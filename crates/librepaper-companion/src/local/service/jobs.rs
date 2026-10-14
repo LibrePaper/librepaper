@@ -14,11 +14,13 @@ use super::*;
 
 /* ------------------------------------------------------------ workspace */
 
-/// `PUT workspace?project=`: sync the hosted workspace for this (origin,
+/// `PUT workspace?project=[&binding=]`: sync a workspace for this (origin,
 /// project) scope from a fresh multipart upload, the same shape as `jobs`'s own
 /// `manifest`/`file` parts but named `manifest` here since there is no job
-/// to describe. Only ever touches the hosted workspace `get_scoped` returns
-/// for `HOSTED_BINDING`; a granted (non-hosted) root is never written here.
+/// to describe. Without `binding`, or with `HOSTED_BINDING`, this syncs the
+/// hosted workspace. Any other id names a granted project folder, which gets
+/// the shared files written into it; the folder's other files are never
+/// touched, and a file edited outside LibrePaper is kept as `<name>.local`.
 pub(super) async fn handle_workspace_put(
     inner: &Arc<Inner>,
     headers: &HeaderMap,
@@ -34,6 +36,9 @@ pub(super) async fn handle_workspace_put(
             &json!({"error": "workspace sync needs a valid project"}),
         );
     };
+    let binding_id =
+        binding_query(request.uri()).unwrap_or_else(|| HOSTED_BINDING.to_string());
+    let granted = binding_id != HOSTED_BINDING;
     let origin = origin.unwrap_or_default().to_string();
 
     let upload = match read_multipart_upload(
@@ -66,15 +71,18 @@ pub(super) async fn handle_workspace_put(
         return response;
     }
 
-    let Some(_binding) = inner
+    if inner
         .quarto_bindings
-        .get_scoped(HOSTED_BINDING, &origin, &project)
-    else {
-        return write_json(
-            404,
-            &json!({"error": "this local app keeps no hosted workspace"}),
-        );
-    };
+        .get_scoped(&binding_id, &origin, &project)
+        .is_none()
+    {
+        let error = if granted {
+            "this project folder is not granted"
+        } else {
+            "this local app keeps no hosted workspace"
+        };
+        return write_json(404, &json!({"error": error}));
+    }
 
     let staged = match tempfile::tempdir() {
         Ok(dir) => dir,
@@ -90,14 +98,34 @@ pub(super) async fn handle_workspace_put(
     }
     let Some(binding) = inner
         .quarto_bindings
-        .get_scoped(HOSTED_BINDING, &origin, &project)
+        .get_scoped(&binding_id, &origin, &project)
     else {
-        return write_json(403, &json!({"error": "hosted workspace was revoked"}));
+        let error = if granted {
+            "this project folder was revoked"
+        } else {
+            "hosted workspace was revoked"
+        };
+        return write_json(403, &json!({"error": error}));
     };
+    if granted {
+        let record = inner.quarto_bindings.written_record(&binding.id);
+        return match sync_granted_folder(staged.path(), &binding.root, &manifest, &record) {
+            Ok(kept) => write_json(200, &json!({"synced": manifest.len(), "kept": kept})),
+            Err(error) => write_json(400, &json!({"error": error})),
+        };
+    }
     match sync_hosted_workspace(staged.path(), &binding.root, &manifest) {
         Ok(()) => write_json(200, &json!({"synced": manifest.len()})),
         Err(error) => write_json(400, &json!({"error": error})),
     }
+}
+
+/// The optional `binding` query parameter naming a granted project folder.
+fn binding_query(uri: &axum::http::Uri) -> Option<String> {
+    let query = uri.query()?;
+    url::form_urlencoded::parse(query.as_bytes())
+        .find(|(name, _)| name == "binding")
+        .map(|(_, value)| value.into_owned())
 }
 
 pub(super) async fn handle_jobs_post(

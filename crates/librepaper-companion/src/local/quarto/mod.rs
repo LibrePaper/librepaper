@@ -529,20 +529,31 @@ pub async fn run_job_with_bindings(
             )
         }
     };
-    // Shared files are uploaded as an inventory before execution. They are a
-    // reconciliation check, never a write-through path: rendering happens
-    // against the user's linked project so local data and environments remain
-    // available, while a stale upload is refused visibly. Resolve the root
-    // first so a replaced binding path cannot be used for this check.
-    // A hosted workspace is the server's own copy of the shared tree, so the
-    // uploads are exactly what belongs in it: they are written through here,
-    // and the inventory check below then holds by construction. A granted
-    // project is never written to.
+    // Shared files are uploaded as an inventory before execution, and the
+    // editor is the source of truth for them. They are written through to both
+    // hosted workspaces and granted folders before each render, so the
+    // inventory check below holds by construction and still guards against a
+    // race. Resolve the root first so a replaced binding path cannot be used
+    // for this write. In a granted folder, files outside the shared inventory
+    // are never touched, and a file changed outside LibrePaper since the last
+    // write is kept as `<name>.local` rather than overwritten; the notes say
+    // which files were kept.
+    let mut sync_notes: Vec<String> = Vec::new();
     if hosted {
         if let Err(error) =
             sync_hosted_workspace(&workspace.project(), &bound_project, &request.manifest)
         {
             return failed(&request, &job_id, &error);
+        }
+    } else {
+        match sync_granted_folder(
+            &workspace.project(),
+            &bound_project,
+            &request.manifest,
+            &binding_store.written_record(&binding.id),
+        ) {
+            Ok(notes) => sync_notes = notes,
+            Err(error) => return failed(&request, &job_id, &error),
         }
     }
     let mut effective_manifest = request.manifest.clone();
@@ -774,7 +785,14 @@ pub async fn run_job_with_bindings(
     let deadline = Instant::now() + Duration::from_secs(request.options.deadline_seconds.max(1));
     let (outcome, log_bytes) =
         super::native::run_confined_logged(command, &mut cancel, deadline).await;
-    let mut log = String::from_utf8_lossy(&log_bytes).into_owned();
+    // The sync notes come first so the log says which local files were kept
+    // as `.local` copies before any of the render's own output.
+    let mut log = String::new();
+    for note in &sync_notes {
+        log.push_str(note);
+        log.push('\n');
+    }
+    log.push_str(&String::from_utf8_lossy(&log_bytes));
     let exit = match outcome {
         super::native::RunOutcome::Exited(code) => code,
         super::native::RunOutcome::Canceled => return canceled(&request, &job_id),
@@ -1422,6 +1440,147 @@ pub(crate) fn sync_hosted_workspace(
         write_hosted_tracking(&tracked_path, &record)?;
     }
     Ok(())
+}
+
+/// What the companion last wrote into a granted folder: relative path to the
+/// sha256 hex of those bytes.
+type WrittenRecord = BTreeMap<String, String>;
+
+fn read_written_record(path: &Path) -> Result<WrittenRecord, String> {
+    match std::fs::symlink_metadata(path) {
+        Ok(metadata) if metadata.file_type().is_symlink() || !metadata.is_file() => {
+            Err("granted folder record is not a regular file".into())
+        }
+        Ok(_) => {
+            let bytes = std::fs::read(path)
+                .map_err(|error| format!("read granted folder record: {error}"))?;
+            // A damaged record must not block renders. Read as empty, every
+            // differing file is kept as `.local` before it is replaced.
+            Ok(serde_json::from_slice(&bytes).unwrap_or_default())
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(WrittenRecord::new()),
+        Err(error) => Err(format!("inspect granted folder record: {error}")),
+    }
+}
+
+fn write_written_record(path: &Path, written: &WrittenRecord) -> Result<(), String> {
+    let parent = path
+        .parent()
+        .ok_or_else(|| "granted folder record has no parent".to_string())?;
+    std::fs::create_dir_all(parent)
+        .map_err(|error| format!("prepare granted folder record: {error}"))?;
+    let bytes = serde_json::to_vec_pretty(written)
+        .map_err(|error| format!("record granted folder: {error}"))?;
+    let mut temporary = tempfile::NamedTempFile::new_in(parent)
+        .map_err(|error| format!("stage granted folder record: {error}"))?;
+    temporary
+        .write_all(&bytes)
+        .and_then(|()| temporary.as_file().sync_data())
+        .map_err(|error| format!("write granted folder record: {error}"))?;
+    temporary
+        .persist(path)
+        .map(|_| ())
+        .map_err(|error| format!("record granted folder: {}", error.error))
+}
+
+/// The first of `<path>.local`, `<path>.local.1`, `<path>.local.2`, ... that
+/// is not on disk yet. Existing files are never overwritten.
+fn free_local_copy_name(root: &Path, path: &str) -> Result<String, String> {
+    let mut candidate = format!("{path}.local");
+    let mut suffix = 0usize;
+    loop {
+        match std::fs::symlink_metadata(root.join(&candidate)) {
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(candidate),
+            Ok(_) => {}
+            Err(error) => return Err(format!("inspect {candidate}: {error}")),
+        }
+        suffix += 1;
+        candidate = format!("{path}.local.{suffix}");
+    }
+}
+
+/// Write the shared manifest into a granted folder. The editor is the source
+/// of truth, so a file that differs from the upload is replaced. Only manifest
+/// paths are touched and nothing is deleted. A file whose current bytes match
+/// neither the upload nor the digest the companion last wrote there was
+/// changed outside LibrePaper: those bytes are first kept beside it as
+/// `<name>.local`. Returns one note per kept copy.
+pub(crate) fn sync_granted_folder(
+    staged: &Path,
+    root: &Path,
+    manifest: &[protocol::ManifestEntry],
+    record: &Path,
+) -> Result<Vec<String>, String> {
+    let files = read_verified_manifest(staged, manifest, MAX_UPLOAD_BYTES)?;
+    let mut written = read_written_record(record)?;
+    let before = written.clone();
+    let mut notes = Vec::new();
+    let result = write_granted_files(root, files, &mut written, &mut notes);
+    // Same reason as the hosted workspace: a changed input must not leave
+    // Calepin's preprocess markers serving the previous body.
+    let result = result.and_then(|changed| {
+        if changed {
+            invalidate_hosted_preprocess_cache(root)
+        } else {
+            Ok(())
+        }
+    });
+    // Record every write that landed even when a later file fails, so the next
+    // sync does not mistake the companion's own earlier write for an outside edit.
+    let saved = if written != before {
+        write_written_record(record, &written)
+    } else {
+        Ok(())
+    };
+    result?;
+    saved?;
+    Ok(notes)
+}
+
+fn write_granted_files(
+    root: &Path,
+    files: Vec<(String, Vec<u8>)>,
+    written: &mut WrittenRecord,
+    notes: &mut Vec<String>,
+) -> Result<bool, String> {
+    let mut changed = false;
+    for (path, bytes) in files {
+        ensure_hosted_parent(root, &path)?;
+        let target = root.join(&path);
+        let current = match std::fs::symlink_metadata(&target) {
+            Ok(metadata) if metadata.is_file() => Some(
+                read_hosted_input(&target)
+                    .ok_or_else(|| format!("read granted folder file: {path}"))?,
+            ),
+            Ok(_) => {
+                return Err(format!(
+                    "granted folder entry is a symlink or not a regular file: {path}"
+                ))
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
+            Err(error) => return Err(format!("inspect granted folder file {path}: {error}")),
+        };
+        if current.as_deref() == Some(bytes.as_slice()) {
+            // Record a match too, so a folder that already held the editor's
+            // copy does not read as edited outside LibrePaper on the next change.
+            written.insert(path, sha256(&bytes));
+            continue;
+        }
+        if let Some(current) = current {
+            let current_digest = sha256(&current);
+            if written.get(&path) != Some(&current_digest) {
+                let copy = free_local_copy_name(root, &path)?;
+                write_hosted_new_input(&root.join(&copy), &current)
+                    .map_err(|error| format!("keep your copy of {path} as {copy}: {error}"))?;
+                notes.push(format!("kept your copy of {path} as {copy}"));
+            }
+        }
+        write_hosted_new_input(&target, &bytes)
+            .map_err(|error| format!("write granted folder file {path}: {error}"))?;
+        written.insert(path, sha256(&bytes));
+        changed = true;
+    }
+    Ok(changed)
 }
 
 pub(crate) fn verify_bound_manifest(

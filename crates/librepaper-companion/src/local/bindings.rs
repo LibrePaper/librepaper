@@ -122,6 +122,27 @@ impl BindingStore {
         binding.id == HOSTED_BINDING
     }
 
+    /// Where the companion records what it last wrote into a granted folder
+    /// for `id`, beside the bindings file in its own state. Binding ids are
+    /// opaque, so anything outside `[A-Za-z0-9_-]+` is named by its digest
+    /// instead of being joined into a path.
+    pub fn written_record(&self, id: &str) -> PathBuf {
+        let safe = !id.is_empty()
+            && id
+                .bytes()
+                .all(|byte| byte.is_ascii_alphanumeric() || byte == b'_' || byte == b'-');
+        let name = if safe {
+            id.to_string()
+        } else {
+            hex::encode(Sha256::digest(id.as_bytes()))
+        };
+        self.path
+            .parent()
+            .unwrap_or_else(|| Path::new("."))
+            .join("written")
+            .join(format!("{name}.json"))
+    }
+
     fn hosted_binding(&self, origin: &str, project: &str) -> Option<ProjectBinding> {
         let base = self.hosted.as_ref()?;
         if !hosted_project_name_ok(project) {

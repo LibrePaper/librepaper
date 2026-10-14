@@ -1046,3 +1046,167 @@ fn css_resolves_beside_a_directory_with_url_special_characters() {
         );
     }
 }
+
+/// Stage uploads the way the job path does: each file's bytes on disk plus the
+/// manifest entry whose digest they must match.
+fn granted_stage(files: &[(&str, &str)]) -> (tempfile::TempDir, Vec<protocol::ManifestEntry>) {
+    let staged = tempdir().expect("staged");
+    let mut manifest = Vec::new();
+    for (path, text) in files {
+        let bytes = text.as_bytes();
+        let target = staged.path().join(path);
+        std::fs::create_dir_all(target.parent().expect("parent")).expect("staged parent");
+        std::fs::write(&target, bytes).expect("staged file");
+        manifest.push(protocol::ManifestEntry {
+            path: (*path).into(),
+            sha256: sha256(bytes),
+            size: bytes.len() as u64,
+        });
+    }
+    (staged, manifest)
+}
+
+#[test]
+fn granted_sync_writes_a_new_shared_file() {
+    let project = tempdir().expect("project");
+    let root = std::fs::canonicalize(project.path()).expect("root");
+    let state = tempdir().expect("state");
+    let record = state.path().join("written").join("grant.json");
+    let (staged, manifest) = granted_stage(&[("paper.qmd", "# paper")]);
+    let notes =
+        sync_granted_folder(staged.path(), &root, &manifest, &record).expect("sync granted");
+    assert!(notes.is_empty());
+    assert_eq!(
+        std::fs::read(root.join("paper.qmd")).expect("paper"),
+        b"# paper".to_vec()
+    );
+    assert!(record.is_file());
+    assert!(!root.join(".librepaper-hosted.json").exists());
+}
+
+#[test]
+fn granted_sync_leaves_unlisted_files_alone() {
+    let project = tempdir().expect("project");
+    let root = std::fs::canonicalize(project.path()).expect("root");
+    std::fs::create_dir_all(root.join("data")).expect("data");
+    std::fs::write(root.join("data/private.csv"), b"secret").expect("private");
+    let state = tempdir().expect("state");
+    let record = state.path().join("grant.json");
+    let (staged, manifest) = granted_stage(&[("paper.qmd", "# paper")]);
+    sync_granted_folder(staged.path(), &root, &manifest, &record).expect("sync granted");
+    assert_eq!(
+        std::fs::read(root.join("data/private.csv")).expect("private"),
+        b"secret".to_vec()
+    );
+}
+
+#[test]
+fn granted_sync_overwrites_its_own_earlier_write_without_a_local_copy() {
+    let project = tempdir().expect("project");
+    let root = std::fs::canonicalize(project.path()).expect("root");
+    let state = tempdir().expect("state");
+    let record = state.path().join("grant.json");
+    let (first, first_manifest) = granted_stage(&[("paper.qmd", "# version one")]);
+    sync_granted_folder(first.path(), &root, &first_manifest, &record).expect("first sync");
+    let (second, second_manifest) = granted_stage(&[("paper.qmd", "# version two")]);
+    let notes =
+        sync_granted_folder(second.path(), &root, &second_manifest, &record).expect("second sync");
+    assert!(notes.is_empty());
+    assert_eq!(
+        std::fs::read(root.join("paper.qmd")).expect("paper"),
+        b"# version two".to_vec()
+    );
+    assert!(!root.join("paper.qmd.local").exists());
+}
+
+#[test]
+fn granted_sync_keeps_an_outside_edit_as_local_copies_without_overwriting() {
+    let project = tempdir().expect("project");
+    let root = std::fs::canonicalize(project.path()).expect("root");
+    let state = tempdir().expect("state");
+    let record = state.path().join("grant.json");
+    let (first, first_manifest) = granted_stage(&[("paper.qmd", "# version one")]);
+    sync_granted_folder(first.path(), &root, &first_manifest, &record).expect("first sync");
+
+    std::fs::write(root.join("paper.qmd"), b"edited by hand").expect("hand edit");
+    let (second, second_manifest) = granted_stage(&[("paper.qmd", "# version two")]);
+    let notes =
+        sync_granted_folder(second.path(), &root, &second_manifest, &record).expect("second sync");
+    assert_eq!(
+        notes,
+        vec!["kept your copy of paper.qmd as paper.qmd.local".to_string()]
+    );
+    assert_eq!(
+        std::fs::read(root.join("paper.qmd.local")).expect("local"),
+        b"edited by hand".to_vec()
+    );
+    assert_eq!(
+        std::fs::read(root.join("paper.qmd")).expect("paper"),
+        b"# version two".to_vec()
+    );
+
+    std::fs::write(root.join("paper.qmd"), b"second hand edit").expect("second hand edit");
+    let (third, third_manifest) = granted_stage(&[("paper.qmd", "# version three")]);
+    let notes =
+        sync_granted_folder(third.path(), &root, &third_manifest, &record).expect("third sync");
+    assert_eq!(
+        notes,
+        vec!["kept your copy of paper.qmd as paper.qmd.local.1".to_string()]
+    );
+    assert_eq!(
+        std::fs::read(root.join("paper.qmd.local")).expect("local"),
+        b"edited by hand".to_vec()
+    );
+    assert_eq!(
+        std::fs::read(root.join("paper.qmd.local.1")).expect("local one"),
+        b"second hand edit".to_vec()
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn granted_sync_refuses_a_symlinked_parent_directory() {
+    let project = tempdir().expect("project");
+    let root = std::fs::canonicalize(project.path()).expect("root");
+    let outside = tempdir().expect("outside");
+    std::os::unix::fs::symlink(outside.path(), root.join("data")).expect("parent symlink");
+    let state = tempdir().expect("state");
+    let record = state.path().join("grant.json");
+    let (staged, manifest) = granted_stage(&[("data/input.csv", "x,y\n1,2\n")]);
+    let error = sync_granted_folder(staged.path(), &root, &manifest, &record).unwrap_err();
+    assert!(error.contains("symlink"), "{error}");
+    assert!(!outside.path().join("input.csv").exists());
+}
+
+#[cfg(unix)]
+#[test]
+fn granted_sync_refuses_a_symlink_at_the_target_path() {
+    let project = tempdir().expect("project");
+    let root = std::fs::canonicalize(project.path()).expect("root");
+    let outside = tempdir().expect("outside");
+    let secret = outside.path().join("secret.txt");
+    std::fs::write(&secret, b"keep").expect("secret");
+    std::os::unix::fs::symlink(&secret, root.join("paper.qmd")).expect("target symlink");
+    let state = tempdir().expect("state");
+    let record = state.path().join("grant.json");
+    let (staged, manifest) = granted_stage(&[("paper.qmd", "# paper")]);
+    let error = sync_granted_folder(staged.path(), &root, &manifest, &record).unwrap_err();
+    assert!(error.contains("paper.qmd"), "{error}");
+    assert_eq!(std::fs::read(&secret).expect("secret"), b"keep".to_vec());
+}
+
+#[test]
+fn granted_sync_treats_a_folder_already_matching_the_editor_as_its_own_write() {
+    let project = tempdir().expect("project");
+    let root = std::fs::canonicalize(project.path()).expect("root");
+    std::fs::write(root.join("paper.qmd"), b"# version one").expect("copied by hand");
+    let state = tempdir().expect("state");
+    let record = state.path().join("grant.json");
+    let (first, first_manifest) = granted_stage(&[("paper.qmd", "# version one")]);
+    sync_granted_folder(first.path(), &root, &first_manifest, &record).expect("first sync");
+    let (second, second_manifest) = granted_stage(&[("paper.qmd", "# version two")]);
+    let notes =
+        sync_granted_folder(second.path(), &root, &second_manifest, &record).expect("second sync");
+    assert!(notes.is_empty());
+    assert!(!root.join("paper.qmd.local").exists());
+}

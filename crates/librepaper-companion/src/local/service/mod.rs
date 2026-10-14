@@ -48,7 +48,9 @@ use crate::local::protocol::{
 /// The last slice of a preview's combined stdout+stderr surfaced in its
 /// status JSON -- enough to show why a render failed, not the whole log.
 const PREVIEW_LOG_TAIL_BYTES: usize = 4 * 1024;
-use crate::local::quarto::{sync_hosted_workspace, BindingStore, HOSTED_BINDING};
+use crate::local::quarto::{
+    sync_granted_folder, sync_hosted_workspace, BindingStore, HOSTED_BINDING,
+};
 
 mod backups;
 mod consent;
