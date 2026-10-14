@@ -1810,8 +1810,9 @@
   // holding.
   const localPreviewSwitches = createGeneration();
   $effect(() => {
-    const quartoTarget = quartoLiveActive && previewMain;
-    const calepinTarget = calepinActive && previewMain;
+    // The binding is part of the target so choosing a folder restarts the preview there.
+    const quartoTarget = quartoLiveActive && previewMain && `${previewMain}|${quartoBindingId}`;
+    const calepinTarget = calepinActive && previewMain && `${previewMain}|${quartoBindingId}`;
     const stale = localPreviewSwitches.begin();
     untrack(async () => {
       // Both engines use the same workspace. Release its old watcher before

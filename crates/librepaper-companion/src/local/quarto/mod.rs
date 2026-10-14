@@ -1291,6 +1291,17 @@ fn write_hosted_new_input(path: &Path, bytes: &[u8]) -> Result<(), String> {
         .write_all(bytes)
         .and_then(|()| temporary.as_file().sync_data())
         .map_err(|error| format!("write hosted workspace input: {error}"))?;
+    // Replacing a file keeps the mode it already has, such as an executable
+    // bit on a script. The temp file would otherwise carry the 0600 default.
+    if std::fs::symlink_metadata(path).is_ok_and(|metadata| metadata.is_file()) {
+        let permissions = std::fs::metadata(path)
+            .map_err(|error| format!("read hosted workspace input mode: {error}"))?
+            .permissions();
+        temporary
+            .as_file()
+            .set_permissions(permissions)
+            .map_err(|error| format!("set hosted workspace input mode: {error}"))?;
+    }
     temporary
         .persist(path)
         .map(|_| ())
@@ -1442,6 +1453,8 @@ pub(crate) fn sync_hosted_workspace(
     Ok(())
 }
 
+static GRANTED_SYNC: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
 /// What the companion last wrote into a granted folder: relative path to the
 /// sha256 hex of those bytes.
 type WrittenRecord = BTreeMap<String, String>;
@@ -1511,20 +1524,16 @@ pub(crate) fn sync_granted_folder(
     manifest: &[protocol::ManifestEntry],
     record: &Path,
 ) -> Result<Vec<String>, String> {
+    // The job runner and the workspace route both call this, and the written
+    // record is read, modified and written back.
+    let _guard = GRANTED_SYNC
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
     let files = read_verified_manifest(staged, manifest, MAX_UPLOAD_BYTES)?;
     let mut written = read_written_record(record)?;
     let before = written.clone();
     let mut notes = Vec::new();
     let result = write_granted_files(root, files, &mut written, &mut notes);
-    // Same reason as the hosted workspace: a changed input must not leave
-    // Calepin's preprocess markers serving the previous body.
-    let result = result.and_then(|changed| {
-        if changed {
-            invalidate_hosted_preprocess_cache(root)
-        } else {
-            Ok(())
-        }
-    });
     // Record every write that landed even when a later file fails, so the next
     // sync does not mistake the companion's own earlier write for an outside edit.
     let saved = if written != before {
@@ -1542,8 +1551,8 @@ fn write_granted_files(
     files: Vec<(String, Vec<u8>)>,
     written: &mut WrittenRecord,
     notes: &mut Vec<String>,
-) -> Result<bool, String> {
-    let mut changed = false;
+) -> Result<(), String> {
+    let mut invalidated = false;
     for (path, bytes) in files {
         ensure_hosted_parent(root, &path)?;
         let target = root.join(&path);
@@ -1570,17 +1579,28 @@ fn write_granted_files(
             let current_digest = sha256(&current);
             if written.get(&path) != Some(&current_digest) {
                 let copy = free_local_copy_name(root, &path)?;
+                invalidate_before_first_write(root, &mut invalidated)?;
                 write_hosted_new_input(&root.join(&copy), &current)
                     .map_err(|error| format!("keep your copy of {path} as {copy}: {error}"))?;
                 notes.push(format!("kept your copy of {path} as {copy}"));
             }
         }
+        invalidate_before_first_write(root, &mut invalidated)?;
         write_hosted_new_input(&target, &bytes)
             .map_err(|error| format!("write granted folder file {path}: {error}"))?;
         written.insert(path, sha256(&bytes));
-        changed = true;
     }
-    Ok(changed)
+    Ok(())
+}
+
+/// Clears Calepin's preprocess markers once, before the first file this sync
+/// changes. A changed input must not leave the markers serving the previous body.
+fn invalidate_before_first_write(root: &Path, invalidated: &mut bool) -> Result<(), String> {
+    if !*invalidated {
+        invalidate_hosted_preprocess_cache(root)?;
+        *invalidated = true;
+    }
+    Ok(())
 }
 
 pub(crate) fn verify_bound_manifest(

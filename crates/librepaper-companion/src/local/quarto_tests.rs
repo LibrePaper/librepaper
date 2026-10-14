@@ -1210,3 +1210,29 @@ fn granted_sync_treats_a_folder_already_matching_the_editor_as_its_own_write() {
     assert!(notes.is_empty());
     assert!(!root.join("paper.qmd.local").exists());
 }
+
+#[cfg(unix)]
+#[test]
+fn granted_sync_keeps_the_mode_of_a_replaced_file() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let project = tempdir().expect("project");
+    let root = std::fs::canonicalize(project.path()).expect("root");
+    let state = tempdir().expect("state");
+    let record = state.path().join("grant.json");
+    let (first, first_manifest) = granted_stage(&[("run.sh", "echo one\n")]);
+    sync_granted_folder(first.path(), &root, &first_manifest, &record).expect("first sync");
+    std::fs::set_permissions(root.join("run.sh"), std::fs::Permissions::from_mode(0o755))
+        .expect("chmod");
+    let (second, second_manifest) = granted_stage(&[("run.sh", "echo two\n")]);
+    sync_granted_folder(second.path(), &root, &second_manifest, &record).expect("second sync");
+    let mode = std::fs::metadata(root.join("run.sh"))
+        .expect("run.sh")
+        .permissions()
+        .mode();
+    assert_eq!(mode & 0o777, 0o755);
+    assert_eq!(
+        std::fs::read(root.join("run.sh")).expect("run.sh"),
+        b"echo two\n".to_vec()
+    );
+}
