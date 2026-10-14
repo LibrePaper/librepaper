@@ -956,10 +956,10 @@
       {:else}
         <input class="input project-search" type="search" placeholder="Search projects"
                aria-label="Search projects by title or file" bind:value={search} />
-        <button type="button" class="btn btn-sm lp-control-outline" onclick={() => openSettings()}>Settings</button>
+        <button type="button" class="btn btn-sm nav-action lp-control-tonal-brand" onclick={() => openSettings()}>Settings</button>
       {/if}
       {#if me.can_publish}
-        <button type="button" class="btn btn-sm nav-new lp-control-brand" aria-label="New project" onclick={() => askName()}>
+        <button type="button" class="btn btn-sm nav-new nav-action lp-control-tonal-brand" aria-label="New project" onclick={() => askName()}>
           <Icon name="file-plus" size={16} />
           <span class="nav-new-label">New project</span>
         </button>
@@ -1410,10 +1410,11 @@
   /* The place, in the bar, where a project's title goes when one is open. */
   .nav-place { font-weight: 600; }
   .project-search { width: 16rem; max-width: 32vw; }
-  /* The bar decides the height of its own row: the button takes the height
-     of the search field beside it rather than a size of its own, so the two
-     read as one row of controls however either is restyled later. */
-  .nav-new { align-self: stretch; }
+  /* The bar decides the height of its own row: the buttons take the height
+     of the search field beside them rather than a size of their own, so they
+     read as one row of controls however any of them is restyled later. They
+     are filled, not outlined, so neither is mistaken for another field. */
+  .nav-action { align-self: stretch; }
 
   .projects { display: flex; flex-direction: column; flex: 1 1 auto; min-width: 0; min-height: 0; overflow-y: auto; padding: calc(var(--spacing) * 6) calc(var(--spacing) * 6) calc(var(--spacing) * 10); gap: calc(var(--spacing) * 4); }
   .place-heading { font-size: var(--text-2xl); font-weight: 600; margin: 0; }
