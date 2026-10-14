@@ -338,9 +338,10 @@ pub(super) async fn handle_jobs_post(
             binding_id: Some(binding_id),
         } = workspace
         {
+            // The hosted workspace takes the entrypoint the job names, as a live preview does.
             let binding = match inner
                 .quarto_bindings
-                .validate_scoped_entrypoint(binding_id, &origin, &project, entrypoint, false)
+                .validate_scoped_entrypoint(binding_id, &origin, &project, entrypoint, true)
             {
                 Ok(binding) => binding,
                 Err(_) => {
