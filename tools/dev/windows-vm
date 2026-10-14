@@ -1,0 +1,240 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# Windows 11 test VM for the LibrePaper companion, run with quickemu.
+# Works from any current working directory.
+
+ORIGINAL_ARGS=("$@")
+REPO_ROOT=$(git -C "$(dirname "${BASH_SOURCE[0]}")" rev-parse --show-toplevel)
+SCRIPT="$REPO_ROOT/tools/dev/windows-vm"
+# The main checkout holds the VM, so every worktree shares one cache.
+MAIN_ROOT=$(dirname "$(git -C "$REPO_ROOT" rev-parse --path-format=absolute --git-common-dir)")
+
+VM_DIR="${WINDOWS_VM_DIR:-$MAIN_ROOT/.windows-vm}"
+CONF_NAME=windows-11.conf
+CONF="$VM_DIR/$CONF_NAME"
+SHARE="$VM_DIR/share"
+
+RAM="${WINDOWS_VM_RAM:-8G}"
+CPUS="${WINDOWS_VM_CPUS:-4}"
+DISPLAY_MODE="${WINDOWS_VM_DISPLAY:-spice}"
+MIN_FREE_GB="${WINDOWS_VM_MIN_FREE_GB:-40}"
+
+# Print help text.
+print_help() {
+    cat <<'EOF'
+Usage: tools/dev/windows-vm <command>
+
+Commands:
+  create             Download Windows 11 (once) and configure the VM
+  start              Boot the VM
+  stop               Stop the VM
+  snapshot NAME      Save a snapshot of the VM disk (VM must be off)
+  restore NAME       Restore a snapshot (VM must be off)
+  snapshots          List snapshots
+  reset [--yes]      Delete the VM disk, EFI vars and TPM state; reinstall with start
+  build              Cross-compile the companion for Windows into the shared folder
+  path               Print the VM directory
+  help               Show this help text
+
+Environment variables:
+  WINDOWS_VM_DIR           VM directory (default: .windows-vm in the main checkout)
+  WINDOWS_VM_RAM           VM memory (default: 8G)
+  WINDOWS_VM_CPUS          VM CPU cores (default: 4)
+  WINDOWS_VM_DISPLAY       quickemu display mode (default: spice)
+  WINDOWS_VM_MIN_FREE_GB   Free GiB required before downloading (default: 40)
+
+Inside the VM, the shared folder is \\10.0.2.4\qemu.
+EOF
+}
+
+die() {
+    echo "windows-vm: $*" >&2
+    exit 1
+}
+
+# Re-run this script inside nix when CMD is missing from PATH.
+with_tools() {
+    local cmd="$1"
+    shift
+    if command -v "$cmd" >/dev/null 2>&1; then
+        return 0
+    fi
+    if [[ -z "${WINDOWS_VM_IN_NIX:-}" ]]; then
+        exec env WINDOWS_VM_IN_NIX=1 nix shell "$@" --command "$SCRIPT" "${ORIGINAL_ARGS[@]}"
+    fi
+    die "$cmd not found"
+}
+
+need_quickemu() {
+    with_tools quickemu nixpkgs#quickemu nixpkgs#samba
+}
+
+require_conf() {
+    [[ -f "$CONF" ]] || die "run tools/dev/windows-vm create first"
+}
+
+validate_snapshot_name() {
+    local re='^[A-Za-z0-9._-]+$'
+    [[ "$1" =~ $re ]] || die "snapshot name must match [A-Za-z0-9._-]+"
+}
+
+# Set KEY="VALUE" in the conf, replacing any existing KEY line.
+set_conf() {
+    local key="$1" value="$2"
+    sed -i "/^$key=/d" "$CONF"
+    printf '%s="%s"\n' "$key" "$value" >> "$CONF"
+}
+
+check_free_space() {
+    local avail_kib free_gb
+    avail_kib=$(df -Pk "$VM_DIR" | awk 'NR==2 {print $4}')
+    free_gb=$((avail_kib / 1048576))
+    if ((free_gb < MIN_FREE_GB)); then
+        die "only ${free_gb} GiB free in $VM_DIR, need ${MIN_FREE_GB} GiB (WINDOWS_VM_MIN_FREE_GB)"
+    fi
+}
+
+cmd_create() {
+    mkdir -p "$VM_DIR" "$SHARE"
+    if [[ -f "$CONF" ]]; then
+        echo "windows-vm: reusing the cached download in $VM_DIR"
+    else
+        check_free_space
+        (cd "$VM_DIR" && quickget windows 11)
+    fi
+
+    set_conf ram "$RAM"
+    set_conf cpu_cores "$CPUS"
+    set_conf public_dir "$SHARE"
+
+    cat <<EOF
+
+Next steps:
+  tools/dev/windows-vm start
+  Install Windows in the VM, then take a clean snapshot:
+  tools/dev/windows-vm snapshot clean
+EOF
+}
+
+cmd_start() {
+    require_conf
+    (cd "$VM_DIR" && quickemu --vm "$CONF_NAME" --display "$DISPLAY_MODE")
+}
+
+cmd_stop() {
+    require_conf
+    (cd "$VM_DIR" && quickemu --vm "$CONF_NAME" --kill)
+}
+
+# $1 is create or apply, $2 is a validated snapshot name.
+cmd_snapshot() {
+    require_conf
+    (cd "$VM_DIR" && quickemu --vm "$CONF_NAME" --snapshot "$1" "$2")
+}
+
+cmd_snapshots() {
+    require_conf
+    (cd "$VM_DIR" && quickemu --vm "$CONF_NAME" --snapshot info)
+}
+
+reset_preview() {
+    cat <<EOF
+This deletes the VM disk, EFI vars and TPM state in $VM_DIR.
+The cached ISOs and $CONF_NAME are kept.
+Run tools/dev/windows-vm reset --yes to delete them.
+EOF
+    exit 1
+}
+
+reset_delete() {
+    require_conf
+    (cd "$VM_DIR" && quickemu --vm "$CONF_NAME" --delete-disk)
+    rm -f "$VM_DIR/windows-11/tpm2-00.permall"
+    echo "windows-vm: reset done; tools/dev/windows-vm start reinstalls from the cached ISO"
+}
+
+cmd_build() {
+    [[ -f "$REPO_ROOT/web/dist/index.html" ]] || die "build the web app first: make web"
+    with_tools cargo-xwin nixpkgs#cargo-xwin nixpkgs#llvmPackages.clang-unwrapped nixpkgs#llvmPackages.bintools-unwrapped
+
+    (cd "$REPO_ROOT" && cargo xwin build --locked --target x86_64-pc-windows-msvc -p librepaper --bin librepaper)
+
+    mkdir -p "$SHARE"
+    cp "$REPO_ROOT/target/x86_64-pc-windows-msvc/debug/librepaper.exe" "$SHARE/"
+    cat > "$SHARE/install-local.ps1" <<'EOF'
+$ErrorActionPreference = 'Stop'
+$dir = Join-Path $HOME '.cargo\bin'
+New-Item -ItemType Directory -Force -Path $dir | Out-Null
+Get-Process librepaper -ErrorAction SilentlyContinue | Stop-Process -Force
+Copy-Item -Force (Join-Path $PSScriptRoot 'librepaper.exe') $dir
+$path = [Environment]::GetEnvironmentVariable('Path', 'User')
+if (($path -split ';') -notcontains $dir) {
+    [Environment]::SetEnvironmentVariable('Path', "$dir;$path", 'User')
+}
+& (Join-Path $dir 'librepaper.exe') --version
+EOF
+
+    cat <<'EOF'
+Copied librepaper.exe and install-local.ps1 to the shared folder.
+In the VM run:
+  powershell -ExecutionPolicy Bypass -File \\10.0.2.4\qemu\install-local.ps1
+EOF
+}
+
+# Main dispatcher.
+main() {
+    local cmd="${1:-help}"
+
+    case "$cmd" in
+        create)
+            need_quickemu
+            cmd_create
+            ;;
+        start)
+            need_quickemu
+            cmd_start
+            ;;
+        stop)
+            need_quickemu
+            cmd_stop
+            ;;
+        snapshot)
+            validate_snapshot_name "${2:-}"
+            need_quickemu
+            cmd_snapshot create "$2"
+            ;;
+        restore)
+            validate_snapshot_name "${2:-}"
+            need_quickemu
+            cmd_snapshot apply "$2"
+            ;;
+        snapshots)
+            need_quickemu
+            cmd_snapshots
+            ;;
+        reset)
+            if [[ "${2:-}" != --yes ]]; then
+                reset_preview
+            fi
+            need_quickemu
+            reset_delete
+            ;;
+        build)
+            cmd_build
+            ;;
+        path)
+            echo "$VM_DIR"
+            ;;
+        help | -h | --help)
+            print_help
+            ;;
+        *)
+            echo "windows-vm: unknown command '$cmd'" >&2
+            print_help >&2
+            exit 1
+            ;;
+    esac
+}
+
+main "$@"

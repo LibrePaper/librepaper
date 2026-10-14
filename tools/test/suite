@@ -19,6 +19,7 @@ usage: tools/test/suite <suite>
   smoke       drive the reader in headless Chromium against a real server (needs docker and chromium)
   e2e         smoke, history and track-changes deployment scenarios (needs docker and chromium)
   external    Quarto/R/Python and real local-service integration tests
+  windows-vm  the tools/dev/windows-vm wrapper against fake quickemu and quickget
   fuzz        every fuzz target for FUZZ_SECONDS (default 60) each
               (FUZZ_TARGETS overrides the target list; needs nightly and cargo-fuzz)
   help        this text
@@ -105,6 +106,11 @@ suite_external() {
 	cargo test -p librepaper-companion quarto -- --ignored --nocapture --test-threads=1 \
 		--skip quarto_project_scope_collects_pages_and_nested_web_resources \
 		--skip quarto_book_scope_keeps_chapter_navigation
+}
+
+# The Windows VM wrapper, kept out of make test.
+suite_windows_vm() {
+	node --test tools/dev/windows-vm.check.mjs
 }
 
 # libFuzzer over the functions that read what somebody else wrote. A finding is
@@ -210,6 +216,7 @@ case "${1:-help}" in
 	smoke) suite_smoke ;;
 	e2e) suite_e2e ;;
 	external) suite_external ;;
+	windows-vm) suite_windows_vm ;;
 	fuzz) suite_fuzz ;;
 	help | -h | --help) usage ;;
 	*) usage >&2; exit 2 ;;
