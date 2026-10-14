@@ -213,7 +213,10 @@ pub(super) async fn handle(
             )
         } else {
             let _admission = inner.pairing.admission_gate().lock().await;
-            match inner.pairing.issue(&auth.origin, "settings page") {
+            match inner
+                .pairing
+                .issue(&auth.origin, crate::local::pairing::SETTINGS_LABEL)
+            {
                 Ok((token, expires)) => write_json(
                     200,
                     &json!({

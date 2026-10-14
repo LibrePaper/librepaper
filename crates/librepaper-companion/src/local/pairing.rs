@@ -8,10 +8,12 @@
 //! - `service.json`: what the running `librepaper start` printed, so
 //!   `status`/`doctor`/`disconnect` and a second `start` can find it without
 //!   asking the service itself.
-//! - `pairings.json`: one entry per origin a browser has connected, keyed by
-//!   the normalised origin. A pairing covers every document that site opens. The token itself is never
-//!   written to disk -- only its SHA-256 -- so reading this file back does
-//!   not hand out live access.
+//! - `pairings.json`: a short list of pairings per origin, keyed by the
+//!   normalised origin. Each entry is one connected browser, and an origin
+//!   holds at most `MAX_PAIRINGS_PER_ORIGIN` of them. A pairing covers every
+//!   document that site opens. The token itself is never written to disk --
+//!   only its SHA-256 -- so reading this file back does not hand out live
+//!   access.
 //!
 //! Every function here takes the config-home base directory as an explicit
 //! argument rather than reading `$XDG_STATE_HOME` itself, so a test can hand
@@ -31,6 +33,13 @@ use librepaper_base::util::{now_unix, random_bytes};
 
 /// How long a pairing token is good for once issued.
 pub const TOKEN_TTL_SECONDS: i64 = 30 * 24 * 3600;
+
+/// Most pairings one origin may hold at once, one per connected browser.
+pub const MAX_PAIRINGS_PER_ORIGIN: usize = 8;
+
+/// Label the settings page gives each token it asks for. Such a token
+/// replaces the earlier settings page tokens for its origin.
+pub const SETTINGS_LABEL: &str = "settings page";
 
 /// What `librepaper start` writes about itself, so a later command in a
 /// different process invocation -- `status`, `disconnect`, a second `start`
@@ -101,56 +110,76 @@ impl PairingStore {
     }
 
     /// Entries whose key is not their own origin (the old per-project keys)
-    /// are dropped rather than honoured.
-    fn load(&self) -> HashMap<String, Pairing> {
-        let mut pairings: HashMap<String, Pairing> =
-            read_json(&self.pairings_path()).unwrap_or_default();
-        pairings.retain(|key, pairing| *key == pairing.origin);
-        pairings
+    /// are dropped rather than honoured. Expired entries and empty lists are
+    /// dropped too. A file in another shape reads as empty.
+    fn load(&self) -> HashMap<String, Vec<Pairing>> {
+        self.load_checked().unwrap_or_default()
     }
 
-    fn load_checked(&self) -> std::io::Result<HashMap<String, Pairing>> {
+    /// Like `load`, but a real read failure other than NotFound is an error.
+    /// A file that does not parse, such as one in the old single-pairing
+    /// shape, is treated as empty so it cannot block revocation forever.
+    fn load_checked(&self) -> std::io::Result<HashMap<String, Vec<Pairing>>> {
         let text = match std::fs::read_to_string(self.pairings_path()) {
             Ok(text) => text,
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(HashMap::new()),
             Err(error) => return Err(error),
         };
-        let mut pairings: HashMap<String, Pairing> =
-            serde_json::from_str(&text).map_err(std::io::Error::other)?;
-        pairings.retain(|key, pairing| *key == pairing.origin);
+        let mut pairings: HashMap<String, Vec<Pairing>> =
+            serde_json::from_str(&text).unwrap_or_default();
+        let now = now_unix();
+        for (key, list) in pairings.iter_mut() {
+            list.retain(|pairing| *key == pairing.origin && pairing.expires > now);
+        }
+        pairings.retain(|_, list| !list.is_empty());
         Ok(pairings)
     }
 
-    fn save(&self, pairings: &HashMap<String, Pairing>) -> std::io::Result<()> {
+    fn save(&self, pairings: &HashMap<String, Vec<Pairing>>) -> std::io::Result<()> {
         write_private_json(&self.pairings_path(), pairings)
     }
 
-    /// Grants `origin` a fresh token, replacing any pairing already held for
-    /// it. Returns the plaintext token -- shown once -- and its expiry.
+    /// Grants `origin` a fresh token for one more browser. Tokens already held
+    /// for the origin keep working. A settings page token replaces only the
+    /// earlier settings page tokens for the origin. When the origin would
+    /// hold more than `MAX_PAIRINGS_PER_ORIGIN`, the oldest are dropped first.
+    /// Returns the plaintext token -- shown once -- and its expiry.
     pub fn issue(&self, origin: &str, label: &str) -> std::io::Result<(String, i64)> {
         let origin = normalize_origin(origin);
         let token = random_token();
         let now = now_unix();
         let expires = now + TOKEN_TTL_SECONDS;
         let mut pairings = self.load();
-        pairings.insert(
-            origin.clone(),
-            Pairing {
-                token_sha256: hash_token(&token),
-                origin,
-                created: now,
-                expires,
-                label: label.to_string(),
-            },
-        );
+        let list = pairings.entry(origin.clone()).or_default();
+        if label == SETTINGS_LABEL {
+            list.retain(|pairing| pairing.label != SETTINGS_LABEL);
+        }
+        list.push(Pairing {
+            token_sha256: hash_token(&token),
+            origin,
+            created: now,
+            expires,
+            label: label.to_string(),
+        });
+        // Ties on `created` go to the lowest index, which is the earliest
+        // push. The new pairing sits last, so it is never the one dropped.
+        while list.len() > MAX_PAIRINGS_PER_ORIGIN {
+            let mut oldest = 0;
+            for (index, pairing) in list.iter().enumerate() {
+                if pairing.created < list[oldest].created {
+                    oldest = index;
+                }
+            }
+            list.remove(oldest);
+        }
         self.save(&pairings)?;
         Ok((token, expires))
     }
 
-    /// Whether `token` is live for `origin`: there is such a pairing, it has
-    /// not expired, and the token matches. The comparison is over the stored
-    /// hash, not the plaintext, and takes the same time whether or not the
-    /// bytes match.
+    /// Whether `token` is live for `origin`: some pairing held for the origin
+    /// has not expired and matches the token. Every pairing is compared, so
+    /// timing does not depend on which one matched. The comparison is over
+    /// the stored hash, not the plaintext.
     pub fn authenticate(&self, origin: &str, token: &str) -> bool {
         if token.is_empty() {
             return false;
@@ -158,12 +187,16 @@ impl PairingStore {
         let origin = normalize_origin(origin);
         let hash = hash_token(token);
         let now = now_unix();
-        self.load().get(&origin).is_some_and(|pairing| {
-            pairing.expires > now
-                && librepaper_base::util::constant_time_eq(
+        self.load().get(&origin).is_some_and(|list| {
+            let mut matched = false;
+            for pairing in list {
+                let same = librepaper_base::util::constant_time_eq(
                     pairing.token_sha256.as_bytes(),
                     hash.as_bytes(),
-                )
+                );
+                matched |= (pairing.expires > now) & same;
+            }
+            matched
         })
     }
 
@@ -176,7 +209,7 @@ impl PairingStore {
         let now = now_unix();
         self.load()
             .get(&origin)
-            .is_some_and(|pairing| pairing.expires > now)
+            .is_some_and(|list| list.iter().any(|pairing| pairing.expires > now))
     }
 
     /// The origins with a live pairing, for `status` and `start` to print.
@@ -184,46 +217,57 @@ impl PairingStore {
         let now = now_unix();
         let mut origins: Vec<_> = self
             .load()
-            .into_values()
-            .filter(|p| p.expires > now)
-            .map(|p| p.origin)
+            .into_iter()
+            .filter(|(_, list)| list.iter().any(|pairing| pairing.expires > now))
+            .map(|(origin, _)| origin)
             .collect();
         origins.sort();
         origins
     }
 
-    /// Local-control view of live site grants. The bearer hash is deliberately
-    /// omitted; callers receive only an opaque revocation id and display
-    /// metadata.
+    /// Local-control view of live site grants, one row per origin. The bearer
+    /// hash is deliberately omitted; callers receive only an opaque revocation
+    /// id and display metadata. The row takes the newest pairing's created and
+    /// label and the latest expiry among the live pairings.
     pub(crate) fn active_details(&self) -> Vec<(String, String, i64, i64, String)> {
         let now = now_unix();
         let mut entries: Vec<_> = self
             .load()
             .into_values()
-            .filter(|pairing| pairing.expires > now)
-            .map(|pairing| {
-                let id = hex::encode(&Sha256::digest(pairing.origin.as_bytes())[..16]);
-                (
+            .filter_map(|list| {
+                let newest = list
+                    .iter()
+                    .filter(|pairing| pairing.expires > now)
+                    .max_by_key(|pairing| pairing.created)?;
+                let latest_expiry = list
+                    .iter()
+                    .filter(|pairing| pairing.expires > now)
+                    .map(|pairing| pairing.expires)
+                    .max()?;
+                let origin = newest.origin.clone();
+                let id = hex::encode(&Sha256::digest(origin.as_bytes())[..16]);
+                Some((
                     id,
-                    pairing.origin,
-                    pairing.created,
-                    pairing.expires,
-                    pairing.label,
-                )
+                    origin,
+                    newest.created,
+                    latest_expiry,
+                    newest.label.clone(),
+                ))
             })
             .collect();
         entries.sort_by(|left, right| left.1.cmp(&right.1));
         entries
     }
 
-    /// Revokes the pairing for `origin` -- what `POST disconnect` does to the
-    /// origin that authenticated it.
+    /// Revokes every pairing held for `origin`. Revoking a site cuts off every
+    /// browser paired with it, not only one of them.
     pub fn revoke(&self, origin: &str) -> bool {
         self.revoke_checked(origin).unwrap_or(false)
     }
 
-    /// Remove a pairing and report persistence failures so API callers never
-    /// claim that access was revoked when the durable credential remains.
+    /// Remove every pairing held for `origin` and report persistence failures
+    /// so API callers never claim that access was revoked when the durable
+    /// credential remains.
     pub fn revoke_checked(&self, origin: &str) -> std::io::Result<bool> {
         let origin = normalize_origin(origin);
         let mut pairings = self.load_checked()?;
@@ -405,10 +449,11 @@ mod tests {
     }
 
     #[test]
-    fn checked_revoke_reports_corrupt_pairing_store() {
+    fn checked_revoke_reports_unreadable_pairing_store() {
         let (_dir, store) = store();
-        std::fs::create_dir_all(store.dir.as_path()).unwrap();
-        std::fs::write(store.pairings_path(), b"not valid json").unwrap();
+        // A directory where the file should be is a read failure that is
+        // not NotFound, so it must surface as an error.
+        std::fs::create_dir_all(store.pairings_path()).unwrap();
         assert!(store.revoke_checked("https://a").is_err());
     }
 
@@ -425,12 +470,72 @@ mod tests {
     }
 
     #[test]
-    fn replacing_a_grant_invalidates_the_previous_token() {
+    fn a_second_browser_keeps_the_first_token_working() {
         let (_dir, store) = store();
-        let (old, _) = store.issue("https://example.test", "old").expect("issue");
-        let (new, _) = store.issue("https://example.test", "new").expect("issue");
-        assert!(!store.authenticate("https://example.test", &old));
-        assert!(store.authenticate("https://example.test", &new));
+        let (first, _) = store.issue("https://example.test", "a").expect("issue");
+        let (second, _) = store.issue("https://example.test", "b").expect("issue");
+        assert!(store.authenticate("https://example.test", &first));
+        assert!(store.authenticate("https://example.test", &second));
+    }
+
+    #[test]
+    fn pairings_beyond_the_cap_drop_the_oldest() {
+        let (_dir, store) = store();
+        let mut tokens = Vec::new();
+        for n in 0..=MAX_PAIRINGS_PER_ORIGIN {
+            let label = format!("browser {n}");
+            let (token, _) = store
+                .issue("https://example.test", &label)
+                .expect("issue");
+            tokens.push(token);
+        }
+        assert!(!store.authenticate("https://example.test", &tokens[0]));
+        for token in &tokens[1..] {
+            assert!(store.authenticate("https://example.test", token));
+        }
+    }
+
+    #[test]
+    fn settings_page_tokens_replace_only_each_other() {
+        let (_dir, store) = store();
+        let (browser, _) = store
+            .issue("https://example.test", "browser")
+            .expect("issue");
+        let (first, _) = store
+            .issue("https://example.test", SETTINGS_LABEL)
+            .expect("issue");
+        let (second, _) = store
+            .issue("https://example.test", SETTINGS_LABEL)
+            .expect("issue");
+        assert!(store.authenticate("https://example.test", &browser));
+        assert!(store.authenticate("https://example.test", &second));
+        assert!(!store.authenticate("https://example.test", &first));
+    }
+
+    #[test]
+    fn revoking_a_site_cuts_off_every_browser() {
+        let (_dir, store) = store();
+        let (a_one, _) = store.issue("https://a", "one").expect("issue");
+        let (a_two, _) = store.issue("https://a", "two").expect("issue");
+        let (b, _) = store.issue("https://b", "").expect("issue");
+        assert!(store.revoke("https://a"));
+        assert!(!store.authenticate("https://a", &a_one));
+        assert!(!store.authenticate("https://a", &a_two));
+        assert!(store.authenticate("https://b", &b));
+    }
+
+    #[test]
+    fn an_old_single_pairing_file_is_treated_as_empty() {
+        let (_dir, store) = store();
+        std::fs::create_dir_all(store.dir.as_path()).unwrap();
+        std::fs::write(
+            store.pairings_path(),
+            r#"{"https://a": {"token_sha256":"x","origin":"https://a","created":1,"expires":9999999999,"label":""}}"#,
+        )
+        .unwrap();
+        assert!(store.active_pairings().is_empty());
+        let removed = store.revoke_checked("https://a").expect("revoke");
+        assert!(!removed);
     }
 
     #[test]
@@ -529,10 +634,7 @@ mod tests {
         let (_dir, store) = store();
         let (token, _) = store.issue("https://example.test", "").expect("issue");
         let mut grants = store.load();
-        grants
-            .get_mut("https://example.test")
-            .expect("grant")
-            .expires = now_unix() - 1;
+        grants.get_mut("https://example.test").expect("grant")[0].expires = now_unix() - 1;
         store.save(&grants).expect("save");
         assert!(!store.authenticate("https://example.test", &token));
         assert!(!store.has_live_pairing("https://example.test"));
@@ -544,8 +646,8 @@ mod tests {
         let (_dir, store) = store();
         let (token, _) = store.issue("https://example.test", "").expect("issue");
         let mut grants = store.load();
-        let pairing = grants.remove("https://example.test").expect("grant");
-        grants.insert("https://example.test|paper".to_string(), pairing);
+        let list = grants.remove("https://example.test").expect("grant");
+        grants.insert("https://example.test|paper".to_string(), list);
         store.save(&grants).expect("save");
         assert!(!store.authenticate("https://example.test", &token));
         assert!(store.active_pairings().is_empty());
