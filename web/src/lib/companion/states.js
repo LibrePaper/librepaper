@@ -2,7 +2,7 @@
 // what to do next. The connection controls and the settings footer share it.
 export const STATES = {
   connected: { says: "Running", tone: "good" },
-  unreachable: { says: "Not running", tone: "error", hint: "Run librepaper in a terminal, or install it." },
+  unreachable: { says: "Not running", tone: "error", hint: "Install the companion, or run librepaper in a terminal if it is installed." },
   denied: { says: "Blocked", tone: "error", hint: "Allow local network access for this site in the browser's site settings." },
   asking: { says: "Needs permission", tone: "warn", hint: "Click Connect, then allow local network access when the browser asks." },
   reachable: { says: "Needs approval", tone: "warn", hint: "Connect, then approve the dialog the companion shows." },

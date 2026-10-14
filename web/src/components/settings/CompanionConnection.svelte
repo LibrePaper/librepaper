@@ -39,10 +39,10 @@
 <div {id} class="companion-connection">
   <span title={hint}><StatusPill label={says} tone={wording.tone} accessibleLabel={`LibrePaper Companion: ${says}`} /></span>
   {#if !connected}
-    {#if local?.state !== "denied" && local?.state !== "asking"}<a class="companion-connection-link" href={INSTALL} target="_blank" rel="noreferrer">Install</a>{/if}
+    {#if local?.state !== "denied" && local?.state !== "asking"}<a class="companion-connection-link" href={INSTALL} target="_blank" rel="noreferrer">Install guide</a>{/if}
     {#if local?.state !== "incompatible"}<button type="button" class="btn btn-sm lp-control-brand" disabled={connecting} onclick={() => void connect()}>{connecting ? "Connecting…" : "Connect"}</button>{/if}
   {/if}
-  {#if failure}<p class="companion-connection-error" role="alert">{failure}</p>{:else if !connected && hint}<p class="companion-connection-hint">{hint}</p>{/if}
+  {#if failure}<p class="companion-connection-error" role="alert">{failure}{#if local?.state !== "denied" && local?.state !== "asking"} <a href={INSTALL} target="_blank" rel="noreferrer">Install guide</a>{/if}</p>{:else if connecting}<p class="companion-connection-hint">Waiting for the companion on this computer. It must be installed and running.</p>{:else if !connected && hint}<p class="companion-connection-hint">{hint}</p>{/if}
 </div>
 
 <style>

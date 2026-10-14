@@ -604,7 +604,7 @@
        snippet prop on PanelTabs. -->
   {#snippet connectPrompt()}
     <div class="connect-required">
-      <p class="panel-muted">Connect the LibrePaper app on this computer to use an agent.</p>
+      <p class="panel-muted">Agents run through LibrePaper Companion, a small program you install on this computer. <a href="https://librepaper.org/local-app.html" target="_blank" rel="noreferrer">Install guide</a>. Once it is running, click Connect.</p>
       <div class="setup-actions">
         <button class="btn btn-sm lp-control-brand" disabled={busy}
                 onclick={() => void connectToApp()}>{busy ? "Connecting…" : "Connect"}</button>
