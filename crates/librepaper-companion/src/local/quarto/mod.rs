@@ -1496,19 +1496,48 @@ fn write_written_record(path: &Path, written: &WrittenRecord) -> Result<(), Stri
         .map_err(|error| format!("record granted folder: {}", error.error))
 }
 
-/// The first of `<path>.local`, `<path>.local.1`, `<path>.local.2`, ... that
-/// is not on disk yet. Existing files are never overwritten.
-fn free_local_copy_name(root: &Path, path: &str) -> Result<String, String> {
-    let mut candidate = format!("{path}.local");
+/// Writes a new file without replacing anything already at `path`. The
+/// rename fails with `AlreadyExists` when the name is taken.
+fn write_new_file_no_clobber(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
+    let parent = path
+        .parent()
+        .ok_or_else(|| std::io::Error::other("no parent directory"))?;
+    let mut temporary = tempfile::NamedTempFile::new_in(parent)?;
+    temporary.write_all(bytes)?;
+    temporary.as_file().sync_data()?;
+    temporary
+        .persist_noclobber(path)
+        .map(|_| ())
+        .map_err(|error| error.error)
+}
+
+/// Keeps `bytes` beside `path` as the first of `<path>.local`,
+/// `<path>.local.1`, `<path>.local.2`, ... that is free. Existing files are
+/// never overwritten. Returns the relative name of the copy written.
+fn keep_local_copy(root: &Path, path: &str, bytes: &[u8]) -> Result<String, String> {
     let mut suffix = 0usize;
     loop {
-        match std::fs::symlink_metadata(root.join(&candidate)) {
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(candidate),
-            Ok(_) => {}
-            Err(error) => return Err(format!("inspect {candidate}: {error}")),
-        }
+        let copy = if suffix == 0 {
+            format!("{path}.local")
+        } else {
+            format!("{path}.local.{suffix}")
+        };
         suffix += 1;
-        candidate = format!("{path}.local.{suffix}");
+        let target = root.join(&copy);
+        match std::fs::symlink_metadata(&target) {
+            Ok(_) => continue,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => {
+                return Err(format!("keep your copy of {path} as {copy}: {error}"));
+            }
+        }
+        match write_new_file_no_clobber(&target, bytes) {
+            Ok(()) => return Ok(copy),
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            Err(error) => {
+                return Err(format!("keep your copy of {path} as {copy}: {error}"));
+            }
+        }
     }
 }
 
@@ -1557,10 +1586,18 @@ fn write_granted_files(
         ensure_hosted_parent(root, &path)?;
         let target = root.join(&path);
         let current = match std::fs::symlink_metadata(&target) {
-            Ok(metadata) if metadata.is_file() => Some(
-                read_hosted_input(&target)
-                    .ok_or_else(|| format!("read granted folder file: {path}"))?,
-            ),
+            Ok(metadata) if metadata.is_file() => {
+                if metadata.len() > MAX_UPLOAD_BYTES as u64 {
+                    return Err(format!(
+                        "{path} in the project folder is larger than an upload may be; \
+                         it was not replaced"
+                    ));
+                }
+                Some(
+                    read_hosted_input(&target)
+                        .ok_or_else(|| format!("read granted folder file: {path}"))?,
+                )
+            }
             Ok(_) => {
                 return Err(format!(
                     "granted folder entry is a symlink or not a regular file: {path}"
@@ -1578,10 +1615,8 @@ fn write_granted_files(
         if let Some(current) = current {
             let current_digest = sha256(&current);
             if written.get(&path) != Some(&current_digest) {
-                let copy = free_local_copy_name(root, &path)?;
                 invalidate_before_first_write(root, &mut invalidated)?;
-                write_hosted_new_input(&root.join(&copy), &current)
-                    .map_err(|error| format!("keep your copy of {path} as {copy}: {error}"))?;
+                let copy = keep_local_copy(root, &path, &current)?;
                 notes.push(format!("kept your copy of {path} as {copy}"));
             }
         }

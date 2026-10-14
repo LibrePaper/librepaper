@@ -1753,8 +1753,20 @@
     return { ...tree, assets: held.assets };
   }
 
+  // A sync can forget a folder the companion no longer grants. Mirroring that
+  // here restarts the preview in the hosted workspace.
+  const previewClient = {
+    ...localQuarto,
+    syncWorkspace: async (input) => {
+      const result = await localQuarto.syncWorkspace(input);
+      const id = localQuarto.bindingId();
+      if (id !== quartoBindingId) quartoBindingId = id;
+      return result;
+    },
+  };
+
   const quartoPreviewController = createLocalPreview({
-    local: localQuarto,
+    local: previewClient,
     engine: "quarto",
     label: "Quarto",
     publish: (payload) => framePreview.publish(payload),
@@ -1777,7 +1789,7 @@
   });
 
   const calepinPreviewController = createLocalPreview({
-    local: localQuarto,
+    local: previewClient,
     engine: "calepin",
     label: "Calepin",
     publish: (payload) => framePreview.publish(payload),
