@@ -495,7 +495,8 @@ impl PostgresCatalog {
         account.ok_or_else(|| Error::Conflict("account is not active".into()))
     }
 
-    /// Whether the account still lacks its starter documents. Errors when the account does not exist.
+    /// Whether the account still lacks its starter documents. Errors when the
+    /// account does not exist.
     pub async fn account_examples_pending(&self, id: Uuid) -> Result<bool> {
         sqlx::query_scalar("SELECT examples_at IS NULL FROM accounts WHERE id=$1")
             .bind(id)
