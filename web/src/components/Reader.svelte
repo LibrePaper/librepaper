@@ -1826,7 +1826,9 @@
   const localPreviewSwitches = createGeneration();
   $effect(() => {
     // The binding is part of the target so choosing a folder restarts the preview there.
-    const quartoTarget = quartoLiveActive && previewMain && `${previewMain}|${quartoBindingId}`;
+    // The output format is too, because Quarto reads it only when it starts, so
+    // switching View between HTML and PDF restarts the preview.
+    const quartoTarget = quartoLiveActive && previewMain && `${previewMain}|${quartoBindingId}|${buildPreferences.output || ""}`;
     const calepinTarget = calepinActive && previewMain && `${previewMain}|${quartoBindingId}`;
     const stale = localPreviewSwitches.begin();
     untrack(async () => {
