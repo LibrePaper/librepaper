@@ -6,13 +6,7 @@ title: "Quarto"
 
 ## Set up
 
-A web page cannot run your code. The LibrePaper companion is a small app that runs Quarto on your own computer, with the R, Python and packages you already have. Open the [desktop app](../local-app.html). The commands below use the `librepaper` binary:
-
-```sh
-librepaper                           # start it
-librepaper --at-login                # start it now and every time you log in
-librepaper status                    # check that it found Quarto
-```
+A web page cannot run your code. The [LibrePaper desktop app](../desktop-app.html) runs Quarto on your own computer, with the R, Python and packages you already have. Install the app. The app finds Quarto when it is installed on your computer.
 
 ## Preview
 

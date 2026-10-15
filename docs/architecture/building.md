@@ -7,7 +7,7 @@ title: "Building from source"
 The binary embeds the web build. Browser renderers are fetched separately from the configured asset mirror.
 
 - `web/` (Svelte, Skeleton, CodeMirror 6, Loro) uses bun and vite.
-- `crates/` (server, CLI and companion, as internal sub-crates) uses cargo.
+- `crates/` (server, CLI and local service, as internal sub-crates) uses cargo.
 
 Renderer implementations live in `wasm-*` repositories. The browser uses pinned WebAssembly artifacts; the production server binary does not link native document renderers. Some renderer crates remain dev-dependencies for fixtures and tests. The web build writes to `web/dist`, which the binary embeds.
 
@@ -26,9 +26,9 @@ The four browser modules (markdown, bibliography, citations, typst) are not embe
 
 `make demo` builds the static site and runs the deployment services from `deploy/compose.yaml` with an app image built from this checkout. It requires Docker Compose 2.24.4 or later. The demo uses the isolated `librepaper-demo` Compose project and loopback ports 8081 (app) and 8082 (site). `PORT=`, `SITE_PORT=`, and `DEMO_PROJECT=` can change these. Its named volumes persist after Ctrl-C and `make demo-stop`. Use `make demo-wipe` to explicitly delete the demo volumes. These targets do not affect native `make serve` or `make wipe`.
 
-The demo serves operator graphs at `http://admin.localhost:8081/` with the password `librepaper-demo-only-password`. The first run compiles both the container server and the host companion; subsequent runs reuse their build caches. Custom `DEMO_PROJECT` names must start with `librepaper-demo`.
+The demo serves operator graphs at `http://admin.localhost:8081/` with the password `librepaper-demo-only-password`. The first run compiles both the container server and the host local service; subsequent runs reuse their build caches. Custom `DEMO_PROJECT` names must start with `librepaper-demo`.
 
-The default container-ready configs are `tools/dev/demo/config.toml` and `tools/dev/demo/config-oauth.toml`. GitHub sign-in comes from `tools/dev/keys.yaml` when `sops` can decrypt it, or from inherited GitHub client credentials. Otherwise the demo starts without sign-in. That file holds only the development OAuth app, so the demo never loads production secrets. `CONFIG=path/to/config.toml` selects a config mounted unchanged into the app container, so custom files must use container paths and bind the app to `0.0.0.0:8080`. The LaTeX mirror check still runs at `MIRROR=` (default `../wasm-latex/mirror`). The host companion's `LIBREPAPER_SERVER` is pinned to the local app origin so tray Settings and approvals return to this app. A companion already running before the demo starts is left alone.
+The default container-ready configs are `tools/dev/demo/config.toml` and `tools/dev/demo/config-oauth.toml`. GitHub sign-in comes from `tools/dev/keys.yaml` when `sops` can decrypt it, or from inherited GitHub client credentials. Otherwise the demo starts without sign-in. That file holds only the development OAuth app, so the demo never loads production secrets. `CONFIG=path/to/config.toml` selects a config mounted unchanged into the app container, so custom files must use container paths and bind the app to `0.0.0.0:8080`. The LaTeX mirror check still runs at `MIRROR=` (default `../wasm-latex/mirror`). The host local service's `LIBREPAPER_SERVER` is pinned to the local app origin so its requests return to this app. A local service already running before the demo starts is left alone.
 
 ## Workspace
 
@@ -92,7 +92,7 @@ termination cause is isolated and the test has a bounded, reliable CI run.
 ### Web tests
 
 - `unit/` runs isolated production modules under Node without Chromium, a local service, or a built compiler artifact.
-- `integration/` crosses module boundaries or exercises a real WASM artifact, local companion, renderer, compiler adapter, or example document.
+- `integration/` crosses module boundaries or exercises a real WASM artifact, local service, renderer, compiler adapter, or example document.
 - `browser/` drives the built Svelte application or a real browser page with Chromium.
 - `fixtures/` holds checked-in inputs shared by tests. The Typst corpus is used by both the PDF and viewer checks.
 

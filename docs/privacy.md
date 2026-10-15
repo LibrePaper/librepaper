@@ -35,9 +35,9 @@ librepaper.org keeps no access log and does not store IP addresses.
 
 - **Sign-in:** GitHub or Google sees your sign-in and tells librepaper.org who you are. Neither one sees your documents.
 - **LaTeX mirror:** Your browser downloads the typesetting engines and LaTeX packages from the LibrePaper mirror. The mirror sees your IP address and the files you request, which can reveal the packages a document uses. It never sees the source.
-- **Desktop app:** The [desktop app](local-app.html) runs on your computer. It sends local feature requests for your browser, and the browser never contacts your computer directly.
-- **Writing assistant:** An assistant you start runs on your computer through the local app. Its access covers one document and expires after five minutes. The browser renews it while the page is open. The AI service behind the assistant sees what the assistant reads.
-- **Local backups:** The local app downloads your projects, including those shared with you, and writes ZIP files to a folder you choose. The browser never learns where that folder is. The ZIP files stay on your computer when you turn backups off or delete a project. See [local backups](backups.html).
+- **Desktop app:** The [desktop app](desktop-app.html) runs on your computer. It sends local feature requests for your browser, and the browser never contacts your computer directly.
+- **Writing assistant:** An assistant you start runs on your computer through the desktop app. Its access covers one document and expires after five minutes. The browser renews it while the page is open. The AI service behind the assistant sees what the assistant reads.
+- **Local backups:** The desktop app downloads your projects, including those shared with you, and writes ZIP files to a folder you choose. The browser never learns where that folder is. The ZIP files stay on your computer when you turn backups off or delete a project. See [local backups](backups.html).
 - **Embedded resources:** A document can load images, fonts, scripts or data from other websites. Those sites see your IP address, your browser and when you opened the document, so an author can learn who read it. Authors can avoid this with PDFs or `embed-resources: true` in Quarto.
 
 ## Cookies and browser storage

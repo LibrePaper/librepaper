@@ -20,23 +20,22 @@ The companion already writes a per-instance credential to `control-token.json` (
 - Machine management routes (`/companion/api/*`) also require `X-LibrePaper-Origin` to equal the configured server's origin, as `ControlAuth::accepts_origin` does today.
 - There is no CORS on the companion. The shell answers the page.
 
-Deleted from the companion: `pair/request`, `connect/claim`, `pair/status`, `disconnect`, `companion/api/session`, `companion/api/pairings/<id>`, `consent.rs`, the pairing tokens in `PairingStore`, pending pairs, connect rate limits, CORS headers, `librepaper local disconnect`, and pairing lines in `librepaper local status`. `PairingStore` keeps only what `service.json` needs, or that moves elsewhere. Per-document execution grants and folder grants stay exactly as they are. So does `librepaper local approve <code>`.
+Deleted from the companion: `pair/request`, `connect/claim`, `pair/status`, `disconnect`, `companion/api/session`, `companion/api/pairings/<id>`, `consent.rs`, the pairing tokens in `PairingStore`, pending pairs, connect rate limits, CORS headers, `librepaper local disconnect`, and pairing lines in `librepaper local status`. `PairingStore` keeps only what `service.json` needs, or that moves elsewhere. Per-document execution grants and folder grants stay exactly as they are. `librepaper local approve <code>` is removed too.
 
 ## The endpoint command
 
-`librepaper local endpoint` (hidden) starts the companion in the background if it is not running, waits until `health` answers, and prints one line of JSON:
+`librepaper local endpoint` (hidden) starts the local service in the background if it is not running, waits until `health` answers, and prints one line of JSON:
 
 ```json
 {"address":"http://127.0.0.1:8763/","token":"<credential>","instance":"<id>","version":"0.0.42","protocol":[2]}
 ```
 
-It exits non-zero with a message on stderr when the companion cannot start. The shell runs it at startup and again whenever a forwarded request fails to connect or gets 401. Tests that drive a real companion use it the same way.
+It exits non-zero with a message on stderr when the local service cannot start. The shell runs it at startup and again whenever a forwarded request fails to connect or gets 401. Tests that drive a real companion use it the same way.
 
 ## Links
 
-The companion binary already handles `librepaper://` links (`librepaper local open <url>`). It now accepts one form: `librepaper://open?url=<https URL>`. It launches the desktop app with `--open <URL>`. Every other form is refused. The pairing-link handling is deleted.
+The `librepaper` binary handles `librepaper://` links. `librepaper local open` is removed. The binary now accepts one form: `librepaper://open?url=<https URL>`. It launches the desktop app with `--open <URL>`. Every other form is refused. The pairing-link handling is deleted.
 
-The tray's Settings item launches the desktop app with `--settings`. When no desktop app is found, it opens the configured server in the browser.
 
 The desktop app is found next to the running `librepaper` executable, then on `PATH`, under the name `librepaper-desktop` (`librepaper-desktop.exe` on Windows; on macOS also `/Applications/LibrePaper.app/Contents/MacOS/librepaper-desktop`).
 
@@ -73,3 +72,17 @@ The companion embedded in `librepaper admin serve` (`local::embedded`, the `loca
 - Caching the unpacked TeX engine state to speed up the first LaTeX compile in WebKitGTK.
 - A server picker beyond `--server`.
 - macOS testing.
+
+## Retiring the companion
+
+"Companion" is retired as a user-facing word. In this spec, "companion" still names the local service until the code is renamed.
+
+- Users install one thing: the LibrePaper desktop app.
+- The desktop app runs the local service in the background. The service ships inside the app as the `librepaper` binary.
+- Users never start, stop or pair the local service.
+- The tray icon, start at login and `librepaper install-desktop` are removed.
+- The public CLI is `login`, `logout`, `list`, `export`, `agent` and `admin`.
+- `librepaper` with no arguments, `start`, `stop`, `status`, `--at-login`, `--foreground`, `--port`, `local approve` and `local open` are removed.
+- `librepaper local endpoint` stays as a hidden command for the desktop app.
+- In a browser, features that need the desktop app say so and link to the install page.
+- The docs move to `docs/desktop-app.md` and `docs/architecture/local-service.md`.
