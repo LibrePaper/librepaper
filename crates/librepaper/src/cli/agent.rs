@@ -1,8 +1,8 @@
 //! `librepaper mcp`: the one entry point the sidebar assistant's own chosen
 //! ACP agent spawns on this computer, as its own child process, following the
-//! command the companion's session handed it at `session/new`. It speaks
+//! command the local service's session handed it at `session/new`. It speaks
 //! nothing but MCP frames over stdio, and it is not listed, because only that
-//! agent runs it -- never a human, and never LibrePaper's own companion,
+//! agent runs it -- never a human, and never LibrePaper's own local service,
 //! which drives ACP directly in-process instead of spawning a runner (see
 //! `librepaper_companion::assistant::registry`).
 
@@ -21,7 +21,7 @@ use librepaper_companion::local::connections::GRANT_FILE_VARIABLE;
 ///
 /// `--connection NAME` names a runner record this computer holds, so the
 /// agent's command line carries a name rather than a document key. The
-/// companion's session (`assistant::acp::Agent::start`) is the only thing
+/// local service's session (`assistant::acp::Agent::start`) is the only thing
 /// that ever constructs this command; there is no other accepted form.
 #[derive(Args, Clone, Debug)]
 pub(crate) struct McpArgs {

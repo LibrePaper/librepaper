@@ -1,6 +1,7 @@
 //! Internal to librepaper: no stable API, versioned in lockstep with it.
-//! The companion: the local app that compiles on the author's machine, the
-//! assistant sessions it hosts, and the headless automation peer.
+//! The local service: the background process the LibrePaper desktop app runs to
+//! compile on the author's machine, the assistant sessions it hosts, and the
+//! headless automation peer.
 
 pub mod assistant;
 pub mod automation;

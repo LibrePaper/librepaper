@@ -1,4 +1,4 @@
-//! Persistent, account-scoped companion backups.
+//! Persistent, account-scoped local backups.
 //!
 //! Configuration is local to this companion and keyed by the authenticated
 //! deployment origin plus account id. The only way to set its destination is

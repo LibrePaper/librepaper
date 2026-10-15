@@ -82,8 +82,7 @@ struct BindingFile {
 
 /// The one binding id that needs no grant: a document the serving deployment
 /// itself hosts, rendered inside a workspace the server owns. Only a service
-/// started with `with_hosted_workspaces` resolves it; a standalone
-/// `librepaper start` never does.
+/// started with `with_hosted_workspaces` resolves it.
 pub const HOSTED_BINDING: &str = "hosted";
 
 /// The store intentionally takes an explicit config root so tests never need
