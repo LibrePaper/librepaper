@@ -1,0 +1,87 @@
+# This action builds the CLI, then bundles the desktop app around it.
+# Signing happens only when the extra config sets bundle.windows.signCommand.
+name: "Build the Windows desktop app"
+description: "Build the bundled librepaper CLI and the Tauri desktop installers for Windows."
+
+inputs:
+  version:
+    description: "App version, like 0.0.43 or 0.0.43-rc.1."
+    required: true
+  bundles:
+    description: "Installer formats: nsis or nsis,msi."
+    required: true
+  cli-version:
+    description: "When set, exported as LIBREPAPER_VERSION for the CLI build."
+    required: false
+    default: ""
+  tauri-config:
+    description: "Path to an extra Tauri JSON config file to merge."
+    required: false
+    default: ""
+
+outputs:
+  bundle-dir:
+    description: "Directory that holds the Tauri bundles."
+    value: ${{ github.workspace }}/desktop/target/release/bundle
+
+runs:
+  using: composite
+  steps:
+    - uses: dtolnay/rust-toolchain@stable
+
+    - uses: oven-sh/setup-bun@v2
+
+    - name: Fetch pinned CodeMirror and browser renderers
+      shell: bash
+      run: node tools/assets/pins.mjs fetch
+
+    - name: Build the embedded browser app
+      shell: bash
+      run: |
+        cd web
+        bun install --frozen-lockfile
+        bun run build
+        cd ..
+        cp README.md web/dist/README.md
+
+    - name: Build the bundled librepaper binary
+      shell: bash
+      env:
+        CLI_VERSION: ${{ inputs.cli-version }}
+      run: |
+        if [ -n "$CLI_VERSION" ]; then export LIBREPAPER_VERSION="$CLI_VERSION"; fi
+        cargo build --locked --profile dist -p librepaper --bin librepaper
+        mkdir -p desktop/binaries
+        cp target/dist/librepaper.exe desktop/binaries/librepaper-x86_64-pc-windows-msvc.exe
+
+    - name: Write the Tauri build config
+      shell: bash
+      env:
+        VERSION: ${{ inputs.version }}
+        EXTRA: ${{ inputs.tauri-config }}
+      run: |
+        node -e '
+          const fs = require("fs");
+          const path = require("path");
+          const isPlain = (v) => v !== null && typeof v === "object" && !Array.isArray(v);
+          const merge = (a, b) => {
+            const out = { ...a };
+            for (const key of Object.keys(b)) {
+              out[key] = isPlain(a[key]) && isPlain(b[key]) ? merge(a[key], b[key]) : b[key];
+            }
+            return out;
+          };
+          let obj = { version: process.env.VERSION };
+          if (process.env.EXTRA) {
+            obj = merge(obj, JSON.parse(fs.readFileSync(process.env.EXTRA, "utf8")));
+          }
+          fs.writeFileSync(path.join(process.env.RUNNER_TEMP, "tauri-build.json"), JSON.stringify(obj, null, 2));
+        '
+
+    - name: Bundle the desktop app
+      shell: bash
+      env:
+        BUNDLES: ${{ inputs.bundles }}
+      run: |
+        cd desktop
+        bunx @tauri-apps/cli@2.12.1 build --ci --bundles "$BUNDLES" --config "$RUNNER_TEMP/tauri-build.json" -- --locked
