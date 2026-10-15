@@ -8,6 +8,7 @@
 import { createHash } from "node:crypto";
 
 import * as local from "../../src/lib/companion/client.js";
+import { formOf } from "../helpers/form-body.mjs";
 
 // The client verifies every build output against the digest the job status
 // announced, so the fake service has to announce real ones.
@@ -111,9 +112,9 @@ async function testMultipartBuildBody() {
   const nonUtf8 = new Uint8Array([0xff, 0xfe, 0x00, 0x80, 0x81, 0x41, 0x42]);
   const pdf = new TextEncoder().encode("%PDF-fake");
   const log = new TextEncoder().encode("typst log");
-  let capturedForm = null;
+  let capturedInit = null;
   setup({ storage, fetchImpl: async (url, init) => {
-    if (url.endsWith("/jobs") && init.method === "POST") { capturedForm = init.body; return jsonResponse(202, { id: "job1", status: "queued" }); }
+    if (url.endsWith("/jobs") && init.method === "POST") { capturedInit = init; return jsonResponse(202, { id: "job1", status: "queued" }); }
     if (url.endsWith("/jobs/job1")) return jsonResponse(200, { id: "job1", status: "done", exit: 0, outputs: {
       pdf: { size: pdf.byteLength, sha256: await sha256hex(pdf) },
       log: { size: log.byteLength, sha256: await sha256hex(log) },
@@ -135,7 +136,8 @@ async function testMultipartBuildBody() {
   });
   check("runBuild resolves ok on a clean done job", result.ok === true, JSON.stringify({ ok: result.ok, error: result.error }));
   check("the builder is carried into provenance", result.provenance.builder === "typst", JSON.stringify(result.provenance));
-  check("the body is a FormData", capturedForm instanceof FormData);
+  check("the body is multipart", String(capturedInit?.headers?.["Content-Type"] || "").startsWith("multipart/form-data"));
+  const capturedForm = await formOf(capturedInit);
   const jobPart = capturedForm.get("job");
   check("the job part is present", jobPart != null);
   const jobJson = JSON.parse(await jobPart.text());
