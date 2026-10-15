@@ -27,6 +27,9 @@ targets = [
 installers = ["shell", "powershell"]
 install-updater = true
 github-build-setup = "../dist-build-setup.yml"
+# The signed Windows desktop installers (.github/workflows/desktop-windows.yml).
+local-artifacts-jobs = ["./desktop-windows"]
+github-custom-job-permissions = { "desktop-windows" = { contents = "read", id-token = "write" } }
 install-success-msg = "The LibrePaper command line is installed. In a new terminal, run: librepaper --help"
 
 [profile.release]

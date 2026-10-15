@@ -40,3 +40,27 @@ jobs:
           if ($actual -ne $expected) {
             throw "Expected '$expected', got '$actual'"
           }
+
+  # Builds the installers without signing, so a pull request shows whether the desktop app still builds on Windows.
+  desktop:
+    name: Desktop app (unsigned)
+    runs-on: windows-2022
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v6
+      - id: version
+        shell: bash
+        run: echo "version=$(node -p "require('./desktop/tauri.conf.json').version")" >> "$GITHUB_OUTPUT"
+      - id: build
+        uses: ./.github/actions/build-desktop-windows
+        with:
+          version: ${{ steps.version.outputs.version }}
+          bundles: nsis,msi
+      - uses: actions/upload-artifact@v7
+        with:
+          name: desktop-windows-unsigned
+          path: |
+            ${{ steps.build.outputs.bundle-dir }}/nsis/*.exe
+            ${{ steps.build.outputs.bundle-dir }}/msi/*.msi
+          if-no-files-found: error
+          retention-days: 7
