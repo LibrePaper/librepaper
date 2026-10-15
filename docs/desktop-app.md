@@ -36,4 +36,11 @@ LIBREPAPER_SERVER=https://paper.example.org/ desktop/target/release/librepaper-d
 ## Nothing else to start
 
 The desktop app starts its own background local service when it opens. You do not start, stop or pair the local service.
+
+## Windows
+
+- Ctrl+N (Cmd+N on macOS) opens another window.
+- Starting the app again opens another window in the running app.
+- A link to your server that opens in a new tab opens in a new window. Other links open in your browser.
+- Closing the last window quits the app and stops the local service.
 To build from a checkout, see [building from source](architecture/building.html).
