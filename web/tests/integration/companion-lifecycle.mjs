@@ -60,7 +60,8 @@ try {
   const shell = { Authorization: `Bearer ${found.token}`, "X-LibrePaper-Origin": site };
 
   assert.equal((await fetch(`${base}/health`)).status, 200, "health needs no credential");
-  assert.equal((await fetch(`${base}/capabilities`)).status, 401, "a feature route needs the credential");
+  assert.equal((await fetch(`${base}/capabilities`, { headers: { "X-LibrePaper-Origin": site } })).status, 401, "a feature route needs the credential");
+  assert.equal((await fetch(`${base}/capabilities`, { headers: { Authorization: shell.Authorization } })).status, 403, "a feature route needs the page origin");
   assert.equal((await fetch(`${base}/capabilities`, { headers: { ...shell, Authorization: "Bearer wrong" } })).status, 401);
   assert.equal((await fetch(`${base}/capabilities`, { headers: shell })).status, 200, "the shell's headers are accepted");
   assert.equal((await fetch(`${base}/capabilities`, { headers: { ...shell, Origin: site } })).status, 403, "a request with a browser Origin is refused");
@@ -75,12 +76,14 @@ try {
   const bindings = await fetch(`${base}/bindings?project=paper`, { headers: shell });
   assert.equal((await bindings.json()).bindings.length, 0, "no folder chooser has created a binding");
 
-  // `stop` then `start` is the restart sequence; the credential stays valid.
+  // `stop` then `start` is the restart sequence. Each start mints a new
+  // credential, which is why the shell reads the endpoint again after a 401.
   await cli("stop");
   await assert.rejects(cli("status"), "root status reports the stopped companion");
   await cli("start");
   assert.notEqual((await state()).instance, first.instance);
   const restarted = await endpoint();
+  assert.equal((await fetch(`${base}/capabilities`, { headers: shell })).status, 401, "the old credential is refused after a restart");
   assert.equal((await fetch(`${base}/capabilities`, { headers: { ...shell, Authorization: `Bearer ${restarted.token}` } })).status, 200);
   await cli("stop");
   await assert.rejects(fetch(`${base}/health`));
