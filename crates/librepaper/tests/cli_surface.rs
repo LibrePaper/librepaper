@@ -88,12 +88,10 @@ fn admin_help_lists_the_admin_commands() {
 #[test]
 fn local_help_lists_only_the_approval_control() {
     let help = help_of(&["local", "--help"]);
-    for command in ["approve"] {
-        assert!(
-            lists_command(&help, command),
-            "local command {command:?} is absent from local help:\n{help}"
-        );
-    }
+    assert!(
+        lists_command(&help, "approve"),
+        "local command \"approve\" is absent from local help:\n{help}"
+    );
     for hidden_command in [
         "start", "stop", "status", "agent", "open", "endpoint", "tray",
     ] {
