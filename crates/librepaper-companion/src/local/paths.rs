@@ -10,18 +10,6 @@ use std::path::PathBuf;
 
 use etcetera::base_strategy::{BaseStrategy, Xdg};
 
-/// The user home directory, or nothing when the platform reports none.
-pub fn home() -> Option<PathBuf> {
-    Xdg::new()
-        .ok()
-        .map(|strategy| strategy.home_dir().to_path_buf())
-}
-
-/// The user configuration base directory (`$XDG_CONFIG_HOME` on Linux).
-pub fn config_home() -> Option<PathBuf> {
-    Xdg::new().ok().map(|strategy| strategy.config_dir())
-}
-
 /// The user cache base directory (`$XDG_CACHE_HOME` on Linux).
 pub fn cache_home() -> Option<PathBuf> {
     Xdg::new().ok().map(|strategy| strategy.cache_dir())
@@ -58,7 +46,7 @@ pub(crate) fn resolve_executable(found: PathBuf) -> Result<PathBuf, String> {
     };
     if !path.is_file() {
         return Err(format!(
-            "the librepaper binary this app is running from is gone ({}); restart it with `librepaper stop` then `librepaper start`",
+            "the librepaper binary this app is running from is gone ({}); restart the LibrePaper desktop app",
             path.display()
         ));
     }
@@ -80,7 +68,7 @@ mod tests {
 
         let missing = directory.path().join("missing");
         let error = resolve_executable(missing.clone()).unwrap_err();
-        assert!(error.contains("librepaper start"), "{error}");
+        assert!(error.contains("desktop app"), "{error}");
         assert!(error.contains(&missing.display().to_string()));
         assert!(resolve_executable(directory.path().to_path_buf()).is_err());
     }

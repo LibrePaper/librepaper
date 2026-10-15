@@ -3,7 +3,7 @@
 //! State lives under `<state_home>/librepaper/local/`, a sibling of, not
 //! inside, the deployment token cache `local::credentials` keeps under
 //! `<state_home>/librepaper/`. `service.json` is what the running
-//! `librepaper start` printed about itself, so `status`, `endpoint` and a
+//! `librepaper local start` printed about itself, so `status`, `endpoint` and a
 //! second `start` can find it without asking the service.
 //!
 //! Every function here takes the state-home base directory as an explicit
@@ -19,7 +19,7 @@ use serde::{Deserialize, Serialize};
 
 use librepaper_base::util::random_bytes;
 
-/// What `librepaper start` writes about itself, so a later command in a
+/// What `librepaper local start` writes about itself, so a later command in a
 /// different process invocation -- `status`, `endpoint`, a second `start`
 /// checking whether one is already live -- can find the running service.
 #[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq)]

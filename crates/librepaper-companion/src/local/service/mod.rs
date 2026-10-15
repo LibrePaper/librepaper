@@ -1,4 +1,4 @@
-//! The loopback HTTP surface `librepaper start` binds:
+//! The loopback HTTP surface `librepaper local start` binds:
 //! every route hangs
 //! under `protocol::BASE_PATH`; nothing else answers on this port.
 //!
@@ -58,12 +58,6 @@ pub(crate) fn control_token_for_instance(state_home: &Path, instance: &str) -> O
     control::token_for_instance(state_home, instance)
 }
 
-pub(crate) fn control_server_for_instance(
-    state_home: &Path,
-    instance: &str,
-) -> Result<String, String> {
-    control::server_for_instance(state_home, instance)
-}
 mod jobs;
 
 pub(super) type Reply = Response<Body>;
@@ -503,19 +497,6 @@ impl LocalService {
             control,
             admission: Mutex::new(()),
         });
-        // A decision the user has to make on this computer opens Settings.
-        #[cfg(not(test))]
-        {
-            let state_home = inner.state_home.clone();
-            let instance = inner.instance.clone();
-            inner.approvals.set_opener(Some(Arc::new(move || {
-                if let Err(error) = super::lifecycle::open_settings(&state_home, &instance) {
-                    eprintln!("could not open LibrePaper Settings: {error}");
-                }
-            })));
-        }
-        #[cfg(test)]
-        inner.approvals.set_opener(Some(Arc::new(|| {})));
         tokio::spawn(run_worker(inner.clone()));
         tokio::spawn(run_reaper(inner.clone()));
         backups::spawn_scheduler(inner.clone());
@@ -536,7 +517,7 @@ impl LocalService {
             .with_state(self.inner.clone())
     }
 
-    /// Resolve any in-flight consent handlers as denied before graceful
+    /// Resolve any in-flight confirmation dialogs as denied before graceful
     /// service shutdown, so they cannot hold the listener open until timeout.
     pub async fn deny_pending_approvals(&self) {
         self.inner.approvals.deny_all();
@@ -955,7 +936,6 @@ async fn handle(
                 &segs,
                 &headers,
                 origin.as_deref(),
-                peer,
                 request,
             )
             .await
@@ -970,7 +950,6 @@ async fn dispatch(
     segs: &[&str],
     headers: &HeaderMap,
     origin: Option<&str>,
-    peer: SocketAddr,
     request: Request<Body>,
 ) -> Reply {
     match segs {
@@ -1025,15 +1004,8 @@ async fn dispatch(
         }
         // Settings routes (bearer authenticated)
         ["settings"] if *method == Method::GET => handle_settings(inner, headers, origin).await,
-        ["startup"] if *method == Method::POST => {
-            handle_startup(inner, headers, origin, request).await
-        }
-        ["quit"] if *method == Method::POST => handle_quit(inner, headers, origin).await,
         ["integrations", name] if *method == Method::PUT => {
             handle_integration_set(inner, headers, origin, name, request).await
-        }
-        ["approve"] if *method == Method::POST => {
-            handle_approve(inner, peer, headers, request).await
         }
         ["zotero", "search"] if *method == Method::GET => {
             handle_zotero_search(inner, headers, origin, request).await
@@ -1281,107 +1253,13 @@ async fn handle_settings(inner: &Inner, headers: &HeaderMap, origin: Option<&str
         return response;
     }
 
-    let is_standalone = standalone(inner);
-
     write_json(
         200,
         &json!({
             "version": crate::VERSION,
-            "standalone": is_standalone,
-            "startup": if is_standalone { Some(super::lifecycle::startup_enabled()) } else { None },
             "integrations": super::integrations::all(),
         }),
     )
-}
-
-#[derive(serde::Deserialize)]
-struct StartupRequest {
-    enabled: bool,
-}
-
-async fn handle_startup(
-    inner: &Inner,
-    headers: &HeaderMap,
-    origin: Option<&str>,
-    request: Request<Body>,
-) -> Reply {
-    if let Err(response) = authenticate(inner, headers, origin) {
-        return response;
-    }
-
-    if !standalone(inner) {
-        return write_json(
-            409,
-            &json!({"error": "startup can only be set on standalone installations"}),
-        );
-    }
-
-    let body = match read_json_body::<StartupRequest>(request).await {
-        Ok(b) => b,
-        Err(response) => return response,
-    };
-
-    let approval = super::approval::Approval {
-        title: "Startup setting".to_string(),
-        message: if body.enabled {
-            "Start companion at login?".to_string()
-        } else {
-            "Disable startup at login?".to_string()
-        },
-        allow_label: if body.enabled {
-            "Start at login"
-        } else {
-            "Disable"
-        }
-        .to_string(),
-    };
-
-    let decision = decision_to_result(
-        inner
-            .approvals
-            .ask(&approval, Duration::from_secs(300))
-            .await,
-    );
-    match decision {
-        Ok(()) => match super::lifecycle::set_startup(body.enabled) {
-            Ok(()) => write_json(200, &json!({})),
-            Err(error) => write_json(500, &json!({"error": error})),
-        },
-        Err(response) => response,
-    }
-}
-
-async fn handle_quit(inner: &Inner, headers: &HeaderMap, origin: Option<&str>) -> Reply {
-    if let Err(response) = authenticate(inner, headers, origin) {
-        return response;
-    }
-
-    if !standalone(inner) {
-        return write_json(
-            409,
-            &json!({"error": "quit can only be called on standalone installations"}),
-        );
-    }
-
-    let approval = super::approval::Approval {
-        title: "Quit companion".to_string(),
-        message: "Stop the companion app?".to_string(),
-        allow_label: "Quit".to_string(),
-    };
-
-    let decision = decision_to_result(
-        inner
-            .approvals
-            .ask(&approval, Duration::from_secs(300))
-            .await,
-    );
-    match decision {
-        Ok(()) => match super::lifecycle::request_stop(&inner.state_home) {
-            Ok(()) => write_json(200, &json!({})),
-            Err(error) => write_json(500, &json!({"error": error})),
-        },
-        Err(response) => response,
-    }
 }
 
 #[derive(serde::Deserialize)]
@@ -1467,38 +1345,6 @@ async fn handle_integration_set(
             Err(error) => write_json(500, &json!({"error": error})),
         },
         Err(response) => response,
-    }
-}
-
-async fn handle_approve(
-    inner: &Inner,
-    peer: SocketAddr,
-    headers: &HeaderMap,
-    request: Request<Body>,
-) -> Reply {
-    if !peer.ip().is_loopback() {
-        return write_json(403, &json!({"error": "loopback only"}));
-    }
-
-    let token = bearer_token(headers).unwrap_or_default();
-    if !inner.control.accepts(&token, &inner.instance) {
-        return write_json(401, &json!({"error":"invalid control credential"}));
-    }
-
-    #[derive(serde::Deserialize)]
-    struct ApprovalRequest {
-        code: String,
-    }
-
-    let body = match read_json_body::<ApprovalRequest>(request).await {
-        Ok(b) => b,
-        Err(response) => return response,
-    };
-
-    if inner.approvals.approve_code(&body.code) {
-        write_json(200, &json!({}))
-    } else {
-        write_json(404, &json!({"error": "code not found"}))
     }
 }
 
@@ -1649,12 +1495,6 @@ pub(super) fn project_query(uri: &axum::http::Uri) -> Option<String> {
 /// lookup by id, since a request covers every project of its origin.
 fn owned_by(entry: &JobEntry, origin: Option<&str>) -> bool {
     store::normalize_origin(&entry.origin) == store::normalize_origin(origin.unwrap_or_default())
-}
-
-fn standalone(inner: &Inner) -> bool {
-    store::ServiceFile::new(&inner.state_home)
-        .read()
-        .is_some_and(|state| state.instance == inner.instance && state.pid == std::process::id())
 }
 
 #[allow(clippy::result_large_err)] // the error is a response
@@ -2485,73 +2325,6 @@ mod settings_tests {
             .unwrap();
         let body: Value = serde_json::from_slice(&bytes).unwrap();
         assert_eq!(body["instance"], "test-instance");
-    }
-
-    #[tokio::test]
-    async fn post_approve_with_origin_header_is_forbidden() {
-        let (inner, _state_home, _cache_home) = test_inner().await;
-        let request = Request::post(format!("{BASE_PATH}/approve"))
-            .header("host", format!("127.0.0.1:{PORT}"))
-            .header("origin", "https://example.test")
-            .header("authorization", format!("Bearer {}", credential(&inner)))
-            .header("content-type", "application/json")
-            .body(Body::from(r#"{"code":"123456"}"#))
-            .expect("request");
-        assert_eq!(send(&inner, request).await.status(), StatusCode::FORBIDDEN);
-
-        super::super::approval::unscript();
-    }
-
-    #[tokio::test]
-    async fn cli_approval_requires_instance_control_credential() {
-        super::super::approval::unscript();
-        let (inner, _state_home, _cache_home) = test_inner().await;
-        let token = credential(&inner);
-        let peer = "127.0.0.1:12345".parse().unwrap();
-
-        let mut wrong = HeaderMap::new();
-        wrong.insert(
-            "authorization",
-            HeaderValue::from_static("Bearer invalid-control-credential"),
-        );
-        for headers in [HeaderMap::new(), wrong] {
-            let request = Request::post("/approve")
-                .header("content-type", "application/json")
-                .body(Body::from(r#"{"code":"123456"}"#))
-                .unwrap();
-            let response = handle_approve(&inner, peer, &headers, request).await;
-            assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
-        }
-
-        let approval = super::super::approval::Approval {
-            title: "test".into(),
-            message: "test".into(),
-            allow_label: "Allow".into(),
-        };
-        let broker = inner.approvals.clone();
-        let waiting =
-            tokio::spawn(async move { broker.ask(&approval, Duration::from_secs(5)).await });
-        tokio::task::yield_now().await;
-        let code = inner
-            .approvals
-            .codes_for_test()
-            .pop()
-            .expect("pending code");
-        let mut headers = HeaderMap::new();
-        headers.insert(
-            "authorization",
-            HeaderValue::from_str(&format!("Bearer {token}")).unwrap(),
-        );
-        let request = Request::post("/approve")
-            .header("content-type", "application/json")
-            .body(Body::from(json!({"code":code}).to_string()))
-            .unwrap();
-        let response = handle_approve(&inner, peer, &headers, request).await;
-        assert_eq!(response.status(), StatusCode::OK);
-        assert_eq!(
-            waiting.await.unwrap(),
-            super::super::approval::Decision::Allowed
-        );
     }
 
     #[tokio::test]

@@ -1,5 +1,5 @@
-//! Short-lived credentials the signed-in browser delegates to its local
-//! companion. The companion receives a document-and-link grant, never the
+//! Short-lived credentials the signed-in page delegates to the LibrePaper
+//! desktop app's local service. The service receives a document-and-link grant, never the
 //! browser's cookie.
 
 use super::*;
@@ -33,7 +33,7 @@ pub(super) async fn issue(
     if !identity.is_signed_in() || !server.provider_configured(&identity) {
         return write_json(
             401,
-            &json!({"error": "sign in again to authorize the companion"}),
+            &json!({"error": "sign in again to authorize the LibrePaper desktop app"}),
         );
     }
 
@@ -59,7 +59,7 @@ pub(super) async fn issue(
     {
         return write_json(
             403,
-            &json!({"error": "open the document through a live share link to authorize its companion"}),
+            &json!({"error": "open the document through a live share link to authorize the LibrePaper desktop app"}),
         );
     }
 
@@ -86,7 +86,7 @@ pub(super) async fn issue(
     let Some(token) = librepaper_base::auth::sign_agent_grant(&server.key, &grant) else {
         return write_json(
             400,
-            &json!({"error": "could not create a scoped companion authorization"}),
+            &json!({"error": "could not create a scoped desktop app authorization"}),
         );
     };
     write_json(

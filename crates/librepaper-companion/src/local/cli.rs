@@ -1,4 +1,5 @@
-//! `librepaper start` and `local` compatibility commands for the loopback service.
+//! `librepaper local`: the commands the LibrePaper desktop app runs to start,
+//! reach and stop the loopback service, and the agent commands.
 
 use std::net::SocketAddr;
 use std::path::PathBuf;
@@ -16,73 +17,44 @@ use crate::local::service::{LocalService, NativeRunner, Runner};
 use crate::local::store::{ServiceFile, ServiceState};
 use librepaper_base::util::die;
 
-/// Shared options for the default launch and explicit `start` aliases.
+/// Options for `local start`.
 #[derive(Args, Clone, Debug, Default)]
 pub struct LaunchArgs {
     /// Run in the foreground of this process instead of in the background
-    #[arg(long, help_heading = "Companion")]
+    #[arg(long)]
     pub foreground: bool,
-    /// Also start the companion every time you log in
-    #[arg(long, help_heading = "Companion")]
-    pub at_login: bool,
     /// Port to listen on (default 8763)
     #[arg(
         long,
         value_name = "PORT",
         hide_default_value = true,
-        env = "LIBREPAPER_LOCAL_PORT",
-        help_heading = "Companion"
+        env = "LIBREPAPER_LOCAL_PORT"
     )]
     pub port: Option<u16>,
 }
 
-/// `librepaper local <command>` compatibility commands. Keep these aliases
-/// until a removal cutoff is announced for supported external CLI clients.
-/// See `crate::local::cli`.
+/// `librepaper local <command>`. The desktop app runs these; nobody types
+/// them. See `crate::local::cli`.
 #[derive(Subcommand, Clone, Debug)]
 pub enum LocalCommand {
-    /// Start the companion (in the background by default, or in this process with --foreground)
-    #[command(hide = true)]
+    /// Start the service (in the background by default, or in this process with --foreground)
     Start(LaunchArgs),
-    /// Ask a running companion to stop cleanly.
-    #[command(hide = true)]
+    /// Ask a running service to stop cleanly; succeeds when none is running
     Stop,
-    /// Show a page in the desktop app. The operating system runs this for
-    /// `librepaper://open?url=<URL>` links; it is not listed because nobody
-    /// types it.
-    #[command(hide = true)]
-    Open { url: String },
     /// Whether the service is running, its address, and which native tools were found
-    #[command(hide = true)]
     Status,
-    /// Start the companion if needed and print how to reach it as one JSON
-    /// line: address, credential, instance, version and protocol. The desktop
-    /// app runs this; nobody types it.
-    #[command(hide = true)]
+    /// Start the service if needed and print how to reach it as one JSON
+    /// line: address, credential, instance, version and protocol.
     Endpoint {
-        /// Port to start on when the companion is not running (default 8763)
+        /// Port to start on when the service is not running (default 8763)
         #[arg(long, value_name = "PORT", env = "LIBREPAPER_LOCAL_PORT")]
         port: Option<u16>,
     },
-    /// Approve a dialog request from the companion
-    Approve {
-        /// Approval code from the dialog
-        code: String,
-    },
-    /// Internal helper process for the optional system tray.
-    #[command(hide = true)]
-    Tray,
-    /// Teach this computer an ACP agent the sidebar can drive
-    #[command(hide = true)]
-    Agent {
-        #[command(subcommand)]
-        command: LocalAgentCommand,
-    },
 }
 
-/// Declaring an ACP agent this machine offers. It lives here, as a local
-/// command, rather than as a loopback route: a page picks which agent
-/// to drive, never what command to run.
+/// Declaring an ACP agent this machine offers. It is a command, not a
+/// loopback route: a page picks which agent to drive, never what command to
+/// run.
 #[derive(Subcommand, Clone, Debug)]
 pub enum LocalAgentCommand {
     /// Declare an agent. Everything after `--` is the command that speaks the
@@ -113,11 +85,6 @@ pub async fn run(args: LocalArgs) {
     match args.command {
         LocalCommand::Start(args) => {
             let port = args.port.unwrap_or(0);
-            if args.at_login {
-                if let Err(error) = crate::local::lifecycle::set_startup(true) {
-                    die(error);
-                }
-            }
             if args.foreground {
                 start_foreground(port).await
             } else {
@@ -125,15 +92,8 @@ pub async fn run(args: LocalArgs) {
             }
         }
         LocalCommand::Stop => stop().await,
-        LocalCommand::Open { url } => open(&url),
         LocalCommand::Status => status().await,
         LocalCommand::Endpoint { port } => endpoint(port.unwrap_or(0)).await,
-        LocalCommand::Approve { code } => approve(&code).await,
-        #[cfg(any(target_os = "linux", target_os = "macos", windows))]
-        LocalCommand::Tray => super::tray::run().await,
-        #[cfg(not(any(target_os = "linux", target_os = "macos", windows)))]
-        LocalCommand::Tray => die("tray icons are unsupported on this platform"),
-        LocalCommand::Agent { command } => local_agent(command),
     }
 }
 
@@ -151,7 +111,7 @@ fn cache_home() -> PathBuf {
 async fn start_background(port: u16) {
     match crate::local::lifecycle::spawn_background(port).await {
         Ok(state) => println!(
-            "Companion ready on port {}. Use the tray Settings item to manage it when available.",
+            "Local service ready on port {}.",
             state.port
         ),
         Err(error) => die(error),
@@ -171,10 +131,10 @@ async fn start_foreground(port: u16) {
         .create(true)
         .truncate(false)
         .write(true)
-        .open(local_dir.join("companion.lock"))
+        .open(crate::local::lifecycle::lock_path(&state_home))
         .unwrap_or_else(|error| die(error));
     if lock.try_lock().is_err() {
-        die("The companion is already running. Use `librepaper start` to reuse it.");
+        die("The local service is already running.");
     }
     crate::local::lifecycle::clear_stop_request(&state_home);
 
@@ -199,9 +159,6 @@ async fn start_foreground(port: u16) {
     };
     if let Err(err) = service_file.write(&state) {
         die(format!("could not write service.json: {err}"));
-    }
-    if let Err(error) = crate::local::lifecycle::ensure_tray(&state_home) {
-        eprintln!("tray helper could not start: {error}");
     }
 
     // Every document renders in a workspace of its own under the cache,
@@ -231,10 +188,9 @@ async fn start_foreground(port: u16) {
     let router = service.router();
 
     println!(
-        "Companion ready on http://127.0.0.1:{port}{}",
+        "Local service ready on http://127.0.0.1:{port}{}",
         protocol::BASE_PATH
     );
-    println!("When available, use tray Settings to manage the companion.");
     println!("Ctrl-C to stop.");
 
     let v6_task = if let Some(v6) = listener_v6 {
@@ -278,26 +234,19 @@ async fn start_foreground(port: u16) {
     }
     service.stop_previews().await;
     service_file.remove();
-    println!("Companion stopped");
+    println!("Local service stopped");
 }
 
 async fn stop() {
     if let Err(error) = crate::local::lifecycle::stop(&state_home()).await {
         die(error);
     }
-    println!("Companion stopped");
+    println!("Local service stopped");
 }
 
-fn open(url: &str) {
-    let page = crate::local::lifecycle::open_target(url).unwrap_or_else(|error| die(error));
-    if let Err(error) = crate::local::lifecycle::open_in_desktop_app(&page) {
-        die(error);
-    }
-}
-
-/// Starts the companion if it is not running, then prints one JSON line the
+/// Starts the service if it is not running, then prints one JSON line the
 /// desktop app reads: where to reach it and the credential that opens it.
-/// Exits non-zero with a message when the companion cannot be reached.
+/// Exits non-zero with a message when the service cannot be reached.
 async fn endpoint(port: u16) {
     let state = crate::local::lifecycle::spawn_background(port)
         .await
@@ -322,7 +271,7 @@ fn endpoint_line(state: &ServiceState, token: &str) -> String {
 }
 
 /// Exits non-zero when nothing is answering, so a script can branch on it:
-/// `make demo` uses it to decide whether to start a companion or leave the
+/// `make demo` uses it to decide whether to start a service or leave the
 /// one already running alone. Reports the service address, then the native
 /// tools found and missing.
 async fn status() {
@@ -362,10 +311,9 @@ async fn status() {
                     answering = false;
                 }
             }
-            println!("tray: {}", crate::local::lifecycle::tray_availability());
         }
         None => {
-            println!("Companion is not running");
+            println!("Local service is not running");
             answering = false;
         }
     }
@@ -400,7 +348,7 @@ async fn status() {
         println!("  local builds run with the user's normal access");
     }
 
-    // A stale `service.json` describes a companion that is gone. Reporting
+    // A stale `service.json` describes a service that is gone. Reporting
     // that as success would have a script skip starting one.
     if !answering {
         std::process::exit(1);
@@ -420,61 +368,11 @@ fn print_tool(name: &str, tool: &protocol::Tool) {
     }
 }
 
-async fn approve(code: &str) {
-    let home = state_home();
-    match ServiceFile::new(&home).read() {
-        Some(state) => {
-            let Some(control_token) =
-                crate::local::service::control_token_for_instance(&home, &state.instance)
-            else {
-                die("Local control credential is unavailable");
-            };
-            let url = format!(
-                "http://127.0.0.1:{}{}/approve",
-                state.port,
-                protocol::BASE_PATH
-            );
-            let client = reqwest::Client::builder()
-                .timeout(Duration::from_secs(5))
-                .build();
-
-            let result = match client {
-                Ok(client) => {
-                    client
-                        .post(&url)
-                        .header("content-type", "application/json")
-                        .header("authorization", format!("Bearer {control_token}"))
-                        .body(json!({"code": code}).to_string())
-                        .send()
-                        .await
-                }
-                Err(err) => Err(err),
-            };
-
-            match result {
-                Ok(response) if response.status().is_success() => {
-                    println!("Approval code accepted");
-                }
-                Ok(response) if response.status().as_u16() == 404 => {
-                    die("Code not recognized");
-                }
-                _ => {
-                    die("Could not reach the companion");
-                }
-            }
-        }
-        None => {
-            die("Companion is not running");
-        }
-    }
-}
-
 /// Teach this computer an ACP agent, so the sidebar can drive an agent that
 /// is not in the built-in table. This is how opencode, Pi, or something that
 /// does not exist yet becomes a sidebar assistant without LibrePaper
 /// guessing at a package name that may never have existed.
-fn local_agent(command: LocalAgentCommand) {
-    use LocalAgentCommand;
+pub fn agent(command: LocalAgentCommand) {
     let state_home = crate::local::paths::state_home_or_die();
     let store = crate::local::acp_agents::CustomStore::new(&state_home);
     match command {

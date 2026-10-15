@@ -1,16 +1,14 @@
-//! Per-service browser approval queue.
+//! Per-service approval prompts.
 //!
-//! Approval requests are deliberately owned by one running local service.
-//! They are never kept in a process-global credential table, and the
-//! six-digit CLI code is only indexed inside that same broker.
+//! A request that changes what the service runs on this computer is confirmed
+//! in a native operating system dialog, never in a web page. Each running
+//! local service owns its broker; closing it denies everything waiting.
 
-use std::collections::HashMap;
-use std::sync::{Arc, Mutex};
-use std::time::{Duration, Instant};
+use std::sync::Arc;
+use std::time::Duration;
 
-use tokio::sync::oneshot;
+use tokio::sync::{watch, Mutex};
 
-const MAX_PENDING: usize = 64;
 const DEFAULT_TTL: Duration = Duration::from_secs(300);
 
 #[cfg(test)]
@@ -31,61 +29,21 @@ pub(crate) enum Decision {
     Denied,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum DecisionResult {
-    Applied,
-    Unknown,
-    Expired,
-}
-
-#[derive(Clone, Debug, serde::Serialize)]
-pub(crate) struct PendingView {
-    pub id: String,
-    pub title: String,
-    pub message: String,
-    pub allow_label: String,
-    pub expires_in_seconds: u64,
-}
-
-struct Pending {
-    approval: Approval,
-    expires: Instant,
-    code: String,
-    answer: oneshot::Sender<Decision>,
-}
-
-#[derive(Default)]
-struct State {
-    pending: HashMap<String, Pending>,
-    closed: bool,
-}
-
-pub(crate) type ApprovalOpener = Arc<dyn Fn() + Send + Sync>;
-
-/// A service-local queue that wakes the waiting operation after one explicit
-/// allow/deny decision. The queue is bounded and every wait removes its entry
-/// on decision, timeout, or cancellation.
-#[derive(Clone, Default)]
+/// Asks one question at a time through the operating system. A question the
+/// user does not answer within its time limit, or one still open when the
+/// service shuts down, is denied.
+#[derive(Clone)]
 pub(crate) struct ApprovalBroker {
-    state: Arc<Mutex<State>>,
-    opener: Arc<Mutex<Option<ApprovalOpener>>>,
-    #[cfg(test)]
-    browser_available_override: Arc<Mutex<Option<bool>>>,
+    one_at_a_time: Arc<Mutex<()>>,
+    closed: Arc<watch::Sender<bool>>,
 }
 
-struct PendingGuard {
-    broker: ApprovalBroker,
-    id: String,
-}
-
-impl Drop for PendingGuard {
-    fn drop(&mut self) {
-        self.broker
-            .state
-            .lock()
-            .unwrap_or_else(|error| error.into_inner())
-            .pending
-            .remove(&self.id);
+impl Default for ApprovalBroker {
+    fn default() -> Self {
+        Self {
+            one_at_a_time: Arc::new(Mutex::new(())),
+            closed: Arc::new(watch::channel(false).0),
+        }
     }
 }
 
@@ -94,209 +52,66 @@ impl ApprovalBroker {
         #[cfg(test)]
         let scripted = SCRIPTED.with(|script| *script.borrow());
 
-        let (answer, receiver) = oneshot::channel();
-        let expires = Instant::now() + ttl.min(DEFAULT_TTL);
-        let (id, code, should_open) = {
-            let mut state = self.state.lock().unwrap_or_else(|error| error.into_inner());
-            if state.closed {
-                return Decision::Denied;
-            }
-            #[cfg(test)]
-            if let Some(allowed) = scripted {
-                return if allowed {
-                    Decision::Allowed
-                } else {
-                    Decision::Denied
-                };
-            }
-            reap_expired(&mut state);
-            if state.pending.len() >= MAX_PENDING {
-                return Decision::Denied;
-            }
-            let should_open = state.pending.is_empty();
-            let id = fresh_id(&state);
-            let code = fresh_code(&state);
-            state.pending.insert(
-                id.clone(),
-                Pending {
-                    approval: approval.clone(),
-                    expires,
-                    code: code.clone(),
-                    answer,
-                },
-            );
-            (id, code, should_open)
-        };
-        let _cleanup = PendingGuard {
-            broker: self.clone(),
-            id: id.clone(),
-        };
-
-        eprintln!(
-            "LibrePaper approval pending: {}. Approve in Settings → Companion or run: librepaper local approve {}",
-            approval.title, code
-        );
-        if should_open && self.browser_available() {
-            if let Some(open) = self
-                .opener
-                .lock()
-                .unwrap_or_else(|error| error.into_inner())
-                .clone()
-            {
-                open();
-            }
+        let mut closed = self.closed.subscribe();
+        if *closed.borrow() {
+            return Decision::Denied;
         }
-
-        let decision = match tokio::time::timeout_at(
-            tokio::time::Instant::from_std(expires),
-            receiver,
-        )
-        .await
-        {
-            Ok(Ok(decision)) => decision,
-            _ => Decision::Denied,
+        #[cfg(test)]
+        if let Some(allowed) = scripted {
+            return if allowed {
+                Decision::Allowed
+            } else {
+                Decision::Denied
+            };
+        }
+        let question = async {
+            let _turn = self.one_at_a_time.lock().await;
+            native_confirm(approval).await
         };
-        let mut state = self.state.lock().unwrap_or_else(|error| error.into_inner());
-        state.pending.remove(&id);
+        let decision = tokio::select! {
+            decision = question => decision,
+            _ = closed.wait_for(|closed| *closed) => Decision::Denied,
+            _ = tokio::time::sleep(ttl.min(DEFAULT_TTL)) => Decision::Denied,
+        };
+        if decision == Decision::Denied {
+            tracing::info!("denied: {}", approval.title);
+        }
         decision
     }
 
-    pub(crate) fn set_opener(&self, opener: Option<ApprovalOpener>) {
-        *self
-            .opener
-            .lock()
-            .unwrap_or_else(|error| error.into_inner()) = opener;
-    }
-
-    fn browser_available(&self) -> bool {
-        #[cfg(test)]
-        if let Some(available) = *self
-            .browser_available_override
-            .lock()
-            .unwrap_or_else(|error| error.into_inner())
-        {
-            return available;
-        }
-        browser_available()
-    }
-
-    #[cfg(test)]
-    fn set_browser_available_for_test(&self, available: bool) {
-        *self
-            .browser_available_override
-            .lock()
-            .unwrap_or_else(|error| error.into_inner()) = Some(available);
-    }
-
-    pub(crate) fn list(&self) -> Vec<PendingView> {
-        let mut state = self.state.lock().unwrap_or_else(|error| error.into_inner());
-        state
-            .pending
-            .retain(|_, pending| !pending.answer.is_closed());
-        reap_expired(&mut state);
-        let now = Instant::now();
-        let mut pending: Vec<_> = state
-            .pending
-            .iter()
-            .map(|(id, entry)| PendingView {
-                id: id.clone(),
-                title: entry.approval.title.clone(),
-                message: entry.approval.message.clone(),
-                allow_label: entry.approval.allow_label.clone(),
-                expires_in_seconds: entry.expires.saturating_duration_since(now).as_secs(),
-            })
-            .collect();
-        pending.sort_by(|left, right| left.id.cmp(&right.id));
-        pending
-    }
-
-    pub(crate) fn decide(&self, id: &str, decision: Decision) -> DecisionResult {
-        let mut state = self.state.lock().unwrap_or_else(|error| error.into_inner());
-        let Some(pending) = state.pending.remove(id) else {
-            return DecisionResult::Unknown;
-        };
-        if pending.expires <= Instant::now() {
-            return DecisionResult::Expired;
-        }
-        if pending.answer.send(decision).is_ok() {
-            DecisionResult::Applied
-        } else {
-            DecisionResult::Unknown
-        }
-    }
-
-    /// Called only by the loopback CLI approval route. Codes are never
-    /// returned by the authenticated dashboard API.
-    pub(crate) fn approve_code(&self, code: &str) -> bool {
-        let code = code.trim();
-        let id = {
-            let mut state = self.state.lock().unwrap_or_else(|error| error.into_inner());
-            reap_expired(&mut state);
-            state
-                .pending
-                .iter()
-                .find(|(_, pending)| pending.code == code)
-                .map(|(id, _)| id.clone())
-        };
-        id.is_some_and(|id| self.decide(&id, Decision::Allowed) == DecisionResult::Applied)
-    }
-
-    #[cfg(test)]
-    pub(crate) fn codes_for_test(&self) -> Vec<String> {
-        self.state
-            .lock()
-            .unwrap_or_else(|error| error.into_inner())
-            .pending
-            .values()
-            .map(|pending| pending.code.clone())
-            .collect()
-    }
-
-    /// Close this broker to new requests, then deny everything already
-    /// waiting. A request racing shutdown observes the same lock and cannot
-    /// sneak into the queue after the drain.
+    /// Close this broker to new requests and deny everything waiting. A
+    /// request racing shutdown sees the closed flag and is denied at once.
     pub(crate) fn deny_all(&self) {
-        let mut state = self.state.lock().unwrap_or_else(|error| error.into_inner());
-        state.closed = true;
-        for (_, pending) in state.pending.drain() {
-            let _ = pending.answer.send(Decision::Denied);
-        }
+        self.closed.send_replace(true);
     }
 }
 
-fn browser_available() -> bool {
-    #[cfg(target_os = "linux")]
-    {
-        std::env::var_os("DISPLAY").is_some() || std::env::var_os("WAYLAND_DISPLAY").is_some()
-    }
-    #[cfg(not(target_os = "linux"))]
-    {
-        true
-    }
-}
-
-fn reap_expired(state: &mut State) {
-    let now = Instant::now();
-    state.pending.retain(|_, pending| pending.expires > now);
-}
-
-fn fresh_id(state: &State) -> String {
-    loop {
-        let candidate = hex::encode(librepaper_base::util::random_bytes(16));
-        if !state.pending.contains_key(&candidate) {
-            return candidate;
-        }
+#[cfg(windows)]
+async fn native_confirm(approval: &Approval) -> Decision {
+    let answer = rfd::AsyncMessageDialog::new()
+        .set_level(rfd::MessageLevel::Warning)
+        .set_title(approval.title.as_str())
+        .set_description(format!(
+            "{}\n\nYes: {}\nNo: deny",
+            approval.message, approval.allow_label
+        ))
+        .set_buttons(rfd::MessageButtons::YesNo)
+        .show()
+        .await;
+    if answer == rfd::MessageDialogResult::Yes {
+        Decision::Allowed
+    } else {
+        Decision::Denied
     }
 }
 
-fn fresh_code(state: &State) -> String {
-    use rand::Rng;
-    loop {
-        let code = format!("{:06}", rand::rng().random_range(0..1_000_000));
-        if state.pending.values().all(|pending| pending.code != code) {
-            return code;
-        }
-    }
+#[cfg(not(windows))]
+async fn native_confirm(approval: &Approval) -> Decision {
+    eprintln!(
+        "LibrePaper cannot show a confirmation dialog on this platform, so it denied: {}",
+        approval.title
+    );
+    Decision::Denied
 }
 
 #[cfg(test)]
@@ -313,114 +128,34 @@ pub(crate) fn unscript() {
 mod tests {
     use super::*;
 
-    #[tokio::test]
-    async fn approvals_open_the_browser_for_the_first_pending_request() {
-        use std::sync::atomic::{AtomicUsize, Ordering};
-
-        let broker = ApprovalBroker::default();
-        broker.set_browser_available_for_test(true);
-        let opens = Arc::new(AtomicUsize::new(0));
-        let opened = opens.clone();
-        broker.set_opener(Some(Arc::new(move || {
-            opened.fetch_add(1, Ordering::SeqCst);
-        })));
-        let request = Approval {
+    fn request() -> Approval {
+        Approval {
             title: "Test".into(),
             message: "Allow?".into(),
             allow_label: "Allow".into(),
-        };
+        }
+    }
 
-        let ordinary_broker = broker.clone();
-        let ordinary =
-            tokio::spawn(
-                async move { ordinary_broker.ask(&request, Duration::from_secs(5)).await },
-            );
-        tokio::task::yield_now().await;
-        assert_eq!(opens.load(Ordering::SeqCst), 1);
+    #[tokio::test]
+    async fn shutdown_rejects_later_approval_requests() {
+        let broker = ApprovalBroker::default();
         broker.deny_all();
-        assert_eq!(ordinary.await.unwrap(), Decision::Denied);
-    }
-
-    #[tokio::test]
-    async fn decisions_are_one_shot_and_scoped_to_the_broker() {
-        let first = ApprovalBroker::default();
-        let second = ApprovalBroker::default();
-        let request = Approval {
-            title: "Test".into(),
-            message: "Allow?".into(),
-            allow_label: "Allow".into(),
-        };
-        let task_broker = first.clone();
-        let task =
-            tokio::spawn(async move { task_broker.ask(&request, Duration::from_secs(5)).await });
-        tokio::task::yield_now().await;
-        let pending = first.list();
-        assert_eq!(pending.len(), 1);
-        assert_eq!(
-            second.decide(&pending[0].id, Decision::Allowed),
-            DecisionResult::Unknown
-        );
-        assert_eq!(
-            first.decide(&pending[0].id, Decision::Allowed),
-            DecisionResult::Applied
-        );
-        assert_eq!(
-            first.decide(&pending[0].id, Decision::Denied),
-            DecisionResult::Unknown
-        );
-        assert_eq!(task.await.unwrap(), Decision::Allowed);
-    }
-
-    #[tokio::test]
-    async fn expiry_and_cancellation_remove_pending_records() {
-        let broker = ApprovalBroker::default();
-        let request = Approval {
-            title: "Test".into(),
-            message: "Allow?".into(),
-            allow_label: "Allow".into(),
-        };
-        assert_eq!(
-            broker.ask(&request, Duration::from_millis(1)).await,
-            Decision::Denied
-        );
-        assert!(broker.list().is_empty());
-        let task_broker = broker.clone();
-        let task =
-            tokio::spawn(async move { task_broker.ask(&request, Duration::from_secs(5)).await });
-        tokio::task::yield_now().await;
-        assert_eq!(broker.list().len(), 1);
-        task.abort();
-        let _ = task.await;
-        assert!(broker.list().is_empty());
-    }
-
-    #[tokio::test]
-    async fn shutdown_denies_waiters_and_rejects_later_approval_requests() {
-        let broker = ApprovalBroker::default();
-        let request = Approval {
-            title: "Test".into(),
-            message: "Allow?".into(),
-            allow_label: "Allow".into(),
-        };
-        let task_broker = broker.clone();
-        let task_request = request.clone();
-        let waiting = tokio::spawn(async move {
-            task_broker
-                .ask(&task_request, Duration::from_secs(300))
-                .await
-        });
-        tokio::task::yield_now().await;
-        assert_eq!(broker.list().len(), 1);
-
-        broker.deny_all();
-        assert_eq!(waiting.await.unwrap(), Decision::Denied);
-        assert!(broker.list().is_empty());
         let after_shutdown = tokio::time::timeout(
             Duration::from_millis(50),
-            broker.ask(&request, Duration::from_secs(300)),
+            broker.ask(&request(), Duration::from_secs(300)),
         )
         .await
         .expect("an approval created after shutdown must not wait for its TTL");
         assert_eq!(after_shutdown, Decision::Denied);
+    }
+
+    #[cfg(not(windows))]
+    #[tokio::test]
+    async fn a_platform_without_a_dialog_denies() {
+        let broker = ApprovalBroker::default();
+        assert_eq!(
+            broker.ask(&request(), Duration::from_secs(5)).await,
+            Decision::Denied
+        );
     }
 }

@@ -102,21 +102,6 @@ fn validate_server(raw: &str) -> Result<url::Url, String> {
     Ok(server)
 }
 
-/// The server this credential was saved for, as a URL with no fragment, for
-/// the Settings fallback that opens a browser when no desktop app is found.
-pub(super) fn server_for_instance(state_home: &Path, instance: &str) -> Result<String, String> {
-    let path = state_home.join("librepaper").join("local").join(TOKEN_FILE);
-    let file = read_private_file(&path)
-        .filter(|file| file.instance == instance)
-        .ok_or("local credential is unavailable for this service instance")?;
-    let server = validate_server(
-        file.server
-            .as_deref()
-            .ok_or("trusted LibrePaper server is missing from the local credential")?,
-    )?;
-    Ok(server.to_string())
-}
-
 pub(super) fn token_for_instance(state_home: &Path, instance: &str) -> Option<String> {
     let path = state_home.join("librepaper").join("local").join(TOKEN_FILE);
     read_private_file(&path)
@@ -183,9 +168,6 @@ pub(super) async fn handle(
             let capabilities = inner.runner.capabilities(true).await;
             write_json(200, &json!({"tools":capabilities}))
         }
-        (Some("approvals"), Some(id), None, None) if *method == Method::POST => {
-            decide_approval(inner, id, request).await
-        }
         (Some("bindings"), Some(id), None, None) if *method == Method::DELETE => {
             let _admission = inner.admission.lock().await;
             match inner.quarto_bindings.revoke_any(id) {
@@ -221,9 +203,8 @@ pub(super) async fn handle(
             cancel_session(inner, id).await
         }
         (Some("settings"), None, None, None) if *method == Method::PUT => {
-            update_settings(inner, request).await
+            update_settings(request).await
         }
-        (Some("quit"), None, None, None) if *method == Method::POST => quit(inner).await,
         _ => write_json(404, &json!({"error":"not found"})),
     }
 }
@@ -302,56 +283,22 @@ async fn state(inner: &Inner) -> Reply {
             json!({"id":id,"state":snapshot.state,"task_id":snapshot.task_id,"detail":snapshot.detail})
         })
         .collect();
-    let startup_enabled = if super::standalone(inner) {
-        Some(super::super::lifecycle::startup_enabled())
-    } else {
-        None
-    };
     write_json(
         200,
         &json!({
             "version":crate::VERSION,
-            "standalone":super::standalone(inner),
             "tools":capabilities,
             "bindings":bindings,
-            "approvals":inner.approvals.list(),
             "jobs":jobs,
             "previews":previews,
             "agents":crate::local::acp_agents::detect(&inner.state_home),
             "custom_agents":crate::local::acp_agents::CustomStore::new(&inner.state_home).list().into_iter().map(|(id, agent)| json!({"id":id,"label":agent.label,"command":agent.command})).collect::<Vec<_>>(),
             "sessions":sessions,
-        "settings":{
-                "startup_enabled":startup_enabled,
+            "settings":{
                 "integrations":crate::local::integrations::all(),
             }
         }),
     )
-}
-
-#[derive(Deserialize)]
-struct DecisionRequest {
-    decision: String,
-}
-
-async fn decide_approval(inner: &Inner, id: &str, request: Request<Body>) -> Reply {
-    let body = match read_json_body::<DecisionRequest>(request).await {
-        Ok(body) => body,
-        Err(response) => return response,
-    };
-    let decision = match body.decision.as_str() {
-        "allow" => crate::local::approval::Decision::Allowed,
-        "deny" => crate::local::approval::Decision::Denied,
-        _ => return write_json(400, &json!({"error":"decision must be allow or deny"})),
-    };
-    match inner.approvals.decide(id, decision) {
-        crate::local::approval::DecisionResult::Applied => write_json(200, &json!({"ok":true})),
-        crate::local::approval::DecisionResult::Expired => {
-            write_json(404, &json!({"error":"approval expired"}))
-        }
-        crate::local::approval::DecisionResult::Unknown => {
-            write_json(404, &json!({"error":"approval not found"}))
-        }
-    }
 }
 
 async fn cancel_job(inner: &Inner, id: &str) -> Reply {
@@ -502,21 +449,14 @@ fn generated_agent_ids_are_reserved_safe_and_unique() {
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct SettingsRequest {
-    startup_enabled: Option<bool>,
     integrations: Option<std::collections::BTreeMap<String, crate::local::integrations::Custom>>,
 }
 
-async fn update_settings(inner: &Inner, request: Request<Body>) -> Reply {
+async fn update_settings(request: Request<Body>) -> Reply {
     let body = match read_json_body::<SettingsRequest>(request).await {
         Ok(body) => body,
         Err(response) => return response,
     };
-    if body.startup_enabled.is_some() && !super::standalone(inner) {
-        return write_json(
-            409,
-            &json!({"error":"startup is available only in standalone mode"}),
-        );
-    }
     let integration_updates: Vec<_> = if let Some(integrations) = &body.integrations {
         let mut updates = Vec::with_capacity(integrations.len());
         for (name, custom) in integrations {
@@ -536,31 +476,7 @@ async fn update_settings(inner: &Inner, request: Request<Body>) -> Reply {
     if let Err(error) = crate::local::integrations::set_many(integration_updates) {
         return write_json(400, &json!({"error":error}));
     }
-
-    if let Some(enabled) = body.startup_enabled {
-        if super::super::lifecycle::startup_enabled() != enabled {
-            if let Err(error) = super::super::lifecycle::set_startup(enabled) {
-                return write_json(500, &json!({"error":error}));
-            }
-        }
-    }
     write_json(200, &json!({"ok":true}))
-}
-
-async fn quit(inner: &Inner) -> Reply {
-    if !super::standalone(inner) {
-        return write_json(
-            409,
-            &json!({"error":"quit is available only in standalone mode"}),
-        );
-    }
-    match super::super::lifecycle::request_stop(&inner.state_home) {
-        Ok(()) => {
-            inner.approvals.deny_all();
-            write_json(200, &json!({"ok":true}))
-        }
-        Err(error) => write_json(500, &json!({"error":error})),
-    }
 }
 
 #[cfg(test)]
@@ -656,21 +572,10 @@ mod tests {
             .headers()
             .keys()
             .all(|name| !name.as_str().starts_with("access-control-")));
-
-        let quit = send_api(
-            &inner,
-            Method::GET,
-            "/companion/api/quit",
-            Some(&token),
-            Some(&manage),
-            &host,
-        )
-        .await;
-        assert_eq!(quit.status(), StatusCode::NOT_FOUND);
     }
 
     #[tokio::test]
-    async fn pairing_routes_are_gone() {
+    async fn pairing_and_lifecycle_routes_are_gone() {
         let (inner, _state_home, _cache_home) = test_inner().await;
         let manage = origin(&inner);
         let token = credential(&inner);
@@ -678,6 +583,8 @@ mod tests {
         for (method, path) in [
             (Method::POST, "/companion/api/session"),
             (Method::DELETE, "/companion/api/pairings/abc"),
+            (Method::POST, "/companion/api/quit"),
+            (Method::POST, "/companion/api/approvals/abc"),
         ] {
             let response = send_api(&inner, method, path, Some(&token), Some(&manage), &host).await;
             assert_eq!(response.status(), StatusCode::NOT_FOUND, "{path}");
@@ -772,15 +679,6 @@ mod tests {
                 & 0o777;
             assert_eq!(mode, 0o600);
         }
-    }
-
-    #[test]
-    fn the_saved_server_is_readable_for_the_settings_fallback() {
-        let state_home = tempfile::tempdir().unwrap();
-        ControlAuth::create(state_home.path(), "live").unwrap();
-        let server = server_for_instance(state_home.path(), "live").unwrap();
-        assert!(url::Url::parse(&server).unwrap().fragment().is_none());
-        assert!(server_for_instance(state_home.path(), "other").is_err());
     }
 
     #[test]

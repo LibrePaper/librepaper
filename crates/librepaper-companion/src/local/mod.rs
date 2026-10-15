@@ -28,8 +28,6 @@ pub mod quarto_capture;
 pub mod service;
 pub mod store;
 pub(crate) mod tools;
-#[cfg(any(target_os = "linux", target_os = "macos", windows))]
-pub mod tray;
 
 pub mod zotero;
 
