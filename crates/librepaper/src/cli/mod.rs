@@ -489,19 +489,6 @@ async fn run_admin(
 fn serve_options(
     resolved: server_config::ResolvedConfig,
 ) -> librepaper_server::server::serve::ServeOptions {
-    let start_local = resolved.local_companion.then(|| {
-        let start: librepaper_server::server::serve::StartLocal = Box::new(|base: PathBuf| {
-            Box::pin(async move {
-                let app = librepaper_companion::local::embedded::start(&base).await?;
-                let stopper = app.clone();
-                Ok(librepaper_server::server::serve::LocalApp {
-                    address: app.address.clone(),
-                    stop: Box::new(move || Box::pin(async move { stopper.stop().await })),
-                })
-            })
-        });
-        start
-    });
     librepaper_server::server::serve::ServeOptions {
         address: resolved.address,
         storage: resolved.storage,
@@ -523,7 +510,6 @@ fn serve_options(
         erase_inactive_after: resolved.erase_inactive_after,
         asset_mirror: resolved.asset_mirror,
         typst_fonts: resolved.typst_fonts,
-        start_local,
         load_shell: librepaper_shell::load_shell,
         latex_release: librepaper_shell::latex_release(),
         config: resolved.config,
