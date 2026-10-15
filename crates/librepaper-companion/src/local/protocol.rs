@@ -50,18 +50,7 @@ pub struct Health {
     pub instance: String,
 }
 
-/// `POST connect/claim` answer: a bearer token scoped to the origin.
-#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
-pub struct ConnectResponse {
-    pub token: String,
-    pub expires: i64,
-    /// Changes when the companion process restarts. Clients may retain their
-    /// token and reconnect after observing a new instance.
-    #[serde(default)]
-    pub instance: String,
-}
-
-/// Request a native folder chooser for a document of a paired site. The
+/// Request a native folder chooser for a document of a site. The
 /// chooser is deliberately initiated by an explicit POST from the UI; paths
 /// never cross this protocol.
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
@@ -84,13 +73,6 @@ pub struct BindingSummary {
     pub project: String,
     pub entrypoint: String,
     pub created_at: i64,
-}
-
-#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
-pub struct PairClaimRequest {
-    pub request: String,
-    pub origin: String,
-    pub verifier: String,
 }
 
 /// One native tool, as the browser is allowed to know it: whether, which
@@ -1049,7 +1031,7 @@ pub struct AssistantQuery {
 }
 
 /// Renew the server grant for an already-running assistant. This value is
-/// received only from a paired browser origin and contains no browser cookie.
+/// received only from the desktop shell and contains no browser cookie.
 #[derive(Clone, Serialize, Deserialize, PartialEq)]
 pub struct AssistantRenewal {
     pub link: String,

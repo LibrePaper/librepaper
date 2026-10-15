@@ -10,10 +10,10 @@ use tokio::net::TcpListener;
 
 use clap::{Args, Subcommand};
 
-use crate::local::pairing::{PairingStore, ServiceState};
 use crate::local::paths::state_home_or_die as state_home;
 use crate::local::protocol::{self, DEFAULT_PORT};
 use crate::local::service::{LocalService, NativeRunner, Runner};
+use crate::local::store::{ServiceFile, ServiceState};
 use librepaper_base::util::die;
 
 /// Shared options for the default launch and explicit `start` aliases.
@@ -47,23 +47,23 @@ pub enum LocalCommand {
     /// Ask a running companion to stop cleanly.
     #[command(hide = true)]
     Stop,
-    /// Launch the companion and open a validated local connection link.
-    /// The operating system runs this for `librepaper://` links; it is not
-    /// listed because nobody types it.
+    /// Show a page in the desktop app. The operating system runs this for
+    /// `librepaper://open?url=<URL>` links; it is not listed because nobody
+    /// types it.
     #[command(hide = true)]
     Open { url: String },
-    /// Whether the service is running, its address, code and pairings, and which native tools were found
+    /// Whether the service is running, its address, and which native tools were found
     #[command(hide = true)]
     Status,
+    /// Start the companion if needed and print how to reach it as one JSON
+    /// line: address, credential, instance, version and protocol. The desktop
+    /// app runs this; nobody types it.
+    #[command(hide = true)]
+    Endpoint,
     /// Approve a dialog request from the companion
     Approve {
         /// Approval code from the dialog
         code: String,
-    },
-    /// Revoke a site pairing
-    Disconnect {
-        /// Origin (e.g. https://papers.example)
-        origin: String,
     },
     /// Internal helper process for the optional system tray.
     #[command(hide = true)]
@@ -77,7 +77,7 @@ pub enum LocalCommand {
 }
 
 /// Declaring an ACP agent this machine offers. It lives here, as a local
-/// command, rather than as a loopback route: a paired page picks which agent
+/// command, rather than as a loopback route: a page picks which agent
 /// to drive, never what command to run.
 #[derive(Subcommand, Clone, Debug)]
 pub enum LocalAgentCommand {
@@ -121,10 +121,10 @@ pub async fn run(args: LocalArgs) {
             }
         }
         LocalCommand::Stop => stop().await,
-        LocalCommand::Open { url } => open(&url).await,
+        LocalCommand::Open { url } => open(&url),
         LocalCommand::Status => status().await,
+        LocalCommand::Endpoint => endpoint().await,
         LocalCommand::Approve { code } => approve(&code).await,
-        LocalCommand::Disconnect { origin } => disconnect(origin),
         #[cfg(any(target_os = "linux", target_os = "macos", windows))]
         LocalCommand::Tray => super::tray::run().await,
         #[cfg(not(any(target_os = "linux", target_os = "macos", windows)))]
@@ -147,7 +147,7 @@ fn cache_home() -> PathBuf {
 async fn start_background(port: u16) {
     match crate::local::lifecycle::spawn_background(port).await {
         Ok(state) => println!(
-            "Companion ready on port {}. Open Settings → Companion to manage it; use tray Settings when available.",
+            "Companion ready on port {}. Use the tray Settings item to manage it when available.",
             state.port
         ),
         Err(error) => die(error),
@@ -156,7 +156,7 @@ async fn start_background(port: u16) {
 
 async fn start_foreground(port: u16) {
     let state_home = state_home();
-    let pairing = PairingStore::new(&state_home, None);
+    let service_file = ServiceFile::new(&state_home);
     let port = if port == 0 { DEFAULT_PORT } else { port };
 
     let local_dir = state_home.join("librepaper/local");
@@ -193,7 +193,7 @@ async fn start_foreground(port: u16) {
         pid: std::process::id(),
         started: librepaper_base::util::now_unix(),
     };
-    if let Err(err) = pairing.write_service(&state) {
+    if let Err(err) = service_file.write(&state) {
         die(format!("could not write service.json: {err}"));
     }
     if let Err(error) = crate::local::lifecycle::ensure_tray(&state_home) {
@@ -213,31 +213,24 @@ async fn start_foreground(port: u16) {
         &state_home,
         workspaces.clone(),
     ));
-    let service = LocalService::with_hosted_workspaces_and_code(
+    // The credential is written to a private file before the first request
+    // is served, so `endpoint` can read it as soon as `health` answers.
+    let service = LocalService::with_hosted_workspaces(
         port,
         instance,
         &state_home,
         &cache_home(),
         runner,
-        None,
         workspaces,
-    );
-    // Production starts keep the control token private and expose it only to
-    // explicit browser launches or the local approval broker. The returned
-    // URL is deliberately discarded here and never reaches stdout or logs.
-    let _settings_url = service
-        .enable_control_panel()
-        .await
-        .unwrap_or_else(|error| die(error));
+    )
+    .unwrap_or_else(|error| die(error));
     let router = service.router();
 
     println!(
         "Companion ready on http://127.0.0.1:{port}{}",
         protocol::BASE_PATH
     );
-    println!("Next: Settings → Companion.");
     println!("When available, use tray Settings to manage the companion.");
-    print_pairings(&pairing);
     println!("Ctrl-C to stop.");
 
     let v6_task = if let Some(v6) = listener_v6 {
@@ -280,7 +273,7 @@ async fn start_foreground(port: u16) {
         task.abort();
     }
     service.stop_previews().await;
-    pairing.remove_service();
+    service_file.remove();
     println!("Companion stopped");
 }
 
@@ -291,45 +284,48 @@ async fn stop() {
     println!("Companion stopped");
 }
 
-async fn open(url: &str) {
-    // Validate before causing even a launch side effect.
-    if let Err(error) = crate::local::lifecycle::connection_target(url, DEFAULT_PORT) {
-        die(error);
-    }
-    let state = crate::local::lifecycle::spawn_background(0)
-        .await
-        .unwrap_or_else(|error| die(error));
-    let target = crate::local::lifecycle::connection_target(url, state.port)
-        .unwrap_or_else(|error| die(error));
-    let result = match target {
-        crate::local::lifecycle::Target::Nothing => Ok(()),
-        crate::local::lifecycle::Target::Open(target) => {
-            crate::local::lifecycle::open_browser(&target)
-        }
-        crate::local::lifecycle::Target::Settings => crate::local::lifecycle::open_settings(
-            &crate::local::paths::state_home_or_die(),
-            state.port,
-            &state.instance,
-        ),
-        crate::local::lifecycle::Target::Pair(link) => {
-            crate::local::lifecycle::pair(&link, state.port).await
-        }
-    };
-    if let Err(error) = result {
+fn open(url: &str) {
+    let page = crate::local::lifecycle::open_target(url).unwrap_or_else(|error| die(error));
+    if let Err(error) = crate::local::lifecycle::open_in_desktop_app(&page) {
         die(error);
     }
 }
 
+/// Starts the companion if it is not running, then prints one JSON line the
+/// desktop app reads: where to reach it and the credential that opens it.
+/// Exits non-zero with a message when the companion cannot be reached.
+async fn endpoint() {
+    let state = crate::local::lifecycle::spawn_background(0)
+        .await
+        .unwrap_or_else(|error| die(error));
+    let Some(token) =
+        crate::local::service::control_token_for_instance(&state_home(), &state.instance)
+    else {
+        die("Local control credential is unavailable");
+    };
+    println!("{}", endpoint_line(&state, &token));
+}
+
+fn endpoint_line(state: &ServiceState, token: &str) -> String {
+    json!({
+        "address": format!("http://127.0.0.1:{}/", state.port),
+        "token": token,
+        "instance": state.instance,
+        "version": crate::VERSION,
+        "protocol": protocol::PROTOCOL_VERSIONS,
+    })
+    .to_string()
+}
+
 /// Exits non-zero when nothing is answering, so a script can branch on it:
 /// `make demo` uses it to decide whether to start a companion or leave the
-/// one already running alone. Reports the service address, code and pairings,
-/// then the native tools found and missing.
+/// one already running alone. Reports the service address, then the native
+/// tools found and missing.
 async fn status() {
     let home = state_home();
-    let pairing = PairingStore::new(&home, None);
     let mut answering = true;
 
-    match pairing.read_service() {
+    match ServiceFile::new(&home).read() {
         Some(state) => {
             let url = format!(
                 "http://127.0.0.1:{}{}/health",
@@ -362,7 +358,6 @@ async fn status() {
                     answering = false;
                 }
             }
-            print_pairings(&pairing);
             println!("tray: {}", crate::local::lifecycle::tray_availability());
         }
         None => {
@@ -398,25 +393,13 @@ async fn status() {
                 capabilities.confinement.reason.as_str()
             }
         );
-        println!("  paired local builds run with the user's normal access");
+        println!("  local builds run with the user's normal access");
     }
 
     // A stale `service.json` describes a companion that is gone. Reporting
     // that as success would have a script skip starting one.
     if !answering {
         std::process::exit(1);
-    }
-}
-
-fn print_pairings(pairing: &PairingStore) {
-    let pairings = pairing.active_pairings();
-    if pairings.is_empty() {
-        println!("no paired origins");
-        return;
-    }
-    println!("paired origins:");
-    for origin in pairings {
-        println!("  {origin}");
     }
 }
 
@@ -435,9 +418,7 @@ fn print_tool(name: &str, tool: &protocol::Tool) {
 
 async fn approve(code: &str) {
     let home = state_home();
-    let pairing = PairingStore::new(&home, None);
-
-    match pairing.read_service() {
+    match ServiceFile::new(&home).read() {
         Some(state) => {
             let Some(control_token) =
                 crate::local::service::control_token_for_instance(&home, &state.instance)
@@ -484,15 +465,6 @@ async fn approve(code: &str) {
     }
 }
 
-fn disconnect(origin: String) {
-    let pairing = PairingStore::new(&state_home(), None);
-    if pairing.revoke(&origin) {
-        println!("Disconnected {origin}");
-    } else {
-        println!("{origin} was not connected");
-    }
-}
-
 /// Teach this computer an ACP agent, so the sidebar can drive an agent that
 /// is not in the built-in table. This is how opencode, Pi, or something that
 /// does not exist yet becomes a sidebar assistant without LibrePaper
@@ -527,5 +499,28 @@ fn local_agent(command: LocalAgentCommand) {
                 die(format!("no agent named '{id}'"));
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn endpoint_line_is_one_json_object_with_the_connection_details() {
+        let state = ServiceState {
+            port: 8763,
+            instance: "abc123".into(),
+            pid: 1,
+            started: 0,
+        };
+        let line = endpoint_line(&state, "secret-token");
+        assert!(!line.contains('\n'));
+        let value: serde_json::Value = serde_json::from_str(&line).unwrap();
+        assert_eq!(value["address"], "http://127.0.0.1:8763/");
+        assert_eq!(value["token"], "secret-token");
+        assert_eq!(value["instance"], "abc123");
+        assert_eq!(value["version"], crate::VERSION);
+        assert_eq!(value["protocol"], json!(protocol::PROTOCOL_VERSIONS));
     }
 }

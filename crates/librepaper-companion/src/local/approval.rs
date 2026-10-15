@@ -23,9 +23,6 @@ pub(crate) struct Approval {
     pub title: String,
     pub message: String,
     pub allow_label: String,
-    /// Optional pairing/site scope so revocation can invalidate that pending
-    /// consent without touching unrelated machine-local approvals.
-    pub scope: Option<String>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -265,30 +262,6 @@ impl ApprovalBroker {
             let _ = pending.answer.send(Decision::Denied);
         }
     }
-
-    pub(crate) fn deny_scope(&self, scope: &str) {
-        let mut state = self.state.lock().unwrap_or_else(|error| error.into_inner());
-        let ids: Vec<_> = state
-            .pending
-            .iter()
-            .filter_map(|(id, pending)| {
-                pending
-                    .approval
-                    .scope
-                    .as_deref()
-                    .is_some_and(|approval_scope| {
-                        crate::local::pairing::normalize_origin(approval_scope)
-                            == crate::local::pairing::normalize_origin(scope)
-                    })
-                    .then_some(id.clone())
-            })
-            .collect();
-        for id in ids {
-            if let Some(pending) = state.pending.remove(&id) {
-                let _ = pending.answer.send(Decision::Denied);
-            }
-        }
-    }
 }
 
 fn browser_available() -> bool {
@@ -355,7 +328,6 @@ mod tests {
             title: "Test".into(),
             message: "Allow?".into(),
             allow_label: "Allow".into(),
-            scope: None,
         };
 
         let ordinary_broker = broker.clone();
@@ -377,7 +349,6 @@ mod tests {
             title: "Test".into(),
             message: "Allow?".into(),
             allow_label: "Allow".into(),
-            scope: None,
         };
         let task_broker = first.clone();
         let task =
@@ -407,7 +378,6 @@ mod tests {
             title: "Test".into(),
             message: "Allow?".into(),
             allow_label: "Allow".into(),
-            scope: None,
         };
         assert_eq!(
             broker.ask(&request, Duration::from_millis(1)).await,
@@ -431,7 +401,6 @@ mod tests {
             title: "Test".into(),
             message: "Allow?".into(),
             allow_label: "Allow".into(),
-            scope: None,
         };
         let task_broker = broker.clone();
         let task_request = request.clone();

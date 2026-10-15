@@ -3,7 +3,7 @@
 //! The local companion lets authors point to custom-built or vendored versions
 //! of these tools, and pass extra arguments the tools should always receive.
 //! Configuration lives in `<state_home>/librepaper/local/integrations.json`,
-//! alongside the pairing and connection stores.
+//! alongside the service and connection files.
 //!
 //! An executable can be given as a file path or a directory (which is joined
 //! with the tool name). Paths must be absolute; relative paths are rejected.
@@ -16,7 +16,7 @@ use std::sync::RwLock;
 
 use serde::{Deserialize, Serialize};
 
-use super::pairing::{read_json, write_private_json};
+use super::store::{read_json, write_private_json};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Integration {
