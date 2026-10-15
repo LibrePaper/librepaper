@@ -304,10 +304,16 @@ fn integration_prompt(
     path: &str,
     body: &[u8],
 ) -> Result<Option<(String, String)>, Response<Vec<u8>>> {
-    if *method != Method::PUT || !path.starts_with("/librepaper/local/integrations/") {
+    // Split the path the way the local service routes it, empty segments
+    // dropped, so a doubled slash cannot reach the route without the prompt.
+    let segments: Vec<&str> = path
+        .strip_prefix("/librepaper/local")
+        .map(|rest| rest.split('/').filter(|segment| !segment.is_empty()).collect())
+        .unwrap_or_default();
+    if *method != Method::PUT || segments.first() != Some(&"integrations") {
         return Ok(None);
     }
-    let name = path.rsplit('/').next().unwrap_or_default();
+    let name = if segments.len() == 2 { segments[1] } else { "" };
     let tool = match name {
         "quarto" => "Quarto",
         "calepin" => "Calepin",
