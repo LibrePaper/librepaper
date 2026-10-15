@@ -6,7 +6,7 @@ title: "Calepin"
 
 ## Companion
 
-The browser cannot run code. The LibrePaper companion runs Calepin on your computer with the tools installed there. Install [the companion](../local-app.html), then start it:
+The browser cannot run code. The LibrePaper companion runs Calepin on your computer with the tools installed there. Open the [desktop app](../local-app.html). The commands below use the `librepaper` binary:
 
 ```sh
 librepaper                           # start in the background
@@ -29,7 +29,7 @@ Calepin runs locally and its generated output is not uploaded automatically. The
 
 Calepin can render with a folder on your computer. This is how you use private data without uploading it.
 
-- Start the companion.
+- Open the desktop app.
 - Choose **File → Project folder…**.
 - Check the main file name.
 - Click **Choose folder…** and approve.
@@ -47,7 +47,7 @@ If `librepaper status` does not find Calepin, install it or add it to PATH. A cu
 ## Trust
 
 - Calepin runs with your user account. It can use your files, installed packages and the network. LibrePaper does not sandbox it.
-- Pairing asks once per site in Settings → Render → Typst and Calepin. Check the site and requested action before allowing it. Pairing alone runs nothing.
+- Calepin runs only in the [desktop app](../local-app.html). The browser cannot run it.
 - Every document starts on the browser preview. Calepin runs only after you choose View > Execute code locally and accept the warning, one document at a time.
 - Anyone with editor access can change that code at any time, so allow it only on documents whose owner and editors you trust.
 - The permission is remembered for that document in this browser until you turn it off or sign out.

@@ -39,7 +39,7 @@ tools/dev/windows-vm bootstrap local   # run install-local.ps1 in the VM
 ## Checklist
 
 1. Run `tools/dev/windows-vm bootstrap`, or run the released installer by hand in PowerShell: `powershell -ExecutionPolicy Bypass -c "irm https://github.com/LibrePaper/librepaper/releases/latest/download/librepaper-installer.ps1 | iex"`. Open a new terminal and confirm `librepaper --version`. Record any SmartScreen or Defender warning.
-2. Open app.librepaper.org in Edge, then in Chrome. Pair the companion and confirm the Local Network Access prompt and the native pairing dialog appear.
+2. Open the desktop app and confirm it loads app.librepaper.org.
 3. Enable start at login, reboot the VM, and confirm the companion starts once. It registers under `HKCU\Software\Microsoft\Windows\CurrentVersion\Run`.
 4. In Settings > Rendering, use Choose folder under Project folder and confirm a live preview uses that folder. Cancel a second chooser and confirm the prior folder remains.
 5. Restore the clean snapshot and repeat step 1 with Scoop: `scoop bucket add vincentarelbundock https://github.com/vincentarelbundock/scoop-bucket` then `scoop install librepaper`.

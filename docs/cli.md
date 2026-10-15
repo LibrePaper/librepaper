@@ -13,23 +13,20 @@ librepaper install-desktop                      # install a launcher that starts
 librepaper --at-login                           # start now and at login
 librepaper --foreground                        # run in this process
 librepaper --port 8763                          # use a chosen port
-librepaper status                               # address, pairings, tools, agents
+librepaper status                               # address, tools, agents
 librepaper stop                                 # stop it
 librepaper agent list                           # list configured agents
 librepaper agent add <id> -- <command>          # add an agent command
 librepaper agent remove <id>                    # remove an agent
-librepaper local approve <code>                 # approve on a no-display machine
-librepaper local disconnect <origin>            # revoke a website pairing
+librepaper local approve <code>                 # approve a pending request
 librepaper export c9k ./paper-copy              # immutable snapshot
 librepaper export c9k ./paper-copy --key URL    # read as share-link holder
 librepaper export c9k ./paper-copy --at "v1"    # historical version
 ```
 
-On supported desktops, starting the companion shows a tray icon. Choose **Settings** from its menu to open the Companion section in the main LibrePaper app. The tray appears automatically. There is no tray preference to configure. Closing the app page leaves the companion running. Use **Quit companion** in Settings or `librepaper stop` to stop it. Start-at-login is optional. Folder selection uses the operating system's native chooser.
+On supported desktops, starting the companion shows a tray icon. Its Settings item opens the [desktop app](local-app.html). The tray appears automatically. Use `librepaper stop` to stop the companion. Start-at-login is optional. Folder selection uses the operating system's native chooser.
 
 The companion discovers document tools from the `PATH` inherited when it starts. Set a tool's executable explicitly in its Integrations settings when it is not on `PATH`.
-
-On a machine with no display, check `companion.log` for the approval code and run `librepaper local approve <code>` within two minutes. The CLI remains available for headless setup and control.
 
 For scheduled local backups, see [account backups](backups.html).
 
