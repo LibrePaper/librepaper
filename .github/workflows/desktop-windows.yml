@@ -143,6 +143,7 @@ jobs:
             }
           }
           Set-Content -Path (Join-Path $env:RUNNER_TEMP 'tauri-sign.json') -Value (ConvertTo-Json $tauriSign -Depth 6) -Encoding utf8NoBOM
+          Add-Content -Path $env:GITHUB_ENV -Value "SIGNTOOL=$signtool`nSIGNING_DLIB=$dlib`nSIGNING_METADATA=$metaPath"
 
       - name: Sign in to Azure
         uses: azure/login@v3
@@ -150,6 +151,17 @@ jobs:
           client-id: ${{ secrets.AZURE_CLIENT_ID }}
           tenant-id: ${{ secrets.AZURE_TENANT_ID }}
           subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+
+      # Tauri hides signtool's output when a signature fails. Sign a throwaway
+      # copy of signtool first, with the dlib's debug log, so a problem with the
+      # account, the profile or the role shows its real error before the build.
+      - name: Check that Azure signs
+        shell: pwsh
+        run: |
+          $probe = Join-Path $env:RUNNER_TEMP 'sign-probe.exe'
+          Copy-Item $env:SIGNTOOL $probe
+          & $env:SIGNTOOL sign /v /debug /fd SHA256 /tr http://timestamp.acs.microsoft.com /td SHA256 /dlib $env:SIGNING_DLIB /dmdf $env:SIGNING_METADATA $probe
+          if ($LASTEXITCODE -ne 0) { throw "signtool exited with code $LASTEXITCODE" }
 
       - name: Build the desktop app
         id: build
