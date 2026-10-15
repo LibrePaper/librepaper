@@ -78,7 +78,8 @@ pub(crate) fn bind_scope(
         main,
         true,
     )?;
-    // This check keeps two previews off one directory, for hosted workspaces and granted folders alike.
+    // This check keeps two previews off one directory, for hosted workspaces
+    // and granted folders alike.
     if existing
         .values()
         .filter(other_scope)
@@ -619,6 +620,7 @@ impl Previews {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[cfg(unix)]
     use crate::local::bindings::HOSTED_BINDING;
     use std::io::Cursor;
 
@@ -725,6 +727,7 @@ mod tests {
         assert!(!final_log.contains("\n\n"));
     }
 
+    #[cfg(unix)]
     /// A managed preview request for one hosted project, with a manifest
     /// that carries its entrypoint.
     fn hosted_request(project: &str) -> PreviewRequest {
@@ -758,6 +761,7 @@ mod tests {
         }
     }
 
+    #[cfg(unix)]
     /// A session with every field the scope checks read filled in. `Session`
     /// owns a live `Child`, so this spawns a real `sleep` that is killed
     /// when the session is dropped.
@@ -797,12 +801,12 @@ mod tests {
         }
     }
 
+    #[cfg(unix)]
     #[tokio::test]
     async fn hosted_previews_for_two_projects_run_side_by_side() {
         let state = tempfile::tempdir().unwrap();
         let hosted = tempfile::tempdir().unwrap();
-        let bindings =
-            BindingStore::new(state.path()).with_hosted_workspaces(hosted.path().into());
+        let bindings = BindingStore::new(state.path()).with_hosted_workspaces(hosted.path().into());
         let one_root = bindings
             .validate_scoped_entrypoint(
                 HOSTED_BINDING,
@@ -820,12 +824,12 @@ mod tests {
         assert!(result.is_ok(), "{:?}", result.as_ref().err());
     }
 
+    #[cfg(unix)]
     #[tokio::test]
     async fn a_second_preview_on_the_same_directory_is_refused() {
         let state = tempfile::tempdir().unwrap();
         let hosted = tempfile::tempdir().unwrap();
-        let bindings =
-            BindingStore::new(state.path()).with_hosted_workspaces(hosted.path().into());
+        let bindings = BindingStore::new(state.path()).with_hosted_workspaces(hosted.path().into());
         let two_root = bindings
             .validate_scoped_entrypoint(
                 HOSTED_BINDING,
