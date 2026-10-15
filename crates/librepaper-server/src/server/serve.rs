@@ -659,7 +659,7 @@ pub async fn serve(options: ServeOptions) {
     println!("  data in {}", blobs.describe());
     println!("  publishing: {}", publishers.describe());
     println!("  commenting: {}", commenters.describe());
-    super::host_metrics::warn(&config, &deployment_paths.deployment);
+    super::host_metrics::warn(&config, &deployment_paths.deployment, blobs.is_local());
     if std::io::stdout().is_terminal() {
         println!(
             "  storage: {} total bytes; {} bytes per owner",

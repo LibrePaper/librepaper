@@ -87,11 +87,19 @@ pub fn snapshot(primary: Option<&Path>) -> Value {
     })
 }
 
-pub fn warn(config: &librepaper_base::config::Configuration, primary: &Path) {
+/// Whether the storage ceiling is larger than the local disk can take. Only a
+/// deployment that keeps user files on this disk is bounded by it.
+fn ceiling_exceeds_disk(total: i64, free: u64, files_on_disk: bool) -> bool {
+    files_on_disk && total >= 0 && total as u64 > free.saturating_sub(256 * 1024 * 1024)
+}
+
+pub fn warn(
+    config: &librepaper_base::config::Configuration,
+    primary: &Path,
+    files_on_disk: bool,
+) {
     if let Ok((_, free)) = librepaper_base::util::disk_space(primary) {
-        if config.storage.total >= 0
-            && config.storage.total as u64 > free.saturating_sub(256 * 1024 * 1024)
-        {
+        if ceiling_exceeds_disk(config.storage.total, free, files_on_disk) {
             tracing::warn!("the storage ceiling leaves less than 256 MiB of currently available filesystem headroom");
         }
     }
@@ -127,6 +135,15 @@ mod tests {
         assert_eq!(cpu_ticks("cpu0 1 2 3 4 5 6 7 8\n"), None);
         assert_eq!(cpu_ticks("cpu  1 2 3\n"), None);
         assert_eq!(cpu_ticks("cpu  1 2 3 four 5 6 7 8\n"), None);
+    }
+
+    #[test]
+    fn only_files_on_this_disk_are_bounded_by_its_free_space() {
+        let gib: i64 = 1 << 30;
+        assert!(ceiling_exceeds_disk(100 * gib, (29 * gib) as u64, true));
+        assert!(!ceiling_exceeds_disk(100 * gib, (29 * gib) as u64, false));
+        assert!(!ceiling_exceeds_disk(5 * gib, (29 * gib) as u64, true));
+        assert!(!ceiling_exceeds_disk(-1, 0, true));
     }
 
     #[test]
