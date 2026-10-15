@@ -240,6 +240,10 @@ fn serve(app: &AppHandle, request: Request<Vec<u8>>, responder: UriSchemeRespond
     }
 
     let (parts, body) = request.into_parts();
+    let prompt = match integration_prompt(&origin, &parts.method, parts.uri.path(), &body) {
+        Ok(prompt) => prompt,
+        Err(res) => return responder.respond(with_origin(res, &origin)),
+    };
     let forward = Forward {
         method: parts.method,
         path: parts
@@ -253,6 +257,29 @@ fn serve(app: &AppHandle, request: Request<Vec<u8>>, responder: UriSchemeRespond
     };
     let app = app.clone();
     tauri::async_runtime::spawn(async move {
+        // The page is a remote site, so the shell asks before it lets the page
+        // choose which program runs Quarto or Calepin documents.
+        if let Some((title, message)) = prompt {
+            let asked = app.clone();
+            let allowed = tauri::async_runtime::spawn_blocking(move || {
+                asked
+                    .dialog()
+                    .message(message)
+                    .title(title)
+                    .kind(MessageDialogKind::Warning)
+                    .buttons(MessageDialogButtons::OkCancelCustom(
+                        "Allow".into(),
+                        "Cancel".into(),
+                    ))
+                    .blocking_show()
+            })
+            .await
+            .unwrap_or(false);
+            if !allowed {
+                let res = json_error(StatusCode::FORBIDDEN, "The command was not changed.");
+                return responder.respond(with_origin(res, &origin));
+            }
+        }
         let service = app.state::<Service>();
         let res = match service.forward(forward).await {
             Ok(res) => res,
@@ -260,6 +287,58 @@ fn serve(app: &AppHandle, request: Request<Vec<u8>>, responder: UriSchemeRespond
         };
         responder.respond(with_origin(res, &origin));
     });
+}
+
+#[derive(serde::Deserialize)]
+struct IntegrationChange {
+    path: Option<String>,
+    #[serde(default)]
+    args: Vec<String>,
+}
+
+// Returns the title and message of the confirmation a change needs, or None
+// for any request that is not a PUT to an integration.
+fn integration_prompt(
+    origin: &str,
+    method: &Method,
+    path: &str,
+    body: &[u8],
+) -> Result<Option<(String, String)>, Response<Vec<u8>>> {
+    // Split the path the way the local service routes it, empty segments
+    // dropped, so a doubled slash cannot reach the route without the prompt.
+    let segments: Vec<&str> = path
+        .strip_prefix("/librepaper/local")
+        .map(|rest| rest.split('/').filter(|segment| !segment.is_empty()).collect())
+        .unwrap_or_default();
+    if *method != Method::PUT || segments.first() != Some(&"integrations") {
+        return Ok(None);
+    }
+    let name = if segments.len() == 2 { segments[1] } else { "" };
+    let tool = match name {
+        "quarto" => "Quarto",
+        "calepin" => "Calepin",
+        _ => return Err(json_error(StatusCode::BAD_REQUEST, "unknown integration")),
+    };
+    let Ok(change) = serde_json::from_slice::<IntegrationChange>(body) else {
+        return Err(json_error(StatusCode::BAD_REQUEST, "the body must be JSON"));
+    };
+    let path = change.path.filter(|path| !path.is_empty());
+    let args = change.args;
+    let title = format!("Change the {tool} command");
+    let message = match (path, args.is_empty()) {
+        (None, true) => format!("{origin} wants LibrePaper to use the default {tool} command."),
+        (path, _) => {
+            let program = path.unwrap_or_else(|| format!("{name} (found on PATH)"));
+            let command = std::iter::once(program)
+                .chain(args)
+                .collect::<Vec<_>>()
+                .join(" ");
+            format!(
+                "{origin} wants LibrePaper to run {tool} as:\n\n{command}\n\nOnly allow this if you asked for it."
+            )
+        }
+    };
+    Ok(Some((title, message)))
 }
 
 fn with_origin(mut res: Response<Vec<u8>>, origin: &str) -> Response<Vec<u8>> {
@@ -277,6 +356,15 @@ fn forbidden() -> Response<Vec<u8>> {
         .status(StatusCode::FORBIDDEN)
         .body(Vec::new())
         .expect("an empty response is valid")
+}
+
+fn json_error(status: StatusCode, error: &str) -> Response<Vec<u8>> {
+    let body = serde_json::json!({ "error": error }).to_string().into_bytes();
+    Response::builder()
+        .status(status)
+        .header(header::CONTENT_TYPE, "application/json")
+        .body(body)
+        .expect("the error response is valid")
 }
 
 fn unavailable(detail: &str) -> Response<Vec<u8>> {
