@@ -79,6 +79,20 @@ import { watchPinch } from "../lib/pinch.js";
         padding: 24px 20px;
       }
     }
+    /* Previews are light paper. Chrome and Firefox answer a frame's
+       prefers-color-scheme from the light page around it, but WebKit follows
+       the system, and LaTeXML's dark block would then paint white text on the
+       white page. Its light rules are restated for a dark system. */
+    html.librepaper-preview { color-scheme: light; }
+    @media (prefers-color-scheme: dark) {
+      html.librepaper-preview { background-color: #fff; color: #000; }
+      html.librepaper-preview .ltx_foreignobject_content { color: inherit; }
+      html.librepaper-preview [style*="--ltx-fg-color:"] { color: var(--ltx-fg-color); }
+      html.librepaper-preview [style*="--ltx-bg-color:"] { background-color: var(--ltx-bg-color); }
+      html.librepaper-preview [style*="--ltx-border-color:"] { border-color: var(--ltx-border-color); }
+      html.librepaper-preview [style*="--ltx-fill-color:"] { fill: var(--ltx-fill-color); }
+      html.librepaper-preview [style*="--ltx-stroke-color:"] { stroke: var(--ltx-stroke-color); }
+    }
   `;
   const previewStyle = document.createElement("style");
   previewStyle.dataset.librepaperPreview = "canvas";
