@@ -199,7 +199,7 @@ wipe:  ## Delete the local deployment -- database and data directory -- and star
 # it starts without sign-in. CONFIG= may select an explicitly container-ready
 # TOML file.
 DEMO_KEYS ?= tools/dev/keys.yaml
-demo:  ## Run a local Docker deployment and host companion (21 days of simulated activity)
+demo:  ## Run a local Docker deployment (21 days of simulated activity)
 	@if [ "$(CONFIG_WAS_SUPPLIED)" = yes ]; then \
 		echo "demo: using CONFIG=$(CONFIG)"; \
 		exec $(MAKE) --no-print-directory demo-run CONFIG="$(CONFIG)"; \
@@ -215,12 +215,11 @@ demo:  ## Run a local Docker deployment and host companion (21 days of simulated
 		exec $(MAKE) --no-print-directory demo-run CONFIG=tools/dev/demo/config.toml; \
 	fi
 
-demo-run: override LIBREPAPER_SERVER = http://localhost:$(PORT)
 demo-run: CONFIG := $(if $(CONFIG_WAS_SUPPLIED),$(CONFIG),tools/dev/demo/config.toml)
-demo-run: $(BIN)
+demo-run:
 	@tools/assets/mirror check
 	@LIBREPAPER_APP_ORIGIN=http://localhost:$(PORT) $(MAKE) --no-print-directory site
-	@CONFIG="$(CONFIG)" PORT="$(PORT)" SITE_PORT="$(SITE_PORT)" BIN="$(abspath $(BIN))" OPEN="$(OPEN)" tools/dev/demo/compose run
+	@CONFIG="$(CONFIG)" PORT="$(PORT)" SITE_PORT="$(SITE_PORT)" OPEN="$(OPEN)" tools/dev/demo/compose run
 
 demo-stop:  ## Stop the demo containers and retain their named volumes
 	@tools/dev/demo/compose stop

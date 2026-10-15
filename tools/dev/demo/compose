@@ -12,7 +12,6 @@ CONFIG_PATH="${CONFIG:-tools/dev/demo/config.toml}"
 BACKUP_CONFIG_PATH="${RESTICPROFILE_CONFIG:-deploy/resticprofile.toml}"
 PORT="${PORT:-8081}"
 SITE_PORT="${SITE_PORT:-8082}"
-BIN="${BIN:-$ROOT/dist/librepaper}"
 APP_ORIGIN="http://localhost:$PORT"
 
 die() { printf 'demo: %s\n' "$*" >&2; exit 1; }
@@ -56,9 +55,7 @@ case "$ACTION" in
   run)
     [[ -f "$CONFIG_PATH" ]] || die "config file does not exist: $CONFIG_PATH"
     [[ -f "$BACKUP_CONFIG_PATH" ]] || die "backup config file does not exist: $BACKUP_CONFIG_PATH"
-    [[ -x "$BIN" ]] || die "host companion binary is not executable: $BIN"
     compose_started=0
-    companion_pid=''
     logs_pid=''
     cleanup() {
       local result=$?
@@ -66,10 +63,6 @@ case "$ACTION" in
       if [[ -n "$logs_pid" ]]; then
         kill "$logs_pid" 2>/dev/null || true
         wait "$logs_pid" 2>/dev/null || true
-      fi
-      if [[ -n "$companion_pid" ]]; then
-        kill "$companion_pid" 2>/dev/null || true
-        wait "$companion_pid" 2>/dev/null || true
       fi
       if (( compose_started )); then
         if (( result != 0 )); then
@@ -87,20 +80,13 @@ case "$ACTION" in
     compose_started=1
     compose up --build --detach --wait --wait-timeout 180
 
-    if LIBREPAPER_SERVER="$APP_ORIGIN" "$BIN" status >/dev/null 2>&1; then
-      echo "local $(LIBREPAPER_SERVER="$APP_ORIGIN" "$BIN" status | sed -n 2p)  (already running; left alone)"
-    else
-      LIBREPAPER_SERVER="$APP_ORIGIN" "$BIN" start --foreground >/dev/null 2>&1 &
-      companion_pid=$!
-    fi
-
     if [[ "${OPEN:-1}" = 1 ]] && command -v firefox >/dev/null 2>&1; then
       (sleep 1; firefox "http://localhost:$SITE_PORT" >/dev/null 2>&1 &) || true
     fi
     printf 'app   %s\n' "$APP_ORIGIN"
     printf 'site  http://localhost:%s\n' "$SITE_PORT"
     printf 'admin graphs: http://admin.localhost:%s/ (password: librepaper-demo-only-password)\n' "$PORT"
-    printf 'Press Ctrl-C to stop the demo containers and any companion started here.\n'
+    printf 'Press Ctrl-C to stop the demo containers.\n'
     compose logs --follow &
     logs_pid=$!
     wait "$logs_pid"
