@@ -578,35 +578,20 @@ impl Previews {
         }
     }
 
-    /// Stops every preview an origin owns, whatever its project.
-    pub async fn stop_origin(&mut self, origin: &str) {
-        let ids: Vec<_> = self
-            .0
-            .iter()
-            .filter(|(_, session)| session.origin == origin)
-            .map(|(id, _)| id.clone())
-            .collect();
-        for id in ids {
-            self.stop(&id).await;
-        }
-    }
-
-    pub async fn reap(&mut self, paired_origins: &[String], bindings: &BindingStore) {
+    pub async fn reap(&mut self, bindings: &BindingStore) {
         // Deliberately does not reap a session merely because its process
         // has exited: a render failure now ends that process quickly (there
         // is no server left to keep it alive), and the reader still needs
         // `GET previews/{id}` and its `page`/`log_tail` to see why. Such a
-        // session is cleared by an explicit `DELETE`, by its pairing or
+        // session is cleared by an explicit `DELETE`, by its
         // binding going away, or by the TTL below.
         let expired: Vec<_> = self
             .0
             .iter()
             .filter_map(|(id, p)| {
-                let pairing_expired = !paired_origins.contains(&p.origin);
-                (pairing_expired
-                    || bindings
-                        .get_scoped(&p.binding, &p.origin, &p.project)
-                        .is_none()
+                (bindings
+                    .get_scoped(&p.binding, &p.origin, &p.project)
+                    .is_none()
                     || p.started.elapsed() > Duration::from_secs(3600))
                 .then(|| id.clone())
             })

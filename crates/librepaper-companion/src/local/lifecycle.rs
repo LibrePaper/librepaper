@@ -1,21 +1,20 @@
 //! Launching and controlling the companion never grants a website permission
-//! to execute code. Deep links open the loopback consent page, carrying only
-//! a public challenge; the browser retains its secret verifier.
+//! to execute code. A `librepaper://open` link only asks the desktop app to
+//! show a page; the app, not the link, decides what that page may do.
 
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::time::Duration;
 
-use super::pairing::{self, PairingStore, ServiceState};
 use super::protocol::{BASE_PATH, DEFAULT_PORT};
+use super::store::{self, ServiceFile, ServiceState};
 
 pub fn control_path(state_home: &Path) -> PathBuf {
     state_home.join("librepaper/local/stop.request")
 }
 
 pub fn request_stop(state_home: &Path) -> Result<(), String> {
-    let store = PairingStore::new(state_home, None);
-    let Some(state) = store.read_service() else {
+    let Some(state) = ServiceFile::new(state_home).read() else {
         return Ok(());
     };
     std::fs::write(control_path(state_home), state.instance)
@@ -27,8 +26,7 @@ pub fn clear_stop_request(state_home: &Path) {
 }
 
 pub fn stop_requested(state_home: &Path) -> bool {
-    let store = PairingStore::new(state_home, None);
-    store.read_service().is_some_and(|state| {
+    ServiceFile::new(state_home).read().is_some_and(|state| {
         std::fs::read_to_string(control_path(state_home)).is_ok_and(|value| value == state.instance)
     })
 }
@@ -54,12 +52,12 @@ async fn reachable(state: &ServiceState) -> bool {
 }
 
 pub async fn running(state_home: &Path) -> Option<ServiceState> {
-    let state = PairingStore::new(state_home, None).read_service()?;
+    let state = ServiceFile::new(state_home).read()?;
     reachable(&state).await.then_some(state)
 }
 
 pub(crate) fn service_state(state_home: &Path) -> Option<ServiceState> {
-    PairingStore::new(state_home, None).read_service()
+    ServiceFile::new(state_home).read()
 }
 
 pub(crate) fn running_state(state_home: &Path) -> bool {
@@ -126,7 +124,7 @@ pub async fn spawn_background(port: u16) -> Result<ServiceState, String> {
     let mut child = command
         .spawn()
         .map_err(|error| format!("could not launch companion: {error}"))?;
-    let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(15);
     loop {
         if let Some(state) = running(&state_home).await {
             if let Err(error) = ensure_tray(&state_home) {
@@ -198,14 +196,15 @@ pub fn ensure_tray(state_home: &Path) -> Result<(), String> {
     Ok(())
 }
 
-/// Open the trusted LibrePaper app at Settings with this companion attached.
-pub fn open_settings(state_home: &Path, port: u16, instance: &str) -> Result<(), String> {
-    let url = settings_url(state_home, port, instance)?;
-    open_browser(&url)
-}
-
-pub fn settings_url(state_home: &Path, port: u16, instance: &str) -> Result<String, String> {
-    super::service::control_settings_url_for_instance(state_home, port, instance)
+/// Open Settings: in the desktop app when one is installed, otherwise in the
+/// browser at the server this credential was saved for.
+pub fn open_settings(state_home: &Path, instance: &str) -> Result<(), String> {
+    if let Some(app) = find_desktop_app() {
+        return launch_detached(&app, &["--settings"]);
+    }
+    open_browser(&super::service::control_server_for_instance(
+        state_home, instance,
+    )?)
 }
 
 pub async fn stop(state_home: &Path) -> Result<(), String> {
@@ -221,8 +220,8 @@ pub async fn stop(state_home: &Path) -> Result<(), String> {
         tokio::time::sleep(Duration::from_millis(100)).await;
     }
     // The service removes its state after cleaning up preview processes.
-    while PairingStore::new(state_home, None)
-        .read_service()
+    while ServiceFile::new(state_home)
+        .read()
         .is_some_and(|s| s.instance == state.instance)
     {
         if tokio::time::Instant::now() >= deadline {
@@ -233,188 +232,105 @@ pub async fn stop(state_home: &Path) -> Result<(), String> {
     Ok(())
 }
 
-/// What a `librepaper://` link asks the browser to do once the companion is
-/// up: nothing at all, or open the system browser at an address.
-#[derive(Debug, PartialEq, Eq)]
-pub enum Target {
-    Nothing,
-    Open(String),
-    Settings,
-    Pair(PairLink),
-}
-
-/// The fields of a validated `librepaper://connect` link.
-#[derive(Debug, PartialEq, Eq)]
-pub struct PairLink {
-    pub origin: String,
-    pub request: String,
-    pub challenge: String,
-    pub return_to: String,
-}
-
-/// Pure validation, also used before launching a stopped companion.
-pub fn connection_target(raw: &str, port: u16) -> Result<Target, String> {
-    let link = url::Url::parse(raw).map_err(|_| "Invalid companion link.")?;
+/// The page a `librepaper://open?url=<URL>` link asks the desktop app to
+/// show. This is the only link form: anything else, or a URL that is not
+/// https (or http on this computer), is refused. Pure, so it can run before
+/// anything is launched.
+pub fn open_target(raw: &str) -> Result<String, String> {
+    let invalid = || "Invalid LibrePaper link.".to_string();
+    let link = url::Url::parse(raw).map_err(|_| invalid())?;
     if link.scheme() != "librepaper"
+        || link.host_str() != Some("open")
         || !link.username().is_empty()
         || link.password().is_some()
         || link.port().is_some()
         || link.fragment().is_some()
         || !matches!(link.path(), "" | "/")
     {
-        return Err("Invalid companion link.".into());
+        return Err(invalid());
     }
-    match link.host_str() {
-        Some("launch") => launch_target(&link, port),
-        Some("connect") => connect_target(&link),
-        Some("settings") if link.query().is_none() => Ok(Target::Settings),
-        _ => Err("Unknown companion action.".into()),
+    let mut query = link.query_pairs();
+    let (Some((key, value)), None) = (query.next(), query.next()) else {
+        return Err(invalid());
+    };
+    if key != "url" {
+        return Err(invalid());
     }
-}
-
-/// `librepaper://connect?origin&request&challenge&return`: the
-/// fields `pair` hands the companion. Validation is the shared rule
-/// `crate::local::pairing` and the consent route both call.
-fn connect_target(link: &url::Url) -> Result<Target, String> {
-    let mut fields = std::collections::HashMap::new();
-    for (key, value) in link.query_pairs() {
-        if !matches!(key.as_ref(), "origin" | "request" | "challenge" | "return")
-            || fields
-                .insert(key.into_owned(), value.into_owned())
-                .is_some()
-        {
-            return Err("Unexpected or repeated companion link parameter.".into());
-        }
-    }
-    let origin = fields.get("origin").ok_or("The connection needs a site.")?;
-    if pairing::valid_origin(origin).is_none() {
-        return Err("The connection site must be an HTTP(S) origin.".into());
-    }
-    let request = fields
-        .get("request")
-        .ok_or("The connection needs a request identifier.")?;
-    let challenge = fields
-        .get("challenge")
-        .ok_or("The connection needs a challenge.")?;
-    if pairing::valid_request_id(request).is_none() || pairing::valid_challenge(challenge).is_none()
+    let page = url::Url::parse(&value).map_err(|_| invalid())?;
+    let secure =
+        page.scheme() == "https" || (page.scheme() == "http" && store::is_loopback(&page));
+    if !secure
+        || page.host_str().is_none()
+        || !page.username().is_empty()
+        || page.password().is_some()
     {
-        return Err("Invalid connection challenge.".into());
+        return Err(invalid());
     }
-    let return_to = fields
-        .get("return")
-        .ok_or("The connection needs a return address.")?;
-    if pairing::valid_return(return_to, origin).is_none() {
-        return Err("Invalid connection return address.".into());
-    }
-
-    Ok(Target::Pair(PairLink {
-        origin: origin.clone(),
-        request: request.clone(),
-        challenge: challenge.clone(),
-        return_to: return_to.clone(),
-    }))
+    Ok(page.to_string())
 }
 
-/// Hands a `librepaper://connect` link to the running companion as the page
-/// itself would, so the native dialog appears with no browser window, and
-/// waits for the answer. Only an allowed pairing on a port the page cannot
-/// guess sends the browser anywhere: back to `return` with the address in
-/// the fragment.
-pub async fn pair(link: &PairLink, port: u16) -> Result<(), String> {
-    let base = format!("http://127.0.0.1:{port}{BASE_PATH}");
-    let client = reqwest::Client::builder()
-        .no_proxy()
-        .timeout(Duration::from_secs(5))
-        .build()
-        .map_err(|error| error.to_string())?;
-    let response = client
-        .post(format!("{base}/pair/request"))
-        .header("origin", &link.origin)
-        .json(&serde_json::json!({
-            "origin": link.origin,
-            "request": link.request,
-            "challenge": link.challenge,
-            "return": link.return_to,
-        }))
-        .send()
-        .await
-        .map_err(|error| format!("The companion did not answer: {error}"))?;
-    if response.status() != reqwest::StatusCode::ACCEPTED {
-        return Err(format!(
-            "The companion refused the connection ({}).",
-            response.status()
-        ));
+/// Where the desktop app lives: beside the running `librepaper`, then on
+/// `PATH`, then the macOS application bundle.
+pub fn find_desktop_app() -> Option<PathBuf> {
+    let beside = std::env::current_exe()
+        .ok()
+        .and_then(|executable| desktop_app_beside(&executable));
+    beside
+        .or_else(|| which::which(DESKTOP_APP).ok())
+        .or_else(|| {
+            let bundle = PathBuf::from(MACOS_DESKTOP_APP);
+            (cfg!(target_os = "macos") && bundle.is_file()).then_some(bundle)
+        })
+}
+
+const DESKTOP_APP: &str = if cfg!(windows) {
+    "librepaper-desktop.exe"
+} else {
+    "librepaper-desktop"
+};
+
+const MACOS_DESKTOP_APP: &str = "/Applications/LibrePaper.app/Contents/MacOS/librepaper-desktop";
+
+fn desktop_app_beside(executable: &Path) -> Option<PathBuf> {
+    let candidate = executable.parent()?.join(DESKTOP_APP);
+    candidate.is_file().then_some(candidate)
+}
+
+/// Shows `page` in the desktop app, starting it if it is not running.
+pub fn open_in_desktop_app(page: &str) -> Result<(), String> {
+    let app = find_desktop_app().ok_or("The LibrePaper desktop app is not installed.")?;
+    launch_detached(&app, &["--open", page])
+}
+
+/// Starts `program` with no terminal and no ties to this process, so it
+/// outlives a short-lived command and a tray click alike.
+fn launch_detached(program: &Path, args: &[&str]) -> Result<(), String> {
+    let mut command = Command::new(program);
+    command
+        .args(args)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null());
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::CommandExt;
+        command.process_group(0);
     }
-    let deadline = tokio::time::Instant::now() + Duration::from_secs(300);
-    while tokio::time::Instant::now() < deadline {
-        tokio::time::sleep(Duration::from_millis(500)).await;
-        let Ok(response) = client
-            .get(format!("{base}/pair/status"))
-            .query(&[("request", &link.request)])
-            .send()
-            .await
-        else {
-            continue;
-        };
-        match response.status() {
-            reqwest::StatusCode::ACCEPTED => continue,
-            reqwest::StatusCode::OK => {
-                if port != DEFAULT_PORT {
-                    open_browser(&pairing::return_fragment(
-                        &link.return_to,
-                        port,
-                        &link.request,
-                    ))?;
-                }
-                return Ok(());
-            }
-            _ => return Ok(()), // Refused or expired: the page's own claim poll says so.
-        }
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        command.creation_flags(0x08000000 | 0x00000200); // no console window, new process group
     }
+    let mut child = command
+        .spawn()
+        .map_err(|error| format!("could not launch the LibrePaper desktop app: {error}"))?;
+    std::thread::Builder::new()
+        .name("librepaper-desktop-wait".into())
+        .spawn(move || {
+            let _ = child.wait();
+        })
+        .map_err(|error| format!("could not supervise the LibrePaper desktop app: {error}"))?;
     Ok(())
-}
-
-/// `librepaper://launch`, with or without `?origin&request&return`. Either
-/// way this only ever runs after the companion is confirmed up; with the
-/// three fields present, and only when the companion's port is not the
-/// default one, it hands the browser back the address it could not
-/// otherwise learn.
-fn launch_target(link: &url::Url, port: u16) -> Result<Target, String> {
-    if link.query().is_none() {
-        return Ok(Target::Nothing);
-    }
-    let mut fields = std::collections::HashMap::new();
-    for (key, value) in link.query_pairs() {
-        if !matches!(key.as_ref(), "origin" | "request" | "return")
-            || fields
-                .insert(key.into_owned(), value.into_owned())
-                .is_some()
-        {
-            return Err("Unexpected or repeated companion link parameter.".into());
-        }
-    }
-    let origin = fields.get("origin").ok_or("The connection needs a site.")?;
-    if pairing::valid_origin(origin).is_none() {
-        return Err("The connection site must be an HTTP(S) origin.".into());
-    }
-    let request = fields
-        .get("request")
-        .ok_or("The connection needs a request identifier.")?;
-    if pairing::valid_request_id(request).is_none() {
-        return Err("Invalid connection request identifier.".into());
-    }
-    let return_to = fields
-        .get("return")
-        .ok_or("The connection needs a return address.")?;
-    if pairing::valid_return(return_to, origin).is_none() {
-        return Err("Invalid connection return address.".into());
-    }
-    if port == DEFAULT_PORT {
-        return Ok(Target::Nothing);
-    }
-    Ok(Target::Open(pairing::return_fragment(
-        return_to, port, request,
-    )))
 }
 
 pub fn open_browser(target: &str) -> Result<(), String> {
@@ -773,35 +689,6 @@ mod tests {
         assert_eq!(arguments, vec!["start", "--foreground", "--port", "8763"]);
     }
 
-    #[test]
-    fn settings_url_uses_the_persisted_trusted_server_and_carries_no_credential() {
-        let state = tempfile::tempdir().unwrap();
-        let path = state.path().join("librepaper/local/control-token.json");
-        librepaper_base::private_files::publish(
-            &path,
-            &serde_json::json!({
-                "instance": "live",
-                "token": "a".repeat(64),
-                "server": "https://app.example/"
-            })
-            .to_string()
-            .into_bytes(),
-            "test control token",
-        )
-        .unwrap();
-        let target = url::Url::parse(&settings_url(state.path(), 8763, "live").unwrap()).unwrap();
-        assert_eq!(target.origin().ascii_serialization(), "https://app.example");
-        let fields: std::collections::HashMap<_, _> =
-            url::form_urlencoded::parse(target.fragment().unwrap().as_bytes())
-                .into_owned()
-                .collect();
-        assert_eq!(fields["settings"], "local");
-        assert_eq!(fields["companion_address"], "http://127.0.0.1:8763/");
-        assert_eq!(fields.len(), 2);
-        assert!(!target.as_str().contains(&"a".repeat(64)));
-        assert!(settings_url(state.path(), 8763, "other").is_err());
-    }
-
     #[cfg(target_os = "linux")]
     #[test]
     fn desktop_launcher_exec_field_quotes_paths_without_expanding_shell_fields() {
@@ -826,123 +713,54 @@ mod tests {
         assert!(!plist.contains("<key>KeepAlive</key>"));
     }
     #[test]
-    fn connect_links_carry_only_validated_pair_fields() {
-        let query = format!(
-            "origin=https%3A%2F%2Fpapers.example&request={}&challenge={}&return=https%3A%2F%2Fpapers.example%2Fdoc",
-            "r".repeat(32),
-            "a".repeat(64)
+    fn open_links_carry_only_an_https_page() {
+        assert_eq!(
+            open_target("librepaper://open?url=https%3A%2F%2Fapp.example%2Fdoc%2Fpaper").unwrap(),
+            "https://app.example/doc/paper"
         );
-        let target =
-            connection_target(&format!("librepaper://connect?{query}"), 18763).expect("valid link");
-        let Target::Pair(link) = target else {
-            panic!("a connect link always asks the companion to pair");
-        };
-        assert_eq!(link.origin, "https://papers.example");
-        assert_eq!(link.return_to, "https://papers.example/doc");
+        assert_eq!(
+            open_target("librepaper://open?url=http%3A%2F%2F127.0.0.1%3A5173%2F").unwrap(),
+            "http://127.0.0.1:5173/"
+        );
         for invalid in [
-            "https://evil.example".into(),
-            "librepaper://connect".into(),
-            format!("librepaper://user@connect?{query}"),
-            format!("librepaper://connect/path?{query}"),
-            format!("librepaper://connect?{query}&origin=https://evil.example"),
-            format!("librepaper://connect?{query}#fragment"),
-            query.replace("https%3A%2F%2Fpapers.example", "file%3A%2F%2F%2Ftmp"),
-            // return is now required, and must share the origin's site.
-            format!(
-                "librepaper://connect?{}",
-                query.replace("&return=https%3A%2F%2Fpapers.example%2Fdoc", "")
-            ),
-            format!(
-                "librepaper://connect?{}",
-                query.replace(
-                    "return=https%3A%2F%2Fpapers.example%2Fdoc",
-                    "return=https%3A%2F%2Fevil.example%2Fdoc",
-                )
-            ),
+            "https://app.example/",
+            "librepaper://open",
+            "librepaper://open?",
+            "librepaper://open?url=",
+            "librepaper://open?url=http%3A%2F%2Fapp.example%2F",
+            "librepaper://open?url=file%3A%2F%2F%2Ftmp%2Fx",
+            "librepaper://open?url=javascript%3Aalert(1)",
+            "librepaper://open?url=https%3A%2F%2Fuser%3Apass%40app.example%2F",
+            "librepaper://open?url=https%3A%2F%2Fapp.example%2F&url=https%3A%2F%2Fevil.example%2F",
+            "librepaper://open?url=https%3A%2F%2Fapp.example%2F&extra=1",
+            "librepaper://open?page=https%3A%2F%2Fapp.example%2F",
+            "librepaper://open/extra?url=https%3A%2F%2Fapp.example%2F",
+            "librepaper://open?url=https%3A%2F%2Fapp.example%2F#fragment",
+            "librepaper://user@open?url=https%3A%2F%2Fapp.example%2F",
+            "librepaper://settings",
+            "librepaper://launch",
+            "librepaper://connect?origin=https%3A%2F%2Fapp.example",
         ] {
-            assert!(
-                connection_target(&invalid, 8763).is_err(),
-                "accepted {invalid}"
-            );
+            assert!(open_target(invalid).is_err(), "accepted {invalid}");
         }
     }
 
     #[test]
-    fn launch_links_only_return_an_address_off_the_default_port() {
-        assert_eq!(
-            connection_target("librepaper://launch", 18763).expect("bare launch"),
-            Target::Nothing
-        );
-
-        let query = format!(
-            "origin=https%3A%2F%2Fpapers.example&request={}&return=https%3A%2F%2Fpapers.example%2Fdoc",
-            "r".repeat(32)
-        );
-        let link = format!("librepaper://launch?{query}");
-
-        // On the default port there is nothing for the browser to learn: it
-        // already knows the address.
-        assert_eq!(
-            connection_target(&link, DEFAULT_PORT).expect("launch on default port"),
-            Target::Nothing
-        );
-
-        let Target::Open(target) =
-            connection_target(&link, 18763).expect("launch on a non-default port")
-        else {
-            panic!("a non-default port must hand back an address");
-        };
-        assert!(target.starts_with("https://papers.example/doc#librepaper-local="));
-        assert!(target.contains("librepaper-request="));
-
-        // A launch link with an unexpected extra field, only some of the
-        // three, or a mismatched return origin, is rejected rather than
-        // silently ignored.
-        for invalid in [
-            format!("librepaper://launch?{query}&project=paper"),
-            format!(
-                "librepaper://launch?origin=https%3A%2F%2Fpapers.example&request={}",
-                "r".repeat(32)
-            ),
-            format!(
-                "librepaper://launch?{}",
-                query.replace(
-                    "return=https%3A%2F%2Fpapers.example%2Fdoc",
-                    "return=https%3A%2F%2Fevil.example%2Fdoc",
-                )
-            ),
-        ] {
-            assert!(
-                connection_target(&invalid, 18763).is_err(),
-                "accepted {invalid}"
-            );
-        }
+    fn the_desktop_app_is_found_beside_the_running_binary() {
+        let directory = tempfile::tempdir().unwrap();
+        let executable = directory.path().join("librepaper");
+        assert_eq!(desktop_app_beside(&executable), None);
+        let app = directory.path().join(DESKTOP_APP);
+        std::fs::write(&app, b"#!/bin/sh\n").unwrap();
+        assert_eq!(desktop_app_beside(&executable), Some(app));
     }
 
-    #[test]
-    fn settings_links_are_parameterless_and_open_the_settings_action() {
-        assert_eq!(
-            connection_target("librepaper://settings", 8763).unwrap(),
-            Target::Settings
-        );
-        for invalid in [
-            "librepaper://settings?origin=https://site.example",
-            "librepaper://settings/extra",
-            "librepaper://settings#anything",
-            "librepaper://settings?",
-        ] {
-            assert!(
-                connection_target(invalid, 8763).is_err(),
-                "accepted {invalid}"
-            );
-        }
-    }
     #[test]
     fn stop_request_is_tied_to_the_running_instance() {
         let temporary = tempfile::tempdir().expect("state");
-        let store = PairingStore::new(temporary.path(), None);
+        let store = ServiceFile::new(temporary.path());
         store
-            .write_service(&ServiceState {
+            .write(&ServiceState {
                 instance: "first".into(),
                 ..Default::default()
             })
@@ -950,7 +768,7 @@ mod tests {
         request_stop(temporary.path()).expect("stop");
         assert!(stop_requested(temporary.path()));
         store
-            .write_service(&ServiceState {
+            .write(&ServiceState {
                 instance: "second".into(),
                 ..Default::default()
             })

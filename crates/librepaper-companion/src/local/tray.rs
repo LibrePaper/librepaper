@@ -100,9 +100,7 @@ fn handle_menu(state_home: &Path, ids: &MenuItems) -> bool {
     while let Ok(event) = MenuEvent::receiver().try_recv() {
         if event.id == ids.open.id() {
             if let Some(state) = super::lifecycle::service_state(state_home) {
-                if let Err(error) =
-                    super::lifecycle::open_settings(state_home, state.port, &state.instance)
-                {
+                if let Err(error) = super::lifecycle::open_settings(state_home, &state.instance) {
                     eprintln!("could not open LibrePaper Settings: {error}");
                 }
             }

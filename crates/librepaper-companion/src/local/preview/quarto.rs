@@ -146,9 +146,10 @@ pub(crate) fn plan(
     // serves one artifact. PDF already has that property.
     require_embedded_html(&mut command, kind);
     command.args(crate::local::integrations::extra_args(Integration::Quarto));
-    // Pairing is the trust boundary for local execution. Keep the inherited
-    // environment so Quarto sees the same runtimes and packages as it does
-    // when the user invokes it from a terminal.
+    // The per-document execution grant is the trust boundary for local
+    // execution. Keep the inherited environment so Quarto sees the same
+    // runtimes and packages as it does when the user invokes it from a
+    // terminal.
     let cache = binding.root.join(".quarto").join("preview-cache");
     std::fs::create_dir_all(&cache).map_err(|error| error.to_string())?;
     command.env("DENO_DIR", cache.join("deno"));

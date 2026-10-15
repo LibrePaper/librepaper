@@ -52,11 +52,8 @@ pub(super) async fn handle_workspace_put(
         Ok(upload) => upload,
         Err(response) => return response,
     };
-    // Upload bodies are bounded but may be slow. Do not hold the admission
-    // gate while reading them; recheck now, then under the gate before syncing.
-    if let Err(response) = authenticate(inner, headers, Some(&origin)) {
-        return response;
-    }
+    // Upload bodies are bounded but may be slow, so the admission gate is
+    // not held while reading them; it is taken before syncing.
     let uploads = upload.files;
     let manifest_text = upload.metadata;
     let manifest: Vec<ManifestEntry> = match serde_json::from_str(&manifest_text) {
@@ -91,10 +88,7 @@ pub(super) async fn handle_workspace_put(
         return write_json(400, &json!({"error": error}));
     }
 
-    let _admission = inner.pairing.admission_gate().lock().await;
-    if let Err(response) = authenticate(inner, headers, Some(&origin)) {
-        return response;
-    }
+    let _admission = inner.admission.lock().await;
     let Some(binding) = inner
         .quarto_bindings
         .get_scoped(&binding_id, &origin, &project)
@@ -150,11 +144,7 @@ pub(super) async fn handle_jobs_post(
         Ok(upload) => upload,
         Err(response) => return response,
     };
-    // Never hold the admission gate across an upload. A site may have been
-    // revoked while the request body was still arriving.
-    if let Err(response) = authenticate(inner, headers, Some(&origin)) {
-        return response;
-    }
+    // Never hold the admission gate across an upload.
     let mut uploads = upload.files;
     let job_text = upload.metadata;
     let raw_job: Value = match serde_json::from_str(&job_text) {
@@ -287,13 +277,13 @@ pub(super) async fn handle_jobs_post(
         }
     };
     // Bound local reads must follow authentication and inventory limits.
-    let Some(project) = pairing::valid_project(&job.project) else {
+    let Some(project) = store::valid_project(&job.project) else {
         return write_json(400, &json!({"error": "job needs a valid project"}));
     };
-    if pairing::normalize_origin(&job.origin) != pairing::normalize_origin(&origin) {
+    if store::normalize_origin(&job.origin) != store::normalize_origin(&origin) {
         return write_json(
             403,
-            &json!({"error": "job scope does not match the connected token"}),
+            &json!({"error": "job scope does not match the request origin"}),
         );
     }
     if let Err(response) = validate_manifest_shape(&job.manifest) {
@@ -393,10 +383,10 @@ pub(super) async fn handle_jobs_post(
         }
         debug_assert_eq!(job.kind == "quarto", builder == "quarto");
     }
-    if pairing::normalize_origin(&job.origin) != pairing::normalize_origin(&origin) {
+    if store::normalize_origin(&job.origin) != store::normalize_origin(&origin) {
         return write_json(
             403,
-            &json!({"error": "origin does not match the connected token"}),
+            &json!({"error": "origin does not match the request origin"}),
         );
     }
     if let Err(response) = validate_manifest_shape(&job.manifest) {
@@ -477,11 +467,7 @@ pub(super) async fn handle_jobs_post(
     };
     let generation = job.generation;
 
-    let _admission = inner.pairing.admission_gate().lock().await;
-    if let Err(response) = authenticate(inner, headers, Some(&origin)) {
-        let _ = std::fs::remove_dir_all(&root);
-        return response;
-    }
+    let _admission = inner.admission.lock().await;
     // Preview admission uses admission -> previews -> jobs. Recheck with the
     // same order here: the early check above intentionally released previews
     // before staging uploads, so a preview may have started in the meantime.

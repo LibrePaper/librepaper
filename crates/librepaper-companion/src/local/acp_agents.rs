@@ -32,7 +32,7 @@ use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
-use super::pairing::{read_json, write_private_json};
+use super::store::{read_json, write_private_json};
 
 #[derive(Clone, Copy, Debug)]
 struct Kind {

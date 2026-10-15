@@ -1,7 +1,7 @@
 //! Process and state paths shared by non-CLI entry points.
 //!
 //! Every platform uses the XDG layout (`~/.local/state`, `~/.config`,
-//! `~/.cache`), not the native folders, so existing tokens, pairings,
+//! `~/.cache`), not the native folders, so existing tokens,
 //! bindings and backup schedules stay where earlier versions put them.
 //! etcetera still resolves the home directory natively, which is what
 //! makes this work on Windows.
@@ -34,7 +34,7 @@ pub fn state_home() -> Result<PathBuf, String> {
 }
 
 /// The state directory to read and write under, following XDG: where the
-/// token cache and the local service's pairings live. A machine with no home
+/// token cache and the local service's state live. A machine with no home
 /// directory cannot go on, so this exits with the reason.
 pub fn state_home_or_die() -> PathBuf {
     state_home().unwrap_or_else(|error| librepaper_base::util::die(&error))
