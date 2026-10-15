@@ -9,6 +9,9 @@ const DEFAULT_SERVER: &str = "https://app.librepaper.org/";
 #[derive(Serialize, Deserialize)]
 pub struct Servers {
     servers: Vec<String>,
+    // An environment override applies to this run only, so it is never saved.
+    #[serde(skip)]
+    from_env: bool,
 }
 
 impl Servers {
@@ -16,6 +19,7 @@ impl Servers {
         if let Ok(server) = std::env::var("LIBREPAPER_SERVER") {
             return Ok(Self {
                 servers: vec![server],
+                from_env: true,
             });
         }
         let path = file(app)?;
@@ -23,12 +27,16 @@ impl Servers {
             Ok(bytes) => serde_json::from_slice(&bytes).map_err(|err| format!("{}: {err}", path.display())),
             Err(err) if err.kind() == io::ErrorKind::NotFound => Ok(Self {
                 servers: vec![DEFAULT_SERVER.to_string()],
+                from_env: false,
             }),
             Err(err) => Err(format!("{}: {err}", path.display())),
         }
     }
 
     pub fn save(&self, app: &AppHandle) -> Result<(), String> {
+        if self.from_env {
+            return Ok(());
+        }
         let path = file(app)?;
         if let Some(dir) = path.parent() {
             fs::create_dir_all(dir).map_err(|err| err.to_string())?;
