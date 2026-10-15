@@ -62,17 +62,17 @@
     savedFeedback = false;
     const requestId = loadId;
     try {
-      await desktopClient.manage("/settings", { method: "PUT", body: { integrations: { [name]: { path, args } } } });
+      const saved = await desktopClient.setIntegration(name, { path, args });
       if (requestId === loadId) {
-        show({ path, args });
+        show({ path: saved?.path ?? path, args: saved?.args ?? args });
         settingsLoaded = true;
         settingsError = "";
         savedFeedback = true;
       }
     } catch (error) {
       if (requestId === loadId) {
-        settingsError = error?.status === 403
-          ? "You declined the change in the dialog on your computer."
+        settingsError = error?.name === "Refused" && error?.status === 403
+          ? "The command was not changed."
           : error?.message || "Could not change the command.";
       }
     } finally {
