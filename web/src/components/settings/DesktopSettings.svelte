@@ -1,9 +1,19 @@
 <script>
   import SettingRow from "./SettingRow.svelte";
   import DesktopOnly from "../DesktopOnly.svelte";
+  import { capabilities } from "../../lib/desktop/client.js";
 
   let { view } = $props();
   const active = (status) => !["done", "complete", "completed", "succeeded", "failed", "error", "cancelled", "canceled", "stopped", "interrupted", "expired", "denied"].includes(String(status || "").toLowerCase());
+
+  let report = $state("");
+  async function checkSetup() {
+    try {
+      report = JSON.stringify(await capabilities({ rescan: true }), null, 2);
+    } catch (error) {
+      report = error?.message || "The setup check could not reach the desktop app.";
+    }
+  }
 </script>
 
 {#if view.error}
@@ -34,6 +44,14 @@
     <div class="settings-section-title"><h4 class="settings-subhead" id="desktop-version-heading">Desktop app</h4><span class="setting-description">Version {view.state.version}</span></div>
   </section>
   {/if}
+
+  <section id="desktop-report" class="settings-subsection" aria-labelledby="desktop-report-heading">
+    <div class="settings-section-title"><h4 class="settings-subhead" id="desktop-report-heading">Check local setup</h4></div>
+    <SettingRow title="Tool report" description="Rescan the tools the desktop app found on this computer and view the report.">
+      <button type="button" class="btn btn-sm lp-control-tonal-brand" onclick={() => void checkSetup()}>Check</button>
+    </SettingRow>
+    {#if report}<pre class="setting-log" role="status">{report}</pre>{/if}
+  </section>
 
   <section id="desktop-activity" class="settings-subsection" aria-labelledby="desktop-activity-heading">
     <div class="settings-section-title"><h4 class="settings-subhead" id="desktop-activity-heading">Activity</h4></div>

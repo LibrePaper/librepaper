@@ -978,6 +978,13 @@ export async function runBackups(accountId) {
   return response.json();
 }
 
+/** Change the command that runs Quarto or Calepin. The desktop app asks the
+ * person to confirm first and refuses with 403 when they cancel. */
+export async function setIntegration(name, { path, args }) {
+  const response = await send("PUT", `integrations/${encodeURIComponent(name)}`, { jsonBody: { path, args } });
+  return response.json();
+}
+
 /* --------------------------------------------------- Connecting an agent */
 
 /** One call to the desktop app's assistant surface, JSON in and

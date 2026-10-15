@@ -51,6 +51,7 @@ export const CATEGORIES = [
     entries: [
       { id: "desktop-folders", says: "Project folders", terms: "bindings folder grant revoke directory project access" },
       { id: "desktop-version", says: "Version", terms: "desktop app version install update" },
+      { id: "desktop-report", says: "Check local setup", terms: "doctor troubleshoot diagnostics report rescan windows setup tools" },
       { id: "desktop-activity", says: "Activity", terms: "jobs previews sessions cancel stop output logs running" },
     ],
   },

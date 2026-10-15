@@ -45,7 +45,7 @@ tools/dev/windows-vm bootstrap local   # run install-local.ps1 in the VM
 
 ## Desktop app console flicker regression
 
-- Open the desktop app. It starts the local service in the background. Open Settings > Companion. Confirm it stays connected and no visible `cmd`, registry or `taskkill` windows appear during 45 to 60 seconds. This covers multiple 5-second state polls and 15-second capabilities polls.
+- Open the desktop app. It starts the local service in the background. Open Settings > Desktop app. Confirm the page keeps loading and no visible `cmd`, registry or `taskkill` windows appear during 45 to 60 seconds. This covers multiple 5-second state polls and 15-second capabilities polls.
 - Repeat once with no discoverable optional tools, then with Quarto, R, Python and Calepin available. Use the explicit rescan action and confirm the connection remains stable without visible console windows in both cases.
 
 Code signing is outside the scope of this checklist.
