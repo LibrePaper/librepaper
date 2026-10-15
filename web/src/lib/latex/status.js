@@ -14,7 +14,7 @@ const listeners = new Set();
 /// `configure` has run: an idle phase, no backend, the session route the
 /// spec calls "browser" until a native fallback earns it otherwise, and a
 /// `local` shape that mirrors `LocalStatus` (section 2.6) even though
-/// the companion client has not been asked anything yet.
+/// the desktop client has not been asked anything yet.
 let state = {
   phase: "idle",
   message: "",

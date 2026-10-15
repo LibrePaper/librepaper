@@ -1,9 +1,9 @@
 // The account-wide backup status shared by the Reader pill and Settings.
-// It is polled only while the desktop app is ready.
+// It is polled only inside the desktop app.
 import * as client from "./client.js";
 
 export function createBackupStatus(bridge = client, { runningPollMs = 1000 } = {}) {
-  let current = $state.raw({ accountId: "", paired: false, loading: false, data: null, error: "" });
+  let current = $state.raw({ accountId: "", active: false, loading: false, data: null, error: "" });
   let scope = 0;
   let timer = null;
   let runningTimer = null;
@@ -20,7 +20,7 @@ export function createBackupStatus(bridge = client, { runningPollMs = 1000 } = {
   async function refresh() {
     const accountId = current.accountId;
     const requestScope = scope;
-    if (!accountId || !current.paired) return current;
+    if (!accountId || !current.active) return current;
     if (inFlight) {
       if (!queuedRefresh) {
         let resolveQueued;
@@ -35,7 +35,7 @@ export function createBackupStatus(bridge = client, { runningPollMs = 1000 } = {
     const request = (async () => {
       try {
         const data = await bridge.backups(accountId);
-        if (requestScope === scope && accountId === current.accountId && current.paired) {
+        if (requestScope === scope && accountId === current.accountId && current.active) {
           current = { ...current, loading: false, data, error: "" };
           // A running backup finishes in seconds, so check again soon.
           if (data?.running && runningTimer === null) {
@@ -46,7 +46,7 @@ export function createBackupStatus(bridge = client, { runningPollMs = 1000 } = {
           }
         }
       } catch (error) {
-        if (requestScope === scope && accountId === current.accountId && current.paired) {
+        if (requestScope === scope && accountId === current.accountId && current.active) {
           current = { ...current, loading: false, data: null, error: error?.message || "Backup status is unavailable." };
         }
       }
@@ -64,7 +64,7 @@ export function createBackupStatus(bridge = client, { runningPollMs = 1000 } = {
         const followup = queuedRefresh;
         queuedRefresh = null;
         if (followup) {
-          if (requestScope === scope && accountId === current.accountId && current.paired) {
+          if (requestScope === scope && accountId === current.accountId && current.active) {
             void refresh().then(followup.resolve, followup.resolve);
           } else {
             followup.resolve(current);
@@ -74,16 +74,16 @@ export function createBackupStatus(bridge = client, { runningPollMs = 1000 } = {
     }
   }
 
-  function setScope(accountId, paired) {
+  function setScope(accountId, active) {
     const nextId = typeof accountId === "string" ? accountId : "";
-    const nextPaired = Boolean(nextId && paired);
-    if (nextId === current.accountId && nextPaired === current.paired) return;
+    const nextPaired = Boolean(nextId && active);
+    if (nextId === current.accountId && nextPaired === current.active) return;
     stop();
     scope += 1;
     inFlight = null;
     queuedRefresh?.resolve(current);
     queuedRefresh = null;
-    current = { accountId: nextId, paired: nextPaired, loading: false, data: null, error: "" };
+    current = { accountId: nextId, active: nextPaired, loading: false, data: null, error: "" };
     if (!nextPaired) return;
     void refresh();
     timer = setInterval(() => void refresh(), 30_000);

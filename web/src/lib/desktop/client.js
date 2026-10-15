@@ -4,9 +4,8 @@
 // base URL it publishes as `window.__LIBREPAPER_DESKTOP__`. It adds the local
 // credential and the page's origin itself, so this file holds no address, no
 // token and no pairing. Outside the desktop app there is nothing to call and
-// the status stays `browser`. This module answers "is the desktop app
-// available" and "run this job on it", nothing about routing or fallback
-// order (that is `route.js`, package B2).
+// every feature call throws `DesktopOnly`. This module answers "run this job
+// on the desktop app", nothing about routing or fallback order.
 //
 // Every dependency this file needs from the ambient browser -- fetch,
 // storage, wall clock, the wait between polls -- is reached through `deps`
@@ -17,15 +16,14 @@
 
 import { bytesOf, toArrayBuffer } from "../bytes.js";
 import { named } from "../latex/errors.js";
-import { instructionsFor } from "./states.js";
 
-/** @typedef {{ fetch: (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>, storage: Storage | null, now: () => number, wait: (ms: number, signal?: AbortSignal) => Promise<void>, location: () => Location | null, replaceHash: (hash: string) => void }} CompanionDeps */
+/** @typedef {{ fetch: (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>, storage: Storage | null, now: () => number, wait: (ms: number, signal?: AbortSignal) => Promise<void>, location: () => Location | null, replaceHash: (hash: string) => void }} DesktopDeps */
 /** @typedef {{ entrypoint?: string, format?: string, profile?: string | null, parameters?: Record<string, string | number | boolean | null>, policy?: string, kind?: string, inputRevision?: string, inputDigest?: string, renderScope?: string, executionMode?: string, dataInputs?: string[], livePreview?: boolean, [key: string]: unknown }} RenderOptions */
-/** @typedef {{ entrypoint?: string, binding?: string, bindingId?: string, idempotencyKey?: string, id?: string, inputDigest?: string, inputRevision?: string, generation?: number, deadlineSeconds?: number, snapshot?: string, [key: string]: unknown }} CompanionJob */
-/** @typedef {{ main: string, texts?: Record<string, string>, assets?: Record<string, Uint8Array | ArrayBuffer | string>, digests?: Record<string, string>, files?: Record<string, unknown> }} CompanionTree */
+/** @typedef {{ entrypoint?: string, binding?: string, bindingId?: string, idempotencyKey?: string, id?: string, inputDigest?: string, inputRevision?: string, generation?: number, deadlineSeconds?: number, snapshot?: string, [key: string]: unknown }} DesktopJob */
+/** @typedef {{ main: string, texts?: Record<string, string>, assets?: Record<string, Uint8Array | ArrayBuffer | string>, digests?: Record<string, string>, files?: Record<string, unknown> }} DesktopTree */
 /** @typedef {{ path: string, sha256: string, size: number }} ManifestFile */
 /** @typedef {{ signal?: AbortSignal, onProgress?: (progress: { done: number, total: number, scope?: string, stage?: string }) => void, onLog?: (line: string) => void }} BuildCallbacks */
-/** @typedef {{ status: string, exit?: number, stage?: string, log_tail?: string, outputs?: Record<string, { size: number, sha256: string }>, diagnostics?: unknown[], provenance?: Record<string, unknown>, error?: string }} CompanionJobStatus */
+/** @typedef {{ status: string, exit?: number, stage?: string, log_tail?: string, outputs?: Record<string, { size: number, sha256: string }>, diagnostics?: unknown[], provenance?: Record<string, unknown>, error?: string }} DesktopJobStatus */
 /** @typedef {{ binding_id: string, main: string, format: string, profile?: string | null, parameters?: Record<string, string | number | boolean | null>, policy?: string, idempotency_key?: string | null, execution_mode?: string, render_scope?: string, data_inputs?: string[], shared_inventory_complete?: boolean }} QuartoJobDetails */
 /** @typedef {{ main: string, format: string, binding_id: string }} CalepinJobDetails */
 /** @typedef {{ protocol: number, kind: string, project: string | null, origin: string, snapshot: string, generation: number, manifest: ManifestFile[], quarto: QuartoJobDetails, [key: string]: unknown }} QuartoRequestBody */
@@ -33,13 +31,20 @@ import { instructionsFor } from "./states.js";
 
 export const QUARTO_JOB_KINDS = Object.freeze(["render", "refresh", "frozen"]);
 
+/** Where to get the desktop app. Every place that asks for it links here. */
+export const INSTALL_URL = "https://librepaper.org/desktop-app.html";
+
+/** What a feature call says in a plain browser. */
+export const DESKTOP_ONLY_MESSAGE = "This needs the LibrePaper desktop app.";
+
+const UNREACHABLE_MESSAGE = "The LibrePaper desktop app could not reach its local service. Restart the desktop app.";
+
 // Feature routes and machine management routes, under the desktop base.
 const LOCAL_BASE = "librepaper/local/";
 const MANAGE_BASE = "companion/api/";
 
 const BINDINGS_KEY = "librepaper-local-quarto-bindings";
 
-const HEALTH_TIMEOUT_MS = 2000;
 const POLL_FAST_MS = 500;
 const POLL_SLOW_MS = 1000;
 const POLL_SLOW_AFTER_MS = 10 * 1000;
@@ -71,7 +76,7 @@ function defaultDeps() {
   };
 }
 
-/** @type {CompanionDeps} */
+/** @type {DesktopDeps} */
 let deps = defaultDeps();
 
 export const _testing = {
@@ -81,9 +86,7 @@ export const _testing = {
   reset() {
     deps = defaultDeps();
     current = { project: null, origin: "" };
-    listeners.clear();
-    probing = null;
-    currentStatus = initialStatus();
+    capabilitiesCache = null;
   },
 };
 
@@ -160,53 +163,16 @@ export function configure({ project, origin } = {}) {
   };
 }
 
-// -------------------------------------------------------------- status
-
-function initialStatus() {
-  return {
-    state: desktop() ? "checking" : "browser",
-    protocol: null,
-    version: null,
-    capabilities: null,
-    checkedAt: null,
-    error: null,
-    instance: null,
-    instructions: instructionsFor(desktop() ? "checking" : "browser"),
-  };
-}
-
-let currentStatus = initialStatus();
-const listeners = new Set();
-let probing = null;
-
-export function status() {
-  return currentStatus;
-}
-
-// The first listener on a desktop page starts the probe that moves the status
-// off `checking`; nothing probes on its own after that.
-export function subscribe(listener) {
-  listeners.add(listener);
-  listener(currentStatus);
-  if (currentStatus.state === "checking") void probe();
-  return () => { listeners.delete(listener); };
-}
-
-function setStatus(patch) {
-  currentStatus = { ...currentStatus, ...patch };
-  for (const listener of listeners) listener(currentStatus);
-  return currentStatus;
-}
-
 // -------------------------------------------------------------- wire helpers
 
+/** The desktop global, or a `DesktopOnly` error in a plain browser. */
 function requireDesktop() {
   const shell = desktop();
-  if (!shell) throw named("Unreachable", instructionsFor("browser"));
+  if (!shell) throw named("DesktopOnly", DESKTOP_ONLY_MESSAGE);
   return shell;
 }
 
-const unavailable = () => named("Unreachable", instructionsFor("unavailable"));
+const unavailable = () => named("Unreachable", UNREACHABLE_MESSAGE);
 
 async function sha256hex(bytes) {
   const hash = await crypto.subtle.digest("SHA-256", bytes);
@@ -222,7 +188,7 @@ async function sha256hex(bytes) {
 async function throwOnFailure(response) {
   if (response.status === 502) throw unavailable();
   if (!response.ok) {
-    let message = `Local LibrePaper refused the request (${response.status})`;
+    let message = `The LibrePaper desktop app refused the request (${response.status})`;
     try {
       const data = await response.clone().json();
       if (data && typeof data.error === "string") message = data.error;
@@ -265,76 +231,11 @@ async function bytesOfResponse(response) {
   return new Uint8Array(await response.arrayBuffer());
 }
 
-// -------------------------------------------------------------- probe
-
-/** @param {string} state @param {Record<string, unknown>} [patch] */
-function settle(state, patch = {}) {
-  return setStatus({
-    state, protocol: null, version: null, capabilities: null, error: null, ...patch,
-    checkedAt: deps.now(), instructions: instructionsFor(state),
-  });
-}
-
-// Reads health and capabilities from the desktop app. Concurrent calls share
-// one probe.
-export function probe() {
-  if (!probing) probing = runProbe().finally(() => { probing = null; });
-  return probing;
-}
-
-async function runProbe() {
-  const shell = desktop();
-  if (!shell) return settle("browser");
-  let response;
-  try {
-    response = await deps.fetch(shell.base + LOCAL_BASE + "health", {
-      method: "GET", mode: "cors", credentials: "omit",
-      signal: typeof AbortSignal !== "undefined" && AbortSignal.timeout ? AbortSignal.timeout(HEALTH_TIMEOUT_MS) : undefined,
-    });
-  } catch (error) {
-    return settle("unavailable", { error: String(error?.message || error) });
-  }
-  if (!response.ok) return settle("unavailable", { error: `health responded ${response.status}` });
-  let body;
-  try {
-    body = await response.json();
-  } catch {
-    return settle("unavailable", { error: "malformed health response" });
-  }
-  if (body?.service !== "librepaper-local" || !Array.isArray(body?.protocol)) {
-    return settle("unavailable", { error: "unrecognised local service", version: body?.version || null });
-  }
-  const version = body.version || null;
-  // Protocol 2 is the floor: it is the version that reports adapter-oriented
-  // `builders` capabilities, the only capability schema this browser reads.
-  // An older app is reported as incompatible rather than as toolless.
-  if (!body.protocol.includes(2)) {
-    return settle("incompatible", { protocol: body.protocol, version, error: "protocol mismatch" });
-  }
-  try {
-    const capabilitiesResponse = await send("GET", "capabilities");
-    const caps = await capabilitiesResponse.json();
-    return settle("ready", { protocol: body.protocol, version, capabilities: caps, instance: body.instance || null });
-  } catch (error) {
-    return settle("unavailable", { protocol: body.protocol, version, error: String(error?.message || error) });
-  }
-}
-
-export function retry() {
-  return probe();
-}
-
-/** Whether this page may manage the machine: only inside the desktop app once it is ready. The shell and the
- * companion refuse any site other than the configured server. */
-export function canManage() {
-  return Boolean(desktop()) && status().state === "ready";
-}
-
 /** Call a machine management route.
  * @param {string} path @param {{ method?: string, body?: unknown }} [options] */
 export async function manage(path, { method = "GET", body } = {}) {
   if (typeof path !== "string" || !path.startsWith("/") || path.startsWith("//") || path.includes("\\")) {
-    throw new TypeError("Invalid companion management path");
+    throw new TypeError("Invalid management path");
   }
   const shell = requireDesktop();
   /** @type {Record<string, string>} */
@@ -355,7 +256,7 @@ export async function manage(path, { method = "GET", body } = {}) {
   if (response.status === 502) throw unavailable();
   if (response.status === 403) throw named("Refused", "This is not available for this site.", { status: 403 });
   if (!response.ok) {
-    let message = `The companion request failed (${response.status}).`;
+    let message = `The desktop app request failed (${response.status}).`;
     try {
       const data = await response.json();
       if (typeof data?.error === "string" && data.error) message = data.error;
@@ -367,10 +268,9 @@ export async function manage(path, { method = "GET", body } = {}) {
   return type.includes("json") ? response.json() : response.text();
 }
 
-// Settings opens from the `settings=local` fragment the tray's Settings item
-// and the desktop app's `--settings` argument carry. The field is stripped
-// from the address bar whatever it says. Returns whether Settings was
-// requested.
+// The desktop app's `--settings` argument opens the page with a
+// `settings=local` fragment. The field is stripped from the address bar
+// whatever it says. Returns whether Settings was requested.
 export function intake() {
   const loc = deps.location();
   const hash = String(loc?.hash || "").replace(/^#/, "");
@@ -382,21 +282,23 @@ export function intake() {
   return true;
 }
 
-// Reads the last probed capabilities rather than fetching -- callers that
-// need a fresh answer call `capabilities()` first, the same way the rest of
-// this module treats `status()` as a cache of the last probe.
-export function calepinAvailable() {
-  const calepin = status().capabilities?.calepin;
-  return !!(calepin && calepin.found);
-}
+// The tools found on this computer, fetched once per page load. A rescan
+// replaces the answer.
+let capabilitiesCache = null;
 
 export async function capabilities({ rescan = false } = {}) {
+  if (capabilitiesCache && !rescan) return capabilitiesCache;
   const method = rescan ? "POST" : "GET";
   const path = rescan ? "capabilities/rescan" : "capabilities";
   const response = await send(method, path);
-  const data = await response.json();
-  setStatus({ capabilities: data });
-  return data;
+  capabilitiesCache = await response.json();
+  return capabilitiesCache;
+}
+
+/** Whether the desktop app found Calepin. */
+export async function calepinAvailable() {
+  const found = await capabilities();
+  return Boolean(found?.calepin?.found);
 }
 
 /** Search the running Zotero desktop library through the desktop app.
@@ -482,7 +384,7 @@ function quartoPolicy(kind, policy) {
 // alongside it, `buildCalepinForm` layers `engine`/`calepin` the same way,
 // and `kind` stays the value the Rust `JobRequest` already deserializes
 // today for both.
-/** @param {{ job: CompanionJob, manifest: ManifestFile[], inputRevision?: string }} input */
+/** @param {{ job: DesktopJob, manifest: ManifestFile[], inputRevision?: string }} input */
 function jobEnvelope({ job, manifest, inputRevision }) {
   return {
     protocol: 2,
@@ -501,7 +403,7 @@ function jobEnvelope({ job, manifest, inputRevision }) {
 }
 
 /** Build the JSON part of a Quarto request without accepting shell fragments. */
-/** @param {{ job?: CompanionJob, entrypoint?: string, format?: string, profile?: string | null, parameters?: Record<string, string | number | boolean | null>, policy?: string, kind?: string, inputRevision?: string, inputDigest?: string, files?: ManifestFile[] }} [options] */
+/** @param {{ job?: DesktopJob, entrypoint?: string, format?: string, profile?: string | null, parameters?: Record<string, string | number | boolean | null>, policy?: string, kind?: string, inputRevision?: string, inputDigest?: string, files?: ManifestFile[] }} [options] */
 export function quartoRequest({ job = {}, entrypoint, format = "html", profile = null, parameters = {}, policy, kind = "render", inputRevision = "", inputDigest = "", files = [] } = {}) {
   const main = relativePath(entrypoint || job.entrypoint || "");
   if (!main.endsWith(".qmd") && !main.endsWith(".md")) throw new Error("Quarto entrypoint must be a .qmd or .md file");
@@ -563,7 +465,7 @@ export function quartoRequest({ job = {}, entrypoint, format = "html", profile =
 // Turn a shared tree's `texts`/`assets` maps into `[relativePath, bytes]`
 // pairs, validating and de-duplicating paths the same way for every caller
 // that walks a tree -- the Quarto job/preview form, and `syncWorkspace`.
-/** @param {CompanionTree} tree @returns {Array<[string, Uint8Array]>} */
+/** @param {DesktopTree} tree @returns {Array<[string, Uint8Array]>} */
 function collectTreeFiles(tree) {
   const files = [];
   const seen = new Set();
@@ -591,7 +493,7 @@ function calepinOptions({ entrypoint, format = "html" } = {}) {
   return { main, format: String(format) };
 }
 
-/** @param {{ job?: CompanionJob, tree: CompanionTree, options?: RenderOptions }} input */
+/** @param {{ job?: DesktopJob, tree: DesktopTree, options?: RenderOptions }} input */
 async function buildCalepinForm({ job = {}, tree, options = {} }) {
   const files = collectTreeFiles(tree);
   const manifest = await manifestOf(files);
@@ -613,7 +515,7 @@ async function buildCalepinForm({ job = {}, tree, options = {} }) {
   return formOf(request, files);
 }
 
-/** @param {{ job?: CompanionJob, tree: CompanionTree, options?: RenderOptions }} input */
+/** @param {{ job?: DesktopJob, tree: DesktopTree, options?: RenderOptions }} input */
 async function buildQuartoForm({ job, tree, options = {} }) {
   if (options.renderScope === "project") {
     throw new Error("Quarto website and book project renders are not supported; render one document instead");
@@ -706,14 +608,14 @@ async function submitAndAwait(form, signal) {
   return { id: submitted.id, status };
 }
 
-/** @param {string} id @param {string} name @param {CompanionJobStatus} status */
+/** @param {string} id @param {string} name @param {DesktopJobStatus} status */
 async function fetchOutput(id, name, status) {
   if (!status.outputs?.[name]) return null;
   const response = await send("GET", `jobs/${id}/files/${encodeURIComponent(name)}`, { });
   return bytesOfResponse(response);
 }
 
-/** @param {string} id @param {string} name @param {CompanionJobStatus} status */
+/** @param {string} id @param {string} name @param {DesktopJobStatus} status */
 async function fetchVerifiedOutput(id, name, status) {
   const descriptor = status.outputs?.[name];
   if (!descriptor) return null;
@@ -738,10 +640,8 @@ function base64Of(bytes) {
 
 // -------------------------------------------------------------- jobs
 
-/** @param {{ job?: CompanionJob, tree: CompanionTree, builder: string, engine?: string, output?: string, options?: Record<string, unknown>, bindingId?: string }} input @param {BuildCallbacks} [callbacks] */
+/** @param {{ job?: DesktopJob, tree: DesktopTree, builder: string, engine?: string, output?: string, options?: Record<string, unknown>, bindingId?: string }} input @param {BuildCallbacks} [callbacks] */
 export async function runBuild({ job = {}, tree, builder, engine, output = "pdf", options = {}, bindingId = "" }, { signal, onProgress } = {}) {
-  // A ready status means a health check accepted protocol 2 (see `probe`), so
-  // the build request needs no version guard.
   const files = collectTreeFiles(tree);
   const manifest = await manifestOf(files);
   const request = {
@@ -761,7 +661,7 @@ export async function runBuild({ job = {}, tree, builder, engine, output = "pdf"
   return { ok: jobStatus.status === "done" && jobStatus.exit === 0 && artifact != null, kind: output, pdf: output === "pdf" ? artifact : null, artifact, log: log ? new TextDecoder().decode(log) : "", diagnostics: jobStatus.diagnostics || [], exit: jobStatus.exit, error: jobStatus.error, provenance: { ...(jobStatus.provenance || {}), backend: "local", builder } };
 }
 
-/** @param {string} id @param {CompanionJobStatus} status @param {{ format?: string, policy?: string, inputRevision?: string }} options @param {BuildCallbacks} [callbacks] @param {CompanionJob} [job] */
+/** @param {string} id @param {DesktopJobStatus} status @param {{ format?: string, policy?: string, inputRevision?: string }} options @param {BuildCallbacks} [callbacks] @param {DesktopJob} [job] */
 async function collectQuartoOutputs(id, status, options, { onProgress, onLog } = {}, job = {}) {
   if (status.log_tail) for (const line of String(status.log_tail).split("\n")) onLog?.(line);
   const format = options.format || "html";
@@ -874,7 +774,7 @@ async function collectQuartoOutputs(id, status, options, { onProgress, onLog } =
 /** Start a live preview on either engine. For `quarto` this produces the
  * Quarto preview JSON; for `calepin`, `options` is the
  * `{ entrypoint, format }` pair validated by `calepinOptions`. */
-/** @param {{ engine?: string, job?: CompanionJob, tree: CompanionTree, options?: RenderOptions }} input @returns {Promise<{ id: string, url: string }>} */
+/** @param {{ engine?: string, job?: DesktopJob, tree: DesktopTree, options?: RenderOptions }} input @returns {Promise<{ id: string, url: string }>} */
 export async function startLocalPreview({ engine = "quarto", job = {}, tree, options = {} }) {
   const form = engine === "calepin"
     ? await buildCalepinForm({ job, tree, options: { ...options, livePreview: true } })
@@ -994,7 +894,7 @@ export async function localPreviewPage(id, { etag } = {}) {
 }
 // -------------------------------------------------------------- workspace sync
 
-/** @param {CompanionTree} tree */
+/** @param {DesktopTree} tree */
 async function buildWorkspaceForm(tree) {
   const files = collectTreeFiles(tree);
   const manifest = await manifestOf(files);
@@ -1004,11 +904,11 @@ async function buildWorkspaceForm(tree) {
   return form;
 }
 
-// Pushes the shared tree to the companion's hosted workspace, or to the
+// Pushes the shared tree to the desktop app's hosted workspace, or to the
 // project folder the user chose, so a running preview sees the current files,
 // without going through the job queue. Same file layout as a job's multipart
 // body, but the JSON part is named `manifest` (a bare array) rather than `job`.
-/** @param {{ tree: CompanionTree }} input */
+/** @param {{ tree: DesktopTree }} input */
 export async function syncWorkspace({ tree }) {
   const form = await buildWorkspaceForm(tree);
   const params = new URLSearchParams({ project: String(current.project) });
@@ -1018,7 +918,7 @@ export async function syncWorkspace({ tree }) {
     const response = await send("PUT", `workspace?${params}`, { formBody: form });
     return response.json();
   } catch (error) {
-    // A saved folder this companion no longer grants (revoked, or another
+    // A saved folder this desktop app no longer grants (revoked, or another
     // install) is forgotten, and the preview falls back to the hosted
     // workspace instead of failing on every sync.
     if (binding === HOSTED_BINDING || error?.name !== "Refused" || ![403, 404].includes(error?.status)) throw error;
@@ -1027,40 +927,9 @@ export async function syncWorkspace({ tree }) {
   }
 }
 
-/* -------------------------------------------- Companion settings and permissions */
+/* -------------------------------------------- Backups */
 
-/** Load companion settings: integrations, grants for this document,
- * startup configuration, and whether the companion is standalone. Dialog
- * routes (setIntegration, setStartup, quit) may take up to 5 minutes
- * waiting for OS confirmation and surface 403 or 503 errors. */
-export async function settings() {
-  const response = await send("GET", "settings");
-  return response.json();
-}
-
-/** Update an integration's settings (path and arguments). Waits for OS dialog confirmation (up to 5 minutes). */
-export async function setIntegration(name, { path, args }) {
-  const response = await send("PUT", `integrations/${name}`, {
-    jsonBody: { path, args },
-  });
-  return response.json();
-}
-
-/** Enable or disable starting the companion at login (standalone only).
- * Waits for OS dialog confirmation (up to 5 minutes). */
-export async function setStartup(enabled) {
-  await send("POST", "startup", {
-    jsonBody: { enabled },
-  });
-}
-
-/** Quit the companion (standalone only). Waits for OS dialog confirmation
- * (up to 5 minutes). */
-export async function quit() {
-  await send("POST", "quit");
-}
-
-/** Read account-wide backup state from the paired companion. The account id
+/** Read account-wide backup state from the desktop app. The account id
  * is the signed-in server account, never the currently open project. */
 export async function backups(accountId) {
   const query = new URLSearchParams({ account: String(accountId || "") });
@@ -1068,7 +937,7 @@ export async function backups(accountId) {
   return response.json();
 }
 
-/** Ask the companion to choose and retain a native backup destination. */
+/** Ask the desktop app to choose and retain a native backup destination. */
 export async function chooseBackupFolder(accountId) {
   const response = await send("POST", "backups/folder", {
     jsonBody: { account_id: String(accountId || "") },
@@ -1137,7 +1006,7 @@ export async function startAssistant({ link = "", conversation = "", chatToken =
 }
 
 /** Replace the active runner's short-lived document grant. The browser calls
- * this while its own session remains active; the companion never receives a
+ * this while its own session remains active; the desktop app never receives a
  * browser cookie and the runner reads the current grant on reconnect. */
 export async function renewAssistant({ link = "", conversation = "", agentToken = "" } = {}) {
   return assistantCall("POST", "assistant/renew", {

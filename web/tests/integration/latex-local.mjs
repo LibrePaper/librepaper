@@ -1,13 +1,13 @@
 // The desktop client, against a fake desktop app.
 //
-// The companion client never touches `fetch` or `localStorage` directly --
+// The desktop client never touches `fetch` or `localStorage` directly --
 // everything ambient goes through its `_testing.inject`-able `deps` -- so this
 // check drives the exact production module under Node with a small fake HTTP
 // service and an in-memory store.
 
 import { createHash } from "node:crypto";
 
-import * as local from "../../src/lib/companion/client.js";
+import * as local from "../../src/lib/desktop/client.js";
 import { formOf } from "../helpers/form-body.mjs";
 
 // The client verifies every build output against the digest the job status
@@ -68,41 +68,12 @@ function bytesResponse(status, bytes) {
   };
 }
 
-const HEALTH_OK = { service: "librepaper-local", protocol: [2], version: "0.1.0", instance: "abc123" };
 
 function setup({ storage = fakeStorage(), now = clock(), fetchImpl } = {}) {
   globalThis.window = { __LIBREPAPER_DESKTOP__: { base: "lp-local://localhost/", version: "test" } };
   local._testing.reset();
   local._testing.inject({ storage, now: now.now, fetch: fetchImpl, wait: (ms) => Promise.resolve() });
   return { storage, now };
-}
-
-/* --------------------------------------------------------- probe classification */
-
-async function testProbeUnavailable() {
-  setup({ fetchImpl: async () => { throw new TypeError("fetch failed"); } });
-  const status = await local.probe();
-  check("a network failure classifies as unavailable", status.state === "unavailable", status.state);
-  check("unavailable carries instructions", /could not reach/.test(status.instructions));
-  setup({ fetchImpl: async () => jsonResponse(502, { error: "companion unavailable" }) });
-  check("a 502 from the shell classifies as unavailable", (await local.probe()).state === "unavailable");
-}
-
-async function testProbeIncompatible() {
-  setup({ fetchImpl: async () => jsonResponse(200, { service: "librepaper-local", protocol: [1], version: "0.0.1", instance: "x" }) });
-  const status = await local.probe();
-  check("a protocol without 2 classifies as incompatible", status.state === "incompatible", status.state);
-}
-
-async function testProbeReady() {
-  setup({ fetchImpl: async (url) => {
-    if (url.endsWith("/health")) return jsonResponse(200, HEALTH_OK);
-    if (url.endsWith("/capabilities")) return jsonResponse(200, { tools: {}, confinement: { available: false, kind: "none", reason: "" }, platform: "linux", distribution: null });
-    throw new Error(`unexpected ${url}`);
-  } });
-  const ready = await local.probe();
-  check("health and capabilities verify into ready", ready.state === "ready", ready.state);
-  check("capabilities are attached", ready.capabilities && typeof ready.capabilities === "object");
 }
 
 /* --------------------------------------------------------- multipart bodies */
@@ -253,9 +224,6 @@ async function testRefusedUnreachable() {
 /* --------------------------------------------------------- run */
 
 const tests = [
-  testProbeUnavailable,
-  testProbeIncompatible,
-  testProbeReady,
   testMultipartBuildBody,
   testOutputDigestIsVerified,
   testPollingIntervals,

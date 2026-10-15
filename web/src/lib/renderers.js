@@ -3,7 +3,7 @@ import { needsBibliography } from "./bibliography-engine.js";
 //
 // The modules come from the same pinned renderer releases as the native
 // command line tools, so the preview follows the document source. Rendering
-// stays in this browser or a configured local companion and is never stored by
+// stays in this browser or the desktop app and is never stored by
 // the deployment.
 //
 // They are plain WebAssembly with a handful of exports rather than
@@ -16,7 +16,7 @@ import { needsBibliography } from "./bibliography-engine.js";
 import * as latex from "./latex.js";
 import * as latexHtml from "./latex/html.js";
 import * as quarto from "./engines/quarto.js";
-import * as localBridge from "./companion/client.js";
+import * as localBridge from "./desktop/client.js";
 import { snapshotDigest } from "./projection-digest.js";
 
 import { rendererRequest } from "./renderer-client.js";
@@ -176,14 +176,14 @@ export function formatOf(path) {
 export async function render(tree, title, { manual = false, format: requestedFormat = "pdf", configuration = null, buildPreferences = null, project = "" } = {}) {
   const source = tree.texts?.[tree.main] ?? "";
   const format = formatOf(tree.main);
-  // LaTeX is never dispatched to the companion from here. It builds in the
+  // LaTeX is never dispatched to the desktop app from here. It builds in the
   // browser, and its one local path is the automatic Biber and native
   // fallback that `latex.js` routes for itself.
   if (buildPreferences?.selection === "tool" && buildPreferences.backend === "local" && format !== "latex") {
     localBridge.configure({ project, origin: globalThis.location?.origin || "" });
     const digest = await snapshotDigest(tree);
     const usesWorkspace = ["quarto", "calepin"].includes(buildPreferences.tool);
-    // Snapshot builds can use the companion-owned hosted workspace populated
+    // Snapshot builds can use the desktop app hosted workspace populated
     // from this request's complete manifest. A user-granted folder is only
     // needed when the document deliberately depends on unshared local files.
     const job = { snapshot: digest, generation: Date.now(), binding: usesWorkspace ? localBridge.bindingId() : "", inputRevision: digest };

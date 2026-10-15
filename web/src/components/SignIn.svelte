@@ -2,7 +2,7 @@
   import Nav from "./Nav.svelte";
   import Icon from "./Icon.svelte";
   import { me as whoami } from "../lib/api.js";
-  import { INSTALL_URL } from "../lib/companion/states.js";
+  import { INSTALL_URL } from "../lib/desktop/client.js";
 
   // The page the server shows when there is more than one way in. It is served
   // for /auth/login, so the choice is made here and every other page can link

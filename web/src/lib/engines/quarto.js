@@ -355,7 +355,7 @@ function proseLine(line, labels, { lineNumber = 0, inlineRecords = [] } = {}) {
       const ordinal = inlineOrdinals.get(expression) || 0;
       inlineOrdinals.set(expression, ordinal + 1);
       const record = inlineRecords.filter((item) => item.line === lineNumber && item.expression === expression)[ordinal];
-      // Code expressions stay source text until a local Quarto companion
+      // Code expressions stay source text until a desktop app
       // evaluates them. No prior computation is reused in this draft.
       return chunk;
     }

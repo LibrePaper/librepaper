@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import * as local from "../../src/lib/companion/client.js";
+import * as local from "../../src/lib/desktop/client.js";
 
 function harness(hash = "") {
   const replaced = [];
@@ -23,7 +23,7 @@ function harness(hash = "") {
 
 // An address field is not a Settings request and is left alone.
 {
-  const h = harness("companion_address=http%3A%2F%2F127.0.0.1%3A9911%2F&keep=yes");
+  const h = harness("address=http%3A%2F%2F127.0.0.1%3A9911%2F&keep=yes");
   assert.equal(local.intake(), false);
   assert.deepEqual(h.replaced, []);
 }

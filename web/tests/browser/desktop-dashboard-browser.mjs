@@ -1,7 +1,7 @@
 // End-to-end check for the main Settings dialog's desktop app controls.
-// Uses a real companion process and browser with isolated HOME/state/cache.
+// Uses a real local service process and browser with isolated HOME/state/cache.
 // The page server stands in for the desktop shell: it forwards the page's
-// requests to the companion with the local credential and the page's origin.
+// requests to the local service with the local credential and the page's origin.
 // Run with LIBREPAPER_TEST_BINARY=dist/librepaper.
 
 import assert from "node:assert/strict";
@@ -21,7 +21,7 @@ const here = dirname(fileURLToPath(import.meta.url));
 const root = dirname(dirname(dirname(here)));
 const binary = process.env.LIBREPAPER_TEST_BINARY || join(root, "dist", "librepaper");
 if (!existsSync(binary)) {
-  console.log(`companion-settings-browser: no binary at ${binary}; skipping (build it or set LIBREPAPER_TEST_BINARY)`);
+  console.log(`desktop-dashboard-browser: no binary at ${binary}; skipping (build it or set LIBREPAPER_TEST_BINARY)`);
   process.exit(0);
 }
 
@@ -56,7 +56,7 @@ writeFileSync(harness, `
 <script>
   import SettingsDialog from ${JSON.stringify(join(root, "web/src/components/settings/SettingsDialog.svelte"))};
   let open = $state(true);
-  let category = $state("companion");
+  let category = $state("desktop");
   window.showSettingsCategory = (next) => category = next;
 </script>
 <SettingsDialog bind:open bind:category sourceFormat="quarto" mayEdit={true} userId="browser-check"
@@ -66,11 +66,10 @@ writeFileSync(harness, `
 writeFileSync(entry, `
 import ${JSON.stringify(join(root, "web/src/styles/app.css"))};
 import { mount } from ${JSON.stringify(join(root, "web/node_modules/svelte/src/index-client.js"))};
-import * as local from ${JSON.stringify(join(root, "web/src/lib/companion/client.js"))};
+import * as local from ${JSON.stringify(join(root, "web/src/lib/desktop/client.js"))};
 import Harness from ${JSON.stringify(harness)};
 // The page is served from the configured server origin, as the shell would show it.
 local.configure({ origin: location.origin });
-await local.probe();
 mount(Harness, { target: document.body });
 `);
 
@@ -126,7 +125,7 @@ try {
         response.end(Buffer.from(await forwarded.arrayBuffer()));
       } catch (error) {
         response.statusCode = 502;
-        response.end(JSON.stringify({ error: "companion unavailable", detail: String(error) }));
+        response.end(JSON.stringify({ error: "service unavailable", detail: String(error) }));
       }
     } else if (request.url === "/check.js") {
       response.setHeader("content-type", "text/javascript");
@@ -155,10 +154,10 @@ try {
   app.stdout.on("data", (chunk) => { appLog += chunk; });
   app.stderr.on("data", (chunk) => { appLog += chunk; });
 
-  await until("companion health", async () => {
+  await until("local service health", async () => {
     const response = await fetch(`${companionAddress}librepaper/local/health`).catch(() => null);
     return Boolean(response && response.ok);
-  }, 15000).catch((error) => { throw new Error(`${error.message}\ncompanion output:\n${appLog}`); });
+  }, 15000).catch((error) => { throw new Error(`${error.message}\nlocal service output:\n${appLog}`); });
 
   // What the shell would learn from `local endpoint`.
   endpoint = JSON.parse((await promisify(execFile)(binary, ["local", "endpoint"], { env: appEnv, timeout: 20000 })).stdout.trim().split("\n").at(-1));
@@ -166,22 +165,21 @@ try {
 
   b = await browser("chromium", join(temporary, "chrome"), await freePort());
   await b.navigate(`${appOrigin}/`);
-  await until("computer management available", () => b.evaluate(`Boolean(document.querySelector("#companion-activity-heading"))`), 12000);
+  await until("computer management available", () => b.evaluate(`Boolean(document.querySelector("#desktop-activity-heading"))`), 12000);
 
   assert.equal(await b.evaluate("location.hash"), "", "management does not add a fragment");
   assert.equal(await b.evaluate("location.href"), `${appOrigin}/`, "management opens in place without changing the document URL");
   const token = endpoint.token;
   assert.equal(await b.evaluate(`document.documentElement.innerHTML.includes(${JSON.stringify(token)})`), false, "the token never reaches the page");
   assert.equal(await b.evaluate('/\\bConnect\\b/.test(document.body.innerText)'), false, "there are no connect controls");
-  assert.equal(await b.evaluate('document.querySelectorAll(".request-card").length'), 0, "approvals use existing SettingRow layout");
   assert.equal(await b.evaluate('document.querySelector("#tray-enabled") === null'), true, "there is no tray preference");
-  assert.equal(await b.evaluate(`document.querySelector("#companion-approvals-heading") === null && document.querySelector("#companion-agents-heading") === null`), true, "approvals appear only while one waits, and agents have their own category");
+  assert.equal(await b.evaluate(`document.querySelector("#agents-list-heading") === null`), true, "agents have their own category");
   assert.equal(await b.evaluate('document.body.innerText.includes("Tool search folders")'), false, "tool search folders are not configurable");
-  assert.equal(await b.evaluate('document.querySelector("#companion-folders-heading") === null'), true, "empty project-folder grants have no heading");
+  assert.equal(await b.evaluate('document.querySelector("#desktop-folders-heading") === null'), true, "empty project-folder grants have no heading");
 
   for (const path of ["/companion", "/companion/", "/companion/index.html", "/companion/app.js", "/companion/style.css"]) {
     const response = await fetch(`${companionAddress.replace(/\/$/, "")}${path}`);
-    assert.equal(response.status, 404, `standalone companion page is gone: ${path}`);
+    assert.equal(response.status, 404, `standalone page is gone: ${path}`);
   }
 
   const apiState = async (headers = {}) => fetch(`${companionAddress}companion/api/state`, {
@@ -204,39 +202,39 @@ try {
   }
   const agentLabel = "Claude";
   await b.evaluate(`[...document.querySelectorAll(".settings-nav-item")].find((item) => item.textContent.trim() === "AI agents").click()`);
-  await until("agents heading visible", () => b.evaluate("Boolean(document.querySelector('#companion-agents-heading'))"), 10000);
+  await until("agents heading visible", () => b.evaluate("Boolean(document.querySelector('#agents-list-heading'))"), 10000);
   await b.evaluate(`(() => {
-    const section = document.querySelector("#companion-agents-heading").closest("section");
+    const section = document.querySelector("#agents-list-heading").closest("section");
     const addButton = [...section.querySelectorAll("button")].find((item) => item.textContent.trim() === "Add agent" && item.type !== "submit");
     addButton?.click();
   })()`);
   await b.evaluate(`(() => {
-    const section = document.querySelector("#companion-agents-heading").closest("section");
+    const section = document.querySelector("#agents-list-heading").closest("section");
     section.querySelector('input[name="label"]').value = "Claude";
     section.querySelector('input[name="label"]').dispatchEvent(new Event("input", { bubbles: true }));
     section.querySelector('input[name="command"]').value = "librepaper-no-such-executable-for-test --version";
     section.querySelector('input[name="command"]').dispatchEvent(new Event("input", { bubbles: true }));
   })()`);
-  await waitForEnabledButton("Add agent", "#companion-agents-heading");
+  await waitForEnabledButton("Add agent", "#agents-list-heading");
   await b.evaluate(`(() => {
-    const section = document.querySelector("#companion-agents-heading").closest("section");
+    const section = document.querySelector("#agents-list-heading").closest("section");
     [...section.querySelectorAll("button[type='submit']")].find((item) => item.textContent.trim() === "Add agent").click();
   })()`);
   await until("invalid executable error", () => b.evaluate(`
-    [...document.querySelector("#companion-agents-heading").closest("section").querySelectorAll('[role="alert"]')]
+    [...document.querySelector("#agents-list-heading").closest("section").querySelectorAll('[role="alert"]')]
       .some((node) => node.textContent.trim().length > 0)
   `), 5000);
   await new Promise((done) => setTimeout(done, 5500));
   assert.equal(await b.evaluate(`
     (() => {
-      const section = document.querySelector("#companion-agents-heading").closest("section");
+      const section = document.querySelector("#agents-list-heading").closest("section");
       return [...section.querySelectorAll('[role="alert"]')].some((node) => node.textContent.trim().length > 0)
         && section.querySelector('input[name="label"]').value === "Claude"
         && section.querySelector('input[name="command"]').value === "librepaper-no-such-executable-for-test --version";
     })()
   `), true, "agent server error and inputs survive polling");
   await b.evaluate(`(() => {
-    const section = document.querySelector("#companion-agents-heading").closest("section");
+    const section = document.querySelector("#agents-list-heading").closest("section");
     const field = section.querySelector('input[name="command"]');
     field.value = ${JSON.stringify(process.execPath)};
     field.dispatchEvent(new Event("input", { bubbles: true }));
@@ -250,14 +248,14 @@ try {
     if (!agent) return false;
     agentId = agent.id;
     return b.evaluate(`(() => {
-      const section = document.querySelector("#companion-agents-heading").closest("section");
+      const section = document.querySelector("#agents-list-heading").closest("section");
       return [...section.querySelectorAll(".setting-title")].filter((item) => item.textContent === ${JSON.stringify(agentLabel)}).length === 1;
     })()`);
   }, 10000);
   await b.evaluate("window.confirm = () => true");
-  await waitForEnabledButton("Remove", "#companion-agents-heading");
+  await waitForEnabledButton("Remove", "#agents-list-heading");
   await b.evaluate(`(() => {
-    const section = document.querySelector("#companion-agents-heading").closest("section");
+    const section = document.querySelector("#agents-list-heading").closest("section");
     const row = [...section.querySelectorAll(".setting-row")].find((item) =>
       [...item.querySelectorAll(".setting-title")].some((title) => title.textContent.trim() === ${JSON.stringify(agentLabel)}));
     [...row.querySelectorAll("button")].find((button) => button.textContent.trim() === "Remove").click();
@@ -302,7 +300,7 @@ try {
 
   await captureSettingsScreenshot();
 
-  console.log("companion-dashboard-browser: shell-forwarded Settings, agent management, and tool commands passed");
+  console.log("desktop-dashboard-browser: shell-forwarded Settings, agent management, and tool commands passed");
 } finally {
   if (b) await b.close();
   if (app && app.exitCode === null) {

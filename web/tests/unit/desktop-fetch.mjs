@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import * as local from "../../src/lib/companion/client.js";
+import * as local from "../../src/lib/desktop/client.js";
 import { formOf } from "../helpers/form-body.mjs";
 
 const BASE = "lp-local://localhost/";
@@ -21,8 +21,6 @@ function setup(fetch, { inDesktop = true } = {}) {
   local.configure({ project: "paper", origin: "https://papers.example" });
 }
 
-const health = (protocol = [2]) => response({ service: "librepaper-local", protocol, version: "0.0.42", instance: "companion" });
-
 // desktop() reads the page global and is null in an ordinary browser.
 {
   delete globalThis.window;
@@ -32,32 +30,34 @@ const health = (protocol = [2]) => response({ service: "librepaper-local", proto
   delete globalThis.window;
 }
 
-// Outside the desktop app the state is browser and a probe stays there.
+// Outside the desktop app a feature call says it needs the desktop app and sends nothing.
 {
   setup(async () => { throw new Error("no request may be sent"); }, { inDesktop: false });
-  assert.equal(local.status().state, "browser");
-  assert.equal((await local.probe()).state, "browser");
-  assert.equal(local.canManage(), false);
-  await assert.rejects(local.settings(), (error) => error.name === "Unreachable");
+  const desktopOnly = (error) => error.name === "DesktopOnly" && error.message === local.DESKTOP_ONLY_MESSAGE;
+  await assert.rejects(local.capabilities(), desktopOnly);
+  await assert.rejects(local.agents(), desktopOnly);
+  await assert.rejects(local.manage("/state"), desktopOnly);
+  await assert.rejects(local.runBuild({ tree: { main: "paper.qmd", texts: { "paper.qmd": "# Paper" } }, builder: "quarto" }), desktopOnly);
+  assert.equal(local.DESKTOP_ONLY_MESSAGE, "This needs the LibrePaper desktop app.");
 }
 
-// Inside the desktop app the status starts as checking and a probe makes it ready.
+// Inside the desktop app the base is used, no credential is sent, and capabilities are fetched once.
 {
   const requests = [];
   setup(async (url, init = {}) => {
     requests.push({ url, init });
-    if (url === `${BASE}librepaper/local/health`) return health();
-    if (url === `${BASE}librepaper/local/capabilities`) return response({ manage: true, builders: {} });
+    if (url === `${BASE}librepaper/local/capabilities`) return response({ calepin: { found: true }, builders: {} });
+    if (url === `${BASE}librepaper/local/capabilities/rescan`) return response({ calepin: { found: false }, builders: {} });
     if (url === `${BASE}companion/api/settings`) return response({ setting: true });
     if (url === `${BASE}librepaper/local/jobs`) return response({ id: "job-1" });
     if (url === `${BASE}librepaper/local/jobs/job-1`) return response({ status: "done", exit: 0, outputs: {} });
     throw new Error(`Unexpected request: ${url}`);
   });
-  assert.equal(local.status().state, "checking");
-  const ready = await local.probe();
-  assert.equal(ready.state, "ready");
-  assert.equal(ready.version, "0.0.42");
-  assert.equal(local.canManage(), true);
+  assert.equal((await local.capabilities()).calepin.found, true);
+  assert.equal(await local.calepinAvailable(), true);
+  assert.equal(requests.filter(({ url }) => url.endsWith("/capabilities")).length, 1, "capabilities are fetched once per page load");
+  assert.equal((await local.capabilities({ rescan: true })).calepin.found, false, "a rescan replaces the answer");
+  assert.equal(await local.calepinAvailable(), false);
   assert.deepEqual(await local.manage("/settings"), { setting: true });
   const built = await local.runBuild({ tree: { main: "paper.qmd", texts: { "paper.qmd": "# Paper" } }, builder: "quarto" });
   assert.equal(built.ok, false, "the stub omits Quarto outputs after exercising job submission and polling");
@@ -68,20 +68,14 @@ const health = (protocol = [2]) => response({ service: "librepaper-local", proto
   assert.ok(requests.every(({ init }) => !init.headers || !("Authorization" in init.headers)), "the page sends no credential");
 }
 
-// A 502 from the shell, or a network error, is unavailable.
+// A 502 from the shell, or a network error, is Unreachable.
 {
-  setup(async () => response({ error: "companion unavailable" }, 502));
-  assert.equal((await local.probe()).state, "unavailable");
+  const unreachable = (error) => error.name === "Unreachable" && /could not reach its local service/.test(error.message);
+  setup(async () => response({ error: "service unavailable" }, 502));
+  await assert.rejects(local.capabilities(), unreachable);
+  await assert.rejects(local.manage("/state"), unreachable);
   setup(async () => { throw new TypeError("Failed to fetch"); });
-  assert.equal((await local.probe()).state, "unavailable");
-  setup(async (url) => url.endsWith("/health") ? health() : response({ error: "companion unavailable" }, 502));
-  assert.equal((await local.probe()).state, "unavailable", "a 502 on capabilities is unavailable too");
-}
-
-// A protocol that excludes this client's version is incompatible.
-{
-  setup(async () => health([1]));
-  assert.equal((await local.probe()).state, "incompatible");
+  await assert.rejects(local.agents(), unreachable);
 }
 
 // A network failure or 502 during a job is Unreachable and is not replayed.
@@ -111,4 +105,4 @@ const health = (protocol = [2]) => response({ service: "librepaper-local", proto
 
 local._testing.reset();
 delete globalThis.window;
-console.log("companion-fetch: the desktop base, no credential, and the browser, ready, unavailable and incompatible states");
+console.log("desktop-fetch: the desktop base, no credential, DesktopOnly in a browser, and Unreachable on a 502");

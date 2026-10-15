@@ -20,8 +20,7 @@ test("an unreported builder has no capability and no operations", () => {
   assert.equal(capabilityFor(caps, "pandoc"), null);
   assert.deepEqual(operationsFor(caps, "pandoc"), []);
   assert.equal(supportsOperation(caps, "pandoc", "build", "snapshot"), false);
-  // A companion below the protocol floor never reaches "ready", so its
-  // tool-specific fields must not be read as builder capabilities.
+  // Tool-specific fields must not be read as builder capabilities.
   assert.equal(capabilityFor({ quarto: { tool: { available: true } } }, "quarto"), null);
 });
 
@@ -30,7 +29,7 @@ test("LaTeX is a browser format and offers no local builder", () => {
   assert.deepEqual(buildersFor("latex").map((entry) => entry.id), ["tex"]);
   assert.deepEqual(tex.backend, ["browser"]);
   assert.deepEqual(tex.engines, ["pdflatex", "xelatex"]);
-  // The companion advertises TeX adapters for the automatic Biber and native
+  // The desktop app advertises TeX adapters for the automatic Biber and native
   // fallback that `latex.js` routes itself. They are deliberately not menu
   // choices, so the catalog must not name them.
   assert.equal(BUILDERS.some((entry) => ["latexmk", "tectonic"].includes(entry.id)), false);
