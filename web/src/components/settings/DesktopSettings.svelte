@@ -83,6 +83,5 @@
 <style>
   .desktop-error { color: var(--color-error-text); }
   .desktop-notice { color: var(--color-success-text); }
-  .setting-log { max-height: 18rem; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; }
   .desktop-help { margin-top: calc(var(--spacing) * 3); }
 </style>
