@@ -43,7 +43,7 @@ WEB_BUILD := web/bun.lock web/tools/vendor-katex.mjs web/tools/compress-shell.mj
 WEB     := $(shell find web/src web/public -type f -not -path 'web/src/site/*') $(wildcard web/pages/*.html web/package.json web/vite.config.js web/vite.frame.config.js) $(WEB_BUILD)
 SOURCES := $(shell find crates -type f -not -path '*/target/*') $(shell find docs/examples -type f) Cargo.toml Cargo.lock .cargo/config.toml assets.lock
 
-.PHONY: help build install test test-rust check fmt serve demo demo-run demo-stop demo-wipe wipe kill clean snapshot web pins site site-serve
+.PHONY: help build install desktop test test-rust check fmt serve demo demo-run demo-stop demo-wipe wipe kill clean snapshot web pins site site-serve
 
 help:  ## Display this help screen
 	@printf "\033[1mAvailable commands:\033[0m\n\n"
@@ -55,6 +55,15 @@ install: $(BIN)  ## Build and install to ~/.local/bin (override PREFIX= or BINDI
 	@install -d "$(DESTDIR)$(BINDIR)"
 	@install -m 755 "$(BIN)" "$(DESTDIR)$(BINDIR)/librepaper"
 	@echo "Installed $(DESTDIR)$(BINDIR)/librepaper"
+
+# The desktop shell is its own Cargo workspace. NixOS keeps the WebKitGTK
+# libraries out of the default path, so the build runs inside a nix shell there.
+desktop:  ## Build the desktop app (desktop/target/release/librepaper-desktop)
+	@if [ -e /etc/NIXOS ]; then \
+		nix-shell -p pkg-config webkitgtk_4_1 gtk3 libsoup_3 glib-networking --run 'cargo build --release --manifest-path desktop/Cargo.toml'; \
+	else \
+		cargo build --release --manifest-path desktop/Cargo.toml; \
+	fi
 
 # Rebuilt whenever any source or page changes.
 $(BIN): $(SOURCES) $(SHELL_OUT)
