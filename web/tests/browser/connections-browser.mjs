@@ -118,8 +118,8 @@ try {
   assert.equal(backup.offline,true,'Backup pill reports unavailable account backups');
   await clickPill('open backup settings');
   await until('Backup settings',()=>b.evaluate('document.querySelector(".backups-intro") && document.querySelector(".settings-category")?.textContent.trim() === "Backups"'),3000);
-  assert.match(await b.evaluate('document.querySelector("#backup-connection .setting-description")?.innerText || ""'),/Sign in to load account backup settings/,
-    'Backup settings explains that account backups require sign-in');
+  assert.equal(await b.evaluate('document.querySelector(".desktop-only .desktop-only-message")?.textContent.trim() || ""'),'This needs the LibrePaper desktop app.',
+    'Backup settings in a browser say they need the desktop app');
   await click('[aria-label="Close"]');
   await clickPill('Remote');
   await until('Account settings',()=>b.evaluate('document.querySelector(".settings-category")?.textContent.trim() === "Account"'),3000);

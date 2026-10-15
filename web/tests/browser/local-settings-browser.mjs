@@ -47,8 +47,12 @@ export function chooseFolderBinding() { return Promise.resolve({ id: "folder", e
 export async function manage(path, { method = "GET", body } = {}) {
   window.manageCalls = [...(window.manageCalls || []), { path, method, body }];
   if (path === "/state") return { version: "1.0.0", jobs: [], previews: [], sessions: [], bindings: [], settings: { integrations: { quarto: { path: null, args: [] }, calepin: { path: null, args: [] } } } };
-  if (path === "/settings" && method === "PUT") return null;
   throw new Error("unexpected management call " + path);
+}
+export async function capabilities() { return { tools: {}, builders: [] }; }
+export async function setIntegration(name, { path, args }) {
+  window.integrationCalls = [...(window.integrationCalls || []), { name, path, args }];
+  return { path, args };
 }
 `);
 
@@ -137,9 +141,9 @@ try {
   await b.evaluate(type("Arguments", `--log-level warning --metadata "title=Two words"`));
   await settle();
   await b.evaluate(clickSelector("#quarto-section .tool-command-actions button"));
-  await until("integration saved", () => b.evaluate("(window.manageCalls || []).some((call) => call.method === 'PUT')"), 5000);
-  assert.deepEqual(JSON.parse(await b.evaluate("JSON.stringify(window.manageCalls.find((call) => call.method === 'PUT').body)")), {
-    integrations: { quarto: { path: "/opt/quarto/bin", args: ["--log-level", "warning", "--metadata", "title=Two words"] } },
+  await until("integration saved", () => b.evaluate("(window.integrationCalls || []).length > 0"), 5000);
+  assert.deepEqual(JSON.parse(await b.evaluate("JSON.stringify(window.integrationCalls[0])")), {
+    name: "quarto", path: "/opt/quarto/bin", args: ["--log-level", "warning", "--metadata", "title=Two words"],
   });
 
   console.log("local-settings-browser: browser notice, desktop app controls and integration commands passed");
