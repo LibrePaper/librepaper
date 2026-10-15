@@ -35,5 +35,5 @@ LIBREPAPER_SERVER=https://paper.example.org/ desktop/target/release/librepaper-d
 
 ## Nothing else to start
 
-The desktop app starts its own background local service when it opens. You do not start, stop or pair the local service. 
+The desktop app starts its own background local service when it opens. You do not start, stop or pair the local service.
 To build from a checkout, see [building from source](architecture/building.html).

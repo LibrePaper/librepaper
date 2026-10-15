@@ -20,7 +20,7 @@ released.
 
 ## Install
 
-Follow [the companion page](https://librepaper.org/local-app.html): installer scripts, Homebrew and Scoop.
+Follow [the desktop app page](https://librepaper.org/desktop-app.html).
 
 ## Documentation
 
@@ -44,7 +44,7 @@ An exported project is a snapshot copy. Editing it does not update the hosted
 document.
 
 - [What is LibrePaper](https://librepaper.org/what.html)
-- [The companion](https://librepaper.org/local-app.html)
+- [The desktop app](https://librepaper.org/desktop-app.html)
 - [Self-hosting](https://librepaper.org/host/simple.html)
 - [Privacy](https://librepaper.org/privacy.html)
 - [Building from source](https://librepaper.org/architecture/building.html)
