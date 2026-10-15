@@ -160,6 +160,17 @@ fn serve(app: &AppHandle, request: Request<Vec<u8>>, responder: UriSchemeRespond
         return responder.respond(forbidden());
     }
 
+    // Documents render in cross-origin frames inside the trusted page, so a
+    // request must name the trusted origin itself. Frame and image loads send
+    // no Origin, and only GET and HEAD may pass without one.
+    let allowed = match request.headers().get(header::ORIGIN) {
+        Some(sent) => sent.to_str().is_ok_and(|sent| sent == origin),
+        None => matches!(*request.method(), Method::GET | Method::HEAD),
+    };
+    if !allowed {
+        return responder.respond(forbidden());
+    }
+
     if request.method() == Method::OPTIONS {
         let mut res = Response::builder()
             .status(StatusCode::NO_CONTENT)

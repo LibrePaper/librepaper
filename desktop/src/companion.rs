@@ -81,9 +81,12 @@ impl Companion {
 }
 
 pub async fn endpoint() -> Result<Endpoint, String> {
-    let output = tokio::process::Command::new(binary())
-        .args(["local", "endpoint"])
-        .stdin(Stdio::null())
+    let mut command = tokio::process::Command::new(binary());
+    command.args(["local", "endpoint"]).stdin(Stdio::null());
+    // CREATE_NO_WINDOW: a GUI app spawning a console program would flash a console window.
+    #[cfg(windows)]
+    command.creation_flags(0x0800_0000);
+    let output = command
         .output()
         .await
         .map_err(|err| format!("cannot run librepaper: {err}"))?;
