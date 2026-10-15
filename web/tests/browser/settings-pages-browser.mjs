@@ -148,6 +148,18 @@ try {
   assert.deepEqual(JSON.parse(await b.evaluate(`JSON.stringify([...document.querySelectorAll(".settings-nav-item")].map((node) => node.textContent.trim()))`)),
     ["Editor", "Rendering", "Tools", "Desktop app", "AI agents", "Backups", "Account"]);
 
+  // Settings is a page, not a card: it covers the window, Back closes it and
+  // so does Escape.
+  assert.equal(await b.evaluate(`(() => { const r = document.querySelector(".modal-page").getBoundingClientRect(); return r.top === 0 && r.left === 0 && r.width === innerWidth && r.height === innerHeight; })()`), true, "settings covers the window");
+  assert.equal(await b.evaluate(`document.querySelector(".modal-back")?.textContent.trim()`), "Back");
+  await b.evaluate(`document.querySelector(".modal-back").click()`);
+  await until("Back closes settings", () => b.evaluate(`!document.querySelector('[role="dialog"][data-state="open"]')`), 5000);
+  await show("rendering", "quarto", "Rendering");
+  await b.command("Input.dispatchKeyEvent", { type: "keyDown", key: "Escape", code: "Escape", windowsVirtualKeyCode: 27 });
+  await b.command("Input.dispatchKeyEvent", { type: "keyUp", key: "Escape", code: "Escape", windowsVirtualKeyCode: 27 });
+  await until("Escape closes settings", () => b.evaluate(`!document.querySelector('[role="dialog"][data-state="open"]')`), 5000);
+  await show("rendering", "quarto", "Rendering");
+
   // Rendering shows two sections with global build options visible for all formats.
   await until("the Quarto profile rows", () => present(["rendering-profile"]).then((found) => found.length === 1), 5000);
   assert.deepEqual(await present(everything), renderingRows);

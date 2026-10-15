@@ -146,7 +146,7 @@ try {
   const companionPort = await freePort();
   const companionAddress = `http://127.0.0.1:${companionPort}/`;
   appEnv.LIBREPAPER_LOCAL_PORT = String(companionPort);
-  app = spawn(binary, ["start", "--foreground", "--port", String(companionPort)], {
+  app = spawn(binary, ["local", "start", "--foreground", "--port", String(companionPort)], {
     env: appEnv,
     stdio: ["ignore", "pipe", "pipe"],
   });

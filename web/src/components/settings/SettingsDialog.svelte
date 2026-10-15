@@ -1,8 +1,8 @@
 <script>
-  // The settings, as a preferences window rather than a form: a navigation
-  // list of categories at the left, one category at a time at the right. It
-  // opens from the workspace navbar or sidebar, and any entry point can open
-  // it on a given category.
+  // The settings, as a full-screen page with a Back link rather than a
+  // preferences window: a navigation list of categories at the left, one
+  // category at a time at the right. It opens from the workspace navbar or
+  // sidebar, and any entry point can open it on a given category.
   import { onMount, tick } from "svelte";
   import { createMachineView } from "../../lib/desktop/machine.svelte.js";
   import Modal from "../Modal.svelte";
@@ -67,7 +67,7 @@
   }
 </script>
 
-<Modal bind:open title="Settings" full>
+<Modal bind:open title="Settings" page>
   <div class="settings">
     <nav class="settings-nav" aria-label="Settings categories">
       <input class="input input-sm settings-search" type="search" placeholder="Search settings" aria-label="Search settings" bind:value={query} />

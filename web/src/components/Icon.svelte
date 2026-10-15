@@ -54,6 +54,7 @@
     diff: [["path", "M12 3v14"], ["path", "M5 10h14"], ["path", "M5 21h14"]],
     "chevron-right": [["path", "m9 6 6 6-6 6"]],
     "chevron-left": [["path", "m15 18-6-6 6-6"]],
+    "arrow-left": [["path", "m12 19-7-7 7-7"], ["path", "M19 12H5"]],
     // Lucide's chevrons-left and -right, for stepping the history calendar a
     // whole year at a time beside the single chevrons that step a month.
     "chevrons-left": [["path", "m11 17-5-5 5-5"], ["path", "m18 17-5-5 5-5"]],
