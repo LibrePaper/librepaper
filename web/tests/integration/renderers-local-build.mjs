@@ -4,6 +4,7 @@
 import assert from "node:assert/strict";
 import * as client from "../../src/lib/companion/client.js";
 import * as renderers from "../../src/lib/renderers.js";
+import { formOf } from "../helpers/form-body.mjs";
 
 globalThis.location = { origin: "https://app.test" };
 
@@ -40,7 +41,7 @@ client._testing.inject({ fetch: async (url, init = {}) => {
   if (url.endsWith("/health")) return response(200, { service: "librepaper-local", protocol: [2], version: "2", instance: "one" });
   if (url.endsWith("/capabilities")) return response(200, { builders: [] });
   if (url.endsWith("/jobs") && init.method === "POST") {
-    submitted = JSON.parse(await init.body.get("job").text());
+    submitted = JSON.parse(await (await formOf(init)).get("job").text());
     return response(202, { id: "build-1" });
   }
   if (url.endsWith("/jobs/build-1")) return response(200, { status: "done", exit: 0, outputs: { [submitted.output]: { size: artifact.byteLength, sha256: await digest(artifact) } }, provenance: { builder: submitted.builder } });
@@ -98,7 +99,7 @@ assert.equal(failed.html, null);
 
 client._testing.inject({ fetch: async (url, init = {}) => {
   if (url.endsWith("/jobs") && init.method === "POST") {
-    submitted = JSON.parse(await init.body.get("job").text());
+    submitted = JSON.parse(await (await formOf(init)).get("job").text());
     return response(202, { id: "quarto-hosted" });
   }
   if (url.endsWith("/jobs/quarto-hosted")) return response(200, { status: "failed", exit: 1, error: "fixture stopped after admission", outputs: {} });

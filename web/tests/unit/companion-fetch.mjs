@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import * as local from "../../src/lib/companion/client.js";
+import { formOf } from "../helpers/form-body.mjs";
 
 const BASE = "lp-local://localhost/";
 
@@ -62,7 +63,8 @@ const health = (protocol = [2]) => response({ service: "librepaper-local", proto
   assert.equal(built.ok, false, "the stub omits Quarto outputs after exercising job submission and polling");
   const jobPost = requests.find(({ url, init }) => url.endsWith("/librepaper/local/jobs") && init.method === "POST");
   assert.ok(jobPost, "job submission sends a POST");
-  assert.ok(jobPost.init.body instanceof FormData, "job submission preserves its multipart body");
+  assert.match(String(jobPost.init.headers?.["Content-Type"] || ""), /^multipart\/form-data; boundary=/, "job submission preserves its multipart body");
+  assert.notEqual((await formOf(jobPost.init)).get("job"), null, "job submission preserves its multipart body");
   assert.ok(requests.every(({ init }) => !init.headers || !("Authorization" in init.headers)), "the page sends no credential");
 }
 

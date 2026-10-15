@@ -9,6 +9,7 @@ const { createLocalPreview } = await loadRunes(
 );
 import { _testing, configure, probe, quartoRequest, runBuild, syncWorkspace, startLocalPreview, localPreviewPage, localPreviewStatus, stopLocalPreview, calepinAvailable } from "../../src/lib/companion/client.js";
 import { parameterSha256 } from "../../src/lib/engines/quarto.js";
+import { formOf } from "../helpers/form-body.mjs";
 
 const digest = "a".repeat(64);
 
@@ -82,7 +83,7 @@ const manifestSha = await sha(manifest);
 const posts = [];
 setup(async (url, init = {}) => {
   if (init.method === "POST" && url.endsWith("/jobs")) {
-    posts.push(await init.body.get("job").text());
+    posts.push(await (await formOf(init)).get("job").text());
     return response({ id: "qjob-1", status: "queued" }, 202);
   }
   if (init.method === "GET" && url.endsWith("/jobs/qjob-1")) {
@@ -194,7 +195,7 @@ setup(async (url, init = {}) => {
 const tree = { main: "paper.qmd", texts: { "paper.qmd": "# Paper" }, assets: { "figures/plot.png": new Uint8Array([1, 2, 3]) } };
 const syncResult = await syncWorkspace({ tree });
 assert.deepEqual(syncResult, { synced: 2 });
-const manifestPart = syncRequest.body.get("manifest");
+const manifestPart = (await formOf(syncRequest)).get("manifest");
 const manifestEntries = JSON.parse(await manifestPart.text());
 assert.deepEqual(
   manifestEntries.map((entry) => entry.path).sort(),
@@ -205,7 +206,7 @@ for (const entry of manifestEntries) {
   assert.equal(entry.sha256, await sha(bytes));
   assert.equal(entry.size, bytes.byteLength);
 }
-const filesInForm = syncRequest.body.getAll("file");
+const filesInForm = (await formOf(syncRequest)).getAll("file");
 assert.equal(filesInForm.length, 2);
 const fileNames = filesInForm.map((part) => part.name).sort();
 assert.deepEqual(fileNames, ["figures/plot.png", "paper.qmd"]);
@@ -348,7 +349,8 @@ console.log("quarto-local: preview lifecycle calls work, and calepinAvailable de
           : response({ error: "this project folder is not granted" }, 404);
       }
       if (init.method === "POST" && url.endsWith("/previews")) {
-        const request = init.body?.get ? JSON.parse(await init.body.get("job").text()) : JSON.parse(init.body);
+        const multipart = String(init.headers?.["Content-Type"] || "").startsWith("multipart/form-data");
+        const request = multipart ? JSON.parse(await (await formOf(init)).get("job").text()) : JSON.parse(init.body);
         // The protocol 2 envelope names the binding once, in `workspace`,
         // rather than inside an engine-specific block.
         const binding = request.workspace?.binding_id;
