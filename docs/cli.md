@@ -2,33 +2,21 @@
 title: "The CLI"
 ---
 
-## The companion
+## Desktop app
 
-After installing [the companion](local-app.html), run `librepaper` in a terminal to start it in the background.
+The [desktop app](desktop-app.html) runs its own local service. You do not start, stop or pair it from the CLI.
+
+The desktop app finds document tools from the `PATH` it inherits when it starts. Set a tool's executable explicitly in its Integrations settings when it is not on `PATH`.
+
+For local backups, see [backups](backups.html).
+
+## Export
 
 ```sh
-librepaper                                      # start in background
-librepaper start                                # explicit equivalent
-librepaper install-desktop                      # install a launcher that starts the companion
-librepaper --at-login                           # start now and at login
-librepaper --foreground                        # run in this process
-librepaper --port 8763                          # use a chosen port
-librepaper status                               # address, tools, agents
-librepaper stop                                 # stop it
-librepaper agent list                           # list configured agents
-librepaper agent add <id> -- <command>          # add an agent command
-librepaper agent remove <id>                    # remove an agent
-librepaper local approve <code>                 # approve a pending request
 librepaper export c9k ./paper-copy              # immutable snapshot
 librepaper export c9k ./paper-copy --key URL    # read as share-link holder
 librepaper export c9k ./paper-copy --at "v1"    # historical version
 ```
-
-On supported desktops, starting the companion shows a tray icon. Its Settings item opens the [desktop app](local-app.html). The tray appears automatically. Use `librepaper stop` to stop the companion. Start-at-login is optional. Folder selection uses the operating system's native chooser.
-
-The companion discovers document tools from the `PATH` inherited when it starts. Set a tool's executable explicitly in its Integrations settings when it is not on `PATH`.
-
-For scheduled local backups, see [account backups](backups.html).
 
 ## Document commands
 

@@ -21,7 +21,7 @@ Cursors follow characters through insertions and deletions. Resolution falls bac
 Marks are painted in the browser. Source identity and current attachment come from the server.
 
 Comments use concepts from the W3C Web Annotation Data Model, adapted to the
-document's source anchors. The companion's `librepaper export DOCUMENT DIRECTORY`
+document's source anchors. The CLI's `librepaper export DOCUMENT DIRECTORY`
 command exports a project snapshot of source and assets, not annotations. The
 current CLI has no comments-to-Markdown or JSON-LD export.
 
