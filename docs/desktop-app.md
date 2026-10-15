@@ -39,6 +39,7 @@ sudo zypper install ./LibrePaper-<version>-1.x86_64.rpm    # openSUSE
 ```
 
 - The Scoop package, the Debian package and the RPM package also install the `librepaper` command line.
+- The Linux package is named `libre-paper`: remove it with `sudo apt remove libre-paper` or `sudo dnf remove libre-paper`.
 - macOS: build from source for now.
 
 ```sh

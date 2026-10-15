@@ -81,7 +81,7 @@ librepaper.org; that is an operator command described in the private runbook
 Get-AuthenticodeSignature .\LibrePaper_0.0.43_x64-setup.exe | Format-List Status, SignerCertificate, TimeStamperCertificate
 ```
 
-- Pull requests build unsigned installers in the "Windows build" workflow (artifact `desktop-windows-unsigned`).
+- Pull requests build unsigned installers in the "Windows build" workflow (artifact `desktop-windows-unsigned`) and the Linux packages in the "Linux desktop build" workflow (artifact `desktop-linux-packages`).
 
 ## Repository secrets
 
