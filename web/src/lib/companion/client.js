@@ -1059,7 +1059,7 @@ export async function quit() {
  * is the signed-in server account, never the currently open project. */
 export async function backups(accountId) {
   const query = new URLSearchParams({ account: String(accountId || "") });
-  const response = await send("GET", `backups?${query}`, });
+  const response = await send("GET", `backups?${query}`);
   return response.json();
 }
 
