@@ -34,7 +34,8 @@ sudo apt install ./LibrePaper_<version>_amd64.deb
 - Fedora and openSUSE: download `LibrePaper-<version>-1.x86_64.rpm` from the release, then run:
 
 ```sh
-sudo dnf install ./LibrePaper-<version>-1.x86_64.rpm
+sudo dnf install ./LibrePaper-<version>-1.x86_64.rpm       # Fedora
+sudo zypper install ./LibrePaper-<version>-1.x86_64.rpm    # openSUSE
 ```
 
 - The Scoop package, the Debian package and the RPM package also install the `librepaper` command line.
