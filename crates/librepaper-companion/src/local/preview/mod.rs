@@ -68,13 +68,6 @@ pub(crate) fn bind_scope(
     // A session in this same scope is this caller's own previous watcher,
     // which `start` replaces. Every exclusion below is about somebody else's.
     let other_scope = |p: &&Session| p.origin != request.origin || p.project != request.project;
-    if existing
-        .values()
-        .filter(other_scope)
-        .any(|p| p.binding == binding_id)
-    {
-        return Err("Stop the existing preview before starting another watcher.".into());
-    }
     if existing.values().filter(other_scope).count() >= MAX_OTHER_PREVIEWS {
         return Err("Too many active previews".into());
     }
@@ -85,6 +78,8 @@ pub(crate) fn bind_scope(
         main,
         true,
     )?;
+    // This check keeps two previews off one directory, for hosted workspaces
+    // and granted folders alike.
     if existing
         .values()
         .filter(other_scope)
@@ -625,6 +620,8 @@ impl Previews {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[cfg(unix)]
+    use crate::local::bindings::HOSTED_BINDING;
     use std::io::Cursor;
 
     struct MockWatch;
@@ -728,5 +725,131 @@ mod tests {
             "no blank line after a line at the limit"
         );
         assert!(!final_log.contains("\n\n"));
+    }
+
+    #[cfg(unix)]
+    /// A managed preview request for one hosted project, with a manifest
+    /// that carries its entrypoint.
+    fn hosted_request(project: &str) -> PreviewRequest {
+        let source = b"# Paper\n";
+        PreviewRequest {
+            protocol: 2,
+            project: project.into(),
+            origin: "https://example.test".into(),
+            snapshot: "revision".into(),
+            generation: 1,
+            inputs: crate::local::protocol::PreviewInputs::Quarto(
+                crate::local::protocol::QuartoJobOptions {
+                    binding_id: HOSTED_BINDING.into(),
+                    main: "paper.qmd".into(),
+                    format: "html".into(),
+                    ..Default::default()
+                },
+            ),
+            manifest: vec![crate::local::protocol::ManifestEntry {
+                path: "paper.qmd".into(),
+                sha256: librepaper_document::results::sha256(source),
+                size: source.len() as u64,
+            }],
+            source: None,
+            workspace: crate::local::protocol::WorkspaceRequest::Bound {
+                binding_id: HOSTED_BINDING.into(),
+            },
+            builder: "quarto".into(),
+            output: "html".into(),
+            entrypoint: "paper.qmd".into(),
+        }
+    }
+
+    #[cfg(unix)]
+    /// A session with every field the scope checks read filled in. `Session`
+    /// owns a live `Child`, so this spawns a real `sleep` that is killed
+    /// when the session is dropped.
+    async fn hosted_session(project: &str, root: PathBuf) -> Session {
+        let child = Command::new("sleep")
+            .arg("60")
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .kill_on_drop(true)
+            .spawn()
+            .expect("spawn sleep");
+        let log: Arc<AsyncMutex<String>> = Arc::new(AsyncMutex::new(String::new()));
+        let latest: Arc<AsyncMutex<Option<Artifact>>> = Arc::new(AsyncMutex::new(None));
+        let rendering = Arc::new(AtomicBool::new(false));
+        let watch = Arc::new(SessionWatch {
+            root: root.clone(),
+            entrypoint: "paper.qmd".to_string(),
+            adapter: Box::new(MockWatch),
+            log: log.clone(),
+            latest: latest.clone(),
+            rendering: rendering.clone(),
+        });
+        Session {
+            engine: "quarto".into(),
+            kind: ArtifactKind::Html,
+            origin: "https://example.test".into(),
+            project: project.into(),
+            binding: HOSTED_BINDING.into(),
+            root,
+            started: Instant::now(),
+            log,
+            latest,
+            rendering,
+            watch,
+            child,
+        }
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn hosted_previews_for_two_projects_run_side_by_side() {
+        let state = tempfile::tempdir().unwrap();
+        let hosted = tempfile::tempdir().unwrap();
+        let bindings = BindingStore::new(state.path()).with_hosted_workspaces(hosted.path().into());
+        let one_root = bindings
+            .validate_scoped_entrypoint(
+                HOSTED_BINDING,
+                "https://example.test",
+                "one",
+                "paper.qmd",
+                true,
+            )
+            .unwrap()
+            .root;
+        let mut existing = HashMap::new();
+        existing.insert("one".to_string(), hosted_session("one", one_root).await);
+        let request = hosted_request("two");
+        let result = bind_scope(&existing, &request, &bindings, HOSTED_BINDING, "paper.qmd");
+        assert!(result.is_ok(), "{:?}", result.as_ref().err());
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_second_preview_on_the_same_directory_is_refused() {
+        let state = tempfile::tempdir().unwrap();
+        let hosted = tempfile::tempdir().unwrap();
+        let bindings = BindingStore::new(state.path()).with_hosted_workspaces(hosted.path().into());
+        let two_root = bindings
+            .validate_scoped_entrypoint(
+                HOSTED_BINDING,
+                "https://example.test",
+                "two",
+                "paper.qmd",
+                true,
+            )
+            .unwrap()
+            .root;
+        // Another scope's watcher already sits on project two's directory.
+        let mut existing = HashMap::new();
+        existing.insert("one".to_string(), hosted_session("one", two_root).await);
+        let request = hosted_request("two");
+        let err = bind_scope(&existing, &request, &bindings, HOSTED_BINDING, "paper.qmd")
+            .err()
+            .expect("a second preview on one directory should be refused");
+        assert!(
+            err.contains("already watches this project directory"),
+            "{err}"
+        );
     }
 }
