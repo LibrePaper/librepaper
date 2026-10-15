@@ -240,7 +240,12 @@ async function send(method, path, { jsonBody, formBody, signal } = {}) {
   const headers = { Accept: "application/json" };
   let body;
   if (formBody !== undefined) {
-    body = formBody;
+    // WebKitGTK crashes the desktop app when a request through its URL
+    // scheme carries a Blob, and a form's files are Blobs. The multipart body
+    // is encoded here into plain bytes, with its boundary in the content type.
+    const encoded = new Response(formBody);
+    headers["Content-Type"] = encoded.headers.get("content-type") || "multipart/form-data";
+    body = await encoded.arrayBuffer();
   } else if (jsonBody !== undefined) {
     headers["Content-Type"] = "application/json";
     body = JSON.stringify(jsonBody);
