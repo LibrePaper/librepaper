@@ -202,9 +202,6 @@ pub(super) async fn handle(
         (Some("agents"), Some("sessions"), Some(id), Some("cancel")) if *method == Method::POST => {
             cancel_session(inner, id).await
         }
-        (Some("settings"), None, None, None) if *method == Method::PUT => {
-            update_settings(request).await
-        }
         _ => write_json(404, &json!({"error":"not found"})),
     }
 }
@@ -446,39 +443,6 @@ fn generated_agent_ids_are_reserved_safe_and_unique() {
     );
 }
 
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-struct SettingsRequest {
-    integrations: Option<std::collections::BTreeMap<String, crate::local::integrations::Custom>>,
-}
-
-async fn update_settings(request: Request<Body>) -> Reply {
-    let body = match read_json_body::<SettingsRequest>(request).await {
-        Ok(body) => body,
-        Err(response) => return response,
-    };
-    let integration_updates: Vec<_> = if let Some(integrations) = &body.integrations {
-        let mut updates = Vec::with_capacity(integrations.len());
-        for (name, custom) in integrations {
-            let which = match crate::local::integrations::Integration::parse(name) {
-                Ok(which) => which,
-                Err(error) => return write_json(400, &json!({"error":error})),
-            };
-            if let Err(error) = custom.validate() {
-                return write_json(400, &json!({"error":error}));
-            }
-            updates.push((which, custom.clone()));
-        }
-        updates
-    } else {
-        Vec::new()
-    };
-    if let Err(error) = crate::local::integrations::set_many(integration_updates) {
-        return write_json(400, &json!({"error":error}));
-    }
-    write_json(200, &json!({"ok":true}))
-}
-
 #[cfg(test)]
 mod tests {
     use super::super::test_support::{credential, inner as build_inner, origin, PORT};
@@ -585,6 +549,7 @@ mod tests {
             (Method::DELETE, "/companion/api/pairings/abc"),
             (Method::POST, "/companion/api/quit"),
             (Method::POST, "/companion/api/approvals/abc"),
+            (Method::PUT, "/companion/api/settings"),
         ] {
             let response = send_api(&inner, method, path, Some(&token), Some(&manage), &host).await;
             assert_eq!(response.status(), StatusCode::NOT_FOUND, "{path}");
