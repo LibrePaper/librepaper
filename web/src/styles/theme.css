@@ -41,19 +41,21 @@
 	--color-disabled-bg: var(--sage-3);
 	--color-disabled-text: var(--sage-9);
 
-	/* Source syntax colors use the same Radix scales as the rest of the UI. */
-	--source-highlight-keyword: var(--green-12);
-	--source-highlight-string: var(--amber-12);
-	--source-highlight-number: var(--red-11);
-	--source-highlight-comment: var(--sage-11);
-	--source-highlight-tag: var(--green-11);
-	--source-highlight-property: var(--sage-12);
-	--source-highlight-function: var(--green-12);
-	--source-highlight-heading: var(--color-text);
-	--source-highlight-link: var(--color-link);
-	--source-highlight-monospace: var(--red-11);
-	--source-highlight-punctuation: var(--sage-11);
-	--source-highlight-invalid: var(--red-11);
+	/* Source syntax colors follow GitHub Light (Primer prettylights). */
+	--source-highlight-keyword: #cf222e;
+	--source-highlight-string: #0a3069;
+	--source-highlight-constant: #0550ae;
+	--source-highlight-comment: #6e7781;
+	--source-highlight-tag: #116329;
+	--source-highlight-property: #0550ae;
+	--source-highlight-function: #8250df;
+	--source-highlight-variable: #953800;
+	--source-highlight-heading: #0550ae;
+	--source-highlight-link: #0a3069;
+	--source-highlight-monospace: #0a3069;
+	--source-highlight-punctuation: #1f2328;
+	--source-highlight-meta: #6e7781;
+	--source-highlight-invalid: #82071e;
 
 	/* Avatar fills keep white initials readable at normal text size. */
 	--color-avatar-1: var(--color-brand);
