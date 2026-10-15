@@ -94,7 +94,9 @@ fn local_help_lists_only_the_approval_control() {
             "local command {command:?} is absent from local help:\n{help}"
         );
     }
-    for hidden_command in ["start", "stop", "status", "agent", "open", "endpoint", "tray"] {
+    for hidden_command in [
+        "start", "stop", "status", "agent", "open", "endpoint", "tray",
+    ] {
         assert!(
             !lists_command(&help, hidden_command),
             "compatibility command {hidden_command:?} should be hidden from local help:\n{help}"
