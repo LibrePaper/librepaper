@@ -93,11 +93,7 @@ fn ceiling_exceeds_disk(total: i64, free: u64, files_on_disk: bool) -> bool {
     files_on_disk && total >= 0 && total as u64 > free.saturating_sub(256 * 1024 * 1024)
 }
 
-pub fn warn(
-    config: &librepaper_base::config::Configuration,
-    primary: &Path,
-    files_on_disk: bool,
-) {
+pub fn warn(config: &librepaper_base::config::Configuration, primary: &Path, files_on_disk: bool) {
     if let Ok((_, free)) = librepaper_base::util::disk_space(primary) {
         if ceiling_exceeds_disk(config.storage.total, free, files_on_disk) {
             tracing::warn!("the storage ceiling leaves less than 256 MiB of currently available filesystem headroom");
