@@ -35,7 +35,6 @@ use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 use tokio::sync::{mpsc, watch, Mutex, Notify};
 
-use crate::local::approval::ApprovalBroker;
 use crate::local::preview;
 use crate::local::protocol::{
     self, Capabilities, JobOptions, JobOutcome, JobRequest, JobStatus, ManifestEntry, Workspace,
@@ -429,7 +428,6 @@ pub(super) struct Inner {
     /// supervised tokio task per (document, conversation) pair. See
     /// `crate::assistant::registry`.
     pub(super) assistant_sessions: crate::assistant::registry::SessionRegistry,
-    pub(super) approvals: ApprovalBroker,
     /// The one credential that opens this service, and the one origin whose
     /// pages may manage the machine. Created when the service is built.
     control: control::ControlAuth,
@@ -493,7 +491,6 @@ impl LocalService {
             assistant_sessions: crate::assistant::registry::SessionRegistry::new(
                 state_home.to_path_buf(),
             ),
-            approvals: ApprovalBroker::default(),
             control,
             admission: Mutex::new(()),
         });
@@ -515,12 +512,6 @@ impl LocalService {
         Router::new()
             .fallback(handle)
             .with_state(self.inner.clone())
-    }
-
-    /// Resolve any in-flight confirmation dialogs as denied before graceful
-    /// service shutdown, so they cannot hold the listener open until timeout.
-    pub async fn deny_pending_approvals(&self) {
-        self.inner.approvals.deny_all();
     }
 }
 
@@ -1002,8 +993,7 @@ async fn dispatch(
         ["capabilities", "rescan"] if *method == Method::POST => {
             handle_capabilities(inner, headers, origin, true).await
         }
-        // Settings routes (bearer authenticated)
-        ["settings"] if *method == Method::GET => handle_settings(inner, headers, origin).await,
+        // Integration route (bearer authenticated)
         ["integrations", name] if *method == Method::PUT => {
             handle_integration_set(inner, headers, origin, name, request).await
         }
@@ -1246,28 +1236,14 @@ async fn handle_capabilities(
     write_json(200, &response)
 }
 
-/* ------------------------------------------------------ Settings routes */
-
-async fn handle_settings(inner: &Inner, headers: &HeaderMap, origin: Option<&str>) -> Reply {
-    if let Err(response) = authenticate(inner, headers, origin) {
-        return response;
-    }
-
-    write_json(
-        200,
-        &json!({
-            "version": crate::VERSION,
-            "integrations": super::integrations::all(),
-        }),
-    )
-}
-
 #[derive(serde::Deserialize)]
 struct IntegrationRequest {
     path: Option<String>,
     args: Vec<String>,
 }
 
+/// Changes the Quarto or Calepin command. The desktop shell asks the user
+/// before it forwards this request, so the service applies it directly.
 async fn handle_integration_set(
     inner: &Inner,
     headers: &HeaderMap,
@@ -1308,43 +1284,9 @@ async fn handle_integration_set(
         return write_json(200, &json!(custom));
     }
 
-    let origin_name = origin.unwrap_or("unknown");
-    let tool = match which {
-        super::integrations::Integration::Quarto => "Quarto",
-        super::integrations::Integration::Calepin => "Calepin",
-    };
-    let message = if custom == super::integrations::Custom::default() {
-        format!("{origin_name} wants LibrePaper to restore the default {tool} command.")
-    } else {
-        let program = match &custom.path {
-            Some(path) => path.display().to_string(),
-            None => format!("{} (found on PATH)", which.as_str()),
-        };
-        let command = std::iter::once(program)
-            .chain(custom.args.iter().cloned())
-            .collect::<Vec<_>>()
-            .join(" ");
-        format!("{origin_name} wants LibrePaper to run {tool} as:\n\n{command}\n\nOnly allow this if you asked for it.")
-    };
-
-    let approval = super::approval::Approval {
-        title: format!("Change {tool} command"),
-        message,
-        allow_label: "Use it".to_string(),
-    };
-
-    let decision = decision_to_result(
-        inner
-            .approvals
-            .ask(&approval, Duration::from_secs(300))
-            .await,
-    );
-    match decision {
-        Ok(()) => match super::integrations::set(which, custom.clone()) {
-            Ok(()) => write_json(200, &json!(custom)),
-            Err(error) => write_json(500, &json!({"error": error})),
-        },
-        Err(response) => response,
+    match super::integrations::set(which, custom.clone()) {
+        Ok(()) => write_json(200, &json!(custom)),
+        Err(error) => write_json(500, &json!({"error": error})),
     }
 }
 
@@ -1495,17 +1437,6 @@ pub(super) fn project_query(uri: &axum::http::Uri) -> Option<String> {
 /// lookup by id, since a request covers every project of its origin.
 fn owned_by(entry: &JobEntry, origin: Option<&str>) -> bool {
     store::normalize_origin(&entry.origin) == store::normalize_origin(origin.unwrap_or_default())
-}
-
-#[allow(clippy::result_large_err)] // the error is a response
-fn decision_to_result(decision: super::approval::Decision) -> Result<(), Reply> {
-    match decision {
-        super::approval::Decision::Allowed => Ok(()),
-        super::approval::Decision::Denied => Err(write_json(
-            403,
-            &json!({"error": "Not approved on this computer."}),
-        )),
-    }
 }
 
 pub(super) fn bearer_token(headers: &HeaderMap) -> Option<String> {
@@ -2154,7 +2085,6 @@ pub(super) mod test_support {
             assistant_sessions: crate::assistant::registry::SessionRegistry::new(
                 state_home.to_path_buf(),
             ),
-            approvals: ApprovalBroker::default(),
             admission: Mutex::new(()),
         })
     }
@@ -2383,49 +2313,12 @@ mod settings_tests {
     #[tokio::test]
     // The store is process-wide; holding its test lock across awaits is the point.
     #[allow(clippy::await_holding_lock)]
-    async fn put_integration_denied_leaves_unchanged() {
+    async fn put_integration_applies_without_asking() {
         let (inner, state_home, _cache_home) = test_inner().await;
         let _lock = super::super::integrations::TEST_LOCK
             .lock()
             .unwrap_or_else(|poison| poison.into_inner());
         super::super::integrations::init(state_home.path());
-        super::super::approval::script(false);
-
-        let request = Request::put("/integrations/quarto")
-            .header("authorization", format!("Bearer {}", credential(&inner)))
-            .header("content-type", "application/json")
-            .body(Body::from(
-                r#"{"path":"/usr/bin/quarto","args":["--verbose"]}"#,
-            ))
-            .expect("request");
-
-        let response = handle_integration_set(
-            &inner,
-            &request.headers().clone(),
-            Some("https://example.test"),
-            "quarto",
-            request,
-        )
-        .await;
-        assert_eq!(response.status(), StatusCode::FORBIDDEN);
-        assert_eq!(
-            super::super::integrations::get(super::super::integrations::Integration::Quarto),
-            super::super::integrations::Custom::default()
-        );
-
-        super::super::approval::unscript();
-    }
-
-    #[tokio::test]
-    // The store is process-wide; holding its test lock across awaits is the point.
-    #[allow(clippy::await_holding_lock)]
-    async fn put_integration_allowed_persists() {
-        let (inner, state_home, _cache_home) = test_inner().await;
-        let _lock = super::super::integrations::TEST_LOCK
-            .lock()
-            .unwrap_or_else(|poison| poison.into_inner());
-        super::super::integrations::init(state_home.path());
-        super::super::approval::script(true);
 
         let request = Request::put("/integrations/quarto")
             .header("authorization", format!("Bearer {}", credential(&inner)))
@@ -2452,8 +2345,6 @@ mod settings_tests {
             Some(std::path::PathBuf::from("/usr/bin/quarto"))
         );
         assert_eq!(custom.args, vec!["--verbose"]);
-
-        super::super::approval::unscript();
     }
 
     #[tokio::test]

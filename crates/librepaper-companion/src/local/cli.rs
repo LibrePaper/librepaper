@@ -205,7 +205,6 @@ async fn start_foreground(port: u16) {
     };
 
     let make_v4 = router.into_make_service_with_connect_info::<SocketAddr>();
-    let shutdown_service = service.clone();
     let shutdown = async move {
         let stop_poll = async {
             let mut poll = tokio::time::interval(Duration::from_millis(250));
@@ -220,7 +219,6 @@ async fn start_foreground(port: u16) {
             _ = tokio::signal::ctrl_c() => {},
             _ = stop_poll => {},
         }
-        shutdown_service.deny_pending_approvals().await;
     };
     if let Err(err) = axum::serve(listener, make_v4)
         .with_graceful_shutdown(shutdown)
