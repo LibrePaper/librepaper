@@ -46,9 +46,9 @@ writeFileSync(harness, `
 `);
 
 writeFileSync(statusMock, `
-let current = $state.raw({ state: "unreachable" });
+let current = $state.raw({ state: "unavailable" });
 export const companion = { get status() { return current; }, watch() { return () => {}; } };
-window.setPairing = (paired) => { window.pairingVersion = (window.pairingVersion || 0) + 1; current = { state: paired ? "connected" : "unreachable", address: "http://127.0.0.1:8763/", instance: "companion-a" }; };
+window.setPairing = (paired) => { window.pairingVersion = (window.pairingVersion || 0) + 1; current = { state: paired ? "ready" : "unavailable", instance: "companion-a" }; };
 `);
 
 writeFileSync(clientMock, `
@@ -59,7 +59,7 @@ window.backupStatusRequest = (accountId) => new Promise((resolve, reject) => {
   window.backupRequests.push({ resolve, reject, account_id: accountId });
 });
 export function backups(accountId) { return window.backupStatusRequest(accountId); }
-export async function connectApp() { window.connectCalls = (window.connectCalls || 0) + 1; }
+export async function retry() { window.retryCalls = (window.retryCalls || 0) + 1; }
 export async function authorizeBackups(accountId, approveCode, isCurrent) {
   window.backupCalls.push({ method: "POST authorize", account_id: accountId });
   const pairing = window.pairingVersion || 0;
@@ -153,17 +153,17 @@ try {
   assert.equal(await b.evaluate("document.querySelector('#backup-enable [role=switch]').disabled && document.querySelector('#backup-destination input').disabled && document.querySelector('#backup-destination button').disabled && document.querySelector('#backup-frequency select').disabled && document.querySelector('.backup-status button').disabled"), true, "controls are disabled while the companion is disconnected");
   assert.equal(await b.evaluate("window.backupCalls.length"), 0, "an unpaired companion is not queried for backup status");
   assert.equal(await b.evaluate("document.querySelector('#backup-enable').innerText.includes('Unknown') && document.querySelector('#backup-frequency').innerText.includes('Unknown')"), true, "unloaded switches and frequency are visibly unknown");
-  assert.equal(await b.evaluate("window.connectCalls || 0"), 0, "opening settings does not start a companion connection");
+  assert.equal(await b.evaluate("window.retryCalls || 0"), 0, "opening settings does not probe the desktop app");
 
   await b.evaluate("window.setAccount({})");
   await until("signed-out prompt shown", () => b.evaluate("document.body.innerText.includes('Sign in')"), 5000);
   assert.equal(await b.evaluate(visibleControls), true, "backup settings remain visible when signed out");
   assert.equal(await b.evaluate("document.querySelector('#backup-enable [role=switch]').disabled && document.querySelector('#backup-destination input').disabled && document.querySelector('#backup-destination button').disabled && document.querySelector('#backup-frequency select').disabled && document.querySelector('.backup-status button').disabled"), true, "all account-scoped controls are disabled when signed out");
   await b.evaluate("window.setAccount({ id: 'account-a', provider: 'github' })");
-  await until("connect prompt restored", () => b.evaluate("document.querySelector('#settings-companion')?.innerText.includes('Not running')"), 5000);
+  await until("unavailable status restored", () => b.evaluate("document.querySelector('#settings-companion')?.innerText.includes('Not running')"), 5000);
 
   await b.evaluate(click("#settings-companion button"));
-  await until("existing companion connection flow invoked", () => b.evaluate("window.connectCalls === 1"), 5000);
+  await until("retry requested", () => b.evaluate("window.retryCalls === 1"), 5000);
   await b.evaluate("window.setPairing(true)");
   await until("paired status request", () => b.evaluate("window.backupRequests.length === 1"), 5000);
   assert.equal(await b.evaluate(visibleControls), true, "controls stay mounted while the first status request is pending");

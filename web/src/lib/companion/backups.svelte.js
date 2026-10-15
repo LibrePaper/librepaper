@@ -1,6 +1,5 @@
 // The account-wide backup status shared by the Reader pill and Settings.
-// It is polled only while the companion is already paired, so this feature
-// never starts a first-time companion probe by itself.
+// It is polled only while the desktop app is ready.
 import * as client from "./client.js";
 
 export function createBackupStatus(bridge = client, { runningPollMs = 1000 } = {}) {

@@ -2,13 +2,11 @@
 //
 //   node web/tests/e2e/latex-e2e.mjs <binary> <mode> <fixture> [seconds] [mirror]
 //
-// `mode` is `browser` (the reader's browser compiler) or `local` (the same
-// reader check, with an optional local companion available for fallback). A
+// `mode` is `browser` (the reader's browser compiler), the only mode: a
+// browser no longer reaches a companion, so there is no local variant. A
 // reader opens the published read link, so its only document authority is the
 // fragment key. Publishing itself uses a locally minted, signed GitHub test
 // session; no OAuth service is contacted.
-import { createHash, randomBytes } from "node:crypto";
-import { spawn, spawnSync } from "node:child_process";
 import { existsSync, mkdtempSync, readFileSync, readdirSync, statSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, dirname, join, resolve } from "node:path";
@@ -26,7 +24,6 @@ const MIRROR_ARG = process.argv[6] || process.env.MIRROR || join(ROOT, "..", "wa
 let BASE;
 const scratch = mkdtempSync(join(tmpdir(), "librepaper-latex-e2e-"));
 let mirror = null;
-let local = null;
 let deployment = null;
 
 const wait = (ms) => new Promise((done) => setTimeout(done, ms));
@@ -66,7 +63,7 @@ async function publish(cookie, fixture) {
 }
 
 async function main() {
-  if (!(MODE === "browser" || MODE === "local")) throw new Error(`unknown mode ${MODE}; use browser or local`);
+  if (MODE !== "browser") throw new Error(`unknown mode ${MODE}; use browser`);
   const fixture = process.argv[4]
     ? REQUESTED_FIXTURE
     : existsSync(REQUESTED_FIXTURE)
@@ -84,7 +81,6 @@ async function main() {
   deployment = await startDeployment({
     label: "latex_e2e",
     binary: BINARY,
-    localCompanion: true,
     advanced: `[assets]\nmirror = ${JSON.stringify(assetMirror)}\n`,
   });
   if (!deployment || deployment.unavailable) {
@@ -102,63 +98,12 @@ async function main() {
   });
 
   const targetUrl = published.url;
-  let localPairing = null;
-  if (MODE === "local") {
-    // No display: the companion asks on its terminal, and the approve
-    // command answers as the person at this computer would.
-    const localConfig = join(scratch, "companion-config");
-    const env = { ...process.env, XDG_CONFIG_HOME: localConfig, XDG_CACHE_HOME: join(localConfig, "cache") };
-    delete env.DISPLAY;
-    delete env.WAYLAND_DISPLAY;
-    let log = "";
-    local = spawn(BINARY, ["start", "--foreground", "--port", "8763"], { stdio: ["ignore", "ignore", "pipe"], env });
-    local.stderr.on("data", (data) => { log += data; });
-    const base = "http://127.0.0.1:8763/librepaper/local";
-    await until("local app ready", async () => {
-      try { return (await fetch(`${base}/health`)).ok; } catch { return false; }
-    }, 30000);
-    const health = await (await fetch(`${base}/health`)).json();
-    const request = randomBytes(24).toString("base64url");
-    const verifier = randomBytes(32).toString("base64url");
-    const challenge = createHash("sha256").update(verifier).digest("hex");
-    const headers = { "content-type": "application/json", origin: BASE };
-    const asked = await fetch(`${base}/pair/request`, {
-      method: "POST", headers,
-      body: JSON.stringify({ origin: BASE, project: published.slug, request, challenge, return: BASE }),
-    });
-    if (asked.status !== 202) throw new Error(`pair/request failed (${asked.status}): ${await asked.text()}`);
-    let code = null;
-    await until("approval asked on the terminal", async () => {
-      code = log.match(/librepaper local approve (\d{6})/)?.[1] || null;
-      return Boolean(code);
-    }, 30000);
-    const approved = spawnSync(BINARY, ["local", "approve", code], { env, encoding: "utf8" });
-    if (approved.status !== 0) throw new Error(`local approve failed: ${approved.stderr}`);
-    let pairing = null;
-    await until("pairing claimed", async () => {
-      const claimed = await fetch(`${base}/connect/claim`, {
-        method: "POST", headers, body: JSON.stringify({ request, origin: BASE, project: published.slug, verifier }),
-      });
-      if (claimed.status === 202) return false;
-      pairing = await claimed.json();
-      if (!claimed.ok || !pairing.token) throw new Error(`local pairing failed (${claimed.status}): ${JSON.stringify(pairing)}`);
-      return true;
-    }, 30000);
-    localPairing = { token: pairing.token, expires: pairing.expires, instance: health.instance };
-    // The local mode keeps the companion fallback reachable for the Biber
-    // fixture. Browser Biber remains preferred by the renderer; the local
-    // pairing is selected only after browser resource failure.
-  }
-
   process.env.LIBREPAPER_BROWSER_IGNORE_CERT_ERRORS = "1";
   const tab = await browser(process.env.BROWSER || "chromium", join(scratch, "profile"), 9500 + Math.floor(Math.random() * 500));
   try {
     await tab.resize(1300, 900);
     await tab.navigate(BASE);
     await tab.setCookie("librepaper_session", readerCookie.slice(readerCookie.indexOf("=") + 1), BASE);
-    if (localPairing) {
-      await tab.evaluate(`localStorage.setItem("librepaper-local-pairings", JSON.stringify({ [location.origin + "|" + ${JSON.stringify(published.slug)}]: ${JSON.stringify(localPairing)} }))`);
-    }
     // A wait that, when it runs out, says what the reader was showing and
     // which mirror files it fetched, rather than only that time ran out.
     let seen = "";
@@ -211,7 +156,6 @@ try {
   process.exitCode = 1;
 } finally {
   await deployment?.stop();
-  local?.kill("SIGINT");
   mirror?.server.close();
   await wait(250);
   for (const directory of [scratch, mirror?.tls].filter(Boolean)) removeTemporary(directory);

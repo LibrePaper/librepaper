@@ -4,8 +4,7 @@ import * as client from "../../src/lib/companion/client.js";
 
 const values = new Map();
 const storage = { getItem: (key) => values.get(key) || null, setItem: (key, value) => values.set(key, String(value)), removeItem: (key) => values.delete(key) };
-const scope = "https://app.test";
-values.set("librepaper-local-connections", JSON.stringify({ [scope]: { token: "token", instance: "one" } }));
+globalThis.window = { __LIBREPAPER_DESKTOP__: { base: "lp-local://localhost/", version: "test" } };
 client._testing.reset();
 client._testing.inject({ storage, wait: () => Promise.resolve() });
 client.configure({ project: "paper", origin: "https://app.test" });

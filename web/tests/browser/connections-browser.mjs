@@ -104,12 +104,11 @@ try {
     const root=document.querySelector('#companion-connection');
     const visible=element => Boolean(element?.getClientRects().length && getComputedStyle(element).visibility !== 'hidden');
     const install=root?.querySelector('a[href="https://librepaper.org/local-app.html"]');
-    const connect=[...(root?.querySelectorAll('button') || [])].find(button => button.textContent.trim() === 'Connect');
-    return { installVisible:visible(install), connectVisible:visible(connect), connectEnabled:Boolean(connect && !connect.disabled) };
+    const open=root?.querySelector('a[href^="librepaper://open?url="]');
+    return { installVisible:visible(install), openVisible:visible(open) };
   })()`);
-  assert.equal(localActions.installVisible,true,'Companion settings shows a visible companion Install link');
-  assert.equal(localActions.connectVisible,true,'Companion settings shows a visible Connect button');
-  assert.equal(localActions.connectEnabled,true,'Companion settings Connect button is enabled');
+  assert.equal(localActions.installVisible,true,'Companion settings shows a visible desktop app Install link');
+  assert.equal(localActions.openVisible,true,'Companion settings shows a visible Open in the desktop app link');
 
   await click('[aria-label="Close"]');
   const backup = await connectionState('open backup settings');

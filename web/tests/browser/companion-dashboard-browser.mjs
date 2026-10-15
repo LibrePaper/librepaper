@@ -1,9 +1,12 @@
-// End-to-end check for the main Settings dialog's local companion controls.
+// End-to-end check for the main Settings dialog's desktop app controls.
 // Uses a real companion process and browser with isolated HOME/state/cache.
+// The page server stands in for the desktop shell: it forwards the page's
+// requests to the companion with the local credential and the page's origin.
 // Run with LIBREPAPER_TEST_BINARY=dist/librepaper.
 
 import assert from "node:assert/strict";
-import { spawn } from "node:child_process";
+import { execFile, spawn } from "node:child_process";
+import { promisify } from "node:util";
 import { build } from "vite";
 import { svelte } from "@sveltejs/vite-plugin-svelte";
 import tailwindcss from "@tailwindcss/vite";
@@ -65,10 +68,9 @@ import ${JSON.stringify(join(root, "web/src/styles/app.css"))};
 import { mount } from ${JSON.stringify(join(root, "web/node_modules/svelte/src/index-client.js"))};
 import * as local from ${JSON.stringify(join(root, "web/src/lib/companion/client.js"))};
 import Harness from ${JSON.stringify(harness)};
-// The page is served from the configured server origin, so the companion pairs it without consent.
-if (window.__companionAddress) local.setAddress(window.__companionAddress);
+// The page is served from the configured server origin, as the shell would show it.
 local.configure({ origin: location.origin });
-await local.connectApp();
+await local.probe();
 mount(Harness, { target: document.body });
 `);
 
@@ -100,12 +102,33 @@ try {
     },
   });
 
-  let companionAddressForPage = "";
+  let endpoint = null;
   const page = () => `<!doctype html>
     <html data-theme="librepaper"><head><meta charset="utf-8"><link rel="stylesheet" href="/check.css"><title>LibrePaper Settings</title></head>
-    <body><script>window.__companionAddress=${JSON.stringify(companionAddressForPage)}</script><script type="module" src="/check.js"></script></body></html>`;
-  server = createServer((request, response) => {
-    if (request.url === "/check.js") {
+    <body><script>window.__LIBREPAPER_DESKTOP__ = Object.freeze({ base: location.origin + "/__lp/", version: "test" })</script><script type="module" src="/check.js"></script></body></html>`;
+  server = createServer(async (request, response) => {
+    if (request.url.startsWith("/__lp/")) {
+      const chunks = [];
+      for await (const chunk of request) chunks.push(chunk);
+      const origin = `http://${request.headers.host}`;
+      try {
+        const forwarded = await fetch(`${endpoint.address}${request.url.slice("/__lp/".length)}`, {
+          method: request.method,
+          headers: {
+            Authorization: `Bearer ${endpoint.token}`,
+            "X-LibrePaper-Origin": origin,
+            ...(request.headers["content-type"] ? { "content-type": request.headers["content-type"] } : {}),
+          },
+          body: ["GET", "HEAD"].includes(request.method) ? undefined : Buffer.concat(chunks),
+        });
+        response.statusCode = forwarded.status;
+        response.setHeader("content-type", forwarded.headers.get("content-type") || "application/octet-stream");
+        response.end(Buffer.from(await forwarded.arrayBuffer()));
+      } catch (error) {
+        response.statusCode = 502;
+        response.end(JSON.stringify({ error: "companion unavailable", detail: String(error) }));
+      }
+    } else if (request.url === "/check.js") {
       response.setHeader("content-type", "text/javascript");
       response.end(readFileSync(join(output, "check.js")));
     } else if (request.url === "/check.css") {
@@ -123,7 +146,7 @@ try {
 
   const companionPort = await freePort();
   const companionAddress = `http://127.0.0.1:${companionPort}/`;
-  companionAddressForPage = companionAddress;
+  appEnv.LIBREPAPER_LOCAL_PORT = String(companionPort);
   app = spawn(binary, ["start", "--foreground", "--port", String(companionPort)], {
     env: appEnv,
     stdio: ["ignore", "pipe", "pipe"],
@@ -137,14 +160,19 @@ try {
     return Boolean(response && response.ok);
   }, 15000).catch((error) => { throw new Error(`${error.message}\ncompanion output:\n${appLog}`); });
 
+  // What the shell would learn from `local endpoint`.
+  endpoint = JSON.parse((await promisify(execFile)(binary, ["local", "endpoint"], { env: appEnv, timeout: 20000 })).stdout.trim().split("\n").at(-1));
+  assert.equal(endpoint.address, companionAddress);
+
   b = await browser("chromium", join(temporary, "chrome"), await freePort());
   await b.navigate(`${appOrigin}/`);
-  await until("computer management available", () => b.evaluate(`Boolean(document.querySelector("#companion-sites-heading"))`), 12000);
+  await until("computer management available", () => b.evaluate(`Boolean(document.querySelector("#companion-activity-heading"))`), 12000);
 
-  assert.equal(await b.evaluate("location.hash"), "", "the session pairing does not add a fragment");
+  assert.equal(await b.evaluate("location.hash"), "", "management does not add a fragment");
   assert.equal(await b.evaluate("location.href"), `${appOrigin}/`, "management opens in place without changing the document URL");
-  const token = await b.evaluate(`JSON.parse(localStorage.getItem("librepaper-local-connections"))[location.origin].token`);
-  assert.equal(await b.evaluate(`document.documentElement.innerHTML.includes(${JSON.stringify(token)})`), false, "the token is not rendered into the page");
+  const token = endpoint.token;
+  assert.equal(await b.evaluate(`document.documentElement.innerHTML.includes(${JSON.stringify(token)})`), false, "the token never reaches the page");
+  assert.equal(await b.evaluate('/\\bConnect\\b/.test(document.body.innerText)'), false, "there are no connect controls");
   assert.equal(await b.evaluate('document.querySelectorAll(".request-card").length'), 0, "approvals use existing SettingRow layout");
   assert.equal(await b.evaluate('document.querySelector("#tray-enabled") === null'), true, "there is no tray preference");
   assert.equal(await b.evaluate(`document.querySelector("#companion-approvals-heading") === null && document.querySelector("#companion-agents-heading") === null`), true, "approvals appear only while one waits, and agents have their own category");
@@ -157,40 +185,12 @@ try {
   }
 
   const apiState = async (headers = {}) => fetch(`${companionAddress}companion/api/state`, {
-    headers: { Origin: appOrigin, Authorization: `Bearer ${token}`, ...headers },
+    headers: { "X-LibrePaper-Origin": appOrigin, Authorization: `Bearer ${token}`, ...headers },
   });
   const trusted = await apiState();
-  assert.equal(trusted.status, 200, "the session pairing can use the management API");
+  assert.equal(trusted.status, 200, "the configured server can use the management API");
   await captureSettingsScreenshot();
 
-  const requestId = Buffer.from(`settings-allow-${Date.now()}`).toString("base64url").padEnd(32, "x");
-  const challenge = "a".repeat(64);
-  // Another site asks: a pair request from the configured origin itself would
-  // replace this page's own pairing when allowed.
-  const siteOrigin = "https://site.example";
-  async function askForPair(id) {
-    const response = await fetch(`${companionAddress}librepaper/local/pair/request`, {
-      method: "POST",
-      headers: { "content-type": "application/json", Origin: siteOrigin },
-      body: JSON.stringify({
-        origin: siteOrigin,
-        request: id,
-        challenge,
-        return: `${siteOrigin}/document`,
-      }),
-    });
-    assert.equal(response.status, 202, `pair request queued: ${await response.text()}`);
-  }
-  async function pairStatus(id) {
-    return fetch(`${companionAddress}librepaper/local/pair/status?request=${encodeURIComponent(id)}`)
-      .then((response) => response.status);
-  }
-  async function waitForApproval() {
-    await until("approval visible in Settings", () => b.evaluate(`
-      [...document.querySelector("#companion-approvals-heading").closest("section").querySelectorAll(".setting-title")]
-        .some((node) => /Connect|Pair/i.test(node.textContent))
-    `), 10000);
-  }
   async function waitForEnabledButton(label, scopeId) {
     await until(`${label} action enabled`, () => b.evaluate(`(() => {
       const scope = ${JSON.stringify(scopeId)}
@@ -202,44 +202,6 @@ try {
       );
     })()`), 10000);
   }
-  async function decide(label, decision, expected) {
-    const id = `${requestId.slice(0, 26)}${label.padEnd(6, "x")}`;
-    await askForPair(id);
-    await waitForApproval();
-    await waitForEnabledButton(decision === "allow" ? "Connect" : "Deny", "#companion-approvals-heading");
-    await b.evaluate(`(() => {
-      const section = document.querySelector("#companion-approvals-heading").closest("section");
-      const row = [...section.querySelectorAll(".setting-row")].find((item) => /Connect|Pair/i.test(item.textContent));
-      const labels = ${JSON.stringify(decision === "allow" ? ["Allow", "Connect"] : ["Deny"])};
-      const action = [...row.querySelectorAll("button")].find((item) => labels.includes(item.textContent.trim()));
-      if (!action) throw new Error("Could not find the " + ${JSON.stringify(decision)} + " action in Settings approvals");
-      action.click();
-    })()`);
-    await until(`pair ${decision} result`, async () => (await pairStatus(id)) === expected, 10000);
-    if (decision === "allow") {
-      await until("approved request removed from Settings", () => b.evaluate(`
-        (() => {
-          const section = document.querySelector("#companion-approvals-heading")?.closest("section");
-          if (!section) return true;
-          return ![...section.querySelectorAll(".setting-title")]
-            .some((node) => /Connect|Pair/i.test(node.textContent));
-        })()
-      `), 10000);
-    }
-  }
-
-  await decide("allow", "allow", 200);
-  const deniedId = `${requestId.slice(0, 26)}denyxx`;
-  await askForPair(deniedId);
-  await waitForApproval();
-  await waitForEnabledButton("Deny", "#companion-approvals-heading");
-  await b.evaluate(`(() => {
-    const section = document.querySelector("#companion-approvals-heading").closest("section");
-    const row = [...section.querySelectorAll(".setting-row")].find((item) => /Connect|Pair/i.test(item.textContent));
-    [...row.querySelectorAll("button")].find((item) => item.textContent.trim() === "Deny").click();
-  })()`);
-  await until("pair deny result", async () => (await pairStatus(deniedId)) === 403, 10000);
-
   const agentLabel = "Claude";
   await b.evaluate(`[...document.querySelectorAll(".settings-nav-item")].find((item) => item.textContent.trim() === "AI agents").click()`);
   await until("agents heading visible", () => b.evaluate("Boolean(document.querySelector('#companion-agents-heading'))"), 10000);
@@ -338,29 +300,9 @@ try {
     return quarto.path === quartoPath && quarto.args.join(" ") === quartoArgs;
   }, 10000);
 
-  // Revoking the other site leaves this page's own pairing and its management in place.
-  await b.evaluate('window.showSettingsCategory("companion")');
-  await until("sites heading visible", () => b.evaluate("Boolean(document.querySelector('#companion-sites-heading'))"), 10000);
-
-  await until("allowed site visible in Settings", () => b.evaluate(`
-    [...document.querySelector("#companion-sites-heading").closest("section").querySelectorAll(".setting-row")]
-      .some((item) => item.textContent.includes(${JSON.stringify(siteOrigin)}))
-  `), 10000);
-  await waitForEnabledButton("Revoke", "#companion-sites-heading");
-  await b.evaluate(`(() => {
-    const section = document.querySelector("#companion-sites-heading").closest("section");
-    const row = [...section.querySelectorAll(".setting-row")].find((item) => item.textContent.includes(${JSON.stringify(siteOrigin)}));
-    if (!row) throw new Error("allowed site did not appear in Settings");
-    row.querySelector("button").click();
-  })()`);
-  await until("connected site revoked through Settings", async () => {
-    const response = await apiState();
-    return response.ok && !(await response.json()).pairings.some((item) => item.origin === siteOrigin);
-  }, 10000);
-
   await captureSettingsScreenshot();
 
-  console.log("companion-dashboard-browser: session-paired Settings, approval decisions, agent/site management, and standalone-only controls passed");
+  console.log("companion-dashboard-browser: shell-forwarded Settings, agent management, and tool commands passed");
 } finally {
   if (b) await b.close();
   if (app && app.exitCode === null) {

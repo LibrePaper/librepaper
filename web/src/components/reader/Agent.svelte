@@ -53,16 +53,15 @@
   let extra = $state("");
   let agentLink = $state("");
   // What this computer has, as the local app reports it. The browser cannot
-  // read a PATH, so until the app is paired there is nothing to offer and the
+  // read a PATH, so until the desktop app is ready there is nothing to offer and the
   // panel says so rather than guessing.
   let installed = $state([]);
   let restoredConversation = "";
   let chosenAgent = $state("");
   let assistant = $state({ running: false, agent: "", access: "" });
-  // The shared local-app state drives this panel. Watching it reflects probes
-  // started elsewhere; the Connect action below is what contacts the app.
+  // The shared desktop app state drives this panel.
   $effect(() => companion.watch());
-  const paired = $derived(companion.status?.state === "connected");
+  const paired = $derived(companion.status?.state === "ready");
   const chosenInstalled = $derived(installed.find((entry) => entry.id === chosenAgent) || null);
   // The four access levels, as a choice rather than four commands: each row
   // carries its own explanation, so the panel never defines them twice.
@@ -587,7 +586,7 @@
        snippet prop on PanelTabs. -->
   {#snippet connectPrompt()}
     <div class="connect-required">
-      <CompanionConnection needs="agents" onconnected={refreshAgents} />
+      <CompanionConnection needs="agents" />
     </div>
   {/snippet}
   <!-- The gear at the top of each pane is the one way to Local companion
@@ -847,7 +846,7 @@
   .agent-context { display:flex; flex-direction:column; gap:calc(var(--spacing) * 2); }
   .agent-settings { display:flex; align-items:center; gap:calc(var(--spacing) * .5); font-size:.8em; color:var(--color-text-secondary); }
   .agent-setting { border:0; background:transparent; color:inherit; font:inherit; padding:0; cursor:pointer; max-width:12rem; }
-  /* The whole not-paired warning: one line, the Connect button, and the
+  /* The whole not-ready warning: one line, the desktop app notice, and the
      refusal message if there is one. */
   .connect-required { display:flex; flex-direction:column; gap:calc(var(--spacing) * .5);
                        padding:calc(var(--spacing) * 2); background:var(--color-subtle);

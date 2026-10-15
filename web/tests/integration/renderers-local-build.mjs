@@ -13,9 +13,6 @@ const storage = {
   setItem: (key, value) => values.set(key, String(value)),
   removeItem: (key) => values.delete(key),
 };
-values.set("librepaper-local-connections", JSON.stringify({
-  "https://app.test": { token: "token", instance: "one" },
-}));
 
 function response(status, body, bytes = null) {
   return {
@@ -32,9 +29,10 @@ async function digest(bytes) {
     .map((byte) => byte.toString(16).padStart(2, "0")).join("");
 }
 
+globalThis.window = { __LIBREPAPER_DESKTOP__: { base: "lp-local://localhost/", version: "test" } };
 client._testing.reset();
 client._testing.inject({ storage, wait: () => Promise.resolve() });
-client.configure({ project: "paper", origin: "https://app.test", active: true });
+client.configure({ project: "paper", origin: "https://app.test" });
 
 let submitted = null;
 let artifact = new TextEncoder().encode("%PDF-typst");

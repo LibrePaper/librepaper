@@ -28,10 +28,10 @@
       New here? Your account is created the first time you continue. Sign in to read, comment, edit, and create documents and projects.
     </p>
     <!-- The service is young and may change under people, so a local copy kept
-         by the companion is the safety net. -->
+         by the desktop app is the safety net. -->
     <div class="signin-warning" role="note">
       <p><strong>LibrePaper is experimental.</strong> The website and service may change at any time.</p>
-      <p>We recommend you use the <a href={INSTALL_URL}>companion app</a> to make <a href="https://librepaper.org/backups.html">automatic local backups</a> of your projects as you edit them.</p>
+      <p>We recommend you use the <a href={INSTALL_URL}>desktop app</a> to make <a href="https://librepaper.org/backups.html">automatic local backups</a> of your projects as you edit them.</p>
     </div>
     <div class="signin-providers">
       {#each providers.filter((provider) => (me.providers ?? []).includes(provider)) as provider (provider)}

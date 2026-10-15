@@ -31,7 +31,7 @@ if (!deployment || deployment.unavailable) {
 const temporary = await mkdtemp(join(tmpdir(), "librepaper-backups-authorization-"));
 const stateHome = join(temporary, "state");
 const origin = deployment.base;
-const pairingToken = "integration-browser-pairing-token";
+let pairingToken;
 const accountId = deployment.accountId;
 const backupDestination = join(temporary, "backup-destination");
 const env = {
@@ -56,7 +56,7 @@ const localBase = `http://127.0.0.1:${port}/librepaper/local`;
 const api = (path, body, token = pairingToken, method = "POST") => fetch(`${localBase}${path}`, {
   method,
   headers: {
-    Origin: origin,
+    "X-LibrePaper-Origin": origin,
     Authorization: `Bearer ${token}`,
     "Content-Type": "application/json",
   },
@@ -71,20 +71,9 @@ try {
     source_format: "markdown",
   });
 
-  // Pairing state mirrors the companion's persisted format. It contains only
-  // a hash of this test token, just like a consented browser pairing.
-  const localState = join(stateHome, "librepaper", "local");
-  await mkdir(localState, { recursive: true });
+  await mkdir(join(stateHome, "librepaper", "local"), { recursive: true });
   await mkdir(backupDestination, { recursive: true });
-  await writeFile(join(localState, "pairings.json"), JSON.stringify({
-    [origin]: {
-      token_sha256: createHash("sha256").update(pairingToken).digest("hex"),
-      origin,
-      created: Math.floor(Date.now() / 1000),
-      expires: Math.floor(Date.now() / 1000) + 3600,
-      label: "backup authorization integration",
-    },
-  }), { mode: 0o600 });
+  const localState = join(stateHome, "librepaper", "local");
   // The native folder chooser cannot be driven in this headless test. Seed
   // the same persisted setting the chooser creates, disabled until the new
   // device credential has been approved.
@@ -105,13 +94,15 @@ try {
 
   await cli("start", "--port", String(port));
   companionStarted = true;
+  // The credential the desktop shell would use.
+  pairingToken = JSON.parse((await cli("endpoint")).stdout.trim().split("\n").at(-1)).token;
   const health = await fetch(`${localBase}/health`);
   assert.equal(health.status, 200, "the isolated companion is running");
   assert.equal(existsSync(join(stateHome, "librepaper", "tokens.json")), false,
     "the companion starts without a cached CLI token");
 
   const unauthenticated = await api("/backups/authorize", { account_id: accountId }, "");
-  assert.equal(unauthenticated.status, 401, "starting authorization requires the paired browser token");
+  assert.equal(unauthenticated.status, 401, "starting authorization requires the local credential");
   const invalidAccount = await api("/backups/authorize", { account_id: "bad account id" });
   assert.equal(invalidAccount.status, 400, "invalid account identifiers cannot start device grants");
 
@@ -171,8 +162,10 @@ try {
   companionStarted = false;
   await cli("start", "--port", String(port));
   companionStarted = true;
+  // The credential the desktop shell would use.
+  pairingToken = JSON.parse((await cli("endpoint")).stdout.trim().split("\n").at(-1)).token;
   const statusAfterRestart = await fetch(`${localBase}/backups?account=${encodeURIComponent(accountId)}`, {
-    headers: { Origin: origin, Authorization: `Bearer ${pairingToken}` },
+    headers: { "X-LibrePaper-Origin": origin, Authorization: `Bearer ${pairingToken}` },
   });
   assert.equal(statusAfterRestart.status, 200, `backup status after restart: ${await statusAfterRestart.clone().text()}`);
   assert.equal((await statusAfterRestart.json()).needs_login, false, "the backup remains authorized after restart");
@@ -190,7 +183,7 @@ try {
   let finished;
   while (Date.now() < deadline) {
     const response = await fetch(`${localBase}/backups?account=${encodeURIComponent(accountId)}`, {
-      headers: { Origin: origin, Authorization: `Bearer ${pairingToken}` },
+      headers: { "X-LibrePaper-Origin": origin, Authorization: `Bearer ${pairingToken}` },
     });
     assert.equal(response.status, 200, `scheduled backup status: ${await response.clone().text()}`);
     finished = await response.json();

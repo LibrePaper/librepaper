@@ -180,7 +180,7 @@ export async function render(tree, title, { manual = false, format: requestedFor
   // browser, and its one local path is the automatic Biber and native
   // fallback that `latex.js` routes for itself.
   if (buildPreferences?.selection === "tool" && buildPreferences.backend === "local" && format !== "latex") {
-    localBridge.configure({ project, origin: globalThis.location?.origin || "", active: true });
+    localBridge.configure({ project, origin: globalThis.location?.origin || "" });
     const digest = await snapshotDigest(tree);
     const usesWorkspace = ["quarto", "calepin"].includes(buildPreferences.tool);
     // Snapshot builds can use the companion-owned hosted workspace populated

@@ -17,7 +17,7 @@ export const BUILDERS = Object.freeze([
 
 export function buildersFor(format) { return BUILDERS.filter((builder) => builder.formats.includes(format)); }
 
-// A companion that does not speak protocol 2 never reaches "connected"
+// A companion that does not speak protocol 2 never reaches "ready"
 // (`companion/client.js`), so a capability response always carries `builders`,
 // and every builder record carries its own explicit operations.
 export function capabilityFor(capabilities, id) {

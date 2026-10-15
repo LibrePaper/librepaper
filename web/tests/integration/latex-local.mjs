@@ -1,10 +1,9 @@
-// The local bridge client, against a fake local LibrePaper.
+// The desktop client, against a fake desktop app.
 //
-// The companion client never touches `fetch` or `localStorage` directly -- everything
-// ambient goes through its `_testing.inject`-able `deps` -- so this check
-// drives the exact production module under Node with a small fake HTTP
-// service and an in-memory store, and controls the wall clock so the
-// negative-cache backoff does not actually take ten minutes to check.
+// The companion client never touches `fetch` or `localStorage` directly --
+// everything ambient goes through its `_testing.inject`-able `deps` -- so this
+// check drives the exact production module under Node with a small fake HTTP
+// service and an in-memory store.
 
 import { createHash } from "node:crypto";
 
@@ -71,44 +70,21 @@ function bytesResponse(status, bytes) {
 const HEALTH_OK = { service: "librepaper-local", protocol: [2], version: "0.1.0", instance: "abc123" };
 
 function setup({ storage = fakeStorage(), now = clock(), fetchImpl } = {}) {
+  globalThis.window = { __LIBREPAPER_DESKTOP__: { base: "lp-local://localhost/", version: "test" } };
   local._testing.reset();
   local._testing.inject({ storage, now: now.now, fetch: fetchImpl, wait: (ms) => Promise.resolve() });
   return { storage, now };
 }
 
-/* --------------------------------------------------------- address & pairings */
-
-async function testAddress() {
-  setup();
-  check("address() defaults to DEFAULT_ADDRESS", local.address() === local.DEFAULT_ADDRESS);
-  local.setAddress("http://127.0.0.1:9999/");
-  check("setAddress() persists", local.address() === "http://127.0.0.1:9999/");
-}
-
 /* --------------------------------------------------------- probe classification */
 
-async function testProbeUnreachable() {
-  const { now } = setup({ fetchImpl: async () => { throw new TypeError("fetch failed"); } });
+async function testProbeUnavailable() {
+  setup({ fetchImpl: async () => { throw new TypeError("fetch failed"); } });
   const status = await local.probe();
-  check("a network failure classifies as unreachable", status.state === "unreachable", status.state);
-  check("unreachable carries instructions", /install once/.test(status.instructions));
-
-  let calls = 0;
-  local._testing.inject({ fetch: async () => { calls += 1; throw new TypeError("fetch failed"); } });
-  const cached = await local.probe();
-  check("a repeat probe within the backoff uses the cache", calls === 0, `calls=${calls}`);
-  check("the cached status is returned", cached.state === "unreachable");
-
-  now.advance(61_000);
-  await local.probe();
-  check("the probe runs again once the backoff elapses", calls === 1, `calls=${calls}`);
-}
-
-async function testProbeDenied() {
-  setup({ fetchImpl: async () => { throw new Error("Access to the network address space was blocked"); } });
-  const status = await local.probe();
-  check("a permission-denied fetch classifies as denied", status.state === "denied", status.state);
-  check("denied carries instructions", /local network access/.test(status.instructions));
+  check("a network failure classifies as unavailable", status.state === "unavailable", status.state);
+  check("unavailable carries instructions", /could not reach/.test(status.instructions));
+  setup({ fetchImpl: async () => jsonResponse(502, { error: "companion unavailable" }) });
+  check("a 502 from the shell classifies as unavailable", (await local.probe()).state === "unavailable");
 }
 
 async function testProbeIncompatible() {
@@ -117,92 +93,21 @@ async function testProbeIncompatible() {
   check("a protocol without 2 classifies as incompatible", status.state === "incompatible", status.state);
 }
 
-async function testProbeUnauthorizedThenConnected() {
-  const storage = fakeStorage();
-  local.configure({ project: "demo", origin: "https://librepaper.example" });
-  setup({ storage, fetchImpl: async () => jsonResponse(200, HEALTH_OK) });
-  local.configure({ project: "demo", origin: "https://librepaper.example" });
-  const status = await local.probe();
-  check("reachable with no pairing classifies as unauthorized", status.state === "unauthorized", status.state);
-
-  storage.setItem("librepaper-local-connections", JSON.stringify({ "https://librepaper.example": { token: "tok", expires: 0, instance: "abc" } }));
-  local._testing.inject({
-    fetch: async (url) => {
-      if (url.endsWith("/health")) return jsonResponse(200, HEALTH_OK);
-      if (url.endsWith("/capabilities")) return jsonResponse(200, { tools: {}, confinement: { available: false, kind: "none", reason: "" }, platform: "linux", distribution: null });
-      throw new Error(`unexpected ${url}`);
-    },
-  });
-  const connected = await local.probe({ force: true });
-  check("a valid pairing verifies into connected", connected.state === "connected", connected.state);
-  check("capabilities are attached", connected.capabilities && typeof connected.capabilities === "object");
-}
-
-async function testProbeDropsExpiredToken() {
-  const storage = fakeStorage();
-  local.configure({ project: "demo", origin: "https://librepaper.example" });
-  storage.setItem("librepaper-local-connections", JSON.stringify({ "https://librepaper.example": { token: "stale", expires: 0, instance: "abc" } }));
-  setup({ storage, fetchImpl: async (url) => {
+async function testProbeReady() {
+  setup({ fetchImpl: async (url) => {
     if (url.endsWith("/health")) return jsonResponse(200, HEALTH_OK);
-    if (url.endsWith("/capabilities")) return jsonResponse(401, { error: "expired" });
+    if (url.endsWith("/capabilities")) return jsonResponse(200, { tools: {}, confinement: { available: false, kind: "none", reason: "" }, platform: "linux", distribution: null });
     throw new Error(`unexpected ${url}`);
   } });
-  local.configure({ project: "demo", origin: "https://librepaper.example" });
-  const status = await local.probe();
-  check("a 401 verifying capabilities falls back to unauthorized", status.state === "unauthorized", status.state);
-  const stored = JSON.parse(storage.getItem("librepaper-local-connections"));
-  check("the stale token is dropped from storage", !("https://librepaper.example" in stored));
-}
-
-/* --------------------------------------------------------- negative-cache backoff */
-
-async function testBackoffDoubles() {
-  const { now } = setup({ fetchImpl: async () => { throw new TypeError("fetch failed"); } });
-  await local.probe();
-  now.advance(60_000);
-  await local.probe(); // still unreachable, backoff should double to 120s
-  now.advance(61_000);
-  let calls = 0;
-  local._testing.inject({ fetch: async () => { calls += 1; throw new TypeError("still down"); } });
-  await local.probe();
-  check("a 61s gap after a doubled 60s backoff is not yet enough", calls === 0, `calls=${calls}`);
-  now.advance(60_000);
-  await local.probe();
-  check("the doubled backoff (120s total) eventually elapses", calls === 1, `calls=${calls}`);
-}
-
-async function testRetryAndConnectClearBackoff() {
-  const { now } = setup({ fetchImpl: async () => { throw new TypeError("fetch failed"); } });
-  await local.probe();
-  let calls = 0;
-  local._testing.inject({ fetch: async (url) => { calls += 1; return jsonResponse(200, HEALTH_OK); } });
-  await local.retry();
-  check("retry() bypasses the negative cache", calls >= 1, `calls=${calls}`);
-}
-
-/* --------------------------------------------------------- connect / disconnect */
-
-async function testDisconnectRemovesPairing() {
-  const storage = fakeStorage();
-  local.configure({ project: "proj1", origin: "https://app.example" });
-  storage.setItem("librepaper-local-connections", JSON.stringify({ "https://app.example": { token: "tok", expires: 0, instance: "x" } }));
-  setup({ storage, fetchImpl: async (url) => {
-    if (url.endsWith("/disconnect")) return jsonResponse(200, {});
-    if (url.endsWith("/health")) return jsonResponse(200, HEALTH_OK);
-    throw new Error(`unexpected ${url}`);
-  } });
-  local.configure({ project: "proj1", origin: "https://app.example" });
-  await local.disconnect();
-  const stored = JSON.parse(storage.getItem("librepaper-local-connections"));
-  check("disconnect() removes the pairing", !("https://app.example" in stored));
+  const ready = await local.probe();
+  check("health and capabilities verify into ready", ready.state === "ready", ready.state);
+  check("capabilities are attached", ready.capabilities && typeof ready.capabilities === "object");
 }
 
 /* --------------------------------------------------------- multipart bodies */
 
 async function testMultipartBuildBody() {
   const storage = fakeStorage();
-  local.configure({ project: "proj1", origin: "https://app.example" });
-  storage.setItem("librepaper-local-connections", JSON.stringify({ "https://app.example": { token: "tok", expires: 0, instance: "x" } }));
   const nonUtf8 = new Uint8Array([0xff, 0xfe, 0x00, 0x80, 0x81, 0x41, 0x42]);
   const pdf = new TextEncoder().encode("%PDF-fake");
   const log = new TextEncoder().encode("typst log");
@@ -254,8 +159,6 @@ async function testMultipartBuildBody() {
 // refused rather than handed to the reader as a page.
 async function testOutputDigestIsVerified() {
   const storage = fakeStorage();
-  local.configure({ project: "proj1", origin: "https://app.example" });
-  storage.setItem("librepaper-local-connections", JSON.stringify({ "https://app.example": { token: "tok", expires: 0, instance: "x" } }));
   const announced = new TextEncoder().encode("%PDF-real");
   const served = new TextEncoder().encode("%PDF-fake");
   setup({ storage, fetchImpl: async (url, init) => {
@@ -278,8 +181,6 @@ async function testOutputDigestIsVerified() {
 
 async function testPollingIntervals() {
   const storage = fakeStorage();
-  local.configure({ project: "p", origin: "https://a" });
-  storage.setItem("librepaper-local-connections", JSON.stringify({ "https://a": { token: "tok", expires: 0, instance: "x" } }));
   const { now } = setup({ storage, fetchImpl: null });
   local.configure({ project: "p", origin: "https://a" });
   const waits = [];
@@ -307,8 +208,6 @@ async function testPollingIntervals() {
 
 async function testCancelViaAbort() {
   const storage = fakeStorage();
-  local.configure({ project: "p", origin: "https://a" });
-  storage.setItem("librepaper-local-connections", JSON.stringify({ "https://a": { token: "tok", expires: 0, instance: "x" } }));
   setup({ storage, fetchImpl: null });
   local.configure({ project: "p", origin: "https://a" });
   let canceled = false;
@@ -332,10 +231,8 @@ async function testCancelViaAbort() {
 
 /* --------------------------------------------------------- rejection shapes */
 
-async function testRefusedUnreachableUnauthorized() {
+async function testRefusedUnreachable() {
   const storage = fakeStorage();
-  local.configure({ project: "p", origin: "https://a" });
-  storage.setItem("librepaper-local-connections", JSON.stringify({ "https://a": { token: "tok", expires: 0, instance: "x" } }));
 
   setup({ storage, fetchImpl: async () => jsonResponse(409, { error: "a newer generation is already queued" }) });
   local.configure({ project: "p", origin: "https://a" });
@@ -346,90 +243,29 @@ async function testRefusedUnreachableUnauthorized() {
   local.configure({ project: "p", origin: "https://a" });
   await rejects(local.capabilities({}), "Unreachable", "a network failure rejects as Unreachable");
 
-  setup({ storage: fakeStorage(), fetchImpl: async () => jsonResponse(200, {}) });
+  setup({ storage, fetchImpl: async () => jsonResponse(502, {}) });
   local.configure({ project: "p", origin: "https://a" });
-  await rejects(local.capabilities({}), "Unauthorized", "no stored pairing rejects as Unauthorized");
-
-  setup({ storage, fetchImpl: async () => jsonResponse(401, { error: "nope" }) });
-  local.configure({ project: "p", origin: "https://a" });
-  await rejects(local.capabilities({}), "Unauthorized", "a 401 rejects as Unauthorized");
-}
-
-/* --------------------------------------------------------- engagement */
-
-// A loopback request is what makes a browser ask the person to allow this
-// site "access to other apps and services". That question belongs to the
-// moment they ask for something local, so simply watching the status --
-// which every open document does, pairing or not -- must reach nothing.
-async function testWatchingNeverReachesLoopback() {
-  const storage = fakeStorage();
-  let calls = 0;
-  const now = clock();
-  setup({ storage, now, fetchImpl: async () => { calls += 1; return jsonResponse(200, HEALTH_OK); } });
-  storage.setItem("librepaper-local-connections", JSON.stringify({
-    "https://a": { token: "token", expires: now.now() + 3_600_000, instance: "abc123" },
-  }));
-  // The background reconnect is a real timer; hold its callbacks instead of
-  // waiting fifteen seconds for each one.
-  const pending = [];
-  const realSetTimeout = globalThis.setTimeout;
-  globalThis.setTimeout = (fn) => { pending.push(fn); return { unref() {} } ; };
-  const fire = async () => { for (const callback of pending.splice(0)) await callback(); };
-  try {
-    local.configure({ project: "p", origin: "https://a" });
-    const stop = local.subscribe(() => {});
-    await fire();
-    check("watching a paired document reaches the local app not at all", calls === 0, `calls=${calls}`);
-
-    // Asking for it is what engages the session -- and from then on the
-    // reconnect may keep the status fresh.
-    await local.probe({ force: true });
-    check("a deliberate probe reaches it", calls > 0, `calls=${calls}`);
-    const engagedCalls = calls;
-    await fire();
-    check("the reconnect runs once the session is engaged", calls > engagedCalls, `calls=${calls}`);
-
-    // Another document on the same origin keeps the pairing and the session.
-    local.configure({ project: "other", origin: "https://a" });
-    const sameOriginCalls = calls;
-    await fire();
-    check("opening another document on the same origin stays engaged", calls > sameOriginCalls, `calls=${calls}`);
-
-    // A different origin starts over: its own pairing, its own question.
-    local.configure({ project: "other", origin: "https://b" });
-    const switchedCalls = calls;
-    await fire();
-    check("opening another origin disengages again", calls === switchedCalls, `calls=${calls}`);
-    stop();
-  } finally {
-    globalThis.setTimeout = realSetTimeout;
-  }
+  await rejects(local.capabilities({}), "Unreachable", "a 502 from the shell rejects as Unreachable");
 }
 
 /* --------------------------------------------------------- run */
 
 const tests = [
-  testAddress,
-  testProbeUnreachable,
-  testProbeDenied,
+  testProbeUnavailable,
   testProbeIncompatible,
-  testProbeUnauthorizedThenConnected,
-  testProbeDropsExpiredToken,
-  testBackoffDoubles,
-  testRetryAndConnectClearBackoff,
-  testDisconnectRemovesPairing,
+  testProbeReady,
   testMultipartBuildBody,
   testOutputDigestIsVerified,
   testPollingIntervals,
   testCancelViaAbort,
-  testRefusedUnreachableUnauthorized,
-  testWatchingNeverReachesLoopback,
+  testRefusedUnreachable,
 ];
 
 for (const test of tests) {
   await test();
 }
 local._testing.reset();
+delete globalThis.window;
 
 if (failures) {
   console.error(`latex-local: ${failures} check(s) failed`);
