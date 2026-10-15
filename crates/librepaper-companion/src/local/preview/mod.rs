@@ -588,13 +588,13 @@ impl Previews {
         let expired: Vec<_> = self
             .0
             .iter()
-            .filter_map(|(id, p)| {
-                (bindings
+            .filter(|(_, p)| {
+                bindings
                     .get_scoped(&p.binding, &p.origin, &p.project)
                     .is_none()
-                    || p.started.elapsed() > Duration::from_secs(3600))
-                .then(|| id.clone())
+                    || p.started.elapsed() > Duration::from_secs(3600)
             })
+            .map(|(id, _)| id.clone())
             .collect();
         for id in expired {
             self.stop(&id).await;

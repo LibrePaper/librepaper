@@ -86,15 +86,15 @@ fn admin_help_lists_the_admin_commands() {
 }
 
 #[test]
-fn local_help_lists_only_approval_and_pairing_controls() {
+fn local_help_lists_only_the_approval_control() {
     let help = help_of(&["local", "--help"]);
-    for command in ["approve", "disconnect"] {
+    for command in ["approve"] {
         assert!(
             lists_command(&help, command),
             "local command {command:?} is absent from local help:\n{help}"
         );
     }
-    for hidden_command in ["start", "stop", "status", "agent", "open", "tray"] {
+    for hidden_command in ["start", "stop", "status", "agent", "open", "endpoint", "tray"] {
         assert!(
             !lists_command(&help, hidden_command),
             "compatibility command {hidden_command:?} should be hidden from local help:\n{help}"

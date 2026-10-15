@@ -734,7 +734,6 @@ mod socket_policy_tests {
             vec!["librepaper", "local", "status"],
             vec!["librepaper", "local", "agent", "list"],
             vec!["librepaper", "local", "approve", "123456"],
-            vec!["librepaper", "local", "disconnect", "https://paper.example"],
         ] {
             assert!(Cli::try_parse_from(args).is_ok());
         }
