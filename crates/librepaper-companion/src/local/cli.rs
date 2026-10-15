@@ -59,7 +59,11 @@ pub enum LocalCommand {
     /// line: address, credential, instance, version and protocol. The desktop
     /// app runs this; nobody types it.
     #[command(hide = true)]
-    Endpoint,
+    Endpoint {
+        /// Port to start on when the companion is not running (default 8763)
+        #[arg(long, value_name = "PORT", env = "LIBREPAPER_LOCAL_PORT")]
+        port: Option<u16>,
+    },
     /// Approve a dialog request from the companion
     Approve {
         /// Approval code from the dialog
@@ -123,7 +127,7 @@ pub async fn run(args: LocalArgs) {
         LocalCommand::Stop => stop().await,
         LocalCommand::Open { url } => open(&url),
         LocalCommand::Status => status().await,
-        LocalCommand::Endpoint => endpoint().await,
+        LocalCommand::Endpoint { port } => endpoint(port.unwrap_or(0)).await,
         LocalCommand::Approve { code } => approve(&code).await,
         #[cfg(any(target_os = "linux", target_os = "macos", windows))]
         LocalCommand::Tray => super::tray::run().await,
@@ -294,8 +298,8 @@ fn open(url: &str) {
 /// Starts the companion if it is not running, then prints one JSON line the
 /// desktop app reads: where to reach it and the credential that opens it.
 /// Exits non-zero with a message when the companion cannot be reached.
-async fn endpoint() {
-    let state = crate::local::lifecycle::spawn_background(0)
+async fn endpoint(port: u16) {
+    let state = crate::local::lifecycle::spawn_background(port)
         .await
         .unwrap_or_else(|error| die(error));
     let Some(token) =
