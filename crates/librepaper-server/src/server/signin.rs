@@ -457,12 +457,7 @@ impl Server {
             // 30 MB mistake before it is sent rather than after.
             "/api/config" => Some(write_json(
                 200,
-                &config_body(
-                    &self.config,
-                    self.fonts.is_some(),
-                    self.latex.as_deref(),
-                    self.local_app.as_deref(),
-                ),
+                &config_body(&self.config, self.fonts.is_some(), self.latex.as_deref()),
             )),
             _ => None,
         }
@@ -659,7 +654,6 @@ fn config_body(
     config: &librepaper_base::config::Configuration,
     fonts: bool,
     latex: Option<&str>,
-    local_app: Option<&str>,
 ) -> serde_json::Value {
     let mut body = json!(config);
     if let Some(fields) = body.as_object_mut() {
@@ -669,31 +663,14 @@ fn config_body(
         fields.insert("latex".to_string(), json!(latex.is_some()));
         // The pinned release directory URL, not the mirror root.
         fields.insert("latexMirror".to_string(), json!(latex));
-        // Where this deployment's own local app listens, when it runs one.
-        // Only a browser on this machine can reach it, which is why the
-        // browser takes it only from a page served from loopback.
-        if let Some(address) = local_app {
-            fields.insert("local_app".to_string(), json!({ "address": address }));
-        }
     }
     body
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{config_body, set_cookie};
+    use super::set_cookie;
     use librepaper_base::auth::{cookie_name, SESSION_COOKIE};
-    use librepaper_base::config::Configuration;
-
-    #[test]
-    fn the_embedded_local_app_is_advertised_only_when_it_runs() {
-        let config = Configuration::default();
-        let running = config_body(&config, false, None, Some("http://127.0.0.1:9999/"));
-        assert_eq!(running["local_app"]["address"], "http://127.0.0.1:9999/");
-        let absent = config_body(&config, false, None, None);
-        assert!(absent.get("local_app").is_none());
-        assert!(absent.get("latex_local").is_none());
-    }
 
     #[test]
     fn https_session_cookie_is_secure_host_only_and_http_only() {

@@ -1,11 +1,9 @@
 //! `librepaper admin serve`: the whole service in this process.
 
 use std::collections::HashMap;
-use std::future::{Future, IntoFuture};
+use std::future::IntoFuture;
 use std::io::IsTerminal;
 use std::net::SocketAddr;
-use std::path::PathBuf;
-use std::pin::Pin;
 use std::sync::Arc;
 
 use tokio::net::TcpListener;
@@ -26,18 +24,6 @@ use librepaper_engine::storage::{open_storage, StorageOptions};
 /// second deployment on the same machine needs no manually picked port.
 const PORT_FIRST: u16 = 8080;
 const PORT_LAST: u16 = 8099;
-
-/// A running local app, as the server sees it: where browsers find it, and
-/// how to stop it at shutdown.
-pub struct LocalApp {
-    pub address: String,
-    pub stop: Box<dyn FnOnce() -> Pin<Box<dyn Future<Output = ()> + Send>> + Send>,
-}
-
-/// Starts the local app under the given private directory of the deployment.
-pub type StartLocal = Box<
-    dyn FnOnce(PathBuf) -> Pin<Box<dyn Future<Output = Result<LocalApp, String>> + Send>> + Send,
->;
 
 pub struct ServeOptions {
     pub address: std::net::SocketAddr,
@@ -82,11 +68,6 @@ pub struct ServeOptions {
     /// A directory of font files served to typst documents, or nothing. See
     /// `crate::server::fonts`.
     pub typst_fonts: Option<String>,
-    /// Starts the local app for this machine, or nothing when disabled in TOML.
-    /// When present, `serve` also runs the loopback service that renders
-    /// Quarto documents for an editor whose browser is on this host. The
-    /// caller supplies it so the server does not depend on the service.
-    pub start_local: Option<StartLocal>,
     /// Loads the compiled-in shell for the validated asset mirror. The caller
     /// supplies it so the server does not depend on the shell crate, whose
     /// input is a build output; it runs where the server used to call it, after
@@ -609,21 +590,6 @@ pub async fn serve(options: ServeOptions) {
     instance.latex = Some(latex);
     instance.site = site;
     instance.fonts = fonts;
-    // The local app for this machine: only a browser on this host can reach
-    // it, and it lives under the deployment's private state so it shares
-    // nothing with a standalone `librepaper start`. Failing to start it
-    // is a warning, not a death: the deployment serves documents regardless.
-    let local = match options.start_local {
-        None => None,
-        Some(start) => match start(deployment_paths.state.join("local-app")).await {
-            Ok(local) => Some(local),
-            Err(error) => {
-                tracing::warn!("local app not started: {error}");
-                None
-            }
-        },
-    };
-    instance.local_app = local.as_ref().map(|app| app.address.clone());
     let instance = Arc::new(instance);
     // The sampler feeds the metrics page and the graphs, so either one is
     // reason enough to run it. Only the listener needs `[metrics] address`.
@@ -674,12 +640,6 @@ pub async fn serve(options: ServeOptions) {
         println!(
             "  the project mirror promises only releases carried by this build (latex {})",
             options.latex_release
-        );
-    }
-    if let Some(local) = &local {
-        println!(
-            "  local app: {} (for browsers on this machine)",
-            local.address
         );
     }
     if retention > 0 {
@@ -776,9 +736,6 @@ pub async fn serve(options: ServeOptions) {
     };
     drop(serving);
     drop(instance);
-    if let Some(local) = local {
-        (local.stop)().await;
-    }
     closing_catalog.close().await;
     if let Err(err) = serve_result {
         die(err);

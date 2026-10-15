@@ -15,7 +15,6 @@ pub mod cli;
 pub mod connections;
 pub mod credentials;
 pub mod discovery;
-pub mod embedded;
 pub mod engine_adapter;
 pub mod environment;
 pub mod folder;

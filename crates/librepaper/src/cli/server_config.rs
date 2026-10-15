@@ -60,7 +60,6 @@ pub(crate) struct ResolvedConfig {
     pub(crate) site_origin: Option<String>,
     pub(crate) admin_origin: Option<String>,
     pub(crate) admin_github_ids: Vec<i64>,
-    pub(crate) local_companion: bool,
     pub(crate) migrate: bool,
     pub(crate) storage: StorageOptions,
     pub(crate) github_client_id: Option<String>,
@@ -96,7 +95,6 @@ impl fmt::Debug for ResolvedConfig {
             .field("site_origin", &self.site_origin)
             .field("admin_origin", &self.admin_origin)
             .field("admin_github_ids", &self.admin_github_ids)
-            .field("local_companion", &self.local_companion)
             .field("migrate", &self.migrate)
             .field("storage", &"<redacted>")
             .field("github_client_id", &self.github_client_id)
@@ -156,7 +154,6 @@ struct Raw {
 #[serde(default, deny_unknown_fields)]
 struct Server {
     address: Option<Input<SocketAddr>>,
-    local_companion: Option<Input<bool>>,
     migrate: Option<Input<bool>>,
 }
 #[derive(Debug, Default, Deserialize)]
@@ -407,7 +404,7 @@ fn check_keys(v: &toml::Value) -> Result<(), String> {
             "logging",
         ],
     )?;
-    section(v, "server", &["address", "local_companion", "migrate"])?;
+    section(v, "server", &["address", "migrate"])?;
     section(v, "origins", &["app", "docs", "site", "admin"])?;
     section(v, "admin", &["github_ids"])?;
     section(
@@ -615,7 +612,6 @@ pub(crate) fn load_with_postgres_env(
         raw.server.address,
         "0.0.0.0:8080".parse::<SocketAddr>().unwrap(),
     )?;
-    let local_companion = r.value("server.local_companion", raw.server.local_companion, false)?;
     let migrate = r.value("server.migrate", raw.server.migrate, true)?;
     let app_origin = r.optional("origins.app", raw.origins.app)?;
     let docs_origin = r.optional("origins.docs", raw.origins.docs)?;
@@ -781,7 +777,6 @@ pub(crate) fn load_with_postgres_env(
         site_origin,
         admin_origin,
         admin_github_ids,
-        local_companion,
         migrate,
         storage,
         github_client_id,
@@ -931,13 +926,6 @@ pub(crate) fn show_resolved(c: &ResolvedConfig) -> String {
         "server.address",
         "address",
         &quote(&c.address.to_string()),
-    );
-    value(
-        &mut out,
-        &c.sources,
-        "server.local_companion",
-        "local_companion",
-        &c.local_companion.to_string(),
     );
     value(
         &mut out,
