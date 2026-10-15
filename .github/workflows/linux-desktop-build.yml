@@ -1,0 +1,31 @@
+name: Linux desktop build
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  # Builds the packages a release would ship, so a pull request shows whether the desktop app still packages on Linux.
+  desktop:
+    name: Desktop app packages
+    runs-on: ubuntu-22.04
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v6
+      - id: version
+        shell: bash
+        run: echo "version=$(node -p "require('./desktop/tauri.conf.json').version")" >> "$GITHUB_OUTPUT"
+      - id: build
+        uses: ./.github/actions/build-desktop
+        with:
+          version: ${{ steps.version.outputs.version }}
+          bundles: deb,rpm
+      - uses: actions/upload-artifact@v7
+        with:
+          name: desktop-linux-packages
+          path: |
+            ${{ steps.build.outputs.bundle-dir }}/deb/*.deb
+            ${{ steps.build.outputs.bundle-dir }}/rpm/*.rpm
+          if-no-files-found: error
+          retention-days: 7
