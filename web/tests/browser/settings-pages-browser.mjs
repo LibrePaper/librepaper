@@ -156,9 +156,12 @@ try {
   await b.evaluate(`document.querySelector(".modal-back").click()`);
   await until("Back closes settings", () => b.evaluate(`!document.querySelector('[role="dialog"][data-state="open"]')`), 5000);
   await show("rendering", "quarto", "Rendering");
-  await b.command("Input.dispatchKeyEvent", { type: "keyDown", key: "Escape", code: "Escape", windowsVirtualKeyCode: 27 });
-  await b.command("Input.dispatchKeyEvent", { type: "keyUp", key: "Escape", code: "Escape", windowsVirtualKeyCode: 27 });
-  await until("Escape closes settings", () => b.evaluate(`!document.querySelector('[role="dialog"][data-state="open"]')`), 5000);
+  // The dialog listens for Escape a moment after it opens, so press until it closes.
+  await until("Escape closes settings", async () => {
+    await b.command("Input.dispatchKeyEvent", { type: "keyDown", key: "Escape", code: "Escape", windowsVirtualKeyCode: 27 });
+    await b.command("Input.dispatchKeyEvent", { type: "keyUp", key: "Escape", code: "Escape", windowsVirtualKeyCode: 27 });
+    return b.evaluate(`!document.querySelector('[role="dialog"][data-state="open"]')`);
+  }, 5000);
   await show("rendering", "quarto", "Rendering");
 
   // Rendering shows two sections with global build options visible for all formats.

@@ -56,7 +56,9 @@ try {
   assert.equal(await at(), "/", "a browser stays on the landing page");
 
   // The desktop app sends a stranger to sign-in, and back to the projects after.
-  await tab.navigate(`${origin}/desktop/`);
+  // The page replaces itself before it finishes loading, so no load event
+  // belongs to this navigation; wait for the sign-in page instead.
+  await tab.command("Page.navigate", { url: `${origin}/desktop/` });
   await until("sign-in page", () => tab.evaluate("location.pathname === '/auth/login'"));
   assert.equal(await at(), "/auth/login?next=%2F", "the desktop app opens sign-in");
 
