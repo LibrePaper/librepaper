@@ -49,9 +49,9 @@ librepaper.org; that is an operator command described in the private runbook
 - Before publishing, each updater checks the downloaded archive against the
   release's cargo-dist `.sha256` file. A missing or invalid checksum stops the
   update without changing the package repository.
-- Homebrew uses the Linux and macOS x86_64 and ARM64 archives. Scoop uses the
-  x86_64 Windows archive. Both install the released binary, which includes the
-  browser application.
+- Scoop installs the desktop app from `LibrePaper_<version>_x64-portable.zip`,
+  which holds the signed app and `librepaper.exe`. Homebrew uses the Linux and
+  macOS x86_64 and ARM64 archives and still installs the command line.
 - User install commands live on the [desktop app page](desktop-app.md). Update it when
   a distribution channel changes.
 
@@ -60,6 +60,7 @@ librepaper.org; that is an operator command described in the private runbook
 - The Release workflow builds the desktop app installers on Windows (`.github/workflows/desktop-windows.yml`) and attaches them to the release: `LibrePaper_<version>_x64-setup.exe` and, for stable versions, `LibrePaper_<version>_x64_en-US.msi`.
 - Tauri signs the app, the bundled `librepaper.exe`, the installers and the uninstaller with Azure Artifact Signing. A failed signature fails the release.
 - The job runs in the `release` GitHub environment and signs in to Azure with OIDC. There is no client secret.
+- The release also has a signed portable zip for Scoop, and `.deb` and `.rpm` packages built by `.github/workflows/desktop-linux.yml`. Prereleases ship only the `.deb`. Each desktop asset has a `.sha256` file.
 - Configure these settings in the `release` environment:
 
 | Name | Kind | Value |

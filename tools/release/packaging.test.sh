@@ -113,7 +113,9 @@ LIBREPAPER_RELEASE_TAG=v1.2.3 bash "$root/tools/release/update-scoop-bucket.sh" 
 [[ -f "$tmp/capture/bucket/librepaper.json" ]] || fail 'Scoop manifest was not generated'
 grep -Fq '"version": "1.2.3"' "$tmp/capture/bucket/librepaper.json" || fail 'manifest has wrong version'
 grep -Fq '"license": "MIT"' "$tmp/capture/bucket/librepaper.json" || fail 'manifest missing MIT license metadata'
-grep -Fq 'librepaper-x86_64-pc-windows-msvc.zip' "$tmp/capture/bucket/librepaper.json" || fail 'manifest missing Windows archive'
+grep -Fq 'LibrePaper_1.2.3_x64-portable.zip' "$tmp/capture/bucket/librepaper.json" || fail 'manifest missing the portable desktop zip'
+grep -Fq '"shortcuts": [["librepaper-desktop.exe", "LibrePaper"]]' "$tmp/capture/bucket/librepaper.json" || fail 'manifest missing the Start menu shortcut'
+grep -Fq 'LibrePaper_$version_x64-portable.zip' "$tmp/capture/bucket/librepaper.json" || fail 'manifest autoupdate missing the portable desktop zip'
 grep -Fq "\"hash\": \"$MOCK_HASH\"" "$tmp/capture/bucket/librepaper.json" || fail 'manifest missing verified archive hash'
 [[ -e "$tmp/pushed" ]] || fail 'Scoop manifest was not pushed'
 

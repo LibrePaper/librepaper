@@ -17,7 +17,28 @@ Nothing runs unasked. Folders are granted one at a time through your system's ow
 
 ## Install
 
-The desktop app is built from source for now.
+- Windows with Scoop:
+
+```sh
+scoop bucket add vincentarelbundock https://github.com/vincentarelbundock/scoop-bucket
+scoop install librepaper
+```
+
+- Windows installer: download `LibrePaper_<version>_x64-setup.exe` from the GitHub release. It is signed.
+- Debian and Ubuntu: download `LibrePaper_<version>_amd64.deb` from the release, then run:
+
+```sh
+sudo apt install ./LibrePaper_<version>_amd64.deb
+```
+
+- Fedora and openSUSE: download `LibrePaper-<version>-1.x86_64.rpm` from the release, then run:
+
+```sh
+sudo dnf install ./LibrePaper-<version>-1.x86_64.rpm
+```
+
+- The Scoop package, the Debian package and the RPM package also install the `librepaper` command line.
+- macOS: build from source for now.
 
 ```sh
 # From a checkout of the repository

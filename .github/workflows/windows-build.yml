@@ -52,7 +52,7 @@ jobs:
         shell: bash
         run: echo "version=$(node -p "require('./desktop/tauri.conf.json').version")" >> "$GITHUB_OUTPUT"
       - id: build
-        uses: ./.github/actions/build-desktop-windows
+        uses: ./.github/actions/build-desktop
         with:
           version: ${{ steps.version.outputs.version }}
           bundles: nsis,msi

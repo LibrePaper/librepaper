@@ -153,7 +153,7 @@ jobs:
 
       - name: Build the desktop app
         id: build
-        uses: ./.github/actions/build-desktop-windows
+        uses: ./.github/actions/build-desktop
         with:
           version: ${{ steps.version.outputs.version }}
           bundles: ${{ steps.version.outputs.bundles }}
@@ -164,6 +164,7 @@ jobs:
         shell: pwsh
         env:
           BUNDLE_DIR: ${{ steps.build.outputs.bundle-dir }}
+          VERSION: ${{ steps.version.outputs.version }}
         run: |
           $ErrorActionPreference = 'Stop'
 
@@ -188,6 +189,17 @@ jobs:
           $out = Join-Path $env:RUNNER_TEMP 'desktop-release'
           New-Item -ItemType Directory -Force -Path $out | Out-Null
           Copy-Item -Path $installers.FullName -Destination $out
+
+          # Scoop installs this zip: the app and the librepaper command line side by side.
+          $portable = Join-Path $env:RUNNER_TEMP 'portable'
+          New-Item -ItemType Directory -Force -Path $portable | Out-Null
+          Copy-Item 'desktop\target\release\librepaper-desktop.exe' (Join-Path $portable 'librepaper-desktop.exe')
+          Copy-Item 'desktop\binaries\librepaper-x86_64-pc-windows-msvc.exe' (Join-Path $portable 'librepaper.exe')
+          Compress-Archive -Path (Join-Path $portable '*') -DestinationPath (Join-Path $out "LibrePaper_$($env:VERSION)_x64-portable.zip")
+          foreach ($asset in Get-ChildItem -Path $out -File) {
+            $hash = (Get-FileHash -Algorithm SHA256 -Path $asset.FullName).Hash.ToLower()
+            Set-Content -Path "$($asset.FullName).sha256" -Value "$hash *$($asset.Name)" -NoNewline -Encoding ascii
+          }
 
       # Names starting with artifacts- are attached to the GitHub Release by the host job.
       - uses: actions/upload-artifact@v7
