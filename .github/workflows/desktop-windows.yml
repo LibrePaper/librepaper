@@ -180,17 +180,31 @@ jobs:
         run: |
           $ErrorActionPreference = 'Stop'
 
-          $files = @(
-            'desktop\target\release\librepaper-desktop.exe',
-            'desktop\binaries\librepaper-x86_64-pc-windows-msvc.exe'
-          )
           $installers = @(Get-ChildItem -Path "$env:BUNDLE_DIR\nsis\*.exe")
           if (Test-Path "$env:BUNDLE_DIR\msi") {
             $installers += @(Get-ChildItem -Path "$env:BUNDLE_DIR\msi\*.msi")
           }
           if ($installers.Count -eq 0) { throw "No installer found under $env:BUNDLE_DIR" }
 
-          foreach ($f in ($files + $installers.FullName)) {
+          # Tauri signs the app while it packages it, and the copy left in
+          # target\release ends up unsigned. The zip gets its own signed copy.
+          $portable = Join-Path $env:RUNNER_TEMP 'portable'
+          New-Item -ItemType Directory -Force -Path $portable | Out-Null
+          Copy-Item 'desktop\target\release\librepaper-desktop.exe' (Join-Path $portable 'librepaper-desktop.exe')
+          Copy-Item 'desktop\binaries\librepaper-x86_64-pc-windows-msvc.exe' (Join-Path $portable 'librepaper.exe')
+          & $env:SIGNTOOL sign /v /fd SHA256 /tr http://timestamp.acs.microsoft.com /td SHA256 /dlib $env:SIGNING_DLIB /dmdf $env:SIGNING_METADATA (Join-Path $portable 'librepaper-desktop.exe')
+          if ($LASTEXITCODE -ne 0) { throw "signtool exited with code $LASTEXITCODE" }
+
+          # Check what users run: the installers, the programs inside the NSIS
+          # installer, and the programs in the zip.
+          $unpacked = Join-Path $env:RUNNER_TEMP 'nsis-unpacked'
+          & 7z x -y "-o$unpacked" ($installers | Where-Object Extension -eq '.exe' | Select-Object -First 1).FullName | Out-Null
+          if ($LASTEXITCODE -ne 0) { throw "7z could not unpack the NSIS installer" }
+          $inside = @(Get-ChildItem -Path $unpacked -Recurse -File -Include 'librepaper-desktop.exe', 'librepaper.exe', 'uninstall.exe')
+          if ($inside.Count -lt 2) { throw "The NSIS installer does not hold the app and librepaper.exe" }
+          $files = @($installers.FullName) + @($inside.FullName) + @((Get-ChildItem -Path $portable -File).FullName)
+
+          foreach ($f in $files) {
             $s = Get-AuthenticodeSignature -FilePath $f
             Write-Output "$($f): $($s.Status) $($s.SignerCertificate.Subject)"
             if ($s.Status -ne 'Valid' -or -not $s.TimeStamperCertificate) {
@@ -203,10 +217,6 @@ jobs:
           Copy-Item -Path $installers.FullName -Destination $out
 
           # Scoop installs this zip: the app and the librepaper command line side by side.
-          $portable = Join-Path $env:RUNNER_TEMP 'portable'
-          New-Item -ItemType Directory -Force -Path $portable | Out-Null
-          Copy-Item 'desktop\target\release\librepaper-desktop.exe' (Join-Path $portable 'librepaper-desktop.exe')
-          Copy-Item 'desktop\binaries\librepaper-x86_64-pc-windows-msvc.exe' (Join-Path $portable 'librepaper.exe')
           Compress-Archive -Path (Join-Path $portable '*') -DestinationPath (Join-Path $out "LibrePaper_$($env:VERSION)_x64-portable.zip")
           foreach ($asset in Get-ChildItem -Path $out -File) {
             $hash = (Get-FileHash -Algorithm SHA256 -Path $asset.FullName).Hash.ToLower()
