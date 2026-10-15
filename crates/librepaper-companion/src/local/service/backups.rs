@@ -1543,12 +1543,7 @@ mod tests {
 
         inner
             .backups
-            .complete_authorization(
-                &inner,
-                &origin,
-                &account_id,
-                &authorization_id
-            )
+            .complete_authorization(&inner, &origin, &account_id, &authorization_id)
             .await
             .unwrap();
         assert_eq!(
@@ -1584,12 +1579,7 @@ mod tests {
         assert_ne!(authorization_id, replacement_id);
         assert!(inner
             .backups
-            .complete_authorization(
-                &inner,
-                &origin,
-                &account_id,
-                &authorization_id
-            )
+            .complete_authorization(&inner, &origin, &account_id, &authorization_id)
             .await
             .unwrap_err()
             .contains("expired or was replaced"));
@@ -1597,23 +1587,13 @@ mod tests {
         let wrong_account = uuid::Uuid::now_v7().to_string();
         assert!(inner
             .backups
-            .complete_authorization(
-                &inner,
-                &origin,
-                &wrong_account,
-                &replacement_id
-            )
+            .complete_authorization(&inner, &origin, &wrong_account, &replacement_id)
             .await
             .unwrap_err()
             .contains("does not match"));
         assert!(inner
             .backups
-            .complete_authorization(
-                &inner,
-                &origin,
-                &account_id,
-                "unknown-authorization"
-            )
+            .complete_authorization(&inner, &origin, &account_id, "unknown-authorization")
             .await
             .unwrap_err()
             .contains("expired or was replaced"));
@@ -1637,12 +1617,7 @@ mod tests {
 
         assert!(inner
             .backups
-            .complete_authorization(
-                &inner,
-                &origin,
-                &requested_account,
-                &authorization_id
-            )
+            .complete_authorization(&inner, &origin, &requested_account, &authorization_id)
             .await
             .unwrap_err()
             .contains("does not match"));
@@ -1679,12 +1654,7 @@ mod tests {
 
         assert!(inner
             .backups
-            .complete_authorization(
-                &inner,
-                &origin,
-                &account_id,
-                &authorization_id
-            )
+            .complete_authorization(&inner, &origin, &account_id, &authorization_id)
             .await
             .unwrap_err()
             .contains("expired or was replaced"));
@@ -1718,7 +1688,7 @@ mod tests {
                     &completing_inner,
                     &completing_origin,
                     &completing_account,
-                    &completing_id
+                    &completing_id,
                 )
                 .await
         });
@@ -1756,12 +1726,7 @@ mod tests {
 
         assert!(inner
             .backups
-            .complete_authorization(
-                &inner,
-                &origin,
-                &account_id,
-                &authorization_id
-            )
+            .complete_authorization(&inner, &origin, &account_id, &authorization_id)
             .await
             .unwrap_err()
             .contains("too large"));
@@ -2274,7 +2239,8 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn backup_status_route_needs_credential_and_origin_and_enable_rejects_mismatched_account() {
+    async fn backup_status_route_needs_credential_and_origin_and_enable_rejects_mismatched_account()
+    {
         let account_id = uuid::Uuid::now_v7().to_string();
         let (server, fixture_task) = start_backup_fixture(account_id.clone()).await;
         let state_home = tempfile::tempdir().unwrap();

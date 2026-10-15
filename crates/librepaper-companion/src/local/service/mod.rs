@@ -880,7 +880,12 @@ async fn run_reaper(inner: Arc<Inner>) {
     let mut ticker = tokio::time::interval(Duration::from_secs(30));
     loop {
         ticker.tick().await;
-        inner.previews.lock().await.reap(&inner.quarto_bindings).await;
+        inner
+            .previews
+            .lock()
+            .await
+            .reap(&inner.quarto_bindings)
+            .await;
         let mut jobs = inner.jobs.lock().await;
         let now = Instant::now();
         let expired: Vec<String> = jobs
@@ -1643,8 +1648,7 @@ pub(super) fn project_query(uri: &axum::http::Uri) -> Option<String> {
 /// Whether `entry` belongs to the requesting origin: the whole scope of a
 /// lookup by id, since a request covers every project of its origin.
 fn owned_by(entry: &JobEntry, origin: Option<&str>) -> bool {
-    store::normalize_origin(&entry.origin)
-        == store::normalize_origin(origin.unwrap_or_default())
+    store::normalize_origin(&entry.origin) == store::normalize_origin(origin.unwrap_or_default())
 }
 
 fn standalone(inner: &Inner) -> bool {
@@ -2369,7 +2373,11 @@ mod settings_tests {
         let headers = bearer(&inner);
         assert!(authenticate(&inner, &headers, Some("https://paper.example")).is_ok());
         assert!(authenticate(&inner, &headers, Some("http://127.0.0.1:5173")).is_ok());
-        for bad_origin in [None, Some("not an origin"), Some("https://paper.example/path")] {
+        for bad_origin in [
+            None,
+            Some("not an origin"),
+            Some("https://paper.example/path"),
+        ] {
             let response = authenticate(&inner, &headers, bad_origin).unwrap_err();
             assert_eq!(response.status(), StatusCode::FORBIDDEN);
         }
@@ -2388,14 +2396,19 @@ mod settings_tests {
     async fn a_browser_origin_or_fetch_metadata_header_is_refused_with_403() {
         let (inner, _state_home, _cache_home) = test_inner().await;
         for header in ["origin", "sec-fetch-site"] {
-            let request =
-                shell_request(&inner, &format!("{BASE_PATH}/capabilities"), "https://paper.example")
-                    .header(header, "https://paper.example")
-                .body(Body::empty())
-                .unwrap();
+            let request = shell_request(
+                &inner,
+                &format!("{BASE_PATH}/capabilities"),
+                "https://paper.example",
+            )
+            .header(header, "https://paper.example")
+            .body(Body::empty())
+            .unwrap();
             let response = send(&inner, request).await;
             assert_eq!(response.status(), StatusCode::FORBIDDEN, "{header}");
-            let bytes = axum::body::to_bytes(response.into_body(), 4096).await.unwrap();
+            let bytes = axum::body::to_bytes(response.into_body(), 4096)
+                .await
+                .unwrap();
             let body: Value = serde_json::from_slice(&bytes).unwrap();
             assert_eq!(body["error"], "browsers cannot call the companion directly");
         }
@@ -2411,10 +2424,13 @@ mod settings_tests {
     #[tokio::test]
     async fn the_shell_with_the_credential_and_an_origin_is_served_without_cors() {
         let (inner, _state_home, _cache_home) = test_inner().await;
-        let request =
-            shell_request(&inner, &format!("{BASE_PATH}/capabilities"), "https://paper.example")
-                .body(Body::empty())
-                .unwrap();
+        let request = shell_request(
+            &inner,
+            &format!("{BASE_PATH}/capabilities"),
+            "https://paper.example",
+        )
+        .body(Body::empty())
+        .unwrap();
         let response = send(&inner, request).await;
         assert_eq!(response.status(), StatusCode::OK);
         assert_eq!(response.headers()["cache-control"], "no-store");
@@ -2422,7 +2438,9 @@ mod settings_tests {
             .headers()
             .keys()
             .all(|name| !name.as_str().starts_with("access-control-")));
-        let bytes = axum::body::to_bytes(response.into_body(), 1 << 20).await.unwrap();
+        let bytes = axum::body::to_bytes(response.into_body(), 1 << 20)
+            .await
+            .unwrap();
         let body: Value = serde_json::from_slice(&bytes).unwrap();
         assert_eq!(body["manage"], false);
 
@@ -2435,7 +2453,9 @@ mod settings_tests {
         .body(Body::empty())
         .unwrap();
         let response = send(&inner, request).await;
-        let bytes = axum::body::to_bytes(response.into_body(), 1 << 20).await.unwrap();
+        let bytes = axum::body::to_bytes(response.into_body(), 1 << 20)
+            .await
+            .unwrap();
         let body: Value = serde_json::from_slice(&bytes).unwrap();
         assert_eq!(body["manage"], true);
     }
@@ -2449,7 +2469,10 @@ mod settings_tests {
             .header("x-librepaper-origin", "https://paper.example")
             .body(Body::empty())
             .unwrap();
-        assert_eq!(send(&inner, request).await.status(), StatusCode::UNAUTHORIZED);
+        assert_eq!(
+            send(&inner, request).await.status(),
+            StatusCode::UNAUTHORIZED
+        );
 
         let request = Request::get(format!("{BASE_PATH}/health"))
             .header("host", format!("127.0.0.1:{PORT}"))
@@ -2457,7 +2480,9 @@ mod settings_tests {
             .unwrap();
         let response = send(&inner, request).await;
         assert_eq!(response.status(), StatusCode::OK);
-        let bytes = axum::body::to_bytes(response.into_body(), 4096).await.unwrap();
+        let bytes = axum::body::to_bytes(response.into_body(), 4096)
+            .await
+            .unwrap();
         let body: Value = serde_json::from_slice(&bytes).unwrap();
         assert_eq!(body["instance"], "test-instance");
     }

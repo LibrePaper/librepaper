@@ -102,12 +102,13 @@ fn local_help_lists_only_approval_and_pairing_controls() {
     }
 }
 
-/// `local open` answers `librepaper://` links for the operating system, and
-/// the sidebar assistant's own chosen agent spawns `mcp`. Both parse, neither
+/// `local open` answers `librepaper://` links for the operating system,
+/// `local endpoint` hands the desktop app its address and credential, and
+/// the sidebar assistant's own chosen agent spawns `mcp`. All three parse, none
 /// is advertised.
 #[test]
 fn machine_invoked_commands_parse_but_are_not_listed() {
-    for (parent, command) in [("local", "open"), ("", "mcp")] {
+    for (parent, command) in [("local", "open"), ("local", "endpoint"), ("", "mcp")] {
         let mut path: Vec<&str> = [parent].into_iter().filter(|p| !p.is_empty()).collect();
         let mut help_args = path.clone();
         help_args.push("--help");

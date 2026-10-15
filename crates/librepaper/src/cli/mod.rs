@@ -739,9 +739,13 @@ mod socket_policy_tests {
             assert!(Cli::try_parse_from(args).is_ok());
         }
         assert!(Cli::try_parse_from(["librepaper", "desktop"]).is_err());
-        assert!(
-            Cli::try_parse_from(["librepaper", "local", "open", "librepaper://connect"]).is_ok()
-        );
+        assert!(Cli::try_parse_from([
+            "librepaper",
+            "local",
+            "open",
+            "librepaper://open?url=https://app.librepaper.org/"
+        ])
+        .is_ok());
         assert!(Cli::try_parse_from(["librepaper", "local", "tray"]).is_ok());
     }
 

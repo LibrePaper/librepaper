@@ -135,12 +135,7 @@ pub(super) async fn handle_assistant_renew(
     let origin = origin.unwrap_or_default();
     match inner
         .assistant_sessions
-        .renew_agent_token(
-            &link,
-            origin,
-            &body.conversation,
-            &body.agent_token,
-        )
+        .renew_agent_token(&link, origin, &body.conversation, &body.agent_token)
         .await
     {
         Ok(()) => write_json(200, &json!({"renewed": true})),

@@ -620,7 +620,15 @@ mod tests {
 
         let none = send_api(&inner, Method::GET, state, None, Some(&manage), &host).await;
         assert_eq!(none.status(), StatusCode::UNAUTHORIZED);
-        let wrong = send_api(&inner, Method::GET, state, Some("wrong"), Some(&manage), &host).await;
+        let wrong = send_api(
+            &inner,
+            Method::GET,
+            state,
+            Some("wrong"),
+            Some(&manage),
+            &host,
+        )
+        .await;
         assert_eq!(wrong.status(), StatusCode::UNAUTHORIZED);
 
         // The right credential still opens nothing for another site, or for
@@ -630,7 +638,15 @@ mod tests {
             assert_eq!(response.status(), StatusCode::FORBIDDEN, "{foreign:?}");
         }
 
-        let ok = send_api(&inner, Method::GET, state, Some(&token), Some(&manage), &host).await;
+        let ok = send_api(
+            &inner,
+            Method::GET,
+            state,
+            Some(&token),
+            Some(&manage),
+            &host,
+        )
+        .await;
         assert_eq!(ok.status(), StatusCode::OK);
         assert_eq!(
             ok.headers()["cache-control"],
@@ -663,8 +679,7 @@ mod tests {
             (Method::POST, "/companion/api/session"),
             (Method::DELETE, "/companion/api/pairings/abc"),
         ] {
-            let response =
-                send_api(&inner, method, path, Some(&token), Some(&manage), &host).await;
+            let response = send_api(&inner, method, path, Some(&token), Some(&manage), &host).await;
             assert_eq!(response.status(), StatusCode::NOT_FOUND, "{path}");
         }
     }

@@ -67,9 +67,7 @@ const MAX_RECOVERED_SESSIONS: usize = 500;
 
 fn ensure_origin_owner(owner: Option<&str>, requester: &str) -> Result<(), String> {
     let Some(owner) = owner else {
-        return Err(
-            "the running assistant session has no owning site; stop and restart it".into(),
-        );
+        return Err("the running assistant session has no owning site; stop and restart it".into());
     };
     if crate::local::store::normalize_origin(owner)
         == crate::local::store::normalize_origin(requester)

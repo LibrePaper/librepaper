@@ -257,8 +257,7 @@ pub fn open_target(raw: &str) -> Result<String, String> {
         return Err(invalid());
     }
     let page = url::Url::parse(&value).map_err(|_| invalid())?;
-    let secure =
-        page.scheme() == "https" || (page.scheme() == "http" && store::is_loopback(&page));
+    let secure = page.scheme() == "https" || (page.scheme() == "http" && store::is_loopback(&page));
     if !secure
         || page.host_str().is_none()
         || !page.username().is_empty()
