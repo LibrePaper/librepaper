@@ -226,7 +226,11 @@ fn removed_root_launch_controls_fail_to_parse() {
         &["--port", "9123", "agent", "list"][..],
         &["--foreground", "list"][..],
         &["local", "approve", "123456"][..],
-        &["local", "open", "librepaper://open?url=https://app.librepaper.org/"][..],
+        &[
+            "local",
+            "open",
+            "librepaper://open?url=https://app.librepaper.org/",
+        ][..],
         &["local", "tray"][..],
     ] {
         assert!(!cli(args).status.success(), "{args:?} should be rejected");

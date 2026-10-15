@@ -921,15 +921,7 @@ async fn handle(
         None => plain(404, "not found"),
         Some(rest) => {
             let segs: Vec<&str> = rest.split('/').filter(|s| !s.is_empty()).collect();
-            dispatch(
-                &inner,
-                &method,
-                &segs,
-                &headers,
-                origin.as_deref(),
-                request,
-            )
-            .await
+            dispatch(&inner, &method, &segs, &headers, origin.as_deref(), request).await
         }
     };
     with_security_headers(response, &path)

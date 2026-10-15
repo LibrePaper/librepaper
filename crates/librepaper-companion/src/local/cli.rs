@@ -110,10 +110,7 @@ fn cache_home() -> PathBuf {
 
 async fn start_background(port: u16) {
     match crate::local::lifecycle::spawn_background(port).await {
-        Ok(state) => println!(
-            "Local service ready on port {}.",
-            state.port
-        ),
+        Ok(state) => println!("Local service ready on port {}.", state.port),
         Err(error) => die(error),
     }
 }

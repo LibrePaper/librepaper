@@ -662,7 +662,12 @@ mod socket_policy_tests {
             vec!["librepaper", "--at-login"],
             vec!["librepaper", "--port", "9123", "list"],
             vec!["librepaper", "local", "approve", "123456"],
-            vec!["librepaper", "local", "open", "librepaper://open?url=https://app.librepaper.org/"],
+            vec![
+                "librepaper",
+                "local",
+                "open",
+                "librepaper://open?url=https://app.librepaper.org/",
+            ],
             vec!["librepaper", "local", "tray"],
             vec!["librepaper", "local", "agent", "list"],
             vec!["librepaper", "desktop"],
@@ -676,7 +681,14 @@ mod socket_policy_tests {
         for args in [
             vec!["librepaper", "agent", "list"],
             vec!["librepaper", "local", "start"],
-            vec!["librepaper", "local", "start", "--foreground", "--port", "9123"],
+            vec![
+                "librepaper",
+                "local",
+                "start",
+                "--foreground",
+                "--port",
+                "9123",
+            ],
             vec!["librepaper", "local", "stop"],
             vec!["librepaper", "local", "status"],
             vec!["librepaper", "local", "endpoint"],
@@ -684,7 +696,9 @@ mod socket_policy_tests {
         ] {
             assert!(Cli::try_parse_from(args.clone()).is_ok(), "{args:?}");
         }
-        assert!(Cli::try_parse_from(["librepaper", "local", "start", "--tool-path", "/opt"]).is_err());
+        assert!(
+            Cli::try_parse_from(["librepaper", "local", "start", "--tool-path", "/opt"]).is_err()
+        );
         assert!(Cli::try_parse_from(["librepaper", "local", "start", "--at-login"]).is_err());
     }
 
@@ -695,7 +709,10 @@ mod socket_policy_tests {
             assert!(help.contains(command), "missing {command} in {help}");
         }
         assert!(!help.to_lowercase().contains("companion"), "{help}");
-        assert!(Cli::command().find_subcommand("local").unwrap().is_hide_set());
+        assert!(Cli::command()
+            .find_subcommand("local")
+            .unwrap()
+            .is_hide_set());
     }
 
     #[test]
