@@ -6,7 +6,7 @@ title: "Quarto"
 
 ## Set up
 
-A web page cannot run your code. The LibrePaper companion is a small app that runs Quarto on your own computer, with the R, Python and packages you already have. Install [the companion](../local-app.html), then start it:
+A web page cannot run your code. The LibrePaper companion is a small app that runs Quarto on your own computer, with the R, Python and packages you already have. Open the [desktop app](../local-app.html). The commands below use the `librepaper` binary:
 
 ```sh
 librepaper                           # start it
@@ -51,7 +51,7 @@ To share a data file anyway, list it in `.librepaper-share.json` at the top of t
 
 You can render with a folder on your computer. This is how you use private data, packages and caches without uploading them.
 
-- Start the companion.
+- Open the desktop app.
 - Choose **File → Project folder…**.
 - Check the main file name.
 - Click **Choose folder…** and approve.

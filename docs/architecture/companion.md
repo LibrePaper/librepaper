@@ -10,11 +10,17 @@ The companion handles two cases the browser cannot: Quarto and Calepin, which bo
 
 The protocol is versioned and runs over loopback HTTP. It sets bounded limits on body, upload, file count, PDF, log size and job deadline. The health endpoint identifies the service and negotiates version. It does nothing else. Requests with a mismatched `Host` header are answered before parsing. This protects against DNS rebinding.
 
-A browser pairs with the service per origin and project. Pairings live in the user's state directory keyed by origin and project. Only the token hash is written to disk. Tokens expire.
+The companion writes a local credential to `control-token.json` (mode 0600) in its state directory. The desktop app holds that credential. Browsers never call the companion directly.
 
-On supported desktops, starting the companion shows a tray icon. Choose **Settings** from its menu to open the Companion section in the main LibrePaper app. The default app is `https://app.librepaper.org/`. Setting `LIBREPAPER_SERVER` when the companion starts selects a self-hosted app. The configured app pairs without a consent step. A JSON POST to `companion/api/session` from its exact Origin, loopback Host and peer returns an ordinary site pairing. That one pairing also carries machine management, so the app has a single connection. Pairings for other sites never reach the management routes. Settings show pending approvals, available tools, connected sites, authorized folders, running work and local configuration. Other sites pair through the public `pair/request` flow. Their consent request opens Settings in the configured app, which then connects on its own. The Settings link carries only the companion address, never a credential. The local `control-token.json` file is used only by the CLI `approve` command. Revoking a site also removes its scoped folder grants and related local work.
+- Every route except `GET /librepaper/local/health` requires `Authorization: Bearer <credential>`.
+- The desktop app forwards each browser request through its `lp-local` scheme. It sends the page origin as `X-LibrePaper-Origin`.
+- A request with a browser `Origin` or `Sec-Fetch-Site` header gets 403.
 
-Closing the app page leaves the companion running. Use **Quit companion** in Settings or `librepaper stop` to stop it. Start-at-login remains optional. Tray support depends on the desktop environment. Where it is unavailable, use the command line. Folder selection opens the operating system's native chooser. Folder names and contents remain local. On a headless machine, pairing can still be approved with `librepaper local approve <code>` from the terminal.
+On supported desktops, starting the companion shows a tray icon. Its Settings item opens the desktop app. The default server is `https://app.librepaper.org/`. `LIBREPAPER_SERVER` selects a self-hosted server.
+
+`librepaper local endpoint` starts the companion if it is not running. It prints one line of JSON with the address and credential. The desktop app runs it at startup and again after a failed request.
+
+Use `librepaper stop` to stop the companion. Start-at-login remains optional. Tray support depends on the desktop environment. Where it is unavailable, use the command line. Folder selection opens the operating system's native chooser. Folder names and contents remain local.
 
 An agent edits via MCP to the server. MCP owns transport, and the room owns effects and durability. A caller supplies source tree identity and immutable byte ranges. The validator produces a new source. Patches whose ranges don't match are refused. Validated batches apply in one commit.
 

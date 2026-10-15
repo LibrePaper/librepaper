@@ -13,7 +13,7 @@ The LibrePaper companion finds agents installed on your computer, starts the one
 ```sh
 librepaper                           # start in the background
 librepaper --at-login                # also start every time you log in
-librepaper status                    # address, pairings, tools and agents found
+librepaper status                    # address, tools and agents found
 librepaper stop                      # stop it
 
 # Any other ACP agent: everything after -- is its command

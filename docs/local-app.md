@@ -1,28 +1,24 @@
 ---
-title: "The companion"
+title: "The desktop app"
 ---
 
-Web browsers run every page in a sandbox to protect visitors: a website cannot read your local files or control your computer.
+The LibrePaper desktop app runs tools on your computer. Web browsers run every page in a sandbox to protect visitors, so a website cannot run code or read your local files. The desktop app does these things for the website, under your account.
 
-In LibrePaper it is often useful to reach past that sandbox. A Quarto document needs the R or Python installed on your machine, your AI agent lives in your terminal, and a backup belongs in a folder on your disk. The companion is one small program that does these things for the website, on your machine and under your account, only for the sites and folders you approve.
+The browser keeps writing, collaborating and reading. The features below run only in the desktop app.
 
 ## What it enables
 
-- Computational notebooks: [Quarto](notebooks/quarto.html) and [Calepin](notebooks/calepin.html) are two applications that allow users to run R, Python or Julia code inside a document, so a paper, report or slide deck computes its own tables and figures. The browser cannot run code. The companion runs it on your computer with the tools installed there, optionally against a project folder on your disk.
+- Computational notebooks: [Quarto](notebooks/quarto.html) and [Calepin](notebooks/calepin.html) run R, Python or Julia code inside a document, so a paper, report or slide deck computes its own tables and figures. The code runs on your computer with the tools installed there, optionally against a project folder on your disk.
 - [AI agents](agents.html): start the coding agent you already have and hand it the document tools.
 - [Local backups](backups.html): copy every project in your account to ZIP files in a folder you pick.
 - [Zotero](https://www.zotero.org): cite from your local library. Access is read-only.
 - [The CLI](cli.html): export project snapshots, and run or host a server from the same binary.
 
-Nothing runs unasked. A site pairs with the companion per origin and project, folders are granted one at a time through your system's own chooser, running a document's code is approved per document, and Settings shows what is connected and running. On a shared project, editors can change the code that runs, so it is their code too.
-
-## Browser compatibility
-
-Safari may block a secure LibrePaper page from reaching the companion over local HTTP as mixed content. If this happens, use Chrome or Firefox for companion features. WebKit tracks the related behavior in [issue 171934](https://bugs.webkit.org/show_bug.cgi?id=171934); behavior can vary by Safari and macOS version.
+Nothing runs unasked. Folders are granted one at a time through your system's own chooser. Running a document's code is approved per document. On a shared project, editors can change the code that runs, so it is their code too.
 
 ## Install
 
-LibrePaper is one binary. Pick one install method.
+The desktop app uses the `librepaper` binary. Pick one install method.
 
 ## Installer script
 
@@ -57,6 +53,24 @@ scoop bucket add vincentarelbundock https://github.com/vincentarelbundock/scoop-
 scoop install librepaper
 ```
 
+## Desktop app
+
+The desktop app is built from source for now.
+
+```sh
+# From a checkout of the repository
+make desktop                                   # build the app
+desktop/target/release/librepaper-desktop      # start the app
+```
+
+- On NixOS, `make desktop` runs inside `nix-shell`.
+- `LIBREPAPER_SERVER` points the app at another server. It replaces the default server.
+
+```sh
+# Start the app with another server
+LIBREPAPER_SERVER=https://paper.example.org/ desktop/target/release/librepaper-desktop
+```
+
 ## Start
 
 ```sh
@@ -64,9 +78,13 @@ librepaper --version                 # check the install
 librepaper                           # start the companion in the background
 librepaper install-desktop           # install a launcher that starts the companion
 librepaper --at-login                # start at login too
-librepaper status                    # address, pairings, tools, agents
+librepaper status                    # address, tools, agents
 ```
 
-On supported desktops, starting the companion shows a tray icon. Choose **Settings** from its menu to open the Companion section in the main LibrePaper app, where you can approve site requests, review local access, see tool status and change settings. The tray appears automatically. There is no tray preference to configure. Closing the app page does not stop the companion. Choose **Quit companion** in Settings or run `librepaper stop`. Folder selection uses your operating system's native chooser. On a headless machine, pairing approval falls back to a code shown in the terminal. Approve it with `librepaper local approve <code>` within two minutes.
+On supported desktops, starting the companion shows a tray icon. Its **Settings** item opens the desktop app. If no desktop app is found, it opens your LibrePaper server in the browser. The tray appears automatically.
+
+To stop the companion, run `librepaper stop`.
+
+Folder selection uses your operating system's native chooser.
 
 See [the CLI reference](cli.html#the-companion) for more commands. To build from a checkout, see [building from source](architecture/building.html).
