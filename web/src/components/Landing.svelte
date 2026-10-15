@@ -34,7 +34,7 @@
   import Row from "./layout/Row.svelte";
   import ExplorerMenu from "./ExplorerMenu.svelte";
   import { say } from "../lib/toast.svelte.js";
-  import { SHELL_HEADERS, get, getPrivate, me as whoami } from "../lib/api.js";
+  import { SHELL_HEADERS, get, getPrivate, me as whoami, signInHref } from "../lib/api.js";
   import { day as isoDay, since } from "../lib/dates.js";
   import { PROJECT_TABS, PROJECT_TAB_IDS } from "../lib/panels.js";
   import { FORMATS } from "../lib/starter.js";
@@ -852,6 +852,11 @@
         return {};
       })
       .then(async (who) => {
+        // The desktop app has no front page: a stranger is sent straight to sign-in.
+        if (localBridge.desktop() && reachedServer && !who.name && who.providers?.length) {
+          location.replace(signInHref("/"));
+          return;
+        }
         me = who;
         if (who.can_publish) {
           if (newTab) void loadTemplates();

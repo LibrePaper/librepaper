@@ -99,8 +99,9 @@ export async function signOut(site = "") {
   // to be signing out from -- a project you can no longer open, a panel with
   // nothing in it -- and somebody who has just signed out is a stranger
   // again, so they get what a stranger gets. `replace`, so Back does not
-  // return to a page that is now somebody else's.
-  location.replace(site || "/");
+  // return to a page that is now somebody else's. The desktop app stays on its
+  // server: "/" sends a stranger to sign-in.
+  location.replace(globalThis.window?.__LIBREPAPER_DESKTOP__ ? "/" : site || "/");
 }
 
 /// Asks the server to erase the signed-in account: what it owns is queued for
