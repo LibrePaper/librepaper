@@ -1,7 +1,7 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "default",
-  "description": "The main window. Remote server pages get no IPC; they reach the companion through lp-local.",
+  "description": "The main window. Remote server pages get no IPC; they reach the local service through lp-local.",
   "windows": ["main"],
   "permissions": ["core:default", "dialog:default"]
 }

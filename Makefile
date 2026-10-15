@@ -58,8 +58,12 @@ install: $(BIN)  ## Build and install to ~/.local/bin (override PREFIX= or BINDI
 
 # The desktop shell is its own Cargo workspace. NixOS keeps the WebKitGTK
 # libraries out of the default path, so the build runs inside a nix shell there.
-desktop:  ## Build the desktop app (desktop/target/release/librepaper-desktop)
-	@if [ -e /etc/NIXOS ]; then \
+desktop: $(BIN)  ## Build the desktop app (desktop/target/release/librepaper-desktop), bundling the CLI
+	@triple=$$(rustc -vV | sed -n 's/^host: //p') && \
+	ext=$$(case $$triple in *windows*) echo .exe ;; esac) && \
+	mkdir -p desktop/binaries && \
+	cp $(BIN) desktop/binaries/librepaper-$$triple$$ext && \
+	if [ -e /etc/NIXOS ]; then \
 		nix-shell -p pkg-config webkitgtk_4_1 gtk3 libsoup_3 glib-networking --run 'cargo build --release --manifest-path desktop/Cargo.toml'; \
 	else \
 		cargo build --release --manifest-path desktop/Cargo.toml; \

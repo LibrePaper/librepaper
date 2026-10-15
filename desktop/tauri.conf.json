@@ -15,6 +15,14 @@
   "bundle": {
     "active": true,
     "targets": "all",
-    "icon": ["icons/icon.png"]
+    "icon": ["icons/icon.png"],
+    "externalBin": ["binaries/librepaper"]
+  },
+  "plugins": {
+    "deep-link": {
+      "desktop": {
+        "schemes": ["librepaper"]
+      }
+    }
   }
 }

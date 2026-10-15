@@ -1,14 +1,15 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
-mod companion;
 mod servers;
+mod service;
 
 use std::sync::Mutex;
 
-use companion::{Companion, Forward};
 use servers::Servers;
+use service::{Forward, Service};
 use tauri::http::{header, HeaderValue, Method, Request, Response, StatusCode};
-use tauri::{App, AppHandle, Manager, UriSchemeResponder, WebviewUrl, WebviewWindowBuilder};
+use tauri::{App, AppHandle, Manager, RunEvent, UriSchemeResponder, WebviewUrl, WebviewWindowBuilder};
+use tauri_plugin_deep_link::DeepLinkExt;
 use tauri_plugin_dialog::{DialogExt, MessageDialogButtons, MessageDialogKind};
 use url::Url;
 
@@ -17,19 +18,25 @@ pub struct Shell {
     servers: Mutex<Servers>,
 }
 
-fn main() {
-    tauri::Builder::default()
+fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let app = tauri::Builder::default()
         // Registered first, so a second launch is forwarded before anything else runs.
         .plugin(tauri_plugin_single_instance::init(|app, argv, _cwd| {
             handle_args(app, &argv)
         }))
+        .plugin(tauri_plugin_deep_link::init())
         .plugin(tauri_plugin_dialog::init())
         .register_asynchronous_uri_scheme_protocol("lp-local", |ctx, request, responder| {
             serve(ctx.app_handle(), request, responder)
         })
         .setup(setup)
-        .run(tauri::generate_context!())
-        .expect("the LibrePaper desktop app failed to start");
+        .build(tauri::generate_context!())?;
+    app.run(|_, event| {
+        if let RunEvent::Exit = event {
+            service::stop();
+        }
+    });
+    Ok(())
 }
 
 fn setup(app: &mut App) -> Result<(), Box<dyn std::error::Error>> {
@@ -40,7 +47,13 @@ fn setup(app: &mut App) -> Result<(), Box<dyn std::error::Error>> {
     app.manage(Shell {
         servers: Mutex::new(servers),
     });
-    app.manage(Companion::new());
+    app.manage(Service::new());
+
+    // Starts the local service before the page asks for it.
+    let warm = app.handle().clone();
+    tauri::async_runtime::spawn(async move {
+        warm.state::<Service>().warm().await;
+    });
 
     // The page reads its base URL before any script of its own runs.
     let base = if cfg!(windows) {
@@ -58,6 +71,23 @@ fn setup(app: &mut App) -> Result<(), Box<dyn std::error::Error>> {
         .initialization_script(script)
         .build()?;
 
+    if cfg!(any(target_os = "linux", windows)) {
+        if let Err(err) = app.deep_link().register_all() {
+            eprintln!("could not register the librepaper:// scheme: {err}");
+        }
+    }
+    let links = app.handle().clone();
+    app.deep_link().on_open_url(move |event| {
+        for url in event.urls() {
+            deep_link(&links, url.as_str());
+        }
+    });
+    if let Ok(Some(urls)) = app.deep_link().get_current() {
+        for url in urls {
+            deep_link(app.handle(), url.as_str());
+        }
+    }
+
     let args: Vec<String> = std::env::args().collect();
     handle_args(app.handle(), &args);
     Ok(())
@@ -68,11 +98,8 @@ fn handle_args(app: &AppHandle, args: &[String]) {
     while let Some(arg) = args.next() {
         match arg.as_str() {
             "--open" => {
-                if let Some(url) = args.next().and_then(|raw| servers::accepted(raw)) {
-                    let origin = url.origin().ascii_serialization();
-                    if trusted(app, &origin) {
-                        navigate(app, url);
-                    }
+                if let Some(raw) = args.next() {
+                    open(app, raw);
                 }
             }
             "--settings" => {
@@ -86,7 +113,30 @@ fn handle_args(app: &AppHandle, args: &[String]) {
                     add_server(app, url);
                 }
             }
+            arg if arg.starts_with("librepaper://") => deep_link(app, arg),
             _ => {}
+        }
+    }
+}
+
+// Only librepaper://open?url=<URL> is accepted. Every other link is ignored.
+fn deep_link(app: &AppHandle, raw: &str) {
+    let Ok(link) = Url::parse(raw) else {
+        return;
+    };
+    if link.scheme() != "librepaper" || link.host_str() != Some("open") {
+        return;
+    }
+    if let Some((_, target)) = link.query_pairs().find(|pair| pair.0 == "url") {
+        open(app, &target);
+    }
+}
+
+fn open(app: &AppHandle, raw: &str) {
+    if let Some(url) = servers::accepted(raw) {
+        let origin = url.origin().ascii_serialization();
+        if trusted(app, &origin) {
+            navigate(app, url);
         }
     }
 }
@@ -100,7 +150,9 @@ fn add_server(app: &AppHandle, url: Url) {
     }
     let app = app.clone();
     std::thread::spawn(move || {
-        let question = format!("Allow {origin} to use the LibrePaper companion on this computer?");
+        let question = format!(
+            "Allow {origin} to use this computer's tools through the LibrePaper desktop app?"
+        );
         let allowed = app
             .dialog()
             .message(question)
@@ -201,8 +253,8 @@ fn serve(app: &AppHandle, request: Request<Vec<u8>>, responder: UriSchemeRespond
     };
     let app = app.clone();
     tauri::async_runtime::spawn(async move {
-        let companion = app.state::<Companion>();
-        let res = match companion.forward(forward).await {
+        let service = app.state::<Service>();
+        let res = match service.forward(forward).await {
             Ok(res) => res,
             Err(detail) => unavailable(&detail),
         };
@@ -228,7 +280,7 @@ fn forbidden() -> Response<Vec<u8>> {
 }
 
 fn unavailable(detail: &str) -> Response<Vec<u8>> {
-    let body = serde_json::json!({ "error": "companion unavailable", "detail": detail })
+    let body = serde_json::json!({ "error": "local service unavailable", "detail": detail })
         .to_string()
         .into_bytes();
     Response::builder()
