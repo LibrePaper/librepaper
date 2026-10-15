@@ -409,6 +409,7 @@
   let lastBibliographyKey = "";
   let zoteroSearchGeneration = 0;
   let lastZoteroError = "";
+  const ZOTERO_NEEDS_DESKTOP = "Zotero needs the LibrePaper desktop app.";
   function formatOf(path) {
     const lower = String(path || "").toLowerCase();
     if (lower.endsWith(".typ")) return "typst";
@@ -457,8 +458,19 @@
     bibliographyTimer = setTimeout(refreshBibliography, 120);
   }
 
+  function reportZotero(message) {
+    if (message === lastZoteroError) return;
+    lastZoteroError = message;
+    onbibliography?.({ entries: bibliographyEntries(), diagnostics: [{ severity: "warning", message, file: pathOfDoc(boundDoc(), showing), line: 0 }] }, bibliographyRequest());
+  }
+
   async function remoteBibliography(query) {
-    if (!desktop() || !["markdown", "quarto"].includes(formatOf(pathOfDoc(boundDoc(), showing)))) return [];
+    if (!["markdown", "quarto"].includes(formatOf(pathOfDoc(boundDoc(), showing)))) return [];
+    // Zotero lives on this computer, so a browser says where it can be used.
+    if (!desktop()) {
+      reportZotero(ZOTERO_NEEDS_DESKTOP);
+      return [];
+    }
     const generation = ++zoteroSearchGeneration;
     await new Promise((resolve) => setTimeout(resolve, 180));
     if (generation !== zoteroSearchGeneration) return [];
@@ -467,11 +479,7 @@
       response = await searchZotero(query);
       lastZoteroError = "";
     } catch (error) {
-      const message = error?.message || String(error);
-      if (message !== lastZoteroError) {
-        lastZoteroError = message;
-        onbibliography?.({ entries: bibliographyEntries(), diagnostics: [{ severity: "warning", message: `Zotero unavailable: ${message}`, file: pathOfDoc(boundDoc(), showing), line: 0 }] }, bibliographyRequest());
-      }
+      reportZotero(`Zotero unavailable: ${error?.message || String(error)}`);
       return [];
     }
     if (generation !== zoteroSearchGeneration) return [];
