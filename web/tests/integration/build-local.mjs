@@ -1,6 +1,6 @@
-// v2 companion build contract using the production client and fake HTTP.
+// v2 desktop app build contract using the production client and fake HTTP.
 import assert from "node:assert/strict";
-import * as client from "../../src/lib/companion/client.js";
+import * as client from "../../src/lib/desktop/client.js";
 import { formOf } from "../helpers/form-body.mjs";
 
 const values = new Map();
@@ -22,7 +22,6 @@ client._testing.inject({ fetch: async (url, init = {}) => {
   if (url.endsWith("/jobs/job-1/files/log")) return response(200, {}, new Uint8Array());
   throw new Error(`unexpected request ${url}`);
 } });
-await client.probe({ force: true });
 const sourceTreeDigest = "a".repeat(64);
 const result = await client.runBuild({ job: { snapshot: sourceTreeDigest, generation: 4 }, tree: { main: "paper.tex", texts: { "paper.tex": "\\documentclass{article}" }, assets: {} }, builder: "latexmk", engine: "xelatex", output: "pdf", options: { shell_escape: false } });
 assert.equal(result.ok, true);

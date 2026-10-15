@@ -1,14 +1,16 @@
 <script>
   import ToolRow from "./ToolRow.svelte";
   import ToolCommand from "./ToolCommand.svelte";
-  import CompanionConnection from "./CompanionConnection.svelte";
-  import { companion } from "../../lib/companion/status.svelte.js";
+  import DesktopOnly from "../DesktopOnly.svelte";
+  import { capabilities as desktopCapabilities } from "../../lib/desktop/client.js";
 
   // The page does not own the machine view; the dialog creates and starts it.
   let { view } = $props();
 
-  // Watching never probes, so opening this page cannot prompt for local network access.
-  $effect(() => companion.watch());
+  // The rescan also refreshes what the rest of the page knows about the tools.
+  async function rescan() {
+    if (await view.act("rescan", "Tool scan complete.", "/tools/rescan", { method: "POST" })) void desktopCapabilities({ rescan: true }).catch(() => {});
+  }
 
   const CONFIGURABLE = ["quarto", "calepin"];
   const COMMON = ["Quarto", "Calepin", "Zotero"];
@@ -35,9 +37,9 @@
     return [...unique.values()];
   }
 
-  const connected = $derived(view.available || companion.status?.state === "ready");
-  const capabilities = $derived(view.available ? view.state?.tools : companion.status?.capabilities);
-  // The programs worth showing are listed even when the companion did not report them.
+  const connected = $derived(view.available);
+  const capabilities = $derived(view.state?.tools);
+  // The programs worth showing are listed even when the desktop app did not report them.
   const tools = $derived.by(() => {
     const found = items(capabilities);
     for (const name of COMMON) if (!found.some((entry) => entry.name.toLowerCase() === name.toLowerCase())) found.push({ name, tool: null });
@@ -61,9 +63,7 @@
   }
 </script>
 
-{#if !connected}
-<CompanionConnection needs="checking the tools on this computer" />
-{/if}
+<DesktopOnly>
 {#if view.error}
   <p class="setting-description tools-error" role="alert">{view.error}</p>
 {/if}
@@ -78,7 +78,7 @@
 <section id="tools-list" class="settings-subsection" aria-labelledby="tools-list-heading">
   <div class="settings-section-title">
     <h4 class="settings-subhead" id="tools-list-heading">Programs</h4>
-    {#if view.available}<button class="btn btn-sm lp-control-tonal-brand" type="button" disabled={Boolean(view.pending)} onclick={() => void view.act("rescan", "Tool scan complete.", "/tools/rescan", { method: "POST" })}>{view.pending === "rescan" ? "Scanning…" : "Rescan"}</button>{/if}
+    {#if view.available}<button class="btn btn-sm lp-control-tonal-brand" type="button" disabled={Boolean(view.pending)} onclick={() => void rescan()}>{view.pending === "rescan" ? "Scanning…" : "Rescan"}</button>{/if}
   </div>
   {#each tools as { key, title, tool } (key)}
     {#if CONFIGURABLE.includes(key)}
@@ -88,6 +88,7 @@
     {/if}
   {/each}
 </section>
+</DesktopOnly>
 
 <style>
   .tools-error { color: var(--color-error-text); }

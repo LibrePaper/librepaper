@@ -161,7 +161,7 @@
   import { sourceHighlighting } from "../lib/source-highlight.js";
   import { analyzeBibliography } from "../lib/bibliography-engine.js";
   import { bibliographyCache, bibliographyCacheKey, bibliographyCompletion, bibliographyNeedsAnalysis, citationContext, planZoteroImport } from "../lib/bibliography.js";
-  import { desktop, searchZotero, status as companionStatus, zoteroItem } from "../lib/companion/client.js";
+  import { desktop, searchZotero, zoteroItem } from "../lib/desktop/client.js";
   import { createProposals, locateProposalHunk } from "../lib/proposals.js";
   import { proposalMarks, setProposalMarks } from "../lib/proposal-marks.js";
   import { DIRECTORY_ORIGIN } from "../lib/project-session.js";
@@ -458,7 +458,7 @@
   }
 
   async function remoteBibliography(query) {
-    if (!desktop() || companionStatus().state !== "ready" || !["markdown", "quarto"].includes(formatOf(pathOfDoc(boundDoc(), showing)))) return [];
+    if (!desktop() || !["markdown", "quarto"].includes(formatOf(pathOfDoc(boundDoc(), showing)))) return [];
     const generation = ++zoteroSearchGeneration;
     await new Promise((resolve) => setTimeout(resolve, 180));
     if (generation !== zoteroSearchGeneration) return [];

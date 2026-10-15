@@ -77,13 +77,12 @@ globalThis.WebSocket = class {
   }
   close() { this.onclose?.(); }
 };
-// The agent panel shows its chat only once the desktop app is ready, so the
-// harness defines the desktop global and answers the app's two probe routes.
+// The agent panel shows its chat only inside the desktop app, so the
+// harness defines the desktop global.
 window.__LIBREPAPER_DESKTOP__ = { base: 'http://lp-local.localhost/', version: 'test' };
 globalThis.fetch = async (url, init = {}) => {
   const path = String(url);
   if (path.startsWith('http://lp-local.localhost/')) {
-    if (path.endsWith('/health')) return Response.json({service:'librepaper-local',protocol:[2],version:'test',instance:'one'});
     if (path.endsWith('/capabilities')) return Response.json({builders:[]});
     return Response.json({});
   }
@@ -96,9 +95,8 @@ globalThis.fetch = async (url, init = {}) => {
   return { ok:false, json:async()=>({}) };
 };
 const { default: Reader } = await import(${JSON.stringify(join(root,"web/src/components/Reader.svelte"))});
-const companion = await import(${JSON.stringify(join(root,"web/src/lib/companion/client.js"))});
-companion.configure({ project: 'paper', origin: location.origin });
-await companion.retry();
+const desktopClient = await import(${JSON.stringify(join(root,"web/src/lib/desktop/client.js"))});
+desktopClient.configure({ project: 'paper', origin: location.origin });
 const { mount } = await import(${JSON.stringify(join(root,"web/node_modules/svelte/src/index-client.js"))});
 mount(Reader, {target:document.body});
 `);

@@ -33,7 +33,7 @@ try {
   }).then((response) => response.json());
   const link = new URL(sharing.links.commenter.url, deployment.base).href;
 
-  // The record the companion writes before it starts a runner, under the
+  // The record the desktop app writes before it starts a runner, under the
   // name the runner derives (`runner_connection_name`).
   state = await mkdtemp(join(tmpdir(), "librepaper-agent-bridge-"));
   const conversation = "c".repeat(32);

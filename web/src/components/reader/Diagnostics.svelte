@@ -1,6 +1,6 @@
 <script>
   import PanelHeader from "../PanelHeader.svelte";
-  import CompanionConnection from "../settings/CompanionConnection.svelte";
+  import DesktopOnly from "../DesktopOnly.svelte";
   import { provenanceSentence } from "../../lib/latex/status-text.js";
 
   let {
@@ -9,8 +9,8 @@
     canOpen = () => false,
     onopen,
     localAppProblem = false,
-    // Set when a preview here needs the companion and it is not ready.
-    companionNeeds = "",
+    // Set when a preview here needs the desktop app and this is a browser.
+    desktopNeeds = "",
     onretrylocal,
     // The two LaTeX-only additions: what actually produced the current
     // preview, and every backend that was tried to get there. Both come
@@ -68,8 +68,8 @@
 
 <section class="panel" aria-label="Warnings and errors">
   <PanelHeader title="Diagnostics" />
-  {#if companionNeeds}<CompanionConnection needs={companionNeeds} />{:else if localAppProblem}
-    <button type="button" class="btn btn-sm lp-control-tonal-brand mb-4" onclick={onretrylocal}>Reconnect and retry preview</button>
+  {#if desktopNeeds}<DesktopOnly feature={desktopNeeds} />{:else if localAppProblem}
+    <button type="button" class="btn btn-sm lp-control-tonal-brand mb-4" onclick={onretrylocal}>Retry preview</button>
   {/if}
   {#if provenance}
     <details class="mb-4">

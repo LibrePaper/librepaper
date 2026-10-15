@@ -2,7 +2,7 @@
 // The dialog draws its navigation from this and searches it; what a category
 // shows is a component beside this file.
 //
-// Browser-scoped pages: Editor, Rendering. Computer-scoped pages: Tools, Companion,
+// Browser-scoped pages: Editor, Rendering. Computer-scoped pages: Tools, Desktop app,
 // Agents. Account-scoped pages: Backups, Account.
 
 // `offered` answers with the document's format, whether this browser may edit
@@ -46,15 +46,12 @@ export const CATEGORIES = [
     ],
   },
   {
-    id: "companion", says: "Companion", offered: always,
+    id: "desktop", says: "Desktop app", offered: always,
     note: "This computer",
     entries: [
-      { id: "companion-connection", says: "Connection", terms: "companion connect install running status installer setup linux macos windows version" },
-      { id: "companion-approvals", says: "Waiting for your answer", terms: "allow deny approval pending requests access" },
-      { id: "companion-folders", says: "Project folders", terms: "bindings folder grant revoke directory project access" },
-      { id: "companion-startup", says: "Start at login", terms: "startup login background quit companion" },
-      { id: "companion-report", says: "Check local setup", terms: "doctor troubleshoot diagnostics report rescan" },
-      { id: "companion-activity", says: "Activity", terms: "jobs previews sessions cancel stop output logs running" },
+      { id: "desktop-folders", says: "Project folders", terms: "bindings folder grant revoke directory project access" },
+      { id: "desktop-version", says: "Version", terms: "desktop app version install update" },
+      { id: "desktop-activity", says: "Activity", terms: "jobs previews sessions cancel stop output logs running" },
     ],
   },
   {
@@ -69,7 +66,7 @@ export const CATEGORIES = [
     id: "backups", says: "Backups", offered: always,
     entries: [
       { id: "backup-enable", says: "Automatic backups", terms: "zip archive schedule frequency interval account all projects" },
-      { id: "backup-destination", says: "Backup folder", terms: "destination choose directory folder local companion" },
+      { id: "backup-destination", says: "Backup folder", terms: "destination choose directory folder local desktop app" },
       { id: "backup-frequency", says: "Frequency", terms: "minutes schedule interval" },
     ],
   },

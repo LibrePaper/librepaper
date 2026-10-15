@@ -5,7 +5,7 @@ import "../styles/app.css";
 import "../styles/reader.css";
 import Reader from "../components/Reader.svelte";
 import { registerOfflineShell } from "../lib/offline-shell.js";
-import { intake } from "../lib/companion/client.js";
+import { intake } from "../lib/desktop/client.js";
 import { blockPageZoom } from "../lib/pinch.js";
 
 // Mounted into <body> rather than into a wrapper: the stylesheet addresses
@@ -24,6 +24,6 @@ blockPageZoom(document);
 // the reader asks which formats it can render as it mounts.
 globalThis.LIBREPAPER_MODULES = JSON.parse(document.getElementById("librepaper-modules").textContent);
 
-const initialSettings = intake() ? "companion" : "";
+const initialSettings = intake() ? "desktop" : "";
 mount(Boundary, { target: document.body, props: { component: Reader, props: { initialSettings }, name: "the reader" } });
 void registerOfflineShell();

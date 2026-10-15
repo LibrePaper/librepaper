@@ -1,8 +1,8 @@
 // Format routing for protocol-v2 one-shot builders. These checks prove that
-// explicit native Typst and Pandoc selections reach the companion directly
+// explicit native Typst and Pandoc selections reach the desktop app directly
 // and that a local failure is returned instead of starting a browser render.
 import assert from "node:assert/strict";
-import * as client from "../../src/lib/companion/client.js";
+import * as client from "../../src/lib/desktop/client.js";
 import * as renderers from "../../src/lib/renderers.js";
 import { formOf } from "../helpers/form-body.mjs";
 
@@ -48,7 +48,6 @@ client._testing.inject({ fetch: async (url, init = {}) => {
   if (url.endsWith(`/jobs/build-1/files/${submitted.output}`)) return response(200, {}, artifact);
   throw new Error(`unexpected request ${url}`);
 } });
-await client.probe({ force: true });
 
 const typst = await renderers.render(
   { main: "main.typ", texts: { "main.typ": "= Test" }, assets: {} },

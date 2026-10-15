@@ -27,7 +27,7 @@ writeFileSync(entry, `
 import ${JSON.stringify(join(root, "src/styles/app.css"))};
 import { mount, unmount } from ${JSON.stringify(join(root, "node_modules/svelte/src/index-client.js"))};
 import Harness from ${JSON.stringify(harness)};
-import * as localBridge from ${JSON.stringify(join(root, "src/lib/companion/client.js"))};
+import * as localBridge from ${JSON.stringify(join(root, "src/lib/desktop/client.js"))};
 // The Reader scopes the local client to the document it loaded; this harness
 // mounts the panel without a Reader, so it stands in for that one step. The
 // panel itself deliberately does not do it: which document the local app is
@@ -190,11 +190,9 @@ try {
   const appUrl = `http://127.0.0.1:${server.address().port}/`;
   await page.navigate(appUrl);
   await until("live agent panel",()=>page.evaluate("Boolean(document.querySelector('.agent-panel'))"),10000);
-  // Inside the desktop app the panel probes on its own and shows its settings.
+  // Inside the desktop app the panel shows its settings.
   await until("desktop app ready", () => page.evaluate(
     `!document.querySelector('.connect-required') && Boolean(document.querySelector('.agent-settings'))`), 10000);
-  assert.ok(await page.evaluate("window.localCalls.some(call=>call.route==='health')"),
-    "the desktop app is probed when the panel mounts");
   // The composer is rendered only after the desktop app is ready.
   await until("runner composer once ready", () => page.evaluate('document.querySelector(".chat-form")?.dataset.cansend === "true"'), 10000);
   // The Chat tab is the default: the agent/access/start controls live there
@@ -357,15 +355,15 @@ try {
   await until("desktop app ready", () => page.evaluate(`!document.querySelector('.connect-required') && Boolean(document.querySelector('.agent-settings'))`), 3000);
   await until("agents listed", () => page.evaluate(`Boolean(document.querySelector('select[aria-label=Agent] option[value=claude]'))`), 2000);
 
-  // The "Companion settings" text button is gone from the settings line; each
+  // The "Desktop app settings" text button is gone from the settings line; each
   // pane now carries its own icon button to the same page in its header, and
   // only the Chat pane also carries Clear conversation.
-  assert.ok(await page.evaluate(`Boolean(document.querySelector('#agent-pane-chat button[aria-label="Local companion settings"]'))`),
-    "the Chat pane header offers a way to the companion settings page");
+  assert.ok(await page.evaluate(`Boolean(document.querySelector('#agent-pane-chat button[aria-label="Desktop app settings"]'))`),
+    "the Chat pane header offers a way to the desktop app settings page");
   assert.ok(await page.evaluate(`Boolean(document.querySelector('#agent-pane-chat button[aria-label="Clear conversation"]'))`),
     "the Chat pane header offers Clear conversation");
-  assert.ok(await page.evaluate(`Boolean(document.querySelector('#agent-pane-tasks button[aria-label="Local companion settings"]'))`),
-    "the Tasks pane header also offers a way to the companion settings page");
+  assert.ok(await page.evaluate(`Boolean(document.querySelector('#agent-pane-tasks button[aria-label="Desktop app settings"]'))`),
+    "the Tasks pane header also offers a way to the desktop app settings page");
   assert.equal(await page.evaluate(`Boolean(document.querySelector('#agent-pane-tasks button[aria-label="Clear conversation"]'))`), false,
     "Clear conversation is only in the Chat pane");
 
@@ -390,7 +388,7 @@ try {
   assert.equal(started.body.agent, "claude");
   assert.equal(started.body.chat_token, "secret-token");
   assert.match(started.body.agent_token, /^lpa_test_\d+$/,
-    "the companion receives a short-lived document grant rather than the browser chat token");
+    "the desktop app receives a short-lived document grant rather than the browser chat token");
   const grantRequest = await page.evaluate("window.agentTokenCalls[0]");
   assert.equal(grantRequest.method, "POST");
   assert.equal(grantRequest.headers["X-LibrePaper-Key"], "editor",
@@ -408,7 +406,7 @@ try {
   assert.equal(renewed.body.link, started.body.link);
   assert.equal(renewed.body.conversation, started.body.conversation);
   assert.match(renewed.body.agent_token, /^lpa_test_\d+$/,
-    "renewal sends a freshly minted document grant to the companion");
+    "renewal sends a freshly minted document grant to the desktop app");
   // The agent settings stay visible at all times when paired, and nothing in
   // the pane header stops the agent: sending, changing a select or clearing the
   // conversation is how its state changes.
@@ -657,14 +655,14 @@ try {
     `Boolean(document.querySelector('.connect-required')) && (window.calls.some(call=>call.suffix==='') || window.sockets.some(socket=>socket.sent.some(frame=>frame.type==='join')))`), 10000);
   assert.equal(await page.evaluate("window.localCalls.length"), 0,
     "outside the desktop app nothing local is requested");
-  assert.match(await page.evaluate("document.querySelector('.connect-required').textContent"), /Computing, agents, folders and backups need the LibrePaper desktop app\./);
-  assert.equal(await page.evaluate(`document.querySelector('.connect-required a[href*="local-app"]')?.textContent.trim()`), "Install the desktop app");
+  assert.match(await page.evaluate("document.querySelector('.connect-required').textContent"), /The agent needs the LibrePaper desktop app\./);
+  assert.equal(await page.evaluate(`document.querySelector('.connect-required a[href*="desktop-app"]')?.textContent.trim()`), "Get the desktop app");
   assert.equal(await page.evaluate(`document.querySelector('.connect-required a[href^="librepaper://open?url="]')?.textContent.trim()`), "Open in the desktop app");
   assert.deepEqual(await page.evaluate(`Array.from(document.querySelectorAll('.connect-required button')).map(b=>b.textContent.trim())`), [], "there is no Connect button");
-  assert.ok(await page.evaluate(`Boolean(document.querySelector('#agent-pane-chat button[aria-label="Local companion settings"]'))`),
-    "the pane header still offers a way to the companion settings page outside the desktop app");
-  await page.evaluate(`document.querySelector('#agent-pane-chat button[aria-label="Local companion settings"]').click()`);
-  assert.equal(await page.evaluate("window.settingsCalls"), 1, "the notice pane offers a way to the companion settings page");
+  assert.ok(await page.evaluate(`Boolean(document.querySelector('#agent-pane-chat button[aria-label="Desktop app settings"]'))`),
+    "the pane header still offers a way to the desktop app settings page outside the desktop app");
+  await page.evaluate(`document.querySelector('#agent-pane-chat button[aria-label="Desktop app settings"]').click()`);
+  assert.equal(await page.evaluate("window.settingsCalls"), 1, "the notice pane offers a way to the desktop app settings page");
 
   await page.navigate(appUrl);
   await until("desktop app ready again", () => page.evaluate(
@@ -688,7 +686,7 @@ try {
   );
 
   // Reloading the page preserves both the browser's saved assistant record
-  // and the companion's running assistant, just as it would outside this
+  // and the desktop app's running assistant, just as it would outside this
   // harness. The first status request fails transiently; the same mounted
   // panel must retry, restore the saved configuration and attach renewal.
   await choose("Access", "commenter");
@@ -700,7 +698,7 @@ try {
   await until("assistant choice saved before reload", () => page.evaluate(`JSON.parse(localStorage.getItem('librepaper.agent.session.'+location.origin+':paper')||'{}').assistantAccess==='commenter'`), 2000);
   await page.evaluate("localStorage.setItem('librepaper-test-fail-next-status','1')");
   await page.navigate(appUrl);
-  await until("reloaded panel reconnects to companion", () => page.evaluate(
+  await until("reloaded panel reconnects to the desktop app", () => page.evaluate(
     `window.localCalls.some(call=>call.route==='assistant/status')`), 10000);
   assert.equal(await page.evaluate("window.localCalls.filter(call=>call.route==='assistant/status').length"), 1,
     "the first restore attempt reaches the running assistant");
@@ -710,7 +708,7 @@ try {
     "the agent settings stay visible when an assistant is restored");
   await until("running configuration restored", () => page.evaluate(`document.querySelector('select[aria-label=Agent]')?.value==='claude' && document.querySelector('select[aria-label=Access]')?.value==='commenter'`), 3000);
   assert.equal(await page.evaluate("window.activeRunner !== null"), true,
-    "the companion's assistant remains running across the browser reload");
+    "the desktop app's assistant remains running across the browser reload");
   await page.evaluate("window.renewAgentGrant()");
   await until("restored assistant grant renewed", () => page.evaluate("window.localCalls.some(call=>call.route==='assistant/renew')"), 2000);
   const restoredRenewal = await page.evaluate("window.localCalls.find(call=>call.route==='assistant/renew')");

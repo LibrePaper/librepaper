@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import * as local from "../../src/lib/companion/client.js";
+import * as local from "../../src/lib/desktop/client.js";
 
 const response = (body, status = 200) => ({
   status,
@@ -55,7 +55,7 @@ await assert.rejects(
   local.authorizeBackups("account-a", async () => { throw new Error("approval refused"); }, () => true),
   /approval refused/,
 );
-assert.equal(requests.length, 1, "a failed browser approval never completes companion authorization");
+assert.equal(requests.length, 1, "a failed browser approval never completes desktop app authorization");
 
 setup();
 let current = true;

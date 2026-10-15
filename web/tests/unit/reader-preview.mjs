@@ -73,10 +73,10 @@ assert.match(readerSource, /async function stopLocalExecution\(\)\s*\{\s*localEx
 // It is offered under its own heading in the View menu, with a check mark,
 // and choosing it asks rather than acts.
 assert.match(readerSource, /menu-section-label">Local execution<\/div>\s*<Menu\.Item value="local-execution"[\s\S]*?\{localExecution \? "✓" : ""\}/);
-assert.match(readerSource, /const toggleLocalExecution = \(\) => \{\s*if \(localExecution\) void stopLocalExecution\(\);\s*else localExecutionConsent = true;/);
+assert.match(readerSource, /const toggleLocalExecution = \(\) => \{\s*if \(localExecution\) void stopLocalExecution\(\);\s*else askLocalExecution\(\);/);
 // The control asks before it runs: the warning is a dialog somebody has to
 // answer, not a tooltip a mouse might hover over.
-assert.match(readerSource, /\{#snippet localExecutionControl\(\)\}[\s\S]*?sourceFormat === "quarto" && mayEdit && !localExecution\}[\s\S]*?<button[\s\S]*?localExecutionConsent = true[\s\S]*?<\/button>/);
+assert.match(readerSource, /\{#snippet localExecutionControl\(\)\}[\s\S]*?sourceFormat === "quarto" && mayEdit && !localExecution\}[\s\S]*?<button[\s\S]*?onclick=\{askLocalExecution\}[\s\S]*?<\/button>/);
 // The dialog's buttons come from Modal's `confirm`, which is what puts focus
 // on the action: this one is answered with Enter like every other question.
 // Only the dialog grants, and what it says names who has to be trusted: the
@@ -93,7 +93,7 @@ assert.match(readerSource, /isGrantKey\(e\.key\) \|\| e\.key === null/);
 // has to carry it itself, rather than claim a browser render is under way
 // that can never finish.
 assert.match(readerSource, /const pdfNeedsLocalTool = \$derived\(\s*pdfOutput && \["markdown", "quarto"\]\.includes\(sourceFormat\)/);
-assert.match(readerSource, /\{#if pdfNeedsLocalTool\}[\s\S]*?<h2 class="h4">PDF needs[\s\S]*?\{#if pdfNeedsLocalExecution\}[\s\S]*?localExecutionConsent = true[\s\S]*?<\/button>[\s\S]*?Preview as HTML instead<\/button>[\s\S]*?\{:else\}\s*<h2 class="h4">(?:\{#if previewBusy\}<span class="spinner"><\/span>\{\/if\})?Not yet rendered<\/h2>/);
+assert.match(readerSource, /\{#if pdfNeedsLocalTool\}[\s\S]*?<h2 class="h4">PDF needs[\s\S]*?\{#if pdfNeedsLocalExecution\}[\s\S]*?askLocalExecution[\s\S]*?<\/button>[\s\S]*?Preview as HTML instead<\/button>[\s\S]*?\{:else\}\s*<h2 class="h4">(?:\{#if previewBusy\}<span class="spinner"><\/span>\{\/if\})?Not yet rendered<\/h2>/);
 // Choosing Quarto's own preview is a choice of tool, not of output: a PDF
 // that was asked for survives enabling the thing that can produce it.
 assert.match(readerSource, /async function setQuartoPreviewMode\(mode\)[\s\S]*?output: mode === "markdown" \? "html" : \(buildPreferences\.output \|\| "html"\)/);

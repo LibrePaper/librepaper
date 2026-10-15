@@ -1,13 +1,13 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import vm from "node:vm";
-import * as localBridge from "../../src/lib/companion/client.js";
+import * as localBridge from "../../src/lib/desktop/client.js";
 import { loadRunes } from "../helpers/runes.mjs";
 
 const { createLocalPreview } = await loadRunes(
   new URL("../../src/lib/reader/local-preview.svelte.js", import.meta.url),
 );
-import { _testing, configure, probe, quartoRequest, runBuild, syncWorkspace, startLocalPreview, localPreviewPage, localPreviewStatus, stopLocalPreview, calepinAvailable } from "../../src/lib/companion/client.js";
+import { _testing, configure, quartoRequest, runBuild, syncWorkspace, startLocalPreview, localPreviewPage, localPreviewStatus, stopLocalPreview, calepinAvailable } from "../../src/lib/desktop/client.js";
 import { parameterSha256 } from "../../src/lib/engines/quarto.js";
 import { formOf } from "../helpers/form-body.mjs";
 
@@ -177,7 +177,6 @@ setup(async (url, init = {}) => {
   }
   throw new Error(`unexpected v2 preview request: ${init.method || "GET"} ${url}`);
 });
-await probe({ force: true });
 await startLocalPreview({ job: { binding: "binding-1" }, tree: { main: "paper.qmd", texts: { "paper.qmd": "# Preview" } }, options: {} });
 assert.equal(v2PreviewRequest.protocol, 2);
 assert.equal(v2PreviewRequest.entrypoint, "paper.qmd");
@@ -320,7 +319,7 @@ console.log("quarto-local: startLocalPreview validates both Calepin and default 
 console.log("quarto-local: localPreviewPage returns pdf bytes as a Uint8Array with kind \"pdf\"");
 
 // Preview lifecycle calls share the format-neutral API, and calepinAvailable
-// reads the last probed capabilities without fetching.
+// reads the capabilities the desktop app reports.
 {
   setup(async (url, init) => {
     if (init.method === "DELETE") return response({ stopped: true });
@@ -328,13 +327,13 @@ console.log("quarto-local: localPreviewPage returns pdf bytes as a Uint8Array wi
   });
   assert.equal((await localPreviewStatus("preview-1")).state, "running");
   await stopLocalPreview("preview-1");
-  assert.equal(calepinAvailable(), false);
+  assert.equal(await calepinAvailable(), false);
   _testing.inject({});
 }
-console.log("quarto-local: preview lifecycle calls work, and calepinAvailable defaults false");
+console.log("quarto-local: preview lifecycle calls work, and calepinAvailable is false without Calepin");
 
 // Exercise the Reader's actual controller configuration with the wire client:
-// a saved folder the companion no longer grants is forgotten, and the live
+// a saved folder the desktop app no longer grants is forgotten, and the live
 // preview falls back to the hosted workspace it just synchronized.
 {
   const reader = readFileSync(new URL("../../src/components/Reader.svelte", import.meta.url), "utf8");

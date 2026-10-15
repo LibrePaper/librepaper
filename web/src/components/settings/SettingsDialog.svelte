@@ -2,13 +2,12 @@
   // The settings, as a preferences window rather than a form: a navigation
   // list of categories at the left, one category at a time at the right. It
   // opens from the workspace navbar or sidebar, and any entry point can open
-  // it on a given category -- connection controls can land on Companion.
+  // it on a given category.
   import { onMount, tick } from "svelte";
-  import { createMachineView } from "../../lib/companion/machine.svelte.js";
+  import { createMachineView } from "../../lib/desktop/machine.svelte.js";
   import Modal from "../Modal.svelte";
   import { offered, search, has } from "./registry.js";
   import EditorSettings from "./EditorSettings.svelte";
-  import CompanionStatus from "./CompanionStatus.svelte";
   import LatexFilesSettings from "./LatexFilesSettings.svelte";
   import QuotaSettings from "./QuotaSettings.svelte";
   import BuildSettings from "./BuildSettings.svelte";
@@ -18,7 +17,7 @@
   import RemoteSettings from "./RemoteSettings.svelte";
   import BackupsSettings from "./BackupsSettings.svelte";
   import AgentSettings from "./AgentSettings.svelte";
-  import CompanionSettings from "./CompanionSettings.svelte";
+  import DesktopSettings from "./DesktopSettings.svelte";
 
   let {
     open = $bindable(false),
@@ -59,8 +58,6 @@
   const nav = $derived(found ? found.map((match) => match.category) : available);
   const entriesOf = (id) => found?.find((match) => match.category.id === id)?.entries || [];
 
-  const approvals = $derived(view.list(view.state?.approvals).length);
-
   let body = $state(null);
   async function go(id, entry = "") {
     category = id;
@@ -70,19 +67,6 @@
   }
 </script>
 
-<style>
-  .settings-nav-badge {
-    display: inline-flex;
-    min-width: 1.25rem;
-    padding: 0 0.35rem;
-    border-radius: 999px;
-    background: var(--color-warning-solid);
-    color: white;
-    font-size: var(--text-xs);
-    margin-inline-start: 0.5rem;
-  }
-</style>
-
 <Modal bind:open title="Settings" full>
   <div class="settings">
     <nav class="settings-nav" aria-label="Settings categories">
@@ -91,16 +75,12 @@
         <button type="button" class="settings-nav-item" class:current={shown?.id === item.id}
                 aria-current={shown?.id === item.id ? "page" : undefined} onclick={() => go(item.id)}>
           {item.says}
-          {#if item.id === "companion" && approvals > 0}
-            <span class="settings-nav-badge" aria-label={`${approvals} waiting for your answer`}>{approvals}</span>
-          {/if}
         </button>
         {#each entriesOf(item.id) as entry (entry.id)}
           <button type="button" class="settings-nav-entry" onclick={() => go(item.id, entry.id)}>{entry.says}</button>
         {/each}
       {/each}
       {#if found && !nav.length}<p class="settings-nav-empty">Nothing matches.</p>{/if}
-      <div class="settings-nav-companion"><CompanionStatus onopen={() => go("companion")} /></div>
     </nav>
 
     <div class="settings-body" bind:this={body}>
@@ -133,8 +113,8 @@
           <RemoteSettings {remoteConnected} {remoteNote} />
           {#if row("storage-account")}<QuotaSettings />{/if}
           {#if row("account-erase")}<AccountSettings {account} />{/if}
-        {:else if shown.id === "companion"}
-          <CompanionSettings {view} />
+        {:else if shown.id === "desktop"}
+          <DesktopSettings {view} />
         {/if}
       {/if}
     </div>

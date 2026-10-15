@@ -3,7 +3,7 @@
 //   node web/tests/e2e/latex-e2e.mjs <binary> <mode> <fixture> [seconds] [mirror]
 //
 // `mode` is `browser` (the reader's browser compiler), the only mode: a
-// browser no longer reaches a companion, so there is no local variant. A
+// browser no longer reaches the desktop app, so there is no local variant. A
 // reader opens the published read link, so its only document authority is the
 // fragment key. Publishing itself uses a locally minted, signed GitHub test
 // session; no OAuth service is contacted.

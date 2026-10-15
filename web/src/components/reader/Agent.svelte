@@ -7,10 +7,9 @@
   import IconButton from "../IconButton.svelte";
   import ChatTranscript from "../ChatTranscript.svelte";
   import ChatComposer from "../ChatComposer.svelte";
-  import CompanionConnection from "../settings/CompanionConnection.svelte";
+  import DesktopOnly from "../DesktopOnly.svelte";
   import { createAgentClient, documentKey } from "../../lib/agent-client.svelte.js";
-  import * as local from "../../lib/companion/client.js";
-  import { companion } from "../../lib/companion/status.svelte.js";
+  import * as local from "../../lib/desktop/client.js";
   import {
     captureAttachment, capabilityAllows, diagnosticLabel, suggestionContext,
     normalizeCapabilities, scopeLabel, visibleResults,
@@ -53,15 +52,13 @@
   let extra = $state("");
   let agentLink = $state("");
   // What this computer has, as the local app reports it. The browser cannot
-  // read a PATH, so until the desktop app is ready there is nothing to offer and the
+  // read a PATH, so without the desktop app there is nothing to offer and the
   // panel says so rather than guessing.
   let installed = $state([]);
   let restoredConversation = "";
   let chosenAgent = $state("");
   let assistant = $state({ running: false, agent: "", access: "" });
-  // The shared desktop app state drives this panel.
-  $effect(() => companion.watch());
-  const paired = $derived(companion.status?.state === "ready");
+  const paired = Boolean(local.desktop());
   const chosenInstalled = $derived(installed.find((entry) => entry.id === chosenAgent) || null);
   // The four access levels, as a choice rather than four commands: each row
   // carries its own explanation, so the panel never defines them twice.
@@ -350,7 +347,7 @@
       restoreProblem = "";
       return true;
     } catch (error) {
-      // A one-off companion or server failure must not disable renewal for a
+      // A one-off desktop app or server failure must not disable renewal for a
       // runner that is still active. The effect retries with bounded backoff.
       if (!isCurrent()) return true;
       restoreProblem = error?.message || String(error);
@@ -586,10 +583,10 @@
        snippet prop on PanelTabs. -->
   {#snippet connectPrompt()}
     <div class="connect-required">
-      <CompanionConnection needs="agents" />
+      <DesktopOnly feature="The agent" />
     </div>
   {/snippet}
-  <!-- The gear at the top of each pane is the one way to Local companion
+  <!-- The gear at the top of each pane is the one way to the desktop app
        settings now; the Chat pane also gets Clear conversation beside it. -->
   {#snippet paneHeader(withNewConversation)}
     <div class="pane-header">
@@ -597,7 +594,7 @@
         <IconButton icon="eraser" label="Clear conversation" tone="plain" size="btn-icon-sm"
                     disabled={busy} onclick={() => void newConversation()} />
       {/if}
-      <IconButton icon="sliders" label="Local companion settings" tone="plain" size="btn-icon-sm"
+      <IconButton icon="sliders" label="Desktop app settings" tone="plain" size="btn-icon-sm"
                   onclick={() => onsettings?.()} />
     </div>
   {/snippet}

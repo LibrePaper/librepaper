@@ -1,13 +1,10 @@
 <script>
   import SettingRow from "./SettingRow.svelte";
   import ToolRow from "./ToolRow.svelte";
-  import CompanionConnection from "./CompanionConnection.svelte";
-  import { companion } from "../../lib/companion/status.svelte.js";
-  import { splitArgs } from "../../lib/companion/args.js";
+  import DesktopOnly from "../DesktopOnly.svelte";
+  import { splitArgs } from "../../lib/desktop/args.js";
 
   let { view } = $props();
-
-  $effect(() => companion.watch());
 
   let adding = $state(false);
   let invalid = $state("");
@@ -39,11 +36,10 @@
   }
 </script>
 
-<CompanionConnection needs="agents" />
-
+<DesktopOnly>
 {#if view.available}
-  <section class="settings-subsection" id="agents-list" aria-labelledby="companion-agents-heading">
-    <div class="settings-section-title"><h4 class="settings-subhead" id="companion-agents-heading">Agents on this computer</h4></div>
+  <section class="settings-subsection" id="agents-list" aria-labelledby="agents-list-heading">
+    <div class="settings-section-title"><h4 class="settings-subhead" id="agents-list-heading">Agents on this computer</h4></div>
     <p class="setting-description">Coding agents installed on this computer, used from the sidebar.</p>
     {#if view.loadError}<p class="setting-description management-error" role="alert">{view.loadError}</p>{/if}
     {#each detectedAgents as agent (agent.id)}
@@ -74,6 +70,7 @@
     </div>
   </section>
 {/if}
+</DesktopOnly>
 
 <style>
   .management-error { color: var(--color-error-text); }

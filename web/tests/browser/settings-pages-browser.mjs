@@ -1,7 +1,7 @@
 // Where a setting lives, in the dialog itself. A tool that builds the
 // document is configured on the Rendering page; the Tools page holds the
-// programs on this computer; the Companion page holds the connection and its
-// troubleshooting; and the Account page carries the server.
+// programs on this computer; the Desktop app page holds running work and folders;
+// and the Account page carries the server.
 import assert from "node:assert/strict";
 import { build } from "vite";
 import { svelte } from "@sveltejs/vite-plugin-svelte";
@@ -21,7 +21,6 @@ if (screenshotDir) mkdirSync(screenshotDir, { recursive: true });
 const output = join(temporary, "build");
 const entry = join(temporary, "entry.js");
 const harness = join(temporary, "Harness.svelte");
-const statusMock = join(temporary, "status.svelte.js");
 const clientMock = join(temporary, "client.js");
 async function freePort() {
   const probe = createServer();
@@ -46,35 +45,25 @@ writeFileSync(harness, `
                 remoteConnected={true} />
 `);
 
-writeFileSync(statusMock, `
-let current = $state.raw({ state: "ready", capabilities: {
-  tools: { quarto: { available: true, version: "1.6.0" } },
-  calepin: { available: true, version: "0.3.0" },
-  zotero: { available: true, version: "7.0" },
-  builders: [{ id: "quarto", available: true, version: "1.6.0", outputs: ["html", "pdf"], operations: [{ kind: "build", workspace_modes: ["snapshot"] }] }],
-} });
-window.setCompanionState = (state) => { current = { ...current, state }; };
-export const companion = {
-  get status() { return current; },
-  watch() { return () => {}; },
-};
-`);
-
 writeFileSync(clientMock, `
-window.probeCalls = 0;
-export function probe() { window.probeCalls += 1; return Promise.resolve(); }
-export function retry() { return Promise.resolve(); }
-export function subscribe(listener) { listener({ state: "ready", instance: "test" }); return () => {}; }
-export function canManage() { return false; }
-export function manage() { throw new Error("Management API should not be used without a manage capability."); }
+export const INSTALL_URL = "https://librepaper.org/desktop-app.html";
+export const DESKTOP_ONLY_MESSAGE = "This needs the LibrePaper desktop app.";
+export const desktop = () => window.__LIBREPAPER_DESKTOP__ ?? null;
 export function chooseFolderBinding() { return Promise.resolve({ id: "folder", entrypoint: "main.qmd" }); }
 export async function capabilities() { return {}; }
-export async function settings() {
-  return { version: "1.0.0", standalone: true, startup: false, integrations: { quarto: { path: null, args: [] }, calepin: { path: null, args: [] } } };
+export async function manage(path) {
+  if (path !== "/state") throw new Error("unexpected management call " + path);
+  return {
+    version: "1.0.0", jobs: [], previews: [], sessions: [], bindings: [],
+    settings: { integrations: { quarto: { path: null, args: [] }, calepin: { path: null, args: [] } } },
+    tools: {
+      tools: { quarto: { available: true, version: "1.6.0" } },
+      calepin: { available: true, version: "0.3.0" },
+      zotero: { available: true, version: "7.0" },
+      builders: [{ id: "quarto", available: true, version: "1.6.0", outputs: ["html", "pdf"], operations: [{ kind: "build", workspace_modes: ["snapshot"] }] }],
+    },
+  };
 }
-export async function setIntegration(_name, custom) { return custom; }
-export async function setStartup() {}
-export async function quit() {}
 `);
 
 writeFileSync(entry, `
@@ -88,8 +77,7 @@ const mockModules = {
   name: "settings-pages-test-mocks",
   enforce: "pre",
   resolveId(source, importer) {
-    if (source.endsWith("/lib/companion/status.svelte.js")) return statusMock;
-    if (source.endsWith("/lib/companion/client.js") || (source === "./client.js" && importer?.endsWith("/lib/companion/machine.svelte.js"))) return clientMock;
+    if (source.endsWith("/lib/desktop/client.js") || (source === "./client.js" && importer?.endsWith("/lib/desktop/machine.svelte.js"))) return clientMock;
     return null;
   },
 };
@@ -105,6 +93,8 @@ await build({
 });
 
 const page = `<!doctype html><html data-theme="librepaper"><head><meta charset="utf-8"><link rel="stylesheet" href="/check.css"><title>settings pages check</title></head><body><script type="module" src="/check.js"></script></body></html>`;
+// Inside the desktop app the page global exists; the plain page is a browser.
+const desktopPage = page.replace("<body>", "<body><script>window.__LIBREPAPER_DESKTOP__ = { base: 'x', version: 'test' }</script>");
 const server = createServer((request, response) => {
   if (request.url === "/check.js") {
     response.setHeader("content-type", "text/javascript");
@@ -117,7 +107,7 @@ const server = createServer((request, response) => {
     return;
   }
   response.setHeader("content-type", "text/html");
-  response.end(page);
+  response.end(request.url.startsWith("/plain") ? page : desktopPage);
 });
 await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
 const port = server.address().port;
@@ -147,7 +137,7 @@ try {
   };
   const everything = ["render-latex-engine", "render-latex-files", "render-markdown-tool", "rendering-profile", "rendering-parameters",
     "tools-list", "tools-quarto", "tools-calepin", "tools-zotero", "quarto-executable", "quarto-arguments",
-    "companion-connection", "companion-startup", "companion-report",
+    "desktop-version", "desktop-activity",
     "remote-status", "remote-address", "storage-account", "account-erase"];
   const renderingRows = ["render-latex-engine", "render-latex-files", "render-markdown-tool", "rendering-profile", "rendering-parameters"];
   const renderingSections = ["LaTeX", "Markdown and Quarto"];
@@ -156,15 +146,15 @@ try {
   await until("harness mounted", () => b.evaluate("typeof window.show === \"function\""), 10000);
   await show("rendering", "quarto", "Rendering");
   assert.deepEqual(JSON.parse(await b.evaluate(`JSON.stringify([...document.querySelectorAll(".settings-nav-item")].map((node) => node.textContent.trim()))`)),
-    ["Editor", "Rendering", "Tools", "Companion", "AI agents", "Backups", "Account"]);
+    ["Editor", "Rendering", "Tools", "Desktop app", "AI agents", "Backups", "Account"]);
 
   // Rendering shows two sections with global build options visible for all formats.
   await until("the Quarto profile rows", () => present(["rendering-profile"]).then((found) => found.length === 1), 5000);
   assert.deepEqual(await present(everything), renderingRows);
   assert.deepEqual(await subheads(), renderingSections);
   assert.equal(await b.evaluate(`document.querySelector(".settings-group-title") === null`), true);
-  // The companion lives on its own page and the programs it finds on the Tools page, not here.
-  assert.equal(await b.evaluate(`[...document.querySelectorAll(".settings-body .setting-status-pill")].some((pill) => /Companion|Running|Not running|Needs approval|Blocked|Update needed/.test(pill.textContent))`), false, "Rendering has no companion or program status pill");
+  // The programs the desktop app finds live on the Tools page, not here.
+  assert.equal(await b.evaluate(`[...document.querySelectorAll(".settings-body .setting-status-pill")].some((pill) => /Running|Not running|Needs approval|Blocked|Update needed/.test(pill.textContent))`), false, "Rendering has no program status pill");
   assert.equal(await b.evaluate(`document.querySelector("#quarto-executable") === null`), true, "Rendering has no executable fields");
   await capture("rendering-connected");
   if (screenshotDir) {
@@ -189,9 +179,6 @@ try {
   await show("rendering", "html", "Rendering");
   assert.deepEqual(await subheads(), renderingSections);
   assert.ok((await present(everything)).includes("render-latex-files"));
-  // None of that looked for the companion: the Rendering page must not make the
-  // browser ask for local network access just by opening.
-  assert.equal(await b.evaluate("window.probeCalls"), 0, "the Rendering page does not probe for the companion");
 
   // The Tools page is the programs on this computer. Zotero
   // feeds a document without building it, and has no command of its own.
@@ -199,24 +186,21 @@ try {
   await until("the program rows", () => present(["tools-zotero"]).then((found) => found.length === 1), 5000);
   await capture("tools");
   assert.deepEqual(await present(everything), ["tools-list", "tools-quarto", "tools-calepin", "tools-zotero"]);
-  assert.equal(await b.evaluate('Boolean(document.querySelector("#settings-companion"))'), true, "the Companion status sits in the dialog sidebar on every page");
   assert.deepEqual(await subheads(), ["Programs"], "the Tools page carries no connection controls");
-  assert.equal(await b.evaluate(`document.querySelector(".settings-body .companion-needed") === null`), true, "a running companion needs no pointer to its page");
   assert.match(await b.evaluate(`document.querySelector("#tools-zotero .setting-status-pill")?.textContent`), /Available · 7\.0/);
   assert.equal(await b.evaluate(`document.querySelector("#tools-zotero .tool-row-toggle")`), null, "Zotero has no command to edit");
-  assert.match(await b.evaluate(`document.querySelector("#settings-companion .setting-status-pill")?.textContent`), /Running/);
   // Quarto lists its executable and arguments behind Details.
   assert.equal(await b.evaluate(`document.querySelector("#quarto-executable") === null`), true, "the executable row starts hidden");
   await b.evaluate(`document.querySelector("#tools-quarto .tool-row-toggle").click()`);
   await until("the Quarto command rows", () => present(["quarto-executable", "quarto-arguments"]).then((found) => found.length === 2), 5000);
   assert.deepEqual(await present(everything), ["tools-list", "tools-quarto", "tools-calepin", "tools-zotero", "quarto-executable", "quarto-arguments"]);
 
-  // The Companion page is the connection, the machine and the setup check.
-  await show("companion", "quarto", "Companion");
-  await until("the startup row", () => present(["companion-startup"]).then((found) => found.length === 1), 5000);
-  await capture("companion");
-  assert.deepEqual(await present(everything), ["companion-connection", "companion-startup", "companion-report"]);
-  assert.deepEqual(await subheads(), ["Connection"]);
+  // The Desktop app page is the version and the running work.
+  await show("desktop", "quarto", "Desktop app");
+  await until("the activity row", () => present(["desktop-activity"]).then((found) => found.length === 1), 5000);
+  await capture("desktop");
+  assert.deepEqual(await present(everything), ["desktop-version", "desktop-activity"]);
+  assert.deepEqual(await subheads(), ["Desktop app", "Activity"]);
 
   // A visitor's Account page is the server; storage and erasure need an account.
   await show("account", "quarto", "Account");
@@ -225,43 +209,28 @@ try {
   assert.match(await b.evaluate(`document.querySelector("#remote-status .setting-status-pill")?.textContent`), /Connected/);
   assert.match(await b.evaluate(`document.querySelector("#remote-status").textContent`), /Remote connection/);
 
-  // Offline settings stay visible. Build tool selections are available globally,
-  // while the command fields for local tools are disabled.
-  await b.evaluate(`window.setCompanionState("unavailable")`);
+  // In a browser the desktop app pages give one notice and the rendering
+  // choices stay editable.
+  await b.navigate(`http://127.0.0.1:${port}/plain`);
+  await until("harness mounted in a browser", () => b.evaluate("typeof window.show === \"function\""), 10000);
   await show("rendering", "quarto", "Rendering");
-  await capture("rendering-offline");
+  await capture("rendering-browser");
   assert.deepEqual(await subheads(), renderingSections);
-  await until("offline rendering settings", () => present(["render-latex-engine"]).then((found) => found.length === 1), 5000);
+  await until("browser rendering settings", () => present(["render-latex-engine"]).then((found) => found.length === 1), 5000);
   assert.equal(await b.evaluate(`document.querySelector('[aria-label="LaTeX engine"]').disabled`), false);
   assert.equal(await b.evaluate(`document.querySelector('[aria-label="Quarto profile"]').disabled`), false);
   assert.equal(await b.evaluate(`document.querySelector('[aria-label="Quarto parameters"]').disabled`), false);
-  await show("tools", "quarto", "Tools");
-  assert.equal(await b.evaluate(`document.querySelector("#tools-calepin .setting-status-pill")?.textContent.trim()`), "Not checked");
-  assert.equal(await b.evaluate(`document.querySelector("#tools-zotero .setting-status-pill")?.textContent.trim()`), "Not checked");
-  assert.match(await b.evaluate(`document.querySelector("#settings-companion .setting-status-pill")?.textContent`), /Not running/);
-  assert.match(await b.evaluate(`document.querySelector(".settings-body .companion-connection")?.textContent || ""`), /Needed for checking the tools/, "Tools shows the companion widget while unavailable");
-  await b.evaluate(`window.setCompanionState("browser")`);
-  await until("the browser notice", () => b.evaluate(`Boolean(document.querySelector(".settings-body .companion-connection a"))`), 5000);
-  assert.equal(await b.evaluate(`document.querySelector(".settings-body .companion-connection a")?.getAttribute("href")`), "https://librepaper.org/local-app.html", "Tools links the install page");
-  assert.match(await b.evaluate(`document.querySelector(".settings-body .companion-connection").textContent`), /Computing, agents, folders and backups need the LibrePaper desktop app\./);
-  assert.match(await b.evaluate(`document.querySelector(".settings-body .companion-connection a[href^='librepaper://open?url=']")?.textContent || ""`), /Open in the desktop app/);
-  await show("companion", "quarto", "Companion");
-  assert.match(await b.evaluate(`document.querySelector("#companion-connection").textContent`), /Install the desktop app/);
-  await b.resize(1280, 900);
-  await show("tools", "quarto", "Tools");
-  assert.equal(await b.evaluate(`document.querySelector("#tools-zotero .tool-row-toggle")`), null, "Zotero does not load an editable companion config");
-  await b.evaluate(`document.querySelector("#tools-quarto .tool-row-toggle").click()`);
-  await until("offline Quarto command rows", () => present(["quarto-executable"]).then((found) => found.length === 1), 5000);
-  assert.equal(await b.evaluate(`document.querySelector('[aria-label="Executable path"]')?.disabled`), true);
-  assert.equal(await b.evaluate(`document.querySelector('[aria-label="Arguments"]')?.disabled`), true);
+  for (const [pageId, says] of [["tools", "Tools"], ["desktop", "Desktop app"], ["agents", "AI agents"], ["backups", "Backups"]]) {
+    await show(pageId, "quarto", says);
+    await until(`the browser notice on ${says}`, () => b.evaluate(`Boolean(document.querySelector(".settings-body .desktop-only a"))`), 5000);
+    assert.equal(await b.evaluate(`document.querySelector(".settings-body .desktop-only-message").textContent.trim()`), "This needs the LibrePaper desktop app.");
+    assert.equal(await b.evaluate(`document.querySelector(".settings-body .desktop-only a")?.getAttribute("href")`), "https://librepaper.org/desktop-app.html", `${says} links the install page`);
+    assert.match(await b.evaluate(`document.querySelector(".settings-body .desktop-only a[href^='librepaper://open?url=']")?.textContent || ""`), /Open in the desktop app/);
+    assert.equal(await b.evaluate(`document.querySelector("#quarto-executable") === null`), true, `${says} shows no command fields in a browser`);
+  }
+  await capture("tools-browser");
 
-  await capture("tools-offline");
-  await show("companion", "quarto", "Companion");
-  await capture("companion-offline");
-  await show("backups", "quarto", "Backups");
-  await capture("backups-offline");
-
-  console.log("settings-pages-browser: Rendering shows two sections with global format options for all documents and no companion rows, Tools lists the programs with Quarto commands behind Details, Companion holds the connection and setup check, Quarto settings remain editable offline, and local command fields disable without the companion");
+  console.log("settings-pages-browser: Rendering shows two sections with global format options, Tools lists the programs with Quarto commands behind Details, Desktop app lists running work, and a browser gets one notice on every desktop page");
 } finally {
   if (b) await b.close();
   server.close();

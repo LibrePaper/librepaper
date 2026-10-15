@@ -39,10 +39,10 @@
   import { PROJECT_TABS, PROJECT_TAB_IDS } from "../lib/panels.js";
   import { FORMATS } from "../lib/starter.js";
   import { preparedProjects } from "../lib/offline-projects.js";
-  import * as localBridge from "../lib/companion/client.js";
+  import * as localBridge from "../lib/desktop/client.js";
 
   let { initialSettings = "" } = $props();
-  let settingsOpen = $state(untrack(() => initialSettings === "companion"));
+  let settingsOpen = $state(untrack(() => initialSettings === "desktop"));
   let settingsCategory = $state(untrack(() => initialSettings || "editor"));
   function openSettings(category = "editor") {
     settingsCategory = category;

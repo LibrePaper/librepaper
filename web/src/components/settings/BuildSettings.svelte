@@ -2,7 +2,6 @@
   // Which renderer builds every document of one format in this browser. The
   // choice is global: it is read for the format, not for the document open.
   import SettingRow from "./SettingRow.svelte";
-  import * as localBridge from "../../lib/companion/client.js";
   import { defaults, read, update } from "../../lib/build-preferences.js";
 
   let { format, userId = "anonymous", onpreferences, ontools = undefined } = $props();
@@ -44,7 +43,6 @@
     const choice = row.choices.find((each) => each.value === value);
     preference = update(scope(), format, choice.patch);
     onpreferences?.(format, preference);
-    if (choice.patch.backend === "local") void localBridge.probe();
   }
 </script>
 
