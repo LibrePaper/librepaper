@@ -57,6 +57,9 @@ runs:
         CLI_VERSION: ${{ inputs.cli-version }}
       run: |
         if [ -n "$CLI_VERSION" ]; then export LIBREPAPER_VERSION="$CLI_VERSION"; fi
+        # Link the C runtime statically, as cargo-dist does. A Windows install
+        # without the Visual C++ runtime cannot start the binary otherwise.
+        if [ "$RUNNER_OS" = "Windows" ]; then export RUSTFLAGS="-C target-feature=+crt-static"; fi
         cargo build --locked --profile dist -p librepaper --bin librepaper
         ext=""
         if [ "$RUNNER_OS" = "Windows" ]; then ext=".exe"; fi
