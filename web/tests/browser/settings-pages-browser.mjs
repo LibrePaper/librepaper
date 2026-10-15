@@ -151,6 +151,7 @@ try {
   // Settings is a page, not a card: it covers the window, Back closes it and
   // so does Escape.
   assert.equal(await b.evaluate(`(() => { const r = document.querySelector(".modal-page").getBoundingClientRect(); return r.top === 0 && r.left === 0 && r.width === innerWidth && r.height === innerHeight; })()`), true, "settings covers the window");
+  assert.equal(await b.evaluate(`(() => { const r = document.querySelector(".modal-page-body").getBoundingClientRect(); return r.left === 0 && r.width === innerWidth; })()`), true, "the settings body uses the full width");
   assert.equal(await b.evaluate(`document.querySelector(".modal-back")?.textContent.trim()`), "Back");
   await b.evaluate(`document.querySelector(".modal-back").click()`);
   await until("Back closes settings", () => b.evaluate(`!document.querySelector('[role="dialog"][data-state="open"]')`), 5000);
