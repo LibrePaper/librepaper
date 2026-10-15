@@ -1,18 +1,12 @@
-// The local LibrePaper app, as a browser client.
+// The LibrePaper desktop app, as a browser client.
 //
-// The browser can discover a reachable local service; it cannot enumerate
-// installed applications or prove one is absent (SPEC "What detection
-// means"). So this file never tries harder than one bounded probe of one
-// documented endpoint, remembers the outcome for a while, and lets the
-// controller decide what to try next -- this module answers "is local
+// The desktop app loads this page in its own window and answers requests at a
+// base URL it publishes as `window.__LIBREPAPER_DESKTOP__`. It adds the local
+// credential and the page's origin itself, so this file holds no address, no
+// token and no pairing. Outside the desktop app there is nothing to call and
+// the status stays `browser`. This module answers "is the desktop app
 // available" and "run this job on it", nothing about routing or fallback
 // order (that is `route.js`, package B2).
-//
-// State that must survive a reload lives in `localStorage`, plain and
-// unencrypted, because the token it stores is scoped to loopback and to one
-// origin (see SPEC "Connection boundary") -- it is not a secret worth more
-// protection than that, and pretending otherwise would not change what a
-// script running on this origin can already do.
 //
 // Every dependency this file needs from the ambient browser -- fetch,
 // storage, wall clock, the wait between polls -- is reached through `deps`
@@ -25,9 +19,7 @@ import { bytesOf, toArrayBuffer } from "../bytes.js";
 import { named } from "../latex/errors.js";
 import { instructionsFor } from "./states.js";
 
-/** @typedef {{ targetAddressSpace?: "loopback" } & RequestInit} LocalRequestInit */
-/** @typedef {{ fetch: (input: RequestInfo | URL, init?: LocalRequestInit) => Promise<Response>, storage: Storage | null, now: () => number, wait: (ms: number, signal?: AbortSignal) => Promise<void>, location: () => Location | null, localNetworkPermission: () => Promise<PermissionState | null>, replaceHash: (hash: string) => void, launchLink: (url: string) => void }} CompanionDeps */
-/** @typedef {{ token: string }} Pairing */
+/** @typedef {{ fetch: (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>, storage: Storage | null, now: () => number, wait: (ms: number, signal?: AbortSignal) => Promise<void>, location: () => Location | null, replaceHash: (hash: string) => void }} CompanionDeps */
 /** @typedef {{ entrypoint?: string, format?: string, profile?: string | null, parameters?: Record<string, string | number | boolean | null>, policy?: string, kind?: string, inputRevision?: string, inputDigest?: string, renderScope?: string, executionMode?: string, dataInputs?: string[], livePreview?: boolean, [key: string]: unknown }} RenderOptions */
 /** @typedef {{ entrypoint?: string, binding?: string, bindingId?: string, idempotencyKey?: string, id?: string, inputDigest?: string, inputRevision?: string, generation?: number, deadlineSeconds?: number, snapshot?: string, [key: string]: unknown }} CompanionJob */
 /** @typedef {{ main: string, texts?: Record<string, string>, assets?: Record<string, Uint8Array | ArrayBuffer | string>, digests?: Record<string, string>, files?: Record<string, unknown> }} CompanionTree */
@@ -39,39 +31,18 @@ import { instructionsFor } from "./states.js";
 /** @typedef {{ protocol: number, kind: string, project: string | null, origin: string, snapshot: string, generation: number, manifest: ManifestFile[], quarto: QuartoJobDetails, [key: string]: unknown }} QuartoRequestBody */
 /** @typedef {{ protocol: number, kind: string, project: string | null, origin: string, snapshot: string, generation: number, manifest: ManifestFile[], options: { deadline_seconds: number }, workspace?: { mode: "bound" | "snapshot", binding_id: string }, [key: string]: unknown }} JobEnvelope */
 
-/** @param {unknown} timer */
-function unrefTimer(timer) {
-  if (timer !== null && typeof timer === "object" && "unref" in timer && typeof timer.unref === "function") {
-    timer.unref();
-  }
-}
-
-export const DEFAULT_ADDRESS = "http://127.0.0.1:8763/";
 export const QUARTO_JOB_KINDS = Object.freeze(["render", "refresh", "frozen"]);
 
-// Every route lives under this one path, on the companion's own address.
+// Feature routes and machine management routes, under the desktop base.
 const LOCAL_BASE = "librepaper/local/";
+const MANAGE_BASE = "companion/api/";
 
-const ADDRESS_KEY = "librepaper-local-address";
-const PAIRINGS_KEY = "librepaper-local-connections";
 const BINDINGS_KEY = "librepaper-local-quarto-bindings";
-const PENDING_KEY = "librepaper-local-pending";
-const PENDING_TTL_MS = 10 * 60 * 1000;
 
-// Module-level advertised address from the server: not persisted, not leaked.
-let advertisedAddress = null;
-
-const NEGATIVE_MIN_MS = 60 * 1000;
-const NEGATIVE_MAX_MS = 10 * 60 * 1000;
 const HEALTH_TIMEOUT_MS = 2000;
 const POLL_FAST_MS = 500;
 const POLL_SLOW_MS = 1000;
 const POLL_SLOW_AFTER_MS = 10 * 1000;
-const RECONNECT_INTERVAL_MS = 15 * 1000;
-// How long a launch link may take to bring an installed companion up before a
-// connect attempt says nothing is running. The installer registers no
-// `librepaper://` handler, so for most people the link does nothing at all.
-const START_GRACE_MS = 15 * 1000;
 
 function realWait(ms, signal) {
   return new Promise((resolve) => {
@@ -91,32 +62,11 @@ function defaultDeps() {
     now: () => Date.now(),
     wait: realWait,
     location: () => (typeof location !== "undefined" ? location : null),
-    // Chrome's Local Network Access permission, where the browser has one:
-    // "local-network-access" in Chrome 142, later split so loopback has its
-    // own name. An unknown name throws, which means "not this browser".
-    async localNetworkPermission() {
-      if (typeof navigator === "undefined" || !navigator.permissions?.query) return null;
-      for (const name of ["loopback-network", "local-network-access"]) {
-        try { return (await navigator.permissions.query({ name: /** @type {PermissionName} */ (name) })).state; } catch { /* not this browser's name */ }
-      }
-      return null;
-    },
     replaceHash(hash) {
       if (typeof history === "undefined" || typeof location === "undefined") return;
       const url = new URL(location.href);
       url.hash = hash;
       history.replaceState(null, "", url.href);
-    },
-    launchLink(url) {
-      if (typeof window === "undefined" || !window.document?.body) {
-        throw named("Unreachable", "Open LibrePaper in a browser to launch the companion.");
-      }
-      const frame = window.document.createElement("iframe");
-      frame.hidden = true;
-      frame.src = url;
-      window.document.body.appendChild(frame);
-      const timer = setTimeout(() => frame.remove(), 3000);
-      unrefTimer(timer);
     },
   };
 }
@@ -130,20 +80,18 @@ export const _testing = {
   },
   reset() {
     deps = defaultDeps();
-    negative = null;
-    current = { project: null, origin: "", active: true };
-    lastInstance = null;
-    addressSpaceSupported = true;
+    current = { project: null, origin: "" };
     listeners.clear();
-    subscriberCount = 0;
-    engaged = false;
+    probing = null;
     currentStatus = initialStatus();
-    connectionAttempt = null;
-    advertisedAddress = null;
-    cancelAutoReconnect();
   },
-  intakeFragment,
 };
+
+/** The desktop app's page global, or null in an ordinary browser.
+ * @returns {{ base: string, version: string } | null} */
+export function desktop() {
+  return globalThis.window?.__LIBREPAPER_DESKTOP__ ?? null;
+}
 
 // -------------------------------------------------------------- storage
 
@@ -155,7 +103,7 @@ function readRaw(key) {
   const s = store();
   if (!s) return null;
   // Only a string is a stored value: a storage shim that answers with a
-  // promise or an object would otherwise be read as an address.
+  // promise or an object would otherwise be read as one.
   try {
     const value = s.getItem(key);
     return typeof value === "string" ? value : null;
@@ -168,12 +116,6 @@ function writeRaw(key, value) {
   try { s.setItem(key, value); } catch { /* quota or a disabled store; not fatal */ }
 }
 
-function removeRaw(key) {
-  const s = store();
-  if (!s) return;
-  try { s.removeItem(key); } catch { /* a disabled store; not fatal */ }
-}
-
 function readJSON(key, fallback) {
   const raw = readRaw(key);
   if (!raw) return fallback;
@@ -184,143 +126,9 @@ function writeJSON(key, value) {
   writeRaw(key, JSON.stringify(value));
 }
 
-// A stored address is used only when it is one: an http(s) URL with a host,
-// ending in a slash so paths append to it. Anything else -- including the
-// "[object Promise]" an earlier Settings panel once saved after rendering an
-// async facade into its field -- is ignored, and the default stands.
-function validAddress(value) {
-  if (typeof value !== "string" || !value.trim()) return null;
-  try {
-    const url = new URL(value.trim());
-    if (!/^https?:$/.test(url.protocol) || !url.host) return null;
-    return url.pathname.endsWith("/") ? url.href : `${url.href}/`;
-  } catch {
-    return null;
-  }
-}
-
-function randomUrlToken(bytes = 18) {
-  const values = new Uint8Array(bytes);
-  crypto.getRandomValues(values);
-  let binary = "";
-  for (const value of values) binary += String.fromCharCode(value);
-  return btoa(binary).replaceAll("+", "-").replaceAll("/", "_").replaceAll("=", "");
-}
-
-async function sha256Hex(value) {
-  const bytes = new TextEncoder().encode(value);
-  const digest = new Uint8Array(await crypto.subtle.digest("SHA-256", bytes));
-  return [...digest].map((byte) => byte.toString(16).padStart(2, "0")).join("");
-}
-
-export function address() {
-  return validAddress(readRaw(ADDRESS_KEY)) || validAddress(advertisedAddress) || DEFAULT_ADDRESS;
-}
-
-// Shared by an explicit `setAddress` and the `storage` listener that notices
-// another tab wrote a new one through the fragment mechanism: either way,
-// a probe against the old address is stale and the status is unknown again
-// until the next one.
-function addressChanged() {
-  resetNegativeCache();
-  setStatus({ address: address(), state: "unknown", checkedAt: null, error: null, instructions: instructionsFor("unknown", address()) });
-}
-
-export function setAddress(url) {
-  const value = validAddress(url);
-  if (value) writeRaw(ADDRESS_KEY, value);
-  else removeRaw(ADDRESS_KEY);
-  addressChanged();
-}
-
-export function setAdvertisedAddress(url) {
-  if (!url) {
-    if (advertisedAddress) {
-      advertisedAddress = null;
-      addressChanged();
-    }
-    return;
-  }
-  // Only accept if it is a loopback URL and the page itself is served from loopback.
-  const loopback = loopbackAddress(url);
-  if (!loopback) return;
-  const loc = deps.location();
-  if (!loc || !["127.0.0.1", "localhost", "[::1]"].includes(loc.hostname)) return;
-  if (loopback !== advertisedAddress) {
-    advertisedAddress = loopback;
-    addressChanged();
-  }
-}
-
-// -------------------------------------------------------------- pending connection
-//
-// The one request this page is mid-connection for, written when `connectApp`
-// starts and read back by the fragment the link handler or the consent
-// result page hands back through a top-level navigation (see
-// `intakeFragment`). It is never a secret -- the request id only tells this
-// page which of possibly several outstanding attempts an address belongs to.
-
-function writePending(request) {
-  writeJSON(PENDING_KEY, { request, expires: deps.now() + PENDING_TTL_MS });
-}
-
-function clearPending() {
-  removeRaw(PENDING_KEY);
-}
-
-function readPending() {
-  const pending = readJSON(PENDING_KEY, null);
-  if (!pending || typeof pending.request !== "string" || !pending.request) return null;
-  if (!Number.isFinite(pending.expires) || pending.expires <= deps.now()) return null;
-  return pending;
-}
-
-// A stored address is only ever written by this same-origin page (through
-// `setAddress`) or by this fragment, so the loopback shape it demands here is
-// a promise about what a legitimate companion port looks like, not a defence
-// against a malicious one -- the request id match is what stops a third
-// party's address from being accepted at all.
-function loopbackAddress(value) {
-  let parsed;
-  try { parsed = new URL(value); } catch { return null; }
-  if (parsed.protocol !== "http:") return null;
-  if (!["127.0.0.1", "localhost", "[::1]"].includes(parsed.hostname)) return null;
-  if (!parsed.port) return null;
-  if (parsed.pathname !== "/") return null;
-  if (parsed.search || parsed.hash) return null;
-  if (parsed.username || parsed.password) return null;
-  return parsed.href;
-}
-
-// Read at module init, and only then: the fragment is how the OS link
-// handler tells the page the companion's real port, since a top-level
-// navigation is the only channel back from it. The two params are stripped
-// from the hash whatever they say, so a stale or forged pair never lingers
-// in the address bar.
-function intakeFragment() {
-  const loc = deps.location();
-  const hash = String(loc?.hash || "").replace(/^#/, "");
-  if (!hash) return;
-  const params = new URLSearchParams(hash);
-  const encodedAddress = params.get("librepaper-local");
-  const requestId = params.get("librepaper-request");
-  if (encodedAddress == null && requestId == null) return;
-  params.delete("librepaper-local");
-  params.delete("librepaper-request");
-  const remaining = params.toString();
-  deps.replaceHash(remaining);
-  if (encodedAddress == null || requestId == null) return;
-  const pending = readPending();
-  if (!pending || pending.request !== requestId) return;
-  const decoded = loopbackAddress(encodedAddress);
-  if (!decoded) return;
-  writeRaw(ADDRESS_KEY, decoded);
-  clearPending();
-}
-
-// The binding every document has without anyone granting one: the local app
+// The binding every document has without anyone granting one: the desktop app
 // renders it in a workspace of its own, written from the files the browser
-// sends with each job. A project folder chosen in the local app settings
+// sends with each job. A project folder chosen in the desktop app settings
 // replaces it for a project that keeps data the document does not share.
 export const HOSTED_BINDING = "hosted";
 
@@ -342,130 +150,46 @@ export function setBindingId(id) {
   return value;
 }
 
-/** Whether this browser should quietly re-use an existing project pairing. */
-// -------------------------------------------------------------- pairings
+let current = { project: null, origin: "" };
 
-let current = { project: null, origin: "", active: true };
-
-/** @param {{ project?: string | null, origin?: string, active?: boolean }} [options] */
-export function configure({ project, origin, active = true } = {}) {
-  const previousOrigin = current.origin;
-  cancelAutoReconnect();
+/** @param {{ project?: string | null, origin?: string }} [options] */
+export function configure({ project, origin } = {}) {
   current = {
     project: project !== undefined ? project : current.project,
     origin: origin !== undefined ? origin : current.origin,
-    active,
   };
-  // Only reset connection state when the origin changes, not when project changes
-  if (previousOrigin !== current.origin) { lastInstance = null; negative = null; engaged = false; setStatus(initialStatus()); }
-  scheduleAutoReconnect();
-}
-
-function pairingKey() {
-  return current.origin;
-}
-
-export function hasPairing() { return Boolean(getPairing()?.token); }
-
-function getPairing() {
-  const all = readJSON(PAIRINGS_KEY, {});
-  return all[pairingKey()] || null;
-}
-
-function setPairing(entry) {
-  const all = readJSON(PAIRINGS_KEY, {});
-  all[pairingKey()] = entry;
-  writeJSON(PAIRINGS_KEY, all);
-}
-
-function dropPairing() {
-  const all = readJSON(PAIRINGS_KEY, {});
-  if (!(pairingKey() in all)) return;
-  delete all[pairingKey()];
-  writeJSON(PAIRINGS_KEY, all);
-}
-
-function requirePairing() {
-  const pairing = getPairing();
-  if (!pairing || !pairing.token) {
-    throw named("Unauthorized", "The companion is not connected");
-  }
-  return pairing;
 }
 
 // -------------------------------------------------------------- status
 
 function initialStatus() {
   return {
-    state: "unknown",
-    address: address(),
+    state: desktop() ? "checking" : "browser",
     protocol: null,
     version: null,
     capabilities: null,
     checkedAt: null,
     error: null,
-    errorKind: null,
-    instructions: instructionsFor("unknown", address()),
+    instance: null,
+    instructions: instructionsFor(desktop() ? "checking" : "browser"),
   };
 }
 
 let currentStatus = initialStatus();
 const listeners = new Set();
-let lastInstance = null;
-let autoReconnectTimer = null;
-let subscriberCount = 0;
-// Whether this page session has deliberately reached for the local app.
-//
-// A loopback request is what makes a browser ask the person for local
-// network access -- "allow this site to access other apps and services" --
-// and that question is only fair once they have asked for something the
-// local app does: a local build, a Zotero lookup, the local-app settings,
-// the connect ceremony. Opening a document must not provoke it, not even a
-// document this browser already holds a pairing for. So nothing here probes
-// on its own: `probe()` and `send()` mark the session engaged, and only a
-// session that is engaged keeps its status fresh in the background.
-let engaged = false;
-
-function cancelAutoReconnect() {
-  if (autoReconnectTimer) clearTimeout(autoReconnectTimer);
-  autoReconnectTimer = null;
-}
-
-// Called by the two things that are a person asking for the local app: a
-// probe and a real request. The first one also starts the background
-// reconnect, so a companion started after this page was opened is still
-// found without another click.
-function engage() {
-  if (engaged) return;
-  engaged = true;
-  scheduleAutoReconnect();
-}
-
-function scheduleAutoReconnect() {
-  if (autoReconnectTimer || !engaged || !current.active || subscriberCount === 0 || !getPairing()) return;
-  autoReconnectTimer = setTimeout(async () => {
-    autoReconnectTimer = null;
-    if (!engaged || !current.active || subscriberCount === 0 || !getPairing()) return;
-    await probe().catch(() => {});
-    scheduleAutoReconnect();
-  }, RECONNECT_INTERVAL_MS);
-  unrefTimer(autoReconnectTimer);
-}
+let probing = null;
 
 export function status() {
   return currentStatus;
 }
 
+// The first listener on a desktop page starts the probe that moves the status
+// off `checking`; nothing probes on its own after that.
 export function subscribe(listener) {
   listeners.add(listener);
-  subscriberCount = listeners.size;
   listener(currentStatus);
-  scheduleAutoReconnect();
-  return () => {
-    if (!listeners.delete(listener)) return;
-    subscriberCount = Math.max(0, subscriberCount - 1);
-    if (!subscriberCount) cancelAutoReconnect();
-  };
+  if (currentStatus.state === "checking") void probe();
+  return () => { listeners.delete(listener); };
 }
 
 function setStatus(patch) {
@@ -474,94 +198,29 @@ function setStatus(patch) {
   return currentStatus;
 }
 
-// -------------------------------------------------------------- negative cache
-//
-// A failed probe (unreachable or denied) is not retried on every keystroke --
-// SPEC "Do not repeatedly probe or launch the app on every keystroke." The
-// backoff starts at a minute and doubles, capped at ten minutes, until an
-// explicit retry/connect or a successful probe clears it.
-
-let negative = null; // { until, backoffMs }
-
-function resetNegativeCache() {
-  negative = null;
-}
-
-function noteNegative(nowMs) {
-  const backoffMs = negative ? Math.min(negative.backoffMs * 2, NEGATIVE_MAX_MS) : NEGATIVE_MIN_MS;
-  negative = { until: nowMs + backoffMs, backoffMs };
-}
-
 // -------------------------------------------------------------- wire helpers
 
-let addressSpaceSupported = true;
-
-/** @param {unknown} error */
-function isAddressSpaceValidationError(error) {
-  if (!(error instanceof TypeError)) return false;
-  const message = String(error.message || "");
-  return /targetAddressSpace/i.test(message)
-    && /invalid|unsupported|not supported|not recognized|unrecognized|unknown|not a valid|must be/i.test(message);
+function requireDesktop() {
+  const shell = desktop();
+  if (!shell) throw named("Unreachable", instructionsFor("browser"));
+  return shell;
 }
 
-// Keep the browser-specific option in one place. A validation error happens
-// before fetch sends the request, so that one error is safe to retry without
-// the option, including for POSTs. Network failures never replay a request.
-/** @param {string | URL} input @param {LocalRequestInit} init @returns {Promise<Response>} */
-async function localFetch(input, init) {
-  if (!addressSpaceSupported) return deps.fetch(input, init);
-  try {
-    return await deps.fetch(input, { ...init, targetAddressSpace: "loopback" });
-  } catch (error) {
-    if (!isAddressSpaceValidationError(error)) throw error;
-    addressSpaceSupported = false;
-    return deps.fetch(input, init);
-  }
-}
-
-async function healthFetch(addr) {
-  const url = addr + LOCAL_BASE + "health";
-  /** @type {LocalRequestInit} */
-  const init = {
-    method: "GET",
-    mode: "cors",
-    credentials: "omit",
-    signal: typeof AbortSignal !== "undefined" && AbortSignal.timeout ? AbortSignal.timeout(HEALTH_TIMEOUT_MS) : undefined,
-  };
-  return localFetch(url, init);
-}
+const unavailable = () => named("Unreachable", instructionsFor("unavailable"));
 
 async function sha256hex(bytes) {
   const hash = await crypto.subtle.digest("SHA-256", bytes);
   return [...new Uint8Array(hash)].map((byte) => byte.toString(16).padStart(2, "0")).join("");
 }
 
-// What a failed loopback request means to the person. The browser's own text
-// ("Failed to fetch", "NetworkError when attempting to fetch resource.",
-// "Load failed") names no cause, and a blocked Local Network Access
-// permission fails with the same text, so the permission is asked separately.
-async function unreachableState(error) {
-  if (/permission|blocked|private network/i.test(String(error?.message || error))) return "denied";
-  try {
-    // An undecided permission fails the same way as a stopped companion, and
-    // only the permission tells them apart.
-    const permission = await deps.localNetworkPermission?.();
-    if (permission === "denied") return "denied";
-    if (permission === "prompt") return "asking";
-  } catch { /* no answer is not a denial */ }
-  return "unreachable";
-}
-
-// Shared by `send()` and `localPreviewPage()`: a 401 drops the stored
-// pairing and is `Unauthorized`; any other non-2xx is `Refused`, carrying the
-// server's own JSON `error` message when it gave one. A caller that must
-// recognise a 404 specially (`localPreviewPage`'s "not rendered yet") checks
-// that before calling this, since a 404 would otherwise land in `Refused`.
+// Shared by `send()` and `localPreviewPage()`. The shell answers 502 when the
+// local service cannot be reached, which is `Unreachable`; any other non-2xx
+// is `Refused`, carrying the service's own JSON `error` message when it gave
+// one. A caller that must recognise a 404 specially (`localPreviewPage`'s
+// "not rendered yet") checks that before calling this, since a 404 would
+// otherwise land in `Refused`.
 async function throwOnFailure(response) {
-  if (response.status === 401) {
-    dropPairing();
-    throw named("Unauthorized", "Local LibrePaper rejected the stored pairing");
-  }
+  if (response.status === 502) throw unavailable();
   if (!response.ok) {
     let message = `Local LibrePaper refused the request (${response.status})`;
     try {
@@ -572,18 +231,13 @@ async function throwOnFailure(response) {
   }
 }
 
-/// The one place a request is sent to the bridge once paired. Classifies
-/// every failure the SPEC names: a network failure is `Unreachable`, a 401
-/// drops the pairing and is `Unauthorized`, any other non-2xx is `Refused`
-/// with the server's own message when it gave one.
-/** @param {string} method @param {string} path @param {{ token?: string, jsonBody?: unknown, formBody?: FormData, signal?: AbortSignal }} [options] */
-async function send(method, path, { token, jsonBody, formBody, signal } = {}) {
-  engage();
-  const scope = pairingKey();
-  const addr = address();
-  const url = addr + LOCAL_BASE + path;
+/// The one place a feature request is sent to the desktop app. A network
+/// failure or a 502 is `Unreachable`, any other non-2xx is `Refused` with the
+/// service's own message when it gave one.
+/** @param {string} method @param {string} path @param {{ jsonBody?: unknown, formBody?: FormData, signal?: AbortSignal }} [options] */
+async function send(method, path, { jsonBody, formBody, signal } = {}) {
+  const shell = requireDesktop();
   const headers = { Accept: "application/json" };
-  if (token) headers.Authorization = `Bearer ${token}`;
   let body;
   if (formBody !== undefined) {
     body = formBody;
@@ -593,14 +247,11 @@ async function send(method, path, { token, jsonBody, formBody, signal } = {}) {
   }
   let response;
   try {
-    response = await localFetch(url, { method, mode: "cors", credentials: "omit", headers, body, signal });
-  } catch (error) {
-    if (signal?.aborted) {
-      throw named("Canceled", "Canceled");
-    }
-    throw named("Unreachable", instructionsFor(await unreachableState(error), address()));
+    response = await deps.fetch(shell.base + LOCAL_BASE + path, { method, mode: "cors", credentials: "omit", headers, body, signal });
+  } catch {
+    if (signal?.aborted) throw named("Canceled", "Canceled");
+    throw unavailable();
   }
-  if (scope !== pairingKey() || addr !== address()) throw named("Canceled", "The local project changed.");
   await throwOnFailure(response);
   return response;
 }
@@ -611,348 +262,78 @@ async function bytesOfResponse(response) {
 
 // -------------------------------------------------------------- probe
 
-export async function probe({ force = false } = {}) {
-  const scope = pairingKey();
-  const scopedStatus = (patch) => scope === pairingKey() ? setStatus(patch) : currentStatus;
-  const startMs = deps.now();
-  if (!force && negative && startMs < negative.until) {
-    return currentStatus;
-  }
-  engage();
-  const addr = address();
-  // Every "no usable local app yet" outcome below shares this shape -- only
-  // the message and (once the health body has been read) the reported
-  // version vary -- so it is noted in the backoff cache and reported once.
-  const markUnreachable = (error, version = null) => {
-    noteNegative(deps.now());
-    return scopedStatus({
-      state: "unreachable", address: addr, protocol: null, version, capabilities: null,
-      checkedAt: deps.now(), error, errorKind: null, instructions: instructionsFor("unreachable", address()),
-    });
-  };
+/** @param {string} state @param {Record<string, unknown>} [patch] */
+function settle(state, patch = {}) {
+  return setStatus({
+    state, protocol: null, version: null, capabilities: null, error: null, ...patch,
+    checkedAt: deps.now(), instructions: instructionsFor(state),
+  });
+}
+
+// Reads health and capabilities from the desktop app. Concurrent calls share
+// one probe.
+export function probe() {
+  if (!probing) probing = runProbe().finally(() => { probing = null; });
+  return probing;
+}
+
+async function runProbe() {
+  const shell = desktop();
+  if (!shell) return settle("browser");
   let response;
   try {
-    response = await healthFetch(addr);
-  } catch (error) {
-    const message = String(error?.message || error);
-    const state = await unreachableState(error);
-    noteNegative(deps.now());
-    return scopedStatus({
-      state, address: addr, protocol: null, version: null, capabilities: null,
-      checkedAt: deps.now(), error: message, errorKind: null, instructions: instructionsFor(state, address()),
+    response = await deps.fetch(shell.base + LOCAL_BASE + "health", {
+      method: "GET", mode: "cors", credentials: "omit",
+      signal: typeof AbortSignal !== "undefined" && AbortSignal.timeout ? AbortSignal.timeout(HEALTH_TIMEOUT_MS) : undefined,
     });
+  } catch (error) {
+    return settle("unavailable", { error: String(error?.message || error) });
   }
-  if (scope !== pairingKey() || addr !== address()) return currentStatus;
-  if (!response.ok) {
-    return markUnreachable(`health responded ${response.status}`);
-  }
+  if (!response.ok) return settle("unavailable", { error: `health responded ${response.status}` });
   let body;
   try {
     body = await response.json();
   } catch {
-    return markUnreachable("malformed health response");
+    return settle("unavailable", { error: "malformed health response" });
   }
-  if (scope !== pairingKey() || addr !== address()) return currentStatus;
   if (body?.service !== "librepaper-local" || !Array.isArray(body?.protocol)) {
-    return markUnreachable("unrecognised local service", body?.version || null);
+    return settle("unavailable", { error: "unrecognised local service", version: body?.version || null });
   }
-  if (lastInstance && body.instance && lastInstance !== body.instance) {
-    setStatus({ state: "reachable", capabilities: null, instance: body.instance });
-  }
-  lastInstance = body.instance || null;
+  const version = body.version || null;
   // Protocol 2 is the floor: it is the version that reports adapter-oriented
   // `builders` capabilities, the only capability schema this browser reads.
-  // An older companion is reported as incompatible rather than as toolless.
+  // An older app is reported as incompatible rather than as toolless.
   if (!body.protocol.includes(2)) {
-    resetNegativeCache();
-    return scopedStatus({
-      state: "incompatible", address: addr, protocol: body.protocol, version: body.version || null, capabilities: null,
-      checkedAt: deps.now(), error: "protocol mismatch", errorKind: null, instructions: instructionsFor("incompatible", address()),
-    });
-  }
-  resetNegativeCache();
-  // Both an unpaired app and a pairing the bridge no longer honours report
-  // the same "unauthorized" status once the health check itself succeeded.
-  const markUnauthorized = () => scopedStatus({
-    state: "unauthorized", address: addr, protocol: body.protocol, version: body.version || null, capabilities: null,
-    checkedAt: deps.now(), error: null, errorKind: null, instructions: instructionsFor("unauthorized", address()),
-  });
-  const pairing = getPairing();
-  if (!pairing || !pairing.token) {
-    return markUnauthorized();
+    return settle("incompatible", { protocol: body.protocol, version, error: "protocol mismatch" });
   }
   try {
-    const capsResponse = await send("GET", "capabilities", { token: pairing.token });
-    const caps = await capsResponse.json();
-    const connectedStatus = scopedStatus({
-      state: "connected", address: addr, protocol: body.protocol, version: body.version || null, capabilities: caps, instance: lastInstance,
-      checkedAt: deps.now(), error: null, errorKind: null, instructions: instructionsFor("connected", address()),
-    });
-    scheduleAutoReconnect();
-    return connectedStatus;
+    const capabilitiesResponse = await send("GET", "capabilities");
+    const caps = await capabilitiesResponse.json();
+    return settle("ready", { protocol: body.protocol, version, capabilities: caps, instance: body.instance || null });
   } catch (error) {
-    if (error?.name === "Unauthorized") {
-      return markUnauthorized();
-    }
-    if (error?.name === "Unreachable" && await unreachableState(error) === "denied") {
-      return scopedStatus({
-        state: "denied", address: addr, protocol: body.protocol, version: body.version || null, capabilities: null,
-        checkedAt: deps.now(), error: String(error?.message || error), errorKind: error.name,
-        instructions: instructionsFor("denied", address()),
-      });
-    }
-    // The health check just succeeded, so the service is up; a hiccup
-    // verifying the token is not the same claim as "unreachable".
-    return scopedStatus({
-      state: "reachable", address: addr, protocol: body.protocol, version: body.version || null, capabilities: null,
-      checkedAt: deps.now(), error: String(error?.message || error), errorKind: error?.name || "Error",
-      instructions: instructionsFor("reachable", address()),
-    });
+    return settle("unavailable", { protocol: body.protocol, version, error: String(error?.message || error) });
   }
 }
 
-export async function retry() {
-  resetNegativeCache();
-  return probe({ force: true });
+export function retry() {
+  return probe();
 }
 
-// -------------------------------------------------------------- connect/disconnect
-
-// The one connection entrypoint: paired already, this fires a launch link and
-// waits for the probe to see it; unpaired, it sends a pair/request and waits
-// for the companion dashboard to show a local approval request; once allowed, claims the token
-// through the connect/claim endpoint. Single-flight: a second call while one is
-// in flight joins it.
-let connectionAttempt = null;
-
-export function connectApp(options = {}) {
-  if (connectionAttempt) return connectionAttempt;
-  connectionAttempt = runConnectApp(options).finally(() => { connectionAttempt = null; });
-  return connectionAttempt;
-}
-
-/** @param {{ timeoutMs?: number, pollMs?: number, startGraceMs?: number, signal?: AbortSignal }} [options] */
-async function runConnectApp({ timeoutMs = 5 * 60 * 1000, pollMs = 700, startGraceMs = START_GRACE_MS, signal } = {}) {
-  const { origin } = current;
-  if (!origin) throw named("Unauthorized", "Open LibrePaper before connecting the companion.");
-  const scope = pairingKey();
-  // The address may legitimately change mid-attempt -- the fragment this very
-  // attempt is waiting on rewrites it -- so only a change of document scope
-  // cancels; every address read below goes through `address()` fresh.
-  const checkScope = () => {
-    if (signal?.aborted || scope !== pairingKey()) {
-      throw named("Canceled", "The document changed. Connect again in the current document.");
-    }
-  };
-  const request = randomUrlToken(24);
-  const verifier = randomUrlToken(32);
-  const challenge = await sha256Hex(verifier);
-  const loc = deps.location();
-  const returnUrl = String(loc?.href || "").split("#")[0];
-  writePending(request);
-  checkScope();
-
-  if (getPairing()) {
-    // Revalidate stored credentials before deciding to relaunch the app.
-    // A healthy companion that cannot verify this token is ready for a fresh
-    // consent request; waiting on a launch link here would only keep polling
-    // with credentials the bridge cannot use.
-    const status = await probe({ force: true });
-    checkScope();
-    if (status.state === "connected") { clearPending(); return status; }
-    if (status.state === "unauthorized") {
-      // A 401 already clears the pairing in send(). An unpaired status can
-      // also be reported if the token disappeared between reads.
-      dropPairing();
-    } else if (status.state === "reachable" && status.errorKind === "Unreachable") {
-      // Fetch can hide an authorization failure behind a CORS TypeError. The
-      // successful health response above proves the companion is available;
-      // on an explicit Connect, ask it for fresh consent in this same click.
-      dropPairing();
-    } else if (status.state === "denied" || status.state === "asking") {
-      clearPending();
-      throw named("Refused", status.instructions);
-    } else if (status.state === "incompatible") {
-      clearPending();
-      throw named("Refused", status.instructions);
-    } else {
-      deps.launchLink(`librepaper://launch?${new URLSearchParams({ origin, request, return: returnUrl })}`);
-    }
-
-    if (getPairing()) {
-      const started = deps.now();
-      while (deps.now() - started < timeoutMs) {
-        await deps.wait(pollMs, signal);
-        checkScope();
-        const retryStatus = await probe({ force: true });
-        checkScope();
-        if (retryStatus.state === "connected") { clearPending(); return retryStatus; }
-        if (retryStatus.state === "unauthorized"
-          || (retryStatus.state === "reachable" && retryStatus.errorKind === "Unreachable")) {
-          dropPairing();
-          break;
-        }
-        if (retryStatus.state === "denied" || retryStatus.state === "asking" || retryStatus.state === "incompatible") {
-          throw named("Refused", retryStatus.instructions);
-        }
-        // Nothing has answered since the link fired, so nothing is starting.
-        if (retryStatus.state === "unreachable" && deps.now() - started >= startGraceMs) throw named("Unreachable", retryStatus.instructions);
-      }
-      if (getPairing()) throw named("Unreachable", currentStatus.state === "unreachable"
-        ? currentStatus.instructions
-        : "LibrePaper Companion is running but did not connect. Try connecting again.");
-    }
-  }
-
-  // Asked directly first, whatever the last probe said: a stale "unreachable"
-  // must not send an already running companion to the link handler, which may
-  // not be registered. The link, which starts it and asks it the same way, is
-  // only for a companion this request cannot reach.
-  // Resolves true when the companion accepted the request, false when it could
-  // not be reached, and throws when it refused the request. When the companion
-  // pairs this page directly (the configured LibrePaper server needs no
-  // consent) it stores the pairing and sets `paired` to the probed status.
-  let paired = null;
-  const ask = async () => {
-    try {
-      const response = await localFetch(`${address()}companion/api/session`, {
-        method: "POST", mode: "cors", credentials: "omit", cache: "no-store",
-        headers: { "Content-Type": "application/json" }, body: "{}",
-        signal: signal ? AbortSignal.any([signal, AbortSignal.timeout(2000)]) : AbortSignal.timeout(2000),
-      });
-      if (response.status === 200) {
-        const data = await response.json();
-        if (typeof data?.token === "string" && data.token && Number.isFinite(data.expires)) {
-          checkScope();
-          setPairing({ token: data.token, expires: data.expires, instance: data.instance || null });
-          resetNegativeCache();
-          clearPending();
-          paired = await probe({ force: true });
-          return true;
-        }
-      }
-    } catch (error) {
-      if (error?.name === "Canceled") throw error;
-      // Other origins and unreachable companions use the public flow below.
-    }
-    let delivered = false;
-    try {
-      const response = await localFetch(`${address()}${LOCAL_BASE}pair/request`, {
-        method: "POST", mode: "cors", credentials: "omit",
-        headers: { "Content-Type": "application/json" },
-        signal: signal ? AbortSignal.any([signal, AbortSignal.timeout(2000)]) : AbortSignal.timeout(2000),
-        body: JSON.stringify({ origin, request, challenge, return: returnUrl }),
-      });
-      delivered = true;
-      if (response.status !== 202) {
-        const data = await response.json().catch(() => null);
-        throw named("Refused", data?.error || `The companion could not ask for permission (${response.status}).`);
-      }
-      return true;
-    } catch (error) {
-      if (delivered) throw error;
-      // Unreachable after all: the caller falls through to the link.
-    }
-    return false;
-  };
-  let asked = await ask();
-  checkScope();
-  if (paired) return paired;
-  if (!asked) {
-    deps.launchLink(`librepaper://connect?${new URLSearchParams({ origin, request, challenge, return: returnUrl })}`);
-  }
-  let answered = asked;
-
-  const started = deps.now();
-  while (deps.now() - started < timeoutMs) {
-    await deps.wait(pollMs, signal);
-    checkScope();
-    let response;
-    try {
-      response = await localFetch(`${address()}${LOCAL_BASE}connect/claim`, {
-        method: "POST", mode: "cors", credentials: "omit",
-        headers: { "Content-Type": "application/json" },
-        signal: signal ? AbortSignal.any([signal, AbortSignal.timeout(2000)]) : AbortSignal.timeout(2000),
-        body: JSON.stringify({ request, origin, verifier }),
-      });
-    } catch (error) {
-      checkScope();
-      const state = await unreachableState(error);
-      if (state === "denied") { clearPending(); throw named("Refused", instructionsFor("denied", address())); }
-      if (state === "asking") {
-        clearPending();
-        throw named("Refused", instructionsFor("asking", address()));
-      }
-      // Nothing has answered since the link fired, so nothing is starting.
-      if (!answered && deps.now() - started >= startGraceMs) {
-        clearPending();
-        throw named("Unreachable", instructionsFor("unreachable", address()));
-      }
-      continue; // The installed companion may still be starting.
-    }
-    checkScope();
-    answered = true;
-    if (response.status === 404 && !asked) {
-      // The companion came up after the link fired, so it never saw our request.
-      asked = await ask();
-      checkScope();
-      if (paired) return paired;
-      continue;
-    }
-    if (response.status === 202 || response.status === 404) continue;
-    if (response.status === 403) {
-      let errorMessage = "This connection request expired or was refused. Try connecting again.";
-      try {
-        const data = await response.clone().json();
-        if (data && typeof data.error === "string") errorMessage = data.error;
-      } catch { /* not a JSON body; keep the generic message */ }
-      throw named("Unauthorized", errorMessage);
-    }
-    if (!response.ok) throw named("Refused", `The companion could not connect (${response.status}). Install and open the companion, then try again.`);
-    const data = await response.json();
-    checkScope();
-    if (typeof data.token !== "string" || !data.token || !Number.isFinite(data.expires)) {
-      throw named("Refused", "The companion returned an invalid connection response.");
-    }
-    setPairing({ token: data.token, expires: data.expires, instance: data.instance || null });
-    resetNegativeCache();
-    clearPending();
-    return probe({ force: true });
-  }
-  clearPending();
-  throw named("Unreachable", answered
-    ? "LibrePaper Companion did not connect. Approve the permission window it shows, then try again."
-    : instructionsFor("unreachable", address()));
-}
-
-export async function disconnect() {
-  const pairing = getPairing();
-  if (pairing?.token) {
-    try { await send("POST", "disconnect", { token: pairing.token }); } catch { /* revoking a dead pairing is not an error */ }
-  }
-  dropPairing();
-  resetNegativeCache();
-  return probe({ force: true });
-}
-
-/** Whether this page may manage the companion: only the configured LibrePaper server is paired for it. */
+/** Whether this page may manage the machine: only inside the desktop app once it is ready. The shell and the
+ * companion refuse any site other than the configured server. */
 export function canManage() {
-  const now = status();
-  return Boolean(now.state === "connected" && now.capabilities?.manage);
+  return Boolean(desktop()) && status().state === "ready";
 }
 
-/** Call a machine management route with the site pairing.
+/** Call a machine management route.
  * @param {string} path @param {{ method?: string, body?: unknown }} [options] */
 export async function manage(path, { method = "GET", body } = {}) {
   if (typeof path !== "string" || !path.startsWith("/") || path.startsWith("//") || path.includes("\\")) {
     throw new TypeError("Invalid companion management path");
   }
-  const pairing = requirePairing();
-  engage();
-  const scope = pairingKey();
-  const addr = address();
+  const shell = requireDesktop();
   /** @type {Record<string, string>} */
-  const headers = { Accept: "application/json", Authorization: `Bearer ${pairing.token}` };
+  const headers = { Accept: "application/json" };
   let payload;
   if (body !== undefined) {
     headers["Content-Type"] = "application/json";
@@ -960,18 +341,14 @@ export async function manage(path, { method = "GET", body } = {}) {
   }
   let response;
   try {
-    response = await localFetch(`${addr}companion/api${path}`, {
+    response = await deps.fetch(`${shell.base}${MANAGE_BASE}${path.slice(1)}`, {
       method, mode: "cors", credentials: "omit", cache: "no-store", headers, body: payload,
     });
-  } catch (error) {
-    throw named("Unreachable", instructionsFor(await unreachableState(error), address()));
+  } catch {
+    throw unavailable();
   }
-  if (scope !== pairingKey() || addr !== address()) throw named("Canceled", "The local project changed.");
-  if (response.status === 401 || response.status === 403) {
-    dropPairing();
-    setStatus({ state: "unauthorized", capabilities: null, error: null, errorKind: null, instructions: instructionsFor("unauthorized", address()) });
-    throw named("Unauthorized", "The companion no longer accepts this site. Connect again.");
-  }
+  if (response.status === 502) throw unavailable();
+  if (response.status === 403) throw named("Refused", "This is not available for this site.", { status: 403 });
   if (!response.ok) {
     let message = `The companion request failed (${response.status}).`;
     try {
@@ -985,23 +362,19 @@ export async function manage(path, { method = "GET", body } = {}) {
   return type.includes("json") ? response.json() : response.text();
 }
 
-// Settings opens from the fragment the companion's Settings link carries. The
-// fields are stripped whatever they say, so a forged address never lingers in
-// the address bar, and only a Settings request may move the companion address.
-// Returns whether Settings was requested.
+// Settings opens from the `settings=local` fragment the tray's Settings item
+// and the desktop app's `--settings` argument carry. The field is stripped
+// from the address bar whatever it says. Returns whether Settings was
+// requested.
 export function intake() {
   const loc = deps.location();
   const hash = String(loc?.hash || "").replace(/^#/, "");
   if (!hash) return false;
   const params = new URLSearchParams(hash);
-  const requested = params.get("settings") === "local";
-  const carried = params.get("companion_address");
-  if (!requested && carried === null) return false;
-  for (const key of ["settings", "companion_address", "companion_control", "companion_instance"]) params.delete(key);
+  if (params.get("settings") !== "local") return false;
+  params.delete("settings");
   deps.replaceHash(params.toString());
-  const target = requested ? loopbackAddress(carried) : null;
-  if (target && target !== address()) setAddress(target);
-  return requested;
+  return true;
 }
 
 // Reads the last probed capabilities rather than fetching -- callers that
@@ -1013,40 +386,35 @@ export function calepinAvailable() {
 }
 
 export async function capabilities({ rescan = false } = {}) {
-  const pairing = requirePairing();
   const method = rescan ? "POST" : "GET";
   const path = rescan ? "capabilities/rescan" : "capabilities";
-  const response = await send(method, path, { token: pairing.token });
+  const response = await send(method, path);
   const data = await response.json();
   setStatus({ capabilities: data });
   return data;
 }
 
-/** Search the running Zotero desktop library through the paired companion.
+/** Search the running Zotero desktop library through the desktop app.
  * Results remain transient: this client does not place queries or metadata in
  * browser storage. */
 export async function searchZotero(query) {
-  const pairing = requirePairing();
   const path = `zotero/search?${new URLSearchParams({ q: String(query || "") })}`;
-  const response = await send("GET", path, { token: pairing.token });
+  const response = await send("GET", path);
   return response.json();
 }
 
 /** Fetch one Zotero item as deterministic BibTeX. */
 export async function zoteroItem(key) {
-  const pairing = requirePairing();
   const value = String(key || "");
   if (!/^[A-Za-z0-9]{1,32}$/.test(value)) throw named("InvalidRequest", "Invalid Zotero item key");
-  const response = await send("GET", `zotero/items/${value}`, { token: pairing.token });
+  const response = await send("GET", `zotero/items/${value}`);
   return response.json();
 }
 
-/** Ask the companion to open its native directory chooser and bind the
+/** Ask the desktop app to open its native directory chooser and bind the
  * selected project folder. The absolute path never crosses the wire. */
 export async function chooseFolderBinding({ entrypoint = "" } = {}) {
-  const pairing = requirePairing();
   const response = await send("POST", "bindings/folder", {
-    token: pairing.token,
     jsonBody: { project: current.project, entrypoint: String(entrypoint || "") },
   });
   const data = await response.json();
@@ -1302,13 +670,13 @@ async function sourceSnapshot(treeDigest, main, manifest) {
 
 // -------------------------------------------------------------- job polling
 
-async function pollJob(id, token, signal) {
+async function pollJob(id, signal) {
   const start = deps.now();
   for (;;) {
     if (signal?.aborted) {
       throw named("Canceled", "Canceled");
     }
-    const response = await send("GET", `jobs/${id}`, { token, signal });
+    const response = await send("GET", `jobs/${id}`, { signal });
     const status = await response.json();
     if (status.status === "done" || status.status === "failed" || status.status === "canceled") return status;
     const waitMs = deps.now() - start > POLL_SLOW_AFTER_MS ? POLL_SLOW_MS : POLL_FAST_MS;
@@ -1316,14 +684,14 @@ async function pollJob(id, token, signal) {
   }
 }
 
-async function submitAndAwait(pairing, form, signal) {
-  const submitted = await send("POST", "jobs", { token: pairing.token, formBody: form }).then((r) => r.json());
+async function submitAndAwait(form, signal) {
+  const submitted = await send("POST", "jobs", { formBody: form }).then((r) => r.json());
   let status;
   try {
-    status = await pollJob(submitted.id, pairing.token, signal);
+    status = await pollJob(submitted.id, signal);
   } catch (error) {
     if (signal?.aborted) {
-      await send("POST", `jobs/${submitted.id}/cancel`, { token: pairing.token }).catch(() => {});
+      await send("POST", `jobs/${submitted.id}/cancel`).catch(() => {});
     }
     throw error;
   }
@@ -1333,20 +701,20 @@ async function submitAndAwait(pairing, form, signal) {
   return { id: submitted.id, status };
 }
 
-/** @param {string} id @param {string} token @param {string} name @param {CompanionJobStatus} status */
-async function fetchOutput(id, token, name, status) {
+/** @param {string} id @param {string} name @param {CompanionJobStatus} status */
+async function fetchOutput(id, name, status) {
   if (!status.outputs?.[name]) return null;
-  const response = await send("GET", `jobs/${id}/files/${encodeURIComponent(name)}`, { token });
+  const response = await send("GET", `jobs/${id}/files/${encodeURIComponent(name)}`, { });
   return bytesOfResponse(response);
 }
 
-/** @param {string} id @param {string} token @param {string} name @param {CompanionJobStatus} status */
-async function fetchVerifiedOutput(id, token, name, status) {
+/** @param {string} id @param {string} name @param {CompanionJobStatus} status */
+async function fetchVerifiedOutput(id, name, status) {
   const descriptor = status.outputs?.[name];
   if (!descriptor) return null;
   const expectedSize = safeSize(Number(descriptor.size));
   const expectedDigest = safeSha256(descriptor.sha256, `${name} output digest`);
-  const bytes = await fetchOutput(id, token, name, status);
+  const bytes = await fetchOutput(id, name, status);
   if (!bytes || bytes.byteLength !== expectedSize) {
     throw named("Refused", `Local builder returned the wrong size for ${name}`);
   }
@@ -1367,9 +735,8 @@ function base64Of(bytes) {
 
 /** @param {{ job?: CompanionJob, tree: CompanionTree, builder: string, engine?: string, output?: string, options?: Record<string, unknown>, bindingId?: string }} input @param {BuildCallbacks} [callbacks] */
 export async function runBuild({ job = {}, tree, builder, engine, output = "pdf", options = {}, bindingId = "" }, { signal, onProgress } = {}) {
-  // A pairing only exists after a health check that refused anything below
-  // protocol 2 (see `probe`), so the build request needs no version guard.
-  const pairing = requirePairing();
+  // A ready status means a health check accepted protocol 2 (see `probe`), so
+  // the build request needs no version guard.
   const files = collectTreeFiles(tree);
   const manifest = await manifestOf(files);
   const request = {
@@ -1381,22 +748,22 @@ export async function runBuild({ job = {}, tree, builder, engine, output = "pdf"
   const source = await sourceSnapshot(job.snapshot, tree.main, manifest);
   if (source) request.source = source;
   onProgress?.({ done: 0, total: 1, scope: `local ${builder}` });
-  const { id, status: jobStatus } = await submitAndAwait(pairing, formOf(request, files), signal);
-  if (builder === "quarto") return collectQuartoOutputs(id, jobStatus, pairing, { format: output }, { onProgress }, job);
-  const artifact = await fetchVerifiedOutput(id, pairing.token, output, jobStatus) || await fetchVerifiedOutput(id, pairing.token, `artifact.${output}`, jobStatus);
-  const log = await fetchVerifiedOutput(id, pairing.token, "log", jobStatus);
+  const { id, status: jobStatus } = await submitAndAwait(formOf(request, files), signal);
+  if (builder === "quarto") return collectQuartoOutputs(id, jobStatus, { format: output }, { onProgress }, job);
+  const artifact = await fetchVerifiedOutput(id, output, jobStatus) || await fetchVerifiedOutput(id, `artifact.${output}`, jobStatus);
+  const log = await fetchVerifiedOutput(id, "log", jobStatus);
   onProgress?.({ done: 1, total: 1, scope: `local ${builder}` });
   return { ok: jobStatus.status === "done" && jobStatus.exit === 0 && artifact != null, kind: output, pdf: output === "pdf" ? artifact : null, artifact, log: log ? new TextDecoder().decode(log) : "", diagnostics: jobStatus.diagnostics || [], exit: jobStatus.exit, error: jobStatus.error, provenance: { ...(jobStatus.provenance || {}), backend: "local", builder } };
 }
 
-/** @param {string} id @param {CompanionJobStatus} status @param {Pairing} pairing @param {{ format?: string, policy?: string, inputRevision?: string }} options @param {BuildCallbacks} [callbacks] @param {CompanionJob} [job] */
-async function collectQuartoOutputs(id, status, pairing, options, { onProgress, onLog } = {}, job = {}) {
+/** @param {string} id @param {CompanionJobStatus} status @param {{ format?: string, policy?: string, inputRevision?: string }} options @param {BuildCallbacks} [callbacks] @param {CompanionJob} [job] */
+async function collectQuartoOutputs(id, status, options, { onProgress, onLog } = {}, job = {}) {
   if (status.log_tail) for (const line of String(status.log_tail).split("\n")) onLog?.(line);
   const format = options.format || "html";
   const artifactName = `artifact.${format}`;
-  const manifestBytes = await fetchOutput(id, pairing.token, "manifest.json", status) ||
-    await fetchOutput(id, pairing.token, "quarto-bundle.json", status);
-  const logBytes = await fetchOutput(id, pairing.token, "log", status);
+  const manifestBytes = await fetchOutput(id, "manifest.json", status) ||
+    await fetchOutput(id, "quarto-bundle.json", status);
+  const logBytes = await fetchOutput(id, "log", status);
   let manifest = null;
   if (manifestBytes) {
     try { manifest = JSON.parse(new TextDecoder().decode(manifestBytes)); } catch { onLog?.("Quarto collector returned an invalid manifest"); }
@@ -1443,7 +810,7 @@ async function collectQuartoOutputs(id, status, pairing, options, { onProgress, 
         closureError = `Quarto bundle output exceeds the size limit: ${outputName}`;
         break;
       }
-      const bytes = await fetchOutput(id, pairing.token, outputName, status);
+      const bytes = await fetchOutput(id, outputName, status);
       if (!bytes) {
         closureError = `Quarto bundle output could not be downloaded: ${outputName}`;
         break;
@@ -1504,7 +871,6 @@ async function collectQuartoOutputs(id, status, pairing, options, { onProgress, 
  * `{ entrypoint, format }` pair validated by `calepinOptions`. */
 /** @param {{ engine?: string, job?: CompanionJob, tree: CompanionTree, options?: RenderOptions }} input @returns {Promise<{ id: string, url: string }>} */
 export async function startLocalPreview({ engine = "quarto", job = {}, tree, options = {} }) {
-  const pairing = requirePairing();
   const form = engine === "calepin"
     ? await buildCalepinForm({ job, tree, options: { ...options, livePreview: true } })
     : await buildQuartoForm({ job, tree, options: { ...options, livePreview: true } });
@@ -1512,11 +878,8 @@ export async function startLocalPreview({ engine = "quarto", job = {}, tree, opt
   if (!(jobPart instanceof Blob)) throw new Error("local preview request is missing its job manifest");
   /** @type {JobEnvelope & { quarto?: QuartoJobDetails, calepin?: CalepinJobDetails }} */
   const built = JSON.parse(await jobPart.text());
-  // Unconditionally protocol 2, like `runBuild`: a pairing only exists after
-  // a health check that refused anything below it (see `probe`), and the
-  // bridge has no other shape to decode a preview from. The version guard
-  // this replaced defaulted to 1 when the status was unset, which produced a
-  // request nothing could answer.
+  // Unconditionally protocol 2, like `runBuild`: the bridge has no other
+  // shape to decode a preview from.
   const builder = engine === "calepin" ? "calepin" : "quarto";
   const details = engine === "calepin" ? built.calepin : built.quarto;
   if (!details) throw new Error(`local preview request is missing ${builder} job details`);
@@ -1538,18 +901,16 @@ export async function startLocalPreview({ engine = "quarto", job = {}, tree, opt
   };
   const source = await sourceSnapshot(built.snapshot, entrypoint, built.manifest);
   if (source) request.source = source;
-  const response = await send("POST", "previews", { token:pairing.token, jsonBody:request });
+  const response = await send("POST", "previews", { jsonBody: request });
   return response.json();
 }
 /** @param {string} id @returns {Promise<void>} */
 export async function stopLocalPreview(id) {
-  const pairing = requirePairing();
-  await send("DELETE", `previews/${encodeURIComponent(id)}`, { token:pairing.token });
+  await send("DELETE", `previews/${encodeURIComponent(id)}`);
 }
 /** @param {string} id @returns {Promise<{ state?: string, log_tail?: string }>} */
 export async function localPreviewStatus(id) {
-  const pairing = requirePairing();
-  const response = await send("GET", `previews/${encodeURIComponent(id)}`, { token:pairing.token });
+  const response = await send("GET", `previews/${encodeURIComponent(id)}`);
   return response.json();
 }
 
@@ -1600,16 +961,15 @@ function kindHeaderOf(response) {
 // distinguished by `name` from every other failure, none of which are.
 /** @param {string} id @param {{ etag?: string | null }} [options] @returns {Promise<{kind?: "html" | "pdf", html?: string, bytes?: Uint8Array, etag?: string | null, rendering?: boolean}>} */
 export async function localPreviewPage(id, { etag } = {}) {
-  const pairing = requirePairing();
-  const addr = address();
-  const url = `${addr}${LOCAL_BASE}previews/${encodeURIComponent(id)}/page`;
-  const headers = { Accept: "text/html, application/pdf", Authorization: `Bearer ${pairing.token}` };
+  const shell = requireDesktop();
+  const url = `${shell.base}${LOCAL_BASE}previews/${encodeURIComponent(id)}/page`;
+  const headers = { Accept: "text/html, application/pdf" };
   if (etag) headers["If-None-Match"] = etag;
   let response;
   try {
-    response = await localFetch(url, { method: "GET", mode: "cors", credentials: "omit", headers });
-  } catch (error) {
-    throw named("Unreachable", instructionsFor(await unreachableState(error), address()));
+    response = await deps.fetch(url, { method: "GET", mode: "cors", credentials: "omit", headers });
+  } catch {
+    throw unavailable();
   }
   const rendering = renderingHeaderOf(response);
   if (response.status === 304) return { rendering };
@@ -1645,13 +1005,12 @@ async function buildWorkspaceForm(tree) {
 // body, but the JSON part is named `manifest` (a bare array) rather than `job`.
 /** @param {{ tree: CompanionTree }} input */
 export async function syncWorkspace({ tree }) {
-  const pairing = requirePairing();
   const form = await buildWorkspaceForm(tree);
   const params = new URLSearchParams({ project: String(current.project) });
   const binding = bindingId();
   if (binding !== HOSTED_BINDING) params.set("binding", binding);
   try {
-    const response = await send("PUT", `workspace?${params}`, { token: pairing.token, formBody: form });
+    const response = await send("PUT", `workspace?${params}`, { formBody: form });
     return response.json();
   } catch (error) {
     // A saved folder this companion no longer grants (revoked, or another
@@ -1670,16 +1029,13 @@ export async function syncWorkspace({ tree }) {
  * routes (setIntegration, setStartup, quit) may take up to 5 minutes
  * waiting for OS confirmation and surface 403 or 503 errors. */
 export async function settings() {
-  const pairing = requirePairing();
-  const response = await send("GET", "settings", { token: pairing.token });
+  const response = await send("GET", "settings");
   return response.json();
 }
 
 /** Update an integration's settings (path and arguments). Waits for OS dialog confirmation (up to 5 minutes). */
 export async function setIntegration(name, { path, args }) {
-  const pairing = requirePairing();
   const response = await send("PUT", `integrations/${name}`, {
-    token: pairing.token,
     jsonBody: { path, args },
   });
   return response.json();
@@ -1688,9 +1044,7 @@ export async function setIntegration(name, { path, args }) {
 /** Enable or disable starting the companion at login (standalone only).
  * Waits for OS dialog confirmation (up to 5 minutes). */
 export async function setStartup(enabled) {
-  const pairing = requirePairing();
   await send("POST", "startup", {
-    token: pairing.token,
     jsonBody: { enabled },
   });
 }
@@ -1698,38 +1052,29 @@ export async function setStartup(enabled) {
 /** Quit the companion (standalone only). Waits for OS dialog confirmation
  * (up to 5 minutes). */
 export async function quit() {
-  const pairing = requirePairing();
-  await send("POST", "quit", { token: pairing.token });
+  await send("POST", "quit");
 }
 
 /** Read account-wide backup state from the paired companion. The account id
  * is the signed-in server account, never the currently open project. */
 export async function backups(accountId) {
-  const pairing = requirePairing();
   const query = new URLSearchParams({ account: String(accountId || "") });
-  const response = await send("GET", `backups?${query}`, { token: pairing.token });
+  const response = await send("GET", `backups?${query}`, });
   return response.json();
 }
 
 /** Ask the companion to choose and retain a native backup destination. */
 export async function chooseBackupFolder(accountId) {
-  const pairing = requirePairing();
   const response = await send("POST", "backups/folder", {
-    token: pairing.token,
     jsonBody: { account_id: String(accountId || "") },
   });
   return response.json();
 }
 
-/** Authorize access through the signed-in browser, retaining the original
- * companion pairing across the approval round trip. `approveCode` is the one
- * browser-server request; `isCurrent` checks its account and UI scope. */
-export async function authorizeBackups(accountId, approveCode, isCurrent = () => true) {
-  const pairing = requirePairing();
-  const token = pairing.token;
-  const stillCurrent = () => getPairing()?.token === token && isCurrent();
+/** Authorize access through the signed-in browser. `approveCode` is the one
+ * browser-server request; `stillCurrent` checks its account and UI scope. */
+export async function authorizeBackups(accountId, approveCode, stillCurrent = () => true) {
   const response = await send("POST", "backups/authorize", {
-    token,
     jsonBody: { account_id: String(accountId || "") },
   });
   const { user_code: userCode, authorization_id: authorizationId } = await response.json();
@@ -1737,7 +1082,6 @@ export async function authorizeBackups(accountId, approveCode, isCurrent = () =>
   await approveCode(userCode, stillCurrent);
   if (!stillCurrent()) throw named("Canceled", "The backup authorization scope changed.");
   const completed = await send("POST", "backups/authorize/complete", {
-    token,
     jsonBody: { account_id: String(accountId || ""), authorization_id: String(authorizationId) },
   });
   if (!stillCurrent()) throw named("Canceled", "The backup authorization scope changed.");
@@ -1746,9 +1090,7 @@ export async function authorizeBackups(accountId, approveCode, isCurrent = () =>
 
 /** Update account-wide backup scheduling. */
 export async function updateBackups(accountId, { enabled, frequency_minutes }) {
-  const pairing = requirePairing();
   const response = await send("PUT", "backups", {
-    token: pairing.token,
     jsonBody: { account_id: String(accountId || ""), enabled: Boolean(enabled), frequency_minutes },
   });
   return response.json();
@@ -1756,9 +1098,7 @@ export async function updateBackups(accountId, { enabled, frequency_minutes }) {
 
 /** Run an account-wide backup immediately. */
 export async function runBackups(accountId) {
-  const pairing = requirePairing();
   const response = await send("POST", "backups/run", {
-    token: pairing.token,
     jsonBody: { account_id: String(accountId || "") },
   });
   return response.json();
@@ -1766,12 +1106,11 @@ export async function runBackups(accountId) {
 
 /* --------------------------------------------------- Connecting an agent */
 
-/** One pairing-scoped call to the local app's assistant surface, JSON in and
+/** One call to the desktop app's assistant surface, JSON in and
  * out. `agents`, `startAssistant`, `assistantStatus` and `stopAssistant` are
  * all this same shape; only the method, path and body differ. */
 async function assistantCall(method, path, jsonBody) {
-  const pairing = requirePairing();
-  const response = await send(method, path, { token: pairing.token, ...(jsonBody ? { jsonBody } : {}) });
+  const response = await send(method, path, jsonBody ? { jsonBody } : {});
   return response.json();
 }
 
@@ -1816,14 +1155,3 @@ export async function stopAssistant({ link = "", conversation = "" } = {}) {
   return assistantCall("POST", "assistant/stop", { link: String(link || ""), conversation: String(conversation || "") });
 }
 
-// -------------------------------------------------------------- module init
-//
-// Only in a real browser: a Node test drives `intakeFragment` directly
-// through `_testing`, with its own injected `location`/`storage`, rather than
-// relying on this running at import time.
-if (typeof window !== "undefined") {
-  intakeFragment();
-  window.addEventListener("storage", (event) => {
-    if (event.key === ADDRESS_KEY) addressChanged();
-  });
-}

@@ -1,4 +1,4 @@
-// The local app's status, as one piece of reactive state for the whole page.
+// The desktop app's status, as one piece of reactive state for the whole page.
 //
 // `client.js` is a plain module on purpose: Node tests import it directly, so
 // it cannot hold runes. Every component that wants to *watch* the status
@@ -18,8 +18,8 @@ export function createCompanionStatus(client = defaultClient) {
   // Replaced wholesale by the client on every probe, never edited in place.
   let current = $state.raw(client.status());
 
-  // The client only auto-reconnects while somebody is listening, so the one
-  // subscription is held for exactly as long as one component is watching.
+  // The one subscription is held for exactly as long as one component is
+  // watching; the first one also starts the probe.
   let release = null;
   let watchers = 0;
 

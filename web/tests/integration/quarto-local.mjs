@@ -59,7 +59,8 @@ async function sha(bytes) {
 }
 
 function setup(fetch) {
-  const values = new Map([["librepaper-local-connections", JSON.stringify({ "example.test": { token: "token" } })]]);
+  const values = new Map();
+  globalThis.window = { __LIBREPAPER_DESKTOP__: { base: "lp-local://localhost/", version: "test" } };
   _testing.reset();
   configure({ origin: "example.test", project: "paper" });
   _testing.inject({ storage: { getItem: (key) => values.get(key) || null, setItem: (key, value) => values.set(key, value) }, fetch, wait: async () => {} });
@@ -96,7 +97,7 @@ setup(async (url, init = {}) => {
 });
 // A one-shot Quarto build now travels through the same `runBuild` path as
 // every other builder; the Quarto-specific envelope (`runQuarto`, deleted
-// with the pairing cutover) had no live caller left, so what remains worth
+// with the desktop cutover) had no live caller left, so what remains worth
 // checking here is the bundle collection `runBuild` still relies on.
 const first = await runBuild({
   job: { snapshot: "rev-1", generation: 0 },
@@ -152,7 +153,7 @@ assert.equal(preview.id, "preview-1");
 const previewRequest = JSON.parse(previewCalls[0].init.body);
 assert.equal(previewRequest.manifest[0].sha256, await sha(new TextEncoder().encode("# Preview")));
 assert.equal(previewRequest.manifest[0].path, "paper.qmd");
-assert.equal(previewCalls[0].init.headers.Authorization, "Bearer token");
+assert.equal(previewCalls[0].init.headers.Authorization, undefined, "the page sends no credential");
 assert.equal(previewRequest.token, undefined);
 await stopLocalPreview(preview.id);
 const pdfPreview = await startLocalPreview({job:{binding:"binding-1"}, tree:{main:"paper.qmd",texts:{"paper.qmd":"---\nformat: pdf\n---\n# Preview"}},options:{format:"pdf"}});
@@ -186,7 +187,7 @@ let syncRequest = null;
 setup(async (url, init = {}) => {
   assert.equal(init.method, "PUT");
   assert.ok(new URL(url).pathname.endsWith("/librepaper/local/workspace"));
-  assert.equal(init.headers.Authorization, "Bearer token");
+  assert.equal(init.headers.Authorization, undefined, "the page sends no credential");
   syncRequest = init;
   return response({ synced: 2 });
 });

@@ -20,7 +20,7 @@ test("an unreported builder has no capability and no operations", () => {
   assert.equal(capabilityFor(caps, "pandoc"), null);
   assert.deepEqual(operationsFor(caps, "pandoc"), []);
   assert.equal(supportsOperation(caps, "pandoc", "build", "snapshot"), false);
-  // A companion below the protocol floor never reaches "connected", so its
+  // A companion below the protocol floor never reaches "ready", so its
   // tool-specific fields must not be read as builder capabilities.
   assert.equal(capabilityFor({ quarto: { tool: { available: true } } }, "quarto"), null);
 });

@@ -9,7 +9,7 @@
     canOpen = () => false,
     onopen,
     localAppProblem = false,
-    // Set when a preview here needs the companion and it is not connected.
+    // Set when a preview here needs the companion and it is not ready.
     companionNeeds = "",
     onretrylocal,
     // The two LaTeX-only additions: what actually produced the current

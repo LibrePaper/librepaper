@@ -1,50 +1,38 @@
 import assert from "node:assert/strict";
 import * as local from "../../src/lib/companion/client.js";
 
-const address = "http://127.0.0.1:8763/";
-
 function harness(hash = "") {
-  const store = new Map();
   const replaced = [];
   const location = { href: `https://app.example.test/${hash ? `#${hash}` : ""}`, hash: hash ? `#${hash}` : "" };
   local._testing.reset();
   local._testing.inject({
-    storage: { getItem: (k) => store.get(k) ?? null, setItem: (k, v) => store.set(k, v), removeItem: (k) => store.delete(k) },
     location: () => location,
     replaceHash: (value) => { replaced.push(value); location.hash = value ? `#${value}` : ""; },
   });
   return { location, replaced };
 }
 
-// A Settings request sets the companion address, is reported, and leaves unrelated fragment params alone.
+// A Settings request is reported and leaves unrelated fragment params alone.
 {
-  const h = harness(`k=reader-key&settings=local&companion_address=${encodeURIComponent("http://127.0.0.1:9911/")}`);
+  const h = harness("k=reader-key&settings=local");
   assert.equal(local.intake(), true);
   assert.equal(h.location.hash, "#k=reader-key");
   assert.deepEqual(h.replaced, ["k=reader-key"]);
-  assert.equal(local.address(), "http://127.0.0.1:9911/");
   assert.equal(local.intake(), false);
 }
 
-// Legacy control fields are stripped whatever they say.
+// An address field is not a Settings request and is left alone.
 {
-  const h = harness("settings=local&companion_control=abc&companion_instance=def&keep=yes");
-  assert.equal(local.intake(), true);
-  assert.equal(h.location.hash, "#keep=yes");
-  assert.equal(local.address(), address);
+  const h = harness("companion_address=http%3A%2F%2F127.0.0.1%3A9911%2F&keep=yes");
+  assert.equal(local.intake(), false);
+  assert.deepEqual(h.replaced, []);
 }
 
-// A non-loopback address is stripped and never becomes the companion address.
-for (const bad of ["https://attacker.example/", "http://127.0.0.1/", "http://user:pw@127.0.0.1:8763/", "http://127.0.0.1:8763/x", "not a url"]) {
-  const h = harness(`settings=local&companion_address=${encodeURIComponent(bad)}&keep=yes`);
-  assert.equal(local.intake(), true);
-  assert.equal(h.location.hash, "#keep=yes");
-  assert.equal(local.address(), address, bad);
-}
-
-// A fragment with neither field is left untouched.
+// A fragment with no Settings request is left untouched.
 {
   const h = harness("k=reader-key");
   assert.equal(local.intake(), false);
   assert.deepEqual(h.replaced, []);
 }
+
+local._testing.reset();

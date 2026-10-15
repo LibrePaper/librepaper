@@ -842,14 +842,8 @@
 
   $effect(() => {
     void showOfflineProjects();
-    localBridge.configure({ project: null, origin: location.origin, active: true });
-    // The companion opened Settings, usually to show a site waiting for an
-    // answer. This server pairs without a consent step, so connect at once.
-    if (untrack(() => initialSettings === "companion")) void localBridge.connectApp().catch(() => {});
-    get("/api/config").then((answer) => {
-      rules = answer ?? {};
-      if (answer?.local_app?.address) localBridge.setAdvertisedAddress(answer.local_app.address);
-    }).catch(() => {});
+    localBridge.configure({ project: null, origin: location.origin });
+    get("/api/config").then((answer) => { rules = answer ?? {}; }).catch(() => {});
     // Not the shared me(), which folds a failed request into an empty account:
     // this page needs to tell the two apart in order to say which it is.
     get("/api/me")

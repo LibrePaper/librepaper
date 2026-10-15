@@ -10,7 +10,7 @@
   let { account = {} } = $props();
   const accountId = $derived(typeof account.id === "string" ? account.id : "");
   const signedIn = $derived(Boolean(account.provider && accountId));
-  const paired = $derived(companion.status.state === "connected");
+  const paired = $derived(companion.status.state === "ready");
   const backupStatus = $derived(backups.status);
   const data = $derived(backupStatus.data || {});
   const hasStatus = $derived(signedIn && paired && backupStatus.data !== null && !backupStatus.error);
@@ -23,11 +23,10 @@
   let saved = $state(false);
   let requestScope = 0;
   let lastScope = "";
-  const pairingAddress = $derived(companion.status.address || "");
   const pairingInstance = $derived(companion.status.instance || "");
 
   $effect(() => {
-    const nextScope = `${accountId}\u0000${paired}\u0000${pairingAddress}\u0000${pairingInstance}`;
+    const nextScope = `${accountId}\u0000${paired}\u0000${pairingInstance}`;
     backups.setScope(accountId, paired);
     if (nextScope !== lastScope) {
       lastScope = nextScope;
@@ -46,10 +45,8 @@
     const requestedAccount = accountId;
     const requestedProvider = account.provider;
     const actionScope = requestScope;
-    const address = pairingAddress;
     const instance = pairingInstance;
-    const isCurrent = () => actionScope === requestScope && accountId === requestedAccount && signedIn && paired
-      && pairingAddress === address && pairingInstance === instance;
+    const isCurrent = () => actionScope === requestScope && accountId === requestedAccount && signedIn && paired && pairingInstance === instance;
     try {
       await localBridge.authorizeBackups(requestedAccount, async (userCode, pairingCurrent) => {
         const browserAccount = await me();

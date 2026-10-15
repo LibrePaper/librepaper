@@ -1,4 +1,4 @@
-// The local companion settings are an important permission boundary: their
+// The desktop app settings are an important permission boundary: their
 // controls describe the machine LibrePaper can use, and a custom Quarto
 // command is sent to the companion, which confirms it on this computer.
 import assert from "node:assert/strict";
@@ -41,7 +41,7 @@ writeFileSync(harness, `
 `);
 
 writeFileSync(statusMock, `
-let current = $state.raw({ state: "unreachable", address: "http://127.0.0.1:8763/", capabilities: null });
+let current = $state.raw({ state: "browser", capabilities: null });
 const listeners = new Set();
 export const companion = {
   get status() { return current; },
@@ -51,16 +51,11 @@ window.setLocalStatus = (next) => { current = next; };
 `);
 
 writeFileSync(clientMock, `
-let currentAddress = "http://127.0.0.1:8763/";
-export function address() { return currentAddress; }
-export function setAddress(value) { currentAddress = value; window.savedAddress = value; }
 export function probe() { return Promise.resolve(); }
 export function retry() { window.retryCalls = (window.retryCalls || 0) + 1; return Promise.resolve(); }
-export function disconnect() { return Promise.resolve(); }
-export function subscribe(listener) { listener({ state: "connected", address: currentAddress, instance: "test" }); return () => {}; }
+export function subscribe(listener) { listener({ state: "ready", instance: "test" }); return () => {}; }
 export function canManage() { return false; }
 export function manage() { throw new Error("Management API should not be used without a manage capability."); }
-export function connectApp() { window.pairCalls = (window.pairCalls || 0) + 1; return Promise.reject(new Error("The permission window was blocked.")); }
 export function chooseFolderBinding() { return Promise.resolve({ id: "folder", entrypoint: "main.qmd" }); }
 export async function capabilities(options) {
   window.capabilityCalls = (window.capabilityCalls || 0) + 1;
@@ -132,39 +127,42 @@ try {
   await b.navigate(`http://127.0.0.1:${port}/`);
   await until("local settings mounted", () => b.evaluate("Boolean(document.querySelector('#companion-connection'))"), 10000);
 
-  // An unreachable companion links to the install page instead of carrying
-  // commands. Connection details are expanded when needed.
+  // A browser outside the desktop app links to the install page and offers to
+  // open the page in the desktop app.
   const initial = await b.evaluate(`JSON.stringify({
     text: document.body.innerText,
     details: document.querySelectorAll('details').length,
     summaries: document.querySelectorAll('summary').length,
     install: document.querySelector('#companion-connection a[href*="local-app"]')?.href,
+    open: document.querySelector('#companion-connection a[href^="librepaper://open?url="]')?.getAttribute('href'),
   })`);
   const disconnected = JSON.parse(initial);
   assert.equal(disconnected.install, "https://librepaper.org/local-app.html", "the install section links to the one install page");
+  assert.match(disconnected.open, /^librepaper:\/\/open\?url=http/, "the page offers to open itself in the desktop app");
+  assert.match(disconnected.text, /Computing, agents, folders and backups need the LibrePaper desktop app\./);
   assert.doesNotMatch(disconnected.text, /curl|librepaper-installer/, "the settings page carries no install command of its own");
   assert.equal(disconnected.details, 0, "initial view has no collapsed details");
   assert.equal(disconnected.summaries, 0, "initial view has no disclosure summary");
   assert.doesNotMatch(disconnected.text, /Build presets|Current document/);
   assert.equal(await b.evaluate("Boolean(document.querySelector('#companion-startup'))"), false, "startup setting is hidden while disconnected");
   assert.equal(await b.evaluate("Boolean([...document.querySelectorAll('button')].find((button) => button.textContent.trim() === 'Quit companion'))"), false, "quit companion button is hidden while disconnected");
-  assert.equal(await b.evaluate("Boolean([...document.querySelectorAll('#companion-address button')].find((button) => button.textContent.trim() === 'Disconnect')?.disabled)"), true, "disconnect stays visible but unavailable while disconnected");
+  assert.equal(await b.evaluate("Boolean([...document.querySelectorAll('button')].find((button) => /Connect|Disconnect/.test(button.textContent.trim())))"), false, "there are no connect controls");
+  assert.equal(await b.evaluate("Boolean(document.querySelector('#companion-address'))"), false, "there is no address field");
   assert.equal(await b.evaluate("document.querySelector('#companion-report button')?.disabled"), true, "setup check is unavailable while disconnected");
   assert.equal(await b.evaluate("Boolean(document.querySelector('#quarto-executable input')?.disabled && document.querySelector('#quarto-arguments input')?.disabled)"), true, "Quarto fields remain unavailable until connected");
 
-  // A failed connection request is shown beside Connect, explaining why it happened.
-  await b.evaluate("window.setLocalStatus({ state: 'unauthorized', address: 'http://127.0.0.1:8763/', capabilities: null })");
+  // Inside the desktop app an unavailable service offers Retry.
+  await b.evaluate("window.setLocalStatus({ state: 'unavailable', capabilities: null })");
   await settle();
-  await b.evaluate(clickText("Connect"));
-  await until("popup failure shown", () => b.evaluate("document.body.innerText.includes('permission window was blocked')"), 5000);
+  await b.evaluate(clickText("Retry"));
+  await until("retry requested", () => b.evaluate("window.retryCalls === 1"), 5000);
 
   // Once connected, the install link gives way to machine controls, and
   // the Quarto section offers its own command.
-  await b.evaluate(`window.setLocalStatus({ state: 'connected', address: 'http://127.0.0.1:8763/', capabilities: { tools: { quarto: { available: true, version: '1.6.0' } }, confinement: { kind: 'none' } } })`);
+  await b.evaluate(`window.setLocalStatus({ state: 'ready', capabilities: { tools: { quarto: { available: true, version: '1.6.0' } }, confinement: { kind: 'none' } } })`);
   await until("connected settings shown", () => b.evaluate("Boolean(document.querySelector('#quarto-executable')) && document.querySelector('#companion-startup [role=switch]')?.disabled === false"), 5000);
   const connectedText = await b.evaluate("document.body.innerText");
   assert.equal(await b.evaluate("document.querySelector('#companion-connection a[href*=\"local-app\"]')"), null, "a connected companion needs no install link");
-  assert.doesNotMatch(connectedText, /permission window was blocked/);
   assert.doesNotMatch(connectedText, /Build presets|Available tools/);
   assert.match(connectedText, /Quit companion/);
 
@@ -179,25 +177,17 @@ try {
     name: "quarto", path: "/opt/quarto/bin", args: ["--log-level", "warning", "--metadata", "title=Two words"],
   });
 
-  // The address editor is behind an explicit details action. Diagnostics use
-  // the local client and render their result as status text.
-  // The address, its editor and the setup check sit on the page itself.
-  assert.equal(await b.evaluate(`document.querySelector('[aria-label="Companion address"]')?.value`), "http://127.0.0.1:8763/", "the address field shows the current companion address");
-  await b.evaluate(`(() => { const input = document.querySelector('[aria-label="Companion address"]'); input.value = 'http://127.0.0.1:9876/'; input.dispatchEvent(new Event('input', { bubbles: true })); })()`);
-  await b.evaluate(clickText("Save"));
-  await until("address saved", () => b.evaluate("window.savedAddress === 'http://127.0.0.1:9876/'"), 5000);
-  await until("address save feedback shown", () => b.evaluate("document.querySelector('#companion-address-feedback')?.textContent.trim() === 'Saved'"), 5000);
-  await b.evaluate(`window.setLocalStatus({ state: 'connected', address: 'http://127.0.0.1:9876/', capabilities: { tools: { quarto: { available: true, version: '1.6.0' } }, confinement: { kind: 'none' } } })`);
-  await until("settings loaded at new address", () => b.evaluate("window.settingsCalls >= 2 && document.querySelector('#companion-report button')?.disabled === false"), 5000);
+  // Diagnostics use the local client and render their result as status text.
+  await until("setup check available", () => b.evaluate("document.querySelector('#companion-report button')?.disabled === false"), 5000);
   await b.evaluate(clickSelector("#companion-report button"));
   await until("diagnostic report shown", () => b.evaluate("Boolean(document.querySelector('pre[role=status]'))"), 5000);
   assert.match(await b.evaluate("document.querySelector('pre[role=status]').textContent"), /quarto/);
   assert.equal(await b.evaluate("window.capabilityCalls"), 1, "diagnostics request a fresh local capability report");
 
-  await b.evaluate(`window.setLocalStatus({ state: 'unreachable', address: 'http://127.0.0.1:9876/', capabilities: null })`);
+  await b.evaluate(`window.setLocalStatus({ state: 'unavailable', capabilities: null })`);
   await until("startup and quit hidden after disconnect", () => b.evaluate("!document.querySelector('#companion-startup') && ![...document.querySelectorAll('button')].some((button) => button.textContent.trim() === 'Quit companion')"), 5000);
 
-  console.log("local-settings-browser: companion row install link, failed-popup fallback, inline address editor, inline diagnostics, and standalone-only startup/quit controls passed");
+  console.log("local-settings-browser: browser notice, retry, inline diagnostics, and standalone-only startup/quit controls passed");
 } finally {
   if (b) await b.close();
   server.close();

@@ -20,13 +20,12 @@
 
   const local = $derived(companion.status);
   $effect(() => companion.watch());
-  // Only the configured LibrePaper server may manage the companion; any other site uses the paired routes.
+  // Inside the desktop app a ready companion is managed through the management routes.
   const managedAvailable = $derived(local ? localBridge.canManage() : false);
-  const managedScope = $derived(`${local?.address || ""}|${local?.instance || ""}`);
+  const managedScope = $derived(local?.instance || "");
 
   $effect(() => {
-    const connected = local?.state === "connected";
-    const address = local?.address || "";
+    const connected = local?.state === "ready";
     const instance = local?.instance || "";
     const requestedName = name;
     const requestId = ++loadId;
@@ -39,7 +38,7 @@
     managedState = null;
     managedRequest++;
     if (managed) void loadManagedSettings(++managedRequest, requestedName, scope);
-    else if (connected) void loadSettings(requestId, requestedName, address, instance);
+    else if (connected) void loadSettings(requestId, requestedName, instance);
     else {
       savedPath = "";
       savedArgs = [];
@@ -48,15 +47,15 @@
     }
   });
 
-  async function loadSettings(requestId, requestedName, address, instance) {
+  async function loadSettings(requestId, requestedName, instance) {
     try {
       const integration = (await localBridge.settings())?.integrations?.[requestedName];
-      if (requestId !== loadId || requestedName !== name || local?.state !== "connected" || (local?.address || "") !== address || (local?.instance || "") !== instance) return;
+      if (requestId !== loadId || requestedName !== name || local?.state !== "ready" || (local?.instance || "") !== instance) return;
       if (integration) show(integration);
       settingsLoaded = Boolean(integration);
       if (!integration) settingsError = "Integration settings are unavailable from the companion.";
     } catch (error) {
-      if (requestId === loadId && requestedName === name && local?.state === "connected" && (local?.address || "") === address && (local?.instance || "") === instance) {
+      if (requestId === loadId && requestedName === name && local?.state === "ready" && (local?.instance || "") === instance) {
         settingsError = error?.message || "Could not load companion settings.";
       }
     }
@@ -123,7 +122,7 @@
     }
   }
 
-  const isConnected = $derived(managedAvailable || local?.state === "connected");
+  const isConnected = $derived(managedAvailable || local?.state === "ready");
   const canEdit = $derived(isConnected && settingsLoaded && !pendingDialogAction);
   const unchanged = $derived(editingPath === savedPath && joinArgs(splitArgs(editingArgs)) === joinArgs(savedArgs));
   const isDefault = $derived(!savedPath && savedArgs.length === 0);

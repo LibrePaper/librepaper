@@ -5,7 +5,7 @@ import * as localBridge from "./client.js";
 
 export function createMachineView() {
   let available = $state(false);
-  // A stored credential is not a running companion, so track whether it answers.
+  // A ready status is not a live companion forever, so track whether it answers.
   let reachable = $state(true);
   let state = $state(null);
   let error = $state("");
@@ -17,7 +17,7 @@ export function createMachineView() {
   let currentScope = "";
 
   // The scope names the companion this view last talked to; it holds no secret.
-  const scopeOf = (status) => `${status?.address || ""}|${status?.instance || ""}`;
+  const scopeOf = (status) => status?.instance || "";
 
   const list = (value) => Array.isArray(value) ? value : [];
   const id = (value) => encodeURIComponent(String(value));

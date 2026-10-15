@@ -1,6 +1,8 @@
 import assert from "node:assert/strict";
 import * as local from "../../src/lib/companion/client.js";
 
+const BASE = "lp-local://localhost/";
+
 const response = (body, status = 200, contentType = "application/json") => ({
   status,
   ok: status >= 200 && status < 300,
@@ -10,110 +12,101 @@ const response = (body, status = 200, contentType = "application/json") => ({
   clone() { return response(body, status, contentType); },
 });
 
-const storeWithPairing = () => new Map([[
-  "librepaper-local-connections",
-  JSON.stringify({ "https://papers.example": { token: "pairing-token", expires: 1_000_000, instance: "companion" } }),
-]]);
-
-function setup(fetch, storage = new Map()) {
+function setup(fetch, { inDesktop = true } = {}) {
+  if (inDesktop) globalThis.window = { __LIBREPAPER_DESKTOP__: Object.freeze({ base: BASE, version: "test" }) };
+  else delete globalThis.window;
   local._testing.reset();
-  local._testing.inject({
-    storage: {
-      getItem: (key) => storage.get(key) ?? null,
-      setItem: (key, value) => storage.set(key, value),
-      removeItem: (key) => storage.delete(key),
-    },
-    location: () => ({ href: "https://papers.example/docs/paper" }),
-    fetch,
-  });
+  local._testing.inject({ fetch });
   local.configure({ project: "paper", origin: "https://papers.example" });
-  return storage;
 }
 
-// An explicit option validation failure during health falls back once. The
-// remembered decision then applies to pairing verification, management, and
-// job submission.
+const health = (protocol = [2]) => response({ service: "librepaper-local", protocol, version: "0.0.42", instance: "companion" });
+
+// desktop() reads the page global and is null in an ordinary browser.
+{
+  delete globalThis.window;
+  assert.equal(local.desktop(), null);
+  globalThis.window = { __LIBREPAPER_DESKTOP__: { base: BASE, version: "test" } };
+  assert.deepEqual(local.desktop(), { base: BASE, version: "test" });
+  delete globalThis.window;
+}
+
+// Outside the desktop app the state is browser and a probe stays there.
+{
+  setup(async () => { throw new Error("no request may be sent"); }, { inDesktop: false });
+  assert.equal(local.status().state, "browser");
+  assert.equal((await local.probe()).state, "browser");
+  assert.equal(local.canManage(), false);
+  await assert.rejects(local.settings(), (error) => error.name === "Unreachable");
+}
+
+// Inside the desktop app the status starts as checking and a probe makes it ready.
 {
   const requests = [];
-  let rejectedHealthOption = false;
   setup(async (url, init = {}) => {
     requests.push({ url, init });
-    if (url.endsWith("/librepaper/local/health")) {
-      if (init.targetAddressSpace && !rejectedHealthOption) {
-        rejectedHealthOption = true;
-        throw new TypeError("targetAddressSpace is not a valid RequestInit value");
-      }
-      return response({ service: "librepaper-local", protocol: [2], instance: "companion" });
-    }
-    if (url.endsWith("/librepaper/local/capabilities")) return response({ manage: true, builders: {} });
-    if (url.endsWith("companion/api/settings")) return response({ setting: true });
-    if (url.endsWith("/librepaper/local/jobs")) return response({ id: "job-1" });
-    if (url.endsWith("/librepaper/local/jobs/job-1")) return response({ status: "done", exit: 0, outputs: {} });
+    if (url === `${BASE}librepaper/local/health`) return health();
+    if (url === `${BASE}librepaper/local/capabilities`) return response({ manage: true, builders: {} });
+    if (url === `${BASE}companion/api/settings`) return response({ setting: true });
+    if (url === `${BASE}librepaper/local/jobs`) return response({ id: "job-1" });
+    if (url === `${BASE}librepaper/local/jobs/job-1`) return response({ status: "done", exit: 0, outputs: {} });
     throw new Error(`Unexpected request: ${url}`);
-  }, storeWithPairing());
-
-  const connected = await local.connectApp({ timeoutMs: 1, pollMs: 0 });
-  assert.equal(connected.state, "connected");
+  });
+  assert.equal(local.status().state, "checking");
+  const ready = await local.probe();
+  assert.equal(ready.state, "ready");
+  assert.equal(ready.version, "0.0.42");
+  assert.equal(local.canManage(), true);
   assert.deepEqual(await local.manage("/settings"), { setting: true });
   const built = await local.runBuild({ tree: { main: "paper.qmd", texts: { "paper.qmd": "# Paper" } }, builder: "quarto" });
   assert.equal(built.ok, false, "the stub omits Quarto outputs after exercising job submission and polling");
   const jobPost = requests.find(({ url, init }) => url.endsWith("/librepaper/local/jobs") && init.method === "POST");
   assert.ok(jobPost, "job submission sends a POST");
   assert.ok(jobPost.init.body instanceof FormData, "job submission preserves its multipart body");
-  assert.equal(jobPost.init.mode, "cors");
-  assert.equal(jobPost.init.credentials, "omit");
-
-  const healthRequests = requests.filter(({ url }) => url.endsWith("/librepaper/local/health"));
-  assert.equal(healthRequests.length, 2, "health option validation falls back once");
-  assert.equal(healthRequests[0].init.targetAddressSpace, "loopback");
-  assert.equal("targetAddressSpace" in healthRequests[1].init, false);
-  assert.ok(requests.slice(2).every(({ init }) => !("targetAddressSpace" in init)), "the support decision applies to later paired requests");
+  assert.ok(requests.every(({ init }) => !init.headers || !("Authorization" in init.headers)), "the page sends no credential");
 }
 
-// The same explicit validation fallback is safe for the session POST itself.
+// A 502 from the shell, or a network error, is unavailable.
 {
-  let attempts = 0;
-  const sessionRequests = [];
-  setup(async (url, init = {}) => {
-    if (url.endsWith("companion/api/session")) {
-      attempts += 1;
-      sessionRequests.push(init);
-      if (init.targetAddressSpace) throw new TypeError("targetAddressSpace is unsupported");
-      return response({ token: "pairing-token", expires: 1_000_000, instance: "companion" });
-    }
-    if (url.endsWith("/librepaper/local/health")) return response({ service: "librepaper-local", protocol: [2], instance: "companion" });
-    if (url.endsWith("/librepaper/local/capabilities")) return response({ manage: true, builders: {} });
-    throw new Error(`Unexpected request: ${url}`);
-  });
-  assert.equal((await local.connectApp({ timeoutMs: 1, pollMs: 0 })).state, "connected");
-  assert.equal(attempts, 2, "the explicit pre-send option validation error retries the POST once");
-  const [withOption, withoutOption] = sessionRequests;
-  assert.equal(withOption.method, "POST");
-  assert.equal(withOption.body, "{}");
-  assert.ok(withOption.signal instanceof AbortSignal);
-  for (const key of ["method", "mode", "credentials", "cache", "headers", "body", "signal"]) {
-    assert.equal(withoutOption[key], withOption[key], `fallback preserves ${key}`);
-  }
+  setup(async () => response({ error: "companion unavailable" }, 502));
+  assert.equal((await local.probe()).state, "unavailable");
+  setup(async () => { throw new TypeError("Failed to fetch"); });
+  assert.equal((await local.probe()).state, "unavailable");
+  setup(async (url) => url.endsWith("/health") ? health() : response({ error: "companion unavailable" }, 502));
+  assert.equal((await local.probe()).state, "unavailable", "a 502 on capabilities is unavailable too");
 }
 
-// A generic network TypeError during job POST is never replayed.
+// A protocol that excludes this client's version is incompatible.
 {
-  for (const message of ["Failed to fetch", "targetAddressSpace blocked by mixed-content policy"]) {
+  setup(async () => health([1]));
+  assert.equal((await local.probe()).state, "incompatible");
+}
+
+// A network failure or 502 during a job is Unreachable and is not replayed.
+{
+  for (const failure of [() => { throw new TypeError("Failed to fetch"); }, () => response({}, 502)]) {
     let posts = 0;
     setup(async (url, init = {}) => {
       if (url.endsWith("/librepaper/local/jobs") && init.method === "POST") {
         posts += 1;
-        throw new TypeError(message);
+        return failure();
       }
       throw new Error(`Unexpected request: ${url}`);
-    }, storeWithPairing());
+    });
     await assert.rejects(
       local.runBuild({ tree: { main: "paper.qmd", texts: { "paper.qmd": "# Paper" } }, builder: "quarto" }),
       (error) => error.name === "Unreachable",
     );
-    assert.equal(posts, 1, `a generic TypeError is not replayed: ${message}`);
+    assert.equal(posts, 1, "a failed job request is not replayed");
   }
 }
 
+// A 403 from a management route says it is not available for this site.
+{
+  setup(async () => response({ error: "forbidden" }, 403));
+  await assert.rejects(local.manage("/state"), (error) => error.name === "Refused" && error.status === 403);
+}
+
 local._testing.reset();
-console.log("companion-fetch: option fallback is shared across pairing, management, and job requests without network replay");
+delete globalThis.window;
+console.log("companion-fetch: the desktop base, no credential, and the browser, ready, unavailable and incompatible states");

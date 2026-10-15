@@ -23,7 +23,7 @@ for (const format of ["latex", "typst", "markdown", "quarto", "html", ""]) {
     }
   }
 }
-for (const query of ["windows setup", "zotero", "server address", "remote connection", "disconnected sync", "companion address"]) {
+for (const query of ["windows setup", "zotero", "server address", "remote connection", "disconnected sync"]) {
   assert.ok(search(query, { format: "html", mayEdit: false, signedIn: false })?.length, `settings search finds ${query}`);
 }
 
@@ -53,7 +53,7 @@ assert.doesNotMatch(dialog, /render-folder/);
 // does probe. LaTeX engine and Markdown tool
 // selections both present the correct options.
 assert.doesNotMatch(build, /\$effect\([^)]*probe/);
-assert.match(build, /void localBridge\.probe\(\{ force: true \}\)/);
+assert.match(build, /void localBridge\.probe\(\)/);
 assert.match(build, /id: "render-latex-engine"/);
 assert.deepEqual([...build.matchAll(/value: "(\w+)", says/g)].map((match) => match[1]), [
   "automatic", "pdflatex", "xelatex",
@@ -69,7 +69,7 @@ for (const format of ["typst", "quarto"]) assert.doesNotMatch(dialog, new RegExp
 // apply, and responses are scoped to the connection. Only Quarto and Calepin
 // have commands; Zotero is listed with the other programs.
 assert.match(command, /const canEdit = \$derived\(isConnected && settingsLoaded && !pendingDialogAction\);/);
-assert.match(command, /requestId !== loadId[\s\S]{0,260}local\?\.state !== "connected"/);
+assert.match(command, /requestId !== loadId[\s\S]{0,260}local\?\.state !== "ready"/);
 assert.match(tools, /const CONFIGURABLE = \["quarto", "calepin"\];/);
 assert.match(tools, /"Zotero"/);
 // Rendering says nothing about the companion; the programs live under Tools.

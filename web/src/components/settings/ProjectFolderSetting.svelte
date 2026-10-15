@@ -5,12 +5,11 @@
   import { companion } from "../../lib/companion/status.svelte.js";
 
   // The folder on this computer that live previews build in. It watches the
-  // companion's status and never probes for it: opening the Render page must
-  // not make the browser ask for local network access.
+  // desktop app's status and never probes for it.
   let { sourceFormat = "", main = "", mayEdit = false, onbindingid } = $props();
   const local = $derived(companion.status);
   $effect(() => companion.watch());
-  const connected = $derived(local?.state === "connected");
+  const connected = $derived(local?.state === "ready");
 
   let folderError = $state("");
   let choosingFolder = $state(false);
@@ -24,11 +23,10 @@
     folderError = "";
     choosingFolder = true;
     const requestedEntrypoint = entrypoint.trim();
-    const requestedAddress = local?.address || "";
     const requestedInstance = local?.instance || "";
     try {
       const result = await localBridge.chooseFolderBinding({ entrypoint: requestedEntrypoint });
-      if (connected && mayEdit && (local?.address || "") === requestedAddress && (local?.instance || "") === requestedInstance) {
+      if (connected && mayEdit && (local?.instance || "") === requestedInstance) {
         if (result?.id) onbindingid?.(result.id);
         entrypoint = result?.entrypoint || entrypoint;
       }

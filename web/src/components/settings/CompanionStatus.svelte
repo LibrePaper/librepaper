@@ -1,5 +1,5 @@
 <script>
-  // The settings sidebar footer: whether the companion is running, as one line
+  // The settings sidebar footer: whether the desktop app is running, as one line
   // that opens the Companion page. It watches the status and never probes.
   import StatusPill from "./StatusPill.svelte";
   import { companion } from "../../lib/companion/status.svelte.js";
@@ -9,12 +9,12 @@
 
   $effect(() => companion.watch());
   // No version here: the sidebar is narrow, and the Companion page shows it.
-  const wording = $derived(STATES[companion.status?.state] || STATES.unknown);
+  const wording = $derived(STATES[companion.status?.state] || STATES.browser);
 </script>
 
 <button type="button" id="settings-companion" class="companion-status" onclick={() => onopen?.()}>
   <span class="companion-status-label">Companion</span>
-  <StatusPill label={wording.says} tone={wording.tone} accessibleLabel={`LibrePaper Companion: ${wording.says}`} />
+  <StatusPill label={wording.says} tone={wording.tone} accessibleLabel={`LibrePaper desktop app: ${wording.says}`} />
 </button>
 
 <style>

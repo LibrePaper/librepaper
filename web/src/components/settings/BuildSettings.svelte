@@ -44,8 +44,7 @@
     const choice = row.choices.find((each) => each.value === value);
     preference = update(scope(), format, choice.patch);
     onpreferences?.(format, preference);
-    // Choosing a local tool is the gesture that may reach the companion.
-    if (choice.patch.backend === "local") void localBridge.probe({ force: true });
+    if (choice.patch.backend === "local") void localBridge.probe();
   }
 </script>
 

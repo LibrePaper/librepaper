@@ -268,28 +268,18 @@
   let quartoBindingId = $state("");
   const localAppStatus = $derived(companion.status);
 
-  /// Points the local-app pairing at this document and picks up whatever
-  /// binding it already remembers for it. Nothing is asked of the local app
-  /// here: reaching loopback is what makes the browser ask the person for
-  /// local network access, and opening a document is not a request for
-  /// anything local. The first gesture that needs the companion --
-  /// `ensureLocalApp`, a local build, the local-app settings -- probes then.
-  /// Which document this browser tab is about, as far as the local app is
-  /// concerned. A pairing token is granted per (origin, project), so this is
-  /// what decides which pairing every later call reads.
+  /// Which document this browser tab is about, as far as the desktop app is
+  /// concerned. It picks up whatever binding the client already remembers for
+  /// it. Nothing is asked of the desktop app here.
   ///
   /// Deliberately not behind a format check. It used to live inside the
   /// Quarto binding lookup below, which meant an HTML or LaTeX document never
   /// scoped the client at all, and anything else that wanted the local app
   /// for that document -- the agent panel -- asked with a null project and
-  /// was refused. Rendering locally and pairing with the local app are
-  /// different questions about the same document.
-  ///
-  /// It stays inside the rule the comment above describes, because it reaches
-  /// nothing: the client only begins probing once something explicitly asks
-  /// it to, so scoping it is bookkeeping, not a request.
+  /// was refused. Rendering locally and using the desktop app are different
+  /// questions about the same document.
   function scopeLocalApp() {
-    localQuarto.configure({ project: SLUG, origin: location.origin, active: mayEdit });
+    localQuarto.configure({ project: SLUG, origin: location.origin });
   }
 
   /// The execution permission key for this document.
@@ -1691,22 +1681,16 @@
     return doc.title || (await renderers.titleOf(tree)) || "Untitled";
   }
 
-  // The whole connection story, on demand and with nothing to type: reach
-  // the local app, and when it is there but has not allowed this site yet,
-  // ask it to connect. What remains for the person is to have started the
-  // app and to click Allow once; the status text says which when it fails.
+  // The whole connection story, on demand: probe the desktop app and say why
+  // it is not usable when it is not.
   async function ensureLocalApp() {
     if (localConnecting) return false;
     localConnecting = true;
     try {
       localConnectionError = "";
-      localQuarto.configure({ project: SLUG, origin: location.origin, active: mayEdit });
-      let status = await localQuarto.retry();
-      if (["unreachable", "unauthorized", "reachable"].includes(status.state)) {
-        try { status = await localQuarto.connectApp(); }
-        catch (error) { localConnectionError = error.message; showPanel("diagnostics"); return false; }
-      }
-      if (status.state !== "connected") {
+      localQuarto.configure({ project: SLUG, origin: location.origin });
+      const status = await localQuarto.retry();
+      if (status.state !== "ready") {
         localConnectionError = status.instructions || "Local LibrePaper is unavailable.";
         showPanel("diagnostics");
         return false;
@@ -1730,20 +1714,20 @@
   // texts -- or null for the document as it stands.
 
   // Whether this browser should be running Quarto's own live preview rather
-  // than showing its own draft rendering: Quarto preview mode chosen, paired,
+  // than showing its own draft rendering: Quarto preview mode chosen, ready,
   // connected, editable, and not looking at history. `editing` (the source
   // pane) is not required -- an editor who has not opened it yet still gets
   // the live pane the moment they are able to edit.
   const quartoLiveActive = $derived.by(() =>
-    sourceFormat === "quarto" && quartoPreviewMode === "quarto" && localExecution && (!buildPreferences.output || ["html", "pdf"].includes(buildPreferences.output)) && (buildPreferences.selection === "automatic" || (buildPreferences.backend === "local" && buildPreferences.tool === "quarto")) && mayEdit && localAppStatus.state === "connected",
+    sourceFormat === "quarto" && quartoPreviewMode === "quarto" && localExecution && (!buildPreferences.output || ["html", "pdf"].includes(buildPreferences.output)) && (buildPreferences.selection === "automatic" || (buildPreferences.backend === "local" && buildPreferences.tool === "quarto")) && mayEdit && localAppStatus.state === "ready",
   );
 
   // Whether this browser should be showing a Typst document's chunks run by
   // Calepin on this computer rather than this browser's own Typst rendering:
-  // the calepin mode chosen, paired, connected, the calepin command itself
+  // the calepin mode chosen, ready, the calepin command itself
   // found, editable, and not looking at history.
   const calepinActive = $derived.by(() =>
-    sourceFormat === "typst" && !typstHtmlPreview && localExecution && typstPreviewMode === "calepin" && buildPreferences.backend === "local" && buildPreferences.tool === "calepin" && mayEdit && localAppStatus.state === "connected" && localQuarto.calepinAvailable(),
+    sourceFormat === "typst" && !typstHtmlPreview && localExecution && typstPreviewMode === "calepin" && buildPreferences.backend === "local" && buildPreferences.tool === "calepin" && mayEdit && localAppStatus.state === "ready" && localQuarto.calepinAvailable(),
   );
 
   async function localPreviewTreeNow() {
@@ -1847,7 +1831,7 @@
   // The person starts the companion after a local run has already failed, from
   // the settings page or a terminal, so nothing on this page asked for it, and
   // the panel must not keep saying it is not running. What that failure left
-  // behind is cleared on the change into "connected" (not on every status
+  // behind is cleared on the change into "ready" (not on every status
   // object, and not on the first probe, which has nothing to undo): the
   // connection error, and the failed render's diagnostic, which a live
   // preview that now takes the pane would never replace. The run is retried
@@ -1859,7 +1843,7 @@
     const state = localAppStatus.state;
     const before = previousLocalAppState;
     previousLocalAppState = state;
-    if (state !== "connected" || !before || before === "unknown" || before === "connected") return;
+    if (state !== "ready" || before === null || before === "checking" || before === "browser" || before === "ready") return;
     untrack(() => {
       localConnectionError = "";
       if (!localExecutionRelevant) return;
@@ -2335,11 +2319,11 @@
       : renderState.failure ? renderState.failureReason || "The build failed without reporting why." : "",
   );
 
-  // Quarto preview mode chosen, but not yet paired with the local app on
+  // Quarto preview mode chosen, but the desktop app is not ready on
   // this computer: the pane shows the draft, and Diagnostics explains why.
   const quartoNeedsLocalApp = $derived(
     sourceFormat === "quarto" && quartoPreviewMode === "quarto" && localExecution && mayEdit &&
-      localAppStatus.state !== "connected",
+      localAppStatus.state !== "ready",
   );
   // A PDF from Markdown or Quarto source is only ever produced by a tool on
   // this computer: this browser's own renderer makes HTML and nothing else.
@@ -2349,7 +2333,7 @@
   // choosing PDF output and then closing, or never installing, the local app.
   const pdfNeedsLocalTool = $derived(
     pdfOutput && ["markdown", "quarto"].includes(sourceFormat) && mayEdit &&
-      (localAppStatus.state !== "connected" || (sourceFormat === "quarto" && !localExecution)),
+      (localAppStatus.state !== "ready" || (sourceFormat === "quarto" && !localExecution)),
   );
   // The gesture that is missing, told apart so the card offers one action
   // rather than a menu: Quarto has to be allowed to run this document's code
@@ -2365,20 +2349,20 @@
   }
 
   // The same two banner cases, for a Typst document with Calepin preview
-  // chosen: not yet connected to the local app, or connected but without the
+  // chosen: the desktop app is not ready, or ready but without the
   // calepin command itself.
   const typstNeedsLocalApp = $derived(
     sourceFormat === "typst" && !typstHtmlPreview && localExecution && typstPreviewMode === "calepin" && mayEdit &&
-      localAppStatus.state !== "connected",
+      localAppStatus.state !== "ready",
   );
   const typstNeedsCalepinCommand = $derived(
     sourceFormat === "typst" && !typstHtmlPreview && localExecution && typstPreviewMode === "calepin" && mayEdit &&
-      localAppStatus.state === "connected" && !localQuarto.calepinAvailable(),
+      localAppStatus.state === "ready" && !localQuarto.calepinAvailable(),
   );
 
   const localAppDiagnostics = $derived([
-    localAppStatus.state !== "connected" ? { severity: "error", message: localConnectionError } : null,
-    quartoNeedsLocalApp && !localConnectionError ? { severity: "warning", message: "The Markdown preview is shown until LibrePaper Companion is connected." } : null,
+    localAppStatus.state !== "ready" ? { severity: "error", message: localConnectionError } : null,
+    quartoNeedsLocalApp && !localConnectionError ? { severity: "warning", message: "The Markdown preview is shown until the LibrePaper desktop app is ready." } : null,
     typstNeedsCalepinCommand ? { severity: "warning", message: "Calepin preview needs the calepin command on this computer." } : null,
     sourceFormat === "quarto" && quartoPreviewMode === "quarto" && localExecution ? { severity: "error", message: quartoPreviewError } : null,
     ...(sourceFormat === "quarto" && quartoPreviewMode === "quarto" && localExecution ? quartoPreviewKept : []).map((note) => ({ severity: "warning", message: note.charAt(0).toUpperCase() + note.slice(1) + "." })),
@@ -2388,9 +2372,9 @@
   // entry and would hide the failed render's own message.
   ].filter((item) => item?.message).map((item) => ({ ...item, source: "local-app" })));
   // What the Diagnostics panel names when a preview here needs the
-  // companion and it is not connected. Empty when nothing needs it.
+  // companion and it is not ready. Empty when nothing needs it.
   const companionNeeds = $derived(
-    localAppStatus.state === "connected" ? ""
+    localAppStatus.state === "ready" ? ""
       : quartoNeedsLocalApp ? "Quarto preview"
       : typstNeedsLocalApp ? "Calepin preview"
       : pdfNeedsLocalTool ? "the PDF preview"
@@ -3189,7 +3173,6 @@
     .then((answer) => {
       workspace.setRules(answer || {});
       if (typeof answer?.latexMirror === "string") latex.at(answer.latexMirror);
-      if (answer?.local_app?.address) localQuarto.setAdvertisedAddress(answer.local_app.address);
     })
     .catch(() => {
       /* the server checks every path again; this only explains it sooner */
@@ -3696,7 +3679,7 @@
 
   // Account scope and companion pairing are the only triggers for reading
   // backup status. A signed-out or unpaired page never makes a new probe.
-  $effect(() => backupStatusStore.setScope(me?.id, companion.status.state === "connected"));
+  $effect(() => backupStatusStore.setScope(me?.id, companion.status.state === "ready"));
   $effect(() => () => backupStatusStore.reset());
 
   // Ctrl-S reports the durability the server has confirmed for local work.
@@ -4033,9 +4016,9 @@
       {@render localExecutionControl()}
       <div class="connection-settings" role="group" aria-label="Connection settings">
         <button class="connection-pill local-pill" type="button" onclick={() => openSettings("companion")}
-                aria-label={`Local companion ${localAppStatus.state === "connected" ? "connected" : "disconnected"}; open local settings`}
-                title={`Local companion ${localAppStatus.state === "connected" ? "connected" : "disconnected"}. Open local settings`}>
-          <span class="connection-dot" class:offline={localAppStatus.state !== "connected"} aria-hidden="true"></span>
+                aria-label={`Local companion ${localAppStatus.state === "ready" ? "connected" : "disconnected"}; open local settings`}
+                title={`Local companion ${localAppStatus.state === "ready" ? "connected" : "disconnected"}. Open local settings`}>
+          <span class="connection-dot" class:offline={localAppStatus.state !== "ready"} aria-hidden="true"></span>
           <span>Local</span>
         </button>
         <button class="connection-pill" type="button" onclick={() => openSettings("account")}

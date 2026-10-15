@@ -49,9 +49,8 @@ export const CATEGORIES = [
     id: "companion", says: "Companion", offered: always,
     note: "This computer",
     entries: [
-      { id: "companion-connection", says: "Connection", terms: "companion connect install running status installer setup linux macos windows address port disconnect version" },
+      { id: "companion-connection", says: "Connection", terms: "companion connect install running status installer setup linux macos windows version" },
       { id: "companion-approvals", says: "Waiting for your answer", terms: "allow deny approval pending requests access" },
-      { id: "companion-sites", says: "Connected sites", terms: "pairing revoke origin website site access" },
       { id: "companion-folders", says: "Project folders", terms: "bindings folder grant revoke directory project access" },
       { id: "companion-startup", says: "Start at login", terms: "startup login background quit companion" },
       { id: "companion-report", says: "Check local setup", terms: "doctor troubleshoot diagnostics report rescan" },

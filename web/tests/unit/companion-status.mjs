@@ -6,8 +6,8 @@
 // them: that the status a component reads is the last one the client
 // published, that a second watcher does not open a second subscription, and
 // that the subscription ends only when the last watcher lets go -- the client
-// stops probing for a reconnect when nothing is listening, so releasing too
-// eagerly would leave a running local app undiscovered.
+// keeps one listener list, so releasing too eagerly would leave a watcher
+// without updates.
 import assert from "node:assert/strict";
 import { loadRunes } from "../helpers/runes.mjs";
 
@@ -17,7 +17,7 @@ const { createCompanionStatus } = await loadRunes(
 
 function fakeClient() {
   const listeners = new Set();
-  let status = { state: "unknown" };
+  let status = { state: "checking" };
   return {
     subscriptions: 0,
     status: () => status,
@@ -38,15 +38,15 @@ function fakeClient() {
 const client = fakeClient();
 const companion = createCompanionStatus(client);
 
-assert.equal(companion.status.state, "unknown", "the status reads before anyone watches");
+assert.equal(companion.status.state, "checking", "the status reads before anyone watches");
 assert.equal(client.listening, 0, "and watching is what opens the subscription");
 
 const first = companion.watch();
 const second = companion.watch();
 assert.equal(client.subscriptions, 1, "two watchers share one subscription");
 
-client.publish({ state: "connected", capabilities: { quarto: {} } });
-assert.equal(companion.status.state, "connected");
+client.publish({ state: "ready", capabilities: { quarto: {} } });
+assert.equal(companion.status.state, "ready");
 assert.equal(companion.status.capabilities.quarto !== undefined, true);
 
 first();
@@ -59,4 +59,4 @@ assert.equal(client.listening, 0, "the last watcher out stops the client listeni
 
 companion.watch();
 assert.equal(client.subscriptions, 2, "watching again opens a fresh subscription");
-assert.equal(companion.status.state, "connected", "which replays what the client last knew");
+assert.equal(companion.status.state, "ready", "which replays what the client last knew");

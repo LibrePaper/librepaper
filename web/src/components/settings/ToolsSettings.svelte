@@ -35,7 +35,7 @@
     return [...unique.values()];
   }
 
-  const connected = $derived(view.available || companion.status?.state === "connected");
+  const connected = $derived(view.available || companion.status?.state === "ready");
   const capabilities = $derived(view.available ? view.state?.tools : companion.status?.capabilities);
   // The programs worth showing are listed even when the companion did not report them.
   const tools = $derived.by(() => {
