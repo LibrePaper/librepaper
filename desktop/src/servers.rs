@@ -24,7 +24,9 @@ impl Servers {
         }
         let path = file(app)?;
         match fs::read(&path) {
-            Ok(bytes) => serde_json::from_slice(&bytes).map_err(|err| format!("{}: {err}", path.display())),
+            Ok(bytes) => {
+                serde_json::from_slice(&bytes).map_err(|err| format!("{}: {err}", path.display()))
+            }
             Err(err) if err.kind() == io::ErrorKind::NotFound => Ok(Self {
                 servers: vec![DEFAULT_SERVER.to_string()],
                 from_env: false,

@@ -59,7 +59,8 @@ impl Service {
                 Ok(res) => return relay(res).await,
                 Err(err)
                     if !retried
-                        && (err.is_connect() || matches!(request.method, Method::GET | Method::HEAD)) => {}
+                        && (err.is_connect()
+                            || matches!(request.method, Method::GET | Method::HEAD)) => {}
                 Err(err) => return Err(err.to_string()),
             }
             retried = true;
@@ -78,7 +79,11 @@ impl Service {
         Ok(endpoint)
     }
 
-    async fn send(&self, endpoint: &Endpoint, request: &Forward) -> reqwest::Result<reqwest::Response> {
+    async fn send(
+        &self,
+        endpoint: &Endpoint,
+        request: &Forward,
+    ) -> reqwest::Result<reqwest::Response> {
         let url = format!("{}{}", endpoint.address.trim_end_matches('/'), request.path);
         let mut builder = self
             .http
@@ -151,7 +156,11 @@ fn binary() -> PathBuf {
     if let Some(path) = std::env::var_os("LIBREPAPER_BIN") {
         return PathBuf::from(path);
     }
-    let name = if cfg!(windows) { "librepaper.exe" } else { "librepaper" };
+    let name = if cfg!(windows) {
+        "librepaper.exe"
+    } else {
+        "librepaper"
+    };
     std::env::current_exe()
         .ok()
         .and_then(|exe| exe.parent().map(|dir| dir.join(name)))
@@ -174,7 +183,5 @@ async fn relay(res: reqwest::Response) -> Result<Response<Vec<u8>>, String> {
         }
     }
     let body = res.bytes().await.map_err(|err| err.to_string())?;
-    builder
-        .body(body.to_vec())
-        .map_err(|err| err.to_string())
+    builder.body(body.to_vec()).map_err(|err| err.to_string())
 }
