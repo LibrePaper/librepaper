@@ -372,7 +372,8 @@ async fn committed_tracked_changes_deletes_and_applies_survive_a_lost_mcp_respon
 
     // A deterministic child key may already belong to an unrelated request.
     // The parent batch must bind its expected child digest and report unknown
-    // when that key's committed proposal has different arguments.
+    // when that key's staged proposal has different arguments. Only private
+    // staging splits into children; a published pass is one command.
     let (batch_view, batch_epoch, batch_ranges) = read_ranges(
         &deployment,
         &owner,
@@ -396,7 +397,7 @@ async fn committed_tracked_changes_deletes_and_applies_survive_a_lost_mcp_respon
     let parent_arguments = json!({
         "view_id":batch_view,
         "operation":parent_key,
-        "publish":"suggestions",
+        "publish":"private",
         "validation":"source",
         "batch":"independent",
         "patches":[
@@ -418,9 +419,9 @@ async fn committed_tracked_changes_deletes_and_applies_survive_a_lost_mcp_respon
     )
     .await;
     assert_eq!(status, StatusCode::OK);
-    let unrelated_change = recovered(&unrelated_response)["effects"][0]["id"]
+    let unrelated_candidate = recovered(&unrelated_response)["candidate_id"]
         .as_str()
-        .expect("the child-key proposal committed independently")
+        .expect("the child-key proposal was staged independently")
         .to_string();
     let (status, _) = call(
         &deployment,
@@ -444,14 +445,9 @@ async fn committed_tracked_changes_deletes_and_applies_survive_a_lost_mcp_respon
         "outcome_unknown"
     );
     assert_eq!(parent_result["items"][1]["status"], "committed");
-    assert_eq!(parent_result["effects"].as_array().unwrap().len(), 1);
-    assert!(
-        !parent_result["effects"]
-            .as_array()
-            .into_iter()
-            .flatten()
-            .any(|effect| effect["id"] == unrelated_change),
-        "the parent cannot attribute a proposal committed under a mismatched child digest"
+    assert_ne!(
+        parent_result["items"][1]["candidate_id"], unrelated_candidate,
+        "the parent cannot attribute a proposal staged under a mismatched child digest"
     );
 
     // The commenter deletes a comment it authored. Recovery must work
@@ -606,5 +602,61 @@ async fn committed_tracked_changes_deletes_and_applies_survive_a_lost_mcp_respon
     .await;
     assert_eq!(status, StatusCode::NOT_FOUND, "{revoked_lookup}");
 
+    deployment.catalog.close().await;
+}
+
+/// Two replacements closer together than the 64 characters of context each
+/// edit carries used to fail: the second one searched for context the first
+/// had already rewritten. A pass now locates every edit against one head.
+#[tokio::test]
+#[ignore = "requires LIBREPAPER_TEST_POSTGRES_URL"]
+async fn a_pass_with_nearby_replacements_applies_all_of_them() {
+    let Some(deployment) = deployment("mcp-nearby-pass").await else {
+        return;
+    };
+    let owner = bearer(
+        deployment.owner_id,
+        "owner",
+        &deployment.owner_generation,
+        &deployment.owner_link_key,
+    );
+    // "interval" and "posterior" are a few words apart in PAPER.
+    let (view, epoch, ranges) =
+        read_ranges(&deployment, &owner, &["*interval*", "posterior"]).await;
+    let (status, response) = call(
+        &deployment,
+        &owner,
+        "document_propose",
+        json!({
+            "view_id":view,
+            "operation":operation(&epoch),
+            "publish":"suggestions",
+            "validation":"source",
+            "batch":"independent",
+            "patches":[
+                {"range_id":ranges[0],"replacement":"*credible interval*"},
+                {"range_id":ranges[1],"replacement":"predictive"}
+            ]
+        }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{response}");
+    let outcome = recovered(&response);
+    assert_eq!(outcome["published"], true, "{response}");
+    let effects = outcome["effects"].as_array().unwrap();
+    assert_eq!(effects.len(), 2, "two tracked changes: {response}");
+    assert!(effects.iter().all(|effect| effect["kind"] == "change"));
+    assert_eq!(outcome["items"].as_array().unwrap().len(), 2);
+    let room = deployment
+        .server
+        .documents
+        .rooms
+        .get(&deployment.slug)
+        .await
+        .unwrap();
+    let current = room.agent_query_snapshot().await.unwrap();
+    let text = &current.texts()["paper.md"];
+    assert!(text.contains("credible interval"), "{text}");
+    assert!(text.contains("predictive"), "{text}");
     deployment.catalog.close().await;
 }

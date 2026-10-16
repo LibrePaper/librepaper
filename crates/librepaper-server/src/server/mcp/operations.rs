@@ -92,13 +92,20 @@ pub(super) fn operation_digest(name: &str, args: &Value) -> String {
     librepaper_base::canonical_json::sha256_hex(&json!({"tool": name, "arguments": args}))
 }
 
+/// Only private staging splits an independent batch into one command per
+/// patch. A published pass is one command that carries every patch, so all
+/// of its edits are located against the same head and applied together.
+fn splits_into_children(args: &Value) -> bool {
+    args["batch"] == "independent" && args["publish"].as_str() == Some("private")
+}
+
 fn independent_child_digests(
     actor: &str,
     key: &OperationKey,
     args: &Value,
     tool: &str,
 ) -> Vec<String> {
-    if tool != "document_propose" || args["batch"] != "independent" {
+    if tool != "document_propose" || !splits_into_children(args) {
         return Vec::new();
     }
     args["patches"]
@@ -454,7 +461,7 @@ impl Server {
             .await?;
         match name {
             "document_propose" => {
-                if args["batch"] == "independent" {
+                if splits_into_children(args) {
                     let mut items = Vec::new();
                     for (index, patch) in
                         args["patches"].as_array().into_iter().flatten().enumerate()
@@ -949,12 +956,6 @@ impl Server {
             result["render"] = json!(render);
         }
         if candidate.publish == "suggestions" {
-            if candidate.patches.len() != 1 {
-                return Err(Failure::new(
-                    "invalid_params",
-                    "publishing several tracked changes is independent, not atomic; use batch: independent",
-                ));
-            }
             if !who.at_least(Role::Editor) {
                 return Err(Failure::new(
                     "permission_changed",
@@ -972,7 +973,10 @@ impl Server {
             }
             // The pass is anchored fresh against the one head
             // `AgentTrackedCommand::evaluate` locks (§7 step 2); this module
-            // supplies only what the candidate actually asked for. The
+            // supplies only what the candidate actually asked for. Every
+            // patch of the pass travels in this one command, so all of them
+            // are located against the same head before any is applied, and
+            // the pass lands whole or not at all. The
             // command's request id is derived from the pass's own request
             // id, so a retried pass lands on the same label (§7.2) rather
             // than applying its edits twice.
@@ -1024,6 +1028,7 @@ impl Server {
                 room.document_id,
             )?;
             let operation = key.clone();
+            let patch_count = candidate.patches.len();
             let retained_candidate_id = candidate_id.to_owned();
             let mut cmd = librepaper_engine::log::recorded::RecordedCommand::new(
                 &mut cmd,
@@ -1034,7 +1039,7 @@ impl Server {
                         .iter()
                         .map(|id| json!({"kind":"change","id":id}))
                         .collect::<Vec<_>>();
-                    json!({"tool":"document_propose","operation":operation,"status":"committed","candidate_id":retained_candidate_id,"effects":effects,"items":[{"index":0,"status":"committed"}],"published":true})
+                    json!({"tool":"document_propose","operation":operation,"status":"committed","candidate_id":retained_candidate_id,"effects":effects,"items":(0..patch_count).map(|index| json!({"index":index,"status":"committed"})).collect::<Vec<_>>(),"published":true})
                 },
             );
             let (outcome, replay) = room
@@ -1099,6 +1104,7 @@ impl Server {
                             .map_err(|error| Failure::new("unavailable", error.to_string()))?;
                         if admission.tool == "document_propose"
                             && admission.context["batch"] == "independent"
+                            && admission.context["publish"] == "private"
                         {
                             // The parent has no atomic mutation of its own;
                             // child receipts are the only complete account of
