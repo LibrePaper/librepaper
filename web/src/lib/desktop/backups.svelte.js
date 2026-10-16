@@ -1,4 +1,4 @@
-// The account-wide backup status shared by the Reader pill and Settings.
+// The account-wide backup status shared by the Reader's Diagnostics and Settings.
 // It is polled only inside the desktop app.
 import * as client from "./client.js";
 

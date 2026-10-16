@@ -75,9 +75,9 @@ try {
   const origin = `http://127.0.0.1:${serverHttp.address().port}`;
   await b.resize(1280,900);
 
-  // The page is ready once the Run code switch or the connection pill is drawn.
+  // The page is ready once the Run code switch or the presence group is drawn.
   await b.navigate(`${origin}/docs/paper`);
-  await until('Reader is ready',()=>b.evaluate(`Boolean(document.querySelector('button[role=switch][aria-label="Run code"]') || document.querySelector('.connection-pill'))`),10000);
+  await until('Reader is ready',()=>b.evaluate(`Boolean(document.querySelector('button[role=switch][aria-label="Run code"]') || document.querySelector('nav .presence'))`),10000);
 
   // The shell's shortcut: Settings is not open yet, and the event opens it.
   // The Settings page stays mounted while closed, so only a visible one counts.
