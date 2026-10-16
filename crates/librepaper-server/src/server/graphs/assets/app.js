@@ -247,8 +247,9 @@
   // Opens the moderation tab with this account's id and provider filled in.
   function blockAccount(account) {
     document.getElementById("block-target").value = account.id;
-    if (account.provider === "github" || account.provider === "google") {
-      document.getElementById("block-provider").value = account.provider;
+    const select = document.getElementById("block-provider");
+    if (Array.from(select.options).some((option) => option.value === account.provider)) {
+      select.value = account.provider;
     }
     focusReason = true;
     if (location.hash === "#moderation") show("moderation");
@@ -616,7 +617,8 @@
 
   window.addEventListener("hashchange", () => show(tabFromHash()));
 
-  // Names the signed-in operator. On any failure the line stays empty.
+  // Names the signed-in operator and fills the provider list for blocking. On
+  // any failure both stay empty.
   async function loadOperator() {
     const operator = document.getElementById("operator");
     try {
@@ -624,6 +626,14 @@
       if (!response.ok) throw new Error("HTTP " + response.status);
       const session = await response.json();
       operator.textContent = "Signed in as " + session.login;
+      const select = document.getElementById("block-provider");
+      select.replaceChildren();
+      for (const provider of session.providers || []) {
+        const option = document.createElement("option");
+        option.value = provider.id;
+        option.textContent = provider.label;
+        select.appendChild(option);
+      }
     } catch (error) {
       operator.textContent = "";
     }

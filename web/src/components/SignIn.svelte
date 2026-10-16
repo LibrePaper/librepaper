@@ -7,7 +7,7 @@
   // The page the server shows when there is more than one way in. It is served
   // for /auth/login, so the choice is made here and every other page can link
   // to the one address without knowing what this deployment configured.
-  /** @type {{providers?: string[]}} */
+  /** @type {{providers?: {id: string, kind: string, label: string}[]}} */
   let me = $state({});
   $effect(() => {
     whoami().then((who) => (me = who ?? {}));
@@ -16,8 +16,7 @@
   // Carried through from the query rather than read off location.pathname:
   // this page is not where the person was going.
   const next = new URLSearchParams(location.search).get("next") || "/";
-  const href = (provider) => `/auth/login/${provider}?next=${encodeURIComponent(next)}`;
-  const providers = ["github", "google"];
+  const href = (provider) => `/auth/login/${provider.id}?next=${encodeURIComponent(next)}`;
 
   // Only the desktop app can switch the server it opens, so only it offers the choice.
   const inDesktop = Boolean(desktop());
@@ -48,17 +47,19 @@
       <p>We recommend you use the <a href={INSTALL_URL}>desktop app</a> to make <a href="https://librepaper.org/backups.html">automatic local backups</a> of your projects as you edit them.</p>
     </div>
     <div class="signin-providers">
-      {#each providers.filter((provider) => (me.providers ?? []).includes(provider)) as provider (provider)}
+      {#each me.providers ?? [] as provider (provider.id)}
         <a class="signin-provider" href={href(provider)}>
           <span class="signin-provider-content">
             <span class="signin-provider-icon" aria-hidden="true">
-              {#if provider === "github"}
+              {#if provider.kind === "github"}
                 <Icon name="github" size={20} />
-              {:else}
+              {:else if provider.kind === "google"}
                 <img src="/assets/google-g.svg" width="20" height="20" alt="" />
+              {:else}
+                <Icon name="key" size={20} />
               {/if}
             </span>
-            <span>Continue with {provider === "github" ? "GitHub" : "Google"}</span>
+            <span>Continue with {provider.label}</span>
           </span>
         </a>
       {/each}
