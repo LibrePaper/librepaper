@@ -90,7 +90,6 @@ impl Server {
             return write_json(403, &cross_site_refusal());
         }
         let headers = request.headers().clone();
-        let query = request.uri().query().map(str::to_string);
         let entry = match self.checked_entry(slug).await {
             Ok(Some(entry)) => entry,
             Ok(None) => return write_json(404, &json!({"error":"not found"})),
@@ -101,9 +100,7 @@ impl Server {
         // is present on the same request.
         let mut bounded = headers.clone();
         bounded.insert(AUTOMATION_HEADER, HeaderValue::from_static("1"));
-        let who = self
-            .viewer(&entry, &bounded, arrival, query.as_deref())
-            .await;
+        let who = self.viewer(&entry, &bounded, arrival, None).await;
         if let Err(response) = self.check_readable(&entry, &who) {
             return response;
         }
@@ -128,9 +125,7 @@ impl Server {
             Ok(None) => return write_json(404, &json!({"error":"not found"})),
             Err(response) => return response,
         };
-        let current_who = self
-            .viewer(&current_entry, &bounded, arrival, query.as_deref())
-            .await;
+        let current_who = self.viewer(&current_entry, &bounded, arrival, None).await;
         if current_who.auth_failed || !self.may_read(&current_entry, &current_who) {
             return write_json(403, &json!({"error":"comment access changed"}));
         }

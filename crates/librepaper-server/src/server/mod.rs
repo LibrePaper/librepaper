@@ -1198,10 +1198,10 @@ impl Server {
     }
 
     /// The digest of the link key a request carried, or "" for none. A browser
-    /// presents it as a header on `fetch` and as a query parameter on the
-    /// socket, which is the one place it cannot set a header. Only the digest
-    /// is ever kept or compared, so the key itself lives in one browser and
-    /// nowhere else.
+    /// presents it as a header on `fetch`. The query form exists for the socket
+    /// handshake alone, the one request a browser cannot put a header on, so
+    /// every HTTP handler passes `None` here and a key in an HTTP query string
+    /// names no link. Only the digest is ever kept or compared.
     pub fn link_hash(&self, headers: &HeaderMap, query: Option<&str>) -> String {
         let mut key = header_of(headers, LINK_HEADER).unwrap_or_default();
         if key.is_empty() {

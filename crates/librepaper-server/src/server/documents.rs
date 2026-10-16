@@ -189,13 +189,7 @@ impl Server {
         };
         let headers = request.headers().clone();
         let query = request.uri().query().map(str::to_string);
-        let who = self.viewer_as(
-            &entry,
-            context.identity(),
-            &headers,
-            arrival,
-            query.as_deref(),
-        );
+        let who = self.viewer_as(&entry, context.identity(), &headers, arrival, None);
         if let Err(response) = self.check_readable(&entry, &who) {
             return response;
         }
@@ -272,13 +266,7 @@ impl Server {
         };
         let headers = request.headers().clone();
         let query = request.uri().query().map(str::to_string);
-        let who = self.viewer_as(
-            &entry,
-            context.identity(),
-            &headers,
-            arrival,
-            query.as_deref(),
-        );
+        let who = self.viewer_as(&entry, context.identity(), &headers, arrival, None);
         if let Err(response) = self.check_readable(&entry, &who) {
             return response;
         }
@@ -314,9 +302,7 @@ impl Server {
                     Ok(None) => return write_json(404, &json!({"error": "not found"})),
                     Err(response) => return response,
                 };
-                let current_who = self
-                    .viewer(&current_entry, &headers, arrival, query.as_deref())
-                    .await;
+                let current_who = self.viewer(&current_entry, &headers, arrival, None).await;
                 if current_who.auth_failed {
                     return write_json(
                         401,
@@ -936,7 +922,7 @@ impl Server {
         if !self.valid_slug(slug) {
             return plain(400, "bad slug");
         }
-        let (entry, who) = match self.entry_viewer_in(slug, context, headers, query).await {
+        let (entry, who) = match self.entry_viewer_in(slug, context, headers, None).await {
             Ok(result) => result,
             Err(response) => return response,
         };
@@ -1000,7 +986,6 @@ impl Server {
         headers: &HeaderMap,
         context: &RequestContext,
         slug: &str,
-        query: Option<&str>,
     ) -> Reply {
         let arrival = &context.arrival;
         if !self.valid_slug(slug) {
@@ -1011,7 +996,7 @@ impl Server {
             Ok(None) => return write_json(404, &json!({"error": "not found"})),
             Err(response) => return response,
         };
-        let who = self.viewer_as(&entry, context.identity(), headers, arrival, query);
+        let who = self.viewer_as(&entry, context.identity(), headers, arrival, None);
         if self.needs_sign_in(&entry, &who) {
             return sign_in_to_read();
         }
@@ -1050,7 +1035,6 @@ impl Server {
         headers: &HeaderMap,
         context: &RequestContext,
         slug: &str,
-        query: Option<&str>,
     ) -> Reply {
         let arrival = &context.arrival;
         if !self.valid_slug(slug) {
@@ -1064,7 +1048,7 @@ impl Server {
             Ok(None) => return write_json(404, &json!({"error": "not found"})),
             Err(response) => return response,
         };
-        let who = self.viewer_as(&entry, context.identity(), headers, arrival, query);
+        let who = self.viewer_as(&entry, context.identity(), headers, arrival, None);
         if self.needs_sign_in(&entry, &who) {
             return sign_in_to_read();
         }
@@ -1124,7 +1108,7 @@ impl Server {
         headers: &HeaderMap,
         context: &RequestContext,
         slug: &str,
-        query: Option<&str>,
+        _query: Option<&str>,
     ) -> Reply {
         let arrival = &context.arrival;
         if !self.valid_slug(slug) {
@@ -1135,7 +1119,7 @@ impl Server {
             Ok(None) => return write_json(404, &json!({"error": "not found"})),
             Err(response) => return response,
         };
-        let who = self.viewer_as(&entry, context.identity(), headers, arrival, query);
+        let who = self.viewer_as(&entry, context.identity(), headers, arrival, None);
         if self.needs_sign_in(&entry, &who) {
             return sign_in_to_read();
         }
@@ -1379,7 +1363,6 @@ impl Server {
         if !self.valid_slug(slug) {
             return write_json(400, &json!({"error": "bad slug"}));
         }
-        let query = request.uri().query().map(str::to_string);
         // The name the copy is to have. The client asks for one before it
         // calls, because a project named for what it is beats a shelf of
         // "(copy)" rows; an empty or absent body still forks, so the old
@@ -1421,9 +1404,7 @@ impl Server {
         };
         // Read it as whoever is asking: a private project nobody shared is
         // not forkable, and answers as missing rather than as refused.
-        let viewer = self
-            .viewer(&entry, &headers, arrival, query.as_deref())
-            .await;
+        let viewer = self.viewer(&entry, &headers, arrival, None).await;
         if self.needs_sign_in(&entry, &viewer) {
             return sign_in_to_read();
         }
@@ -1870,11 +1851,9 @@ impl Server {
         headers: &HeaderMap,
         arrival: &Arrival,
         slug: &str,
-        query: Option<&str>,
         on: bool,
     ) -> Reply {
-        self.handle_mark(headers, arrival, slug, query, Some(on))
-            .await
+        self.handle_mark(headers, arrival, slug, Some(on)).await
     }
 
     /// Hide a shared document from this account's shared-project view, or
@@ -1884,7 +1863,6 @@ impl Server {
         headers: &HeaderMap,
         arrival: &Arrival,
         slug: &str,
-        query: Option<&str>,
         hidden: bool,
     ) -> Reply {
         if cross_site_refused(headers, arrival) {
@@ -1898,7 +1876,7 @@ impl Server {
             Ok(None) => return write_json(404, &json!({"error": "not found"})),
             Err(response) => return response,
         };
-        let who = self.viewer(&entry, headers, arrival, query).await;
+        let who = self.viewer(&entry, headers, arrival, None).await;
         if self.needs_sign_in(&entry, &who) {
             return sign_in_to_read();
         }
@@ -1929,9 +1907,8 @@ impl Server {
         headers: &HeaderMap,
         arrival: &Arrival,
         slug: &str,
-        query: Option<&str>,
     ) -> Reply {
-        self.handle_mark(headers, arrival, slug, query, None).await
+        self.handle_mark(headers, arrival, slug, None).await
     }
 
     async fn handle_mark(
@@ -1939,7 +1916,6 @@ impl Server {
         headers: &HeaderMap,
         arrival: &Arrival,
         slug: &str,
-        query: Option<&str>,
         favorite: Option<bool>,
     ) -> Reply {
         if cross_site_refused(headers, arrival) {
@@ -1953,7 +1929,7 @@ impl Server {
             Ok(None) => return write_json(404, &json!({"error": "not found"})),
             Err(response) => return response,
         };
-        let who = self.viewer(&entry, headers, arrival, query).await;
+        let who = self.viewer(&entry, headers, arrival, None).await;
         if self.needs_sign_in(&entry, &who) {
             return sign_in_to_read();
         }
