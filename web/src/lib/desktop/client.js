@@ -96,6 +96,22 @@ export function desktop() {
   return globalThis.window?.__LIBREPAPER_DESKTOP__ ?? null;
 }
 
+// Asks the desktop shell itself, not the local service, to do something only
+// the shell can: the clipboard, the log folder, which server the app opens.
+export async function shellAction(name, body) {
+  const shell = desktop();
+  if (!shell) throw named("DesktopOnly", DESKTOP_ONLY_MESSAGE);
+  const response = await fetch(`${shell.base}shell/${name}`, {
+    method: "POST",
+    headers: body === undefined ? undefined : { "content-type": "application/json" },
+    body: body === undefined ? undefined : JSON.stringify(body),
+  });
+  if (response.ok) return;
+  let message = "";
+  try { message = (await response.json())?.error || ""; } catch { /* no body */ }
+  throw new Error(message || `The desktop app could not do that (${response.status}).`);
+}
+
 // -------------------------------------------------------------- storage
 
 function store() {

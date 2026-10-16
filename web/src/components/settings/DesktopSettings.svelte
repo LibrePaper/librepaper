@@ -1,7 +1,7 @@
 <script>
   import SettingRow from "./SettingRow.svelte";
   import DesktopOnly from "../DesktopOnly.svelte";
-  import { capabilities } from "../../lib/desktop/client.js";
+  import { capabilities, shellAction } from "../../lib/desktop/client.js";
 
   let { view } = $props();
   const active = (status) => !["done", "complete", "completed", "succeeded", "failed", "error", "cancelled", "canceled", "stopped", "interrupted", "expired", "denied"].includes(String(status || "").toLowerCase());
@@ -13,6 +13,14 @@
     } catch (error) {
       report = error?.message || "The setup check could not reach the desktop app.";
     }
+  }
+
+  let shellStatus = $state("");
+  let shellFailed = $state(false);
+  async function runShell(name, done) {
+    shellStatus = ""; shellFailed = false;
+    try { await shellAction(name); shellStatus = done; }
+    catch (error) { shellFailed = true; shellStatus = error?.message || "The desktop app could not do that."; }
   }
 </script>
 
@@ -51,6 +59,17 @@
       <button type="button" class="btn btn-sm lp-control-tonal-brand" onclick={() => void checkSetup()}>Check</button>
     </SettingRow>
     {#if report}<pre class="setting-log" role="status">{report}</pre>{/if}
+  </section>
+
+  <section id="desktop-diagnostics" class="settings-subsection" aria-labelledby="desktop-diagnostics-heading">
+    <div class="settings-section-title"><h4 class="settings-subhead" id="desktop-diagnostics-heading">Diagnostics</h4></div>
+    <SettingRow title="Copy diagnostics" description="Copies the app version, your system, the tools found and the recent log, to paste into a bug report. Nothing is sent anywhere.">
+      <button type="button" class="btn btn-sm lp-control-tonal-brand" onclick={() => void runShell("diagnostics", "Diagnostics copied.")}>Copy</button>
+    </SettingRow>
+    <SettingRow title="Log folder" description="Open the folder that holds the desktop app's log.">
+      <button type="button" class="btn btn-sm lp-control-tonal-brand" onclick={() => void runShell("open-logs", "")}>Open</button>
+    </SettingRow>
+    {#if shellStatus}<p class="setting-description" class:desktop-error={shellFailed} role="status">{shellStatus}</p>{/if}
   </section>
 
   <section id="desktop-activity" class="settings-subsection" aria-labelledby="desktop-activity-heading">
