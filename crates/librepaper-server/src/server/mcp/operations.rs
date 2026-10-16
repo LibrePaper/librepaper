@@ -1403,6 +1403,7 @@ mod digest_tests {
         let first = json!({
             "operation": key.clone(),
             "batch": "independent",
+            "publish": "private",
             "patches": [{"range_id":"r1","replacement":"first"}, {"range_id":"r2","replacement":"second"}],
         });
         let mut changed = first.clone();
@@ -1411,6 +1412,12 @@ mod digest_tests {
         let changed_digests =
             independent_child_digests("actor", &key, &changed, "document_propose");
         assert_eq!(original_digests.len(), 2);
+        let mut published = first.clone();
+        published["publish"] = json!("suggestions");
+        assert!(
+            independent_child_digests("actor", &key, &published, "document_propose").is_empty(),
+            "a published pass is one command, not children"
+        );
         assert_eq!(original_digests[0], changed_digests[0]);
         assert_ne!(original_digests[1], changed_digests[1]);
     }
