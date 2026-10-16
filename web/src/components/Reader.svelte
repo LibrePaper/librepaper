@@ -2557,11 +2557,13 @@
   // does, reached without first switching layouts and opening the panel; the
   // rest open the panels a person looks for under File, and its last lines
   // are the two commands that are about the workspace rather than a document.
+  // In the desktop app only, its last item quits the app.
   // The Files panel is mounted on its first visit and draws the name field it
   // focuses, so the panel is opened and the DOM given a turn before the panel
   // is asked.
   async function chooseFileCommand(value) {
     if (value === "settings") return openSettings("editor");
+    if (value === "quit") return void localQuarto.shellAction("quit").catch((error) => say(error.message || "The desktop app could not quit.", { kind: "problem", id: "reader:quit" }));
     if (value === "project-folder") return void (projectFolderOpen = true);
     if (value === "compile") return compileNow();
     if (value === "offline") return makeAvailableOffline();
@@ -3496,6 +3498,10 @@
     <Menu.Item value="project-folder" class="menuitem">Project folder…</Menu.Item>
   {/if}
   <Menu.Item value="settings" class="menuitem"><span class="menuitem-label">Settings…</span>{#if MENU_KEYS.settings}<span class="menuitem-keys">{MENU_KEYS.settings}</span>{/if}</Menu.Item>
+  {#if hasDesktop}
+    <hr class="hr my-1" />
+    <Menu.Item value="quit" class="menuitem">Quit</Menu.Item>
+  {/if}
 {/snippet}
 
 {#snippet layoutItems()}
