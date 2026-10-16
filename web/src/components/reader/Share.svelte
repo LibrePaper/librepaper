@@ -28,8 +28,8 @@
   let confirming = $state(null);
 
   const ROLES = [
-    { id: "reader", label: "Read", says: "Anyone with this link can read the current source and see ongoing changes." },
-    { id: "commenter", label: "Comment", says: "Anyone with this link can read the current source, see ongoing changes, and comment." },
+    { id: "reader", label: "Read", says: "Signed-in users with this link can read the current source and see ongoing changes." },
+    { id: "commenter", label: "Comment", says: "Signed-in users with this link can read the current source, see ongoing changes, and comment." },
     { id: "editor", label: "Edit", says: "Signed-in users with this link can edit." },
   ];
   const EXPIRIES = [["7d", "7 days"], ["30d", "30 days"], ["180d", "6 months"], ["never", "Never"]];
@@ -44,7 +44,6 @@
   // one minted before the catalogue kept the key, or under a session key that
   // has since been replaced -- has a row, works, and has no URL to show.
   const live = (link) => Boolean(link) && !link.expired;
-  const needsSignin = (role) => (role === "editor" && sharing?.edit_needs_signin) || (role === "commenter" && sharing?.comment_needs_signin);
   // What a link's row says about itself once it exists: when it stops working,
   // and its budget only where one was chosen.
   const metaOf = (link) => [link.until ? `Expires ${dateOf(link.until)}` : "No expiry", link.budget == null ? "" : `${link.budget} comments/hour`].filter(Boolean).join(" · ");
@@ -186,7 +185,7 @@
           {@const link = linkOf(role.id)}
           <section class="share-section" aria-labelledby="share-{role.id}-heading">
             <h4 id="share-{role.id}-heading" class="panel-section-title">{role.label}</h4>
-            <p class="panel-meta">{role.says}{#if needsSignin(role.id)}<br />Sign-in required.{/if}</p>
+            <p class="panel-meta">{role.says}</p>
             {#if editing?.role === role.id}
               {@render form(role)}
             {:else if live(link)}
