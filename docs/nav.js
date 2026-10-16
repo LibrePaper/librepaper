@@ -26,7 +26,7 @@ export const nav = [
   },
   { path: "collaborate", label: "Collaborate" },
   { path: "agents", label: "Agents" },
-  { path: "cli", label: "CLI" },
+  { path: "cli", label: "Command line" },
   {
     label: "Self-hosting",
     pages: [
