@@ -421,7 +421,7 @@
   function bibliographyRequest() {
     const doc = boundDoc();
     const tree = doc ? treeForDoc(doc) : { main: "", texts: {} };
-    const id = showing || doc?.getMap("meta")?.get("main") || "";
+    const id = showing || (doc ? projectDirectory(doc, rules ?? null).mainId : "");
     const main = pathOfDoc(doc, id) || tree.main || "";
     const activeFormat = formatOf(main);
     return { main, format: activeFormat, source: getTextFromDoc(id)?.toString?.() ?? tree.texts?.[main] ?? "", texts: tree.texts || {} };

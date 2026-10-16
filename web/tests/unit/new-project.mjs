@@ -18,16 +18,16 @@ const names = (list) => list.map((each) => each.name);
   ];
   const rows = [{ slug: "lab-abc", title: "Lab report", source_format: "markdown", url: "/d/lab" }];
   const all = catalog(builtIn, rows);
-  assert.deepEqual(ids(all), ["letter", "cv", "lab-abc"], "blank is left out, built-ins keep their order, custom rows come last");
-  assert.deepEqual(all[0], {
+  assert.deepEqual(ids(all), ["blank", "letter", "cv", "lab-abc"], "built-ins keep their order, blank included, custom rows come last");
+  assert.deepEqual(all[1], {
     id: "letter", name: "Letter", description: "A formal letter.", keywords: ["reference"],
     formats: ["typst", "latex"], custom: false, url: "",
   });
-  assert.deepEqual(all[2], {
+  assert.deepEqual(all[3], {
     id: "lab-abc", name: "Lab report", description: "", keywords: [],
     formats: ["markdown"], custom: true, url: "/d/lab",
   }, "a custom row maps to a template with its title, source format and link");
-  assert.deepEqual(ids(catalog(builtIn)), ["letter", "cv"], "custom rows are optional");
+  assert.deepEqual(ids(catalog(builtIn)), ["blank", "letter", "cv"], "custom rows are optional");
 }
 
 // ---- browse ----

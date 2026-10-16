@@ -17,6 +17,10 @@ pub(super) struct Upload {
     /// but the main one, by path. Texts are UTF-8 and go into the shared
     /// document; the rest are figures and go to the store under their digest.
     pub(super) files: Vec<(String, Vec<u8>)>,
+    /// A multipart upload that carried a title and no files: a new project
+    /// with nothing in it. It never replaces a project, since there is no
+    /// directory it could claim to be.
+    pub(super) empty: bool,
 }
 
 #[allow(clippy::result_large_err)] // the invalid-source response is an HTTP reply
@@ -448,7 +452,7 @@ impl Server {
                 );
             }
         };
-        let mine = existing.as_ref().is_some_and(|e| e.owned_by(&who.id));
+        let mine = !parsed.empty && existing.as_ref().is_some_and(|e| e.owned_by(&who.id));
         let key = if mine {
             base.clone()
         } else {
@@ -473,7 +477,9 @@ impl Server {
         // be the whole document -- only `put_directory_as_actor`'s
         // whole-project replacement (§7) does, and it always takes the
         // complete file set.
-        let (main, mut files) = if !parsed.main.is_empty() {
+        let (main, mut files) = if parsed.empty {
+            (String::new(), Vec::new())
+        } else if !parsed.main.is_empty() {
             (parsed.main.clone(), parsed.files.clone())
         } else if let Some(existing) = existing.as_ref().filter(|_| mine) {
             let main = if !parsed.source_format.is_empty()
@@ -613,6 +619,7 @@ impl Server {
         let (mut source, mut source_format) = (String::new(), String::new());
         let mut requested_engine: Option<String> = None;
         let mut requested_draft_format: Option<String> = None;
+        let mut empty = false;
 
         if content_type.contains("multipart/form-data") {
             // The middleware declares the content length, and the body is
@@ -666,6 +673,7 @@ impl Server {
                     _ => {}
                 }
             }
+            empty = sent.is_empty() && main.is_empty();
             // Which of them is the document, and what the rest are. A single
             // part is what this route has always taken and keeps its meaning;
             // several is a directory, and one of them has to be named.
@@ -775,6 +783,9 @@ impl Server {
             source = html;
             source_format = "html".to_string();
         }
+        if empty {
+            source_format = "markdown".to_string();
+        }
         if !self.config.storable_source(&source_format) {
             return Err(write_json(
                 400,
@@ -807,7 +818,7 @@ impl Server {
         }
 
         let title = title.trim().to_string();
-        if title.is_empty() || source.trim().is_empty() {
+        if title.is_empty() || (source.trim().is_empty() && !empty) {
             return Err(write_json(
                 400,
                 &json!({"error": "title and a document are required"}),
@@ -879,6 +890,7 @@ impl Server {
                 .into_iter()
                 .map(|(path, _, bytes)| (path, bytes))
                 .collect(),
+            empty,
         })
     }
 
@@ -1561,6 +1573,7 @@ impl Server {
             source_format: entry.source_format.clone(),
             main: entry.main.clone(),
             files: rest.clone(),
+            empty: false,
         }) {
             if let Some(admission) = upload_admission {
                 let _ = self.store.catalog.cancel_upload_admission(admission).await;

@@ -986,7 +986,7 @@
           <span class="starters-say">Start something new</span>
           {#each FORMATS as choice}
             <button type="button" class="btn btn-sm lp-control-tonal-brand"
-                    onclick={() => openNew("blank", { format: choice.id })}>{choice.name}</button>
+                    onclick={() => openNew("template", { template: "blank", format: choice.id })}>{choice.name}</button>
           {/each}
         </div>
       {/if}

@@ -123,10 +123,14 @@ pub fn encode(
     limits: ArchiveLimits,
 ) -> Result<EncodedArchive, ArchiveError> {
     validate_format(&archive.source_format)?;
-    validate_path(&archive.main_path)?;
-    if archive.files.is_empty() || archive.files.len() > limits.files {
+    // A project with no files has no main file either; a project with files
+    // must name one of them.
+    if !archive.files.is_empty() || !archive.main_path.is_empty() {
+        validate_path(&archive.main_path)?;
+    }
+    if archive.files.len() > limits.files {
         return Err(ArchiveError::Invalid(format!(
-            "source archive has {} files; expected 1..={}",
+            "source archive has {} files; expected 0..={}",
             archive.files.len(),
             limits.files
         )));
@@ -195,9 +199,10 @@ pub fn encode(
             limits.source_bytes
         )));
     }
-    if !manifest_files
-        .iter()
-        .any(|file| file.path() == archive.main_path)
+    if !(manifest_files.is_empty() && archive.main_path.is_empty())
+        && !manifest_files
+            .iter()
+            .any(|file| file.path() == archive.main_path)
     {
         return Err(ArchiveError::Invalid(
             "main path is absent from source archive".into(),
@@ -303,8 +308,10 @@ pub fn decode(bytes: &[u8], limits: ArchiveLimits) -> Result<SourceArchive, Arch
         )));
     }
     validate_format(&manifest.source_format)?;
-    validate_path(&manifest.main_path)?;
-    if manifest.files.is_empty() || manifest.files.len() > limits.files {
+    if !manifest.files.is_empty() || !manifest.main_path.is_empty() {
+        validate_path(&manifest.main_path)?;
+    }
+    if manifest.files.len() > limits.files {
         return Err(ArchiveError::Invalid(
             "source archive file count is outside limits".into(),
         ));
@@ -366,7 +373,9 @@ pub fn decode(bytes: &[u8], limits: ArchiveLimits) -> Result<SourceArchive, Arch
     if inline_total > limits.source_bytes as u64 {
         return Err(ArchiveError::Invalid("inline source exceeds limit".into()));
     }
-    if !files.iter().any(|file| file.path() == manifest.main_path) {
+    if !(files.is_empty() && manifest.main_path.is_empty())
+        && !files.iter().any(|file| file.path() == manifest.main_path)
+    {
         return Err(ArchiveError::Invalid(
             "main path is absent from source archive".into(),
         ));
@@ -508,6 +517,25 @@ mod tests {
                 .files,
             fixture().files
         );
+    }
+
+    #[test]
+    fn an_empty_project_round_trips() {
+        let archive = SourceArchive {
+            source_format: "markdown".into(),
+            main_path: String::new(),
+            files: Vec::new(),
+        };
+        let encoded = encode(archive, ArchiveLimits::default()).unwrap();
+        let decoded = decode(&encoded.bytes, ArchiveLimits::default()).unwrap();
+        assert!(decoded.files.is_empty());
+        assert!(decoded.main_path.is_empty());
+        let named_but_absent = SourceArchive {
+            source_format: "markdown".into(),
+            main_path: "paper.md".into(),
+            files: Vec::new(),
+        };
+        assert!(encode(named_but_absent, ArchiveLimits::default()).is_err());
     }
 
     #[test]
