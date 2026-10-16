@@ -37,10 +37,7 @@ pub(super) async fn issue(
         );
     }
 
-    let (entry, viewer) = match server
-        .entry_viewer_in(&slug, &context, headers, request.uri().query())
-        .await
-    {
+    let (entry, viewer) = match server.entry_viewer_in(&slug, &context, headers, None).await {
         Ok(value) => value,
         Err(response) => return response,
     };
@@ -51,7 +48,7 @@ pub(super) async fn issue(
     // A grant must name one live link capability. A bare owner page may read
     // the document, but cannot delegate that wider account authority to an
     // automation process.
-    let link_hash = server.link_hash(headers, request.uri().query());
+    let link_hash = server.link_hash(headers, None);
     if link_hash.is_empty()
         || entry
             .link_role(&link_hash, librepaper_base::util::now_unix())

@@ -179,7 +179,7 @@ async fn document_detail(
         return server.not_found(request.headers());
     }
     server
-        .handle_document_detail(request.headers(), &ctx, request.uri().query(), &slug)
+        .handle_document_detail(request.headers(), &ctx, &slug)
         .await
 }
 
@@ -233,9 +233,7 @@ async fn document_project(
     Path(slug): Path<String>,
     request: Request<Body>,
 ) -> Reply {
-    server
-        .handle_project(request.headers(), &ctx, &slug, request.uri().query())
-        .await
+    server.handle_project(request.headers(), &ctx, &slug).await
 }
 
 async fn history(
@@ -382,9 +380,8 @@ async fn favorite(
     request: Request<Body>,
 ) -> Reply {
     let on = request.method() != Method::DELETE;
-    let query = request.uri().query().map(str::to_string);
     server
-        .handle_favorite(request.headers(), &ctx.arrival, &slug, query.as_deref(), on)
+        .handle_favorite(request.headers(), &ctx.arrival, &slug, on)
         .await
 }
 
@@ -395,15 +392,8 @@ async fn shared_hidden(
     request: Request<Body>,
 ) -> Reply {
     let hidden = request.method() != Method::POST;
-    let query = request.uri().query().map(str::to_string);
     server
-        .handle_shared_hidden(
-            request.headers(),
-            &ctx.arrival,
-            &slug,
-            query.as_deref(),
-            hidden,
-        )
+        .handle_shared_hidden(request.headers(), &ctx.arrival, &slug, hidden)
         .await
 }
 
@@ -413,9 +403,8 @@ async fn opened(
     Path(slug): Path<String>,
     request: Request<Body>,
 ) -> Reply {
-    let query = request.uri().query().map(str::to_string);
     server
-        .handle_opened(request.headers(), &ctx.arrival, &slug, query.as_deref())
+        .handle_opened(request.headers(), &ctx.arrival, &slug)
         .await
 }
 
@@ -522,9 +511,7 @@ async fn source(
     Path(slug): Path<String>,
     request: Request<Body>,
 ) -> Reply {
-    server
-        .handle_source(request.headers(), &ctx, &slug, request.uri().query())
-        .await
+    server.handle_source(request.headers(), &ctx, &slug).await
 }
 
 async fn snapshot(
@@ -533,9 +520,7 @@ async fn snapshot(
     Path(slug): Path<String>,
     request: Request<Body>,
 ) -> Reply {
-    server
-        .handle_snapshot(request.headers(), &ctx, &slug, request.uri().query())
-        .await
+    server.handle_snapshot(request.headers(), &ctx, &slug).await
 }
 
 async fn comments(
@@ -1484,7 +1469,6 @@ impl Server {
         &self,
         headers: &HeaderMap,
         context: &RequestContext,
-        query: Option<&str>,
         slug: &str,
     ) -> Reply {
         let arrival = &context.arrival;
@@ -1493,7 +1477,7 @@ impl Server {
             Ok(None) => return write_json(404, &json!({"error": "not found"})),
             Err(response) => return response,
         };
-        let who = self.viewer_as(&entry, context.identity(), headers, arrival, query);
+        let who = self.viewer_as(&entry, context.identity(), headers, arrival, None);
         if self.needs_sign_in(&entry, &who) {
             return sign_in_to_read();
         }

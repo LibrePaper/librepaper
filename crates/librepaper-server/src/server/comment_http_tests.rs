@@ -707,7 +707,7 @@ async fn snapshot_comment_storage_errors_hide_database_context() {
     };
     let response = deployment
         .server
-        .handle_snapshot(request.headers(), &context, &deployment.slug, None)
+        .handle_snapshot(request.headers(), &context, &deployment.slug)
         .await;
     sqlx::query("ALTER TABLE annotations_hidden_for_snapshot_test RENAME TO annotations")
         .execute(deployment.catalog.pool())
@@ -841,7 +841,7 @@ async fn snapshot_exposes_the_shared_cli_project_snapshot_wire_fields() {
 
     let response = deployment
         .server
-        .handle_snapshot(request.headers(), &context, &deployment.slug, None)
+        .handle_snapshot(request.headers(), &context, &deployment.slug)
         .await;
     assert_eq!(response.status(), axum::http::StatusCode::OK);
     let bytes = axum::body::to_bytes(response.into_body(), 1024 * 1024)

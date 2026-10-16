@@ -174,7 +174,10 @@ impl Server {
             // The one door. The shell links here rather than to a provider,
             // so no page has to know which providers this deployment has.
             "/auth/login" => {
-                let next = query.get("next").cloned().unwrap_or_default();
+                // The return path is cleaned here, before it rides in the state
+                // cookie or a redirect, so a link key that reached a URL by
+                // mistake goes no further.
+                let next = local_path(&query.get("next").cloned().unwrap_or_default());
                 // Somebody already signed in, for example from the marketing
                 // site's Sign in button, goes straight to where they were headed.
                 if let Ok(who) = self.authenticated_identity(headers, arrival).await {
@@ -206,7 +209,7 @@ impl Server {
                 // The next URL is arbitrary caller-supplied text, so it is
                 // URL-encoded before it rides beside the state token in one
                 // cookie value.
-                let next = query.get("next").cloned().unwrap_or_default();
+                let next = local_path(&query.get("next").cloned().unwrap_or_default());
                 // The PKCE verifier rides in the state cookie as the third
                 // field, as it does for Google.
                 let verifier = pkce_verifier();
@@ -227,7 +230,7 @@ impl Server {
                     return Some(plain(404, "this deployment has no Google sign-in"));
                 }
                 let state = random_token();
-                let next = query.get("next").cloned().unwrap_or_default();
+                let next = local_path(&query.get("next").cloned().unwrap_or_default());
                 // The PKCE verifier rides in the state cookie beside the state
                 // token and the next path: the cookie is HttpOnly and __Host-
                 // on HTTPS, so the verifier is exactly as private as the state
