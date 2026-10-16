@@ -11,7 +11,7 @@ Share with links, not people. The owner mints a read, comment or edit link in th
 | editor | edit the source; delete any comment |
 | owner | share, transfer, destroy |
 
-- A read link works for anyone holding it. Edit links need sign-in. Comment links need sign-in unless the deployment allows anonymous comments.
+- Every link needs a sign-in. A reader, commenter or editor signs in with GitHub or Google the first time they open the link, and the browser keeps the key after that.
 - The key is in the link's fragment, so it reaches no server log and no `Referer` header. Replacing a link kills the old key.
 - Moving a file does not rewrite the references inside source files.
 - Copying a checkpoint link keeps your share key. Restore records the current version before applying the earlier one.

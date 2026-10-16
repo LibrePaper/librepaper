@@ -235,8 +235,7 @@ window.sharingSetup = async () => {
   let linkNumber = 0;
   let snapshot = { slug: 'paper', can_share: true, url: '/docs/paper',
     owner: { name: 'Alice', provider: 'github' },
-    links: { reader: null, commenter: null, editor: null },
-    edit_needs_signin: false, comment_needs_signin: false };
+    links: { reader: null, commenter: null, editor: null } };
   window.expireShareLink = (role) => { snapshot.links[role].expired = true; };
   window.fetch = async (_url, options = {}) => {
     if (options.method !== 'POST') return new Response(JSON.stringify(snapshot));

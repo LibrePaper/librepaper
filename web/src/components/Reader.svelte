@@ -107,15 +107,13 @@
   import PendingAnnotations from "./reader/PendingAnnotations.svelte";
 
   const SLUG = location.pathname.split("/").pop();
-  // Preserve the whole shared URL before `takeKeyFromFragment` removes its
-  // secret fragment from the address bar. The OAuth round trip returns to the
-  // same document, and the key remains available in this browser's storage.
-  const DOCUMENT_URL = location.pathname + location.search + location.hash;
 
   // The key a reader arrived with, taken out of the fragment before anything
   // asks the server a question. A fragment never leaves the browser, so this
   // is the one part of the URL a link key can safely travel in; from here it
   // is kept under the slug and presented on every request for this document.
+  // The sign-in return path carries only the path and query: the key stays in
+  // this browser's storage and never travels in a URL the server sees.
   const KEY = takeKeyFromFragment(SLUG);
 
   let { initialSettings = "" } = $props();
@@ -4297,7 +4295,7 @@
           Readers, commenters, and editors need to sign in before they can open a shared document.
         </p>
         <div class="notyet-actions">
-          <a class="btn btn-sm lp-control-brand" href={signInHref(DOCUMENT_URL)}>Sign in</a>
+          <a class="btn btn-sm lp-control-brand" href={signInHref()}>Sign in</a>
         </div>
       </div>
     </section>

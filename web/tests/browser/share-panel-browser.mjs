@@ -64,7 +64,6 @@ const expiryOf = (until) => {
 };
 const answer = () => ({
   slug: "paper", url: "/docs/paper", can_share: true,
-  edit_needs_signin: true, comment_needs_signin: true,
   links: Object.fromEntries(Object.entries(state).map(([role, link]) => [role, link
     ? { key: link.key, url: link.key ? "/docs/paper#k=" + link.key : "",
         since: link.since, until: link.until,
@@ -131,7 +130,7 @@ window.sharePanelCheck = async () => {
   /* ------------------------------------- a permission is what it is, not a form */
 
   check(sections().length === 3, "read, comment and edit");
-  check(/^Read Anyone with this link can read the current source and see ongoing changes\\. Expires Mar 1[67], 2027 This link was made before its URL could be kept\\. Replace it to get a new URL\\.$/.test(seen(0)),
+  check(/^Read Signed-in users with this link can read the current source and see ongoing changes\\. Expires Mar 1[67], 2027 This link was made before its URL could be kept\\. Replace it to get a new URL\\.$/.test(seen(0)),
     "a link that exists is its expiry and a row of icons that spell nothing: " + seen(0));
   check(!seen(0).includes("•••"), "nothing is behind an overflow any more: " + seen(0));
   // No copy among them: this one link's key predates the column that would
@@ -143,9 +142,9 @@ window.sharePanelCheck = async () => {
       + [...sections()[0].querySelectorAll(".share-icon")].map((node) => node.getAttribute("aria-label")).join("|"));
   check([...sections()[0].querySelectorAll(".share-icon svg")].length === 3,
     "and each of them is drawn rather than written");
-  check(seen(1).startsWith("Comment Anyone with this link can read the current source, see ongoing changes, and comment. Sign-in required."),
+  check(seen(1).startsWith("Comment Signed-in users with this link can read the current source, see ongoing changes, and comment."),
     "each says what the link it hands out lets somebody do: " + seen(1));
-  check(seen(2) === "Edit Signed-in users with this link can edit. Sign-in required. Create link",
+  check(seen(2) === "Edit Signed-in users with this link can edit. Create link",
     "and a role with no link offers to open one rather than saying it has none: " + seen(2));
   check(!text().includes("Unlabelled"), "a link without a memo says nothing about labels");
   check(!document.querySelector(".share-section input, .share-section select"),
