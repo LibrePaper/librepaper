@@ -524,12 +524,17 @@ function buildResult({ job, attempts, startedAt, ok, pdf = null, synctex = null,
 }
 
 /// When the bundle index says a requested `.sty`/`.cls` is absent from the
-/// browser mirror, name it instead of the generic compile failure.
-async function mirrorAbsentMessage(mirrorAbsent) {
+/// browser mirror, name it instead of the generic compile failure. The
+/// suggestion, when the worker found a close name, is for the first file only.
+function mirrorAbsentMessage(mirrorAbsent, suggestions = {}) {
   const names = [...new Set(Array.isArray(mirrorAbsent) ? mirrorAbsent : [])];
   if (!names.length) return null;
-  const named = names.length === 1 ? `"${names[0]}"` : `"${names[0]}" and ${names.length - 1} more`;
-  return `Package ${named} is not available in the browser mirror.`;
+  const [first] = names;
+  const head = names.length === 1 ? first : `${first} and ${names.length - 1} more`;
+  const verb = names.length === 1 ? "is" : "are";
+  const near = suggestions[first];
+  const didYouMean = near ? ` Did you mean ${near}?` : "";
+  return `${head} ${verb} not part of TeX Live.${didYouMean} If it comes from a publisher or a colleague, upload the file to the project.`;
 }
 
 // What this browser cannot do, in the document's own terms.
@@ -775,7 +780,7 @@ async function runCompile({ tree, jobGeneration: generationAtStart, token, start
 
     if (!(reply.status === 0 || reply.status === 1) || !lastPdf) {
       attempts.push({ stage: "browser", backend: "browser", ok: false, log: finalLog, reason: "tex" });
-      const missingMessage = await mirrorAbsentMessage(reply.mirrorAbsent);
+      const missingMessage = mirrorAbsentMessage(reply.mirrorAbsent, reply.mirrorSuggestions);
       checkpoint();
       return handleBrowserFailure({
         timings: collected(),
