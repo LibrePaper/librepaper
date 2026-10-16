@@ -22,3 +22,13 @@ rustflags = ["-C", "link-arg=-fuse-ld=mold"]
 # fails on a stale one (`tools/dev/db sqlx-check`).
 [env]
 SQLX_OFFLINE = { value = "true", force = false }
+
+# GitHub's runners sometimes drop an HTTP/2 stream from crates.io mid-download
+# ("[16] Error in the HTTP2 framing layer"), and cargo gives up after its
+# default three retries. One connection per download avoids that error, and
+# more retries ride out the rest. The cost is a slower first fetch.
+[net]
+retry = 10
+
+[http]
+multiplexing = false
