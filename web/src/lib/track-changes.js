@@ -556,7 +556,8 @@ export function rejectMany(doc, ids) {
   let count = 0;
   while (pending.length > 0) {
     const listed = new Set();
-    for (const [oid, ov] of map.entries()) {
+    for (const [oid, entry] of map.entries()) {
+      const ov = /** @type {any} */ (entry);
       if (!pending.includes(oid) || !Array.isArray(ov?.points)) continue;
       for (const p of ov.points) if (p && p.id !== oid) listed.add(p.id);
     }

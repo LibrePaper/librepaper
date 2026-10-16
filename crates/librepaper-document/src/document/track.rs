@@ -535,7 +535,10 @@ fn entry_value(c: &ResolvedChange, start: &Cursor, end: Option<&Cursor>) -> Loro
             .map(|p| {
                 let mut pm: HashMap<String, LoroValue> = HashMap::new();
                 pm.insert("id".into(), LoroValue::from(p.id.as_str()));
-                pm.insert("at".into(), LoroValue::Double(cp_to_utf16(&c.deleted, p.at) as f64));
+                pm.insert(
+                    "at".into(),
+                    LoroValue::Double(cp_to_utf16(&c.deleted, p.at) as f64),
+                );
                 LoroValue::from(pm)
             })
             .collect();
@@ -798,7 +801,10 @@ pub fn reject_many<S: AsRef<str>>(doc: &LoroDoc, ids: &[S]) -> usize {
                 }
             }
         }
-        let i = pending.iter().position(|id| !listed.contains(id)).unwrap_or(0);
+        let i = pending
+            .iter()
+            .position(|id| !listed.contains(id))
+            .unwrap_or(0);
         let id = pending.remove(i);
         if reject(doc, &id) {
             count += 1;
@@ -1291,7 +1297,13 @@ mod tests {
                 .into_iter()
                 .find(|c| c.id == b)
                 .unwrap();
-            assert_eq!(bob.points, vec![Point { id: a.clone(), at: 1 }]);
+            assert_eq!(
+                bob.points,
+                vec![Point {
+                    id: a.clone(),
+                    at: 1
+                }]
+            );
             let order = if bob_first { [&b, &a] } else { [&a, &b] };
             for change in order {
                 assert!(reject(&doc, change));
@@ -1321,7 +1333,13 @@ mod tests {
             .into_iter()
             .find(|c| c.id == b)
             .unwrap();
-        assert_eq!(read.points, vec![Point { id: a.clone(), at: 2 }]);
+        assert_eq!(
+            read.points,
+            vec![Point {
+                id: a.clone(),
+                at: 2
+            }]
+        );
         // A hand-written entry reads the same way.
         let text = text_of(&doc, &id).unwrap();
         let start = text.get_cursor(1, Side::Left).unwrap();
