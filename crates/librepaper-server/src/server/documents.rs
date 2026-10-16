@@ -1105,11 +1105,7 @@ impl Server {
             Ok(format) => format,
             Err(error) => return sequencer_reply(&error),
         };
-        let changes = match room
-            .log()
-            .with_projected_head(reader_changes)
-            .await
-        {
+        let changes = match room.log().with_projected_head(reader_changes).await {
             Ok(changes) => changes,
             Err(error) => return sequencer_reply(&error),
         };
