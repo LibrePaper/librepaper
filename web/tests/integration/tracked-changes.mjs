@@ -3,8 +3,8 @@
 // update, the other sees it, decides it, and the decision reaches the first.
 //
 // A tracked change is part of the document. Client A writes the new text and
-// the `changes` entry in one commit, the way the editor's tracking plugin does
-// (the entry layout is the one in SPEC-track-changes.md). Client B reads it
+// the change record with `trackedSplice` and commits, the way the editor's
+// tracking plugin does (the layout is in SPEC-track-changes.md). Client B reads it
 // with `listChanges`, and accepts or rejects it with `accept` and `reject`.
 // Both are ordinary document edits, so the decision travels through the same
 // `doc-update` path as typing and needs no message of its own.
@@ -17,9 +17,8 @@
 // Requires a built librepaper binary and LIBREPAPER_TEST_POSTGRES_URL. Only
 // absent optional server/database configuration is skipped; setup errors fail.
 import assert from "node:assert/strict";
-import { randomUUID } from "node:crypto";
 import { createProjectSession } from "../../src/lib/project-session.js";
-import { CHANGES, accept, listChanges, reject } from "../../src/lib/track-changes.js";
+import { accept, listChanges, reject, trackedSplice } from "../../src/lib/track-changes.js";
 import { startDeployment } from "../helpers/deployment.mjs";
 
 const deployment = await startDeployment({ label: "tracked_changes" });
@@ -85,29 +84,16 @@ const sourceOf = async (slug) => {
   return (await response.json()).source;
 };
 
-/// What the editor's tracking plugin writes for one replacement: the new text,
-/// and a `changes` entry holding the original words and cursors around the new
-/// ones, in one commit.
+/// What the editor's tracking plugin writes for one replacement: the new text
+/// and the change record, in one commit.
 function trackedReplace(client, from, original, inserted) {
   const fileId = client.session.mainId();
-  const text = client.session.textOf(fileId);
-  const at = text.toString().indexOf(original);
+  const at = client.session.textOf(fileId).toString().indexOf(original);
   assert.notEqual(at, -1, `${original} is in the source`);
-  text.delete(at, original.length);
-  text.insert(at, inserted);
-  const id = randomUUID();
-  client.doc.getMap(CHANGES).set(id, {
-    file: fileId,
-    author: from.author,
-    who: from.who,
-    at: Date.now(),
-    run: from.run ?? null,
-    start: text.getCursor(at, -1).encode(),
-    end: text.getCursor(at + inserted.length - 1, 1).encode(),
-    deleted: original,
-  });
+  const ids = trackedSplice(client.doc, fileId, at, at + original.length, inserted, { author: from.author, who: from.who }, { run: from.run ?? null });
+  assert.equal(ids.length, 1, "one replacement is one change");
   client.doc.commit();
-  return id;
+  return ids[0];
 }
 
 const clients = [];

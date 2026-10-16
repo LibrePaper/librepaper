@@ -686,7 +686,7 @@ for (const invalidate of [null, "navigation", "main"]) {
   assert.equal(ctx.selectedChange, "b", "a selected change that is still pending stays selected");
   ctx.session = null;
   vm.runInContext("recomputeChanges()", ctx);
-  assert.deepEqual(ctx.changeRows, [], "no session, no rows");
+  assert.deepEqual(JSON.parse(JSON.stringify(ctx.changeRows)), [], "no session, no rows");
 }
 
 // Further keystrokes must not postpone an editor's already scheduled preview.
