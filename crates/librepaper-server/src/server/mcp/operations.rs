@@ -1056,6 +1056,10 @@ impl Server {
                 .collect::<Vec<_>>());
             // These changes are in the document now, marked pending.
             result["published"] = json!(true);
+            // A pass applies all of its patches or none, so each one committed.
+            result["items"] = json!((0..patch_count)
+                .map(|index| json!({"index":index,"status":"committed"}))
+                .collect::<Vec<_>>());
             result["next"] = json!(
                 "These tracked changes are in the document now, marked pending. An editor accepts or rejects each one; do not report the words as final."
             );
