@@ -1,4 +1,4 @@
-//! A room: one document's comments, proposals and open sockets.
+//! A room: one document's comments and open sockets.
 //!
 //! What a room used to be was the document itself -- a resident `LoroDoc`,
 //! the authority over what the bytes meant, a lease to serialize writes to
@@ -10,8 +10,8 @@
 //!
 //! What is left here is the half that was never about bytes: the relational
 //! state whose meaning depends on the source. A comment is a place in the
-//! text, a proposal is a branch with a decision, and both have to be written
-//! in the same transaction as the source they depend on. So a room is
+//! text, and it has to be written in the same transaction as the source it
+//! depends on. So a room is
 //! now a façade: it holds the sequencer for its document, a bounded cache of
 //! where its comments are anchored, and the asset bookkeeping that has
 //! nowhere else to live.
@@ -58,9 +58,6 @@ pub mod locate;
 mod locate_corpus_tests;
 mod message;
 pub(crate) use librepaper_engine::storage::outgoing;
-#[cfg(test)]
-mod proposal_round_trip_tests;
-pub mod proposals;
 #[cfg(test)]
 mod recovery_tests;
 pub(crate) mod resolve;
@@ -440,11 +437,8 @@ impl Room {
     /// There is no resident list to read from and no whole-document load
     /// behind this: it is three bounded statements (see
     /// `room::comments::page`) plus one pass over the room's attachment
-    /// cache. `suggestions` is the caller's editor right, and it does two
-    /// things at once because both follow from it: it is pushed into the
-    /// query as "may see a `kind='suggestion'` row", so a reader's page is
-    /// a page rather than whatever is left of one after filtering; and it
-    /// is `CommentView::for_viewer`'s `is_owner`, which is what takes the
+    /// cache. `editor` is the caller's editor right. It is
+    /// `CommentView::for_viewer`'s `is_owner`, which is what takes the
     /// source anchors out of a reader's copy.
     ///
     /// Anchors that this room has not resolved yet are resolved here, which
@@ -458,18 +452,14 @@ impl Room {
         after: Option<comments::Position>,
         limit: usize,
         author: &str,
-        suggestions: bool,
+        editor: bool,
     ) -> Result<(Vec<CommentView>, comments::CommentPage), WriteError> {
-        let mut page =
-            comments::page(&self.catalog, self.document_id, after, limit, suggestions).await?;
-        if suggestions {
-            self.enrich_proposed(&mut page.comments).await?;
-        }
+        let mut page = comments::page(&self.catalog, self.document_id, after, limit).await?;
         self.attach(&mut page.comments).await;
         let views = page
             .comments
             .iter()
-            .map(|item| CommentView::for_viewer(item, author, suggestions))
+            .map(|item| CommentView::for_viewer(item, author, editor))
             .collect();
         Ok((views, page))
     }
@@ -482,16 +472,13 @@ impl Room {
         comment_id: Uuid,
         after: Option<comments::Position>,
         limit: usize,
-        suggestions: bool,
     ) -> Result<Option<comments::ReplyPage>, WriteError> {
-        let Some(comment) = self
+        if self
             .catalog
             .annotation(self.document_id, comment_id)
             .await?
-        else {
-            return Ok(None);
-        };
-        if !suggestions && comment.kind == "suggestion" {
+            .is_none()
+        {
             return Ok(None);
         }
         Ok(Some(
@@ -506,60 +493,16 @@ impl Room {
     /// caller has to be able to tell them apart -- "the comment is gone"
     /// and "the database is unavailable" send an agent in opposite
     /// directions.
-    pub async fn comment_by_id(
-        &self,
-        id: &str,
-        suggestions: bool,
-    ) -> Result<Option<Comment>, WriteError> {
+    pub async fn comment_by_id(&self, id: &str) -> Result<Option<Comment>, WriteError> {
         let Ok(id) = Uuid::parse_str(id) else {
             return Ok(None);
         };
-        let Some(comment) = comments::one(&self.catalog, self.document_id, id, suggestions).await?
-        else {
+        let Some(comment) = comments::one(&self.catalog, self.document_id, id).await? else {
             return Ok(None);
         };
         let mut one = [comment];
-        if suggestions {
-            self.enrich_proposed(&mut one).await?;
-        }
         self.attach(&mut one).await;
         Ok(Some(one.into_iter().next().expect("one comment")))
-    }
-
-    /// Fills the replacement shown on a suggestion from its open proposal
-    /// branch. It is derived on each read, so reconnects and cold rooms show
-    /// the saved branch without storing a second proposed-text field.
-    async fn enrich_proposed(&self, comments: &mut [Comment]) -> Result<(), WriteError> {
-        let ids: Vec<Uuid> = comments
-            .iter()
-            .filter(|comment| comment.motivation == "editing" && !comment.proposal.is_empty())
-            .filter_map(|comment| Uuid::parse_str(&comment.proposal).ok())
-            .collect();
-        if ids.is_empty() {
-            return Ok(());
-        }
-        let proposals = self
-            .catalog
-            .proposals_by_ids(self.document_id, &ids)
-            .await?;
-        if proposals.is_empty() {
-            return Ok(());
-        }
-        let doc = self.log.with_head(|head| head.fork()).await?;
-        let by_id: HashMap<Uuid, _> = proposals.into_iter().map(|p| (p.id, p)).collect();
-        for comment in comments.iter_mut() {
-            let Ok(id) = Uuid::parse_str(&comment.proposal) else {
-                continue;
-            };
-            if let Some(proposal) = by_id.get(&id) {
-                // A corrupt or no longer reconstructible branch must not
-                // hide its annotation or turn an unknown replacement into an
-                // empty deletion. `None` means unavailable; `Some("")` is a
-                // genuine deletion proposal.
-                comment.proposed = comments::proposed_from_branch(&doc, comment, proposal);
-            }
-        }
-        Ok(())
     }
 
     #[cfg(test)]
@@ -568,17 +511,13 @@ impl Room {
             .load(std::sync::atomic::Ordering::Relaxed)
     }
 
-    /// The collection's authoritative shape: how many comments this caller
-    /// may see, how many are open, how many replies there are, and a token
-    /// that changes whenever any of it does.
+    /// The collection's authoritative shape: how many comments there are,
+    /// how many are open, how many replies there are, and a token that
+    /// changes whenever any of it does.
     pub async fn comment_state(
         &self,
-        suggestions: bool,
     ) -> Result<librepaper_engine::storage::postgres::AnnotationState, WriteError> {
-        Ok(self
-            .catalog
-            .annotation_state(self.document_id, suggestions)
-            .await?)
+        Ok(self.catalog.annotation_state(self.document_id).await?)
     }
 
     /// Throws the room's cached anchors away. Cheap, and correct at any
@@ -598,18 +537,15 @@ impl Room {
     /// Every comment, by walking every page. Test-only: see
     /// [`comments::walk_all`].
     // Not under `cfg(test)`: the server crate's tests use it, like engine::testing.
-    pub async fn all_comments(&self, editor: bool) -> Result<Vec<Comment>, WriteError> {
-        let mut comments = comments::walk_all(&self.catalog, self.document_id, editor).await?;
+    pub async fn all_comments(&self) -> Result<Vec<Comment>, WriteError> {
+        let mut comments = comments::walk_all(&self.catalog, self.document_id).await?;
         self.attach(&mut comments).await;
         Ok(comments)
     }
 
     /// (total, open), for an owner's own listing.
     pub async fn counts(&self) -> Result<(usize, usize), WriteError> {
-        let (total, open) = self
-            .catalog
-            .annotation_counts(self.document_id, true)
-            .await?;
+        let (total, open) = self.catalog.annotation_counts(self.document_id).await?;
         Ok((total as usize, open as usize))
     }
 

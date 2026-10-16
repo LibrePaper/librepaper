@@ -130,12 +130,7 @@ impl Server {
             .unwrap_or(librepaper_room::room::comments::COMMENT_PAGE_DEFAULT);
         let after = match values.get("cursor") {
             Some(raw) => {
-                match librepaper_room::room::comments::decode_cursor(
-                    raw,
-                    room.document_id,
-                    None,
-                    may_edit,
-                ) {
+                match librepaper_room::room::comments::decode_cursor(raw, room.document_id, None) {
                     Ok(position) => Some(position),
                     Err(error) => return write_json(400, &json!({"error": error.to_string()})),
                 }
@@ -145,7 +140,7 @@ impl Server {
         // The counts come first so a page and the totals beside it are read
         // in the same order every time; both are their own statement, and
         // neither holds a connection past its own answer.
-        let state = match room.comment_state(may_edit).await {
+        let state = match room.comment_state().await {
             Ok(state) => state,
             Err(error) => return refused("read comment state", &error),
         };
@@ -157,7 +152,7 @@ impl Server {
                     "protocol": "librepaper.comments.v1",
                     "comments": views,
                     "next_cursor": page.next.map(|at| librepaper_room::room::comments::encode_cursor(
-                        room.document_id, None, may_edit, at)),
+                        room.document_id, None, at)),
                     "complete": page.complete,
                     "oversize": page.oversize,
                     "state": librepaper_room::room::comments::comment_state_json(&state),
@@ -193,7 +188,6 @@ impl Server {
         if let Err(response) = self.check_readable(&entry, &who) {
             return response;
         }
-        let may_edit = who.at_least(Role::Editor);
         let room = match self.rooms.get(slug).await {
             Ok(room) => room,
             Err(error) => return refused("open the room", &error),
@@ -215,16 +209,13 @@ impl Server {
                 raw,
                 room.document_id,
                 Some(comment_id),
-                may_edit,
             ) {
                 Ok(position) => Some(position),
                 Err(error) => return write_json(400, &json!({"error": error.to_string()})),
             },
             None => None,
         };
-        match room.reply_page(comment_id, after, limit, may_edit).await {
-            // A thread of a document this caller cannot see a suggestion of
-            // answers exactly as a missing one does.
+        match room.reply_page(comment_id, after, limit).await {
             Ok(None) => write_json(404, &json!({"error": "not found"})),
             Ok(Some(page)) => write_json(
                 200,
@@ -234,7 +225,7 @@ impl Server {
                     "comment_id": comment,
                     "replies": page.replies,
                     "next_cursor": page.next.map(|at| librepaper_room::room::comments::encode_cursor(
-                        room.document_id, Some(comment_id), may_edit, at)),
+                        room.document_id, Some(comment_id), at)),
                     "complete": page.complete,
                     "oversize": page.oversize,
                     "total": page.total,
@@ -288,12 +279,6 @@ impl Server {
                 let Ok(incoming) = serde_json::from_slice::<RoomMessage>(&body) else {
                     return write_json(400, &json!({"error": "bad request"}));
                 };
-                if incoming.motivation() == "editing" && !who.at_least(Role::Editor) {
-                    return write_json(
-                        403,
-                        &json!({"error": "editor access is required for suggestions"}),
-                    );
-                }
                 // Body reads are an await boundary. Resolve identity and
                 // document rights again afterwards so revocation/transfer
                 // cannot race a large request into a mutation.
@@ -1152,7 +1137,7 @@ impl Server {
         // that it is a bounded page with `comment_state` beside it saying
         // how much more there is and where to continue. A caller that
         // wants the rest walks `GET .../comments?cursor=`.
-        let state = match room.comment_state(may_edit).await {
+        let state = match room.comment_state().await {
             Ok(state) => state,
             Err(error) => return refused("read snapshot comment state", &error),
         };
@@ -1176,7 +1161,6 @@ impl Server {
                 .map(|at| librepaper_room::room::comments::encode_cursor(
                     room.document_id,
                     None,
-                    may_edit,
                     at
                 )));
         let tree_sha = projected.projection.digest();

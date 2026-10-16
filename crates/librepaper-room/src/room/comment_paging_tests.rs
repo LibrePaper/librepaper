@@ -171,7 +171,6 @@ impl Deployment {
             author_key: self.author_key(),
             author_label: "Reviewer".into(),
             color: None,
-            proposal_id: None,
             original_anchor: OriginalAnchor {
                 source_sequence: 1,
                 frontier: vec![1, 2, 3],
@@ -198,51 +197,6 @@ impl Deployment {
                     &mut tx,
                     id,
                     self.whole_document_comment(document_id, &format!("Remark {index}")),
-                    &self.mutation_authorization(),
-                    false,
-                )
-                .await
-                .unwrap();
-            ids.push(id);
-        }
-        tx.commit().await.unwrap();
-        ids
-    }
-
-    /// `count` suggestions, which is the one kind a reader may not see.
-    async fn seed_suggestions(&self, document_id: Uuid, count: usize) -> Vec<Uuid> {
-        let mut tx = self.catalog.pool().begin().await.unwrap();
-        let mut ids = Vec::with_capacity(count);
-        for index in 0..count {
-            let id = Uuid::new_v4();
-            // A suggestion needs a proposal row of its own:
-            // `annotations_suggestion_proposal` refuses one without it,
-            // which is what makes "a suggestion is an edit" true in the
-            // schema and not only in the code.
-            let proposal = self
-                .catalog
-                .open_proposal(
-                    &mut tx,
-                    librepaper_engine::storage::postgres::NewProposal {
-                        document_id,
-                        id: Uuid::new_v4(),
-                        author: self.author_key(),
-                        owner_key: self.author_key(),
-                        base_frontiers: Vec::new(),
-                        tip_frontiers: Vec::new(),
-                        branch_bytes: Vec::new(),
-                    },
-                )
-                .await
-                .unwrap();
-            let mut input = self.whole_document_comment(document_id, &format!("Edit {index}"));
-            input.kind = "suggestion".into();
-            input.proposal_id = Some(proposal.id);
-            self.catalog
-                .put_annotation_authorized(
-                    &mut tx,
-                    id,
-                    input,
                     &self.mutation_authorization(),
                     false,
                 )
@@ -306,7 +260,7 @@ async fn every_comment_past_the_page_size_is_still_read_back() {
         .await;
 
     room.forget_comments().await;
-    let comments = room.all_comments(true).await.unwrap();
+    let comments = room.all_comments().await.unwrap();
     assert_eq!(
         comments.len(),
         PAST_THE_PAGE,
@@ -329,7 +283,7 @@ async fn every_comment_past_the_page_size_is_still_read_back() {
     // snapshot every socket `hello` and document GET is built from.
     // And the same must be true of what a browser is actually handed: a
     // page, plus the authoritative count of everything behind it.
-    let state = room.comment_state(true).await.unwrap();
+    let state = room.comment_state().await.unwrap();
     assert_eq!(state.total, PAST_THE_PAGE as i64);
     let (views, first) = room
         .comment_page(
@@ -361,7 +315,7 @@ async fn the_page_boundary_is_exact_in_both_directions() {
         .await;
     room.forget_comments().await;
     assert_eq!(
-        room.all_comments(true).await.unwrap().len(),
+        room.all_comments().await.unwrap().len(),
         ANNOTATION_PAGE_MAX as usize,
         "exactly one full page",
     );
@@ -370,7 +324,7 @@ async fn the_page_boundary_is_exact_in_both_directions() {
     // single-page read dropped.
     let late = deployment.seed_comments(room.document_id, 1).await[0];
     room.forget_comments().await;
-    let comments = room.all_comments(true).await.unwrap();
+    let comments = room.all_comments().await.unwrap();
     assert_eq!(comments.len(), ANNOTATION_PAGE_MAX as usize + 1);
     assert!(
         ids_of(&comments).contains(&late.to_string()),
@@ -390,7 +344,7 @@ async fn resolve_reply_and_delete_reach_a_comment_past_the_page_size() {
         .seed_comments(room.document_id, PAST_THE_PAGE)
         .await;
     room.forget_comments().await;
-    let comments = room.all_comments(true).await.unwrap();
+    let comments = room.all_comments().await.unwrap();
     // Whichever row sorts last is past the first page by construction, and
     // it is the one `find_annotation`'s old first-page scan could not see.
     let last: Uuid = comments.last().unwrap().id.parse().unwrap();
@@ -415,7 +369,7 @@ async fn resolve_reply_and_delete_reach_a_comment_past_the_page_size() {
     assert!(outcome.resolved_at.is_some());
 
     room.forget_comments().await;
-    let reloaded = room.all_comments(true).await.unwrap();
+    let reloaded = room.all_comments().await.unwrap();
     let stored = reloaded
         .iter()
         .find(|comment| comment.id == last.to_string())
@@ -448,7 +402,7 @@ async fn resolve_reply_and_delete_reach_a_comment_past_the_page_size() {
         .expect("a comment past the first page can be deleted");
     room.forget_comments().await;
     assert_eq!(
-        room.all_comments(true).await.unwrap().len(),
+        room.all_comments().await.unwrap().len(),
         PAST_THE_PAGE - 1,
         "and the delete really removed it",
     );
@@ -478,7 +432,7 @@ async fn a_document_past_the_aggregate_reply_ceiling_still_loads() {
     assert!(total > 5_000, "the ceiling this test is about");
 
     room.forget_comments().await;
-    let loaded = room.all_comments(true).await.unwrap();
+    let loaded = room.all_comments().await.unwrap();
     assert_eq!(loaded.len(), comments.len());
     assert_eq!(
         loaded
@@ -514,7 +468,7 @@ async fn one_thread_longer_than_a_reply_page_is_read_whole() {
         .seed_replies(room.document_id, comment, count)
         .await;
     room.forget_comments().await;
-    let loaded = room.all_comments(true).await.unwrap();
+    let loaded = room.all_comments().await.unwrap();
     assert_eq!(loaded[0].replies.len(), count);
     let unique: HashSet<&str> = loaded[0]
         .replies
@@ -558,7 +512,7 @@ async fn a_comment_id_from_another_document_is_not_reachable() {
     // And the write really did not happen, on either side.
     other.forget_comments().await;
     assert!(
-        !other.all_comments(true).await.unwrap()[0].resolved,
+        !other.all_comments().await.unwrap()[0].resolved,
         "a refused command leaves no partial change behind",
     );
     assert!(
@@ -620,7 +574,7 @@ async fn a_retried_create_past_the_page_size_stays_one_comment() {
     assert_eq!(written[0].created_at, written[1].created_at);
 
     room.forget_comments().await;
-    let comments = room.all_comments(true).await.unwrap();
+    let comments = room.all_comments().await.unwrap();
     assert_eq!(
         comments.len(),
         ANNOTATION_PAGE_MAX as usize + 1,
@@ -658,7 +612,7 @@ async fn a_concurrent_create_neither_duplicates_nor_drops_a_row() {
         tx.commit().await.unwrap();
         row.id
     });
-    let loaded = comments::walk_all(&deployment.catalog, document_id, true)
+    let loaded = comments::walk_all(&deployment.catalog, document_id)
         .await
         .unwrap();
     let arrived = writer.await.unwrap();
@@ -681,7 +635,7 @@ async fn a_concurrent_create_neither_duplicates_nor_drops_a_row() {
     );
 
     // And once the walk is over, it is certainly there.
-    let after = comments::walk_all(&deployment.catalog, document_id, true)
+    let after = comments::walk_all(&deployment.catalog, document_id)
         .await
         .unwrap();
     assert!(ids_of(&after).contains(&arrived.to_string()));
@@ -712,7 +666,7 @@ async fn a_collection_past_the_old_snapshot_budget_is_still_readable() {
         .await
         .unwrap();
 
-    let state = room.comment_state(true).await.unwrap();
+    let state = room.comment_state().await.unwrap();
     assert_eq!(state.total, 40);
 
     // Each page stays inside the byte budget, and the traversal reaches
@@ -721,7 +675,7 @@ async fn a_collection_past_the_old_snapshot_budget_is_still_readable() {
     let mut after = None;
     let mut pages = 0;
     loop {
-        let page = comments::page(&deployment.catalog, room.document_id, after, 200, true)
+        let page = comments::page(&deployment.catalog, room.document_id, after, 200)
             .await
             .unwrap();
         pages += 1;
@@ -787,14 +741,14 @@ async fn a_row_wider_than_the_byte_budget_is_served_alone_rather_than_refused() 
         .unwrap();
     deployment.seed_comments(room.document_id, 2).await;
 
-    let first = comments::page(&deployment.catalog, room.document_id, None, 200, true)
+    let first = comments::page(&deployment.catalog, room.document_id, None, 200)
         .await
         .unwrap();
     assert_eq!(first.comments.len(), 1, "the wide row comes alone");
     assert_eq!(first.comments[0].id, wide.to_string());
     assert!(first.oversize, "and the page says it was over budget");
     assert!(!first.complete);
-    let second = comments::page(&deployment.catalog, room.document_id, first.next, 200, true)
+    let second = comments::page(&deployment.catalog, room.document_id, first.next, 200)
         .await
         .unwrap();
     assert_eq!(second.comments.len(), 2, "the rows behind it are reachable");
@@ -818,7 +772,7 @@ async fn tied_timestamps_traverse_exactly_once_at_every_page_size() {
         let mut seen: Vec<String> = Vec::new();
         let mut after = None;
         loop {
-            let page = comments::page(&deployment.catalog, room.document_id, after, limit, true)
+            let page = comments::page(&deployment.catalog, room.document_id, after, limit)
                 .await
                 .unwrap();
             seen.extend(page.comments.iter().map(|comment| comment.id.clone()));
@@ -850,7 +804,7 @@ async fn one_thread_past_a_thousand_replies_does_not_widen_its_page() {
     let count = 1_001;
     deployment.seed_replies(room.document_id, deep, count).await;
 
-    let page = comments::page(&deployment.catalog, room.document_id, None, 200, true)
+    let page = comments::page(&deployment.catalog, room.document_id, None, 200)
         .await
         .unwrap();
     assert_eq!(
@@ -910,7 +864,7 @@ async fn many_short_reply_previews_stay_on_one_comment_page() {
             .await;
     }
 
-    let page = comments::page(&deployment.catalog, room.document_id, None, 200, true)
+    let page = comments::page(&deployment.catalog, room.document_id, None, 200)
         .await
         .unwrap();
     assert_eq!(page.comments.len(), 110);
@@ -939,7 +893,7 @@ async fn page_sizing_snapshot_does_not_substitute_rows() {
         .unwrap();
     let sizes = deployment
         .catalog
-        .annotation_sizes_in_transaction(&mut tx, room.document_id, None, 3, true)
+        .annotation_sizes_in_transaction(&mut tx, room.document_id, None, 3)
         .await
         .unwrap();
     assert_eq!(sizes.len(), 3);
@@ -959,7 +913,7 @@ async fn page_sizing_snapshot_does_not_substitute_rows() {
     let sized_ids: Vec<Uuid> = sizes.iter().map(|row| row.id).collect();
     let rows = deployment
         .catalog
-        .annotations_in_transaction(&mut tx, room.document_id, &sized_ids, true)
+        .annotations_in_transaction(&mut tx, room.document_id, &sized_ids)
         .await
         .unwrap();
     assert_eq!(rows.iter().map(|row| row.id).collect::<Vec<_>>(), sized_ids);
@@ -969,8 +923,8 @@ async fn page_sizing_snapshot_does_not_substitute_rows() {
     deployment.catalog.close().await;
 }
 
-/// A cursor is a position, bound to the document, the thread and the query
-/// options it was issued for. Presenting one anywhere else is refused
+/// A cursor is a position, bound to the document and the thread it was
+/// issued for. Presenting one anywhere else is refused
 /// rather than answered from the wrong collection.
 #[tokio::test]
 #[ignore = "requires LIBREPAPER_TEST_POSTGRES_URL"]
@@ -981,80 +935,28 @@ async fn a_cursor_is_refused_outside_what_it_was_issued_for() {
     let room = deployment.room().await;
     let other = deployment.other_room().await;
     let ids = deployment.seed_comments(room.document_id, 4).await;
-    let page = comments::page(&deployment.catalog, room.document_id, None, 2, true)
+    let page = comments::page(&deployment.catalog, room.document_id, None, 2)
         .await
         .unwrap();
-    let cursor = comments::encode_cursor(room.document_id, None, true, page.next.unwrap());
+    let cursor = comments::encode_cursor(room.document_id, None, page.next.unwrap());
 
     // Its own request accepts it.
-    assert!(comments::decode_cursor(&cursor, room.document_id, None, true).is_ok());
+    assert!(comments::decode_cursor(&cursor, room.document_id, None).is_ok());
     // Another document's does not.
-    assert!(comments::decode_cursor(&cursor, other.document_id, None, true).is_err());
+    assert!(comments::decode_cursor(&cursor, other.document_id, None).is_err());
     // Nor a thread's.
-    assert!(comments::decode_cursor(&cursor, room.document_id, Some(ids[0]), true).is_err());
-    // Nor a reader's, whose eligible rows are a different set.
-    assert!(comments::decode_cursor(&cursor, room.document_id, None, false).is_err());
+    assert!(comments::decode_cursor(&cursor, room.document_id, Some(ids[0])).is_err());
     // And neither does anything that is not a cursor at all.
     for junk in ["", "not-base64!!", "YWJj", "eyJ2Ijo5OTl9"] {
         assert!(
-            comments::decode_cursor(junk, room.document_id, None, true).is_err(),
+            comments::decode_cursor(junk, room.document_id, None).is_err(),
             "{junk:?} was accepted",
         );
     }
     // A thread cursor is refused on the listing, symmetrically.
-    let thread_cursor = comments::encode_cursor(
-        room.document_id,
-        Some(ids[0]),
-        true,
-        comments::Position::start(),
-    );
-    assert!(comments::decode_cursor(&thread_cursor, room.document_id, None, true).is_err());
-    deployment.catalog.close().await;
-}
-
-/// A reader's page is a page of what a reader may see: the suggestion
-/// filter is in the query, not applied after the fact, so a document of
-/// mostly suggestions does not hand a reader a page of three rows.
-#[tokio::test]
-#[ignore = "requires LIBREPAPER_TEST_POSTGRES_URL"]
-async fn a_reader_pages_only_what_a_reader_may_see() {
-    let Some(deployment) = deployment("paging-visibility").await else {
-        return;
-    };
-    let room = deployment.room().await;
-    deployment.seed_comments(room.document_id, 10).await;
-    deployment.seed_suggestions(room.document_id, 90).await;
-
-    assert_eq!(room.comment_state(true).await.unwrap().total, 100);
-    assert_eq!(
-        room.comment_state(false).await.unwrap().total,
-        10,
-        "a reader's count is a reader's count",
-    );
-    let (views, page) = room.comment_page(None, 10, "", false).await.unwrap();
-    assert_eq!(views.len(), 10, "a full page of readable rows");
-    assert!(page.complete);
-    for comment in &page.comments {
-        assert_ne!(comment.motivation, "editing");
-    }
-    // And a reader cannot reach a suggestion's thread by naming it.
-    let suggestion = sqlx::query_scalar::<_, Uuid>(
-        "SELECT id FROM annotations WHERE document_id=$1 AND kind='suggestion' LIMIT 1",
-    )
-    .bind(room.document_id)
-    .fetch_one(deployment.catalog.pool())
-    .await
-    .unwrap();
-    assert!(room
-        .reply_page(suggestion, None, 10, false)
-        .await
-        .unwrap()
-        .is_none());
-    assert!(room
-        .reply_page(suggestion, None, 10, true)
-        .await
-        .unwrap()
-        .is_some());
+    let thread_cursor =
+        comments::encode_cursor(room.document_id, Some(ids[0]), comments::Position::start());
+    assert!(comments::decode_cursor(&thread_cursor, room.document_id, None).is_err());
     deployment.catalog.close().await;
 }
 
@@ -1071,7 +973,7 @@ async fn the_room_cache_stays_bounded_while_a_large_document_is_paged() {
     deployment
         .seed_comments(room.document_id, crate::room::ATTACHMENT_CACHE_MAX + 200)
         .await;
-    let held = room.all_comments(true).await.unwrap();
+    let held = room.all_comments().await.unwrap();
     assert_eq!(held.len(), crate::room::ATTACHMENT_CACHE_MAX + 200);
     assert!(
         room.attachment_cache_len().await <= crate::room::ATTACHMENT_CACHE_MAX,
@@ -1110,7 +1012,7 @@ async fn a_comment_beyond_the_first_page_is_readable_by_id() {
         .find(|id| !on_page.contains(&id.to_string()))
         .expect("most of them are past the first page");
     let comment = room
-        .comment_by_id(&beyond.to_string(), true)
+        .comment_by_id(&beyond.to_string())
         .await
         .expect("the catalogue answers")
         .expect("a comment past the first page reads by id");
@@ -1141,7 +1043,7 @@ async fn page_cost_does_not_grow_with_the_collection() {
         let mut pages = 0usize;
         let mut after = None;
         loop {
-            let page = comments::page(&deployment.catalog, document_id, after, 200, true)
+            let page = comments::page(&deployment.catalog, document_id, after, 200)
                 .await
                 .unwrap();
             let bytes: usize = page
@@ -1215,7 +1117,7 @@ async fn page_cost_does_not_grow_with_the_collection() {
     );
 
     // And the room's own residency after walking all of it.
-    let _ = room.all_comments(true).await.unwrap();
+    let _ = room.all_comments().await.unwrap();
     let held = room.attachment_cache_len().await;
     eprintln!("room attachment cache after a 3,200-comment traversal: {held} entries");
     assert!(held <= crate::room::ATTACHMENT_CACHE_MAX);
@@ -1252,7 +1154,7 @@ async fn an_agent_walks_threads_and_its_version_token_survives_paging() {
             .last()
             .and_then(|item| item.get("cursor").and_then(|c| c.as_str()))
             .map(|raw| {
-                comments::decode_cursor(raw, room.document_id, None, true).expect("its own cursor")
+                comments::decode_cursor(raw, room.document_id, None).expect("its own cursor")
             });
         seen.extend(
             window
@@ -1272,7 +1174,7 @@ async fn an_agent_walks_threads_and_its_version_token_survives_paging() {
     // The same comment's version token, from three different reads.
     let deep = ids[0].to_string();
     let by_id = room
-        .comment_by_id(&deep, true)
+        .comment_by_id(&deep)
         .await
         .expect("the catalogue answers")
         .expect("by id");
@@ -1310,7 +1212,7 @@ async fn an_agent_walks_threads_and_its_version_token_survives_paging() {
     // A reply changes it, which is what an `expected_version` check is for.
     deployment.seed_replies(room.document_id, ids[0], 1).await;
     let after_reply = room
-        .comment_by_id(&deep, true)
+        .comment_by_id(&deep)
         .await
         .expect("the catalogue answers")
         .expect("still there");
@@ -1322,11 +1224,11 @@ async fn an_agent_walks_threads_and_its_version_token_survives_paging() {
     deployment.catalog.close().await;
 }
 
-/// An event reuses the enriched row, but its reply cursor belongs to the
-/// audience receiving it, just like a cursor from a normal comment page.
+/// An event reuses the enriched row, and the reply cursor in it continues the
+/// thread for either audience, just like a cursor from a normal comment page.
 #[tokio::test]
 #[ignore = "requires LIBREPAPER_TEST_POSTGRES_URL"]
-async fn event_reply_cursors_continue_for_their_own_audience() {
+async fn event_reply_cursors_continue_for_both_audiences() {
     let Some(deployment) = deployment("event-reply-cursors").await else {
         return;
     };
@@ -1337,16 +1239,11 @@ async fn event_reply_cursors_continue_for_their_own_audience() {
         .await;
     let payload = serde_json::json!({"type": "reply", "comment_id": id.to_string()});
     let event = room.prepare_comment_event(&payload).await;
-    for suggestions in [true, false] {
-        let view = event.view_for("", suggestions);
+    for editor in [true, false] {
+        let view = event.view_for("", editor);
         let cursor = view["comment"]["reply_cursor"].as_str().unwrap();
-        let at = comments::decode_cursor(cursor, room.document_id, Some(id), suggestions).unwrap();
-        assert!(comments::decode_cursor(cursor, room.document_id, Some(id), !suggestions).is_err());
-        let page = room
-            .reply_page(id, Some(at), 10, suggestions)
-            .await
-            .unwrap()
-            .unwrap();
+        let at = comments::decode_cursor(cursor, room.document_id, Some(id)).unwrap();
+        let page = room.reply_page(id, Some(at), 10).await.unwrap().unwrap();
         assert!(page.complete);
         assert_eq!(page.replies.len(), 3);
         let prefix = view["comment"]["replies"].as_array().unwrap();

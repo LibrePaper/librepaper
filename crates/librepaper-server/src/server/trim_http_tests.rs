@@ -4,8 +4,7 @@
 //! the document to a shallow snapshot and deletes every version label, archive,
 //! and unreferenced figure that is more than one hour old. Fresh unreferenced
 //! uploads are kept as a grace period. The response is JSON with counts of
-//! deleted rows and their byte sizes. Refuses with 409 if a pending suggestion
-//! exists, without deleting anything.
+//! deleted rows and their byte sizes.
 //!
 //! Needs `LIBREPAPER_TEST_POSTGRES_URL` and is skipped without it, like the
 //! rest of the catalogue coverage.
@@ -17,7 +16,7 @@ use sha2::{Digest, Sha256};
 use uuid::Uuid;
 
 use crate::server::origins::Origins;
-use librepaper_engine::storage::postgres::{Authority, NewProposal};
+use librepaper_engine::storage::postgres::Authority;
 use librepaper_engine::storage::store::{DocumentInput, MutationActor};
 
 use super::http_test_support::{deployment as http_deployment, owner_bearer};
@@ -372,203 +371,6 @@ async fn a_trim_deletes_every_version_and_every_unused_figure() {
         room.references_asset(&figure_b_digest_hex).await.unwrap(),
         "figure-b must still be referenced as current"
     );
-
-    // Teardown: drop all room/Arc references before closing catalog.
-    let catalog = deployment.catalog.clone();
-    drop(room);
-    drop(deployment);
-    catalog.close().await;
-}
-
-#[tokio::test]
-#[ignore = "requires LIBREPAPER_TEST_POSTGRES_URL"]
-async fn a_trim_refuses_while_a_suggestion_is_pending() {
-    let Some(deployment) = deployment("trim-pending-proposal").await else {
-        return;
-    };
-
-    let room = deployment
-        .server
-        .documents
-        .rooms
-        .get(&deployment.slug)
-        .await
-        .unwrap();
-
-    let authority = Authority {
-        principal_key: deployment.owner_id.to_string(),
-        account_id: Some(deployment.owner_id),
-        link_hash: None,
-        session_generation: Some(1),
-        policy_edit: true,
-        policy_comment: true,
-        automation: false,
-    };
-
-    // Step 1: create a label so we can verify it survives the refused trim.
-    let named = room
-        .take_label("v1", Some("Version 1".into()), "Owner", &authority, None)
-        .await
-        .unwrap();
-
-    // Step 2: open a pending proposal.
-    let mut tx = deployment.catalog.pool().begin().await.unwrap();
-    let _proposal = deployment
-        .catalog
-        .open_proposal(
-            &mut tx,
-            NewProposal {
-                document_id: room.document_id,
-                id: Uuid::new_v4(),
-                author: "owner".into(),
-                owner_key: "owner".into(),
-                base_frontiers: Vec::new(),
-                tip_frontiers: Vec::new(),
-                branch_bytes: Vec::new(),
-            },
-        )
-        .await
-        .unwrap();
-    tx.commit().await.unwrap();
-
-    // Record state before the trim attempt.
-    let usage_before: i64 = deployment
-        .catalog
-        .usage_bytes(Some(deployment.owner_id))
-        .await
-        .unwrap();
-    let labels_before: i64 =
-        sqlx::query_scalar("SELECT count(*) FROM document_labels WHERE document_id=$1")
-            .bind(room.document_id)
-            .fetch_one(deployment.catalog.pool())
-            .await
-            .unwrap();
-    let archives_before: i64 =
-        sqlx::query_scalar("SELECT count(*) FROM document_archives WHERE document_id=$1")
-            .bind(room.document_id)
-            .fetch_one(deployment.catalog.pool())
-            .await
-            .unwrap();
-    let assets_before: i64 =
-        sqlx::query_scalar("SELECT count(*) FROM document_assets WHERE document_id=$1")
-            .bind(room.document_id)
-            .fetch_one(deployment.catalog.pool())
-            .await
-            .unwrap();
-    let storage_before = deployment
-        .catalog
-        .document_storage_by_owner(deployment.owner_id)
-        .await
-        .unwrap();
-    let history_before = storage_before
-        .iter()
-        .find(|s| s.id == room.document_id)
-        .map(|s| s.history_bytes)
-        .unwrap_or(0);
-
-    // Step 3: POST trim.
-    let headers = owner_bearer(&deployment);
-    let arrival = Origins::loopback_only().resolve("localhost").unwrap();
-    let request = Request::builder()
-        .method("POST")
-        .uri(format!("/api/documents/{}/history/trim", deployment.slug))
-        .header("content-type", "application/json")
-        .header(
-            "authorization",
-            headers.get("authorization").unwrap().clone(),
-        )
-        .body(Body::from(json!({}).to_string()))
-        .unwrap();
-    let response = deployment
-        .server
-        .handle_history_trim(request, &arrival, &deployment.slug)
-        .await;
-    assert_eq!(
-        response.status(),
-        409,
-        "trim must refuse while a proposal is pending"
-    );
-
-    // Step 4: verify error message mentions suggestion/proposal.
-    let body = axum::body::to_bytes(response.into_body(), 1024 * 1024)
-        .await
-        .unwrap();
-    let body: serde_json::Value = serde_json::from_slice(&body).unwrap();
-    let error_msg = body["error"].as_str().unwrap_or("");
-    assert!(
-        error_msg.contains("suggestion") || error_msg.contains("proposal"),
-        "error message must mention suggestion or proposal (got: {})",
-        error_msg
-    );
-
-    // Step 5: verify refusal changed nothing: usage, label count, archive count, asset count,
-    // and history bytes all remain unchanged.
-    let usage_after = deployment
-        .catalog
-        .usage_bytes(Some(deployment.owner_id))
-        .await
-        .unwrap();
-    assert_eq!(
-        usage_after, usage_before,
-        "usage must be unchanged after refused trim"
-    );
-
-    let labels_after: i64 =
-        sqlx::query_scalar("SELECT count(*) FROM document_labels WHERE document_id=$1")
-            .bind(room.document_id)
-            .fetch_one(deployment.catalog.pool())
-            .await
-            .unwrap();
-    assert_eq!(
-        labels_after, labels_before,
-        "label count must be unchanged after refused trim"
-    );
-
-    let archives_after: i64 =
-        sqlx::query_scalar("SELECT count(*) FROM document_archives WHERE document_id=$1")
-            .bind(room.document_id)
-            .fetch_one(deployment.catalog.pool())
-            .await
-            .unwrap();
-    assert_eq!(
-        archives_after, archives_before,
-        "archive count must be unchanged after refused trim"
-    );
-
-    let assets_after: i64 =
-        sqlx::query_scalar("SELECT count(*) FROM document_assets WHERE document_id=$1")
-            .bind(room.document_id)
-            .fetch_one(deployment.catalog.pool())
-            .await
-            .unwrap();
-    assert_eq!(
-        assets_after, assets_before,
-        "asset count must be unchanged after refused trim"
-    );
-
-    let storage_after = deployment
-        .catalog
-        .document_storage_by_owner(deployment.owner_id)
-        .await
-        .unwrap();
-    let history_after = storage_after
-        .iter()
-        .find(|s| s.id == room.document_id)
-        .map(|s| s.history_bytes)
-        .unwrap_or(0);
-    assert_eq!(
-        history_after, history_before,
-        "history bytes must be unchanged after refused trim"
-    );
-
-    // Label still exists.
-    let label_exists: bool =
-        sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM document_labels WHERE id=$1)")
-            .bind(named.id)
-            .fetch_one(deployment.catalog.pool())
-            .await
-            .unwrap();
-    assert!(label_exists, "label must survive the refused trim");
 
     // Teardown: drop all room/Arc references before closing catalog.
     let catalog = deployment.catalog.clone();

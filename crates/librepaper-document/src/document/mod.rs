@@ -37,7 +37,6 @@
 
 pub mod formats;
 pub mod html;
-pub mod hunks;
 
 pub mod paths;
 pub mod projection;

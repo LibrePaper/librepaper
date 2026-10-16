@@ -52,7 +52,6 @@ pub(super) fn api_router(server: Arc<Server>) -> Router {
         .route("/api/documents/{slug}/opened", post(opened))
         .route("/api/documents/{slug}/chat", any(chat_root))
         .route("/api/documents/{slug}/chat/{*tail}", any(chat))
-        .route("/api/documents/{slug}/suggestions", post(suggestions))
         .route(
             "/api/documents/{slug}/assistant/capabilities",
             get(assistant_capabilities),
@@ -427,17 +426,6 @@ async fn chat_root(
     request: Request<Body>,
 ) -> Reply {
     server.handle_chat(request, &ctx.arrival, &slug, &[]).await
-}
-
-async fn suggestions(
-    State(server): State<Arc<Server>>,
-    Extension(ctx): Extension<RequestContext>,
-    Path(slug): Path<String>,
-    request: Request<Body>,
-) -> Reply {
-    server
-        .handle_assistant_batch(request, ctx.peer, &ctx.arrival, &slug)
-        .await
 }
 
 async fn assistant_capabilities(

@@ -118,80 +118,6 @@ pub enum KnownMessage {
         #[serde(default)]
         request_id: String,
     },
-    #[serde(rename = "proposal-suggest")]
-    ProposalSuggest {
-        #[serde(default)]
-        exact: String,
-        #[serde(default)]
-        prefix: String,
-        #[serde(default)]
-        suffix: String,
-        #[serde(default)]
-        proposed: Option<String>,
-        #[serde(default)]
-        request_id: String,
-    },
-    #[serde(rename = "proposal-open")]
-    ProposalOpen {
-        #[serde(default)]
-        base: String,
-        /// True when replaying an id the client previously acknowledged.
-        /// Unlike an initial lost-ack retry, a resume may not create a row
-        /// after both its live row and retained outcome have expired.
-        #[serde(default)]
-        resume: bool,
-        #[serde(default)]
-        request_id: String,
-    },
-    #[serde(rename = "proposal-update")]
-    ProposalUpdate {
-        #[serde(default)]
-        proposal_id: String,
-        #[serde(default)]
-        update: String,
-        #[serde(default)]
-        tip: String,
-        /// Where the proposal's base moves to, when the author has absorbed
-        /// other people's edits into their branch. Empty leaves it alone.
-        #[serde(default)]
-        base: String,
-        /// Last server version acknowledged by `proposal-opened` or
-        /// `proposal-updated`; guards delayed branch writes.
-        #[serde(default)]
-        expected_version: i64,
-        #[serde(default)]
-        request_id: String,
-    },
-    #[serde(rename = "proposal-decide")]
-    ProposalDecide {
-        #[serde(default)]
-        proposal_id: String,
-        #[serde(default)]
-        hunk: usize,
-        #[serde(default)]
-        accepted: bool,
-        /// A whole-suggestion answer. Typed proposals keep per-hunk decisions.
-        #[serde(default)]
-        all: bool,
-        #[serde(default)]
-        tip: String,
-        #[serde(default)]
-        note: String,
-        #[serde(default)]
-        request_id: String,
-    },
-    #[serde(rename = "proposal-discard")]
-    ProposalDiscard {
-        #[serde(default)]
-        proposal_id: String,
-        #[serde(default)]
-        request_id: String,
-    },
-    #[serde(rename = "proposal-list")]
-    ProposalList {
-        #[serde(default)]
-        request_id: String,
-    },
     #[serde(rename = "comment")]
     Comment {
         #[serde(default)]
@@ -214,8 +140,6 @@ pub enum KnownMessage {
         document: bool,
         #[serde(default)]
         color: Option<String>,
-        #[serde(default)]
-        proposed: Option<String>,
         #[serde(default)]
         temp_id: String,
         #[serde(default)]
@@ -254,21 +178,6 @@ pub enum KnownMessage {
         #[serde(default)]
         request_id: String,
     },
-    #[serde(rename = "refine")]
-    Refine {
-        #[serde(default)]
-        comment_id: String,
-        #[serde(default)]
-        proposed: Option<String>,
-        #[serde(default)]
-        expected_proposed: Option<String>,
-        #[serde(default)]
-        body: String,
-        #[serde(default)]
-        temp_id: String,
-        #[serde(default)]
-        request_id: String,
-    },
 }
 
 macro_rules! string_field {
@@ -294,17 +203,10 @@ impl KnownMessage {
                 | "doc-update-chunk"
                 | "doc-update-end"
                 | "doc-label"
-                | "proposal-suggest"
-                | "proposal-open"
-                | "proposal-update"
-                | "proposal-decide"
-                | "proposal-discard"
-                | "proposal-list"
                 | "comment"
                 | "reply"
                 | "resolve"
                 | "delete"
-                | "refine"
         )
     }
 
@@ -319,17 +221,10 @@ impl KnownMessage {
             Self::DocUpdateChunk { .. } => "doc-update-chunk",
             Self::DocUpdateEnd { .. } => "doc-update-end",
             Self::DocLabel { .. } => "doc-label",
-            Self::ProposalSuggest { .. } => "proposal-suggest",
-            Self::ProposalOpen { .. } => "proposal-open",
-            Self::ProposalUpdate { .. } => "proposal-update",
-            Self::ProposalDecide { .. } => "proposal-decide",
-            Self::ProposalDiscard { .. } => "proposal-discard",
-            Self::ProposalList { .. } => "proposal-list",
             Self::Comment { .. } => "comment",
             Self::Reply { .. } => "reply",
             Self::Resolve { .. } => "resolve",
             Self::Delete { .. } => "delete",
-            Self::Refine { .. } => "refine",
         }
     }
     string_field!(
@@ -341,57 +236,28 @@ impl KnownMessage {
             | DocUpdateChunk
             | DocUpdateEnd
             | DocLabel
-            | ProposalSuggest
-            | ProposalOpen
-            | ProposalUpdate
-            | ProposalDecide
-            | ProposalDiscard
-            | ProposalList
             | Comment
             | Reply
             | Resolve
             | Delete
-            | Refine
     );
-    string_field!(
-        temp_id,
-        temp_id,
-        Chat | Comment | Reply | Resolve | Delete | Refine
-    );
-    string_field!(comment_id, comment_id, Reply | Resolve | Delete | Refine);
-    string_field!(body, body, Chat | Comment | Reply | Refine);
+    string_field!(temp_id, temp_id, Chat | Comment | Reply | Resolve | Delete);
+    string_field!(comment_id, comment_id, Reply | Resolve | Delete);
+    string_field!(body, body, Chat | Comment | Reply);
     string_field!(motivation, motivation, Comment);
     string_field!(render_digest, render_digest, Comment);
     string_field!(creator, creator, Comment | Reply);
-    string_field!(exact, exact, ProposalSuggest | Comment);
-    string_field!(prefix, prefix, ProposalSuggest | Comment);
-    string_field!(suffix, suffix, ProposalSuggest | Comment);
-    string_field!(
-        update,
-        update,
-        DocPresence | DocUpdate | DocUpdateChunk | ProposalUpdate
-    );
+    string_field!(exact, exact, Comment);
+    string_field!(prefix, prefix, Comment);
+    string_field!(suffix, suffix, Comment);
+    string_field!(update, update, DocPresence | DocUpdate | DocUpdateChunk);
     string_field!(vector, vector, DocOpen);
     string_field!(protocol, protocol, DocOpen);
-    string_field!(
-        proposal_id,
-        proposal_id,
-        ProposalUpdate | ProposalDecide | ProposalDiscard
-    );
-    string_field!(base, base, ProposalOpen | ProposalUpdate);
-    value_field!(resume, resume, bool, ProposalOpen);
-    value_field!(expected_version, expected_version, i64, ProposalUpdate);
-    string_field!(tip, tip, ProposalUpdate | ProposalDecide);
-    string_field!(note, note, ProposalDecide);
     string_field!(why, why, DocLabel);
-    option_field!(proposed, proposed, ProposalSuggest | Comment | Refine);
-    option_field!(expected_proposed, expected_proposed, Refine);
     option_field!(color, color, Comment);
     value_field!(position, position, Option<i64>, Comment);
     value_field!(document, document, bool, Comment);
     value_field!(resolved, resolved, bool, Resolve);
-    value_field!(accepted, accepted, bool, ProposalDecide);
-    value_field!(all, all, bool, ProposalDecide);
     value_field!(
         seq,
         seq,
@@ -401,7 +267,6 @@ impl KnownMessage {
     value_field!(size, size, usize, DocUpdateStart);
     value_field!(chunks, chunks, usize, DocUpdateStart);
     value_field!(index, index, usize, DocUpdateChunk);
-    value_field!(hunk, hunk, usize, ProposalDecide);
 }
 
 impl Message {
@@ -480,32 +345,8 @@ impl Message {
     pub fn protocol(&self) -> &str {
         self.string(KnownMessage::protocol)
     }
-    pub fn proposal_id(&self) -> &str {
-        self.string(KnownMessage::proposal_id)
-    }
-    pub fn base(&self) -> &str {
-        self.string(KnownMessage::base)
-    }
-    pub fn resume(&self) -> bool {
-        self.value(KnownMessage::resume)
-    }
-    pub fn expected_version(&self) -> i64 {
-        self.value(KnownMessage::expected_version)
-    }
-    pub fn tip(&self) -> &str {
-        self.string(KnownMessage::tip)
-    }
-    pub fn note(&self) -> &str {
-        self.string(KnownMessage::note)
-    }
     pub fn why(&self) -> &str {
         self.string(KnownMessage::why)
-    }
-    pub fn proposed(&self) -> Option<&str> {
-        self.option(KnownMessage::proposed)
-    }
-    pub fn expected_proposed(&self) -> Option<&str> {
-        self.option(KnownMessage::expected_proposed)
     }
     pub fn color(&self) -> Option<&str> {
         self.option(KnownMessage::color)
@@ -519,12 +360,6 @@ impl Message {
     pub fn resolved(&self) -> bool {
         self.value(KnownMessage::resolved)
     }
-    pub fn accepted(&self) -> bool {
-        self.value(KnownMessage::accepted)
-    }
-    pub fn all(&self) -> bool {
-        self.value(KnownMessage::all)
-    }
     pub fn seq(&self) -> i64 {
         self.value(KnownMessage::seq)
     }
@@ -536,9 +371,6 @@ impl Message {
     }
     pub fn index(&self) -> usize {
         self.value(KnownMessage::index)
-    }
-    pub fn hunk(&self) -> usize {
-        self.value(KnownMessage::hunk)
     }
     pub fn doc_update(update: String, seq: i64, request_id: String) -> Self {
         Self::Known(KnownMessage::DocUpdate {
@@ -579,32 +411,5 @@ mod tests {
             r#"{"type":"doc-update-start","size":"not-a-number"}"#
         )
         .is_err());
-    }
-
-    #[test]
-    fn proposal_updates_carry_the_acknowledged_version() {
-        let message: Message =
-            serde_json::from_str(r#"{"type":"proposal-update","expected_version":7}"#).unwrap();
-        assert_eq!(message.expected_version(), 7);
-    }
-
-    #[test]
-    fn proposal_open_distinguishes_initial_retry_from_resume() {
-        let initial: Message =
-            serde_json::from_str(r#"{"type":"proposal-open","request_id":"a"}"#).unwrap();
-        let resumed: Message =
-            serde_json::from_str(r#"{"type":"proposal-open","request_id":"a","resume":true}"#)
-                .unwrap();
-        assert!(!initial.resume());
-        assert!(resumed.resume());
-    }
-
-    #[test]
-    fn proposal_decide_can_name_one_whole_suggestion() {
-        let message: Message =
-            serde_json::from_str(r#"{"type":"proposal-decide","all":true,"accepted":false}"#)
-                .unwrap();
-        assert!(message.all());
-        assert!(!message.accepted());
     }
 }

@@ -787,7 +787,7 @@ mod tests {
             "one",
             "document_propose",
             &request,
-            &json!({"result":{"status":"committed","effects":[{"kind":"suggestion","id":"kept"}]}}),
+            &json!({"result":{"status":"committed","effects":[{"kind":"change","id":"kept"}]}}),
         )
         .unwrap();
 
@@ -795,7 +795,7 @@ mod tests {
 
         let recovered = State::load(&session_dir.join("runner.json")).unwrap();
         assert_eq!(recovered.tasks[0].status, TaskStatus::Interrupted);
-        assert_eq!(recovered.tasks[0].results["suggestions"], json!(["kept"]));
+        assert_eq!(recovered.tasks[0].results["changes"], json!(["kept"]));
     }
 
     /// Every stop path, including dashboard key-based stops, must reconcile
@@ -827,7 +827,7 @@ mod tests {
             "one",
             "document_propose",
             &request,
-            &json!({"result":{"status":"committed","effects":[{"kind":"suggestion","id":"kept"}]}}),
+            &json!({"result":{"status":"committed","effects":[{"kind":"change","id":"kept"}]}}),
         )
         .unwrap();
 
@@ -840,6 +840,6 @@ mod tests {
 
         let recovered = State::load(&state_path).unwrap();
         assert_eq!(recovered.tasks[0].status, TaskStatus::Interrupted);
-        assert_eq!(recovered.tasks[0].results["suggestions"], json!(["kept"]));
+        assert_eq!(recovered.tasks[0].results["changes"], json!(["kept"]));
     }
 }

@@ -348,7 +348,7 @@ async fn a_commenter_who_cannot_edit_still_lands_a_comment_that_survives_and_rea
         1,
         "the comment made through the wire moved with its words"
     );
-    let comments = room.all_comments(true).await.unwrap();
+    let comments = room.all_comments().await.unwrap();
     let after = comments
         .iter()
         .find(|c| c.id == comment_id)
@@ -479,7 +479,6 @@ async fn the_wire_sees_every_comment_past_the_first_page_and_can_resolve_one() {
                         author_key: author.clone(),
                         author_label: "Commenter".into(),
                         color: None,
-                        proposal_id: None,
                         original_anchor: librepaper_room::room::OriginalAnchor {
                             source_sequence: 1,
                             frontier: vec![1, 2, 3],
@@ -503,7 +502,7 @@ async fn the_wire_sees_every_comment_past_the_first_page_and_can_resolve_one() {
 
     // The authoritative count comes from the catalogue, not from a list: a
     // reader of the first page is told how many there are behind it.
-    let state = room.comment_state(false).await.unwrap();
+    let state = room.comment_state().await.unwrap();
     assert_eq!(state.total as usize, page + 1);
 
     // A real HTTP traversal, page by page, exactly as a browser and the
@@ -583,7 +582,7 @@ async fn the_wire_sees_every_comment_past_the_first_page_and_can_resolve_one() {
 
     room.forget_comments().await;
     assert!(
-        room.comment_by_id(&last, true)
+        room.comment_by_id(&last)
             .await
             .expect("the catalogue answers")
             .expect("still there")

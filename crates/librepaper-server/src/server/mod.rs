@@ -49,6 +49,7 @@ use librepaper_room::room::{
 #[cfg(test)]
 mod admin_http_tests;
 mod agent_auth;
+mod assistant;
 mod chat;
 #[cfg(test)]
 mod comment_http_tests;
@@ -81,7 +82,6 @@ mod sharing;
 mod signin;
 mod socket;
 pub use librepaper_base::config::socket_budget;
-mod suggestions;
 #[cfg(test)]
 mod trim_http_tests;
 #[cfg(test)]
@@ -1652,7 +1652,6 @@ impl Server {
                 position,
                 document,
                 color,
-                proposed,
                 request_id,
                 ..
             } => {
@@ -1676,7 +1675,6 @@ impl Server {
                     position,
                     document,
                     color.as_deref(),
-                    proposed.as_deref(),
                     expected_render_digest,
                 )
                 .map_err(|error| json!({"type": "error", "message": error}))?;
@@ -1745,109 +1743,10 @@ impl Server {
                     .map_err(command_error_value)?;
                 Ok(json!({"type": "delete", "comment_id": comment_id}))
             }
-            RoomCommand::Refine {
-                comment_id,
-                proposed,
-                expected_proposed,
-                body,
-                ..
-            } => {
-                let parsed_id = comment_id;
-                let (proposal_id, expected_version, exact, prefix, suffix) = match self
-                    .proposal_for_comment(&catalog, document_id, parsed_id)
-                    .await
-                {
-                    Ok(found) => found,
-                    Err(error) => return Err(read_error_value(error)),
-                };
-                let mut refine = librepaper_room::room::RefineSuggestion::new(
-                    catalog.clone(),
-                    document_id,
-                    parsed_id,
-                    proposal_id,
-                    expected_version,
-                    author,
-                    config,
-                    &body,
-                    &exact,
-                    &prefix,
-                    &suffix,
-                    &proposed,
-                    Some(expected_proposed.as_str()),
-                )
-                .map_err(|error| json!({"type": "error", "message": error}))?;
-                let comment = room
-                    .command(authority, &mut refine)
-                    .await
-                    .map_err(command_error_value)?;
-                Ok(json!({"type": "refine", "comment": comment}))
-            }
         }
     }
-
-    /// The proposal a suggestion comment names, and the version a refine
-    /// checks its edit against (§7.2: a conditional transition reads the
-    /// version rather than trusting a client-supplied one).
-    async fn proposal_for_comment(
-        &self,
-        catalog: &librepaper_engine::storage::postgres::PostgresCatalog,
-        document_id: uuid::Uuid,
-        comment_id: uuid::Uuid,
-    ) -> Result<(uuid::Uuid, i64, String, String, String), librepaper_room::room::WriteError> {
-        let comment = self
-            .comment_row(catalog, document_id, comment_id)
-            .await?
-            .ok_or_else(|| librepaper_room::room::WriteError::Conflict("unknown comment".into()))?;
-        let proposal_id = uuid::Uuid::parse_str(&comment.proposal).map_err(|_| {
-            librepaper_room::room::WriteError::Conflict("that comment has no suggestion".into())
-        })?;
-        let proposal = catalog
-            .proposal(proposal_id)
-            .await
-            .map_err(|error| librepaper_room::room::WriteError::Storage(error.to_string()))?
-            .ok_or_else(|| {
-                librepaper_room::room::WriteError::Conflict("unknown suggestion".into())
-            })?;
-        // The passage as the comment currently has it anchored, which is
-        // what `RefineSuggestion` relocates from -- not anything the wire
-        // message carries, since `Command::Refine` names only the new
-        // proposal, never the old quote.
-        let (exact, prefix, suffix) = match comment.source() {
-            Some(target) => (
-                target.exact.clone(),
-                target.prefix.clone(),
-                target.suffix.clone(),
-            ),
-            None => {
-                return Err(librepaper_room::room::WriteError::Conflict(
-                    "that comment has no source passage".into(),
-                ))
-            }
-        };
-        Ok((proposal_id, proposal.version, exact, prefix, suffix))
-    }
-
-    /// A comment by id, read straight from the catalogue rather than through
-    /// the room's cache: `run_comment_command` needs it to look up a
-    /// suggestion's proposal before the command that decides it exists, so
-    /// there is no cached copy to trust yet.
-    async fn comment_row(
-        &self,
-        catalog: &librepaper_engine::storage::postgres::PostgresCatalog,
-        document_id: uuid::Uuid,
-        comment_id: uuid::Uuid,
-    ) -> Result<Option<librepaper_room::room::Comment>, librepaper_room::room::WriteError> {
-        // An indexed `(id, document_id)` read. It used to walk the whole
-        // document's comments and pick one out of the result, which cost
-        // the collection to answer a question about one row and could not
-        // see a comment past the old read budget at all.
-        //
-        // The failure is kept rather than flattened away: an unavailable
-        // database answering "unknown comment" tells a client to stop, when
-        // the one thing it should do is try again.
-        librepaper_room::room::comments::one(catalog, document_id, comment_id, true).await
-    }
 }
+
 /// Where the manual lives. It is a static site, deployed separately from this
 /// binary, so a documentation change never needs a release and a deployment
 /// never carries a copy of the text.
@@ -1873,45 +1772,9 @@ pub(super) fn command_reply(what: &str, error: librepaper_engine::log::CommandEr
     command_refused(what, error)
 }
 
-/// A failed room *read* as the socket's own error value. It is the same
-/// variant-driven mapping `socket_refusal` gives a failed write -- the
-/// message, the status and the retry advice all come from the variant -- so
-/// a comment lookup that failed because storage is away is told apart from
-/// one that found nothing, on the transport as well as in the code.
-fn read_error_value(error: librepaper_room::room::WriteError) -> Value {
-    refusal_value("annotation lookup", &error)
-}
-
 #[cfg(test)]
 mod comment_lookup_tests {
     use super::*;
-
-    /// A comment that is not there and a database that cannot be asked are
-    /// different answers. The second is worth retrying and must not claim
-    /// the comment is unknown.
-    #[test]
-    fn a_failed_read_is_not_an_unknown_comment() {
-        let missing = read_error_value(librepaper_room::room::WriteError::Conflict(
-            "unknown comment".into(),
-        ));
-        assert_eq!(missing["message"], json!("unknown comment"));
-        assert!(missing.get("retryable").is_none());
-
-        let unavailable = read_error_value(librepaper_room::room::WriteError::Storage(
-            "connection reset".into(),
-        ));
-        assert_eq!(
-            unavailable["message"],
-            json!("storage temporarily unavailable")
-        );
-        assert_eq!(unavailable["retryable"], json!(true));
-        // The cause is logged, never sent.
-        assert!(!unavailable.to_string().contains("connection reset"));
-        // And the status travels with it: the REST comments route answers
-        // with this rather than falling back to 400.
-        assert_eq!(missing["status"], json!(409));
-        assert_eq!(unavailable["status"], json!(503));
-    }
 
     /// `handle_comments` picks its status out of the error value. Before the
     /// value carried one, every refusal from this path -- a retryable
