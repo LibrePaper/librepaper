@@ -92,7 +92,7 @@ fn setup(app: &mut App) -> Result<(), Box<dyn std::error::Error>> {
     app.manage(Shell {
         servers: Mutex::new(servers),
     });
-    app.manage(Service::new());
+    app.manage(Service::new(&first));
 
     // Starts the local service before the page asks for it.
     let warm = app.handle().clone();
@@ -375,7 +375,7 @@ fn serve(app: &AppHandle, label: String, request: Request<Vec<u8>>, responder: U
         );
         res.headers_mut().insert(
             header::ACCESS_CONTROL_ALLOW_HEADERS,
-            HeaderValue::from_static("content-type"),
+            HeaderValue::from_static("content-type, if-none-match"),
         );
         return responder.respond(with_origin(res, &origin));
     }
@@ -505,6 +505,8 @@ fn serve(app: &AppHandle, label: String, request: Request<Vec<u8>>, responder: U
                 }
             }
             responder.respond(with_origin(no_content(), &origin));
+            // The service accepts one site, so it is started for the new server.
+            app.state::<Service>().switch(&url).await;
             // The window that asked is moved to the new server.
             let nav = app.clone();
             let result = app.run_on_main_thread(move || {
@@ -540,6 +542,7 @@ fn serve(app: &AppHandle, label: String, request: Request<Vec<u8>>, responder: U
             .to_string(),
         origin: origin.clone(),
         content_type: parts.headers.get(header::CONTENT_TYPE).cloned(),
+        if_none_match: parts.headers.get(header::IF_NONE_MATCH).cloned(),
         body,
     };
     let app = app.clone();
@@ -655,6 +658,10 @@ fn with_origin(mut res: Response<Vec<u8>>, origin: &str) -> Response<Vec<u8>> {
     }
     res.headers_mut()
         .insert(header::VARY, HeaderValue::from_static("Origin"));
+    res.headers_mut().insert(
+        header::ACCESS_CONTROL_EXPOSE_HEADERS,
+        HeaderValue::from_static("etag, x-librepaper-rendering"),
+    );
     res
 }
 
