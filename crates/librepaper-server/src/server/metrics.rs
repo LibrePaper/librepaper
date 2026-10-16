@@ -549,13 +549,33 @@ pub fn spawn_sampler(server: Arc<super::Server>) {
     tokio::spawn(async move {
         let mut interval = tokio::time::interval(Duration::from_secs(15));
         interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+        // The stored total the graphs draw. The storage ledger in the snapshot
+        // moves only when a log row is flushed or compacted, so it misses
+        // uploads, command rows, new documents and deletions until the next
+        // restart. The catalogue's total is exact. Asking for it only when the
+        // graphs are about to record keeps it to one query a minute, and a
+        // failed ask keeps the last figure.
+        let mut stored: Option<i64> = None;
         loop {
             interval.tick().await;
             let snapshot =
                 tokio::time::timeout(SCRAPE_SAMPLE_TIMEOUT, server.metrics_snapshot()).await;
-            if let Ok(snapshot) = snapshot {
+            if let Ok(mut snapshot) = snapshot {
                 server.metrics.update_gauges(&snapshot, &server.config);
                 if let Some(graphs) = server.graphs.clone() {
+                    if stored.is_none() || graphs.due() {
+                        let asked = tokio::time::timeout(
+                            SCRAPE_SAMPLE_TIMEOUT,
+                            server.store.catalog.usage_bytes(None),
+                        )
+                        .await;
+                        if let Ok(Ok(bytes)) = asked {
+                            stored = Some(bytes);
+                        }
+                    }
+                    if let Some(bytes) = stored {
+                        snapshot["storage"] = serde_json::json!({ "retained_bytes": bytes });
+                    }
                     let live = server.metrics.live.clone();
                     let observed =
                         tokio::task::spawn_blocking(move || graphs.observe(&snapshot, &live)).await;

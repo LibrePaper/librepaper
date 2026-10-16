@@ -314,6 +314,17 @@ impl Graphs {
         self.observe_at(Instant::now(), unix_seconds(), snapshot, live);
     }
 
+    /// Whether the next `observe` will record a row. The sampler asks the
+    /// catalogue for the stored total only then.
+    pub fn due(&self) -> bool {
+        self.due_at(Instant::now())
+    }
+
+    fn due_at(&self, now: Instant) -> bool {
+        let state = self.state.lock().unwrap_or_else(PoisonError::into_inner);
+        now >= state.next_due
+    }
+
     fn observe_at(&self, now: Instant, unix: i64, snapshot: &Value, live: &Live) {
         let mut state = self.state.lock().unwrap_or_else(PoisonError::into_inner);
         if !state.checked {
@@ -470,7 +481,7 @@ fn sample(snapshot: &Value, per_minute: [Option<f64>; 4], cpu: Option<f64>) -> [
         per_minute[3],
         gauge(snapshot, "/rooms/documents"),
         gauge(snapshot, "/sockets/active"),
-        gauge(snapshot, "/storage_ledger/deployment_bytes"),
+        gauge(snapshot, "/storage/retained_bytes"),
         gauge(snapshot, "/host/rss_bytes"),
         gauge(snapshot, "/host/host_available_memory_bytes"),
         gauge(snapshot, "/host/disk_available_bytes"),
@@ -493,7 +504,7 @@ mod tests {
         json!({
             "rooms": {"documents": 17},
             "sockets": {"active": 1},
-            "storage_ledger": {"deployment_bytes": 840_000},
+            "storage": {"retained_bytes": 840_000},
             "host": {
                 "rss_bytes": 23_000_000,
                 "host_available_memory_bytes": 4_000_000_000u64,
@@ -728,6 +739,26 @@ mod tests {
         near(later("requests_per_minute"), 0.0);
         assert_eq!(later("latency_p95_seconds"), None);
         near(later("host_cpu_percent"), 25.0);
+    }
+
+    #[test]
+    fn due_is_true_only_once_the_next_row_is_due() {
+        let dir = tempfile::tempdir().unwrap();
+        let graphs = Graphs::open(dir.path()).unwrap();
+        let live = Live::default();
+        let started = graphs.state.lock().unwrap().last_record;
+
+        assert!(!graphs.due_at(started + Duration::from_secs(30)));
+        assert!(graphs.due_at(started + HISTORY_INTERVAL));
+
+        graphs.observe_at(
+            started + HISTORY_INTERVAL,
+            unix_seconds(),
+            &snapshot(0, 0),
+            &live,
+        );
+        assert!(!graphs.due_at(started + HISTORY_INTERVAL));
+        assert!(graphs.due_at(started + HISTORY_INTERVAL * 2));
     }
 
     /// The seconds after `base` at which the sockets series has a row.
