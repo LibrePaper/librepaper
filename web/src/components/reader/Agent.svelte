@@ -583,7 +583,7 @@
        snippet prop on PanelTabs. -->
   {#snippet connectPrompt()}
     <div class="connect-required">
-      <DesktopOnly feature="The agent" />
+      <DesktopOnly feature="The agent" description="Chat with Claude, Codex or another coding agent that reads and edits this project." />
     </div>
   {/snippet}
   <!-- The gear at the top of each pane is the one way to the desktop app
