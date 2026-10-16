@@ -516,7 +516,7 @@ export function reject(doc, id) {
     if (owner) splitOwner(doc, text, owner, id, resolved);
     // Deletions this change swallowed move back to where they sat inside it.
     for (const pt of resolved.points ?? []) {
-      const target = map.get(pt.id);
+      const target = /** @type {any} */ (map.get(pt.id));
       if (!target) continue;
       const found = resolveEntry(doc, pt.id, target);
       if (!found || found.file !== resolved.file || found.to !== found.from) continue;
