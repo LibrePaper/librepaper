@@ -21,7 +21,7 @@ use loro::{
     Container, LoroDoc, LoroText, LoroValue, ValueOrContainer,
 };
 
-use crate::document::session::{apply_text_edits, mint_id, Edit, CHANGES, FILES};
+use crate::document::session::{apply_text_edits, Edit, CHANGES, FILES};
 
 /// Who is making an edit: the stable key and the name comments show.
 pub struct Author<'a> {
@@ -154,160 +154,162 @@ fn plan_one(
     let delta = n as isize - (t - f) as isize;
     let shift = |p: usize| (p as isize + delta) as usize;
 
-    // Own changes the edit touches, endpoints included.
-    let affected: Vec<usize> = (0..list.len())
-        .filter(|&i| {
-            let c = &list[i];
-            c.who == step.me.who && c.from <= t && c.to >= f
-        })
-        .collect();
-
     // Runs of original text the edit deletes: [f, t) outside every change.
     let mut runs: Vec<(usize, usize)> = Vec::new();
     let mut pos = f;
-    for c in list.iter().filter(|c| c.to > c.from) {
-        let s = c.from.max(f);
-        let e = c.to.min(t);
-        if s < e {
-            if pos < s {
-                runs.push((pos, s));
-            }
-            pos = pos.max(e);
+    for c in list.iter() {
+        if c.from >= t {
+            break;
         }
+        if c.to <= pos {
+            continue;
+        }
+        if c.from > pos {
+            runs.push((pos, c.from));
+        }
+        pos = pos.max(c.to);
     }
     if pos < t {
         runs.push((pos, t));
     }
 
+    // Only an edit that deletes original text or inserts makes or merges an
+    // own change. A deletion inside insertions just shrinks them.
+    let trigger = !runs.is_empty() || n > 0;
+    let affected: Vec<usize> = if trigger {
+        (0..list.len())
+            .filter(|&i| {
+                let c = &list[i];
+                c.who == step.me.who && c.from <= t && c.to >= f
+            })
+            .collect()
+    } else {
+        Vec::new()
+    };
+
     let mut out: Vec<ResolvedChange> = Vec::new();
 
-    if !affected.is_empty() || n > 0 || !runs.is_empty() {
-        let first = affected.first().map(|&i| &list[i]);
-        let last_to = affected.last().map(|&i| list[i].to).unwrap_or(t);
+    if trigger {
+        // (position, kind, text): an own change's `deleted` sits at its
+        // position, and an own pure deletion inside a run splits the run.
         let mut pieces: Vec<(usize, u8, String)> = Vec::new();
         for &i in &affected {
             pieces.push((list[i].from, 0, list[i].deleted.clone()));
         }
-        for &(s, e) in &runs {
-            pieces.push((s, 1, text[s..e].iter().collect()));
+        for &(rs, re) in &runs {
+            let mut start = rs;
+            for &i in &affected {
+                let p = list[i].from;
+                if list[i].from == list[i].to && p > start && p < re {
+                    pieces.push((start, 1, text[start..p].iter().collect()));
+                    start = p;
+                }
+            }
+            pieces.push((start, 1, text[start..re].iter().collect()));
         }
         pieces.sort_by_key(|p| (p.0, p.1));
         let deleted: String = pieces.into_iter().map(|p| p.2).collect();
-        let from = first.map_or(f, |c| c.from.min(f));
-        let to = shift(t.max(last_to));
-        let merged = match first {
-            Some(c) => ResolvedChange {
-                id: c.id.clone(),
-                file: c.file.clone(),
-                who: c.who.clone(),
-                author: step.me.author.to_string(),
-                run: step.run.map(str::to_string).or_else(|| c.run.clone()),
-                at: step.now_ms,
-                from,
-                to,
-                deleted,
-            },
-            None => ResolvedChange {
-                id: mint(),
-                // The writer fills in the file.
-                file: String::new(),
-                who: step.me.who.to_string(),
-                author: step.me.author.to_string(),
-                run: step.run.map(str::to_string),
-                at: step.now_ms,
-                from,
-                to,
-                deleted,
-            },
-        };
-        if merged.from < merged.to || !merged.deleted.is_empty() {
-            dirty.insert(merged.id.clone());
-            out.push(merged);
+        let first = affected.first().map(|&i| &list[i]);
+        let mut from = f;
+        let mut to = f + n;
+        for &i in &affected {
+            from = from.min(list[i].from);
+            if list[i].to > t {
+                to = to.max(shift(list[i].to));
+            }
         }
+        let merged = ResolvedChange {
+            id: first.map_or_else(|| mint(), |c| c.id.clone()),
+            // The writer fills in the file of a new change.
+            file: first.map_or_else(String::new, |c| c.file.clone()),
+            who: step.me.who.to_string(),
+            author: step.me.author.to_string(),
+            run: step
+                .run
+                .map(str::to_string)
+                .or_else(|| first.and_then(|c| c.run.clone())),
+            at: step.now_ms,
+            from,
+            to,
+            deleted,
+        };
+        dirty.insert(merged.id.clone());
+        out.push(merged);
     }
 
     for (i, c) in list.iter().enumerate() {
         if affected.contains(&i) {
             continue;
         }
-        if c.from == c.to {
-            // A pure deletion: only its point moves.
-            let mut moved = c.clone();
-            let p = c.from;
-            moved.from = if p < f {
-                p
-            } else if p >= t {
-                shift(p)
-            } else {
-                f + n
-            };
-            moved.to = moved.from;
-            out.push(moved);
-            continue;
-        }
-        if c.to <= f {
-            out.push(c.clone());
-            continue;
-        }
-        if c.from >= t {
-            let mut moved = c.clone();
-            moved.from = shift(c.from);
-            moved.to = shift(c.to);
-            out.push(moved);
-            continue;
-        }
-        // The edit deletes part of this change, or inserts strictly inside it.
-        let left = c.from < f;
-        let right = c.to > t;
-        match (left, right) {
-            (true, true) if n > 0 => {
-                let mut head = c.clone();
-                head.to = f;
+        if trigger && n > 0 && c.from < f && f < c.to {
+            let mut head = c.clone();
+            head.to = f;
+            dirty.insert(head.id.clone());
+            out.push(head);
+            if c.to > t {
                 let mut tail = c.clone();
                 tail.id = mint();
                 tail.from = f + n;
                 tail.to = shift(c.to);
                 tail.deleted = String::new();
-                dirty.insert(head.id.clone());
-                dirty.insert(tail.id.clone());
-                out.push(head);
-                out.push(tail);
-            }
-            (true, true) => {
-                let mut whole = c.clone();
-                whole.to = shift(c.to);
-                dirty.insert(whole.id.clone());
-                out.push(whole);
-            }
-            (true, false) => {
-                let mut head = c.clone();
-                head.to = f;
-                dirty.insert(head.id.clone());
-                out.push(head);
-            }
-            (false, true) => {
-                let mut tail = c.clone();
-                tail.from = f + n;
-                tail.to = shift(c.to);
                 dirty.insert(tail.id.clone());
                 out.push(tail);
             }
-            (false, false) => {
-                // Every inserted character is gone. What it removed from the
-                // original text stays recorded as a deletion at that point.
-                if !c.deleted.is_empty() {
-                    let mut point = c.clone();
-                    point.from = f + n;
-                    point.to = f + n;
-                    dirty.insert(point.id.clone());
-                    out.push(point);
-                }
+            continue;
+        }
+        let mut moved = c.clone();
+        if c.from == c.to {
+            moved.from = map_point(c.from, f, t, n);
+            moved.to = moved.from;
+            if t > f && f <= c.from && c.from < t {
+                dirty.insert(c.id.clone());
+            }
+        } else {
+            moved.from = map_start(c.from, f, t, n);
+            moved.to = map_end(c.to, f, t, n);
+            if moved.to < moved.from {
+                moved.from = moved.to;
+            }
+            if c.from < t && c.to > f {
+                dirty.insert(c.id.clone());
             }
         }
+        out.push(moved);
     }
 
+    out.retain(|c| c.from != c.to || !c.deleted.is_empty());
     out.sort_by_key(|c| (c.from, c.to));
     out
+}
+
+fn map_start(p: usize, ef: usize, et: usize, len: usize) -> usize {
+    if p < ef {
+        p
+    } else if p >= et {
+        p + len - (et - ef)
+    } else {
+        ef + len
+    }
+}
+
+fn map_end(p: usize, ef: usize, et: usize, len: usize) -> usize {
+    if p <= ef {
+        p
+    } else if p > et {
+        p + len - (et - ef)
+    } else {
+        ef
+    }
+}
+
+fn map_point(p: usize, ef: usize, et: usize, len: usize) -> usize {
+    if p < ef {
+        p
+    } else if p >= et {
+        p + len - (et - ef)
+    } else {
+        ef
+    }
 }
 
 fn text_of(doc: &LoroDoc, file_id: &str) -> Option<LoroText> {
@@ -331,10 +333,23 @@ fn bytes_field(m: &loro::LoroMapValue, key: &str) -> Option<Vec<u8>> {
     }
 }
 
+/// An entry read back, with the replacement cursors Loro offers when an
+/// anchor character was deleted.
+struct Read {
+    change: ResolvedChange,
+    start_update: Option<Cursor>,
+    end_update: Option<Cursor>,
+}
+
 /// The entry for `id` with its cursors resolved, or `None` when it is not a
 /// well-formed entry or is orphaned (its file or start cursor is gone). An
 /// empty change is returned; callers that list changes drop it.
-fn read_entry(doc: &LoroDoc, id: &str) -> Option<ResolvedChange> {
+///
+/// A cursor resolves to the index of the character it is attached to. The end
+/// cursor is attached to the last inserted character, so `to` is one past it,
+/// unless that character was deleted: then Loro answers with an `update` and
+/// the position the character had, which is already the end.
+fn read_entry(doc: &LoroDoc, id: &str) -> Option<Read> {
     let ValueOrContainer::Value(LoroValue::Map(m)) = doc.get_map(CHANGES).get(id)? else {
         return None;
     };
@@ -344,14 +359,19 @@ fn read_entry(doc: &LoroDoc, id: &str) -> Option<ResolvedChange> {
     if start.container != text.id() {
         return None;
     }
-    let from = doc.get_cursor_pos(&start).ok()?.current.pos;
+    let start_pos = doc.get_cursor_pos(&start).ok()?;
+    let from = start_pos.current.pos;
+    let mut end_update = None;
     let to = match bytes_field(&m, "end") {
         Some(bytes) => {
             let end = Cursor::decode(&bytes).ok()?;
             if end.container != text.id() {
                 return None;
             }
-            doc.get_cursor_pos(&end).ok()?.current.pos
+            let end_pos = doc.get_cursor_pos(&end).ok()?;
+            let live = end_pos.update.is_none();
+            end_update = end_pos.update;
+            end_pos.current.pos + usize::from(live)
         }
         None => from,
     };
@@ -363,16 +383,20 @@ fn read_entry(doc: &LoroDoc, id: &str) -> Option<ResolvedChange> {
         _ => 0,
     };
     let run = string_field(&m, "run");
-    Some(ResolvedChange {
-        id: id.to_string(),
-        file,
-        who: string_field(&m, "who")?,
-        author: string_field(&m, "author")?,
-        run,
-        at,
-        from,
-        to,
-        deleted: string_field(&m, "deleted")?,
+    Some(Read {
+        change: ResolvedChange {
+            id: id.to_string(),
+            file,
+            who: string_field(&m, "who")?,
+            author: string_field(&m, "author")?,
+            run,
+            at,
+            from,
+            to,
+            deleted: string_field(&m, "deleted")?,
+        },
+        start_update: start_pos.update,
+        end_update,
     })
 }
 
@@ -382,7 +406,7 @@ pub fn resolve_changes(doc: &LoroDoc, file_id: &str) -> Vec<ResolvedChange> {
     let mut out: Vec<ResolvedChange> = doc
         .get_map(CHANGES)
         .keys()
-        .filter_map(|id| read_entry(doc, &id.to_string()))
+        .filter_map(|id| read_entry(doc, &id.to_string()).map(|r| r.change))
         .filter(|c| c.file == file_id && (c.from < c.to || !c.deleted.is_empty()))
         .collect();
     out.sort_by(|a, b| (a.from, a.to, &a.id).cmp(&(b.from, b.to, &b.id)));
@@ -489,7 +513,8 @@ pub fn apply_tracked_edits(
 }
 
 /// Accepts a change: drops the record and keeps the text. Returns false when
-/// there is no such change. Does not commit.
+/// there is no such change. An orphaned record is dropped too. Does not
+/// commit.
 pub fn accept(doc: &LoroDoc, id: &str) -> bool {
     let map = doc.get_map(CHANGES);
     if map.get(id).is_none() {
@@ -499,35 +524,61 @@ pub fn accept(doc: &LoroDoc, id: &str) -> bool {
 }
 
 /// Rejects a change: puts `deleted` back in place of the inserted text, then
-/// drops the record. Returns false when there is no such change or it is
-/// orphaned. Does not commit.
+/// drops the record. Returns false when there is no such change. An orphaned
+/// record is only dropped. Does not commit.
 pub fn reject(doc: &LoroDoc, id: &str) -> bool {
-    let Some(c) = read_entry(doc, id) else {
-        return false;
-    };
-    let Some(text) = text_of(doc, &c.file) else {
-        return false;
-    };
-    if c.to > c.from && text.delete(c.from, c.to - c.from).is_err() {
+    let map = doc.get_map(CHANGES);
+    if map.get(id).is_none() {
         return false;
     }
-    if !c.deleted.is_empty() && text.insert(c.from, &c.deleted).is_err() {
-        return false;
+    if let Some(Read { change: c, .. }) = read_entry(doc, id) {
+        if let Some(text) = text_of(doc, &c.file) {
+            if c.to > c.from {
+                text.delete(c.from, c.to - c.from).ok();
+            }
+            if !c.deleted.is_empty() {
+                text.insert(c.from, &c.deleted).ok();
+            }
+        }
     }
-    doc.get_map(CHANGES).delete(id).is_ok()
+    map.delete(id).is_ok()
 }
 
 /// Removes every orphaned, malformed or empty entry and returns how many it
-/// removed. An editor calls this in its next local commit. Does not commit.
+/// removed. An entry whose cursor came back with a replacement is rewritten
+/// with fresh cursors made from its resolved span, so a deleted anchor is
+/// looked up the slow way once; that does not count. An editor calls this in its next local commit. Does not commit.
 pub fn prune(doc: &LoroDoc) -> usize {
     let map = doc.get_map(CHANGES);
     let ids: Vec<String> = map.keys().map(|k| k.to_string()).collect();
     let mut removed = 0;
     for id in ids {
-        let keep = read_entry(doc, &id).is_some_and(|c| c.from < c.to || !c.deleted.is_empty());
-        if !keep && map.delete(&id).is_ok() {
-            removed += 1;
+        let read = read_entry(doc, &id)
+            .filter(|r| r.change.from < r.change.to || !r.change.deleted.is_empty());
+        let Some(read) = read else {
+            if map.delete(&id).is_ok() {
+                removed += 1;
+            }
+            continue;
+        };
+        if read.start_update.is_none() && read.end_update.is_none() {
+            continue;
         }
+        // Loro's replacement cursor sits on the next live character, which
+        // the end rule would overshoot. Write fresh cursors from the span.
+        let c = &read.change;
+        let Some(text) = text_of(doc, &c.file) else {
+            continue;
+        };
+        let Some(start) = text.get_cursor(c.from, Side::Left) else {
+            continue;
+        };
+        let end = if c.to > c.from {
+            text.get_cursor(c.to - 1, Side::Right)
+        } else {
+            None
+        };
+        map.insert(&id, entry_value(c, &start, end.as_ref())).ok();
     }
     removed
 }
