@@ -52,7 +52,7 @@ import MergeEditor from ${JSON.stringify(join(root, "web/src/components/MergeEdi
 import Editor from ${JSON.stringify(join(root, "web/src/components/Editor.svelte"))};
 import Diagnostics from ${JSON.stringify(join(root, "web/src/components/reader/Diagnostics.svelte"))};
 import { join as joinSession } from ${JSON.stringify(join(root, "web/src/lib/collab.js"))};
-import { createProposals } from ${JSON.stringify(join(root, "web/src/lib/proposals.js"))};
+import { trackedSplice } from ${JSON.stringify(join(root, "web/src/lib/track-changes.js"))};
 import { durableProjectPersistence, prepareOfflineProject, preparedProject } from ${JSON.stringify(join(root, "web/src/lib/offline-projects.js"))};
 import { createClassComponent } from ${JSON.stringify(join(root, "web/node_modules/svelte/src/legacy/legacy-client.js"))};
 
@@ -100,54 +100,35 @@ window.editorCheck = async () => {
     sameView: firstView === finalView,
   };
 };
-window.proposalOverlayMappingCheck = async () => {
+// A pending change written by another peer is drawn in the text: what it added,
+// marked where it sits, and what it took out, hung where it was taken from.
+window.peerChangeCheck = async () => {
   const value = joinSession({ send: () => {}, mayEdit: true });
   const textId = value.addText("cats.md", "the cat sat.");
   value.setMain(textId);
-  const base = value.doc.frontiers();
   const host = document.createElement("section");
   document.body.append(host);
   const component = createClassComponent({
     component: Editor,
     target: host,
-    props: { session: value, format: "markdown", file: textId },
+    props: { session: value, format: "markdown", file: textId, me: { who: "me", author: "Me" } },
   });
   await tick();
-  component.$set({ review: [{
-    id: "adjacent-cat-replacement",
-    base,
-    hunks: [{ index: 0, start: 4, deleted: 3, inserted: "dog", before: "cat", prefix: "the ", suffix: " sat.", file: textId }],
-  }] });
-  await tick();
-  fromAPeer(value.doc, (peer) => {
-    const text = peer.getMap("files").get(textId);
-    text.insert(4, "very ");
-    text.insert(12, " very");
-  });
+  fromAPeer(value.doc, (peer) => trackedSplice(peer, textId, 4, 7, "dog", { who: "peer", author: "Pat" }));
   await tick();
   await tick();
-  const adjacentView = EditorView.findFromDOM(host.querySelector(".cm-editor"));
-  const adjacent = {
-    text: adjacentView.state.doc.toString(),
-    line: host.querySelector(".cm-line")?.textContent || "",
-    removed: [...host.querySelectorAll("del.proposal-removed")].map((node) => node.textContent),
-    added: [...host.querySelectorAll("ins.proposal-added")].map((node) => node.textContent),
-  };
-  fromAPeer(value.doc, (peer) => {
-    const text = peer.getMap("files").get(textId);
-    text.delete(9, 3);
-    text.insert(9, "fox");
-  });
-  await tick();
-  await tick();
-  const stale = {
-    text: EditorView.findFromDOM(host.querySelector(".cm-editor")).state.doc.toString(),
-    overlay: Boolean(host.querySelector("del.proposal-removed, ins.proposal-added")),
+  const view = EditorView.findFromDOM(host.querySelector(".cm-editor"));
+  const drawn = {
+    text: view.state.doc.toString(),
+    added: [...host.querySelectorAll(".change-added")].map((node) => node.textContent),
+    removed: [...host.querySelectorAll("del.change-removed")].map((node) => node.textContent),
+    mine: host.querySelectorAll(".change-mine").length,
+    entries: value.doc.getMap("changes").size,
   };
   component.$destroy();
   host.remove();
   value.leave();
-  return { adjacent, stale };
+  return drawn;
 };
 window.projectedMainFallbackCheck = async () => {
   const outcomes = [];
@@ -535,15 +516,11 @@ window.collabCacheCheck = async () => {
     sessions.forEach((value) => value.leave());
   }
 };
-// Track changes, end to end through the component: switching it on has to
-// take the keystrokes out of the paper and put them on a branch, and that
-// branch has to reach the socket while the author is still typing. Both of
-// those were broken -- the binding was rebuilt while the prop that said
-// "tracking" had not arrived yet, so every tracked keystroke went straight
-// into the document, and nothing flushed until tracking was switched off.
+// Track changes, end to end through the component: with tracking on, typing
+// puts the text in the document and records one pending change beside it;
+// more typing extends that change; undo takes back both. With tracking off,
+// nothing is recorded.
 window.trackingCheck = async () => {
-  const sent = [];
-  const statuses = [];
   const value = joinSession({ send: () => {}, mayEdit: true });
   const id = value.addText("tracked.md", "alpha");
   value.setMain(id);
@@ -552,226 +529,38 @@ window.trackingCheck = async () => {
   const tracked = createClassComponent({
     component: Editor,
     target: host,
-    props: {
-      session: value, format: "markdown", file: id, editable: true,
-      send: (message) => { sent.push(message); return true; },
-      onproposalstatus: (status) => { if (status) statuses.push(status); },
-    },
+    props: { session: value, format: "markdown", file: id, editable: true, me: { who: "me", author: "Me" } },
   });
   await tick();
-  tracked.startTracking();
-  await tick();
-  const on = tracked.trackingOn();
-  const openedBeforeTyping = sent.some((message) => message.type === "proposal-open");
-  const draftId = tracked.proposalStatus()?.id || "";
+  const changes = () => value.doc.getMap("changes");
+  const on = (tracked.startTracking(), tracked.trackingOn());
   const view = EditorView.findFromDOM(host.querySelector(".cm-editor"));
-  view.dispatch({ changes: { from: 0, insert: "TRACKED " } });
-  // Longer than the flush pause: the point of the check is that typing sends,
-  // without anything else having to happen.
-  await new Promise((resolve) => setTimeout(resolve, 700));
-  const open = sent.find((message) => message.type === "proposal-open");
-  if (open) tracked.receiveProposal({ type: "proposal-opened", proposal_id: open.request_id, request_id: open.request_id, tip: "", applied_version: "" });
-  await new Promise((resolve) => setTimeout(resolve, 100));
-  const update = sent.find((message) => message.type === "proposal-update");
-  if (update) tracked.receiveProposal({ type: "proposal-updated", proposal_id: update.proposal_id, request_id: update.request_id, tip: update.tip, applied_version: "" });
-  const shown = view.state.doc.toString();
-  const paper = value.textOf(id).toString();
-  tracked.stopTracking();
+  view.dispatch({ changes: { from: 0, insert: "TRACKED " }, userEvent: "input.type" });
   await tick();
+  await tick();
+  const first = { text: value.textOf(id).toString(), entries: changes().size, ids: [...changes().keys()] };
+  const drawn = host.querySelectorAll(".change-added.change-mine").length;
+  view.dispatch({ changes: { from: 8, insert: "more " }, userEvent: "input.type" });
+  await tick();
+  await tick();
+  const second = { text: value.textOf(id).toString(), entries: changes().size, same: [...changes().keys()][0] === first.ids[0] };
+  const { undo } = await import(${JSON.stringify(join(root, "web/src/lib/loro-undo.js"))});
+  await new Promise((resolve) => setTimeout(resolve, 1100));
+  undo(view);
+  await tick();
+  await tick();
+  const undone = { text: value.textOf(id).toString(), entries: changes().size };
+  tracked.stopTracking();
   const off = tracked.trackingOn();
-  const afterStop = value.textOf(id).toString();
-  const back = EditorView.findFromDOM(host.querySelector(".cm-editor"));
-  back.dispatch({ changes: { from: 0, insert: "DIRECT " } });
+  const stopped = EditorView.findFromDOM(host.querySelector(".cm-editor"));
+  stopped.dispatch({ changes: { from: 0, insert: "DIRECT " }, userEvent: "input.type" });
   await tick();
-  const direct = value.textOf(id).toString();
+  await tick();
+  const direct = { text: value.textOf(id).toString(), entries: changes().size };
   tracked.$destroy();
   host.remove();
   value.leave();
-  return {
-    on, off, opened: Boolean(open), openedBeforeTyping, draftId, shown, paper, afterStop, direct,
-    pendingSeen: statuses.some((status) => Number(status.pending) > 0), acknowledged: Number(statuses.at(-1)?.pending || 0) === 0,
-    flushed: Boolean(update && update.proposal_id === draftId && update.update),
-  };
-};
-// Track changes with a stop before proposal-opened arrives: the unsent work
-// should be sent once the server names the proposal, even though tracking
-// was turned off locally first.
-window.trackingStopBeforeOpenedCheck = async () => {
-  const sent = [];
-  const value = joinSession({ send: () => {}, mayEdit: true });
-  const id = value.addText("tracked.md", "alpha");
-  value.setMain(id);
-  const host = document.createElement("section");
-  document.body.append(host);
-  const tracked = createClassComponent({
-    component: Editor,
-    target: host,
-    props: {
-      session: value, format: "markdown", file: id, editable: true,
-      send: (message) => { sent.push(message); return true; },
-    },
-  });
-  await tick();
-  tracked.startTracking();
-  await tick();
-  const view = EditorView.findFromDOM(host.querySelector(".cm-editor"));
-  view.dispatch({ changes: { from: 0, insert: "TRACKED " } });
-  // Wait for the lazy open request, but do not acknowledge it yet.
-  await new Promise((resolve) => setTimeout(resolve, 700));
-  const open = sent.find((message) => message.type === "proposal-open");
-  // Stop tracking before proposal-opened arrives.
-  tracked.stopTracking();
-  await tick();
-  const noUpdateYet = sent.filter((message) => message.type === "proposal-update").length;
-  // Now deliver proposal-opened -- the unsent work should be sent.
-  if (open) tracked.receiveProposal({ type: "proposal-opened", proposal_id: open.request_id, request_id: open.request_id, tip: "", applied_version: "" });
-  const delayedUpdate = sent.find((message) => message.type === "proposal-update" && message.proposal_id === open?.request_id);
-  if (delayedUpdate) tracked.receiveProposal({ type: "proposal-updated", proposal_id: delayedUpdate.proposal_id, request_id: delayedUpdate.request_id, tip: delayedUpdate.tip, applied_version: "" });
-  const shown = value.textOf(id).toString();
-  tracked.$destroy();
-  host.remove();
-  value.leave();
-  return {
-    noUpdateYet,
-    openId: open?.request_id || "",
-    delayedSent: Boolean(delayedUpdate && delayedUpdate.update),
-    delayedUpdateId: delayedUpdate?.proposal_id || "",
-    shown,
-  };
-};
-// An active tracked draft resolving is still the same user intent. The next
-// edit must stay on a fresh lazy branch instead of silently reaching the room.
-window.trackingResolutionRestartsCheck = async () => {
-  const sent = [];
-  const value = joinSession({ send: () => {}, mayEdit: true });
-  const id = value.addText("tracked-resolution.md", "alpha");
-  value.setMain(id);
-  await value.start({ protocol: "librepaper.room.v3", vector: "", updates: [] });
-  const host = document.createElement("section");
-  document.body.append(host);
-  const tracked = createClassComponent({
-    component: Editor,
-    target: host,
-    props: {
-      session: value, format: "markdown", file: id, editable: true,
-      send: (message) => { sent.push(message); return true; },
-    },
-  });
-  await tick();
-  tracked.startTracking();
-  await tick();
-  let view = EditorView.findFromDOM(host.querySelector(".cm-editor"));
-  view.dispatch({ changes: { from: 0, insert: "FIRST " } });
-  await new Promise((resolve) => setTimeout(resolve, 700));
-  const firstOpen = sent.find((message) => message.type === "proposal-open");
-  if (firstOpen) tracked.receiveProposal({ type: "proposal-opened", proposal_id: firstOpen.request_id, request_id: firstOpen.request_id, tip: "", applied_version: 1 });
-  await new Promise((resolve) => setTimeout(resolve, 100));
-  const firstUpdate = sent.find((message) => message.type === "proposal-update");
-  if (firstUpdate) tracked.receiveProposal({ type: "proposal-updated", proposal_id: firstUpdate.proposal_id, request_id: firstUpdate.request_id, tip: firstUpdate.tip, applied_version: 2 });
-  if (firstUpdate) {
-    const bytes = Uint8Array.from(atob(firstUpdate.update), (character) => character.charCodeAt(0));
-    value.doc.import(bytes);
-    value.doc.commit();
-  }
-  if (firstOpen) tracked.receiveProposal({
-    type: "proposal-decided", proposal_id: firstOpen.request_id, resolved: true,
-    decisions: [{ hunk: 0, accepted: true }], resolved_base: firstOpen.base || "", resolved_tip: firstUpdate?.tip || "",
-  });
-  await tick();
-  const stillTracking = tracked.trackingOn();
-  const restartedId = tracked.proposalStatus()?.id || "";
-  const openCountBeforeTyping = sent.filter((message) => message.type === "proposal-open").length;
-  view = EditorView.findFromDOM(host.querySelector(".cm-editor"));
-  view.dispatch({ changes: { from: 0, insert: "NEXT " } });
-  const liveImmediately = value.textOf(id).toString();
-  await new Promise((resolve) => setTimeout(resolve, 700));
-  const opens = sent.filter((message) => message.type === "proposal-open");
-  const finalText = value.textOf(id).toString();
-  const secondId = opens.at(-1)?.request_id || "";
-  tracked.stopTracking();
-  tracked.$destroy();
-  host.remove();
-  value.leave();
-  return {
-    stillTracking, restartedId, openCountBeforeTyping, firstId: firstOpen?.request_id || "",
-    secondId, opensAfterTyping: opens.length, liveImmediately, finalText,
-  };
-};
-// A retained draft can require manual recovery while a newer active draft is
-// still safe to rebase. Resolution delivery belongs to the session manager,
-// which also owns both drafts while the editor is mounted.
-window.trackingRecoveryDoesNotBlockResolutionCheck = async () => {
-  const sent = [];
-  const send = (message) => { sent.push(message); return true; };
-  const value = joinSession({ send, mayEdit: true });
-  const id = value.addText("tracked-recovery.md", "alpha");
-  value.setMain(id);
-  await value.start({ protocol: "librepaper.room.v3", vector: "", updates: [] });
-  const manager = createProposals({ session: value, send, mayEdit: true });
-  const host = document.createElement("section");
-  document.body.append(host);
-  const tracked = createClassComponent({
-    component: Editor,
-    target: host,
-    props: { session: value, format: "markdown", file: id, editable: true, send },
-  });
-  await tick();
-
-  // Leave an update in flight before stopping so the manager retains it. An
-  // expired server outcome marks that older draft blocked for manual export.
-  tracked.startTracking();
-  await tick();
-  let view = EditorView.findFromDOM(host.querySelector(".cm-editor"));
-  view.dispatch({ changes: { from: 0, insert: "OLD " } });
-  await new Promise((resolve) => setTimeout(resolve, 700));
-  const oldOpen = sent.find((message) => message.type === "proposal-open");
-  if (oldOpen) manager.apply({ type: "proposal-opened", proposal_id: oldOpen.request_id, request_id: oldOpen.request_id, applied_version: 1 });
-  await new Promise((resolve) => setTimeout(resolve, 100));
-  const oldUpdate = sent.find((message) => message.type === "proposal-update");
-  tracked.stopTracking();
-  if (oldUpdate) manager.apply({ type: "error", request_id: oldUpdate.request_id, status_unknown: true });
-  const oldRecoveryRequired = Boolean(manager.status()?.recoveryRequired);
-
-  // A new branch is allowed to proceed even while the retained draft keeps
-  // the recovery warning visible. The manager, rather than Editor's private
-  // API, receives the fresh proposal's open, update and resolution messages.
-  tracked.startTracking();
-  await tick();
-  view = EditorView.findFromDOM(host.querySelector(".cm-editor"));
-  view.dispatch({ changes: { from: 0, insert: "FRESH " } });
-  await new Promise((resolve) => setTimeout(resolve, 700));
-  const freshOpen = sent.filter((message) => message.type === "proposal-open").at(-1);
-  if (freshOpen) manager.apply({ type: "proposal-opened", proposal_id: freshOpen.request_id, request_id: freshOpen.request_id, applied_version: 2 });
-  await new Promise((resolve) => setTimeout(resolve, 100));
-  const freshUpdate = sent.filter((message) => message.type === "proposal-update").at(-1);
-  if (freshUpdate) manager.apply({ type: "proposal-updated", proposal_id: freshUpdate.proposal_id, request_id: freshUpdate.request_id, tip: freshUpdate.tip, applied_version: 3 });
-  if (freshOpen && freshUpdate) manager.apply({
-    type: "proposal-decided", proposal_id: freshOpen.request_id, resolved: true,
-    decisions: [{ hunk: 0, accepted: false }], resolved_base: freshOpen.base, resolved_tip: freshUpdate.tip,
-  });
-  await tick();
-  const recoveryAfterFreshResolution = Boolean(manager.status()?.recoveryRequired);
-  const recoveryStatusId = tracked.proposalStatus()?.id || "";
-  const restartedDraftId = manager.id?.() || "";
-  const trackingAfterFreshResolution = tracked.trackingOn();
-  const opensBeforeNextTyping = sent.filter((message) => message.type === "proposal-open").length;
-  view = EditorView.findFromDOM(host.querySelector(".cm-editor"));
-  view.dispatch({ changes: { from: 0, insert: "NEXT " } });
-  const liveImmediately = value.textOf(id).toString();
-  await new Promise((resolve) => setTimeout(resolve, 700));
-  const opens = sent.filter((message) => message.type === "proposal-open");
-  const latestOpenId = opens.at(-1)?.request_id || "";
-  const finalText = value.textOf(id).toString();
-  tracked.stopTracking();
-  tracked.$destroy();
-  host.remove();
-  value.leave();
-  return {
-    oldOpenId: oldOpen?.request_id || "", oldUpdateId: oldUpdate?.request_id || "",
-    oldRecoveryRequired, freshOpenId: freshOpen?.request_id || "", freshUpdateId: freshUpdate?.request_id || "",
-    recoveryAfterFreshResolution, recoveryStatusId, restartedDraftId, trackingAfterFreshResolution, opensBeforeNextTyping, latestOpenId,
-    opensAfterNextTyping: opens.length, liveImmediately, finalText,
-  };
+  return { on, off, first, drawn, second, undone, direct };
 };
 window.diagnosticsCheck = async () => {
   const host = document.createElement("aside");
@@ -1006,14 +795,13 @@ try {
   assert.equal(result.before.caret + 7, result.after.caret);
   assert.equal(result.after.text, "REMOTE LOCAL alpha");
   console.log("editor-browser: file state, undo, caret, and inactive remote text preserved");
-  const proposalOverlay = await evaluate("proposalOverlayMappingCheck()");
-  assert.equal(proposalOverlay.adjacent.text, "the very cat very sat.");
-  assert.equal(proposalOverlay.adjacent.line, "the very catdog very sat.", "the proposal overlay moved away from the original cat");
-  assert.deepEqual(proposalOverlay.adjacent.removed, ["cat"]);
-  assert.deepEqual(proposalOverlay.adjacent.added, ["dog"]);
-  assert.equal(proposalOverlay.stale.text, "the very fox very sat.");
-  assert.equal(proposalOverlay.stale.overlay, false, "an edit inside the replacement remained painted as valid");
-  console.log("editor-browser: adjacent edits preserve proposal overlays, while interior edits make them stale");
+  const peerChange = await evaluate("peerChangeCheck()");
+  assert.equal(peerChange.text, "the dog sat.");
+  assert.deepEqual(peerChange.added, ["dog"], "a change written by another peer was not drawn");
+  assert.deepEqual(peerChange.removed, ["cat"], "the text the peer took out was not drawn");
+  assert.equal(peerChange.mine, 0, "another author's change was drawn as the viewer's own");
+  assert.equal(peerChange.entries, 1);
+  console.log("editor-browser: a change written by another peer is drawn in the text");
   const projectedMain = await evaluate("projectedMainFallbackCheck()");
   assert.deepEqual(projectedMain.map((outcome) => outcome.mainState), ["absent", "dangling"]);
   for (const outcome of projectedMain) {
@@ -1105,58 +893,18 @@ try {
 
   const tracked = await evaluate("trackingCheck()");
   assert.equal(tracked.on, true, "track changes reported off after being switched on");
-  assert.equal(tracked.openedBeforeTyping, false, "starting tracking created an empty server proposal");
-  assert.match(tracked.draftId, /^[0-9a-f-]{36}$/i, "the draft was not named locally with a UUID");
-  assert.equal(tracked.opened, true, "the first real tracked edit did not open a proposal");
-  assert.equal(tracked.shown, "TRACKED alpha", "the author cannot see what they typed");
-  assert.equal(tracked.paper, "alpha", "a tracked keystroke reached the document instead of the branch");
-  assert.equal(tracked.pendingSeen, true, "unacknowledged tracked work was not exposed to the save status");
-  assert.equal(tracked.flushed, true, "the branch was never sent, so nobody could review it");
-  assert.equal(tracked.acknowledged, true, "an explicit server acknowledgement did not clear tracked pending status");
+  assert.equal(tracked.first.text, "TRACKED alpha", "a tracked keystroke did not reach the document");
+  assert.equal(tracked.first.entries, 1, "typing with tracking on did not record one change");
+  assert.ok(tracked.drawn > 0, "the viewer's own change was not drawn");
+  assert.equal(tracked.second.text, "TRACKED more alpha");
+  assert.equal(tracked.second.entries, 1, "typing more made a second change instead of extending the first");
+  assert.equal(tracked.second.same, true, "typing more replaced the change instead of extending it");
+  assert.equal(tracked.undone.text, "alpha", "undo did not take back the typed text");
+  assert.equal(tracked.undone.entries, 0, "undo took back the text but left its change record");
   assert.equal(tracked.off, false, "track changes reported on after being switched off");
-  assert.equal(tracked.afterStop, "alpha", "stopping applied the proposal instead of leaving it for review");
-  assert.equal(tracked.direct, "DIRECT alpha", "editing after stopping did not reach the document");
-  console.log("editor-browser: tracked edits go to a branch, are sent while typing, and leave the paper alone");
-  const trackingStopBefore = await evaluate("trackingStopBeforeOpenedCheck()");
-  assert.equal(trackingStopBefore.noUpdateYet, 0, "proposal-update was sent before stopping");
-  assert.equal(trackingStopBefore.delayedSent, true, "unsent work was not sent after proposal-opened");
-  assert.match(trackingStopBefore.openId, /^[0-9a-f-]{36}$/i, "the pending open did not retain its client-chosen id");
-  assert.equal(trackingStopBefore.delayedUpdateId, trackingStopBefore.openId, "the delayed update was sent to the wrong proposal id");
-  assert.equal(trackingStopBefore.shown, "alpha", "stopping tracking changed the paper text");
-  console.log("editor-browser: stopping before proposal-opened sends unsent edits once named");
-  const trackingResolved = await evaluate("trackingResolutionRestartsCheck()");
-  assert.equal(trackingResolved.stillTracking, true, "resolving an active proposal turned track changes off");
-  assert.notEqual(trackingResolved.restartedId, "", "resolution did not establish a fresh local draft");
-  assert.notEqual(trackingResolved.restartedId, trackingResolved.firstId, "resolution did not replace the decided draft identity");
-  assert.equal(trackingResolved.openCountBeforeTyping, 1, "restarting tracking created an empty server proposal");
-  assert.notEqual(trackingResolved.secondId, "", "typing after resolution did not open a new tracked proposal");
-  assert.notEqual(trackingResolved.secondId, trackingResolved.firstId, "typing after resolution reused the decided proposal id");
-  assert.equal(trackingResolved.secondId, trackingResolved.restartedId, "typing opened a different proposal than the fresh local draft");
-  assert.equal(trackingResolved.opensAfterTyping, 2);
-  assert.equal(trackingResolved.liveImmediately, "FIRST alpha", "the first keystroke after resolution reached the room");
-  assert.equal(trackingResolved.finalText, "FIRST alpha", "the next tracked edit leaked into live text");
-  console.log("editor-browser: tracking restarts lazily after its own proposal resolves");
-  const retainedRecovery = await evaluate("trackingRecoveryDoesNotBlockResolutionCheck()");
-  assert.notEqual(retainedRecovery.oldOpenId, "", "the retained draft was never opened");
-  assert.notEqual(retainedRecovery.oldUpdateId, "", "the retained draft had no in-flight update to preserve");
-  assert.equal(retainedRecovery.oldRecoveryRequired, true, "the old unresolved outcome did not require manual recovery");
-  assert.notEqual(retainedRecovery.freshOpenId, "", "tracking did not create a fresh proposal beside the retained draft");
-  assert.notEqual(retainedRecovery.freshOpenId, retainedRecovery.oldOpenId, "the fresh proposal reused the retained draft id");
-  assert.notEqual(retainedRecovery.freshUpdateId, "", "the fresh proposal update was not delivered to the session manager");
-  assert.equal(retainedRecovery.recoveryAfterFreshResolution, true, "resolving the fresh proposal incorrectly cleared the old recovery warning");
-  assert.equal(retainedRecovery.recoveryStatusId, retainedRecovery.oldOpenId, "the old manual recovery warning was not retained after the fresh resolution");
-  assert.notEqual(retainedRecovery.restartedDraftId, "", "the fresh resolution did not establish another local draft");
-  assert.notEqual(retainedRecovery.restartedDraftId, retainedRecovery.freshOpenId, "the restarted local branch reused the resolved proposal id");
-  assert.equal(retainedRecovery.trackingAfterFreshResolution, true, "resolving the fresh proposal did not restart local tracking");
-  assert.equal(retainedRecovery.opensBeforeNextTyping, 2, "restarting after resolution created an empty server proposal");
-  assert.notEqual(retainedRecovery.latestOpenId, "", "typing after fresh resolution did not open a new proposal");
-  assert.equal(retainedRecovery.latestOpenId, retainedRecovery.restartedDraftId, "typing opened a different proposal than the fresh local branch");
-  assert.notEqual(retainedRecovery.latestOpenId, retainedRecovery.oldOpenId, "typing reused the retained proposal id");
-  assert.notEqual(retainedRecovery.latestOpenId, retainedRecovery.freshOpenId, "typing reused the resolved proposal id");
-  assert.equal(retainedRecovery.opensAfterNextTyping, 3);
-  assert.equal(retainedRecovery.liveImmediately, "alpha", "typing after the old recovery warning reached live text");
-  assert.equal(retainedRecovery.finalText, "alpha", "the next tracked edit leaked into live text");
-  console.log("editor-browser: an old retained recovery warning does not block fresh tracked resolution");
+  assert.equal(tracked.direct.text, "DIRECT alpha", "editing after stopping did not reach the document");
+  assert.equal(tracked.direct.entries, 0, "typing with tracking off recorded a change");
+  console.log("editor-browser: tracked typing is recorded as one change, undone with its text, and not recorded when off");
   const zoom = await evaluate("editorZoomCheck()");
   assert.deepEqual(zoom, { before: "14px", prevented: true, grown: "28px", storedGrown: "28", shrunk: "10px", storedShrunk: "10" }, "ctrl+wheel over the source sizes its text and remembers it");
   console.log("editor-browser: ctrl+wheel over the source sizes its text and remembers it");
