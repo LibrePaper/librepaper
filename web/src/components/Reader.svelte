@@ -1,5 +1,5 @@
 <script>
-  import { listChanges, accept, reject } from "../lib/track-changes.js";
+  import { listChanges, accept, reject, rejectMany } from "../lib/track-changes.js";
   // One document: the source beside it, the page itself, and everything said
   // about it.
   import { aboutWholeDocument, anchorAll, flatten, placeSources, shownSelector } from "../lib/anchor.js";
@@ -1011,6 +1011,13 @@
   function rejectChange(row) {
     if (mayEdit && row?.id) reject(session.doc, row.id);
     return Promise.resolve();
+  }
+
+  /// Rejects several changes in one commit, owners before the changes they
+  /// swallowed. Resolves to the number rejected.
+  function rejectChanges(rows) {
+    const count = mayEdit ? rejectMany(session.doc, rows.map((row) => row.id)) : 0;
+    return Promise.resolve(count);
   }
 
   function receive(event) {
@@ -3632,7 +3639,7 @@
   {#snippet changesPanel()}
     <Changes changes={changeRows} {files} {identity} {tracking} canTrack={mayEdit && editing}
       canReview={mayEdit} selected={selectedChange} ids={changesIds}
-      ontracking={setTracking} onaccept={acceptChange} onreject={rejectChange} onreveal={revealChange} />
+      ontracking={setTracking} onaccept={acceptChange} onreject={rejectChange} onrejectmany={rejectChanges} onreveal={revealChange} />
     {@render pendingRecovery("changes")}
   {/snippet}
 

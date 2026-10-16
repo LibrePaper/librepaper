@@ -27,6 +27,7 @@ import Changes from ${JSON.stringify(join(root, "src/components/reader/Changes.s
 
 window.accepted = [];
 window.rejected = [];
+window.rejectManyCalls = [];
 window.revealed = [];
 window.tracked = [];
 
@@ -44,6 +45,7 @@ const files = [{ id: 'f1', path: 'paper.md' }, { id: 'f2', path: 'notes.md' }];
 const handlers = {
   onaccept: (row) => { window.accepted.push(row.id); return Promise.resolve(); },
   onreject: (row) => { window.rejected.push(row.id); return Promise.resolve(); },
+  onrejectmany: (rows) => { window.rejectManyCalls.push(rows.map((row) => row.id)); window.rejected.push(...rows.map((row) => row.id)); return Promise.resolve(rows.length); },
   onreveal: (row) => window.revealed.push(row.id),
   ontracking: (on) => window.tracked.push(on),
 };
@@ -51,7 +53,7 @@ const handlers = {
 let component = null;
 window.show = async (props = {}) => {
   if (component) await unmount(component);
-  window.accepted = []; window.rejected = []; window.revealed = []; window.tracked = [];
+  window.accepted = []; window.rejected = []; window.rejectManyCalls = []; window.revealed = []; window.tracked = [];
   component = mount(Changes, { target: document.body, props: {
     changes: rows, files, canReview: true, canTrack: true, identity: 'Grace', ...handlers, ...props,
   } });
@@ -266,6 +268,7 @@ try {
   await ev("window.barButton('Reject').click()");
   await waitFor("bulk rejected", "window.rejected.length === 2");
   assert.deepEqual((await ev("window.rejected")).sort(), ["c1", "c2"]);
+  assert.deepEqual((await ev("window.rejectManyCalls")).map((ids) => [...ids].sort()), [["c1", "c2"]], "one call carries both ids");
   assert.match(await ev("window.feedback()"), /2 changes rejected/);
   assert.equal(await ev("window.picks()"), 0, "the ticks are spent and the mode closes behind them");
 
