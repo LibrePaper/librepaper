@@ -24,18 +24,22 @@ pub struct Forward {
     pub path: String,
     pub origin: String,
     pub content_type: Option<HeaderValue>,
+    pub if_none_match: Option<HeaderValue>,
     pub body: Vec<u8>,
 }
 
 pub struct Service {
     endpoint: Mutex<Option<Endpoint>>,
+    // The one site the service accepts, as an origin with a trailing slash.
+    server: std::sync::Mutex<String>,
     http: reqwest::Client,
 }
 
 impl Service {
-    pub fn new() -> Self {
+    pub fn new(server: &url::Url) -> Self {
         Self {
             endpoint: Mutex::new(None),
+            server: std::sync::Mutex::new(format!("{}/", server.origin().ascii_serialization())),
             // The service is on loopback, so a system proxy must not see it.
             http: reqwest::Client::builder()
                 .no_proxy()
@@ -49,6 +53,18 @@ impl Service {
     // once more. A reset mid-request is retried only for GET and HEAD, since
     // another request may already have changed state.
     pub async fn warm(&self) {
+        if let Err(err) = self.current().await {
+            crate::shell_log::write(&format!("local service did not start: {err}"));
+        }
+    }
+
+    /// Starts the service again for another server. It accepts one site, so
+    /// the running one is stopped and the next request starts it afresh.
+    pub async fn switch(&self, server: &url::Url) {
+        *self.server.lock().expect("server lock") =
+            format!("{}/", server.origin().ascii_serialization());
+        *self.endpoint.lock().await = None;
+        let _ = tokio::task::spawn_blocking(stop_running).await;
         if let Err(err) = self.current().await {
             crate::shell_log::write(&format!("local service did not start: {err}"));
         }
@@ -107,7 +123,9 @@ impl Service {
         if let Some(endpoint) = slot.as_ref() {
             return Ok(endpoint.clone());
         }
-        let endpoint = endpoint().await?;
+        // Cloned into a local first: a std Mutex guard must not live across the await.
+        let server = self.server.lock().expect("server lock").clone();
+        let endpoint = endpoint(&server).await?;
         *slot = Some(endpoint.clone());
         Ok(endpoint)
     }
@@ -126,6 +144,9 @@ impl Service {
             .body(request.body.clone());
         if let Some(content_type) = &request.content_type {
             builder = builder.header(header::CONTENT_TYPE, content_type.clone());
+        }
+        if let Some(if_none_match) = &request.if_none_match {
+            builder = builder.header(header::IF_NONE_MATCH, if_none_match.clone());
         }
         builder.send().await
     }
@@ -148,9 +169,11 @@ async fn answers(address: &str) -> bool {
     )
 }
 
-pub async fn endpoint() -> Result<Endpoint, String> {
+async fn endpoint(server: &str) -> Result<Endpoint, String> {
     let mut command = tokio::process::Command::new(binary());
     command.args(["local", "endpoint"]).stdin(Stdio::null());
+    // The service accepts management requests for this one site only.
+    command.env("LIBREPAPER_SERVER", server);
     // CREATE_NO_WINDOW: a GUI app spawning a console program would flash a console window.
     #[cfg(windows)]
     command.creation_flags(0x0800_0000);
@@ -203,6 +226,12 @@ pub async fn diagnostics(args: &[&str]) -> Result<String, String> {
 // service that outlives the wait is killed.
 pub fn stop() {
     QUITTING.store(true, Ordering::SeqCst);
+    stop_running();
+}
+
+// Runs `librepaper local stop` and waits up to five seconds for it. A server
+// switch uses this without setting QUITTING, so the watcher keeps running.
+fn stop_running() {
     #[cfg(windows)]
     use std::os::windows::process::CommandExt;
 
@@ -245,19 +274,39 @@ fn binary() -> PathBuf {
 }
 
 // Only these headers reach the page. The service's other headers stay on
-// its side of the bridge.
+// its side of the bridge. The preview poller reads the last two.
+const RELAYED: [&str; 5] = ["content-type", "cache-control", "content-disposition", "etag", "x-librepaper-rendering"];
+
 async fn relay(res: reqwest::Response) -> Result<Response<Vec<u8>>, String> {
     let mut builder = Response::builder().status(res.status());
-    for name in [
-        header::CONTENT_TYPE,
-        header::CACHE_CONTROL,
-        header::CONTENT_DISPOSITION,
-        header::ETAG,
-    ] {
-        if let Some(value) = res.headers().get(&name) {
+    for name in RELAYED {
+        if let Some(value) = res.headers().get(name) {
             builder = builder.header(name, value.clone());
         }
     }
     let body = res.bytes().await.map_err(|err| err.to_string())?;
     builder.body(body.to_vec()).map_err(|err| err.to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::RELAYED;
+    use tauri::http::HeaderName;
+
+    #[test]
+    fn relayed_headers_include_the_preview_poller_headers() {
+        assert!(RELAYED.contains(&"etag"));
+        assert!(RELAYED.contains(&"x-librepaper-rendering"));
+    }
+
+    #[test]
+    fn relayed_headers_are_valid_lowercase_names() {
+        for name in RELAYED {
+            assert!(
+                HeaderName::from_bytes(name.as_bytes()).is_ok(),
+                "{name} is not a header name"
+            );
+            assert_eq!(name, name.to_ascii_lowercase());
+        }
+    }
 }
