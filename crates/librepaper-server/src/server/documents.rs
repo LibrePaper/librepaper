@@ -1107,7 +1107,7 @@ impl Server {
         };
         let changes = match room
             .log()
-            .with_projected_head(|doc, projected| reader_changes(doc, projected))
+            .with_projected_head(reader_changes)
             .await
         {
             Ok(changes) => changes,
