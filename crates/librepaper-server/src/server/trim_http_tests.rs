@@ -13,7 +13,6 @@ use axum::body::Body;
 use axum::http::Request;
 use serde_json::json;
 use sha2::{Digest, Sha256};
-use uuid::Uuid;
 
 use crate::server::origins::Origins;
 use librepaper_engine::storage::postgres::Authority;

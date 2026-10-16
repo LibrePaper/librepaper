@@ -969,43 +969,6 @@ async fn find_annotation(
         .ok_or_else(|| CommandError::Conflict("unknown comment".into()))
 }
 
-/// [`find_annotation`] for the one path that has no transaction open: §7.2's
-/// replay, which answers a retry before a transaction is begun.
-async fn find_annotation_committed(
-    catalog: &PostgresCatalog,
-    document_id: Uuid,
-    id: Uuid,
-) -> Result<AnnotationRecord, CommandError> {
-    catalog
-        .annotation(document_id, id)
-        .await?
-        .ok_or_else(|| CommandError::Conflict("unknown comment".into()))
-}
-
-/// Rebuilds the `NewAnnotation` a row already holds, for the one field that
-/// is actually changing (`resolved`) to go through `replace_annotation_authorized`
-/// -- which replaces the whole row, immutable anchor included, and refuses
-/// when what it is handed does not match what is stored (the check that
-/// keeps an anchor from drifting).
-fn replay_of(row: &AnnotationRecord) -> Result<NewAnnotation, CommandError> {
-    let original_anchor =
-        postgres::original_anchor_from_record(row).map_err(CommandError::Storage)?;
-    let presentation = postgres::presentation_from_record(row);
-    Ok(NewAnnotation {
-        document_id: row.document_id,
-        kind: row.kind.clone(),
-        body: row.body.clone(),
-        author_account_id: row.author_account_id,
-        author_key: row.author_key.clone(),
-        author_label: row.author_label.clone(),
-        color: row.color.clone(),
-        original_anchor,
-        presentation,
-        render_digest: row.render_digest.clone(),
-        attachment: None,
-    })
-}
-
 // -- semantic commands ---------------------------------------------------
 
 /// Who is writing, as every annotation command needs them.

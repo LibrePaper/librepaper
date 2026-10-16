@@ -1,6 +1,5 @@
 //! Domain operations behind the five MCP tools. Transport ids never identify effects.
 use super::*;
-use librepaper_room::room;
 use librepaper_room::room::agent::{
     self, AgentAuthority, OperationKey, Patch, PatchRequest, SourceFile, SourceTree,
 };

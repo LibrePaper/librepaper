@@ -684,8 +684,8 @@ impl AgentTrackedCommand {
                 .entry(edit.file_id.as_str())
                 .or_default()
                 .push(session::Edit {
-                    at: text[..start].chars().count(),
-                    delete: edit.exact.chars().count(),
+                    at: text[..start].encode_utf16().count(),
+                    delete: edit.exact.encode_utf16().count(),
                     insert: edit.replacement.clone(),
                 });
         }
