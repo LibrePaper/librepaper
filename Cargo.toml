@@ -32,6 +32,8 @@ github-build-setup = "../dist-build-setup.yml"
 local-artifacts-jobs = ["./desktop-windows", "./desktop-macos", "./desktop-linux"]
 # The desktop updater manifest (.github/workflows/publish-updater.yml).
 publish-jobs = ["./publish-updater"]
+# Prereleases get latest.json too, so a test release exercises it. The app only reads releases/latest, which skips prereleases.
+publish-prereleases = true
 github-custom-job-permissions = { "desktop-windows" = { contents = "read", id-token = "write" }, "desktop-macos" = { contents = "read" }, "desktop-linux" = { contents = "read" }, "publish-updater" = { contents = "write" } }
 install-success-msg = "The LibrePaper command line is installed. In a new terminal, run: librepaper --help"
 

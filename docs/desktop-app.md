@@ -85,7 +85,7 @@ The desktop app starts its own background local service when it opens. You do no
 
 ### Updates
 
-On macOS and with the Windows installer, the app checks for a new version when it starts and asks before it installs it. Scoop, Homebrew and the Linux packages update the app through their own commands.
+On macOS and with the Windows installer, the app checks for a new version when it starts and asks before it installs it. This includes an app installed with Homebrew. Scoop and the Linux packages update the app through their own commands.
 
 ### Windows
 
