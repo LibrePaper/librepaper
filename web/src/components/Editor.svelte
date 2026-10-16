@@ -142,7 +142,7 @@
   // in the same sentence converge without either waiting for the other, and
   // each of them keeps their own caret, selection and undo history.
   import { EditorState, Prec, Transaction } from "@codemirror/state";
-  import { EditorView, ViewPlugin, lineNumbers, highlightActiveLine, highlightActiveLineGutter, highlightSpecialChars, dropCursor, rectangularSelection, drawSelection } from "@codemirror/view";
+  import { EditorView, lineNumbers, highlightActiveLine, highlightActiveLineGutter, highlightSpecialChars, dropCursor, rectangularSelection, drawSelection } from "@codemirror/view";
   import { defaultKeymap, indentWithTab, selectAll } from "@codemirror/commands";
   import { autocompletion, closeBrackets, closeBracketsKeymap, completionKeymap, startCompletion } from "@codemirror/autocomplete";
   import { searchKeymap, highlightSelectionMatches, openSearchPanel } from "@codemirror/search";
@@ -163,7 +163,6 @@
   import { bibliographyCache, bibliographyCacheKey, bibliographyCompletion, bibliographyNeedsAnalysis, citationContext, planZoteroImport } from "../lib/bibliography.js";
   import { desktop, searchZotero, zoteroItem } from "../lib/desktop/client.js";
   import { changeMarks, setChangeMarks } from "../lib/change-marks.js";
-  import { loroSyncAnnotation } from "../../vendor/loro-codemirror/sync.ts";
   import { recordEdits, resolveChanges, trackedSplice, prune } from "../lib/track-changes.js";
   import { DIRECTORY_ORIGIN } from "../lib/project-session.js";
   import { projectDirectory } from "../lib/projection.js";
@@ -177,6 +176,7 @@
   //
   // `me` is who the tracked edits belong to, `{who, author}`. `selectedChange`
   // is the id of the change the reviewer is looking at.
+  /** @type {{ me?: { who: string, author: string }, [key: string]: any }} */
   let { session, format = "", file = "", keys = "default", editable = true,
     tracking = false, me = { who: "", author: "" }, selectedChange = null,
     analyze = analyzeBibliography,

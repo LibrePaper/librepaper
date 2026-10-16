@@ -409,7 +409,8 @@ export function reject(doc, id) {
 export function prune(doc) {
   const map = doc.getMap(CHANGES);
   let count = 0;
-  for (const [id, value] of [...map.entries()]) {
+  for (const [id, entry] of [...map.entries()]) {
+    const value = /** @type {any} */ (entry);
     const resolved = resolveEntry(doc, id, value);
     if (!resolved || (resolved.from === resolved.to && resolved.deleted === "")) {
       map.delete(id);
