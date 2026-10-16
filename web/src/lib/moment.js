@@ -8,8 +8,8 @@
 // writing a source archive for every remark is not.
 //
 // This lives on its own because the server writes these strings and two
-// unrelated readers have to recognise one: a comment's passage trace, and a
-// stale suggestion opened against the draft it was made on.
+// unrelated readers have to recognise one: a comment's passage trace and the
+// passage lookup.
 
 export const MOMENT = "frontier:";
 export const isMoment = (selected) => String(selected || "").startsWith(MOMENT);
