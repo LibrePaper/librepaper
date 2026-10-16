@@ -1,4 +1,4 @@
-// Connection pills, their settings pages, and their compact navbar layout.
+// The Reader's presence group and its offline state, plus its settings pages and narrow-window bounds.
 // Reader deliberately mounts without a document-state reply: these controls
 // are independent of source hydration and collaboration's document content.
 import assert from "node:assert/strict";
@@ -73,31 +73,28 @@ try {
   const url = `http://127.0.0.1:${serverHttp.address().port}/docs/paper`;
   await b.resize(1280,900);
   await b.navigate(url);
-  await until('connection controls',()=>b.evaluate(`(() => {
-    const group=document.querySelector('[aria-label="Connection settings"]');
-    return group?.querySelectorAll('.connection-pill').length === 2
-      && Boolean([...group.querySelectorAll('.connection-pill')].find(pill => pill.getAttribute('aria-label')?.includes('Remote server')))
-      && Boolean([...group.querySelectorAll('.connection-pill')].find(pill => pill.getAttribute('aria-label')?.includes('open backup settings')));
-  })()`),10000);
-  await until('connected remote state',()=>b.evaluate('typeof window.roomConnected === "function" && document.querySelector(\'.connection-pill[aria-label*="Remote"] .connection-dot\')?.classList.contains("offline") === false'),10000);
+  await until('Reader is ready',()=>b.evaluate(`typeof window.roomConnected === "function" && Boolean(document.querySelector('nav .presence'))`),10000);
+  assert.equal(await b.evaluate('Boolean(document.querySelector(".connection-pill") || document.querySelector(\'[aria-label="Connection settings"]\'))'),false,'no connection pills in the top bar');
   const flush = () => b.evaluate('new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)))');
   const click = async (selector) => { await b.evaluate(`document.querySelector(${JSON.stringify(selector)}).click()`); await flush(); };
-  const clickPill = (name) => click(`.connection-pill[aria-label*="${name}"]`);
-  const connectionState = (name) => b.evaluate(`(() => {
-    const pill=document.querySelector(${JSON.stringify(`.connection-pill[aria-label*="${name}"]`)});
-    return { visible:Boolean(pill?.getClientRects().length && getComputedStyle(pill).visibility !== 'hidden'),
-      offline:pill?.querySelector('.connection-dot')?.classList.contains('offline') };
-  })()`);
+  const offlineLabel = () => b.evaluate(`document.querySelector('nav .presence .presence-offline')?.textContent.trim() ?? null`);
+  const openSettingsAt = async (name) => {
+    await b.evaluate('window.dispatchEvent(new CustomEvent("librepaper:open-settings"))'); await flush();
+    await b.evaluate(`[...document.querySelectorAll(".settings-nav-item")].find(item => item.textContent.trim() === ${JSON.stringify(name)}).click()`); await flush();
+  };
+  await until('connected presence',()=>b.evaluate('document.querySelector("nav .presence .presence-offline") === null'),10000);
 
-  const remote = await connectionState('Remote');
-  assert.equal(remote.visible,true,'Remote pill is visible');
-  assert.equal(remote.offline,false,'Remote starts connected');
   await b.evaluate('window.roomConnected(false)'); await flush();
-  assert.equal((await connectionState('Remote')).offline,true,'Remote pill turns red while disconnected');
-  await clickPill('Remote');
+  assert.equal(await offlineLabel(),'Offline','the presence group says Offline while disconnected');
+
+  await openSettingsAt('Account');
   await until('Account settings',()=>b.evaluate('document.querySelector(".settings-category")?.textContent.trim() === "Account"'),3000);
   assert.equal(await b.evaluate('Boolean(document.querySelector(".local-pill"))'),false,'no desktop app status pill in the bar');
-  await b.evaluate('[...document.querySelectorAll(".settings-nav-item")].find(item => item.textContent.trim() === "Desktop app").click()'); await flush();
+  assert.equal(await b.evaluate('document.querySelector("#remote-status [role=status]")?.getAttribute("aria-label")'),"Remote connection disconnected",
+    'Remote settings exposes its disconnected state');
+  await click('[aria-label="Close"]');
+
+  await openSettingsAt('Desktop app');
   await until('Desktop app settings',()=>b.evaluate('document.querySelector(".settings-category")?.textContent.trim() === "Desktop app"'),3000);
   const desktopActions = await b.evaluate(`(() => {
     const root=document.querySelector('.desktop-only');
@@ -111,29 +108,25 @@ try {
   assert.equal(desktopActions.open,'Open in the desktop app');
   assert.equal(desktopActions.installVisible,true,'Desktop app settings shows a visible install link');
   assert.equal(desktopActions.openVisible,true,'Desktop app settings shows a visible open link');
-
   await click('[aria-label="Close"]');
-  const backup = await connectionState('open backup settings');
-  assert.equal(backup.visible,true,'Backup pill is visible');
-  assert.equal(backup.offline,true,'Backup pill reports unavailable account backups');
-  await clickPill('open backup settings');
+
+  await openSettingsAt('Backups');
   await until('Backup settings',()=>b.evaluate('document.querySelector(".backups-intro") && document.querySelector(".settings-category")?.textContent.trim() === "Backups"'),3000);
   assert.equal(await b.evaluate('document.querySelector(".desktop-only .desktop-only-message")?.textContent.trim() || ""'),'This needs the LibrePaper desktop app.',
     'Backup settings in a browser say they need the desktop app');
   await click('[aria-label="Close"]');
-  await clickPill('Remote');
-  await until('Account settings',()=>b.evaluate('document.querySelector(".settings-category")?.textContent.trim() === "Account"'),3000);
-  assert.equal(await b.evaluate('document.querySelector("#remote-status [role=status]")?.getAttribute("aria-label")'),"Remote connection disconnected",
-    'Remote settings exposes its disconnected state');
+
   await b.evaluate('window.roomConnected(true)'); await flush();
-  assert.equal((await connectionState('Remote')).offline,false,'Remote pill turns green when connected');
+  assert.equal(await offlineLabel(),null,'the Offline label goes away when reconnected');
+  await openSettingsAt('Account');
+  await until('Account settings again',()=>b.evaluate('document.querySelector(".settings-category")?.textContent.trim() === "Account"'),3000);
   assert.equal(await b.evaluate('document.querySelector("#remote-status [role=status]")?.getAttribute("aria-label")'),"Remote connection connected",
     'Remote settings exposes its connected state');
   await click('[aria-label="Close"]');
 
-  // Phones leave the connection lights out of the bar; Settings still has them.
+  // Compact widths draw no presence group, so nothing connection-related is in the bar.
   await b.resize(390,844); await flush();
-  assert.equal(await b.evaluate('document.querySelectorAll(".connection-pill").length'),0,'no connection lights in a narrow window');
+  assert.equal(await b.evaluate('document.querySelectorAll(".connection-pill").length'),0,'no connection pills in a narrow window');
   assert.deepEqual(await b.evaluate('window.testErrors'),[]);
-  console.log('connections-browser: status pills, settings pages, desktop app links, and narrow-window bounds passed');
+  console.log('connections-browser: presence offline state, settings pages, desktop app links, and narrow-window bounds passed');
 } finally { await b?.close(); serverHttp?.close(); removeTemporary(temp); }

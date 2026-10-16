@@ -27,6 +27,8 @@
     onresolve,
     ondelete,
     onreply,
+    // Asks the agent to act on this comment. Absent where no agent is offered.
+    onagent,
     cardIdPrefix = "comment",
     // The card the sidebar has singled out: its passage is ringed in the
     // document, and the card wears the same ring so the two read as one.
@@ -264,6 +266,17 @@
        now, and it is still the confirmed one: what it opens is the dialog,
        not the deletion. -->
   <div class="actions">
+    {#if onagent && !comment.resolved}
+      <IconButton
+        icon="bot"
+        label="Address comment with agent"
+        disabled={!canComment}
+        onclick={(e) => {
+          e.stopPropagation();
+          onagent?.(comment);
+        }}
+      />
+    {/if}
     {#if canComment}
       <IconButton
         icon="check"

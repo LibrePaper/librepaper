@@ -8,7 +8,11 @@
 
   // `open` marks the current tab and, by default, tints the trigger; a page
   // whose places are always open passes `pressed={false}` to keep it plain.
-  let { tabs = [], panel = "", open = false, pressed = open, onselect, onsettings, menus = [], onmenu = undefined, me = {}, counts = {} } = $props();
+  // `badges` is the rail's: a panel whose badge carries a dot is marked on its
+  // item, and the trigger is marked too, because a closed menu is all a phone
+  // shows of the panels.
+  let { tabs = [], panel = "", open = false, pressed = open, onselect, onsettings, menus = [], onmenu = undefined, me = {}, counts = {}, badges = {} } = $props();
+  const marked = $derived(tabs.find((tab) => badges[tab.id]?.dot));
 
   // The menu is portalled so it cannot inherit a height; measure the room
   // between the top bar and the visual viewport and let the scrolling region
@@ -76,9 +80,10 @@
 >
   <Menu.Trigger
     class={`btn-icon icon-control icon-standard compact-panels-trigger ${pressed ? "lp-control-tonal-brand" : "icon-plain"}`}
-    aria-label="Menu"
+    aria-label={marked ? `Menu, ${badges[marked.id].says || marked.says}` : "Menu"}
   >
     <Icon name="menu" />
+    {#if marked}<span class="compact-dot" aria-hidden="true"></span>{/if}
     <span class="compact-label" aria-hidden="true">Menu</span>
   </Menu.Trigger>
   <ExplorerMenu>
@@ -99,13 +104,14 @@
           value={tab.id}
           class="menuitem compact-panel-item"
           data-panel-id={tab.id}
-          aria-label={tab.says}
+          aria-label={badges[tab.id]?.says || tab.says}
           aria-current={selected ? "true" : undefined}
         >
           <span class="menuitem-check" aria-hidden="true">{selected ? "✓" : ""}</span>
           <Icon name={tab.icon} size="1rem" />
           <span class="menuitem-label">{tab.says}</span>
           {#if counts[tab.id]}<span class="menuitem-count">{counts[tab.id]}</span>{/if}
+          {#if badges[tab.id]?.dot}<span class="menuitem-dot" aria-hidden="true"></span>{/if}
         </Menu.Item>
       {/each}
       <div class="compact-panels-divider" role="separator"></div>
@@ -169,7 +175,11 @@
     align-items: center;
     justify-content: center;
     padding: 0;
+    position: relative;
   }
+
+  .compact-dot { position: absolute; right: 8px; top: 4px; width: 7px; height: 7px; border-radius: 50%; background: var(--color-brand); pointer-events: none; }
+  .menuitem-dot { margin-inline-start: auto; width: 7px; height: 7px; flex: none; border-radius: 50%; background: var(--color-brand); }
 
   .menuitem-count { margin-inline-start: auto; color: var(--color-text-secondary); font-size: var(--text-xs); font-variant-numeric: tabular-nums; }
 

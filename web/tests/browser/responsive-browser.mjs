@@ -429,13 +429,12 @@ try {
       const toolbar=document.querySelector('nav');
       const menuItems=[...document.querySelectorAll('.menubar-item')];
       const account=[...(toolbar?.querySelectorAll('.account')||[])].find(node=>node.getClientRects().length);
-      const pills=[...toolbar?.querySelectorAll('.connection-pill')||[]];
       const presence=toolbar?.querySelector('.presence');
       const face=document.querySelector('.face-switch');
       const panels=document.querySelector('.compact-panels-trigger');
       const mobileNav=document.querySelector('.mobile-pane-nav');
       const rect=node=>{const r=node.getBoundingClientRect();return {left:r.left,right:r.right,top:r.top,bottom:r.bottom,width:r.width,height:r.height}};
-      const items=[panels,face,...pills,account,presence].filter(Boolean);
+      const items=[panels,face,account,presence].filter(Boolean);
       const boxes=items.map(rect);
       const overlaps=boxes.some((a,i)=>boxes.slice(i+1).some(b=>a.left < b.right-1 && b.left < a.right-1 && a.top < b.bottom-1 && b.top < a.bottom-1));
       return {width:innerWidth,items:boxes,overlaps,presenceAvatars:presence?.querySelectorAll('.avatar').length||0,presenceMore:presence?.querySelector('.presence-more')?.textContent.trim()||'',

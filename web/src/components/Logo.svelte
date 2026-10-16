@@ -10,14 +10,17 @@
   // intrinsic size in an <img>, and a browser sizing it from its container
   // alone falls back to 300px, or in Firefox to nothing at all.
   //
-  // Two sizes: the one on the bar, and the one above a page that introduces
-  // itself. A caller asks for a size rather than reaching in with a selector,
-  // which is what lets these styles stay scoped to this file.
+  // Three sizes: the one on the bar, the one above a page that introduces
+  // itself, and the one above the sign-in form. A caller asks for a size
+  // rather than reaching in with a selector, which is what lets these styles
+  // stay scoped to this file.
   let { size = "bar" } = $props();
 </script>
 
 {#if size === "hero"}
   <img class="logo hero" src="/assets/librepaper-logo.svg" alt="LibrePaper" />
+{:else if size === "signin"}
+  <img class="logo signin" src="/assets/librepaper-logo.svg" alt="LibrePaper" />
 {:else}
   <img class="logo bar" src="/assets/librepaper-icon.svg" alt="LibrePaper" />
 {/if}
@@ -45,5 +48,12 @@
     height: auto;
     aspect-ratio: 6221 / 908;
     margin-inline: auto;
+  }
+  /* Sized by height to sit above the sign-in form at the same scale as its
+     heading. */
+  .signin {
+    height: 1.5rem;
+    width: auto;
+    aspect-ratio: 6221 / 908;
   }
 </style>

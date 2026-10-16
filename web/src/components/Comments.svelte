@@ -35,6 +35,7 @@
     // Several at once, behind one confirmation: the page owns that dialog.
     ondeletemany = undefined,
     onreply = undefined,
+    onagent = undefined,
     pending = undefined,
     // Optional view filter used by the collaboration tabs. Highlight notes
     // remain in both views when they carry a discussion.
@@ -207,6 +208,7 @@
         {onresolve}
         {ondelete}
         {onreply}
+        {onagent}
         {onloadreplies}
       />
     {/each}

@@ -1,5 +1,5 @@
 <script>
-  import { onMount } from "svelte";
+  import { onMount, tick } from "svelte";
   import { Tabs } from "@skeletonlabs/skeleton-svelte";
   import { getPrivate, post, SHELL_HEADERS, keyHeaders } from "../../lib/api.js";
   import PanelHeader from "../PanelHeader.svelte";
@@ -13,13 +13,14 @@
   import {
     captureAttachment, capabilityAllows, diagnosticLabel,
     normalizeCapabilities, scopeLabel, visibleResults,
-    findTask, groupTasks, inferScope, searchTasks, taskPrompt, taskScopes,
+    TASK_CATEGORIES, browseTasks, findTask, inferScope, recentTasks, rememberTask,
+    searchTasks, taskBlocker, taskForKind, taskPrompt, taskScopes,
   } from "../../lib/assistant.js";
   import { humanizeTool, permissionAction, permissionButtons } from "../../lib/agent-permission.js";
 
   let {
     slug, link, canShare = false, path = "", selection = null, revision = "", request = null,
-    diagnostics = [], oncommenttask, ondiagnostictask,
+    diagnostics = [],
     comments = [], changes = [], onreview, onpreview, onsettings,
     userName = "You",
   } = $props();
@@ -41,13 +42,21 @@
   let diagnostic = $state(null);
   let diagnosticRevision = $state("");
   let draft = $state("");
-  // The Tasks pane is a launcher: a searchable catalog, then a preparation
-  // view for the one task the user picked. Nothing is written into the draft
-  // until that view is confirmed.
+  // The Tasks pane is a launcher: a short list of recent tasks or search
+  // results, then a preparation view for the one task the user picked. The
+  // launcher's query, category, highlight and scroll position survive a visit
+  // to that view.
   let taskView = $state("launcher");
   let taskQuery = $state("");
+  let browsing = $state(false);
+  let category = $state("");
+  let highlight = $state(0);
   let chosenTaskId = $state("");
   let extra = $state("");
+  let listEl = $state(null);
+  let searchEl = $state(null);
+  let backEl = $state(null);
+  let savedScroll = 0;
   let agentLink = $state("");
   // What this computer has, as the local app reports it. The browser cannot
   // read a PATH, so without the desktop app there is nothing to offer and the
@@ -82,8 +91,16 @@
   // How long a just-started agent may take to join before the send gives up.
   const RUNNER_JOIN_MS = 60_000;
   const AGENT_GRANT_RENEW_MS = 2 * 60_000;
+  const RECENT_TASKS = "librepaper.agent.recentTasks";
   function lastUsed(key) { try { return localStorage.getItem(key) || ""; } catch { return ""; } }
   function rememberLastUsed(key, value) { try { localStorage.setItem(key, value); } catch { /* private window */ } }
+  function storedTaskIds() {
+    try {
+      const ids = JSON.parse(lastUsed(RECENT_TASKS) || "[]");
+      return Array.isArray(ids) ? ids.filter((id) => typeof id === "string") : [];
+    } catch { return []; }
+  }
+  let recentIds = $state(storedTaskIds());
 
   async function mintAgentGrant(documentLink) {
     const response = await fetch(`/api/documents/${encodeURIComponent(slug)}/agent-token`, {
@@ -125,16 +142,46 @@
   // No agent attached yet, but sending can start the chosen one first.
   const canStart = $derived(!runnerReady && !assistant.running && Boolean(connection.id) && Boolean(chosenInstalled?.assistant));
   const startable = $derived(canStart && preparedTaskValid && !uncertainDelivery);
-  const taskGroups = $derived(groupTasks(searchTasks(taskQuery)));
-  const chosen = $derived(findTask(chosenTaskId));
-  const scopeAvailable = (id) => id === "selection" ? Boolean(attachment) : id === "file" ? Boolean(contextPath) : true;
-  const allows = (kind, chosenScope) => capabilityAllows(caps, { kind, scope: chosenScope }, {
-    attached: attachment || null, path: contextPath,
+  const launcherRows = $derived.by(() => {
+    const query = taskQuery.trim();
+    if (query) {
+      const found = searchTasks(query);
+      return browsing && category ? found.filter((entry) => entry.category === category) : found;
+    }
+    return browsing ? browseTasks(category) : recentTasks(recentIds);
   });
-  // A row is offered when some scope the reader can actually supply works for
-  // it; which scope that is belongs to the preparation view, not the catalog.
-  const canPrepare = (entry) => taskScopes(entry).some((id) => scopeAvailable(id) && allows(entry.kind, id));
-  const preparable = $derived(Boolean(chosen) && scopeAvailable(scope) && allows(chosen.kind, scope));
+  const chosen = $derived(findTask(chosenTaskId));
+  const COMMENT_TASKS = ["address-comment"];
+  const contextTask = $derived(COMMENT_TASKS.includes(chosenTaskId) || chosenTaskId === "fix-diagnostic");
+  const scopeAvailable = (id) => id === "selection" ? Boolean(attachment) : id === "file" ? Boolean(contextPath) : true;
+  // Rows are never disabled; what stops a task is said in the preparation view.
+  const staleReason = $derived.by(() => {
+    if (!chosen) return "";
+    if (COMMENT_TASKS.includes(chosenTaskId) && commentContext) {
+      const live = comments.find((item) => String(item.id) === String(commentContext.id));
+      if (!live || live.resolved) return "The attached comment is no longer available.";
+    }
+    if (diagnostic) {
+      const file = diagnostic.file || diagnostic.path || "";
+      const present = diagnostics.some((item) => (item.file || item.path || "") === file
+        && (item.line || 0) === (diagnostic.line || 0) && item.message === diagnostic.message);
+      if (!present) return "This diagnostic is gone after the last compile.";
+    }
+    return "";
+  });
+  const blocker = $derived(chosen ? taskBlocker(caps, { kind: chosen.kind, scope }, {
+    attached: attachment || null, path: contextPath,
+  }) : "");
+  const agentReady = $derived(runnerReady || canStart);
+  const commentTarget = $derived(COMMENT_TASKS.includes(chosenTaskId) && commentContext
+    ? `Comment: "${clip(commentContext.body || commentContext.exact || "", 80)}"` : "");
+  const diagnosticTarget = $derived(diagnostic
+    ? (diagnostic.message
+      ? `${contextPath}${diagnostic.line ? `:${diagnostic.line}` : ""} ${diagnostic.message}`.trim()
+      : diagnosticLabel(diagnostic, path))
+    : "");
+  const selectedWords = $derived(selectedText.trim().split(/\s+/).filter(Boolean).length);
+  function clip(text, max) { return text.length > max ? `${text.slice(0, max)}...` : text; }
   const inputTask = $derived(Object.values(connection.tasks || {}).find((item) => item?.status === "needs_input" && item.input) || null);
   // Everything that is currently in flight: what the queued list and status
   // line show, and the composer's Stop button acts on. "Active" (as opposed to
@@ -385,12 +432,8 @@
   function applyRequest(next) {
     if (!next) return;
     pendingRequest = null;
-    tab = "chat";
-    // A contextual action prepares the same shape as a catalog task, but it
-    // is not one of them: leave the launcher on its list.
-    chosenTaskId = "";
-    taskView = "launcher";
-    draft = "";
+    tab = "tasks";
+    extra = "";
     task = next.task || null;
     commentContext = next.comment || null;
     diagnostic = next.diagnostic || null;
@@ -409,10 +452,6 @@
     if (next.task) {
       task = { ...next.task };
       scope = next.task.scope || scope;
-      if (!next.comment && !next.diagnostic) {
-        const label = task.kind.charAt(0).toUpperCase() + task.kind.slice(1);
-        draft = taskPrompt({ label }, task.scope);
-      }
     }
     if (next.comment) {
       const quoted = next.comment.source || next.comment;
@@ -420,59 +459,106 @@
       else { suppressedSelection = selectionKey(selection || lastSelection); attachment = null; }
       scope = attachment ? "selection" : (contextPath ? "file" : "document");
       task = { kind: "respond", scope };
-      draft = "Address this comment.";
     }
-    if (next.diagnostic) {
-      task = next.task || { kind: "fix", scope };
-      if (!draft.trim()) draft = task.kind === "fix" ? "Fix this diagnostic." : "Explain this diagnostic.";
-    }
+    if (next.diagnostic) task = next.task || { kind: "fix", scope };
+    chosenTaskId = next.comment ? "address-comment"
+      : next.diagnostic ? (next.task?.kind === "explain" ? taskForKind("explain")?.id || "" : "fix-diagnostic")
+      : next.task ? taskForKind(next.task.kind)?.id || "" : "";
     lastRequestId = next.id || lastRequestId;
+    if (chosenTaskId) enterPrepare();
+    else taskView = "launcher";
   }
 
   function requestArrived(next) {
     if (!next?.id || next.id === lastRequestId) return;
     lastRequestId = next.id;
-    tab = "chat";
-    if (draft.trim()) pendingRequest = next;
+    tab = "tasks";
+    if (taskView === "prepare" && extra.trim()) pendingRequest = next;
     else applyRequest(next);
   }
 
+  function enterPrepare() {
+    if (taskView !== "prepare") savedScroll = listEl?.scrollTop || 0;
+    taskView = "prepare";
+    void tick().then(() => backEl?.focus());
+  }
+
+  function leavePrepare({ focus = true } = {}) {
+    taskView = "launcher";
+    void tick().then(() => {
+      if (listEl) listEl.scrollTop = savedScroll;
+      if (focus) searchEl?.focus();
+    });
+  }
+
   function openTask(entry) {
-    if (!entry || !canPrepare(entry)) return;
+    if (!entry) return;
     chosenTaskId = entry.id;
     extra = "";
     scope = inferScope(entry, { attached: attachment, path: contextPath });
-    taskView = "prepare";
+    enterPrepare();
   }
 
-  /// Picking a task is the decision; writing a draft the reader then has to
-  /// send again was a second confirmation of the same thing. This sends it and
-  /// moves to the chat, where the answer will arrive.
+  function startBrowse() {
+    browsing = true; category = ""; highlight = 0;
+    searchEl?.focus();
+  }
+
+  function stopBrowse() {
+    browsing = false; category = ""; highlight = 0;
+    searchEl?.focus();
+  }
+
+  function scrollToHighlight() {
+    void tick().then(() => listEl?.querySelector(".task-row.active")?.scrollIntoView({ block: "nearest" }));
+  }
+
+  function searchKeydown(event) {
+    if (event.isComposing) return;
+    const rows = launcherRows;
+    if (event.key === "ArrowDown" || event.key === "ArrowUp") {
+      if (!rows.length) return;
+      highlight = (highlight + (event.key === "ArrowDown" ? 1 : -1) + rows.length) % rows.length;
+      event.preventDefault();
+      scrollToHighlight();
+    } else if ((event.key === "Home" || event.key === "End") && taskQuery && rows.length) {
+      highlight = event.key === "Home" ? 0 : rows.length - 1;
+      event.preventDefault();
+      scrollToHighlight();
+    } else if (event.key === "Enter") {
+      if (!rows[highlight]) return;
+      event.preventDefault();
+      openTask(rows[highlight]);
+    } else if (event.key === "Escape") {
+      if (taskQuery) { taskQuery = ""; highlight = 0; event.preventDefault(); }
+      else if (browsing) { stopBrowse(); event.preventDefault(); }
+    }
+  }
+
+  function prepareKeydown(event) {
+    if (event.key !== "Escape" || event.target.tagName === "SELECT" || extra) return;
+    event.preventDefault();
+    leavePrepare();
+  }
+
+  /// Picking a task and confirming it is the one decision. A send that fails
+  /// leaves the preparation view as it was so the user can retry.
   async function sendTask() {
-    // Deliberately not gated on `sendable`: that judges the task currently in
-    // context, which is the previous one. What matters is whether the task
-    // being sent is allowed, which is `preparable`, and whether the assistant
-    // is there or can be started. `send` makes the final check once this task
-    // is in context.
-    if (!chosen || !preparable || !(runnerReady || canStart)) return;
+    if (busy || !chosen || staleReason || blocker || !agentReady) return;
     const entry = chosen;
+    const fromContext = contextTask;
     task = { kind: entry.kind, scope };
     const note = extra.trim();
     const prompt = taskPrompt(entry, scope);
-    if (entry.kind !== "explain") { diagnostic = null; diagnosticRevision = ""; }
-    // Leave the catalog showing for the next request; "Change context" in the
-    // chat pane reopens this task's view.
-    taskView = "launcher";
+    if (!fromContext && entry.kind !== "explain") { diagnostic = null; diagnosticRevision = ""; }
+    if (!await send(note ? `${prompt}\n\n${note}` : prompt)) return;
+    if (!fromContext) {
+      recentIds = rememberTask(recentIds, entry.id);
+      try { localStorage.setItem(RECENT_TASKS, JSON.stringify(recentIds)); } catch { /* private window */ }
+    }
+    extra = "";
     tab = "chat";
-    draft = "";
-    await send(note ? `${prompt}\n\n${note}` : prompt);
-  }
-
-  // Scope is chosen inside the preparation view, before anything is written
-  // into the draft, so changing it neither rewrites the composer nor discards
-  // the attached passage the user may switch back to.
-  function chooseScope(next) {
-    scope = next;
+    leavePrepare({ focus: false });
   }
 
   async function send(text) {
@@ -651,13 +737,6 @@
       <div role="status"><span class="panel-muted">Reconnecting…</span> <button class="btn btn-sm lp-control-tonal-brand" disabled={busy} onclick={() => void reconnect()}>Reconnect now</button></div>
     {/if}
 
-  {#if pendingRequest}
-    <div class="request-warning" role="alert">
-      <span>A new assistant request is ready. Replace the current draft and attached context?</span>
-      <div class="setup-actions"><button class="btn btn-sm lp-control-brand" onclick={() => applyRequest(pendingRequest)}>Replace draft and context</button><button class="btn btn-sm" onclick={() => pendingRequest = null}>Keep current draft</button></div>
-    </div>
-  {/if}
-
   {#each uncertainTasks() as item (item.id)}
     <p class="panel-meta" role="alert">Message delivery was not confirmed. <button class="btn btn-sm lp-control-tonal-brand" disabled={busy} onclick={() => void retryTask(item.id)}>Retry delivery</button></p>
   {/each}
@@ -668,7 +747,7 @@
 
   <!-- The draft carries its own context, so the chat pane states it in one
        line and sends the user back to the task view to change it. -->
-  {#if task || attachment}<p class="panel-meta context-summary">{scopeLabel(scope, { path: contextPath, attached: attachment })} <button class="btn btn-sm" onclick={() => { tab = "tasks"; taskView = chosen ? "prepare" : "launcher"; }}>Change context</button>{#if attachment}<button class="btn btn-sm" onclick={removeSelection}>Remove passage</button>{/if}</p>{/if}
+  {#if task || attachment}<p class="panel-meta context-summary">{scopeLabel(scope, { path: contextPath, attached: attachment })} <button class="btn btn-sm" onclick={() => { tab = "tasks"; if (chosen) enterPrepare(); else taskView = "launcher"; }}>Change context</button>{#if attachment}<button class="btn btn-sm" onclick={removeSelection}>Remove passage</button>{/if}</p>{/if}
   <!-- Missing access or context is worth explaining; a runner that simply
        is not there yet starts when the message is sent, so that case gets no
        line here. -->
@@ -733,84 +812,78 @@
   {#if !paired}
     {@render connectPrompt()}
   {:else}
+  {#if pendingRequest}
+    <div class="request-warning" role="alert">
+      <span>A new request arrived. Replace this one?</span>
+      <div class="setup-actions"><button class="btn btn-sm lp-control-brand" onclick={() => applyRequest(pendingRequest)}>Replace</button><button class="btn btn-sm" onclick={() => pendingRequest = null}>Keep current</button></div>
+    </div>
+  {/if}
   {#if taskView === "prepare" && chosen}
-    <div class="agent-context task-prepare">
-      <button class="task-back" onclick={() => taskView = "launcher"}>← All tasks</button>
-      <div>
+    <!-- Escape is a convenience on top of the Back button. -->
+    <!-- svelte-ignore a11y_no_static_element_interactions -->
+    <div class="agent-context task-prepare" onkeydown={prepareKeydown}>
+      <div class="task-head">
+        <button class="task-back" aria-label="Back to tasks" bind:this={backEl} onclick={() => leavePrepare()}>←</button>
         <h3 class="task-title">{chosen.label}</h3>
-        <p class="panel-muted task-description">{chosen.description}</p>
       </div>
-      <label class="label task-scope">Scope
-        <select class="select" value={scope} onchange={(event) => chooseScope(event.currentTarget.value)}>
-          {#each taskScopes(chosen) as id}
-            <option value={id} disabled={!scopeAvailable(id)}>{scopeLabel(id, { path: contextPath, attached: id === "selection" ? attachment : null })}</option>
-          {/each}
-        </select>
-      </label>
-      {#if scope === "selection" && attachment}
+      <p class="panel-muted task-description">{chosen.description}</p>
+      {#if commentTarget}<p class="panel-meta task-target" title={commentContext.body || commentContext.exact || ""}>{commentTarget}</p>{/if}
+      {#if diagnostic}
+        <p class="panel-meta task-target" title={diagnosticTarget}>{diagnosticTarget}</p>
+        {#if !contextTask}<div class="attachment-actions"><button class="btn btn-sm" onclick={() => { diagnostic = null; diagnosticRevision = ""; }}>Remove diagnostic</button></div>{/if}
+      {/if}
+      {#if !contextTask && taskScopes(chosen).length > 1}
+        <label class="label task-scope">Scope
+          <select class="select" value={scope} onchange={(event) => scope = event.currentTarget.value}>
+            {#each taskScopes(chosen) as id}
+              <option value={id} disabled={!scopeAvailable(id)}>{scopeLabel(id, { path: contextPath, attached: id === "selection" ? attachment : null })}</option>
+            {/each}
+          </select>
+        </label>
+      {/if}
+      {#if scope === "selection" && attachment && !commentTarget}
         <div class="attachment">
-          <div><strong>{attachment.anchored ? "Selected passage" : "Quoted passage"} · {attachment.path || path || "document"}</strong><blockquote>{selectedText}</blockquote></div>
+          <strong>{attachment.anchored ? "Selected text" : "Quoted text"}, {selectedWords} {selectedWords === 1 ? "word" : "words"} · {attachment.path || path || "document"}</strong>
+          <blockquote title={selectedText}>{selectedText}</blockquote>
           <div class="attachment-actions"><button class="btn btn-sm" onclick={removeSelection}>Remove</button><button class="btn btn-sm" disabled={!selection?.exact} onclick={replaceSelection}>Replace with current selection</button></div>
           {#if !attachment.anchored}<p class="panel-muted" role="alert">This passage has no source anchor. Explain remains available; Tighten and Rewrite need an anchored source selection.</p>{/if}
         </div>
       {/if}
-      {#if diagnostic}<div class="diagnostic-context"><strong>Diagnostic · {contextPath}{diagnostic.line ? `:${diagnostic.line}` : ""}</strong><span>{diagnostic.message || "Explain this diagnostic"}</span><span>{diagnostic.source || ""}</span><button class="btn btn-sm" onclick={() => { diagnostic = null; diagnosticRevision = ""; }}>Remove diagnostic</button></div>{/if}
-      <label class="label">Additional instructions (optional)
-        <textarea class="input" rows="3" value={extra} oninput={(event) => extra = event.currentTarget.value}></textarea>
-      </label>
-      {#if !preparable}<p class="panel-meta" role="status">This task needs the appropriate access and context. Choose another scope, or attach a passage in the document.</p>
-      {:else if !runnerReady}<p class="panel-meta" role="status">Start an agent in the Chat tab before sending a task.</p>{/if}
-      <div class="prepare-actions"><button class="btn btn-sm lp-control-brand" disabled={busy || !preparable || !(runnerReady || canStart)} onclick={() => void sendTask()}>Send to agent</button></div>
+      <textarea class="input task-extra" rows="1" placeholder="Additional instructions (optional)" aria-label="Additional instructions"
+                value={extra} oninput={(event) => extra = event.currentTarget.value}
+                onkeydown={(event) => { if (event.key === "Enter" && (event.ctrlKey || event.metaKey)) { event.preventDefault(); void sendTask(); } }}></textarea>
+      {#if staleReason || blocker || !agentReady}
+        <p class="panel-meta" role="status">{staleReason || blocker || "Start an agent in the Chat tab before sending a task."}</p>
+      {/if}
+      <div class="prepare-actions"><button class="btn btn-sm lp-control-brand" disabled={busy || Boolean(staleReason) || Boolean(blocker) || !agentReady} onclick={() => void sendTask()}>Send to agent</button></div>
     </div>
   {:else}
     <div class="agent-context task-launcher">
-      <p class="panel-muted">Ask your agent to…</p>
-      <input class="input task-search" type="search" placeholder="Search tasks…" aria-label="Search tasks"
-             value={taskQuery} oninput={(event) => taskQuery = event.currentTarget.value} />
-      <div class="task-list task-catalog" role="group" aria-label="Assistant tasks">
-        {#each taskGroups as group (group.category)}
-          <h3 class="task-group">{group.category}</h3>
-          {#each group.tasks as entry (entry.id)}
-            <button class="task-row" disabled={!canPrepare(entry)}
-                    title={canPrepare(entry) ? entry.description : "Check access and attach the required context"}
-                    onclick={() => openTask(entry)}>
-              <span>{entry.label}</span><span class="task-chevron" aria-hidden="true">›</span>
-            </button>
-          {/each}
-        {/each}
-        {#if !taskGroups.length}<p class="panel-muted">No task matches “{taskQuery}”.</p>{/if}
-      </div>
-
-      {#if (oncommenttask && comments.some(comment => !comment.resolved)) || (ondiagnostictask && diagnostics.length)}
-        <!-- Not peers of the catalog: these are openings the document itself
-             offers, which prepare the same task + context + instructions. -->
-        <div class="context-tasks task-list">
-          <h3 class="task-group">Contextual</h3>
-          {#if oncommenttask}
-            {#each comments.filter(comment => !comment.resolved) as comment (comment.id)}
-              <div class="context-task">
-                <p class="panel-muted">{comment.body || comment.exact || "Comment"}</p>
-                <button class="task-row" disabled={!caps.can_comment} onclick={() => oncommenttask(comment)}>
-                  <span>Address comment</span><span class="task-chevron" aria-hidden="true">›</span>
-                </button>
-              </div>
-            {/each}
-          {/if}
-          {#if ondiagnostictask}
-            <!-- A compiler's own prose belongs in Diagnostics, not here: a
-                 launcher names the task and the place it applies to, so a
-                 long or noisy message cannot crowd out the catalog. -->
-            {#each diagnostics as item}
-              <div class="context-task">
-                <p class="panel-muted">{diagnosticLabel(item, path)}</p>
-                <button class="task-row" disabled={!caps.can_comment} onclick={() => ondiagnostictask(item)}>
-                  <span>Fix diagnostic</span><span class="task-chevron" aria-hidden="true">›</span>
-                </button>
-              </div>
-            {/each}
-          {/if}
+      <input bind:this={searchEl} class="input task-search" type="search" role="combobox" placeholder="Search tasks..." aria-label="Search tasks"
+             aria-autocomplete="list" aria-expanded={launcherRows.length > 0} aria-controls="agent-task-results"
+             aria-activedescendant={launcherRows[highlight] ? `task-option-${launcherRows[highlight].id}` : undefined}
+             value={taskQuery} oninput={(event) => { taskQuery = event.currentTarget.value; highlight = 0; }}
+             onkeydown={searchKeydown} />
+      {#if browsing}
+        <div class="task-browse-head">
+          <button class="task-back" aria-label="Back" onclick={stopBrowse}>← Back</button>
+          <select class="select task-category" aria-label="Category" value={category}
+                  onchange={(event) => { category = event.currentTarget.value; highlight = 0; }}>
+            <option value="">All categories</option>
+            {#each TASK_CATEGORIES as name}<option value={name}>{name}</option>{/each}
+          </select>
         </div>
       {/if}
+      <ul role="listbox" id="agent-task-results" class="task-results" aria-label="Tasks" bind:this={listEl} hidden={!launcherRows.length}>
+        {#each launcherRows as entry, index (entry.id)}
+          <!-- The search box owns the keyboard; the row is its pointer target. -->
+          <!-- svelte-ignore a11y_click_events_have_key_events -->
+          <li role="option" id="task-option-{entry.id}" aria-selected={index === highlight} class="task-row" class:active={index === highlight}
+              title="{entry.label}: {entry.description}" onclick={() => openTask(entry)}>{entry.label}</li>
+        {/each}
+      </ul>
+      {#if !launcherRows.length}<p class="panel-muted">No matching tasks</p>{/if}
+      {#if !browsing && !taskQuery.trim()}<button class="task-browse" onclick={startBrowse}>Browse all tasks</button>{/if}
     </div>
   {/if}
   {/if}
@@ -858,34 +931,32 @@
   .queued-requests { flex:none; max-height:2.25rem; overflow-y:auto; }
   .queued-label { color:var(--color-text-secondary); min-width:0; overflow:hidden; white-space:nowrap; text-overflow:ellipsis; }
   .queued-status { color:var(--color-text-secondary); font-size:.8em; }
-  /* The task catalog is a list, not a set of controls: typography, spacing
-     and a hover background carry it, so it stays legible as it grows. */
-  .task-list { display:flex; flex-direction:column; }
-  .task-group { margin:calc(var(--spacing) * 2) 0 calc(var(--spacing) * .5); font-size:.7rem; font-weight:600;
-                letter-spacing:.08em; text-transform:uppercase; color:var(--color-text-secondary); }
-  .task-list > .task-group:first-child { margin-top:0; }
-  .task-row { display:flex; align-items:center; justify-content:space-between; gap:var(--spacing);
-              width:100%; min-height:2.25rem; padding:calc(var(--spacing) * 1) calc(var(--spacing) * 1.5);
-              border:0; border-radius:var(--radius-base, .25rem); background:transparent;
-              text-align:left; cursor:pointer; }
-  .task-row:hover:not(:disabled), .task-row:focus-visible { background:var(--color-subtle); }
-  .task-row:disabled { opacity:.45; cursor:not-allowed; }
-  .task-chevron { color:var(--color-text-secondary); }
+  /* The task list is typography, spacing and a hover background, not a stack
+     of controls. Rows are one line each. */
+  .task-launcher, .task-prepare { gap:var(--spacing); }
+  .task-results { list-style:none; margin:0; padding:0; display:flex; flex-direction:column; }
+  .task-results[hidden] { display:none; }
+  .task-row { padding:.375rem .5rem; border-radius:var(--radius-base, .25rem); cursor:pointer;
+              white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+  .task-row:hover, .task-row.active { background:var(--color-subtle); }
   .task-search { width:100%; min-width:0; }
-  .context-tasks { display:flex; flex-direction:column; }
-  .context-task { display:flex; flex-direction:column; }
-  .context-task p { overflow-wrap:anywhere; margin:calc(var(--spacing) * 1.5) 0 0; padding-inline:calc(var(--spacing) * 1.5); font-size:.8rem; }
-  .task-back { align-self:flex-start; border:0; background:transparent; padding:0; cursor:pointer; color:var(--color-text-secondary); }
+  .task-browse { align-self:flex-start; border:0; background:transparent; padding:0 .5rem; cursor:pointer;
+                 font-size:.8em; color:var(--color-text-secondary); }
+  .task-browse:hover { color:inherit; text-decoration:underline; }
+  .task-browse-head { display:flex; align-items:center; justify-content:space-between; gap:var(--spacing); }
+  .task-category { min-width:0; max-width:60%; }
+  .task-head { display:flex; align-items:center; gap:var(--spacing); }
+  .task-back { border:0; background:transparent; padding:0; cursor:pointer; color:var(--color-text-secondary); }
   .task-back:hover { color:inherit; }
-  .task-title { margin:0; font-weight:600; }
-  .task-description { margin:calc(var(--spacing) * .5) 0 0; }
+  .task-title { margin:0; font-weight:600; min-width:0; overflow:hidden; white-space:nowrap; text-overflow:ellipsis; }
+  .task-description { margin:0; font-size:.85em; }
+  .task-target { margin:0; overflow:hidden; white-space:nowrap; text-overflow:ellipsis; }
   .task-scope .select, .task-prepare .input { width:100%; min-width:0; }
+  .task-extra { field-sizing:content; min-height:2rem; max-height:8rem; overflow:auto; resize:none; }
   .prepare-actions { display:flex; justify-content:flex-end; }
   .context-summary { display:flex; align-items:center; flex-wrap:wrap; gap:var(--spacing); }
-  .attachment { display:flex; flex-direction:column; gap:var(--spacing); padding:calc(var(--spacing) * 2); border-left:3px solid var(--color-brand); background:var(--color-subtle); }
-  .attachment blockquote { max-height:7rem; overflow:auto; margin:var(--spacing) 0 0; white-space:pre-wrap; overflow-wrap:anywhere; }
-  .diagnostic-context { display:flex; flex-direction:column; gap:var(--spacing); padding:calc(var(--spacing) * 2); background:var(--color-subtle); }
-  .diagnostic-context span { white-space:pre-wrap; overflow-wrap:anywhere; }
+  .attachment { display:flex; flex-direction:column; gap:var(--spacing); padding:calc(var(--spacing) * 1.5); border-left:3px solid var(--color-brand); background:var(--color-subtle); }
+  .attachment blockquote { display:-webkit-box; -webkit-box-orient:vertical; -webkit-line-clamp:3; line-clamp:3; overflow:hidden; margin:0; white-space:pre-wrap; overflow-wrap:anywhere; }
   .request-warning { display:flex; flex-direction:column; gap:var(--spacing); padding:calc(var(--spacing) * 2); background:var(--color-warning-bg); overflow-wrap:anywhere; }
   /* A compact card inside the transcript rather than a dashboard block below
      it: a thin accent border says "this needs you" without a heavy frame. */
@@ -898,5 +969,4 @@
   .permission-details code, .permission-details pre { max-height:14rem; overflow:auto; white-space:pre-wrap; overflow-wrap:anywhere; }
   .permission-details pre { margin:0; padding:var(--spacing); background:var(--color-divider); }
   .agent-panel :global(.chat-transcript-wrap) { flex:1 0 8rem; min-height:8rem; }
-  @media (max-height:600px) { .attachment blockquote { max-height:4rem; } }
 </style>
