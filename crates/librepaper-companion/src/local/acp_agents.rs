@@ -18,13 +18,13 @@
 //! works but not fully.
 //!
 //! The built-in table below is a starting guess, not the limit.
-//! `librepaper agent add` declares any ACP-speaking command as an agent
-//! this machine offers, which is how an agent LibrePaper has never heard of
-//! gets driven from the sidebar, and how a changed entry point is corrected
-//! without waiting for a release. That declaration is deliberately a local
-//! command rather than a loopback route: the browser chooses *which* agent,
-//! never *what command*, the same invariant the build protocol keeps by
-//! refusing a caller-supplied `command` (see
+//! Settings, Agents, Add agent in the desktop app declares any ACP-speaking
+//! command as an agent this machine offers, which is how an agent LibrePaper
+//! has never heard of gets driven from the sidebar, and how a changed entry
+//! point is corrected without waiting for a release. That declaration is
+//! deliberately a local command rather than a loopback route: the browser
+//! chooses *which* agent, never *what command*, the same invariant the build
+//! protocol keeps by refusing a caller-supplied `command` (see
 //! `protocol::BuildRequestV2::validate_shape`).
 
 use std::collections::BTreeMap;
@@ -145,7 +145,8 @@ fn kind(id: &str) -> Option<&'static Kind> {
 
 /* ------------------------------------------------ Agents this machine adds */
 
-/// An ACP agent the user declared with `librepaper agent add`. This is
+/// An ACP agent the user added in the desktop app's settings (Settings,
+/// Agents, Add agent). This is
 /// the general answer for any agent not in the built-in table, including one
 /// that does not exist yet.
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]

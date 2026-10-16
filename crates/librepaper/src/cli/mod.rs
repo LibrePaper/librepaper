@@ -12,7 +12,7 @@ use serde_json::{json, Value};
 use librepaper_base::config::Configuration;
 use librepaper_base::http::{detail_of, get_as, get_with_token, post_json, text, Credentials};
 use librepaper_base::util::die;
-use librepaper_companion::local::cli::{LocalAgentCommand, LocalArgs, LocalCommand};
+use librepaper_companion::local::cli::{LocalArgs, LocalCommand};
 
 mod agent;
 
@@ -26,7 +26,7 @@ pub use documents::*;
 pub use tokens::*;
 
 #[derive(Parser)]
-#[command(name = "librepaper", version = crate::VERSION, about = "sign in, list and export documents, manage agents for the LibrePaper desktop app, and administer deployments", long_about = None, arg_required_else_help = true)]
+#[command(name = "librepaper", version = crate::VERSION, about = "sign in, list and export documents, and administer deployments", long_about = None, arg_required_else_help = true)]
 #[command(
     after_help = "To sign in from this terminal, set the deployment and run `librepaper login`:
 
@@ -64,11 +64,6 @@ pub(crate) struct Deployment {
 #[allow(clippy::large_enum_variant)]
 #[derive(Subcommand)]
 pub(crate) enum Command {
-    /// Manage the agents the LibrePaper desktop app offers in the document sidebar
-    Agent {
-        #[command(subcommand)]
-        command: LocalAgentCommand,
-    },
     /// Sign in through a deployment, in a browser
     Login {
         #[command(flatten)]
@@ -105,7 +100,7 @@ pub(crate) enum Command {
         deployment: Deployment,
     },
     // The one command the sidebar assistant's own agent spawns. Not listed,
-    // because nobody types it; see `agent`.
+    // because nobody types it.
     #[command(hide = true)]
     Mcp(agent::McpArgs),
     // The desktop app's interface to the background service. Not listed,
@@ -308,10 +303,9 @@ pub fn main() {
 fn needs_local_environment(command: &Command) -> bool {
     matches!(
         command,
-        Command::Agent { .. }
-            | Command::Local {
-                command: LocalCommand::Start(_) | LocalCommand::Status,
-            }
+        Command::Local {
+            command: LocalCommand::Start(_) | LocalCommand::Status,
+        }
     )
 }
 
@@ -320,7 +314,6 @@ async fn run(command: Command, postgres_env: Option<&server_config::PostgresEnvS
         install_subscriber(None);
     }
     match command {
-        Command::Agent { command } => librepaper_companion::local::cli::agent(command),
         Command::Login { deployment } => login(deployment.server).await,
         Command::Logout => logout(),
         Command::Admin { command } => run_admin(command, postgres_env).await,
@@ -670,6 +663,7 @@ mod socket_policy_tests {
             ],
             vec!["librepaper", "local", "tray"],
             vec!["librepaper", "local", "agent", "list"],
+            vec!["librepaper", "agent", "list"],
             vec!["librepaper", "desktop"],
         ] {
             assert!(Cli::try_parse_from(args.clone()).is_err(), "{args:?}");
@@ -679,7 +673,6 @@ mod socket_policy_tests {
     #[test]
     fn local_commands_parse_for_the_desktop_app() {
         for args in [
-            vec!["librepaper", "agent", "list"],
             vec!["librepaper", "local", "start"],
             vec![
                 "librepaper",
@@ -705,7 +698,7 @@ mod socket_policy_tests {
     #[test]
     fn help_lists_the_public_commands_and_hides_local() {
         let help = Cli::command().render_help().to_string();
-        for command in ["agent", "login", "logout", "list", "export", "admin"] {
+        for command in ["login", "logout", "list", "export", "admin"] {
             assert!(help.contains(command), "missing {command} in {help}");
         }
         assert!(!help.to_lowercase().contains("companion"), "{help}");

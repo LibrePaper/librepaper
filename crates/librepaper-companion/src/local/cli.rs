@@ -1,5 +1,5 @@
 //! `librepaper local`: the commands the LibrePaper desktop app runs to start,
-//! reach and stop the loopback service, and the agent commands.
+//! reach and stop the loopback service.
 
 use std::net::SocketAddr;
 use std::path::PathBuf;
@@ -49,29 +49,6 @@ pub enum LocalCommand {
         /// Port to start on when the service is not running (default 8763)
         #[arg(long, value_name = "PORT", env = "LIBREPAPER_LOCAL_PORT")]
         port: Option<u16>,
-    },
-}
-
-/// Declaring an ACP agent this machine offers. It is a command, not a
-/// loopback route: a page picks which agent to drive, never what command to
-/// run.
-#[derive(Subcommand, Clone, Debug)]
-pub enum LocalAgentCommand {
-    /// Declare an agent. Everything after `--` is the command that speaks the
-    /// Agent Client Protocol on stdio, for example:
-    /// `librepaper agent add opencode --label opencode -- opencode acp`
-    Add {
-        /// Short lower-case id, shown in the sidebar's agent list.
-        id: String,
-        #[arg(long, value_name = "NAME", default_value = "")]
-        label: String,
-        #[arg(last = true, required = true, value_name = "COMMAND")]
-        command: Vec<String>,
-    },
-    /// Which agents this computer has been taught
-    List,
-    Remove {
-        id: String,
     },
 }
 
@@ -360,42 +337,6 @@ fn print_tool(name: &str, tool: &protocol::Tool) {
             tool.note.clone()
         };
         println!("  {name}: {note}");
-    }
-}
-
-/// Teach this computer an ACP agent, so the sidebar can drive an agent that
-/// is not in the built-in table. This is how opencode, Pi, or something that
-/// does not exist yet becomes a sidebar assistant without LibrePaper
-/// guessing at a package name that may never have existed.
-pub fn agent(command: LocalAgentCommand) {
-    let state_home = crate::local::paths::state_home_or_die();
-    let store = crate::local::acp_agents::CustomStore::new(&state_home);
-    match command {
-        LocalAgentCommand::Add {
-            id,
-            label,
-            command: acp,
-        } => match store.add(&id, &label, &acp) {
-            Ok(()) => println!("{id} will be offered in the document sidebar"),
-            Err(error) => die(error),
-        },
-        LocalAgentCommand::List => {
-            let all = store.list();
-            if all.is_empty() {
-                println!("No agents added on this computer. Built-in agents are detected on PATH.");
-                return;
-            }
-            for (id, custom) in all {
-                println!("{id}\t{}\t{}", custom.label, custom.command.join(" "));
-            }
-        }
-        LocalAgentCommand::Remove { id } => {
-            if store.remove(&id) {
-                println!("removed {id}");
-            } else {
-                die(format!("no agent named '{id}'"));
-            }
-        }
     }
 }
 
