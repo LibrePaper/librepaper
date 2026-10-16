@@ -41,18 +41,14 @@ writeFileSync(entry, [
       value.doc.getMap("meta").delete("main");
       value.doc.commit();
     }
-    const base = value.doc.frontiers();
-    const baseVersion = value.doc.oplogVersion();
-    const sent = [];
     const fetchBefore = globalThis.fetch;
     const zoteroCalls = [];
     const bibliographyReports = [];
     const baseMeta = [...value.doc.getMap("meta").entries()];
     const host = document.createElement("section");
     document.body.append(host);
-    let outbound = null;
     const editor = createClassComponent({ component: Editor, target: host, props: {
-      session: value, format: "markdown", file: main, send: (message) => { sent.push(message); return { ok: true }; },
+      session: value, format: "markdown", file: main, me: { who: "me", author: "Me" },
       analyze: async () => ({ entries: [], diagnostics: [] }),
       onbibliography: (report) => bibliographyReports.push(report),
     } });
@@ -90,58 +86,26 @@ writeFileSync(entry, [
       if (!acceptCompletion(view)) throw new Error("the Zotero picker could not accept its selected entry");
       for (let attempt = 0; attempt < 100; attempt++) {
         await new Promise((resolve) => setTimeout(resolve, 50));
-        if (sent.some((message) => message.type === "proposal-open")) break;
+        if (value.textOf(main).toString().includes("@Riv2024") && value.doc.getMap("changes").size > 0) break;
       }
-      const open = sent.find((message) => message.type === "proposal-open");
-      if (!open) throw new Error("tracked Zotero import did not open a proposal");
-      editor.receiveProposal({ type: "proposal-opened", proposal_id: open.request_id, request_id: open.request_id, tip: "", applied_version: 1 });
-      let update = null, lastAcknowledged = "", appliedVersion = 1;
-      for (let attempt = 0; attempt < 100; attempt++) {
-        const updates = sent.filter((message) => message.type === "proposal-update");
-        const latest = updates.at(-1);
-        if (latest && latest.request_id !== lastAcknowledged) {
-          lastAcknowledged = latest.request_id;
-          const candidate = value.doc.forkAt(base);
-          candidate.import(Uint8Array.from(atob(latest.update), (character) => character.charCodeAt(0)));
-          const candidateProjection = projectDirectory(candidate, null);
-          const candidateText = candidate.getMap("files").get(main)?.toString() || "";
-          const candidateBibliography = candidateProjection.texts.get("references.bib") || "";
-          if (editor.text(main)?.includes("@Riv2024") && candidateText.includes("@Riv2024") && candidateBibliography.includes("x-librepaper-zotero-item={ITEM123}")) {
-            outbound = candidate;
-            update = latest;
-            break;
-          }
-          candidate.free();
-          editor.receiveProposal({ type: "proposal-updated", proposal_id: open.request_id, request_id: latest.request_id, tip: latest.tip, applied_version: ++appliedVersion });
-        }
-        await new Promise((resolve) => setTimeout(resolve, 50));
-      }
-      if (!outbound || !update) throw new Error("tracked Zotero import did not publish a private branch containing both the citation and bibliography: " + JSON.stringify({ text: editor.text(main), updates: sent.filter((message) => message.type === "proposal-update").length, calls: zoteroCalls, reports: bibliographyReports }));
-      const projection = projectDirectory(outbound, null);
-      const liveProjection = projectDirectory(value.doc, null);
-      const jsonUpdates = outbound.exportJsonUpdates(baseVersion, undefined, false);
-      const metadataContainer = String(outbound.getMap("meta").id);
-      const metadataOperations = jsonUpdates.changes.flatMap((change) => change.ops || []).filter((operation) => String(operation.container) === metadataContainer);
+      if (!value.textOf(main).toString().includes("@Riv2024")) throw new Error("tracked Zotero import did not reach the document: " + JSON.stringify({ text: value.textOf(main).toString(), calls: zoteroCalls, reports: bibliographyReports }));
+      const projection = projectDirectory(value.doc, null);
+      const entries = [...value.doc.getMap("changes").values()];
       return {
         mainState: missingMain ? "absent" : "explicit",
-        text: outbound.getMap("files").get(main).toString(),
+        text: value.textOf(main).toString(),
         mainId: main,
         bib: [...projection.files].find(([path]) => path === "references.bib")?.[1].id || "",
-        metaMain: outbound.getMap("meta").get("main") ?? null,
         projectedMain: projection.mainId,
         projectedPath: projection.main,
         bibliography: projection.texts.get("references.bib") || "",
-        metadataUnchanged: JSON.stringify([...outbound.getMap("meta").entries()]) === JSON.stringify(baseMeta),
-        noMetadataOperations: metadataOperations.length === 0,
-        liveText: value.textOf(main).toString(),
-        liveMetaMain: value.doc.getMap("meta").get("main") ?? null,
-        liveMain: liveProjection.mainId,
-        liveHasBibliography: value.list().some((file) => file.path === "references.bib"),
+        metadataUnchanged: JSON.stringify([...value.doc.getMap("meta").entries()]) === JSON.stringify(baseMeta),
+        changeCount: entries.length,
+        changeFiles: [...new Set(entries.map((entry) => entry.file))],
       };
     } finally {
       globalThis.fetch = fetchBefore;
       delete window.__LIBREPAPER_DESKTOP__;
-      outbound?.free();
       editor.$destroy();
       host.remove();
       value.leave();
@@ -198,16 +162,13 @@ try {
     const zotero = await evaluate(`zoteroImportMainCheck(${missingMain})`);
     assert.match(zotero.text, /bibliography: references\.bib/);
     assert.match(zotero.text, /@Riv2024/);
-    assert.notEqual(zotero.bib, "", "the Zotero import did not create references.bib in its proposal");
+    assert.notEqual(zotero.bib, "", "the Zotero import did not create references.bib");
     assert.match(zotero.bibliography, /x-librepaper-zotero-item=\{ITEM123\}/);
     assert.equal(zotero.projectedMain, zotero.mainId, "creating the bibliography displaced the projected paper main");
     assert.equal(zotero.projectedPath, "paper.md");
-    assert.equal(zotero.metadataUnchanged, true, "the exported proposal changed metadata");
-    assert.equal(zotero.noMetadataOperations, true, "the exported proposal includes a metadata operation");
-    assert.equal(zotero.liveText, "See ", "tracked Zotero import changed the shared paper");
-    assert.equal(zotero.liveMetaMain, missingMain ? null : zotero.mainId);
-    assert.equal(zotero.liveMain, zotero.mainId);
-    assert.equal(zotero.liveHasBibliography, false, "tracked Zotero import changed the shared file directory");
+    assert.equal(zotero.metadataUnchanged, true, "the tracked import changed metadata");
+    assert.ok(zotero.changeCount > 0, "the tracked import recorded no change");
+    assert.deepEqual(zotero.changeFiles, [zotero.mainId], "the tracked import recorded a change in another file");
   }
-  console.log("citations-browser: tracked Zotero imports preserve implicit and explicit main metadata");
+  console.log("citations-browser: tracked Zotero imports are recorded as changes and preserve implicit and explicit main metadata");
 } finally { socket?.close(); await stopBrowserProcess(browser); server?.close(); removeTemporary(temporary); }
