@@ -205,21 +205,20 @@ function cursorPos(doc, bytes) {
 }
 
 // Resolves one stored value to UTF-16 offsets, or null when it is orphaned.
-// `healed` holds the replacement bytes of a cursor whose character was deleted.
+// `stale` is true when a cursor's character was deleted.
 function resolveEntry(doc, id, value) {
   if (!value || typeof value.file !== "string" || !(value.start instanceof Uint8Array)) return null;
   const text = fileText(doc, value.file);
   if (!text) return null;
   const start = cursorPos(doc, value.start);
   if (!start) return null;
-  const healed = {};
-  if (start.update) healed.start = start.update.encode();
+  let stale = Boolean(start.update);
   const from = start.offset;
   let to = from;
   if (value.end) {
     const end = cursorPos(doc, value.end);
     if (!end) return null;
-    if (end.update) healed.end = end.update.encode();
+    if (end.update) stale = true;
     to = end.update ? end.offset : end.offset + 1;
   }
   if (to < from) to = from;
@@ -233,7 +232,7 @@ function resolveEntry(doc, id, value) {
     from,
     to,
     deleted: value.deleted ?? "",
-    healed,
+    stale,
   };
 }
 
@@ -263,7 +262,7 @@ function resolveAll(doc, fileId) {
  * @param {string} fileId
  */
 export function resolveChanges(doc, fileId) {
-  return resolveAll(doc, fileId).map(({ content, healed, ...change }) => change);
+  return resolveAll(doc, fileId).map(({ content, stale, ...change }) => change);
 }
 
 /**
@@ -272,7 +271,7 @@ export function resolveChanges(doc, fileId) {
  * @param {import("loro-crdt").LoroDoc} doc
  */
 export function listChanges(doc) {
-  return resolveAll(doc).map(({ content, healed, ...change }) => ({
+  return resolveAll(doc).map(({ content, stale, ...change }) => ({
     ...change,
     inserted: content.slice(change.from, change.to),
   }));
@@ -415,12 +414,9 @@ export function prune(doc) {
     if (!resolved || (resolved.from === resolved.to && resolved.deleted === "")) {
       map.delete(id);
       count += 1;
-    } else if (resolved.healed.start || resolved.healed.end) {
-      map.set(id, {
-        ...value,
-        start: resolved.healed.start ?? value.start,
-        end: resolved.healed.end ?? value.end,
-      });
+    } else if (resolved.stale) {
+      const fresh = cursorValue(fileText(doc, resolved.file), resolved.from, resolved.to, value, value.run ?? null, value.at, resolved.deleted, resolved.file);
+      if (fresh) map.set(id, { ...value, start: fresh.start, end: fresh.end });
     }
   }
   return count;
