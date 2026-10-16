@@ -27,8 +27,8 @@ The design is conservative on purpose:
 1. `git clone`, `git pull` and `git push` against a LibrePaper project, from
    any desktop where the companion is installed.
 2. A push lands in open editors live, like a coauthor's typing.
-3. Comments and suggestions stay attached to text that a push does not
-   touch.
+3. Comments and pending tracked changes stay attached to text that a push
+   does not touch.
 4. A push is refused only for real overlap, never because someone typed
    elsewhere in the same file.
 5. Every refusal names the file and the reason, and says what to run next.
@@ -422,8 +422,8 @@ that both call, and both gain from every improvement to it.
   returns the first outcome for a retried operation id.
 - **Authorization.** `authorize_document_mutation` and the recheck
   callback.
-- **Suggestions.** `document_propose` with `publish: "suggestions"` turns
-  patches into tracked suggestions through `AgentSuggestionBatch`.
+- **Tracked changes.** `document_propose` with `publish: "suggestions"` applies
+  patches as tracked changes through `AgentTrackedCommand`.
 
 ### What changes in the room
 
@@ -458,9 +458,9 @@ that both call, and both gain from every improvement to it.
    source drives the editor notice ("pushed from git") and the activity
    record. Like the operation scope, `Origin` is kept out of the request
    digest, so it cannot alter a retry's identity.
-4. **Suggestions take a `SourceChange`.** `AgentSuggestionBatch` accepts
+4. **Tracked changes take a `SourceChange`.** `AgentTrackedCommand` accepts
    the same type, so any caller that can apply a change can also publish it
-   for review. File operations cannot be suggestions yet. A change that
+   for review. File operations cannot be tracked changes yet. A change that
    has them and asks for review is refused with that reason.
 
 ### The callers
@@ -492,7 +492,7 @@ that both call, and both gain from every improvement to it.
 
   The route parses the body, sets `Origin::Git`, and calls
   `apply_source_change`. With `"publish": "suggestions"` it calls the
-  suggestion batch instead, which is how `git push -o review` works. The
+  tracked-change command instead, which is how `git push -o review` works. The
   route holds no logic of its own beyond authentication and parsing.
   `message` is the last pushed commit's subject, used for the notice.
 
@@ -573,7 +573,7 @@ Each step can be merged and shipped on its own.
      `room/source_change.rs`, with no behavior change for agents;
    - file operations, `Origin` with per-origin limits and the recorded
      source;
-   - suggestions accept a `SourceChange`;
+   - tracked changes accept a `SourceChange`;
    - the thin push route.
 4. **Companion: push.**
    - `export` capability, ancestry check, refusal rules, three-way hunk
@@ -670,9 +670,9 @@ tests):
 - **One grant per account per computer.** An opt-in choice on the consent
   page: "all projects I can edit, on this computer". It ends repeat
   consent, at the cost of a wider grant.
-- **Push as suggestions.** `git push -o review` sends
+- **Push as tracked changes.** `git push -o review` sends
   `"publish": "suggestions"`, so coauthors review the change as tracked
-  suggestions. The server already supports it through the shared core.
+  changes. The server already supports it through the shared core.
 - **Named versions as tags.** Fetch writes a tag for each named version
   created since the last fetch.
 - **Hosted access without the companion.** The same `/api/git/v1/` routes,
