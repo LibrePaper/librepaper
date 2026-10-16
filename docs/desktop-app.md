@@ -31,36 +31,66 @@ Web browsers run every page in a sandbox, so a website cannot run code or use fi
 
 ## Install the desktop app
 
-- Windows with Scoop:
+Every package except the plain macOS `.dmg` puts two commands on your PATH: `librepaper` (the [command line](cli.html)) and `librepaper-desktop` (the app). You do not need the command line to write.
+
+**macOS**
+
+- With Homebrew:
+
+```sh
+brew install vincentarelbundock/tap/librepaper
+```
+
+- Or download `LibrePaper_<version>_universal.dmg` from the release, open it and drag LibrePaper to Applications. It runs on Apple Silicon and Intel Macs. This install does not put the commands on your PATH.
+
+**Windows**
+
+- With Scoop:
 
 ```sh
 scoop bucket add vincentarelbundock https://github.com/vincentarelbundock/scoop-bucket
 scoop install librepaper
 ```
 
-- Windows installer: download `LibrePaper_<version>_x64-setup.exe` from the GitHub release. It is signed.
-- Debian and Ubuntu: download `LibrePaper_<version>_amd64.deb` from the release, then run:
+- Or download `LibrePaper_<version>_x64-setup.exe` from the release. It is signed. It adds its folder to your user PATH, so open a new terminal to use both commands. Uninstalling removes the PATH entry.
+
+**Linux**
+
+- Debian and Ubuntu: download `librepaper_<version>_amd64.deb` from the release, then run:
 
 ```sh
-sudo apt install ./LibrePaper_<version>_amd64.deb
+sudo apt install ./librepaper_<version>_amd64.deb
+sudo apt remove librepaper                        # remove it
 ```
 
-- Fedora and openSUSE: download `LibrePaper-<version>-1.x86_64.rpm` from the release, then run:
+- Fedora: download `librepaper-<version>-1.x86_64.rpm` from the release, then run:
 
 ```sh
-sudo dnf install ./LibrePaper-<version>-1.x86_64.rpm       # Fedora
-sudo zypper install ./LibrePaper-<version>-1.x86_64.rpm    # openSUSE
+sudo dnf install ./librepaper-<version>-1.x86_64.rpm
+sudo dnf remove librepaper                        # remove it
 ```
 
-- The Scoop package, the Debian package and the RPM package also install the [`librepaper` command line](cli.html), which hosts servers and runs scripts. You do not need it to write.
-- On Linux, open LibrePaper from your applications menu, or run `librepaper-desktop` in a terminal.
-- The Linux package is named `libre-paper`: remove it with `sudo apt remove libre-paper` or `sudo dnf remove libre-paper`.
-- macOS: download `LibrePaper_<version>_universal.dmg` from the release, open it and drag LibrePaper to Applications. It runs on Apple Silicon and Intel Macs.
-- macOS with Homebrew:
+- openSUSE: use the same `.rpm` file, then run:
 
 ```sh
-brew install --cask vincentarelbundock/tap/librepaper
+sudo zypper install ./librepaper-<version>-1.x86_64.rpm
 ```
+
+- Arch Linux: install the AUR package `librepaper-bin` with any AUR helper:
+
+```sh
+yay -S librepaper-bin
+```
+
+- Nix (x86_64 Linux only):
+
+```sh
+nix profile install github:LibrePaper/librepaper    # install
+nix run github:LibrePaper/librepaper                # or try it without installing
+```
+
+- Open LibrePaper from your applications menu, or run `librepaper-desktop` in a terminal.
+
 - To build from source:
 
 ```sh
@@ -85,7 +115,7 @@ The desktop app starts its own background local service when it opens. You do no
 
 ### Updates
 
-On macOS and with the Windows installer, the app checks for a new version when it starts and asks before it installs it. This includes an app installed with Homebrew. Scoop and the Linux packages update the app through their own commands.
+On macOS and with the Windows installer, the app checks for a new version when it starts and asks before it installs it. This includes an app installed with Homebrew. Scoop, the Linux packages, the AUR and Nix update the app through their own commands.
 
 ### Windows
 
