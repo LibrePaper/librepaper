@@ -182,7 +182,8 @@ fn open_window(app: &AppHandle, url: Url) -> tauri::Result<tauri::WebviewWindow>
         format!("window-{}", NEXT.fetch_add(1, Ordering::Relaxed))
     };
     let opener = app.clone();
-    WebviewWindowBuilder::new(app, label, WebviewUrl::External(url))
+    let checked = url.clone();
+    let window = WebviewWindowBuilder::new(app, label, WebviewUrl::External(url))
         .title("LibrePaper")
         .inner_size(1280.0, 860.0)
         .initialization_script(desktop_script())
@@ -202,7 +203,9 @@ fn open_window(app: &AppHandle, url: Url) -> tauri::Result<tauri::WebviewWindow>
             }
             NewWindowResponse::Deny
         })
-        .build()
+        .build()?;
+    check_server(app, window.label().to_string(), checked);
+    Ok(window)
 }
 
 // Shows a URL in the focused window, or in a new window.
@@ -341,10 +344,12 @@ fn page_origin(app: &AppHandle, label: &str) -> Option<String> {
 }
 
 fn serve(app: &AppHandle, label: String, request: Request<Vec<u8>>, responder: UriSchemeResponder) {
-    let Some(origin) = page_origin(app, &label) else {
+    let Some(origin) = serve_origin(app, &label) else {
         return responder.respond(forbidden());
     };
-    if !trusted(app, &origin) {
+    // The offline page may ask for one route only: the server switch.
+    let bundled = origin == app_origin();
+    if !trusted(app, &origin) && !(bundled && request.uri().path() == "/shell/server") {
         return responder.respond(forbidden());
     }
 
@@ -514,6 +519,11 @@ fn serve(app: &AppHandle, label: String, request: Request<Vec<u8>>, responder: U
             }
         });
         return;
+    }
+
+    // Every other route is for trusted servers. The offline page stops here.
+    if bundled {
+        return responder.respond(forbidden());
     }
 
     let (parts, body) = request.into_parts();
@@ -755,4 +765,62 @@ fn focused_window(app: &AppHandle) -> Option<tauri::WebviewWindow> {
         .cloned()
         .or_else(|| windows.get("main").cloned())
         .or_else(|| windows.values().next().cloned())
+}
+
+// Where the bundled pages (frontendDist) are served from.
+fn app_origin() -> &'static str {
+    if cfg!(windows) {
+        "http://tauri.localhost"
+    } else {
+        "tauri://localhost"
+    }
+}
+
+// Opens the offline page in a window whose server did not answer. The
+// webview's own error page says nothing useful.
+fn check_server(app: &AppHandle, label: String, server: Url) {
+    let app = app.clone();
+    tauri::async_runtime::spawn(async move {
+        if reachable(&server).await {
+            return;
+        }
+        shell_log::write(&format!(
+            "{} did not answer",
+            server.origin().ascii_serialization()
+        ));
+        let Ok(mut page) = Url::parse(&format!("{}/offline.html", app_origin())) else {
+            return;
+        };
+        page.query_pairs_mut().append_pair("server", server.as_str());
+        let nav = app.clone();
+        let _ = app.run_on_main_thread(move || {
+            if let Some(window) = nav.get_webview_window(&label) {
+                if let Err(err) = window.navigate(page) {
+                    shell_log::write(&format!("could not show the offline page: {err}"));
+                }
+            }
+        });
+    });
+}
+
+// Any HTTP answer counts: the server is there, whatever it says.
+async fn reachable(server: &Url) -> bool {
+    let Ok(client) = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(10))
+        .build()
+    else {
+        return true;
+    };
+    client.get(server.clone()).send().await.is_ok()
+}
+
+// The origin a request from the window's page carries. A bundled page has an
+// opaque origin in the url crate ("null"), so it gets the origin its requests
+// send instead.
+fn serve_origin(app: &AppHandle, label: &str) -> Option<String> {
+    let url = app.get_webview_window(label)?.url().ok()?;
+    if url.as_str().starts_with(&format!("{}/", app_origin())) {
+        return Some(app_origin().to_string());
+    }
+    page_origin(app, label)
 }
