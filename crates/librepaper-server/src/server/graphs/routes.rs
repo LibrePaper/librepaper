@@ -228,6 +228,7 @@ fn decide(server: &Server, parts: &Parts) -> Decision {
             "login": operator.login,
             "github_id": operator.github_id,
             "expires_at": operator.expires_at,
+            "providers": server.providers(),
         })),
         "/data" => return Decision::Data(parts.uri.query().map(str::to_owned)),
         "/accounts" => return Decision::Accounts,

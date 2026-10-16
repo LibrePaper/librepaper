@@ -424,10 +424,11 @@ impl Arrival {
         format!("{}/auth/callback", self.here())
     }
 
-    /// Google's own callback. GitHub keeps the bare `/auth/callback` so that
-    /// no OAuth app already registered against it has to be edited.
-    pub fn google_callback_url(&self) -> String {
-        format!("{}/auth/callback/google", self.here())
+    /// An OpenID Connect provider's callback, named by its id. GitHub keeps
+    /// the bare `/auth/callback` so that no OAuth app already registered
+    /// against it has to be edited.
+    pub fn oidc_callback_url(&self, id: &str) -> String {
+        format!("{}/auth/callback/{id}", self.here())
     }
 
     fn here(&self) -> &str {
