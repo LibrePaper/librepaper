@@ -46,8 +46,8 @@ use librepaper_engine::log::sequencer::{
     Command as SequencerCommand, CommandError, Evidence, Head, PreparedSource, Rung,
 };
 use librepaper_engine::storage::postgres::{
-    self, AnnotationRecord, AnnotationState, MutationAuthorization, NewAnnotation,
-    NewReply, PostgresCatalog, ReplyRecord,
+    self, AnnotationRecord, AnnotationState, MutationAuthorization, NewAnnotation, NewReply,
+    PostgresCatalog, ReplyRecord,
 };
 
 use super::locate::{self, Quote};
@@ -1187,9 +1187,8 @@ impl SequencerCommand for AddComment {
                     false,
                 )
                 .await?;
-            annotation_row_to_comment(&row, Vec::new()).map_err(|error| {
-                CommandError::Storage(postgres::Error::Invalid(error.to_string()))
-            })
+            annotation_row_to_comment(&row, Vec::new())
+                .map_err(|error| CommandError::Storage(postgres::Error::Invalid(error.to_string())))
         })
     }
 }
@@ -1483,10 +1482,7 @@ impl Room {
     /// `deletable`, which are derived from the row already in hand.
     pub async fn prepare_comment_event(&self, payload: &Value) -> CommentEvent {
         let kind = payload.get("type").and_then(Value::as_str);
-        if !matches!(
-            kind,
-            Some("comment" | "reply" | "delete" | "resolve")
-        ) {
+        if !matches!(kind, Some("comment" | "reply" | "delete" | "resolve")) {
             return CommentEvent::bare(payload.clone());
         }
         if kind == Some("delete") {

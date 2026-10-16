@@ -120,8 +120,11 @@ impl Room {
             .map(|reply| {
                 let mut value = serde_json::to_value(reply).unwrap_or(Value::Null);
                 if let Some(at) = reply.at {
-                    value["cursor"] =
-                        json!(comments::encode_cursor(self.document_id, Some(comment_id), at));
+                    value["cursor"] = json!(comments::encode_cursor(
+                        self.document_id,
+                        Some(comment_id),
+                        at
+                    ));
                 }
                 value
             })

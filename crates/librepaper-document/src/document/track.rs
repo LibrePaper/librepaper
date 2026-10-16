@@ -122,13 +122,7 @@ pub fn plan_edits(
             });
         }
     }
-    out.sort_by_key(|p| {
-        (
-            p.state == PlanState::Removed,
-            p.change.from,
-            p.change.to,
-        )
-    });
+    out.sort_by_key(|p| (p.state == PlanState::Removed, p.change.from, p.change.to));
     out
 }
 
@@ -422,9 +416,7 @@ fn entry_value(c: &ResolvedChange, start: &Cursor, end: Option<&Cursor>) -> Loro
     m.insert("at".into(), LoroValue::Double(c.at as f64));
     m.insert(
         "run".into(),
-        c.run
-            .as_deref()
-            .map_or(LoroValue::Null, LoroValue::from),
+        c.run.as_deref().map_or(LoroValue::Null, LoroValue::from),
     );
     m.insert("start".into(), LoroValue::from(start.encode()));
     m.insert(
@@ -483,7 +475,15 @@ pub fn apply_tracked_edits(
     }
 
     let mut mint = mint_uuid;
-    let plan = plan_edits(&before, &pending, &planned_edits, by, run, now_ms, &mut mint);
+    let plan = plan_edits(
+        &before,
+        &pending,
+        &planned_edits,
+        by,
+        run,
+        now_ms,
+        &mut mint,
+    );
     let map = doc.get_map(CHANGES);
     let mut set = Vec::new();
     for p in plan {
@@ -504,7 +504,8 @@ pub fn apply_tracked_edits(
                 };
                 let mut c = c.clone();
                 c.file = file_id.to_string();
-                map.insert(&c.id, entry_value(&c, &start, end.as_ref())).ok();
+                map.insert(&c.id, entry_value(&c, &start, end.as_ref()))
+                    .ok();
                 set.push(c.id);
             }
         }
@@ -659,7 +660,13 @@ mod tests {
             let edits: Vec<(usize, usize, String)> = fx
                 .edits
                 .iter()
-                .map(|e| (cp(&fx.before, e.from), cp(&fx.before, e.to), e.insert.clone()))
+                .map(|e| {
+                    (
+                        cp(&fx.before, e.from),
+                        cp(&fx.before, e.to),
+                        e.insert.clone(),
+                    )
+                })
                 .collect();
             let me = Author {
                 who: &fx.me.who,
@@ -720,7 +727,8 @@ mod tests {
     #[test]
     fn records_a_replacement() {
         let (doc, id) = setup("the quick fox");
-        let set = apply_tracked_edits(&doc, &id, &[edit(4, 5, "slow")], &ME, Some("r1"), 9).unwrap();
+        let set =
+            apply_tracked_edits(&doc, &id, &[edit(4, 5, "slow")], &ME, Some("r1"), 9).unwrap();
         doc.commit();
         assert_eq!(set.len(), 1);
         assert_eq!(body(&doc, &id), "the slow fox");
@@ -806,7 +814,11 @@ mod tests {
             doc.commit();
             assert!(accept(&doc, &ids[b]));
             doc.commit();
-            let want = if first_is_a { "one two 3 four" } else { "1 two three four" };
+            let want = if first_is_a {
+                "one two 3 four"
+            } else {
+                "1 two three four"
+            };
             assert_eq!(body(&doc, &id), want);
             assert!(resolve_changes(&doc, &id).is_empty());
         }
@@ -839,8 +851,10 @@ mod tests {
         apply_tracked_edits(&doc, &id, &[edit(4, 5, "slow")], &ME, None, 1).unwrap();
         doc.commit();
         let (other, other_id) = setup("x");
-        let orphan = apply_tracked_edits(&other, &other_id, &[edit(0, 0, "y")], &ME, None, 1).unwrap();
-        doc.import(&other.export(loro::ExportMode::all_updates()).unwrap()).unwrap();
+        let orphan =
+            apply_tracked_edits(&other, &other_id, &[edit(0, 0, "y")], &ME, None, 1).unwrap();
+        doc.import(&other.export(loro::ExportMode::all_updates()).unwrap())
+            .unwrap();
         doc.commit();
         assert!(orphan.len() == 1);
         // The orphan's file is in the document, so it resolves. Delete the

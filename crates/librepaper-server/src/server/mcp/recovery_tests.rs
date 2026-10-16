@@ -351,13 +351,7 @@ async fn committed_tracked_changes_deletes_and_applies_survive_a_lost_mcp_respon
         change_outcome["effects"][0]["id"].as_str().is_some(),
         "receipt names the created change"
     );
-    let (status, retry) = call(
-        &deployment,
-        &owner,
-        "document_propose",
-        change_arguments,
-    )
-    .await;
+    let (status, retry) = call(&deployment, &owner, "document_propose", change_arguments).await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(recovered(&retry)["error"]["code"], "outcome_unknown");
     let room = deployment

@@ -1155,14 +1155,9 @@ impl Server {
         };
         let mut comment_state = librepaper_room::room::comments::comment_state_json(&state);
         comment_state["complete"] = json!(page.complete);
-        comment_state["next_cursor"] =
-            json!(page
-                .next
-                .map(|at| librepaper_room::room::comments::encode_cursor(
-                    room.document_id,
-                    None,
-                    at
-                )));
+        comment_state["next_cursor"] = json!(page
+            .next
+            .map(|at| librepaper_room::room::comments::encode_cursor(room.document_id, None, at)));
         let tree_sha = projected.projection.digest();
         let main = projected.projection.main.clone();
         let files = projected.projection.files.clone();
