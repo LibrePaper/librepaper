@@ -213,12 +213,13 @@ try {
 
       // The two things the keyboard opens. Neither is reachable by opening a
       // panel, and both are tables of controls, which is where an id printed
-      // twice or a listbox with no name would land.
+      // twice or a listbox with no name would land. The keyboard button opens
+      // the settings on the editor page, where the shortcut table is.
       const settle = "new Promise(done => requestAnimationFrame(() => requestAnimationFrame(done)))";
       await tab.evaluate("document.querySelector('[aria-label=\"Keyboard shortcuts\"]').click()");
       await tab.evaluate(settle);
       failures.push(...await violations(tab, "reader: keyboard shortcuts"));
-      await tab.evaluate("document.querySelector('[role=\"dialog\"][data-state=\"open\"] [aria-label=Close]').click()");
+      await tab.evaluate("document.querySelector('[role=\"dialog\"][data-state=\"open\"] .modal-back').click()");
       await tab.evaluate(settle);
 
       await tab.evaluate("window.dispatchEvent(new KeyboardEvent('keydown', {key:'p', code:'KeyP', ctrlKey:true, altKey:true, bubbles:true}))");

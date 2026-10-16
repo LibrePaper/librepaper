@@ -11,18 +11,14 @@
   // this table answers is "what can I press", and a key that vanishes because
   // the preview happens to be closed reads as a key that does not exist.
   //
-  // It is a component rather than markup inside the settings page because the
-  // settings are not the only place a table like this could be wanted. Today
-  // it is shown only in the editor settings, beside the choice of editor keys,
-  // which is where `?` and the keyboard button both lead. It is not shown in a
-  // dialog of its own.
+  // It is shown in the editor settings, beside the choice of editor keys,
+  // which is where `?` and the keyboard button both lead.
   let { context = {}, modalEditor = false, apple = APPLE } = $props();
 
   const groups = $derived(helpTable(context, { apple }));
 
-  // A static id would collide if this table were ever mounted twice on one
-  // page. `$props.id()` is unique per component instance, so each mount gets
-  // its own ids without any caller having to know about the others.
+  // `$props.id()` rather than a static id, so the ids stay unique however
+  // many times the table is mounted.
   const uid = $props.id();
 </script>
 

@@ -105,7 +105,7 @@ try {
   const focusSource = () => b.evaluate('document.querySelector(".cm-content").focus()');
   const source = () => b.evaluate('document.querySelector(".cm-content").textContent');
 
-  /* ------------------------------------------------- ? is settings, and a letter */
+  /* ------------------------------------------------- ? is the settings, and a letter */
 
   await focusBody();
   await key("?", { code: "Slash", modifiers: ["shift"], virtual: 191 });
@@ -232,7 +232,7 @@ try {
   assert.equal(await b.evaluate("window.__claimed()"), true, "a chord we answer is cancelled");
 
   assert.deepEqual(await b.evaluate("window.testErrors"), []);
-  console.log("shortcuts-browser: ? opens the shortcut table in the settings from the page, and is a letter in the source,⌃\\ cycles from the editor, panels take the focus, the palette runs what it offers, and the settings list the same table");
+  console.log("shortcuts-browser: ? opens the shortcut table in the settings from the page, and is a letter in the source, ⌃\\ cycles from the editor, panels take the focus, the palette runs what it offers, and the settings list the same table");
 } finally {
   await b?.close();
   serverHttp?.close();
