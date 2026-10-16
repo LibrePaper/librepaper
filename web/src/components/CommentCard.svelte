@@ -32,6 +32,8 @@
     // A suggestion's own two verbs. Hidden entirely for any other comment.
     onaccept,
     onreject,
+    // Asks the agent to act on this comment. Absent where no agent is offered.
+    onagent,
     cardIdPrefix = "comment",
     // The card the sidebar has singled out: its passage is ringed in the
     // document, and the card wears the same ring so the two read as one.
@@ -342,6 +344,17 @@
        now, and it is still the confirmed one: what it opens is the dialog,
        not the deletion. -->
   <div class="actions">
+    {#if onagent && !comment.resolved}
+      <IconButton
+        icon="bot"
+        label={comment.motivation === "editing" ? "Refine suggestion with agent" : "Address comment with agent"}
+        disabled={!canComment}
+        onclick={(e) => {
+          e.stopPropagation();
+          onagent?.(comment);
+        }}
+      />
+    {/if}
     {#if !isSuggestion && canComment}
       <!-- Reject is the resolve, for a suggestion -- see the diff and
            decision block above. -->

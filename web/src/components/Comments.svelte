@@ -39,6 +39,7 @@
     onreply = undefined,
     onaccept = undefined,
     onreject = undefined,
+    onagent = undefined,
     onrejectconfirmed = undefined,
     pending = undefined,
     // Optional view filter used by the collaboration tabs. Highlight notes
@@ -251,6 +252,7 @@
         {onreply}
         {onaccept}
         {onreject}
+        {onagent}
         {onloadreplies}
       />
       {/each}
