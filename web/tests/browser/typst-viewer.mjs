@@ -329,6 +329,33 @@ async function run() {
     JSON.stringify(coloured));
   check("a PDF highlight takes a click through to its thread", coloured?.focused, JSON.stringify(coloured));
 
+  // A pending change tints its text, and a deletion is a synthetic struck
+  // span that is replaced, not added to, by each later painting pass.
+  const changed = await tab.eval(`
+    const doc = window.doc();
+    const text = window.text();
+    const at = window.anchor({ exact: 'Typst PDF fixture', prefix: '', suffix: '' });
+    if (!at) return null;
+    const ranges = [{ id: 'change:one', start: at.start, end: at.end, motivation: 'change', deleted: 'old words', author: 'Ada' }];
+    const counts = [];
+    for (let pass = 0; pass < 3; pass++) {
+      window.paint(ranges);
+      await new Promise(resolve => setTimeout(resolve, 150));
+      counts.push(doc.querySelectorAll('del.librepaper-change-deleted').length);
+    }
+    const mark = doc.querySelector('mark[data-librepaper~="change:one"]');
+    const gone = doc.querySelector('del.librepaper-change-deleted');
+    return {
+      counts,
+      tinted: Boolean(mark) && !/transparent|rgba\\(0, 0, 0, 0\\)/.test(doc.defaultView.getComputedStyle(mark).backgroundColor),
+      deleted: gone?.textContent,
+      textStable: window.text() === text,
+    };
+  `);
+  check("a change range tints its text and draws its deletion once per pass",
+    changed?.tinted && changed.deleted === "old words" && changed.counts.every((n) => n === 1) && changed.textStable,
+    JSON.stringify(changed));
+
   // Zooming rerenders the page under the marks, and the parent repaints them
   // against the text it reads back. Both have to land somewhere real.
   const markZoom = await tab.eval(`

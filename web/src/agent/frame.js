@@ -124,6 +124,22 @@ import { watchPinch } from "../lib/pinch.js";
   `;
   document.head.appendChild(markStyle);
 
+  // A pending deletion has no words left in the document to wrap, so it is a
+  // synthetic span carrying the deleted text, struck through, at the place the
+  // words were. `data-librepaper-synthetic` keeps it out of the text walk, so
+  // the offset tables never count it as content.
+  const changeStyle = document.createElement("style");
+  changeStyle.dataset.librepaperChanges = "1";
+  changeStyle.textContent = `
+    .librepaper-change-deleted {
+      background: hsl(0 45% 93% / 0.7);
+      color: hsl(0 55% 40%);
+      text-decoration: line-through;
+      cursor: pointer;
+    }
+  `;
+  document.head.appendChild(changeStyle);
+
   function adoptStyles(parsed, presentation) {
     // Quarto's layout selectors depend on attributes of both root elements.
     // Keep the body itself (and its observer), copying only presentation
@@ -159,6 +175,7 @@ import { watchPinch } from "../lib/pinch.js";
   const TINTS = {
     commenting: [42, 55],
     highlighting: [145, 28],
+    change: [140, 45],
   };
   /** @type {[number, number]} */
   const NEUTRAL = [220, 12]; // resolved: the colour has served its purpose
@@ -195,6 +212,7 @@ import { watchPinch } from "../lib/pinch.js";
       if (node instanceof Text) {
         const parent = node.parentElement;
         if (parent && ["SCRIPT", "STYLE", "NOSCRIPT"].includes(parent.tagName)) continue;
+        if (parent?.closest("[data-librepaper-synthetic]")) continue;
         index.set(node, nodes.length);
         starts.push(total);
         nodes.push(node);
@@ -286,6 +304,7 @@ import { watchPinch } from "../lib/pinch.js";
   function highlight(ranges) {
     lastRanges = ranges;
     quietly(() => {
+      document.querySelectorAll(".librepaper-change-deleted").forEach((node) => node.remove());
       document
         .querySelectorAll("mark[data-librepaper]")
         .forEach((mark) => mark.replaceWith(...mark.childNodes));
@@ -339,6 +358,11 @@ import { watchPinch } from "../lib/pinch.js";
           ? wash(tintOf(inner.motivation), live.length, 0.42)
           : wash(NEUTRAL, 1, 0.24);
         mark.style.cssText = `background:${shade};color:inherit;cursor:pointer`;
+        if (live.length && inner.motivation === "change") {
+          mark.style.textDecoration = "underline";
+          mark.style.textDecorationColor = "hsl(140 55% 35%)";
+          if (typeof inner.author === "string") mark.title = inner.author;
+        }
         range.surroundContents(mark);
         // The same innermost annotation the colour came from is the one a click
         // on this stretch means.
@@ -346,6 +370,32 @@ import { watchPinch } from "../lib/pinch.js";
       }
     });
     quietly(applySelected);
+    // The marks split the text nodes, so the table is rebuilt before the
+    // deleted text is placed. Later offsets go first, which leaves the nodes
+    // of the earlier ones untouched.
+    const deletions = ranges.filter((item) => typeof item.deleted === "string" && item.deleted);
+    if (deletions.length) {
+      scan();
+      quietly(() => {
+        if (!table.nodes.length) return;
+        for (const item of [...deletions].sort((a, b) => b.start - a.start)) {
+          const at = nodeAt(item.start);
+          const node = table.nodes[at];
+          const offset = Math.max(0, Math.min(node.data.length, item.start - table.starts[at]));
+          const gone = document.createElement("del");
+          gone.className = "librepaper-change-deleted";
+          gone.dataset.librepaperSynthetic = "1";
+          gone.setAttribute("aria-label", `Deleted: ${item.deleted}`);
+          if (typeof item.author === "string") gone.title = item.author;
+          gone.appendChild(document.createTextNode(item.deleted));
+          gone.onclick = () => { select(item.id); post({ type: "focus", id: item.id }); };
+          const spot = document.createRange();
+          spot.setStart(node, offset);
+          spot.collapse(true);
+          spot.insertNode(gone);
+        }
+      });
+    }
     // surroundContents splits the text nodes it wraps, so the table built above
     // no longer describes the document. A selection made after a highlight
     // would land in a node the table has never seen, and report offsets against
