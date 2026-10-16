@@ -47,8 +47,14 @@ deletes a range that holds another change's deleted text (a pure deletion
 point inside the range, or a foreign insertion that the edit deletes whole and
 that collapses to a point), the change the editor owns after the edit lists it
 as `{ id, at }`. `at` is the number of original characters of `deleted` that
-precede that change's point in document order (UTF-16 in the browser, code
-points in Rust). A merge carries the points of the changes it absorbs and
+precede that change's point in document order. The stored `at` is always in
+UTF-16 units of the owner's `deleted` string. The browser uses it as is. Rust
+counts code points internally, so it converts at its read and write
+boundaries. A pure deletion that sits at the end of the deleted range, right
+after it (`p == edit.to`), is recorded too, with `at` equal to the full length
+of the owner's new `deleted` text before it; without it, two deletions
+anchored on the same character would lose their order. An id already carried
+over from a merged change is not listed twice. A merge carries the points of the changes it absorbs and
 shifts each `at` by the deleted text that now lands before it.
 
 Cursors:
@@ -164,6 +170,11 @@ Both are one local Loro commit by the deciding editor:
   points go left with their offset when `at < a`, else right with `at - a`.
   This keeps the order of two deletions that were anchored at the same
   character, so rejecting them in any order restores the original text.
+- `rejectMany(doc, ids)` (Rust `reject_many`) rejects several changes in one
+  commit. A selected change whose `points` list another selected change is
+  rejected before that one; this repeats until none is left, since owners can
+  nest. When rejecting a change splits an owner that was not selected, the
+  owner's parts stay pending. It returns the number rejected.
 - On `accept`, the `points` go with the record.
 
 They are plain document edits: they sync through the normal update path, need
@@ -175,7 +186,7 @@ the `deleted` text then appears twice. That race is accepted.
 
 New module `web/src/lib/track-changes.js` (the planner, `resolveChanges(doc,
 fileId)`, `listChanges(doc)` for every file, `recordEdits(doc, fileId,
-preResolved, edits, me, run)`, `accept`, `reject`, `prune`). It replaces
+preResolved, edits, me, run)`, `accept`, `reject`, `rejectMany`, `prune`). It replaces
 `web/src/lib/proposals.js`, which is deleted.
 
 Editor (`web/src/components/Editor.svelte`):

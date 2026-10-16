@@ -250,12 +250,14 @@ fn plan_one(
                 if affected.contains(&i) || c.deleted.is_empty() {
                     continue;
                 }
+                // A pure deletion right after the range (`c.from == t`) is
+                // recorded too, so the order of the two deletions is kept.
                 let swallowed = if c.from == c.to {
-                    f <= c.from && c.from < t
+                    f <= c.from && c.from <= t
                 } else {
                     c.from >= f && c.to <= t
                 };
-                if swallowed {
+                if swallowed && !points.iter().any(|pt| pt.id == c.id) {
                     points.push(Point {
                         id: c.id.clone(),
                         at: before(c.from),
@@ -439,6 +441,8 @@ fn read_entry(doc: &LoroDoc, id: &str) -> Option<Read> {
         _ => 0,
     };
     let run = string_field(&m, "run");
+    let deleted = string_field(&m, "deleted")?;
+    // Stored `at` counts UTF-16 units of `deleted`; here it counts code points.
     let points = match m.get("points") {
         Some(LoroValue::List(items)) => items
             .iter()
@@ -453,7 +457,7 @@ fn read_entry(doc: &LoroDoc, id: &str) -> Option<Read> {
                 };
                 Some(Point {
                     id: string_field(pm, "id")?,
-                    at,
+                    at: utf16_to_cp(&deleted, at),
                 })
             })
             .collect(),
@@ -469,7 +473,7 @@ fn read_entry(doc: &LoroDoc, id: &str) -> Option<Read> {
             at,
             from,
             to,
-            deleted: string_field(&m, "deleted")?,
+            deleted,
             points,
         },
         start_update: start_pos.update,
@@ -488,6 +492,23 @@ pub fn resolve_changes(doc: &LoroDoc, file_id: &str) -> Vec<ResolvedChange> {
         .collect();
     out.sort_by(|a, b| (a.from, a.to, &a.id).cmp(&(b.from, b.to, &b.id)));
     out
+}
+
+/// The code point offset in `s` of a UTF-16 offset.
+fn utf16_to_cp(s: &str, utf16: usize) -> usize {
+    let mut units = 0;
+    for (i, ch) in s.chars().enumerate() {
+        if units >= utf16 {
+            return i;
+        }
+        units += ch.len_utf16();
+    }
+    s.chars().count()
+}
+
+/// The UTF-16 offset in `s` of a code point offset.
+fn cp_to_utf16(s: &str, cp: usize) -> usize {
+    s.chars().take(cp).map(char::len_utf16).sum()
 }
 
 fn entry_value(c: &ResolvedChange, start: &Cursor, end: Option<&Cursor>) -> LoroValue {
@@ -514,7 +535,7 @@ fn entry_value(c: &ResolvedChange, start: &Cursor, end: Option<&Cursor>) -> Loro
             .map(|p| {
                 let mut pm: HashMap<String, LoroValue> = HashMap::new();
                 pm.insert("id".into(), LoroValue::from(p.id.as_str()));
-                pm.insert("at".into(), LoroValue::Double(p.at as f64));
+                pm.insert("at".into(), LoroValue::Double(cp_to_utf16(&c.deleted, p.at) as f64));
                 LoroValue::from(pm)
             })
             .collect();
@@ -750,6 +771,40 @@ pub fn reject(doc: &LoroDoc, id: &str) -> bool {
         }
     }
     map.delete(id).is_ok()
+}
+
+/// Rejects several changes. A selected change that lists another selected
+/// change in its `points` goes first, so the pair restores in order. If
+/// rejecting a change splits an owner that was not selected, the owner's parts
+/// stay pending. Returns the number of changes rejected. Does not commit.
+pub fn reject_many<S: AsRef<str>>(doc: &LoroDoc, ids: &[S]) -> usize {
+    let map = doc.get_map(CHANGES);
+    let mut pending: Vec<String> = Vec::new();
+    for id in ids {
+        let id = id.as_ref();
+        if map.get(id).is_some() && !pending.iter().any(|p| p == id) {
+            pending.push(id.to_string());
+        }
+    }
+    let mut count = 0;
+    while !pending.is_empty() {
+        let mut listed: HashSet<String> = HashSet::new();
+        for owner in &pending {
+            if let Some(r) = read_entry(doc, owner) {
+                for p in &r.change.points {
+                    if p.id != *owner {
+                        listed.insert(p.id.clone());
+                    }
+                }
+            }
+        }
+        let i = pending.iter().position(|id| !listed.contains(id)).unwrap_or(0);
+        let id = pending.remove(i);
+        if reject(doc, &id) {
+            count += 1;
+        }
+    }
+    count
 }
 
 /// Removes every orphaned, malformed or empty entry and returns how many it
@@ -1225,5 +1280,87 @@ mod tests {
         assert!(reject(&doc, &right.id));
         doc.commit();
         assert_eq!(body(&doc, &id), "abcde");
+    }
+
+    #[test]
+    fn a_deletion_right_after_the_range_is_recorded_as_a_point() {
+        for bob_first in [true, false] {
+            let (doc, id, a, b) = swallow("abcd", edit(2, 1, ""), edit(1, 1, ""));
+            assert_eq!(body(&doc, &id), "ad");
+            let bob = resolve_changes(&doc, &id)
+                .into_iter()
+                .find(|c| c.id == b)
+                .unwrap();
+            assert_eq!(bob.points, vec![Point { id: a.clone(), at: 1 }]);
+            let order = if bob_first { [&b, &a] } else { [&a, &b] };
+            for change in order {
+                assert!(reject(&doc, change));
+                doc.commit();
+            }
+            assert_eq!(body(&doc, &id), "abcd");
+            assert!(resolve_changes(&doc, &id).is_empty());
+        }
+    }
+
+    #[test]
+    fn points_are_stored_in_utf16_units() {
+        // Bob deletes "\u{1F600}b"; Alice's deletion of "c" sat after "b".
+        let (doc, id, a, b) = swallow("a\u{1F600}bcd", edit(4, 1, ""), edit(1, 3, ""));
+        let stored = match doc.get_map(CHANGES).get(&b) {
+            Some(ValueOrContainer::Value(LoroValue::Map(m))) => m,
+            _ => panic!("entry"),
+        };
+        let Some(LoroValue::List(points)) = stored.get("points") else {
+            panic!("points");
+        };
+        let LoroValue::Map(pm) = &points[0] else {
+            panic!("point");
+        };
+        assert!(matches!(pm.get("at"), Some(LoroValue::Double(v)) if *v == 3.0));
+        let read = resolve_changes(&doc, &id)
+            .into_iter()
+            .find(|c| c.id == b)
+            .unwrap();
+        assert_eq!(read.points, vec![Point { id: a.clone(), at: 2 }]);
+        // A hand-written entry reads the same way.
+        let text = text_of(&doc, &id).unwrap();
+        let start = text.get_cursor(1, Side::Left).unwrap();
+        let mut c = read.clone();
+        c.id = "hand".into();
+        c.points = vec![Point { id: a, at: 2 }];
+        doc.get_map(CHANGES)
+            .insert("hand", entry_value(&c, &start, None))
+            .unwrap();
+        let hand = read_entry(&doc, "hand").unwrap().change;
+        assert_eq!(hand.points[0].at, 2);
+        assert!(reject(&doc, &b));
+        doc.commit();
+        assert_eq!(body(&doc, &id), "a\u{1F600}bd");
+    }
+
+    #[test]
+    fn reject_many_puts_owners_first_in_either_order() {
+        for bob_first in [true, false] {
+            let (doc, id, a, b) = swallow("abcde", edit(2, 1, ""), edit(1, 2, "Z"));
+            assert_eq!(body(&doc, &id), "aZe");
+            let ids = if bob_first {
+                [b.clone(), a.clone()]
+            } else {
+                [a.clone(), b.clone()]
+            };
+            assert_eq!(reject_many(&doc, &ids), 2);
+            doc.commit();
+            assert_eq!(body(&doc, &id), "abcde");
+            assert!(resolve_changes(&doc, &id).is_empty());
+        }
+    }
+
+    #[test]
+    fn reject_many_leaves_the_parts_of_an_unselected_owner_pending() {
+        let (doc, id, a, _b) = swallow("abcde", edit(2, 1, ""), edit(1, 2, "Z"));
+        assert_eq!(reject_many(&doc, &[a]), 1);
+        doc.commit();
+        assert_eq!(body(&doc, &id), "acZe");
+        assert_eq!(resolve_changes(&doc, &id).len(), 2);
     }
 }

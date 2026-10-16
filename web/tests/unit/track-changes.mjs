@@ -15,6 +15,7 @@ import {
   prune,
   recordEdits,
   reject,
+  rejectMany,
   resolveChanges,
   trackedSplice,
   writePlanned,
@@ -355,6 +356,72 @@ for (const bobFirst of [true, false]) {
   assert.equal(reject(doc, right.id), true);
   assert.equal(textOf(doc), "abcde");
   assert.equal(doc.getMap(CHANGES).size, 0);
+}
+
+// Alice deletes "c" and Bob deletes the "b" just before it: Bob's change
+// records Alice's point at the end of his deleted text.
+for (const bobFirst of [true, false]) {
+  const doc = makeDoc("abcd");
+  const [a] = track(doc, 2, 3, "", ME);
+  assert.equal(textOf(doc), "abd");
+  const b = track(doc, 1, 2, "", BOB).find((id) => id !== a);
+  assert.equal(textOf(doc), "ad");
+  assert.deepEqual(doc.getMap(CHANGES).get(b).points, [{ id: a, at: 1 }]);
+  rejectAll(doc, bobFirst ? b : a);
+  assert.equal(textOf(doc), "abcd", `points at the end: bobFirst=${bobFirst}`);
+  assert.equal(doc.getMap(CHANGES).size, 0);
+}
+
+// An entry written the way Rust writes it counts `at` in UTF-16 units of
+// `deleted`. The original was "a\u{1F600}bcd": Bob deleted the emoji and "b"
+// (3 units), Alice deleted "c", and both sit before "d".
+{
+  const doc = makeDoc("ad");
+  const text = doc.getMap("files").get("f1");
+  const entry = (who, deleted, extra) => ({
+    file: "f1",
+    author: who,
+    who,
+    at: 1,
+    run: null,
+    start: text.getCursor(1, -1).encode(),
+    end: null,
+    deleted,
+    ...extra,
+  });
+  doc.getMap(CHANGES).set("x", entry("alice", "c"));
+  doc.getMap(CHANGES).set("owner", entry("bob", "\u{1F600}b", { points: [{ id: "x", at: 3 }] }));
+  doc.commit();
+  const owner = resolveChanges(doc, "f1").find((c) => c.id === "owner");
+  assert.deepEqual(owner.points, [{ id: "x", at: 3 }]);
+  assert.equal(reject(doc, "owner"), true);
+  assert.equal(textOf(doc), "a\u{1F600}bd");
+  const x = resolveChanges(doc, "f1").find((c) => c.id === "x");
+  assert.deepEqual([x.from, x.to], [4, 4]);
+  assert.equal(reject(doc, "x"), true);
+  assert.equal(textOf(doc), "a\u{1F600}bcd");
+}
+
+// rejectMany rejects owners first, in either id order, in one commit.
+for (const bobFirst of [true, false]) {
+  const doc = makeDoc("abcde");
+  const [a] = track(doc, 2, 3, "", ME);
+  const b = track(doc, 1, 3, "Z", BOB).find((id) => id !== a);
+  assert.equal(textOf(doc), "aZe");
+  assert.equal(rejectMany(doc, bobFirst ? [b, a] : [a, b]), 2);
+  assert.equal(textOf(doc), "abcde", `rejectMany: bobFirst=${bobFirst}`);
+  assert.equal(doc.getMap(CHANGES).size, 0);
+}
+
+// An unselected owner's parts stay pending.
+{
+  const doc = makeDoc("abcde");
+  const [a] = track(doc, 2, 3, "", ME);
+  track(doc, 1, 3, "Z", BOB);
+  assert.equal(rejectMany(doc, [a]), 1);
+  assert.equal(textOf(doc), "acZe");
+  assert.equal(resolveChanges(doc, "f1").length, 2);
+  assert.equal(rejectMany(doc, ["missing"]), 0);
 }
 
 // Accepting the swallowing change drops its points with it.
