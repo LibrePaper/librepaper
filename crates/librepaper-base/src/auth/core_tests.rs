@@ -3,7 +3,8 @@ use super::*;
 #[test]
 fn credentials_cannot_cross_purposes() {
     let key = [7; 32];
-    let mut who = Identity::google("42", "alice@example.org", "Alice | Example", "");
+    let mut who =
+        Identity::from_provider("google", "42", "alice@example.org", "Alice | Example", "");
     who.session_generation = "generation".into();
     let session = sign_session(&key, &who, now_unix() + 3600);
     let device = sign_device(&key, &who, now_unix() + 3600);
@@ -29,7 +30,7 @@ fn credentials_cannot_cross_purposes() {
 #[test]
 fn agent_grants_are_short_lived_document_link_scoped_credentials() {
     let key = [19; 32];
-    let mut identity = Identity::google("42", "alice@example.org", "Alice", "");
+    let mut identity = Identity::from_provider("google", "42", "alice@example.org", "Alice", "");
     identity.id = uuid::Uuid::now_v7().to_string();
     identity.session_generation = "7".into();
     let grant = AgentGrant {
@@ -72,7 +73,8 @@ fn established_catalog_account_uuid_survives_session_round_trip() {
 fn pictures_travel_in_current_credentials() {
     let key = [3; 32];
     let expiry = now_unix() + 3600;
-    let mut who = Identity::google(
+    let mut who = Identity::from_provider(
+        "google",
         "42",
         "alice@example.org",
         "Alice | Example",
@@ -107,7 +109,7 @@ fn pictures_travel_in_current_credentials() {
         &format!("https://example.org/{}", "x".repeat(600)),
     ] {
         assert!(
-            Identity::google("42", "alice@example.org", "Alice", bad)
+            Identity::from_provider("google", "42", "alice@example.org", "Alice", bad)
                 .picture
                 .is_empty(),
             "kept {bad}"
@@ -199,4 +201,212 @@ fn corrupt_missing_or_unreadable_keys_are_not_replaced() {
     std::fs::create_dir(&unreadable).unwrap();
     assert!(session_key_file(&unreadable, false).is_err());
     assert!(unreadable.is_dir());
+}
+
+#[test]
+fn github_identities_keep_their_shape() {
+    let who = Identity::github(" Alice ", "583231");
+    assert_eq!(who.provider, "github");
+    assert_eq!(who.id, "github:583231");
+    assert_eq!(who.handle, "alice");
+    assert_eq!(who.name, "alice");
+    assert!(who.picture.is_empty());
+    assert!(who.session_generation.is_empty());
+    assert!(!Identity::github("alice", "").is_signed_in());
+}
+
+#[test]
+fn from_provider_builds_the_id_without_touching_the_subject() {
+    let who = Identity::from_provider(
+        "oidc-x",
+        " github:583231 ",
+        " Alice@Example.ORG ",
+        "Alice",
+        "",
+    );
+    assert_eq!(who.provider, "oidc-x");
+    assert_eq!(who.id, "oidc-x:github:583231");
+    assert_eq!(who.handle, "alice@example.org");
+    assert_eq!(who.name, "Alice");
+    assert!(who.session_generation.is_empty());
+    // No subject, no id, so nobody is signed in.
+    let nobody = Identity::from_provider("entra", "  ", "alice@example.org", "Alice", "");
+    assert!(!nobody.is_signed_in());
+}
+
+#[test]
+fn from_provider_never_shows_an_address_as_the_name() {
+    let name = |given: &str| {
+        Identity::from_provider("oidc-x", "1", "Alice.Smith@example.org", given, "").name
+    };
+    assert_eq!(name(""), "alice.smith");
+    assert_eq!(name("   "), "alice.smith");
+    assert_eq!(name("alice.smith@example.org"), "alice.smith");
+    assert_eq!(name("Contact: bob@example.org"), "alice.smith");
+    assert_eq!(name("  Alice Smith  "), "Alice Smith");
+    // A handle with no address in it is its own local part.
+    assert_eq!(Identity::from_provider("github", "1", "Alice", "", "").name, "alice");
+}
+
+#[test]
+fn from_provider_cleans_and_limits_the_name() {
+    let name = |given: &str| Identity::from_provider("oidc-x", "1", "alice@example.org", given, "").name;
+    assert_eq!(name(&"a".repeat(150)), "a".repeat(100));
+    assert_eq!(name(&"a".repeat(100)), "a".repeat(100));
+    // The limit counts characters and never cuts one in half.
+    assert_eq!(name(&"\u{e9}".repeat(150)), "\u{e9}".repeat(100));
+    assert_eq!(name("Al\u{7}ice\n Smith\t"), "Alice Smith");
+    // A name of nothing but control characters is no name.
+    assert_eq!(name("\u{7}\u{8}"), "alice");
+    // A bar is allowed: the cookie parser takes the name last.
+    assert_eq!(name("Alice | Example"), "Alice | Example");
+}
+
+#[test]
+fn from_provider_filters_the_picture() {
+    let picture = |given: &str| {
+        Identity::from_provider("oidc-x", "1", "alice@example.org", "Alice", given).picture
+    };
+    assert_eq!(
+        picture(" https://pictures.example/a.png "),
+        "https://pictures.example/a.png"
+    );
+    assert_eq!(picture(""), "");
+    assert_eq!(picture("http://pictures.example/a.png"), "");
+    assert_eq!(picture("https://pictures.example/a|b.png"), "");
+    assert_eq!(picture(&format!("https://pictures.example/{}", "x".repeat(600))), "");
+}
+
+#[test]
+fn oidc_slugs_are_a_lowercase_letter_then_up_to_23_letters_digits_or_hyphens() {
+    for good in ["a", "x", "keycloak", "a-", "a-b", "abc123", "a1-b2-c3"] {
+        assert!(valid_oidc_slug(good), "{good}");
+    }
+    assert!(valid_oidc_slug(&format!("a{}", "b".repeat(23))));
+    for bad in [
+        "", "1a", "-a", "A", "aB", "a_b", "a b", "a|b", "a:b", "a.b", "\u{e9}",
+    ] {
+        assert!(!valid_oidc_slug(bad), "{bad}");
+    }
+    assert!(!valid_oidc_slug(&format!("a{}", "b".repeat(24))));
+}
+
+#[test]
+fn provider_ids_are_the_three_names_and_oidc_slugs() {
+    for good in [
+        "github",
+        "google",
+        "entra",
+        "oidc-x",
+        "oidc-keycloak",
+        "oidc-a1-b2",
+        "oidc-abcdefghijklmnopqrstuvwx",
+    ] {
+        assert!(valid_provider_id(good), "{good}");
+    }
+    for bad in [
+        "",
+        "oidc-",
+        "OIDC-x",
+        "oidc-X",
+        "oidc-1x",
+        "oidc--x",
+        "oidc-x_y",
+        "oidc-abcdefghijklmnopqrstuvwxy",
+        "evil|x",
+        "GitHub",
+        "Google",
+        "microsoft",
+        "oidc",
+        " github",
+        "github ",
+        "oidc-x ",
+    ] {
+        assert!(!valid_provider_id(bad), "{bad:?}");
+    }
+}
+
+#[test]
+fn sessions_and_device_tokens_of_every_provider_id_parse() {
+    let key = [5; 32];
+    let expiry = now_unix() + 3600;
+    for (provider, id) in [
+        ("github", "github:583231"),
+        ("google", "google:42"),
+        ("entra", "entra:0b0e6ea5-79e6-4a53-b1f4-2d02f5f6cb49"),
+        ("oidc-x", "oidc-x:github:583231"),
+        ("oidc-keycloak", "oidc-keycloak:subject"),
+    ] {
+        let who = Identity {
+            provider: provider.into(),
+            id: id.into(),
+            handle: "alice@example.org".into(),
+            name: "Alice".into(),
+            picture: String::new(),
+            session_generation: "generation".into(),
+        };
+        assert_eq!(read_session(&key, &sign_session(&key, &who, expiry)), who);
+        assert_eq!(read_device(&key, &sign_device(&key, &who, expiry)), who);
+    }
+}
+
+#[test]
+fn sessions_naming_no_acceptable_provider_are_anonymous() {
+    let key = [5; 32];
+    let expiry = now_unix() + 3600;
+    let signed = |provider: &str, id: &str| {
+        let who = Identity {
+            provider: provider.into(),
+            id: id.into(),
+            handle: "alice@example.org".into(),
+            name: "Alice".into(),
+            picture: String::new(),
+            session_generation: "generation".into(),
+        };
+        (
+            read_session(&key, &sign_session(&key, &who, expiry)),
+            read_device(&key, &sign_device(&key, &who, expiry)),
+        )
+    };
+    for provider in ["oidc-", "OIDC-x", "oidc-X", "evil|x", "microsoft", "oidc", ""] {
+        let (session, device) = signed(provider, &format!("{provider}:42"));
+        assert!(!session.is_signed_in(), "{provider:?}");
+        assert!(!device.is_signed_in(), "{provider:?}");
+    }
+    // The id has to belong to the provider the cookie names.
+    let (session, device) = signed("entra", "google:42");
+    assert!(!session.is_signed_in());
+    assert!(!device.is_signed_in());
+}
+
+#[test]
+fn agent_grants_accept_every_provider_id_and_refuse_others() {
+    let key = [21; 32];
+    for provider in ["github", "google", "entra", "oidc-x"] {
+        let mut identity =
+            Identity::from_provider(provider, "42", "alice@example.org", "Alice", "");
+        identity.session_generation = "7".into();
+        let grant = AgentGrant {
+            identity,
+            slug: "paper_1".into(),
+            link_hash: "ab".repeat(32),
+            role: 2,
+            expires_at: now_unix() + 60,
+        };
+        let token = sign_agent_grant(&key, &grant).expect("valid grant signs");
+        assert_eq!(read_agent_grant(&key, &token), Some(grant), "{provider}");
+    }
+    for provider in ["oidc-", "OIDC-x", "evil|x", ""] {
+        let mut identity =
+            Identity::from_provider(provider, "42", "alice@example.org", "Alice", "");
+        identity.session_generation = "7".into();
+        let grant = AgentGrant {
+            identity,
+            slug: "paper_1".into(),
+            link_hash: "ab".repeat(32),
+            role: 2,
+            expires_at: now_unix() + 60,
+        };
+        assert!(sign_agent_grant(&key, &grant).is_none(), "{provider:?}");
+    }
 }
