@@ -304,7 +304,9 @@ fn needs_local_environment(command: &Command) -> bool {
     matches!(
         command,
         Command::Local {
-            command: LocalCommand::Start(_) | LocalCommand::Status | LocalCommand::Diagnostics { .. },
+            command: LocalCommand::Start(_)
+                | LocalCommand::Status
+                | LocalCommand::Diagnostics { .. },
         }
     )
 }
