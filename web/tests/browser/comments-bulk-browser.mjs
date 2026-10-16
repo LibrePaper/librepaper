@@ -10,8 +10,7 @@ import { fileURLToPath } from "node:url";
 import { browser, until, removeTemporary } from "../helpers/browser-driver.mjs";
 
 // The panel's bulk verbs act only on what the cards would let this caller do
-// one at a time: "Resolve all" skips suggestions (their verbs are accept and
-// reject) and what is already resolved; "Clear resolved" and "Delete all" hand
+// one at a time: "Resolve all" skips what is already resolved; "Clear resolved" and "Delete all" hand
 // the page one list, so it can confirm once, and only ever name comments the
 // caller may delete.
 const root = fileURLToPath(new URL("../../", import.meta.url));
@@ -27,8 +26,6 @@ const comments=[
   {id:'theirs',seq:1,motivation:'commenting',presentation:{rendered_exact:'Two'},body:'Somebody else, open',deletable:false,replies:[]},
   {id:'done',seq:2,motivation:'commenting',presentation:{rendered_exact:'Three'},body:'Resolved',resolved:true,deletable:true,replies:[]},
   {id:'locked',seq:3,motivation:'commenting',presentation:{rendered_exact:'Four'},body:'Somebody else, resolved',resolved:true,deletable:false,replies:[]},
-  {id:'accepted',seq:4,motivation:'editing',presentation:{rendered_exact:'Five'},proposed:'Six',resolved:true,outcome:'accepted',deletable:true,original_anchor:{kind:'source_text',source_sequence:1,frontier:'AAAA',target:{file_id:'f1',exact:'Five',prefix:'',suffix:''}},replies:[]},
-  {id:'proposed',seq:5,motivation:'editing',presentation:{rendered_exact:'Seven'},proposed:'Eight',deletable:true,original_anchor:{kind:'source_text',source_sequence:2,frontier:'AAAA',target:{file_id:'f1',exact:'Seven',prefix:'',suffix:''}},replies:[]},
 ];
 const handlers={onresolve:c=>window.resolved.push(c.id),ondeletemany:list=>window.deleted.push(list.map(c=>c.id))};
 let component=mount(Comments,{target:document.body,props:{comments,canModerate:false,...handlers}});
@@ -50,7 +47,7 @@ try {
   await new Promise((resolve, reject) => { server.once("error", reject); server.listen(0, "127.0.0.1", resolve); });
   page = await browser("chromium", join(temporary, "profile"), 24000 + Math.floor(Math.random() * 10000));
   await page.navigate(`http://127.0.0.1:${server.address().port}/`);
-  await until("panel", () => page.evaluate('document.body.innerText.includes("3 open · 6 total")'), 10000);
+  await until("panel", () => page.evaluate('document.body.innerText.includes("2 open · 4 total")'), 10000);
 
   // One card's own verbs, in the order they are read in: settle it, remove
   // it, answer it. Delete used to be the only item of a "•••" menu, which is
@@ -67,16 +64,16 @@ try {
   assert.ok(await page.evaluate('window.click("Resolve all")'));
   assert.deepEqual(await page.evaluate("window.resolved"), ["open", "theirs"]);
   assert.ok(await page.evaluate('window.click("Clear resolved")'));
-  assert.deepEqual(await page.evaluate("window.deleted"), [["done", "accepted"]]);
+  assert.deepEqual(await page.evaluate("window.deleted"), [["done"]]);
 
-  // An owner clears everything, decided suggestions included, in one list.
+  // An owner clears everything in one list.
   await page.evaluate("window.asModerator()");
   await until("moderator panel", () => page.evaluate('window.labels().includes("Delete all")'), 2000);
   assert.ok(await page.evaluate('window.click("Clear resolved")'));
   assert.ok(await page.evaluate('window.click("Delete all")'));
   assert.deepEqual(await page.evaluate("window.deleted"), [
-    ["done", "locked", "accepted"],
-    ["open", "theirs", "done", "locked", "accepted", "proposed"],
+    ["done", "locked"],
+    ["open", "theirs", "done", "locked"],
   ]);
   console.log("comments-bulk-browser: a card's own verbs, and resolve all / clear resolved / delete all respecting each caller's reach");
 } finally {

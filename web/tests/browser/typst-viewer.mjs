@@ -300,59 +300,6 @@ async function run() {
   `);
   check("a ligature-safe Typst text anchor paints", ligature?.marks > 0 && ligature.text === "fixture", JSON.stringify(ligature));
 
-  // A suggestion over a PDF is drawn beside the words rather than among them.
-  // The agent paints a proposal as a real span, which a flowing document can
-  // simply put after the passage; a PDF page cannot, because the glyphs are
-  // on the canvas and every run of selectable text above them is transparent
-  // and absolutely placed. Left in the run, the proposal inherits that
-  // transparency -- invisible words -- and widens the run it sits in. The
-  // rules that lift it out live in `pages/viewer.html`.
-  const tracked = await tab.eval(`
-    const doc = window.doc();
-    const at = window.anchor({ exact: 'Typst PDF fixture', prefix: '', suffix: '' });
-    if (!at) return null;
-    const runs = [...doc.querySelectorAll('.textLayer span:not(.gap)')];
-    // The boxes of the runs themselves: a proposal drawn in the flow would
-    // widen the one it was inserted into, wherever it ended up on screen.
-    const boxes = () => runs.map(span => {
-      const b = span.getBoundingClientRect();
-      return [b.x, b.y, b.width, b.height];
-    });
-    const before = JSON.stringify(boxes());
-    const text = window.text();
-    window.paint([{ id: 'tracked', start: at.start, end: at.end, motivation: 'editing', proposed: 'A revised title' }]);
-    await new Promise(resolve => setTimeout(resolve, 100));
-    const strike = doc.querySelector('mark[data-librepaper~="tracked"]');
-    const style = doc.defaultView.getComputedStyle(strike);
-    const proposals = doc.querySelectorAll('.librepaper-suggestion-synthetic');
-    const proposal = doc.defaultView.getComputedStyle(proposals[0]);
-    const result = { proposalCount: proposals.length,
-      proposalText: proposals[0]?.textContent,
-      // Opaque, and out of the run: the two things the text layer would
-      // otherwise take away from it.
-      proposalColour: proposal.color,
-      proposalPlacement: [proposal.position, proposal.left],
-      visibleStrike: style.textDecorationColor !== 'rgba(0, 0, 0, 0)',
-      // The proposal is not a word of the document, so the text the agent
-      // publishes -- what every anchor is measured against -- must not have
-      // grown by one character of it.
-      sameText: window.text() === text,
-      // Rounding at fractional zoom moves a box by well under a pixel.
-      sameBoxes: boxes().every((box, i) => box.every((value, j) => Math.abs(value - JSON.parse(before)[i][j]) < 0.05)) };
-    window.paint([]);
-    await new Promise(resolve => setTimeout(resolve, 100));
-    result.cleared = !doc.querySelector('.librepaper-suggestion-synthetic, mark[data-librepaper]');
-    return result;
-  `);
-  check("PDF suggestions paint one proposal with a visible strike",
-    tracked?.proposalCount === 1 && tracked.proposalText === 'A revised title' && tracked.visibleStrike,
-    JSON.stringify(tracked));
-  check("a PDF proposal is legible over the page and leaves the runs where they were",
-    tracked?.proposalColour !== 'rgba(0, 0, 0, 0)' && tracked.proposalPlacement[0] === 'absolute'
-      && tracked.proposalPlacement[1] !== 'auto' && tracked.sameText && tracked.sameBoxes,
-    JSON.stringify(tracked));
-  check("PDF suggestions clear cleanly", tracked?.cleared, JSON.stringify(tracked));
-
   // A highlight with a reader's own colour must stay visible over the PDF
   // text layer, must not become part of the published text or trigger a ready
   // loop, and must take a click through to its thread.
@@ -478,16 +425,15 @@ async function run() {
     const found = await tab.eval(`
       const at = window.anchor(${JSON.stringify(boundary.selector)});
       if (!at) return null;
-      window.paint([{ id: 'typst-cross-page', start: at.start, end: at.end, motivation: 'editing', proposed: 'A replacement across pages' }]);
+      window.paint([{ id: 'typst-cross-page', start: at.start, end: at.end, motivation: 'highlighting' }]);
       await new Promise((resolve) => setTimeout(resolve, 120));
       const viewer = frame.contentWindow.librepaperViewer;
       const marks = [...window.doc().querySelectorAll('mark[data-librepaper]')].filter((m) => !m.closest('span.gap'));
       const markPages = [...new Set(marks.map((mark) => mark.closest('.page')?.dataset.page).filter(Boolean))];
-      return { at, startPage: viewer.pageForOffset(at.start), endPage: viewer.pageForOffset(at.end - 1), markPages, marks: marks.length, proposals: window.doc().querySelectorAll('.librepaper-suggestion-synthetic').length };
+      return { at, startPage: viewer.pageForOffset(at.start), endPage: viewer.pageForOffset(at.end - 1), markPages, marks: marks.length };
     `);
     check("the cross-page text anchor paints in the PDF text layer", found?.marks > 0, JSON.stringify(found));
     check("the cross-page highlight reaches both pages", found?.markPages?.length > 1, JSON.stringify(found));
-    check("a suggestion spanning PDF pages shows its proposal only once", found?.proposals === 1, JSON.stringify(found));
     check("PDF pageForOffset follows the highlighted page break", found?.endPage > found?.startPage, JSON.stringify(found));
   }
 

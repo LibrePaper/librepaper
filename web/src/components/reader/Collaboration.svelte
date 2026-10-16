@@ -9,7 +9,7 @@
     comments = [], identity = "", commentingAs = "Anonymous",
     canModerate = false, canComment = true,
     went = {}, replacements = {}, onreveal = undefined, onresolve = undefined, ondelete = undefined,
-    ondeletemany = undefined, onreply = undefined, onaccept = undefined, onreject = undefined, onrejectconfirmed = undefined, pending = undefined,
+    ondeletemany = undefined, onreply = undefined, pending = undefined,
     unreadChat = false, selected = "", tab = $bindable("comments"),
     // The traversal, as `lib/reader/annotations.svelte.js` keeps it: the
     // catalogue's own counts, whether there is another page, and whether
@@ -17,7 +17,7 @@
     // counting the rows it was handed, which are a prefix.
     page = null, onloadmore, onloadreplies,
     // The draft being written, which belongs to the Comments tab whatever it
-    // will become: a suggestion is a comment until it is sent.
+    // will become.
     composing = null, needsLogin = false, signInHref = "", oncommentsend = undefined, oncommentcancel = undefined,
   } = $props();
   const VIEWS = [
@@ -27,7 +27,7 @@
   ];
   const common = () => ({ identity, commentingAs, canModerate, canComment,
     went, replacements, onreveal, onresolve, ondelete, ondeletemany,
-    onreply, onaccept, onreject, onrejectconfirmed, pending, selected,
+    onreply, pending, selected,
     page, onloadmore, onloadreplies });
 </script>
 

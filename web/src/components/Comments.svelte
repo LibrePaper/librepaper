@@ -3,8 +3,6 @@
   import CommentCard from "./CommentCard.svelte";
   import CommentComposer from "./CommentComposer.svelte";
   import PanelHeader from "./PanelHeader.svelte";
-  import { reviewGroups, rejectPass } from "../lib/assistant-review.js";
-  import { tick } from "svelte";
 
   // The annotations, in document order: an annotation is about a place in the
   // text, so the column follows the page rather than the order things were
@@ -37,13 +35,9 @@
     // Several at once, behind one confirmation: the page owns that dialog.
     ondeletemany = undefined,
     onreply = undefined,
-    onaccept = undefined,
-    onreject = undefined,
-    onrejectconfirmed = undefined,
     pending = undefined,
     // Optional view filter used by the collaboration tabs. Highlight notes
-    // remain in both views when they carry a discussion; suggestion review
-    // uses the same card and action plumbing with a narrower list.
+    // remain in both views when they carry a discussion.
     filter = "all",
     title = "Comments",
     // The standing line at the top of the panel: how a comment gets made at
@@ -77,34 +71,10 @@
 
   const filtered = $derived(comments.filter((comment) => {
     if (filter === "highlights") return comment.motivation === "highlighting";
-    if (filter === "suggestions") return comment.motivation === "editing";
-    if (filter === "comments") return comment.motivation !== "editing" && (comment.motivation !== "highlighting" || comment.body || comment.replies?.length);
+    if (filter === "comments") return comment.motivation !== "highlighting" || comment.body || comment.replies?.length;
     return true;
   }));
   const shown = $derived([...filtered].sort((a, b) => place(a) - place(b) || a.seq - b.seq));
-  const groups = $derived(reviewGroups(shown));
-  let rejecting = $state("");
-  let passResult = $state("");
-
-  async function rejectGroup(group) {
-    if (!canModerate || rejecting || !onrejectconfirmed) return;
-    rejecting = group.pass;
-    passResult = "";
-    try {
-      const results = await rejectPass([...group.pending], onrejectconfirmed);
-      const failed = results.filter((result) => !result.rejected);
-      passResult = `${results.length - failed.length} rejected${failed.length ? `; ${failed.length} could not be rejected: ${failed[0].error}` : "."}`;
-    } finally { rejecting = ""; }
-  }
-
-  async function reviewNext(group) {
-    const next = group.pending.find((comment) => !comment.deciding);
-    if (!next) return;
-    await tick();
-    const card = document.getElementById(`${cardIdPrefix}-${next.id}`);
-    card?.scrollIntoView({ block: "nearest" });
-    card?.querySelector("button")?.focus({ preventScroll: true });
-  }
 
   const open = $derived(filtered.filter((comment) => !comment.resolved).length);
 
@@ -134,9 +104,9 @@
   const remaining = $derived(page ? Math.max(0, page.total - comments.length) : 0);
 
   // The bulk verbs act only on what the cards would let this caller do one at
-  // a time: resolve is not a suggestion's verb (accept and reject are), and
-  // delete is real only for a comment the server said so about, or an owner.
-  const resolvable = $derived(filtered.filter((comment) => !comment.resolved && comment.motivation !== "editing"));
+  // a time: delete is real only for a comment the server said so about, or an
+  // owner.
+  const resolvable = $derived(filtered.filter((comment) => !comment.resolved));
   const deletable = $derived(filtered.filter((comment) => canModerate || comment.deletable));
   const clearable = $derived(deletable.filter((comment) => comment.resolved));
 
@@ -149,8 +119,11 @@
   const composerKey = $derived.by(() => {
     if (!composing) return null;
     const where = placeDraft(composing.pending);
-    return groups.find((group) => place(group.comments[0]) > where)?.key ?? "";
+    const next = shown.find((comment) => place(comment) > where);
+    return next ? cardKey(next) : "";
   });
+
+  const cardKey = (comment) => comment._uiKey ?? comment.id ?? comment.temp_id;
 
   function resolveAll() {
     for (const comment of resolvable) onresolve?.(comment);
@@ -218,23 +191,8 @@
 
   <div id="{cardIdPrefix}-list" class="comments-list flex flex-col gap-2">
     {@render pending?.()}
-    {#if passResult}<p class="panel-muted" role="status">{passResult}</p>{/if}
-    {#each groups as group (group.key)}
-      {#if composerKey === group.key}{@render composer()}{/if}
-      <div class="flex flex-col gap-2" data-pass={group.pass || undefined}>
-      {#if group.pass}
-        <div class="pass-header">
-          <strong>Writing pass · {group.comments.length} suggestions</strong>
-          <p class="panel-meta">{group.pending.length} pending</p>
-          {#if canModerate && group.pending.length}
-            <div class="flex gap-2">
-              <button class="btn btn-sm lp-control-tonal-brand" disabled={Boolean(rejecting)} onclick={() => void reviewNext(group)}>Review next</button>
-              <button class="btn btn-sm lp-control-tonal-brand" disabled={Boolean(rejecting) || !onrejectconfirmed} onclick={() => void rejectGroup(group)}>{rejecting === group.pass ? "Rejecting…" : "Reject all"}</button>
-            </div>
-          {/if}
-        </div>
-      {/if}
-      {#each group.comments as comment (comment._uiKey ?? comment.id ?? comment.temp_id)}
+    {#each shown as comment (cardKey(comment))}
+      {#if composerKey === cardKey(comment)}{@render composer()}{/if}
       <CommentCard
         {canComment}
         {comment}
@@ -249,12 +207,8 @@
         {onresolve}
         {ondelete}
         {onreply}
-        {onaccept}
-        {onreject}
         {onloadreplies}
       />
-      {/each}
-      </div>
     {/each}
     {#if composerKey === ""}{@render composer()}{/if}
 
@@ -293,6 +247,5 @@
   .comments-list { flex: 1 1 auto; min-height: 0; overflow-y: auto; overscroll-behavior: contain; }
   .load-more { align-self: center; margin: calc(var(--spacing) * 2) 0; }
   .page-error { padding: calc(var(--spacing) * 2); display: flex; flex-direction: column; gap: calc(var(--spacing) * 2); align-items: flex-start; }
-  .pass-header { padding: calc(var(--spacing) * 2); border-left: 3px solid var(--color-brand); }
   .bulk { margin-left: auto; }
 </style>
