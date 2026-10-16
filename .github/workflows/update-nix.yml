@@ -42,4 +42,3 @@ jobs:
         run: bash tools/release/update-nix.sh
         env:
           LIBREPAPER_RELEASE_TAG: ${{ steps.resolve.outputs.tag }}
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

@@ -56,6 +56,9 @@ stdenv.mkDerivation {
 
   dontConfigure = true;
   dontBuild = true;
+  # The release binaries are already stripped. Stripping them again after
+  # autoPatchelf breaks the relocations of the librepaper binary.
+  dontStrip = true;
 
   unpackPhase = ''
     runHook preUnpack
@@ -70,9 +73,10 @@ stdenv.mkDerivation {
     cp -r usr/bin usr/share $out/
 
     # Start the desktop app from the store path, not from a bare name.
-    find $out/share/applications -name '*.desktop' -exec \
-      substituteInPlace {} --replace-fail \
-        "Exec=librepaper-desktop" "Exec=$out/bin/librepaper-desktop" \;
+    for desktop in $out/share/applications/*.desktop; do
+      substituteInPlace "$desktop" --replace-fail \
+        "Exec=librepaper-desktop" "Exec=$out/bin/librepaper-desktop"
+    done
 
     runHook postInstall
   '';

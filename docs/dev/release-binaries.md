@@ -126,7 +126,7 @@ Keep the key and the `.p12` out of the repository. Delete the local copies you n
 
 ## Test a release without publishing a stable version
 
-Use a prerelease tag such as `v0.0.43-rc.1` from a test branch. Prerelease tags do not trigger the Homebrew, Scoop or Docker updates.
+Use a prerelease tag such as `v0.0.43-rc.1` from a test branch. Prerelease tags do not trigger the Homebrew, Scoop, AUR, Nix or Docker updates.
 
 `tools/release/version` accepts only stable versions. Edit the version by hand in `Cargo.toml` and in the workspace entries of `Cargo.lock`.
 
