@@ -38,13 +38,21 @@ fn lists_command(help: &str, command: &str) -> bool {
 #[test]
 fn top_level_help_lists_exactly_the_public_commands() {
     let help = help_of(&["--help"]);
-    for command in ["agent", "login", "logout", "list", "export", "admin"] {
+    for command in ["login", "logout", "list", "export", "admin"] {
         assert!(
             lists_command(&help, command),
             "public command {command:?} is absent from top-level help:\n{help}"
         );
     }
-    for hidden in ["local", "mcp", "start", "stop", "status", "install-desktop"] {
+    for hidden in [
+        "agent",
+        "local",
+        "mcp",
+        "start",
+        "stop",
+        "status",
+        "install-desktop",
+    ] {
         assert!(
             !lists_command(&help, hidden),
             "{hidden:?} should not be listed in top-level help:\n{help}"
@@ -134,14 +142,11 @@ fn mcp_requires_a_connection_and_rejects_a_bare_link() {
 }
 
 #[test]
-fn agent_lists_its_subcommands() {
-    let help = help_of(&["agent", "--help"]);
-    for command in ["add", "list", "remove"] {
-        assert!(
-            lists_command(&help, command),
-            "agent command {command:?} is absent from agent help:\n{help}"
-        );
-    }
+fn agents_are_managed_in_the_desktop_app_not_the_cli() {
+    assert!(
+        !cli(&["agent", "list"]).status.success(),
+        "agent should fail"
+    );
     assert!(
         !cli(&["local", "agent", "list"]).status.success(),
         "local agent should fail"
@@ -204,7 +209,10 @@ fn export_flags_are_correct() {
 fn inherited_local_port_env_does_not_reject_other_subcommands() {
     let state_home = tempfile::tempdir().unwrap();
     let output = Command::new(env!("CARGO_BIN_EXE_librepaper"))
-        .args(["agent", "list"])
+        .args(["logout"])
+        .env("HOME", state_home.path())
+        .env("XDG_CONFIG_HOME", state_home.path())
+        .env("XDG_DATA_HOME", state_home.path())
         .env_remove("LIBREPAPER_SERVER")
         .env_remove("LIBREPAPER_TOKEN")
         .env("LIBREPAPER_LOCAL_PORT", "9123")
