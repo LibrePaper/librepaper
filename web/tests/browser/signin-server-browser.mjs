@@ -78,12 +78,13 @@ try {
   // The labels come from the server, in the order it sends them.
   assert.equal(await tab.evaluate("Array.from(document.querySelectorAll('.signin-provider'), (link) => link.textContent.trim()).join('|')"), "Continue with GitHub|Continue with Contoso|Continue with Example SSO");
   assert.equal(await tab.evaluate("Boolean(document.querySelectorAll('.signin-provider')[2].querySelector('svg'))"), true, "a custom provider gets the key icon");
-  assert.equal(await tab.evaluate("Boolean(document.querySelector('details.signin-server'))"), false, "a browser offers no server choice");
+  assert.equal(await tab.evaluate("Boolean(document.querySelector('.signin-server-change'))"), false, "a browser offers no server choice");
 
   // The desktop app offers the choice and hands the address to the shell.
   await tab.navigate(`${origin}/desktop/`);
-  await until("server choice", () => tab.evaluate("Boolean(document.querySelector('details.signin-server'))"));
-  await tab.evaluate("document.querySelector('details.signin-server').open = true");
+  await until("server choice", () => tab.evaluate("Boolean(document.querySelector('.signin-server-change'))"));
+  await tab.evaluate("document.querySelector('.signin-server-change').click()");
+  await until("server form", () => tab.evaluate("Boolean(document.querySelector('.signin-server-form'))"));
   await setField("https://paper.example.org");
   await submitForm();
   await until("server request", () => bodies.some((body) => body.url === "https://paper.example.org"));

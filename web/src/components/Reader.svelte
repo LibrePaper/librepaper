@@ -147,21 +147,6 @@
   /** @type {ReaderUser} */
   let me = $state({ id: "" });
   const backupStatus = $derived(backupStatusStore.status);
-  const backupPillGood = $derived(Boolean(
-    backupStatus.active && backupStatus.data?.enabled && backupStatus.data?.destination_set
-    && !backupStatus.data?.error && !backupStatus.data?.needs_login && !backupStatus.error,
-  ));
-  const backupPillLabel = $derived(!me?.id
-    ? "Backups unavailable: sign in to an account"
-    : !backupStatus.active
-      ? "Backups unavailable: they need the LibrePaper desktop app"
-      : backupStatus.error
-        ? `Backup status unavailable: ${backupStatus.error}`
-        : backupStatus.data?.needs_login
-          ? "Backups unavailable: authorize this browser account"
-          : backupStatus.data?.error
-            ? `Backup error: ${backupStatus.data.error}`
-            : backupPillGood ? "Account backups enabled" : backupStatus.data ? "Account backups disabled" : "Backup status unavailable");
   // The displayed name, since this is what goes on a comment and what the
   // reader is shown commenting as. A Google account's handle is its email and
   // belongs on neither.
@@ -2063,7 +2048,7 @@
   let diagnostics = $state([]);
   const diagnosticsController = createRenderDiagnostics({
     active: () => editing,
-    local: () => [...localAppDiagnostics, ...previewNoteItems],
+    local: () => [...localAppDiagnostics, ...backupDiagnostics, ...previewNoteItems],
     failure: () => buildFailure,
     update: (list) => (diagnostics = list),
     deliver: (list) => editor?.setDiagnostics?.(list),
@@ -2106,6 +2091,7 @@
         : [],
     },
     changes: {},
+    collaboration: unreadChat ? { says: "Collaboration: unread messages", dot: true } : {},
   });
 
   // A reader is told nothing about live editor diagnostics. They cannot fix
@@ -2311,6 +2297,16 @@
   // An item with no message is dropped. An empty error would show as a blank
   // entry and would hide the failed render's own message.
   ].filter((item) => item?.message).map((item) => ({ ...item, source: "local-app" })));
+  // Backups that are off say nothing. Only a failing backup is reported.
+  const backupDiagnostics = $derived.by(() => {
+    const data = backupStatus.active ? backupStatus.data : null;
+    if (!data?.enabled) return [];
+    const message = data.needs_login ? "Backups are on but this account is not authorized in the desktop app. Open Settings, then Backups."
+      : data.error ? `Backups are on but failing: ${data.error}. Open Settings, then Backups.`
+      : !data.destination_set ? "Backups are on but have no destination. Open Settings, then Backups."
+      : "";
+    return message ? [{ severity: "warning", message, source: "backups" }] : [];
+  });
   // What the Diagnostics panel names when a preview here needs the desktop
   // app and this is a browser. Empty when nothing needs it.
   const desktopNeeds = $derived(
@@ -2323,6 +2319,7 @@
   );
   $effect(() => {
     void localAppDiagnostics;
+    void backupDiagnostics;
     void previewNoteItems;
     void buildFailure;
     void editing;
@@ -3949,7 +3946,7 @@
            panels, File/Edit/Insert/View and the account) and the Preview/Source
            switch. Each carries a caption. The menubar stays mounted but is
            invisible; a menu chosen from Menu opens in the menu's own box. -->
-      <CompactPanelMenu tabs={tabs} {panel} {me} open={shown.comments} onselect={openPanel} onsettings={() => openSettings()}
+      <CompactPanelMenu tabs={tabs} {panel} {me} {badges} open={shown.comments} onselect={openPanel} onsettings={() => openSettings()}
                         menus={compactMenus} onmenu={(id, anchor) => menubar.show(id, anchor)} />
       {@render faceSwitch()}
     {:else}
@@ -3961,25 +3958,12 @@
       <!-- The build's state is told by the preview pane's progress line and
            by Diagnostics, so the bar only carries the local execution switch. -->
       {@render localExecutionControl()}
-      <div class="connection-settings" role="group" aria-label="Connection settings">
-        <button class="connection-pill" type="button" onclick={() => openSettings("account")}
-                aria-label={`Remote server ${connected ? "connected" : "disconnected"}; open account settings`}
-                title={connected ? `${peers} people connected. Open account settings` : `${connectionNote}. Open account settings`}>
-          <span class="connection-dot" class:offline={!connected} aria-hidden="true"></span>
-          <span>Remote</span>
-        </button>
-        <button class="connection-pill backup-pill" type="button" onclick={() => openSettings("backups")}
-                aria-label={`${backupPillLabel}; open backup settings`}
-                title={`${backupPillLabel}. Open backup settings`}>
-          <span class="connection-dot" class:offline={!backupPillGood} aria-hidden="true"></span>
-          <span>Backup</span>
-        </button>
-      </div>
       <div class="presence" role="group" aria-label={connected ? `${peers} people connected` : connectionNote} title={connected ? `${peers} people connected` : connectionNote}>
         {#each participants.slice(0, 3) as person (person.key)}
           <Avatar name={person.name} key={person.key} colour={person.colour} size={6} />
         {/each}
         {#if participants.length > 3}<span class="presence-more">+{participants.length - 3}</span>{/if}
+        {#if !connected}<span class="presence-offline"><span class="presence-offline-dot" aria-hidden="true"></span>Offline</span>{/if}
       </div>
     {/if}
   {/snippet}
@@ -4492,21 +4476,13 @@
     .face-switch :global(.icon-control) { flex-direction: column; gap: 2px; width: auto; min-width: 3.5rem; height: 2.75rem; padding: 0; }
     .face-switch :global(.compact-label) { font-size: 11px; }
   }
-  .connection-settings { display: inline-flex; flex: none; align-items: center; gap: calc(var(--spacing) * .5); }
-  .connection-pill { display: inline-flex; flex: none; align-items: center; gap: calc(var(--spacing) * .75); min-height: 1.75rem; padding: 0 calc(var(--spacing) * 2); border: 1px solid var(--color-border); border-radius: 999px; background: var(--color-subtle); color: var(--color-text-secondary); font: inherit; font-size: var(--text-xs); cursor: pointer; }
-  .connection-pill:hover { background: var(--color-row-hover); color: var(--color-text); }
-  .connection-pill:focus-visible { outline: 2px solid var(--color-brand); outline-offset: 2px; }
-  .connection-dot { width: .5rem; height: .5rem; flex: 0 0 .5rem; border-radius: 50%; background: var(--color-success-solid); }
-  .connection-dot.offline { background: var(--color-error-solid); }
-  /* Narrow windows keep all three connection controls as named status dots. */
   @media (max-width: 600px) {
-    .connection-settings { gap: 0; }
-    .connection-pill { min-height: 1.5rem; padding-inline: calc(var(--spacing) * 1.25); }
-    .connection-pill > span:not(.connection-dot) { display: none; }
     /* Nobody else here yet: an empty group would still take a gap. */
     .presence:empty { display: none; }
   }
   .presence { display: inline-flex; flex: none; align-items: center; gap: calc(var(--spacing) * .5); color: var(--color-text-secondary); font-size: var(--text-xs); }
+  .presence-offline { display: inline-flex; align-items: center; gap: calc(var(--spacing) * .75); color: var(--color-text-secondary); font-size: var(--text-xs); }
+  .presence-offline-dot { width: .5rem; height: .5rem; flex: 0 0 .5rem; border-radius: 50%; background: var(--color-error-solid); }
   .presence :global(.avatar + .avatar) { margin-left: calc(var(--spacing) * -1.5); box-shadow: 0 0 0 2px var(--color-shell); }
   .presence-more { display: inline-grid; place-items: center; min-width: 1.5rem; height: 1.5rem; margin-left: calc(var(--spacing) * -1.5); border-radius: 50%; background: var(--color-divider); color: var(--color-text-secondary); font-size: .65rem; }
   /* A heading over a run of items. Aligned with the names rather than with
