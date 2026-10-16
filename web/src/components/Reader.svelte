@@ -334,10 +334,6 @@
   // toggle is the consent, and it is given again each time.
   const localExecutionRelevant = $derived.by(() => ["quarto", "typst"].includes(sourceFormat) && mayEdit);
 
-  // Where the toggle is offered: every editable Quarto document, and an
-  // editable Typst document when the desktop app found Calepin.
-  const runCodeOffered = $derived(mayEdit && (sourceFormat === "quarto" || (sourceFormat === "typst" && hasDesktop && calepinFound)));
-
   // Turning it on puts this format's engine on the local tool and uses the
   // desktop app. A browser without the desktop app says so and stays off.
   async function startLocalExecution() {
@@ -1620,6 +1616,10 @@
   });
   let mayEdit = $state(false);
   let sourceFormat = $state("");
+
+  // Where the toggle is offered: every editable Quarto document, and an
+  // editable Typst document when the desktop app found Calepin.
+  const runCodeOffered = $derived(mayEdit && (sourceFormat === "quarto" || (sourceFormat === "typst" && hasDesktop && calepinFound)));
   let peers = $state(1);
   let participants = $state([]);
   let linked = $state(read(LINKED, false) === true);
