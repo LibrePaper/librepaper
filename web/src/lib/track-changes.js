@@ -14,7 +14,8 @@ export const CHANGES = "changes";
 /**
  * @typedef {{ who: string, author: string }} Me
  * @typedef {{ from: number, to: number, insert: string }} Edit
- * @typedef {{ id: string, who: string, author: string, run: string | null, at: number, from: number, to: number, deleted: string }} Change
+ * @typedef {{ id: string, at: number }} Point
+ * @typedef {{ id: string, who: string, author: string, run: string | null, at: number, from: number, to: number, deleted: string, points?: Point[] }} Change
  * @typedef {Change & { state: "kept" | "set" | "removed" }} PlannedChange
  */
 
@@ -93,6 +94,30 @@ function planOne(cur, list, edit, me, run, now, mintId) {
       from = Math.min(from, c.from);
       if (c.to > et) to = Math.max(to, c.to + delta);
     }
+    // `points` records where foreign deletions that this edit swallowed sat in
+    // the new `deleted` text, counted in original characters before them.
+    const before = (p) => {
+      let n = 0;
+      for (const c of affected) if (c.from <= p) n += c.deleted.length;
+      for (const r of runs) n += Math.max(0, Math.min(r.to, p) - r.from);
+      return n;
+    };
+    const points = [];
+    affected.forEach((c, i) => {
+      if (!c.points || c.points.length === 0) return;
+      let shift = 0;
+      for (let j = 0; j < i; j++) shift += affected[j].deleted.length;
+      for (const r of runs) shift += Math.max(0, Math.min(r.to, c.from) - r.from);
+      for (const pt of c.points) points.push({ id: pt.id, at: pt.at + shift });
+    });
+    if (et > ef) {
+      for (const c of list) {
+        if (affected.includes(c) || c.deleted === "") continue;
+        const swallowed =
+          c.from === c.to ? ef <= c.from && c.from < et : c.from >= ef && c.to <= et;
+        if (swallowed) points.push({ id: c.id, at: before(c.from) });
+      }
+    }
     out.push({
       id: first ? first.id : mintId(),
       who: me.who,
@@ -102,6 +127,7 @@ function planOne(cur, list, edit, me, run, now, mintId) {
       from,
       to,
       deleted: pieces.map((p) => p.text).join(""),
+      ...(points.length > 0 ? { points } : {}),
       state: "set",
     });
   }
@@ -204,6 +230,13 @@ function cursorPos(doc, bytes) {
   }
 }
 
+function readPoints(raw) {
+  if (!Array.isArray(raw)) return [];
+  return raw
+    .filter((p) => p && typeof p.id === "string" && typeof p.at === "number")
+    .map((p) => ({ id: p.id, at: p.at }));
+}
+
 // Resolves one stored value to UTF-16 offsets, or null when it is orphaned.
 // `stale` is true when a cursor's character was deleted.
 function resolveEntry(doc, id, value) {
@@ -219,9 +252,10 @@ function resolveEntry(doc, id, value) {
     const end = cursorPos(doc, value.end);
     if (!end) return null;
     if (end.update) stale = true;
-    to = end.update ? end.offset : end.offset + 1;
+    to = end.update ? end.offset : end.offset + charWidth(text.toString(), end.offset);
   }
   if (to < from) to = from;
+  const points = readPoints(value.points);
   return {
     id,
     file: value.file,
@@ -232,6 +266,7 @@ function resolveEntry(doc, id, value) {
     from,
     to,
     deleted: value.deleted ?? "",
+    ...(points.length > 0 ? { points } : {}),
     stale,
   };
 }
@@ -280,12 +315,27 @@ export function listChanges(doc) {
 // ---------------------------------------------------------------------------
 // Writing the records
 
-function cursorValue(text, from, to, me, run, at, deleted, file) {
+// The UTF-16 index of the last code point of `[from, to)`. A surrogate pair is
+// one character to Loro, so the end cursor must sit on its first unit.
+function lastCharStart(body, to) {
+  const lo = body.charCodeAt(to - 1);
+  const hi = to >= 2 ? body.charCodeAt(to - 2) : 0;
+  return lo >= 0xdc00 && lo <= 0xdfff && hi >= 0xd800 && hi <= 0xdbff ? to - 2 : to - 1;
+}
+
+// The UTF-16 width of the character at `pos`: 2 for a surrogate pair.
+function charWidth(body, pos) {
+  const hi = body.charCodeAt(pos);
+  const lo = body.charCodeAt(pos + 1);
+  return hi >= 0xd800 && hi <= 0xdbff && lo >= 0xdc00 && lo <= 0xdfff ? 2 : 1;
+}
+
+function cursorValue(text, from, to, me, run, at, deleted, file, points) {
   const start = text.getCursor(from, -1);
   if (!start) return null;
   let end = null;
   if (to > from) {
-    end = text.getCursor(to - 1, 1);
+    end = text.getCursor(lastCharStart(text.toString(), to), 1);
     if (!end) return null;
   }
   return {
@@ -297,7 +347,36 @@ function cursorValue(text, from, to, me, run, at, deleted, file) {
     start: start.encode(),
     end: end ? end.encode() : null,
     deleted,
+    ...(points && points.length > 0 ? { points: points.map((p) => ({ id: p.id, at: p.at })) } : {}),
   };
+}
+
+/**
+ * Writes a plan: every "set" entry with fresh cursors against the file's
+ * current text, and deletes every "removed" id. Does not commit. Returns the
+ * ids it wrote.
+ *
+ * @param {import("loro-crdt").LoroDoc} doc
+ * @param {string} fileId
+ * @param {PlannedChange[]} planned
+ * @returns {string[]}
+ */
+export function writePlanned(doc, fileId, planned) {
+  const text = fileText(doc, fileId);
+  if (!text) return [];
+  const map = doc.getMap(CHANGES);
+  const written = [];
+  for (const c of planned) {
+    if (c.state === "removed") {
+      map.delete(c.id);
+    } else if (c.state === "set") {
+      const value = cursorValue(text, c.from, c.to, c, c.run, c.at, c.deleted, fileId, c.points);
+      if (!value) continue;
+      map.set(c.id, value);
+      written.push(c.id);
+    }
+  }
+  return written;
 }
 
 /**
@@ -315,26 +394,13 @@ function cursorValue(text, from, to, me, run, at, deleted, file) {
  * @returns {string[]}
  */
 export function recordEdits(doc, fileId, before, preResolved, edits, me, { run = null, now = Date.now() } = {}) {
-  const text = fileText(doc, fileId);
-  if (!text) return [];
-  const map = doc.getMap(CHANGES);
+  if (!fileText(doc, fileId)) return [];
   const plan = planEdits(before, preResolved, edits, me, {
     run,
     now,
     mintId: () => crypto.randomUUID(),
   });
-  const written = [];
-  for (const c of plan) {
-    if (c.state === "removed") {
-      map.delete(c.id);
-    } else if (c.state === "set") {
-      const value = cursorValue(text, c.from, c.to, c, c.run, c.at, c.deleted, fileId);
-      if (!value) continue;
-      map.set(c.id, value);
-      written.push(c.id);
-    }
-  }
-  return written;
+  return writePlanned(doc, fileId, plan);
 }
 
 /**
@@ -394,6 +460,15 @@ export function reject(doc, id) {
     const text = fileText(doc, resolved.file);
     if (resolved.to > resolved.from) text.delete(resolved.from, resolved.to - resolved.from);
     if (resolved.deleted) text.insert(resolved.from, resolved.deleted);
+    // Deletions this change swallowed move back to where they sat inside it.
+    for (const pt of resolved.points ?? []) {
+      const target = map.get(pt.id);
+      if (!target) continue;
+      const found = resolveEntry(doc, pt.id, target);
+      if (!found || found.file !== resolved.file || found.to !== found.from) continue;
+      const start = text.getCursor(resolved.from + pt.at, -1);
+      if (start) map.set(pt.id, { ...target, start: start.encode(), end: null });
+    }
   }
   map.delete(id);
   doc.commit();
@@ -416,7 +491,7 @@ export function prune(doc) {
       map.delete(id);
       count += 1;
     } else if (resolved.stale) {
-      const fresh = cursorValue(fileText(doc, resolved.file), resolved.from, resolved.to, value, value.run ?? null, value.at, resolved.deleted, resolved.file);
+      const fresh = cursorValue(fileText(doc, resolved.file), resolved.from, resolved.to, value, value.run ?? null, value.at, resolved.deleted, resolved.file, resolved.points);
       if (fresh) map.set(id, { ...value, start: fresh.start, end: fresh.end });
     }
   }

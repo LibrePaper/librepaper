@@ -17,6 +17,7 @@ import {
   reject,
   resolveChanges,
   trackedSplice,
+  writePlanned,
 } from "../../src/lib/track-changes.js";
 
 const fixtures = JSON.parse(
@@ -54,7 +55,12 @@ for (const f of fixtures) {
     { now: 2, mintId: () => `new-${++n}` },
   );
   const live = planned.filter((c) => c.state !== "removed").map(shape);
-  assert.deepEqual(live, f.expect, f.name);
+  assert.deepEqual(live, f.expect.map(({ points, ...c }) => c), f.name);
+  // Points are compared only for the entries the fixture lists them on.
+  for (const want of f.expect) {
+    if (!want.points) continue;
+    assert.deepEqual(planned.find((c) => c.id === want.id).points, want.points, `${f.name}: points`);
+  }
 }
 
 // Unchanged entries are kept, edited ones are set, dropped ones are removed.
@@ -293,6 +299,93 @@ for (const decide of [accept, reject]) {
   assert.equal(decide(doc, id), true);
   assert.equal(textOf(doc), "aZcd");
   assert.equal(map.size, 0);
+}
+
+// ---------------------------------------------------------------------------
+// Swallowed deletion points
+
+for (const bobFirst of [true, false]) {
+  const doc = makeDoc("abcd");
+  const [a] = track(doc, 1, 2, "", ME);
+  const [b] = track(doc, 1, 2, "", BOB);
+  assert.equal(textOf(doc), "ad");
+  const entry = doc.getMap(CHANGES).get(b);
+  assert.deepEqual(entry.points, [{ id: a, at: 0 }]);
+  for (const id of bobFirst ? [b, a] : [a, b]) assert.equal(reject(doc, id), true);
+  assert.equal(textOf(doc), "abcd", `points: bobFirst=${bobFirst}`);
+  assert.equal(doc.getMap(CHANGES).size, 0);
+}
+
+// A point that sat in the middle of the new deletion.
+for (const bobFirst of [true, false]) {
+  const doc = makeDoc("abcde");
+  const [a] = track(doc, 2, 3, "", ME);
+  assert.equal(textOf(doc), "abde");
+  const [b] = track(doc, 1, 3, "", BOB);
+  assert.equal(textOf(doc), "ae");
+  assert.deepEqual(doc.getMap(CHANGES).get(b).points, [{ id: a, at: 1 }]);
+  for (const id of bobFirst ? [b, a] : [a, b]) assert.equal(reject(doc, id), true);
+  assert.equal(textOf(doc), "abcde", `points middle: bobFirst=${bobFirst}`);
+}
+
+// Accepting the swallowing change drops its points with it.
+{
+  const doc = makeDoc("abcd");
+  const [a] = track(doc, 1, 2, "", ME);
+  const [b] = track(doc, 1, 2, "", BOB);
+  assert.equal(accept(doc, b), true);
+  assert.equal(reject(doc, a), true);
+  assert.equal(textOf(doc), "abd");
+}
+
+// ---------------------------------------------------------------------------
+// Astral characters at the end of an insertion
+
+{
+  const doc = makeDoc("ab");
+  const [id] = track(doc, 1, 1, "x😀");
+  assert.equal(textOf(doc), "ax😀b");
+  const list = resolveChanges(doc, "f1");
+  assert.deepEqual([list[0].from, list[0].to], [1, 4]);
+  assert.equal(reject(doc, id), true);
+  assert.equal(textOf(doc), "ab");
+  assert.equal(doc.getMap(CHANGES).size, 0);
+}
+
+// An entry written the way Rust writes it: the end cursor sits on the emoji's
+// first unit, side 1.
+{
+  const doc = makeDoc("a😀b");
+  const text = doc.getMap("files").get("f1");
+  doc.getMap(CHANGES).set("rust", {
+    file: "f1",
+    author: "Me",
+    who: "me",
+    at: 1,
+    run: null,
+    start: text.getCursor(1, -1).encode(),
+    end: text.getCursor(1, 1).encode(),
+    deleted: "",
+  });
+  doc.commit();
+  const list = resolveChanges(doc, "f1");
+  assert.deepEqual([list[0].from, list[0].to], [1, 3]);
+  assert.equal(reject(doc, "rust"), true);
+  assert.equal(textOf(doc), "ab");
+}
+
+// writePlanned writes a plan and deletes removed ids.
+{
+  const doc = makeDoc("abcd");
+  const [old] = track(doc, 1, 2, "Z");
+  const pre = resolveChanges(doc, "f1");
+  const text = doc.getMap("files").get("f1");
+  text.delete(1, 1);
+  const plan = planEdits("aZcd", pre, [{ from: 1, to: 2, insert: "" }], ME, { now: 9, mintId: () => "n" });
+  const ids = writePlanned(doc, "f1", plan);
+  doc.commit();
+  assert.deepEqual(ids, [old]);
+  assert.equal(resolveChanges(doc, "f1")[0].deleted, "b");
 }
 
 console.log("track-changes: ok");

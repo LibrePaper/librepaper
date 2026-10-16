@@ -249,5 +249,44 @@
     "edits": [{ "from": 1, "to": 3, "insert": "" }],
     "after": "ab",
     "expect": [{ "id": "new-1", "who": "me", "from": 1, "to": 1, "deleted": "😀" }]
+  },
+  {
+    "name": "points: deleting a foreign pure deletion's anchor records where it sat",
+    "before": "acd",
+    "changes": [{ "id": "a", "who": "alice", "from": 1, "to": 1, "deleted": "b" }],
+    "me": { "who": "bob", "author": "Bob" },
+    "edits": [{ "from": 1, "to": 2, "insert": "" }],
+    "after": "ad",
+    "expect": [
+      { "id": "new-1", "who": "bob", "from": 1, "to": 1, "deleted": "c", "points": [{ "id": "a", "at": 0 }] },
+      { "id": "a", "who": "alice", "from": 1, "to": 1, "deleted": "b" }
+    ]
+  },
+  {
+    "name": "points: a swallowed point in the middle of the new deletion",
+    "before": "abde",
+    "changes": [{ "id": "a", "who": "alice", "from": 2, "to": 2, "deleted": "c" }],
+    "me": { "who": "bob", "author": "Bob" },
+    "edits": [{ "from": 1, "to": 3, "insert": "" }],
+    "after": "ae",
+    "expect": [
+      { "id": "new-1", "who": "bob", "from": 1, "to": 1, "deleted": "bd", "points": [{ "id": "a", "at": 1 }] },
+      { "id": "a", "who": "alice", "from": 1, "to": 1, "deleted": "c" }
+    ]
+  },
+  {
+    "name": "points: a merge carries points and shifts them past deleted text that lands before",
+    "before": "ad",
+    "changes": [
+      { "id": "a", "who": "alice", "from": 1, "to": 1, "deleted": "b" },
+      { "id": "m", "who": "bob", "from": 1, "to": 1, "deleted": "c", "points": [{ "id": "a", "at": 0 }] }
+    ],
+    "me": { "who": "bob", "author": "Bob" },
+    "edits": [{ "from": 0, "to": 1, "insert": "" }],
+    "after": "d",
+    "expect": [
+      { "id": "m", "who": "bob", "from": 0, "to": 0, "deleted": "ac", "points": [{ "id": "a", "at": 1 }] },
+      { "id": "a", "who": "alice", "from": 0, "to": 0, "deleted": "b" }
+    ]
   }
 ]
