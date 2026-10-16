@@ -395,6 +395,35 @@ async fn housekeeping_re_asks_for_a_compaction_whose_ask_was_lost() {
     bare.catalog.close().await;
 }
 
+/// The sweep retires a document once nothing holds its sequencer. Housekeeping
+/// used to keep a clone of every resident sequencer for its whole run, so
+/// `retire_idle` never saw a strong count of one and no document ever left
+/// the registry.
+#[tokio::test]
+#[ignore = "requires LIBREPAPER_TEST_POSTGRES_URL"]
+async fn housekeeping_retires_a_document_nobody_holds() {
+    let Some(bare) = bare("idle-retirement").await else {
+        return;
+    };
+    let registry = bare.registry();
+
+    let sequencer = bare.sequencer(&registry).await;
+    registry.housekeep().await;
+    assert_eq!(
+        registry.all().await.len(),
+        1,
+        "a sequencer somebody still holds stays resident"
+    );
+
+    drop(sequencer);
+    registry.housekeep().await;
+    assert!(
+        registry.all().await.is_empty(),
+        "an idle sequencer nobody holds is retired by the sweep"
+    );
+    bare.catalog.close().await;
+}
+
 fn subscriber() -> librepaper_engine::storage::outgoing::Sender {
     librepaper_engine::storage::outgoing::Sender::channel(64, 1 << 20, None, None).0
 }

@@ -302,6 +302,9 @@ impl Registry {
         for sequencer in &resident {
             sequencer.prune_rate_limiter();
         }
+        // These clones would make every sequencer look held to `retire_idle`,
+        // which only retires a sequencer that nothing else holds.
+        drop(resident);
         self.retire_fenced().await;
         self.retire_idle().await;
     }
