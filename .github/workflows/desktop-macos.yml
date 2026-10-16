@@ -1,0 +1,192 @@
+# cargo-dist calls this workflow as a local-artifacts job on release tags
+# (local-artifacts-jobs in Cargo.toml), so the release waits for it.
+# It builds a universal macOS app (Apple Silicon and Intel) and a DMG. The app is compiled without secrets.
+# The signing and notarization secrets reach only the tauri bundle step, which runs no build scripts.
+# Tauri signs the bundled librepaper and the app with the hardened runtime, notarizes the app and staples it.
+# This workflow then notarizes and staples the DMG.
+name: macOS desktop app
+
+on:
+  workflow_call:
+    inputs:
+      plan:
+        required: true
+        type: string
+
+jobs:
+  build:
+    name: Signed and notarized macOS app
+    runs-on: macos-15
+    environment: release
+    permissions:
+      contents: read
+    timeout-minutes: 150
+    steps:
+      - name: Check the Apple settings
+        shell: bash
+        env:
+          HAS_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE != '' && secrets.APPLE_CERTIFICATE_PASSWORD != '' }}
+          HAS_API_KEY: ${{ secrets.APPLE_API_KEY_ID != '' && secrets.APPLE_API_ISSUER != '' && secrets.APPLE_API_PRIVATE_KEY != '' }}
+        run: |
+          if [ "$HAS_CERTIFICATE" != "true" ]; then
+            echo "::error::Set APPLE_CERTIFICATE and APPLE_CERTIFICATE_PASSWORD in the release environment."
+            exit 1
+          fi
+          if [ "$HAS_API_KEY" != "true" ]; then
+            echo "::error::Set APPLE_API_KEY_ID, APPLE_API_ISSUER and APPLE_API_PRIVATE_KEY in the release environment. Notarization is required."
+            exit 1
+          fi
+
+      - name: Read the version from the tag
+        id: version
+        shell: bash
+        run: |
+          TAG="$GITHUB_REF_NAME"
+          VERSION="${TAG#v}"
+          pattern='^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$'
+          if ! [[ "$VERSION" =~ $pattern ]]; then
+            echo "::error::Tag $TAG is not a version tag like v0.0.43."
+            exit 1
+          fi
+          {
+            echo "tag=$TAG"
+            echo "version=$VERSION"
+          } >> "$GITHUB_OUTPUT"
+
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+          submodules: recursive
+
+      # Fail in a minute, before the build, when the certificate cannot sign.
+      # The same check Tauri relies on: a valid Developer ID Application identity in a keychain.
+      - name: Check the signing certificate
+        shell: bash
+        env:
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+        run: |
+          set -euo pipefail
+          # codesign needs Apple's Developer ID intermediate to build the chain.
+          if ! security find-certificate -c "Developer ID Certification Authority" /Library/Keychains/System.keychain >/dev/null 2>&1; then
+            curl -fsSL https://www.apple.com/certificateauthority/DeveloperIDG2CA.cer -o "$RUNNER_TEMP/DeveloperIDG2CA.cer"
+            sudo security import "$RUNNER_TEMP/DeveloperIDG2CA.cer" -k /Library/Keychains/System.keychain
+          fi
+          keychain="$RUNNER_TEMP/lp-check.keychain-db"
+          keychain_password="$(openssl rand -hex 16)"
+          p12="$RUNNER_TEMP/lp-check.p12"
+          trap 'rm -f "$p12"; security delete-keychain "$keychain" 2>/dev/null || true' EXIT
+          security create-keychain -p "$keychain_password" "$keychain"
+          security unlock-keychain -p "$keychain_password" "$keychain"
+          (umask 077; printf '%s' "$APPLE_CERTIFICATE" | base64 --decode > "$p12")
+          if ! security import "$p12" -k "$keychain" -P "$APPLE_CERTIFICATE_PASSWORD" -T /usr/bin/codesign >/dev/null; then
+            echo "::error::The keychain could not import APPLE_CERTIFICATE. Check the password, or export the .p12 again with openssl pkcs12 -export -legacy."
+            exit 1
+          fi
+          rm -f "$p12"
+          identities="$(security find-identity -v -p codesigning "$keychain")"
+          echo "$identities"
+          if ! grep -q '"Developer ID Application: ' <<<"$identities"; then
+            echo "::error::APPLE_CERTIFICATE holds no valid Developer ID Application identity with its private key."
+            exit 1
+          fi
+          security find-certificate -c "Developer ID Application" -p "$keychain" > "$RUNNER_TEMP/lp-check.pem"
+          openssl x509 -in "$RUNNER_TEMP/lp-check.pem" -noout -subject -enddate
+          if ! openssl x509 -in "$RUNNER_TEMP/lp-check.pem" -noout -checkend 2592000 >/dev/null; then
+            echo "::error::The Developer ID Application certificate expires within 30 days."
+            exit 1
+          fi
+
+      - name: Build the app
+        id: build
+        uses: ./.github/actions/build-desktop
+        with:
+          version: ${{ steps.version.outputs.version }}
+          cli-version: ${{ steps.version.outputs.tag }}
+          target: universal-apple-darwin
+          bundle: "false"
+
+      - name: Write the notarization key
+        shell: bash
+        env:
+          APPLE_API_PRIVATE_KEY: ${{ secrets.APPLE_API_PRIVATE_KEY }}
+        run: |
+          key="$RUNNER_TEMP/apple-api-key.p8"
+          (umask 077; printf '%s\n' "$APPLE_API_PRIVATE_KEY" > "$key")
+          echo "APPLE_API_KEY_PATH=$key" >> "$GITHUB_ENV"
+
+      # Tauri reads APPLE_API_KEY as the key ID and APPLE_API_KEY_PATH as the .p8 file.
+      - name: Sign and notarize the app
+        shell: bash
+        working-directory: desktop
+        env:
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          APPLE_API_KEY: ${{ secrets.APPLE_API_KEY_ID }}
+          APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
+        run: bunx @tauri-apps/cli@2.12.1 bundle --ci --bundles app,dmg --target universal-apple-darwin --config "$RUNNER_TEMP/tauri-build.json"
+
+      - name: Notarize and staple the DMG
+        shell: bash
+        env:
+          APPLE_API_KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}
+          APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
+          BUNDLE_DIR: ${{ steps.build.outputs.bundle-dir }}
+        run: |
+          set -euo pipefail
+          dmg="$(ls "$BUNDLE_DIR"/dmg/*.dmg)"
+          result="$(xcrun notarytool submit "$dmg" --key "$APPLE_API_KEY_PATH" --key-id "$APPLE_API_KEY_ID" --issuer "$APPLE_API_ISSUER" --wait --output-format json)"
+          echo "$result"
+          status="$(jq -r .status <<<"$result")"
+          if [ "$status" != "Accepted" ]; then
+            id="$(jq -r .id <<<"$result")"
+            xcrun notarytool log "$id" --key "$APPLE_API_KEY_PATH" --key-id "$APPLE_API_KEY_ID" --issuer "$APPLE_API_ISSUER" || true
+            echo "::error::Apple did not accept the DMG: $status"
+            exit 1
+          fi
+          xcrun stapler staple "$dmg"
+
+      - name: Remove the notarization key
+        if: always()
+        shell: bash
+        run: rm -f "$RUNNER_TEMP/apple-api-key.p8"
+
+      - name: Check the signatures and notarization
+        shell: bash
+        env:
+          BUNDLE_DIR: ${{ steps.build.outputs.bundle-dir }}
+        run: |
+          set -euo pipefail
+          app="$BUNDLE_DIR/macos/LibrePaper.app"
+          dmg="$(ls "$BUNDLE_DIR"/dmg/*.dmg)"
+          codesign --verify --deep --strict --verbose=2 "$app"
+          codesign -dv --verbose=4 "$app" 2>&1 | grep -E '^(Authority|TeamIdentifier|Runtime Version|Timestamp|Format)='
+          codesign -dv --verbose=4 "$app" 2>&1 | grep -q 'flags=.*runtime' || { echo "::error::The app lacks the hardened runtime."; exit 1; }
+          codesign --verify --strict --verbose=2 "$app/Contents/MacOS/librepaper"
+          lipo -archs "$app/Contents/MacOS/librepaper"
+          lipo -archs "$app/Contents/MacOS/librepaper-desktop"
+          spctl --assess --type execute --verbose=4 "$app"
+          xcrun stapler validate "$app"
+          spctl --assess --type open --context context:primary-signature --verbose=4 "$dmg"
+          xcrun stapler validate "$dmg"
+
+      - name: Collect the DMG
+        shell: bash
+        env:
+          BUNDLE_DIR: ${{ steps.build.outputs.bundle-dir }}
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          out="$RUNNER_TEMP/desktop-release"
+          mkdir -p "$out"
+          name="LibrePaper_${VERSION}_universal.dmg"
+          cp "$(ls "$BUNDLE_DIR"/dmg/*.dmg)" "$out/$name"
+          cd "$out"
+          shasum -a 256 "$name" | awk '{print $1 " *" $2}' > "$name.sha256"
+          ls -l
+
+      # Names starting with artifacts- are attached to the GitHub Release by the host job.
+      - uses: actions/upload-artifact@v7
+        with:
+          name: artifacts-desktop-macos
+          path: ${{ runner.temp }}/desktop-release/*
+          if-no-files-found: error
