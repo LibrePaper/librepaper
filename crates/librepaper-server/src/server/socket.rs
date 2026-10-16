@@ -251,7 +251,6 @@ impl UpdateAssembly {
 #[derive(Clone)]
 pub(super) struct Connection {
     pub(super) slug: String,
-    pub(super) network: String,
     pub(super) principal: String,
     pub(super) headers: HeaderMap,
     pub(super) arrival: Arrival,
@@ -326,7 +325,6 @@ impl Server {
             .and_then(|link| librepaper_base::util::parse_timestamp(&link.until));
         let address = client_address(peer, &headers, &self.config.cost.trusted_proxies);
         let identity = librepaper_base::config::socket_budget::SocketIdentity {
-            network: client_network(&address),
             principal: who.id.id.clone(),
             document: slug.to_string(),
             role: Some(if may_edit {
@@ -438,7 +436,6 @@ impl Server {
             socket_id,
             Connection {
                 slug: room.slug.clone(),
-                network: client_network(&address),
                 principal: who.id.id.clone(),
                 headers: headers.clone(),
                 arrival,

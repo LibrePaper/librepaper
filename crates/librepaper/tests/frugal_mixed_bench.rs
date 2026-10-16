@@ -394,7 +394,6 @@ async fn frugal_mixed_workload_benchmark() {
     let blobs: Arc<dyn BlobStore> = Arc::new(FsStore::new(tmp.path().to_path_buf(), false));
     let mut config = Configuration::default();
     config.sockets.deployment_max = 4096;
-    config.sockets.network_max = 4096;
     config.sockets.principal_max = 4096;
     config.sockets.document_max = 4096;
     config.sockets.document_editors_max = 4096;

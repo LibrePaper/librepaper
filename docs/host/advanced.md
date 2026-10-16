@@ -273,6 +273,7 @@ Every limit and the retention settings are listed, with their defaults, at the e
 
 - Each account is limited in storage (`publisher_storage_mib`) and uploads per hour (`publisher_uploads_per_hour`).
 - The whole server is limited in total storage (`deployment_storage_mib`), memory for loading documents (`memory_budget_mib`), edit history per document (`log_quota_mib`), and unsaved edits in memory and on disk (`pending_mib`, `pending_scratch_mib`).
+- Live connections are capped from the memory budget, 8 per MiB (4,096 at the default 512 MiB), with at most 64 per account and 32 editors per document.
 - With [object storage](#object-storage), disk is no longer the constraint on `deployment_storage_mib`: set it to what you are willing to store.
 - `[retention]` deletes documents after `expire_after`, counted from the last update by default or from creation.
 - `erase_inactive_after` in `[retention]` erases accounts that have not signed in for that long, with every document they own. It is off by default and must be at least 60 days. The admin console shows how many accounts it will erase in the next 30 days.

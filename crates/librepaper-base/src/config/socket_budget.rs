@@ -10,16 +10,30 @@ use std::sync::{Arc, Mutex};
 use serde::Serialize;
 use serde_json::{json, Value};
 
+/// Live sockets a deployment admits per MiB of `memory_budget_bytes`: 4096
+/// at the default 512 MiB. Operators size one number, the memory budget, and
+/// the socket ceiling follows it.
+pub const SOCKETS_PER_MIB: usize = 8;
+
+/// The deployment socket ceiling for a memory budget, never below 64.
+pub fn deployment_sockets(memory_budget_bytes: u64) -> usize {
+    ((memory_budget_bytes >> 20) as usize)
+        .saturating_mul(SOCKETS_PER_MIB)
+        .max(64)
+}
+
 /// Live socket guardrails.  Configuration can replace this value at server
 /// construction without changing the accounting algorithm.
+///
+/// A whole lecture hall can share one public address, so there is no
+/// per-network cap: every socket belongs to a signed-in account, the
+/// per-account cap bounds one person or agent, and the deployment cap bounds
+/// everyone.
 #[derive(Clone, Copy, Debug, Serialize)]
 pub struct SocketPolicy {
     pub deployment_max: usize,
-    pub network_max: usize,
     pub principal_max: usize,
     pub document_max: usize,
-    pub document_readers_max: usize,
-    pub document_commenters_max: usize,
     pub document_editors_max: usize,
     pub queue_bytes_max: usize,
     pub idle_seconds: u64,
@@ -28,12 +42,9 @@ pub struct SocketPolicy {
 impl Default for SocketPolicy {
     fn default() -> Self {
         Self {
-            deployment_max: 4096,
-            network_max: 128,
+            deployment_max: deployment_sockets(512 << 20),
             principal_max: 64,
             document_max: 256,
-            document_readers_max: 256,
-            document_commenters_max: 256,
             document_editors_max: 32,
             queue_bytes_max: 16 * 1024 * 1024,
             idle_seconds: 30 * 60,
@@ -50,18 +61,18 @@ pub enum SocketRole {
 }
 
 impl SocketRole {
-    fn limit(self, policy: &SocketPolicy) -> usize {
+    /// The per-document cap for this role, if it has one. Only editors do:
+    /// readers and commenters are bound by the document ceiling alone.
+    fn limit(self, policy: &SocketPolicy) -> Option<usize> {
         match self {
-            Self::Reader => policy.document_readers_max,
-            Self::Commenter => policy.document_commenters_max,
-            Self::Editor => policy.document_editors_max,
+            Self::Editor => Some(policy.document_editors_max),
+            Self::Reader | Self::Commenter => None,
         }
     }
 }
 
 #[derive(Clone, Debug)]
 pub struct SocketIdentity {
-    pub network: String,
     pub principal: String,
     pub document: String,
     /// Control/chat transports use only the overall socket allowances.
@@ -76,7 +87,6 @@ struct DocumentSockets {
 
 struct State {
     active: HashMap<u64, SocketIdentity>,
-    networks: HashMap<String, usize>,
     principals: HashMap<String, usize>,
     documents: HashMap<String, DocumentSockets>,
     queue_frames: usize,
@@ -97,7 +107,6 @@ impl SocketBudget {
             policy,
             state: Mutex::new(State {
                 active: HashMap::new(),
-                networks: HashMap::new(),
                 principals: HashMap::new(),
                 documents: HashMap::new(),
                 queue_frames: 0,
@@ -123,9 +132,6 @@ impl SocketBudget {
         if state.active.len() >= self.policy.deployment_max {
             return Err(Refusal::Deployment);
         }
-        if state.networks.get(&identity.network).copied().unwrap_or(0) >= self.policy.network_max {
-            return Err(Refusal::Network);
-        }
         let principal = if identity.principal.is_empty() {
             "anonymous"
         } else {
@@ -138,13 +144,14 @@ impl SocketBudget {
         if document.map_or(0, |counts| counts.total) >= self.policy.document_max {
             return Err(Refusal::Document);
         }
+        // Only the editor role has a cap, so only an editor can be refused here.
         if let Some(role) = identity.role {
-            if document.map_or(0, |counts| counts.roles[role as usize]) >= role.limit(&self.policy)
-            {
-                return Err(Refusal::DocumentRole(role));
+            if role.limit(&self.policy).is_some_and(|limit| {
+                document.map_or(0, |counts| counts.roles[role as usize]) >= limit
+            }) {
+                return Err(Refusal::DocumentEditors);
             }
         }
-        *state.networks.entry(identity.network.clone()).or_default() += 1;
         *state.principals.entry(principal.to_string()).or_default() += 1;
         let document = state
             .documents
@@ -165,7 +172,6 @@ impl SocketBudget {
     fn release(&self, id: u64, identity: &SocketIdentity) {
         let mut state = self.lock();
         state.active.remove(&id);
-        decrement(&mut state.networks, &identity.network);
         decrement(
             &mut state.principals,
             if identity.principal.is_empty() {
@@ -211,10 +217,8 @@ impl SocketBudget {
         let state = self.lock();
         json!({
             "active": state.active.len(),
-            "networks": state.networks.len(),
             "principals": state.principals.len(),
             "documents": state.documents.len(),
-            "max_network_sockets": state.networks.values().copied().max().unwrap_or(0),
             "max_principal_sockets": state.principals.values().copied().max().unwrap_or(0),
             "max_document_sockets": state.documents.values().map(|counts| counts.total).max().unwrap_or(0),
             "max_document_reader_sockets": state.documents.values().map(|counts| counts.roles[SocketRole::Reader as usize]).max().unwrap_or(0),
@@ -239,22 +243,18 @@ fn decrement(values: &mut HashMap<String, usize>, key: &str) {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum Refusal {
     Deployment,
-    Network,
     Principal,
     Document,
-    DocumentRole(SocketRole),
+    DocumentEditors,
 }
 
 impl Refusal {
     pub fn scope(self) -> &'static str {
         match self {
             Self::Deployment => "deployment",
-            Self::Network => "network",
             Self::Principal => "principal",
             Self::Document => "document",
-            Self::DocumentRole(SocketRole::Reader) => "document_readers",
-            Self::DocumentRole(SocketRole::Commenter) => "document_commenters",
-            Self::DocumentRole(SocketRole::Editor) => "document_editors",
+            Self::DocumentEditors => "document_editors",
         }
     }
 }
@@ -283,56 +283,84 @@ impl Drop for SocketPermit {
 mod tests {
     use super::*;
 
-    fn identity(document: &str, role: Option<SocketRole>) -> SocketIdentity {
+    fn identity(principal: &str, document: &str, role: Option<SocketRole>) -> SocketIdentity {
         SocketIdentity {
-            network: "n".into(),
-            principal: "p".into(),
+            principal: principal.into(),
             document: document.into(),
             role,
         }
     }
 
     #[test]
-    fn document_roles_have_independent_caps_and_release_slots() {
-        let budget = SocketBudget::new(SocketPolicy {
-            document_readers_max: 1,
-            document_commenters_max: 2,
-            document_editors_max: 3,
-            ..Default::default()
-        });
-        let mut guards = Vec::new();
-        let mut id = 0;
-        for (role, limit) in [
-            (SocketRole::Reader, 1),
-            (SocketRole::Commenter, 2),
-            (SocketRole::Editor, 3),
-        ] {
-            for _ in 0..limit {
-                id += 1;
-                guards.push(budget.admit(id, identity("d", Some(role))).unwrap());
-            }
-            assert_eq!(
-                budget.admit(id + 1, identity("d", Some(role))).err(),
-                Some(Refusal::DocumentRole(role))
-            );
-            // A full document role does not consume another document's slots.
-            drop(budget.admit(id + 1, identity("other", Some(role))).unwrap());
-        }
-        let snapshot = budget.snapshot();
-        assert_eq!(snapshot["active"], 6);
-        assert_eq!(snapshot["max_document_reader_sockets"], 1);
-        assert_eq!(snapshot["max_document_commenter_sockets"], 2);
-        assert_eq!(snapshot["max_document_editor_sockets"], 3);
+    fn lecture_hall_readers_from_one_address_are_all_admitted() {
+        let budget = SocketBudget::new(SocketPolicy::default());
+        let guards: Vec<_> = (0..150)
+            .map(|id| {
+                budget
+                    .admit(
+                        id,
+                        identity(&format!("user{id}"), "d", Some(SocketRole::Reader)),
+                    )
+                    .unwrap()
+            })
+            .collect();
+        assert_eq!(budget.snapshot()["active"], 150);
         drop(guards);
-        assert_eq!(budget.snapshot()["documents"], 0);
-        for role in [
-            SocketRole::Reader,
-            SocketRole::Commenter,
-            SocketRole::Editor,
-        ] {
-            drop(budget.admit(100, identity("d", Some(role))).unwrap());
-        }
         assert_eq!(budget.snapshot()["active"], 0);
+    }
+
+    #[test]
+    fn the_33rd_editor_is_refused_and_a_reader_is_still_admitted() {
+        let budget = SocketBudget::new(SocketPolicy::default());
+        let mut guards = Vec::new();
+        for id in 0..32 {
+            guards.push(
+                budget
+                    .admit(id, identity(&format!("editor{id}"), "d", Some(SocketRole::Editor)))
+                    .unwrap(),
+            );
+        }
+        assert_eq!(
+            budget
+                .admit(32, identity("editor32", "d", Some(SocketRole::Editor)))
+                .err(),
+            Some(Refusal::DocumentEditors)
+        );
+        assert_eq!(budget.snapshot()["max_document_editor_sockets"], 32);
+        guards.push(
+            budget
+                .admit(33, identity("reader", "d", Some(SocketRole::Reader)))
+                .unwrap(),
+        );
+        drop(guards);
+        assert_eq!(budget.snapshot()["active"], 0);
+        assert_eq!(budget.snapshot()["documents"], 0);
+    }
+
+    #[test]
+    fn the_65th_socket_for_one_principal_is_refused() {
+        let budget = SocketBudget::new(SocketPolicy::default());
+        let guards: Vec<_> = (0..64)
+            .map(|id| {
+                budget
+                    .admit(id, identity("p", &format!("doc{id}"), None))
+                    .unwrap()
+            })
+            .collect();
+        assert_eq!(
+            budget.admit(64, identity("p", "doc64", None)).err(),
+            Some(Refusal::Principal)
+        );
+        drop(guards);
+        assert_eq!(budget.snapshot()["active"], 0);
+    }
+
+    #[test]
+    fn deployment_ceiling_follows_the_memory_budget() {
+        assert_eq!(deployment_sockets(512 << 20), 4096);
+        assert_eq!(deployment_sockets(1024 << 20), 8192);
+        assert_eq!(deployment_sockets(1 << 20), 64);
+        assert_eq!(SocketPolicy::default().deployment_max, 4096);
     }
 
     #[test]
@@ -343,19 +371,19 @@ mod tests {
             ..Default::default()
         });
         let editor = budget
-            .admit(1, identity("d", Some(SocketRole::Editor)))
+            .admit(1, identity("p", "d", Some(SocketRole::Editor)))
             .unwrap();
-        let control = budget.admit(2, identity("d", None)).unwrap();
+        let control = budget.admit(2, identity("p", "d", None)).unwrap();
         assert_eq!(budget.snapshot()["max_document_editor_sockets"], 1);
         assert_eq!(
             budget
-                .admit(3, identity("d", Some(SocketRole::Reader)))
+                .admit(3, identity("p", "d", Some(SocketRole::Reader)))
                 .err(),
             Some(Refusal::Document)
         );
         drop(control);
         let reader = budget
-            .admit(3, identity("d", Some(SocketRole::Reader)))
+            .admit(3, identity("p", "d", Some(SocketRole::Reader)))
             .unwrap();
         drop((editor, reader));
         assert_eq!(budget.snapshot()["active"], 0);
@@ -374,7 +402,7 @@ mod tests {
                 let start = start.clone();
                 std::thread::spawn(move || {
                     start.wait();
-                    budget.admit(id, identity("d", Some(SocketRole::Editor)))
+                    budget.admit(id, identity("p", "d", Some(SocketRole::Editor)))
                 })
             })
             .collect();
@@ -386,7 +414,7 @@ mod tests {
         assert!(results
             .iter()
             .filter_map(|result| result.as_ref().err())
-            .all(|reason| *reason == Refusal::DocumentRole(SocketRole::Editor)));
+            .all(|reason| *reason == Refusal::DocumentEditors));
         assert_eq!(budget.snapshot()["active"], 3);
         drop(results);
         assert_eq!(budget.snapshot()["active"], 0);
@@ -398,12 +426,7 @@ mod tests {
             deployment_max: 1,
             ..Default::default()
         });
-        let identity = SocketIdentity {
-            network: "n".into(),
-            principal: "p".into(),
-            document: "d".into(),
-            role: Some(SocketRole::Editor),
-        };
+        let identity = identity("p", "d", Some(SocketRole::Editor));
         let guard = budget.admit(1, identity.clone()).unwrap();
         assert!(budget.admit(2, identity.clone()).is_err());
         drop(guard);

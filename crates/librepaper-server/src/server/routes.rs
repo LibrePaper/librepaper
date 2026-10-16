@@ -416,7 +416,7 @@ async fn chat(
 ) -> Reply {
     let tail = tail.split('/').collect::<Vec<_>>();
     server
-        .handle_chat(request, ctx.peer, &ctx.arrival, &slug, &tail)
+        .handle_chat(request, &ctx.arrival, &slug, &tail)
         .await
 }
 
@@ -427,7 +427,7 @@ async fn chat_root(
     request: Request<Body>,
 ) -> Reply {
     server
-        .handle_chat(request, ctx.peer, &ctx.arrival, &slug, &[])
+        .handle_chat(request, &ctx.arrival, &slug, &[])
         .await
 }
 

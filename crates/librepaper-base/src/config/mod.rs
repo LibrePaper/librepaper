@@ -369,7 +369,10 @@ impl Default for Configuration {
                 uploads_per_hour: 30,
             },
             cost: CostPolicy::default(),
-            sockets: crate::config::socket_budget::SocketPolicy::default(),
+            sockets: crate::config::socket_budget::SocketPolicy {
+                deployment_max: crate::config::socket_budget::deployment_sockets(512 * 1024 * 1024),
+                ..crate::config::socket_budget::SocketPolicy::default()
+            },
             // What the upload form takes. Every one of these is a source
             // format `document_format` names and `storable_source` allows, so
             // the list a person is shown and the list the publish route
@@ -598,6 +601,7 @@ impl Configuration {
             .checked_mul(1024 * 1024)
             .ok_or_else(|| "memory budget is too large".to_string())?;
         self.memory_budget_bytes = bytes;
+        self.sockets.deployment_max = crate::config::socket_budget::deployment_sockets(bytes);
         Ok(())
     }
 
@@ -679,6 +683,14 @@ mod tests {
         assert_eq!(config.storage.per_owner, 50 * 1024 * 1024);
         assert_eq!(config.storage.uploads_per_hour, 30);
         assert_eq!(config.storage.total, 5 * 1024 * 1024 * 1024);
+    }
+
+    #[test]
+    fn socket_ceiling_follows_the_memory_budget() {
+        let mut config = Configuration::default();
+        assert_eq!(config.sockets.deployment_max, 4096);
+        assert!(config.set_memory_budget(Some(1024)).is_ok());
+        assert_eq!(config.sockets.deployment_max, 8192);
     }
 
     /// A configuration that cannot persist what it admits has to be refused

@@ -40,7 +40,6 @@ impl Server {
     pub(super) async fn handle_chat_socket(
         self: Arc<Self>,
         request: Request<Body>,
-        peer: SocketAddr,
         arrival: &Arrival,
         slug: &str,
         id: &str,
@@ -57,13 +56,11 @@ impl Server {
             Ok(result) => result,
             Err(response) => return response,
         };
-        let address = client_address(peer, &headers, &self.config.cost.trusted_proxies);
         let link_expires = entry
             .live_link(&who.link, librepaper_base::util::now_unix())
             .and_then(|link| librepaper_base::util::parse_timestamp(&link.until));
         let connection = Connection {
             slug: slug.into(),
-            network: client_network(&address),
             principal: who.id.id.clone(),
             headers,
             arrival: arrival.clone(),
@@ -124,7 +121,6 @@ impl Server {
         let _socket_permit = match self.socket_budget.admit(
             socket_id,
             librepaper_base::config::socket_budget::SocketIdentity {
-                network: connection.network.clone(),
                 principal: connection.principal.clone(),
                 document: slug.clone(),
                 role: None,
@@ -235,14 +231,13 @@ impl Server {
     pub(super) async fn handle_chat(
         self: Arc<Self>,
         request: Request<Body>,
-        peer: SocketAddr,
         arrival: &Arrival,
         slug: &str,
         tail: &[&str],
     ) -> Reply {
         if let [id, "socket"] = tail {
             return self
-                .handle_chat_socket(request, peer, arrival, slug, id)
+                .handle_chat_socket(request, arrival, slug, id)
                 .await;
         }
         if !self.valid_slug(slug) {

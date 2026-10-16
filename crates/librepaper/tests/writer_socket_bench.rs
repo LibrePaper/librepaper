@@ -738,7 +738,6 @@ async fn writer_socket_end_to_end_benchmark() {
     // writer mutex from account lookup differences. Raise only socket caps so
     // the requested 100-document scenario is admitted concurrently.
     config.sockets.deployment_max = 2048;
-    config.sockets.network_max = 2048;
     config.sockets.principal_max = 2048;
     config.sockets.document_max = 2048;
     config.sockets.document_editors_max = 2048;

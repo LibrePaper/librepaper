@@ -56,7 +56,7 @@ trusted_networks = ["172.29.0.0/16"]
 # publisher_uploads_per_hour = 30    # projects, forks and figure uploads per rolling hour
 # Whole server:
 # deployment_storage_mib = 5120      # storage for all accounts together; uploads are refused when full
-# memory_budget_mib = 512            # memory for loading documents
+# memory_budget_mib = 512            # memory for loading documents; also sets the live connection cap (8 per MiB)
 # log_quota_mib = 32                 # edit history one document holds before compaction; scale with memory_budget_mib
 # pending_mib = 64                   # unsaved edits held in memory
 # pending_scratch_mib = 161          # unsaved edits spilled to disk; the default follows log_quota_mib

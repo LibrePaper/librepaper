@@ -302,24 +302,12 @@ impl Metrics {
                 config.sockets.deployment_max as f64,
             ),
             (
-                "librepaper_sockets_network_limit",
-                config.sockets.network_max as f64,
-            ),
-            (
                 "librepaper_sockets_principal_limit",
                 config.sockets.principal_max as f64,
             ),
             (
                 "librepaper_sockets_document_limit",
                 config.sockets.document_max as f64,
-            ),
-            (
-                "librepaper_sockets_document_readers_limit",
-                config.sockets.document_readers_max as f64,
-            ),
-            (
-                "librepaper_sockets_document_commenters_limit",
-                config.sockets.document_commenters_max as f64,
             ),
             (
                 "librepaper_sockets_document_editors_limit",
@@ -606,11 +594,6 @@ const GAUGE_FIELDS: &[(&str, &str, &str)] = &[
     ("librepaper_sockets_active", "sockets", "active"),
     ("librepaper_sockets_queue_frames", "sockets", "queue_frames"),
     ("librepaper_sockets_queue_bytes", "sockets", "queue_bytes"),
-    (
-        "librepaper_sockets_max_network_sockets",
-        "sockets",
-        "max_network_sockets",
-    ),
     (
         "librepaper_sockets_max_principal_sockets",
         "sockets",
