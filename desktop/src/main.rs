@@ -432,6 +432,19 @@ fn serve(app: &AppHandle, label: String, request: Request<Vec<u8>>, responder: U
         return responder.respond(with_origin(res, &origin));
     }
 
+    // The File menu's Quit in the page quits the whole app. RunEvent::Exit stops the service.
+    if request.method() == Method::POST && request.uri().path() == "/shell/quit" {
+        let main = app.clone();
+        if let Err(err) = app.run_on_main_thread(move || main.exit(0)) {
+            shell_log::write(&format!("could not quit: {err}"));
+        }
+        let res = Response::builder()
+            .status(StatusCode::NO_CONTENT)
+            .body(Vec::new())
+            .expect("an empty response is valid");
+        return responder.respond(with_origin(res, &origin));
+    }
+
     // The zoom shortcuts in the page. Every window takes the new level.
     let zoom_step = match request.uri().path() {
         "/shell/zoom-in" => Some(zoom::Step::In),
