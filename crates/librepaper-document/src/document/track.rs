@@ -1,0 +1,805 @@
+//! Tracked changes: Word's model on the shared Loro document.
+//!
+//! A tracked edit goes into the text at once, like any edit, and the `changes`
+//! root records it as a pending change: the original text it removed
+//! (`deleted`) and a pair of cursors around the text it put there. Accepting
+//! drops the record. Rejecting puts `deleted` back where the new text was,
+//! then drops the record. See `SPEC-track-changes.md`.
+//!
+//! [`plan_edits`] is pure and has a twin in `web/src/lib/track-changes.js`;
+//! both run `web/tests/fixtures/track-changes.json`. Everything here counts in
+//! Unicode code points, which is what Loro cursors use. The fixtures count in
+//! UTF-16 and the test runner converts.
+//!
+//! None of the writers here commit. The caller owns the transaction, the same
+//! as with `apply_edits_at`.
+
+use std::collections::{HashMap, HashSet};
+
+use loro::{
+    cursor::{Cursor, PosType, Side},
+    Container, LoroDoc, LoroText, LoroValue, ValueOrContainer,
+};
+
+use crate::document::session::{apply_text_edits, mint_id, Edit, CHANGES, FILES};
+
+/// Who is making an edit: the stable key and the name comments show.
+pub struct Author<'a> {
+    pub who: &'a str,
+    pub author: &'a str,
+}
+
+/// A pending change with its cursors resolved to offsets in the text now.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ResolvedChange {
+    pub id: String,
+    pub file: String,
+    pub who: String,
+    pub author: String,
+    pub run: Option<String>,
+    pub at: i64,
+    /// Code point offsets of the inserted text, `from <= to`.
+    pub from: usize,
+    pub to: usize,
+    /// The original text this change removed.
+    pub deleted: String,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PlanState {
+    /// Unchanged apart from shifting; its cursors still hold.
+    Kept,
+    /// New or changed; its entry must be written.
+    Set,
+    /// Gone; its entry must be deleted.
+    Removed,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Planned {
+    pub change: ResolvedChange,
+    pub state: PlanState,
+}
+
+/// Plans a batch of edits against the pending changes of one file.
+///
+/// `edits` are `(from, to, insert)` in the coordinates of `before`, ascending
+/// and non-overlapping. They are applied in order, each one adjusted by the
+/// edits before it. The result is every change that was or is now pending,
+/// in the coordinates of the text after the whole batch, sorted by `from`.
+pub fn plan_edits(
+    before: &str,
+    changes: &[ResolvedChange],
+    edits: &[(usize, usize, String)],
+    me: &Author,
+    run: Option<&str>,
+    now_ms: i64,
+    mint: &mut dyn FnMut() -> String,
+) -> Vec<Planned> {
+    let mut text: Vec<char> = before.chars().collect();
+    let mut list: Vec<ResolvedChange> = changes.to_vec();
+    list.sort_by_key(|c| (c.from, c.to));
+    let mut dirty: HashSet<String> = HashSet::new();
+    let mut running: isize = 0;
+
+    for (from, to, insert) in edits {
+        let ins: Vec<char> = insert.chars().collect();
+        if from == to && ins.is_empty() {
+            continue;
+        }
+        let f = (*from as isize + running) as usize;
+        let t = (*to as isize + running) as usize;
+        let step = Step {
+            f,
+            t,
+            ins: &ins,
+            me,
+            run,
+            now_ms,
+        };
+        list = plan_one(&text, list, &step, &mut dirty, mint);
+        text.splice(f..t, ins.iter().copied());
+        running += ins.len() as isize - (t - f) as isize;
+    }
+
+    let live: HashSet<&str> = list.iter().map(|c| c.id.as_str()).collect();
+    let mut out: Vec<Planned> = list
+        .iter()
+        .map(|c| Planned {
+            state: if dirty.contains(&c.id) {
+                PlanState::Set
+            } else {
+                PlanState::Kept
+            },
+            change: c.clone(),
+        })
+        .collect();
+    for c in changes {
+        if !live.contains(c.id.as_str()) {
+            out.push(Planned {
+                change: c.clone(),
+                state: PlanState::Removed,
+            });
+        }
+    }
+    out.sort_by_key(|p| {
+        (
+            p.state == PlanState::Removed,
+            p.change.from,
+            p.change.to,
+        )
+    });
+    out
+}
+
+/// One edit of a batch, already in the coordinates of the running text.
+struct Step<'a> {
+    f: usize,
+    t: usize,
+    ins: &'a [char],
+    me: &'a Author<'a>,
+    run: Option<&'a str>,
+    now_ms: i64,
+}
+
+/// Plans one edit. `list` is sorted by `from`; so is the result.
+fn plan_one(
+    text: &[char],
+    list: Vec<ResolvedChange>,
+    step: &Step,
+    dirty: &mut HashSet<String>,
+    mint: &mut dyn FnMut() -> String,
+) -> Vec<ResolvedChange> {
+    let (f, t, n) = (step.f, step.t, step.ins.len());
+    let delta = n as isize - (t - f) as isize;
+    let shift = |p: usize| (p as isize + delta) as usize;
+
+    // Own changes the edit touches, endpoints included.
+    let affected: Vec<usize> = (0..list.len())
+        .filter(|&i| {
+            let c = &list[i];
+            c.who == step.me.who && c.from <= t && c.to >= f
+        })
+        .collect();
+
+    // Runs of original text the edit deletes: [f, t) outside every change.
+    let mut runs: Vec<(usize, usize)> = Vec::new();
+    let mut pos = f;
+    for c in list.iter().filter(|c| c.to > c.from) {
+        let s = c.from.max(f);
+        let e = c.to.min(t);
+        if s < e {
+            if pos < s {
+                runs.push((pos, s));
+            }
+            pos = pos.max(e);
+        }
+    }
+    if pos < t {
+        runs.push((pos, t));
+    }
+
+    let mut out: Vec<ResolvedChange> = Vec::new();
+
+    if !affected.is_empty() || n > 0 || !runs.is_empty() {
+        let first = affected.first().map(|&i| &list[i]);
+        let last_to = affected.last().map(|&i| list[i].to).unwrap_or(t);
+        let mut pieces: Vec<(usize, u8, String)> = Vec::new();
+        for &i in &affected {
+            pieces.push((list[i].from, 0, list[i].deleted.clone()));
+        }
+        for &(s, e) in &runs {
+            pieces.push((s, 1, text[s..e].iter().collect()));
+        }
+        pieces.sort_by_key(|p| (p.0, p.1));
+        let deleted: String = pieces.into_iter().map(|p| p.2).collect();
+        let from = first.map_or(f, |c| c.from.min(f));
+        let to = shift(t.max(last_to));
+        let merged = match first {
+            Some(c) => ResolvedChange {
+                id: c.id.clone(),
+                file: c.file.clone(),
+                who: c.who.clone(),
+                author: step.me.author.to_string(),
+                run: step.run.map(str::to_string).or_else(|| c.run.clone()),
+                at: step.now_ms,
+                from,
+                to,
+                deleted,
+            },
+            None => ResolvedChange {
+                id: mint(),
+                // The writer fills in the file.
+                file: String::new(),
+                who: step.me.who.to_string(),
+                author: step.me.author.to_string(),
+                run: step.run.map(str::to_string),
+                at: step.now_ms,
+                from,
+                to,
+                deleted,
+            },
+        };
+        if merged.from < merged.to || !merged.deleted.is_empty() {
+            dirty.insert(merged.id.clone());
+            out.push(merged);
+        }
+    }
+
+    for (i, c) in list.iter().enumerate() {
+        if affected.contains(&i) {
+            continue;
+        }
+        if c.from == c.to {
+            // A pure deletion: only its point moves.
+            let mut moved = c.clone();
+            let p = c.from;
+            moved.from = if p < f {
+                p
+            } else if p >= t {
+                shift(p)
+            } else {
+                f + n
+            };
+            moved.to = moved.from;
+            out.push(moved);
+            continue;
+        }
+        if c.to <= f {
+            out.push(c.clone());
+            continue;
+        }
+        if c.from >= t {
+            let mut moved = c.clone();
+            moved.from = shift(c.from);
+            moved.to = shift(c.to);
+            out.push(moved);
+            continue;
+        }
+        // The edit deletes part of this change, or inserts strictly inside it.
+        let left = c.from < f;
+        let right = c.to > t;
+        match (left, right) {
+            (true, true) if n > 0 => {
+                let mut head = c.clone();
+                head.to = f;
+                let mut tail = c.clone();
+                tail.id = mint();
+                tail.from = f + n;
+                tail.to = shift(c.to);
+                tail.deleted = String::new();
+                dirty.insert(head.id.clone());
+                dirty.insert(tail.id.clone());
+                out.push(head);
+                out.push(tail);
+            }
+            (true, true) => {
+                let mut whole = c.clone();
+                whole.to = shift(c.to);
+                dirty.insert(whole.id.clone());
+                out.push(whole);
+            }
+            (true, false) => {
+                let mut head = c.clone();
+                head.to = f;
+                dirty.insert(head.id.clone());
+                out.push(head);
+            }
+            (false, true) => {
+                let mut tail = c.clone();
+                tail.from = f + n;
+                tail.to = shift(c.to);
+                dirty.insert(tail.id.clone());
+                out.push(tail);
+            }
+            (false, false) => {
+                // Every inserted character is gone. What it removed from the
+                // original text stays recorded as a deletion at that point.
+                if !c.deleted.is_empty() {
+                    let mut point = c.clone();
+                    point.from = f + n;
+                    point.to = f + n;
+                    dirty.insert(point.id.clone());
+                    out.push(point);
+                }
+            }
+        }
+    }
+
+    out.sort_by_key(|c| (c.from, c.to));
+    out
+}
+
+fn text_of(doc: &LoroDoc, file_id: &str) -> Option<LoroText> {
+    match doc.get_map(FILES).get(file_id)? {
+        ValueOrContainer::Container(Container::Text(t)) => Some(t),
+        _ => None,
+    }
+}
+
+fn string_field(m: &loro::LoroMapValue, key: &str) -> Option<String> {
+    match m.get(key)? {
+        LoroValue::String(s) => Some(s.to_string()),
+        _ => None,
+    }
+}
+
+fn bytes_field(m: &loro::LoroMapValue, key: &str) -> Option<Vec<u8>> {
+    match m.get(key)? {
+        LoroValue::Binary(b) => Some(b.to_vec()),
+        _ => None,
+    }
+}
+
+/// The entry for `id` with its cursors resolved, or `None` when it is not a
+/// well-formed entry or is orphaned (its file or start cursor is gone). An
+/// empty change is returned; callers that list changes drop it.
+fn read_entry(doc: &LoroDoc, id: &str) -> Option<ResolvedChange> {
+    let ValueOrContainer::Value(LoroValue::Map(m)) = doc.get_map(CHANGES).get(id)? else {
+        return None;
+    };
+    let file = string_field(&m, "file")?;
+    let text = text_of(doc, &file)?;
+    let start = Cursor::decode(&bytes_field(&m, "start")?).ok()?;
+    if start.container != text.id() {
+        return None;
+    }
+    let from = doc.get_cursor_pos(&start).ok()?.current.pos;
+    let to = match bytes_field(&m, "end") {
+        Some(bytes) => {
+            let end = Cursor::decode(&bytes).ok()?;
+            if end.container != text.id() {
+                return None;
+            }
+            doc.get_cursor_pos(&end).ok()?.current.pos
+        }
+        None => from,
+    };
+    // An end before the start means the inserted text is gone.
+    let to = to.max(from);
+    let at = match m.get("at") {
+        Some(LoroValue::I64(v)) => *v,
+        Some(LoroValue::Double(v)) => *v as i64,
+        _ => 0,
+    };
+    let run = string_field(&m, "run");
+    Some(ResolvedChange {
+        id: id.to_string(),
+        file,
+        who: string_field(&m, "who")?,
+        author: string_field(&m, "author")?,
+        run,
+        at,
+        from,
+        to,
+        deleted: string_field(&m, "deleted")?,
+    })
+}
+
+/// The pending changes of one file, resolved against its text now and sorted
+/// by `from`. Orphaned and empty changes are left out.
+pub fn resolve_changes(doc: &LoroDoc, file_id: &str) -> Vec<ResolvedChange> {
+    let mut out: Vec<ResolvedChange> = doc
+        .get_map(CHANGES)
+        .keys()
+        .filter_map(|id| read_entry(doc, &id.to_string()))
+        .filter(|c| c.file == file_id && (c.from < c.to || !c.deleted.is_empty()))
+        .collect();
+    out.sort_by(|a, b| (a.from, a.to, &a.id).cmp(&(b.from, b.to, &b.id)));
+    out
+}
+
+fn entry_value(c: &ResolvedChange, start: &Cursor, end: Option<&Cursor>) -> LoroValue {
+    let mut m: HashMap<String, LoroValue> = HashMap::new();
+    m.insert("file".into(), LoroValue::from(c.file.as_str()));
+    m.insert("author".into(), LoroValue::from(c.author.as_str()));
+    m.insert("who".into(), LoroValue::from(c.who.as_str()));
+    // The browser writes a JS number, which Loro stores as a double.
+    m.insert("at".into(), LoroValue::Double(c.at as f64));
+    m.insert(
+        "run".into(),
+        c.run
+            .as_deref()
+            .map_or(LoroValue::Null, LoroValue::from),
+    );
+    m.insert("start".into(), LoroValue::from(start.encode()));
+    m.insert(
+        "end".into(),
+        end.map_or(LoroValue::Null, |e| LoroValue::from(e.encode())),
+    );
+    m.insert("deleted".into(), LoroValue::from(c.deleted.as_str()));
+    LoroValue::from(m)
+}
+
+/// A random version 4 UUID in its hyphenated form.
+fn mint_uuid() -> String {
+    let mut b = librepaper_base::util::random_bytes(16);
+    b[6] = (b[6] & 0x0f) | 0x40;
+    b[8] = (b[8] & 0x3f) | 0x80;
+    let h = hex::encode(b);
+    format!(
+        "{}-{}-{}-{}-{}",
+        &h[0..8],
+        &h[8..12],
+        &h[12..16],
+        &h[16..20],
+        &h[20..32]
+    )
+}
+
+/// Applies `edits` (UTF-16, measured against the file as it is now, ascending
+/// and non-overlapping, as `apply_edits_at` takes them) to the file's text and
+/// records them as tracked changes by `by`. Returns the ids of the changes it
+/// created or changed. Errors, leaving the document untouched, when the file
+/// is missing or the edits do not fit its text. Does not commit.
+pub fn apply_tracked_edits(
+    doc: &LoroDoc,
+    file_id: &str,
+    edits: &[Edit],
+    by: &Author,
+    run: Option<&str>,
+    now_ms: i64,
+) -> Result<Vec<String>, String> {
+    let text = text_of(doc, file_id).ok_or_else(|| "the file does not exist".to_string())?;
+    let before = text.to_string();
+    let pending = resolve_changes(doc, file_id);
+
+    let to_cp = |utf16: usize| {
+        text.convert_pos(utf16, PosType::Utf16, PosType::Unicode)
+            .ok_or_else(|| "an edit does not fit the file".to_string())
+    };
+    let mut planned_edits: Vec<(usize, usize, String)> = Vec::with_capacity(edits.len());
+    for e in edits {
+        let from = to_cp(e.at)?;
+        let to = to_cp(e.at.saturating_add(e.delete))?;
+        planned_edits.push((from, to, e.insert.clone()));
+    }
+    if !apply_text_edits(&text, edits) {
+        return Err("an edit does not fit the file".to_string());
+    }
+
+    let mut mint = mint_uuid;
+    let plan = plan_edits(&before, &pending, &planned_edits, by, run, now_ms, &mut mint);
+    let map = doc.get_map(CHANGES);
+    let mut set = Vec::new();
+    for p in plan {
+        match p.state {
+            PlanState::Kept => {}
+            PlanState::Removed => {
+                map.delete(&p.change.id).ok();
+            }
+            PlanState::Set => {
+                let c = &p.change;
+                let Some(start) = text.get_cursor(c.from, Side::Left) else {
+                    continue;
+                };
+                let end = if c.to > c.from {
+                    text.get_cursor(c.to - 1, Side::Right)
+                } else {
+                    None
+                };
+                let mut c = c.clone();
+                c.file = file_id.to_string();
+                map.insert(&c.id, entry_value(&c, &start, end.as_ref())).ok();
+                set.push(c.id);
+            }
+        }
+    }
+    Ok(set)
+}
+
+/// Accepts a change: drops the record and keeps the text. Returns false when
+/// there is no such change. Does not commit.
+pub fn accept(doc: &LoroDoc, id: &str) -> bool {
+    let map = doc.get_map(CHANGES);
+    if map.get(id).is_none() {
+        return false;
+    }
+    map.delete(id).is_ok()
+}
+
+/// Rejects a change: puts `deleted` back in place of the inserted text, then
+/// drops the record. Returns false when there is no such change or it is
+/// orphaned. Does not commit.
+pub fn reject(doc: &LoroDoc, id: &str) -> bool {
+    let Some(c) = read_entry(doc, id) else {
+        return false;
+    };
+    let Some(text) = text_of(doc, &c.file) else {
+        return false;
+    };
+    if c.to > c.from && text.delete(c.from, c.to - c.from).is_err() {
+        return false;
+    }
+    if !c.deleted.is_empty() && text.insert(c.from, &c.deleted).is_err() {
+        return false;
+    }
+    doc.get_map(CHANGES).delete(id).is_ok()
+}
+
+/// Removes every orphaned, malformed or empty entry and returns how many it
+/// removed. An editor calls this in its next local commit. Does not commit.
+pub fn prune(doc: &LoroDoc) -> usize {
+    let map = doc.get_map(CHANGES);
+    let ids: Vec<String> = map.keys().map(|k| k.to_string()).collect();
+    let mut removed = 0;
+    for id in ids {
+        let keep = read_entry(doc, &id).is_some_and(|c| c.from < c.to || !c.deleted.is_empty());
+        if !keep && map.delete(&id).is_ok() {
+            removed += 1;
+        }
+    }
+    removed
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::document::session::{new_doc, put_text};
+    use serde::Deserialize;
+
+    const FIXTURES: &str = include_str!("../../../../web/tests/fixtures/track-changes.json");
+
+    #[derive(Deserialize)]
+    struct FxChange {
+        id: String,
+        who: String,
+        from: usize,
+        to: usize,
+        deleted: String,
+    }
+
+    #[derive(Deserialize)]
+    struct FxMe {
+        who: String,
+        author: String,
+    }
+
+    #[derive(Deserialize)]
+    struct FxEdit {
+        from: usize,
+        to: usize,
+        insert: String,
+    }
+
+    #[derive(Deserialize)]
+    struct Fixture {
+        name: String,
+        before: String,
+        changes: Vec<FxChange>,
+        me: FxMe,
+        edits: Vec<FxEdit>,
+        after: String,
+        expect: Vec<FxChange>,
+    }
+
+    /// Converts a UTF-16 offset in `s` to a code point offset.
+    fn cp(s: &str, utf16: usize) -> usize {
+        let mut units = 0;
+        for (i, ch) in s.chars().enumerate() {
+            if units >= utf16 {
+                return i;
+            }
+            units += ch.len_utf16();
+        }
+        s.chars().count()
+    }
+
+    fn resolved(s: &str, c: &FxChange) -> ResolvedChange {
+        ResolvedChange {
+            id: c.id.clone(),
+            file: "f".into(),
+            who: c.who.clone(),
+            author: c.who.clone(),
+            run: None,
+            at: 0,
+            from: cp(s, c.from),
+            to: cp(s, c.to),
+            deleted: c.deleted.clone(),
+        }
+    }
+
+    #[test]
+    fn shared_fixtures() {
+        let fixtures: Vec<Fixture> = serde_json::from_str(FIXTURES).unwrap();
+        assert!(!fixtures.is_empty());
+        for fx in fixtures {
+            let changes: Vec<ResolvedChange> =
+                fx.changes.iter().map(|c| resolved(&fx.before, c)).collect();
+            let edits: Vec<(usize, usize, String)> = fx
+                .edits
+                .iter()
+                .map(|e| (cp(&fx.before, e.from), cp(&fx.before, e.to), e.insert.clone()))
+                .collect();
+            let me = Author {
+                who: &fx.me.who,
+                author: &fx.me.who,
+            };
+            let mut counter = 0;
+            let mut mint = || {
+                counter += 1;
+                format!("new-{counter}")
+            };
+            let plan = plan_edits(&fx.before, &changes, &edits, &me, None, 1, &mut mint);
+            let mut got: Vec<(String, String, usize, usize, String)> = plan
+                .into_iter()
+                .filter(|p| p.state != PlanState::Removed)
+                .map(|p| {
+                    let c = p.change;
+                    (c.id, c.who, c.from, c.to, c.deleted)
+                })
+                .collect();
+            let mut want: Vec<(String, String, usize, usize, String)> = fx
+                .expect
+                .iter()
+                .map(|c| {
+                    let r = resolved(&fx.after, c);
+                    (r.id, r.who, r.from, r.to, r.deleted)
+                })
+                .collect();
+            got.sort_by_key(|c| (c.2, c.3, c.0.clone()));
+            want.sort_by_key(|c| (c.2, c.3, c.0.clone()));
+            assert_eq!(got, want, "fixture: {}", fx.name);
+        }
+    }
+
+    const ME: Author<'static> = Author {
+        who: "me",
+        author: "Me",
+    };
+
+    fn setup(body: &str) -> (LoroDoc, String) {
+        let doc = new_doc();
+        let id = put_text(&doc, "main.md", body);
+        doc.commit();
+        (doc, id)
+    }
+
+    fn body(doc: &LoroDoc, id: &str) -> String {
+        text_of(doc, id).unwrap().to_string()
+    }
+
+    fn edit(at: usize, delete: usize, insert: &str) -> Edit {
+        Edit {
+            at,
+            delete,
+            insert: insert.to_string(),
+        }
+    }
+
+    #[test]
+    fn records_a_replacement() {
+        let (doc, id) = setup("the quick fox");
+        let set = apply_tracked_edits(&doc, &id, &[edit(4, 5, "slow")], &ME, Some("r1"), 9).unwrap();
+        doc.commit();
+        assert_eq!(set.len(), 1);
+        assert_eq!(body(&doc, &id), "the slow fox");
+        let changes = resolve_changes(&doc, &id);
+        assert_eq!(changes.len(), 1);
+        let c = &changes[0];
+        assert_eq!((c.from, c.to), (4, 8));
+        assert_eq!(c.deleted, "quick");
+        assert_eq!((c.who.as_str(), c.author.as_str()), ("me", "Me"));
+        assert_eq!((c.run.as_deref(), c.at), (Some("r1"), 9));
+    }
+
+    #[test]
+    fn accept_keeps_the_text() {
+        let (doc, id) = setup("the quick fox");
+        let set = apply_tracked_edits(&doc, &id, &[edit(4, 5, "slow")], &ME, None, 1).unwrap();
+        doc.commit();
+        assert!(accept(&doc, &set[0]));
+        doc.commit();
+        assert_eq!(body(&doc, &id), "the slow fox");
+        assert!(resolve_changes(&doc, &id).is_empty());
+        assert!(!accept(&doc, &set[0]));
+    }
+
+    #[test]
+    fn reject_restores_a_replacement() {
+        let (doc, id) = setup("the quick fox");
+        let set = apply_tracked_edits(&doc, &id, &[edit(4, 5, "slow")], &ME, None, 1).unwrap();
+        doc.commit();
+        assert!(reject(&doc, &set[0]));
+        doc.commit();
+        assert_eq!(body(&doc, &id), "the quick fox");
+        assert!(resolve_changes(&doc, &id).is_empty());
+    }
+
+    #[test]
+    fn reject_removes_a_pure_insertion() {
+        let (doc, id) = setup("the fox");
+        let set = apply_tracked_edits(&doc, &id, &[edit(4, 0, "quick ")], &ME, None, 1).unwrap();
+        doc.commit();
+        assert_eq!(body(&doc, &id), "the quick fox");
+        assert!(reject(&doc, &set[0]));
+        doc.commit();
+        assert_eq!(body(&doc, &id), "the fox");
+    }
+
+    #[test]
+    fn reject_restores_a_pure_deletion() {
+        let (doc, id) = setup("the quick fox");
+        let set = apply_tracked_edits(&doc, &id, &[edit(4, 6, "")], &ME, None, 1).unwrap();
+        doc.commit();
+        assert_eq!(body(&doc, &id), "the fox");
+        let changes = resolve_changes(&doc, &id);
+        assert_eq!((changes[0].from, changes[0].to), (4, 4));
+        assert!(reject(&doc, &set[0]));
+        doc.commit();
+        assert_eq!(body(&doc, &id), "the quick fox");
+    }
+
+    #[test]
+    fn deletion_at_the_end_of_the_text_round_trips() {
+        let (doc, id) = setup("the fox");
+        let set = apply_tracked_edits(&doc, &id, &[edit(3, 4, "")], &ME, None, 1).unwrap();
+        doc.commit();
+        assert_eq!(body(&doc, &id), "the");
+        assert!(reject(&doc, &set[0]));
+        doc.commit();
+        assert_eq!(body(&doc, &id), "the fox");
+    }
+
+    #[test]
+    fn changes_can_be_decided_in_either_order() {
+        for first_is_a in [true, false] {
+            let (doc, id) = setup("one two three four");
+            let mut ids = apply_tracked_edits(&doc, &id, &[edit(0, 3, "1")], &ME, None, 1).unwrap();
+            doc.commit();
+            ids.extend(apply_tracked_edits(&doc, &id, &[edit(10, 5, "3")], &ME, None, 2).unwrap());
+            doc.commit();
+            assert_eq!(body(&doc, &id), "1 two 3 four");
+            assert_eq!(ids.len(), 2);
+            let (a, b) = if first_is_a { (0, 1) } else { (1, 0) };
+            assert!(reject(&doc, &ids[a]));
+            doc.commit();
+            assert!(accept(&doc, &ids[b]));
+            doc.commit();
+            let want = if first_is_a { "one two 3 four" } else { "1 two three four" };
+            assert_eq!(body(&doc, &id), want);
+            assert!(resolve_changes(&doc, &id).is_empty());
+        }
+    }
+
+    #[test]
+    fn astral_text_is_counted_in_code_points() {
+        let (doc, id) = setup("a\u{1F600}b");
+        let set = apply_tracked_edits(&doc, &id, &[edit(3, 1, "c")], &ME, None, 1).unwrap();
+        doc.commit();
+        let changes = resolve_changes(&doc, &id);
+        assert_eq!((changes[0].from, changes[0].to), (2, 3));
+        assert!(reject(&doc, &set[0]));
+        doc.commit();
+        assert_eq!(body(&doc, &id), "a\u{1F600}b");
+    }
+
+    #[test]
+    fn misfit_edits_leave_the_document_alone() {
+        let (doc, id) = setup("short");
+        assert!(apply_tracked_edits(&doc, &id, &[edit(3, 9, "x")], &ME, None, 1).is_err());
+        assert!(apply_tracked_edits(&doc, "nope", &[edit(0, 0, "x")], &ME, None, 1).is_err());
+        assert_eq!(body(&doc, &id), "short");
+        assert!(doc.get_map(CHANGES).keys().next().is_none());
+    }
+
+    #[test]
+    fn prune_drops_orphans_and_empty_entries() {
+        let (doc, id) = setup("the quick fox");
+        apply_tracked_edits(&doc, &id, &[edit(4, 5, "slow")], &ME, None, 1).unwrap();
+        doc.commit();
+        let (other, other_id) = setup("x");
+        let orphan = apply_tracked_edits(&other, &other_id, &[edit(0, 0, "y")], &ME, None, 1).unwrap();
+        doc.import(&other.export(loro::ExportMode::all_updates()).unwrap()).unwrap();
+        doc.commit();
+        assert!(orphan.len() == 1);
+        // The orphan's file is in the document, so it resolves. Delete the
+        // file to orphan it, then add a record that is not a map.
+        doc.get_map(FILES).delete(&other_id).unwrap();
+        doc.get_map(CHANGES).insert("junk", 1).unwrap();
+        doc.commit();
+        assert_eq!(prune(&doc), 2);
+        assert_eq!(resolve_changes(&doc, &id).len(), 1);
+        assert_eq!(prune(&doc), 0);
+    }
+}
