@@ -67,22 +67,11 @@ client_id = "replace"
 client_secret = "replace"
 ```
 
-**Microsoft Entra ID.** Sign-in admits the members and guests of one Microsoft Entra tenant. LibrePaper requests the `openid`, `email` and `profile` scopes.
-
-- Register an app in the Entra admin center. Open App registrations, choose New registration, and pick the option for accounts in this organizational directory only, which is a single tenant.
-- Set the redirect URI to `https://paper.example/auth/callback/entra`. Choose the Web platform.
-- Under Certificates and secrets, add a new client secret. Note its expiry date. Sign-in stops when the secret expires.
-- The `email` scope alone gives the address on the v2.0 endpoint. If a sign-in is refused for a missing address, add the optional claim `email` to the ID token under Token configuration.
-- Copy the Directory (tenant) ID and the Application (client) ID into the `[auth.entra]` table below.
-- To limit sign-in to some people, open Enterprise applications, choose the app, then Properties. Set "Assignment required" to Yes, and assign the users or groups who may sign in.
-- Guests invited to the tenant can sign in too.
-- Some tenants block user consent. An administrator then grants consent once for `openid`, `email` and `profile`.
-- The admin console still signs in with GitHub. An Entra-only deployment registers a GitHub OAuth app and lists its GitHub ID in `[admin]`.
-- Set `session_lifetime` under `[auth]` to `"24h"`. A person removed from the tenant keeps access until the session expires. Without this setting, that is 30 days. A CLI token ends with the browser session that approved it.
+**Microsoft Entra ID.** Sign-in admits the members and guests of one Microsoft Entra tenant. Register a single-tenant web app with the redirect URI `https://paper.example/auth/callback/entra`, following [Register an application](https://learn.microsoft.com/en-us/entra/identity-platform/quickstart-register-app), then copy its IDs and a client secret into `[auth.entra]`:
 
 ```toml
 [auth]
-session_lifetime = "24h"           # a working day. The default is 30d.
+session_lifetime = "24h"           # optional: removed members lose access within a day, not 30
 
 [auth.entra]
 tenant = "00000000-0000-0000-0000-000000000000"   # Directory (tenant) ID, a GUID
