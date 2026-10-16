@@ -25,7 +25,7 @@ PostgreSQL holds metadata, update logs and review state. The object store holds 
 
 Document state is persisted as a compressed base plus an ordered log in Postgres, compacted periodically. History is retained by default, but an owner can explicitly trim older edit history and named versions. Trimmed history cannot be recovered from the live document.
 
-A checkpoint records the whole directory as a canonical tree. Checkpoints are written when somebody labels a moment, restores an earlier version, or accepts a proposal.
+A checkpoint records the whole directory as a canonical tree. Checkpoints are written when somebody labels a moment or restores an earlier version.
 
 Source archives, keyed by tree digest, are produced on request, not at checkpoint time. They are content-addressed and the fastest way to retrieve a document at a point in time.
 

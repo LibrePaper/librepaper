@@ -112,7 +112,7 @@ and `preview_result`. `message` may travel in either direction. The server
 rejects wrong-role events, invalid or oversized values, and delivery without
 a connected recipient.
 
-Document edits, comments, and suggestion decisions continue through their
+Document edits, comments, and decisions on tracked changes continue through their
 ordinary document operations. The assistant channel has no HTTP message-post,
 polling, listen, cursor, or transcript endpoints.
 
