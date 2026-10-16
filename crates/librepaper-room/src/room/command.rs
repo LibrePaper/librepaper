@@ -22,7 +22,6 @@ pub enum Command {
         position: Option<i64>,
         document: bool,
         color: Option<String>,
-        proposed: Option<String>,
         temp_id: String,
         request_id: String,
     },
@@ -40,16 +39,6 @@ pub enum Command {
     },
     Delete {
         comment_id: Uuid,
-        temp_id: String,
-    },
-    Refine {
-        comment_id: Uuid,
-        proposed: String,
-        /// What the caller last read the suggestion as proposing. Required
-        /// on the wire (§7.2) and carried through to the command, which
-        /// checks it against the stored branch.
-        expected_proposed: String,
-        body: String,
         temp_id: String,
     },
 }
@@ -115,14 +104,13 @@ impl Command {
     /// The comment this command names, as the wire echoes it back.
     ///
     /// Parsed once, at the boundary in `into_command`, rather than in each
-    /// of the six arms that used to turn the same string into the same
+    /// of the arms that used to turn the same string into the same
     /// `Uuid` and answer "unknown comment" when it would not.
     pub fn comment_id(&self) -> String {
         match self {
             Self::Reply { comment_id, .. }
             | Self::Resolve { comment_id, .. }
-            | Self::Delete { comment_id, .. }
-            | Self::Refine { comment_id, .. } => comment_id.to_string(),
+            | Self::Delete { comment_id, .. } => comment_id.to_string(),
             Self::Comment { .. } => String::new(),
         }
     }
@@ -132,8 +120,7 @@ impl Command {
             Self::Comment { temp_id, .. }
             | Self::Reply { temp_id, .. }
             | Self::Resolve { temp_id, .. }
-            | Self::Delete { temp_id, .. }
-            | Self::Refine { temp_id, .. } => temp_id,
+            | Self::Delete { temp_id, .. } => temp_id,
         }
     }
 
@@ -158,17 +145,8 @@ impl Message {
         let temp_id = self.temp_id().to_owned();
         let request_id = self.request_id().to_owned();
         let comment_id = self.comment_id().to_owned();
-        let missing = |operation: &'static str, field: &'static str| {
-            Err(CommandError::Missing {
-                operation,
-                field,
-                comment_id: comment_id.clone(),
-                temp_id: temp_id.clone(),
-                request_id: request_id.clone(),
-            })
-        };
         // An id that is absent and one that is not a UUID are the same
-        // refusal, made here rather than in each of the six arms below. The
+        // refusal, made here rather than in each of the arms below. The
         // catalogue stores annotation ids as `uuid`, so a string that will
         // not parse names no comment that could ever exist.
         let named = |operation: &'static str| -> Result<Uuid, CommandError> {
@@ -192,7 +170,6 @@ impl Message {
                 position: self.position(),
                 document: self.document(),
                 color: self.color().map(str::to_owned),
-                proposed: self.proposed().map(str::to_owned),
                 temp_id,
                 request_id,
             }),
@@ -218,22 +195,6 @@ impl Message {
                 let comment_id = named("delete")?;
                 Ok(Command::Delete {
                     comment_id,
-                    temp_id,
-                })
-            }
-            "refine" => {
-                let comment_id = named("refine")?;
-                let Some(proposed) = self.proposed().map(str::to_owned) else {
-                    return missing("refine", "proposed");
-                };
-                let Some(expected_proposed) = self.expected_proposed().map(str::to_owned) else {
-                    return missing("refine", "expected_proposed");
-                };
-                Ok(Command::Refine {
-                    comment_id,
-                    proposed,
-                    expected_proposed,
-                    body: self.body().to_owned(),
                     temp_id,
                 })
             }
@@ -267,7 +228,6 @@ mod tests {
             position: Some(3),
             document: true,
             color: Some("amber".into()),
-            proposed: Some("proposed".into()),
             temp_id: "t".into(),
             request_id: "r".into(),
         }
@@ -288,7 +248,6 @@ mod tests {
             position,
             document,
             color,
-            proposed,
             temp_id,
             request_id,
         } = comment().with_creator("server".into())
@@ -305,7 +264,6 @@ mod tests {
         assert_eq!(position, Some(3));
         assert!(document);
         assert_eq!(color.as_deref(), Some("amber"));
-        assert_eq!(proposed.as_deref(), Some("proposed"));
         assert_eq!(temp_id, "t");
         assert_eq!(request_id, "r");
 
@@ -326,57 +284,6 @@ mod tests {
         };
         assert_eq!(creator, "server");
         assert_eq!(comment_id.to_string(), NAMED);
-    }
-
-    /// A refinement's precondition reaches the command. It used to be
-    /// required on the wire and then dropped on the floor here, which left
-    /// the handler's own version lookup as the only check -- and that cannot
-    /// tell a caller refining a suggestion they read two edits ago from one
-    /// refining what is there now.
-    #[test]
-    fn a_refinement_carries_what_the_caller_last_read() {
-        let message: Message = serde_json::from_value(json!({
-            "type": "refine",
-            "comment_id": NAMED,
-            "proposed": "the new words",
-            "expected_proposed": "the words they read",
-            "body": "why",
-        }))
-        .expect("a refine frame");
-        let Command::Refine {
-            comment_id,
-            proposed,
-            expected_proposed,
-            body,
-            ..
-        } = message.into_command().expect("a refine command")
-        else {
-            panic!("a refine frame is a refine command");
-        };
-        assert_eq!(comment_id.to_string(), NAMED);
-        assert_eq!(proposed, "the new words");
-        assert_eq!(expected_proposed, "the words they read");
-        assert_eq!(body, "why");
-    }
-
-    /// And it is still required: a refinement without it names no state to
-    /// check against.
-    #[test]
-    fn a_refinement_without_it_is_refused() {
-        let message: Message = serde_json::from_value(json!({
-            "type": "refine",
-            "comment_id": NAMED,
-            "proposed": "the new words",
-        }))
-        .expect("a refine frame");
-        assert!(matches!(
-            message.into_command(),
-            Err(CommandError::Missing {
-                operation: "refine",
-                field: "expected_proposed",
-                ..
-            })
-        ));
     }
 
     /// Commands that carry no creator pass through untouched.

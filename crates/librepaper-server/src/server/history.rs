@@ -961,8 +961,7 @@ impl Server {
     /// editing history (a shallow snapshot replaces the log), every version and
     /// its archive, and every figure the current files do not name (figures
     /// uploaded in the last hour are kept). Comments stay and re-find their
-    /// text. Refused while another editor is connected and while suggestions are
-    /// pending. The freed objects leave storage with the orphan sweep.
+    /// text. Refused while another editor is connected. The freed objects leave storage with the orphan sweep.
     pub(super) async fn handle_history_trim(
         &self,
         request: Request<Body>,
@@ -1006,24 +1005,6 @@ impl Server {
                 409,
                 &json!({"error": "another editor has this document open; ask them to close it first"}),
             );
-        }
-        // Refuse while suggestions are pending, because a proposal forks at a
-        // base the trim discards.
-        match self.store.catalog.open_proposals(room.document_id).await {
-            Ok(open) if !open.is_empty() => {
-                return write_json(
-                    409,
-                    &json!({
-                        "error": format!(
-                            "decide or discard the {} pending suggestion{} before trimming",
-                            open.len(),
-                            if open.len() == 1 { "" } else { "s" }
-                        )
-                    }),
-                )
-            }
-            Ok(_) => {}
-            Err(error) => return refused("read the catalogue", &error.into()),
         }
         // Compact to a shallow snapshot and delete the log. Retry if a concurrent
         // edit entered the buffer after the flush; Ok(None) means the document is

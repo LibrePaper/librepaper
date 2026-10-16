@@ -250,31 +250,54 @@ fn recovered(response: &Value) -> &Value {
     }
 }
 
-async fn read_range(deployment: &Deployment, headers: &HeaderMap) -> (String, String, String) {
-    let needle = "*interval* covers the mean";
-    let start = PAPER.find(needle).unwrap();
-    let end = start + needle.len();
+/// Reads one range per needle in one view, located in the document as it
+/// stands now, pending changes included.
+async fn read_ranges(
+    deployment: &Deployment,
+    headers: &HeaderMap,
+    needles: &[&str],
+) -> (String, String, Vec<String>) {
+    let room = deployment
+        .server
+        .documents
+        .rooms
+        .get(&deployment.slug)
+        .await
+        .unwrap();
+    let current = room.agent_query_snapshot().await.unwrap();
+    let text = &current.texts()["paper.md"];
+    let queries: Vec<Value> = needles
+        .iter()
+        .map(|needle| {
+            let start = text.find(needle).unwrap();
+            json!({"kind":"source","path":"paper.md","start":start,"end":start + needle.len()})
+        })
+        .collect();
     let (status, response) = call(
         deployment,
         headers,
         "document_read",
-        json!({"queries":[{"kind":"source","path":"paper.md","start":start,"end":end}]}),
+        json!({"queries":queries}),
     )
     .await;
     assert_eq!(status, StatusCode::OK, "{response}");
     let value = recovered(&response);
     let view_id = value["view_id"].as_str().unwrap().to_string();
     let epoch = value["operation_epoch"].as_str().unwrap().to_string();
-    let range_id = value["results"][0]["blocks"][0]["range_id"]
-        .as_str()
-        .expect("document_read returns a signed range handle")
-        .to_string();
-    (view_id, epoch, range_id)
+    let ranges = (0..needles.len())
+        .map(|index| {
+            value["results"][index]["blocks"][0]["range_id"]
+                .as_str()
+                .expect("document_read returns a signed range handle")
+                .to_string()
+        })
+        .collect();
+    (view_id, epoch, ranges)
 }
 
 #[tokio::test]
 #[ignore = "requires LIBREPAPER_TEST_POSTGRES_URL"]
-async fn committed_suggestions_deletes_and_applies_survive_a_lost_mcp_response() {
+async fn committed_tracked_changes_deletes_and_applies_survive_a_lost_mcp_response() {
     let Some(deployment) = deployment("mcp-receipt-recovery").await else {
         return;
     };
@@ -291,77 +314,87 @@ async fn committed_suggestions_deletes_and_applies_survive_a_lost_mcp_response()
         &deployment.commenter_link_key,
     );
 
-    // A commenter publishes one anchored suggestion. Throw away the mutation
+    // An editor publishes one tracked change. Throw away the mutation
     // response, recover the PostgreSQL transaction outcome, then verify that
     // the same operation key remains refused rather than applying twice.
-    let (comment_view, comment_epoch, comment_range) = read_range(&deployment, &commenter).await;
-    let suggestion_operation = operation(&comment_epoch);
-    let suggestion_arguments = json!({
-        "view_id":comment_view,
-        "operation":suggestion_operation,
+    let (change_view, change_epoch, change_ranges) =
+        read_ranges(&deployment, &owner, &["*interval* covers the mean"]).await;
+    let change_operation = operation(&change_epoch);
+    let change_arguments = json!({
+        "view_id":change_view,
+        "operation":change_operation,
         "publish":"suggestions",
         "validation":"source",
-        "patches":[{"range_id":comment_range,"replacement":"interval estimates the posterior mean"}]
+        "patches":[{"range_id":change_ranges[0],"replacement":"interval estimates the posterior mean"}]
     });
     let (status, _discarded) = call(
         &deployment,
-        &commenter,
+        &owner,
         "document_propose",
-        suggestion_arguments.clone(),
+        change_arguments.clone(),
     )
     .await;
     assert_eq!(status, StatusCode::OK);
     let (status, response) = call(
         &deployment,
-        &commenter,
+        &owner,
         "document_result",
-        json!({"operation":operation(&comment_epoch),"kind":"operation","target_operation":suggestion_arguments["operation"]}),
+        json!({"operation":operation(&change_epoch),"kind":"operation","target_operation":change_arguments["operation"]}),
     )
     .await;
     assert_eq!(status, StatusCode::OK, "{response}");
-    let suggestion_outcome = recovered(&response);
-    assert_eq!(suggestion_outcome["tool"], "document_propose");
-    assert_eq!(suggestion_outcome["status"], "committed");
-    let suggestion_id = suggestion_outcome["effects"][0]["id"]
-        .as_str()
-        .expect("receipt names the created suggestion")
-        .to_string();
-    assert_eq!(suggestion_outcome["effects"][0]["kind"], "suggestion");
+    let change_outcome = recovered(&response);
+    assert_eq!(change_outcome["tool"], "document_propose");
+    assert_eq!(change_outcome["status"], "committed");
+    assert_eq!(change_outcome["effects"][0]["kind"], "change");
+    assert!(
+        change_outcome["effects"][0]["id"].as_str().is_some(),
+        "receipt names the created change"
+    );
     let (status, retry) = call(
         &deployment,
-        &commenter,
+        &owner,
         "document_propose",
-        suggestion_arguments,
+        change_arguments,
     )
     .await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(recovered(&retry)["error"]["code"], "outcome_unknown");
-    let suggestion_count: i64 =
-        sqlx::query_scalar("SELECT count(*) FROM annotations WHERE document_id=$1 AND id=$2")
-            .bind(deployment.document_id)
-            .bind(Uuid::parse_str(&suggestion_id).unwrap())
-            .fetch_one(deployment.catalog.pool())
-            .await
-            .unwrap();
+    let room = deployment
+        .server
+        .documents
+        .rooms
+        .get(&deployment.slug)
+        .await
+        .unwrap();
+    let current = room.agent_query_snapshot().await.unwrap();
     assert_eq!(
-        suggestion_count, 1,
-        "the retry cannot duplicate the suggestion"
+        current.texts()["paper.md"]
+            .matches("interval estimates the posterior mean")
+            .count(),
+        1,
+        "the retry cannot apply the change twice"
     );
 
     // A deterministic child key may already belong to an unrelated request.
     // The parent batch must bind its expected child digest and report unknown
     // when that key's committed proposal has different arguments.
-    let (batch_view, batch_epoch, batch_range) = read_range(&deployment, &commenter).await;
+    let (batch_view, batch_epoch, batch_ranges) = read_ranges(
+        &deployment,
+        &owner,
+        &["second paragraph", "Interval estimates"],
+    )
+    .await;
     let arrival = Origins::loopback_only().resolve("127.0.0.1:8080").unwrap();
     let (_, batch_viewer) = deployment
         .server
-        .entry_viewer(&deployment.slug, &commenter, &arrival, None)
+        .entry_viewer(&deployment.slug, &owner, &arrival, None)
         .await
         .ok()
         .unwrap();
     let author = deployment
         .server
-        .comment_author(&commenter, &arrival, &batch_viewer.id);
+        .comment_author(&owner, &arrival, &batch_viewer.id);
     let actor = super::actor_scope(&deployment.slug, &batch_viewer, &author);
     let parent_key: librepaper_room::room::agent::OperationKey =
         serde_json::from_value(operation(&batch_epoch)).unwrap();
@@ -373,31 +406,31 @@ async fn committed_suggestions_deletes_and_applies_survive_a_lost_mcp_response()
         "validation":"source",
         "batch":"independent",
         "patches":[
-            {"range_id":batch_range,"replacement":"the parent's first replacement"},
-            {"range_id":batch_range,"replacement":"the parent's second replacement"}
+            {"range_id":batch_ranges[0],"replacement":"the parent's first replacement"},
+            {"range_id":batch_ranges[1],"replacement":"the parent's second replacement"}
         ]
     });
     let mut unrelated_child_arguments = parent_arguments.clone();
     unrelated_child_arguments["batch"] = json!("atomic");
     unrelated_child_arguments["operation"] = json!(child_key);
     unrelated_child_arguments["patches"] = json!([
-        {"range_id":batch_range,"replacement":"unrelated prior suggestion"}
+        {"range_id":batch_ranges[0],"replacement":"unrelated prior change"}
     ]);
     let (status, unrelated_response) = call(
         &deployment,
-        &commenter,
+        &owner,
         "document_propose",
         unrelated_child_arguments,
     )
     .await;
     assert_eq!(status, StatusCode::OK);
-    let unrelated_suggestion = recovered(&unrelated_response)["effects"][0]["id"]
+    let unrelated_change = recovered(&unrelated_response)["effects"][0]["id"]
         .as_str()
         .expect("the child-key proposal committed independently")
         .to_string();
     let (status, _) = call(
         &deployment,
-        &commenter,
+        &owner,
         "document_propose",
         parent_arguments.clone(),
     )
@@ -405,7 +438,7 @@ async fn committed_suggestions_deletes_and_applies_survive_a_lost_mcp_response()
     assert_eq!(status, StatusCode::OK);
     let (status, response) = call(
         &deployment,
-        &commenter,
+        &owner,
         "document_result",
         json!({"operation":operation(&batch_epoch),"kind":"operation","target_operation":parent_arguments["operation"]}),
     )
@@ -423,29 +456,31 @@ async fn committed_suggestions_deletes_and_applies_survive_a_lost_mcp_response()
             .as_array()
             .into_iter()
             .flatten()
-            .any(|effect| effect["id"] == unrelated_suggestion),
+            .any(|effect| effect["id"] == unrelated_change),
         "the parent cannot attribute a proposal committed under a mismatched child digest"
     );
 
-    // The commenter deletes the suggestion it authored. Recovery must work
+    // The commenter deletes a comment it authored. Recovery must work
     // after the annotation row itself has gone away.
-    let room = deployment
-        .server
-        .documents
-        .rooms
-        .get(&deployment.slug)
-        .await
-        .unwrap();
-    let suggestion = room
-        .comment_by_id(&suggestion_id, true)
-        .await
-        .unwrap()
-        .unwrap();
+    let (_, comment_epoch, _) = read_ranges(&deployment, &commenter, &["for company"]).await;
+    let (status, created) = call(
+        &deployment,
+        &commenter,
+        "document_comment",
+        json!({"action":"create","body":"A remark","operation":operation(&comment_epoch)}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{created}");
+    let comment_id = recovered(&created)["comment_id"]
+        .as_str()
+        .expect("the comment was created")
+        .to_string();
+    let comment = room.comment_by_id(&comment_id).await.unwrap().unwrap();
     let delete_operation = operation(&comment_epoch);
     let delete_arguments = json!({
         "action":"delete",
-        "comment_id":suggestion_id,
-        "expected_version":suggestion.version(),
+        "comment_id":comment_id,
+        "expected_version":comment.version(),
         "operation":delete_operation
     });
     let (status, _discarded) = call(
@@ -457,10 +492,7 @@ async fn committed_suggestions_deletes_and_applies_survive_a_lost_mcp_response()
     .await;
     assert_eq!(status, StatusCode::OK);
     assert!(
-        room.comment_by_id(&suggestion_id, true)
-            .await
-            .unwrap()
-            .is_none(),
+        room.comment_by_id(&comment_id).await.unwrap().is_none(),
         "the delete committed before its response was discarded"
     );
     let (status, response) = call(
@@ -474,7 +506,7 @@ async fn committed_suggestions_deletes_and_applies_survive_a_lost_mcp_response()
     let delete_outcome = recovered(&response);
     assert_eq!(delete_outcome["tool"], "document_comment");
     assert_eq!(delete_outcome["action"], "delete");
-    assert_eq!(delete_outcome["comment_id"], suggestion_id);
+    assert_eq!(delete_outcome["comment_id"], comment_id);
     let (status, retry) = call(
         &deployment,
         &commenter,
@@ -499,13 +531,14 @@ async fn committed_suggestions_deletes_and_applies_survive_a_lost_mcp_response()
 
     // Direct source application also records its outcome in the command's
     // PostgreSQL transaction. Stage privately, apply, discard, then recover.
-    let (apply_view, apply_epoch, apply_range) = read_range(&deployment, &owner).await;
+    let (apply_view, apply_epoch, apply_ranges) =
+        read_ranges(&deployment, &owner, &["for company"]).await;
     let private_arguments = json!({
         "view_id":apply_view,
         "operation":operation(&apply_epoch),
         "publish":"private",
         "validation":"source",
-        "patches":[{"range_id":apply_range,"replacement":"interval directly estimates the posterior mean"}]
+        "patches":[{"range_id":apply_ranges[0],"replacement":"interval directly estimates the posterior mean"}]
     });
     let (status, private) = call(&deployment, &owner, "document_propose", private_arguments).await;
     assert_eq!(status, StatusCode::OK, "{private}");

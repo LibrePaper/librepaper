@@ -3,11 +3,10 @@
 //! in.
 //!
 //! This module holds the clamped extraction of a unit range ([`slice16`] over
-//! units the caller already has, [`slice16_str`] over a `&str`) and the checked
-//! one ([`utf16_slice`]). Anchoring a reader's selection ([`super::locate`])
-//! has encoded the file once and cuts many ranges out of it, so it takes
-//! `&[u16]`; relocating a comment ([`super::resolve`]) and the proposal and
-//! comment span checks hold text and convert offsets with `str_indices`.
+//! units the caller already has, [`slice16_str`] over a `&str`). Anchoring a
+//! reader's selection ([`super::locate`]) has encoded the file once and cuts
+//! many ranges out of it, so it takes `&[u16]`; relocating a comment
+//! ([`super::resolve`]) holds text and converts offsets with `str_indices`.
 //!
 //! Every *other* UTF-16 helper in this codebase looks similar on the surface
 //! but differs in a way that matters, so it stays where it is rather than
@@ -29,39 +28,11 @@
 //!   not compute UTF-16 offsets at all; they ask Loro's own sticky-index
 //!   machinery to track a position across concurrent edits, which is a
 //!   different mechanism from any string arithmetic here.
-//! - `cli::suggest`'s `before.encode_utf16().count()` and `crates/text`'s
-//!   private `utf16_len` are one-line, self-contained uses of the standard
-//!   library with no clamping or checking decision attached; folding them
-//!   into a named helper would not remove any behavioral decision, only add
-//!   an import.
 //!
 //! `session::Edit` offsets, `session::replace_text`'s arithmetic
 //! and a JavaScript string's own indexing all agree on UTF-16 code units,
 //! which is why none of the above ever converts to UTF-8 byte offsets
 //! internally.
-
-/// The part of `text` between UTF-16 offsets `start` and `end`, or `None` when
-/// the range is inverted, runs past the end, or has an edge inside a surrogate
-/// pair (an astral character has no UTF-16 position in its middle). Checked,
-/// like `session::apply_text_edits`: callers compare the result against text
-/// they expect to find there, and a range that does not exist is a mismatch,
-/// not something to clamp. Offsets are converted on the `&str` itself, so no
-/// caller needs a `Vec<u16>` copy of the file.
-pub(crate) fn utf16_slice(text: &str, start: usize, end: usize) -> Option<&str> {
-    if start > end {
-        return None;
-    }
-    let from = str_indices::utf16::to_byte_idx(text, start);
-    let to = str_indices::utf16::to_byte_idx(text, end);
-    // `to_byte_idx` floors an offset inside a pair and clamps one past the
-    // end; converting back is how both show up.
-    if str_indices::utf16::from_byte_idx(text, from) != start
-        || str_indices::utf16::from_byte_idx(text, to) != end
-    {
-        return None;
-    }
-    Some(&text[from..to])
-}
 
 /// The UTF-16 units `[start, end)` of `units`, as a `String`. Both bounds are
 /// clamped rather than checked, because every caller already derived them
@@ -160,17 +131,6 @@ mod tests {
                 );
             }
         }
-    }
-
-    #[test]
-    fn utf16_slice_refuses_a_bound_inside_a_pair_or_past_the_end() {
-        let text = format!("a{EMOJI}b");
-        assert_eq!(utf16_slice(&text, 1, 3), Some(EMOJI));
-        assert_eq!(utf16_slice(&text, 1, 2), None);
-        assert_eq!(utf16_slice(&text, 2, 3), None);
-        assert_eq!(utf16_slice(&text, 0, 5), None);
-        assert_eq!(utf16_slice(&text, 3, 1), None);
-        assert_eq!(utf16_slice(&text, 4, 4), Some(""));
     }
 
     #[test]

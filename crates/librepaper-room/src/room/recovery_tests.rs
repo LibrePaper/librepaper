@@ -1018,7 +1018,6 @@ async fn a_durable_projection_is_stable_and_command_bundles_or_writes_nothing() 
         None,
         false,
         None,
-        None,
         Some(wrong_digest),
     )
     .expect("a well-formed comment");
@@ -1071,7 +1070,6 @@ async fn a_durable_projection_is_stable_and_command_bundles_or_writes_nothing() 
         " a reader can quote.",
         None,
         false,
-        None,
         None,
         None,
     )
@@ -1150,7 +1148,6 @@ async fn a_durable_projection_is_stable_and_command_bundles_or_writes_nothing() 
         false,
         None,
         None,
-        None,
     )
     .expect("a well-formed comment");
     let doomed_result = room
@@ -1185,7 +1182,7 @@ async fn a_durable_projection_is_stable_and_command_bundles_or_writes_nothing() 
         "the doomed row was never written"
     );
     let annotations = verify
-        .annotations(deployment.document_id, None, 10, true)
+        .annotations(deployment.document_id, None, 10)
         .await
         .unwrap();
     assert_eq!(

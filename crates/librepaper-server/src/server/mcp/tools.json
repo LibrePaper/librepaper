@@ -232,7 +232,7 @@
     },
     {
       "name": "document_propose",
-      "description": "Propose replacements for captured source ranges. Suggestions do not edit the source.",
+      "description": "Propose replacements for captured source ranges. Published proposals land in the document at once as tracked changes, marked pending; an editor accepts or rejects each one. Private proposals change nothing.",
       "inputSchema": {
         "type": "object",
         "properties": {
@@ -258,10 +258,6 @@
                 "replacement": {
                   "type": "string",
                   "maxLength": 60000
-                },
-                "note": {
-                  "type": "string",
-                  "maxLength": 4096
                 },
                 "find": {
                   "type": "string",
@@ -370,7 +366,7 @@
     },
     {
       "name": "document_comment",
-      "description": "Create or reply to comments, refine or decide suggestions, and resolve threads, conditional on their captured version.",
+      "description": "Create or reply to comments, resolve threads and label versions, conditional on their captured version.",
       "inputSchema": {
         "type": "object",
         "properties": {
@@ -391,8 +387,6 @@
               "reply",
               "resolve",
               "delete",
-              "refine",
-              "reject",
               "label"
             ]
           },
@@ -407,10 +401,6 @@
           "body": {
             "type": "string",
             "maxLength": 16000
-          },
-          "proposed": {
-            "type": "string",
-            "maxLength": 32000
           },
           "expected_version": {
             "type": "string",
