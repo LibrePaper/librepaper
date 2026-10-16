@@ -288,5 +288,17 @@
       { "id": "m", "who": "bob", "from": 0, "to": 0, "deleted": "ac", "points": [{ "id": "a", "at": 1 }] },
       { "id": "a", "who": "alice", "from": 0, "to": 0, "deleted": "b" }
     ]
+  },
+  {
+    "name": "points: a deletion right after the range is recorded at the end of the new deletion",
+    "before": "abd",
+    "changes": [{ "id": "a", "who": "alice", "from": 2, "to": 2, "deleted": "c" }],
+    "me": { "who": "bob", "author": "Bob" },
+    "edits": [{ "from": 1, "to": 2, "insert": "" }],
+    "after": "ad",
+    "expect": [
+      { "id": "new-1", "who": "bob", "from": 1, "to": 1, "deleted": "b", "points": [{ "id": "a", "at": 1 }] },
+      { "id": "a", "who": "alice", "from": 1, "to": 1, "deleted": "c" }
+    ]
   }
 ]

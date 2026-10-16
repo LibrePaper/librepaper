@@ -113,9 +113,14 @@ function planOne(cur, list, edit, me, run, now, mintId) {
     if (et > ef) {
       for (const c of list) {
         if (affected.includes(c) || c.deleted === "") continue;
+        // A pure deletion right after the range (`c.from === et`) is recorded
+        // too: its anchor character is live, but the order of the two
+        // deletions would be lost without it.
         const swallowed =
-          c.from === c.to ? ef <= c.from && c.from < et : c.from >= ef && c.to <= et;
-        if (swallowed) points.push({ id: c.id, at: before(c.from) });
+          c.from === c.to ? ef <= c.from && c.from <= et : c.from >= ef && c.to <= et;
+        if (swallowed && !points.some((pt) => pt.id === c.id)) {
+          points.push({ id: c.id, at: before(c.from) });
+        }
       }
     }
     out.push({
@@ -496,14 +501,8 @@ function splitOwner(doc, text, o, xId, x) {
   if (right) map.set(crypto.randomUUID(), right);
 }
 
-/**
- * Rejects a change: puts the original text back, then drops the record.
- * Returns false when the id is unknown. An orphaned record is only dropped.
- *
- * @param {import("loro-crdt").LoroDoc} doc
- * @param {string} id
- */
-export function reject(doc, id) {
+// Rejects one change without committing. See `reject`.
+function rejectOne(doc, id) {
   const map = doc.getMap(CHANGES);
   const value = map.get(id);
   if (!value) return false;
@@ -525,8 +524,49 @@ export function reject(doc, id) {
     }
   }
   map.delete(id);
+  return true;
+}
+
+/**
+ * Rejects a change: puts the original text back, then drops the record.
+ * Returns false when the id is unknown. An orphaned record is only dropped.
+ *
+ * @param {import("loro-crdt").LoroDoc} doc
+ * @param {string} id
+ */
+export function reject(doc, id) {
+  if (!rejectOne(doc, id)) return false;
   doc.commit();
   return true;
+}
+
+/**
+ * Rejects several changes in one commit. A selected change that lists another
+ * selected change in its `points` goes first, so the pair restores in order.
+ * If rejecting a change splits an owner that was not selected, the owner's
+ * parts stay pending. Returns the number of changes rejected.
+ *
+ * @param {import("loro-crdt").LoroDoc} doc
+ * @param {string[]} ids
+ * @returns {number}
+ */
+export function rejectMany(doc, ids) {
+  const map = doc.getMap(CHANGES);
+  const pending = ids.filter((id, i) => ids.indexOf(id) === i && map.get(id));
+  let count = 0;
+  while (pending.length > 0) {
+    const listed = new Set();
+    for (const [oid, ov] of map.entries()) {
+      if (!pending.includes(oid) || !Array.isArray(ov?.points)) continue;
+      for (const p of ov.points) if (p && p.id !== oid) listed.add(p.id);
+    }
+    let i = pending.findIndex((id) => !listed.has(id));
+    if (i < 0) i = 0;
+    const [id] = pending.splice(i, 1);
+    if (rejectOne(doc, id)) count += 1;
+  }
+  if (count > 0) doc.commit();
+  return count;
 }
 
 /**
