@@ -48,6 +48,12 @@
     settingsCategory = category;
     settingsOpen = true;
   }
+  // The desktop app asks for Settings from its menu and from Ctrl or Cmd+,.
+  $effect(() => {
+    const open = () => openSettings();
+    window.addEventListener("librepaper:open-settings", open);
+    return () => window.removeEventListener("librepaper:open-settings", open);
+  });
   function focusOnMount(node) {
     node.focus();
   }
