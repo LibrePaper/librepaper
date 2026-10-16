@@ -923,16 +923,11 @@ impl Worker {
                 }
             }
         }
-        if files.is_empty() {
-            let message = "that label holds no files to archive".to_string();
-            let _ = self
-                .catalog
-                .note_label_archive_error(label_id, &message)
-                .await;
-            return Err(message);
-        }
         let main = if projected.projection.main.is_empty() {
-            files[0].path().to_string()
+            files
+                .first()
+                .map(|file| file.path().to_string())
+                .unwrap_or_default()
         } else {
             projected.projection.main.clone()
         };

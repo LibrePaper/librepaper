@@ -1201,7 +1201,10 @@ impl Store {
             // other file is sorted and staged by `sort_and_stage_assets`.
             let (mut texts, assets, staged_assets) =
                 self.sort_and_stage_assets(document.id, files).await?;
-            texts.insert(0, (value.main.clone(), value.source));
+            // A project created empty has no main file to insert.
+            if !value.main.is_empty() {
+                texts.insert(0, (value.main.clone(), value.source));
+            }
 
             // The name, not the id. `actor.account_id` is the catalogue uuid,
             // and a timeline signed with it can only say "Unknown editor".

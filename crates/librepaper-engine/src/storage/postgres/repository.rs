@@ -1661,9 +1661,9 @@ fn validate_account(input: &NewAccount) -> Result<()> {
 }
 
 fn validate_document(input: &NewDocument) -> Result<()> {
-    if input.slug.is_empty() || input.title.is_empty() || input.main_path.is_empty() {
+    if input.slug.is_empty() || input.title.is_empty() {
         return Err(Error::Invalid(
-            "document labels and main path may not be empty".into(),
+            "document labels may not be empty".into(),
         ));
     }
     if !matches!(input.ownership_mode.as_str(), "owned" | "open")
