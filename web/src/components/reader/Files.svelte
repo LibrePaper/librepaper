@@ -45,6 +45,8 @@
   const deleting = $derived(dialog?.type === "delete" ? files.filter((file) => dialog.entries.some((entry) => entry.path === file.path || entry.kind === "folder" && inside(file.path, entry.path))) : []);
   const protectedSelection = $derived(deleting.some((file) => file.main));
   const openPath = $derived(files.find((file) => file.id === open)?.path);
+  // Project files are text or asset formats, plus ZIP archives that unpack into them.
+  const allowedExtensions = $derived([...new Set([...(rules.text_extensions || []), ...(rules.asset_extensions || []), ".zip"])].sort());
 
   onDestroy(() => { clearTimeout(hoverTimer); settleConflict?.(false); });
   // Follow an editor opened elsewhere (including diagnostics) into its folder.
@@ -201,8 +203,7 @@
       busy = false;
       refusal = errors.join("; ");
       if (skipped.length) {
-        const allowed = [...new Set([...(rules.text_extensions || []), ...(rules.asset_extensions || []), ".zip"])].sort();
-        uploadWarning = `Skipped unsupported file${skipped.length === 1 ? "" : "s"}: ${skipped.join(", ")}. Allowed extensions: ${allowed.join(", ") || "none"}.`;
+        uploadWarning = `Skipped unsupported file${skipped.length === 1 ? "" : "s"}: ${skipped.join(", ")}. Allowed extensions: ${allowedExtensions.join(", ") || "none"}.`;
       }
     }
   }
@@ -279,7 +280,7 @@
         <IconButton icon="download" label="Download project" tone="plain" size="btn-icon-sm" onclick={() => ondownload?.()} />
       </div>
       {#if mayEdit}<input class="chooser" type="file" multiple bind:this={chooser} aria-label="Choose files to upload"
-        accept="{(rules.extensions || []).join(',')},.zip"
+        accept={allowedExtensions.join(",")}
       onchange={(event) => { const input = event.currentTarget; const picked = [...(input.files || [])]; input.value = ""; upload(picked.map((file) => ({ file, path: file.name })), uploadTarget); }} />{/if}
     {/snippet}
     {#if chosen.length > 1 && mayEdit}
