@@ -57,15 +57,6 @@ globalThis.fetch = async (url) => {
   return new Response(bytes, { status: 200, headers: { "content-length": String(bytes.length) } });
 };
 
-globalThis.localStorage = (() => {
-  const store = new Map();
-  return {
-    getItem: (k) => (store.has(k) ? store.get(k) : null),
-    setItem: (k, v) => store.set(k, String(v)),
-    removeItem: (k) => store.delete(k),
-  };
-})();
-
 async function sha256Hex(text) {
   const bytes = new TextEncoder().encode(text);
   const digest = await crypto.subtle.digest("SHA-256", bytes);
@@ -113,8 +104,11 @@ await assert.rejects(
   resources.fetchVerified(other, badUrl, { sha256: "0".repeat(64), size: 11 }),
   /sha256/,
 );
-const readAfterBadFetch = await resources.readiness(other, [{ key: "pdftex/26/bad.sty", url: badUrl }]);
-assert.equal(readAfterBadFetch.ready, false, "a failed verification must not be cached as present");
+assert.equal(
+  await (await caches.open(resources.namespace(other))).match(badUrl),
+  undefined,
+  "a failed verification must not be cached as present",
+);
 
 // --- a corrupt cache hit is discarded and refetched -------------------------
 
@@ -137,8 +131,7 @@ assert.equal(network.calls, 1, "a corrupt hit triggers exactly one refetch, not 
 const missingUrl = "https://mirror.example/texlive/pdftex/26/missing.sty";
 network.fail.add(missingUrl);
 await assert.rejects(resources.fetchVerified(release, missingUrl, { sha256: "0".repeat(64), size: 0 }), /simulated network failure/);
-const readMissing = await resources.readiness(release, [{ key: "pdftex/26/missing.sty", url: missingUrl }]);
-assert.equal(readMissing.ready, false);
+assert.equal(await (await caches.open(resources.namespace(release))).match(missingUrl), undefined);
 
 // A 404 also throws and caches nothing.
 const notFoundUrl = "https://mirror.example/texlive/pdftex/26/nothere.sty";
@@ -183,24 +176,64 @@ const remainingNames = await caches.keys();
 assert.ok(remainingNames.includes("librepaper"), "clear() must never touch project/document storage");
 assert.ok(!remainingNames.some((n) => n.startsWith("librepaper-latex-")), "every latex cache is gone");
 
-// --- readiness() after clear: everything missing again ----------------------
+// --- working sets -----------------------------------------------------------
 
-const readAfterClear = await resources.readiness(release, [{ key: "pdftex/26/amsmath.sty", url: amsmathUrl }]);
-assert.equal(readAfterClear.ready, false);
-assert.deepEqual(readAfterClear.missing, ["pdftex/26/amsmath.sty"]);
+const resolutions = [[26, "amsmath.sty", "tex/latex/amsmath/amsmath.sty"], [26, "nothere.sty", null]];
+const tar = Uint8Array.of(1, 2, 3, 4, 5);
+await resources.writeWorkingSet(release, "pdftex", { resolutions, files: tar });
+const stored = await resources.readWorkingSet(release, "pdftex");
+assert.deepEqual(stored.resolutions, resolutions);
+assert.deepEqual([...stored.files], [...tar]);
+assert.equal(await resources.readWorkingSet(release, "xetex"), null, "working sets are per kind");
+assert.equal(await resources.readWorkingSet(other, "pdftex"), null, "working sets are per release");
+assert.ok(await resources.size() > 0, "working sets count toward size()");
 
-// --- remember(): bounded to 2000 keys per release, in localStorage ---------
+// An empty tar still round trips.
+await resources.writeWorkingSet(release, "bibtex", { resolutions: [], files: new Uint8Array(0) });
+const emptied = await resources.readWorkingSet(release, "bibtex");
+assert.deepEqual(emptied.resolutions, []);
+assert.equal(emptied.files.length, 0);
 
-for (let i = 0; i < 2005; i++) resources.remember(release, `pdftex/26/gen${i}.sty`);
-const kept = resources.remembered(release);
-assert.equal(kept.length, 2000, "remember() is bounded to 2000 keys per release");
-assert.ok(!kept.includes("pdftex/26/gen0.sty"), "oldest entries are dropped first");
-assert.ok(kept.includes("pdftex/26/gen2004.sty"), "the newest entry survives");
+// A corrupted body fails verification: the entry is deleted and null returned.
+const wsKey = "https://librepaper.invalid/working-set/pdftex";
+const wsStore = await caches.open(resources.namespace(release));
+const good = await wsStore.match(wsKey);
+const damaged = new Uint8Array(await good.arrayBuffer());
+damaged[damaged.length - 1] ^= 0xff;
+await wsStore.put(wsKey, new Response(damaged, { headers: good.headers }));
+assert.equal(await resources.readWorkingSet(release, "pdftex"), null);
+assert.equal(await wsStore.match(wsKey), undefined, "a corrupted working set is deleted");
 
-// A different release's remembered keys are tracked separately.
-resources.remember(other, "pdftex/26/onlyother.sty");
-assert.equal(resources.remembered(other).length, 1);
-assert.equal(resources.remembered(release).length, 2000);
+// A malformed body whose digest matches (length prefix past the end) is deleted too.
+const malformed = Uint8Array.of(255, 255, 0, 0, 1);
+await wsStore.put(wsKey, new Response(malformed, {
+  headers: { "x-librepaper-sha256": await sha256Hex(malformed), "content-length": "5" },
+}));
+assert.equal(await resources.readWorkingSet(release, "pdftex"), null);
+assert.equal(await wsStore.match(wsKey), undefined, "a malformed working set is deleted");
+
+// --- evictOtherReleases ------------------------------------------------------
+
+await caches.open(resources.namespace(other));
+await caches.open("librepaper-bundles");
+await resources.evictOtherReleases(release);
+const afterEvict = await caches.keys();
+assert.ok(afterEvict.includes(resources.namespace(release)), "the current release is kept");
+assert.ok(!afterEvict.includes(resources.namespace(other)), "other releases are deleted");
+assert.ok(!afterEvict.includes("librepaper-bundles"), "the legacy engine cache is deleted");
+assert.ok(afterEvict.includes("librepaper"), "unrelated caches are untouched");
+
+// Memoised: a second call in the same page does not delete again.
+await caches.open(resources.namespace(other));
+await resources.evictOtherReleases(release);
+assert.ok((await caches.keys()).includes(resources.namespace(other)), "eviction runs once per namespace");
+
+// --- clear() also removes working sets ----------------------------------------
+
+await resources.writeWorkingSet(release, "pdftex", { resolutions, files: tar });
+await resources.clear();
+assert.equal(await resources.readWorkingSet(release, "pdftex"), null);
+assert.equal(await resources.size(), 0);
 
 // --- persist(): tolerates refusal, called once ------------------------------
 

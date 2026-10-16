@@ -1032,10 +1032,6 @@ export const resources = {
     const module = await getResources();
     if (module) return module.clear();
   },
-  async readiness(release, keys) {
-    const module = await getResources();
-    return module ? module.readiness(release, keys) : { ready: false, missing: keys || [] };
-  },
   async persist() {
     const module = await getResources();
     if (module) return module.persist();

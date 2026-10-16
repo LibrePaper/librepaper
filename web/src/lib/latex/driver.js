@@ -32,7 +32,7 @@
 // verified manifest inventory, so a later mirror mutation cannot change the
 // executable or Wasm bytes after they have been checked.
 
-import { fetchVerified } from "./resources.js";
+import { evictOtherReleases, fetchVerified, readWorkingSet, writeWorkingSet } from "./resources.js";
 
 const GZIP_MAGIC = [0x1f, 0x8b];
 
@@ -57,47 +57,13 @@ async function gunzip(bytes) {
 /// until the engine is rebuilt without that compiled-in string.
 const FMT_FILENAME = { xetex: "xetex.fmt", luatex: "luatex.fmt" };
 
-/// Kinds whose controller answers `loadbundleindex`/`preloadbundle` (the
+/// The most a working set may hold, as the engine is asked to cap it.
+const WORKING_SET_LIMIT = 64 * 1024 * 1024;
+
+/// Kinds whose controller answers `loadbundleindex`/`loadworkingset` (the
 /// engine repository's `bundle-mode.js`, imported by every worker
 /// but LuaTeX today). Kept in sync with `worker.js`'s own `BUNDLE_CAPABLE`.
 const BUNDLE_CAPABLE = new Set(["pdftex", "xetex", "dvipdfm", "bibtex", "bibtex8", "makeindex", "latexml"]);
-
-/// The bundle resolver is supplied by the engine distribution rather than
-/// this repository. Older mirror releases checked a fetched bundle's digest
-/// but forgot the manifest size before unpacking it or writing it to Cache
-/// Storage. Keep the browser's trust boundary fail-closed by hardening the
-/// verified bundle-mode source before it is put in the engine worker blob.
-/// Newer runtimes that already contain all three checks pass through unchanged;
-/// a runtime with an unrecognised resolver is refused rather than silently
-/// running without the size check.
-export function hardenBundleModeSource(source) {
-  if (typeof source !== "string") throw new Error("bundle-mode.js is not text");
-  let hardened = source;
-  const replacements = [
-    [
-      '            if (sha256Hex(bytes) !== meta.sha256) return "digest-mismatch";',
-      '            if (!Number.isSafeInteger(meta.size) || meta.size < 0 || bytes.length !== meta.size) return "size-mismatch";\n            if (sha256Hex(bytes) !== meta.sha256) return "digest-mismatch";',
-    ],
-    [
-      '                                if (!meta || sha256Hex(bytes) !== meta.sha256) {',
-      '                                if (!meta || !Number.isSafeInteger(meta.size) || meta.size < 0 || bytes.length !== meta.size || sha256Hex(bytes) !== meta.sha256) {',
-    ],
-    [
-      '            if (sha256Hex(u8) !== meta.sha256) return "digest-mismatch";',
-      '            if (!Number.isSafeInteger(meta.size) || meta.size < 0 || u8.length !== meta.size) return "size-mismatch";\n            if (sha256Hex(u8) !== meta.sha256) return "digest-mismatch";',
-    ],
-  ];
-  for (const [oldText, newText] of replacements) {
-    if (hardened.includes(newText)) continue;
-    const occurrences = hardened.split(oldText).length - 1;
-    if (occurrences !== 1) throw new Error("Unrecognised bundle-mode.js verification runtime");
-    hardened = hardened.replace(oldText, newText);
-  }
-  if (!hardened.includes("bytes.length !== meta.size") || !hardened.includes("u8.length !== meta.size")) {
-    throw new Error("bundle-mode.js has no fail-closed size verification");
-  }
-  return hardened;
-}
 
 /** @typedef {{url: string, sha256: string, size: number, gz?: boolean}} EngineFormat */
 /** @param {{kind: string, url: string, base?: string, texliveUrl?: string, format?: EngineFormat|null, release?: object|null, assets?: Record<string, object>|null, workerName?: string|null, onProgress?: (progress: object) => void, onDownload?: (download: object) => void}} options */
@@ -133,6 +99,9 @@ class EngineDriver {
     // scrap left over from an earlier pass that happened to recover.
     this.mirrorAbsent = [];
     this.blobUrls = [];
+    // Milliseconds spent starting this engine, filled in by `init()` and
+    // `loadBundleIndex()`.
+    this.timings = null;
   }
 
   /// Every command below waits on this queue, so a caller awaiting `run()`
@@ -184,6 +153,11 @@ class EngineDriver {
 
   async init() {
     if (this.worker) return;
+    const timings = { assetsMs: 0, startMs: 0, formatMs: 0 };
+    this.timings = timings;
+    // Other releases' caches are dead weight; clearing them is not on the path.
+    void evictOtherReleases(this.release);
+    let mark = performance.now();
     let host = { source: this.url };
     if (this.assets && this.workerName) {
       const verified = {};
@@ -198,10 +172,7 @@ class EngineDriver {
       const assetUrls = {};
       for (const [name, bytes] of Object.entries(verified)) {
         const type = /\.js$/i.test(name) ? "text/javascript" : "application/octet-stream";
-        const body = name === "bundle-mode.js"
-          ? hardenBundleModeSource(new TextDecoder().decode(bytes))
-          : bytes;
-        const blob = URL.createObjectURL(new Blob([body], { type }));
+        const blob = URL.createObjectURL(new Blob([bytes], { type }));
         assetUrls[name] = blob;
         this.blobUrls.push(blob);
         if (/\.js$/i.test(name) && name !== this.workerName) dependencyUrls[name] = blob;
@@ -221,6 +192,8 @@ class EngineDriver {
       this.blobUrls.push(sourceUrl);
       host = { source: sourceUrl, imports: dependencyUrls, assets: assetUrls };
     }
+    timings.assetsMs = performance.now() - mark;
+    mark = performance.now();
     await new Promise((resolve, reject) => {
       // Every engine starts in the same-origin host, which loads the verified
       // script itself; see `engine-host.js` for why the page does not.
@@ -234,7 +207,9 @@ class EngineDriver {
       worker.postMessage({ librepaperEngineHost: host });
       this.worker = worker;
     });
+    timings.startMs = performance.now() - mark;
     this._tell({ cmd: "settexliveurl", url: this.texliveUrl });
+    mark = performance.now();
     if (this.kind === "pdftex") {
       // Preamble snapshots are an engine-side speed trick (a cached format
       // for the unchanged part of the document); the controller expects a
@@ -242,6 +217,7 @@ class EngineDriver {
       await this._ask({ cmd: "setpreamblesnapshot", enabled: false }, "setpreamblesnapshot");
     }
     if (this.format) await this._loadFormat();
+    timings.formatMs = performance.now() - mark;
   }
 
   async _loadFormat() {
@@ -383,6 +359,17 @@ class EngineDriver {
     // status (0 and 1 both "compiled", 1 meaning warnings). BibTeX/makeindex:
     // result "ok"/"error", no status at all -- treated as exit 0 or 1.
     const ok = reply.result === "ok" && (reply.status === undefined || reply.status === 0 || reply.status === 1);
+    let bundleStats = null;
+    // A trapped engine (negative status) may never answer again.
+    if (BUNDLE_CAPABLE.has(this.kind) && !(typeof reply.status === "number" && reply.status < 0)) {
+      const set = await this._ask({ cmd: "workingset", limit: WORKING_SET_LIMIT }, "workingset");
+      bundleStats = set.stats ?? null;
+      if (set.changed) {
+        // Saving is best effort and must not delay the result.
+        writeWorkingSet(this.release, this.kind, { resolutions: set.resolutions, files: new Uint8Array(set.files) })
+          .catch(() => {});
+      }
+    }
     return {
       status: typeof reply.status === "number" ? reply.status : ok ? 0 : 1,
       ok,
@@ -395,22 +382,36 @@ class EngineDriver {
       log: reply.log || "",
       inputs: Array.isArray(reply.inputFiles) ? reply.inputFiles : null,
       mirrorAbsent: this.mirrorAbsent.slice(),
+      phaseTimings: reply.phaseTimings ?? null,
+      bundleStats,
     };
   }
 
-  /// Loads the whole-mirror bundle index once --
-  /// every release ships one now, so this runs for every kind this file
-  /// serves. This command answers -- the controller awaits it so a first
-  /// compile never races the worker's own Cache Storage preload.
+  /// Hands the engine the whole-mirror bundle index (unparsed until a lookup
+  /// misses), then the working set this release stored for this kind, if any.
+  /// Both answer, so a first compile never races either load.
   async loadBundleIndex(bytes) {
-    // Every worker but LuaTeX now importScripts()s `bundle-mode.js`
-    // and answers this command; a kind that does not is a no-op here so a
-    // caller need not special-case it (worker.js's `ensureEngine` already
-    // gates the call on `BUNDLE_CAPABLE`, but this stays defensive on its
-    // own since nothing else enforces that from this side).
+    // LuaTeX has no bundle mode; a kind that does not answer is a no-op here
+    // so a caller need not special-case it.
     if (!BUNDLE_CAPABLE.has(this.kind)) return null;
+    const timings = this.timings ?? (this.timings = {});
+    let mark = performance.now();
     const copy = bytes.slice().buffer;
-    return this._ask({ cmd: "loadbundleindex", data: copy }, "loadbundleindex", [copy]);
+    const reply = await this._ask({ cmd: "loadbundleindex", data: copy }, "loadbundleindex", [copy]);
+    timings.indexMs = performance.now() - mark;
+    mark = performance.now();
+    timings.workingSetFiles = 0;
+    const set = await readWorkingSet(this.release, this.kind);
+    if (set) {
+      const { buffer, byteOffset, byteLength } = set.files;
+      const files = byteOffset === 0 && byteLength === buffer.byteLength ? buffer : buffer.slice(byteOffset, byteOffset + byteLength);
+      const loaded = await this._ask(
+        { cmd: "loadworkingset", resolutions: set.resolutions, files }, "loadworkingset", [files],
+      );
+      timings.workingSetFiles = loaded.files ?? 0;
+    }
+    timings.workingSetMs = performance.now() - mark;
+    return reply;
   }
 
   /// XeTeX only: sends the inflated `icudt68l.dat` bytes (the release ships
