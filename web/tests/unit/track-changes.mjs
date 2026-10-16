@@ -304,6 +304,12 @@ for (const decide of [accept, reject]) {
 // ---------------------------------------------------------------------------
 // Swallowed deletion points
 
+// Rejects `first`, then every change that is still pending, one at a time.
+function rejectAll(doc, first) {
+  assert.equal(reject(doc, first), true);
+  for (const id of [...doc.getMap(CHANGES).keys()]) assert.equal(reject(doc, id), true);
+}
+
 for (const bobFirst of [true, false]) {
   const doc = makeDoc("abcd");
   const [a] = track(doc, 1, 2, "", ME);
@@ -311,7 +317,7 @@ for (const bobFirst of [true, false]) {
   assert.equal(textOf(doc), "ad");
   const entry = doc.getMap(CHANGES).get(b);
   assert.deepEqual(entry.points, [{ id: a, at: 0 }]);
-  for (const id of bobFirst ? [b, a] : [a, b]) assert.equal(reject(doc, id), true);
+  rejectAll(doc, bobFirst ? b : a);
   assert.equal(textOf(doc), "abcd", `points: bobFirst=${bobFirst}`);
   assert.equal(doc.getMap(CHANGES).size, 0);
 }
@@ -324,8 +330,31 @@ for (const bobFirst of [true, false]) {
   const [b] = track(doc, 1, 3, "", BOB);
   assert.equal(textOf(doc), "ae");
   assert.deepEqual(doc.getMap(CHANGES).get(b).points, [{ id: a, at: 1 }]);
-  for (const id of bobFirst ? [b, a] : [a, b]) assert.equal(reject(doc, id), true);
+  rejectAll(doc, bobFirst ? b : a);
   assert.equal(textOf(doc), "abcde", `points middle: bobFirst=${bobFirst}`);
+  assert.equal(doc.getMap(CHANGES).size, 0);
+}
+
+// The owner is a replacement and the swallowed change is rejected first: the
+// inserted text stays pending under the right part.
+{
+  const doc = makeDoc("abcde");
+  const [a] = track(doc, 2, 3, "", ME);
+  const [b] = track(doc, 1, 3, "Z", BOB);
+  assert.equal(textOf(doc), "aZe");
+  assert.equal(reject(doc, a), true);
+  assert.equal(textOf(doc), "acZe");
+  const pending = resolveChanges(doc, "f1");
+  assert.equal(pending.length, 2);
+  const left = pending.find((c) => c.id === b);
+  assert.deepEqual([left.from, left.to, left.deleted], [1, 1, "b"]);
+  const right = pending.find((c) => c.id !== b);
+  assert.deepEqual([right.from, right.to, right.deleted], [2, 3, "d"]);
+  assert.equal(reject(doc, b), true);
+  assert.equal(textOf(doc), "abcZe");
+  assert.equal(reject(doc, right.id), true);
+  assert.equal(textOf(doc), "abcde");
+  assert.equal(doc.getMap(CHANGES).size, 0);
 }
 
 // Accepting the swallowing change drops its points with it.
