@@ -61,7 +61,6 @@
   import IconButton from "./IconButton.svelte";
   import Modal from "./Modal.svelte";
   import CommandPalette from "./CommandPalette.svelte";
-  import KeyboardShortcuts from "./KeyboardShortcuts.svelte";
   import Toasts from "./Toasts.svelte";
   import { say } from "../lib/toast.svelte.js";
   import { archive, availableDownloads, docxFile, entryDownload, projectFiles, renderingFile, saveBlob } from "../lib/reader/downloads.js";
@@ -3340,7 +3339,6 @@
   /* ------------------------------------------------------------- the keyboard */
 
   let commandPalette = $state(false);
-  let shortcutsShown = $state(false);
 
   // What the workspace can currently offer, as facts rather than rules. The
   // rules are in lib/commands.js, which decides from these whether a command
@@ -3367,7 +3365,7 @@
   // Whether a selection can be cut, whether there is anything to undo: the
   // editor is asked, because only it knows, and it is asked when something is
   // about to show the answer rather than on every keystroke. The menu does
-  // this on opening; the palette and the help table are the same question
+  // this on opening; the palette and the settings are the same question
   // asked from two more places.
   function refreshEditAvailability() {
     editAvailability = editor?.editAvailability() || {};
@@ -3379,7 +3377,7 @@
   async function runCommand(id) {
     if (EDIT_COMMANDS.includes(id)) return chooseEditCommand(id);
     if (id === "palette") { refreshEditAvailability(); commandPalette = true; return; }
-    if (id === "shortcuts") { refreshEditAvailability(); shortcutsShown = true; return; }
+    if (id === "shortcuts") return openSettings("editor");
     if (id === "focus-files") return focusPanel("files");
     if (id === "focus-outline") return focusPanel("outline");
     if (id === "focus-comments") return focusPanel("collaboration");
@@ -4009,11 +4007,9 @@
   </div>
 {/if}
 
-<!-- The keyboard, said twice: once as a table to read and once as a list to
-     search. Both are drawn from lib/commands.js and both run what the menus
-     run, so neither can drift from what the keys actually do. -->
-<KeyboardShortcuts bind:open={shortcutsShown} context={commandContext}
-                   modalEditor={keys === "vim" || keys === "emacs"} apple={APPLE} />
+<!-- The keyboard as a list to search. It is drawn from lib/commands.js and runs
+     what the menus run, so it cannot drift from what the keys actually do. The
+     table to read lives in the editor settings. -->
 <CommandPalette bind:open={commandPalette} context={commandContext} apple={APPLE}
                 onrun={(id) => void runCommand(id)} />
 

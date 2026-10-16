@@ -1,6 +1,6 @@
 // The keyboard, driven the way a person drives it. The rules live in
 // lib/commands.js and are checked there; what is checked here is that the real
-// window is wired to them: that `?` opens help from the page and types a
+// window is wired to them: that `?` opens the settings from the page and types a
 // question mark in the source, that a chord nobody can type still works from
 // inside the editor, that the palette runs what it offers, and that a panel
 // command moves the focus rather than only opening a column.
@@ -105,29 +105,33 @@ try {
   const focusSource = () => b.evaluate('document.querySelector(".cm-content").focus()');
   const source = () => b.evaluate('document.querySelector(".cm-content").textContent');
 
-  /* -------------------------------------------------- ? is help, and a letter */
+  /* ------------------------------------------------- ? is the settings, and a letter */
 
   await focusBody();
   await key("?", { code: "Slash", modifiers: ["shift"], virtual: 191 });
-  assert.equal(await dialog(), "Keyboard shortcuts", "? on the page opens the shortcut table");
+  assert.equal(await dialog(), "Settings", "? on the page opens the settings");
 
   // The table is the registry drawn: keycaps, grouped, with the commands the
-  // workspace is currently offering named.
+  // workspace is currently offering named. It lives on the Editor page of the
+  // settings, under #editor-shortcuts.
   const table = await b.evaluate(`(() => {
     const open = document.querySelector('[role="dialog"][data-state="open"]');
+    const row = open.querySelector("#editor-shortcuts");
+    if (!row) return null;
     return {
-      caps: [...open.querySelectorAll("kbd")].map(node => node.textContent),
-      names: [...open.querySelectorAll("th[scope=row]")].map(node => node.textContent.trim()),
-      groups: [...open.querySelectorAll("h3")].map(node => node.textContent.trim()),
+      caps: [...row.querySelectorAll("kbd")].map(node => node.textContent),
+      names: [...row.querySelectorAll("th[scope=row]")].map(node => node.textContent.trim()),
+      groups: [...row.querySelectorAll("h3")].map(node => node.textContent.trim()),
     };
   })()`);
+  assert.ok(table, "? opens the settings with the shortcut table on the Editor page");
   assert.ok(table.groups.includes("Navigation"), "the table is grouped: " + JSON.stringify(table.groups));
   assert.ok(table.names.includes("Command palette"), "and names the commands: " + JSON.stringify(table.names));
   assert.ok(table.caps.includes("Ctrl") && table.caps.includes("Alt"), "with this platform's modifier labels: " + JSON.stringify(table.caps));
   assert.ok(!table.caps.includes("⌘"), "and not the other platform's");
 
   await key("Escape", { code: "Escape", virtual: 27 });
-  assert.equal(await dialog(), "", "Escape closes it");
+  assert.equal(await dialog(), "", "Escape closes the settings");
 
   // The same key, in the source, is a question mark. This is the whole reason
   // the dispatcher asks whether a chord could have been typed.
@@ -192,15 +196,15 @@ try {
   })()`);
   assert.ok(listed, "the editor settings carry a shortcuts row");
   // The same commands in the same order with the same keys. Not the same
-  // availability: a question mark was typed into the source since the modal
-  // was read, so there is something to undo now and the table says so. That it
+  // availability: a question mark was typed into the source since ? opened the
+  // settings, so there is something to undo now and the table says so. That it
   // moved is the point -- this is the workspace as it stands, not a picture of
   // it taken when the page loaded.
   const plain = (names) => names.map((name) => name.replace(/\(not available here\)$/, ""));
-  assert.deepEqual(plain(listed.names), plain(table.names), "it is the table ? shows, not a second copy of it");
+  assert.deepEqual(plain(listed.names), plain(table.names), "it is the table ? opened, not a second copy of it");
   assert.deepEqual(listed.caps, table.caps);
-  assert.ok(table.names.includes("Undo(not available here)"), "nothing had been typed when the modal was read");
-  assert.ok(listed.names.includes("Undo"), "and something had by the time the settings were");
+  assert.ok(table.names.includes("Undo(not available here)"), "nothing had been typed when ? opened the settings");
+  assert.ok(listed.names.includes("Undo"), "and something had by the time Ctrl+, opened them");
   await key("Escape", { code: "Escape", virtual: 27 });
   assert.equal(await dialog(), "");
 
@@ -228,7 +232,7 @@ try {
   assert.equal(await b.evaluate("window.__claimed()"), true, "a chord we answer is cancelled");
 
   assert.deepEqual(await b.evaluate("window.testErrors"), []);
-  console.log("shortcuts-browser: ? is help on the page and a letter in the source, ⌃\\ cycles from the editor, panels take the focus, the palette runs what it offers, and the settings list the same table");
+  console.log("shortcuts-browser: ? opens the shortcut table in the settings from the page, and is a letter in the source, ⌃\\ cycles from the editor, panels take the focus, the palette runs what it offers, and the settings list the same table");
 } finally {
   await b?.close();
   serverHttp?.close();
