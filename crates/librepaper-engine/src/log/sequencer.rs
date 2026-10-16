@@ -365,7 +365,7 @@ pub struct Evidence {
 /// Which rung of access a command needs.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum Rung {
-    /// May leave a comment, a reply or a suggestion. Also satisfied by an
+    /// May leave a comment or a reply. Also satisfied by an
     /// editor, and by anyone at all on a document whose ownership mode is
     /// `open`.
     Commenter,
@@ -427,10 +427,9 @@ pub trait Command {
     /// which pushes any row a command needs out to its caller, where it is
     /// read before the lock is taken and can be stale by the time `transact`
     /// runs. That is a real hole for a command whose prepared source depends
-    /// on rows other commands write: two decisions on the same proposal,
-    /// each prepared from a snapshot taken before the other landed, both
-    /// conclude there is nothing to merge while the second still completes
-    /// the review. Rereading here closes it, because the lock is held from
+    /// on rows other commands write: two decisions on the same row, each
+    /// prepared from a snapshot taken before the other landed, would both
+    /// act on stale state. Rereading here closes it, because the lock is held from
     /// this point through `transact` and no other command runs meanwhile.
     ///
     /// The default is "nothing to read", which is right for every command
@@ -2076,7 +2075,7 @@ impl Sequencer {
 
         // §8.4, the same trigger `flush` carries and for the same reason: a
         // command's row is a row. A document edited only by commands -- an
-        // agent patching it, a restore, a proposal being merged -- may never
+        // agent patching it, a restore, a tracked pass -- may never
         // reach an ordinary flush, and its backlog would then cross the
         // threshold with nothing watching.
         if compaction_due {

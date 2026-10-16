@@ -53,7 +53,7 @@ assert.match(readerSource, /current page is still rendering/);
 assert.match(viteSource, /let watchingBuild = false;[\s\S]*?configResolved\(config\) \{ watchingBuild = Boolean\(config\.build\.watch\); \}[\s\S]*?if \(watchingBuild\)/);
 assert.match(offlineSource, /request\.onblocked = \(\) => \{[\s\S]*?blocked = true;[\s\S]*?reject\(/);
 assert.match(offlineSource, /pendingFlush\.catch\(\(\) => \{\}\)\.finally/);
-assert.match(editorSource, /states = new WeakMap\(\);\s*undoManagers\.clear\(\)/);
+assert.match(editorSource, /states = new WeakMap\(\);\s*undoManager = null;\s*undoManagerDoc = null/);
 assert.match(readerSource, /\["markdown", "quarto"\]\.includes\(displayedFormat\) && buildPreferences\.output === "pdf"[\s\S]*?\? "pdf"/);
 assert.match(readerSource, /const frameLoaded = \(\) => \{[\s\S]*?framePreview\.markReady\(\)[\s\S]*?replayPreview\(\)/);
 assert.match(readerSource, /<Preview[\s\S]*?onload=\{frameLoaded\}/);

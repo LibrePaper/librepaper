@@ -85,38 +85,11 @@
       */
       .textLayer mark[data-librepaper] { color: transparent; border-radius: 2px; }
       /*
-        A suggestion's proposed words. The agent paints them as a real span it
-        keeps out of the document's text (`data-librepaper-synthetic`), which
-        in a flowing document simply sits after the passage.
-
-        A PDF page has no inline to put them in. The glyphs are on the canvas
-        and every run above them is transparent and absolutely placed, so left
-        alone the proposal inherits that transparency and is invisible, and it
-        widens the run it was inserted into. Lifting it out of the run and
-        drawing it beside the passage, in its own colours, is what makes it a
-        suggestion somebody can read on a page they cannot reflow.
-
-        These rules replaced ones written for a `data-proposed` attribute the
-        agent no longer sets; `tests/browser/typst-viewer.mjs` is what keeps
-        the two sides in step.
+        A deleted passage is drawn inline in the preview. A text layer span has
+        a fixed place over the glyphs, so a span of extra text would shift it,
+        and the deletion is left to the Changes panel here.
       */
-      .textLayer .librepaper-suggestion-synthetic {
-        position: absolute;
-        z-index: 2;
-        left: 100%;
-        top: 1em;
-        width: max-content;
-        max-width: 240px;
-        padding: 2px 4px;
-        border-radius: 2px;
-        box-shadow: 0 1px 3px #0003;
-        /* The hue the agent gives a proposal, opaque here because there is no
-           glyph underneath this one: it is the only copy of these words. */
-        color: hsl(0 55% 40%);
-        background: hsl(0 45% 96%);
-        font: 12px/1.3 system-ui, sans-serif;
-        white-space: normal;
-      }
+      .textLayer .librepaper-change-deleted { display: none; }
       /* pdf.js measures its fonts with a canvas it keeps on the body. */
       canvas.hiddenCanvasElement { display: none; }
       ::selection { background: rgb(0 100 255 / 0.3); }

@@ -147,7 +147,6 @@ impl Deployment {
         prefix: &str,
         suffix: &str,
         motivation: &str,
-        proposed: Option<&str>,
     ) -> AddComment {
         let config = Configuration::default();
         AddComment::new(
@@ -164,7 +163,6 @@ impl Deployment {
             Some(0),
             false,
             None,
-            proposed,
             None,
         )
         .expect("a well-formed comment")
@@ -186,7 +184,6 @@ async fn a_quotation_becomes_a_range_the_browser_never_sent() {
         "Interval estimates The ",
         " of the posterior.",
         "commenting",
-        None,
     );
     let comment = room
         .command(&deployment.authority(), &mut cmd)
@@ -231,144 +228,12 @@ async fn a_quotation_becomes_a_range_the_browser_never_sent() {
 
 #[tokio::test]
 #[ignore = "requires LIBREPAPER_TEST_POSTGRES_URL"]
-async fn a_suggestion_keeps_its_file_id_across_a_raw_path_collision_and_refinement() {
-    let Some(deployment) = deployment("anchor-path-collision-suggestion").await else {
-        return;
-    };
-    let room = deployment.rooms.get(&deployment.slug).await.unwrap();
-    let collision_id = "000000000000";
-    let (main_id, update) = room
-        .log()
-        .with_head(|doc| {
-            let main_id = session::text_ids_of(doc)
-                .get("paper.md")
-                .cloned()
-                .expect("the main file has an id");
-            assert_ne!(main_id, collision_id);
-            let vector = session::encode_vector(doc);
-            let edited = doc.fork();
-            edited.set_peer_id(9_123).unwrap();
-            let text = edited
-                .get_map(session::FILES)
-                .insert_container(collision_id, loro::LoroText::new())
-                .unwrap();
-            edited
-                .get_map(session::PATHS)
-                .insert(collision_id, "paper.md")
-                .unwrap();
-            text.insert_utf16(0, "The collider holds unique selected passage.\n")
-                .unwrap();
-            edited.commit();
-            let update = session::encode_diff(&edited, &vector).unwrap();
-            (main_id, update)
-        })
-        .await
-        .unwrap();
-    assert!(matches!(
-        room.ingest(9_123, "collider-writer", "collider-writer", 1, update)
-            .await,
-        librepaper_engine::log::Ingested::Accepted
-    ));
-
-    let mut add = deployment.add_comment(
-        &room,
-        "unique selected passage",
-        "The collider holds ",
-        ".\n",
-        "editing",
-        Some("replacement words"),
-    );
-    let comment = room
-        .command(&deployment.authority(), &mut add)
-        .await
-        .unwrap();
-    let source = comment.source().expect("a suggestion has a source");
-    assert_eq!(source.file_id.0, collision_id);
-
-    let served = room
-        .comment_by_id(&comment.id, true)
-        .await
-        .unwrap()
-        .expect("the suggestion is readable");
-    assert_eq!(served.proposed.as_deref(), Some("replacement words"));
-
-    let proposal_id = Uuid::parse_str(&comment.proposal).unwrap();
-    let stored = deployment
-        .catalog
-        .proposal(proposal_id)
-        .await
-        .unwrap()
-        .expect("the suggestion has a proposal");
-    let config = Configuration::default();
-    let mut refine = RefineSuggestion::new(
-        deployment.catalog.clone(),
-        room.document_id,
-        Uuid::parse_str(&comment.id).unwrap(),
-        proposal_id,
-        stored.version,
-        &deployment.writer(),
-        &config,
-        "A refined remark.",
-        &source.exact,
-        &source.prefix,
-        &source.suffix,
-        "refined words",
-        Some("replacement words"),
-    )
-    .unwrap();
-    room.command(&deployment.authority(), &mut refine)
-        .await
-        .expect("refinement reads and writes the selected stable file id");
-
-    let served = room
-        .comment_by_id(&comment.id, true)
-        .await
-        .unwrap()
-        .expect("the refined suggestion is readable");
-    assert_eq!(served.proposed.as_deref(), Some("refined words"));
-    assert_eq!(served.source().unwrap().file_id.0, collision_id);
-
-    let stored = deployment
-        .catalog
-        .proposal(proposal_id)
-        .await
-        .unwrap()
-        .expect("the refined proposal remains open");
-    let (base_main, tip_main, base_collision, tip_collision) = room
-        .log()
-        .with_head(|doc| {
-            let proposal = crate::room::proposals::Proposal {
-                base: loro::Frontiers::decode(&stored.base_frontiers).unwrap(),
-                tip: loro::Frontiers::decode(&stored.tip_frontiers).unwrap(),
-            };
-            let (base, tip) =
-                crate::room::proposals::sides(doc, &proposal, &stored.branch_bytes).unwrap();
-            (
-                super::comments::text_for_file_id(&base, &main_id).unwrap(),
-                super::comments::text_for_file_id(&tip, &main_id).unwrap(),
-                super::comments::text_for_file_id(&base, collision_id).unwrap(),
-                super::comments::text_for_file_id(&tip, collision_id).unwrap(),
-            )
-        })
-        .await
-        .unwrap();
-    assert_eq!(base_main, tip_main, "the main file is untouched");
-    assert_eq!(
-        base_collision,
-        "The collider holds unique selected passage.\n"
-    );
-    assert_eq!(tip_collision, "The collider holds refined words.\n");
-    deployment.catalog.close().await;
-}
-
-#[tokio::test]
-#[ignore = "requires LIBREPAPER_TEST_POSTGRES_URL"]
 async fn a_remark_about_the_whole_document_needs_no_passage() {
     let Some(deployment) = deployment("anchor-whole").await else {
         return;
     };
     let room = deployment.rooms.get(&deployment.slug).await.unwrap();
-    let mut cmd = deployment.add_comment(&room, "", "", "", "commenting", None);
+    let mut cmd = deployment.add_comment(&room, "", "", "", "commenting");
     // `AddComment::new` treats an empty selection as a document-level remark
     // only when the caller asked for one explicitly; do so here.
     let config = Configuration::default();
@@ -385,7 +250,6 @@ async fn a_remark_about_the_whole_document_needs_no_passage() {
         "",
         None,
         true,
-        None,
         None,
         None,
     )
@@ -415,7 +279,6 @@ async fn words_nowhere_in_the_document_are_refused_rather_than_placed() {
         "",
         "",
         "commenting",
-        None,
     );
     let error = room
         .command(&deployment.authority(), &mut cmd)
@@ -446,7 +309,6 @@ async fn editing_the_document_moves_where_a_comment_points_and_not_what_it_is_ab
         "Interval estimates The ",
         " of the posterior.",
         "commenting",
-        None,
     );
     let comment = room
         .command(&deployment.authority(), &mut cmd)
@@ -462,7 +324,7 @@ async fn editing_the_document_moves_where_a_comment_points_and_not_what_it_is_ab
     // no reader. Paging a comment in is what fills that cache, and
     // `Room::comment_page` resolves what it pages in, so a caller of the
     // direct method below expects that same priming.
-    let _ = room.all_comments(true).await.unwrap();
+    let _ = room.all_comments().await.unwrap();
 
     // Somebody writes a paragraph above it. Nothing about the comment has
     // changed; everything about where it sits has.
@@ -490,7 +352,7 @@ async fn editing_the_document_moves_where_a_comment_points_and_not_what_it_is_ab
 
     let moved = room.reattach_comments().await.unwrap();
     assert_eq!(moved.len(), 1, "the one comment on this document moved");
-    let comments = room.all_comments(true).await.unwrap();
+    let comments = room.all_comments().await.unwrap();
     let found = comments.iter().find(|item| item.id == comment.id).unwrap();
     assert_eq!(
         found.original_anchor.as_ref().unwrap(),
@@ -520,7 +382,6 @@ async fn a_passage_that_is_deleted_leaves_a_comment_that_says_so() {
         "Interval estimates The ",
         " of the posterior.",
         "commenting",
-        None,
     );
     let comment = room
         .command(&deployment.authority(), &mut cmd)
@@ -547,7 +408,7 @@ async fn a_passage_that_is_deleted_leaves_a_comment_that_says_so() {
     );
 
     room.reattach_comments().await.unwrap();
-    let comments = room.all_comments(true).await.unwrap();
+    let comments = room.all_comments().await.unwrap();
     let found = comments.iter().find(|item| item.id == comment.id).unwrap();
     assert!(found.source().is_some());
     assert_eq!(
@@ -602,7 +463,6 @@ async fn a_comment_reaches_the_other_editor_and_the_public_channel_live() {
         "Interval estimates The ",
         " of the posterior.",
         "commenting",
-        None,
     );
     let comment = room
         .command(&deployment.authority(), &mut cmd)
@@ -673,7 +533,6 @@ async fn a_snapshot_states_the_list_each_peer_may_see() {
         "Interval estimates The ",
         " of the posterior.",
         "commenting",
-        None,
     );
     room.command(&deployment.authority(), &mut cmd)
         .await
@@ -703,266 +562,6 @@ async fn a_snapshot_states_the_list_each_peer_may_see() {
     deployment.catalog.close().await;
 }
 
-/// A suggestion is the one annotation a reader never receives: it is an edit
-/// to the document, not a remark about it.
-#[tokio::test]
-#[ignore = "requires LIBREPAPER_TEST_POSTGRES_URL"]
-async fn a_suggestion_stays_out_of_the_public_channel() {
-    let Some(deployment) = deployment("anchor-suggestion").await else {
-        return;
-    };
-    let room = deployment.rooms.get(&deployment.slug).await.unwrap();
-    let (editor_tx, mut editor_rx) = tokio::sync::mpsc::channel(8);
-    let (reader_tx, mut reader_rx) = tokio::sync::mpsc::channel(8);
-    room.join(
-        1,
-        true,
-        "editor-1",
-        librepaper_engine::storage::outgoing::Sender::from_raw(editor_tx),
-        None,
-    )
-    .await
-    .unwrap();
-    room.join(
-        2,
-        false,
-        "reader-2",
-        librepaper_engine::storage::outgoing::Sender::from_raw(reader_tx),
-        None,
-    )
-    .await
-    .unwrap();
-
-    let mut cmd = deployment.add_comment(
-        &room,
-        "interval covers the mean",
-        "Interval estimates The ",
-        " of the posterior.",
-        "editing",
-        Some("*interval* contains the mean"),
-    );
-    let comment = room
-        .command(&deployment.authority(), &mut cmd)
-        .await
-        .unwrap();
-    assert!(
-        !comment.proposal.is_empty(),
-        "a suggestion opens a proposal"
-    );
-    let payload = json!({"type": "comment", "comment": comment});
-    room.broadcast_comment_event(None, &payload).await;
-    assert_eq!(
-        room.event_comment_read_count(),
-        1,
-        "a suggestion is read once before its reader view is redacted"
-    );
-
-    let editors = received(&mut editor_rx);
-    assert_eq!(editors.len(), 1);
-    assert_eq!(editors[0]["type"], "comment", "{}", editors[0]);
-
-    let readers = received(&mut reader_rx);
-    assert_eq!(readers.len(), 1);
-    assert_eq!(
-        readers[0]["type"], "annotation-redacted",
-        "a proposed edit is not a remark a reader may have: {}",
-        readers[0],
-    );
-    deployment.catalog.close().await;
-}
-
-/// §7.2's refinement precondition, end to end: a refinement says what the
-/// suggestion proposed when its caller read it, and one that names text the
-/// suggestion no longer proposes is refused.
-///
-/// The proposal row's own version cannot see this. A caller who read the
-/// suggestion two refinements ago still looks up a current version number
-/// on the way in, and their replacement would land on top of work they
-/// never saw.
-#[tokio::test]
-#[ignore = "requires LIBREPAPER_TEST_POSTGRES_URL"]
-async fn a_refinement_of_a_suggestion_that_moved_is_refused() {
-    refinement_round_trip(false, true).await;
-}
-
-#[tokio::test]
-#[ignore = "requires LIBREPAPER_TEST_POSTGRES_URL"]
-async fn repeated_refinements_preserve_intervening_source_edits() {
-    refinement_round_trip(true, true).await;
-}
-
-#[tokio::test]
-#[ignore = "requires LIBREPAPER_TEST_POSTGRES_URL"]
-async fn version_checked_refinements_preserve_intervening_source_edits() {
-    refinement_round_trip(true, false).await;
-}
-
-async fn refinement_round_trip(edit_source: bool, check_text: bool) {
-    let Some(deployment) = deployment("anchor-refine").await else {
-        return;
-    };
-    let room = deployment.rooms.get(&deployment.slug).await.unwrap();
-    let mut cmd = deployment.add_comment(
-        &room,
-        "interval covers the mean",
-        "Interval estimates The ",
-        " of the posterior.",
-        "editing",
-        Some("*interval* contains the mean"),
-    );
-    let comment = room
-        .command(&deployment.authority(), &mut cmd)
-        .await
-        .unwrap();
-    let proposal_id = Uuid::parse_str(&comment.proposal).expect("a proposal id");
-    let source = comment.source().expect("a suggestion is about a passage");
-    let config = Configuration::default();
-    let refine = |version: i64, proposed: &str, expected: &str| {
-        RefineSuggestion::new(
-            deployment.catalog.clone(),
-            room.document_id,
-            Uuid::parse_str(&comment.id).unwrap(),
-            proposal_id,
-            version,
-            &deployment.writer(),
-            &config,
-            "A revised remark.",
-            &source.exact,
-            &source.prefix,
-            &source.suffix,
-            proposed,
-            check_text.then_some(expected),
-        )
-        .expect("a well-formed refinement")
-    };
-    let version = |id: Uuid| {
-        let catalog = deployment.catalog.clone();
-        async move { catalog.proposal(id).await.unwrap().unwrap().version }
-    };
-
-    let edited_source = format!("é 😀 An unrelated opening.\n\n{PAPER}\nAn unrelated ending.\n");
-    if edit_source {
-        edit_refinement_source(&room, &edited_source, 1).await;
-    }
-
-    // One refinement, by someone who read the suggestion as it stands.
-    let first = version(proposal_id).await;
-    let mut cmd = refine(
-        first,
-        "*interval* covers the posterior mean",
-        "*interval* contains the mean",
-    );
-    room.command(&deployment.authority(), &mut cmd)
-        .await
-        .expect("a refinement of what the caller read");
-
-    // A second caller who read it before that refinement. Their version
-    // number is current -- they looked it up on the way in -- and only
-    // what they last read tells them apart.
-    let second = version(proposal_id).await;
-    let mut cmd = refine(
-        second,
-        "*interval* covers something else",
-        "*interval* contains the mean",
-    );
-    if check_text {
-        let error = room
-            .command(&deployment.authority(), &mut cmd)
-            .await
-            .expect_err("a refinement of text the suggestion no longer proposes");
-        assert!(
-            matches!(&error, librepaper_engine::log::CommandError::Conflict(message)
-                if message.contains("read it again")),
-            "{error:?}",
-        );
-    }
-
-    let final_source = if edit_source {
-        format!("{edited_source}\nAnother unrelated ending.\n")
-    } else {
-        PAPER.to_string()
-    };
-    if edit_source {
-        edit_refinement_source(&room, &final_source, 2).await;
-    }
-
-    // And the suggestion still says what the first refinement made it say.
-    let mut cmd = refine(
-        second,
-        "*interval* covers the mean, at last",
-        "*interval* covers the posterior mean",
-    );
-    room.command(&deployment.authority(), &mut cmd)
-        .await
-        .expect("a refinement of what is actually there");
-
-    let served = room
-        .comment_by_id(&comment.id, true)
-        .await
-        .unwrap()
-        .expect("the refined suggestion remains readable");
-    assert_eq!(
-        served.proposed.as_deref(),
-        Some("*interval* covers the mean, at last"),
-        "hydration shows the replacement after refinement and Unicode source edits",
-    );
-
-    let proposal = deployment
-        .catalog
-        .proposal(proposal_id)
-        .await
-        .unwrap()
-        .unwrap();
-    let mut accept = AcceptSuggestion::new(
-        deployment.catalog.clone(),
-        room.document_id,
-        Uuid::parse_str(&comment.id).unwrap(),
-        proposal_id,
-        proposal.base_frontiers,
-        proposal.tip_frontiers,
-        proposal.branch_bytes,
-        "Owner".into(),
-        deployment.mutation_authorization(),
-        Uuid::new_v4(),
-    );
-    room.command(&deployment.authority(), &mut accept)
-        .await
-        .expect("the refined branch can be accepted after source edits");
-    let receipt = deployment
-        .catalog
-        .proposal_outcome(room.document_id, proposal_id)
-        .await
-        .unwrap()
-        .expect("MCP acceptance uses the same durable whole-suggestion result");
-    assert!(!receipt.discarded);
-    assert!(!receipt.decisions.0.is_empty());
-    assert!(receipt.decisions.0.iter().all(|(_, accepted)| *accepted));
-    assert_eq!(
-        room.projection().await.unwrap().texts["paper.md"],
-        final_source.replace(
-            "*interval* covers the mean",
-            "*interval* covers the mean, at last"
-        ),
-        "acceptance preserves unrelated source edits and applies only the final refinement",
-    );
-    deployment.catalog.close().await;
-}
-
-async fn edit_refinement_source(room: &Room, text: &str, sequence: i64) {
-    let (vector, edited) = room
-        .log()
-        .with_head(|doc| (session::encode_vector(doc), doc.fork()))
-        .await
-        .unwrap();
-    session::put_text(&edited, "paper.md", text);
-    let update = session::encode_diff(&edited, &vector).unwrap();
-    assert!(matches!(
-        room.ingest(999, "editor-999", "editor-999", sequence, update)
-            .await,
-        librepaper_engine::log::Ingested::Accepted,
-    ));
-}
-
 /// Whatever is already queued for a peer, as JSON.
 fn received(
     rx: &mut tokio::sync::mpsc::Receiver<librepaper_engine::storage::outgoing::Outgoing>,
@@ -979,18 +578,14 @@ fn received(
     out
 }
 
-/// The MCP action gate, against a suggestion that really was stored.
+/// The MCP action gate, against a comment that really was stored.
 ///
-/// `validate_existing_action` used to require `Comment::proposed` and an
-/// empty `Comment::outcome`, and `room::comments` fills in neither when it
-/// serves a comment. Every unit test of the gate built its own comment with
-/// `proposed: Some(..)`, so the gate looked correct while refusing every
-/// real suggestion an agent had made. This drives the gate with exactly the
-/// value `comment_by_id` hands MCP.
+/// `validate_existing_action` reads the value `comment_by_id` hands MCP, so
+/// this drives it with exactly that value rather than with one built by hand.
 #[tokio::test]
 #[ignore = "requires LIBREPAPER_TEST_POSTGRES_URL"]
-async fn mcp_validates_a_suggestion_as_it_is_actually_served() {
-    use crate::room::proposals::{pending_proposal, validate_existing_action};
+async fn mcp_validates_a_comment_as_it_is_actually_served() {
+    use crate::room::comments::validate_existing_action;
 
     let Some(deployment) = deployment("anchor-mcp-gate").await else {
         return;
@@ -1001,28 +596,18 @@ async fn mcp_validates_a_suggestion_as_it_is_actually_served() {
         "interval covers the mean",
         "Interval estimates The ",
         " of the posterior.",
-        "editing",
-        Some("*interval* contains the mean"),
+        "commenting",
     );
     let created = room
         .command(&deployment.authority(), &mut cmd)
         .await
         .unwrap();
 
-    // Not `created`: MCP validates the indexed read, which now derives the
-    // proposed text from the linked branch while leaving the outcome empty.
     let served = room
-        .comment_by_id(&created.id, true)
+        .comment_by_id(&created.id)
         .await
         .unwrap()
-        .expect("the suggestion is readable");
-    assert!(
-        served.proposed.as_deref() == Some("*interval* contains the mean")
-            && served.outcome.is_empty(),
-        "the served shape derives proposed text from the branch: {:?}",
-        served.proposed,
-    );
-    assert!(!served.proposal.is_empty(), "it does carry a proposal id");
+        .expect("the comment is readable");
 
     let author = format!("account:{}", deployment.account_id);
     let version = served.version();
@@ -1038,25 +623,19 @@ async fn mcp_validates_a_suggestion_as_it_is_actually_served() {
         )
     };
 
-    check("refine", &author, false).expect("the suggestion's own author may refine it");
-    check("reject", "an-editor", true).expect("an editor may reject it");
+    check("resolve", &author, false).expect("the comment's own author may resolve it");
+    check("delete", "an-editor", true).expect("an editor may delete it");
     check("delete", &author, false).expect("the author may delete it");
 
     assert_eq!(
-        check("refine", "someone-else", false)
-            .expect_err("an unrelated commenter may not refine")
-            .code,
-        "permission_changed",
-    );
-    assert_eq!(
-        check("reject", &author, false)
-            .expect_err("rejecting is an editor's decision, even over one's own suggestion")
+        check("delete", "someone-else", false)
+            .expect_err("an unrelated commenter may not delete")
             .code,
         "permission_changed",
     );
     assert_eq!(
         validate_existing_action(
-            "refine",
+            "resolve",
             &served.id,
             Some(&served),
             "a-version-read-two-edits-ago",
@@ -1067,47 +646,6 @@ async fn mcp_validates_a_suggestion_as_it_is_actually_served() {
         .expect_err("a stale expected_version is refused")
         .code,
         "conflict",
-    );
-
-    // The proposal row, not the comment, says whether it is still open.
-    let open = pending_proposal(&deployment.catalog, &served)
-        .await
-        .expect("the proposal is pending");
-    let mut cmd = RejectSuggestion::new(
-        deployment.catalog.clone(),
-        room.document_id,
-        Uuid::parse_str(&served.id).unwrap(),
-        open.id,
-        open.tip_frontiers.clone(),
-        &deployment.writer(),
-        Uuid::new_v4(),
-    );
-    room.command(&deployment.authority(), &mut cmd)
-        .await
-        .expect("an editor rejects it");
-    let receipt = deployment
-        .catalog
-        .proposal_outcome(room.document_id, open.id)
-        .await
-        .unwrap()
-        .expect("MCP rejection records a whole-proposal result");
-    assert!(!receipt.discarded);
-    assert_eq!(receipt.decisions.0, vec![(0, false)]);
-    assert!(
-        room.comment_by_id(&created.id, true)
-            .await
-            .unwrap()
-            .is_none(),
-        "a decided suggestion is deleted with its proposal",
-    );
-    assert!(
-        deployment
-            .catalog
-            .proposal(open.id)
-            .await
-            .unwrap()
-            .is_none(),
-        "the decided proposal is deleted, not kept",
     );
     deployment.catalog.close().await;
 }

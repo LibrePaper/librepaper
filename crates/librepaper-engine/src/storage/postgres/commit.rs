@@ -1,7 +1,7 @@
 //! Who is writing.
 //!
 //! What used to be here -- `commit_source`, the receipt table, the revision
-//! counter, the proposal-decision transaction -- is gone. A write to the
+//! counter -- is gone. A write to the
 //! source is a flush of the log, and a write whose meaning depends on the
 //! source is a semantic command. Both are assembled by the sequencer rather
 //! than by one catalogue method per kind of write. What remains is the identity the

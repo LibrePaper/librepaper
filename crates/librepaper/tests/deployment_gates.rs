@@ -111,7 +111,7 @@ async fn connected(url: &str) -> PostgresCatalog {
 /// to it.
 async fn truncate(catalog: &PostgresCatalog) {
     sqlx::query(
-        "TRUNCATE document_proposal_hunks,document_proposals,document_labels,\
+        "TRUNCATE document_labels,\
          document_updates,document_snapshots,document_assets,replies,annotations,\
          document_marks,share_links,grants,documents,accounts CASCADE",
     )
@@ -1647,7 +1647,6 @@ mod comment_traversal {
                             author_key: format!("account:{owner_id}"),
                             author_label: "Owner".into(),
                             color: None,
-                            proposal_id: None,
                             original_anchor: OriginalAnchor {
                                 source_sequence: 1,
                                 frontier: vec![1, 2, 3],

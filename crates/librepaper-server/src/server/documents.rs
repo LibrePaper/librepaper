@@ -49,6 +49,59 @@ struct SnapshotResponse<C> {
     capabilities: Value,
 }
 
+/// The pending tracked changes of every text file, in the shape a reader
+/// gets them: place, author and text, never CRDT bytes or history. Offsets
+/// are UTF-16, the unit the browser slices strings by; `track` keeps code
+/// points.
+fn reader_changes(
+    doc: &loro::LoroDoc,
+    projected: &librepaper_document::document::projection::Projected,
+) -> Vec<Value> {
+    let mut out = Vec::new();
+    for (path, entry) in &projected.projection.files {
+        if entry.kind != "text" {
+            continue;
+        }
+        let text = projected.texts.get(path).map(String::as_str).unwrap_or("");
+        let units =
+            |points: usize| -> usize { text.chars().take(points).map(char::len_utf16).sum() };
+        for change in librepaper_document::document::track::resolve_changes(doc, &entry.id) {
+            let inserted: String = text
+                .chars()
+                .skip(change.from)
+                .take(change.to - change.from)
+                .collect();
+            out.push(json!({
+                "id": change.id,
+                "file": entry.id,
+                "path": path,
+                "author": change.author,
+                "who": change.who,
+                "run": change.run,
+                "at": change.at,
+                "from": units(change.from),
+                "to": units(change.to),
+                "deleted": change.deleted,
+                "inserted": inserted,
+            }));
+        }
+    }
+    out
+}
+
+/// What a reader's etag names: the projection digest and the pending
+/// changes. The projection digest ignores the `changes` root, so an accept
+/// or a reject, which only deletes a record, would otherwise never reach a
+/// reader. `project_digest` itself stays the projection digest, because the
+/// render and the stale-selection check are keyed on text alone.
+fn reader_identity(project_digest: &str, changes: &[Value]) -> String {
+    let mut hash = Sha256::new();
+    hash.update(project_digest.as_bytes());
+    hash.update(b"\n");
+    hash.update(Value::Array(changes.to_vec()).to_string().as_bytes());
+    hex::encode(hash.finalize())
+}
+
 impl Server {
     pub async fn delete_document(&self, slug: &str) -> Result<usize, String> {
         let storage_id = self.store.begin_delete(slug).await?;
@@ -134,12 +187,7 @@ impl Server {
             .unwrap_or(librepaper_room::room::comments::COMMENT_PAGE_DEFAULT);
         let after = match values.get("cursor") {
             Some(raw) => {
-                match librepaper_room::room::comments::decode_cursor(
-                    raw,
-                    room.document_id,
-                    None,
-                    may_edit,
-                ) {
+                match librepaper_room::room::comments::decode_cursor(raw, room.document_id, None) {
                     Ok(position) => Some(position),
                     Err(error) => return write_json(400, &json!({"error": error.to_string()})),
                 }
@@ -149,7 +197,7 @@ impl Server {
         // The counts come first so a page and the totals beside it are read
         // in the same order every time; both are their own statement, and
         // neither holds a connection past its own answer.
-        let state = match room.comment_state(may_edit).await {
+        let state = match room.comment_state().await {
             Ok(state) => state,
             Err(error) => return refused("read comment state", &error),
         };
@@ -161,7 +209,7 @@ impl Server {
                     "protocol": "librepaper.comments.v1",
                     "comments": views,
                     "next_cursor": page.next.map(|at| librepaper_room::room::comments::encode_cursor(
-                        room.document_id, None, may_edit, at)),
+                        room.document_id, None, at)),
                     "complete": page.complete,
                     "oversize": page.oversize,
                     "state": librepaper_room::room::comments::comment_state_json(&state),
@@ -197,7 +245,6 @@ impl Server {
         if let Err(response) = self.check_readable(&entry, &who) {
             return response;
         }
-        let may_edit = who.at_least(Role::Editor);
         let room = match self.rooms.get(slug).await {
             Ok(room) => room,
             Err(error) => return refused("open the room", &error),
@@ -219,16 +266,13 @@ impl Server {
                 raw,
                 room.document_id,
                 Some(comment_id),
-                may_edit,
             ) {
                 Ok(position) => Some(position),
                 Err(error) => return write_json(400, &json!({"error": error.to_string()})),
             },
             None => None,
         };
-        match room.reply_page(comment_id, after, limit, may_edit).await {
-            // A thread of a document this caller cannot see a suggestion of
-            // answers exactly as a missing one does.
+        match room.reply_page(comment_id, after, limit).await {
             Ok(None) => write_json(404, &json!({"error": "not found"})),
             Ok(Some(page)) => write_json(
                 200,
@@ -238,7 +282,7 @@ impl Server {
                     "comment_id": comment,
                     "replies": page.replies,
                     "next_cursor": page.next.map(|at| librepaper_room::room::comments::encode_cursor(
-                        room.document_id, Some(comment_id), may_edit, at)),
+                        room.document_id, Some(comment_id), at)),
                     "complete": page.complete,
                     "oversize": page.oversize,
                     "total": page.total,
@@ -292,12 +336,6 @@ impl Server {
                 let Ok(incoming) = serde_json::from_slice::<RoomMessage>(&body) else {
                     return write_json(400, &json!({"error": "bad request"}));
                 };
-                if incoming.motivation() == "editing" && !who.at_least(Role::Editor) {
-                    return write_json(
-                        403,
-                        &json!({"error": "editor access is required for suggestions"}),
-                    );
-                }
                 // Body reads are an await boundary. Resolve identity and
                 // document rights again afterwards so revocation/transfer
                 // cannot race a large request into a mutation.
@@ -1071,19 +1109,29 @@ impl Server {
             Ok(room) => room,
             Err(error) => return refused("open the room", &error),
         };
-        let projected = match room.projection().await {
-            Ok(projected) => projected,
-            Err(error) => return sequencer_reply(&error),
-        };
         let format = match room.format(&entry.source_format).await {
             Ok(format) => format,
             Err(error) => return sequencer_reply(&error),
         };
-        // The etag -- and what `source-changed {digest}` on the socket
-        // names (§4.5) -- is the projection digest, not a row number: two
-        // heads with the same files answer the same identity (§2.2).
+        // One read of the head gives the projection and the change offsets,
+        // so an edit cannot pair old text with new offsets.
+        let (projected, changes) = match room
+            .log()
+            .with_projected_head(|doc, projected| {
+                (projected.clone(), reader_changes(doc, projected))
+            })
+            .await
+        {
+            Ok(pair) => pair,
+            Err(error) => return sequencer_reply(&error),
+        };
+        // `project_digest` is the projection digest, not a row number: two
+        // heads with the same files answer the same digest (§2.2). The etag
+        // also covers the pending changes, so an accept or a reject reaches
+        // a reader whose text did not move. The `source-changed` frame
+        // names no identity the browser compares; it only says to refetch.
         let identity = projected.projection.digest();
-        let etag = format!("\"{identity}\"");
+        let etag = format!("\"{}\"", reader_identity(&identity, &changes));
         if header_of(headers, "if-none-match").is_some_and(|value| {
             value
                 .split(',')
@@ -1107,6 +1155,7 @@ impl Server {
                 "main": projected.projection.main,
                 "tree": projected.projection,
                 "texts": projected.texts,
+                "changes": changes,
             }),
         );
         set(&mut response, "etag", &etag);
@@ -1164,7 +1213,7 @@ impl Server {
         // that it is a bounded page with `comment_state` beside it saying
         // how much more there is and where to continue. A caller that
         // wants the rest walks `GET .../comments?cursor=`.
-        let state = match room.comment_state(may_edit).await {
+        let state = match room.comment_state().await {
             Ok(state) => state,
             Err(error) => return refused("read snapshot comment state", &error),
         };
@@ -1182,15 +1231,9 @@ impl Server {
         };
         let mut comment_state = librepaper_room::room::comments::comment_state_json(&state);
         comment_state["complete"] = json!(page.complete);
-        comment_state["next_cursor"] =
-            json!(page
-                .next
-                .map(|at| librepaper_room::room::comments::encode_cursor(
-                    room.document_id,
-                    None,
-                    may_edit,
-                    at
-                )));
+        comment_state["next_cursor"] = json!(page
+            .next
+            .map(|at| librepaper_room::room::comments::encode_cursor(room.document_id, None, at)));
         let tree_sha = projected.projection.digest();
         let main = projected.projection.main.clone();
         let files = projected.projection.files.clone();
@@ -1963,5 +2006,61 @@ impl Server {
                 write_json(500, &json!({"error": "could not save that"}))
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod reader_changes_tests {
+    use super::*;
+    use librepaper_base::config::Configuration;
+    use librepaper_document::document::paths::rules;
+    use librepaper_document::document::projection::project;
+    use librepaper_document::document::session::{new_doc, put_text, Edit};
+    use librepaper_document::document::track::{accept, apply_tracked_edits, Author};
+
+    #[test]
+    fn a_reader_gets_utf16_offsets_and_a_moving_identity() {
+        let doc = new_doc();
+        // U+1F600 is two UTF-16 units and one code point.
+        let id = put_text(&doc, "main.md", "\u{1F600} the quick fox");
+        doc.commit();
+        let me = Author {
+            who: "me",
+            author: "Me",
+        };
+        // UTF-16 offsets: the emoji is 2 units, then " the " is 5 more.
+        let edit = Edit {
+            at: 7,
+            delete: 5,
+            insert: "slow".to_string(),
+        };
+        let set = apply_tracked_edits(&doc, &id, &[edit], &me, Some("r1"), 9).unwrap();
+        doc.commit();
+        let config = Configuration::default();
+        let projected = project(&doc, &rules(&config));
+        let changes = reader_changes(&doc, &projected);
+        assert_eq!(changes.len(), 1);
+        let row = &changes[0];
+        assert_eq!(row["id"], set[0].as_str());
+        assert_eq!(row["file"], id.as_str());
+        assert_eq!(row["path"], "main.md");
+        assert_eq!(row["who"], "me");
+        assert_eq!(row["author"], "Me");
+        assert_eq!(row["run"], "r1");
+        assert_eq!(row["at"], 9);
+        assert_eq!(row["from"], 7);
+        assert_eq!(row["to"], 11);
+        assert_eq!(row["deleted"], "quick");
+        assert_eq!(row["inserted"], "slow");
+        assert_eq!(row.as_object().unwrap().len(), 11);
+
+        let before = reader_identity(&projected.projection.digest(), &changes);
+        assert!(accept(&doc, &set[0]));
+        doc.commit();
+        let projected = project(&doc, &rules(&config));
+        let changes = reader_changes(&doc, &projected);
+        assert!(changes.is_empty());
+        let after = reader_identity(&projected.projection.digest(), &changes);
+        assert_ne!(before, after);
     }
 }

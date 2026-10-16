@@ -162,246 +162,165 @@
   import { analyzeBibliography } from "../lib/bibliography-engine.js";
   import { bibliographyCache, bibliographyCacheKey, bibliographyCompletion, bibliographyNeedsAnalysis, citationContext, planZoteroImport } from "../lib/bibliography.js";
   import { desktop, searchZotero, zoteroItem } from "../lib/desktop/client.js";
-  import { createProposals, locateProposalHunk } from "../lib/proposals.js";
-  import { proposalMarks, setProposalMarks } from "../lib/proposal-marks.js";
+  import { changeMarks, setChangeMarks } from "../lib/change-marks.js";
+  import { CHANGES, planEdits, writePlanned, resolveChanges, trackedSplice, prune } from "../lib/track-changes.js";
   import { DIRECTORY_ORIGIN } from "../lib/project-session.js";
   import { projectDirectory } from "../lib/projection.js";
   import { attachEditorZoom } from "../lib/editor-zoom.js";
   import { untrack } from "svelte";
 
-  // Whether what is typed here goes into a proposal rather than into the paper
-  // is not a prop. It is `startTracking`/`stopTracking`, and the answer lives
-  // in the proposals API: a branch is opened the moment it is switched on and
-  // the binding is rebuilt against that branch in the same call, before any
-  // prop could have arrived (§3.3).
+  // Whether what is typed here is recorded as a tracked change is not a prop
+  // to follow. It starts from `tracking` and is flipped by `startTracking` and
+  // `stopTracking`; the plugin below reads it through a function, so flipping
+  // it does not rebuild any state. Pending changes are drawn either way.
+  //
+  // `me` is who the tracked edits belong to, `{who, author}`. `selectedChange`
+  // is the id of the change the reviewer is looking at.
+  /** @type {{ me?: { who: string, author: string }, [key: string]: any }} */
   let { session, format = "", file = "", keys = "default", editable = true,
-    tracking = false,
-    analyze = analyzeBibliography, send = null, onproposal = null,
-    // What is being proposed for this document, and which hunk of it the
-    // reviewer is looking at. `review` carries each proposal's base and raw
-    // hunks; this editor maps them into the document it is displaying.
-    // `reviewing` is `{proposal, hunk}` or null.
-    //
-    // These are drawn, never applied: a proposal reaches the document when
-    // the server resolves it (§5.1a), and until then the text on screen still
-    // says what it said.
-    review = [], reviewing = null,
-    onchange, oncaret, onfilechange, onbibliography, onsave, onquit, onproposalstatus,
+    tracking = false, me = { who: "", author: "" }, selectedChange = null,
+    analyze = analyzeBibliography,
+    onchange, oncaret, onfilechange, onbibliography, onsave, onquit,
     rules = null } = $props();
+
+  let tracked = $state(untrack(() => tracking));
 
   // One field instance for the component, because it is one editor: a state
   // field is identified by the object, so building a fresh one per file would
   // make each file's state carry a field the view's other states do not have.
-  const proposalReview = proposalMarks();
+  const pendingChanges = changeMarks();
 
-  /// Redraw the proposals over whichever file is on screen.
+  /// Redraw the pending changes over whichever file is on screen.
   ///
-  /// Everything is recomputed rather than mapped: a hunk's offsets are a claim
-  /// about the proposal's base, and moving them through an edit would quietly
-  /// turn them into a claim about something else. `proposal-marks.js` drops
-  /// its decorations on any document change for the same reason, so this has
-  /// to run again after one.
-  function drawProposals() {
-    if (!view) return;
-    // This browser's own draft is drawn from the other basis. While one is
-    // open the binding is attached to the branch, so what the author typed is
-    // the text in front of them: their hunks, which are offsets into the base,
-    // would strike through words that are no longer there and show every
-    // insertion a second time. `draftMarks` reports the same branch against
-    // the text on screen, which is what the author is actually reading.
-    const drafting = Boolean(proposals?.drafting?.());
-    const mine = drafting ? proposals.id() : "";
-    const document_ = boundDoc();
-    const visible = (review || []).filter((one) => one.id !== mine).map((proposal) => ({
-      ...proposal,
-      hunks: (proposal.hunks || []).map((hunk) => {
-        const mapped = locateProposalHunk(document_, { base: proposal.base }, hunk);
-        return mapped.stale ? null : {
-          ...hunk,
-          // CRDT identity validation already proved that the original hunk
-          // still exists. Its original context can change at either edge
-          // when a coauthor makes an adjacent insertion.
-          prefix: "",
-          suffix: "",
-          start: mapped.position ?? hunk.start,
-          file: mapped.file_id || hunk.file,
-        };
-      }).filter(Boolean),
-    }));
+  /// A state carries no decorations until something puts them there, so this
+  /// runs when a file is shown, after every document change (local or
+  /// imported), and when the selection or the viewer changes.
+  function drawChanges() {
+    if (!view || !showing || !session) return;
     view.dispatch({
-      effects: setProposalMarks.of({
-        proposals: visible,
-        showing,
-        selected: reviewing,
-        draft: drafting ? proposals.draftMarks() : [],
+      effects: setChangeMarks.of({
+        changes: resolveChanges(session.doc, showing),
+        me,
+        selected: selectedChange,
       }),
+    });
+  }
+
+  /// Takes each local, user transaction as a tracked change while tracking is
+  /// on. Installed right after the binding, so by the time `update` runs the
+  /// binding has already written the text and committed it.
+  ///
+  /// The planner needs the changes as they were before that write, so the
+  /// list is cached and refreshed after every update and after every document
+  /// event. Loro delivers events in a microtask, so the cache is still the
+  /// old list while the binding's own update runs.
+  ///
+  /// A transaction carrying the binding's annotation is its own write or an
+  /// undo, and is already in the document.
+  ///
+  /// Every local edit, tracked or not, also prunes: an untracked edit can
+  /// delete the character a pending change's cursor is attached to, and the
+  /// prune rewrites that cursor against live text while the history that
+  /// locates it is still there.
+  function trackChanges(fileId) {
+    return ViewPlugin.define(() => {
+      const doc = session.doc;
+      let resolved = resolveChanges(doc, fileId);
+      const refresh = () => { resolved = resolveChanges(doc, fileId); };
+      const subscription = doc.subscribe(refresh);
+      return {
+        update(update) {
+          if (!update.docChanged) return;
+          let local = false;
+          // The sync plugin has written every transaction of this update to
+          // the LoroText already. Each one is planned against the text it
+          // started from, chained, and the result is written once so that no
+          // cursor is made at an intermediate offset.
+          /** @type {any[]} */
+          let live = resolved.map((change) => ({ ...change }));
+          const created = new Set();
+          const written = new Set();
+          const removed = new Set();
+          const now = Date.now();
+          for (const transaction of update.transactions) {
+            if (!transaction.docChanged || transaction.annotation(loroSyncAnnotation) !== undefined) continue;
+            local = true;
+            if (!tracked) continue;
+            const edits = [];
+            transaction.changes.iterChanges((fromA, toA, fromB, toB, insert) => {
+              edits.push({ from: fromA, to: toA, insert: insert.sliceString(0, insert.length, "\n") });
+            });
+            const known = new Set(live.map((change) => change.id));
+            /** @type {any[]} */
+            const plan = planEdits(transaction.startState.doc.toString(), live, edits, me, {
+              run: null,
+              now,
+              mintId: () => crypto.randomUUID(),
+            });
+            for (const change of plan) {
+              if (change.state === "removed") {
+                if (created.has(change.id)) written.delete(change.id);
+                else removed.add(change.id);
+              } else {
+                if (!known.has(change.id)) created.add(change.id);
+                if (change.state === "set") written.add(change.id);
+              }
+            }
+            live = plan.filter((change) => change.state !== "removed");
+          }
+          if (tracked && (written.size || removed.size)) {
+            /** @type {any[]} */
+            const planned = [
+              ...live.filter((change) => written.has(change.id)).map((change) => ({ ...change, state: "set" })),
+              ...[...removed].map((id) => ({ id, state: "removed" })),
+            ];
+            writePlanned(doc, fileId, planned);
+            refresh();
+          }
+          if (local && doc.getMap(CHANGES).size) {
+            prune(doc);
+            doc.commit();
+          }
+          refresh();
+        },
+        destroy() {
+          subscription();
+        },
+      };
     });
   }
 
   let parsedBibliography = $state(null);
   const insertTargets = new Map();
-  const undoManagers = new Map();
+  // One undo manager for the document the editor is bound to, shared by every
+  // file's state. A session swap brings a new document and so a new manager.
+  let undoManager = null;
+  let undoManagerDoc = null;
 
-  // Proposals API for tracked editing. When tracking is on, the editor binds to
-  // the proposal's text instead of the room document's text. The send function
-  // is passed from the Reader and routes messages through the room socket.
-  let proposals = null;
-  let proposalsSession = null;
-  let proposalUnsubscribe = null;
-  let trackingIntent = false;
-  let observedDrafting = false;
-  let startingIntentBranch = false;
-  $effect(() => {
-    if (!send || !session) return;
-    // Source swaps can replace the session while a stopped or unresolved
-    // branch is still retained. That branch belongs to its old session's
-    // manager; attach this editor to the new session without discarding it.
-    if (proposals && proposalsSession !== session) {
-      proposalUnsubscribe?.();
-      proposalUnsubscribe = null;
-      proposals.detach?.();
-      proposals = null;
-      proposalsSession = null;
+  /// Writes one edit into a file's text. Tracked, it is also recorded as a
+  /// pending change. The caller commits.
+  function writeText(fileId, text, from, to, insert) {
+    if (tracked) {
+      trackedSplice(session.doc, fileId, from, to, insert, me);
+      return;
     }
-    // Never over a branch somebody is typing into: replacing the API would
-    // orphan the fork, which is still holding unflushed work and would have
-    // nothing left to flush it.
-    if (proposals?.drafting?.() || proposals?.status?.()?.pending) return;
-    proposalUnsubscribe?.();
-    proposalUnsubscribe = null;
-    proposals = createProposals({
-      session,
-      send: (message) => send?.(message),
-      mayEdit: editable,
-    });
-    proposalsSession = session;
-    observedDrafting = Boolean(proposals.drafting?.());
-    trackingIntent = Boolean(tracking || observedDrafting);
-    if (trackingIntent && !observedDrafting) {
-      startingIntentBranch = true;
-      proposals.start();
-      startingIntentBranch = false;
-      observedDrafting = Boolean(proposals.drafting?.());
-    }
-    proposalUnsubscribe = proposals.onchange?.(() => {
-      const drafting = Boolean(proposals?.drafting?.());
-      // Reader owns proposal delivery. If this active branch resolves while
-      // tracking remains enabled, keep the switch's intent by opening a new
-      // local branch now; it stays server-invisible until the next edit.
-      if (observedDrafting && !drafting && trackingIntent && !startingIntentBranch) {
-        const previous = proposals?.doc?.() || activeDocument;
-        startingIntentBranch = true;
-        proposals.start();
-        startingIntentBranch = false;
-        if (previous) undoManagers.delete(previous);
-      }
-      observedDrafting = Boolean(proposals?.drafting?.());
-      const expected = boundDoc();
-      if (view && activeDocument !== expected) {
-        queueMicrotask(() => {
-          if (view && activeDocument !== boundDoc()) rebind();
-          else drawProposals();
-        });
-      } else drawProposals();
-      onproposalstatus?.(proposals?.status?.() || null);
-    }) || null;
-    onproposalstatus?.(proposals.status?.() || null);
-  });
-
-  /// Rebind the editor to whichever text it should now be writing into.
-  ///
-  /// Switching tracking on or off changes which LoroText the binding is
-  /// attached to -- the branch's copy of the file, or the room's -- and that
-  /// is fixed when the state is built. So the state is thrown away and made
-  /// again. Everything held in it goes with it: the caret, the scroll
-  /// position and the undo history. That is the honest cost of the switch,
-  /// because an undo history over one text cannot be replayed onto another.
-  function rebind() {
-    if (!view || !showing) return;
-    const id = showing;
-    if (activeDocument) stateMap(activeDocument).delete(id);
-    showing = "";
-    show(id);
+    if (to > from) text.delete(from, to - from);
+    if (insert) text.insert(from, insert);
   }
 
-  // A branch lives in this browser until it is flushed, and nothing that is
-  // only here can be reviewed -- not by a coauthor, and not by the author,
-  // whose own queue is drawn from what the server says is open. So typing
-  // sends: after a pause long enough that a keystroke is not a round trip,
-  // and short enough that the Changes panel keeps up with the sentence being
-  // written.
-  const PROPOSAL_FLUSH_MS = 400;
-  let proposalFlushTimer = null;
-  function scheduleProposalFlush() {
-    if (!proposals?.drafting?.()) return;
-    // Local branch operations are not covered by the room's persistence
-    // counter. Report them as soon as CodeMirror creates them, before the
-    // delayed network flush starts.
-    onproposalstatus?.(proposals.status?.() || null);
-    clearTimeout(proposalFlushTimer);
-    proposalFlushTimer = setTimeout(() => {
-      proposalFlushTimer = null;
-      proposals?.flush?.();
-      onproposalstatus?.(proposals?.status?.() || null);
-    }, PROPOSAL_FLUSH_MS);
-  }
-
-  /// Whether a branch is open here, which is the only truthful answer to
-  /// "is track changes on". The switch in the Changes panel reads it back
-  /// rather than assuming it got what it asked for: without a socket to send
-  /// a proposal on there is nothing to fork into, and a switch that shows on
-  /// while every keystroke goes into the paper is the worst of both.
-  export function trackingOn() {
-    return Boolean(proposals?.drafting?.());
-  }
-
-  export function proposalStatus() {
-    return proposals?.status?.() || null;
-  }
-
-  /// Start proposing rather than editing. Forks the document, and from here
-  /// what is typed accumulates on the branch and is flushed to the server
-  /// instead of reaching the paper.
+  /// Start recording what is typed as tracked changes.
   export function startTracking() {
-    if (!proposals || proposals.drafting()) return;
-    trackingIntent = true;
-    proposals.start();
-    observedDrafting = Boolean(proposals.drafting?.());
-    onproposalstatus?.(proposals.status?.() || null);
-    rebind();
+    tracked = true;
   }
 
-  /// Stop, leaving the branch with the server.
-  ///
-  /// What has been typed is not discarded and not applied: it is a proposal,
-  /// and it waits for somebody to answer it (§5.1a). Anything not yet sent
-  /// goes up before the local branch is let go.
+  /// Stop recording. The changes already made stay pending in the document.
   export function stopTracking() {
-    trackingIntent = false;
-    if (!proposals || !proposals.drafting()) return;
-    // Whatever the pause timer was about to send goes now, in this call,
-    // rather than after the branch has been let go.
-    clearTimeout(proposalFlushTimer);
-    proposalFlushTimer = null;
-    proposals.flush();
-    // The manager is keyed by the document it takes back operations on, and
-    // that document is about to be destroyed. Dropping it here keeps one
-    // dead manager per tracking session from accumulating in the map.
-    const branch = proposals.doc();
-    proposals.stop();
-    observedDrafting = Boolean(proposals.drafting?.());
-    onproposalstatus?.(proposals.status?.() || null);
-    if (branch) undoManagers.delete(branch);
-    rebind();
+    tracked = false;
   }
 
-  // Standalone editor integrations can deliver proposal replies here. In the
-  // Reader, delivery belongs to its session-shared manager so replies continue
-  // to settle while the editor is hidden.
-  export function receiveProposal(message) {
-    if (!proposals) return;
-    proposals.apply?.(message);
-    onproposalstatus?.(proposals.status?.() || null);
+  /// Whether tracking is on, which the switch in the Changes panel reads back.
+  export function trackingOn() {
+    return tracked;
   }
 
   let bibliographyGeneration = 0;
@@ -419,7 +338,7 @@
   }
   function bibliographyEntries() { return parsedBibliography?.entries || []; }
   function bibliographyRequest() {
-    const doc = boundDoc();
+    const doc = session.doc;
     const tree = doc ? treeForDoc(doc) : { main: "", texts: {} };
     const id = showing || (doc ? projectDirectory(doc, rules ?? null).mainId : "");
     const main = pathOfDoc(doc, id) || tree.main || "";
@@ -443,7 +362,7 @@
       const newlyAvailable = !parsedBibliography && result.entries.length > 0;
       parsedBibliography = result;
       onbibliography?.(result, request);
-      const currentFormat = formatOf(pathOfDoc(boundDoc(), showing));
+      const currentFormat = formatOf(pathOfDoc(session.doc, showing));
       const currentContext = view && citationContext(view.state.doc.toString(), view.state.selection.main.head, currentFormat);
       if (newlyAvailable && view?.hasFocus && currentContext) startCompletion(view);
     }).catch((error) => {
@@ -461,11 +380,11 @@
   function reportZotero(message) {
     if (message === lastZoteroError) return;
     lastZoteroError = message;
-    onbibliography?.({ entries: bibliographyEntries(), diagnostics: [{ severity: "warning", message, file: pathOfDoc(boundDoc(), showing), line: 0 }] }, bibliographyRequest());
+    onbibliography?.({ entries: bibliographyEntries(), diagnostics: [{ severity: "warning", message, file: pathOfDoc(session.doc, showing), line: 0 }] }, bibliographyRequest());
   }
 
   async function remoteBibliography(query) {
-    if (!["markdown", "quarto"].includes(formatOf(pathOfDoc(boundDoc(), showing)))) return [];
+    if (!["markdown", "quarto"].includes(formatOf(pathOfDoc(session.doc, showing)))) return [];
     // Zotero lives on this computer, so a browser says where it can be used.
     if (!desktop()) {
       reportZotero(ZOTERO_NEEDS_DESKTOP);
@@ -490,7 +409,7 @@
 
   async function importZotero(entry, target) {
     if (!editable || !session || target.view !== view || !showing) return false;
-    const doc = boundDoc();
+    const doc = session.doc;
     const active = getTextFromDoc(showing);
     if (!active) return false;
     const fromUnicode = active.convertPos(target.from, "utf16", "unicode") ?? target.from;
@@ -501,7 +420,7 @@
     const activeSession = session, activeFile = showing, activePath = pathOfDoc(doc, showing);
     try {
       const fetched = await zoteroItem(entry.zotero_item);
-      if (session !== activeSession || boundDoc() !== doc || showing !== activeFile || pathOfDoc(doc, activeFile) !== activePath || view !== target.view || !editable) return false;
+      if (session !== activeSession || session.doc !== doc || showing !== activeFile || pathOfDoc(doc, activeFile) !== activePath || view !== target.view || !editable) return false;
 
       const fromResult = doc.getCursorPos(fromCursor);
       if (!fromResult) return false;
@@ -529,19 +448,21 @@
       const setupShift = plan.registration && mainId === activeFile && plan.registration.from <= Math.min(start_utf16, end_utf16)
         ? plan.registration.insert.length - (plan.registration.to - plan.registration.from) : 0;
       if (bib) {
-        if (plan.addition) bib.insert(bib.toString().length, plan.addition);
+        if (plan.addition) {
+          const end = bib.toString().length;
+          writeText(bibId, bib, end, end, plan.addition);
+        }
       } else addTextToDoc(doc, plan.path, plan.bibtex);
       if (plan.registration && main && mainId !== activeFile) {
-        if (plan.registration.to > plan.registration.from) main.delete(plan.registration.from, plan.registration.to - plan.registration.from);
-        main.insert(plan.registration.from, plan.registration.insert);
+        writeText(mainId, main, plan.registration.from, plan.registration.to, plan.registration.insert);
       }
       target.view.dispatch({ changes, selection: { anchor: Math.min(start_utf16, end_utf16) + setupShift + plan.key.length }, annotations: Transaction.userEvent.of("input.complete") });
+      if (tracked) prune(doc);
       doc.commit();
-      proposals?.flush?.();
       scheduleBibliography();
       return true;
     } catch (error) {
-      onbibliography?.({ entries: bibliographyEntries(), diagnostics: [{ severity: "warning", message: `Zotero import failed: ${error?.message || error}`, file: pathOfDoc(boundDoc(), showing), line: 0 }] }, bibliographyRequest());
+      onbibliography?.({ entries: bibliographyEntries(), diagnostics: [{ severity: "warning", message: `Zotero import failed: ${error?.message || error}`, file: pathOfDoc(session.doc, showing), line: 0 }] }, bibliographyRequest());
       return false;
     }
   }
@@ -555,8 +476,8 @@
   // difference between a directory of files and one text somebody keeps
   // scrolling through.
   // A CodeMirror state owns a Loro binding and undo field. File ids are only
-  // unique inside a document, and proposal branches deliberately reuse them,
-  // so cache states under their owning LoroDoc as well as the file id.
+  // unique inside a document, and a session swap brings a new document, so
+  // cache states under their owning LoroDoc as well as the file id.
   let states = new WeakMap();
   let activeDocument = null;
   const stateMap = (document_) => {
@@ -581,7 +502,7 @@
   /// diagnostic has no place at all -- which is a different thing from being
   /// about the main file, and is why the line is checked first.
   function fileOf(diagnostic) {
-    const doc = boundDoc();
+    const doc = session.doc;
     if (!diagnostic.file) return doc ? projectDirectory(doc, rules ?? null).mainId : "";
     return textIdForPath(doc, diagnostic.file);
   }
@@ -710,7 +631,7 @@
   export function editAvailability() {
     if (!view) return {};
     const selected = !view.state.selection.main.empty;
-    const manager = undoManagers.get(boundDoc());
+    const manager = undoManager;
     return {
       undo: editable && (manager?.canUndo?.() ?? false),
       redo: editable && (manager?.canRedo?.() ?? false),
@@ -750,7 +671,7 @@
   // write into a different document.
   export function captureInsertTarget() {
     if (!view || !session || !showing || editable === false) return null;
-    const doc = boundDoc();
+    const doc = session.doc;
     const loroText = getTextFromDoc(showing);
     if (!loroText) return null;
     const { from, to } = view.state.selection.main;
@@ -808,7 +729,7 @@
   export function applyInsertResult(result, capturedContext = null) {
     if (!result || typeof result.text !== "string" || !view || !session || !editable) return false;
     const target = insertTargets.get(capturedContext?.targetId);
-    if (!target || target.session !== session || target.doc !== boundDoc() || target.file !== showing || pathOfDoc(target.doc, showing) !== capturedContext.path) return false;
+    if (!target || target.session !== session || target.doc !== session.doc || target.file !== showing || pathOfDoc(target.doc, showing) !== capturedContext.path) return false;
     const loroText = getTextFromDoc(showing);
     const doc = target.doc;
     if (!loroText) return false;
@@ -850,7 +771,7 @@
     // and the two stayed apart until something else rebuilt the state.
     const keyOf = (text) => String(text.id);
     const showingKey = keyOf(loroText);
-    const plans = new Map([[showingKey, { text: loroText, edits: [] }]]);
+    const plans = new Map([[showingKey, { file: showing, text: loroText, edits: [] }]]);
     const mapOffset = (offset, snapshot, current) => {
       if (snapshot === current) return offset;
       let prefix = 0, suffix = 0;
@@ -863,13 +784,14 @@
     for (const edit of result.additionalEdits || []) {
       if (!Number.isInteger(edit?.from) || !Number.isInteger(edit?.to) || typeof edit.insert !== "string") return false;
       const path = edit.path || capturedContext.path;
-      const fileText = getTextFromDoc(textIdForPath(doc, path));
+      const fileId = textIdForPath(doc, path);
+      const fileText = getTextFromDoc(fileId);
       const snapshot = path === capturedContext.path ? capturedContext.text : capturedContext.files?.find(file => file.path === path)?.text;
       if (!fileText || typeof snapshot !== "string" || edit.from < 0 || edit.to < edit.from || edit.to > snapshot.length) return false;
       const editFrom = mapOffset(edit.from, snapshot, fileText.toString()), editTo = mapOffset(edit.to, snapshot, fileText.toString());
       const key = keyOf(fileText);
       if (editFrom == null || editTo == null || (key === showingKey && editFrom < to && editTo > from)) return false;
-      if (!plans.has(key)) plans.set(key, { text: fileText, edits: [] });
+      if (!plans.has(key)) plans.set(key, { file: fileId, text: fileText, edits: [] });
       plans.get(key).edits.push({ from: editFrom, to: editTo, insert: edit.insert });
     }
     const changes = plans.get(showingKey).edits;
@@ -886,23 +808,19 @@
     // Every other file the insertion touches. The one on screen went through
     // the transaction above; writing it here as well would apply it twice.
     for (const [key, plan] of plans) if (key !== showingKey) {
-      for (const edit of [...plan.edits].reverse()) {
-        if (edit.to > edit.from) plan.text.delete(edit.from, edit.to - edit.from);
-        if (edit.insert) plan.text.insert(edit.from, edit.insert);
-      }
+      for (const edit of [...plan.edits].reverse()) writeText(plan.file, plan.text, edit.from, edit.to, edit.insert);
     }
+    if (tracked) prune(doc);
     doc.commit();
-    proposals?.flush?.();
     releaseInsertContext(capturedContext);
     view.focus();
     return true;
   }
 
   /// Builds the state for one file, bound to its own LoroText.
-  /// When tracking is on, binds to the proposal's text; otherwise binds to the room's.
   function stateFor(id) {
     const text = getTextFromDoc(id);
-    const path = pathOfDoc(boundDoc(), id);
+    const path = pathOfDoc(session.doc, id);
     // One per document, not per file: the undo manager is constructed from the
     // document and tracks the operations this peer made anywhere in it.
     // Handing it a text is a type error the binding reports as a failure to
@@ -913,10 +831,12 @@
     // document and merges everything within a second: without the exclusion,
     // creating a file and typing into it are one undo step, and taking it
     // back deletes the file.
-    const bound = boundDoc();
-    const undoManager = undoManagers.get(bound)
-      || new UndoManager(bound, { excludeOriginPrefixes: [DIRECTORY_ORIGIN] });
-    undoManagers.set(bound, undoManager);
+    const bound = session.doc;
+    if (undoManagerDoc !== bound) {
+      undoManager = new UndoManager(bound, { excludeOriginPrefixes: [DIRECTORY_ORIGIN] });
+      undoManagerDoc = bound;
+    }
+    const manager = undoManager;
 
     // Who the caret belongs to. The session publishes {name, color, tab}; the
     // binding wants {name, colorClassName}, and paints through a class rather
@@ -957,14 +877,14 @@
         sourceLanguage(path, format),
         autocompletion({
           activateOnTyping: true,
-          override: [bibliographyCompletion({ entries: bibliographyEntries, format: () => formatOf(pathOfDoc(boundDoc(), showing)), remote: remoteBibliography, onRemote: importZotero })],
+          override: [bibliographyCompletion({ entries: bibliographyEntries, format: () => formatOf(pathOfDoc(session.doc, showing)), remote: remoteBibliography, onRemote: importZotero })],
         }),
         // Where a compile's errors are shown: the gutter mark, and with it the
         // underline and the hover the lint extension draws.
         lintGutter(),
         EditorView.lineWrapping,
-        // What somebody has proposed, drawn in the text it would change.
-        proposalReview,
+        // Pending changes, drawn in the text they changed.
+        pendingChanges,
         keymap.of([
           // Everyone tries Ctrl/Cmd-S in an editor.
           { key: "Mod-s", preventDefault: true, run: () => (onsave?.(), true) },
@@ -986,7 +906,7 @@
         // at Prec.high from inside LoroExtensions, so ours has to outrank it
         // to be the one that runs; `undoManagerField` hands it the same
         // manager the binding was given. See lib/loro-undo.js for why.
-        undoManagerField.init(() => undoManager),
+        undoManagerField.init(() => manager),
         Prec.highest(keymap.of([
           { key: "Mod-z", run: undoCommand, preventDefault: true },
           { key: "Mod-y", mac: "Mod-Shift-z", run: redoCommand, preventDefault: true },
@@ -996,20 +916,16 @@
         // is bound to one text at a time (the one in 'showing'), and the
         // getTextFromDoc function returns that text. Multiple editors may be
         // open on different files at once; they all share the same LoroDoc.
-        LoroExtensions(bound, session.ephemeral && { user: { name: userName, colorClassName }, ephemeral: session.ephemeral }, undoManager, () => text),
+        LoroExtensions(bound, session.ephemeral && { user: { name: userName, colorClassName }, ephemeral: session.ephemeral }, manager, () => text),
+        // After the binding, so the text is written when this one looks.
+        trackChanges(id),
         EditorView.updateListener.of((update) => {
-          // A document change clears the proposal decorations, because the
-          // offsets they were placed at have moved. Drawing them again from
-          // the hunks is the only honest way back, and it has to happen after
-          // the transaction rather than inside it.
-          // While tracking is on this also redraws the author's own draft, which
-          // every keystroke changes -- the marks are recomputed from the branch
-          // rather than mapped, for the same reason.
-          if (update.docChanged && ((review || []).length || proposals?.drafting?.())) queueMicrotask(drawProposals);
           if (update.docChanged) {
+            // The marks were mapped through the edit. Drawing them again from
+            // the document picks up the change the edit just recorded, and
+            // has to happen after the transaction rather than inside it.
+            queueMicrotask(drawChanges);
             onchange?.();
-            // What was typed went into the branch, not the paper. Send it.
-            scheduleProposalFlush();
           }
           // Only a deliberate move counts: typing moves the caret constantly,
           // and scrolling the document on every keystroke would make the
@@ -1065,17 +981,9 @@
     });
   }
 
-  // Get the text for a file, from either the branch being drafted or the room
-  // document.
-  //
-  // The test is whether a branch is open, not what the `tracking` prop says.
-  // `startTracking` forks and rebinds in one call, and the prop that reports
-  // the switch has not reached this component by then -- reading it here bound
-  // the editor to the room's text with tracking on, so every keystroke went
-  // into the paper and the branch stayed empty. Which is what "track changes
-  // records nothing" looked like.
+  // Get the text for a file from the room's document.
   function getTextFromDoc(id) {
-    const doc = boundDoc();
+    const doc = session.doc;
     const text = doc?.getMap("files")?.get(id);
     return text?.kind?.() === "Text" ? text : null;
   }
@@ -1126,25 +1034,46 @@
     return id;
   }
 
-  /// The document the binding belongs to: the branch while one is being
-  /// drafted, the room's otherwise.
-  ///
-  /// The binding commits this document after writing into the text it was
-  /// given, and applies to the view whatever arrives in it. Handing it the
-  /// room's document while the text is the branch's leaves the branch's
-  /// operations uncommitted and paints a coauthor's edit into a text that has
-  /// not got it.
-  function boundDoc() {
-    return proposals?.drafting?.() ? proposals.doc() || session.doc : session.doc;
-  }
-
   /// Shows a file, keeping the state of the one being left. The view is made
   /// once and re-stated, rather than destroyed and rebuilt, so that switching
   /// files does not flash.
+  /// The one replacement that turns `old` into `next`: what lies between
+  /// their common prefix and their common suffix.
+  function textChange(old, next) {
+    let from = 0;
+    while (from < old.length && from < next.length && old.charCodeAt(from) === next.charCodeAt(from)) from++;
+    let oldEnd = old.length;
+    let nextEnd = next.length;
+    while (oldEnd > from && nextEnd > from && old.charCodeAt(oldEnd - 1) === next.charCodeAt(nextEnd - 1)) {
+      oldEnd--;
+      nextEnd--;
+    }
+    return { from, to: oldEnd, insert: next.slice(from, nextEnd) };
+  }
+
+  /// Bring the file on screen up to its LoroText after a local write that did
+  /// not come through this view: accepting or rejecting a change from the
+  /// Changes panel, for one. The binding copies only imported edits into the
+  /// view, so without this the screen would keep the old text. The dispatch is
+  /// marked the way the undo plugin marks its own, as already in the document,
+  /// so the binding does not write it back and tracking does not record it.
+  function reconcileShown() {
+    if (!view || !showing) return;
+    const text = getTextFromDoc(showing);
+    if (!text) return;
+    const old = view.state.doc.toString();
+    const next = text.toString();
+    if (old === next) return;
+    view.dispatch({
+      changes: textChange(old, next),
+      annotations: [loroSyncAnnotation.of("undo"), Transaction.addToHistory.of(false)],
+    });
+  }
+
   function show(id) {
     if (!view || !id || id === showing) return;
     if (showing && activeDocument) stateMap(activeDocument).set(showing, view.state);
-    const document_ = boundDoc();
+    const document_ = session.doc;
     const documentStates = stateMap(document_);
     if (!documentStates.has(id)) documentStates.set(id, stateFor(id));
     const state = documentStates.get(id);
@@ -1153,18 +1082,8 @@
     // its CodeMirror binding is not mounted to dispatch those edits. Reconcile
     // the cached state before showing it, preserving its history and selection.
     if (text && state.doc.toString() !== text.toString()) {
-      const old = state.doc.toString();
-      const next = text.toString();
-      let from = 0;
-      while (from < old.length && from < next.length && old.charCodeAt(from) === next.charCodeAt(from)) from++;
-      let oldEnd = old.length;
-      let nextEnd = next.length;
-      while (oldEnd > from && nextEnd > from && old.charCodeAt(oldEnd - 1) === next.charCodeAt(nextEnd - 1)) {
-        oldEnd--;
-        nextEnd--;
-      }
       documentStates.set(id, state.update({
-        changes: { from, to: oldEnd, insert: next.slice(from, nextEnd) },
+        changes: textChange(state.doc.toString(), text.toString()),
         annotations: Transaction.addToHistory.of(false),
       }).state);
     }
@@ -1179,10 +1098,8 @@
     // The marks belong to files, so they are drawn again for the file now on
     // screen. What the compiler said has not changed; where it applies has.
     setDiagnostics(all);
-    // A state carries no decorations until something puts them there, and this
-    // is a fresh one -- including after `rebind`, where the file has not
-    // changed and so nothing upstream would ask for a redraw.
-    drawProposals();
+    // A state carries no decorations until something puts them there.
+    drawChanges();
     view.focus();
   }
 
@@ -1205,47 +1122,37 @@
     // must not recreate the editor when a pane or diagnostic changes.
     return untrack(() => {
       const initial = untrack(() => {
-        const first = file || projectDirectory(boundDoc(), rules ?? null).mainId || "";
+        const first = file || projectDirectory(session.doc, rules ?? null).mainId || "";
         showing = first;
-        const documentStates = stateMap(boundDoc());
+        const documentStates = stateMap(session.doc);
         if (first && !documentStates.has(first)) documentStates.set(first, stateFor(first));
-        activeDocument = boundDoc();
+        activeDocument = session.doc;
         return { first, state: documentStates.get(first) || stateFor(first) };
       });
       view = new EditorView({
         state: initial.state,
         parent: host,
-        // No `dispatchTransactions` here. There was one, and all it did was
-        // hand each edit to the deleted revision mechanism before applying
-        // it; with that gone it called `view.update(transactions)`, which is
-        // exactly what CodeMirror does when nothing is supplied. A proposal
-        // is not intercepted on its way through the editor -- what is typed
-        // goes into whichever text the binding is attached to, and which text
-        // that is was decided when the state was built (see `getTextFromDoc`).
       });
       untrack(() => viewCallbacks.set(view, { onsave, onquit }));
       syncKeys(view);
+      drawChanges();
       if (initial.first) session.inFile?.(initial.first);
       const bibliographyWatcher = scheduleBibliography;
       const unsubscribeBibliography = session.onFiles?.(bibliographyWatcher);
+      // Changes imported from other people, or decided by them, arrive in the
+      // document without a keystroke here. A local write from outside the
+      // view, such as a decision in the Changes panel, is copied into it.
+      const unsubscribeChanges = session.doc.subscribe((batch) => queueMicrotask(() => {
+        if (batch.by === "local") reconcileShown();
+        drawChanges();
+      }));
       refreshBibliography();
       view.focus();
       return () => {
         bibliographyGeneration += 1;
         clearTimeout(bibliographyTimer);
-        // A pause that the editor going away cut short is still work somebody
-        // did, so it goes up on the way out rather than with the view.
-        if (proposalFlushTimer) {
-          clearTimeout(proposalFlushTimer);
-          proposalFlushTimer = null;
-          proposals?.flush?.();
-        }
-        proposals?.detach?.();
-        proposalUnsubscribe?.();
-        proposalUnsubscribe = null;
-        proposals = null;
-        proposalsSession = null;
         if (typeof unsubscribeBibliography === "function") unsubscribeBibliography();
+        unsubscribeChanges();
         if (view) viewCallbacks.delete(view);
         view?.destroy();
         insertTargets.clear();
@@ -1253,7 +1160,8 @@
         // retaining one while clearing the other makes menu availability and
         // the state bound to the view disagree after a lifecycle rebind.
         states = new WeakMap();
-        undoManagers.clear();
+        undoManager = null;
+        undoManagerDoc = null;
         view = null;
         activeDocument = null;
         showing = "";
@@ -1277,14 +1185,11 @@
     if (view) scheduleBibliography();
   });
 
-  // Draw the review whenever the list, the selection or the file on screen
-  // changes. Showing another file is a swap of the view's state, and a state
-  // carries no decorations until something puts them there.
+  // Draw the pending changes again when the selection or the viewer changes.
   $effect(() => {
-    void review;
-    void reviewing;
-    void file;
-    if (view) drawProposals();
+    void selectedChange;
+    void me;
+    if (view) drawChanges();
   });
 
   // `:w` and `:q` run through the WeakMap rather than closing over this
@@ -1306,7 +1211,6 @@
 
 <div class="editorhost" bind:this={host}></div>
 
-<!-- A proposal is painted by `.proposal-added`, `.proposal-removed` and
-     `.proposal-selected` in `styles/librepaper.css`, beside the rest of the
-     review. The rules that used to be here dressed the deleted revision
-     mechanism, and nothing wore them. -->
+<!-- A pending change is painted by `.change-added`, `.change-removed` and
+     `.change-selected` in `styles/librepaper.css`, beside the rest of the
+     review. -->

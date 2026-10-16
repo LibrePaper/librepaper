@@ -24,15 +24,13 @@ const annotations = createAnnotations({
 const view = annotations.state;
 
 annotations.comment({ exact: "selected words" }, {
-  motivation: "commenting", body: "Check this", proposed: "must not travel",
+  motivation: "commenting", body: "Check this",
 }, "Local name");
 const draft = view.comments[0];
 assert.equal(draft.pending, true);
 assert.equal(draft.creator, "Local name");
 assert.equal(sent[0].creator, undefined);
-assert.equal(sent[0].proposed, undefined);
 assert.equal(sent[0].request_id, sent[0].temp_id, "comment retries use the stable temp id as the server idempotency key");
-assert.equal(draft.proposed, undefined);
 assert.equal(anchored.length, 1);
 assert.equal(view.unconfirmed.length, 1);
 const acknowledged = {
@@ -82,35 +80,18 @@ assert.equal(sent.at(-1).request_id, failed, "retry retains the server's durable
 annotations.discard(failed);
 assert.equal(view.unconfirmed.length, 0);
 
-annotations.comment({ exact: "replace me" }, { motivation: "editing", body: "", proposed: "replacement" }, "Name");
-const suggestion = view.comments.at(-1);
-assert.equal(sent.at(-1).proposed, "replacement");
-suggestion.deciding = "accept";
-annotations.receive({ type: "accept", comment_id: suggestion.id, resolved_at: "today", resolved_in: "sha" });
-assert.equal(suggestion.outcome, "accepted");
-assert.equal(suggestion.deciding, undefined);
-annotations.receive({ type: "resolve", comment_id: suggestion.id, resolved: false, resolved_at: null });
-assert.equal(suggestion.outcome, "");
-annotations.resolve(suggestion);
-assert.equal(suggestion.resolved, true);
+annotations.comment({ exact: "resolve me" }, { motivation: "commenting", body: "To resolve" }, "Name");
+const resolvable = view.comments.at(-1);
+annotations.receive({ type: "resolve", comment_id: resolvable.id, resolved: true, resolved_at: "today" });
+assert.equal(resolvable.resolved, true);
+annotations.receive({ type: "resolve", comment_id: resolvable.id, resolved: false, resolved_at: null });
+assert.equal(resolvable.resolved, false);
+annotations.resolve(resolvable);
+assert.equal(resolvable.resolved, true);
 assert.equal(sent.at(-1).type, "resolve");
-annotations.delete(suggestion);
-assert.equal(view.comments.includes(suggestion), false);
+annotations.delete(resolvable);
+assert.equal(view.comments.includes(resolvable), false);
 assert.equal(sent.at(-1).type, "delete");
-annotations.receive({ type: "refine", comment_id: draft.id,
-  comment: { id: draft.id, body: "Refined response", replies: draft.replies } });
-annotations.receive({ type: "refine", comment_id: draft.id,
-  comment: { id: draft.id, body: "Refined response", replies: draft.replies } });
-assert.equal(view.comments.find((item) => item.id === draft.id)?.body, "Refined response");
-assert.equal(view.comments.find((item) => item.id === draft.id)?.pending, false);
-// The actual wire response (`Ok(json!({"type": "refine", "comment":
-// comment}))` in `server/mod.rs`) carries no top-level `comment_id` at all --
-// only the full, updated comment. Without falling back to `comment.id`, a
-// real refine broadcast finds no row to update and is silently dropped.
-annotations.receive({ type: "refine",
-  comment: { id: draft.id, body: "Refined again, wire-shaped", replies: draft.replies } });
-assert.equal(view.comments.find((item) => item.id === draft.id)?.body, "Refined again, wire-shaped",
-  "a refine response with no comment_id field still finds its row, by comment.id");
 annotations.receive({ type: "delete", comment_id: "remote" });
 assert.equal(view.comments.length, 1);
 assert.equal(annotations.receive({ type: "doc-state" }), false);
@@ -141,9 +122,6 @@ assert.equal(sent.at(-1).temp_id, highlightId);
 annotations.comment({ exact: "invalid color" },
   { motivation: "commenting", body: "Note", color: "url(https://example.com)" }, "Name");
 assert.equal(sent.at(-1).color, undefined);
-annotations.comment({ exact: "suggestion" },
-  { motivation: "editing", proposed: "replacement", color: "#aabbcc" }, "Name");
-assert.equal(sent.at(-1).color, undefined, "suggestions keep their own review styling");
 // Where the passages got to after an edit. The server resolves the whole
 // document at once and sends one frame for the pass; a card that never took
 // it would keep showing where a passage was when the page was opened.

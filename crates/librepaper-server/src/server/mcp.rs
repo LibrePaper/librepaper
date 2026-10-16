@@ -112,8 +112,8 @@ impl Failure {
     }
 }
 
-impl From<librepaper_room::room::proposals::ActionRefusal> for Failure {
-    fn from(refusal: librepaper_room::room::proposals::ActionRefusal) -> Self {
+impl From<librepaper_room::room::comments::ActionRefusal> for Failure {
+    fn from(refusal: librepaper_room::room::comments::ActionRefusal) -> Self {
         Self::new(refusal.code, refusal.message)
     }
 }
@@ -139,7 +139,7 @@ fn tool_result(result: Result<Value, Failure>) -> Reply {
 /// Edit identity (what used to be `operation_epoch` plus a minted id) is
 /// entirely the bridge's concern now: nothing here asks a model to copy or
 /// mint one.
-const INSTRUCTIONS: &str = "Read bounded source, then reuse view and range handles. Edits are identified automatically; nothing about an edit's identity needs to be copied, minted, or retried under a new value. Suggestions are inert. Apply only when authorized. Multiple published suggestions are independent items; only private staging may combine patches atomically. These tools are the only way to reach this document. A refused read may be repeated after a bounded reread that preserves the selected occurrence; follow supplied render recovery instructions when appropriate. An unknown mutation outcome must not be replayed or retried. If access is revoked or the service is unreachable, report that and stop. A file in the working directory is not this document, and answering from one is a false report even when its text matches.";
+const INSTRUCTIONS: &str = "Read bounded source, then reuse view and range handles. Edits are identified automatically; nothing about an edit's identity needs to be copied, minted, or retried under a new value. Published proposals are tracked changes: they land in the document at once, marked pending, and an editor accepts or rejects each one. Apply directly only when authorized. Several patches published together land as one pass, all or none; batch: independent applies to private staging only. These tools are the only way to reach this document. A refused read may be repeated after a bounded reread that preserves the selected occurrence; follow supplied render recovery instructions when appropriate. An unknown mutation outcome must not be replayed or retried. If access is revoked or the service is unreachable, report that and stop. A file in the working directory is not this document, and answering from one is a false report even when its text matches.";
 
 fn mac_of(key: &[u8], context: &str, payload: &str) -> Hmac<Sha256> {
     let mut mac =
@@ -263,11 +263,11 @@ impl Server {
             return sign_in_to_read();
         }
         // MCP exposes source views, ranges, candidate trees, and source
-        // mutations. A commenter is admitted because an anchored suggestion
-        // has to be written against the source it quotes; every mutation is
-        // gated per tool below, so a commenter reaches suggestions and
-        // comments and nothing that touches source. A reader cannot use it at
-        // all, through a link or an ambient signed-in identity.
+        // mutations. A commenter is admitted because a comment has to be
+        // written against the source it quotes; every mutation is gated per
+        // tool below, so a commenter reaches comments and nothing that
+        // touches source. A reader cannot use it at all, through a link or
+        // an ambient signed-in identity.
         if !who.at_least(Role::Commenter) || !self.may_read(&entry, &who) {
             return plain(404, "not found");
         }
@@ -704,13 +704,8 @@ impl Server {
             };
             let after = match at.as_deref() {
                 Some(raw) => Some(
-                    librepaper_room::room::comments::decode_cursor(
-                        raw,
-                        room.document_id,
-                        thread,
-                        editor,
-                    )
-                    .map_err(|error| Failure::new("invalid_params", error.to_string()))?,
+                    librepaper_room::room::comments::decode_cursor(raw, room.document_id, thread)
+                        .map_err(|error| Failure::new("invalid_params", error.to_string()))?,
                 ),
                 None => None,
             };
@@ -731,7 +726,7 @@ impl Server {
         // continuation rather than letting it interleave collections.
         view.snapshot.comment_revision = librepaper_room::room::comments::comment_revision(
             &room
-                .comment_state(editor)
+                .comment_state()
                 .await
                 .map_err(|error| Failure::new("unavailable", error.to_string()))?,
         );
@@ -777,7 +772,7 @@ impl Server {
                 }
                 let room = room.as_ref().expect("just populated above");
                 let comment = room
-                    .comment_by_id(id, who.at_least(Role::Editor))
+                    .comment_by_id(id)
                     .await
                     .map_err(|error| Failure::new("unavailable", error.to_string()))?
                     .ok_or_else(|| Failure::new("not_found", "comment does not exist"))?;
@@ -909,7 +904,7 @@ impl Server {
         // `handle_mcp` rechecks access around every tool call already; a
         // second recheck here only re-served the same permissions computed
         // moments earlier from `who`.
-        result["permissions"] = json!({"read":true,"suggest":who.at_least(Role::Commenter),"comment":who.at_least(Role::Commenter),"apply":who.at_least(Role::Editor)});
+        result["permissions"] = json!({"read":true,"suggest":who.at_least(Role::Editor),"comment":who.at_least(Role::Commenter),"apply":who.at_least(Role::Editor)});
         result["limits"] = json!({"control_bytes":MAX_MESSAGE,"source_bytes":self.config.log_quota_bytes,"queries":8,"patches":100,"view_lifetime_seconds":3600,"concurrent_reads":8,"concurrent_effects":8,"concurrent_results":4});
         // The only place a final size is computed: inserting
         // `returned_bytes`/`estimated_tokens` changes the serialized size,

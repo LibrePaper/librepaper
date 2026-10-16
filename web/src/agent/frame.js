@@ -108,10 +108,6 @@ import { watchPinch } from "../lib/pinch.js";
   // front: unlike the document's own styles, nothing here ever needs to
   // change, and it survives every body replacement `adoptStyles` does for a
   // live preview.
-  //
-  // A proposal used to be generated content on the mark itself, so that it
-  // added no text node; it is a real span now -- the synthetic span below --
-  // kept out of the offset tables by the text walk instead.
   const markStyle = document.createElement("style");
   markStyle.dataset.librepaperMarks = "1";
   markStyle.textContent = `
@@ -128,31 +124,21 @@ import { watchPinch } from "../lib/pinch.js";
   `;
   document.head.appendChild(markStyle);
 
-  // Suggestions painted inline: a proposed deletion is a mark over the words
-  // themselves, and a proposed insertion has no words in the document to wrap,
-  // so it is a span carrying the proposed text. `data-librepaper-synthetic`
-  // is what keeps it out of the walk below, so the offset tables never see it
-  // as a character of real content.
-  //
-  // A paged document draws this same span differently -- beside the passage
-  // rather than inline, in `pages/viewer.html` -- because a PDF page has no
-  // inline to give it and the text layer over the glyphs is transparent.
-  const suggestionStyle = document.createElement("style");
-  suggestionStyle.dataset.librepaperSuggestions = "1";
-  suggestionStyle.textContent = `
-    mark.librepaper-suggestion-del {
-      background: hsl(0 45% 93%);
+  // A pending deletion has no words left in the document to wrap, so it is a
+  // synthetic span carrying the deleted text, struck through, at the place the
+  // words were. `data-librepaper-synthetic` keeps it out of the text walk, so
+  // the offset tables never count it as content.
+  const changeStyle = document.createElement("style");
+  changeStyle.dataset.librepaperChanges = "1";
+  changeStyle.textContent = `
+    .librepaper-change-deleted {
+      background: hsl(0 45% 93% / 0.7);
       color: hsl(0 55% 40%);
       text-decoration: line-through;
-    }
-    .librepaper-suggestion-synthetic {
-      background: hsl(0 35% 93%);
-      color: hsl(0 55% 40%);
-      text-decoration: underline;
-      text-decoration-style: dotted;
+      cursor: pointer;
     }
   `;
-  document.head.appendChild(suggestionStyle);
+  document.head.appendChild(changeStyle);
 
   function adoptStyles(parsed, presentation) {
     // Quarto's layout selectors depend on attributes of both root elements.
@@ -189,9 +175,7 @@ import { watchPinch } from "../lib/pinch.js";
   const TINTS = {
     commenting: [42, 55],
     highlighting: [145, 28],
-    // A suggestion: low saturation, hue near red, so a proposed replacement
-    // reads as provisional beside an ordinary comment's warmer tint.
-    editing: [0, 20],
+    change: [140, 45],
   };
   /** @type {[number, number]} */
   const NEUTRAL = [220, 12]; // resolved: the colour has served its purpose
@@ -202,7 +186,6 @@ import { watchPinch } from "../lib/pinch.js";
   /** @param {[number, number]} tint @param {number} depth @param {number} [alpha] */
   const wash = ([hue, saturation], depth, alpha = 1) =>
     `hsl(${hue} ${saturation}% ${Math.max(70, 90 - (Math.min(depth, 5) - 1) * 5)}% / ${alpha})`;
-  const edge = ([hue, saturation]) => `hsl(${hue} ${Math.min(saturation + 10, 60)}% 45%)`;
 
   function post(message) {
     if (!READER) return;
@@ -229,7 +212,7 @@ import { watchPinch } from "../lib/pinch.js";
       if (node instanceof Text) {
         const parent = node.parentElement;
         if (parent && ["SCRIPT", "STYLE", "NOSCRIPT"].includes(parent.tagName)) continue;
-        if (parent?.closest("[data-librepaper-synthetic], [data-librepaper-deletion]")) continue;
+        if (parent?.closest("[data-librepaper-synthetic]")) continue;
         index.set(node, nodes.length);
         starts.push(total);
         nodes.push(node);
@@ -321,7 +304,7 @@ import { watchPinch } from "../lib/pinch.js";
   function highlight(ranges) {
     lastRanges = ranges;
     quietly(() => {
-      document.querySelectorAll(".librepaper-suggestion-synthetic").forEach((node) => node.remove());
+      document.querySelectorAll(".librepaper-change-deleted").forEach((node) => node.remove());
       document
         .querySelectorAll("mark[data-librepaper]")
         .forEach((mark) => mark.replaceWith(...mark.childNodes));
@@ -330,12 +313,6 @@ import { watchPinch } from "../lib/pinch.js";
     scan();
 
     const painted = ranges.filter((item) => item.end > item.start);
-    const pendingSuggestions = painted.filter((item) => item.motivation === "editing" && !item.resolved && typeof item.proposed === "string");
-    const overlapping = new Set();
-    for (const one of pendingSuggestions) for (const other of pendingSuggestions) {
-      if (one !== other && one.start < other.end && other.start < one.end) overlapping.add(one.id);
-    }
-    for (const id of overlapping) post({ type: "suggestion-review", id, reason: "overlap" });
     const edges = [...new Set(painted.flatMap((item) => [item.start, item.end]))].sort(
       (a, b) => a - b,
     );
@@ -374,40 +351,51 @@ import { watchPinch } from "../lib/pinch.js";
         const inner = (live.length ? live : covering).reduce((a, b) =>
           b.end - b.start < a.end - a.start ? b : a,
         );
-        const custom = live.length && inner.motivation !== "editing" ? annotationColor(inner) : null;
+        const custom = live.length ? annotationColor(inner) : null;
         const shade = custom
           ? `color-mix(in srgb, ${custom} 42%, transparent)`
           : live.length
           ? wash(tintOf(inner.motivation), live.length, 0.42)
           : wash(NEUTRAL, 1, 0.24);
         mark.style.cssText = `background:${shade};color:inherit;cursor:pointer`;
-        // A pending suggestion is struck through along its whole extent, and
-        // its proposal is drawn once, after the last segment it covers -- the
-        // segment whose own end lands on the suggestion's end offset. A
-        // decided suggestion falls out of `resolved` and is painted like any
-        // other resolved comment, above.
-        const suggestion = live.find((item) => item.motivation === "editing" && typeof item.proposed === "string" && !overlapping.has(item.id));
-        if (suggestion) {
-          mark.style.textDecoration = "line-through";
-          mark.style.textDecorationColor = edge(tintOf("editing"));
+        if (live.length && inner.motivation === "change") {
+          mark.style.textDecoration = "underline";
+          mark.style.textDecorationColor = "hsl(140 55% 35%)";
+          if (typeof inner.author === "string") mark.title = inner.author;
         }
         range.surroundContents(mark);
-        if (suggestion && piece.end === suggestion.end && suggestion.proposed) {
-          const inserted = document.createElement("span");
-          inserted.className = "librepaper-suggestion-synthetic";
-          inserted.dataset.librepaperSynthetic = "1";
-          inserted.dataset.librepaperSuggestion = String(suggestion.id);
-          inserted.setAttribute("aria-label", `Suggested insertion: ${suggestion.proposed}`);
-          inserted.appendChild(document.createTextNode(suggestion.proposed));
-          inserted.onclick = () => { select(suggestion.id); post({ type: "focus", id: suggestion.id }); };
-          mark.after(inserted);
-        }
         // The same innermost annotation the colour came from is the one a click
         // on this stretch means.
         mark.onclick = () => { select(inner.id); post({ type: "focus", id: inner.id }); };
       }
     });
     quietly(applySelected);
+    // The marks split the text nodes, so the table is rebuilt before the
+    // deleted text is placed. Later offsets go first, which leaves the nodes
+    // of the earlier ones untouched.
+    const deletions = ranges.filter((item) => typeof item.deleted === "string" && item.deleted);
+    if (deletions.length) {
+      scan();
+      quietly(() => {
+        if (!table.nodes.length) return;
+        for (const item of [...deletions].sort((a, b) => b.start - a.start)) {
+          const at = nodeAt(item.start);
+          const node = table.nodes[at];
+          const offset = Math.max(0, Math.min(node.data.length, item.start - table.starts[at]));
+          const gone = document.createElement("del");
+          gone.className = "librepaper-change-deleted";
+          gone.dataset.librepaperSynthetic = "1";
+          gone.setAttribute("aria-label", `Deleted: ${item.deleted}`);
+          if (typeof item.author === "string") gone.title = item.author;
+          gone.appendChild(document.createTextNode(item.deleted));
+          gone.onclick = () => { select(item.id); post({ type: "focus", id: item.id }); };
+          const spot = document.createRange();
+          spot.setStart(node, offset);
+          spot.collapse(true);
+          spot.insertNode(gone);
+        }
+      });
+    }
     // surroundContents splits the text nodes it wraps, so the table built above
     // no longer describes the document. A selection made after a highlight
     // would land in a node the table has never seen, and report offsets against

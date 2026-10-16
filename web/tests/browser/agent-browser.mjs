@@ -382,7 +382,7 @@ try {
     await until(role + " settled", () => page.evaluate("document.querySelector('select[aria-label=Access]').disabled === false"), 2000);
   };
   // The session below exercises editing tasks (tighten, fix), which only an
-  // editor may run: a suggestion is an editor's track change.
+  // editor may run: a tracked change is an editor's act.
   await startWith("editor");
   const started = await page.evaluate("window.localCalls.find(call=>call.route==='assistant')");
   assert.equal(started.body.agent, "claude");
@@ -533,7 +533,7 @@ try {
   const rendered = await page.evaluate("window.sockets[1].sent.find(frame=>frame.context?.render_digest==='rendered-tree')");
   assert.equal(rendered.context.selection.exact,"Rendered passage");
   assert.equal(rendered.context.revision,undefined);
-  await page.evaluate("window.sockets[1].emit({type:'task',task_id:'partial',status:'cancelled',context:{results:{suggestions:['kept'],confirmed:[{kind:'application'}],refused:120,unresolved:3}}})");
+  await page.evaluate("window.sockets[1].emit({type:'task',task_id:'partial',status:'cancelled',context:{results:{changes:['kept'],confirmed:[{kind:'application'}],refused:120,unresolved:3}}})");
   await until("partial effects visible",()=>page.evaluate("document.querySelector('[role=log]').textContent.includes('Source changes applied.') && document.querySelector('[role=log]').textContent.includes('120 document operations were refused')"),1000);
   await page.evaluate("window.sockets[1].emit({type:'capabilities',session_id:'replacement-session',capabilities:{cancel:true}})");
   await until("session boundary visible",()=>page.evaluate("document.querySelector('[role=log]').textContent.includes('does not remember earlier messages')"),1000);

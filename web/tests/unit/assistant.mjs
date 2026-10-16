@@ -72,19 +72,12 @@ assert.deepEqual(response.context.thread, thread);
 assert.equal(response.context.comment_id, "comment-1");
 assert.equal(response.context.revision, undefined);
 
-const refinement = composeTaskMessage({ id: "m4", text: "Make the suggestion more concise.",
-  task: { kind: "refine", scope: "selection" }, attachment,
-  suggestion: { id: "s1", proposed: "A shorter proposal", revision: "sha-1" } });
-assert.deepEqual(refinement.context.suggestion, { id: "s1", proposed: "A shorter proposal", revision: "sha-1" });
-
-const reply = { context: { results: { suggestions: ["s1", "s2"] } } };
-assert.deepEqual(resultIds(reply), { suggestions: ["s1", "s2"] });
-const comments = [
-  { id: "s1", motivation: "editing", resolved: false },
-  { id: "s2", motivation: "editing", resolved: true },
-  { id: "other", motivation: "commenting", resolved: false },
-];
-assert.deepEqual(visibleResults(reply, comments), { suggestions: ["s1", "s2"] });
+const reply = { context: { results: { changes: ["c1", "c2"] } } };
+assert.deepEqual(resultIds(reply), { changes: ["c1", "c2"] });
+assert.deepEqual(resultIds({ context: {} }), { changes: [] });
+// Only the changes still pending in the document can be reviewed.
+assert.deepEqual(visibleResults(reply, [{ id: "c1" }, { id: "other" }]), { changes: ["c1"] });
+assert.deepEqual(visibleResults(reply, []), { changes: [] });
 
 // Every launcher entry must stay inside the protocol's task vocabulary, and
 // every entry must be reachable by its own id.

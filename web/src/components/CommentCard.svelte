@@ -3,8 +3,6 @@
   import IconButton from "./IconButton.svelte";
   import Avatar from "./Avatar.svelte";
   import Row from "./layout/Row.svelte";
-  import * as history from "../lib/history.js";
-  import { runsFor } from "../lib/suggestions.js";
   import { threadRuns } from "../lib/thread.js";
   import { shownSelector } from "../lib/anchor.js";
   import { day as isoDay, moment } from "../lib/dates.js";
@@ -29,9 +27,6 @@
     onresolve,
     ondelete,
     onreply,
-    // A suggestion's own two verbs. Hidden entirely for any other comment.
-    onaccept,
-    onreject,
     // Asks the agent to act on this comment. Absent where no agent is offered.
     onagent,
     cardIdPrefix = "comment",
@@ -57,13 +52,11 @@
   // the comment is about.
   const shown = $derived(shownSelector(comment));
 
-  // A suggestion is a comment whose motivation is `editing` (the W3C term).
-  const isSuggestion = $derived(comment.motivation === "editing");
   // A highlight is the one kind of card with nothing of its own to say: no
-  // body, no proposal, just a badge. Without the passage it marks, the card
+  // body, just a badge. Without the passage it marks, the card
   // is a coloured label for a place the reader cannot see from here, so it
   // carries a few words of what was highlighted.
-  const isHighlight = $derived(!isSuggestion && Boolean(comment.motivation) && comment.motivation !== "commenting");
+  const isHighlight = $derived(Boolean(comment.motivation) && comment.motivation !== "commenting");
   // Enough to recognise the passage by, not enough to reprint it: the words
   // that fit in about sixty characters, cut on a word boundary.
   const excerpt = $derived.by(() => {
@@ -74,35 +67,6 @@
     return `${(cut > 20 ? head.slice(0, cut) : head).trimEnd()}…`;
   });
   const annotationColor = $derived(/^#[0-9a-f]{6}$/i.test(comment.color || "") ? comment.color : null);
-
-  // The word-level diff between the quoted passage and its proposal, kept in
-  // a rune rather than computed inline: `history.wordDiff` is async (it runs
-  // the shared WASM renderer worker), so it is asked for in an effect and
-  // turned into displayable runs by the pure half of this, `runsFor`, which
-  // is what `web/tests/unit/suggestions.mjs` actually exercises.
-  let diffRuns = $state([]);
-  let diffRequest = 0;
-  $effect(() => {
-    const request = ++diffRequest;
-    if (!isSuggestion) {
-      diffRuns = [];
-      return;
-    }
-    // The passage a suggestion replaces, as the source has it: that is what
-    // the proposal is a replacement for, and what the diff is against.
-    const oldText = comment.original_anchor?.target?.exact ?? shown.exact;
-    // `null` means the replacement is not available in this annotation
-    // payload. An empty string is a real deletion.
-    if (comment.proposed == null) {
-      diffRuns = [];
-      return;
-    }
-    const proposedText = comment.proposed;
-    history.wordDiff(oldText, proposedText).then((edits) => {
-      if (request !== diffRequest) return; // superseded by a newer comment or proposal
-      diffRuns = runsFor(oldText, edits);
-    });
-  });
 
   // A resolved note is settled business: it collapses to one line and stays
   // out of the way until someone clicks it open again. Resolving it again
@@ -128,11 +92,9 @@
 
   const stamp = (value) => (value || "").replace("T", " ").slice(0, 16) + " UTC";
   // The one line a resolved card shows: what it was about, then what was said
-  // about it. A decided suggestion leads with the decision, since that is
-  // what "resolved" means for it.
+  // about it.
   const summary = $derived(
     [
-      comment.outcome === "accepted" ? "Accepted" : comment.outcome === "rejected" ? "Rejected" : "",
       shown.exact.trim(),
       (comment.body || "").trim(),
     ]
@@ -242,7 +204,7 @@
         <!-- The motivation is the W3C annotation type. Commenting is the
              default, so only the others are worth showing. -->
         {#if comment.motivation && comment.motivation !== "commenting"}
-          <span class="badge lp-tone-neutral">{isSuggestion ? "Suggested change" : "Highlight"}</span>
+          <span class="badge lp-tone-neutral">Highlight</span>
         {/if}
       </Row>
       {/if}
@@ -253,46 +215,6 @@
       {#if isHighlight && excerpt}
         <p class="quote border-l-2 pl-3 text-sm" style={annotationColor ? `border-color: ${annotationColor}` : undefined}>{excerpt}</p>
       {/if}
-      {#if isSuggestion}
-        <!-- The word-level diff of the quotation against the proposal:
-             deletion struck through, insertion underlined. Deletion in full
-             when the proposal is empty falls out of the diff itself. -->
-        {#if comment.proposed == null}<p class="panel-muted">Suggested replacement unavailable.</p>{:else}<p class="suggestion-diff border-[var(--color-brand)] border-l-2 pl-3 text-sm">
-          {#each diffRuns as run, i (i)}
-            {#if run.kind === "del"}<del>{run.text}</del>
-            {:else if run.kind === "ins"}<ins>{run.text}</ins>
-            {:else}{run.text}{/if}
-          {/each}
-        </p>{/if}
-        {#if comment.outcome === "accepted"}
-          <p class="panel-muted">Accepted in {history.shortSha(comment.resolved_in)}.</p>
-        {:else if comment.outcome === "rejected"}
-          <p class="panel-muted">Rejected.</p>
-        {:else if canModerate}
-          <Row gap={2}>
-            <button
-              type="button"
-              class="btn btn-sm lp-control-brand"
-              disabled={Boolean(comment.deciding) || comment.proposed == null}
-              title={comment.proposed == null ? "The suggested replacement is unavailable" : "Accept this suggestion"}
-              onclick={(e) => {
-                e.stopPropagation();
-                onaccept?.(comment);
-              }}
-            >{comment.deciding === "accept" ? "Accepting…" : "Accept"}</button>
-            <button
-              type="button"
-              class="btn btn-sm lp-control-tonal-brand"
-              disabled={Boolean(comment.deciding)}
-              onclick={(e) => {
-                e.stopPropagation();
-                onreject?.(comment);
-              }}
-            >{comment.deciding === "reject" ? "Rejecting…" : "Reject"}</button>
-          </Row>
-        {/if}
-      {/if}
-
       <!-- The quotation above is what the passage said when the comment was
            made. This is what became of it: the moment it stopped being in the
            document, and the inserted side of the shared word-level diff. -->
@@ -347,7 +269,7 @@
     {#if onagent && !comment.resolved}
       <IconButton
         icon="bot"
-        label={comment.motivation === "editing" ? "Refine suggestion with agent" : "Address comment with agent"}
+        label="Address comment with agent"
         disabled={!canComment}
         onclick={(e) => {
           e.stopPropagation();
@@ -355,9 +277,7 @@
         }}
       />
     {/if}
-    {#if !isSuggestion && canComment}
-      <!-- Reject is the resolve, for a suggestion -- see the diff and
-           decision block above. -->
+    {#if canComment}
       <IconButton
         icon="check"
         label={comment.resolved ? "Reopen" : "Resolve"}

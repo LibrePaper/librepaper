@@ -25,7 +25,7 @@ export function createFrameOverlays({ ready, send }) {
     return true;
   }
 
-  function annotations(comments) {
+  function annotations(comments, changes = []) {
     const nextHighlights = comments
       .filter((comment) => !comment.orphaned && comment.start != null)
       .map((comment) => ({
@@ -34,12 +34,18 @@ export function createFrameOverlays({ ready, send }) {
         end: comment.end,
         motivation: comment.motivation,
         resolved: Boolean(comment.resolved),
-        // Missing replacement data is not an empty replacement. JSON omits
-        // undefined, while an explicit empty string remains a real deletion.
-        proposed: comment.proposed == null ? undefined : comment.proposed,
-        outcome: comment.outcome || "",
         color: comment.color || undefined,
       }));
+    for (const row of changes) {
+      nextHighlights.push({
+        id: "change:" + row.id,
+        start: row.start,
+        end: row.end,
+        motivation: "change",
+        deleted: row.deleted || undefined,
+        author: row.author,
+      });
+    }
     return deliver(
       { type: "highlight", ranges: nextHighlights },
       () => highlights,

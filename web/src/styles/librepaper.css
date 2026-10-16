@@ -1163,15 +1163,15 @@ main.reader .cm-scroller, main.reader .panel { overscroll-behavior: contain; }
   max-width: calc(100vw - var(--spacing) * 8);
 }
 
-/* ------------------------------------------------------- proposed changes */
+/* ------------------------------------------------------- tracked changes */
 
-/* A change somebody has offered, drawn in the text it would change.
+/* A pending change, drawn in the text it changed.
  *
- * Neither of these is the document: the words are a drawing over text that
- * still says what it said, and they stay that way until the proposal resolves.
- * So they are marked as insertions and deletions rather than coloured, which
- * is also what a screen reader announces them as. */
-.proposal-added {
+ * Inserted text is in the document and is marked where it sits. Removed text
+ * is not, and is hung at the point it was taken from. Both are marked as
+ * insertions and deletions rather than only coloured, which is also what a
+ * screen reader announces them as. */
+.change-added {
   text-decoration: underline;
   text-decoration-style: solid;
   text-underline-offset: 2px;
@@ -1180,32 +1180,32 @@ main.reader .cm-scroller, main.reader .panel { overscroll-behavior: contain; }
 
 /* Struck through but still readable. A reviewer deciding whether to lose a
  * sentence has to be able to read the sentence. */
-.proposal-removed {
+.change-removed {
   text-decoration: line-through;
   opacity: 0.65;
 }
 
-/* The author's own draft, while track changes is on.
+/* The viewer's own changes.
  *
- * Coloured, where a coauthor's proposal is tinted by who they are: the
+ * Coloured, where another author's change is tinted by who they are: the
  * presence colour answers "whose change is this", and here there is nobody to
  * tell apart. The colour is added to the insertion and deletion marks rather
  * than used instead of them -- it is the second cue, so that the marks still
  * read without it. */
-.proposal-added.proposal-mine {
+.change-added.change-mine {
   background: color-mix(in srgb, var(--color-success-solid) 18%, transparent);
   text-decoration-color: var(--color-success-text);
 }
 
-.proposal-removed.proposal-mine {
+.change-removed.change-mine {
   color: var(--color-error-text);
   text-decoration-color: var(--color-error-text);
   opacity: 1;
 }
 
-/* The hunk being looked at, so that a decision taken in the margin is visibly
- * about this passage and not the one below it. */
-.proposal-selected {
+/* The change being looked at, so that a decision taken in the margin is
+ * visibly about this passage and not the one below it. */
+.change-selected {
   outline: 2px solid var(--presence, var(--color-brand));
   outline-offset: 1px;
   border-radius: var(--radius-base);

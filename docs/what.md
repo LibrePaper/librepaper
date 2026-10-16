@@ -23,7 +23,7 @@ Writing:
 Working with people:
 
 - Simultaneous editors, with named carets and personal undo
-- Highlights, suggested edits and threaded comments, live for everyone
+- Highlights and threaded comments, live for everyone
 - Share with readers, commenters or editors, signed in with GitHub or Google
 - Chat with collaborators and AI agents
 - Named versions and track changes; owners can permanently trim older history

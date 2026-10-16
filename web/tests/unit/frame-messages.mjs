@@ -20,7 +20,7 @@ assert.deepEqual(accepted({ type: "viewer-state", drawn: true, mode: "page-fit",
 assert.deepEqual(accepted({ type: "viewer-state", drawn: false, mode: "1.5", scale: null }), { type: "viewer-state", drawn: false, mode: "1.5", scale: null });
 for (const message of [
   { type: "annotate" }, { type: "disarm" }, { type: "focus", id: "mark-1" },
-  { type: "reading-position", start: 4 }, { type: "suggestion-review", id: "mark-1", reason: "overlap" },
+  { type: "reading-position", start: 4 },
 ]) assert.ok(accepted(message), `${message.type} is an emitted frame message`);
 
 // Reject malformed objects, privileged/unknown vocabulary, oversize strings,
@@ -37,7 +37,6 @@ for (const message of [
   { type: "viewer-state", drawn: "yes", mode: "page-fit", scale: 1 },
   { type: "viewer-state", drawn: true, mode: "10.1", scale: 1 },
   { type: "focus", id: "x".repeat(257) }, { type: "reading-position", start: 1.25 },
-  { type: "suggestion-review", id: "x", reason: "execute" },
 ]) rejected(message);
 
 // A long ready message costs more bucket units than a short one: ten 2 MB

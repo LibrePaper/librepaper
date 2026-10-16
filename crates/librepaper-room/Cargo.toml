@@ -1,4 +1,4 @@
-# One live document: the room, its comments, proposals and anchoring.
+# One live document: the room, its comments and anchoring.
 [package]
 name = "librepaper-room"
 version.workspace = true

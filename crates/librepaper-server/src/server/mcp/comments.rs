@@ -1,8 +1,8 @@
 //! MCP annotation actions.
 //!
 //! Every effect here is a semantic command
-//! (`librepaper_room::room::{AddComment, AddReply, ResolveComment, DeleteComment,
-//! RefineSuggestion, RejectSuggestion}`), run through `room.command`. A
+//! (`librepaper_room::room::{AddComment, AddReply, ResolveComment, DeleteComment}`),
+//! run through `room.command`. A
 //! comment's anchor is no longer built here and handed down: `AddComment`
 //! relocates the quoted words against head itself, which is what
 //! makes "the passage moved" a precondition failure instead of a race this
@@ -11,10 +11,9 @@
 use super::*;
 use librepaper_room::room;
 use librepaper_room::room::agent::OperationKey;
-use librepaper_room::room::proposals::{pending_proposal, validate_existing_action};
+use librepaper_room::room::comments::validate_existing_action;
 
-/// The id a newly created annotation gets, for a comment and for a suggestion
-/// alike.
+/// The id a newly created annotation gets.
 ///
 /// Two requirements meet here. The `annotations` table's id column is a
 /// `uuid`, so the old `comment-<hex>` and `<pass>-<index>` forms could never
@@ -99,13 +98,10 @@ impl Server {
                 "comment access is required",
             ));
         }
-        // `accept` and `label` are routed to `mcp_accept`/`mcp_label` in
-        // operations.rs before this function is ever called.
+        // `label` is routed to `mcp_label` in operations.rs before this
+        // function is ever called.
         let action = args["action"].as_str().unwrap_or_default();
-        if !matches!(
-            action,
-            "create" | "reply" | "resolve" | "delete" | "refine" | "reject"
-        ) {
+        if !matches!(action, "create" | "reply" | "resolve" | "delete") {
             return Err(Failure::new("invalid_params", "unknown annotation action"));
         }
 
@@ -127,22 +123,20 @@ impl Server {
         let existing = if comment_id.is_empty() {
             None
         } else {
-            room.comment_by_id(comment_id, who.at_least(Role::Editor))
+            room.comment_by_id(comment_id)
                 .await
                 .map_err(|error| Failure::new("unavailable", error.to_string()))?
         };
         if !comment_id.is_empty() && existing.is_none() {
             return Err(Failure::new("not_found", "comment does not exist"));
         }
-        if matches!(action, "reply" | "resolve" | "delete" | "refine" | "reject")
-            && comment_id.is_empty()
-        {
+        if matches!(action, "reply" | "resolve" | "delete") && comment_id.is_empty() {
             return Err(Failure::new(
                 "invalid_params",
                 "comment_id is required for this action",
             ));
         }
-        if matches!(action, "reply" | "resolve" | "delete" | "refine" | "reject") {
+        if matches!(action, "reply" | "resolve" | "delete") {
             let supplied = args["expected_version"].as_str().unwrap_or_default();
             let editor = who.at_least(Role::Editor);
             let current_version = existing.as_ref().map(|comment| comment.version());
@@ -245,7 +239,6 @@ impl Server {
                     whole_document,
                     None,
                     None,
-                    None,
                 )
                 .map_err(|error| Failure::new("invalid_params", error))?;
                 let operation = key.clone();
@@ -328,93 +321,6 @@ impl Server {
                     .map_err(command_failure)?;
                 json!({"comment_id": outcome.comment_id, "resolved": outcome.resolved, "resolved_at": outcome.resolved_at})
             }
-            "refine" => {
-                let existing = existing.expect("validated above");
-                let proposed = args["proposed"]
-                    .as_str()
-                    .ok_or_else(|| Failure::new("invalid_params", "proposed is required"))?;
-                let body = args["body"].as_str().unwrap_or(&existing.body);
-                let source = existing.source().ok_or_else(|| {
-                    Failure::new("invalid_range", "suggestion has no source anchor")
-                })?;
-                let stored = pending_proposal(&catalog, &existing).await?;
-                let mut cmd = room::RefineSuggestion::new(
-                    catalog,
-                    document_id,
-                    named_comment(),
-                    stored.id,
-                    stored.version,
-                    &writer,
-                    &self.config,
-                    body,
-                    &source.exact,
-                    &source.prefix,
-                    &source.suffix,
-                    proposed,
-                    // This transport's own precondition is `expected_version`,
-                    // checked above against the comment as it stands, plus
-                    // the proposal row's version below. There is no
-                    // `expected_proposed` in the tool schema to carry.
-                    None,
-                )
-                .map_err(|error| Failure::new("invalid_params", error))?;
-                let operation = key.clone();
-                let mut cmd = librepaper_engine::log::recorded::RecordedCommand::new(
-                    &mut cmd,
-                    operation_receipt.clone(),
-                    move |comment: &room::Comment| {
-                        json!({
-                            "tool":"document_comment", "operation":operation,
-                            "status":"committed", "action":"refine", "comment_id":comment.id
-                        })
-                    },
-                );
-                let comment = room
-                    .command(&authority, &mut cmd)
-                    .await
-                    .map_err(command_failure)?;
-                // Open pages rebuild the suggestion's before and after from the
-                // proposal itself, so the refined branch has to reach them.
-                crate::server::socket::announce_proposal(&room, &stored.id.to_string()).await;
-                json!({"comment_id": comment.id, "comment": comment})
-            }
-            "reject" => {
-                let existing = existing.expect("validated above");
-                let stored = pending_proposal(&catalog, &existing).await?;
-                let decision_request_id =
-                    parse_uuid(&comment_uuid(&key.scoped_request_id(actor)), "operation id")?;
-                let mut cmd = room::RejectSuggestion::new(
-                    catalog,
-                    document_id,
-                    parse_uuid(comment_id, "comment_id")?,
-                    stored.id,
-                    stored.tip_frontiers,
-                    &writer,
-                    decision_request_id,
-                );
-                let operation = key.clone();
-                let mut cmd = librepaper_engine::log::recorded::RecordedCommand::new(
-                    &mut cmd,
-                    operation_receipt.clone(),
-                    move |comment_id: &uuid::Uuid| {
-                        json!({
-                            "tool":"document_comment", "operation":operation,
-                            "status":"committed", "action":"reject", "comment_id":comment_id
-                        })
-                    },
-                );
-                let comment_id = room
-                    .command(&authority, &mut cmd)
-                    .await
-                    .map_err(command_failure)?;
-                crate::server::socket::announce_proposal_outcome(
-                    &room,
-                    stored.id,
-                    decision_request_id,
-                )
-                .await;
-                json!({"comment_id": comment_id})
-            }
             "delete" => {
                 let existing = existing.expect("validated above");
                 let editor = who.at_least(Role::Editor);
@@ -444,16 +350,15 @@ impl Server {
             }
             _ => unreachable!("actions validated above"),
         };
-        // Open pages learn about it the way they do for the agent's batch
-        // suggestions; without this they only see the change on reload.
+        // Open pages learn about it here; without this they only see the
+        // change on reload.
         room.broadcast_comments_changed().await;
 
         // `handle_mcp` rechecks access around every tool call already (mcp.rs
         // `tools/call`), so this only shapes the reply this action produced.
         //
         // No `replay` key: none of `AddComment`, `AddReply`,
-        // `ResolveComment`, `DeleteComment`, `RefineSuggestion` or
-        // `RejectSuggestion` writes a §7.2 `document_labels` retry record --
+        // `ResolveComment` or `DeleteComment` writes a §7.2 `document_labels` retry record --
         // `create` and `reply` dedup by their own client-derived primary key
         // (§7.2's first bullet) and the rest are conditional on
         // `expected_version` (§7.2's second bullet), so there is no
@@ -472,32 +377,24 @@ mod tests {
     use super::*;
     use librepaper_room::room::Comment;
 
-    /// A suggestion shaped the way `room::comments` actually serves one:
-    /// a proposal id and nothing in the `proposed`/`outcome` projections.
-    /// A fixture that filled those was what hid the defect these predicates
-    /// had, so this one deliberately leaves them at their served values.
-    fn pending(author: &str) -> Comment {
+    fn served(author: &str) -> Comment {
         Comment {
             id: "c".into(),
-            motivation: "editing".into(),
+            motivation: "commenting".into(),
             author: author.into(),
-            proposal: uuid::Uuid::from_u128(7).to_string(),
             ..Comment::default()
         }
     }
 
     #[test]
-    fn a_served_suggestion_passes_validation_for_its_author_and_an_editor() {
-        let comment = pending("author-a");
-        assert!(
-            comment.proposed.is_none() && comment.outcome.is_empty(),
-            "the served shape has no proposal projection; validation must not need one"
-        );
+    fn a_served_comment_passes_validation_for_its_author_and_an_editor() {
+        let comment = served("author-a");
         let version = comment.version();
         for (action, author, editor) in [
-            ("refine", "author-a", false),
-            ("refine", "someone-else", true),
-            ("reject", "someone-else", true),
+            ("resolve", "author-a", false),
+            ("delete", "author-a", false),
+            ("resolve", "someone-else", true),
+            ("delete", "someone-else", true),
         ] {
             validate_existing_action(
                 action,
@@ -513,30 +410,11 @@ mod tests {
     }
 
     #[test]
-    fn a_plain_comment_is_not_a_suggestion() {
-        let mut comment = pending("author-a");
-        comment.motivation = "commenting".into();
-        comment.proposal.clear();
-        let version = comment.version();
-        let error = validate_existing_action(
-            "reject",
-            "c",
-            Some(&comment),
-            &version,
-            Some(&version),
-            "editor",
-            true,
-        )
-        .expect_err("a plain comment carries no proposal to reject");
-        assert_eq!(error.code, "permission_changed");
-    }
-
-    #[test]
     fn a_stale_expected_version_is_a_conflict() {
-        let comment = pending("author-a");
+        let comment = served("author-a");
         let version = comment.version();
         let error = validate_existing_action(
-            "refine",
+            "resolve",
             "c",
             Some(&comment),
             "an-older-version",
@@ -549,11 +427,11 @@ mod tests {
     }
 
     #[test]
-    fn refine_requires_the_suggestion_author_or_editor() {
-        let comment = pending("author-a");
+    fn delete_requires_the_comment_author_or_editor() {
+        let comment = served("author-a");
         let version = comment.version();
         let error = validate_existing_action(
-            "refine",
+            "delete",
             "c",
             Some(&comment),
             &version,
@@ -561,39 +439,7 @@ mod tests {
             "author-b",
             false,
         )
-        .expect_err("an unrelated commenter cannot refine");
-        assert_eq!(error.code, "permission_changed");
-    }
-
-    #[test]
-    fn reject_requires_an_editor_and_a_pending_suggestion() {
-        let comment = pending("author-a");
-        let version = comment.version();
-        let error = validate_existing_action(
-            "reject",
-            "c",
-            Some(&comment),
-            &version,
-            Some(&version),
-            "author-a",
-            false,
-        )
-        .expect_err("a commenter cannot reject");
-        assert_eq!(error.code, "permission_changed");
-
-        let mut resolved = comment;
-        resolved.resolved = true;
-        let resolved_version = resolved.version();
-        let error = validate_existing_action(
-            "reject",
-            "c",
-            Some(&resolved),
-            &resolved_version,
-            Some(&resolved_version),
-            "editor",
-            true,
-        )
-        .expect_err("a resolved proposal is no longer rejectable");
+        .expect_err("an unrelated commenter cannot delete");
         assert_eq!(error.code, "permission_changed");
     }
 
@@ -618,18 +464,6 @@ mod tests {
         // than creating a second one.
         assert_eq!(id, comment_uuid("operation-request-1"));
         assert_ne!(id, comment_uuid("operation-request-2"));
-
-        // The suggestion path in `operations.rs` mints its annotation ids
-        // through the same helper, seeded per suggestion within a pass. It
-        // had its own non-UUID form and its own silent rejection.
-        let first = comment_uuid("0123456789abcdef0123456789abcdef-0");
-        let second = comment_uuid("0123456789abcdef0123456789abcdef-1");
-        assert!(uuid::Uuid::parse_str(&first).is_ok());
-        assert!(uuid::Uuid::parse_str(&second).is_ok());
-        assert_ne!(
-            first, second,
-            "each suggestion in a pass is its own annotation"
-        );
 
         let reply = comment_uuid("reply\0operation-request-1");
         assert!(uuid::Uuid::parse_str(&reply).is_ok());

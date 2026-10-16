@@ -37,7 +37,6 @@
 
 pub mod formats;
 pub mod html;
-pub mod hunks;
 
 pub mod paths;
 pub mod projection;
@@ -45,3 +44,4 @@ pub mod projection;
 pub mod render;
 pub mod retention;
 pub mod session;
+pub mod track;

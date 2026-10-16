@@ -86,7 +86,7 @@
               {#if unresolvedCount} {unresolvedCount} document operation{unresolvedCount === 1 ? " has" : "s have"} an unconfirmed outcome.{/if}
             </p>
           {/if}
-          {#if message.context?.results?.suggestions?.length}
+          {#if message.context?.results?.changes?.length}
             <button class="btn btn-sm lp-control-tonal-brand" onclick={() => onresult?.(message.context.results)}>Review changes</button>
           {/if}
         </div>

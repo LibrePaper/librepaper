@@ -14,11 +14,11 @@ For a long document, follow each query's `next_cursor` against the same `view_id
 
 ## Propose the authorized change
 
-`document_propose` accepts `view_id` and `patches: [{range_id, replacement, note}]`. Edits are identified automatically; nothing about an edit's identity is a tool argument you supply. Use `find` only for a unique exact substring within the captured range. Duplicate occurrences require a more precise source range.
+`document_propose` accepts `view_id` and `patches: [{range_id, replacement}]`. Edits are identified automatically; nothing about an edit's identity is a tool argument you supply. Use `find` only for a unique exact substring within the captured range. Duplicate occurrences require a more precise source range.
 
-Suggestions are inert and are the default for writing changes, including with an editor link. Direct source edits require explicit user authorization and the editor role ceiling; never infer either from a request to proofread or rewrite. Use `document_apply` on the returned candidate only when both are present. A read-only task must not publish a suggestion or comment. `publish: "private"` retains a candidate without posting annotations.
+Published proposals land in the document at once as tracked changes, marked pending, and an editor accepts or rejects each one. Publishing them takes the editor role. Direct source edits, with no tracking, require explicit user authorization and the editor role ceiling; never infer either from a request to proofread or rewrite. Use `document_apply` on the returned candidate only when both are present. A read-only task must not publish a tracked change or comment. `publish: "private"` retains a candidate without changing the document.
 
-Use an atomic multi-patch batch only with `publish: "private"` when all patches belong in one staged candidate. Published multi-suggestion proposals always use `batch: "independent"`; inspect every item and report only the effects confirmed for that item. Separate suggestions cannot make a coherent published change atomic. Do not split a refusal into smaller batches to evade document or rate limits. Include additional read-range handles in `dependencies` when a patch relies on their content. Exact-tree application is the default; never weaken it merely to bypass a conflict.
+Use an atomic multi-patch batch only with `publish: "private"` when all patches belong in one staged candidate. Published multi-change proposals always use `batch: "independent"`; inspect every item and report only the effects confirmed for that item. Separate tracked changes cannot make a coherent published change atomic. Do not split a refusal into smaller batches to evade document or rate limits. Include additional read-range handles in `dependencies` when a patch relies on their content. Exact-tree application is the default; never weaken it merely to bypass a conflict.
 
 | Task | Expected result |
 | --- | --- |
@@ -29,7 +29,7 @@ Use an atomic multi-patch batch only with `publish: "private"` when all patches 
 | Outline | Answer in chat unless the user asks to add headings to the document. |
 | Respond | Draft in chat; use `document_comment` to post only when requested. |
 
-Keep the requested selection, file, or document scope. Surrounding reads may improve understanding but do not authorize broader edits. Preserve references, mathematical meaning, code, and markup. Keep proposal notes short and useful to the reviewer.
+Keep the requested selection, file, or document scope. Surrounding reads may improve understanding but do not authorize broader edits. Preserve references, mathematical meaning, code, and markup. Keep replacements minimal so the reviewer can judge each change.
 
 ## Verify and recover
 
@@ -37,6 +37,6 @@ When compilation is required, use `validation: "compile"`. The service construct
 
 An uncertain write is never retried: a call whose outcome comes back unknown has already been checked once on your behalf, and reporting an effect it did not confirm is a false report. Treat an unknown effect as unknown. A bounded reread may refresh expired read context, but never assumes the same passage or current revision and never replays an uncertain write. On conflict, read fresh evidence and preserve the intended occurrence; never silently swap the old revision for the newest one.
 
-Existing-comment actions use the returned `comment_version` as `expected_version`. Refinement preserves suggestion identity. Rejection requires editor authority; acceptance uses the ordinary editor workflow. Cancellation never reverses committed effects; report confirmed changes even if the task was interrupted later.
+Existing-comment actions use the returned `comment_version` as `expected_version`. Accepting or rejecting a tracked change is the editor's act in the document; you cannot do it. Cancellation never reverses committed effects; report confirmed changes even if the task was interrupted later.
 
-Conclude with a short plain-prose answer. Do not emit a structured result schema or a model-generated list of suggestion IDs; the runner records receipt-confirmed effects separately. State incomplete coverage, conflicts, refusals, unknown effects, or unavailable verification plainly. Candidate/render lookup is a separate supported flow and may complete an already authorized publication; it does not turn an unconfirmed write into a confirmed one.
+Conclude with a short plain-prose answer. Do not emit a structured result schema or a model-generated list of change IDs; the runner records receipt-confirmed effects separately. State incomplete coverage, conflicts, refusals, unknown effects, or unavailable verification plainly. Candidate/render lookup is a separate supported flow and may complete an already authorized publication; it does not turn an unconfirmed write into a confirmed one.

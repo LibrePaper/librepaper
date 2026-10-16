@@ -272,7 +272,7 @@ function sourceLog() {
 
 // A base-only state can advertise a coauthor replacement that overlaps a
 // local edit. Until that row arrives the join stays incomplete, so Reader
-// cannot replay a private proposal inverse against the partial source graph.
+// cannot act on a partial source graph.
 {
   const source = createProjectSession({ send: () => {}, onState: () => {} });
   const coauthor = createProjectSession({ send: () => {}, onState: () => {} });
@@ -311,7 +311,7 @@ function sourceLog() {
     assert.equal(joiner.joined, false, "the base frame cannot claim the missing overlapping coauthor row");
     assert.equal(reports.at(-1).joined, false, "the Reader is told that source hydration is still incomplete");
     assert.equal(sent.filter((message) => message.type === "doc-update").length, 0,
-      "catch-up and proposal resolution wait for the missing source row");
+      "catch-up waits for the missing source row");
 
     await joiner.rows({
       protocol: "librepaper.room.v3", vector: encode(advertised.encode()), updates: [encode(row)],

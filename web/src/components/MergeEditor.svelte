@@ -25,9 +25,8 @@
     diff = true,
     baselineLabel = "label",
     targetLabel = "Live document",
-    // A stale suggestion opens this editor with an explanation of why: the
-    // passage it named no longer matches, so the header carries that reason
-    // instead of leaving the reader to guess why the merge editor appeared.
+    // A short remark for the header, such as which file the comparison is
+    // about.
     note = "",
     onlive,
     onclose,

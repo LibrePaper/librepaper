@@ -104,7 +104,7 @@ pub fn replace_text(doc: &LoroDoc, wanted: &str, path: &str) {
 /// exactly as it was: nothing is applied until every edit has passed the
 /// check, because applying half a message and dropping the rest would leave
 /// the text in a shape nothing asked for.
-fn apply_text_edits(text: &LoroText, edits: &[Edit]) -> bool {
+pub(crate) fn apply_text_edits(text: &LoroText, edits: &[Edit]) -> bool {
     let len = text.len_utf16();
     let mut end_of_previous = 0;
     for edit in edits {

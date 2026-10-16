@@ -22,6 +22,7 @@ use uuid::Uuid;
 
 use crate::room::Room;
 use librepaper_document::document::session;
+use librepaper_document::document::track;
 use librepaper_engine::log::sequencer::{Command, CommandError, Evidence, Head, PreparedSource};
 use librepaper_engine::storage::postgres::{LabelRecord, NewLabel, PostgresCatalog};
 
@@ -409,7 +410,7 @@ fn tree_from_head<'a>(head: &'a Head<'_>) -> SourceTree<'a> {
 }
 
 /// Applies the request's patches to `doc`, one Loro commit covering every
-/// file it touches, so a document that suggests changes across several
+/// file it touches, so a document that changes several
 /// files shares the same conflict rules a main-file-only edit does.
 fn apply_patch_edits(
     doc: &LoroDoc,
@@ -583,6 +584,238 @@ impl Command for AgentPatchCommand<'_> {
     }
 }
 
+/// One edit of a tracked pass. It names its place by the words around it
+/// and the file by its stable id, never by an offset: other passes and other
+/// people change the document between the read and the write, and the
+/// offsets move with them.
+#[derive(Clone, Debug)]
+pub struct TrackedEdit {
+    pub file_id: String,
+    pub prefix: String,
+    pub exact: String,
+    pub suffix: String,
+    pub replacement: String,
+}
+
+/// What a tracked pass answers with: the ids of the changes it created or
+/// changed. A replayed pass does not know them, because only the label of
+/// the original transaction survives, so it answers with none.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct TrackedReceipt {
+    pub changes: Vec<String>,
+    pub replay: bool,
+}
+
+/// One agent pass, applied to the document as tracked changes. Like
+/// [`AgentPatchCommand`] it prepares its source on a fork and leaves a label
+/// naming the request, which is what makes a retry answer without applying
+/// anything twice. Unlike it, the text lands marked as pending changes made
+/// by the agent, which an editor accepts or rejects one by one. Suggesting
+/// edits the document, so it takes the editor rung.
+pub struct AgentTrackedCommand {
+    catalog: Arc<PostgresCatalog>,
+    document_id: Uuid,
+    request_id: Uuid,
+    edits: Vec<TrackedEdit>,
+    /// The stable author key stored with each change, `agent:<name>`.
+    who: String,
+    /// The display name the changes are shown under.
+    author: String,
+    /// The pass id, which groups the pass's changes.
+    run: String,
+    author_account_id: Option<Uuid>,
+    author_label: String,
+    // filled in by evaluate, consumed by transact.
+    changes: Vec<String>,
+}
+
+impl AgentTrackedCommand {
+    #[allow(clippy::too_many_arguments)]
+    pub fn new(
+        catalog: Arc<PostgresCatalog>,
+        document_id: Uuid,
+        request_id: Uuid,
+        edits: Vec<TrackedEdit>,
+        author: String,
+        run: String,
+        author_account_id: Option<Uuid>,
+        author_label: String,
+    ) -> Result<Self, String> {
+        if edits.is_empty() {
+            return Err("a tracked pass needs at least one edit".into());
+        }
+        if edits.len() > MAX_PATCHES {
+            return Err("edit count is outside the limit".into());
+        }
+        Ok(Self {
+            catalog,
+            document_id,
+            request_id,
+            edits,
+            who: format!("agent:{author}"),
+            author,
+            run,
+            author_account_id,
+            author_label,
+            changes: Vec::new(),
+        })
+    }
+
+    /// The edits of each file as `track::apply_tracked_edits` takes them:
+    /// UTF-16 offsets into the file as it stands at head, ascending and not
+    /// overlapping.
+    fn planned(&self, doc: &LoroDoc) -> Result<Vec<(String, Vec<session::Edit>)>, String> {
+        let mut by_file: BTreeMap<&str, Vec<session::Edit>> = BTreeMap::new();
+        for edit in &self.edits {
+            if edit.exact == edit.replacement {
+                return Err("a tracked change must change the passage".into());
+            }
+            let text = super::comments::text_for_file_id(doc, &edit.file_id)
+                .ok_or_else(|| "file is absent".to_string())?;
+            let needle = format!("{}{}{}", edit.prefix, edit.exact, edit.suffix);
+            let first = locate_unique(&text, &needle)?;
+            let start = first + edit.prefix.len();
+            by_file
+                .entry(edit.file_id.as_str())
+                .or_default()
+                .push(session::Edit {
+                    at: text[..start].encode_utf16().count(),
+                    delete: edit.exact.encode_utf16().count(),
+                    insert: edit.replacement.clone(),
+                });
+        }
+        let mut planned = Vec::with_capacity(by_file.len());
+        for (file_id, mut edits) in by_file {
+            edits.sort_by_key(|edit| (edit.at, edit.delete));
+            if edits
+                .windows(2)
+                .any(|pair| pair[0].at + pair[0].delete > pair[1].at)
+            {
+                return Err("edits overlap".into());
+            }
+            planned.push((file_id.to_string(), edits));
+        }
+        Ok(planned)
+    }
+}
+
+/// The byte offset of the only occurrence of `needle` in `text`. Occurrences
+/// may overlap, so the search restarts one character after each match start.
+fn locate_unique(text: &str, needle: &str) -> Result<usize, &'static str> {
+    // An empty passage is the first text of an empty file; anywhere else it
+    // matches at every position.
+    if needle.is_empty() {
+        return if text.is_empty() {
+            Ok(0)
+        } else {
+            Err("the passage is ambiguous; read the document again")
+        };
+    }
+    let mut found = None;
+    let mut from = 0;
+    while let Some(at) = text[from..].find(needle) {
+        let at = from + at;
+        if found.is_some() {
+            return Err("the passage is ambiguous; read the document again");
+        }
+        found = Some(at);
+        from = at + text[at..].chars().next().map_or(1, char::len_utf8);
+    }
+    found.ok_or("the passage changed; read the document again")
+}
+
+impl Command for AgentTrackedCommand {
+    type Output = TrackedReceipt;
+
+    fn name(&self) -> &'static str {
+        "agent-tracked"
+    }
+
+    fn replay(
+        &mut self,
+    ) -> futures_util::future::BoxFuture<'_, std::result::Result<Option<Self::Output>, CommandError>>
+    {
+        Box::pin(async move {
+            let existing = label_for_request(&self.catalog, self.document_id, self.request_id)
+                .await
+                .map_err(CommandError::from)?;
+            Ok(existing.map(|_| TrackedReceipt {
+                changes: Vec::new(),
+                replay: true,
+            }))
+        })
+    }
+
+    fn evaluate(
+        &mut self,
+        head: &Head<'_>,
+    ) -> std::result::Result<Option<PreparedSource>, CommandError> {
+        let planned = self.planned(head.doc()).map_err(CommandError::Conflict)?;
+        let by = track::Author {
+            who: &self.who,
+            author: &self.author,
+        };
+        let run = self.run.as_str();
+        let now_ms = (time::OffsetDateTime::now_utc().unix_timestamp_nanos() / 1_000_000) as i64;
+        let mut changes: Vec<String> = Vec::new();
+        let prepared = head
+            .prepare(client_seq_of(self.request_id), |draft| {
+                for (file_id, edits) in &planned {
+                    changes.extend(track::apply_tracked_edits(
+                        draft,
+                        file_id,
+                        edits,
+                        &by,
+                        Some(run),
+                        now_ms,
+                    )?);
+                }
+                Ok(())
+            })
+            .map_err(CommandError::Conflict)?;
+        self.changes = changes;
+        Ok(prepared)
+    }
+
+    fn transact<'a>(
+        &'a mut self,
+        tx: &'a mut sqlx::Transaction<'_, sqlx::Postgres>,
+        evidence: &'a Evidence,
+    ) -> futures_util::future::BoxFuture<'a, std::result::Result<Self::Output, CommandError>> {
+        Box::pin(async move {
+            let after_digest = evidence
+                .after_digest
+                .clone()
+                .unwrap_or_else(|| evidence.before_digest.clone());
+            self.catalog
+                .insert_label(
+                    tx,
+                    &NewLabel {
+                        id: librepaper_engine::storage::postgres::new_id(),
+                        document_id: self.document_id,
+                        source_sequence: evidence.source_sequence,
+                        vector: evidence.vector.clone(),
+                        frontier: evidence
+                            .after_frontier
+                            .clone()
+                            .unwrap_or_else(|| evidence.before_frontier.clone()),
+                        tree_digest: parse_digest(&after_digest),
+                        label: None,
+                        reason: self.name().to_string(),
+                        request_id: Some(self.request_id),
+                        author_account_id: self.author_account_id,
+                        author_label: self.author_label.clone(),
+                    },
+                )
+                .await?;
+            Ok(TrackedReceipt {
+                changes: std::mem::take(&mut self.changes),
+                replay: false,
+            })
+        })
+    }
+}
+
 fn to_conflict(error: AgentError) -> CommandError {
     match error {
         AgentError::Conflict(why) | AgentError::Invalid(why) => CommandError::Conflict(why),
@@ -723,6 +956,28 @@ impl Room {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn locate_unique_sees_overlapping_matches() {
+        let text = "a".repeat(130);
+        let needle = "a".repeat(129);
+        assert_eq!(
+            locate_unique(&text, &needle),
+            Err("the passage is ambiguous; read the document again")
+        );
+        assert_eq!(locate_unique(&text, &text), Ok(0));
+        assert_eq!(locate_unique("xay", "a"), Ok(1));
+        assert_eq!(
+            locate_unique("xy", "a"),
+            Err("the passage changed; read the document again")
+        );
+        assert_eq!(locate_unique("\u{e9}a", "a"), Ok(2));
+        assert_eq!(locate_unique("", ""), Ok(0));
+        assert_eq!(
+            locate_unique("ab", ""),
+            Err("the passage is ambiguous; read the document again")
+        );
+    }
 
     fn tree(text: &str) -> SourceTree<'_> {
         let files = [(

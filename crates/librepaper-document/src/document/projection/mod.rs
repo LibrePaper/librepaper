@@ -2,8 +2,7 @@
 //!
 //! The server stores and forwards source bytes and reads only their headers
 //! to do so. Whenever it does have to know what the
-//! bytes *mean* -- to render for a reader, to anchor a comment, to evaluate a
-//! proposal, to export -- it asks this function, and this function is total:
+//! bytes *mean* -- to render for a reader, to anchor a comment, to export -- it asks this function, and this function is total:
 //! every `LoroDoc`, however malformed, projects to exactly one directory.
 //! Nothing here writes to the document. There is no repair pass any more,
 //! because there is nothing to repair: a shape the schema does not use is
@@ -35,6 +34,11 @@ pub const FILES: &str = "files";
 pub const PATHS: &str = "paths";
 pub const ASSETS: &str = "assets";
 pub const META: &str = "meta";
+
+/// The root map of pending tracked changes. It is deliberately not in
+/// [`ROOTS`]: the projection and the digest ignore it, so a pending change
+/// never alters what a document says.
+pub const CHANGES: &str = "changes";
 
 /// The key in `meta` that names the main file, by id.
 pub const MAIN: &str = "main";

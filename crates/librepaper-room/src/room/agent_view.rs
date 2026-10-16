@@ -69,8 +69,7 @@ impl Room {
                 let mut view = serde_json::to_value(view).unwrap_or(Value::Null);
                 view["comment_version"] = json!(c.version());
                 if let Some(at) = c.at {
-                    view["cursor"] =
-                        json!(comments::encode_cursor(self.document_id, None, editor, at));
+                    view["cursor"] = json!(comments::encode_cursor(self.document_id, None, at));
                 }
                 view
             })
@@ -99,17 +98,14 @@ impl Room {
             ..Default::default()
         };
         let Some(comment) = self
-            .comment_by_id(&comment_id.to_string(), editor)
+            .comment_by_id(&comment_id.to_string())
             .await
             .map_err(crate::room::agent::AgentError::from)?
         else {
             return Ok(missing);
         };
-        if !editor && !comments::visible_to_reader(&comment) {
-            return Ok(missing);
-        }
         let Some(page) = self
-            .reply_page(comment_id, after, limit, editor)
+            .reply_page(comment_id, after, limit)
             .await
             .map_err(crate::room::agent::AgentError::from)?
         else {
@@ -127,7 +123,6 @@ impl Room {
                     value["cursor"] = json!(comments::encode_cursor(
                         self.document_id,
                         Some(comment_id),
-                        editor,
                         at
                     ));
                 }

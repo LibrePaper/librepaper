@@ -4,7 +4,7 @@ title: "Local backups"
 
 Turn backups on in Settings and pick a folder. Set the interval to 1, 5, 15, 30, or 60 minutes. The default is 5. The [desktop app](desktop-app.html) must be open. Backups run only there.
 
-Each ZIP contains only project source and assets. It holds no comments, suggestions, or history. Backups use the project's stable ID. Renaming does not change archive names. Only the latest ZIP per project is kept. Older versions are replaced.
+Each ZIP contains only project source and assets. It holds no comments or history. Pending tracked changes are part of the document, so each file holds its text with the pending changes in it. Backups use the project's stable ID. Renaming does not change archive names. Only the latest ZIP per project is kept. Older versions are replaced.
 
 Unchanged projects keep their existing ZIP. Changed projects reuse unchanged assets from the previous ZIP before swapping in the new archive. Only server-saved changes are included.
 

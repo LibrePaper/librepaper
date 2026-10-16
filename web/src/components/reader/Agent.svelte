@@ -11,7 +11,7 @@
   import { createAgentClient, documentKey } from "../../lib/agent-client.svelte.js";
   import * as local from "../../lib/desktop/client.js";
   import {
-    captureAttachment, capabilityAllows, diagnosticLabel, suggestionContext,
+    captureAttachment, capabilityAllows, diagnosticLabel,
     normalizeCapabilities, scopeLabel, visibleResults,
     TASK_CATEGORIES, browseTasks, findTask, inferScope, recentTasks, rememberTask,
     searchTasks, taskBlocker, taskForKind, taskPrompt, taskScopes,
@@ -21,7 +21,7 @@
   let {
     slug, link, canShare = false, path = "", selection = null, revision = "", request = null,
     diagnostics = [],
-    comments = [], suggestion: initialSuggestion = null, onreview, onpreview, onsettings,
+    comments = [], changes = [], onreview, onpreview, onsettings,
     userName = "You",
   } = $props();
   let client = $state.raw(null);
@@ -37,8 +37,6 @@
   let problem = $state("");
   let restoreProblem = $state("");
   let attachment = $state(null);
-  let suggestion = $state(null);
-  $effect(() => { if (suggestion === null && initialSuggestion) suggestion = initialSuggestion; });
   let task = $state(null);
   let scope = $state("selection");
   let diagnostic = $state(null);
@@ -153,7 +151,7 @@
     return browsing ? browseTasks(category) : recentTasks(recentIds);
   });
   const chosen = $derived(findTask(chosenTaskId));
-  const COMMENT_TASKS = ["address-comment", "refine-suggestion"];
+  const COMMENT_TASKS = ["address-comment"];
   const contextTask = $derived(COMMENT_TASKS.includes(chosenTaskId) || chosenTaskId === "fix-diagnostic");
   const scopeAvailable = (id) => id === "selection" ? Boolean(attachment) : id === "file" ? Boolean(contextPath) : true;
   // Rows are never disabled; what stops a task is said in the preparation view.
@@ -438,7 +436,6 @@
     extra = "";
     task = next.task || null;
     commentContext = next.comment || null;
-    suggestion = next.suggestion || next.comment?.suggestion || null;
     diagnostic = next.diagnostic || null;
     diagnosticRevision = next.diagnostic ? next.revision || next.diagnostic.revision || "" : "";
     if (next.diagnostic) {
@@ -461,10 +458,10 @@
       if (quoted?.exact) attach({ ...quoted, revision: next.revision || next.comment.revision || revision }, next.revision || next.comment.revision || revision);
       else { suppressedSelection = selectionKey(selection || lastSelection); attachment = null; }
       scope = attachment ? "selection" : (contextPath ? "file" : "document");
-      task = { kind: next.comment.suggestion ? "refine" : "respond", scope };
+      task = { kind: "respond", scope };
     }
     if (next.diagnostic) task = next.task || { kind: "fix", scope };
-    chosenTaskId = next.comment ? (next.comment.suggestion ? "refine-suggestion" : "address-comment")
+    chosenTaskId = next.comment ? "address-comment"
       : next.diagnostic ? (next.task?.kind === "explain" ? taskForKind("explain")?.id || "" : "fix-diagnostic")
       : next.task ? taskForKind(next.task.kind)?.id || "" : "";
     lastRequestId = next.id || lastRequestId;
@@ -574,8 +571,7 @@
       }
       await client.send(text, {
         task: task || undefined, attachment,
-        suggestion: suggestionContext(suggestion),
-        thread: ["respond", "refine"].includes(task?.kind) ? commentContext : null,
+        thread: task?.kind === "respond" ? commentContext : null,
         path: task?.scope === "file" || !task ? contextPath : "",
         revision: diagnosticRevision || attachment?.revision || (task?.scope === "selection" ? revision : ""),
         diagnostic, diagnostics,
@@ -590,7 +586,7 @@
       if (assistant.running) await local.stopAssistant({ link: agentLink || link, conversation: connection.id });
       assistant = { running: false, agent: "", access: "" };
       await client.end(); await client.create();
-      draft = ""; task = null; attachment = null; suggestion = null; commentContext = null;
+      draft = ""; task = null; attachment = null; commentContext = null;
       pendingRequest = null; diagnostic = null; diagnosticRevision = "";
       suppressedSelection = selectionKey(selection || lastSelection);
       tab = "chat";
@@ -615,9 +611,9 @@
   }
 
   function chooseResult(results) {
-    const reviewable = visibleResults({ context: { results } }, comments);
-    if (reviewable.suggestions.length) onreview?.(reviewable);
-    else problem = "These suggestions are no longer available.";
+    const reviewable = visibleResults({ context: { results } }, changes);
+    if (reviewable.changes.length) onreview?.(reviewable);
+    else problem = "These changes are no longer pending.";
   }
 
   $effect(() => {

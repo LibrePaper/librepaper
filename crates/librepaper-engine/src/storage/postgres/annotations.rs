@@ -94,12 +94,6 @@ pub struct AnnotationState {
     pub changed_micros: i64,
 }
 
-/// The eligibility predicate shared by every read below. A suggestion is an
-/// edit, so only an editor may see one; pushing that into SQL rather than
-/// filtering after the fact is what keeps a reader's page a page rather
-/// than whatever is left of one.
-const VISIBLE: &str = "($2 OR kind <> 'suggestion')";
-
 /// The columns whose stored length has no server-side ceiling, summed. A
 /// comment written today is cleaned against the deployment's caps, but
 /// nothing ever shortened one already stored, so these are what a byte
@@ -119,7 +113,7 @@ const REPLY_BYTES: &str =
 /// paged scan cannot drift apart.
 const ANNOTATION_COLUMNS: &str =
     "id,document_id,kind,body,author_account_id,author_key,author_label,\
-     color,proposal_id,source_sequence,frontier,render_digest,target_kind,file_id,\
+     color,source_sequence,frontier,render_digest,target_kind,file_id,\
      start_utf16,end_utf16,start_side,end_side,exact,prefix,suffix,\
      rendered_exact,rendered_prefix,rendered_suffix,rendered_position_utf16,\
      resolved_at,created_at";
@@ -155,7 +149,6 @@ pub struct NewAnnotation {
     pub author_key: String,
     pub author_label: String,
     pub color: Option<String>,
-    pub proposal_id: Option<Uuid>,
     /// Written once to `annotations`; an update that changes it is refused.
     /// Carries its own `source_sequence` and `frontier` (§8.2), so this is
     /// the only place evidence for a write needs to be threaded from.
@@ -187,7 +180,6 @@ pub struct AnnotationRecord {
     pub author_key: String,
     pub author_label: String,
     pub color: Option<String>,
-    pub proposal_id: Option<Uuid>,
     pub source_sequence: i64,
     pub frontier: Vec<u8>,
     pub render_digest: Option<Vec<u8>>,
@@ -241,10 +233,10 @@ async fn put_annotation(
     let anchor = Stored::of(&input.original_anchor)?;
     let inserted = sqlx::query(
         "INSERT INTO annotations(id,document_id,kind,body,author_account_id,author_key,author_label,
-                                 color,proposal_id,source_sequence,frontier,render_digest,target_kind,
+                                 color,source_sequence,frontier,render_digest,target_kind,
                                  file_id,start_utf16,end_utf16,start_side,end_side,exact,prefix,suffix,
                                  rendered_exact,rendered_prefix,rendered_suffix,rendered_position_utf16)
-         VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25)
+         VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24)
          ON CONFLICT(id) DO NOTHING",
     )
     .bind(id)
@@ -255,7 +247,6 @@ async fn put_annotation(
     .bind(&input.author_key)
     .bind(&input.author_label)
     .bind(&input.color)
-    .bind(input.proposal_id)
     .bind(input.original_anchor.source_sequence)
     .bind(&input.original_anchor.frontier)
     .bind(&input.render_digest)
@@ -285,7 +276,6 @@ async fn put_annotation(
             || existing.author_key != input.author_key
             || existing.author_label != input.author_label
             || existing.color != input.color
-            || existing.proposal_id != input.proposal_id
             || existing.render_digest != input.render_digest
             || existing.rendered_exact != input.presentation.rendered_exact
             || existing.rendered_prefix != input.presentation.rendered_prefix
@@ -492,29 +482,6 @@ impl PostgresCatalog {
         Ok(row)
     }
 
-    pub async fn put_suggestion_authorized(
-        &self,
-        tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
-        id: Uuid,
-        input: NewAnnotation,
-        proposal: super::NewProposal,
-        actor: &MutationAuthorization,
-    ) -> Result<AnnotationRecord> {
-        validate(&input)?;
-        if input.kind != "suggestion"
-            || input.proposal_id != Some(proposal.id)
-            || input.document_id != proposal.document_id
-        {
-            return Err(Error::Invalid(
-                "suggestion annotation and proposal do not match".into(),
-            ));
-        }
-        Self::authorize_annotation_mutation(tx, input.document_id, actor, false).await?;
-        self.open_proposal(tx, proposal).await?;
-        let (row, _inserted) = put_annotation(tx, id, &input).await?;
-        Ok(row)
-    }
-
     /// Rewrites the parts of an annotation that can change: its words, its
     /// kind, and whether it is resolved.
     ///
@@ -539,14 +506,10 @@ impl PostgresCatalog {
                 "annotation original anchor is immutable".into(),
             ));
         }
-        let deciding_suggestion = input.kind == "suggestion" && resolved;
-        if deciding_suggestion {
-            Self::authorize_annotation_mutation(tx, input.document_id, actor, true).await?;
-        }
         sqlx::query(
             "UPDATE annotations SET kind=$2,body=$3,author_account_id=$4,author_key=$5,author_label=$6,
-                                    color=$7,proposal_id=$8,
-                                    resolved_at=CASE WHEN $9 THEN COALESCE(resolved_at,now()) ELSE NULL END,
+                                    color=$7,
+                                    resolved_at=CASE WHEN $8 THEN COALESCE(resolved_at,now()) ELSE NULL END,
                                     updated_at=now()
              WHERE id=$1",
         )
@@ -557,7 +520,6 @@ impl PostgresCatalog {
         .bind(&input.author_key)
         .bind(&input.author_label)
         .bind(&input.color)
-        .bind(input.proposal_id)
         .bind(resolved)
         .execute(&mut **tx)
         .await?;
@@ -573,9 +535,6 @@ impl PostgresCatalog {
     /// immutability, and read the row a second time for the timestamp. Every
     /// one of those steps was a chance for a round trip to lose a field that
     /// nothing was trying to change.
-    ///
-    /// The authorization is the same, including the extra editor rung a
-    /// suggestion's decision takes: resolving a suggestion decides it.
     pub async fn set_annotation_resolved_authorized(
         &self,
         tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
@@ -585,19 +544,6 @@ impl PostgresCatalog {
         actor: &MutationAuthorization,
     ) -> Result<Option<OffsetDateTime>> {
         Self::authorize_annotation_mutation(tx, document_id, actor, false).await?;
-        // Locked, so the kind this decision is authorized against is the
-        // kind the update below writes to.
-        let kind: String = sqlx::query_scalar(
-            "SELECT kind FROM annotations WHERE id=$1 AND document_id=$2 FOR UPDATE",
-        )
-        .bind(id)
-        .bind(document_id)
-        .fetch_optional(&mut **tx)
-        .await?
-        .ok_or(Error::NotFound)?;
-        if kind == "suggestion" && resolved {
-            Self::authorize_annotation_mutation(tx, document_id, actor, true).await?;
-        }
         let resolved_at: Option<OffsetDateTime> = sqlx::query_scalar(
             "UPDATE annotations
              SET resolved_at=CASE WHEN $3 THEN COALESCE(resolved_at,now()) ELSE NULL END,
@@ -672,20 +618,15 @@ impl PostgresCatalog {
         .unwrap_or(0))
     }
 
-    /// How many annotations this caller may see, and how many of those are
+    /// How many annotations a document has, and how many of those are
     /// open. Authoritative: a paged client shows these rather than counting
     /// the rows it happens to be holding.
-    pub async fn annotation_counts(
-        &self,
-        document_id: Uuid,
-        suggestions: bool,
-    ) -> Result<(i64, i64)> {
-        Ok(sqlx::query_as(&format!(
+    pub async fn annotation_counts(&self, document_id: Uuid) -> Result<(i64, i64)> {
+        Ok(sqlx::query_as(
             "SELECT count(*), count(*) FILTER (WHERE resolved_at IS NULL) \
-             FROM annotations WHERE document_id=$1 AND {VISIBLE}",
-        ))
+             FROM annotations WHERE document_id=$1",
+        )
         .bind(document_id)
-        .bind(suggestions)
         .fetch_one(&self.pool)
         .await?)
     }
@@ -698,33 +639,26 @@ impl PostgresCatalog {
     /// replace, resolve, reply -- so this changes on an in-place body edit
     /// that leaves the counts alone, which a count pair on its own cannot
     /// see.
-    pub async fn annotation_state(
-        &self,
-        document_id: Uuid,
-        suggestions: bool,
-    ) -> Result<AnnotationState> {
-        Ok(sqlx::query_as(&format!(
+    pub async fn annotation_state(&self, document_id: Uuid) -> Result<AnnotationState> {
+        Ok(sqlx::query_as(
             r#"SELECT
                  count(*)::bigint AS total,
                  count(*) FILTER (WHERE resolved_at IS NULL)::bigint AS open,
                  coalesce((SELECT count(*) FROM replies r
                             WHERE r.annotation_id IN (SELECT id FROM annotations a2
-                                                       WHERE a2.document_id=$1
-                                                         AND ($2 OR a2.kind <> 'suggestion'))
+                                                       WHERE a2.document_id=$1)
                           ),0)::bigint AS replies,
                  greatest(
                    coalesce(max((extract(epoch FROM updated_at)*1000000)::bigint),0),
                    coalesce((SELECT max((extract(epoch FROM r.updated_at)*1000000)::bigint)
                                FROM replies r
                               WHERE r.annotation_id IN (SELECT id FROM annotations a3
-                                                         WHERE a3.document_id=$1
-                                                           AND ($2 OR a3.kind <> 'suggestion'))
+                                                         WHERE a3.document_id=$1)
                             ),0)
                  )::bigint AS changed_micros
-               FROM annotations WHERE document_id=$1 AND {VISIBLE}"#
-        ))
+               FROM annotations WHERE document_id=$1"#,
+        )
         .bind(document_id)
-        .bind(suggestions)
         .fetch_one(&self.pool)
         .await?)
     }
@@ -738,7 +672,6 @@ impl PostgresCatalog {
         document_id: Uuid,
         after: Option<(OffsetDateTime, Uuid)>,
         limit: i64,
-        suggestions: bool,
     ) -> Result<Vec<SizedRow>> {
         if !(1..=ANNOTATION_PAGE_MAX).contains(&limit) {
             return Err(Error::Invalid(format!(
@@ -747,11 +680,11 @@ impl PostgresCatalog {
         }
         sqlx::query_as::<_, SizedRow>(&format!(
             r#"SELECT created_at, id, {ANNOTATION_BYTES} FROM annotations
-               WHERE document_id=$1 AND {VISIBLE}
-                 AND (created_at,id) > (COALESCE($3::timestamptz,'-infinity'), COALESCE($4::uuid,'00000000-0000-0000-0000-000000000000'))
-               ORDER BY created_at,id LIMIT $5"#
+               WHERE document_id=$1
+                 AND (created_at,id) > (COALESCE($2::timestamptz,'-infinity'), COALESCE($3::uuid,'00000000-0000-0000-0000-000000000000'))
+               ORDER BY created_at,id LIMIT $4"#
         ))
-        .bind(document_id).bind(suggestions).bind(after.map(|v| v.0)).bind(after.map(|v| v.1)).bind(limit)
+        .bind(document_id).bind(after.map(|v| v.0)).bind(after.map(|v| v.1)).bind(limit)
         .fetch_all(tx).await.map_err(Error::from)
     }
 
@@ -760,7 +693,6 @@ impl PostgresCatalog {
         document_id: Uuid,
         after: Option<(OffsetDateTime, Uuid)>,
         limit: i64,
-        suggestions: bool,
     ) -> Result<Vec<AnnotationRecord>> {
         if !(1..=ANNOTATION_PAGE_MAX).contains(&limit) {
             return Err(Error::Invalid(format!(
@@ -776,13 +708,12 @@ impl PostgresCatalog {
         sqlx::query_as::<_, AnnotationRecord>(&format!(
             r#"SELECT {ANNOTATION_COLUMNS}
                FROM annotations
-               WHERE document_id=$1 AND {VISIBLE}
-                 AND (created_at,id) > (COALESCE($3::timestamptz,'-infinity'),
-                                        COALESCE($4::uuid,'00000000-0000-0000-0000-000000000000'))
-               ORDER BY created_at,id LIMIT $5"#
+               WHERE document_id=$1
+                 AND (created_at,id) > (COALESCE($2::timestamptz,'-infinity'),
+                                        COALESCE($3::uuid,'00000000-0000-0000-0000-000000000000'))
+               ORDER BY created_at,id LIMIT $4"#
         ))
         .bind(document_id)
-        .bind(suggestions)
         .bind(after_time)
         .bind(after_id)
         .bind(limit)
@@ -796,7 +727,6 @@ impl PostgresCatalog {
         tx: &mut PgConnection,
         document_id: Uuid,
         ids: &[Uuid],
-        suggestions: bool,
     ) -> Result<Vec<AnnotationRecord>> {
         if ids.is_empty() {
             return Ok(Vec::new());
@@ -806,11 +736,10 @@ impl PostgresCatalog {
         }
         sqlx::query_as::<_, AnnotationRecord>(&format!(
             r#"SELECT {ANNOTATION_COLUMNS} FROM annotations
-               WHERE document_id=$1 AND {VISIBLE} AND id=ANY($3)
+               WHERE document_id=$1 AND id=ANY($2)
                ORDER BY created_at,id"#
         ))
         .bind(document_id)
-        .bind(suggestions)
         .bind(ids)
         .fetch_all(tx)
         .await
@@ -1159,16 +1088,11 @@ fn side(value: Option<&str>) -> Result<AnchorSide> {
 }
 
 fn validate(input: &NewAnnotation) -> Result<()> {
-    if !matches!(input.kind.as_str(), "comment" | "highlight" | "suggestion")
+    if !matches!(input.kind.as_str(), "comment" | "highlight")
         || input.author_key.is_empty()
         || input.author_label.is_empty()
     {
         return Err(Error::Invalid("invalid annotation".into()));
-    }
-    if (input.kind == "suggestion") != input.proposal_id.is_some() {
-        return Err(Error::Invalid(
-            "suggestion annotations require exactly one proposal".into(),
-        ));
     }
     if input.original_anchor.frontier.is_empty() {
         return Err(Error::Invalid(
@@ -1204,7 +1128,6 @@ mod tests {
             author_key: "a".into(),
             author_label: "A".into(),
             color: None,
-            proposal_id: None,
             source_sequence: 7,
             frontier: vec![9, 9, 9],
             render_digest: None,
