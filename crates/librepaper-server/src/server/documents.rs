@@ -1097,16 +1097,20 @@ impl Server {
             Ok(room) => room,
             Err(error) => return refused("open the room", &error),
         };
-        let projected = match room.projection().await {
-            Ok(projected) => projected,
-            Err(error) => return sequencer_reply(&error),
-        };
         let format = match room.format(&entry.source_format).await {
             Ok(format) => format,
             Err(error) => return sequencer_reply(&error),
         };
-        let changes = match room.log().with_projected_head(reader_changes).await {
-            Ok(changes) => changes,
+        // One read of the head gives the projection and the change offsets,
+        // so an edit cannot pair old text with new offsets.
+        let (projected, changes) = match room
+            .log()
+            .with_projected_head(|doc, projected| {
+                (projected.clone(), reader_changes(doc, projected))
+            })
+            .await
+        {
+            Ok(pair) => pair,
             Err(error) => return sequencer_reply(&error),
         };
         // `project_digest` is the projection digest, not a row number: two
