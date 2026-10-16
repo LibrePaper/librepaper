@@ -297,3 +297,6 @@ suggestion wording from `docs/architecture/document.md`,
   old characters do not reattach exactly.
 - After a history trim, a change whose cursor pointed at a character deleted
   before the trim may be orphaned and is pruned.
+- Deletions nested three deep (an author deletes text around a deletion that
+  already swallowed another) can restore in the wrong order when the inner
+  ones are rejected first. All the text comes back. Two levels are handled.

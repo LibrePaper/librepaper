@@ -310,6 +310,9 @@ fn plan_one(
                 tail.from = f + n;
                 tail.to = shift(c.to);
                 tail.deleted = String::new();
+                // The deletions this change swallowed stay with the head,
+                // which keeps the deleted text they sit in.
+                tail.points = Vec::new();
                 dirty.insert(tail.id.clone());
                 out.push(tail);
             }
@@ -936,6 +939,53 @@ mod tests {
                 at: cp(&c.deleted, p.at),
             })
             .collect()
+    }
+
+    #[test]
+    fn a_split_tail_claims_none_of_the_heads_points() {
+        let owner = ResolvedChange {
+            id: "o".into(),
+            file: "f".into(),
+            who: "alice".into(),
+            author: "Alice".into(),
+            run: None,
+            at: 1,
+            from: 1,
+            to: 5,
+            deleted: "xy".into(),
+            points: vec![Point {
+                id: "p".into(),
+                at: 1,
+            }],
+        };
+        let mut n = 0;
+        let mut mint = || {
+            n += 1;
+            format!("new-{n}")
+        };
+        let plan = plan_edits(
+            "aWXYZb",
+            &[owner],
+            &[(3, 3, "q".to_string())],
+            &BOB,
+            None,
+            2,
+            &mut mint,
+        );
+        let head = plan.iter().find(|p| p.change.id == "o").unwrap();
+        assert_eq!(head.change.points.len(), 1);
+        for p in plan
+            .iter()
+            .filter(|p| p.change.who == "alice" && p.change.id != "o")
+        {
+            assert!(p.change.points.is_empty(), "the tail claims no points");
+            assert!(p.change.deleted.is_empty());
+        }
+        assert!(
+            plan.iter()
+                .any(|p| p.change.who == "alice" && p.change.id != "o"),
+            "the insertion split"
+        );
     }
 
     #[test]

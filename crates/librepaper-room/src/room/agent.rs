@@ -702,6 +702,15 @@ impl AgentTrackedCommand {
 /// The byte offset of the only occurrence of `needle` in `text`. Occurrences
 /// may overlap, so the search restarts one character after each match start.
 fn locate_unique(text: &str, needle: &str) -> Result<usize, &'static str> {
+    // An empty passage is the first text of an empty file; anywhere else it
+    // matches at every position.
+    if needle.is_empty() {
+        return if text.is_empty() {
+            Ok(0)
+        } else {
+            Err("the passage is ambiguous; read the document again")
+        };
+    }
     let mut found = None;
     let mut from = 0;
     while let Some(at) = text[from..].find(needle) {
@@ -963,6 +972,11 @@ mod tests {
             Err("the passage changed; read the document again")
         );
         assert_eq!(locate_unique("\u{e9}a", "a"), Ok(2));
+        assert_eq!(locate_unique("", ""), Ok(0));
+        assert_eq!(
+            locate_unique("ab", ""),
+            Err("the passage is ambiguous; read the document again")
+        );
     }
 
     fn tree(text: &str) -> SourceTree<'_> {
