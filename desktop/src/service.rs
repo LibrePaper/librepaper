@@ -275,7 +275,13 @@ fn binary() -> PathBuf {
 
 // Only these headers reach the page. The service's other headers stay on
 // its side of the bridge. The preview poller reads the last two.
-const RELAYED: [&str; 5] = ["content-type", "cache-control", "content-disposition", "etag", "x-librepaper-rendering"];
+const RELAYED: [&str; 5] = [
+    "content-type",
+    "cache-control",
+    "content-disposition",
+    "etag",
+    "x-librepaper-rendering",
+];
 
 async fn relay(res: reqwest::Response) -> Result<Response<Vec<u8>>, String> {
     let mut builder = Response::builder().status(res.status());
