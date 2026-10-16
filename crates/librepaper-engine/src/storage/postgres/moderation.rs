@@ -273,8 +273,10 @@ impl PostgresCatalog {
                 .await?;
             return Ok(BlockOutcome::Blocked { id, label });
         }
-        if provider != "github" && provider != "google" {
-            return Err(Error::Invalid("provider must be github or google".into()));
+        if !librepaper_base::auth::valid_provider_id(provider) {
+            return Err(Error::Invalid(
+                "provider must be github, google, entra or oidc-<slug>".into(),
+            ));
         }
         let handle = name.trim().trim_start_matches('@').trim();
         if handle.is_empty() {
@@ -1118,6 +1120,126 @@ mod tests {
         assert!(catalog.account_examples_pending(account.id).await.unwrap());
         catalog.mark_account_examples(account.id).await.unwrap();
         assert!(!catalog.account_examples_pending(account.id).await.unwrap());
+        catalog.close().await;
+    }
+
+    #[tokio::test]
+    #[ignore = "requires LIBREPAPER_TEST_POSTGRES_URL"]
+    async fn a_sign_in_issuer_is_bound_on_first_boot_and_never_moves() {
+        let catalog = test_catalog().await;
+        // The reset list does not name this table, so the test removes its own
+        // row. A fresh provider id keeps it independent of earlier runs.
+        let suffix = Uuid::now_v7().simple().to_string();
+        let provider = format!("oidc-test-{}", &suffix[..12]);
+        let first = "https://idp.example.test/realms/one";
+        let second = "https://idp.example.test/realms/two";
+        assert_eq!(catalog.bind_sign_in_issuer(&provider, first).await.unwrap(), first);
+        assert_eq!(catalog.bind_sign_in_issuer(&provider, first).await.unwrap(), first);
+        assert_eq!(catalog.bind_sign_in_issuer(&provider, second).await.unwrap(), first);
+        let stored: String =
+            sqlx::query_scalar("SELECT issuer FROM sign_in_issuers WHERE provider=$1")
+                .bind(&provider)
+                .fetch_one(catalog.pool())
+                .await
+                .unwrap();
+        assert_eq!(stored, first);
+        sqlx::query("DELETE FROM sign_in_issuers WHERE provider=$1")
+            .bind(&provider)
+            .execute(catalog.pool())
+            .await
+            .unwrap();
+        catalog.close().await;
+    }
+
+    #[tokio::test]
+    #[ignore = "requires LIBREPAPER_TEST_POSTGRES_URL"]
+    async fn a_name_can_be_banned_under_any_provider_id_the_server_accepts() {
+        let catalog = test_catalog().await;
+        let suffix = Uuid::now_v7().simple().to_string();
+        let handle = format!("Banned-{suffix}");
+        for provider in ["entra", "oidc-x"] {
+            let outcome = catalog
+                .block_or_ban(provider, &handle, "operator", "spam")
+                .await
+                .unwrap();
+            assert!(matches!(
+                &outcome,
+                BlockOutcome::Banned { label, .. } if *label == format!("{provider}:{handle}")
+            ));
+            let rows: i64 = sqlx::query_scalar(
+                "SELECT count(*) FROM banned_handles WHERE provider=$1 AND handle=$2",
+            )
+            .bind(provider)
+            .bind(&handle)
+            .fetch_one(catalog.pool())
+            .await
+            .unwrap();
+            assert_eq!(rows, 1);
+        }
+        for provider in ["oidc-", "x|y"] {
+            assert!(matches!(
+                catalog
+                    .block_or_ban(provider, &format!("Refused-{suffix}"), "operator", "spam")
+                    .await,
+                Err(Error::Invalid(_))
+            ));
+        }
+        // The reset list does not name banned_handles. Remove these rows so the
+        // first sign-in test still sees only its own ban.
+        sqlx::query("DELETE FROM banned_handles WHERE handle=$1")
+            .bind(&handle)
+            .execute(catalog.pool())
+            .await
+            .unwrap();
+        catalog.close().await;
+    }
+
+    #[tokio::test]
+    #[ignore = "requires LIBREPAPER_TEST_POSTGRES_URL"]
+    async fn banned_handles_check_accepts_known_provider_ids_and_refuses_malformed_ones() {
+        let catalog = test_catalog().await;
+        let suffix = Uuid::now_v7().simple().to_string();
+        let handle = format!("Constraint-{suffix}");
+        sqlx::query(
+            "INSERT INTO banned_handles(id,provider,handle,actor,reason)
+             VALUES($1,'github',$2,'operator','spam')",
+        )
+        .bind(Uuid::now_v7())
+        .bind(&handle)
+        .execute(catalog.pool())
+        .await
+        .unwrap();
+        let refused = sqlx::query(
+            "INSERT INTO banned_handles(id,provider,handle,actor,reason)
+             VALUES($1,'oidc-',$2,'operator','spam')",
+        )
+        .bind(Uuid::now_v7())
+        .bind(&handle)
+        .execute(catalog.pool())
+        .await
+        .expect_err("oidc- has no slug");
+        assert_eq!(
+            refused
+                .as_database_error()
+                .and_then(|error| error.code())
+                .as_deref(),
+            Some("23514")
+        );
+        sqlx::query(
+            "INSERT INTO banned_handles(id,provider,handle,actor,reason)
+             VALUES($1,'oidc-x',$2,'operator','spam')",
+        )
+        .bind(Uuid::now_v7())
+        .bind(&handle)
+        .execute(catalog.pool())
+        .await
+        .unwrap();
+        // The reset list does not name banned_handles, so remove these rows.
+        sqlx::query("DELETE FROM banned_handles WHERE handle=$1")
+            .bind(&handle)
+            .execute(catalog.pool())
+            .await
+            .unwrap();
         catalog.close().await;
     }
 }

@@ -121,6 +121,25 @@ impl PostgresCatalog {
         Ok(())
     }
 
+    /// Binds a provider id to the issuer it first signed in with and answers
+    /// the stored issuer, which is the configured one on first boot and the old
+    /// one when an operator has changed it since.
+    pub async fn bind_sign_in_issuer(&self, provider: &str, issuer: &str) -> Result<String> {
+        sqlx::query(
+            "INSERT INTO sign_in_issuers (provider, issuer) VALUES ($1, $2)
+             ON CONFLICT (provider) DO NOTHING",
+        )
+        .bind(provider)
+        .bind(issuer)
+        .execute(&self.pool)
+        .await?;
+        sqlx::query_scalar::<_, String>("SELECT issuer FROM sign_in_issuers WHERE provider = $1")
+            .bind(provider)
+            .fetch_one(&self.pool)
+            .await
+            .map_err(Error::from)
+    }
+
     pub async fn begin_account_erasure(
         &self,
         account_id: Uuid,
