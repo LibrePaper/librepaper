@@ -22,7 +22,6 @@ librepaper-base = { path = "../librepaper-base" }
 librepaper-document = { path = "../librepaper-document" }
 librepaper-engine = { path = "../librepaper-engine" }
 librepaper-room = { path = "../librepaper-room" }
-ttf-parser.workspace = true
 tokio.workspace = true
 axum.workspace = true
 http-body-util.workspace = true
@@ -51,8 +50,3 @@ tokio = { workspace = true, features = ["test-util"] }
 reqwest.workspace = true
 tokio-tungstenite.workspace = true
 tempfile.workspace = true
-# A font file for the tests to put in a library.
-typst-assets.workspace = true
-# Test-only: check that the family names our ttf-parser code extracts match
-# the compiler's.
-typst.workspace = true

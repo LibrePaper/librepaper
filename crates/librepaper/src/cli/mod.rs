@@ -457,7 +457,6 @@ fn serve_options(
         expire_from: resolved.expire_from,
         erase_inactive_after: resolved.erase_inactive_after,
         asset_mirror: resolved.asset_mirror,
-        typst_fonts: resolved.typst_fonts,
         load_shell: librepaper_shell::load_shell,
         latex_release: librepaper_shell::latex_release(),
         config: resolved.config,

@@ -55,7 +55,6 @@ mod comment_http_tests;
 pub mod cost;
 mod documents;
 mod figures;
-pub mod fonts;
 mod graphs;
 mod history;
 #[cfg(test)]
@@ -252,10 +251,6 @@ pub struct Server {
     /// has just signed out is a stranger again. Nothing here for a deployment
     /// that is its own front page.
     pub site: Option<String>,
-    /// The fonts this deployment serves to typst documents that name a
-    /// family the compiler does not embed, or nothing. See
-    /// `crate::server::fonts`.
-    pub fonts: Option<crate::server::fonts::Library>,
     pub cost: Arc<cost::CostMeter>,
     /// Operational measurements exported only on the optional private listener.
     pub metrics: Arc<metrics::Metrics>,
@@ -881,7 +876,6 @@ impl Server {
             mcp_capacity,
             latex: None,
             site: None,
-            fonts: None,
             cost,
             metrics: Arc::new(metrics::Metrics::new()),
             metrics_listener_slots: Arc::new(tokio::sync::Semaphore::new(

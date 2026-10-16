@@ -39,7 +39,6 @@ const ROUTES: &[&str] = &[
     "api_documents",
     "api_comments",
     "api_assets",
-    "api_fonts",
     "api_other",
     "auth",
     "published",
@@ -480,8 +479,6 @@ pub fn route_class(path: &str) -> &'static str {
         "api_comments"
     } else if path.starts_with("/api/assets/") {
         "api_assets"
-    } else if path.starts_with("/api/fonts/") {
-        "api_fonts"
     } else if path.starts_with("/api/") {
         "api_other"
     } else if path.starts_with("/auth/") {
@@ -830,7 +827,6 @@ mod tests {
             "/api/documents/x",
             "/api/comments/x",
             "/api/assets/x",
-            "/api/fonts/x",
             "/api/other",
             "/api/monitoring/host-check",
             "/auth/callback",
