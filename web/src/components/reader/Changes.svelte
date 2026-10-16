@@ -14,7 +14,7 @@
     // agent task. A task can make changes under several runs, so the whole
     // set of ids is the filter, not one run.
     ids = [],
-    ontracking, onaccept, onreject, onreveal,
+    ontracking, onaccept, onreject, onrejectmany, onreveal,
     identity = "",
   } = $props();
 
@@ -141,6 +141,13 @@
     const captured = [...rows]; if (!captured.length) return;
     captured.forEach((item) => addBusy(item.id)); stopSelecting(); confirming = "";
     try {
+      // A bulk reject goes through one call, because rejecting a change that
+      // swallowed others can split its owner and the order matters.
+      if (action === "reject" && onrejectmany) {
+        const count = Number(await onrejectmany(captured)) || 0;
+        feedback = `${count} change${count === 1 ? "" : "s"} rejected.`;
+        return;
+      }
       const settled = await Promise.allSettled(captured.map((item) => decisionPromise(item, action)));
       const succeeded = settled.filter((entry) => entry.status === "fulfilled").length;
       const failed = settled.length - succeeded;
