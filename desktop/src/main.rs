@@ -92,7 +92,9 @@ fn setup(app: &mut App) -> Result<(), Box<dyn std::error::Error>> {
 
     if cfg!(any(target_os = "linux", windows)) {
         if let Err(err) = app.deep_link().register_all() {
-            shell_log::write(&format!("could not register the librepaper:// scheme: {err}"));
+            shell_log::write(&format!(
+                "could not register the librepaper:// scheme: {err}"
+            ));
         }
     }
     let links = app.handle().clone();
@@ -382,7 +384,9 @@ fn serve(app: &AppHandle, label: String, request: Request<Vec<u8>>, responder: U
                         env!("CARGO_PKG_VERSION"),
                         shell_log::tail(100)
                     );
-                    app.clipboard().write_text(text).map_err(|err| err.to_string())
+                    app.clipboard()
+                        .write_text(text)
+                        .map_err(|err| err.to_string())
                 }
                 Err(err) => Err(err),
             };

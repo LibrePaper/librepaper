@@ -25,14 +25,18 @@ pub fn write(line: &str) {
     eprintln!("{line}");
     let Some(path) = FILE.get() else { return };
     if let Ok(mut file) = OpenOptions::new().create(true).append(true).open(path) {
-        let seconds = SystemTime::now().duration_since(UNIX_EPOCH).map_or(0, |d| d.as_secs());
+        let seconds = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map_or(0, |d| d.as_secs());
         let _ = writeln!(file, "{seconds} {line}");
     }
 }
 
 /// The last `lines` lines of desktop.log, or a note when there is none.
 pub fn tail(lines: usize) -> String {
-    let Some(path) = FILE.get() else { return "(no desktop log)".into() };
+    let Some(path) = FILE.get() else {
+        return "(no desktop log)".into();
+    };
     match std::fs::read_to_string(path) {
         Ok(text) => {
             let all: Vec<&str> = text.lines().collect();

@@ -21,7 +21,7 @@ try {
     import SignIn from ${JSON.stringify(join(root, "web/src/components/SignIn.svelte"))};
     import { mount } from ${JSON.stringify(join(root, "web/node_modules/svelte/src/index-client.js"))};
     const realFetch = globalThis.fetch;
-    globalThis.fetch = (url, init) => {
+    globalThis.fetch = async (url, init) => {
       const path = String(url);
       if (path.includes('/__lp/')) return realFetch(url, init);
       if (path === '/api/me') return Response.json({ providers: ['github'] });

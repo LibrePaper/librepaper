@@ -40,7 +40,9 @@ async fn check(app: &AppHandle) -> Result<(), String> {
         .ok()
         .and_then(|raw| url::Url::parse(&raw).ok())
     {
-        builder = builder.endpoints(vec![url]).map_err(|err| err.to_string())?;
+        builder = builder
+            .endpoints(vec![url])
+            .map_err(|err| err.to_string())?;
     }
     let updater = builder.build().map_err(|err| err.to_string())?;
     let Some(update) = updater.check().await.map_err(|err| err.to_string())? else {

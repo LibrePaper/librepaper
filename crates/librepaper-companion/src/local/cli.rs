@@ -350,7 +350,11 @@ async fn diagnostics(log_dir_only: bool) {
         return;
     }
     println!("LibrePaper command line {}", crate::VERSION);
-    println!("System: {} {}", std::env::consts::OS, std::env::consts::ARCH);
+    println!(
+        "System: {} {}",
+        std::env::consts::OS,
+        std::env::consts::ARCH
+    );
     println!("Log folder: {}", dir.display());
     println!("PATH:");
     for entry in std::env::split_paths(&std::env::var_os("PATH").unwrap_or_default()) {

@@ -88,6 +88,23 @@ fn select_shell(
         .find(|path| path.is_absolute() && path.is_file())
 }
 
+/// Where tools usually live when no PATH names them. Homebrew and MacTeX
+/// folders exist only on macOS.
+#[cfg(any(target_os = "macos", target_os = "linux", all(test, unix)))]
+const FALLBACK_DIRS: &[&str] = if cfg!(target_os = "macos") {
+    &[
+        "/opt/homebrew/bin",
+        "/usr/local/bin",
+        "/Library/TeX/texbin",
+        "/usr/bin",
+        "/bin",
+        "/usr/sbin",
+        "/sbin",
+    ]
+} else {
+    &["/usr/local/bin", "/usr/bin", "/bin", "/usr/sbin", "/sbin"]
+};
+
 /// Merge PATH sources while preserving inherited precedence and dropping
 /// relative entries, which would otherwise make discovery depend on CWD.
 #[cfg(any(target_os = "macos", target_os = "linux", all(test, unix)))]
@@ -113,19 +130,7 @@ fn resolve_path(inherited: &OsStr, home: Option<PathBuf>, shell: Option<OsString
             dirs.extend(path_file_entries(&file));
         }
     }
-    dirs.extend(
-        [
-            "/opt/homebrew/bin",
-            "/usr/local/bin",
-            "/Library/TeX/texbin",
-            "/usr/bin",
-            "/bin",
-            "/usr/sbin",
-            "/sbin",
-        ]
-        .into_iter()
-        .map(PathBuf::from),
-    );
+    dirs.extend(FALLBACK_DIRS.iter().map(PathBuf::from));
 
     let mut unique = Vec::with_capacity(dirs.len());
     for dir in dirs {
@@ -332,15 +337,13 @@ mod tests {
     #[test]
     fn sparse_path_gets_deterministic_fallbacks() {
         let dirs = resolve_path(OsStr::new("/usr/bin:/bin"), None, None);
-        for expected in [
-            "/opt/homebrew/bin",
-            "/usr/local/bin",
-            "/Library/TeX/texbin",
-            "/usr/bin",
-            "/bin",
-        ] {
+        for expected in FALLBACK_DIRS {
             assert!(dirs.contains(&PathBuf::from(expected)));
         }
+        assert_eq!(
+            dirs.contains(&PathBuf::from("/opt/homebrew/bin")),
+            cfg!(target_os = "macos")
+        );
     }
 
     #[test]

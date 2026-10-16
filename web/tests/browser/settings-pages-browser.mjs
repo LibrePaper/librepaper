@@ -51,6 +51,7 @@ export const DESKTOP_ONLY_MESSAGE = "This needs the LibrePaper desktop app.";
 export const desktop = () => window.__LIBREPAPER_DESKTOP__ ?? null;
 export function chooseFolderBinding() { return Promise.resolve({ id: "folder", entrypoint: "main.qmd" }); }
 export async function capabilities() { return {}; }
+export async function shellAction() {}
 export async function manage(path) {
   if (path !== "/state") throw new Error("unexpected management call " + path);
   return {
@@ -216,7 +217,7 @@ try {
   await until("the activity row", () => present(["desktop-activity"]).then((found) => found.length === 1), 5000);
   await capture("desktop");
   assert.deepEqual(await present(everything), ["desktop-version", "desktop-report", "desktop-activity"]);
-  assert.deepEqual(await subheads(), ["Desktop app", "Check local setup", "Activity"]);
+  assert.deepEqual(await subheads(), ["Desktop app", "Check local setup", "Diagnostics", "Activity"]);
 
   // A visitor's Account page is the server; storage and erasure need an account.
   await show("account", "quarto", "Account");

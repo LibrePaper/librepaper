@@ -65,7 +65,9 @@ impl Servers {
     /// Puts this server first, so the app opens it from now on.
     pub fn make_default(&mut self, url: &Url) {
         let origin = url.origin().ascii_serialization();
-        self.servers.retain(|raw| accepted(raw).map_or(true, |known| known.origin().ascii_serialization() != origin));
+        self.servers.retain(|raw| {
+            accepted(raw).map_or(true, |known| known.origin().ascii_serialization() != origin)
+        });
         self.servers.insert(0, origin);
     }
 }
