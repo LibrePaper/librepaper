@@ -31,6 +31,7 @@
 import { createEngine } from "./driver.js";
 import { fetchVerified } from "./resources.js";
 import { sha256Hex } from "../digest.js";
+import { packageNames, nearestPackage } from "./near-miss.js";
 
 /// Which underlying engine kinds a project engine name needs, in the order
 /// their controllers should be driven: the first is the one that runs LaTeX
@@ -99,6 +100,9 @@ class Worker2 {
     // more -- there is no per-file TeX Live snapshot mirror left to fall
     // back to -- so this is always populated once `configure` succeeds.
     this.bundleIndexBytes = null;
+    // Package basenames read from that index, for near-miss suggestions.
+    // Filled on first use after each `configure`.
+    this.packageNames = null;
     // The most recently staged snapshot: bibtex/makeindex need the project's
     // .bib/.bst/.idx-adjacent files and the engine name to know which
     // primary engine holds the .aux they run against, and neither travels on
@@ -142,6 +146,7 @@ class Worker2 {
     this.base = base;
     this.release = release;
     this.bundleIndexBytes = null;
+    this.packageNames = null;
 
     // This worker speaks exactly one release format (2: paths relative to the
     // release directory `base`, bundled releases). Anything else is a release
@@ -421,6 +426,8 @@ class Worker2 {
       startup[kind] = engine.timings;
     }
 
+    const mirrorSuggestions = this.mirrorSuggestionsFor(mirrorAbsent);
+
     return {
       ok: true,
       status,
@@ -431,8 +438,28 @@ class Worker2 {
       inputs: pass.inputs,
       outputs: outputBuffers,
       mirrorAbsent,
+      mirrorSuggestions,
       __transfer: transfer,
     };
+  }
+
+  // For each absent package file, the nearest name the mirror does have.
+  // Names with no close match are left out.
+  mirrorSuggestionsFor(absent) {
+    const suggestions = {};
+    if (!absent.length) return suggestions;
+    if (this.packageNames === null) {
+      try {
+        this.packageNames = this.bundleIndexBytes ? packageNames(this.bundleIndexBytes) : [];
+      } catch {
+        this.packageNames = [];
+      }
+    }
+    for (const name of absent) {
+      const near = nearestPackage(name, this.packageNames);
+      if (near) suggestions[name] = near;
+    }
+    return suggestions;
   }
 
   // -- bibtex / makeindex -------------------------------------------------
