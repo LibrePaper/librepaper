@@ -6,7 +6,7 @@
 // that a remote peer typing beside a pending insertion does not grow it.
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
-import { LoroDoc, LoroText } from "loro-crdt";
+import { Cursor, LoroDoc, LoroText } from "loro-crdt";
 import {
   CHANGES,
   accept,
@@ -74,7 +74,7 @@ for (const f of fixtures) {
     now: 5,
     mintId: () => "new-1",
   });
-  assert.deepEqual(removed.map((c) => [c.id, c.state, c.from, c.to]), [["a", "removed", 2, 4]]);
+  assert.deepEqual(removed.map((c) => [c.id, c.state, c.from, c.to]), [["a", "removed", 2, 2]]);
   // The run tag lands on new changes.
   const tagged = planEdits("", [], [{ from: 0, to: 0, insert: "x" }], ME, {
     run: "pass-1",
@@ -237,6 +237,28 @@ for (const order of [0, 1]) {
   assert.equal(resolveChanges(b, "f1").length, 1);
   assert.equal(reject(b, list[0].id), true);
   assert.equal(textOf(b), "helloab world");
+}
+
+// A peer deletes the last character of a pending insertion; prune heals it.
+{
+  const a = makeDoc("hello world", 1);
+  track(a, 5, 5, "XYZ");
+  const b = new LoroDoc();
+  b.setPeerId(2);
+  b.import(a.export({ mode: "snapshot" }));
+  b.getMap("files").get("f1").delete(7, 1);
+  b.commit();
+  a.import(b.export({ mode: "update" }));
+  assert.equal(textOf(a), "helloXY world");
+  const list = resolveChanges(a, "f1");
+  assert.equal(list.length, 1);
+  assert.deepEqual([list[0].from, list[0].to], [5, 7]);
+  assert.equal(prune(a), 0);
+  a.commit();
+  const entry = a.getMap(CHANGES).get(list[0].id);
+  const end = a.getCursorPos(Cursor.decode(entry.end));
+  assert.equal(end.update, undefined);
+  assert.deepEqual(resolveChanges(a, "f1").map((c) => [c.from, c.to]), [[5, 7]]);
 }
 
 // ---------------------------------------------------------------------------
