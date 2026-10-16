@@ -2,7 +2,8 @@ import assert from "node:assert/strict";
 import {
   captureAttachment, capabilityAllows, composeTaskMessage, taskDiagnosticContext, diagnosticLabel,
   normalizeCapabilities, resultIds, visibleResults, checkContextSize,
-  TASK_CATALOG, TASK_KINDS, findTask, groupTasks, inferScope, searchTasks, taskPrompt, taskScopes,
+  TASK_CATALOG, TASK_KINDS, TASK_SCOPES, findTask, inferScope, searchTasks, taskPrompt, taskScopes,
+  browseTasks, recentTasks, rememberTask, CONTEXT_TASKS, STARTER_TASK_IDS, taskForKind, taskBlocker,
 } from "../../src/lib/assistant.js";
 
 const selection = {
@@ -111,12 +112,83 @@ assert.equal(inferScope(findTask("tighten"), { path: "main.md" }), "selection");
 
 // Search narrows like a command palette: a label prefix wins over a
 // description hit, and every typed word has to match.
-assert.deepEqual(searchTasks("proof").map((entry) => entry.id), ["proofread", "suggest-improvements"]);
+assert.deepEqual(searchTasks("proof").map((entry) => entry.id), ["proofread"]);
 assert.deepEqual(searchTasks("").map((entry) => entry.id), TASK_CATALOG.map((entry) => entry.id));
 assert.deepEqual(searchTasks("check cit").map((entry) => entry.id), ["check-citations"]);
 assert.deepEqual(searchTasks("zzz"), []);
-assert.deepEqual(groupTasks(searchTasks("")).map((group) => group.category), ["Writing", "Review", "Document"]);
-assert.deepEqual(groupTasks([]), []);
+
+// Keywords carry the synonyms a user actually types.
+assert.equal(searchTasks("grammar")[0].id, "proofread");
+assert.equal(searchTasks("shorter")[0].id, "tighten");
+assert.equal(searchTasks("citations")[0].id, "check-citations");
+assert.equal(searchTasks("argument")[0].id, "review-argument");
+assert.equal(searchTasks("summary")[0].id, "summarize");
+// A typo still finds the entry, and a label prefix outranks a description hit.
+assert.equal(searchTasks("proofraed")[0].id, "proofread");
+assert.equal(searchTasks("review")[0].id, "review-argument");
+for (const entry of TASK_CATALOG) {
+  assert.ok(Array.isArray(entry.keywords) && entry.keywords.length >= 3, `${entry.id} has too few keywords`);
+}
+
+assert.deepEqual(browseTasks().map((entry) => entry.label), [...TASK_CATALOG.map((entry) => entry.label)].sort((a, b) => a.localeCompare(b)));
+assert.ok(browseTasks("Document").length > 0);
+assert.ok(browseTasks("Document").every((entry) => entry.category === "Document"));
+assert.deepEqual(browseTasks("Document").map((entry) => entry.id), ["outline", "summarize"]);
+
+// Recents fall back to the starters, drop unknown and repeated ids, and
+// survive garbage input.
+assert.deepEqual(recentTasks([]).map((entry) => entry.id), STARTER_TASK_IDS);
+assert.deepEqual(recentTasks(["proofread", "summarize", "review-argument"]).map((entry) => entry.id), STARTER_TASK_IDS);
+assert.deepEqual(recentTasks(["tighten", "nope", "tighten", "outline"]).map((entry) => entry.id), ["tighten", "outline"]);
+assert.deepEqual(recentTasks("tighten").map((entry) => entry.id), STARTER_TASK_IDS);
+assert.deepEqual(recentTasks(null).map((entry) => entry.id), STARTER_TASK_IDS);
+assert.equal(recentTasks(["a", "b", "c", "d", "e", "f"].concat(TASK_CATALOG.map((entry) => entry.id))).length, 5);
+assert.deepEqual(rememberTask(["a", "proofread"], "outline"), ["outline", "proofread"]);
+assert.deepEqual(rememberTask(["tighten", "outline"], "tighten"), ["tighten", "outline"]);
+assert.deepEqual(rememberTask(["tighten", "bogus"], "nope"), ["tighten"]);
+const crowdedRecent = TASK_CATALOG.map((entry) => entry.id);
+assert.equal(rememberTask(crowdedRecent.slice(0, 5), crowdedRecent[7]).length, 5);
+assert.equal(rememberTask(crowdedRecent.slice(0, 5), crowdedRecent[7])[0], crowdedRecent[7]);
+
+// Context tasks sit outside the catalog and use the protocol's kinds.
+for (const entry of CONTEXT_TASKS) {
+  assert.ok(TASK_KINDS.includes(entry.kind), `${entry.id} uses an unknown task kind`);
+  assert.equal(TASK_CATALOG.includes(entry), false);
+  assert.equal(findTask(entry.id), entry);
+}
+assert.equal(findTask("fix-diagnostic").kind, "fix");
+assert.equal(taskForKind("tighten").id, "tighten");
+assert.equal(taskForKind("respond").id, "address-comment");
+assert.equal(taskForKind("nope"), null);
+
+// The blocker and the boolean gate agree across the whole matrix.
+const commentCaps = normalizeCapabilities({ can_read: true, can_comment: true, can_edit: false });
+const editorCaps = normalizeCapabilities({ can_read: true, can_comment: true, can_suggest: true, can_edit: false });
+const contexts = [{}, { path: "main.md" }, { attached: attachment, path: "main.md" },
+  { attached: { selection: { exact: "" } }, path: "" }, { attached: { ...attachment, anchored: false } }];
+const kinds = [...TASK_KINDS, "bogus"];
+const scopes = [...TASK_SCOPES, "bogus"];
+let allowedCount = 0;
+let blockedCount = 0;
+for (const capsValue of [commentCaps, editorCaps]) {
+  for (const kind of kinds) {
+    for (const scope of scopes) {
+      for (const context of contexts) {
+        const candidate = { kind, scope };
+        const allowed = capabilityAllows(capsValue, candidate, context);
+        assert.equal(taskBlocker(capsValue, candidate, context) === "", allowed, `${kind}/${scope} disagrees`);
+        if (allowed) allowedCount += 1;
+        else blockedCount += 1;
+      }
+    }
+  }
+}
+assert.ok(allowedCount > 0 && blockedCount > 0);
+assert.equal(taskBlocker(commentCaps, null), "This task cannot run here.");
+assert.equal(taskBlocker({}, { kind: "explain", scope: "file" }, { path: "main.md" }), "Connect an agent to check access for this task.");
+assert.equal(taskBlocker(commentCaps, { kind: "tighten", scope: "selection" }, { attached: attachment }), "You need edit access to run this task.");
+assert.equal(taskBlocker(commentCaps, { kind: "explain", scope: "file" }, {}), "Open a file to use this task.");
+assert.equal(taskBlocker(editorCaps, { kind: "respond", scope: "selection" }, { attached: attachment }), "You need comment access to run this task.");
 
 // The launcher names a diagnostic by severity and place. The engine's own
 // message is never part of the label: it is what the Diagnostics panel shows.
