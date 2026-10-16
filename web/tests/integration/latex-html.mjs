@@ -27,7 +27,7 @@ function harness(options = {}) {
     },
     makeEngine: (config) => {
       const engine = {
-        config, files: {}, runs: [], dead: false,
+        config, files: {}, runs: [], dead: false, timings: { assetsMs: 1 },
         async init() { await options.init?.(engine); },
         async loadBundleIndex(bytes) { engine.index = bytes; return { result: "ok" }; },
         async flushCache() { engine.files = {}; },
@@ -37,7 +37,7 @@ function harness(options = {}) {
         async run(cmd) {
           const files = { ...engine.files };
           engine.runs.push({ cmd, files });
-          return options.run ? options.run(engine, files) : { ok: true, html: `<p>${files[engine.main]}</p>`, diagnostics: [], log: "" };
+          return options.run ? options.run(engine, files) : { ok: true, html: `<p>${files[engine.main]}</p>`, diagnostics: [], log: "", phaseTimings: { compile: 2 }, bundleStats: { memoHits: 3 } };
         },
         terminate() { engine.dead = true; },
       };
@@ -52,8 +52,15 @@ const base = "https://example.org/latex/";
 
 
 const warm = harness();
-assert.equal((await warm.compile(tree("first", { "fig.png": Uint8Array.of(1) }), { base })).html, "<p>first</p>");
-assert.equal((await warm.compile(tree("second"), { base })).html, "<p>second</p>");
+const firstRun = await warm.compile(tree("first", { "fig.png": Uint8Array.of(1) }), { base });
+assert.equal(firstRun.html, "<p>first</p>");
+assert.deepEqual(firstRun.timings, {
+  startup: { latexml: { assetsMs: 1 } },
+  passes: [{ kind: "latexml", phaseTimings: { compile: 2 }, bundleStats: { memoHits: 3 } }],
+});
+const secondRun = await warm.compile(tree("second"), { base });
+assert.equal(secondRun.html, "<p>second</p>");
+assert.deepEqual(secondRun.timings.startup, {}, "start-up timings are reported on an engine's first run only");
 assert.equal(warm.instances.length, 1, "warm edits reuse the engine");
 assert.equal(warm.reads.length, 1);
 assert.equal(warm.verified.length, 1);

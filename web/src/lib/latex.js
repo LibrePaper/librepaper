@@ -41,6 +41,9 @@ export const DEBOUNCE = 1500;
 /// `failure.kind: "timeout"`.
 export const DEADLINE_MS = 240_000;
 export const MAX_PASSES = 8;
+/// How long a compile waits for a cancelled compile's calls to finish before
+/// it gives up on the warm worker.
+const ORPHAN_GRACE_MS = 15_000;
 
 let base = "";
 
@@ -70,7 +73,9 @@ let currentSettings = { engine: "auto" };
 let worker = null;
 let configuredRelease = null;
 let nextCallId = 1;
-const pendingCalls = new Map(); // id -> {resolve, reject}
+const pendingCalls = new Map(); // id -> {resolve, reject, timer, orphan}
+// Resolvers of callers waiting for every orphaned call to be answered.
+let orphanWaiters = [];
 
 // The queue: at most one running, one queued, and the queued one is always
 // the newest tree (SPEC "Browser compilation controller"). `jobGeneration`
@@ -142,8 +147,35 @@ function retireWorker() {
   }
   worker = null;
   configuredRelease = null;
-  for (const [, call] of pendingCalls) call.reject(supersededError());
+  for (const [, call] of pendingCalls) {
+    clearTimeout(call.timer);
+    call.reject(supersededError());
+  }
   pendingCalls.clear();
+  settleOrphanWaiters();
+}
+
+function hasOrphans() {
+  for (const [, call] of pendingCalls) if (call.orphan) return true;
+  return false;
+}
+
+/// Resolves the callers of `noOrphans` once no orphaned call is pending. A
+/// reply, a fired deadline timer, a retired worker and a dead worker all end
+/// with this check.
+function settleOrphanWaiters() {
+  if (!orphanWaiters.length || hasOrphans()) return;
+  const waiters = orphanWaiters;
+  orphanWaiters = [];
+  for (const resolve of waiters) resolve();
+}
+
+/// Resolves when no orphaned call is left on the worker: immediately when
+/// there is none, otherwise when the last orphan is answered, times out
+/// (which retires the worker) or the worker dies.
+function noOrphans() {
+  if (!hasOrphans()) return Promise.resolve();
+  return new Promise((resolve) => orphanWaiters.push(resolve));
 }
 
 async function loadRelease() {
@@ -209,10 +241,10 @@ function withinDeadline(promise, deadlineAt, what, onTimeout, signal) {
   });
 }
 
-function deadlineCall(target, cmd, payload, deadlineAt) {
+function deadlineCall(target, cmd, payload, deadlineAt, token) {
   const ms = remaining(deadlineAt);
   if (!ms) return Promise.reject(timeoutError(`worker ${cmd}`));
-  return call(target, cmd, payload, { timeoutMs: ms });
+  return call(target, cmd, payload, { timeoutMs: ms, token });
 }
 
 async function makeJobWithinDeadline({ tree, generation, engine, release, deadlineAt, signal }) {
@@ -272,7 +304,6 @@ export function setSettings(next) {
   delete currentSettings.release;
   bibCache.clear();
   lastStaged = null;
-  configuredRelease = null; // the next compile must (re)configure the worker for the new release
   cancel();
   statusStore.set({
     route: "browser",
@@ -324,16 +355,24 @@ function attachHandlers(target) {
     const call = pendingCalls.get(message.id);
     if (!call) return;
     pendingCalls.delete(message.id);
+    clearTimeout(call.timer);
+    // An orphan's caller was rejected when it was orphaned, so settling it
+    // again here changes nothing; the reply only frees the worker.
     if (message.failed) call.reject(new Error(message.failed));
     else call.resolve(message);
+    settleOrphanWaiters();
   };
   target.onerror = (event) => {
     if (worker !== target) return;
     const error = new WorkerDied(event?.message || "the compiler worker failed");
     worker = null;
     configuredRelease = null;
-    for (const [, call] of pendingCalls) call.reject(error);
+    for (const [, call] of pendingCalls) {
+      clearTimeout(call.timer);
+      call.reject(error);
+    }
     pendingCalls.clear();
+    settleOrphanWaiters();
     try {
       target.terminate();
     } catch {
@@ -342,39 +381,50 @@ function attachHandlers(target) {
   };
 }
 
-function call(target, cmd, payload, { timeoutMs = 0 } = {}) {
+function call(target, cmd, payload, { timeoutMs = 0, token = null } = {}) {
+  if (token?.cancelled) return Promise.reject(supersededError());
   return new Promise((resolve, reject) => {
     const id = nextCallId++;
     // An engine that never answers -- a worker wedged inside a synchronous
     // fetch, a pass that loops -- would otherwise hold the queue for ever:
     // the job's remaining budget bounds every call, and a call that outlives
     // it retires the worker so the next compile starts from a clean engine.
-    let timer = null;
+    // The timer stays armed when the call is orphaned by `cancel`.
+    const entry = { resolve, reject, timer: null, orphan: false };
     if (timeoutMs > 0) {
-      timer = setTimeout(() => {
+      entry.timer = setTimeout(() => {
         if (!pendingCalls.has(id)) return;
         pendingCalls.delete(id);
         const error = named("WorkerTimeout", `the compiler did not answer ${cmd} within its time budget`);
         if (worker === target) retireWorker();
         reject(error);
+        settleOrphanWaiters();
       }, timeoutMs);
     }
-    const settle = (fn) => (value) => {
-      if (timer) clearTimeout(timer);
-      fn(value);
-    };
-    pendingCalls.set(id, { resolve: settle(resolve), reject: settle(reject) });
+    pendingCalls.set(id, entry);
     try {
       target.postMessage({ id, cmd, ...payload });
     } catch (error) {
-      if (timer) clearTimeout(timer);
+      clearTimeout(entry.timer);
       pendingCalls.delete(id);
       reject(error);
     }
   });
 }
 
-async function ensureWorker(releaseEntry, deadlineAt) {
+async function ensureWorker(releaseEntry, deadlineAt, token) {
+  // A cancelled job left calls running on the worker. Reusing it before they
+  // answer would interleave the two jobs, so wait for them. A warm worker is
+  // worth a short wait, not the old job's whole budget: past the grace the
+  // worker is retired and this job starts a fresh one.
+  if (worker && hasOrphans()) {
+    const graceAt = Math.min(deadlineAt, nowImpl() + ORPHAN_GRACE_MS);
+    try {
+      await withinDeadline(noOrphans(), graceAt, "the previous compile", retireWorker, token.abort.signal);
+    } catch (error) {
+      if (error?.name !== "WorkerTimeout") throw error;
+    }
+  }
   if (worker && configuredRelease === releaseEntry.id) return worker;
   if (worker) retireWorker();
   // The literal `new Worker(new URL(..., import.meta.url), { type: "module" })`
@@ -392,7 +442,7 @@ async function ensureWorker(releaseEntry, deadlineAt) {
   // The worker resolves every engine and package URL against this, and a
   // The worker receives the pinned release directory URL, so all release
   // paths resolve against the direct mirror rather than an app route.
-  await deadlineCall(target, "configure", { base: absoluteBase(), release: releaseEntry }, deadlineAt);
+  await deadlineCall(target, "configure", { base: absoluteBase(), release: releaseEntry }, deadlineAt, token);
   configuredRelease = releaseEntry.id;
   return target;
 }
@@ -457,7 +507,7 @@ function baseProvenance(engine, release) {
   return { backend: "browser", bibliography: null, engine, release, tools: {} };
 }
 
-function buildResult({ job, attempts, startedAt, ok, pdf = null, synctex = null, log = "", diagnostics = undefined, failure, provenance }) {
+function buildResult({ job, attempts, startedAt, ok, pdf = null, synctex = null, log = "", diagnostics = undefined, failure, provenance, timings = null }) {
   return {
     ok,
     pdf: pdf || null,
@@ -469,6 +519,7 @@ function buildResult({ job, attempts, startedAt, ok, pdf = null, synctex = null,
     job,
     provenance,
     failure: failure || null,
+    timings: timings || null,
   };
 }
 
@@ -499,7 +550,7 @@ function unsupportedReason(source, log) {
   return "";
 }
 
-async function handleBrowserFailure({ job, tree, engine, releaseId, attempts, startedAt, kind, message, signal }) {
+async function handleBrowserFailure({ job, tree, engine, releaseId, attempts, startedAt, kind, message, signal, timings = null }) {
   // The failure's own words are the reason; the log is the engine's, from
   // the attempt that just failed, and the diagnostics are read out of it so
   // a missing package or an undefined control sequence lands in the gutter
@@ -520,6 +571,7 @@ async function handleBrowserFailure({ job, tree, engine, releaseId, attempts, st
       stage: "browser",
     },
     provenance: baseProvenance(engine, releaseId),
+    timings,
   });
 }
 
@@ -617,7 +669,7 @@ async function runCompile({ tree, jobGeneration: generationAtStart, token, start
 
   let target;
   try {
-    target = await ensureWorker(releaseEntry, deadlineAt);
+    target = await ensureWorker(releaseEntry, deadlineAt, token);
   } catch (error) {
     checkpoint();
     return handleBrowserFailure({
@@ -638,7 +690,7 @@ async function runCompile({ tree, jobGeneration: generationAtStart, token, start
 
   const generated = lastStaged && lastStaged.project === currentProject ? lastStaged.generated : {};
   try {
-    await deadlineCall(target, "stage", { engine, tree, generated }, deadlineAt);
+    await deadlineCall(target, "stage", { engine, tree, generated }, deadlineAt, token);
   } catch (error) {
     checkpoint();
     return handleBrowserFailure({
@@ -664,11 +716,21 @@ async function runCompile({ tree, jobGeneration: generationAtStart, token, start
   let bibliographyProvenance = null;
   let bibliographyTools = {};
   let passes = 0;
+  // Startup and per-pass timings from every `tex` reply of this job.
+  const startupTimings = {};
+  const passTimings = [];
+  const collectTimings = (reported) => {
+    if (!reported) return;
+    Object.assign(startupTimings, reported.startup);
+    passTimings.push(...(reported.passes || []));
+  };
+  const collected = () => (passTimings.length || Object.keys(startupTimings).length ? { startup: startupTimings, passes: passTimings } : null);
   for (;;) {
     checkpoint();
     if (nowImpl() > deadlineAt) {
       attempts.push({ stage: "browser", backend: "browser", ok: false, log: finalLog, reason: "timeout" });
       return handleBrowserFailure({
+        timings: collected(),
         job,
         tree,
         engine,
@@ -685,12 +747,13 @@ async function runCompile({ tree, jobGeneration: generationAtStart, token, start
     const beforeGenerated = pickGenerated(outputs);
     let reply;
     try {
-      reply = await deadlineCall(target, "tex", { engine, main: tree.main }, deadlineAt);
+      reply = await deadlineCall(target, "tex", { engine, main: tree.main }, deadlineAt, token);
     } catch (error) {
       checkpoint();
       const timedOut = error?.name === "WorkerTimeout";
       attempts.push({ stage: "browser", backend: "browser", ok: false, log: finalLog, reason: timedOut ? "timeout" : "tex" });
       return handleBrowserFailure({
+        timings: collected(),
         job,
         tree,
         engine,
@@ -704,6 +767,7 @@ async function runCompile({ tree, jobGeneration: generationAtStart, token, start
     }
     checkpoint();
 
+    collectTimings(reply.timings);
     outputs = { ...outputs, ...normalizeOutputs(reply.outputs) };
     finalLog = reply.log || "";
     lastPdf = toBytes(reply.pdf);
@@ -714,6 +778,7 @@ async function runCompile({ tree, jobGeneration: generationAtStart, token, start
       const missingMessage = await mirrorAbsentMessage(reply.mirrorAbsent);
       checkpoint();
       return handleBrowserFailure({
+        timings: collected(),
         job,
         tree,
         engine,
@@ -731,7 +796,7 @@ async function runCompile({ tree, jobGeneration: generationAtStart, token, start
     let indexChanged = false;
     if (inspected.makeindex) {
       try {
-        const idx = await deadlineCall(target, "makeindex", { stem }, deadlineAt);
+        const idx = await deadlineCall(target, "makeindex", { stem }, deadlineAt, token);
         checkpoint();
         const ind = toBytes(idx.ind);
         if (!(idx.status === 0 || idx.status === 1) || !ind) {
@@ -740,13 +805,13 @@ async function runCompile({ tree, jobGeneration: generationAtStart, token, start
         const previous = toBytes(outputs[`${stem}.ind`]);
         indexChanged = !previous || previous.length !== ind.length || previous.some((byte, i) => byte !== ind[i]);
         outputs[`${stem}.ind`] = ind;
-        await deadlineCall(target, "write", { path: `${stem}.ind`, bytes: ind.buffer || ind }, deadlineAt);
+        await deadlineCall(target, "write", { path: `${stem}.ind`, bytes: ind.buffer || ind }, deadlineAt, token);
         checkpoint();
       } catch (error) {
         checkpoint();
         if (error?.name === "WorkerTimeout") {
           attempts.push({ stage: "makeindex", backend: "browser", ok: false, log: String(error.message), reason: "timeout" });
-          return handleBrowserFailure({ job, tree, engine, releaseId, attempts, startedAt, signal: token.abort.signal, kind: "timeout", message: String(error.message) });
+          return handleBrowserFailure({ job, tree, engine, releaseId, attempts, startedAt, signal: token.abort.signal, kind: "timeout", message: String(error.message), timings: collected() });
         }
         attempts.push({ stage: "makeindex", backend: "browser", ok: false, log: String(error?.message || error), reason: "index" });
         // TeX has already produced a usable PDF. Keep it visible and retain
@@ -783,6 +848,7 @@ async function runCompile({ tree, jobGeneration: generationAtStart, token, start
         if (error?.name === "WorkerTimeout" || nowImpl() >= deadlineAt) {
           attempts.push({ stage: "browser-bibliography", backend: "browser", ok: false, log: String(error?.message || error), reason: "timeout" });
           return buildResult({
+            timings: collected(),
             job, attempts, startedAt, ok: false, log: finalLog,
             failure: { kind: "timeout", message: "The compile exceeded its time budget.", stage: "browser-bibliography" },
             provenance: baseProvenance(engine, releaseId),
@@ -821,7 +887,7 @@ async function runCompile({ tree, jobGeneration: generationAtStart, token, start
           checkpoint();
           if (token.cancelled || error?.name === "Superseded") throw supersededError();
           if (biberTimedOut || error?.name === "WorkerTimeout" || nowImpl() >= deadlineAt) {
-            return buildResult({ job, attempts, startedAt, ok: false, log: finalLog, failure: { kind: "timeout", message: "The compile exceeded its time budget.", stage: "browser-biber" }, provenance: baseProvenance(engine, releaseId) });
+            return buildResult({ job, attempts, startedAt, ok: false, log: finalLog, failure: { kind: "timeout", message: "The compile exceeded its time budget.", stage: "browser-biber" }, provenance: baseProvenance(engine, releaseId), timings: collected() });
           }
           if (token.cancelled || error?.name === "AbortError") throw supersededError();
           bibResult = { ok: false, error: String(error?.message || error), blg: String(error), tool: { backend: "browser" } };
@@ -830,18 +896,19 @@ async function runCompile({ tree, jobGeneration: generationAtStart, token, start
           if (!bibResult && !token.cancelled) biberAbort.abort();
         }
         attempts.push({ stage: "browser-biber", backend: "browser", ok: bibResult.ok, log: bibResult.blg || "", tool: bibResult.tool?.version });
-        if (!bibResult.ok) return buildResult({ job, attempts, startedAt, ok: false, log: finalLog, failure: { kind: "bibliography", message: bibResult.error || bibResult.blg || "Biber failed", stage: "browser-biber" }, provenance: baseProvenance(engine, releaseId) });
+        if (!bibResult.ok) return buildResult({ job, attempts, startedAt, ok: false, log: finalLog, failure: { kind: "bibliography", message: bibResult.error || bibResult.blg || "Biber failed", stage: "browser-biber" }, provenance: baseProvenance(engine, releaseId), timings: collected() });
         bibCache.set(identity, bibResult);
         bibliographyProvenance = "browser-biber";
         if (bibResult.tool?.version) bibliographyTools = { ...bibliographyTools, biber: bibResult.tool.version };
       } else {
         let reply2;
         try {
-          reply2 = await deadlineCall(target, "bibtex", { stem, eight: inspected.bibtex8 }, deadlineAt);
+          reply2 = await deadlineCall(target, "bibtex", { stem, eight: inspected.bibtex8 }, deadlineAt, token);
         } catch (error) {
           checkpoint();
           attempts.push({ stage: "browser", backend: "browser", ok: false, log: String(error?.message || error), reason: "bibliography" });
           return buildResult({
+            timings: collected(),
             job,
             attempts,
             startedAt,
@@ -869,10 +936,10 @@ async function runCompile({ tree, jobGeneration: generationAtStart, token, start
         bibliographyChanged = !previous || previous.length !== bibResult.bbl.length || previous.some((byte, i) => byte !== bibResult.bbl[i]);
         outputs[`${stem}.bbl`] = bibResult.bbl;
         try {
-          await deadlineCall(target, "write", { path: `${stem}.bbl`, bytes: bibResult.bbl.buffer || bibResult.bbl }, deadlineAt);
+          await deadlineCall(target, "write", { path: `${stem}.bbl`, bytes: bibResult.bbl.buffer || bibResult.bbl }, deadlineAt, token);
         } catch (error) {
           checkpoint();
-          if (error?.name === "WorkerTimeout") return buildResult({ job, attempts, startedAt, ok: false, log: finalLog, failure: { kind: "timeout", message: error.message, stage: "write-bibliography" }, provenance: baseProvenance(engine, releaseId) });
+          if (error?.name === "WorkerTimeout") return buildResult({ job, attempts, startedAt, ok: false, log: finalLog, failure: { kind: "timeout", message: error.message, stage: "write-bibliography" }, provenance: baseProvenance(engine, releaseId), timings: collected() });
           /* the next tex pass will simply see the same undefined citations */
         }
         checkpoint();
@@ -898,6 +965,7 @@ async function runCompile({ tree, jobGeneration: generationAtStart, token, start
   attempts.push({ stage: "browser", backend: "browser", ok: true, log: finalLog });
   const diagnostics = logMod.parse(finalLog, { main: tree.main, paths: treePaths(tree) });
   return buildResult({
+    timings: collected(),
     job,
     attempts,
     startedAt,
@@ -983,6 +1051,10 @@ export function compile(tree, { manual = false } = {}) {
 /// `error.name === "Superseded"`; the run already in flight keeps executing
 /// in the background (a worker command cannot be un-awaited) but its result
 /// is discarded by the same token every checkpoint above already checks.
+/// The worker is kept: each call still pending on it becomes an orphan. Its
+/// caller is rejected now, its entry and deadline timer stay until the worker
+/// answers, and the next job waits for the orphans before it reuses the worker
+/// (see `ensureWorker`). An orphan whose timer fires retires the worker.
 export function cancel() {
   const error = supersededError();
   const discarded = Boolean(queued) || Boolean(activeToken && !activeToken.cancelled);
@@ -995,10 +1067,10 @@ export function cancel() {
     activeToken.abort.abort();
     if (activeCallbacks) for (const reject of activeCallbacks.failing) reject(error);
     activeCallbacks = null;
-    // A pending RPC still has its own deadline timer. Do not let it outlive
-    // this job against a worker the replacement compile could reuse: retire
-    // the worker now, which settles every canceled RPC and clears its timer.
-    if (pendingCalls.size) retireWorker();
+    for (const [, pending] of pendingCalls) {
+      pending.orphan = true;
+      pending.reject(error);
+    }
     running = false;
     activeToken = null;
   }
@@ -1032,10 +1104,6 @@ export const resources = {
     const module = await getResources();
     if (module) return module.clear();
   },
-  async readiness(release, keys) {
-    const module = await getResources();
-    return module ? module.readiness(release, keys) : { ready: false, missing: keys || [] };
-  },
   async persist() {
     const module = await getResources();
     if (module) return module.persist();
@@ -1063,7 +1131,13 @@ export const _testing = {
     if (now !== undefined) nowImpl = now;
     if (deadlineOverride !== undefined) deadlineMs = deadlineOverride;
   },
+  /// Drops the worker, so a check that needs a fresh one can ask for it now
+  /// that switching projects keeps the warm worker.
+  retireWorker() {
+    retireWorker();
+  },
   reset() {
+    retireWorker();
     WorkerClass = typeof Worker !== "undefined" ? Worker : null;
     biberOverride = undefined;
     bibliographyIdentityOverride = undefined;
