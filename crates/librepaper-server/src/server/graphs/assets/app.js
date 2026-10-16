@@ -247,7 +247,7 @@
   // Opens the moderation tab with this account's id and provider filled in.
   function blockAccount(account) {
     document.getElementById("block-target").value = account.id;
-    if (account.provider === "github" || account.provider === "google") {
+    if (["github", "google", "oidc"].includes(account.provider)) {
       document.getElementById("block-provider").value = account.provider;
     }
     focusReason = true;

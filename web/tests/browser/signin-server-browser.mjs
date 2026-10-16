@@ -24,7 +24,7 @@ try {
     globalThis.fetch = async (url, init) => {
       const path = String(url);
       if (path.includes('/__lp/')) return realFetch(url, init);
-      if (path === '/api/me') return Response.json({ providers: ['github'] });
+      if (path === '/api/me') return Response.json(new URLSearchParams(location.search).has('oidc') ? { providers: ['github', 'oidc'], oidc_name: 'Acme SSO' } : { providers: ['github'] });
       return Response.json({});
     };
     mount(SignIn, { target: document.body });
@@ -73,6 +73,11 @@ try {
   await tab.navigate(`${origin}/`);
   await until("github provider", () => tab.evaluate("Boolean(document.querySelector('a[href^=\"/auth/login/github\"]'))"));
   assert.equal(await tab.evaluate("Boolean(document.querySelector('details.signin-server'))"), false, "a browser offers no server choice");
+
+  // A generic OpenID Connect provider is labelled with the deployment's name.
+  await tab.navigate(`${origin}/?oidc`);
+  await until("oidc provider", () => tab.evaluate("Boolean(document.querySelector('a[href^=\"/auth/login/oidc\"]'))"));
+  assert.equal(await tab.evaluate("document.querySelector('a[href^=\"/auth/login/oidc\"]').textContent.trim()"), "Continue with Acme SSO");
 
   // The desktop app offers the choice and hands the address to the shell.
   await tab.navigate(`${origin}/desktop/`);

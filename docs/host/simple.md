@@ -31,7 +31,7 @@ Everything is on one machine, so losing the VPS loses it all until [backups](adv
 - Install Docker Engine and Compose v2 on it.
 - Open ports 80 and 443.
 - Point two DNS names at it: one for the app (`paper.example`) and one for published documents (`docs.paper.example`).
-- Create a GitHub OAuth app, a Google OAuth client, or both. See [Sign-in](#sign-in).
+- Create a GitHub OAuth app, a Google OAuth client, an OpenID Connect client, or several. See [Sign-in](#sign-in).
 
 ## Install
 
@@ -44,7 +44,7 @@ cd librepaper
 
 ## Sign-in
 
-LibrePaper has no passwords of its own. People sign in with GitHub or Google, and the server never sees or stores a password. You register LibrePaper once with the provider, which gives you a client ID and a client secret for `librepaper.toml`. At least one provider is required. Both can be enabled.
+LibrePaper has no passwords of its own. People sign in with GitHub, Google or your own identity provider, and the server never sees or stores a password. You register LibrePaper once with the provider, which gives you a client ID and a client secret for `librepaper.toml`. At least one provider is required. Any number can be enabled.
 
 **GitHub.** LibrePaper requests no scopes and receives the account's public login name.
 
@@ -64,6 +64,23 @@ LibrePaper has no passwords of its own. People sign in with GitHub or Google, an
 client_id = "replace"
 client_secret = "replace"
 ```
+
+**OpenID Connect (Keycloak, Authentik, Okta…).** For a company or community identity provider that speaks OpenID Connect. LibrePaper finds the provider's endpoints from its issuer, and requests the `openid`, `email` and `profile` scopes. Its handle is the person's email address, so the provider must release `email` with `email_verified: true`. A person whose address is not verified cannot sign in.
+
+- Create a confidential client (client authentication with a client secret, authorization code flow) in your provider.
+- Valid redirect URI: `https://paper.example/auth/callback/oidc`
+- Make sure the `email` and `email_verified` claims reach the ID token. The `email` scope releases them in Keycloak and Authentik. Microsoft Entra ID does not send `email_verified` by default, so add it as an optional claim or map it in the app's claims. A sign-in without it is refused.
+- Put the issuer, client ID and secret in `[auth.oidc]`. The issuer is the address without `/.well-known/openid-configuration`, and it must start with `https://`:
+
+```toml
+[auth.oidc]
+issuer = "https://sso.example.org/realms/acme"
+client_id = "librepaper"
+client_secret = { env = "OIDC_CLIENT_SECRET" }
+name = "Acme SSO"                 # the sign-in button reads "Continue with Acme SSO"
+```
+
+`name` is optional and defaults to "Single sign-on". `scopes` defaults to `openid email profile`. Set `client_secret` to `{ env = "OIDC_CLIENT_SECRET" }` to read the secret from that environment variable, or write it as a string.
 
 ## Configure
 
@@ -106,6 +123,7 @@ docs = "https://docs.paper.example"
 # Sign-in needs at least one provider. Callback URLs:
 # GitHub  https://paper.example/auth/callback
 # Google  https://paper.example/auth/callback/google
+# OIDC    https://paper.example/auth/callback/oidc
 [auth.github]
 client_id = "replace"
 client_secret = "replace"
@@ -113,6 +131,15 @@ client_secret = "replace"
 # [auth.google]
 # client_id = "replace"
 # client_secret = "replace"
+
+# Any OpenID Connect provider (Keycloak, Authentik, Okta, Entra ID...). The
+# provider must send email with email_verified: true. name labels the button.
+# [auth.oidc]
+# issuer = "https://sso.example.org/realms/acme"
+# client_id = "replace"
+# client_secret = { env = "OIDC_CLIENT_SECRET" }
+# name = "Single sign-on"
+# scopes = "openid email profile"
 
 # The bundled database, over the socket compose.yaml shares with it. For a
 # database elsewhere, write the full URL here, with ?sslmode=verify-full for a managed service:
@@ -123,7 +150,7 @@ database_url = "postgresql:///librepaper?host=/var/run/postgresql&user=librepape
 # database_connections = 20         # PostgreSQL connection pool size
 
 # Who may publish and comment: "any" signed-in account, a GitHub login, a
-# verified Google address, or "@example.org". "anyone" also allows
+# verified Google or OpenID Connect address, or "@example.org". "anyone" also allows
 # anonymous comments.
 [access]
 publishers = ["any"]
@@ -138,6 +165,7 @@ trusted_networks = ["172.29.0.0/16"]
 # https://admin.paper.example/auth/callback to the GitHub OAuth app's callback URLs.
 # [admin]
 # github_ids = [123456]
+# oidc_subjects = ["<sub claim of each operator>"]
 
 # Optional. Every limit, with its default; uncomment a line to change it.
 # [limits]

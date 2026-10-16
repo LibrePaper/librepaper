@@ -1,8 +1,8 @@
-//! What the admin origin answers. A stranger is sent to GitHub sign-in, and
-//! only a listed GitHub account gets the page, its assets, `/session`, `/data`,
-//! `/accounts` and `/moderation`. `/moderation` is the one route that takes a
-//! POST. Nothing else is served there, and nothing here is served on the app
-//! or docs origins.
+//! What the admin origin answers. A stranger is sent to a sign-in with GitHub
+//! or the OpenID Connect provider, and only a listed account gets the page, its
+//! assets, `/session`, `/data`, `/accounts` and `/moderation`. `/moderation` is
+//! the one route that takes a POST. Nothing else is served there, and nothing
+//! here is served on the app or docs origins.
 
 use std::future::Future;
 use std::sync::Arc;
@@ -12,7 +12,9 @@ use axum::http::request::Parts;
 use axum::http::{header, HeaderValue, Method, Request, StatusCode};
 use axum::response::Response;
 use base64::Engine;
-use librepaper_base::auth::{cookie_name, pkce_verifier, sign, verifies, Identity};
+use librepaper_base::auth::{
+    cookie_name, pkce_verifier, sign, verifies, Identity, PROVIDER_GITHUB, PROVIDER_OIDC,
+};
 use librepaper_base::util::random_token;
 use librepaper_engine::storage::postgres::{BlockOutcome, Error};
 use serde_json::{json, Value};
@@ -46,7 +48,7 @@ const SESSION_COOKIE: &str = "librepaper_admin";
 const STATE_COOKIE: &str = "librepaper_admin_state";
 /// Signs the session token under its own purpose, so an app session can never
 /// pass for an operator session.
-const SESSION_PURPOSE: &str = "admin-session-v1";
+const SESSION_PURPOSE: &str = "admin-session-v2";
 const SESSION_SECONDS: i64 = 12 * 60 * 60;
 const STATE_SECONDS: i64 = 600;
 /// A random value drawn when the process starts and signed into every session,
@@ -54,8 +56,8 @@ const STATE_SECONDS: i64 = 600;
 /// cannot mint one that outlives the process.
 static ADMIN_EPOCH: std::sync::LazyLock<String> =
     std::sync::LazyLock::new(librepaper_base::util::random_token);
-/// Sign-outs per GitHub login, keyed in lowercase. The count is signed into
-/// every session, so a session minted before a sign-out no longer verifies.
+/// Sign-outs per login, a GitHub login or a verified email, keyed in lowercase.
+/// The count is signed into every session, so a session minted before a sign-out no longer verifies.
 static SIGN_OUTS: std::sync::LazyLock<std::sync::Mutex<std::collections::HashMap<String, u64>>> =
     std::sync::LazyLock::new(Default::default);
 
@@ -67,9 +69,12 @@ const MAX_POINTS: i64 = 1000;
 /// What deciding a request found out without waiting on anything.
 enum Decision {
     Reply(Response<Body>),
-    /// The GitHub sign-in comes back with this code and the PKCE verifier
-    /// that started it.
-    Callback(String, String),
+    /// An operator sign-in starts with this provider: a redirect to it, with
+    /// the state cookie its callback will check.
+    Start(&'static str),
+    /// A sign-in comes back from this provider with this code and the PKCE
+    /// verifier that started it.
+    Callback(&'static str, String, String),
     Data(Option<String>),
     Accounts,
     Moderation,
@@ -79,7 +84,8 @@ enum Decision {
 
 /// A signed-in operator, read from a session token that has not expired.
 struct Operator {
-    github_id: i64,
+    /// The qualified identity, "github:<id>" or "oidc:<sub>".
+    subject: String,
     login: String,
     expires_at: i64,
 }
@@ -101,7 +107,10 @@ pub fn admin<'a>(
     async move {
         let mut response = match decision {
             Decision::Reply(response) => response,
-            Decision::Callback(code, verifier) => callback(server, &code, &verifier).await,
+            Decision::Start(provider) => start(server, provider).await,
+            Decision::Callback(provider, code, verifier) => {
+                callback(server, provider, &code, &verifier).await
+            }
             Decision::Data(query) => data(server, query.as_deref()).await,
             Decision::Accounts => accounts(server).await,
             Decision::Moderation => moderation(server).await,
@@ -129,73 +138,52 @@ pub fn admin<'a>(
 }
 
 fn decide(server: &Server, parts: &Parts) -> Decision {
-    // Without a listed GitHub account, a configured app and an admin origin,
-    // this origin serves nothing at all.
+    // Without a listed operator and a provider set up for them, and an admin
+    // origin, this origin serves nothing at all.
+    let providers = admin_providers(server);
     let admin = match server.origins.admin() {
-        Some(origin) if !server.admin_github_ids.is_empty() && server.app.configured() => {
-            origin.as_str()
-        }
+        Some(origin) if !providers.is_empty() => origin.as_str(),
         _ => return Decision::Reply(text(StatusCode::NOT_FOUND, "not found")),
     };
     let https = admin.starts_with("https://");
-    if parts.uri.path() == "/auth/callback" {
-        if parts.method != Method::GET {
+    let path = parts.uri.path();
+    if path == "/auth/callback" {
+        return callback_request(parts, PROVIDER_GITHUB, https);
+    }
+    if path == "/auth/callback/oidc" {
+        return callback_request(parts, PROVIDER_OIDC, https);
+    }
+    // The two ways in, which are answered whether or not anybody is signed in.
+    // A provider that cannot admit an operator here has no way in.
+    let start = match path {
+        "/auth/login/github" => Some(PROVIDER_GITHUB),
+        "/auth/login/oidc" => Some(PROVIDER_OIDC),
+        _ => None,
+    };
+    if let Some(provider) = start {
+        if !matches!(parts.method, Method::GET | Method::HEAD) {
             let mut response = text(StatusCode::METHOD_NOT_ALLOWED, "method not allowed");
-            set(&mut response, "allow", "GET");
+            set(&mut response, "allow", "GET, HEAD");
             return Decision::Reply(response);
         }
-        // The cookie is `state|verifier`. Both halves must be present, and
-        // the state must be the one the query brings back.
-        let expected = cookie(&parts.headers, &cookie_name(https, STATE_COOKIE));
-        let supplied = query_value(parts, "state");
-        let parsed = expected.as_deref().and_then(|value| value.split_once('|'));
-        return match (parsed, supplied) {
-            (Some((state, verifier)), Some(supplied))
-                if !state.is_empty() && !verifier.is_empty() && state == supplied =>
-            {
-                match query_value(parts, "code").filter(|code| !code.is_empty()) {
-                    Some(code) => Decision::Callback(code, verifier.to_string()),
-                    None => {
-                        Decision::Reply(refused(https, "GitHub sent no code; start again at /"))
-                    }
-                }
-            }
-            _ => Decision::Reply(refused(
-                https,
-                "sign-in state did not match; start again at /",
-            )),
-        };
+        if !providers.contains(&provider) {
+            return Decision::Reply(text(StatusCode::NOT_FOUND, "not found"));
+        }
+        return Decision::Start(provider);
     }
-    if parts.uri.path() == "/auth/logout" {
+    if path == "/auth/logout" {
         return Decision::Reply(logout(server, parts, admin, https));
     }
     let Some(operator) = signed_in(server, parts, https) else {
-        if !matches!(parts.method, Method::GET | Method::HEAD) || parts.uri.path() != "/" {
+        if !matches!(parts.method, Method::GET | Method::HEAD) || path != "/" {
             return Decision::Reply(text(StatusCode::UNAUTHORIZED, "sign in at /"));
         }
-        let callback = format!("{admin}/auth/callback");
-        let state = random_token();
-        let verifier = pkce_verifier();
-        let mut response = Response::new(Body::empty());
-        *response.status_mut() = StatusCode::FOUND;
-        // GitHub otherwise approves an already-authorized app silently, so a
-        // signed-out operator would be let straight back in without choosing an
-        // account.
-        let url = format!(
-            "{}&prompt=select_account",
-            server.app.authorize_url(&callback, &state, &verifier)
-        );
-        set(&mut response, "location", &url);
-        append_cookie(
-            &mut response,
-            &set_cookie(
-                &cookie_name(https, STATE_COOKIE),
-                &format!("{state}|{verifier}"),
-                STATE_SECONDS,
-                https,
-            ),
-        );
-        return Decision::Reply(response);
+        // One provider is simply started. Two are a choice, which is offered on
+        // a page of its own rather than guessed at.
+        return match providers.as_slice() {
+            [only] => Decision::Start(only),
+            _ => Decision::Reply(chooser(server.oidc.display_name())),
+        };
     };
     if parts.uri.path() == "/moderation" {
         if matches!(parts.method, Method::GET | Method::HEAD) {
@@ -226,13 +214,168 @@ fn decide(server: &Server, parts: &Parts) -> Decision {
         "/uplot.css" => asset("text/css", UPLOT_CSS),
         "/session" => json_reply(&json!({
             "login": operator.login,
-            "github_id": operator.github_id,
+            "subject": operator.subject,
+            "github_id": github_id(&operator.subject),
             "expires_at": operator.expires_at,
         })),
         "/data" => return Decision::Data(parts.uri.query().map(str::to_owned)),
         "/accounts" => return Decision::Accounts,
         _ => text(StatusCode::NOT_FOUND, "not found"),
     })
+}
+
+/// The providers that can admit an operator here: GitHub when a listed account
+/// and the GitHub app are set up, and OpenID Connect when a listed subject and
+/// the provider are. The admin origin serves nothing when neither is.
+fn admin_providers(server: &Server) -> Vec<&'static str> {
+    let mut providers = Vec::new();
+    if !server.admin_github_ids.is_empty() && server.app.configured() {
+        providers.push(PROVIDER_GITHUB);
+    }
+    if !server.admin_oidc_subjects.is_empty() && server.oidc.configured() {
+        providers.push(PROVIDER_OIDC);
+    }
+    providers
+}
+
+/// Whether a qualified identity ID, "github:<id>" or "oidc:<sub>", is listed
+/// on the admin origin and its provider is set up there.
+fn admitted(server: &Server, identity_id: &str) -> bool {
+    if let Some(id) = github_id(identity_id) {
+        return server.app.configured() && server.admin_github_ids.contains(&id);
+    }
+    match identity_id.strip_prefix("oidc:") {
+        Some(subject) => {
+            server.oidc.configured()
+                && server
+                    .admin_oidc_subjects
+                    .iter()
+                    .any(|listed| listed == subject)
+        }
+        None => false,
+    }
+}
+
+/// What a sign-in callback asks for before anything is exchanged. The state
+/// cookie is `state|verifier`. Both halves must be present, and the state must
+/// be the one the query brings back.
+fn callback_request(parts: &Parts, provider: &'static str, https: bool) -> Decision {
+    if parts.method != Method::GET {
+        let mut response = text(StatusCode::METHOD_NOT_ALLOWED, "method not allowed");
+        set(&mut response, "allow", "GET");
+        return Decision::Reply(response);
+    }
+    let expected = cookie(&parts.headers, &cookie_name(https, STATE_COOKIE));
+    let supplied = query_value(parts, "state");
+    let parsed = expected.as_deref().and_then(|value| value.split_once('|'));
+    match (parsed, supplied) {
+        (Some((state, verifier)), Some(supplied))
+            if !state.is_empty() && !verifier.is_empty() && state == supplied =>
+        {
+            match query_value(parts, "code").filter(|code| !code.is_empty()) {
+                Some(code) => Decision::Callback(provider, code, verifier.to_string()),
+                None => {
+                    let who = if provider == PROVIDER_OIDC {
+                        "the identity provider"
+                    } else {
+                        "GitHub"
+                    };
+                    Decision::Reply(refused(
+                        https,
+                        &format!("{who} sent no code; start again at /"),
+                    ))
+                }
+            }
+        }
+        _ => Decision::Reply(refused(
+            https,
+            "sign-in state did not match; start again at /",
+        )),
+    }
+}
+
+/// Start an operator sign-in with one provider: a redirect to its sign-in page
+/// and the state cookie its callback will check. The provider is asked again
+/// even for an account it already remembers, so a signed-out operator chooses
+/// the account rather than being let straight back in.
+async fn start(server: &Server, provider: &'static str) -> Response<Body> {
+    let Some(origin) = server.origins.admin() else {
+        return text(StatusCode::NOT_FOUND, "not found");
+    };
+    let admin = origin.as_str();
+    let https = admin.starts_with("https://");
+    let state = random_token();
+    let verifier = pkce_verifier();
+    let location = if provider == PROVIDER_OIDC {
+        let callback = format!("{admin}/auth/callback/oidc");
+        match server
+            .oidc
+            .authorize_url(&callback, &state, &verifier)
+            .await
+        {
+            Ok(url) => format!("{url}&prompt=login"),
+            Err(error) => {
+                tracing::warn!("could not start OpenID Connect sign-in for the console: {error}");
+                return text(
+                    StatusCode::BAD_GATEWAY,
+                    "the identity provider is unavailable; try again later",
+                );
+            }
+        }
+    } else {
+        let callback = format!("{admin}/auth/callback");
+        // GitHub otherwise approves an already-authorized app silently, so a
+        // signed-out operator would be let straight back in without choosing an
+        // account.
+        format!(
+            "{}&prompt=select_account",
+            server.app.authorize_url(&callback, &state, &verifier)
+        )
+    };
+    let mut response = Response::new(Body::empty());
+    *response.status_mut() = StatusCode::FOUND;
+    set(&mut response, "location", &location);
+    append_cookie(
+        &mut response,
+        &set_cookie(
+            &cookie_name(https, STATE_COOKIE),
+            &format!("{state}|{verifier}"),
+            STATE_SECONDS,
+            https,
+        ),
+    );
+    response
+}
+
+/// The page offering both operator sign-ins. It is one inline page with no
+/// script and no stylesheet of its own, and the provider's name is escaped.
+fn chooser(oidc_name: &str) -> Response<Body> {
+    let html = format!(
+        "<!doctype html>\n<html lang=\"en\">\n<head>\n<meta charset=\"utf-8\">\n\
+         <meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">\n\
+         <title>Sign in</title>\n</head>\n<body>\n<h1>Sign in</h1>\n\
+         <p><a href=\"/auth/login/github\">Sign in with GitHub</a></p>\n\
+         <p><a href=\"/auth/login/oidc\">Sign in with {}</a></p>\n</body>\n</html>\n",
+        html_escape(oidc_name)
+    );
+    let mut response = Response::new(Body::from(html));
+    set(&mut response, "content-type", "text/html; charset=utf-8");
+    set(&mut response, "content-security-policy", CHOOSER_CSP);
+    response
+}
+
+/// The chooser runs nothing and frames nothing, and links only to this origin.
+const CHOOSER_CSP: &str =
+    "default-src 'none'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'";
+
+/// Escapes text for an HTML body or a double-quoted attribute.
+fn html_escape(value: &str) -> String {
+    value
+        .replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
+        .replace('"', "&quot;")
+        .replace('\'', "&#39;")
 }
 
 /// The first value of a query parameter, if the request has it.
@@ -265,7 +408,7 @@ fn append_cookie(response: &mut Response<Body>, value: &str) {
 fn signed_in(server: &Server, parts: &Parts, https: bool) -> Option<Operator> {
     cookie(&parts.headers, &cookie_name(https, SESSION_COOKIE))
         .and_then(|token| read_admin_session(&server.key, &token, unix_seconds()))
-        .filter(|operator| server.admin_github_ids.contains(&operator.github_id))
+        .filter(|operator| admitted(server, &operator.subject))
 }
 
 /// Sign the operator out. Every session for their login ends, and the cookie
@@ -296,10 +439,15 @@ fn logout(server: &Server, parts: &Parts, admin: &str, https: bool) -> Response<
     response
 }
 
-/// The GitHub sign-in comes back here. The code is exchanged for the account,
-/// and only a listed account gets a session. Either way the state cookie is
-/// spent.
-async fn callback(server: &Server, code: &str, verifier: &str) -> Response<Body> {
+/// The provider's sign-in comes back here. The code is exchanged for the
+/// account, and only a listed account gets a session. Either way the state
+/// cookie is spent.
+async fn callback(
+    server: &Server,
+    provider: &'static str,
+    code: &str,
+    verifier: &str,
+) -> Response<Body> {
     let admin = server.origins.admin().map_or("", |origin| origin.as_str());
     let https = admin.starts_with("https://");
     let state_cookie = cookie_name(https, STATE_COOKIE);
@@ -315,36 +463,20 @@ async fn callback(server: &Server, code: &str, verifier: &str) -> Response<Body>
             "too many sign-ins at once; try again",
         ));
     };
-    let redirect = format!("{admin}/auth/callback");
-    let token = match server.app.exchange(code, &redirect, verifier).await {
-        Ok(token) => token,
-        Err(message) => {
-            return refuse(text(
-                StatusCode::BAD_REQUEST,
-                &format!("GitHub refused the sign-in: {message}"),
-            ))
-        }
-    };
-    let who = match server.app.login(&token).await {
+    let who = match identify(server, provider, code, verifier, admin).await {
         Ok(who) => who,
-        Err(_) => {
-            return refuse(text(
-                StatusCode::BAD_GATEWAY,
-                "GitHub would not say who you are",
-            ))
-        }
+        Err((status, message)) => return refuse(text(status, &message)),
     };
-    let listed = github_id(&who).filter(|id| server.admin_github_ids.contains(id));
-    let Some(id) = listed else {
-        tracing::warn!(login = %who.handle, "admin sign-in refused");
+    if !admitted(server, &who.id) {
+        tracing::warn!(login = %who.handle, provider = %who.provider, "admin sign-in refused");
         return refuse(text(
             StatusCode::FORBIDDEN,
-            "this GitHub account may not use this console",
+            "this account may not use this console",
         ));
-    };
+    }
     tracing::info!(login = %who.handle, "admin sign-in");
     let expires_at = unix_seconds() + SESSION_SECONDS;
-    let session = admin_session_token(&server.key, id, &who.handle, expires_at);
+    let session = admin_session_token(&server.key, &who.id, &who.handle, expires_at);
     let mut response = Response::new(Body::empty());
     *response.status_mut() = StatusCode::FOUND;
     set(&mut response, "location", "/");
@@ -360,32 +492,85 @@ async fn callback(server: &Server, code: &str, verifier: &str) -> Response<Body>
     refuse(response)
 }
 
-/// The numeric GitHub account ID, or `None` for any other provider.
-fn github_id(identity: &Identity) -> Option<i64> {
-    identity.id.strip_prefix("github:")?.parse().ok()
+/// Exchange a provider's code and read the account it names. The error is the
+/// status and the message the callback answers with.
+async fn identify(
+    server: &Server,
+    provider: &str,
+    code: &str,
+    verifier: &str,
+    admin: &str,
+) -> Result<Identity, (StatusCode, String)> {
+    if provider == PROVIDER_OIDC {
+        let redirect = format!("{admin}/auth/callback/oidc");
+        let token = server
+            .oidc
+            .exchange(code, &redirect, verifier)
+            .await
+            .map_err(|message| {
+                (
+                    StatusCode::BAD_REQUEST,
+                    format!("the identity provider refused the sign-in: {message}"),
+                )
+            })?;
+        return server.oidc.identity_for(&token).await.map_err(|message| {
+            if message == librepaper_base::auth::OIDC_UNVERIFIED_EMAIL {
+                (StatusCode::FORBIDDEN, message)
+            } else {
+                (
+                    StatusCode::BAD_GATEWAY,
+                    "the identity provider would not say who you are".to_string(),
+                )
+            }
+        });
+    }
+    let redirect = format!("{admin}/auth/callback");
+    let token = server
+        .app
+        .exchange(code, &redirect, verifier)
+        .await
+        .map_err(|message| {
+            (
+                StatusCode::BAD_REQUEST,
+                format!("GitHub refused the sign-in: {message}"),
+            )
+        })?;
+    server.app.login(&token).await.map_err(|_| {
+        (
+            StatusCode::BAD_GATEWAY,
+            "GitHub would not say who you are".to_string(),
+        )
+    })
 }
 
-/// A session token for one operator: `v1.<payload>.<signature>`, where the
-/// payload is `github_id|expires_at|login` in URL-safe base64.
+/// The numeric GitHub account ID in a qualified identity, or `None` for any
+/// other provider.
+fn github_id(identity_id: &str) -> Option<i64> {
+    identity_id.strip_prefix("github:")?.parse().ok()
+}
+
+/// A session token for one operator: `v2.<payload>.<signature>`, where the
+/// payload is `subject|expires_at|login` in URL-safe base64. The subject is
+/// the qualified identity, "github:<id>" or "oidc:<sub>".
 pub(crate) fn admin_session_token(
     key: &[u8],
-    github_id: i64,
+    subject: &str,
     login: &str,
     expires_at: i64,
 ) -> String {
-    mint(key, &ADMIN_EPOCH, github_id, login, expires_at)
+    mint(key, &ADMIN_EPOCH, subject, login, expires_at)
 }
 
-fn mint(key: &[u8], epoch: &str, github_id: i64, login: &str, expires_at: i64) -> String {
+fn mint(key: &[u8], epoch: &str, subject: &str, login: &str, expires_at: i64) -> String {
     let payload = base64::engine::general_purpose::URL_SAFE_NO_PAD
-        .encode(format!("{github_id}|{expires_at}|{login}"));
+        .encode(format!("{subject}|{expires_at}|{login}"));
     let generation = sign_outs(login);
     let purpose = format!("{SESSION_PURPOSE}:{epoch}:{generation}");
-    format!("v1.{payload}.{}", sign(key, &purpose, &payload))
+    format!("v2.{payload}.{}", sign(key, &purpose, &payload))
 }
 
-/// How many times this GitHub login has been signed out. Logins are matched
-/// without regard to case.
+/// How many times this login has been signed out. Logins are matched without
+/// regard to case.
 fn sign_outs(login: &str) -> u64 {
     let counts = SIGN_OUTS
         .lock()
@@ -396,7 +581,7 @@ fn sign_outs(login: &str) -> u64 {
         .unwrap_or(0)
 }
 
-/// Ends every admin session for this GitHub login.
+/// Ends every admin session for this login, whichever provider it came from.
 pub(crate) fn end_admin_sessions(login: &str) {
     let mut counts = SIGN_OUTS
         .lock()
@@ -404,17 +589,17 @@ pub(crate) fn end_admin_sessions(login: &str) {
     *counts.entry(login.to_ascii_lowercase()).or_insert(0) += 1;
 }
 
-/// The fields of a session payload: GitHub ID, expiry and login.
-fn decode_payload(payload: &str) -> Option<(i64, i64, String)> {
+/// The fields of a session payload: the qualified identity, expiry and login.
+fn decode_payload(payload: &str) -> Option<(String, i64, String)> {
     let decoded = base64::engine::general_purpose::URL_SAFE_NO_PAD
         .decode(payload)
         .ok()?;
     let text = String::from_utf8(decoded).ok()?;
     let mut fields = text.splitn(3, '|');
-    let github_id: i64 = fields.next()?.parse().ok()?;
+    let subject = fields.next()?.to_string();
     let expires_at: i64 = fields.next()?.parse().ok()?;
     let login = fields.next()?.to_string();
-    Some((github_id, expires_at, login))
+    Some((subject, expires_at, login))
 }
 
 /// The operator a session token names, if its signature holds and it has not
@@ -424,19 +609,19 @@ fn read_admin_session(key: &[u8], token: &str, now: i64) -> Option<Operator> {
 }
 
 fn read(key: &[u8], epoch: &str, token: &str, now: i64) -> Option<Operator> {
-    let rest = token.strip_prefix("v1.")?;
+    let rest = token.strip_prefix("v2.")?;
     let (payload, signature) = rest.rsplit_once('.')?;
     // The login picks the sign-out count the signature is checked under, so
     // the payload is read first. Its fields are trusted only once the
     // signature holds.
-    let (github_id, expires_at, login) = decode_payload(payload)?;
+    let (subject, expires_at, login) = decode_payload(payload)?;
     let purpose = format!("{SESSION_PURPOSE}:{epoch}:{}", sign_outs(&login));
     if !verifies(key, &purpose, payload, signature) {
         return None;
     }
     // No session this server issued lasts longer than SESSION_SECONDS.
     (expires_at > now && expires_at <= now + SESSION_SECONDS).then_some(Operator {
-        github_id,
+        subject,
         login,
         expires_at,
     })
@@ -859,16 +1044,31 @@ mod tests {
 
     #[test]
     fn a_session_token_round_trips_to_its_operator() {
-        let token = admin_session_token(KEY, 42, "operator", NOW + 60);
+        let token = admin_session_token(KEY, "github:42", "operator", NOW + 60);
         let operator = read_admin_session(KEY, &token, NOW).unwrap();
-        assert_eq!(operator.github_id, 42);
+        assert_eq!(operator.subject, "github:42");
         assert_eq!(operator.login, "operator");
         assert_eq!(operator.expires_at, NOW + 60);
     }
 
     #[test]
+    fn an_oidc_operator_round_trips_under_its_subject() {
+        let token = admin_session_token(KEY, "oidc:op-1", "op@example.org", NOW + 60);
+        let operator = read_admin_session(KEY, &token, NOW).unwrap();
+        assert_eq!(operator.subject, "oidc:op-1");
+        assert_eq!(operator.login, "op@example.org");
+    }
+
+    #[test]
+    fn a_version_one_token_is_refused() {
+        let token = admin_session_token(KEY, "github:42", "operator", NOW + 60);
+        let old = token.replacen("v2.", "v1.", 1);
+        assert!(read_admin_session(KEY, &old, NOW).is_none());
+    }
+
+    #[test]
     fn a_token_with_a_changed_signature_is_refused() {
-        let token = admin_session_token(KEY, 42, "operator", NOW + 60);
+        let token = admin_session_token(KEY, "github:42", "operator", NOW + 60);
         let last = token.chars().last().unwrap();
         let other = if last == 'A' { 'B' } else { 'A' };
         let forged = format!("{}{other}", &token[..token.len() - 1]);
@@ -879,34 +1079,34 @@ mod tests {
 
     #[test]
     fn an_expired_token_is_refused() {
-        let token = admin_session_token(KEY, 42, "operator", NOW - 1);
+        let token = admin_session_token(KEY, "github:42", "operator", NOW - 1);
         assert!(read_admin_session(KEY, &token, NOW).is_none());
-        let at_expiry = admin_session_token(KEY, 42, "operator", NOW);
+        let at_expiry = admin_session_token(KEY, "github:42", "operator", NOW);
         assert!(read_admin_session(KEY, &at_expiry, NOW).is_none());
     }
 
     #[test]
     fn a_token_from_another_epoch_is_refused() {
-        let token = mint(KEY, "epoch-a", 42, "operator", NOW + 60);
+        let token = mint(KEY, "epoch-a", "github:42", "operator", NOW + 60);
         assert!(read(KEY, "epoch-a", &token, NOW).is_some());
         assert!(read(KEY, "epoch-b", &token, NOW).is_none());
     }
 
     #[test]
     fn a_token_minted_before_a_sign_out_is_refused() {
-        let token = mint(KEY, "epoch-sign-out", 77, "Someone", NOW + 60);
+        let token = mint(KEY, "epoch-sign-out", "github:77", "Someone", NOW + 60);
         assert!(read(KEY, "epoch-sign-out", &token, NOW).is_some());
         end_admin_sessions("someone");
         assert!(read(KEY, "epoch-sign-out", &token, NOW).is_none());
-        let fresh = mint(KEY, "epoch-sign-out", 77, "Someone", NOW + 60);
+        let fresh = mint(KEY, "epoch-sign-out", "github:77", "Someone", NOW + 60);
         assert!(read(KEY, "epoch-sign-out", &fresh, NOW).is_some());
     }
 
     #[test]
     fn a_token_past_the_session_ceiling_is_refused() {
-        let late = admin_session_token(KEY, 42, "operator", NOW + SESSION_SECONDS + 60);
+        let late = admin_session_token(KEY, "github:42", "operator", NOW + SESSION_SECONDS + 60);
         assert!(read_admin_session(KEY, &late, NOW).is_none());
-        let within = admin_session_token(KEY, 42, "operator", NOW + SESSION_SECONDS - 60);
+        let within = admin_session_token(KEY, "github:42", "operator", NOW + SESSION_SECONDS - 60);
         assert!(read_admin_session(KEY, &within, NOW).is_some());
     }
 
@@ -915,13 +1115,23 @@ mod tests {
         let app = librepaper_base::auth::sign_session(KEY, &identity("github:42"), NOW + 60);
         assert!(read_admin_session(KEY, &app, NOW).is_none());
         assert!(read_admin_session(KEY, &format!("v1.{app}"), NOW).is_none());
+        assert!(read_admin_session(KEY, &format!("v2.{app}"), NOW).is_none());
     }
 
     #[test]
     fn only_a_github_identity_has_a_github_id() {
-        assert_eq!(github_id(&identity("github:42")), Some(42));
-        assert_eq!(github_id(&identity("google:42")), None);
-        assert_eq!(github_id(&identity("github:forty-two")), None);
+        assert_eq!(github_id("github:42"), Some(42));
+        assert_eq!(github_id("google:42"), None);
+        assert_eq!(github_id("oidc:42"), None);
+        assert_eq!(github_id("github:forty-two"), None);
+    }
+
+    #[test]
+    fn html_escapes_the_provider_name() {
+        assert_eq!(
+            html_escape(r#"<a href="x">Ops & 'Co'</a>"#),
+            "&lt;a href=&quot;x&quot;&gt;Ops &amp; &#39;Co&#39;&lt;/a&gt;"
+        );
     }
 
     #[test]

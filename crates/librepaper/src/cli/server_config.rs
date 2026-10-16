@@ -60,12 +60,18 @@ pub(crate) struct ResolvedConfig {
     pub(crate) site_origin: Option<String>,
     pub(crate) admin_origin: Option<String>,
     pub(crate) admin_github_ids: Vec<i64>,
+    pub(crate) admin_oidc_subjects: Vec<String>,
     pub(crate) migrate: bool,
     pub(crate) storage: StorageOptions,
     pub(crate) github_client_id: Option<String>,
     pub(crate) github_client_secret: Option<String>,
     pub(crate) google_client_id: Option<String>,
     pub(crate) google_client_secret: Option<String>,
+    pub(crate) oidc_issuer: Option<String>,
+    pub(crate) oidc_client_id: Option<String>,
+    pub(crate) oidc_client_secret: Option<String>,
+    pub(crate) oidc_name: Option<String>,
+    pub(crate) oidc_scopes: Option<String>,
     pub(crate) publishers: Vec<String>,
     pub(crate) commenters: Vec<String>,
     pub(crate) simulate_activity: Option<u32>,
@@ -95,6 +101,7 @@ impl fmt::Debug for ResolvedConfig {
             .field("site_origin", &self.site_origin)
             .field("admin_origin", &self.admin_origin)
             .field("admin_github_ids", &self.admin_github_ids)
+            .field("admin_oidc_subjects", &self.admin_oidc_subjects)
             .field("migrate", &self.migrate)
             .field("storage", &"<redacted>")
             .field("github_client_id", &self.github_client_id)
@@ -107,6 +114,14 @@ impl fmt::Debug for ResolvedConfig {
                 "google_client_secret",
                 &self.google_client_secret.as_ref().map(|_| "<redacted>"),
             )
+            .field("oidc_issuer", &self.oidc_issuer)
+            .field("oidc_client_id", &self.oidc_client_id)
+            .field(
+                "oidc_client_secret",
+                &self.oidc_client_secret.as_ref().map(|_| "<redacted>"),
+            )
+            .field("oidc_name", &self.oidc_name)
+            .field("oidc_scopes", &self.oidc_scopes)
             .field("publishers", &self.publishers)
             .field("commenters", &self.commenters)
             .field("simulate_activity", &self.simulate_activity)
@@ -168,6 +183,7 @@ struct Origins {
 #[serde(default, deny_unknown_fields)]
 struct Admin {
     github_ids: Option<Input<Vec<i64>>>,
+    oidc_subjects: Option<Input<Vec<String>>>,
 }
 #[derive(Debug, Default, Deserialize)]
 #[serde(default, deny_unknown_fields)]
@@ -195,12 +211,22 @@ struct S3 {
 struct Auth {
     github: OAuth,
     google: OAuth,
+    oidc: Oidc,
 }
 #[derive(Debug, Default, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 struct OAuth {
     client_id: Option<Input<String>>,
     client_secret: Option<Input<String>>,
+}
+#[derive(Debug, Default, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+struct Oidc {
+    issuer: Option<Input<String>>,
+    client_id: Option<Input<String>>,
+    client_secret: Option<Input<String>>,
+    name: Option<Input<String>>,
+    scopes: Option<Input<String>>,
 }
 #[derive(Debug, Default, Deserialize)]
 #[serde(default, deny_unknown_fields)]
@@ -406,7 +432,7 @@ fn check_keys(v: &toml::Value) -> Result<(), String> {
     )?;
     section(v, "server", &["address", "migrate"])?;
     section(v, "origins", &["app", "docs", "site", "admin"])?;
-    section(v, "admin", &["github_ids"])?;
+    section(v, "admin", &["github_ids", "oidc_subjects"])?;
     section(
         v,
         "storage",
@@ -434,12 +460,19 @@ fn check_keys(v: &toml::Value) -> Result<(), String> {
             ],
         )?;
     }
-    section(v, "auth", &["github", "google"])?;
+    section(v, "auth", &["github", "google", "oidc"])?;
     if let Some(x) = v.get("auth") {
         for p in ["github", "google"] {
             if let Some(y) = x.get(p) {
                 table(y, &format!("auth.{p}."), &["client_id", "client_secret"])?;
             }
+        }
+        if let Some(y) = x.get("oidc") {
+            table(
+                y,
+                "auth.oidc.",
+                &["issuer", "client_id", "client_secret", "name", "scopes"],
+            )?;
         }
     }
     section(v, "access", &["publishers", "commenters"])?;
@@ -618,6 +651,11 @@ pub(crate) fn load_with_postgres_env(
     let site_origin = r.optional("origins.site", raw.origins.site)?;
     let admin_origin = r.optional("origins.admin", raw.origins.admin)?;
     let admin_github_ids = r.value("admin.github_ids", raw.admin.github_ids, Vec::new())?;
+    let admin_oidc_subjects = r.value(
+        "admin.oidc_subjects",
+        raw.admin.oidc_subjects,
+        Vec::<String>::new(),
+    )?;
     let storage = resolve_storage(raw.storage, &mut r)?;
     let github_client_id = r.optional("auth.github.client_id", raw.auth.github.client_id)?;
     let github_client_secret =
@@ -625,6 +663,11 @@ pub(crate) fn load_with_postgres_env(
     let google_client_id = r.optional("auth.google.client_id", raw.auth.google.client_id)?;
     let google_client_secret =
         r.optional("auth.google.client_secret", raw.auth.google.client_secret)?;
+    let oidc_issuer = r.optional("auth.oidc.issuer", raw.auth.oidc.issuer)?;
+    let oidc_client_id = r.optional("auth.oidc.client_id", raw.auth.oidc.client_id)?;
+    let oidc_client_secret = r.optional("auth.oidc.client_secret", raw.auth.oidc.client_secret)?;
+    let oidc_name = r.optional("auth.oidc.name", raw.auth.oidc.name)?;
+    let oidc_scopes = r.optional("auth.oidc.scopes", raw.auth.oidc.scopes)?;
     let publishers = r.value(
         "access.publishers",
         raw.access.publishers,
@@ -754,6 +797,38 @@ pub(crate) fn load_with_postgres_env(
     {
         return Err("auth.google.client_id and client_secret must not be blank".into());
     }
+    let oidc_settings = [
+        oidc_issuer.as_deref(),
+        oidc_client_id.as_deref(),
+        oidc_client_secret.as_deref(),
+    ];
+    if oidc_settings.iter().any(Option::is_some) && oidc_settings.iter().any(Option::is_none) {
+        return Err(
+            "auth.oidc.issuer, client_id and client_secret must be configured together".into(),
+        );
+    }
+    if oidc_settings
+        .iter()
+        .flatten()
+        .any(|value| value.trim().is_empty())
+    {
+        return Err("auth.oidc.issuer, client_id and client_secret must not be blank".into());
+    }
+    if oidc_name
+        .as_deref()
+        .is_some_and(|value| value.trim().is_empty())
+    {
+        return Err("auth.oidc.name must not be blank".into());
+    }
+    if oidc_scopes
+        .as_deref()
+        .is_some_and(|value| value.trim().is_empty())
+    {
+        return Err("auth.oidc.scopes must not be blank".into());
+    }
+    if let Some(issuer) = oidc_issuer.as_deref() {
+        validate_oidc_issuer(issuer)?;
+    }
     validate_public_urls(
         app_origin.as_deref(),
         docs_origin.as_deref(),
@@ -763,10 +838,13 @@ pub(crate) fn load_with_postgres_env(
     )?;
     let github_configured = non_blank(github_client_id.as_deref()).is_some()
         && non_blank(github_client_secret.as_deref()).is_some();
+    let oidc_configured = oidc_settings.iter().all(Option::is_some);
     validate_admin(
         admin_origin.as_deref(),
         &admin_github_ids,
         github_configured,
+        &admin_oidc_subjects,
+        oidc_configured,
         app_origin.as_deref(),
         docs_origin.as_deref(),
     )?;
@@ -777,12 +855,18 @@ pub(crate) fn load_with_postgres_env(
         site_origin,
         admin_origin,
         admin_github_ids,
+        admin_oidc_subjects,
         migrate,
         storage,
         github_client_id,
         github_client_secret,
         google_client_id,
         google_client_secret,
+        oidc_issuer,
+        oidc_client_id,
+        oidc_client_secret,
+        oidc_name,
+        oidc_scopes,
         publishers,
         commenters,
         simulate_activity,
@@ -822,37 +906,89 @@ fn host_of(origin: &str) -> Option<String> {
         .and_then(|parsed| parsed.host_str().map(str::to_lowercase))
 }
 
-/// The admin console signs in with GitHub and admits only the listed GitHub
-/// user IDs. It has a host of its own, and https off loopback.
-fn validate_admin(
-    admin_origin: Option<&str>,
-    github_ids: &[i64],
-    github_configured: bool,
-    app_origin: Option<&str>,
-    docs_origin: Option<&str>,
-) -> Result<(), String> {
-    let admin = match (non_blank(admin_origin), github_ids.is_empty()) {
-        (None, true) => return Ok(()),
-        (Some(admin), false) => admin,
-        _ => {
-            return Err("origins.admin and admin.github_ids must be configured together".into());
-        }
-    };
-    if github_ids.iter().any(|id| *id <= 0) {
-        return Err("admin.github_ids holds numeric GitHub user IDs, which are positive".into());
-    }
-    if !github_configured {
-        return Err("the admin console signs in with GitHub; configure [auth.github]".into());
-    }
-    let parsed =
-        url::Url::parse(admin).map_err(|_| "origins.admin must be an absolute URL".to_string())?;
-    let loopback = match parsed.host() {
+/// Whether a URL's host is this machine: `localhost`, a name under it, or a
+/// loopback address. Plain HTTP is tolerated only there.
+fn is_loopback(parsed: &url::Url) -> bool {
+    match parsed.host() {
         Some(url::Host::Domain(host)) => host == "localhost" || host.ends_with(".localhost"),
         Some(url::Host::Ipv4(ip)) => ip.is_loopback(),
         Some(url::Host::Ipv6(ip)) => ip.is_loopback(),
         None => false,
+    }
+}
+
+/// The OIDC issuer is the base URL discovery and the token endpoint hang off,
+/// so it is an absolute https URL (or http on loopback, for a local identity
+/// provider) with no credentials, query or fragment.
+fn validate_oidc_issuer(issuer: &str) -> Result<(), String> {
+    let parsed = url::Url::parse(issuer.trim())
+        .map_err(|_| "auth.oidc.issuer must be an absolute URL".to_string())?;
+    if parsed.scheme() != "https" && !(parsed.scheme() == "http" && is_loopback(&parsed)) {
+        return Err("auth.oidc.issuer must be an https: URL, or http: on loopback".into());
+    }
+    if parsed.host_str().is_none()
+        || !parsed.username().is_empty()
+        || parsed.password().is_some()
+        || parsed.query().is_some()
+        || parsed.fragment().is_some()
+    {
+        return Err(
+            "auth.oidc.issuer must be an absolute URL without credentials, a query, or a fragment"
+                .into(),
+        );
+    }
+    Ok(())
+}
+
+/// The admin console admits only the people named in `admin.github_ids` (who
+/// sign in with GitHub) and `admin.oidc_subjects` (who sign in with the OIDC
+/// provider). It has a host of its own, and https off loopback. Either list
+/// needs the origin, and the origin needs at least one of them.
+fn validate_admin(
+    admin_origin: Option<&str>,
+    github_ids: &[i64],
+    github_configured: bool,
+    oidc_subjects: &[String],
+    oidc_configured: bool,
+    app_origin: Option<&str>,
+    docs_origin: Option<&str>,
+) -> Result<(), String> {
+    let Some(admin) = non_blank(admin_origin) else {
+        if !github_ids.is_empty() {
+            return Err("admin.github_ids requires origins.admin".into());
+        }
+        if !oidc_subjects.is_empty() {
+            return Err("admin.oidc_subjects requires origins.admin".into());
+        }
+        return Ok(());
     };
-    if parsed.scheme() != "https" && !(parsed.scheme() == "http" && loopback) {
+    if github_ids.is_empty() && oidc_subjects.is_empty() {
+        return Err(
+            "origins.admin requires admin.github_ids or admin.oidc_subjects, naming who may sign in to the admin console"
+                .into(),
+        );
+    }
+    if github_ids.iter().any(|id| *id <= 0) {
+        return Err("admin.github_ids holds numeric GitHub user IDs, which are positive".into());
+    }
+    if oidc_subjects
+        .iter()
+        .any(|subject| subject.trim().is_empty() || subject.contains('|'))
+    {
+        return Err(
+            "admin.oidc_subjects holds OIDC subject values, which are not blank and do not contain '|'"
+                .into(),
+        );
+    }
+    if !github_ids.is_empty() && !github_configured {
+        return Err("admin.github_ids needs GitHub sign-in; configure [auth.github]".into());
+    }
+    if !oidc_subjects.is_empty() && !oidc_configured {
+        return Err("admin.oidc_subjects needs OIDC sign-in; configure [auth.oidc]".into());
+    }
+    let parsed =
+        url::Url::parse(admin).map_err(|_| "origins.admin must be an absolute URL".to_string())?;
+    if parsed.scheme() != "https" && !(parsed.scheme() == "http" && is_loopback(&parsed)) {
         return Err("origins.admin must be an https: URL, or http: on loopback".into());
     }
     let Some(app) = non_blank(app_origin) else {
@@ -980,6 +1116,13 @@ pub(crate) fn show_resolved(c: &ResolvedConfig) -> String {
                 .join(", ")
         ),
     );
+    value(
+        &mut out,
+        &c.sources,
+        "admin.oidc_subjects",
+        "oidc_subjects",
+        &array(&c.admin_oidc_subjects),
+    );
 
     section(&mut out, "storage");
     value(
@@ -1097,6 +1240,42 @@ pub(crate) fn show_resolved(c: &ResolvedConfig) -> String {
         "auth.google.client_secret",
         "client_secret",
         c.google_client_secret.is_some(),
+    );
+    section(&mut out, "auth.oidc");
+    optional(
+        &mut out,
+        &c.sources,
+        "auth.oidc.issuer",
+        "issuer",
+        c.oidc_issuer.as_deref(),
+    );
+    optional(
+        &mut out,
+        &c.sources,
+        "auth.oidc.client_id",
+        "client_id",
+        c.oidc_client_id.as_deref(),
+    );
+    redacted(
+        &mut out,
+        &c.sources,
+        "auth.oidc.client_secret",
+        "client_secret",
+        c.oidc_client_secret.is_some(),
+    );
+    optional(
+        &mut out,
+        &c.sources,
+        "auth.oidc.name",
+        "name",
+        c.oidc_name.as_deref(),
+    );
+    optional(
+        &mut out,
+        &c.sources,
+        "auth.oidc.scopes",
+        "scopes",
+        c.oidc_scopes.as_deref(),
     );
 
     section(&mut out, "access");
@@ -1509,7 +1688,7 @@ mod tests {
         .unwrap_err();
         assert!(error.contains("origins.admin"), "{error}");
         assert!(error.contains("admin.github_ids"), "{error}");
-        assert!(error.contains("together"), "{error}");
+        assert!(error.contains("admin.oidc_subjects"), "{error}");
 
         let error = load_text(&admin_config(
             "app = \"https://paper.example\"",
@@ -1517,9 +1696,10 @@ mod tests {
             true,
         ))
         .unwrap_err();
-        assert!(error.contains("origins.admin"), "{error}");
-        assert!(error.contains("admin.github_ids"), "{error}");
-        assert!(error.contains("together"), "{error}");
+        assert!(
+            error.contains("admin.github_ids requires origins.admin"),
+            "{error}"
+        );
 
         let error = load_text(&admin_config(
             "admin = \"https://admin.paper.example\"",
@@ -1633,6 +1813,189 @@ mod tests {
 
         std::fs::write(&path, "[admin]\nwat = 1\n").unwrap();
         assert!(load(&path).unwrap_err().contains("admin.wat"));
+    }
+
+    const OIDC_ISSUER: &str = "https://sso.example.org/realms/acme";
+
+    fn oidc_block(issuer: Option<&str>, client_id: Option<&str>, secret: Option<&str>) -> String {
+        let mut text = String::from("[auth.oidc]\n");
+        if let Some(issuer) = issuer {
+            text.push_str(&format!("issuer = \"{issuer}\"\n"));
+        }
+        if let Some(client_id) = client_id {
+            text.push_str(&format!("client_id = \"{client_id}\"\n"));
+        }
+        if let Some(secret) = secret {
+            text.push_str(&format!("client_secret = \"{secret}\"\n"));
+        }
+        text
+    }
+
+    /// Admin settings for the OIDC subject list: an origin, the subjects, and
+    /// an optional OIDC provider block.
+    fn admin_oidc_config(origins: &str, subjects: Option<&str>, oidc: bool) -> String {
+        let mut text = format!("[origins]\n{origins}\n");
+        if let Some(subjects) = subjects {
+            text.push_str(&format!("[admin]\noidc_subjects = {subjects}\n"));
+        }
+        if oidc {
+            text.push_str(&oidc_block(
+                Some(OIDC_ISSUER),
+                Some("oidc-id"),
+                Some("oidc-secret"),
+            ));
+        }
+        text
+    }
+
+    #[test]
+    fn oidc_provider_is_accepted_and_resolved() {
+        let text = format!(
+            "{}name = \"Acme SSO\"\nscopes = \"openid email\"\n",
+            oidc_block(Some(OIDC_ISSUER), Some("oidc-id"), Some("OIDCSECRET"))
+        );
+        let loaded = load_text(&text).unwrap();
+        assert_eq!(loaded.oidc_issuer.as_deref(), Some(OIDC_ISSUER));
+        assert_eq!(loaded.oidc_client_id.as_deref(), Some("oidc-id"));
+        assert_eq!(loaded.oidc_client_secret.as_deref(), Some("OIDCSECRET"));
+        assert_eq!(loaded.oidc_name.as_deref(), Some("Acme SSO"));
+        assert_eq!(loaded.oidc_scopes.as_deref(), Some("openid email"));
+
+        let loaded = load_text(&oidc_block(Some(OIDC_ISSUER), Some("id"), Some("secret"))).unwrap();
+        assert!(loaded.oidc_name.is_none() && loaded.oidc_scopes.is_none());
+    }
+
+    #[test]
+    fn oidc_issuer_client_id_and_secret_come_together() {
+        for text in [
+            oidc_block(Some(OIDC_ISSUER), Some("id"), None),
+            oidc_block(Some(OIDC_ISSUER), None, Some("secret")),
+            oidc_block(None, Some("id"), Some("secret")),
+        ] {
+            let error = load_text(&text).unwrap_err();
+            assert!(
+                error.contains(
+                    "auth.oidc.issuer, client_id and client_secret must be configured together"
+                ),
+                "{error}"
+            );
+        }
+    }
+
+    #[test]
+    fn oidc_values_must_not_be_blank() {
+        let error =
+            load_text(&oidc_block(Some(OIDC_ISSUER), Some("  "), Some("secret"))).unwrap_err();
+        assert!(error.contains("must not be blank"), "{error}");
+
+        let error = load_text(&format!(
+            "{}name = \"  \"\n",
+            oidc_block(Some(OIDC_ISSUER), Some("id"), Some("secret"))
+        ))
+        .unwrap_err();
+        assert!(error.contains("auth.oidc.name"), "{error}");
+
+        let error = load_text(&format!(
+            "{}scopes = \"\"\n",
+            oidc_block(Some(OIDC_ISSUER), Some("id"), Some("secret"))
+        ))
+        .unwrap_err();
+        assert!(error.contains("auth.oidc.scopes"), "{error}");
+    }
+
+    #[test]
+    fn oidc_issuer_must_be_https_or_loopback_http() {
+        for issuer in [
+            "http://sso.example.org/realms/acme",
+            "ftp://sso.example.org/realms/acme",
+            "https://user:issuer-secret@sso.example.org",
+            "https://sso.example.org/realms/acme?x=1",
+            "sso.example.org",
+        ] {
+            let error =
+                load_text(&oidc_block(Some(issuer), Some("id"), Some("secret"))).unwrap_err();
+            assert!(error.contains("auth.oidc.issuer"), "{issuer}: {error}");
+            assert!(!error.contains("issuer-secret"), "{error}");
+        }
+        for issuer in [
+            "http://localhost:8443/realms/acme",
+            "http://127.0.0.1:8443/realms/acme",
+            "http://[::1]:8443/realms/acme",
+        ] {
+            let result = load_text(&oidc_block(Some(issuer), Some("id"), Some("secret")));
+            assert!(result.is_ok(), "{issuer}: {result:?}");
+        }
+    }
+
+    #[test]
+    fn oidc_subjects_need_oidc_sign_in_and_the_admin_origin() {
+        let origin = "app = \"https://paper.example\"\nadmin = \"https://admin.paper.example\"";
+        let loaded =
+            load_text(&admin_oidc_config(origin, Some("[\"f1e2-subject\"]"), true)).unwrap();
+        assert_eq!(loaded.admin_oidc_subjects, vec!["f1e2-subject".to_string()]);
+
+        let error = load_text(&admin_oidc_config(
+            origin,
+            Some("[\"f1e2-subject\"]"),
+            false,
+        ))
+        .unwrap_err();
+        assert!(error.contains("auth.oidc"), "{error}");
+
+        let error = load_text(&admin_oidc_config(
+            "app = \"https://paper.example\"",
+            Some("[\"f1e2-subject\"]"),
+            true,
+        ))
+        .unwrap_err();
+        assert!(
+            error.contains("admin.oidc_subjects requires origins.admin"),
+            "{error}"
+        );
+
+        let error = load_text(&admin_oidc_config(origin, None, true)).unwrap_err();
+        assert!(
+            error.contains("origins.admin requires admin.github_ids or admin.oidc_subjects"),
+            "{error}"
+        );
+    }
+
+    #[test]
+    fn oidc_subjects_must_be_nonblank_and_free_of_pipes() {
+        let origin = "app = \"https://paper.example\"\nadmin = \"https://admin.paper.example\"";
+        for subjects in ["[\"\"]", "[\" \"]", "[\"a|b\"]"] {
+            let error = load_text(&admin_oidc_config(origin, Some(subjects), true)).unwrap_err();
+            assert!(error.contains("admin.oidc_subjects"), "{subjects}: {error}");
+        }
+    }
+
+    #[test]
+    fn oidc_display_redacts_the_secret_and_lists_the_subjects() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("config.toml");
+        let text = format!(
+            "[origins]\napp = \"https://paper.example\"\nadmin = \"https://admin.paper.example\"\n[admin]\noidc_subjects = [\"f1e2-subject\"]\n{}name = \"Acme SSO\"\nscopes = \"openid email\"\n",
+            oidc_block(Some(OIDC_ISSUER), Some("oidc-id"), Some("OIDCSECRET"))
+        );
+        std::fs::write(&path, text).unwrap();
+        let loaded = load(&path).unwrap();
+        let shown = show_resolved(&loaded);
+        assert!(shown.contains("[auth.oidc]"), "{shown}");
+        assert!(
+            shown.contains(&format!("issuer = \"{OIDC_ISSUER}\"")),
+            "{shown}"
+        );
+        assert!(shown.contains("client_id = \"oidc-id\""), "{shown}");
+        assert!(shown.contains("client_secret = \"<redacted>\""), "{shown}");
+        assert!(shown.contains("name = \"Acme SSO\""), "{shown}");
+        assert!(shown.contains("scopes = \"openid email\""), "{shown}");
+        assert!(
+            shown.contains("oidc_subjects = [\"f1e2-subject\"]"),
+            "{shown}"
+        );
+        assert!(!shown.contains("OIDCSECRET"), "{shown}");
+        assert!(!format!("{loaded:?}").contains("OIDCSECRET"));
+        assert!(toml::from_str::<toml::Value>(&shown).is_ok());
     }
 
     #[test]

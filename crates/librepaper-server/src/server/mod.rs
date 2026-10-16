@@ -28,9 +28,9 @@ use librepaper_base::auth::pseudonym::pseudonym_for;
 use librepaper_base::auth::{
     cookie_name, normalized, now_unix, pkce_verifier, random_token, read_agent_grant, read_device,
     read_session, read_visitor, sign_device, sign_session, sign_visitor, Accounts, DeviceOutcome,
-    GithubAccounts, GithubApp, GoogleApp, Identity, PendingCodes, Policy, TokenCache,
+    GithubAccounts, GithubApp, GoogleApp, Identity, OidcApp, PendingCodes, Policy, TokenCache,
     AGENT_GRANT_PREFIX, DEVICE_POLL_INTERVAL, DEVICE_TOKEN_MAX_AGE, DEVICE_TOKEN_PREFIX,
-    PROVIDER_GITHUB, PROVIDER_GOOGLE, SESSION_COOKIE, SESSION_MAX_AGE, STATE_COOKIE,
+    PROVIDER_GITHUB, PROVIDER_GOOGLE, PROVIDER_OIDC, SESSION_COOKIE, SESSION_MAX_AGE, STATE_COOKIE,
     VISITOR_COOKIE,
 };
 use librepaper_base::config::Configuration;
@@ -206,6 +206,9 @@ pub struct Server {
     /// construction the way the other deployment switches are, so a server
     /// without one is simply a server with one provider.
     pub google: GoogleApp,
+    /// A generic OpenID Connect provider, configured the way Google is and
+    /// offered beside the others once it has a client id.
+    pub oidc: OidcApp,
     pub key: Vec<u8>,
     pub tokens: TokenCache,
     pub config: Arc<Configuration>,
@@ -219,6 +222,9 @@ pub struct Server {
     /// Numeric GitHub user IDs allowed to sign in on the admin origin. Empty
     /// means the admin origin serves nothing.
     pub admin_github_ids: Vec<i64>,
+    /// Subjects (`sub` claims) of OpenID Connect accounts allowed to sign in
+    /// on the admin origin. Empty means the OIDC route admits nobody.
+    pub admin_oidc_subjects: Vec<String>,
     /// Seconds without a sign-in after which an account is erased. Zero keeps accounts.
     pub erase_inactive_after: i64,
     /// The history behind the graphs page, open only when the admin origin
@@ -864,12 +870,14 @@ impl Server {
             shell,
             app,
             google: GoogleApp::default(),
+            oidc: OidcApp::default(),
             key,
             tokens: TokenCache::new(),
             config,
             origins: origins::Origins::loopback_only(),
             paths: None,
             admin_github_ids: Vec::new(),
+            admin_oidc_subjects: Vec::new(),
             erase_inactive_after: 0,
             graphs: None,
             publishers,
@@ -1187,6 +1195,7 @@ impl Server {
         match id.provider.as_str() {
             PROVIDER_GITHUB => self.app.configured(),
             PROVIDER_GOOGLE => self.google.configured(),
+            PROVIDER_OIDC => self.oidc.configured(),
             _ => false,
         }
     }

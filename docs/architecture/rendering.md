@@ -26,7 +26,7 @@ The socket carries document updates, presence, comments and `source-changed {dig
 
 A dropped socket loses nothing. Comments post via HTTP. Reconnect hydrates a bounded first page, with older comments loaded through cursor pagination. Refreshes remain bounded. Silent disconnections, such as NAT expiry or sleep, are detected by periodic polling of connection liveness. Queue depth and transport writes are bounded server-side. Authority is rechecked while a socket is open.
 
-Identity comes from GitHub or Google in the browser. A headless terminal uses the deployment's device flow via `librepaper login`. Browser-started local agents receive an automatically renewed five-minute token scoped to the current document and link while the page is open. Both sign-in paths end in a policy-gated handle and an id that everything else keys on. Cookies use `__Host-` naming on HTTPS. OAuth uses PKCE and state cookies. Logout is POST-only.
+Identity comes from GitHub, Google or OpenID Connect in the browser. A headless terminal uses the deployment's device flow via `librepaper login`. Browser-started local agents receive an automatically renewed five-minute token scoped to the current document and link while the page is open. Both sign-in paths end in a policy-gated handle and an id that everything else keys on. Cookies use `__Host-` naming on HTTPS. OAuth uses PKCE and state cookies. Logout is POST-only.
 
 Access comes from a grant on an account or a share link. Links name a role (reader, commenter, editor) and expire after 7 days by default. Links are never logged. Only hashes are recorded. Edit links require sign-in. Comment links do unless the deployment allows anonymous comments.
 

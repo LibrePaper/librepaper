@@ -10,7 +10,9 @@ use tokio::net::TcpListener;
 
 use crate::server::origins::{Origins, DOCS_PREFIX};
 use crate::server::Server;
-use librepaper_base::auth::{session_key_file, GithubApp, GoogleApp, Policy, SESSION_MAX_AGE};
+use librepaper_base::auth::{
+    session_key_file, GithubApp, GoogleApp, OidcApp, Policy, SESSION_MAX_AGE,
+};
 use librepaper_base::config::Configuration;
 use librepaper_base::shell::ShellFile;
 use librepaper_base::util::die;
@@ -37,6 +39,13 @@ pub struct ServeOptions {
     /// Google OAuth app credentials resolved from the TOML configuration.
     pub google_client_id: Option<String>,
     pub google_client_secret: Option<String>,
+    /// Generic OIDC provider credentials resolved from the TOML configuration.
+    /// The issuer is the provider's base URL; the name labels the sign-in button.
+    pub oidc_issuer: Option<String>,
+    pub oidc_client_id: Option<String>,
+    pub oidc_client_secret: Option<String>,
+    pub oidc_name: Option<String>,
+    pub oidc_scopes: Option<String>,
     pub publishers: Option<String>,
     pub commenters: Option<String>,
     /// Write each new account's starter documents as though they had been
@@ -58,6 +67,8 @@ pub struct ServeOptions {
     pub admin_origin: Option<String>,
     /// Numeric GitHub user IDs allowed to sign in on the admin origin.
     pub admin_github_ids: Vec<i64>,
+    /// OIDC `sub` values allowed to sign in on the admin origin.
+    pub admin_oidc_subjects: Vec<String>,
     pub expire_after: Option<String>,
     pub expire_from: Option<String>,
     pub erase_inactive_after: Option<String>,
@@ -153,21 +164,49 @@ fn configured_origins(options: &ServeOptions) -> Result<Origins, String> {
     origins.with_admin(non_blank(options.admin_origin.as_deref()))
 }
 
-/// The admin console signs in with GitHub and admits only the listed user IDs,
-/// so the origin and the IDs come together, and GitHub sign-in must be set up.
-fn validate_admin_github(
+/// The admin console admits only the listed people: GitHub user IDs, who sign
+/// in with GitHub, and OIDC subjects, who sign in with the OIDC provider. The
+/// origin needs at least one of the lists, and each list needs the origin and
+/// its own provider.
+fn validate_admin(
     origin: Option<&str>,
     ids: &[i64],
     github_configured: bool,
+    subjects: &[String],
+    oidc_configured: bool,
 ) -> Result<(), String> {
-    if non_blank(origin).is_some() != !ids.is_empty() {
-        return Err("origins.admin and admin.github_ids must be configured together".into());
+    if non_blank(origin).is_none() {
+        if !ids.is_empty() {
+            return Err("admin.github_ids requires origins.admin".into());
+        }
+        if !subjects.is_empty() {
+            return Err("admin.oidc_subjects requires origins.admin".into());
+        }
+        return Ok(());
+    }
+    if ids.is_empty() && subjects.is_empty() {
+        return Err(
+            "origins.admin requires admin.github_ids or admin.oidc_subjects, naming who may sign in to the admin console"
+                .into(),
+        );
     }
     if ids.iter().any(|id| *id <= 0) {
         return Err("admin.github_ids holds numeric GitHub user IDs, which are positive".into());
     }
-    if non_blank(origin).is_some() && !github_configured {
-        return Err("the admin console signs in with GitHub; configure [auth.github]".into());
+    if subjects
+        .iter()
+        .any(|subject| subject.trim().is_empty() || subject.contains('|'))
+    {
+        return Err(
+            "admin.oidc_subjects holds OIDC subject values, which are not blank and do not contain '|'"
+                .into(),
+        );
+    }
+    if !ids.is_empty() && !github_configured {
+        return Err("admin.github_ids needs GitHub sign-in; configure [auth.github]".into());
+    }
+    if !subjects.is_empty() && !oidc_configured {
+        return Err("admin.oidc_subjects needs OIDC sign-in; configure [auth.oidc]".into());
     }
     Ok(())
 }
@@ -214,6 +253,7 @@ pub struct SignInAdvice {
 pub fn sign_in_advice(
     github: bool,
     google: bool,
+    oidc: bool,
     publishers: &Policy,
     commenters: &Policy,
     // The origin a provider must have registered: the deployment's configured
@@ -232,17 +272,20 @@ pub fn sign_in_advice(
                 .to_string(),
         );
     }
-    if !google && (publishers.names_an_email_or_domain() || commenters.names_an_email_or_domain()) {
+    if !google
+        && !oidc
+        && (publishers.names_an_email_or_domain() || commenters.names_an_email_or_domain())
+    {
         advice.warnings.push(
             "warning: a policy names an email address or a domain, but there is no Google \
-             client; nobody can sign in that way. Configure auth.google.client_id and \
-             auth.google.client_secret in the TOML file."
+             client or OIDC provider; nobody can sign in that way. Configure auth.google.client_id \
+             and auth.google.client_secret, or auth.oidc, in the TOML file."
                 .to_string(),
         );
     }
-    if !github && !google {
+    if !github && !google && !oidc {
         advice.warnings.push(format!(
-            "warning: neither Google nor GitHub sign-in is configured; publishing and source writes are unavailable. Configure auth.github or auth.google credentials in the TOML file (callbacks use {reader_origin}/auth/callback on port {port})."
+            "warning: neither Google, GitHub nor OIDC sign-in is configured; publishing and source writes are unavailable. Configure auth.github, auth.google or auth.oidc credentials in the TOML file (callbacks use {reader_origin}/auth/callback on port {port}, and an OIDC provider uses {reader_origin}/auth/callback/oidc)."
         ));
     }
     advice
@@ -316,10 +359,19 @@ pub fn validate_serve_options(options: &ServeOptions) -> Result<(), String> {
     configured_origins(options)?;
     let github_configured = non_blank(options.github_client_id.as_deref()).is_some()
         && non_blank(options.github_client_secret.as_deref()).is_some();
-    validate_admin_github(
+    let oidc_configured = [
+        options.oidc_issuer.as_deref(),
+        options.oidc_client_id.as_deref(),
+        options.oidc_client_secret.as_deref(),
+    ]
+    .iter()
+    .all(|value| non_blank(*value).is_some());
+    validate_admin(
         options.admin_origin.as_deref(),
         &options.admin_github_ids,
         github_configured,
+        &options.admin_oidc_subjects,
+        oidc_configured,
     )?;
     validate_asset_mirror(&options.asset_mirror)?;
     if let Some(site) = options.site_origin.as_deref() {
@@ -352,6 +404,17 @@ pub fn validate_serve_options(options: &ServeOptions) -> Result<(), String> {
                 "{provider}.client_id and {provider}.client_secret must be configured together"
             ));
         }
+    }
+    let oidc_set = [
+        options.oidc_issuer.as_deref(),
+        options.oidc_client_id.as_deref(),
+        options.oidc_client_secret.as_deref(),
+    ]
+    .map(|value| value.is_some_and(|value| !value.trim().is_empty()));
+    if oidc_set.iter().any(|set| *set) && !oidc_set.iter().all(|set| *set) {
+        return Err(
+            "auth.oidc.issuer, client_id and client_secret must be configured together".into(),
+        );
     }
     Ok(())
 }
@@ -447,6 +510,13 @@ pub async fn serve(options: ServeOptions) {
         client_secret: options.google_client_secret.unwrap_or_default(),
         ..GoogleApp::default()
     };
+    let oidc = OidcApp::new(
+        options.oidc_issuer.unwrap_or_default(),
+        options.oidc_client_id.unwrap_or_default(),
+        options.oidc_client_secret.unwrap_or_default(),
+        options.oidc_name.unwrap_or_default(),
+        options.oidc_scopes.unwrap_or_default(),
+    );
     let publishers = Policy::parse_publishers(options.publishers.as_deref().unwrap_or(""))
         .unwrap_or_else(|error| die(error));
     if !publishers.is_configured() {
@@ -458,6 +528,7 @@ pub async fn serve(options: ServeOptions) {
     let advice = sign_in_advice(
         app.configured(),
         google.configured(),
+        oidc.configured(),
         &publishers,
         &commenters,
         origins
@@ -571,10 +642,12 @@ pub async fn serve(options: ServeOptions) {
     );
     instance.install_writer(writer);
     instance.google = google;
+    instance.oidc = oidc;
     instance.simulate_activity = options.simulate_activity;
     instance.origins = origins.clone();
     instance.paths = Some(deployment_paths.clone());
     instance.admin_github_ids = options.admin_github_ids;
+    instance.admin_oidc_subjects = options.admin_oidc_subjects;
     instance.erase_inactive_after = inactive_after;
     // The history behind the graphs page opens only when the page has a name.
     // A file that cannot be opened costs the graphs and nothing else: the
@@ -817,24 +890,87 @@ mod admin_github_tests {
     #[test]
     fn the_admin_origin_and_ids_come_together_with_github_sign_in() {
         let ids = [987057];
-        assert!(validate_admin_github(None, &[], false).is_ok());
-        assert!(validate_admin_github(Some(" "), &[], false).is_ok());
-        assert!(validate_admin_github(Some("https://admin.paper.example"), &ids, true).is_ok());
+        let subjects = ["f1e2-subject".to_string()];
+        assert!(validate_admin(None, &[], false, &[], false).is_ok());
+        assert!(validate_admin(Some(" "), &[], false, &[], false).is_ok());
+        assert!(
+            validate_admin(Some("https://admin.paper.example"), &ids, true, &[], false).is_ok()
+        );
+        assert!(validate_admin(
+            Some("https://admin.paper.example"),
+            &[],
+            false,
+            &subjects,
+            true
+        )
+        .is_ok());
 
         let error =
-            validate_admin_github(Some("https://admin.paper.example"), &[], true).unwrap_err();
+            validate_admin(Some("https://admin.paper.example"), &[], true, &[], true).unwrap_err();
+        assert!(error.contains("admin.github_ids"), "{error}");
+        assert!(error.contains("admin.oidc_subjects"), "{error}");
+
+        let error = validate_admin(None, &ids, true, &[], true).unwrap_err();
         assert!(error.contains("admin.github_ids"), "{error}");
 
-        let error = validate_admin_github(None, &ids, true).unwrap_err();
-        assert!(error.contains("admin.github_ids"), "{error}");
+        let error = validate_admin(None, &[], true, &subjects, true).unwrap_err();
+        assert!(error.contains("admin.oidc_subjects"), "{error}");
 
         let error =
-            validate_admin_github(Some("https://admin.paper.example"), &[0], true).unwrap_err();
+            validate_admin(Some("https://admin.paper.example"), &[0], true, &[], true).unwrap_err();
         assert!(error.contains("admin.github_ids"), "{error}");
 
-        let error =
-            validate_admin_github(Some("https://admin.paper.example"), &ids, false).unwrap_err();
+        let error = validate_admin(Some("https://admin.paper.example"), &ids, false, &[], true)
+            .unwrap_err();
         assert!(error.contains("auth.github"), "{error}");
+
+        let error = validate_admin(
+            Some("https://admin.paper.example"),
+            &[],
+            true,
+            &subjects,
+            false,
+        )
+        .unwrap_err();
+        assert!(error.contains("auth.oidc"), "{error}");
+
+        let blank = ["  ".to_string()];
+        let error = validate_admin(Some("https://admin.paper.example"), &[], true, &blank, true)
+            .unwrap_err();
+        assert!(error.contains("admin.oidc_subjects"), "{error}");
+    }
+
+    #[test]
+    fn a_configured_oidc_provider_satisfies_the_sign_in_advice() {
+        let policy = Policy::parse("alice@example.org");
+        let advice = sign_in_advice(
+            false,
+            false,
+            true,
+            &policy,
+            &policy,
+            "https://p.example",
+            8080,
+        );
+        assert!(advice.warnings.is_empty(), "{:?}", advice.warnings);
+
+        let advice = sign_in_advice(
+            false,
+            false,
+            false,
+            &policy,
+            &policy,
+            "https://p.example",
+            8080,
+        );
+        assert!(advice
+            .warnings
+            .iter()
+            .any(|warning| warning.contains("auth.oidc")));
+        assert!(advice
+            .warnings
+            .iter()
+            .any(|warning| warning.contains("https://p.example/auth/callback/oidc")));
     }
 }
 

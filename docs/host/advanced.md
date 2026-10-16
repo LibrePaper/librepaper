@@ -24,8 +24,11 @@ At least one sign-in provider is needed.
 |---|---|
 | GitHub | `https://paper.example/auth/callback` |
 | Google | `https://paper.example/auth/callback/google` |
+| OpenID Connect | `https://paper.example/auth/callback/oidc` |
 
 Google uses an `[auth.google]` table with `client_id` and `client_secret`, like `[auth.github]`.
+
+OpenID Connect uses an `[auth.oidc]` table: the `issuer` (an `https://` address, or `http://` on loopback), `client_id`, and `client_secret` (a string, or `{ env = "NAME" }` to read it from the environment). Optional `name` labels the sign-in button (default "Single sign-on"), and `scopes` defaults to `openid email profile`. Endpoints are read from `{issuer}/.well-known/openid-configuration`. The provider must release `email` with `email_verified: true`, since the email address is the handle that `[access]` matches.
 
 `[access]` says who may publish and comment:
 
@@ -39,7 +42,7 @@ Each value is a list of:
 
 - `"any"` means any signed-in account.
 - A GitHub login.
-- A verified Google address.
+- A verified Google address, or an email address the OpenID Connect provider verifies.
 - `"@example.org"` means a whole domain.
 - `"anyone"` means anonymous comments with no sign-in. It is valid for commenters only.
 
@@ -162,7 +165,7 @@ The VPS cannot report its own outage, so alerts come from free outside services.
 
 ### LibrePaper admin console
 
-The console is a page on its own hostname. You sign in with GitHub. It has three tabs:
+The console is a page on its own hostname. You sign in with GitHub, or with OpenID Connect if `[auth.oidc]` is configured. It has three tabs:
 
 - **Resources** graphs the server's health over the last 400 days: CPU, memory, free disk, stored bytes, open documents, live connections and database connections in use.
 - **Accounts** lists the 50 accounts holding the most storage.
@@ -172,18 +175,20 @@ The console is a page on its own hostname. You sign in with GitHub. It has three
 # Optional. The admin console at https://admin.paper.example/, signed in with GitHub.
 # DNS: admin.paper.example -> this VPS, like the other two names.
 # GitHub: in the OAuth app, add https://admin.paper.example/auth/callback to its callback URLs.
+# OpenID Connect: register https://admin.paper.example/auth/callback/oidc at the provider too.
 gh api users/<login> --jq .id            # your numeric GitHub ID
 # librepaper.toml: under [origins] add   admin = "https://admin.paper.example"
 #                  and a new table       [admin]
 #                                        github_ids = [123456]
+#                                        oidc_subjects = ["<sub claim>"]   # for OpenID Connect operators
 ./manage apply
 ```
 
 - It takes one DNS record and two lines in the one file. Caddy needs no changes. Caddy asks the server before obtaining a certificate, and the server says yes to three names.
 - You sign in with GitHub, so your GitHub two-factor authentication protects the console. A session lasts 12 hours.
-- Only the listed GitHub IDs get in. Remove an ID and restart the server to lock that person out at once.
+- Only the listed GitHub IDs and OpenID Connect `sub` claims get in. Remove an entry and restart the server to lock that person out at once.
 - Moderation records your GitHub login as the person who acted.
-- The console needs GitHub sign-in. A deployment with only Google sign-in has no console.
+- The console needs GitHub or OpenID Connect sign-in. A deployment with only Google sign-in has no console.
 - A blocked account is signed out at once. Its block follows the account, so changing the name does not lift it.
 - A refused name covers only that name. Someone who renames their GitHub account before signing in is not caught.
 - Zoom by dragging on any graph. Double-click to return to the chosen range.

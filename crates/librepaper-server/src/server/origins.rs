@@ -430,6 +430,11 @@ impl Arrival {
         format!("{}/auth/callback/google", self.here())
     }
 
+    /// The generic OpenID Connect provider's callback, beside the others.
+    pub fn oidc_callback_url(&self) -> String {
+        format!("{}/auth/callback/oidc", self.here())
+    }
+
     fn here(&self) -> &str {
         &self.here.origin
     }

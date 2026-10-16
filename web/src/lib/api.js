@@ -80,6 +80,8 @@ export const config = () => get("/api/config");
 /// deployment's switches match and is your own to see, the name is what other
 /// readers see, and for a Google account those are deliberately not the same
 /// string. `providers` is empty on a deployment with no sign-in at all.
+/// `oidc_name` is the label of a generic OpenID Connect provider when it is
+/// configured, e.g. "Acme SSO".
 export const me = () => get("/api/me").catch(() => ({}));
 
 /// Signs out and leaves. `site` is what `/api/me` answered with: the

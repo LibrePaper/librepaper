@@ -16,6 +16,7 @@ docs = "https://docs.paper.example"
 # Sign-in needs at least one provider. Callback URLs:
 # GitHub  https://paper.example/auth/callback
 # Google  https://paper.example/auth/callback/google
+# OIDC    https://paper.example/auth/callback/oidc
 [auth.github]
 client_id = "replace"
 client_secret = "replace"
@@ -23,6 +24,15 @@ client_secret = "replace"
 # [auth.google]
 # client_id = "replace"
 # client_secret = "replace"
+
+# Any OpenID Connect provider (Keycloak, Authentik, Okta, Entra ID...). The
+# provider must send email with email_verified: true. name labels the button.
+# [auth.oidc]
+# issuer = "https://sso.example.org/realms/acme"
+# client_id = "replace"
+# client_secret = { env = "OIDC_CLIENT_SECRET" }
+# name = "Single sign-on"
+# scopes = "openid email profile"
 
 # The bundled database, over the socket compose.yaml shares with it. For a
 # database elsewhere, write the full URL here, with ?sslmode=verify-full for a managed service:
@@ -33,7 +43,7 @@ database_url = "postgresql:///librepaper?host=/var/run/postgresql&user=librepape
 # database_connections = 20         # PostgreSQL connection pool size
 
 # Who may publish and comment: "any" signed-in account, a GitHub login, a
-# verified Google address, or "@example.org". "anyone" also allows
+# verified Google or OpenID Connect address, or "@example.org". "anyone" also allows
 # anonymous comments.
 [access]
 publishers = ["any"]
@@ -48,6 +58,7 @@ trusted_networks = ["172.29.0.0/16"]
 # https://admin.paper.example/auth/callback to the GitHub OAuth app's callback URLs.
 # [admin]
 # github_ids = [123456]
+# oidc_subjects = ["<sub claim of each operator>"]
 
 # Optional. Every limit, with its default; uncomment a line to change it.
 # [limits]

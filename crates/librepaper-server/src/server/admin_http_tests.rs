@@ -1,6 +1,7 @@
 //! HTTP regressions for the operator graphs page on its own origin: the
-//! GitHub sign-in gate, the privacy headers, the page routes, and what the app
-//! and document hosts do not serve.
+//! sign-in gate (GitHub or OpenID Connect), the privacy headers, the page
+//! routes, and what the app and document hosts do not serve. The reader's
+//! OpenID Connect door is exercised here too, since it shares this fixture.
 //!
 //! These exercise the production router and request middleware. They need
 //! `LIBREPAPER_TEST_POSTGRES_URL`, like the other server HTTP fixtures.
@@ -19,7 +20,8 @@ use tokio::net::{TcpListener, TcpStream};
 use crate::server::http_test_support::deployment;
 use crate::server::origins::Origins;
 use librepaper_base::auth::{
-    sign_agent_grant, sign_session, AgentGrant, Identity, PROVIDER_GITHUB,
+    cookie_name, sign_agent_grant, sign_session, AgentGrant, Identity, PROVIDER_GITHUB,
+    STATE_COOKIE,
 };
 use librepaper_engine::storage::postgres::WriterLease;
 use librepaper_engine::storage::store::DocumentInput;
@@ -114,6 +116,27 @@ async fn github_stand_in(user_id: i64, login: &str) -> (String, Arc<AtomicUsize>
     (format!("http://{address}"), exchanges)
 }
 
+/// An OpenID Connect stand-in. The token endpoint issues a token to any
+/// exchange, and the userinfo endpoint names the account whose subject is
+/// `op-1`, with a verified address.
+async fn oidc_stand_in() -> String {
+    async fn token() -> Json<Value> {
+        Json(json!({"access_token": "t"}))
+    }
+    async fn userinfo() -> Json<Value> {
+        Json(json!({"sub": "op-1", "email": "op@example.org", "email_verified": true}))
+    }
+    let router = Router::new()
+        .route("/token", post(token))
+        .route("/userinfo", get(userinfo));
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    tokio::spawn(async move {
+        axum::serve(listener, router).await.unwrap();
+    });
+    format!("http://{address}")
+}
+
 /// The fixture with GitHub answering for the given account.
 async fn fixture_for(user_id: i64, login: &str) -> Option<Fixture> {
     fixture_full(vec![OPERATOR_ID], true, user_id, login).await
@@ -129,6 +152,36 @@ async fn fixture_full(
     github_configured: bool,
     user_id: i64,
     login: &str,
+) -> Option<Fixture> {
+    fixture_custom(ids, github_configured, user_id, login, None).await
+}
+
+/// The fixture with OpenID Connect set up against a stand-in, listing the given
+/// subjects, and with GitHub set up or not.
+async fn fixture_oidc(
+    ids: Vec<i64>,
+    github_configured: bool,
+    subjects: Vec<&str>,
+) -> Option<Fixture> {
+    let subjects = subjects.into_iter().map(str::to_string).collect();
+    fixture_custom(
+        ids,
+        github_configured,
+        OPERATOR_ID,
+        "operator",
+        Some(subjects),
+    )
+    .await
+}
+
+/// The fixture with both providers as the caller sets them: `oidc_subjects` is
+/// `None` when OpenID Connect is not set up at all.
+async fn fixture_custom(
+    ids: Vec<i64>,
+    github_configured: bool,
+    user_id: i64,
+    login: &str,
+    oidc_subjects: Option<Vec<String>>,
 ) -> Option<Fixture> {
     let (github, exchanges) = github_stand_in(user_id, login).await;
     let deployment = deployment(
@@ -171,6 +224,21 @@ async fn fixture_full(
     } else {
         librepaper_base::auth::GithubApp::default()
     };
+    if let Some(subjects) = oidc_subjects {
+        let idp = oidc_stand_in().await;
+        let mut oidc = librepaper_base::auth::OidcApp::new(
+            idp.clone(),
+            "oidc-test-client".into(),
+            "oidc-test-secret".into(),
+            "Test IdP".into(),
+            "openid email".into(),
+        );
+        oidc.authorization_endpoint = Some(format!("{idp}/authorize"));
+        oidc.token_endpoint = Some(format!("{idp}/token"));
+        oidc.userinfo_endpoint = Some(format!("{idp}/userinfo"));
+        server.oidc = oidc;
+        server.admin_oidc_subjects = subjects;
+    }
     server.graphs = Some(Arc::new(
         super::graphs::Graphs::open(history.path()).unwrap(),
     ));
@@ -262,7 +330,7 @@ impl Fixture {
     fn session_cookie_as(&self, github_id: i64, login: &str, expires_at: i64) -> String {
         let token = super::graphs::routes::admin_session_token(
             &self.server.key,
-            github_id,
+            &format!("github:{github_id}"),
             login,
             expires_at,
         );
@@ -1796,7 +1864,7 @@ async fn only_the_prefixed_cookie_name_is_read_and_junk_around_it_does_not_hide_
     // comes first. It is not the name the admin origin reads.
     let unlisted = super::graphs::routes::admin_session_token(
         &f.server.key,
-        999,
+        "github:999",
         "intruder",
         librepaper_base::util::now_unix() + 3600,
     );
@@ -1827,4 +1895,202 @@ async fn only_the_prefixed_cookie_name_is_read_and_junk_around_it_does_not_hide_
         401,
         "case 3: the operator token under the unprefixed name"
     );
+}
+
+#[tokio::test]
+#[ignore = "requires LIBREPAPER_TEST_POSTGRES_URL"]
+async fn a_listed_oidc_subject_signs_in_through_the_provider() {
+    let Some(f) = fixture_oidc(vec![], false, vec!["op-1"]).await else {
+        return;
+    };
+    let idp = f
+        .server
+        .oidc
+        .authorization_endpoint
+        .clone()
+        .unwrap_or_default();
+    let start = f.get(ADMIN_HOST, "/").send().await.unwrap();
+    assert_eq!(start.status().as_u16(), 302);
+    let location = header(&start, "location").unwrap_or_default().to_string();
+    assert!(location.starts_with(&idp), "{location}");
+    assert!(location.contains("prompt=login"), "{location}");
+    assert!(
+        location
+            .contains("redirect_uri=https%3A%2F%2Fadmin.paper.example%2Fauth%2Fcallback%2Foidc"),
+        "{location}"
+    );
+    assert_private_headers(&start, "the OpenID Connect sign-in redirect");
+    let (state, state_pair) = sign_in_start(&start);
+
+    let callback = f
+        .get(
+            ADMIN_HOST,
+            &format!("/auth/callback/oidc?code=c&state={state}"),
+        )
+        .header("cookie", &state_pair)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(callback.status().as_u16(), 302);
+    assert_eq!(header(&callback, "location"), Some("/"));
+    let cookies = set_cookies(&callback);
+    let session = cookies
+        .iter()
+        .find(|cookie| cookie.starts_with("__Host-librepaper_admin="))
+        .unwrap_or_else(|| panic!("no session cookie in {cookies:?}"));
+    assert!(session.contains("Max-Age=43200"), "{session:?}");
+    assert_private_headers(&callback, "the OpenID Connect sign-in callback");
+    let session_pair = session.split(';').next().unwrap_or_default().to_string();
+
+    let page = f
+        .get(ADMIN_HOST, "/session")
+        .header("cookie", &session_pair)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(page.status().as_u16(), 200);
+    let body: Value = page.json().await.unwrap();
+    assert_eq!(body["login"], "op@example.org");
+    assert_eq!(body["subject"], "oidc:op-1");
+}
+
+#[tokio::test]
+#[ignore = "requires LIBREPAPER_TEST_POSTGRES_URL"]
+async fn an_unlisted_oidc_subject_is_refused_at_the_callback() {
+    let Some(f) = fixture_oidc(vec![], false, vec!["someone-else"]).await else {
+        return;
+    };
+    let start = f.get(ADMIN_HOST, "/").send().await.unwrap();
+    let (state, state_pair) = sign_in_start(&start);
+
+    let callback = f
+        .get(
+            ADMIN_HOST,
+            &format!("/auth/callback/oidc?code=c&state={state}"),
+        )
+        .header("cookie", &state_pair)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(callback.status().as_u16(), 403);
+    let cookies = set_cookies(&callback);
+    assert!(
+        !cookies
+            .iter()
+            .any(|cookie| cookie.starts_with("__Host-librepaper_admin=")),
+        "no session cookie for an unlisted subject: {cookies:?}"
+    );
+    assert_private_headers(&callback, "an unlisted OpenID Connect callback");
+}
+
+#[tokio::test]
+#[ignore = "requires LIBREPAPER_TEST_POSTGRES_URL"]
+async fn both_providers_offer_a_chooser_on_the_admin_origin() {
+    let Some(f) = fixture_custom(
+        vec![OPERATOR_ID],
+        true,
+        OPERATOR_ID,
+        "operator",
+        Some(vec!["op-1".to_string()]),
+    )
+    .await
+    else {
+        return;
+    };
+    let page = f.get(ADMIN_HOST, "/").send().await.unwrap();
+    assert_eq!(page.status().as_u16(), 200);
+    assert_private_headers(&page, "the sign-in chooser");
+    assert!(header(&page, "content-type")
+        .unwrap_or_default()
+        .starts_with("text/html"));
+    let html = page.text().await.unwrap();
+    assert!(html.contains(r#"href="/auth/login/github""#), "{html}");
+    assert!(html.contains(r#"href="/auth/login/oidc""#), "{html}");
+    assert!(html.contains("Sign in with Test IdP"), "{html}");
+    assert_eq!(inline_scripts(&html), 0);
+
+    // Each link starts its own sign-in.
+    let github = f
+        .get(ADMIN_HOST, "/auth/login/github")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(github.status().as_u16(), 302);
+    assert!(header(&github, "location")
+        .unwrap_or_default()
+        .starts_with("https://github.com/"));
+    let idp = f
+        .server
+        .oidc
+        .authorization_endpoint
+        .clone()
+        .unwrap_or_default();
+    let oidc = f.get(ADMIN_HOST, "/auth/login/oidc").send().await.unwrap();
+    assert_eq!(oidc.status().as_u16(), 302);
+    assert!(header(&oidc, "location")
+        .unwrap_or_default()
+        .starts_with(&idp));
+}
+
+#[tokio::test]
+#[ignore = "requires LIBREPAPER_TEST_POSTGRES_URL"]
+async fn a_reader_with_only_oidc_is_sent_straight_to_the_provider() {
+    let Some(f) = fixture_oidc(vec![], false, vec!["op-1"]).await else {
+        return;
+    };
+    let door = f
+        .get(READER_HOST, "/auth/login?next=/somewhere")
+        .send()
+        .await
+        .unwrap();
+    assert!(door.status().is_redirection(), "{}", door.status());
+    assert_eq!(
+        header(&door, "location"),
+        Some("/auth/login/oidc?next=%2Fsomewhere")
+    );
+
+    let start = f
+        .get(READER_HOST, "/auth/login/oidc?next=/somewhere")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(start.status().as_u16(), 302);
+    let idp = f
+        .server
+        .oidc
+        .authorization_endpoint
+        .clone()
+        .unwrap_or_default();
+    let location = header(&start, "location").unwrap_or_default();
+    assert!(location.starts_with(&idp), "{location}");
+    let state_cookie = header(&start, "set-cookie").unwrap_or_default();
+    assert!(
+        state_cookie.starts_with(&format!("{}=", cookie_name(true, STATE_COOKIE))),
+        "{state_cookie:?}"
+    );
+}
+
+#[tokio::test]
+#[ignore = "requires LIBREPAPER_TEST_POSTGRES_URL"]
+async fn an_oidc_callback_with_another_state_is_refused() {
+    let Some(f) = fixture_oidc(vec![], false, vec!["op-1"]).await else {
+        return;
+    };
+    let path = "/auth/callback/oidc?code=c&state=abc";
+    let none = f.get(READER_HOST, path).send().await.unwrap();
+    assert_eq!(none.status().as_u16(), 400, "no state cookie");
+
+    let state_name = cookie_name(true, STATE_COOKIE);
+    let other = f
+        .get(READER_HOST, path)
+        .header(
+            "cookie",
+            format!("{state_name}=other|%2Fsomewhere|verifier"),
+        )
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(other.status().as_u16(), 400, "another state");
+    let body = other.text().await.unwrap();
+    assert!(body.contains("sign-in state did not match"), "{body:?}");
 }

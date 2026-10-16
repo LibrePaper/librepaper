@@ -1,4 +1,5 @@
-//! Identity comes from a provider -- GitHub or Google. Several paths reach the
+//! Identity comes from a provider -- GitHub, Google, or a generic OpenID
+//! Connect provider. Several paths reach the
 //! same place: a browser signs in through one provider's OAuth web flow and
 //! carries a signed cookie afterwards, while a terminal signs in through this
 //! deployment's own device flow and carries the token that produces as a
@@ -18,19 +19,22 @@ pub use crate::util::{now_unix, random_bytes, random_token};
 mod device;
 mod github;
 mod google;
+mod oidc;
 pub mod pseudonym;
 
 pub use device::*;
 pub use github::*;
 pub use google::*;
+pub use oidc::*;
 
 #[cfg(test)]
 mod core_tests;
 
-/// The two providers, spelled as the id prefix and the session cookie write
+/// The three providers, spelled as the id prefix and the session cookie write
 /// them. Nothing outside this module composes these strings by hand.
 pub const PROVIDER_GITHUB: &str = "github";
 pub const PROVIDER_GOOGLE: &str = "google";
+pub const PROVIDER_OIDC: &str = "oidc";
 
 pub const SESSION_COOKIE: &str = "librepaper_session";
 pub const STATE_COOKIE: &str = "librepaper_state";
@@ -136,7 +140,7 @@ fn valid_agent_grant(grant: &AgentGrant, now: i64) -> bool {
         && !identity.session_generation.is_empty()
         && matches!(
             identity.provider.as_str(),
-            PROVIDER_GITHUB | PROVIDER_GOOGLE
+            PROVIDER_GITHUB | PROVIDER_GOOGLE | PROVIDER_OIDC
         )
         && !identity.handle.is_empty()
         && (1..=3).contains(&grant.role)
@@ -174,13 +178,14 @@ pub fn try_provider_request() -> Option<SemaphorePermit<'static>> {
 
 /// Who a caller is, once verified. `id` is what ownership, comment authorship
 /// and grants key on, and it is qualified with the provider --
-/// `github:583231`, `google:107691503500061507151` -- because GitHub ids and
-/// Google `sub` values are both decimal strings and nothing but the prefix
-/// keeps one namespace out of the other. `handle` is what the policies match:
-/// a GitHub login, or a Google account's verified email. It needs no prefix,
-/// since a GitHub login cannot contain `@` and a verified email always does,
-/// so the character decides. `name` is what other readers see; it is never
-/// matched on, and for a Google account it is deliberately not the email.
+/// `github:583231`, `google:107691503500061507151`, `oidc:abc-123` -- because
+/// GitHub ids and Google or OIDC `sub` values are all strings that could
+/// collide, and nothing but the prefix keeps one namespace out of the other.
+/// `handle` is what the policies match: a GitHub login, or the verified email
+/// of a Google or OIDC account. It needs no prefix, since a GitHub login cannot
+/// contain `@` and a verified email always does, so the character decides.
+/// `name` is what other readers see; it is never matched on, and for a Google
+/// or OIDC account it is deliberately not the email.
 /// Every field is empty for an anonymous caller.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Identity {
@@ -189,7 +194,7 @@ pub struct Identity {
     pub handle: String,
     pub name: String,
     /// The provider's profile picture, as an `https://` URL, or empty. Stored
-    /// only for Google, whose picture URLs are opaque; a GitHub avatar is a
+    /// only for Google and OIDC, whose picture URLs are opaque; a GitHub avatar is a
     /// function of the numeric id, so `picture_url` derives it and the
     /// credential need not carry it.
     pub picture: String,
@@ -241,6 +246,45 @@ impl Identity {
         Identity {
             provider: PROVIDER_GOOGLE.to_string(),
             id: qualified(PROVIDER_GOOGLE, sub),
+            handle: email,
+            name: shown,
+            picture: acceptable_picture(picture),
+            session_generation: String::new(),
+        }
+    }
+
+    /// An account from a generic OpenID Connect provider, from its `sub`, its
+    /// verified email, and the profile fields the provider chose to send. The
+    /// id is built here rather than with `qualified`, because `qualified` passes
+    /// through any id already containing a colon, and a subject such as
+    /// `github:583231` would then name a GitHub account. The name falls back
+    /// from the display name to the username to the local part of the address,
+    /// the same order a reader would recognise the person by.
+    pub fn oidc(
+        sub: &str,
+        email: &str,
+        name: &str,
+        preferred_username: &str,
+        picture: &str,
+    ) -> Identity {
+        let sub = sub.trim();
+        let email = email.trim().to_lowercase();
+        let name = name.trim();
+        let preferred_username = preferred_username.trim();
+        let shown = if !name.is_empty() {
+            name.to_string()
+        } else if !preferred_username.is_empty() {
+            preferred_username.to_string()
+        } else {
+            email.split('@').next().unwrap_or_default().to_string()
+        };
+        Identity {
+            provider: PROVIDER_OIDC.to_string(),
+            id: if sub.is_empty() {
+                String::new()
+            } else {
+                format!("{PROVIDER_OIDC}:{sub}")
+            },
             handle: email,
             name: shown,
             picture: acceptable_picture(picture),
@@ -579,7 +623,7 @@ fn read_identity(key: &[u8], purpose: &str, credential: &str) -> Identity {
         .strip_prefix(&format!("{provider}:"))
         .is_some_and(|subject| !subject.is_empty());
     let catalog_identity = uuid::Uuid::parse_str(id).is_ok();
-    if !matches!(provider, PROVIDER_GITHUB | PROVIDER_GOOGLE)
+    if !matches!(provider, PROVIDER_GITHUB | PROVIDER_GOOGLE | PROVIDER_OIDC)
         || handle.is_empty()
         || (!provider_identity && !catalog_identity)
     {

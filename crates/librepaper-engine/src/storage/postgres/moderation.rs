@@ -273,8 +273,10 @@ impl PostgresCatalog {
                 .await?;
             return Ok(BlockOutcome::Blocked { id, label });
         }
-        if provider != "github" && provider != "google" {
-            return Err(Error::Invalid("provider must be github or google".into()));
+        if provider != "github" && provider != "google" && provider != "oidc" {
+            return Err(Error::Invalid(
+                "provider must be github, google or oidc".into(),
+            ));
         }
         let handle = name.trim().trim_start_matches('@').trim();
         if handle.is_empty() {

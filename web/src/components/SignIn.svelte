@@ -7,7 +7,7 @@
   // The page the server shows when there is more than one way in. It is served
   // for /auth/login, so the choice is made here and every other page can link
   // to the one address without knowing what this deployment configured.
-  /** @type {{providers?: string[]}} */
+  /** @type {{providers?: string[], oidc_name?: string}} */
   let me = $state({});
   $effect(() => {
     whoami().then((who) => (me = who ?? {}));
@@ -17,7 +17,10 @@
   // this page is not where the person was going.
   const next = new URLSearchParams(location.search).get("next") || "/";
   const href = (provider) => `/auth/login/${provider}?next=${encodeURIComponent(next)}`;
-  const providers = ["github", "google"];
+  const providers = ["github", "google", "oidc"];
+  // The label a generic OpenID Connect provider gives itself, e.g. "Acme SSO".
+  const providerName = (provider) =>
+    provider === "github" ? "GitHub" : provider === "google" ? "Google" : me.oidc_name || "Single sign-on";
 
   // Only the desktop app can switch the server it opens, so only it offers the choice.
   const inDesktop = Boolean(desktop());
@@ -54,11 +57,13 @@
             <span class="signin-provider-icon" aria-hidden="true">
               {#if provider === "github"}
                 <Icon name="github" size={20} />
-              {:else}
+              {:else if provider === "google"}
                 <img src="/assets/google-g.svg" width="20" height="20" alt="" />
+              {:else}
+                <Icon name="lock" size={20} />
               {/if}
             </span>
-            <span>Continue with {provider === "github" ? "GitHub" : "Google"}</span>
+            <span>Continue with {providerName(provider)}</span>
           </span>
         </a>
       {/each}
