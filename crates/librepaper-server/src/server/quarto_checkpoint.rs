@@ -25,9 +25,7 @@ impl Server {
             Ok(None) => return write_json(404, &json!({"error":"not found"})),
             Err(response) => return response,
         };
-        let who = self
-            .viewer(&entry, request.headers(), arrival, request.uri().query())
-            .await;
+        let who = self.viewer(&entry, request.headers(), arrival, None).await;
         if self.needs_sign_in(&entry, &who) {
             return sign_in_to_read();
         }

@@ -7,6 +7,17 @@ pub fn slug_pattern(config: &Configuration) -> regex::Regex {
     regex::Regex::new(&config.slug_pattern).expect("the slug pattern is a valid expression")
 }
 
+/// A fragment with every `k=` field removed. A link key lives in the
+/// fragment of a share link and must never reach a server, so a fragment
+/// that arrives here carrying one is cleaned before it is sent anywhere.
+pub(super) fn without_link_key(fragment: &str) -> String {
+    fragment
+        .split('&')
+        .filter(|field| !field.is_empty() && *field != "k" && !field.starts_with("k="))
+        .collect::<Vec<_>>()
+        .join("&")
+}
+
 /// Where a sign-in may return to: somewhere on this site, and nowhere else. A
 /// value like "//elsewhere.example" starts with a slash but is read by
 /// browsers as an absolute URL, which would make the callback an open
@@ -28,8 +39,11 @@ pub fn local_path(next: &str) -> String {
         target.push_str(query);
     }
     if let Some(fragment) = parsed.fragment() {
-        target.push('#');
-        target.push_str(fragment);
+        let fragment = without_link_key(fragment);
+        if !fragment.is_empty() {
+            target.push('#');
+            target.push_str(&fragment);
+        }
     }
     target
 }
@@ -168,6 +182,17 @@ mod proxy_tests {
         let all_zeros: ipnet::IpNet = "::/0".parse().unwrap();
         assert!(!all_zeros.contains(&"127.0.0.1".parse::<IpAddr>().unwrap()));
         assert_eq!(client_network("2001:db8:1:2:3:4:5:6"), "2001:db8:1:2::/64");
+    }
+
+    #[test]
+    fn a_return_path_drops_a_link_key_from_its_fragment() {
+        assert_eq!(local_path("/docs/x#k=abc"), "/docs/x");
+        assert_eq!(local_path("/docs/x#k=abc&settings=local"), "/docs/x#settings=local");
+        assert_eq!(local_path("/docs/x#settings=local&k=abc"), "/docs/x#settings=local");
+        assert_eq!(local_path("/docs/x?a=1#k=abc"), "/docs/x?a=1");
+        assert_eq!(local_path("/docs/x?a=1#version=3"), "/docs/x?a=1#version=3");
+        assert_eq!(without_link_key("k=abc"), "");
+        assert_eq!(without_link_key("a=1&k=abc&b=2"), "a=1&b=2");
     }
 }
 
