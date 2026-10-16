@@ -116,7 +116,7 @@
   /* ------------------------------------------------------------ the document */
 
   /** @typedef {{title?: string; docs_origin?: string; document_id?: string; created_at?: string; role?: string; can_edit?: boolean; can_moderate?: boolean; can_see_sharing?: boolean; commenting_as?: string}} ReaderDocument */
-  /** @typedef {{id?: string; name?: string; handle?: string; provider?: string; providers?: string[]; comments_need_login?: boolean}} ReaderUser */
+  /** @typedef {{id?: string; name?: string; handle?: string; provider?: string; providers?: {id: string, kind: string, label: string}[]; comments_need_login?: boolean}} ReaderUser */
   /** @type {ReaderDocument} */
   let doc = $state({});
   let documentNeedsSignIn = $state(false);
@@ -2142,7 +2142,7 @@
       clearTimeout(calepinSyncTimer);
       calepinSyncTimer = setTimeout(() => void calepinPreviewController.sync(), 500);
     }
-    if (sourceFormat === "quarto" && session) {
+    if (sourceFormat === "quarto" && session?.text) {
       const main = previewMain || session.mainPath() || "main.qmd";
       const id = session.idOf?.(main) || session.mainId();
       const parsed = quarto.parseQuarto(session.textOf(id)?.toString?.() || session.text.toString(), { path: main });
@@ -2747,6 +2747,41 @@
   // directory one.
   const refreshFiles = () => workspace.refresh();
 
+  // Set when the preview was emptied because there was nothing to show, so
+  // that the next file to become renderable is painted: with no previous
+  // target, the first target is otherwise left to the initial paint.
+  let previewCleared = false;
+
+  /// Empties the preview: no file is being followed, no format is selected and
+  /// nothing is drawn. No render is attempted and no engine is warmed.
+  function clearPreview() {
+    previewCleared = true;
+    previewMain = "";
+    previewFile = "";
+    sourceFormat = "";
+    configureLatex("");
+    navigationGeneration += 1;
+    renderCoordinator.invalidate();
+    clearTimeout(previewTimer);
+    previewTimer = null;
+    framePreview.clear();
+    deliveredKind = "";
+    everPainted = false;
+    everPaintedShown = false;
+    activeSynctex = null;
+    renderStatus.resetFailure();
+    renderStatus.clearDocx();
+    diagnosticPainter.rendered({ page: false, diagnostics: [] });
+  }
+
+  // A project with no file at all, as opposed to one whose directory has not
+  // arrived yet. The directory is read from the session itself so that a
+  // stale file list cannot report a project as empty.
+  const projectEmpty = $derived(mayEdit
+    ? Boolean(session && persistence.joined && files.length === 0 && session.list().length === 0)
+    : Boolean(currentProject && !Object.keys(currentProject.tree?.files || currentProject.texts || {}).length));
+  $effect(() => { if (projectEmpty) untrack(clearPreview); });
+
   function updatePreviewTarget() {
     if (!session) return;
     const selected = files.find((file) => file.id === previewFile);
@@ -2754,8 +2789,15 @@
     const path = selected?.kind === "text" && renderers.formatOf(selected.path)
       ? selected.path : session.mainPath();
     const format = renderers.formatOf(path);
-    if (!format || (previewMain === path && sourceFormat === format)) return;
-    const previous = previewMain || sourceFormat;
+    // Nothing the preview could follow: the file it showed is gone and the
+    // main file now is not a format that renders, or there is no file at all.
+    if (!format) {
+      if (previewMain) clearPreview();
+      return;
+    }
+    if (previewMain === path && sourceFormat === format) return;
+    const previous = previewMain || sourceFormat || (previewCleared ? "cleared" : "");
+    previewCleared = false;
     previewMain = path;
     sourceFormat = format;
     configureLatex(format);
@@ -2884,6 +2926,10 @@
   async function downloadTree() {
     if (!mayEdit) {
       say("Downloading the whole project is an editor's. A reader can download the rendered document instead.", { kind: "problem", id: "reader:download-project" });
+      return;
+    }
+    if (projectEmpty) {
+      say("This project has no files to download.", { kind: "problem", id: "reader:download-project" });
       return;
     }
     try {
@@ -3039,7 +3085,7 @@
       sourceGeneration += 1;
       outlineRevision += 1;
       settled = true;
-      renderers.warm(sourceFormat);
+      if (sourceFormat) renderers.warm(sourceFormat);
       void paintPreview();
     })().catch((error) => {
       if (readerDisposed) return;
@@ -3106,14 +3152,15 @@
     }
     // Rendering follows the durable source format. Generated-result identity
     // is deliberately absent: a reader compiles this source on demand.
+    // An empty project has no format; the first file added gives it one.
     const format = document_.source_format ||
-      (document_.execution_engine === "quarto" ? "quarto" : "html");
+      (document_.execution_engine === "quarto" ? "quarto" : "");
     sourceFormat = format;
     scopeLocalApp();
     if (["quarto", "typst", "markdown"].includes(format)) readQuartoBinding();
     // Every reader compiles from source when the browser has the engine. A
     // missing engine produces an actionable local-tool message below.
-    if (!renderers.outputKind(format)) {
+    if (format && !renderers.outputKind(format)) {
       say(`A ${format} document is read where its renderer is built, and this browser has none for it.`, { kind: "problem", id: "reader:no-renderer" });
       settled = true;
       return;
@@ -3124,12 +3171,14 @@
     settled = true;
     // Load the browser renderer for readers as well as editors; this is all
     // transient and does not create a server-side result.
-    renderers.warm(format);
-    // And put the last page this browser drew for this document up while that
-    // happens. Loading an engine and compiling a paper takes seconds, and the
-    // pane would otherwise spend all of them blank -- showing nothing, while
-    // holding the page that is almost always about to be drawn again.
-    void restoreLastPreview();
+    if (format) {
+      renderers.warm(format);
+      // And put the last page this browser drew for this document up while that
+      // happens. Loading an engine and compiling a paper takes seconds, and the
+      // pane would otherwise spend all of them blank -- showing nothing, while
+      // holding the page that is almost always about to be drawn again.
+      void restoreLastPreview();
+    }
     await startCollaboration(document_);
     // `onSource` starts projection metadata only after the initial document state
     // has populated the source tree. A session object alone is not a snapshot.
@@ -3732,6 +3781,16 @@
             </object>
           {:else}
             <img src={figureUrl} alt={shownFigure.path} />
+          {/if}
+        </div>
+      {:else if session && persistence.joined && !sourceBound}
+        <div class="notyet">
+          <p class="lp-text-secondary text-sm">{projectEmpty ? "This project has no files." : "This project has no text files."}</p>
+          {#if mayEdit}
+            <div class="notyet-actions">
+              <button class="btn btn-sm lp-control-brand" onclick={() => void chooseFileCommand("new-file")}>New file</button>
+              <button class="btn btn-sm lp-control-tonal-brand" onclick={() => void chooseFileCommand("upload")}>Upload</button>
+            </div>
           {/if}
         </div>
       {:else if Editor && sourceBound}

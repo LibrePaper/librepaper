@@ -920,6 +920,94 @@ async fn upload_parser_rejects_invalid_utf8_in_single_and_selected_main_files() 
 
 #[tokio::test]
 #[ignore = "requires LIBREPAPER_TEST_POSTGRES_URL"]
+async fn a_titled_upload_with_no_files_creates_an_empty_project() {
+    let Some(deployment) = deployment("http-upload-empty-project").await else {
+        return;
+    };
+    let parsed = match deployment
+        .server
+        .read_upload(multipart_upload(&[("title", None, b"Blank".as_slice())]))
+        .await
+    {
+        Ok(parsed) => parsed,
+        Err(_) => panic!("a titled upload with no files was refused"),
+    };
+    assert!(parsed.empty);
+    assert_eq!(parsed.title, "Blank");
+    assert_eq!(parsed.source_format, "markdown");
+    assert!(parsed.main.is_empty() && parsed.files.is_empty());
+
+    // The other shapes keep their refusals.
+    let untitled = deployment
+        .server
+        .read_upload(multipart_upload(&[("title", None, b"".as_slice())]))
+        .await;
+    assert!(untitled.is_err());
+    let one_empty_file = deployment
+        .server
+        .read_upload(multipart_upload(&[
+            ("title", None, b"Blank".as_slice()),
+            ("file", Some("paper.md"), b"".as_slice()),
+        ]))
+        .await;
+    assert!(one_empty_file.is_err());
+    let missing_main = deployment
+        .server
+        .read_upload(multipart_upload(&[
+            ("title", None, b"Blank".as_slice()),
+            ("main", None, b"paper.md".as_slice()),
+        ]))
+        .await;
+    assert!(missing_main.is_err());
+
+    let actor = MutationActor {
+        account_id: deployment.owner_id.to_string(),
+        owner_key: "owner".into(),
+        session_generation: deployment.owner_session_generation.clone(),
+        link_hash: String::new(),
+        policy_editor: true,
+        policy_comment: true,
+        automation: false,
+        unowned_publisher: false,
+    };
+    deployment
+        .server
+        .store
+        .put_directory_as_actor(
+            DocumentInput {
+                slug: "blank-project".into(),
+                title: parsed.title.clone(),
+                source: parsed.source.clone(),
+                source_format: parsed.source_format.clone(),
+                main: parsed.main.clone(),
+            },
+            parsed.files.clone(),
+            actor,
+        )
+        .await
+        .unwrap();
+    let entry = deployment
+        .server
+        .store
+        .get_result("blank-project")
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(entry.source_format, "markdown");
+    assert!(entry.main.is_empty());
+    let files = deployment
+        .server
+        .store
+        .project_files("blank-project")
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(files.is_empty());
+    deployment.catalog.close().await;
+}
+
+#[tokio::test]
+#[ignore = "requires LIBREPAPER_TEST_POSTGRES_URL"]
 async fn backup_listing_includes_shared_reader_without_granting_publishing_access() {
     let Some(mut deployment) = deployment("http-backup-shared-reader").await else {
         return;

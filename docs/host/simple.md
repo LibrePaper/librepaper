@@ -31,7 +31,7 @@ Everything is on one machine, so losing the VPS loses it all until [backups](adv
 - Install Docker Engine and Compose v2 on it.
 - Open ports 80 and 443.
 - Point two DNS names at it: one for the app (`paper.example`) and one for published documents (`docs.paper.example`).
-- Create a GitHub OAuth app, a Google OAuth client, or both. See [Sign-in](#sign-in).
+- Register at least one sign-in provider: a GitHub OAuth app, a Google OAuth client, a Microsoft Entra ID app registration, or any OpenID Connect provider. See [Sign-in](#sign-in).
 
 ## Install
 
@@ -40,29 +40,6 @@ Each LibrePaper release comes with one download that contains everything the VPS
 ```sh
 curl -fsSL https://github.com/LibrePaper/librepaper/releases/latest/download/librepaper-deploy.tar.gz | tar xz
 cd librepaper
-```
-
-## Sign-in
-
-LibrePaper has no passwords of its own. People sign in with GitHub or Google, and the server never sees or stores a password. You register LibrePaper once with the provider, which gives you a client ID and a client secret for `librepaper.toml`. At least one provider is required. Both can be enabled.
-
-**GitHub.** LibrePaper requests no scopes and receives the account's public login name.
-
-- See [Creating an OAuth app](https://docs.github.com/en/apps/oauth-apps/building-oauth-apps/creating-an-oauth-app). On GitHub, the path is Settings, Developer settings, OAuth Apps, New OAuth App.
-- Homepage URL: `https://paper.example`
-- Authorization callback URL: `https://paper.example/auth/callback`
-- Copy the client ID, generate a client secret, and put both in `[auth.github]`.
-
-**Google.** LibrePaper requests the `openid`, `email` and `profile` scopes and receives the account's name and email address. A Gmail address must be verified by Google. An address at another domain signs in only if that domain uses Google Workspace.
-
-- See [Setting up OAuth 2.0](https://support.google.com/cloud/answer/6158849). In Google Cloud Console, the path is APIs and Services, Credentials, Create credentials, OAuth client ID, Web application. Google asks you to configure the consent screen first.
-- Authorized redirect URI: `https://paper.example/auth/callback/google`
-- Put the client ID and secret in `[auth.google]`:
-
-```toml
-[auth.google]
-client_id = "replace"
-client_secret = "replace"
 ```
 
 ## Configure
@@ -106,6 +83,8 @@ docs = "https://docs.paper.example"
 # Sign-in needs at least one provider. Callback URLs:
 # GitHub  https://paper.example/auth/callback
 # Google  https://paper.example/auth/callback/google
+# Microsoft  https://paper.example/auth/callback/entra
+# Other OIDC https://paper.example/auth/callback/oidc-<name>
 [auth.github]
 client_id = "replace"
 client_secret = "replace"
@@ -113,6 +92,21 @@ client_secret = "replace"
 # [auth.google]
 # client_id = "replace"
 # client_secret = "replace"
+
+# [auth.entra]
+# tenant = "00000000-0000-0000-0000-000000000000"   # Directory (tenant) ID, a GUID
+# client_id = "replace"                             # Application (client) ID
+# client_secret = "replace"
+# label = "Microsoft"                               # the button text
+
+# [auth.oidc.example]
+# issuer = "https://sso.example.org/realms/staff"   # the provider's issuer URL
+# client_id = "replace"
+# client_secret = "replace"
+# label = "Example SSO"                             # the button text
+
+# [auth]
+# session_lifetime = "24h"   # 1h to 30d. Absent, a browser session lasts 30 days.
 
 # The bundled database, over the socket compose.yaml shares with it. For a
 # database elsewhere, write the full URL here, with ?sslmode=verify-full for a managed service:
@@ -123,8 +117,8 @@ database_url = "postgresql:///librepaper?host=/var/run/postgresql&user=librepape
 # database_connections = 20         # PostgreSQL connection pool size
 
 # Who may publish and comment: "any" signed-in account, a GitHub login, a
-# verified Google address, or "@example.org". "anyone" also allows
-# anonymous comments.
+# verified address from Google, Entra or another OpenID Connect provider, or
+# "@example.org". "anyone" also allows anonymous comments.
 [access]
 publishers = ["any"]
 commenters = ["any"]
@@ -172,6 +166,71 @@ cp librepaper.toml librepaper.toml.candidate
 - It validates the candidate, installs it over `librepaper.toml`, recreates the app and backup containers, reloads Caddy and waits for `/ready`.
 - If a check fails, nothing changes.
 - Editing `librepaper.toml` directly and running `./manage apply` works too.
+
+## Sign-in
+
+LibrePaper has no passwords of its own. People sign in with GitHub, Google, Microsoft Entra ID or any OpenID Connect provider, and the server never sees or stores a password. You register LibrePaper once with each provider. Each gives you a client ID and a client secret for `librepaper.toml`. At least one provider is required. You can enable several.
+
+An email or `@domain` entry in `[access]` admits whoever any configured provider says owns that address. Turning on a provider means trusting its administrators with every address in your lists, so prefer `@domain` entries for domains the provider owns.
+
+**GitHub.** LibrePaper requests no scopes and receives the account's public login name.
+
+- See [Creating an OAuth app](https://docs.github.com/en/apps/oauth-apps/building-oauth-apps/creating-an-oauth-app). On GitHub, the path is Settings, Developer settings, OAuth Apps, New OAuth App.
+- Homepage URL: `https://paper.example`
+- Authorization callback URL: `https://paper.example/auth/callback`
+- Copy the client ID, generate a client secret, and put both in `[auth.github]`.
+
+**Google.** LibrePaper requests the `openid`, `email` and `profile` scopes and receives the account's name and email address. A Gmail address must be verified by Google. An address at another domain signs in only if that domain uses Google Workspace.
+
+- See [Setting up OAuth 2.0](https://support.google.com/cloud/answer/6158849). In Google Cloud Console, the path is APIs and Services, Credentials, Create credentials, OAuth client ID, Web application. Google asks you to configure the consent screen first.
+- Authorized redirect URI: `https://paper.example/auth/callback/google`
+- Put the client ID and secret in `[auth.google]`:
+
+```toml
+[auth.google]
+client_id = "replace"
+client_secret = "replace"
+```
+
+**Microsoft Entra ID.** Sign-in admits the members and guests of one Microsoft Entra tenant. Register a single-tenant web app with the redirect URI `https://paper.example/auth/callback/entra`, following [Register an application](https://learn.microsoft.com/en-us/entra/identity-platform/quickstart-register-app), then copy its IDs and a client secret into `[auth.entra]`:
+
+```toml
+[auth]
+session_lifetime = "24h"           # optional: removed members lose access within a day, not 30
+
+[auth.entra]
+tenant = "00000000-0000-0000-0000-000000000000"   # Directory (tenant) ID, a GUID
+client_id = "replace"                             # Application (client) ID
+client_secret = "replace"
+# label = "Contoso"                               # the button text, default Microsoft
+```
+
+**Other OpenID Connect providers.** Any provider with an OpenID Connect discovery document works. Add one `[auth.oidc.<name>]` table for each provider, up to 8. The name uses lowercase letters, digits and hyphens.
+
+- Register LibrePaper as a client, with the callback URL `https://paper.example/auth/callback/oidc-<name>`.
+- The provider must send `email_verified` and mark addresses as verified. AD FS does not, so it is not supported.
+
+Here are examples for Keycloak and GitLab:
+
+```toml
+[auth.oidc.keycloak]
+issuer = "https://sso.example.org/realms/staff"   # the realm's issuer, no trailing path
+client_id = "librepaper"
+client_secret = "replace"
+label = "Example SSO"                             # the button text
+
+[auth.oidc.gitlab]
+issuer = "https://gitlab.com"                     # or your own GitLab
+client_id = "replace"
+client_secret = "replace"
+label = "GitLab"
+# scopes = "openid email profile"                 # the default
+```
+
+**Known limits.**
+
+- One person who signs in through two providers has two accounts. Each account has its own projects.
+- A session outlives a disablement at the provider. It lasts until `session_lifetime` runs out.
 
 ## Deploy
 

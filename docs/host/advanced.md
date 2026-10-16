@@ -24,8 +24,15 @@ At least one sign-in provider is needed.
 |---|---|
 | GitHub | `https://paper.example/auth/callback` |
 | Google | `https://paper.example/auth/callback/google` |
+| Microsoft Entra ID | `https://paper.example/auth/callback/entra` |
+| Other OpenID Connect | `https://paper.example/auth/callback/oidc-<name>` |
 
-Google uses an `[auth.google]` table with `client_id` and `client_secret`, like `[auth.github]`.
+Each provider has its own table in `librepaper.toml`. The keys are:
+
+- `[auth.github]` and `[auth.google]` take `client_id` and `client_secret`.
+- `[auth.entra]` takes `tenant`, `client_id`, `client_secret` and `label`. The tenant is the Directory (tenant) ID, a GUID. The label is the button text and defaults to `Microsoft`.
+- `[auth.oidc.<name>]` takes `issuer`, `client_id`, `client_secret`, `label` and `scopes`. The label is required. The scopes default to `openid email profile`. You can add up to 8 tables.
+- `[auth]` takes `session_lifetime`, from `1h` to `30d`. It is optional. Absent, a browser session lasts 30 days. Set, it bounds sessions to that. Sessions do not renew on use, and a CLI token never lasts longer than the browser session that approved it.
 
 `[access]` says who may publish and comment:
 
@@ -39,9 +46,37 @@ Each value is a list of:
 
 - `"any"` means any signed-in account.
 - A GitHub login.
-- A verified Google address.
+- An email address a configured provider has verified (Google, Entra, or a custom OpenID Connect provider).
 - `"@example.org"` means a whole domain.
 - `"anyone"` means anonymous comments with no sign-in. It is valid for commenters only.
+
+### Identity providers
+
+The server records each provider id and its issuer in the `sign_in_issuers` table on first start. If the configured issuer changes later, the server refuses to start. Its message begins with `auth provider <id> was bound to issuer <old> and is now configured with <new>.`
+
+To rebind an id on purpose, delete its row and restart the app.
+
+```sh
+# Only when the new issuer is the same identity provider at a new address, so
+# every subject stays the same (Keycloak dropped its /auth prefix in version 17,
+# or the hostname moved). A different provider under the same id would hand old
+# accounts to strangers: give it a new name instead.
+docker compose exec postgres psql -U librepaper -d librepaper -c "DELETE FROM sign_in_issuers WHERE provider = 'oidc-keycloak'"
+docker compose restart librepaper   # binds the new issuer on start
+```
+
+**Private certificate authority.** A provider behind a private CA needs that CA in the container. Put the CA certificate in `ca.pem` next to `compose.yaml`. Then add this to `compose.override.yaml`, because `compose.yaml` is replaced on every upgrade:
+
+```yaml
+services:
+  librepaper:
+    volumes:
+      - ./ca.pem:/etc/ssl/private-ca.pem:ro
+    environment:
+      - SSL_CERT_FILE=/etc/ssl/private-ca.pem
+```
+
+Run `docker compose up -d` to apply it.
 
 ## Backups
 
@@ -183,7 +218,7 @@ gh api users/<login> --jq .id            # your numeric GitHub ID
 - You sign in with GitHub, so your GitHub two-factor authentication protects the console. A session lasts 12 hours.
 - Only the listed GitHub IDs get in. Remove an ID and restart the server to lock that person out at once.
 - Moderation records your GitHub login as the person who acted.
-- The console needs GitHub sign-in. A deployment with only Google sign-in has no console.
+- The console needs GitHub sign-in. A deployment with only Google, Entra or custom OpenID Connect sign-in has no console.
 - A blocked account is signed out at once. Its block follows the account, so changing the name does not lift it.
 - A refused name covers only that name. Someone who renames their GitHub account before signing in is not caught.
 - Zoom by dragging on any graph. Double-click to return to the chosen range.

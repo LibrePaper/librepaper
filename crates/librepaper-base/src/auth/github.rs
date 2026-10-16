@@ -10,8 +10,8 @@ use base64::Engine;
 use moka::Expiry;
 use serde::Deserialize;
 
-use crate::auth::Identity;
-use crate::http::{client, USER_AGENT};
+use crate::auth::{Identity, PROVIDER_HTTP_TIMEOUT};
+use crate::http::{provider_client, read_capped, USER_AGENT};
 
 pub const GITHUB_AUTHORIZE: &str = "https://github.com/login/oauth/authorize";
 pub const GITHUB_TOKEN: &str = "https://github.com/login/oauth/access_token";
@@ -19,7 +19,6 @@ pub const GITHUB_USER: &str = "https://api.github.com/user";
 const GITHUB_USERS: &str = "https://api.github.com/users";
 pub const GITHUB_CHECK: &str = "https://api.github.com/applications/{id}/token";
 
-const PROVIDER_HTTP_TIMEOUT: Duration = Duration::from_secs(15);
 const GITHUB_ACCOUNT_CACHE_CAP: usize = 256;
 const GITHUB_ACCOUNT_POSITIVE_TTL: Duration = Duration::from_secs(60);
 const GITHUB_ACCOUNT_NEGATIVE_TTL: Duration = Duration::from_secs(15);
@@ -30,7 +29,7 @@ pub struct GithubApp {
     pub client_id: String,
     pub client_secret: String,
     /// Where check-token is asked, `{id}` standing for the client id. A field
-    /// rather than a constant for the same reason GoogleApp's endpoints are:
+    /// rather than a constant for the same reason the other endpoints are:
     /// a test has no network and stands in for GitHub here.
     pub check_url: String,
     /// The base URL for public account lookups. It is configurable so tests
@@ -84,7 +83,7 @@ impl GithubApp {
     /// Where a browser is sent to sign in. No scopes are asked for: the default
     /// gives the account's public profile, which is the login name, and
     /// nothing else. The PKCE challenge binds the code exchange to this
-    /// redirect, as it does for Google.
+    /// redirect, as it does for the OpenID Connect providers.
     pub fn authorize_url(&self, redirect: &str, state: &str, verifier: &str) -> String {
         let mut target = url::Url::parse(GITHUB_AUTHORIZE).expect("a constant URL");
         target
@@ -114,7 +113,7 @@ impl GithubApp {
             #[serde(default)]
             error_description: String,
         }
-        let response = client()
+        let response = provider_client()
             .post(&self.token_url)
             .timeout(PROVIDER_HTTP_TIMEOUT)
             .header("user-agent", USER_AGENT)
@@ -126,11 +125,11 @@ impl GithubApp {
             .send()
             .await
             .map_err(|err| err.to_string())?;
-        let status = response.status().as_u16();
-        let reply: Reply = response
-            .json()
+        let (status, body) = read_capped(response)
             .await
-            .map_err(|_| format!("github returned {status}"))?;
+            .map_err(|err| format!("github: {err}"))?;
+        let reply: Reply =
+            serde_json::from_slice(&body).map_err(|_| format!("github returned {status}"))?;
         if reply.access_token.is_empty() {
             if reply.error_description.is_empty() {
                 return Err(format!("github returned {status}"));
@@ -160,7 +159,7 @@ impl GithubApp {
         }
         let basic = base64::engine::general_purpose::STANDARD
             .encode(format!("{}:{}", self.client_id, self.client_secret));
-        let response = client()
+        let response = provider_client()
             .post(self.check_url.replace("{id}", &self.client_id))
             .timeout(PROVIDER_HTTP_TIMEOUT)
             .header("user-agent", USER_AGENT)
@@ -202,9 +201,10 @@ impl GithubApp {
         if status != 200 {
             return Err(ProviderError::Upstream { status });
         }
-        let reply: Reply = response
-            .json()
+        let (_, body) = read_capped(response)
             .await
+            .map_err(|_| ProviderError::MalformedResponse { status })?;
+        let reply: Reply = serde_json::from_slice(&body)
             .map_err(|_| ProviderError::MalformedResponse { status })?;
         if reply.user.login.is_empty() {
             return Err(ProviderError::MalformedResponse { status });
@@ -251,7 +251,7 @@ impl GithubApp {
     pub async fn login(&self, token: &str) -> Result<Identity, String> {
         let _permit = crate::auth::try_provider_request()
             .ok_or_else(|| "authentication service is busy; retry shortly".to_string())?;
-        let response = client()
+        let response = provider_client()
             .get(&self.user_url)
             .timeout(PROVIDER_HTTP_TIMEOUT)
             .header("user-agent", USER_AGENT)
@@ -264,10 +264,11 @@ impl GithubApp {
         if status != 200 {
             return Err(format!("github returned {status}"));
         }
-        let user: GithubUser = response
-            .json()
+        let (_, body) = read_capped(response)
             .await
             .map_err(|_| "github returned no login".to_string())?;
+        let user: GithubUser =
+            serde_json::from_slice(&body).map_err(|_| "github returned no login".to_string())?;
         if user.login.is_empty() {
             return Err("github returned no login".to_string());
         }
@@ -375,7 +376,7 @@ impl Accounts for GithubAccounts {
         let _permit = self.lookup_slots.try_acquire().ok()?;
         let _provider_permit = crate::auth::try_provider_request()?;
         let target = format!("{}/{}", self.users_url.trim_end_matches('/'), login);
-        let mut request = client()
+        let mut request = provider_client()
             .get(target)
             .timeout(PROVIDER_HTTP_TIMEOUT)
             .header("user-agent", USER_AGENT)
@@ -392,7 +393,8 @@ impl Accounts for GithubAccounts {
         if status != 200 {
             return None;
         }
-        let user: GithubUser = response.json().await.ok()?;
+        let (_, body) = read_capped(response).await.ok()?;
+        let user: GithubUser = serde_json::from_slice(&body).ok()?;
         if user.login.is_empty() {
             return None;
         }

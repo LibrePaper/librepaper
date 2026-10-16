@@ -79,7 +79,9 @@ export const config = () => get("/api/config");
 /// answer carries `provider`, `handle` and `name`: the handle is what the
 /// deployment's switches match and is your own to see, the name is what other
 /// readers see, and for a Google account those are deliberately not the same
-/// string. `providers` is empty on a deployment with no sign-in at all.
+/// string. `providers` lists the sign-in choices as `{id, kind, label}`
+/// objects, in sign-in page order. It is empty on a deployment with no
+/// sign-in at all.
 export const me = () => get("/api/me").catch(() => ({}));
 
 /// Signs out and leaves. `site` is what `/api/me` answered with: the

@@ -25,7 +25,7 @@ try {
     const signedIn = new URLSearchParams(location.search).has("in");
     globalThis.fetch = async (url) => {
       const path = String(url);
-      if (path === '/api/me') return Response.json(signedIn ? { name: 'Tester', can_publish: true, providers: ['github'] } : { providers: ['github'] });
+      if (path === '/api/me') return Response.json(signedIn ? { name: 'Tester', can_publish: true, providers: [{ id: 'github', kind: 'github', label: 'GitHub' }] } : { providers: [{ id: 'github', kind: 'github', label: 'GitHub' }] });
       if (path.startsWith('/api/list')) return Response.json({ documents: [] });
       return Response.json({});
     };
