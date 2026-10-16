@@ -86,7 +86,7 @@
   }
 
   .signin-card {
-    width: min(100%, 30rem);
+    width: min(100%, 40rem);
     padding: 2.75rem;
     border: 1px solid var(--color-divider);
     border-radius: 12px;
@@ -100,6 +100,7 @@
     font-size: 2rem;
     font-weight: 650;
     line-height: 1.2;
+    text-wrap: balance;
   }
 
   .signin-description {
