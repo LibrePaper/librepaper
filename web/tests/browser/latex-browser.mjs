@@ -390,7 +390,10 @@ async function main(browserName) {
       const tree = {
         main: "main.tex",
         texts: {
-          "main.tex": "\\documentclass{article}\\begin{document}Hello \\input{sections/part.tex}\\end{document}\n",
+          // T1 fonts, as the tutorial uses: the default OpenType Latin Modern
+          // does not load in the browser XeTeX yet (kata q625), and this
+          // case is about the subfolder, not the fonts.
+          "main.tex": "\\documentclass{article}\\usepackage[T1]{fontenc}\\begin{document}Hello \\input{sections/part.tex}\\end{document}\n",
           "sections/part.tex": "from a subfolder.\n",
         },
         assets: {},
@@ -409,8 +412,11 @@ async function main(browserName) {
 
     // --- a second tex of the same tree fetches zero new bytes -------------
     {
-      await fetch(`${BASE}/__reset`);
+      // The XeLaTeX cases above retired pdfTeX (a stage keeps only the engines
+      // it needs), so compile once to bring it back before counting bytes.
       const tree = treeOf("article", "main.tex");
+      await runJob(driver, `__librepaperCompile(${JSON.stringify("pdflatex")}, ${JSON.stringify(tree)})`);
+      await fetch(`${BASE}/__reset`);
       const edited = { ...tree, texts: { ...tree.texts, "main.tex": tree.texts["main.tex"].replace("Nothing is concluded.", "Nothing at all is concluded.") } };
       await runJob(driver, `__librepaperCompile(${JSON.stringify("pdflatex")}, ${JSON.stringify(edited)})`);
       const tally = await (await fetch(`${BASE}/__bytes`)).json();
