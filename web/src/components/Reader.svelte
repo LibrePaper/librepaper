@@ -3787,16 +3787,6 @@
             <img src={figureUrl} alt={shownFigure.path} />
           {/if}
         </div>
-      {:else if session && persistence.joined && !sourceBound}
-        <div class="notyet">
-          <p class="lp-text-secondary text-sm">{projectEmpty ? "This project has no files." : "This project has no text files."}</p>
-          {#if mayEdit}
-            <div class="notyet-actions">
-              <button class="btn btn-sm lp-control-brand" onclick={() => void chooseFileCommand("new-file")}>New file</button>
-              <button class="btn btn-sm lp-control-tonal-brand" onclick={() => void chooseFileCommand("upload")}>Upload</button>
-            </div>
-          {/if}
-        </div>
       {:else if Editor && sourceBound}
         {#key sourceEpoch}
           <Editor bind:this={editor} {session} format={editorFormat} file={openFile} {keys} {rules} {tracking} me={trackingMe} {selectedChange} editable={mayEdit}
