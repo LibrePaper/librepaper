@@ -900,7 +900,7 @@ console.log("reader-races: continuous preview, render coalescing and navigation 
   ctx.persistence.pending = 2;
   vm.runInContext("reportPersistence()", ctx);
   assert.match(said[2], /in this browser only/, "work the server has not seen is not called saved");
-  assert.doesNotMatch(said[3] + said[4], /saved/i, "the word is the server's");
+  assert.doesNotMatch(said[1] + said[2], /saved/i, "the word is the server's");
   // A local write that failed says so through its own failure, not here.
   ctx.persistence = { pending: 0, local: true, localError: "quota exceeded" };
   vm.runInContext("reportPersistence()", ctx);
