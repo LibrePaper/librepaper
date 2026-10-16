@@ -208,9 +208,15 @@ try {
   await ev("window.show({ changes: window.rowsData.map((row) => ({ ...row, run: '' })) })");
   assert.deepEqual(await ev("window.filterItems()"), ["Anyone", "Ada", "Grace (you)", "Every file", "paper.md", "notes.md"],
     "no run, no run filter");
-  // A run handed in by the reader opens the panel already narrowed to it.
-  await ev("window.show({ run: 'run-aaaa1111' })");
-  await waitFor("opened on a run", "window.rows().length === 2");
+  // The ids handed in by the reader open the panel narrowed to exactly those
+  // rows, even when they belong to different runs, and Show all clears it.
+  await ev("window.show({ ids: ['c2', 'c3'] })");
+  await waitFor("opened on ids", "window.rows().length === 2");
+  assert.deepEqual((await ev("window.rows()")).map((row) => row.id).sort(), ["c2", "c3"], "an ids filter shows exactly those rows");
+  assert.match(await ev("document.querySelector('.ids-bar')?.textContent || ''"), /From this task/);
+  await ev("document.querySelector('.show-all').click()");
+  await waitFor("ids cleared", "window.rows().length === 3");
+  assert.equal(await ev("!!document.querySelector('.ids-bar')"), false, "Show all removes the ids filter");
   await ev("window.show()");
 
   // Answering a change calls back with the row, and the queue moves on to the

@@ -10,9 +10,10 @@
   let {
     changes = [], files = [], tracking = false, canTrack = true, canReview = true,
     selected = null,
-    // The run to show first, when the reader sent the reviewer here from an
-    // agent pass.
-    run = "",
+    // The ids to show first, when the reader sent the reviewer here from an
+    // agent task. A task can make changes under several runs, so the whole
+    // set of ids is the filter, not one run.
+    ids = [],
     ontracking, onaccept, onreject, onreveal,
     identity = "",
   } = $props();
@@ -23,7 +24,9 @@
   let authorFilter = $state("");
   let fileFilter = $state("");
   let runFilter = $state("");
-  $effect(() => { runFilter = run; });
+  let idsFilter = $state([]);
+  $effect(() => { idsFilter = ids; });
+  const idSet = $derived(new Set(idsFilter));
   let feedback = $state("");
   // Ticking changes is a mode you enter, not the state the queue sits in. A
   // review is one change at a time; answering several at once is the rarer
@@ -51,7 +54,7 @@
   const orderOf = (item) => fileOrder.get(String(item.file_id || pathOf(item))) ?? Number.MAX_SAFE_INTEGER;
   const orderedRows = $derived([...changes].sort((a, b) => orderOf(a) - orderOf(b) || pathOf(a).localeCompare(pathOf(b)) || positionOf(a) - positionOf(b) || (a.at || 0) - (b.at || 0) || a.id.localeCompare(b.id)));
   const filteredRows = $derived(orderedRows.filter((item) =>
-    (!authorFilter || authorOf(item) === authorFilter) && (!fileFilter || pathOf(item) === fileFilter) && (!runFilter || item.run === runFilter)));
+    (!authorFilter || authorOf(item) === authorFilter) && (!fileFilter || pathOf(item) === fileFilter) && (!runFilter || item.run === runFilter) && (!idsFilter.length || idSet.has(item.id))));
   const selectedRows = $derived(filteredRows.filter((item) => checked.has(item.id)));
   const active = $derived(filteredRows.some((item) => item.id === expanded) ? expanded : filteredRows.some((item) => item.id === selected) ? selected : filteredRows[0]?.id || "");
   const derivedAuthors = $derived([...new Set(changes.map(authorOf))]);
@@ -74,6 +77,7 @@
     authorFilter ? authorLabel({ author: authorFilter }) : "",
     fileFilter,
     runFilter ? runLabel(runFilter) : "",
+    idsFilter.length ? "From this task" : "",
   ].filter(Boolean).join(" · "));
   /// The ••• appears only when it holds something: an empty menu is a button
   /// that opens nothing.
@@ -156,6 +160,7 @@
   function chooseFilter(value) {
     const [key, ...rest] = String(value).split(":");
     const answer = rest.join(":");
+    idsFilter = [];
     if (key === "author") authorFilter = answer;
     else if (key === "file") fileFilter = answer;
     else if (key === "run") runFilter = answer;
@@ -216,6 +221,10 @@
     </div>
     <div class="changes-meta" aria-live="polite">{changes.length} pending{filteredRows.length !== changes.length ? ` · ${filteredRows.length} shown` : ""}</div>
   </header>
+  {#if idsFilter.length}<div class="filter-bar ids-bar">
+    <span class="filter-label">From this task</span>
+    <button type="button" class="bar-action show-all" onclick={() => idsFilter = []}>Show all</button>
+  </div>{/if}
   <!-- One control, only visible when there are several authors or files, or any run, to filter by. -->
   {#if showExtraFilters}<div class="filter-bar">
     <Menu onSelect={(chosen) => chooseFilter(chosen.value)}>
@@ -265,7 +274,7 @@
   </div>{/if}
   {#if feedback}<p class="panel-status" role="status" aria-live="polite">{feedback}</p>{/if}
   {#if !filteredRows.length}<div class="changes-empty" role="status">
-    <p class="panel-muted">{authorFilter || fileFilter || runFilter ? "No changes match these filters." : "No pending changes."}</p>
+    <p class="panel-muted">{authorFilter || fileFilter || runFilter || idsFilter.length ? "No changes match these filters." : "No pending changes."}</p>
   </div>{/if}
   <div class="changes-list" role="list" aria-label="Revision queue">
     {#each filteredRows as item (item.id)}

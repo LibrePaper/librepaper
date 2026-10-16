@@ -163,7 +163,7 @@
   import { bibliographyCache, bibliographyCacheKey, bibliographyCompletion, bibliographyNeedsAnalysis, citationContext, planZoteroImport } from "../lib/bibliography.js";
   import { desktop, searchZotero, zoteroItem } from "../lib/desktop/client.js";
   import { changeMarks, setChangeMarks } from "../lib/change-marks.js";
-  import { CHANGES, recordEdits, resolveChanges, trackedSplice, prune } from "../lib/track-changes.js";
+  import { CHANGES, planEdits, writePlanned, resolveChanges, trackedSplice, prune } from "../lib/track-changes.js";
   import { DIRECTORY_ORIGIN } from "../lib/project-session.js";
   import { projectDirectory } from "../lib/projection.js";
   import { attachEditorZoom } from "../lib/editor-zoom.js";
@@ -232,17 +232,47 @@
         update(update) {
           if (!update.docChanged) return;
           let local = false;
+          // The sync plugin has written every transaction of this update to
+          // the LoroText already. Each one is planned against the text it
+          // started from, chained, and the result is written once so that no
+          // cursor is made at an intermediate offset.
+          let live = resolved.map(({ state, ...change }) => change);
+          const created = new Set();
+          const written = new Set();
+          const removed = new Set();
+          const now = Date.now();
           for (const transaction of update.transactions) {
             if (!transaction.docChanged || transaction.annotation(loroSyncAnnotation) !== undefined) continue;
             local = true;
-            if (tracked) {
-              const edits = [];
-              transaction.changes.iterChanges((fromA, toA, fromB, toB, insert) => {
-                edits.push({ from: fromA, to: toA, insert: insert.sliceString(0, insert.length, "\n") });
-              });
-              recordEdits(doc, fileId, transaction.startState.doc.toString(), resolved, edits, me);
-              refresh();
+            if (!tracked) continue;
+            const edits = [];
+            transaction.changes.iterChanges((fromA, toA, fromB, toB, insert) => {
+              edits.push({ from: fromA, to: toA, insert: insert.sliceString(0, insert.length, "\n") });
+            });
+            const known = new Set(live.map((change) => change.id));
+            const plan = planEdits(transaction.startState.doc.toString(), live, edits, me, {
+              run: null,
+              now,
+              mintId: () => crypto.randomUUID(),
+            });
+            for (const change of plan) {
+              if (change.state === "removed") {
+                if (created.has(change.id)) written.delete(change.id);
+                else removed.add(change.id);
+              } else {
+                if (!known.has(change.id)) created.add(change.id);
+                if (change.state === "set") written.add(change.id);
+              }
             }
+            live = plan.filter((change) => change.state !== "removed").map(({ state, ...change }) => change);
+          }
+          if (tracked && (written.size || removed.size)) {
+            const planned = [
+              ...live.filter((change) => written.has(change.id)).map((change) => ({ ...change, state: "set" })),
+              ...[...removed].map((id) => ({ id, state: "removed" })),
+            ];
+            writePlanned(doc, fileId, planned);
+            refresh();
           }
           if (local && doc.getMap(CHANGES).size) {
             prune(doc);
