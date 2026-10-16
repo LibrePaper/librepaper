@@ -1,5 +1,6 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+mod notice;
 mod servers;
 mod service;
 mod shell_log;
@@ -38,6 +39,12 @@ enum Target {
 static NEXT: AtomicUsize = AtomicUsize::new(2);
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
+    // A panic in a windowed app has nowhere to print, so it goes to desktop.log too.
+    let default_hook = std::panic::take_hook();
+    std::panic::set_hook(Box::new(move |info| {
+        shell_log::write(&format!("panic: {info}"));
+        default_hook(info);
+    }));
     let builder = tauri::Builder::default()
         // Registered first, so a second launch is forwarded before anything else runs.
         .plugin(tauri_plugin_single_instance::init(|app, argv, _cwd| {
@@ -50,6 +57,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         }))
         .plugin(tauri_plugin_deep_link::init())
         .plugin(tauri_plugin_dialog::init())
+        .plugin(tauri_plugin_window_state::Builder::default().build())
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_clipboard_manager::init());
     #[cfg(any(target_os = "macos", windows))]
@@ -86,6 +94,10 @@ fn setup(app: &mut App) -> Result<(), Box<dyn std::error::Error>> {
     let warm = app.handle().clone();
     tauri::async_runtime::spawn(async move {
         warm.state::<Service>().warm().await;
+    });
+    let watcher = app.handle().clone();
+    tauri::async_runtime::spawn(async move {
+        watcher.state::<Service>().watch(watcher.clone()).await;
     });
 
     open_window(app.handle(), first)?;
