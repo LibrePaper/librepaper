@@ -783,7 +783,7 @@ impl Server {
             source = html;
             source_format = "html".to_string();
         }
-        if empty && source.is_empty() && html.trim().is_empty() {
+        if empty {
             source_format = "markdown".to_string();
         }
         if !self.config.storable_source(&source_format) {
