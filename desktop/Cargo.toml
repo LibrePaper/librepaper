@@ -24,6 +24,10 @@ reqwest = { version = "0.12", default-features = false, features = ["rustls-tls"
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "process", "sync"] }
 url = "2"
 
+# Package managers update the app on Linux, so only macOS and Windows self-update.
+[target.'cfg(any(target_os = "macos", windows))'.dependencies]
+tauri-plugin-updater = "2"
+
 [build-dependencies]
 tauri-build = { version = "2", features = [] }
 

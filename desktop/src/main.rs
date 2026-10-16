@@ -2,6 +2,8 @@
 
 mod servers;
 mod service;
+#[cfg(any(target_os = "macos", windows))]
+mod updater;
 
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Mutex;
@@ -34,7 +36,7 @@ enum Target {
 static NEXT: AtomicUsize = AtomicUsize::new(2);
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let app = tauri::Builder::default()
+    let builder = tauri::Builder::default()
         // Registered first, so a second launch is forwarded before anything else runs.
         .plugin(tauri_plugin_single_instance::init(|app, argv, _cwd| {
             if !has_action(&argv) {
@@ -46,7 +48,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         }))
         .plugin(tauri_plugin_deep_link::init())
         .plugin(tauri_plugin_dialog::init())
-        .plugin(tauri_plugin_opener::init())
+        .plugin(tauri_plugin_opener::init());
+    #[cfg(any(target_os = "macos", windows))]
+    let builder = builder.plugin(tauri_plugin_updater::Builder::new().build());
+    let app = builder
         .register_asynchronous_uri_scheme_protocol("lp-local", |ctx, request, responder| {
             let label = ctx.webview_label().to_string();
             serve(ctx.app_handle(), label, request, responder)
@@ -98,6 +103,8 @@ fn setup(app: &mut App) -> Result<(), Box<dyn std::error::Error>> {
 
     let args: Vec<String> = std::env::args().collect();
     handle_args(app.handle(), Target::Current, &args);
+    #[cfg(any(target_os = "macos", windows))]
+    updater::spawn(app.handle().clone());
     Ok(())
 }
 
