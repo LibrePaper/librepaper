@@ -28,12 +28,13 @@ try {
     source: "# Bridge\n\nThe first paragraph.\n",
     source_format: "markdown",
   });
+  // Tracked changes edit the document, so the agent needs an editor link.
   const sharing = await fetch(`${deployment.base}/api/documents/${slug}/share`, {
     method: "POST",
     headers: { "content-type": "application/json", "x-librepaper-client": "1", cookie: deployment.cookie },
-    body: JSON.stringify({ link: { role: "commenter", until: "1d", label: "Agent" } }),
+    body: JSON.stringify({ link: { role: "editor", until: "1d", label: "Agent" } }),
   }).then((response) => response.json());
-  const link = new URL(sharing.links.commenter.url, deployment.base).href;
+  const link = new URL(sharing.links.editor.url, deployment.base).href;
 
   // The record the desktop app writes before it starts a runner, under the
   // name the runner derives (`runner_connection_name`).
