@@ -54,7 +54,7 @@ debug = "line-tables-only"
 debug = "line-tables-only"
 
 [workspace.package]
-version = "0.0.43-rc.4"
+version = "0.0.43-rc.5"
 edition = "2021"
 license = "MIT"
 repository = "https://github.com/LibrePaper/librepaper"
