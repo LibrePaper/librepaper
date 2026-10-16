@@ -268,5 +268,15 @@ Caddy obtains a certificate the first time a name is visited, so the first reque
 - It checks your configuration with the new release before switching. If a check fails, nothing switches.
 - It keeps your `.toml` files and `caddy/local.d/`.
 - It refuses to move to an older release.
+- It leaves the previous release's images on disk, about 250 MB per upgrade. `docker image prune` keeps them, because they still carry their version tags.
 
 The server migrates the schema at startup. `compose.yaml` is replaced on every upgrade. Put your own changes in `compose.override.yaml`.
+
+To free the space old releases take, remove every LibrePaper image except the running one:
+
+```sh
+v=$(./manage version)
+docker images --format '{{.Repository}}:{{.Tag}}' | grep '^ghcr.io/librepaper/' | grep -v -e ":$v\$" -e ':<none>$' | xargs -r docker rmi
+```
+
+`docker rmi` refuses an image that a container still uses, so this never removes the running release. Older releases are not needed afterwards, because `./manage upgrade` refuses to move back to one.
