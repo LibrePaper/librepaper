@@ -426,9 +426,7 @@ async fn chat_root(
     Path(slug): Path<String>,
     request: Request<Body>,
 ) -> Reply {
-    server
-        .handle_chat(request, &ctx.arrival, &slug, &[])
-        .await
+    server.handle_chat(request, &ctx.arrival, &slug, &[]).await
 }
 
 async fn suggestions(

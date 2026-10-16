@@ -316,7 +316,10 @@ mod tests {
         for id in 0..32 {
             guards.push(
                 budget
-                    .admit(id, identity(&format!("editor{id}"), "d", Some(SocketRole::Editor)))
+                    .admit(
+                        id,
+                        identity(&format!("editor{id}"), "d", Some(SocketRole::Editor)),
+                    )
                     .unwrap(),
             );
         }

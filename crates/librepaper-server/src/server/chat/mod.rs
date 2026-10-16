@@ -236,9 +236,7 @@ impl Server {
         tail: &[&str],
     ) -> Reply {
         if let [id, "socket"] = tail {
-            return self
-                .handle_chat_socket(request, arrival, slug, id)
-                .await;
+            return self.handle_chat_socket(request, arrival, slug, id).await;
         }
         if !self.valid_slug(slug) {
             return write_json(400, &json!({"error":"bad slug"}));
