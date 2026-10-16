@@ -380,8 +380,9 @@ fn serve(app: &AppHandle, label: String, request: Request<Vec<u8>>, responder: U
             let copied: Result<(), String> = match service::diagnostics(&[]).await {
                 Ok(report) => {
                     let text = format!(
-                        "LibrePaper desktop app {}\n\n{report}\nDesktop log, last 100 lines:\n{}\n",
+                        "LibrePaper desktop app {}\n\n{report}\nDesktop log ({}), last 100 lines:\n{}\n",
                         env!("CARGO_PKG_VERSION"),
+                        shell_log::location(),
                         shell_log::tail(100)
                     );
                     app.clipboard()

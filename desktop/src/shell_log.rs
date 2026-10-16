@@ -18,7 +18,15 @@ pub fn init(dir: PathBuf) {
     if std::fs::metadata(&path).is_ok_and(|meta| meta.len() > 1024 * 1024) {
         let _ = std::fs::rename(&path, dir.join("desktop.previous.log"));
     }
+    // Created now, so the folder shows where the shell logs before anything goes wrong.
+    let _ = OpenOptions::new().create(true).append(true).open(&path);
     let _ = FILE.set(path);
+}
+
+/// Where desktop.log is, for the diagnostics report.
+pub fn location() -> String {
+    FILE.get()
+        .map_or_else(|| "(none)".into(), |path| path.display().to_string())
 }
 
 pub fn write(line: &str) {
