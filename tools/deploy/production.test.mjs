@@ -358,7 +358,7 @@ test('a control character in a key stops the deploy before any remote call, nami
   }
 });
 
-test('deploy writes compose.override.yaml with only the site mount', () => {
+test('deploy writes compose.override.yaml with the site mount and journald logs', () => {
   const f = fixture();
   try {
     const result = run(f, 'deploy', 'v0.0.24');
@@ -368,6 +368,16 @@ test('deploy writes compose.override.yaml with only the site mount', () => {
       '  caddy:',
       '    volumes:',
       '      - ./site:/srv/site:ro',
+      '  librepaper:',
+      '    logging:',
+      '      driver: journald',
+      '      options:',
+      '        tag: "{{.Name}}"',
+      '  backup:',
+      '    logging:',
+      '      driver: journald',
+      '      options:',
+      '        tag: "{{.Name}}"',
       '',
     ].join('\n'));
     assert.equal(statSync(path.join(f.remote, 'compose.override.yaml')).mode & 0o777, 0o644, 'compose.override.yaml');

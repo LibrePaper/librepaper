@@ -54,11 +54,27 @@ validate_release_version() {
 write_compose_files() {
 	# Compose appends the volumes of an override to those of compose.yaml, so
 	# only the mounts that are specific to this host belong here.
+	#
+	# The app and backup containers log to the host's journal. Every deploy
+	# recreates both, and Docker deletes a container's own logs with it. The
+	# journal keeps them. A changed driver replaces the options in compose.yaml
+	# instead of merging with them, so max-size never reaches journald. Read
+	# them with: sudo journalctl -t librepaper-librepaper-1 --since "1 hour ago"
 	ssh "$HOST" 'umask 022; cat > librepaper/compose.override.yaml.tmp && chmod 644 librepaper/compose.override.yaml.tmp && mv -f librepaper/compose.override.yaml.tmp librepaper/compose.override.yaml' <<'OVERRIDE'
 services:
   caddy:
     volumes:
       - ./site:/srv/site:ro
+  librepaper:
+    logging:
+      driver: journald
+      options:
+        tag: "{{.Name}}"
+  backup:
+    logging:
+      driver: journald
+      options:
+        tag: "{{.Name}}"
 OVERRIDE
 }
 
