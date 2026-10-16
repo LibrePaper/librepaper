@@ -51,10 +51,12 @@ help:  ## Display this help screen
 
 build: $(BIN)  ## Build dist/librepaper, with the shell embedded
 
-install: $(BIN)  ## Build and install to ~/.local/bin (override PREFIX= or BINDIR=)
+# The desktop app runs the librepaper binary that sits beside it.
+install: $(BIN) desktop  ## Build and install librepaper and librepaper-desktop to ~/.local/bin (override PREFIX= or BINDIR=)
 	@install -d "$(DESTDIR)$(BINDIR)"
 	@install -m 755 "$(BIN)" "$(DESTDIR)$(BINDIR)/librepaper"
-	@echo "Installed $(DESTDIR)$(BINDIR)/librepaper"
+	@install -m 755 desktop/target/release/librepaper-desktop "$(DESTDIR)$(BINDIR)/librepaper-desktop"
+	@echo "Installed $(DESTDIR)$(BINDIR)/librepaper and $(DESTDIR)$(BINDIR)/librepaper-desktop"
 
 # The desktop shell is its own Cargo workspace. NixOS keeps the WebKitGTK
 # libraries out of the default path, so the build runs inside a nix shell there.
