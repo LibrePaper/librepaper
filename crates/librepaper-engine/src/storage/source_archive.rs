@@ -199,7 +199,7 @@ pub fn encode(
             limits.source_bytes
         )));
     }
-    if !manifest_files.is_empty()
+    if !(manifest_files.is_empty() && archive.main_path.is_empty())
         && !manifest_files
             .iter()
             .any(|file| file.path() == archive.main_path)
@@ -373,7 +373,9 @@ pub fn decode(bytes: &[u8], limits: ArchiveLimits) -> Result<SourceArchive, Arch
     if inline_total > limits.source_bytes as u64 {
         return Err(ArchiveError::Invalid("inline source exceeds limit".into()));
     }
-    if !files.is_empty() && !files.iter().any(|file| file.path() == manifest.main_path) {
+    if !(files.is_empty() && manifest.main_path.is_empty())
+        && !files.iter().any(|file| file.path() == manifest.main_path)
+    {
         return Err(ArchiveError::Invalid(
             "main path is absent from source archive".into(),
         ));
