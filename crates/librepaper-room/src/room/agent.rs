@@ -673,13 +673,7 @@ impl AgentTrackedCommand {
             let text = super::comments::text_for_file_id(doc, &edit.file_id)
                 .ok_or_else(|| "file is absent".to_string())?;
             let needle = format!("{}{}{}", edit.prefix, edit.exact, edit.suffix);
-            let mut found = text.match_indices(&needle).map(|(at, _)| at);
-            let first = found
-                .next()
-                .ok_or_else(|| "the passage changed; read the document again".to_string())?;
-            if found.next().is_some() {
-                return Err("the passage is ambiguous; read the document again".into());
-            }
+            let first = locate_unique(&text, &needle)?;
             let start = first + edit.prefix.len();
             by_file
                 .entry(edit.file_id.as_str())
@@ -703,6 +697,22 @@ impl AgentTrackedCommand {
         }
         Ok(planned)
     }
+}
+
+/// The byte offset of the only occurrence of `needle` in `text`. Occurrences
+/// may overlap, so the search restarts one character after each match start.
+fn locate_unique(text: &str, needle: &str) -> Result<usize, &'static str> {
+    let mut found = None;
+    let mut from = 0;
+    while let Some(at) = text[from..].find(needle) {
+        let at = from + at;
+        if found.is_some() {
+            return Err("the passage is ambiguous; read the document again");
+        }
+        found = Some(at);
+        from = at + text[at..].chars().next().map_or(1, char::len_utf8);
+    }
+    found.ok_or("the passage changed; read the document again")
 }
 
 impl Command for AgentTrackedCommand {
@@ -937,6 +947,23 @@ impl Room {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn locate_unique_sees_overlapping_matches() {
+        let text = "a".repeat(130);
+        let needle = "a".repeat(129);
+        assert_eq!(
+            locate_unique(&text, &needle),
+            Err("the passage is ambiguous; read the document again")
+        );
+        assert_eq!(locate_unique(&text, &text), Ok(0));
+        assert_eq!(locate_unique("xay", "a"), Ok(1));
+        assert_eq!(
+            locate_unique("xy", "a"),
+            Err("the passage changed; read the document again")
+        );
+        assert_eq!(locate_unique("\u{e9}a", "a"), Ok(2));
+    }
 
     fn tree(text: &str) -> SourceTree<'_> {
         let files = [(
