@@ -51,6 +51,7 @@ export const DESKTOP_ONLY_MESSAGE = "This needs the LibrePaper desktop app.";
 export const desktop = () => window.__LIBREPAPER_DESKTOP__ ?? null;
 export function chooseFolderBinding() { return Promise.resolve({ id: "folder", entrypoint: "main.qmd" }); }
 export async function capabilities() { return {}; }
+export function forgetCapabilities() {}
 export async function shellAction() {}
 export async function manage(path) {
   if (path !== "/state") throw new Error("unexpected management call " + path);

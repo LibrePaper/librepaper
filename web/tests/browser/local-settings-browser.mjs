@@ -50,6 +50,7 @@ export async function manage(path, { method = "GET", body } = {}) {
   throw new Error("unexpected management call " + path);
 }
 export async function capabilities() { return { tools: {}, builders: [] }; }
+export function forgetCapabilities() {}
 export async function shellAction() {}
 export async function setIntegration(name, { path, args }) {
   window.integrationCalls = [...(window.integrationCalls || []), { name, path, args }];

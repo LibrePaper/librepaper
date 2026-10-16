@@ -54,6 +54,7 @@ try {
   await tab.navigate(`${origin}/`);
   await until("signed-out landing", () => tab.evaluate("Boolean(document.querySelector('a[href^=\"/auth/login\"]'))"));
   assert.equal(await at(), "/", "a browser stays on the landing page");
+  assert.equal(await tab.evaluate("Boolean(document.querySelector('.open-link'))"), false, "a browser has no link field");
 
   // The desktop app sends a stranger to sign-in, and back to the projects after.
   // The page replaces itself before it finishes loading, so no load event
@@ -66,6 +67,21 @@ try {
   await tab.navigate(`${origin}/desktop/?in`);
   await until("project browser", () => tab.evaluate("Boolean(document.querySelector('.projects'))"));
   assert.equal(await at(), "/desktop/?in", "a signed-in desktop user stays on the project browser");
+
+  // The desktop app opens a pasted link from its own server, keys and all, and
+  // refuses one from anywhere else.
+  const pasteLink = (value) => tab.evaluate(`(() => {
+    const input = document.querySelector('.open-link input');
+    Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set.call(input, ${JSON.stringify(value)});
+    input.dispatchEvent(new Event('input', { bubbles: true }));
+    document.querySelector('.open-link').requestSubmit();
+  })()`);
+  await until("open a link", () => tab.evaluate("Boolean(document.querySelector('.open-link input'))"));
+  await pasteLink("https://elsewhere.example/docs/x#k=secret");
+  await until("other server refused", () => tab.evaluate("document.querySelector('.open-link-error')?.textContent.includes('Paste a link from')"));
+  await pasteLink(`${origin}/desktop/?in&opened#k=abc`);
+  await until("pasted link opened", () => tab.evaluate("location.search === '?in&opened' && location.hash === '#k=abc'"));
+  await until("project browser again", () => tab.evaluate("typeof window.signOut === 'function' && Boolean(document.querySelector('.projects'))"));
 
   // Signing out in the desktop app stays on the server, not the marketing site.
   await tab.evaluate("window.signOut('https://example.invalid/')");
