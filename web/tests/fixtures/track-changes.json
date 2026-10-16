@@ -1,0 +1,253 @@
+[
+  {
+    "name": "typing into empty text",
+    "before": "",
+    "changes": [],
+    "me": { "who": "me", "author": "Me" },
+    "edits": [{ "from": 0, "to": 0, "insert": "a" }],
+    "after": "a",
+    "expect": [{ "id": "new-1", "who": "me", "from": 0, "to": 1, "deleted": "" }]
+  },
+  {
+    "name": "typing extends own insertion at its end",
+    "before": "abXYcd",
+    "changes": [{ "id": "a", "who": "me", "from": 2, "to": 4, "deleted": "" }],
+    "me": { "who": "me", "author": "Me" },
+    "edits": [{ "from": 4, "to": 4, "insert": "Z" }],
+    "after": "abXYZcd",
+    "expect": [{ "id": "a", "who": "me", "from": 2, "to": 5, "deleted": "" }]
+  },
+  {
+    "name": "typing extends own insertion at its start",
+    "before": "abXYcd",
+    "changes": [{ "id": "a", "who": "me", "from": 2, "to": 4, "deleted": "" }],
+    "me": { "who": "me", "author": "Me" },
+    "edits": [{ "from": 2, "to": 2, "insert": "Z" }],
+    "after": "abZXYcd",
+    "expect": [{ "id": "a", "who": "me", "from": 2, "to": 5, "deleted": "" }]
+  },
+  {
+    "name": "replacing a word is one change",
+    "before": "the quick fox",
+    "changes": [],
+    "me": { "who": "me", "author": "Me" },
+    "edits": [{ "from": 4, "to": 9, "insert": "slow" }],
+    "after": "the slow fox",
+    "expect": [{ "id": "new-1", "who": "me", "from": 4, "to": 8, "deleted": "quick" }]
+  },
+  {
+    "name": "backspace into original text before own insertion prepends deleted",
+    "before": "abcXYd",
+    "changes": [{ "id": "a", "who": "me", "from": 3, "to": 5, "deleted": "q" }],
+    "me": { "who": "me", "author": "Me" },
+    "edits": [{ "from": 2, "to": 3, "insert": "" }],
+    "after": "abXYd",
+    "expect": [{ "id": "a", "who": "me", "from": 2, "to": 4, "deleted": "cq" }]
+  },
+  {
+    "name": "forward delete after own insertion appends deleted",
+    "before": "abXYcd",
+    "changes": [{ "id": "a", "who": "me", "from": 2, "to": 4, "deleted": "q" }],
+    "me": { "who": "me", "author": "Me" },
+    "edits": [{ "from": 4, "to": 5, "insert": "" }],
+    "after": "abXYd",
+    "expect": [{ "id": "a", "who": "me", "from": 2, "to": 4, "deleted": "qc" }]
+  },
+  {
+    "name": "deleting across two own changes and the text between is one change",
+    "before": "aXbcdYe",
+    "changes": [
+      { "id": "a", "who": "me", "from": 1, "to": 2, "deleted": "w" },
+      { "id": "b", "who": "me", "from": 5, "to": 6, "deleted": "z" }
+    ],
+    "me": { "who": "me", "author": "Me" },
+    "edits": [{ "from": 1, "to": 6, "insert": "" }],
+    "after": "ae",
+    "expect": [{ "id": "a", "who": "me", "from": 1, "to": 1, "deleted": "wbcdz" }]
+  },
+  {
+    "name": "deleting all of own insertion removes the change",
+    "before": "abXYcd",
+    "changes": [{ "id": "a", "who": "me", "from": 2, "to": 4, "deleted": "" }],
+    "me": { "who": "me", "author": "Me" },
+    "edits": [{ "from": 2, "to": 4, "insert": "" }],
+    "after": "abcd",
+    "expect": []
+  },
+  {
+    "name": "deleting inside own insertion only shrinks it",
+    "before": "abXYZcd",
+    "changes": [{ "id": "a", "who": "me", "from": 2, "to": 5, "deleted": "" }],
+    "me": { "who": "me", "author": "Me" },
+    "edits": [{ "from": 3, "to": 4, "insert": "" }],
+    "after": "abXZcd",
+    "expect": [{ "id": "a", "who": "me", "from": 2, "to": 4, "deleted": "" }]
+  },
+  {
+    "name": "deleting inside another author's insertion shrinks theirs",
+    "before": "abWXYZcd",
+    "changes": [{ "id": "b", "who": "bob", "from": 2, "to": 6, "deleted": "" }],
+    "me": { "who": "me", "author": "Me" },
+    "edits": [{ "from": 3, "to": 5, "insert": "" }],
+    "after": "abWZcd",
+    "expect": [{ "id": "b", "who": "bob", "from": 2, "to": 4, "deleted": "" }]
+  },
+  {
+    "name": "inserting inside another author's insertion splits it",
+    "before": "abWXYZcd",
+    "changes": [{ "id": "b", "who": "bob", "from": 2, "to": 6, "deleted": "" }],
+    "me": { "who": "me", "author": "Me" },
+    "edits": [{ "from": 4, "to": 4, "insert": "Q" }],
+    "after": "abWXQYZcd",
+    "expect": [
+      { "id": "b", "who": "bob", "from": 2, "to": 4, "deleted": "" },
+      { "id": "new-1", "who": "me", "from": 4, "to": 5, "deleted": "" },
+      { "id": "new-2", "who": "bob", "from": 5, "to": 7, "deleted": "" }
+    ]
+  },
+  {
+    "name": "inserting at the end of another author's insertion is a separate change",
+    "before": "abWXYZcd",
+    "changes": [{ "id": "b", "who": "bob", "from": 2, "to": 6, "deleted": "" }],
+    "me": { "who": "me", "author": "Me" },
+    "edits": [{ "from": 6, "to": 6, "insert": "Q" }],
+    "after": "abWXYZQcd",
+    "expect": [
+      { "id": "b", "who": "bob", "from": 2, "to": 6, "deleted": "" },
+      { "id": "new-1", "who": "me", "from": 6, "to": 7, "deleted": "" }
+    ]
+  },
+  {
+    "name": "inserting at the start of another author's insertion is a separate change",
+    "before": "abWXYZcd",
+    "changes": [{ "id": "b", "who": "bob", "from": 2, "to": 6, "deleted": "" }],
+    "me": { "who": "me", "author": "Me" },
+    "edits": [{ "from": 2, "to": 2, "insert": "Q" }],
+    "after": "abQWXYZcd",
+    "expect": [
+      { "id": "new-1", "who": "me", "from": 2, "to": 3, "deleted": "" },
+      { "id": "b", "who": "bob", "from": 3, "to": 7, "deleted": "" }
+    ]
+  },
+  {
+    "name": "replacing text that runs out of another author's insertion",
+    "before": "abWXYZcd",
+    "changes": [{ "id": "b", "who": "bob", "from": 2, "to": 6, "deleted": "" }],
+    "me": { "who": "me", "author": "Me" },
+    "edits": [{ "from": 4, "to": 8, "insert": "Q" }],
+    "after": "abWXQ",
+    "expect": [
+      { "id": "b", "who": "bob", "from": 2, "to": 4, "deleted": "" },
+      { "id": "new-1", "who": "me", "from": 4, "to": 5, "deleted": "cd" }
+    ]
+  },
+  {
+    "name": "an edit far from other changes keeps and shifts them",
+    "before": "one two three four",
+    "changes": [
+      { "id": "a", "who": "me", "from": 4, "to": 7, "deleted": "" },
+      { "id": "b", "who": "bob", "from": 14, "to": 18, "deleted": "x" }
+    ],
+    "me": { "who": "me", "author": "Me" },
+    "edits": [{ "from": 0, "to": 3, "insert": "1" }],
+    "after": "1 two three four",
+    "expect": [
+      { "id": "new-1", "who": "me", "from": 0, "to": 1, "deleted": "one" },
+      { "id": "a", "who": "me", "from": 2, "to": 5, "deleted": "" },
+      { "id": "b", "who": "bob", "from": 12, "to": 16, "deleted": "x" }
+    ]
+  },
+  {
+    "name": "a multi-range edit is planned range by range",
+    "before": "alpha beta gamma",
+    "changes": [],
+    "me": { "who": "me", "author": "Me" },
+    "edits": [
+      { "from": 0, "to": 5, "insert": "A" },
+      { "from": 11, "to": 16, "insert": "G" }
+    ],
+    "after": "A beta G",
+    "expect": [
+      { "id": "new-1", "who": "me", "from": 0, "to": 1, "deleted": "alpha" },
+      { "id": "new-2", "who": "me", "from": 7, "to": 8, "deleted": "gamma" }
+    ]
+  },
+  {
+    "name": "adjacent ranges of one edit merge into one change",
+    "before": "ab",
+    "changes": [],
+    "me": { "who": "me", "author": "Me" },
+    "edits": [
+      { "from": 0, "to": 1, "insert": "X" },
+      { "from": 1, "to": 2, "insert": "Y" }
+    ],
+    "after": "XY",
+    "expect": [{ "id": "new-1", "who": "me", "from": 0, "to": 2, "deleted": "ab" }]
+  },
+  {
+    "name": "replacing across own insertion and original text",
+    "before": "abXYcd",
+    "changes": [{ "id": "a", "who": "me", "from": 2, "to": 4, "deleted": "q" }],
+    "me": { "who": "me", "author": "Me" },
+    "edits": [{ "from": 3, "to": 5, "insert": "M" }],
+    "after": "abXMd",
+    "expect": [{ "id": "a", "who": "me", "from": 2, "to": 4, "deleted": "qc" }]
+  },
+  {
+    "name": "backspace next to an own pure deletion",
+    "before": "abcd",
+    "changes": [{ "id": "a", "who": "me", "from": 2, "to": 2, "deleted": "x" }],
+    "me": { "who": "me", "author": "Me" },
+    "edits": [{ "from": 1, "to": 2, "insert": "" }],
+    "after": "acd",
+    "expect": [{ "id": "a", "who": "me", "from": 1, "to": 1, "deleted": "bx" }]
+  },
+  {
+    "name": "typing at an own pure deletion turns it into a replacement",
+    "before": "abcd",
+    "changes": [{ "id": "a", "who": "me", "from": 2, "to": 2, "deleted": "x" }],
+    "me": { "who": "me", "author": "Me" },
+    "edits": [{ "from": 2, "to": 2, "insert": "Z" }],
+    "after": "abZcd",
+    "expect": [{ "id": "a", "who": "me", "from": 2, "to": 3, "deleted": "x" }]
+  },
+  {
+    "name": "another author's pure deletion shifts after an insertion before it",
+    "before": "abcd",
+    "changes": [{ "id": "b", "who": "bob", "from": 2, "to": 2, "deleted": "x" }],
+    "me": { "who": "me", "author": "Me" },
+    "edits": [{ "from": 0, "to": 0, "insert": "Q" }],
+    "after": "Qabcd",
+    "expect": [
+      { "id": "new-1", "who": "me", "from": 0, "to": 1, "deleted": "" },
+      { "id": "b", "who": "bob", "from": 3, "to": 3, "deleted": "x" }
+    ]
+  },
+  {
+    "name": "astral characters count as two UTF-16 units: replace after one",
+    "before": "a😀b😀c",
+    "changes": [],
+    "me": { "who": "me", "author": "Me" },
+    "edits": [{ "from": 3, "to": 4, "insert": "X" }],
+    "after": "a😀X😀c",
+    "expect": [{ "id": "new-1", "who": "me", "from": 3, "to": 4, "deleted": "b" }]
+  },
+  {
+    "name": "astral characters: typing extends an own insertion that holds one",
+    "before": "a😀b",
+    "changes": [{ "id": "a", "who": "me", "from": 1, "to": 3, "deleted": "" }],
+    "me": { "who": "me", "author": "Me" },
+    "edits": [{ "from": 3, "to": 3, "insert": "Z" }],
+    "after": "a😀Zb",
+    "expect": [{ "id": "a", "who": "me", "from": 1, "to": 4, "deleted": "" }]
+  },
+  {
+    "name": "astral characters: deleting an original astral character records it whole",
+    "before": "a😀b",
+    "changes": [],
+    "me": { "who": "me", "author": "Me" },
+    "edits": [{ "from": 1, "to": 3, "insert": "" }],
+    "after": "ab",
+    "expect": [{ "id": "new-1", "who": "me", "from": 1, "to": 1, "deleted": "😀" }]
+  }
+]
