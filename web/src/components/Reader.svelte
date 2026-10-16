@@ -377,9 +377,8 @@
     });
   });
 
-  // Pointing the preview at a document in the other executable format puts
-  // the desktop app behind that one too, and checks that it is there, without
-  // asking again. The permission belongs to this document, not the session.
+  // Pointing the preview at a file in the other executable format, while Run
+  // code is on, puts the desktop app behind that one too.
   $effect(() => {
     if (!localExecution || !localExecutionRelevant) return;
     const running = sourceFormat === "quarto" ? quartoPreviewMode === "quarto" : typstPreviewMode === "calepin";
