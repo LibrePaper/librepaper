@@ -31,7 +31,7 @@ Everything is on one machine, so losing the VPS loses it all until [backups](adv
 - Install Docker Engine and Compose v2 on it.
 - Open ports 80 and 443.
 - Point two DNS names at it: one for the app (`paper.example`) and one for published documents (`docs.paper.example`).
-- Create a GitHub OAuth app, a Google OAuth client, or both. See [Sign-in](#sign-in).
+- Register at least one sign-in provider: a GitHub OAuth app, a Google OAuth client, a Microsoft Entra ID app registration, or any OpenID Connect provider. See [Sign-in](#sign-in).
 
 ## Install
 
@@ -82,7 +82,7 @@ client_secret = "replace"
 
 ```toml
 [auth]
-session_lifetime = "24h"           # a working day; the default is 30d
+session_lifetime = "24h"           # a working day. The default is 30d.
 
 [auth.entra]
 tenant = "00000000-0000-0000-0000-000000000000"   # Directory (tenant) ID, a GUID
