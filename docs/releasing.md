@@ -35,12 +35,12 @@ librepaper.org; that is an operator command described in the private runbook
    gh release view "$VERSION" --json assets -q '.assets[].name'
    ```
 
-5. After a successful stable release, the Homebrew, Scoop, AUR, Nix and Docker
+5. After a successful stable release, the Homebrew, Scoop, Nix and Docker
    image workflows run automatically; see below.
 
 ## Automated updates
 
-- A successful stable tag release triggers the Homebrew, Scoop, AUR and Nix
+- A successful stable tag release triggers the Homebrew, Scoop and Nix
   update workflows. Pull request runs, failed releases, prerelease tags, and
   releases from other repositories are ignored.
 - Each updater runs the helper script from the workflow revision, then resolves
@@ -54,7 +54,6 @@ librepaper.org; that is an operator command described in the private runbook
 - Homebrew publishes only the cask `Casks/librepaper.rb`. It installs the
   notarized macOS app from `LibrePaper_<version>_universal.dmg` and links both
   commands.
-- "Update AUR package" pushes `librepaper-bin` to the AUR.
 - "Update Nix package" commits `nix/source.json` to main.
 - User install commands live on the [desktop app page](desktop-app.md). Update it when
   a distribution channel changes.
@@ -71,7 +70,6 @@ Configure these Actions secrets in `LibrePaper/librepaper`:
 | --- | --- | --- |
 | `HOMEBREW_TAP_GITHUB_TOKEN` | Push `Casks/librepaper.rb` to `vincentarelbundock/homebrew-tap` | Contents write |
 | `SCOOP_BUCKET_GITHUB_TOKEN` | Push `bucket/librepaper.json` to `vincentarelbundock/scoop-bucket` | Contents write |
-| `AUR_SSH_PRIVATE_KEY` | Push `PKGBUILD` and `.SRCINFO` to `aur.archlinux.org/librepaper-bin` | SSH key registered on the AUR account |
 
 Each token is used only by its matching update workflow. Keep the Release
 workflow's `GITHUB_TOKEN` permissions limited to release tasks. Update scripts

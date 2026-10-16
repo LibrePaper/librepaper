@@ -6,7 +6,7 @@ The `librepaper` command hosts a LibrePaper server and scripts your documents. T
 
 ## Install
 
-The desktop packages already include the `librepaper` command: Homebrew, Scoop, the Windows installer, the `.deb`, the `.rpm`, the AUR package and Nix. See the [desktop app page](desktop-app.html) to install one of them. On a server with no desktop app, install the command alone with this installer.
+The desktop packages already include the `librepaper` command: Homebrew, Scoop, the Windows installer, the `.deb`, the `.rpm`, the Arch package and Nix. See the [desktop app page](desktop-app.html) to install one of them. On a server with no desktop app, install the command alone with this installer.
 
 ```sh
 # Linux and macOS

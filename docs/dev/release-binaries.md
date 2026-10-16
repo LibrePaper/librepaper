@@ -19,6 +19,7 @@ For the release steps, see [Releasing](../releasing.md).
 | `latest.json` | `publish-updater.yml` | No. The desktop app reads its signatures and URLs |
 | `librepaper_<version>_amd64.deb` | `desktop-linux.yml` | No |
 | `librepaper-<version>-1.x86_64.rpm` (stable versions only) | `desktop-linux.yml` | No |
+| `librepaper-<version>-1-x86_64.pkg.tar.zst` (stable versions only) | `desktop-linux.yml` | No |
 
 Each desktop asset has a `.sha256` file.
 
@@ -120,13 +121,14 @@ Keep the key and the `.p12` out of the repository. Delete the local copies you n
 
 - `desktop-linux.yml` builds the `.deb` and `.rpm` packages on `ubuntu-22.04`. The `.deb` runs on Ubuntu 22.04 and newer.
 - The packages are not signed.
+- The Arch package is built from the `.deb` by `tools/release/build-arch-package.sh`, in an `archlinux:base-devel` container. It repacks the files and does not install WebKitGTK. Its PKGBUILD is `desktop/linux/arch/PKGBUILD`.
 - The package name is `librepaper`, because `desktop/tauri.linux.conf.json` sets the Linux product name to lowercase. The menu entry still reads LibrePaper.
 - Pull requests build both packages in the "Linux desktop build" workflow (`linux-desktop-build.yml`, artifact `desktop-linux-packages`). They build unsigned Windows installers in the "Windows build" workflow (artifact `desktop-windows-unsigned`).
 - No pull request builds the macOS app. The first macOS test of a change is a release tag.
 
 ## Test a release without publishing a stable version
 
-Use a prerelease tag such as `v0.0.43-rc.1` from a test branch. Prerelease tags do not trigger the Homebrew, Scoop, AUR, Nix or Docker updates.
+Use a prerelease tag such as `v0.0.43-rc.1` from a test branch. Prerelease tags do not trigger the Homebrew, Scoop, Nix or Docker updates.
 
 `tools/release/version` accepts only stable versions. Edit the version by hand in `Cargo.toml` and in the workspace entries of `Cargo.lock`.
 

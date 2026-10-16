@@ -76,10 +76,11 @@ sudo dnf remove librepaper                        # remove it
 sudo zypper install ./librepaper-<version>-1.x86_64.rpm
 ```
 
-- Arch Linux: install the AUR package `librepaper-bin` with any AUR helper:
+- Arch Linux: download `librepaper-<version>-1-x86_64.pkg.tar.zst` from the release, then run:
 
 ```sh
-yay -S librepaper-bin
+sudo pacman -U ./librepaper-<version>-1-x86_64.pkg.tar.zst
+sudo pacman -R librepaper                         # remove it
 ```
 
 - Nix (x86_64 Linux only):
@@ -115,7 +116,7 @@ The desktop app starts its own background local service when it opens. You do no
 
 ### Updates
 
-On macOS and with the Windows installer, the app checks for a new version when it starts and asks before it installs it. This includes an app installed with Homebrew. Scoop, the Linux packages, the AUR and Nix update the app through their own commands.
+On macOS and with the Windows installer, the app checks for a new version when it starts and asks before it installs it. This includes an app installed with Homebrew. Scoop, the Linux packages and Nix update the app through their own commands.
 
 ### Windows
 
