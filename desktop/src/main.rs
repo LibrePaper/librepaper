@@ -716,10 +716,17 @@ fn menu(app: &AppHandle) -> tauri::Result<tauri::menu::Menu<tauri::Wry>> {
     use tauri::menu::{Menu, MenuItem, PredefinedMenuItem, HELP_SUBMENU_ID};
     let menu = Menu::default(app)?;
     let settings = MenuItem::with_id(app, "settings", "Settings…", true, Some("CmdOrCtrl+,"))?;
-    if let Some(first) = menu.items()?.first().and_then(|item| item.as_submenu().cloned()) {
+    if let Some(first) = menu
+        .items()?
+        .first()
+        .and_then(|item| item.as_submenu().cloned())
+    {
         first.insert_items(&[&PredefinedMenuItem::separator(app)?, &settings], 1)?;
     }
-    if let Some(help) = menu.get(HELP_SUBMENU_ID).and_then(|item| item.as_submenu().cloned()) {
+    if let Some(help) = menu
+        .get(HELP_SUBMENU_ID)
+        .and_then(|item| item.as_submenu().cloned())
+    {
         help.append_items(&[
             &MenuItem::with_id(app, "diagnostics", "Copy Diagnostics", true, None::<&str>)?,
             &MenuItem::with_id(app, "report", "Report a Problem…", true, None::<&str>)?,
@@ -734,20 +741,28 @@ fn menu_event(app: &AppHandle, id: &str) {
     match id {
         "settings" => {
             if let Some(window) = focused_window(app) {
-                let _ = window.eval("window.dispatchEvent(new CustomEvent(\"librepaper:open-settings\"))");
+                let _ = window
+                    .eval("window.dispatchEvent(new CustomEvent(\"librepaper:open-settings\"))");
             }
         }
         "diagnostics" => {
             let app = app.clone();
             tauri::async_runtime::spawn(async move {
                 match copy_diagnostics(&app).await {
-                    Ok(()) => crate::notice::show(&app, "Diagnostics copied. Paste them into a bug report.", 4000),
+                    Ok(()) => crate::notice::show(
+                        &app,
+                        "Diagnostics copied. Paste them into a bug report.",
+                        4000,
+                    ),
                     Err(err) => crate::notice::show(&app, &err, 6000),
                 }
             });
         }
         "report" => {
-            if let Err(err) = app.opener().open_url("https://github.com/LibrePaper/librepaper/issues", None::<&str>) {
+            if let Err(err) = app.opener().open_url(
+                "https://github.com/LibrePaper/librepaper/issues",
+                None::<&str>,
+            ) {
                 shell_log::write(&format!("could not open the browser: {err}"));
             }
         }
@@ -791,7 +806,8 @@ fn check_server(app: &AppHandle, label: String, server: Url) {
         let Ok(mut page) = Url::parse(&format!("{}/offline.html", app_origin())) else {
             return;
         };
-        page.query_pairs_mut().append_pair("server", server.as_str());
+        page.query_pairs_mut()
+            .append_pair("server", server.as_str());
         let nav = app.clone();
         let _ = app.run_on_main_thread(move || {
             if let Some(window) = nav.get_webview_window(&label) {

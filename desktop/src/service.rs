@@ -74,7 +74,9 @@ impl Service {
             match self.current().await {
                 Ok(_) => crate::notice::show(&app, "The local service is running again.", 4000),
                 Err(err) => {
-                    crate::shell_log::write(&format!("the local service did not start again: {err}"));
+                    crate::shell_log::write(&format!(
+                        "the local service did not start again: {err}"
+                    ));
                     crate::notice::show(&app, "The local service did not start. Settings, Desktop app, Copy diagnostics helps report it.", 0);
                 }
             }
@@ -131,9 +133,15 @@ impl Service {
 
 // Whether something accepts connections at the service address.
 async fn answers(address: &str) -> bool {
-    let Ok(url) = url::Url::parse(address) else { return false };
-    let Ok(addrs) = url.socket_addrs(|| None) else { return false };
-    let Some(addr) = addrs.first() else { return false };
+    let Ok(url) = url::Url::parse(address) else {
+        return false;
+    };
+    let Ok(addrs) = url.socket_addrs(|| None) else {
+        return false;
+    };
+    let Some(addr) = addrs.first() else {
+        return false;
+    };
     matches!(
         tokio::time::timeout(Duration::from_secs(2), tokio::net::TcpStream::connect(addr)).await,
         Ok(Ok(_))

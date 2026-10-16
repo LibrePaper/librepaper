@@ -2,7 +2,7 @@
 //! Releases publish a signed latest.json, and the plugin checks the signature
 //! against the public key in tauri.conf.json before it installs anything.
 
-use tauri::{AppHandle, Manager};
+use tauri::AppHandle;
 use tauri_plugin_dialog::{DialogExt, MessageDialogButtons, MessageDialogKind};
 use tauri_plugin_updater::{Update, UpdaterExt};
 
@@ -51,7 +51,11 @@ async fn check(app: &AppHandle, manual: bool) -> Result<(), String> {
         Ok(update) => update,
         Err(err) => {
             if manual {
-                info(app, format!("LibrePaper could not check for updates: {err}")).await;
+                info(
+                    app,
+                    format!("LibrePaper could not check for updates: {err}"),
+                )
+                .await;
             }
             return Err(err);
         }
@@ -60,7 +64,10 @@ async fn check(app: &AppHandle, manual: bool) -> Result<(), String> {
         if manual {
             info(
                 app,
-                format!("LibrePaper {} is the latest version.", app.package_info().version),
+                format!(
+                    "LibrePaper {} is the latest version.",
+                    app.package_info().version
+                ),
             )
             .await;
         }
@@ -88,7 +95,11 @@ async fn check(app: &AppHandle, manual: bool) -> Result<(), String> {
     if !install {
         return Ok(());
     }
-    crate::notice::show(app, &format!("Downloading LibrePaper {}...", update.version), 0);
+    crate::notice::show(
+        app,
+        &format!("Downloading LibrePaper {}...", update.version),
+        0,
+    );
     let bytes = match update.download(|_, _| {}, || {}).await {
         Ok(bytes) => bytes,
         Err(err) => {
@@ -105,7 +116,11 @@ async fn check(app: &AppHandle, manual: bool) -> Result<(), String> {
     tauri::async_runtime::spawn_blocking(crate::service::stop)
         .await
         .map_err(|err| err.to_string())?;
-    crate::notice::show(app, "Installing the update. LibrePaper restarts in a moment.", 0);
+    crate::notice::show(
+        app,
+        "Installing the update. LibrePaper restarts in a moment.",
+        0,
+    );
     update.install(bytes).map_err(|err| err.to_string())?;
     app.restart()
 }
