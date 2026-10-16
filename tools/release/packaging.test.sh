@@ -128,6 +128,27 @@ grep -Fq 'LibrePaper_$version_x64-portable.zip' "$tmp/capture/bucket/librepaper.
 grep -Fq "\"hash\": \"$MOCK_HASH\"" "$tmp/capture/bucket/librepaper.json" || fail 'manifest missing verified archive hash'
 [[ -e "$tmp/pushed" ]] || fail 'Scoop manifest was not pushed'
 
+reset_mock
+export MOCK_BAD_CHECKSUM=1
+if AUR_SSH_PRIVATE_KEY=test-key LIBREPAPER_RELEASE_TAG=v1.2.3 bash "$root/tools/release/update-aur.sh" >/dev/null 2>&1; then
+  fail 'AUR updater accepted a mismatched checksum'
+fi
+[[ ! -e "$tmp/cloned" ]] || fail 'AUR checksum failure reached git clone'
+[[ ! -e "$tmp/pushed" ]] || fail 'AUR checksum failure pushed a package'
+
+reset_mock
+AUR_SSH_PRIVATE_KEY=test-key LIBREPAPER_RELEASE_TAG=v1.2.3 bash "$root/tools/release/update-aur.sh" >/dev/null
+[[ -f "$tmp/capture/PKGBUILD" ]] || fail 'AUR PKGBUILD was not generated'
+[[ -f "$tmp/capture/.SRCINFO" ]] || fail 'AUR .SRCINFO was not generated'
+grep -Fq 'pkgver=1.2.3' "$tmp/capture/PKGBUILD" || fail 'PKGBUILD has wrong version'
+grep -Fq "sha256sums=('$MOCK_HASH'" "$tmp/capture/PKGBUILD" || fail 'PKGBUILD missing verified deb hash'
+grep -Fq 'librepaper_${pkgver}_amd64.deb' "$tmp/capture/PKGBUILD" || fail 'PKGBUILD missing the deb source'
+grep -Fq "depends=('webkit2gtk-4.1' 'gtk3')" "$tmp/capture/PKGBUILD" || fail 'PKGBUILD missing WebKitGTK and GTK dependencies'
+grep -Fq 'pkgver = 1.2.3' "$tmp/capture/.SRCINFO" || fail '.SRCINFO has wrong version'
+grep -Fq "sha256sums = $MOCK_HASH" "$tmp/capture/.SRCINFO" || fail '.SRCINFO missing verified deb hash'
+grep -Fq 'pkgname = librepaper-bin' "$tmp/capture/.SRCINFO" || fail '.SRCINFO missing pkgname'
+[[ -e "$tmp/pushed" ]] || fail 'AUR package was not pushed'
+
 # A release kit uses committed bytes even when the checkout has dirty config
 # and untracked credentials. It pins the release tag in its image references.
 kit_source="$tmp/deploy-source"
