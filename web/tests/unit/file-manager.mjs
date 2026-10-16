@@ -45,6 +45,19 @@ try {
   assert.throws(() => session.relocate([session.list().find((file) => file.id === main)], "main.png", rules, true), /cannot change/);
   session.removeEntries([session.list().find((file) => file.id === main)]);
   assert.equal(session.mainId(), chapter, "deleting main selects the remaining text deterministically");
+  const fresh = join({ send() {}, mayEdit: true });
+  try {
+    const paper = fresh.addText("paper.tex", "paper");
+    fresh.setMain(paper);
+    const bib = fresh.addText("refs.bib", "bib");
+    const intro = fresh.addText("sections/intro.tex", "intro");
+    fresh.removeEntries([fresh.list().find((file) => file.id === paper)]);
+    assert.equal(fresh.mainId(), intro, "deleting main skips a text that does not render");
+    fresh.removeFile(intro);
+    assert.equal(fresh.mainId(), bib, "falls back to a non-renderable text when nothing renders");
+    fresh.removeFile(bib);
+    assert.equal(fresh.mainId(), "", "no text left, so no main");
+  } finally { fresh.leave(); }
   const copy = session.duplicateEntry(session.list().find((file) => file.id === chapter), "copied.tex", rules);
   session.textOf(copy).insert(0, "COPY ");
   assert.equal(session.textOf(chapter).toString(), "REMOTE original", "duplicate has independent text");

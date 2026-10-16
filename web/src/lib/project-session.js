@@ -25,6 +25,7 @@
 import { LoroDoc, LoroText, EphemeralStore, VersionVector } from "loro-crdt";
 import { checkPlacement, folderPaths, inside, parentPath, relocation, topEntries } from "./file-manager.js";
 import { projectDirectory } from "./projection.js";
+import { formatOf } from "./formats.js";
 import { createGeneration } from "./reader/generation.js";
 
 /** @typedef {{ name?: string, color?: string, tab?: string, file?: string }} PresenceState */
@@ -198,6 +199,18 @@ export function createProjectSession({
   const swaps = new Set();
   // Track subscriptions: Map from text.id -> Map from watcher -> unsub function
   const textSubs = new Map();
+
+  // Run after the main file is removed. Prefer a text that renders, so deleting
+  // paper.tex does not make refs.bib main when sections/intro.tex is there; fall
+  // back to any text, and unset main only when no text is left.
+  function reassignMain() {
+    const remaining = [...paths.entries()]
+      .filter(([id]) => files.get(id) instanceof LoroText)
+      .sort((a, b) => String(a[1]).localeCompare(String(b[1])) || String(a[0]).localeCompare(String(b[0])));
+    const next = remaining.find(([, path]) => formatOf(path)) || remaining[0];
+    if (next) meta.set("main", next[0]);
+    else meta.delete("main");
+  }
 
   function mainText() {
     // Follow the canonical projection rather than the raw declaration. A
@@ -804,13 +817,7 @@ export function createProjectSession({
         const parent = parentPath(entry.path);
         if (parent) meta.set(`folder:${parent}`, true);
       }
-      if (removedMain) {
-        const remaining = [...paths.entries()]
-          .filter(([id]) => files.get(id) instanceof LoroText)
-          .sort((a, b) => String(a[1]).localeCompare(String(b[1])) || String(a[0]).localeCompare(String(b[0])));
-        if (remaining.length) meta.set("main", remaining[0][0]);
-        else meta.delete("main");
-      }
+      if (removedMain) reassignMain();
       doc.commit({ origin: DIRECTORY_ORIGIN });
     },
 
@@ -927,13 +934,7 @@ export function createProjectSession({
       const wasMain = meta.get("main") === id;
       files.delete(id);
       paths.delete(id);
-      if (wasMain) {
-        const remaining = [...paths.entries()]
-          .filter(([file]) => files.get(file) instanceof LoroText)
-          .sort((a, b) => String(a[1]).localeCompare(String(b[1])) || String(a[0]).localeCompare(String(b[0])));
-        if (remaining.length) meta.set("main", remaining[0][0]);
-        else meta.delete("main");
-      }
+      if (wasMain) reassignMain();
       doc.commit({ origin: DIRECTORY_ORIGIN });
     },
 

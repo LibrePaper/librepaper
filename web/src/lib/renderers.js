@@ -1,4 +1,5 @@
 import { needsBibliography } from "./bibliography-engine.js";
+import { formatOf } from "./formats.js";
 // The renderers, loaded into the editor.
 //
 // The modules come from the same pinned renderer releases as the native
@@ -144,18 +145,7 @@ export function diff(oldText, newText, format = "markdown") {
   return request(chosen, "diff", { old: oldText || "", new: newText || "" });
 }
 
-/// What a document is written in, which follows from what its main file is
-/// called. A document is a directory, so the format is a property of one file
-/// in it rather than of the whole.
-export function formatOf(path) {
-  const lower = (path || "").toLowerCase();
-  if (lower.endsWith(".typ")) return "typst";
-  if (lower.endsWith(".qmd")) return "quarto";
-  if (lower.endsWith(".md") || lower.endsWith(".markdown")) return "markdown";
-  if (lower.endsWith(".html") || lower.endsWith(".htm")) return "html";
-  if (lower.endsWith(".tex") || lower.endsWith(".ltx")) return "latex";
-  return "";
-}
+export { formatOf } from "./formats.js";
 
 /// Renders a document into the page a save would store, and says what the
 /// compiler had to say about it.
