@@ -11,7 +11,7 @@ A web page cannot run your code. The [LibrePaper desktop app](../desktop-app.htm
 ## Preview
 
 - A new document shows a plain Markdown preview. No code runs. Code shows as text, and Quarto extras such as callouts, columns and tabs show as raw text too.
-- To see the real Quarto output, choose **View → Execute code locally** and accept the warning. Quarto then renders on your computer.
+- To see the real Quarto output, turn on **Run code** at the top of the editor. Quarto then renders on your computer.
 - Quarto can show HTML, slides (RevealJS) or PDF. Word (DOCX) is a download only.
 - LibrePaper previews one document. It does not render whole Quarto websites or books.
 
@@ -24,7 +24,7 @@ A web page cannot run your code. The [LibrePaper desktop app](../desktop-app.htm
 ## Safety
 
 - Quarto runs as you. It can read your files, use your packages and reach the internet. LibrePaper does not limit what it does.
-- Code runs only in documents where you chose **Execute code locally**. The choice is per document and per browser. Signing out turns it off everywhere.
+- Code runs only while **Run code** is on. It is off whenever a document opens, and LibrePaper never remembers it.
 - Every editor of a document can change its code. Turn this on only for documents whose editors you trust.
 
 ## Upload a Quarto project

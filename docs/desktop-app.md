@@ -25,7 +25,7 @@ Web browsers run every page in a sandbox, so a website cannot run code or use fi
 | A project folder on your disk for code and data | No | Yes |
 
 - In a browser, the desktop-only features say they need the desktop app and offer to open it.
-- Nothing runs unasked. Folders are granted one at a time through your system's own chooser. Running a document's code is approved per document.
+- Nothing runs unasked. Folders are granted one at a time through your system's own chooser. Running a document's code is off whenever a document opens, and you turn it on with the Run code switch.
 - On a shared project, editors can change the code that runs, so it is their code too.
 - The desktop app uses the tools installed on your computer, such as R, Python, Quarto and your coding agent.
 

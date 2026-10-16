@@ -42,6 +42,5 @@ If the desktop app does not find Calepin, install it or add it to PATH. A custom
 
 - Calepin runs with your user account. It can use your files, installed packages and the network. LibrePaper does not sandbox it.
 - Calepin runs only in the [desktop app](../desktop-app.html). The browser cannot run it.
-- Every document starts on the browser preview. Calepin runs only after you choose View > Execute code locally and accept the warning, one document at a time.
+- Every document opens with **Run code** off, on the browser preview. Turn on **Run code** at the top of the editor to run Calepin. It is off again the next time you open the document.
 - Anyone with editor access can change that code at any time, so allow it only on documents whose owner and editors you trust.
-- The permission is remembered for that document in this browser until you turn it off or sign out.

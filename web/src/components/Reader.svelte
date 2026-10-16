@@ -36,7 +36,6 @@
   import { prepareOfflineProject, preparedProject } from "../lib/offline-projects.js";
   import { cacheCurrentShell } from "../lib/offline-shell.js";
   import { needsSourceRefresh } from "../lib/reader/source-events.js";
-  import { granted, grant, revoke, isGrantKey } from "../lib/local-execution.js";
   import {
     SHELL_HEADERS,
     authHeaders,
@@ -284,11 +283,6 @@
     localQuarto.configure({ project: SLUG, origin: location.origin });
   }
 
-  /// The execution permission key for this document.
-  function executionScope() {
-    return { origin: location.origin, user: buildUserId, slug: SLUG };
-  }
-
   /// The Quarto project binding this document already has, if any. This one
   /// really is format-specific: only a locally renderable project has one.
   function readQuartoBinding() {
@@ -296,14 +290,9 @@
   }
   // Which engine draws each format, and what it produces, belong to the
   // build settings along with the preference they follow from; the aliases
-  // are further down, where that module is built. What stays here is the one
-  // thing that is not a preference: running a document's code is remembered
-  // per document in local storage.
-  //
-  // The permission is (origin, user, document slug). It is off by default
-  // for every document, including shared ones. Signing out clears all
-  // permissions. Pairing grants the browser permission to ask, but never
-  // starts document code on its own.
+  // are further down, where that module is built. Whether this document's
+  // code runs is not a preference and is never stored: it is off each time a
+  // document opens.
   let localExecution = $state(false);
 
   async function setLatexOutput(format) {
@@ -340,29 +329,19 @@
     }
   }
 
-  // What running a document's code here actually means. It was a title
-  // attribute on a button, which is to say it was invisible on a touch screen
-  // and delayed on every other: a consequence of this size is asked about,
-  // not hinted at.
-  let localExecutionConsent = $state(false);
-
   // The formats whose local tool runs the document rather than only typesets
-  // it. The permission is remembered per document in this browser, and the
-  // desktop app is used only when both permission and format match what is
-  // being read.
+  // it. Running is off whenever a document opens and is never remembered: the
+  // toggle is the consent, and it is given again each time.
   const localExecutionRelevant = $derived.by(() => ["quarto", "typst"].includes(sourceFormat) && mayEdit);
 
-  // Turning it on, once the dialog has been answered: put this format's
-  // engine on the local tool, use the desktop app, and remember the
-  // permission. A browser without the desktop app leaves the choice standing
-  // and says why in Diagnostics, rather than silently undoing what was just
-  // asked for.
-  //
-  // Only the dialog grants. Every other caller, a retry button or the sync
-  // below, reaches this with a permission already on record or not at all.
+  // Where the toggle is offered: every editable Quarto document, and an
+  // editable Typst document when the desktop app found Calepin.
+  const runCodeOffered = $derived(mayEdit && (sourceFormat === "quarto" || (sourceFormat === "typst" && hasDesktop && calepinFound)));
+
+  // Turning it on puts this format's engine on the local tool and uses the
+  // desktop app. A browser without the desktop app says so and stays off.
   async function startLocalExecution() {
-    localExecutionConsent = false;
-    if (!granted(executionScope())) return;
+    if (!hasDesktop) { say(localQuarto.DESKTOP_ONLY_MESSAGE, { kind: "problem", id: "reader:desktop-only" }); return; }
     localExecution = true;
     if (!localExecutionRelevant) return;
     if (sourceFormat === "quarto") {
@@ -373,48 +352,29 @@
     }
   }
 
-  // Turning it off puts the browser's own renderer back, stops whatever
-  // the desktop app was running for this document, and revokes the permission.
+  // Turning it off puts the browser's own renderer back and stops whatever
+  // the desktop app was running for this document.
   async function stopLocalExecution() {
     localExecution = false;
-    revoke(executionScope());
     if (sourceFormat === "quarto") await setQuartoPreviewMode("markdown");
     else if (sourceFormat === "typst") await setTypstPreviewMode("typst");
   }
 
-  // Running code needs the desktop app, so a browser is told so instead of
-  // being asked for a permission it cannot use.
-  function askLocalExecution() {
-    if (!hasDesktop) say(localQuarto.DESKTOP_ONLY_MESSAGE, { kind: "problem", id: "reader:desktop-only" });
-    else localExecutionConsent = true;
-  }
-
   const toggleLocalExecution = () => {
     if (localExecution) void stopLocalExecution();
-    else askLocalExecution();
+    else void startLocalExecution();
   };
 
-  // Sync localExecution state with the stored permission. Called when
-  // buildUserId changes, and when storage events arrive from other tabs.
-  function syncLocalExecution() {
-    const should = granted(executionScope());
-    if (should && !localExecution) void startLocalExecution();
-    else if (!should && localExecution) void stopLocalExecution();
-  }
-
-  // When the signed-in identity resolves or changes, sync the permission.
+  // A document always opens with its code off. A build preference saved
+  // while it was running must not turn it back on, so the preview starts on
+  // the browser's own renderer.
   $effect(() => {
-    buildUserId;
-    untrack(() => syncLocalExecution());
-  });
-
-  // When another tab grants or revokes the permission, sync this tab.
-  $effect(() => {
-    function handleStorage(e) {
-      if (isGrantKey(e.key) || e.key === null) untrack(() => syncLocalExecution());
-    }
-    window.addEventListener("storage", handleStorage);
-    return () => window.removeEventListener("storage", handleStorage);
+    SLUG;
+    untrack(() => {
+      localExecution = false;
+      if (quartoPreviewMode === "quarto") void setQuartoPreviewMode("markdown");
+      if (typstPreviewMode === "calepin") void setTypstPreviewMode("typst");
+    });
   });
 
   // Pointing the preview at a document in the other executable format puts
@@ -1831,9 +1791,10 @@
   });
 
   // Calepin is found by the desktop app, not by this page, so it is asked
-  // once the Typst preview wants it.
+  // when a Typst document opens there. Whether it is found decides whether
+  // the Typst document offers the toggle.
   $effect(() => {
-    if (!hasDesktop || !localExecution || typstPreviewMode !== "calepin") return;
+    if (!hasDesktop || sourceFormat !== "typst" || !mayEdit) return;
     let stale = false;
     localQuarto.calepinAvailable().then((found) => { if (!stale) calepinFound = found; }, () => { if (!stale) calepinFound = false; });
     return () => { stale = true; };
@@ -2318,8 +2279,8 @@
       (!hasDesktop || (sourceFormat === "quarto" && !localExecution)),
   );
   // The gesture that is missing, told apart so the card offers one action
-  // rather than a menu: Quarto has to be allowed to run this document's code
-  // before anything else is worth suggesting.
+  // rather than a menu: Run code has to be on before anything else is worth
+  // suggesting.
   const pdfNeedsLocalExecution = $derived(pdfNeedsLocalTool && sourceFormat === "quarto" && !localExecution);
 
   // The way out for an author who wants to keep reading rather than install
@@ -3943,15 +3904,11 @@
   <Menu.Item value="preview-file" class="menuitem" disabled={!can["preview-file"]}>Preview this file</Menu.Item>
   <hr class="hr my-1" />
   {@render previewItems()}
-  {#if localExecutionRelevant}
-    <!-- Permission is per (origin, user, document slug), remembered in this
-         browser, and off by default for every document. Signing out revokes
-         all permissions. Offered only where it means something: a LaTeX or
-         HTML document has no local tool that runs it, so the item would warn
-         about arbitrary code execution and then do nothing at all. -->
-    <div class="menu-section-label">Local execution</div>
+  {#if runCodeOffered}
+    <!-- The same switch as the top bar, for widths where the bar has no room for it. Off whenever a document opens, never remembered. -->
+    <div class="menu-section-label">Code</div>
     <Menu.Item value="local-execution" class="menuitem">
-      <span class="menuitem-check">{localExecution ? "✓" : ""}</span>Execute code locally
+      <span class="menuitem-check">{localExecution ? "✓" : ""}</span>Run code
     </Menu.Item>
     <hr class="hr my-1" />
   {/if}
@@ -3969,8 +3926,13 @@
   </div>
 {/snippet}
 {#snippet localExecutionControl()}
-  {#if sourceFormat === "quarto" && mayEdit && !localExecution}
-    <button class="btn btn-sm lp-control-brand reader-local-execution" aria-label="Turn on local execution" title="Turn on local execution" onclick={askLocalExecution}><span class="execution-full">Turn on local execution</span><span class="execution-short">Run</span></button>
+  {#if runCodeOffered}
+    <label class="run-code-toggle" title="Run this document's code on this computer. Off whenever a document opens.">
+      <button type="button" role="switch" class="switch" aria-checked={localExecution} aria-label="Run code" data-state={localExecution ? "checked" : "unchecked"} onclick={toggleLocalExecution}>
+        <span class="switch-thumb" data-state={localExecution ? "checked" : "unchecked"}></span>
+      </button>
+      <span class="run-code-label">Run code</span>
+    </label>
   {/if}
 {/snippet}
 
@@ -4319,11 +4281,11 @@
           <p class="lp-text-secondary text-sm">
             This browser renders {sourceFormat === "quarto" ? "Quarto" : "Markdown"} to HTML only. The PDF is produced by
             {sourceFormat === "quarto" ? "Quarto itself" : "Pandoc or Quarto"}, run through the LibrePaper desktop app,
-            so the preview stays empty until you open this document there{sourceFormat === "quarto" ? " and allowed to run this document" : ""}.
+            so the preview stays empty until you open this document there{sourceFormat === "quarto" ? " and turn on Run code" : ""}.
           </p>
           <div class="notyet-actions">
             {#if pdfNeedsLocalExecution}
-              <button class="btn btn-sm lp-control-brand" onclick={askLocalExecution}>Turn on local execution</button>
+              <button class="btn btn-sm lp-control-brand" onclick={() => void startLocalExecution()}>Run code</button>
               <button class="btn btn-sm lp-control-tonal-brand" onclick={previewAsHtml}>Preview as HTML instead</button>
             {:else}
               <DesktopOnly feature="The PDF preview" />
@@ -4468,14 +4430,6 @@
   {/snippet}
 </Modal>
 
-<Modal bind:open={localExecutionConsent} title="Run this document's code on this computer?"
-  confirm={{ label: "Run code on this computer", onclick: () => { grant(executionScope()); void startLocalExecution(); } }}>
-  <p class="execution-warning">Quarto or Calepin will run the code in this document on your computer.</p>
-  <p>Code in this document will run with your account's access to your files, network, and credentials. Anyone who can edit this document now or later can change that code, and it will run the next time the preview builds.</p>
-  <p>Only allow this if you trust the document's owner and everyone who can edit it.</p>
-  <p>This permission is remembered for this document in this browser until you turn it off or sign out.</p>
-</Modal>
-
 <Modal bind:open={timeline.state.restoring} title="Restore this version?"
   description={restoreMoved
     ? `The project changed while this was open. Restore ${restoreName} over the project as it now stands? The current version will be preserved in history.`
@@ -4516,14 +4470,13 @@
 <Toasts />
 
 <style>
-  .execution-warning { color: var(--color-warning-text); font-weight: 600; }
+  .run-code-toggle { display: inline-flex; align-items: center; gap: calc(var(--spacing) * 1.5); cursor: pointer; font-size: var(--text-sm); white-space: nowrap; }
   .nav-document {
     display: block;
     max-width: min(38vw, 20rem);
     color: var(--color-text-secondary);
     font-size: var(--text-sm);
   }
-  .execution-short { display: none; }
   /* Adapted widths keep the two faces grouped. Compact widths put them in the
      top bar beside the Menu trigger, with the same column sizing and captions. */
   .face-switch { display: inline-flex; align-items: center; gap: 2px; padding: 2px; border-radius: var(--radius-container); background: var(--color-subtle); }
@@ -4552,11 +4505,6 @@
   /* A heading over a run of items. Aligned with the names rather than with
      the panel edge, so the column the items make starts once. */
   .menu-section-label { padding: calc(var(--spacing) * 2) calc(var(--spacing) * 2.5) calc(var(--spacing) * 0.5) calc(var(--spacing) * 7); color: var(--color-text-secondary); font-size: var(--text-xs); font-weight: 600; text-transform: uppercase; letter-spacing: .05em; }
-  @media (max-width: 600px) {
-    .reader-local-execution { padding-inline: .5rem; }
-    .reader-local-execution .execution-full { display: none; }
-    .reader-local-execution .execution-short { display: inline; }
-  }
   @media (max-width: 760px) {
     :global(main.reader.adapted .sidebar-activity) { display: none; }
   }

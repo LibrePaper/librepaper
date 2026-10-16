@@ -1260,8 +1260,8 @@ assert.doesNotMatch(reader, /createRenderingStore|holdRendering|\/renderings\//)
   const file = body('{#snippet fileItems()}', '{/snippet}');
   assert.match(view, /Preview this file/);
   assert.match(view, /@render previewItems\(\)/);
-  // Local execution is its own section of the View menu, not another engine.
-  assert.match(view, /menu-section-label">Local execution<\/div>/);
+  // Running code is its own section of the View menu, not another engine.
+  assert.match(view, /menu-section-label">Code<\/div>/);
   assert.match(view, /value="local-execution"/);
   assert.doesNotMatch(reader, /preview-quarto|preview-calepin|preview-markdown|preview-typst"/);
   assert.doesNotMatch(file, /preview-/);
