@@ -59,9 +59,8 @@ fn reader_changes(
             continue;
         }
         let text = projected.texts.get(path).map(String::as_str).unwrap_or("");
-        let units = |points: usize| -> usize {
-            text.chars().take(points).map(char::len_utf16).sum()
-        };
+        let units =
+            |points: usize| -> usize { text.chars().take(points).map(char::len_utf16).sum() };
         for change in librepaper_document::document::track::resolve_changes(doc, &entry.id) {
             let inserted: String = text
                 .chars()
