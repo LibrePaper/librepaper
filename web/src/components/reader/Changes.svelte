@@ -193,6 +193,7 @@
         <!-- A real switch rather than a checkbox with a switch painted over it:
              the state is the control's own, so the name no longer has to carry
              "On" or "Off" for a screen reader to read it out. -->
+        {#if canReview}
         <Switch class="tracking-toggle" checked={tracking} disabled={!canTrack}
           title={canTrack ? "Track subsequent edits in this document" : "Editing is unavailable"}
           onCheckedChange={({ checked }) => ontracking?.(checked)}>
@@ -200,6 +201,7 @@
           <Switch.Control class="switch"><Switch.Thumb class="switch-thumb" /></Switch.Control>
           <Switch.HiddenInput />
         </Switch>
+        {/if}
         {#if hasMenu}<Menu onSelect={(chosen) => chooseMenuItem(chosen.value)}>
           <!-- The button is authored here rather than handed a `class`: a class
                arriving as a prop carries no scope hash, so the rules below would

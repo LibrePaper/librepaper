@@ -8,7 +8,7 @@ import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { browser, until, removeTemporary } from "../helpers/browser-driver.mjs";
-import { deploymentBinary, startDeployment } from "../helpers/deployment.mjs";
+import { deploymentBinary, sessionCookie, startDeployment } from "../helpers/deployment.mjs";
 
 const binary = process.argv[2] || deploymentBinary();
 const deployment = await startDeployment({ label: "track_changes_browser", binary });
@@ -19,6 +19,7 @@ if (!deployment || deployment.unavailable) {
 const profile = mkdtempSync(join(tmpdir(), "librepaper-track-changes-browser-"));
 const port = 33000 + Math.floor(Math.random() * 20000);
 let editor;
+let reader;
 const cookie = deployment.cookie;
 const browserBase = deployment.browserBase;
 const source = "# A Paper\n\nThe first paragraph.\n\nA second paragraph.\n";
@@ -38,13 +39,13 @@ const sourceText = async (slug) => {
   return snapshot.texts?.[snapshot.main] ?? snapshot.source;
 };
 
-const openChanges = async () => {
+const openChanges = async (page = editor) => {
   const changesTab = `([...document.querySelectorAll('button, a')]
     .find((button) => [button.getAttribute('aria-label'), button.title, button.textContent.trim()]
       .includes('Changes')))`;
-  await until("Changes tab", () => editor.evaluate(`Boolean(${changesTab})`));
-  await editor.evaluate(`${changesTab}.click()`);
-  await until("Changes panel", () => editor.evaluate(`Boolean(document.querySelector('.changes-panel'))`));
+  await until("Changes tab", () => page.evaluate(`Boolean(${changesTab})`));
+  await page.evaluate(`${changesTab}.click()`);
+  await until("Changes panel", () => page.evaluate(`Boolean(document.querySelector('.changes-panel'))`));
 };
 
 async function main() {
@@ -74,12 +75,36 @@ async function main() {
   await until("the preview marks the pending change", async () => await editor.frameEvaluate(`[...document.querySelectorAll('mark[data-librepaper^="change:"]')]
     .some((mark) => mark.textContent.includes(${JSON.stringify(typed)}))`).catch(() => false));
 
+  // A person with only a read link sees the same mark and a read-only row.
+  const shareUrl = new URL(document.share_url, browserBase);
+  reader = await browser("chromium", join(profile, "reader"), port + 1);
+  const readerId = deployment.postgres.seedRegisteredAccount({
+    provider: "github", subject: "github:changes-reader", handle: "changes-reader", displayName: "Changes Reader",
+  });
+  const readerCookie = sessionCookie({
+    dataDirectory: deployment.data, accountId: readerId, handle: "changes-reader", name: "Changes Reader",
+  });
+  await reader.setCookie("librepaper_session", readerCookie.slice(readerCookie.indexOf("=") + 1), browserBase);
+  await reader.resize(1400, 900);
+  await reader.navigate(shareUrl.href);
+  const readerMarked = `[...document.querySelectorAll('mark[data-librepaper^="change:"]')]
+    .some((mark) => mark.textContent.includes(${JSON.stringify(typed)}))`;
+  await until("the reader's preview marks the pending change", async () => await reader.frameEvaluate(readerMarked).catch(() => false));
+  assert.equal(await reader.evaluate(`Boolean(document.querySelector('.cm-content'))`), false, "the reader has no source pane");
+  await openChanges(reader);
+  await until("the reader's Changes row", () => reader.evaluate(`[...document.querySelectorAll('.change-row .insertion')]
+    .some((node) => node.textContent.includes(${JSON.stringify(typed)}))`));
+  assert.equal(await reader.evaluate(`Boolean(document.querySelector('.change-row .row-action.reject, .change-row .row-action.accept, .tracking-toggle'))`), false,
+    "the reader has no Accept, Reject or tracking switch");
+
   // Reject puts the text back as it was and drops the change.
   await editor.evaluate(`document.querySelector('.change-row .row-main').click()`);
   await until("reject offered", () => editor.evaluate(`Boolean(document.querySelector('.change-row .row-action.reject:not(:disabled)'))`));
   await editor.evaluate(`document.querySelector('.change-row .row-action.reject').click()`);
   await until("the text is restored in the editor", () => editor.evaluate(`!document.querySelector('.cm-content').textContent.includes(${JSON.stringify(typed)})`));
   await until("the change is gone", () => editor.evaluate(`document.querySelectorAll('.change-row').length === 0`));
+  await until("the reader's mark is gone without a reload", async () => !(await reader.frameEvaluate(readerMarked).catch(() => true)));
+  await until("the reader's row is gone", () => reader.evaluate(`document.querySelectorAll('.change-row').length === 0`));
   await until("the restored text is durable", async () => (await sourceText(slug)) === source);
 
   // And it stays restored.
@@ -97,6 +122,7 @@ try {
   await main();
 } finally {
   await editor?.close();
+  await reader?.close();
   await deployment.stop();
   removeTemporary(profile);
 }

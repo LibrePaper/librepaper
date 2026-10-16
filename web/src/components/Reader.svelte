@@ -915,7 +915,9 @@
 
   function recomputeChanges() {
     if (!session) {
-      changeRows = [];
+      // A reader or commenter has no live document; their rows come with the
+      // current project (`readerChangeRows`), so there is nothing to clear.
+      if (mayEdit) changeRows = [];
       return;
     }
     changeRows = listChanges(session.doc).map((change) => ({
@@ -931,6 +933,23 @@
       after: change.inserted,
     }));
     if (selectedChange && !changeRows.some((row) => row.id === selectedChange)) selectedChange = null;
+  }
+
+  // The pending changes a reader or commenter is sent with the current
+  // project, in the row shape the live document gives an editor.
+  function readerChangeRows(list) {
+    return (list || []).map((change) => ({
+      id: change.id,
+      file_id: change.file,
+      path: change.path,
+      author: change.author,
+      who: change.who,
+      run: change.run || "",
+      at: change.at,
+      position: change.from,
+      before: change.deleted,
+      after: change.inserted,
+    }));
   }
 
   // Recomputing reads every change, and the thing that asks for it most often
@@ -3005,6 +3024,8 @@
       if (readerDisposed || mayEdit) return;
       projectEtag = response.headers.get("etag") || `"${next.project_digest}"`;
       currentProject = next;
+      changeRows = readerChangeRows(next.changes);
+      if (selectedChange && !changeRows.some((row) => row.id === selectedChange)) selectedChange = null;
       projectUnreadable = "";
       sourceFormat = next.format || sourceFormat;
       configureLatex(sourceFormat, readerProjectOwner);

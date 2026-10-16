@@ -10,28 +10,29 @@ import { tabsFor, TABS } from "../../src/lib/panels.js";
 
 const offered = (who) => tabsFor(who).map((tab) => tab.id);
 
-// The two roles that arrive by a link. A read link is a document and nothing
-// else: no panel is a panel they could act in, and a rail of icons opening
-// columns that report on work they cannot do is a workspace they do not have.
+// The two roles that arrive by a link. A read link is a document and the
+// pending changes in it, read only: no other panel is one they could act in,
+// and a rail of icons opening columns that report on work they cannot do is a
+// workspace they do not have.
 assert.deepEqual(
   offered({ role: "reader", mayEdit: false, editing: false, canSeeSharing: false, canPublish: false }),
-  [],
-  "a read link is offered no panel at all",
+  ["changes"],
+  "a read link is offered the changes, read only",
 );
 
-// A comment link is the comments, and only those: not the changes queue, not
-// the agent, not the history, none of which the link can touch.
+// A comment link is the comments and the changes, and only those: not the
+// agent, not the history, none of which the link can touch.
 assert.deepEqual(
   offered({ role: "commenter", mayEdit: false, editing: false, canSeeSharing: false, canPublish: false }),
-  ["collaboration"],
-  "a comment link is offered the one panel it is for",
+  ["collaboration", "changes"],
+  "a comment link is offered the comments and the changes",
 );
 
 // Neither of them is offered the source, which is the same statement: the
 // panels that stand beside a source pane are not on their list.
 for (const role of ["reader", "commenter"]) {
   const list = offered({ role, mayEdit: false, editing: false, canSeeSharing: false, canPublish: false });
-  for (const forbidden of ["files", "outline", "changes", "agent", "history", "diagnostics", "share"]) {
+  for (const forbidden of ["files", "outline", "agent", "history", "diagnostics", "share"]) {
     assert.ok(!list.includes(forbidden), `${role} is not offered ${forbidden}`);
   }
 }
@@ -64,4 +65,4 @@ assert.deepEqual(offered({ mayEdit: false, editing: false }), [], "an unanswered
 assert.deepEqual(offered({ role: "", mayEdit: false, editing: false }), [], "and neither does an empty role");
 assert.deepEqual(offered(undefined), [], "nor no reader at all");
 
-console.log("panels: a read link gets the document, a comment link gets the comments, an editor gets the workspace");
+console.log("panels: a read link gets the changes, a comment link gets the comments and changes, an editor gets the workspace");
