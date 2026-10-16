@@ -1,7 +1,10 @@
 //! Explicit TOML configuration for server deployments. Environment lookup is
 //! permitted only when a leaf explicitly names an env reference.
 use librepaper_base::{
-    auth::Policy,
+    auth::{
+        acceptable_provider_url, trim_issuer, valid_oidc_slug, OidcProvider, Policy,
+        SESSION_MAX_AGE,
+    },
     config::{Configuration, DEFAULT_LOG_QUOTA_BYTES, DEFAULT_PENDING_BYTES},
 };
 use librepaper_engine::storage::StorageOptions;
@@ -64,8 +67,9 @@ pub(crate) struct ResolvedConfig {
     pub(crate) storage: StorageOptions,
     pub(crate) github_client_id: Option<String>,
     pub(crate) github_client_secret: Option<String>,
-    pub(crate) google_client_id: Option<String>,
-    pub(crate) google_client_secret: Option<String>,
+    pub(crate) oidc: Vec<OidcProvider>,
+    pub(crate) session_lifetime: std::time::Duration,
+    session_lifetime_text: String,
     pub(crate) publishers: Vec<String>,
     pub(crate) commenters: Vec<String>,
     pub(crate) simulate_activity: Option<u32>,
@@ -101,11 +105,16 @@ impl fmt::Debug for ResolvedConfig {
                 "github_client_secret",
                 &self.github_client_secret.as_ref().map(|_| "<redacted>"),
             )
-            .field("google_client_id", &self.google_client_id)
+            .field("oidc_count", &self.oidc.len())
             .field(
-                "google_client_secret",
-                &self.google_client_secret.as_ref().map(|_| "<redacted>"),
+                "oidc_ids",
+                &self
+                    .oidc
+                    .iter()
+                    .map(|provider| provider.id.as_str())
+                    .collect::<Vec<_>>(),
             )
+            .field("session_lifetime", &self.session_lifetime)
             .field("publishers", &self.publishers)
             .field("commenters", &self.commenters)
             .field("simulate_activity", &self.simulate_activity)
@@ -193,12 +202,32 @@ struct S3 {
 struct Auth {
     github: OAuth,
     google: OAuth,
+    entra: Entra,
+    oidc: BTreeMap<String, Custom>,
+    session_lifetime: Option<Input<String>>,
 }
 #[derive(Debug, Default, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 struct OAuth {
     client_id: Option<Input<String>>,
     client_secret: Option<Input<String>>,
+}
+#[derive(Debug, Default, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+struct Entra {
+    tenant: Option<Input<String>>,
+    client_id: Option<Input<String>>,
+    client_secret: Option<Input<String>>,
+    label: Option<Input<String>>,
+}
+#[derive(Debug, Default, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+struct Custom {
+    issuer: Option<Input<String>>,
+    client_id: Option<Input<String>>,
+    client_secret: Option<Input<String>>,
+    label: Option<Input<String>>,
+    scopes: Option<Input<String>>,
 }
 #[derive(Debug, Default, Deserialize)]
 #[serde(default, deny_unknown_fields)]
@@ -431,11 +460,31 @@ fn check_keys(v: &toml::Value) -> Result<(), String> {
             ],
         )?;
     }
-    section(v, "auth", &["github", "google"])?;
+    section(
+        v,
+        "auth",
+        &["github", "google", "entra", "oidc", "session_lifetime"],
+    )?;
     if let Some(x) = v.get("auth") {
         for p in ["github", "google"] {
             if let Some(y) = x.get(p) {
                 table(y, &format!("auth.{p}."), &["client_id", "client_secret"])?;
+            }
+        }
+        if let Some(y) = x.get("entra") {
+            table(
+                y,
+                "auth.entra.",
+                &["tenant", "client_id", "client_secret", "label"],
+            )?;
+        }
+        if let Some(providers) = x.get("oidc").and_then(toml::Value::as_table) {
+            for (slug, y) in providers {
+                table(
+                    y,
+                    &format!("auth.oidc.{slug}."),
+                    &["issuer", "client_id", "client_secret", "label", "scopes"],
+                )?;
             }
         }
     }
@@ -619,9 +668,6 @@ pub(crate) fn load_with_postgres_env(
     let github_client_id = r.optional("auth.github.client_id", raw.auth.github.client_id)?;
     let github_client_secret =
         r.optional("auth.github.client_secret", raw.auth.github.client_secret)?;
-    let google_client_id = r.optional("auth.google.client_id", raw.auth.google.client_id)?;
-    let google_client_secret =
-        r.optional("auth.google.client_secret", raw.auth.google.client_secret)?;
     let publishers = r.value(
         "access.publishers",
         raw.access.publishers,
@@ -736,18 +782,13 @@ pub(crate) fn load_with_postgres_env(
     {
         return Err("auth.github.client_id and client_secret must not be blank".into());
     }
-    if google_client_id.is_some() != google_client_secret.is_some() {
-        return Err("auth.google.client_id and client_secret must be configured together".into());
-    }
-    if google_client_id
-        .as_deref()
-        .is_some_and(|value| value.trim().is_empty())
-        || google_client_secret
-            .as_deref()
-            .is_some_and(|value| value.trim().is_empty())
-    {
-        return Err("auth.google.client_id and client_secret must not be blank".into());
-    }
+    let (oidc, session_lifetime_text, session_lifetime) = resolve_auth(
+        raw.auth.google,
+        raw.auth.entra,
+        raw.auth.oidc,
+        raw.auth.session_lifetime,
+        &mut r,
+    )?;
     validate_public_urls(
         app_origin.as_deref(),
         docs_origin.as_deref(),
@@ -775,8 +816,9 @@ pub(crate) fn load_with_postgres_env(
         storage,
         github_client_id,
         github_client_secret,
-        google_client_id,
-        google_client_secret,
+        oidc,
+        session_lifetime,
+        session_lifetime_text,
         publishers,
         commenters,
         simulate_activity,
@@ -789,6 +831,224 @@ pub(crate) fn load_with_postgres_env(
         config,
         sources: r.sources,
     })
+}
+
+/// Largest number of custom OpenID Connect providers.
+const MAX_OIDC_PROVIDERS: usize = 8;
+
+/// Resolves the OpenID Connect providers and the browser session lifetime.
+/// Providers come out in sign-in page order: Google, Entra, then the custom
+/// entries sorted by slug.
+fn resolve_auth(
+    google: OAuth,
+    entra: Entra,
+    custom: BTreeMap<String, Custom>,
+    session_lifetime: Option<Input<String>>,
+    r: &mut Resolver<'_>,
+) -> Result<(Vec<OidcProvider>, String, std::time::Duration), String> {
+    let mut providers = Vec::new();
+
+    let google_id = r.optional("auth.google.client_id", google.client_id)?;
+    let google_secret = r.optional("auth.google.client_secret", google.client_secret)?;
+    if let Some((client_id, client_secret)) = credentials("google", google_id, google_secret)? {
+        providers.push(OidcProvider::google(&client_id, &client_secret));
+    }
+
+    let tenant = r.optional("auth.entra.tenant", entra.tenant)?;
+    let entra_id = r.optional("auth.entra.client_id", entra.client_id)?;
+    let entra_secret = r.optional("auth.entra.client_secret", entra.client_secret)?;
+    let entra_label = r.optional("auth.entra.label", entra.label)?;
+    let entra_set =
+        tenant.is_some() || entra_id.is_some() || entra_secret.is_some() || entra_label.is_some();
+    match credentials("entra", entra_id, entra_secret)? {
+        Some((client_id, client_secret)) => {
+            let tenant = entra_tenant_id(&tenant.ok_or("auth.entra.tenant is required")?)?;
+            if let Some(label) = &entra_label {
+                check_label("auth.entra.label", label)?;
+            }
+            providers.push(OidcProvider::entra(
+                &tenant,
+                &client_id,
+                &client_secret,
+                entra_label.as_deref(),
+            ));
+        }
+        None if entra_set => {
+            return Err(
+                "auth.entra.client_id and client_secret must be set with the other auth.entra settings"
+                    .into(),
+            );
+        }
+        None => {}
+    }
+
+    if custom.len() > MAX_OIDC_PROVIDERS {
+        return Err("auth.oidc: at most 8 providers".into());
+    }
+    for (slug, entry) in custom {
+        if !valid_oidc_slug(&slug) {
+            return Err(format!(
+                "auth.oidc.{slug}: the name must match ^[a-z][a-z0-9-]{{0,23}}$"
+            ));
+        }
+        let key = |field: &str| format!("auth.oidc.{slug}.{field}");
+        let client_id = r.optional(&key("client_id"), entry.client_id)?;
+        let client_secret = r.optional(&key("client_secret"), entry.client_secret)?;
+        let Some((client_id, client_secret)) =
+            credentials(&format!("oidc.{slug}"), client_id, client_secret)?
+        else {
+            return Err(format!(
+                "auth.oidc.{slug}.client_id and client_secret must be set"
+            ));
+        };
+        let issuer = r.optional(&key("issuer"), entry.issuer)?;
+        let issuer = issuer.ok_or_else(|| format!("auth.oidc.{slug}.issuer is required"))?;
+        check_issuer(&key("issuer"), &issuer)?;
+        let label = r.optional(&key("label"), entry.label)?;
+        let label = label.ok_or_else(|| format!("auth.oidc.{slug}.label is required"))?;
+        check_label(&key("label"), &label)?;
+        let scopes = r.optional(&key("scopes"), entry.scopes)?;
+        if let Some(scopes) = &scopes {
+            check_scopes(&key("scopes"), scopes)?;
+        }
+        providers.push(OidcProvider::custom(
+            &slug,
+            &issuer,
+            &client_id,
+            &client_secret,
+            &label,
+            scopes.as_deref(),
+        ));
+    }
+    check_issuers(&providers)?;
+
+    let session_lifetime_text =
+        r.value("auth.session_lifetime", session_lifetime, "30d".to_owned())?;
+    // Parse failures and never, off and zero all fall outside the range.
+    let seconds = librepaper_document::document::retention::parse_retention(&session_lifetime_text)
+        .unwrap_or(0);
+    let longest = SESSION_MAX_AGE.as_secs() as i64;
+    if !(3600..=longest).contains(&seconds) {
+        return Err("auth.session_lifetime must be between 1h and 30d".into());
+    }
+    Ok((
+        providers,
+        session_lifetime_text,
+        std::time::Duration::from_secs(seconds as u64),
+    ))
+}
+
+/// client_id and client_secret come as a pair. Neither set means the table
+/// is not configured at all.
+fn credentials(
+    table: &str,
+    client_id: Option<String>,
+    client_secret: Option<String>,
+) -> Result<Option<(String, String)>, String> {
+    match (client_id, client_secret) {
+        (None, None) => Ok(None),
+        (Some(client_id), Some(client_secret)) => {
+            if client_id.trim().is_empty() || client_secret.trim().is_empty() {
+                return Err(format!(
+                    "auth.{table}.client_id and client_secret must not be blank"
+                ));
+            }
+            Ok(Some((client_id, client_secret)))
+        }
+        _ => Err(format!(
+            "auth.{table}.client_id and client_secret must be configured together"
+        )),
+    }
+}
+
+/// Entra writes the tenant GUID in lowercase in its issuer, and the issuer
+/// check is exact, so the GUID is lowercased here. One tenant only.
+fn entra_tenant_id(value: &str) -> Result<String, String> {
+    let tenant = value.to_ascii_lowercase();
+    if matches!(tenant.as_str(), "common" | "organizations" | "consumers") {
+        return Err(
+            "auth.entra.tenant must name one tenant; multi-tenant sign-in is not supported"
+                .into(),
+        );
+    }
+    if !is_guid(&tenant) {
+        return Err(
+            "auth.entra.tenant must be the Directory (tenant) ID, a GUID; a domain name produces a different issuer"
+                .into(),
+        );
+    }
+    Ok(tenant)
+}
+
+fn is_guid(value: &str) -> bool {
+    let groups: Vec<&str> = value.split('-').collect();
+    groups.len() == 5
+        && groups.iter().zip([8, 4, 4, 4, 12]).all(|(group, length)| {
+            group.len() == length && group.bytes().all(|byte| byte.is_ascii_hexdigit())
+        })
+}
+
+/// The tenant is the path segment of the issuer that the Entra preset builds.
+fn tenant_of_entra_issuer(issuer: &str) -> &str {
+    issuer
+        .strip_prefix("https://login.microsoftonline.com/")
+        .and_then(|rest| rest.strip_suffix("/v2.0"))
+        .unwrap_or(issuer)
+}
+
+/// Issuers are operator text that the server fetches from, so they must be
+/// https, or http on loopback, with no query and no fragment.
+fn check_issuer(key: &str, issuer: &str) -> Result<(), String> {
+    let refused = || {
+        format!("{key} must be an https:// URL (http:// only on localhost) with no query or fragment")
+    };
+    let parsed = url::Url::parse(issuer).map_err(|_| refused())?;
+    if parsed.query().is_some() || parsed.fragment().is_some() {
+        return Err(refused());
+    }
+    acceptable_provider_url(issuer).map_err(|_| refused())
+}
+
+/// One identity provider reached under two ids would split its users into
+/// two sets of accounts. A trailing slash does not make a new issuer.
+fn check_issuers(providers: &[OidcProvider]) -> Result<(), String> {
+    for (index, provider) in providers.iter().enumerate() {
+        let issuer = trim_issuer(&provider.issuer);
+        if let Some(earlier) = providers[..index]
+            .iter()
+            .find(|other| trim_issuer(&other.issuer) == issuer)
+        {
+            let key = match provider.id.strip_prefix("oidc-") {
+                Some(slug) => format!("auth.oidc.{slug}.issuer"),
+                None => format!("auth.{}.issuer", provider.id),
+            };
+            return Err(format!("{key} duplicates the issuer of {}", earlier.id));
+        }
+    }
+    Ok(())
+}
+
+/// Labels are shown on the sign-in page, so blank, long and control
+/// characters are refused.
+fn check_label(key: &str, label: &str) -> Result<(), String> {
+    if label.trim().is_empty() || label.chars().count() > 40 || label.chars().any(char::is_control)
+    {
+        return Err(format!(
+            "{key} must be 1 to 40 characters with no control characters"
+        ));
+    }
+    Ok(())
+}
+
+/// The id token only comes back when the scopes ask for openid.
+fn check_scopes(key: &str, scopes: &str) -> Result<(), String> {
+    let openid = scopes.split_whitespace().any(|scope| scope == "openid");
+    if !openid || scopes.chars().count() > 200 {
+        return Err(format!(
+            "{key} must contain openid and be at most 200 characters"
+        ));
+    }
+    Ok(())
 }
 
 fn validate_public_urls(
@@ -1061,6 +1321,15 @@ pub(crate) fn show_resolved(c: &ResolvedConfig) -> String {
         c.storage.s3_session_token.is_some(),
     );
 
+    section(&mut out, "auth");
+    value(
+        &mut out,
+        &c.sources,
+        "auth.session_lifetime",
+        "session_lifetime",
+        &quote(&c.session_lifetime_text),
+    );
+
     section(&mut out, "auth.github");
     optional(
         &mut out,
@@ -1076,21 +1345,97 @@ pub(crate) fn show_resolved(c: &ResolvedConfig) -> String {
         "client_secret",
         c.github_client_secret.is_some(),
     );
+    let google = c.oidc.iter().find(|provider| provider.id == "google");
     section(&mut out, "auth.google");
     optional(
         &mut out,
         &c.sources,
         "auth.google.client_id",
         "client_id",
-        c.google_client_id.as_deref(),
+        google.map(|provider| provider.client_id.as_str()),
     );
     redacted(
         &mut out,
         &c.sources,
         "auth.google.client_secret",
         "client_secret",
-        c.google_client_secret.is_some(),
+        google.is_some(),
     );
+    if let Some(entra) = c.oidc.iter().find(|provider| provider.id == "entra") {
+        section(&mut out, "auth.entra");
+        optional(
+            &mut out,
+            &c.sources,
+            "auth.entra.tenant",
+            "tenant",
+            Some(tenant_of_entra_issuer(&entra.issuer)),
+        );
+        optional(
+            &mut out,
+            &c.sources,
+            "auth.entra.client_id",
+            "client_id",
+            Some(entra.client_id.as_str()),
+        );
+        redacted(
+            &mut out,
+            &c.sources,
+            "auth.entra.client_secret",
+            "client_secret",
+            true,
+        );
+        optional(
+            &mut out,
+            &c.sources,
+            "auth.entra.label",
+            "label",
+            Some(entra.label.as_str()),
+        );
+    }
+    for provider in c
+        .oidc
+        .iter()
+        .filter(|provider| provider.id.starts_with("oidc-"))
+    {
+        let slug = &provider.id["oidc-".len()..];
+        let key = |field: &str| format!("auth.oidc.{slug}.{field}");
+        section(&mut out, &format!("auth.oidc.{slug}"));
+        optional(
+            &mut out,
+            &c.sources,
+            &key("issuer"),
+            "issuer",
+            Some(provider.issuer.as_str()),
+        );
+        optional(
+            &mut out,
+            &c.sources,
+            &key("client_id"),
+            "client_id",
+            Some(provider.client_id.as_str()),
+        );
+        redacted(
+            &mut out,
+            &c.sources,
+            &key("client_secret"),
+            "client_secret",
+            true,
+        );
+        optional(
+            &mut out,
+            &c.sources,
+            &key("label"),
+            "label",
+            Some(provider.label.as_str()),
+        );
+        optional(
+            &mut out,
+            &c.sources,
+            &key("scopes"),
+            "scopes",
+            Some(provider.scopes.as_str()),
+        );
+    }
 
     section(&mut out, "access");
     value(
@@ -1795,4 +2140,354 @@ client_secret = { file = "missing-oauth-secret" }
         assert!(toml::from_str::<toml::Value>(&s).is_ok());
         assert!(s.contains("# source: default"));
     }
+
+    fn oidc_ids(loaded: &ResolvedConfig) -> Vec<&str> {
+        loaded
+            .oidc
+            .iter()
+            .map(|provider| provider.id.as_str())
+            .collect()
+    }
+
+    const GOOGLE_TABLE: &str =
+        "[auth.google]\nclient_id = \"google-id\"\nclient_secret = \"google-secret\"\n";
+    const ENTRA_TENANT: &str = "00000000-0000-0000-0000-000000000000";
+    const ENTRA_CREDENTIALS: &str = "client_id = \"entra-id\"\nclient_secret = \"entra-secret\"\n";
+    const CUSTOM_BODY: &str = "issuer = \"https://sso.example.org/realms/staff\"\nclient_id = \"librepaper\"\nclient_secret = \"custom-secret\"\nlabel = \"Example SSO\"\n";
+
+    fn entra_text(tenant: &str, body: &str) -> String {
+        format!("[auth.entra]\ntenant = \"{}\"\n{}", tenant, body)
+    }
+
+    fn custom_entry(slug: &str, body: &str) -> String {
+        format!("[auth.oidc.{}]\n{}", slug, body)
+    }
+
+    #[test]
+    fn google_needs_both_credentials_and_non_blank_values() {
+        let error = load_text("[auth.google]\nclient_id = \"id\"\n").unwrap_err();
+        assert!(
+            error.contains("auth.google.client_id and client_secret must be configured together"),
+            "{error}"
+        );
+        let error = load_text("[auth.google]\nclient_secret = \"secret\"\n").unwrap_err();
+        assert!(
+            error.contains("auth.google.client_id and client_secret must be configured together"),
+            "{error}"
+        );
+        let error =
+            load_text("[auth.google]\nclient_id = \" \"\nclient_secret = \"secret\"\n").unwrap_err();
+        assert!(
+            error.contains("auth.google.client_id and client_secret must not be blank"),
+            "{error}"
+        );
+        let loaded = load_text(GOOGLE_TABLE).unwrap();
+        assert_eq!(oidc_ids(&loaded), ["google"]);
+        assert_eq!(loaded.oidc[0].issuer, "https://accounts.google.com");
+    }
+
+    #[test]
+    fn entra_needs_a_credential_pair_and_one_guid_tenant() {
+        let pair = "auth.entra.client_id and client_secret must be configured together";
+        let blank = "auth.entra.client_id and client_secret must not be blank";
+        let missing = "auth.entra.client_id and client_secret must be set";
+        let guid = "auth.entra.tenant must be the Directory (tenant) ID, a GUID";
+        let domain = "a domain name produces a different issuer";
+        let multi = "multi-tenant sign-in is not supported";
+        let long_label = format!(
+            "{}label = \"{}\"\n",
+            entra_text(ENTRA_TENANT, ENTRA_CREDENTIALS),
+            "x".repeat(41)
+        );
+        let cases: Vec<(String, &str)> = vec![
+            (entra_text(ENTRA_TENANT, "client_id = \"id\"\n"), pair),
+            (entra_text(ENTRA_TENANT, "client_secret = \"secret\"\n"), pair),
+            (
+                entra_text(
+                    ENTRA_TENANT,
+                    "client_id = \" \"\nclient_secret = \"secret\"\n",
+                ),
+                blank,
+            ),
+            (entra_text(ENTRA_TENANT, ""), missing),
+            (
+                "[auth.entra]\nclient_id = \"id\"\nclient_secret = \"secret\"\n".to_owned(),
+                "auth.entra.tenant is required",
+            ),
+            (entra_text("contoso.onmicrosoft.com", ENTRA_CREDENTIALS), domain),
+            (entra_text("0000-0000", ENTRA_CREDENTIALS), guid),
+            (
+                entra_text("00000000000000000000000000000000", ENTRA_CREDENTIALS),
+                guid,
+            ),
+            (entra_text("common", ENTRA_CREDENTIALS), multi),
+            (entra_text("Organizations", ENTRA_CREDENTIALS), multi),
+            (entra_text("CONSUMERS", ENTRA_CREDENTIALS), multi),
+            (long_label, "auth.entra.label must be 1 to 40 characters"),
+        ];
+        for (text, expected) in cases {
+            let error = load_text(&text).unwrap_err();
+            assert!(error.contains(expected), "{text}: {error}");
+        }
+
+        let loaded = load_text(&entra_text(
+            "ABCDEF12-3456-7890-ABCD-EF1234567890",
+            ENTRA_CREDENTIALS,
+        ))
+        .unwrap();
+        assert_eq!(oidc_ids(&loaded), ["entra"]);
+        assert_eq!(
+            loaded.oidc[0].issuer,
+            "https://login.microsoftonline.com/abcdef12-3456-7890-abcd-ef1234567890/v2.0"
+        );
+        assert_eq!(loaded.oidc[0].label, "Microsoft");
+        let loaded = load_text(&format!(
+            "{}label = \"Contoso\"\n",
+            entra_text(ENTRA_TENANT, ENTRA_CREDENTIALS)
+        ))
+        .unwrap();
+        assert_eq!(loaded.oidc[0].label, "Contoso");
+    }
+
+    #[test]
+    fn custom_entries_pass_and_refuse_by_rule() {
+        let loaded = load_text(&custom_entry("keycloak", CUSTOM_BODY)).unwrap();
+        assert_eq!(oidc_ids(&loaded), ["oidc-keycloak"]);
+        assert_eq!(loaded.oidc[0].issuer, "https://sso.example.org/realms/staff");
+        assert_eq!(loaded.oidc[0].label, "Example SSO");
+
+        for issuer in [
+            "http://localhost:8080/realms/staff",
+            "http://127.0.0.1:8080",
+            "http://[::1]:8080",
+        ] {
+            let body = CUSTOM_BODY.replace("https://sso.example.org/realms/staff", issuer);
+            assert!(load_text(&custom_entry("keycloak", &body)).is_ok(), "{issuer}");
+        }
+
+        let custom_error = |body: &str| load_text(&custom_entry("keycloak", body)).unwrap_err();
+        let issuer_error = "auth.oidc.keycloak.issuer must be an https:// URL (http:// only on localhost) with no query or fragment";
+        for issuer in [
+            "http://sso.example.org/realms/staff",
+            "https://sso.example.org/realms/staff?tenant=1",
+            "https://sso.example.org/realms/staff#top",
+            "sso.example.org/realms/staff",
+        ] {
+            let body = CUSTOM_BODY.replace("https://sso.example.org/realms/staff", issuer);
+            assert!(custom_error(&body).contains(issuer_error), "{issuer}");
+        }
+
+        let body = CUSTOM_BODY.replace("issuer = \"https://sso.example.org/realms/staff\"\n", "");
+        assert!(custom_error(&body).contains("auth.oidc.keycloak.issuer is required"));
+        let body = CUSTOM_BODY.replace("label = \"Example SSO\"\n", "");
+        assert!(custom_error(&body).contains("auth.oidc.keycloak.label is required"));
+        let body = CUSTOM_BODY.replace("client_secret = \"custom-secret\"\n", "");
+        assert!(custom_error(&body).contains(
+            "auth.oidc.keycloak.client_id and client_secret must be configured together"
+        ));
+        let body = CUSTOM_BODY.replace("client_id = \"librepaper\"\nclient_secret = \"custom-secret\"\n", "");
+        assert!(custom_error(&body)
+            .contains("auth.oidc.keycloak.client_id and client_secret must be set"));
+        let body = CUSTOM_BODY.replace("custom-secret", " ");
+        assert!(custom_error(&body)
+            .contains("auth.oidc.keycloak.client_id and client_secret must not be blank"));
+
+        let label_error = "auth.oidc.keycloak.label must be 1 to 40 characters";
+        let long_label = "x".repeat(41);
+        for label in ["", " ", "Bad\\u0007Label", long_label.as_str()] {
+            let body = CUSTOM_BODY.replace(
+                "label = \"Example SSO\"",
+                &format!("label = \"{}\"", label),
+            );
+            assert!(custom_error(&body).contains(label_error), "{label}");
+        }
+        let body = CUSTOM_BODY.replace("label = \"Example SSO\"", &format!("label = \"{}\"", "x".repeat(40)));
+        assert!(load_text(&custom_entry("keycloak", &body)).is_ok());
+
+        let scopes_error = "auth.oidc.keycloak.scopes must contain openid and be at most 200 characters";
+        for scopes in [
+            "profile email".to_owned(),
+            String::new(),
+            format!("openid {}", "p".repeat(194)),
+        ] {
+            let body = format!("{}scopes = \"{}\"\n", CUSTOM_BODY, scopes);
+            assert!(custom_error(&body).contains(scopes_error), "{scopes}");
+        }
+        let body = format!("{}scopes = \"openid {}\"\n", CUSTOM_BODY, "p".repeat(193));
+        assert!(load_text(&custom_entry("keycloak", &body)).is_ok());
+
+        let error = custom_error(&format!("{}wat = 1\n", CUSTOM_BODY));
+        assert!(error.contains("auth.oidc.keycloak.wat"), "{error}");
+    }
+
+    #[test]
+    fn custom_names_match_the_slug_rule_and_the_count_is_capped() {
+        let long = "a".repeat(25);
+        for slug in ["Keycloak", "1sso", long.as_str()] {
+            let error = load_text(&custom_entry(slug, CUSTOM_BODY)).unwrap_err();
+            assert!(
+                error.contains(
+                    format!(
+                        "auth.oidc.{}: the name must match ^[a-z][a-z0-9-]{{0,23}}$",
+                        slug
+                    )
+                    .as_str()
+                ),
+                "{error}"
+            );
+        }
+        assert!(load_text(&custom_entry(&"a".repeat(24), CUSTOM_BODY)).is_ok());
+
+        let numbered = |count: usize| -> String {
+            (0..count)
+                .map(|n| {
+                    custom_entry(
+                        &format!("p{}", n),
+                        &format!(
+                            "issuer = \"https://p{}.example.org\"\nclient_id = \"id\"\nclient_secret = \"secret\"\nlabel = \"Example\"\n",
+                            n
+                        ),
+                    )
+                })
+                .collect()
+        };
+        assert!(load_text(&numbered(8)).is_ok());
+        let error = load_text(&numbered(9)).unwrap_err();
+        assert!(error.contains("auth.oidc: at most 8 providers"), "{error}");
+    }
+
+    #[test]
+    fn oidc_issuers_must_be_unique_after_one_trailing_slash() {
+        let mirror = "issuer = \"https://accounts.google.com/\"\nclient_id = \"id\"\nclient_secret = \"secret\"\nlabel = \"Mirror\"\n";
+        let error = load_text(&format!(
+            "{}{}",
+            GOOGLE_TABLE,
+            custom_entry("mirror", mirror)
+        ))
+        .unwrap_err();
+        assert!(
+            error.contains("auth.oidc.mirror.issuer duplicates the issuer of google"),
+            "{error}"
+        );
+
+        let entra_mirror = format!(
+            "issuer = \"https://login.microsoftonline.com/{}/v2.0/\"\nclient_id = \"id\"\nclient_secret = \"secret\"\nlabel = \"Mirror\"\n",
+            ENTRA_TENANT
+        );
+        let error = load_text(&format!(
+            "{}{}",
+            entra_text(ENTRA_TENANT, ENTRA_CREDENTIALS),
+            custom_entry("mirror", &entra_mirror)
+        ))
+        .unwrap_err();
+        assert!(
+            error.contains("auth.oidc.mirror.issuer duplicates the issuer of entra"),
+            "{error}"
+        );
+
+        let error = load_text(&format!(
+            "{}{}",
+            custom_entry("a", CUSTOM_BODY),
+            custom_entry("b", CUSTOM_BODY)
+        ))
+        .unwrap_err();
+        assert!(
+            error.contains("auth.oidc.b.issuer duplicates the issuer of oidc-a"),
+            "{error}"
+        );
+    }
+
+    #[test]
+    fn providers_come_out_in_sign_in_order() {
+        let other_issuer = CUSTOM_BODY.replace("staff", "other");
+        let text = format!(
+            "{}{}{}{}",
+            custom_entry("zeta", CUSTOM_BODY),
+            custom_entry("alpha", &other_issuer),
+            entra_text(ENTRA_TENANT, ENTRA_CREDENTIALS),
+            GOOGLE_TABLE
+        );
+        let loaded = load_text(&text).unwrap();
+        assert_eq!(
+            oidc_ids(&loaded),
+            ["google", "entra", "oidc-alpha", "oidc-zeta"]
+        );
+    }
+
+    fn session_lifetime(text: &str) -> Result<std::time::Duration, String> {
+        load_text(&format!("[auth]\nsession_lifetime = \"{}\"\n", text))
+            .map(|loaded| loaded.session_lifetime)
+    }
+
+    #[test]
+    fn session_lifetime_is_bounded_and_defaults_to_thirty_days() {
+        assert_eq!(
+            session_lifetime("24h").unwrap(),
+            std::time::Duration::from_secs(86_400)
+        );
+        assert_eq!(
+            session_lifetime("7d").unwrap(),
+            std::time::Duration::from_secs(7 * 86_400)
+        );
+        assert_eq!(
+            session_lifetime("1h").unwrap(),
+            std::time::Duration::from_secs(3_600)
+        );
+        assert_eq!(session_lifetime("30d").unwrap(), SESSION_MAX_AGE);
+        for text in ["30m", "31d", "never", "0"] {
+            let error = session_lifetime(text).unwrap_err();
+            assert!(
+                error.contains("auth.session_lifetime must be between 1h and 30d"),
+                "{text}: {error}"
+            );
+        }
+        let loaded = load_text("").unwrap();
+        assert_eq!(loaded.session_lifetime, SESSION_MAX_AGE);
+        assert!(show_resolved(&loaded).contains("session_lifetime = \"30d\""));
+    }
+
+    #[test]
+    fn unknown_keys_in_the_oidc_tables_are_refused() {
+        let error = load_text(&entra_text(ENTRA_TENANT, "wat = 1\n")).unwrap_err();
+        assert!(error.contains("auth.entra.wat"), "{error}");
+        let error = load_text("[auth]\nnever = 1\n").unwrap_err();
+        assert!(error.contains("auth.never"), "{error}");
+    }
+
+    #[test]
+    fn the_dump_shows_the_oidc_sections_without_secrets() {
+        let text = format!(
+            "[auth]\nsession_lifetime = \"24h\"\n{}{}{}",
+            "[auth.google]\nclient_id = \"google-id\"\nclient_secret = \"GOOGLE-SECRET\"\n",
+            entra_text(
+                ENTRA_TENANT,
+                "client_id = \"entra-id\"\nclient_secret = \"ENTRA-SECRET\"\nlabel = \"Contoso\"\n",
+            ),
+            custom_entry(
+                "keycloak",
+                "issuer = \"https://sso.example.org/realms/staff\"\nclient_id = \"librepaper\"\nclient_secret = \"KEYCLOAK-SECRET\"\nlabel = \"Example SSO\"\nscopes = \"openid email profile\"\n",
+            ),
+        );
+        let loaded = load_text(&text).unwrap();
+        let shown = show_resolved(&loaded);
+        let debug = format!("{:?}", loaded);
+        for secret in ["GOOGLE-SECRET", "ENTRA-SECRET", "KEYCLOAK-SECRET"] {
+            assert!(!shown.contains(secret), "{shown}");
+            assert!(!debug.contains(secret), "{debug}");
+        }
+        for expected in [
+            "session_lifetime = \"24h\"",
+            "[auth.google]",
+            "[auth.entra]",
+            "tenant = \"00000000-0000-0000-0000-000000000000\"",
+            "label = \"Contoso\"",
+            "[auth.oidc.keycloak]",
+            "issuer = \"https://sso.example.org/realms/staff\"",
+            "scopes = \"openid email profile\"",
+        ] {
+            assert!(shown.contains(expected), "{expected}: {shown}");
+        }
+        assert!(toml::from_str::<toml::Value>(&shown).is_ok());
+    }
+
 }
