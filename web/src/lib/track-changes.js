@@ -5,8 +5,7 @@
 // records (pure, shared with the Rust port through the fixtures), writes the
 // records, resolves them to offsets and decides them.
 //
-// Offsets are UTF-16 everywhere except at the Loro boundary, where cursors
-// and `getCursorPos` use Unicode code points.
+// Offsets are UTF-16 everywhere, the same as CodeMirror and loro-crdt in JS.
 
 import { Cursor } from "loro-crdt";
 
@@ -18,25 +17,6 @@ export const CHANGES = "changes";
  * @typedef {{ id: string, who: string, author: string, run: string | null, at: number, from: number, to: number, deleted: string }} Change
  * @typedef {Change & { state: "kept" | "set" | "removed" }} PlannedChange
  */
-
-// ---------------------------------------------------------------------------
-// Unit conversion
-
-function toUtf16(text, codePoints) {
-  let i = 0;
-  for (let n = 0; n < codePoints && i < text.length; n += 1) {
-    i += text.codePointAt(i) > 0xffff ? 2 : 1;
-  }
-  return i;
-}
-
-function toCodePoints(text, units) {
-  let n = 0;
-  for (let i = 0; i < units && i < text.length; n += 1) {
-    i += text.codePointAt(i) > 0xffff ? 2 : 1;
-  }
-  return n;
-}
 
 // ---------------------------------------------------------------------------
 // The planner
@@ -158,7 +138,9 @@ function planOne(cur, list, edit, me, run, now, mintId) {
       to = mapEnd(c.to, ef, et, len);
       if (to < from) from = to;
     }
-    out.push({ ...c, from, to });
+    const overlaps =
+      c.from === c.to ? et > ef && ef <= c.from && c.from < et : c.from < et && c.to > ef;
+    out.push({ ...c, from, to, state: overlaps ? "set" : c.state });
   }
 
   const kept = [];
@@ -215,28 +197,31 @@ function fileText(doc, fileId) {
 function cursorPos(doc, bytes) {
   try {
     const result = doc.getCursorPos(Cursor.decode(bytes));
-    return result && typeof result.offset === "number" ? result.offset : null;
+    if (!result || typeof result.offset !== "number") return null;
+    return { offset: result.offset, update: result.update ?? null };
   } catch {
     return null;
   }
 }
 
 // Resolves one stored value to UTF-16 offsets, or null when it is orphaned.
-function resolveEntry(doc, id, value, content) {
+// `healed` holds the replacement bytes of a cursor whose character was deleted.
+function resolveEntry(doc, id, value) {
   if (!value || typeof value.file !== "string" || !(value.start instanceof Uint8Array)) return null;
   const text = fileText(doc, value.file);
   if (!text) return null;
-  const s = content ?? text.toString();
   const start = cursorPos(doc, value.start);
-  if (start === null) return null;
-  let end = start;
+  if (!start) return null;
+  const healed = {};
+  if (start.update) healed.start = start.update.encode();
+  const from = start.offset;
+  let to = from;
   if (value.end) {
-    const e = cursorPos(doc, value.end);
-    if (e === null) return null;
-    end = e;
+    const end = cursorPos(doc, value.end);
+    if (!end) return null;
+    if (end.update) healed.end = end.update.encode();
+    to = end.update ? end.offset : end.offset + 1;
   }
-  const from = toUtf16(s, start);
-  let to = toUtf16(s, end);
   if (to < from) to = from;
   return {
     id,
@@ -248,6 +233,7 @@ function resolveEntry(doc, id, value, content) {
     from,
     to,
     deleted: value.deleted ?? "",
+    healed,
   };
 }
 
@@ -260,7 +246,7 @@ function resolveAll(doc, fileId) {
       const text = fileText(doc, value.file);
       contents.set(value.file, text ? text.toString() : null);
     }
-    const resolved = resolveEntry(doc, id, value, contents.get(value?.file));
+    const resolved = resolveEntry(doc, id, value);
     if (!resolved) continue;
     if (resolved.from === resolved.to && resolved.deleted === "") continue;
     found.push({ ...resolved, content: contents.get(value.file) });
@@ -277,7 +263,7 @@ function resolveAll(doc, fileId) {
  * @param {string} fileId
  */
 export function resolveChanges(doc, fileId) {
-  return resolveAll(doc, fileId).map(({ content, ...change }) => change);
+  return resolveAll(doc, fileId).map(({ content, healed, ...change }) => change);
 }
 
 /**
@@ -286,7 +272,7 @@ export function resolveChanges(doc, fileId) {
  * @param {import("loro-crdt").LoroDoc} doc
  */
 export function listChanges(doc) {
-  return resolveAll(doc).map(({ content, ...change }) => ({
+  return resolveAll(doc).map(({ content, healed, ...change }) => ({
     ...change,
     inserted: content.slice(change.from, change.to),
   }));
@@ -296,13 +282,11 @@ export function listChanges(doc) {
 // Writing the records
 
 function cursorValue(text, from, to, me, run, at, deleted, file) {
-  const s = text.toString();
-  const startCp = toCodePoints(s, from);
-  const start = text.getCursor(startCp, -1);
+  const start = text.getCursor(from, -1);
   if (!start) return null;
   let end = null;
   if (to > from) {
-    end = text.getCursor(toCodePoints(s, to) - 1, 1);
+    end = text.getCursor(to - 1, 1);
     if (!end) return null;
   }
   return {
@@ -406,7 +390,7 @@ export function reject(doc, id) {
   const map = doc.getMap(CHANGES);
   const value = map.get(id);
   if (!value) return false;
-  const resolved = resolveEntry(doc, id, value, null);
+  const resolved = resolveEntry(doc, id, value);
   if (resolved) {
     const text = fileText(doc, resolved.file);
     if (resolved.to > resolved.from) text.delete(resolved.from, resolved.to - resolved.from);
@@ -418,7 +402,8 @@ export function reject(doc, id) {
 }
 
 /**
- * Deletes orphaned and empty records. Does not commit. Returns the count.
+ * Deletes orphaned and empty records and rewrites entries whose cursors
+ * pointed at deleted characters. Does not commit. Returns the number deleted.
  *
  * @param {import("loro-crdt").LoroDoc} doc
  */
@@ -426,10 +411,16 @@ export function prune(doc) {
   const map = doc.getMap(CHANGES);
   let count = 0;
   for (const [id, value] of [...map.entries()]) {
-    const resolved = resolveEntry(doc, id, value, null);
+    const resolved = resolveEntry(doc, id, value);
     if (!resolved || (resolved.from === resolved.to && resolved.deleted === "")) {
       map.delete(id);
       count += 1;
+    } else if (resolved.healed.start || resolved.healed.end) {
+      map.set(id, {
+        ...value,
+        start: resolved.healed.start ?? value.start,
+        end: resolved.healed.end ?? value.end,
+      });
     }
   }
   return count;
