@@ -15,7 +15,7 @@
 export const nav = [
   { path: "what", label: "What is LibrePaper" },
   { path: "migration", label: "Migration" },
-  { path: "desktop-app", label: "Desktop app" },
+  { path: "desktop-app", label: "Web and desktop app" },
   { path: "backups", label: "Local backups" },
   {
     label: "Computational notebooks",

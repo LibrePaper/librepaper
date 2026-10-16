@@ -10,6 +10,8 @@ agent to comment and edit.
 
 ## Features
 
+Most features work in any web browser. Running code, agents, Zotero and local backups need the [desktop app](desktop-app.html).
+
 Writing:
 
 - Live preview of Markdown, HTML, Typst and LaTeX
