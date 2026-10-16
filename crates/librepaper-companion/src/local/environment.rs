@@ -14,16 +14,46 @@ const MAX_SHELL_OUTPUT: usize = 64 * 1024;
 
 /// Initialize the process PATH on macOS and Linux. This must run before threads start.
 ///
+/// The login shell's PATH is read from a cache in the state directory when one
+/// exists, so a start does not wait for the shell. The cache is refreshed by a
+/// background thread started after PATH is set; a tool installed since the last
+/// start is found from the next start on. With no cache, the shell is run once
+/// synchronously and its PATH is written to the cache.
+///
 /// # Safety
 /// Call only during synchronous startup before Tokio or any other threads are
 /// started. Changing the process environment while other threads may read it
-/// is unsafe.
+/// is unsafe. The background refresh thread runs only after PATH is set and
+/// makes no environment writes, but any later `set_var` in the process races
+/// with it.
 #[cfg(any(target_os = "macos", target_os = "linux"))]
 pub unsafe fn initialize() {
     let inherited = std::env::var_os("PATH").unwrap_or_default();
-    let dirs = resolve_path(&inherited, home_directory(), shell_path());
+    let cache = cache_file();
+    let cached = cache.as_deref().and_then(read_cache);
+    let shell = match &cached {
+        Some(path) => Some(path.clone()),
+        None => {
+            let fresh = shell_path();
+            if let (Some(file), Some(fresh)) = (cache.as_deref(), fresh.as_deref()) {
+                write_cache(file, fresh);
+            }
+            fresh
+        }
+    };
+    let dirs = resolve_path(&inherited, home_directory(), shell);
     if let Ok(path) = std::env::join_paths(dirs) {
         unsafe { std::env::set_var("PATH", path) };
+    }
+    // Threads may start only now that PATH is set.
+    if cached.is_some() {
+        if let Some(file) = cache {
+            std::thread::spawn(move || {
+                if let Some(fresh) = shell_path() {
+                    write_cache(&file, &fresh);
+                }
+            });
+        }
     }
 }
 
@@ -39,6 +69,31 @@ fn home_directory() -> Option<PathBuf> {
     std::env::var_os("HOME")
         .filter(|home| !home.is_empty())
         .map(PathBuf::from)
+}
+
+// The login shell's PATH from the last start, so the next start does not wait
+// for the shell. It is refreshed in the background every start.
+#[cfg(any(target_os = "macos", target_os = "linux"))]
+fn cache_file() -> Option<PathBuf> {
+    crate::local::paths::state_home()
+        .ok()
+        .map(|home| home.join("librepaper/local/login-path"))
+}
+
+#[cfg(any(target_os = "macos", target_os = "linux"))]
+fn read_cache(path: &Path) -> Option<OsString> {
+    use std::os::unix::ffi::OsStringExt;
+    let bytes = std::fs::read(path).ok()?;
+    (!bytes.is_empty()).then(|| OsString::from_vec(bytes))
+}
+
+#[cfg(any(target_os = "macos", target_os = "linux"))]
+fn write_cache(path: &Path, value: &OsStr) {
+    use std::os::unix::ffi::OsStrExt;
+    if let Some(dir) = path.parent() {
+        let _ = std::fs::create_dir_all(dir);
+    }
+    let _ = std::fs::write(path, value.as_bytes());
 }
 
 #[cfg(any(target_os = "macos", target_os = "linux"))]
@@ -369,6 +424,20 @@ mod tests {
             Some(OsString::from("/opt/homebrew/bin:/custom/bin"))
         );
         assert_eq!(parse_marked_path(b"no marker", marker), None);
+    }
+
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
+    #[test]
+    fn cached_path_round_trips_and_empty_cache_reads_as_none() {
+        let directory = tempfile::tempdir().unwrap();
+        let file = directory.path().join("nested/login-path");
+        assert_eq!(read_cache(&file), None);
+
+        write_cache(&file, OsStr::new("/opt/bin:/usr/bin"));
+        assert_eq!(read_cache(&file), Some(OsString::from("/opt/bin:/usr/bin")));
+
+        std::fs::write(&file, b"").unwrap();
+        assert_eq!(read_cache(&file), None);
     }
 
     #[cfg(unix)]
