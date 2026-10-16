@@ -119,11 +119,11 @@ try {
   assert.equal(client.current.tasks[sent.id].status, "working");
   socket.emit({ type: "task", id: "event-1b", task_id: sent.id, status: "working", text: "Still working" });
   assert.equal(client.current.tasks[sent.id].status, "working", "progress does not imply completion");
-  socket.emit({ type: "task", id: "event-finished", task_id: "finished", status: "completed", context: { results: { suggestions: ["suggestion-1"] } } });
+  socket.emit({ type: "task", id: "event-finished", task_id: "finished", status: "completed", context: { results: { changes: ["change-1"] } } });
   assert.equal(client.current.tasks.finished.status, "completed");
-  assert.deepEqual(client.current.tasks.finished.result, { suggestions: ["suggestion-1"] });
-  socket.emit({ type: "task", id: "cancelled-with-effects", task_id: "cancelled-effects", status: "cancelled", context: { results: { suggestions: ["suggestion-1"] } } });
-  assert.deepEqual(client.current.messages.at(-1).context.results, { suggestions: ["suggestion-1"] }, "cancelled effects remain reviewable in the transcript");
+  assert.deepEqual(client.current.tasks.finished.result, { changes: ["change-1"] });
+  socket.emit({ type: "task", id: "cancelled-with-effects", task_id: "cancelled-effects", status: "cancelled", context: { results: { changes: ["change-1"] } } });
+  assert.deepEqual(client.current.messages.at(-1).context.results, { changes: ["change-1"] }, "cancelled effects remain reviewable in the transcript");
   socket.emit({ type: "task", id: "event-interrupted", seq: 1, task_id: "recovery", status: "interrupted", text: "Reconcile receipts" });
   assert.equal(client.current.tasks.recovery.status, "interrupted");
   socket.emit({ type: "task", id: "event-stale", seq: 1, task_id: "recovery", status: "completed" });
@@ -208,7 +208,7 @@ try {
   answer(4, "A longer answer");
   assert.equal(client.current.messages.filter((message) => message.context?.streamed_answer && message.context.task_id === "streamed").length, 1);
   const streamed = () => client.current.messages.find((message) => message.context?.streamed_answer && message.context.task_id === "streamed");
-  const results = { suggestions: ["s1"], confirmed: [{ kind: "application" }], confirmed_omitted: 0, refused: 0, unresolved: 0 };
+  const results = { changes: ["c1"], confirmed: [{ kind: "application" }], confirmed_omitted: 0, refused: 0, unresolved: 0 };
   reconnected.emit({ type: "task", task_id: "streamed", seq: 6, status: "interrupted", text: "Task interrupted", context: { results } });
   answer(5, "Stale answer");
   assert.equal(streamed().text, "A longer answer");

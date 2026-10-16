@@ -1,7 +1,7 @@
 // Pure assistant-panel helpers. Keeping task and context composition here
 // makes it possible to verify the wire contract without mounting Svelte.
 
-export const TASK_KINDS = ["proofread", "tighten", "rewrite", "explain", "fix", "refine", "outline", "respond"];
+export const TASK_KINDS = ["proofread", "tighten", "rewrite", "explain", "fix", "outline", "respond"];
 export const TASK_SCOPES = ["selection", "file", "document"];
 export const CONTEXT_LIMIT = 16 * 1024;
 
@@ -173,18 +173,18 @@ export function normalizeCapabilities(value) {
 }
 
 export function taskNeedsAnchor(task) {
-  return task?.scope === "selection" && ["tighten", "rewrite", "refine"].includes(task?.kind);
+  return task?.scope === "selection" && ["tighten", "rewrite"].includes(task?.kind);
 }
 
 export function capabilityAllows(capabilities, task, { attached = null, path = "" } = {}) {
   const caps = normalizeCapabilities(capabilities);
   if (!task || !TASK_KINDS.includes(task.kind) || !TASK_SCOPES.includes(task.scope)) return false;
   if (!caps.verified || !caps.can_read) return false;
-  if (["tighten", "rewrite", "refine"].includes(task.kind) && task.scope !== "selection") return false;
+  if (["tighten", "rewrite"].includes(task.kind) && task.scope !== "selection") return false;
   if (task.scope === "selection" && !attached) return false;
   if (taskNeedsAnchor(task) && !text(attached?.selection?.exact).trim()) return false;
   if (task.scope === "file" && !path) return false;
-  if (["tighten", "rewrite", "proofread", "fix", "refine"].includes(task.kind) && !caps.can_suggest) return false;
+  if (["tighten", "rewrite", "proofread", "fix"].includes(task.kind) && !caps.can_suggest) return false;
   if (task.kind === "respond" && !caps.can_reply) return false;
   return true;
 }
@@ -207,24 +207,10 @@ export function taskDiagnosticContext(diagnostic, revision = "") {
   };
 }
 
-// A refinement keeps the original annotation as its identity. The runner
-// uses this compact context to call the refine document operation rather than
-// creating a second suggestion about the same words.
-export function suggestionContext(suggestion) {
-  if (!suggestion?.id) return null;
-  return {
-    id: text(suggestion.id),
-    ...(suggestion.proposed !== undefined ? { proposed: text(suggestion.proposed) } : {}),
-    ...(suggestion.revision ? { revision: text(suggestion.revision) } : {}),
-    ...(suggestion.path ? { path: text(suggestion.path) } : {}),
-    ...(suggestion.exact ? { exact: text(suggestion.exact) } : {}),
-  };
-}
-
 /** @typedef {{kind: string, scope: string}} AssistantTask */
 /** @typedef {{type: "message", id: string, text: string, task?: AssistantTask, context: Record<string, unknown>}} AssistantTaskMessage */
-/** @param {{id?: string, text?: string, task?: AssistantTask, attachment?: object|null, selection?: object|null, path?: string, revision?: string, diagnostic?: object|null, diagnostics?: object[], suggestion?: object|null, thread?: object|null}} [options] @returns {AssistantTaskMessage} */
-export function composeTaskMessage({ id, text: body = "", task, attachment = null, selection = null, path = "", revision = "", diagnostic = null, diagnostics = [], suggestion = null, thread = null } = {}) {
+/** @param {{id?: string, text?: string, task?: AssistantTask, attachment?: object|null, selection?: object|null, path?: string, revision?: string, diagnostic?: object|null, diagnostics?: object[], thread?: object|null}} [options] @returns {AssistantTaskMessage} */
+export function composeTaskMessage({ id, text: body = "", task, attachment = null, selection = null, path = "", revision = "", diagnostic = null, diagnostics = [], thread = null } = {}) {
   /** @type {Record<string, unknown> & {diagnostics: object[], diagnostics_omitted: number}} */
   const context = { diagnostics: [], diagnostics_omitted: 0 };
   const selected = task?.scope === "selection" || !task
@@ -233,7 +219,7 @@ export function composeTaskMessage({ id, text: body = "", task, attachment = nul
   const file = selected?.path || (task?.scope === "file" || !task ? path : "");
   if (file) context.file = file;
   if (selected?.selection) context.selection = selected.selection;
-  const commentId = thread?.id || suggestion?.id;
+  const commentId = thread?.id;
   const currentRevision = selected?.revision || (selected?.render_digest ? "" : revision);
   if (commentId) context.comment_id = text(commentId);
   else {
@@ -242,8 +228,6 @@ export function composeTaskMessage({ id, text: body = "", task, attachment = nul
   }
   const error = taskDiagnosticContext(diagnostic, revision || diagnostic?.revision || "");
   if (error) context.diagnostic = error;
-  const refinement = suggestionContext(suggestion);
-  if (refinement) context.suggestion = refinement;
   if (thread && typeof thread === "object") context.thread = thread;
   // Browser diagnostics include LaTeX warnings that the native CLI cannot
   // reproduce. Keep each render's revision, independently of the selection.
@@ -278,17 +262,13 @@ export function checkContextSize(value, limit = CONTEXT_LIMIT) {
 
 export function resultIds(message) {
   const results = message?.context?.results;
-  if (!results || typeof results !== "object") return { suggestions: [] };
-  const suggestions = Array.isArray(results.suggestions)
-    ? results.suggestions.map(text).filter(Boolean)
-    : [];
-  return { suggestions };
+  if (!results || typeof results !== "object") return { changes: [] };
+  const changes = Array.isArray(results.changes) ? results.changes.map(text).filter(Boolean) : [];
+  return { changes };
 }
 
-export function visibleResults(message, comments = []) {
-  const result = resultIds(message);
-  const editing = comments.filter((comment) => comment?.motivation === "editing");
-  const visible = new Set(editing.map((comment) => text(comment?.id)));
-  const suggestions = result.suggestions.filter((id) => visible.has(id));
-  return { suggestions };
+// The ids of a task's tracked changes that are still pending in the document.
+export function visibleResults(message, changes = []) {
+  const visible = new Set(changes.map((change) => text(change?.id)));
+  return { changes: resultIds(message).changes.filter((id) => visible.has(id)) };
 }
