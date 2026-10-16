@@ -187,8 +187,14 @@ mod proxy_tests {
     #[test]
     fn a_return_path_drops_a_link_key_from_its_fragment() {
         assert_eq!(local_path("/docs/x#k=abc"), "/docs/x");
-        assert_eq!(local_path("/docs/x#k=abc&settings=local"), "/docs/x#settings=local");
-        assert_eq!(local_path("/docs/x#settings=local&k=abc"), "/docs/x#settings=local");
+        assert_eq!(
+            local_path("/docs/x#k=abc&settings=local"),
+            "/docs/x#settings=local"
+        );
+        assert_eq!(
+            local_path("/docs/x#settings=local&k=abc"),
+            "/docs/x#settings=local"
+        );
         assert_eq!(local_path("/docs/x?a=1#k=abc"), "/docs/x?a=1");
         assert_eq!(local_path("/docs/x?a=1#version=3"), "/docs/x?a=1#version=3");
         assert_eq!(without_link_key("k=abc"), "");

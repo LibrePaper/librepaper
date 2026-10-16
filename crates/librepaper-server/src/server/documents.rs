@@ -1108,7 +1108,6 @@ impl Server {
         headers: &HeaderMap,
         context: &RequestContext,
         slug: &str,
-        _query: Option<&str>,
     ) -> Reply {
         let arrival = &context.arrival;
         if !self.valid_slug(slug) {

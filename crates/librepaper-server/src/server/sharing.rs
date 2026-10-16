@@ -570,7 +570,8 @@ impl Server {
             // the choices that would actually be accepted.
             "publishers": self.publishers.public_description(),
             "commenters_policy": self.commenters.public_description(),
-            // Every link needs a signed-in account, see may_read in mod.rs, so there is nothing to flag per role.
+            // Every link needs a signed-in account, see may_read in mod.rs, so
+            // there is nothing to flag per role.
         })
     }
 
@@ -836,7 +837,8 @@ mod request_shape_tests {
     fn a_budget_is_omitted_null_or_a_number() {
         let omitted: LinkRequest = serde_json::from_str(r#"{"role":"reader"}"#).unwrap();
         assert_eq!(omitted.budget, None);
-        let cleared: LinkRequest = serde_json::from_str(r#"{"role":"reader","budget":null}"#).unwrap();
+        let cleared: LinkRequest =
+            serde_json::from_str(r#"{"role":"reader","budget":null}"#).unwrap();
         assert_eq!(cleared.budget, Some(None));
         let set: LinkRequest = serde_json::from_str(r#"{"role":"reader","budget":5}"#).unwrap();
         assert_eq!(set.budget, Some(Some(5)));

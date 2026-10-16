@@ -520,9 +520,7 @@ async fn snapshot(
     Path(slug): Path<String>,
     request: Request<Body>,
 ) -> Reply {
-    server
-        .handle_snapshot(request.headers(), &ctx, &slug, request.uri().query())
-        .await
+    server.handle_snapshot(request.headers(), &ctx, &slug).await
 }
 
 async fn comments(

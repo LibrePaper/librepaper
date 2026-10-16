@@ -37,10 +37,7 @@ pub(super) async fn issue(
         );
     }
 
-    let (entry, viewer) = match server
-        .entry_viewer_in(&slug, &context, headers, None)
-        .await
-    {
+    let (entry, viewer) = match server.entry_viewer_in(&slug, &context, headers, None).await {
         Ok(value) => value,
         Err(response) => return response,
     };
