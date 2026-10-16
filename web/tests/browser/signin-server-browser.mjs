@@ -24,7 +24,7 @@ try {
     globalThis.fetch = async (url, init) => {
       const path = String(url);
       if (path.includes('/__lp/')) return realFetch(url, init);
-      if (path === '/api/me') return Response.json({ providers: ['github'] });
+      if (path === '/api/me') return Response.json({ providers: [{ id: 'github', kind: 'github', label: 'GitHub' }, { id: 'entra', kind: 'entra', label: 'Contoso' }, { id: 'oidc-keycloak', kind: 'oidc', label: 'Example SSO' }] });
       return Response.json({});
     };
     mount(SignIn, { target: document.body });
@@ -72,6 +72,12 @@ try {
   // A browser shows the providers and no way to pick a server.
   await tab.navigate(`${origin}/`);
   await until("github provider", () => tab.evaluate("Boolean(document.querySelector('a[href^=\"/auth/login/github\"]'))"));
+  await until("three providers", () => tab.evaluate("document.querySelectorAll('.signin-provider').length === 3"));
+  assert.equal(await tab.evaluate("Boolean(document.querySelector('a[href^=\"/auth/login/github\"]'))"), true, "GitHub links to its own sign-in");
+  assert.equal(await tab.evaluate("Boolean(document.querySelector('a[href^=\"/auth/login/oidc-keycloak\"]'))"), true, "a custom provider links to its own sign-in");
+  // The labels come from the server, in the order it sends them.
+  assert.equal(await tab.evaluate("Array.from(document.querySelectorAll('.signin-provider'), (link) => link.textContent.trim()).join('|')"), "Continue with GitHub|Continue with Contoso|Continue with Example SSO");
+  assert.equal(await tab.evaluate("Boolean(document.querySelectorAll('.signin-provider')[2].querySelector('svg'))"), true, "a custom provider gets the key icon");
   assert.equal(await tab.evaluate("Boolean(document.querySelector('.signin-server-change'))"), false, "a browser offers no server choice");
 
   // The desktop app offers the choice and hands the address to the shell.
@@ -94,4 +100,4 @@ try {
   server?.close();
   removeTemporary(temp);
 }
-console.log("signin-server-browser: the desktop sign-in page offers another server; a browser does not");
+console.log("signin-server-browser: the sign-in page lists the providers the server sends; the desktop sign-in page offers another server; a browser does not");

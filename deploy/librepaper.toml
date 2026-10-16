@@ -16,6 +16,8 @@ docs = "https://docs.paper.example"
 # Sign-in needs at least one provider. Callback URLs:
 # GitHub  https://paper.example/auth/callback
 # Google  https://paper.example/auth/callback/google
+# Microsoft  https://paper.example/auth/callback/entra
+# Other OIDC https://paper.example/auth/callback/oidc-<name>
 [auth.github]
 client_id = "replace"
 client_secret = "replace"
@@ -23,6 +25,21 @@ client_secret = "replace"
 # [auth.google]
 # client_id = "replace"
 # client_secret = "replace"
+
+# [auth.entra]
+# tenant = "00000000-0000-0000-0000-000000000000"   # Directory (tenant) ID, a GUID
+# client_id = "replace"                             # Application (client) ID
+# client_secret = "replace"
+# label = "Microsoft"                               # the button text
+
+# [auth.oidc.example]
+# issuer = "https://sso.example.org/realms/staff"   # the provider's issuer URL
+# client_id = "replace"
+# client_secret = "replace"
+# label = "Example SSO"                             # the button text
+
+# [auth]
+# session_lifetime = "24h"   # 1h to 30d. Absent, a browser session lasts 30 days.
 
 # The bundled database, over the socket compose.yaml shares with it. For a
 # database elsewhere, write the full URL here, with ?sslmode=verify-full for a managed service:
@@ -33,8 +50,8 @@ database_url = "postgresql:///librepaper?host=/var/run/postgresql&user=librepape
 # database_connections = 20         # PostgreSQL connection pool size
 
 # Who may publish and comment: "any" signed-in account, a GitHub login, a
-# verified Google address, or "@example.org". "anyone" also allows
-# anonymous comments.
+# verified address from Google, Entra or another OpenID Connect provider, or
+# "@example.org". "anyone" also allows anonymous comments.
 [access]
 publishers = ["any"]
 commenters = ["any"]

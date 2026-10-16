@@ -10,7 +10,9 @@ use serde_json::Value;
 pub const USER_AGENT: &str = "librepaper/1.0";
 
 /// The shared client. Connection pooling is why it is one rather than one per
-/// call; the timeout is per request, set where the request is made.
+/// call; the timeout is per request, set where the request is made. It follows
+/// redirects, so it must not be used for calls to a sign-in provider; those
+/// go through `provider_client`.
 pub fn client() -> &'static reqwest::Client {
     static CLIENT: OnceLock<reqwest::Client> = OnceLock::new();
     CLIENT.get_or_init(|| {
@@ -21,6 +23,53 @@ pub fn client() -> &'static reqwest::Client {
             .build()
             .expect("a client with no special needs builds")
     })
+}
+
+/// The client for sign-in providers. It never follows a redirect: a provider
+/// endpoint comes from configuration or a checked discovery document, and a
+/// redirect would send the request, and the client secret in it, somewhere
+/// nobody vetted.
+pub fn provider_client() -> &'static reqwest::Client {
+    static CLIENT: OnceLock<reqwest::Client> = OnceLock::new();
+    CLIENT.get_or_init(|| {
+        reqwest::Client::builder()
+            .user_agent(USER_AGENT)
+            .connect_timeout(Duration::from_secs(5))
+            .timeout(Duration::from_secs(300))
+            .redirect(reqwest::redirect::Policy::none())
+            .build()
+            .expect("a client with no special needs builds")
+    })
+}
+
+/// The most a provider may answer with. Every reply read from a provider is
+/// small JSON, so anything longer is refused rather than buffered.
+pub const PROVIDER_BODY_CAP: usize = 64 * 1024;
+
+/// Reads a provider's reply as (status, body), failing as soon as the body
+/// grows past `PROVIDER_BODY_CAP`. A server that never stops sending is cut
+/// off after the cap instead of at the request timeout.
+pub async fn read_capped(mut response: reqwest::Response) -> Result<(u16, Vec<u8>), String> {
+    let status = response.status().as_u16();
+    let too_long = || format!("the reply is longer than {PROVIDER_BODY_CAP} bytes");
+    if response
+        .content_length()
+        .is_some_and(|length| length > PROVIDER_BODY_CAP as u64)
+    {
+        return Err(too_long());
+    }
+    let mut body = Vec::new();
+    while let Some(chunk) = response
+        .chunk()
+        .await
+        .map_err(|err| format!("could not read the reply: {err}"))?
+    {
+        if body.len() + chunk.len() > PROVIDER_BODY_CAP {
+            return Err(too_long());
+        }
+        body.extend_from_slice(&chunk);
+    }
+    Ok((status, body))
 }
 
 /// One round trip, returning (status, body) rather than an error on a 4xx:

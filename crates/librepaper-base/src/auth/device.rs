@@ -332,7 +332,9 @@ pub(super) fn digest_of(value: &str) -> String {
 pub(super) struct Pending {
     pub(super) device_digest: String,
     pub(super) created: i64,
-    pub(super) approved: Option<Identity>,
+    /// The approving account, and the deadline of the credential it approved
+    /// with.
+    pub(super) approved: Option<(Identity, i64)>,
 }
 
 struct SourceWindow {
@@ -350,7 +352,8 @@ pub struct PendingCodes {
 pub enum DeviceOutcome {
     Pending,
     Expired,
-    Approved(Identity),
+    /// The identity, and the deadline of the credential that approved it.
+    Approved(Identity, i64),
 }
 
 impl Default for PendingCodes {
@@ -432,16 +435,16 @@ impl PendingCodes {
     /// the same account succeeds without replacing the first identity (and in
     /// particular without refreshing its session generation), while another
     /// account cannot overwrite it.
-    pub fn approve(&self, user: &str, who: &Identity) -> bool {
+    pub fn approve(&self, user: &str, who: &Identity, deadline: i64) -> bool {
         let mut entries = self.entries.lock().expect("pending codes poisoned");
         self.sweep(&mut entries);
         match entries.get_mut(&normalized(user)) {
             Some(entry) => match &entry.approved {
                 None => {
-                    entry.approved = Some(who.clone());
+                    entry.approved = Some((who.clone(), deadline));
                     true
                 }
-                Some(existing) => existing.provider == who.provider && existing.id == who.id,
+                Some((existing, _)) => existing.provider == who.provider && existing.id == who.id,
             },
             None => false,
         }
@@ -461,9 +464,9 @@ impl PendingCodes {
             return DeviceOutcome::Expired;
         };
         match entries.get(&user).and_then(|entry| entry.approved.clone()) {
-            Some(who) => {
+            Some((who, deadline)) => {
                 entries.remove(&user);
-                DeviceOutcome::Approved(who)
+                DeviceOutcome::Approved(who, deadline)
             }
             None => DeviceOutcome::Pending,
         }
@@ -566,13 +569,15 @@ mod tests {
             ..Identity::github("alice", "1")
         };
         let other = Identity::github("bob", "2");
-        assert!(pending.approve(&user, &first));
-        assert!(pending.approve(&user, &retry));
-        assert!(!pending.approve(&user, &other));
+        assert!(pending.approve(&user, &first, 1_000));
+        assert!(pending.approve(&user, &retry, 2_000));
+        assert!(!pending.approve(&user, &other, 3_000));
         match pending.claim(&device) {
-            DeviceOutcome::Approved(identity) => {
+            DeviceOutcome::Approved(identity, deadline) => {
                 assert_eq!(identity.session_generation, "old-generation");
                 assert_eq!(identity.name, "alice");
+                // The first approval's deadline stays too.
+                assert_eq!(deadline, 1_000);
             }
             _ => panic!("approved device was not claimable"),
         }

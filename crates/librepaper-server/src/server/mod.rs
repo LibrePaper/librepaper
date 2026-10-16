@@ -26,12 +26,12 @@ use crate::server::origins::{
 };
 use librepaper_base::auth::pseudonym::pseudonym_for;
 use librepaper_base::auth::{
-    cookie_name, normalized, now_unix, pkce_verifier, random_token, read_agent_grant, read_device,
-    read_session, read_visitor, sign_device, sign_session, sign_visitor, Accounts, DeviceOutcome,
-    GithubAccounts, GithubApp, GoogleApp, Identity, PendingCodes, Policy, TokenCache,
-    AGENT_GRANT_PREFIX, DEVICE_POLL_INTERVAL, DEVICE_TOKEN_MAX_AGE, DEVICE_TOKEN_PREFIX,
-    PROVIDER_GITHUB, PROVIDER_GOOGLE, SESSION_COOKIE, SESSION_MAX_AGE, STATE_COOKIE,
-    VISITOR_COOKIE,
+    cookie_name, device_deadline, normalized, now_unix, pkce_verifier, random_token,
+    read_agent_grant, read_device, read_session, read_visitor, session_deadline, sign_device,
+    sign_session, sign_visitor, Accounts, DeviceOutcome, GithubAccounts, GithubApp, Identity,
+    OidcProvider, PendingCodes, Policy, TokenCache, AGENT_GRANT_PREFIX, DEVICE_POLL_INTERVAL,
+    DEVICE_TOKEN_MAX_AGE, DEVICE_TOKEN_PREFIX, PROVIDER_GITHUB, SESSION_COOKIE, SESSION_MAX_AGE,
+    STATE_COOKIE, VISITOR_COOKIE,
 };
 use librepaper_base::config::Configuration;
 use librepaper_base::shell::{renderers, ShellFile};
@@ -79,6 +79,8 @@ mod routes;
 pub mod serve;
 mod sharing;
 mod signin;
+#[cfg(test)]
+mod signin_http_tests;
 mod socket;
 pub use librepaper_base::config::socket_budget;
 mod suggestions;
@@ -191,6 +193,15 @@ fn grant_role_ceiling(role: u8) -> Role {
     }
 }
 
+/// One way to sign in, as the sign-in page and `/api/me` describe it. The
+/// label is the operator's own text, so a page must show it as text.
+#[derive(Clone, Debug, serde::Serialize)]
+pub struct ProviderInfo {
+    pub id: String,
+    pub kind: &'static str,
+    pub label: String,
+}
+
 pub struct Server {
     documents: DocumentService,
     /// Dedicated PostgreSQL ownership session. Production installs this before
@@ -201,10 +212,19 @@ pub struct Server {
     writer_lost_notify: tokio::sync::Notify,
     pub shell: HashMap<String, ShellFile>,
     pub app: GithubApp,
-    /// The other way in. Configured from the environment alone, and set after
-    /// construction the way the other deployment switches are, so a server
-    /// without one is simply a server with one provider.
-    pub google: GoogleApp,
+    /// The OpenID Connect providers, in the order the sign-in page offers
+    /// them. GitHub is not among them: it stays `app`, which the admin
+    /// console reads too. Set after construction the way the other
+    /// deployment switches are, so a server without any is simply a server
+    /// with one provider.
+    pub oidc: Vec<OidcProvider>,
+    /// How long a browser session lasts: `SESSION_MAX_AGE`, unless the
+    /// operator bounded sessions with `bound_sessions`.
+    pub session_lifetime: std::time::Duration,
+    /// The most a device token lasts: `DEVICE_TOKEN_MAX_AGE`, or the
+    /// operator's bound when that is shorter. The credential that approved
+    /// it caps it further, so in practice it ends with a browser session.
+    pub device_token_lifetime: std::time::Duration,
     pub key: Vec<u8>,
     pub tokens: TokenCache,
     pub config: Arc<Configuration>,
@@ -858,7 +878,9 @@ impl Server {
             writer_lost_notify: tokio::sync::Notify::new(),
             shell,
             app,
-            google: GoogleApp::default(),
+            oidc: Vec::new(),
+            session_lifetime: SESSION_MAX_AGE,
+            device_token_lifetime: DEVICE_TOKEN_MAX_AGE,
             key,
             tokens: TokenCache::new(),
             config,
@@ -1180,9 +1202,44 @@ impl Server {
     pub fn provider_configured(&self, id: &Identity) -> bool {
         match id.provider.as_str() {
             PROVIDER_GITHUB => self.app.configured(),
-            PROVIDER_GOOGLE => self.google.configured(),
-            _ => false,
+            other => self.oidc(other).is_some(),
         }
+    }
+
+    /// Which providers this deployment can actually sign somebody in with, in
+    /// the order the page offers them: GitHub when its app is configured,
+    /// then every OpenID Connect entry as configured.
+    pub fn providers(&self) -> Vec<ProviderInfo> {
+        let mut providers = Vec::new();
+        if self.app.configured() {
+            providers.push(ProviderInfo {
+                id: PROVIDER_GITHUB.to_string(),
+                kind: "github",
+                label: "GitHub".to_string(),
+            });
+        }
+        providers.extend(self.oidc.iter().map(|provider| ProviderInfo {
+            id: provider.id.clone(),
+            kind: provider.kind(),
+            label: provider.label.clone(),
+        }));
+        providers
+    }
+
+    /// Bounds every credential's lifetime to the operator's setting, or leaves
+    /// each its own: a browser session `SESSION_MAX_AGE`, a device token
+    /// `DEVICE_TOKEN_MAX_AGE`. A device token never outlasts the bound, so an
+    /// operator who sets one sets both.
+    pub fn bound_sessions(&mut self, lifetime: Option<std::time::Duration>) {
+        self.session_lifetime = lifetime.unwrap_or(SESSION_MAX_AGE);
+        self.device_token_lifetime = lifetime.map_or(DEVICE_TOKEN_MAX_AGE, |bound| {
+            bound.min(DEVICE_TOKEN_MAX_AGE)
+        });
+    }
+
+    /// The configured OpenID Connect provider with this id, if there is one.
+    pub fn oidc(&self, id: &str) -> Option<&OidcProvider> {
+        self.oidc.iter().find(|provider| provider.id == id)
     }
 
     /// The digest of the link key a request carried, or "" for none. A browser

@@ -10,7 +10,9 @@ use tokio::net::TcpListener;
 
 use crate::server::origins::{Origins, DOCS_PREFIX};
 use crate::server::Server;
-use librepaper_base::auth::{session_key_file, GithubApp, GoogleApp, Policy, SESSION_MAX_AGE};
+use librepaper_base::auth::{
+    session_key_file, trim_issuer, GithubApp, OidcProvider, Policy, SESSION_MAX_AGE,
+};
 use librepaper_base::config::Configuration;
 use librepaper_base::shell::ShellFile;
 use librepaper_base::util::die;
@@ -34,9 +36,15 @@ pub struct ServeOptions {
     /// GitHub OAuth app credentials resolved from the TOML configuration.
     pub github_client_id: Option<String>,
     pub github_client_secret: Option<String>,
-    /// Google OAuth app credentials resolved from the TOML configuration.
-    pub google_client_id: Option<String>,
-    pub google_client_secret: Option<String>,
+    /// The OpenID Connect providers (Google, Entra and custom entries), in the
+    /// order the sign-in page offers them, with their credentials resolved
+    /// from the TOML configuration. GitHub is not among them.
+    pub oidc: Vec<OidcProvider>,
+    /// A bound on how long a browser session and a device token last before
+    /// the person signs in again, or nothing, which leaves each its own
+    /// lifetime. Already checked to lie between an hour and the thirty days
+    /// of `SESSION_MAX_AGE`.
+    pub session_lifetime: Option<std::time::Duration>,
     pub publishers: Option<String>,
     pub commenters: Option<String>,
     /// Write each new account's starter documents as though they had been
@@ -208,9 +216,13 @@ pub struct SignInAdvice {
 /// The two warnings are not deaths: a deployment may be mid-migration, and a
 /// list naming somebody no configured provider can produce is worth saying out
 /// loud rather than refusing to start over.
+///
+/// `email_provider` is whether any OpenID Connect provider is configured,
+/// since each of them yields email addresses. `callbacks` are the addresses an
+/// operator with no provider yet would register one at.
 pub fn sign_in_advice(
     github: bool,
-    google: bool,
+    email_provider: bool,
     publishers: &Policy,
     commenters: &Policy,
     // The origin a provider must have registered: the deployment's configured
@@ -219,6 +231,7 @@ pub fn sign_in_advice(
     // will actually arrive on.
     reader_origin: &str,
     port: u16,
+    callbacks: &[String],
 ) -> SignInAdvice {
     let mut advice = SignInAdvice::default();
     if !github && (publishers.names_a_login() || commenters.names_a_login()) {
@@ -229,20 +242,34 @@ pub fn sign_in_advice(
                 .to_string(),
         );
     }
-    if !google && (publishers.names_an_email_or_domain() || commenters.names_an_email_or_domain()) {
+    if !email_provider
+        && (publishers.names_an_email_or_domain() || commenters.names_an_email_or_domain())
+    {
         advice.warnings.push(
-            "warning: a policy names an email address or a domain, but there is no Google \
-             client; nobody can sign in that way. Configure auth.google.client_id and \
-             auth.google.client_secret in the TOML file."
+            "warning: a policy names an email address or a domain, but no provider yields \
+             email addresses; nobody can sign in that way. Configure auth.google, \
+             auth.entra or an auth.oidc table in the TOML file."
                 .to_string(),
         );
     }
-    if !github && !google {
+    if !github && !email_provider {
         advice.warnings.push(format!(
-            "warning: neither Google nor GitHub sign-in is configured; publishing and source writes are unavailable. Configure auth.github or auth.google credentials in the TOML file (callbacks use {reader_origin}/auth/callback on port {port})."
+            "warning: no sign-in provider is configured; publishing and source writes are unavailable. Configure auth.github, auth.google, auth.entra or an auth.oidc table in the TOML file. The callback URLs to register at the provider, served by {reader_origin} on port {port}, are {}.",
+            callbacks.join(", ")
         ));
     }
     advice
+}
+
+/// The callback URLs an operator would register, one for each way of signing
+/// in. A custom provider's depends on the slug its table is given.
+fn callback_urls(reader_origin: &str) -> Vec<String> {
+    vec![
+        format!("{reader_origin}/auth/callback (GitHub)"),
+        format!("{reader_origin}/auth/callback/google"),
+        format!("{reader_origin}/auth/callback/entra"),
+        format!("{reader_origin}/auth/callback/oidc-<slug> (one for each auth.oidc table)"),
+    ]
 }
 
 /// The stable Loro peer identity this deployment authors source under
@@ -287,6 +314,9 @@ fn storage_policy(config: &Configuration) -> librepaper_engine::storage::postgre
 
 /// Seconds without a sign-in after which an account is erased; zero keeps them.
 /// A window under two session lifetimes would erase people who still sign in.
+/// The floor is twice `SESSION_MAX_AGE` whatever `auth.session_lifetime`
+/// says: credentials issued before the setting was shortened keep their own
+/// expiry, and a short setting must not make a two-hour erasure window legal.
 pub(crate) fn parse_inactive_after(value: &str) -> Result<i64, String> {
     let seconds = parse_retention(value)?;
     let floor = 2 * SESSION_MAX_AGE.as_secs() as i64;
@@ -311,8 +341,9 @@ pub fn validate_serve_options(options: &ServeOptions) -> Result<(), String> {
     parse_inactive_after(options.erase_inactive_after.as_deref().unwrap_or(""))
         .map_err(|error| format!("retention.erase_inactive_after: {error}"))?;
     configured_origins(options)?;
-    let github_configured = non_blank(options.github_client_id.as_deref()).is_some()
-        && non_blank(options.github_client_secret.as_deref()).is_some();
+    let github_id = non_blank(options.github_client_id.as_deref()).is_some();
+    let github_secret = non_blank(options.github_client_secret.as_deref()).is_some();
+    let github_configured = github_id && github_secret;
     validate_admin_github(
         options.admin_origin.as_deref(),
         &options.admin_github_ids,
@@ -326,25 +357,11 @@ pub fn validate_serve_options(options: &ServeOptions) -> Result<(), String> {
     if !publishers.is_configured() {
         return Err("access.publishers must name who may publish".into());
     }
-    for (provider, client_id, client_secret) in [
-        (
-            "auth.github",
-            options.github_client_id.as_deref(),
-            options.github_client_secret.as_deref(),
-        ),
-        (
-            "auth.google",
-            options.google_client_id.as_deref(),
-            options.google_client_secret.as_deref(),
-        ),
-    ] {
-        if client_id.is_some_and(|value| !value.trim().is_empty())
-            != client_secret.is_some_and(|value| !value.trim().is_empty())
-        {
-            return Err(format!(
-                "{provider}.client_id and {provider}.client_secret must be configured together"
-            ));
-        }
+    if github_id != github_secret {
+        return Err(
+            "auth.github.client_id and auth.github.client_secret must be configured together"
+                .into(),
+        );
     }
     Ok(())
 }
@@ -429,11 +446,6 @@ pub async fn serve(options: ServeOptions) {
         client_secret: options.github_client_secret.unwrap_or_default(),
         ..GithubApp::default()
     };
-    let google = GoogleApp {
-        client_id: options.google_client_id.unwrap_or_default(),
-        client_secret: options.google_client_secret.unwrap_or_default(),
-        ..GoogleApp::default()
-    };
     let publishers = Policy::parse_publishers(options.publishers.as_deref().unwrap_or(""))
         .unwrap_or_else(|error| die(error));
     if !publishers.is_configured() {
@@ -441,17 +453,20 @@ pub async fn serve(options: ServeOptions) {
     }
     let commenters = Policy::parse(options.commenters.as_deref().unwrap_or("any"));
     let loopback_origin = format!("http://localhost{address}");
+    let reader_origin = origins
+        .reader()
+        .map(|reader| reader.as_str())
+        .unwrap_or(&loopback_origin)
+        .to_string();
 
     let advice = sign_in_advice(
         app.configured(),
-        google.configured(),
+        !options.oidc.is_empty(),
         &publishers,
         &commenters,
-        origins
-            .reader()
-            .map(|reader| reader.as_str())
-            .unwrap_or(&loopback_origin),
+        &reader_origin,
         port,
+        &callback_urls(&reader_origin),
     );
     for warning in &advice.warnings {
         tracing::warn!(
@@ -498,6 +513,30 @@ pub async fn serve(options: ServeOptions) {
             .validate_schema()
             .await
             .unwrap_or_else(|error| die(format!("PostgreSQL schema is not ready: {error}")));
+    }
+    // A subject is unique only within its issuer, so a provider id pointed at
+    // another issuer would hand every account it made to whoever holds the
+    // same subject there. The first run records the issuer and every later
+    // run holds the configuration to it, before anybody can sign in.
+    for provider in &options.oidc {
+        let configured = trim_issuer(&provider.issuer);
+        let bound = catalog
+            .bind_sign_in_issuer(&provider.id, configured)
+            .await
+            .unwrap_or_else(|error| {
+                die(format!(
+                    "could not record the issuer of auth provider {}: {error}",
+                    provider.id
+                ))
+            });
+        if trim_issuer(&bound) != configured {
+            die(format!(
+                "auth provider {id} was bound to issuer {old} and is now configured with {new}. Existing {id} accounts belong to the old issuer. Restore the old issuer, or give the new one a different id.",
+                id = provider.id,
+                old = trim_issuer(&bound),
+                new = configured,
+            ));
+        }
     }
     let writer = catalog
         .claim_writer()
@@ -557,7 +596,8 @@ pub async fn serve(options: ServeOptions) {
         commenters.clone(),
     );
     instance.install_writer(writer);
-    instance.google = google;
+    instance.oidc = options.oidc;
+    instance.bound_sessions(options.session_lifetime);
     instance.simulate_activity = options.simulate_activity;
     instance.origins = origins.clone();
     instance.paths = Some(deployment_paths.clone());
@@ -611,6 +651,16 @@ pub async fn serve(options: ServeOptions) {
     println!("  data in {}", blobs.describe());
     println!("  publishing: {}", publishers.describe());
     println!("  commenting: {}", commenters.describe());
+    for provider in &instance.oidc {
+        println!(
+            "  sign-in {}: {} ({}), callback {reader_origin}/auth/callback/{}",
+            provider.id, provider.label, provider.issuer, provider.id
+        );
+    }
+    println!(
+        "  sign-in lasts {}",
+        describe_seconds(instance.session_lifetime.as_secs() as i64)
+    );
     super::host_metrics::warn(&config, &deployment_paths.deployment, blobs.is_local());
     if std::io::stdout().is_terminal() {
         println!(

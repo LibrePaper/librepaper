@@ -3,6 +3,7 @@
 //! themselves.
 
 use super::*;
+use librepaper_base::auth::SignInError;
 
 /// Keeps a browser's key from ever colliding with a handle, since neither a
 /// GitHub login nor an email address can contain a colon.
@@ -57,25 +58,128 @@ pub(super) fn url_unescape(value: &str) -> String {
         .unwrap_or_default()
 }
 
-impl Server {
-    /// Which providers this deployment can actually sign somebody in with, in
-    /// the order the page offers them. A provider is configured when its
-    /// client id is set.
-    pub(super) fn providers(&self) -> Vec<&'static str> {
-        let mut providers = Vec::new();
-        if self.app.configured() {
-            providers.push(PROVIDER_GITHUB);
+/// A sign-in on its way to the provider: the two secrets the authorize URL
+/// carries and the state cookie keeps until the provider sends the person
+/// back.
+struct Begin {
+    state: String,
+    verifier: String,
+}
+
+impl Begin {
+    fn new() -> Begin {
+        Begin {
+            state: random_token(),
+            verifier: pkce_verifier(),
         }
-        if self.google.configured() {
-            providers.push(PROVIDER_GOOGLE);
-        }
-        providers
     }
 
+    /// Sets the state cookie and sends the browser to the provider. The
+    /// provider's id rides in the cookie, so a sign-in started with one
+    /// provider cannot be finished at another's callback. The next path is
+    /// arbitrary caller-supplied text, so it is URL-encoded before it rides
+    /// beside the other fields in one cookie value. The verifier is exactly
+    /// as private as the state: the cookie is HttpOnly and __Host- on HTTPS,
+    /// and the server keeps nothing between the two halves of the flow.
+    fn redirect(&self, provider: &str, authorize_url: &str, next: &str, https: bool) -> Reply {
+        let value = format!(
+            "{provider}|{}|{}|{}",
+            self.state,
+            url_escape(next),
+            self.verifier
+        );
+        let mut response = redirect(authorize_url);
+        add_cookie(
+            &mut response,
+            &set_cookie(&cookie_name(https, STATE_COOKIE), &value, 600, https),
+        );
+        response
+    }
+}
+
+/// The state cookie's four fields: the provider, the state token, the
+/// URL-escaped next path and the PKCE verifier. Only the next path may be
+/// empty. A cookie from before the provider was added has three fields and
+/// is not read as anything, so a sign-in in flight during an upgrade fails
+/// once rather than finishing without a provider to hold it to.
+fn parse_state(value: &str) -> Option<(&str, &str, &str, &str)> {
+    let mut fields = value.splitn(4, '|');
+    let provider = fields.next()?;
+    let state = fields.next()?;
+    let next = fields.next()?;
+    let verifier = fields.next()?;
+    if provider.is_empty() || state.is_empty() || verifier.is_empty() {
+        return None;
+    }
+    Some((provider, state, next, verifier))
+}
+
+/// Said for a state cookie that is malformed, for another provider or for
+/// another sign-in, so a refusal does not say which of them it was.
+const MISMATCH: &str = "sign-in state did not match; try again";
+
+/// What a callback carries once it has been tied to the sign-in that began
+/// it.
+struct Callback {
+    next: String,
+    verifier: String,
+}
+
+/// Checks a callback against the state cookie before anything is asked of a
+/// provider. The state ties it to the redirect that started it, so a link
+/// someone else crafted cannot sign you in as them. The provider ties it to
+/// the route it arrived on, so a sign-in started with one provider cannot
+/// finish at another.
+#[allow(clippy::result_large_err)] // the refusal is the HTTP reply itself
+fn read_callback(
+    method: &Method,
+    headers: &HeaderMap,
+    query: &HashMap<String, String>,
+    provider: &str,
+    https: bool,
+) -> Result<Callback, Reply> {
+    if *method != Method::GET {
+        let mut response = plain(405, "method not allowed");
+        set(&mut response, "allow", "GET");
+        return Err(response);
+    }
+    let Some(value) = cookie(headers, &cookie_name(https, STATE_COOKIE)) else {
+        return Err(plain(400, "sign-in expired; try again"));
+    };
+    let Some((started_with, state, next, verifier)) = parse_state(&value) else {
+        return Err(plain(400, MISMATCH));
+    };
+    if started_with != provider || query.get("state").map(String::as_str) != Some(state) {
+        return Err(plain(400, MISMATCH));
+    }
+    Ok(Callback {
+        next: url_unescape(next),
+        verifier: verifier.to_string(),
+    })
+}
+
+/// An OAuth error code is shown only when it looks like one. The value is
+/// the provider's, or whoever built the link, and ends up on a page.
+fn shown_error(code: &str) -> &str {
+    let plausible =
+        (1..=40).contains(&code.len()) && code.bytes().all(|b| b.is_ascii_lowercase() || b == b'_');
+    if plausible {
+        code
+    } else {
+        "error"
+    }
+}
+
+/// The first `limit` characters, for a log line that quotes a provider.
+fn truncated(value: &str, limit: usize) -> String {
+    value.chars().take(limit).collect()
+}
+
+impl Server {
     /// The page offering the choice, served from the shell the way the 404
     /// page is: the same bytes to every caller, and the `next` path carried
-    /// through in the query so the page can put it on both links. A caller
-    /// that cannot take HTML gets the two addresses as a line of text.
+    /// through in the query so the page can put it on every link. A caller
+    /// that cannot take HTML gets the addresses as a line of text.
     pub(super) fn sign_in_page(&self, headers: &HeaderMap, next: &str) -> Reply {
         let accepts_html = header_of(headers, "accept").is_some_and(|a| a.contains("text/html"));
         match self.shell.get("/signin.html") {
@@ -87,19 +191,22 @@ impl Server {
                 set(&mut response, "cache-control", "no-store");
                 response
             }
-            _ => plain(
-                200,
-                &format!(
-                    "sign in at /auth/login/github?next={0} or /auth/login/google?next={0}",
-                    url_escape(next)
-                ),
-            ),
+            _ => {
+                let links: Vec<String> = self
+                    .providers()
+                    .iter()
+                    .map(|provider| {
+                        format!("/auth/login/{}?next={}", provider.id, url_escape(next))
+                    })
+                    .collect();
+                plain(200, &format!("sign in at {}", links.join(" or ")))
+            }
         }
     }
 
-    /// The end of either flow: set the session cookie, drop the state cookie, and go back
-    /// where the person started. Both providers finish here, so a session
-    /// cookie is set in exactly one place.
+    /// The end of every flow: set the session cookie, drop the state cookie,
+    /// and go back where the person started. Every provider finishes here, so
+    /// a session cookie is set in exactly one place.
     pub(super) async fn sign_in(&self, arrival: &Arrival, who: &Identity, next: &str) -> Reply {
         let https = arrival.is_https();
         let mut signed_who = who.clone();
@@ -130,17 +237,14 @@ impl Server {
             tracing::warn!("could not prepare account examples: {error}");
         }
         let mut response = redirect(&local_path(next));
-        let session = sign_session(
-            &self.key,
-            &signed_who,
-            now_unix() + SESSION_MAX_AGE.as_secs() as i64,
-        );
+        let lifetime = self.session_lifetime.as_secs() as i64;
+        let session = sign_session(&self.key, &signed_who, now_unix() + lifetime);
         add_cookie(
             &mut response,
             &set_cookie(
                 &cookie_name(https, SESSION_COOKIE),
                 &session,
-                SESSION_MAX_AGE.as_secs() as i64,
+                lifetime,
                 https,
             ),
         );
@@ -149,6 +253,115 @@ impl Server {
             &clear_cookie(&cookie_name(https, STATE_COOKIE), https),
         );
         response
+    }
+
+    /// Starts a sign-in with one provider: a fresh state and PKCE verifier,
+    /// the state cookie, and the redirect to the provider's authorize page.
+    async fn start_sign_in(
+        &self,
+        id: &str,
+        query: &HashMap<String, String>,
+        arrival: &Arrival,
+    ) -> Reply {
+        let https = arrival.is_https();
+        // The return path is cleaned here, before it rides in the state
+        // cookie, so a link key that reached a URL by mistake goes no
+        // further.
+        let next = local_path(&query.get("next").cloned().unwrap_or_default());
+        let begin = Begin::new();
+        if id == PROVIDER_GITHUB && self.app.configured() {
+            let callback = arrival.callback_url();
+            let url = self
+                .app
+                .authorize_url(&callback, &begin.state, &begin.verifier);
+            return begin.redirect(id, &url, &next, https);
+        }
+        let Some(provider) = self.oidc(id) else {
+            return plain(404, "this deployment has no such sign-in");
+        };
+        let redirect_uri = arrival.oidc_callback_url(id);
+        match provider
+            .start(&redirect_uri, &begin.state, &begin.verifier)
+            .await
+        {
+            Ok(url) => begin.redirect(id, &url, &next, https),
+            Err(reason) => {
+                tracing::warn!("could not start a sign-in with {id}: {reason}");
+                plain(
+                    502,
+                    "the sign-in provider is unavailable; try again shortly",
+                )
+            }
+        }
+    }
+
+    /// Finishes a sign-in with an OpenID Connect provider. Everything that
+    /// can be refused without asking the provider is refused first.
+    async fn finish_oidc_sign_in(
+        &self,
+        id: &str,
+        method: &Method,
+        headers: &HeaderMap,
+        query: &HashMap<String, String>,
+        arrival: &Arrival,
+    ) -> Reply {
+        let Some(provider) = self.oidc(id) else {
+            return plain(404, "this deployment has no such sign-in");
+        };
+        let callback = match read_callback(method, headers, query, id, arrival.is_https()) {
+            Ok(callback) => callback,
+            Err(refusal) => return refusal,
+        };
+        // The description is the provider's own text, so it goes to the log
+        // and never to the page.
+        if let Some(error) = query.get("error") {
+            let description = query
+                .get("error_description")
+                .map(String::as_str)
+                .unwrap_or_default();
+            tracing::info!(
+                "{id} refused a sign-in: {:?}, {:?}",
+                truncated(error, 100),
+                truncated(description, 200)
+            );
+            return plain(
+                400,
+                &format!(
+                    "{} refused the sign-in: {}",
+                    provider.label,
+                    shown_error(error)
+                ),
+            );
+        }
+        let code = query.get("code").map(String::as_str).unwrap_or_default();
+        if code.is_empty() {
+            return plain(400, &format!("{} sent no code; try again", provider.label));
+        }
+        let signed_in = provider
+            .sign_in(
+                code,
+                &arrival.oidc_callback_url(id),
+                &callback.verifier,
+                query.get("iss").map(String::as_str),
+            )
+            .await;
+        match signed_in {
+            Ok(who) => self.sign_in(arrival, &who, &callback.next).await,
+            Err(error) => {
+                match &error {
+                    SignInError::Discovery(reason)
+                    | SignInError::Exchange(reason)
+                    | SignInError::Provider(reason) => {
+                        tracing::warn!("sign-in with {id} failed: {reason}");
+                    }
+                    SignInError::Refused(reason) => {
+                        tracing::info!("sign-in with {id} was refused: {reason}");
+                    }
+                    SignInError::Busy | SignInError::State => {}
+                }
+                plain(error.status(), &error.message(&provider.label))
+            }
+        }
     }
 
     /// The sign-in routes: the door, each provider's redirect, the callbacks
@@ -185,94 +398,36 @@ impl Server {
                         return Some(redirect(&local_path(&next)));
                     }
                 }
-                match self.providers()[..] {
+                let providers = self.providers();
+                match providers.as_slice() {
                     // Nothing to sign in to: this deployment is open to
-                    // everyone and was started without any OAuth app.
+                    // everyone and was started without any provider.
                     [] => Some(plain(
                         404,
-                        "this deployment has no sign-in: reading and commenting remain available, but publishing requires Google or GitHub sign-in",
+                        "this deployment has no sign-in: reading and commenting remain available, but publishing requires signing in",
                     )),
                     // One provider is not a choice, so it is not offered as
                     // one.
                     [only] => Some(redirect(&format!(
-                        "/auth/login/{only}?next={}",
+                        "/auth/login/{}?next={}",
+                        only.id,
                         url_escape(&next)
                     ))),
                     _ => Some(self.sign_in_page(headers, &next)),
                 }
             }
-            "/auth/login/github" => {
-                if !self.app.configured() {
-                    return Some(plain(404, "this deployment has no GitHub sign-in"));
-                }
-                let state = random_token();
-                // The next URL is arbitrary caller-supplied text, so it is
-                // URL-encoded before it rides beside the state token in one
-                // cookie value.
-                let next = local_path(&query.get("next").cloned().unwrap_or_default());
-                // The PKCE verifier rides in the state cookie as the third
-                // field, as it does for Google.
-                let verifier = pkce_verifier();
-                let value = format!("{state}|{}|{verifier}", url_escape(&next));
-                let mut response = redirect(&self.app.authorize_url(
-                    &arrival.callback_url(),
-                    &state,
-                    &verifier,
-                ));
-                add_cookie(
-                    &mut response,
-                    &set_cookie(&cookie_name(https, STATE_COOKIE), &value, 600, https),
-                );
-                Some(response)
-            }
-            "/auth/login/google" => {
-                if !self.google.configured() {
-                    return Some(plain(404, "this deployment has no Google sign-in"));
-                }
-                let state = random_token();
-                let next = local_path(&query.get("next").cloned().unwrap_or_default());
-                // The PKCE verifier rides in the state cookie beside the state
-                // token and the next path: the cookie is HttpOnly and __Host-
-                // on HTTPS, so the verifier is exactly as private as the state
-                // already is, and the server keeps nothing between the two
-                // halves of the flow.
-                let verifier = pkce_verifier();
-                let value = format!("{state}|{}|{verifier}", url_escape(&next));
-                let mut response = redirect(&self.google.authorize_url(
-                    &arrival.google_callback_url(),
-                    &state,
-                    &verifier,
-                ));
-                add_cookie(
-                    &mut response,
-                    &set_cookie(&cookie_name(https, STATE_COOKIE), &value, 600, https),
-                );
-                Some(response)
-            }
+            // GitHub's callback is the one that keeps the bare path, so no
+            // OAuth app already registered against it has to be edited.
             "/auth/callback" => {
-                let Some(value) = cookie(headers, &cookie_name(https, STATE_COOKIE)) else {
-                    return Some(plain(400, "sign-in expired; try again"));
+                let started = read_callback(method, headers, &query, PROVIDER_GITHUB, https);
+                let callback = match started {
+                    Ok(callback) => callback,
+                    Err(refusal) => return Some(refusal),
                 };
-                // Three fields, as in the Google callback: the verifier is the
-                // third, and a cookie without it did not start this flow.
-                let mut fields = value.splitn(3, '|');
-                let state = fields.next().unwrap_or_default();
-                let encoded_next = fields.next().unwrap_or_default();
-                let verifier = fields.next().unwrap_or_default();
-                // The state ties this callback to the redirect that started
-                // it, so a link someone else crafted cannot sign you in as
-                // them.
-                if state.is_empty()
-                    || verifier.is_empty()
-                    || query.get("state").map(String::as_str) != Some(state)
-                {
-                    return Some(plain(400, "sign-in state did not match; try again"));
-                }
-                let next = url_unescape(encoded_next);
                 let code = query.get("code").cloned().unwrap_or_default();
                 let token = match self
                     .app
-                    .exchange(&code, &arrival.callback_url(), verifier)
+                    .exchange(&code, &arrival.callback_url(), &callback.verifier)
                     .await
                 {
                     Ok(token) => token,
@@ -284,49 +439,7 @@ impl Server {
                     Ok(who) => who,
                     Err(_) => return Some(plain(502, "github would not say who you are")),
                 };
-                Some(self.sign_in(arrival, &who, &next).await)
-            }
-            "/auth/callback/google" => {
-                if !self.google.configured() {
-                    return Some(plain(404, "this deployment has no Google sign-in"));
-                }
-                let Some(value) = cookie(headers, &cookie_name(https, STATE_COOKIE)) else {
-                    return Some(plain(400, "sign-in expired; try again"));
-                };
-                // Three fields here rather than two: the verifier is the
-                // third, and a cookie without it did not start this flow.
-                let mut fields = value.splitn(3, '|');
-                let state = fields.next().unwrap_or_default();
-                let encoded_next = fields.next().unwrap_or_default();
-                let verifier = fields.next().unwrap_or_default();
-                if state.is_empty()
-                    || verifier.is_empty()
-                    || query.get("state").map(String::as_str) != Some(state)
-                {
-                    return Some(plain(400, "sign-in state did not match; try again"));
-                }
-                let next = url_unescape(encoded_next);
-                let code = query.get("code").cloned().unwrap_or_default();
-                let redirect_uri = arrival.google_callback_url();
-                let token = match self.google.exchange(&code, &redirect_uri, verifier).await {
-                    Ok(token) => token,
-                    Err(err) => {
-                        return Some(plain(400, &format!("google refused the sign-in: {err}")))
-                    }
-                };
-                let who = match self.google.identity_for(&token).await {
-                    Ok(who) => who,
-                    // The one refusal a person can act on: every other failure
-                    // here is the deployment's or Google's, and says so.
-                    Err(err)
-                        if err == librepaper_base::auth::UNVERIFIED_EMAIL
-                            || err == librepaper_base::auth::UNVERIFIED_WORKSPACE_DOMAIN =>
-                    {
-                        return Some(plain(403, &err))
-                    }
-                    Err(_) => return Some(plain(502, "google would not say who you are")),
-                };
-                Some(self.sign_in(arrival, &who, &next).await)
+                Some(self.sign_in(arrival, &who, &callback.next).await)
             }
             "/auth/logout" => {
                 // A GET here would be a plain link or a browser prefetch either
@@ -422,7 +535,8 @@ impl Server {
                         "provider": id.provider,
                         // The handle is the caller's own, and reaches only the
                         // caller: it is what the page checks against the
-                        // switches, and a Google handle is an email address.
+                        // switches, and an email provider's handle is an
+                        // email address.
                         "handle": id.handle,
                         "name": id.name,
                         // Where the bar fetches the account's own picture
@@ -462,8 +576,33 @@ impl Server {
                 200,
                 &config_body(&self.config, self.latex.as_deref()),
             )),
-            _ => None,
+            // The rest of the sign-in routes name their provider in the path.
+            other => {
+                if let Some(id) = other.strip_prefix("/auth/login/") {
+                    return Some(self.start_sign_in(id, &query, arrival).await);
+                }
+                if let Some(id) = other.strip_prefix("/auth/callback/") {
+                    let reply = self
+                        .finish_oidc_sign_in(id, method, headers, &query, arrival)
+                        .await;
+                    return Some(reply);
+                }
+                None
+            }
         }
+    }
+
+    /// When the credential on this request stops being valid: the session
+    /// cookie's expiry, or a device token's. Nothing for a request carrying
+    /// neither, including a GitHub bearer and an agent grant, whose deadlines
+    /// this server cannot read.
+    fn credential_deadline(&self, headers: &HeaderMap, arrival: &Arrival) -> Option<i64> {
+        if let Some(authorization) = header_of(headers, "authorization") {
+            let token = authorization.strip_prefix("Bearer ")?;
+            return device_deadline(&self.key, token);
+        }
+        let cookie = cookie(headers, &cookie_name(arrival.is_https(), SESSION_COOKIE))?;
+        session_deadline(&self.key, &cookie)
     }
 
     /// The approval page, served the way the sign-in page is: the same bytes
@@ -555,7 +694,15 @@ impl Server {
                 if !who.is_signed_in() {
                     return write_json(401, &json!({"error": "sign in to approve"}));
                 }
-                if !self.pending.approve(&field("user_code"), &who) {
+                // The token this approval produces must not outlive the
+                // credential approving it, or a token could approve its own
+                // successor forever, past any bound the operator set. A
+                // credential with no deadline this server can read (a GitHub
+                // bearer, an agent grant) cannot approve.
+                let Some(deadline) = self.credential_deadline(headers, arrival) else {
+                    return write_json(401, &json!({"error": "sign in to approve"}));
+                };
+                if !self.pending.approve(&field("user_code"), &who, deadline) {
                     return plain(404, "that code is not one this server is waiting for");
                 }
                 write_json(200, &json!({"approved": true}))
@@ -568,13 +715,20 @@ impl Server {
                     write_json(400, &json!({"error": "authorization_pending"}))
                 }
                 DeviceOutcome::Expired => write_json(400, &json!({"error": "expired_token"})),
-                DeviceOutcome::Approved(who) => {
-                    let seconds = DEVICE_TOKEN_MAX_AGE.as_secs() as i64;
+                DeviceOutcome::Approved(who, deadline) => {
+                    // Bounded together with browser sessions when the operator
+                    // set a lifetime (see `Server::bound_sessions`), and never
+                    // past the deadline of the credential that approved it.
+                    let now = now_unix();
+                    let expiry = (now + self.device_token_lifetime.as_secs() as i64).min(deadline);
+                    if expiry <= now {
+                        return write_json(400, &json!({"error": "expired_token"}));
+                    }
                     // Device credentials have their own purpose and versioned
                     // envelope. Browser session cookies remain a separate
                     // credential even though both carry the same identity.
-                    let token = sign_device(&self.key, &who, now_unix() + seconds);
-                    write_json(200, &json!({"token": token, "expires_in": seconds}))
+                    let token = sign_device(&self.key, &who, expiry);
+                    write_json(200, &json!({"token": token, "expires_in": expiry - now}))
                 }
             },
             _ => plain(404, "not found"),

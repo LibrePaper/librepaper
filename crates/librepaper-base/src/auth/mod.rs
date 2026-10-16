@@ -1,5 +1,6 @@
-//! Identity comes from a provider -- GitHub or Google. Several paths reach the
-//! same place: a browser signs in through one provider's OAuth web flow and
+//! Identity comes from a provider -- GitHub, or any OpenID Connect provider
+//! (Google, Microsoft Entra ID, or one the operator names). Several paths reach
+//! the same place: a browser signs in through one provider's web flow and
 //! carries a signed cookie afterwards, while a terminal signs in through this
 //! deployment's own device flow and carries the token that produces as a
 //! bearer. All of them end up as a handle, which the policies below either
@@ -17,20 +18,25 @@ pub use crate::util::{now_unix, random_bytes, random_token};
 
 mod device;
 mod github;
-mod google;
+mod oidc;
+mod pkce;
 pub mod pseudonym;
 
 pub use device::*;
 pub use github::*;
-pub use google::*;
+pub use oidc::*;
+pub use pkce::*;
 
 #[cfg(test)]
 mod core_tests;
 
-/// The two providers, spelled as the id prefix and the session cookie write
-/// them. Nothing outside this module composes these strings by hand.
+/// The provider ids, spelled as the id prefix and the session cookie write
+/// them. Nothing outside this module composes these strings by hand. A custom
+/// OpenID Connect provider is `OIDC_ID_PREFIX` followed by the operator's slug.
 pub const PROVIDER_GITHUB: &str = "github";
 pub const PROVIDER_GOOGLE: &str = "google";
+pub const PROVIDER_ENTRA: &str = "entra";
+pub const OIDC_ID_PREFIX: &str = "oidc-";
 
 pub const SESSION_COOKIE: &str = "librepaper_session";
 pub const STATE_COOKIE: &str = "librepaper_state";
@@ -38,6 +44,27 @@ pub const STATE_COOKIE: &str = "librepaper_state";
 /// the deployment lets anyone comment.
 pub const VISITOR_COOKIE: &str = "librepaper_visitor";
 pub const SESSION_MAX_AGE: Duration = Duration::from_secs(30 * 24 * 3600);
+
+/// How long any one call to a sign-in provider may take.
+pub const PROVIDER_HTTP_TIMEOUT: Duration = Duration::from_secs(15);
+
+/// Whether text is a slug an operator may give a custom provider: a lowercase
+/// letter, then up to 23 lowercase letters, digits or hyphens.
+pub fn valid_oidc_slug(slug: &str) -> bool {
+    let bytes = slug.as_bytes();
+    bytes.len() <= 24
+        && bytes.first().is_some_and(u8::is_ascii_lowercase)
+        && bytes[1..]
+            .iter()
+            .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || *byte == b'-')
+}
+
+/// Whether text is a provider id this code can issue: one of the three named
+/// providers, or `oidc-` and a valid slug.
+pub fn valid_provider_id(id: &str) -> bool {
+    matches!(id, PROVIDER_GITHUB | PROVIDER_GOOGLE | PROVIDER_ENTRA)
+        || id.strip_prefix(OIDC_ID_PREFIX).is_some_and(valid_oidc_slug)
+}
 
 /// A short-lived credential delegated by a signed-in browser to its local
 /// companion. It is useful only for one document and one already-presented
@@ -134,10 +161,7 @@ fn valid_agent_grant(grant: &AgentGrant, now: i64) -> bool {
     let identity = &grant.identity;
     identity.is_signed_in()
         && !identity.session_generation.is_empty()
-        && matches!(
-            identity.provider.as_str(),
-            PROVIDER_GITHUB | PROVIDER_GOOGLE
-        )
+        && valid_provider_id(&identity.provider)
         && !identity.handle.is_empty()
         && (1..=3).contains(&grant.role)
         && !grant.slug.is_empty()
@@ -177,11 +201,11 @@ pub fn try_provider_request() -> Option<SemaphorePermit<'static>> {
 /// `github:583231`, `google:107691503500061507151` -- because GitHub ids and
 /// Google `sub` values are both decimal strings and nothing but the prefix
 /// keeps one namespace out of the other. `handle` is what the policies match:
-/// a GitHub login, or a Google account's verified email. It needs no prefix,
-/// since a GitHub login cannot contain `@` and a verified email always does,
-/// so the character decides. `name` is what other readers see; it is never
-/// matched on, and for a Google account it is deliberately not the email.
-/// Every field is empty for an anonymous caller.
+/// a GitHub login, or an email address a configured provider vouches for. It
+/// needs no prefix, since a GitHub login cannot contain `@` and such an email
+/// always does, so the character decides. `name` is what other readers see;
+/// it is never matched on, and for an email provider it is deliberately not
+/// the email. Every field is empty for an anonymous caller.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Identity {
     pub provider: String,
@@ -189,9 +213,9 @@ pub struct Identity {
     pub handle: String,
     pub name: String,
     /// The provider's profile picture, as an `https://` URL, or empty. Stored
-    /// only for Google, whose picture URLs are opaque; a GitHub avatar is a
-    /// function of the numeric id, so `picture_url` derives it and the
-    /// credential need not carry it.
+    /// only for OpenID Connect providers, whose picture URLs are opaque; a
+    /// GitHub avatar is a function of the numeric id, so `picture_url`
+    /// derives it and the credential need not carry it.
     pub picture: String,
     /// Random catalogue generation bound into signed credentials. Changing
     /// it revokes every cookie and device token for the account.
@@ -214,35 +238,52 @@ impl Identity {
     /// and the login is what a reader recognises.
     pub fn github(login: &str, id: &str) -> Identity {
         let login = login.trim().to_lowercase();
-        Identity {
-            provider: PROVIDER_GITHUB.to_string(),
-            id: qualified(PROVIDER_GITHUB, id),
-            name: login.clone(),
-            handle: login,
-            picture: String::new(),
-            session_generation: String::new(),
-        }
+        Identity::from_provider(PROVIDER_GITHUB, id, &login, &login, "")
     }
 
-    /// A Google account, from its `sub`, its verified email, the profile
-    /// name and the profile picture. Google returns no name for some
-    /// accounts, and an unnamed comment is worse than one signed with the
-    /// local part of the address, which is the name the person already writes
-    /// to themselves under. The picture is kept only if it is an address a
-    /// page could safely show and a credential could safely carry.
-    pub fn google(sub: &str, email: &str, name: &str, picture: &str) -> Identity {
-        let email = email.trim().to_lowercase();
-        let name = name.trim();
-        let shown = if name.is_empty() {
-            email.split('@').next().unwrap_or_default().to_string()
-        } else {
-            name.to_string()
+    /// An account from any provider: its subject, the handle the policies
+    /// match (a login or a verified email), the name to show and a picture.
+    /// The id is the provider and the subject joined with a colon. Nothing is
+    /// done to a subject that already has a colon in it, because a subject
+    /// may, and the provider in front is what keeps it out of any other
+    /// namespace. A provider may send no name, or an address as the name, and a
+    /// comment signed with an address is worse than one signed with its local
+    /// part, so an address-shaped name is cut to its own local part and a
+    /// missing name falls back to the handle's. No subject means no id, so
+    /// nobody is signed in. The picture
+    /// is kept only if it is an address a page could safely show and a
+    /// credential could safely carry.
+    pub fn from_provider(
+        provider: &str,
+        subject: &str,
+        handle: &str,
+        name: &str,
+        picture: &str,
+    ) -> Identity {
+        let handle = handle.trim().to_lowercase();
+        let name: String = name.chars().filter(|c| !c.is_control()).collect();
+        let name: String = name.trim().chars().take(MAX_NAME_CHARS).collect();
+        let name = name.trim_end();
+        let name = match name.split_once('@') {
+            Some((local, _)) => local.trim_end().to_string(),
+            None => name.to_string(),
         };
+        let name = if name.is_empty() {
+            handle.split('@').next().unwrap_or_default().to_string()
+        } else {
+            name
+        };
+        // The subject is kept exactly as the provider sent it. Trimming it
+        // would fold two subjects the provider tells apart into one account.
         Identity {
-            provider: PROVIDER_GOOGLE.to_string(),
-            id: qualified(PROVIDER_GOOGLE, sub),
-            handle: email,
-            name: shown,
+            provider: provider.to_string(),
+            id: if subject.trim().is_empty() {
+                String::new()
+            } else {
+                format!("{provider}:{subject}")
+            },
+            handle,
+            name,
             picture: acceptable_picture(picture),
             session_generation: String::new(),
         }
@@ -268,6 +309,9 @@ impl Identity {
     }
 }
 
+/// The longest display name an identity carries, in characters.
+const MAX_NAME_CHARS: usize = 100;
+
 /// A picture URL a provider answered with, or empty if it is not one a page
 /// should be handed: it has to be https, short, made of URL characters, and
 /// free of the bar that separates credential fields.
@@ -283,16 +327,6 @@ fn acceptable_picture(picture: &str) -> String {
     } else {
         String::new()
     }
-}
-
-/// An id with its provider in front, unless it already carries one. Empty in,
-/// empty out: no id at all is not an id belonging to anybody.
-pub fn qualified(provider: &str, id: &str) -> String {
-    let id = id.trim();
-    if id.is_empty() || id.contains(':') {
-        return id.to_string();
-    }
-    format!("{provider}:{id}")
 }
 
 /// The cookie name for this request: the __Host- prefix on HTTPS, the plain
@@ -348,10 +382,10 @@ impl Policy {
     ///
     /// ```text
     /// anyone                 no sign-in required at all
-    /// any                    any signed-in account, either provider
+    /// any                    any signed-in account, on any provider
     /// alice,bob              only these GitHub logins
-    /// alice@example.org      the Google account with that verified email
-    /// @example.org           any Google account on that domain
+    /// alice@example.org      the account with that verified email
+    /// @example.org           any account with an email on that domain
     /// ```
     ///
     /// The forms mix freely in one list.
@@ -391,8 +425,8 @@ impl Policy {
         }
     }
 
-    /// Whether this policy admits a handle: a GitHub login, or a Google
-    /// account's verified email. Matching is case-insensitive throughout,
+    /// Whether this policy admits a handle: a GitHub login, or an email address
+    /// a configured provider vouches for. Matching is case-insensitive throughout,
     /// since neither a login nor an address is case-sensitive in practice.
     pub fn allows(&self, handle: &str) -> bool {
         if self.public {
@@ -449,8 +483,8 @@ impl Policy {
     }
 
     /// Whether this policy names anybody who could only sign in with GitHub,
-    /// or only with Google. Startup uses these to warn about a list that names
-    /// people no configured provider can ever produce.
+    /// or only with an email provider. Startup uses these to warn about a list
+    /// that names people no configured provider can ever produce.
     pub fn names_a_login(&self) -> bool {
         self.github_only || self.entries.iter().any(|entry| !entry.contains('@'))
     }
@@ -546,53 +580,63 @@ pub fn read_device(key: &[u8], token: &str) -> Identity {
 }
 
 fn read_identity(key: &[u8], purpose: &str, credential: &str) -> Identity {
-    let Some(versioned) = credential.strip_prefix("v2.") else {
-        return Identity::anonymous();
-    };
-    let Some((payload, signature)) = versioned.split_once('.') else {
-        return Identity::anonymous();
-    };
+    read_credential(key, purpose, credential)
+        .map(|(identity, _)| identity)
+        .unwrap_or_default()
+}
+
+/// When a session cookie stops being valid, for one that is valid now. A
+/// credential approved from another must never outlive it, so the approver's
+/// deadline is read here and caps whatever it approves.
+pub fn session_deadline(key: &[u8], cookie: &str) -> Option<i64> {
+    read_credential(key, "session", cookie).map(|(_, deadline)| deadline)
+}
+
+/// The same for a device token.
+pub fn device_deadline(key: &[u8], token: &str) -> Option<i64> {
+    let token = token.strip_prefix(DEVICE_TOKEN_PREFIX)?;
+    read_credential(key, "device", token).map(|(_, deadline)| deadline)
+}
+
+fn read_credential(key: &[u8], purpose: &str, credential: &str) -> Option<(Identity, i64)> {
+    let versioned = credential.strip_prefix("v2.")?;
+    let (payload, signature) = versioned.split_once('.')?;
     if !verifies(key, &format!("{purpose}-v2"), payload, signature) {
-        return Identity::anonymous();
+        return None;
     }
-    let Ok(raw) = base64::engine::general_purpose::URL_SAFE_NO_PAD.decode(payload) else {
-        return Identity::anonymous();
-    };
-    let Ok(text) = String::from_utf8(raw) else {
-        return Identity::anonymous();
-    };
+    let raw = base64::engine::general_purpose::URL_SAFE_NO_PAD
+        .decode(payload)
+        .ok()?;
+    let text = String::from_utf8(raw).ok()?;
     // A profile name may contain bars, so only the last bar separates expiry.
-    let Some((front, expiry)) = text.rsplit_once('|') else {
-        return Identity::anonymous();
-    };
-    let Ok(expiry) = expiry.parse::<i64>() else {
-        return Identity::anonymous();
-    };
+    let (front, expiry) = text.rsplit_once('|')?;
+    let expiry = expiry.parse::<i64>().ok()?;
     if now_unix() >= expiry {
-        return Identity::anonymous();
+        return None;
     }
     let fields: Vec<&str> = front.splitn(6, '|').collect();
     let [provider, handle, id, generation, picture, name] = fields[..] else {
-        return Identity::anonymous();
+        return None;
     };
     let provider_identity = id
         .strip_prefix(&format!("{provider}:"))
         .is_some_and(|subject| !subject.is_empty());
     let catalog_identity = uuid::Uuid::parse_str(id).is_ok();
-    if !matches!(provider, PROVIDER_GITHUB | PROVIDER_GOOGLE)
+    if !valid_provider_id(provider)
         || handle.is_empty()
         || (!provider_identity && !catalog_identity)
     {
-        return Identity::anonymous();
+        return None;
     }
-    Identity {
+    let identity = Identity {
         provider: provider.into(),
         handle: handle.into(),
         id: id.into(),
         session_generation: generation.into(),
         picture: acceptable_picture(picture),
         name: name.into(),
-    }
+    };
+    Some((identity, expiry))
 }
 
 /// "<token>.<signature>" for a freshly minted visitor token, so a browser
