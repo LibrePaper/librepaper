@@ -119,7 +119,7 @@
   /* ------------------------------------------------------------ the document */
 
   /** @typedef {{title?: string; docs_origin?: string; document_id?: string; created_at?: string; role?: string; can_edit?: boolean; can_moderate?: boolean; can_see_sharing?: boolean; commenting_as?: string}} ReaderDocument */
-  /** @typedef {{id?: string; name?: string; handle?: string; provider?: string; providers?: string[]; comments_need_login?: boolean}} ReaderUser */
+  /** @typedef {{id?: string; name?: string; handle?: string; provider?: string; providers?: {id: string, kind: string, label: string}[]; comments_need_login?: boolean}} ReaderUser */
   /** @type {ReaderDocument} */
   let doc = $state({});
   let documentNeedsSignIn = $state(false);

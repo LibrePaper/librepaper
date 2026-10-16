@@ -127,6 +127,8 @@
     ],
     lock: [["rect", { width: 18, height: 11, x: 3, y: 11, rx: 2, ry: 2 }], ["path", "M7 11V7a5 5 0 0 1 10 0v4"]],
     unlock: [["rect", { width: 18, height: 11, x: 3, y: 11, rx: 2, ry: 2 }], ["path", "M7 11V7a5 5 0 0 1 9.9-1"]],
+    // Lucide's key, for a sign-in provider with no logo of its own here.
+    key: [["path", "m15.5 7.5 2.3 2.3a1 1 0 0 0 1.4 0l2.1-2.1a1 1 0 0 0 0-1.4L19 4"], ["path", "m21 2-9.6 9.6"], ["circle", { cx: 7.5, cy: 15.5, r: 5.5 }]],
     "log-out": [["path", "m16 17 5-5-5-5"], ["path", "M21 12H9"], ["path", "M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"]],
     "log-in": [["path", "m10 17 5-5-5-5"], ["path", "M15 12H3"], ["path", "M15 3h4a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2h-4"]],
     help: [
