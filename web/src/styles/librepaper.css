@@ -1071,8 +1071,8 @@ main.reader .cm-scroller, main.reader .panel { overscroll-behavior: contain; }
 .settings-section-title { display: flex; align-items: baseline; flex-wrap: wrap; gap: --spacing(2); }
 .settings-section-title .settings-subhead { flex: 1; min-width: 0; }
 .settings-group-title { margin: --spacing(3) 0 0; color: var(--panel-muted); font-size: var(--panel-meta-size); font-weight: 600; }
-/* The shortcut table's group names are subsections when the table sits in settings. */
-.settings-body h3.group-name { font-size: var(--text-base); font-weight: var(--panel-title-weight); text-transform: none; letter-spacing: normal; color: inherit; }
+/* In settings the shortcut table sits inside a row, so its group names rank below the row title. */
+.settings-body h3.group-name { color: var(--panel-muted); font-size: var(--panel-meta-size); font-weight: 600; text-transform: none; letter-spacing: normal; }
 
 /* Rows align their controls and use whitespace; section headings carry the rules. */
 /* The words keep a floor of 12rem and the controls never take more than half the
