@@ -107,7 +107,7 @@ fn machine_invoked_commands_parse_but_are_not_listed() {
             "{command:?} --help should parse"
         );
     }
-    for command in ["start", "stop", "status", "endpoint"] {
+    for command in ["start", "stop", "status", "endpoint", "diagnostics"] {
         assert!(
             cli(&["local", command, "--help"]).status.success(),
             "local {command} --help should parse"

@@ -9,6 +9,11 @@ use std::time::Duration;
 use super::protocol::{BASE_PATH, DEFAULT_PORT};
 use super::store::{ServiceFile, ServiceState};
 
+/// The folder that holds the service lock, the stop request and companion.log.
+pub(crate) fn log_dir(state_home: &std::path::Path) -> std::path::PathBuf {
+    state_home.join("librepaper/local")
+}
+
 /// The file whose lock marks a running (or starting) service.
 pub fn lock_path(state_home: &Path) -> PathBuf {
     state_home.join("librepaper/local/companion.lock")
@@ -101,12 +106,12 @@ pub async fn spawn_background(port: u16) -> Result<ServiceState, String> {
     }
     let executable = super::paths::current_executable()?;
     let mut command = background_command(executable, port);
-    let log_dir = state_home.join("librepaper/local");
-    std::fs::create_dir_all(&log_dir).map_err(|error| error.to_string())?;
-    let log_path = log_dir.join("companion.log");
+    let dir = log_dir(&state_home);
+    std::fs::create_dir_all(&dir).map_err(|error| error.to_string())?;
+    let log_path = dir.join("companion.log");
     // Bound accumulated startup diagnostics without exposing them to sites.
     if std::fs::metadata(&log_path).is_ok_and(|meta| meta.len() > 1024 * 1024) {
-        let _ = std::fs::rename(&log_path, log_dir.join("companion.previous.log"));
+        let _ = std::fs::rename(&log_path, dir.join("companion.previous.log"));
     }
     let mut options = std::fs::OpenOptions::new();
     options.create(true).append(true);

@@ -304,7 +304,7 @@ fn needs_local_environment(command: &Command) -> bool {
     matches!(
         command,
         Command::Local {
-            command: LocalCommand::Start(_) | LocalCommand::Status,
+            command: LocalCommand::Start(_) | LocalCommand::Status | LocalCommand::Diagnostics { .. },
         }
     )
 }
@@ -686,6 +686,8 @@ mod socket_policy_tests {
             vec!["librepaper", "local", "status"],
             vec!["librepaper", "local", "endpoint"],
             vec!["librepaper", "local", "endpoint", "--port", "9123"],
+            vec!["librepaper", "local", "diagnostics"],
+            vec!["librepaper", "local", "diagnostics", "--log-dir"],
         ] {
             assert!(Cli::try_parse_from(args.clone()).is_ok(), "{args:?}");
         }

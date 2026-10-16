@@ -50,6 +50,13 @@ pub enum LocalCommand {
         #[arg(long, value_name = "PORT", env = "LIBREPAPER_LOCAL_PORT")]
         port: Option<u16>,
     },
+    /// Print a plain-text report for a bug report: version, system, PATH,
+    /// the service, the tools found and the end of the log. With --log-dir,
+    /// print only the folder that holds the log.
+    Diagnostics {
+        #[arg(long)]
+        log_dir: bool,
+    },
 }
 
 /// The arguments `librepaper local` hands to `crate::local::run`.
@@ -71,6 +78,7 @@ pub async fn run(args: LocalArgs) {
         LocalCommand::Stop => stop().await,
         LocalCommand::Status => status().await,
         LocalCommand::Endpoint { port } => endpoint(port.unwrap_or(0)).await,
+        LocalCommand::Diagnostics { log_dir } => diagnostics(log_dir).await,
     }
 }
 
@@ -247,6 +255,16 @@ fn endpoint_line(state: &ServiceState, token: &str) -> String {
 /// one already running alone. Reports the service address, then the native
 /// tools found and missing.
 async fn status() {
+    // A stale `service.json` describes a service that is gone. Reporting
+    // that as success would have a script skip starting one.
+    if !report_status().await {
+        std::process::exit(1);
+    }
+}
+
+/// Prints the service address and the tools, and returns whether the service
+/// answered. Never exits, so `diagnostics` can print it on its own.
+async fn report_status() -> bool {
     let home = state_home();
     let mut answering = true;
 
@@ -320,10 +338,37 @@ async fn status() {
         println!("  local builds run with the user's normal access");
     }
 
-    // A stale `service.json` describes a service that is gone. Reporting
-    // that as success would have a script skip starting one.
-    if !answering {
-        std::process::exit(1);
+    answering
+}
+
+/// The report a bug report needs. Unlike `status`, it never exits: it prints
+/// the same service and tool lines whether or not the service runs.
+async fn diagnostics(log_dir_only: bool) {
+    let dir = crate::local::lifecycle::log_dir(&state_home());
+    if log_dir_only {
+        println!("{}", dir.display());
+        return;
+    }
+    println!("LibrePaper command line {}", crate::VERSION);
+    println!("System: {} {}", std::env::consts::OS, std::env::consts::ARCH);
+    println!("Log folder: {}", dir.display());
+    println!("PATH:");
+    for entry in std::env::split_paths(&std::env::var_os("PATH").unwrap_or_default()) {
+        println!("  {}", entry.display());
+    }
+    println!();
+    report_status().await;
+    println!();
+    println!("Recent log (companion.log, last 200 lines):");
+    match std::fs::read(dir.join("companion.log")) {
+        Ok(bytes) => {
+            let text = String::from_utf8_lossy(&bytes);
+            let lines: Vec<&str> = text.lines().collect();
+            for line in &lines[lines.len().saturating_sub(200)..] {
+                println!("{line}");
+            }
+        }
+        Err(_) => println!("(no log yet)"),
     }
 }
 

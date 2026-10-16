@@ -1,23 +1,24 @@
 //! Resolve a useful PATH before the companion starts its async runtime.
 //!
-//! Finder and LaunchAgents do not read shell startup files. Resolve the
-//! login-shell PATH once, synchronously, then let children inherit it.
+//! Finder, LaunchAgents and Linux desktop launchers do not read shell startup
+//! files. Resolve the login-shell PATH once, synchronously, then let children
+//! inherit it.
 
-#[cfg(any(target_os = "macos", all(test, unix)))]
+#[cfg(any(target_os = "macos", target_os = "linux", all(test, unix)))]
 use std::ffi::{OsStr, OsString};
-#[cfg(any(target_os = "macos", all(test, unix)))]
+#[cfg(any(target_os = "macos", target_os = "linux", all(test, unix)))]
 use std::path::{Path, PathBuf};
 
-#[cfg(any(target_os = "macos", all(unix, test)))]
+#[cfg(any(target_os = "macos", target_os = "linux", all(unix, test)))]
 const MAX_SHELL_OUTPUT: usize = 64 * 1024;
 
-/// Initialize the process PATH on macOS. This must run before threads start.
+/// Initialize the process PATH on macOS and Linux. This must run before threads start.
 ///
 /// # Safety
 /// Call only during synchronous startup before Tokio or any other threads are
 /// started. Changing the process environment while other threads may read it
 /// is unsafe.
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "linux"))]
 pub unsafe fn initialize() {
     let inherited = std::env::var_os("PATH").unwrap_or_default();
     let dirs = resolve_path(&inherited, home_directory(), shell_path());
@@ -26,21 +27,21 @@ pub unsafe fn initialize() {
     }
 }
 
-/// The PATH initializer is a no-op outside macOS.
+/// The PATH initializer is a no-op outside macOS and Linux.
 ///
 /// # Safety
 /// Call only during synchronous startup before any threads are started.
-#[cfg(not(target_os = "macos"))]
+#[cfg(not(any(target_os = "macos", target_os = "linux")))]
 pub unsafe fn initialize() {}
 
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "linux"))]
 fn home_directory() -> Option<PathBuf> {
     std::env::var_os("HOME")
         .filter(|home| !home.is_empty())
         .map(PathBuf::from)
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "linux"))]
 fn shell_path() -> Option<OsString> {
     let configured = std::env::var_os("SHELL");
     let account = account_login_shell();
@@ -56,7 +57,7 @@ fn shell_path() -> Option<OsString> {
     login_shell_path(&shell, std::time::Duration::from_secs(2))
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "linux"))]
 fn account_login_shell() -> Option<OsString> {
     // SAFETY: getpwuid returns a process-global record; copy its shell before
     // making any other libc calls. Initialization is synchronous and single-threaded.
@@ -73,7 +74,7 @@ fn account_login_shell() -> Option<OsString> {
     }
 }
 
-#[cfg(any(target_os = "macos", all(test, unix)))]
+#[cfg(any(target_os = "macos", target_os = "linux", all(test, unix)))]
 fn select_shell(
     configured: Option<&OsStr>,
     account: Option<&OsStr>,
@@ -89,7 +90,7 @@ fn select_shell(
 
 /// Merge PATH sources while preserving inherited precedence and dropping
 /// relative entries, which would otherwise make discovery depend on CWD.
-#[cfg(any(target_os = "macos", all(test, unix)))]
+#[cfg(any(target_os = "macos", target_os = "linux", all(test, unix)))]
 fn resolve_path(inherited: &OsStr, home: Option<PathBuf>, shell: Option<OsString>) -> Vec<PathBuf> {
     let mut dirs = std::env::split_paths(inherited)
         .filter(|dir| dir.is_absolute())
@@ -135,7 +136,7 @@ fn resolve_path(inherited: &OsStr, home: Option<PathBuf>, shell: Option<OsString
     unique
 }
 
-#[cfg(any(target_os = "macos", all(test, unix)))]
+#[cfg(any(target_os = "macos", target_os = "linux", all(test, unix)))]
 fn path_file_entries(path: &Path) -> Vec<PathBuf> {
     use std::io::Read;
 
@@ -167,7 +168,7 @@ fn path_file_entries(path: &Path) -> Vec<PathBuf> {
 /// Run only a fixed PATH-printing snippet in the user's interactive login
 /// shell. stdout is read without blocking and retained up to 64 KiB. On
 /// timeout the shell process group is killed before the child is reaped.
-#[cfg(any(target_os = "macos", all(unix, test)))]
+#[cfg(any(target_os = "macos", target_os = "linux", all(unix, test)))]
 fn login_shell_path(shell: &Path, timeout: std::time::Duration) -> Option<OsString> {
     use std::os::fd::AsRawFd;
     use std::os::unix::process::CommandExt;
@@ -269,7 +270,7 @@ fn login_shell_path(shell: &Path, timeout: std::time::Duration) -> Option<OsStri
     parse_marked_path(&output, &marker)
 }
 
-#[cfg(any(target_os = "macos", all(unix, test)))]
+#[cfg(any(target_os = "macos", target_os = "linux", all(unix, test)))]
 fn read_nonblocking(fd: std::os::fd::RawFd, buffer: &mut [u8]) -> std::io::Result<usize> {
     // SAFETY: caller keeps the descriptor open and buffer points to writable memory.
     let count = unsafe { libc::read(fd, buffer.as_mut_ptr().cast(), buffer.len()) };
@@ -280,14 +281,14 @@ fn read_nonblocking(fd: std::os::fd::RawFd, buffer: &mut [u8]) -> std::io::Resul
     }
 }
 
-#[cfg(any(target_os = "macos", all(unix, test)))]
+#[cfg(any(target_os = "macos", target_os = "linux", all(unix, test)))]
 fn unique_marker() -> u128 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map_or(0, |duration| duration.as_nanos())
 }
 
-#[cfg(any(target_os = "macos", all(test, unix)))]
+#[cfg(any(target_os = "macos", target_os = "linux", all(test, unix)))]
 fn parse_marked_path(output: &[u8], marker: &str) -> Option<OsString> {
     let text = std::str::from_utf8(output).ok()?;
     let begin = format!("{marker}_BEGIN");
