@@ -27,6 +27,7 @@ jobs:
         env:
           HAS_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE != '' && secrets.APPLE_CERTIFICATE_PASSWORD != '' }}
           HAS_API_KEY: ${{ secrets.APPLE_API_KEY_ID != '' && secrets.APPLE_API_ISSUER != '' && secrets.APPLE_API_PRIVATE_KEY != '' }}
+          HAS_UPDATER_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY != '' }}
         run: |
           if [ "$HAS_CERTIFICATE" != "true" ]; then
             echo "::error::Set APPLE_CERTIFICATE and APPLE_CERTIFICATE_PASSWORD in the release environment."
@@ -34,6 +35,10 @@ jobs:
           fi
           if [ "$HAS_API_KEY" != "true" ]; then
             echo "::error::Set APPLE_API_KEY_ID, APPLE_API_ISSUER and APPLE_API_PRIVATE_KEY in the release environment. Notarization is required."
+            exit 1
+          fi
+          if [ "$HAS_UPDATER_KEY" != "true" ]; then
+            echo "::error::Set TAURI_SIGNING_PRIVATE_KEY and TAURI_SIGNING_PRIVATE_KEY_PASSWORD in the release environment."
             exit 1
           fi
 
@@ -97,6 +102,14 @@ jobs:
             exit 1
           fi
 
+      # The updater archive exists only when this reaches the bundle step, which
+      # reads the merged config in $RUNNER_TEMP/tauri-build.json.
+      - name: Write the updater config
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo '{"bundle":{"createUpdaterArtifacts":true}}' > "$RUNNER_TEMP/tauri-updater.json"
+
       - name: Build the app
         id: build
         uses: ./.github/actions/build-desktop
@@ -105,6 +118,7 @@ jobs:
           cli-version: ${{ steps.version.outputs.tag }}
           target: universal-apple-darwin
           bundle: "false"
+          tauri-config: ${{ runner.temp }}/tauri-updater.json
 
       - name: Write the notarization key
         shell: bash
@@ -124,6 +138,8 @@ jobs:
           APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
           APPLE_API_KEY: ${{ secrets.APPLE_API_KEY_ID }}
           APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         run: bunx @tauri-apps/cli@2.12.1 bundle --ci --bundles app,dmg --target universal-apple-darwin --config "$RUNNER_TEMP/tauri-build.json"
 
       - name: Notarize and staple the DMG
@@ -170,18 +186,27 @@ jobs:
           spctl --assess --type open --context context:primary-signature --verbose=4 "$dmg"
           xcrun stapler validate "$dmg"
 
-      - name: Collect the DMG
+      - name: Collect the DMG and the update
         shell: bash
         env:
           BUNDLE_DIR: ${{ steps.build.outputs.bundle-dir }}
           VERSION: ${{ steps.version.outputs.version }}
         run: |
+          set -euo pipefail
           out="$RUNNER_TEMP/desktop-release"
           mkdir -p "$out"
           name="LibrePaper_${VERSION}_universal.dmg"
           cp "$(ls "$BUNDLE_DIR"/dmg/*.dmg)" "$out/$name"
+          # The desktop updater reads this archive and its signature through latest.json.
+          update="LibrePaper_${VERSION}_universal.app.tar.gz"
+          test -f "$BUNDLE_DIR/macos/LibrePaper.app.tar.gz"
+          test -f "$BUNDLE_DIR/macos/LibrePaper.app.tar.gz.sig"
+          cp "$BUNDLE_DIR/macos/LibrePaper.app.tar.gz" "$out/$update"
+          cp "$BUNDLE_DIR/macos/LibrePaper.app.tar.gz.sig" "$out/$update.sig"
           cd "$out"
-          shasum -a 256 "$name" | awk '{print $1 " *" $2}' > "$name.sha256"
+          for asset in "$name" "$update" "$update.sig"; do
+            shasum -a 256 "$asset" | awk '{print $1 " *" $2}' > "$asset.sha256"
+          done
           ls -l
 
       # Names starting with artifacts- are attached to the GitHub Release by the host job.
