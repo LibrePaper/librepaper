@@ -460,7 +460,7 @@ impl Server {
             // 30 MB mistake before it is sent rather than after.
             "/api/config" => Some(write_json(
                 200,
-                &config_body(&self.config, self.fonts.is_some(), self.latex.as_deref()),
+                &config_body(&self.config, self.latex.as_deref()),
             )),
             _ => None,
         }
@@ -655,14 +655,10 @@ impl Server {
 /// after, plus the few facts about this deployment a page needs up front.
 fn config_body(
     config: &librepaper_base::config::Configuration,
-    fonts: bool,
     latex: Option<&str>,
 ) -> serde_json::Value {
     let mut body = json!(config);
     if let Some(fields) = body.as_object_mut() {
-        // Whether there is a font library to ask for a family the compiler
-        // warned about. The index itself is at `/api/fonts/index.json`.
-        fields.insert("fonts".to_string(), json!(fonts));
         fields.insert("latex".to_string(), json!(latex.is_some()));
         // The pinned release directory URL, not the mirror root.
         fields.insert("latexMirror".to_string(), json!(latex));

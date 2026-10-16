@@ -73,7 +73,6 @@ pub(crate) struct ResolvedConfig {
     pub(crate) expire_from: Option<String>,
     pub(crate) erase_inactive_after: Option<String>,
     pub(crate) asset_mirror: String,
-    pub(crate) typst_fonts: Option<String>,
     pub(crate) metrics_address: Option<SocketAddr>,
     pub(crate) log_filter: String,
     pub(crate) config: Configuration,
@@ -114,7 +113,6 @@ impl fmt::Debug for ResolvedConfig {
             .field("expire_from", &self.expire_from)
             .field("erase_inactive_after", &self.erase_inactive_after)
             .field("asset_mirror", &self.asset_mirror)
-            .field("typst_fonts", &self.typst_fonts)
             .field("metrics_address", &self.metrics_address)
             .field("log_filter", &self.log_filter)
             .field("config", &self.config)
@@ -231,7 +229,6 @@ struct Retention {
 #[serde(default, deny_unknown_fields)]
 struct Assets {
     mirror: Option<Input<String>>,
-    typst_fonts: Option<Input<PathBuf>>,
 }
 #[derive(Debug, Default, Deserialize)]
 #[serde(default, deny_unknown_fields)]
@@ -462,7 +459,7 @@ fn check_keys(v: &toml::Value) -> Result<(), String> {
         "retention",
         &["expire_after", "expire_from", "erase_inactive_after"],
     )?;
-    section(v, "assets", &["mirror", "typst_fonts"])?;
+    section(v, "assets", &["mirror"])?;
     section(v, "metrics", &["address"])?;
     section(v, "proxy", &["trusted_networks"])?;
     section(v, "demo", &["simulate_activity_days"])?;
@@ -653,9 +650,6 @@ pub(crate) fn load_with_postgres_env(
         raw.assets.mirror,
         librepaper_base::config::DEFAULT_ASSET_MIRROR.into(),
     )?;
-    let typst_fonts = r
-        .optional("assets.typst_fonts", raw.assets.typst_fonts)?
-        .map(|p| r.path(&p).to_string_lossy().into_owned());
     let metrics_address = r.optional("metrics.address", raw.metrics.address)?;
     let log_filter = r.value(
         "logging.filter",
@@ -790,7 +784,6 @@ pub(crate) fn load_with_postgres_env(
         expire_from,
         erase_inactive_after,
         asset_mirror,
-        typst_fonts,
         metrics_address,
         log_filter,
         config,
@@ -1204,13 +1197,6 @@ pub(crate) fn show_resolved(c: &ResolvedConfig) -> String {
         "assets.mirror",
         "mirror",
         &quote(&c.asset_mirror),
-    );
-    optional(
-        &mut out,
-        &c.sources,
-        "assets.typst_fonts",
-        "typst_fonts",
-        c.typst_fonts.as_deref(),
     );
     section(&mut out, "metrics");
     let metrics_address = c.metrics_address.map(|value| value.to_string());

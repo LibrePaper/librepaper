@@ -65,9 +65,6 @@ pub struct ServeOptions {
     /// distribution bytes are fetched directly by the browser and never pass
     /// through this process.
     pub asset_mirror: String,
-    /// A directory of font files served to typst documents, or nothing. See
-    /// `crate::server::fonts`.
-    pub typst_fonts: Option<String>,
     /// Loads the compiled-in shell for the validated asset mirror. The caller
     /// supplies it so the server does not depend on the shell crate, whose
     /// input is a build output; it runs where the server used to call it, after
@@ -325,10 +322,6 @@ pub fn validate_serve_options(options: &ServeOptions) -> Result<(), String> {
     if let Some(site) = options.site_origin.as_deref() {
         validate_site_origin(site)?;
     }
-    if let Some(fonts) = options.typst_fonts.as_deref() {
-        crate::server::fonts::Library::open(fonts)
-            .map_err(|error| format!("assets.typst_fonts: {error}"))?;
-    }
     let publishers = Policy::parse_publishers(options.publishers.as_deref().unwrap_or(""))?;
     if !publishers.is_configured() {
         return Err("access.publishers must name who may publish".into());
@@ -406,12 +399,6 @@ pub async fn serve(options: ServeOptions) {
     let site = match options.site_origin.as_deref().unwrap_or("").trim() {
         "" => None,
         flag => Some(validate_site_origin(flag).unwrap_or_else(|err| die(err))),
-    };
-    // The font library likewise: a directory that is not there is a typo,
-    // and every file in one that is gets read now, for the families it holds.
-    let fonts = match options.typst_fonts.as_deref().unwrap_or("").trim() {
-        "" => None,
-        flag => Some(crate::server::fonts::Library::open(flag).unwrap_or_else(|err| die(err))),
     };
     let expire_from = parse_expire_from(options.expire_from.as_deref().unwrap_or(""))
         .unwrap_or_else(|err| die(err));
@@ -589,7 +576,6 @@ pub async fn serve(options: ServeOptions) {
     }
     instance.latex = Some(latex);
     instance.site = site;
-    instance.fonts = fonts;
     let instance = Arc::new(instance);
     // The sampler feeds the metrics page and the graphs, so either one is
     // reason enough to run it. Only the listener needs `[metrics] address`.
@@ -631,9 +617,6 @@ pub async fn serve(options: ServeOptions) {
             "  storage: {} total bytes; {} bytes per owner",
             config.storage.total, config.storage.per_owner
         );
-    }
-    if let Some(library) = &instance.fonts {
-        println!("  fonts: {}", library.describe());
     }
     println!("  asset mirror: {assets}");
     if assets == librepaper_base::config::DEFAULT_ASSET_MIRROR {

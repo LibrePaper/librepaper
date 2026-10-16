@@ -368,8 +368,7 @@ async fn middleware_inner(
         };
         return refusal("request_budget", scope);
     }
-    let permit = if path.starts_with("/api/fonts/")
-        || path.starts_with("/published/")
+    let permit = if path.starts_with("/published/")
         || path.starts_with("/assets/")
         || (path.starts_with("/api/") && path.contains("/assets/"))
     {
@@ -399,7 +398,7 @@ async fn middleware_inner(
     } else {
         next.run(request).await
     };
-    if path.starts_with("/api/") && !path.starts_with("/api/fonts/")
+    if path.starts_with("/api/")
         || path.starts_with("/raw/")
         || path.starts_with("/pdf/")
         || path.starts_with("/auth/")

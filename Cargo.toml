@@ -64,7 +64,6 @@ license = "MIT"
 repository = "https://github.com/LibrePaper/librepaper"
 
 [workspace.dependencies]
-ttf-parser = "0.25.1"
 # The server. WebSockets come with axum, so nothing here frames them by hand.
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "fs", "time", "sync", "signal", "process", "io-util", "io-std"] }
 axum = { version = "0.8", features = ["ws", "multipart", "http1"] }
@@ -178,10 +177,5 @@ rfd = "0.15"
 # Linux asks the desktop portal for folders. This backend speaks D-Bus in Rust
 # and does not link GTK or libappindicator into static release binaries.
 ashpd = { version = "0.11", default-features = false, features = ["tokio"] }
-# A font file for the tests to put in a library.
-typst-assets = { version = "=0.15.1", features = ["fonts"] }
-# Test-only: check that the family names our ttf-parser code extracts match
-# the compiler's.
-typst = "=0.15.1"
 # Test-only: render markdown in the locate corpus test.
 comrak = "0.54.0"
