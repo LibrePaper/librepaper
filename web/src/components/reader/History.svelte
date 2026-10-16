@@ -241,7 +241,6 @@
     restore: "Restored",
     superseded: "Replaced by a restore",
     recovered: "Recovered",
-    accept: "Accepted a suggestion",
   };
   const said = (point) => point.label || WHY[point.why] || "";
   const told = (point) => said(point) || "Synced";

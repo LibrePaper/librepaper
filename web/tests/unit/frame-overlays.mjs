@@ -6,8 +6,8 @@ const sent = [];
 const overlays = createFrameOverlays({ ready: () => ready, send: (message) => sent.push(message) });
 const comments = [
   {
-    id: "passage", start: 4, end: 9, motivation: "editing", proposed: "after",
-    outcome: "", resolved: false,
+    id: "passage", start: 4, end: 9, motivation: "commenting",
+    resolved: false,
     presentation: { rendered_exact: "quote", rendered_position_utf16: 4 },
   },
   { id: "orphan", start: 10, end: 12, orphaned: true, motivation: "commenting" },
@@ -24,8 +24,8 @@ assert.deepEqual(sent, [
     type: "highlight",
     ranges: [
       {
-        id: "passage", start: 4, end: 9, motivation: "editing",
-        resolved: false, proposed: "after", outcome: "",
+        id: "passage", start: 4, end: 9, motivation: "commenting",
+        resolved: false,
       },
     ],
   },

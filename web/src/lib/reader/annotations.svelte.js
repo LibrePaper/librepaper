@@ -1,5 +1,4 @@
 import { submissions } from "../submissions.js";
-import { applyDecision } from "../suggestions.js";
 import { authHeaders } from "../api.js";
 
 // How many pages a refresh re-reads before it gives up and says it is
@@ -117,18 +116,17 @@ export function createAnnotations({ slug, key = "", anchor, repaint, send, rende
     repaint();
   }
 
-  /** @param {{ exact: string, prefix?: string, suffix?: string, position?: number | null, render_digest?: string }} selection @param {{ motivation: string, body: string, proposed?: string, color?: string }} input @param {string} creator */
-  function comment(selection, { motivation, body, proposed, color }, creator) {
+  /** @param {{ exact: string, prefix?: string, suffix?: string, position?: number | null, render_digest?: string }} selection @param {{ motivation: string, body: string, color?: string }} input @param {string} creator */
+  function comment(selection, { motivation, body, color }, creator) {
     const temp_id = crypto.randomUUID();
-    const editingFields = motivation === "editing" ? { proposed: proposed ?? "" } : {};
-    const colorFields = motivation !== "editing" && /^#[0-9a-f]{6}$/i.test(color || "")
+    const colorFields = /^#[0-9a-f]{6}$/i.test(color || "")
       ? { color: color.toLowerCase() } : {};
     // The draft is shown the way a stored comment is shown: from what the
     // page had. The server will send back the same thing beside the anchor it
     // works out, so the card and the highlight do not move when it does.
     const optimistic = {
       id: temp_id, temp_id, _uiKey: temp_id, seq: Number.MAX_SAFE_INTEGER,
-      ...selection, motivation, body, ...editingFields, ...colorFields, creator,
+      ...selection, motivation, body, ...colorFields, creator,
       presentation: {
         rendered_exact: selection.exact || "",
         rendered_prefix: selection.prefix || "",
@@ -141,7 +139,7 @@ export function createAnnotations({ slug, key = "", anchor, repaint, send, rende
     anchor([optimistic]);
     update([...list(), optimistic]);
     repaint();
-    submit({ type: "comment", ...selection, render_digest: selection.render_digest ?? renderDigest() ?? "", motivation, body, ...editingFields, ...colorFields, temp_id });
+    submit({ type: "comment", ...selection, render_digest: selection.render_digest ?? renderDigest() ?? "", motivation, body, ...colorFields, temp_id });
   }
 
   function reply(parent, body, creator) {
@@ -247,18 +245,13 @@ export function createAnnotations({ slug, key = "", anchor, repaint, send, rende
       update(list().filter((item) => item.id !== event.comment_id));
       if (!hasState && gone) countBy(-1, gone.resolved ? 0 : -1);
       repaint();
-    } else if (["resolve", "accept", "reject"].includes(event.type)) {
+    } else if (event.type === "resolve") {
       const hasState = applyEventState(event);
       const item = list().find((item) => item.id === event.comment_id);
       if (!item) return true;
-      if (event.type === "resolve") {
-        if (!hasState && item.resolved !== event.resolved) countBy(0, event.resolved ? -1 : 1);
-        item.resolved = event.resolved;
-        item.resolved_at = event.resolved_at;
-        if (!event.resolved) item.outcome = "";
-      } else {
-        applyDecision(item, event, event.type === "accept" ? "accepted" : "rejected");
-      }
+      if (!hasState && item.resolved !== event.resolved) countBy(0, event.resolved ? -1 : 1);
+      item.resolved = event.resolved;
+      item.resolved_at = event.resolved_at;
       publish();
       repaint();
     } else if (event.type === "comments-changed") {
@@ -274,20 +267,6 @@ export function createAnnotations({ slug, key = "", anchor, repaint, send, rende
         revision: event.state?.revision ?? state.page.revision,
       };
       void refresh();
-    } else if (event.type === "refine") {
-      applyEventState(event);
-      outbox.acknowledge(event);
-      // The response carries `comment_id` nowhere on the wire (`Ok(json!({
-      // "type": "refine", "comment": comment}))` in `server/mod.rs`) -- only
-      // the full, updated comment, which is where its own id actually is.
-      const item = list().find((candidate) => candidate.id === (event.comment_id ?? event.comment?.id));
-      if (!item || !event.comment) return true;
-      // The authoritative comment may have arrived through a read-only link;
-      // preserve the caller's existing delete permission instead of granting
-      // it merely because a refinement was broadcast.
-      Object.assign(item, event.comment, { pending: false });
-      publish();
-      repaint();
     } else return false;
     return true;
   }

@@ -85,9 +85,6 @@ export function validateFrameMessage(input) {
     case "reading-position":
       return Number.isSafeInteger(input.start) && input.start >= 0 && input.start <= MAX_READY_TEXT
         ? { type: "reading-position", start: input.start } : null;
-    case "suggestion-review":
-      return boundedString(input.id, MAX_ID) && input.id.length && input.reason === "overlap"
-        ? { type: "suggestion-review", id: input.id, reason: "overlap" } : null;
     default:
       return null;
   }

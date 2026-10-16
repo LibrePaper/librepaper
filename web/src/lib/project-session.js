@@ -1070,8 +1070,7 @@ export function createProjectSession({
     /// importing before it touches `doc` itself.
     start(state) {
       // A reconnect starts a new source hydration window. Publish that
-      // synchronously so final proposal outcomes arriving before the async
-      // import completes are held by Reader.
+      // synchronously so the Reader sees the room as not yet joined.
       joined = false;
       report();
       const stale = connection.mark();

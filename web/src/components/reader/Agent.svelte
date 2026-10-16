@@ -11,7 +11,7 @@
   import { createAgentClient, documentKey } from "../../lib/agent-client.svelte.js";
   import * as local from "../../lib/desktop/client.js";
   import {
-    captureAttachment, capabilityAllows, diagnosticLabel, suggestionContext,
+    captureAttachment, capabilityAllows, diagnosticLabel,
     normalizeCapabilities, scopeLabel, visibleResults,
     findTask, groupTasks, inferScope, searchTasks, taskPrompt, taskScopes,
   } from "../../lib/assistant.js";
@@ -20,7 +20,7 @@
   let {
     slug, link, canShare = false, path = "", selection = null, revision = "", request = null,
     diagnostics = [], oncommenttask, ondiagnostictask,
-    comments = [], suggestion: initialSuggestion = null, onreview, onpreview, onsettings,
+    comments = [], changes = [], onreview, onpreview, onsettings,
     userName = "You",
   } = $props();
   let client = $state.raw(null);
@@ -36,8 +36,6 @@
   let problem = $state("");
   let restoreProblem = $state("");
   let attachment = $state(null);
-  let suggestion = $state(null);
-  $effect(() => { if (suggestion === null && initialSuggestion) suggestion = initialSuggestion; });
   let task = $state(null);
   let scope = $state("selection");
   let diagnostic = $state(null);
@@ -395,7 +393,6 @@
     draft = "";
     task = next.task || null;
     commentContext = next.comment || null;
-    suggestion = next.suggestion || next.comment?.suggestion || null;
     diagnostic = next.diagnostic || null;
     diagnosticRevision = next.diagnostic ? next.revision || next.diagnostic.revision || "" : "";
     if (next.diagnostic) {
@@ -422,8 +419,8 @@
       if (quoted?.exact) attach({ ...quoted, revision: next.revision || next.comment.revision || revision }, next.revision || next.comment.revision || revision);
       else { suppressedSelection = selectionKey(selection || lastSelection); attachment = null; }
       scope = attachment ? "selection" : (contextPath ? "file" : "document");
-      task = { kind: next.comment.suggestion ? "refine" : "respond", scope };
-      draft = next.comment.suggestion ? "Refine this suggestion." : "Address this comment.";
+      task = { kind: "respond", scope };
+      draft = "Address this comment.";
     }
     if (next.diagnostic) {
       task = next.task || { kind: "fix", scope };
@@ -488,8 +485,7 @@
       }
       await client.send(text, {
         task: task || undefined, attachment,
-        suggestion: suggestionContext(suggestion),
-        thread: ["respond", "refine"].includes(task?.kind) ? commentContext : null,
+        thread: task?.kind === "respond" ? commentContext : null,
         path: task?.scope === "file" || !task ? contextPath : "",
         revision: diagnosticRevision || attachment?.revision || (task?.scope === "selection" ? revision : ""),
         diagnostic, diagnostics,
@@ -504,7 +500,7 @@
       if (assistant.running) await local.stopAssistant({ link: agentLink || link, conversation: connection.id });
       assistant = { running: false, agent: "", access: "" };
       await client.end(); await client.create();
-      draft = ""; task = null; attachment = null; suggestion = null; commentContext = null;
+      draft = ""; task = null; attachment = null; commentContext = null;
       pendingRequest = null; diagnostic = null; diagnosticRevision = "";
       suppressedSelection = selectionKey(selection || lastSelection);
       tab = "chat";
@@ -529,9 +525,9 @@
   }
 
   function chooseResult(results) {
-    const reviewable = visibleResults({ context: { results } }, comments);
-    if (reviewable.suggestions.length) onreview?.(reviewable);
-    else problem = "These suggestions are no longer available.";
+    const reviewable = visibleResults({ context: { results } }, changes);
+    if (reviewable.changes.length) onreview?.(reviewable);
+    else problem = "These changes are no longer pending.";
   }
 
   $effect(() => {
@@ -793,9 +789,9 @@
           {#if oncommenttask}
             {#each comments.filter(comment => !comment.resolved) as comment (comment.id)}
               <div class="context-task">
-                <p class="panel-muted">{comment.body || comment.exact || "Suggestion"}</p>
+                <p class="panel-muted">{comment.body || comment.exact || "Comment"}</p>
                 <button class="task-row" disabled={!caps.can_comment} onclick={() => oncommenttask(comment)}>
-                  <span>{comment.motivation === "editing" ? "Refine suggestion" : "Address comment"}</span><span class="task-chevron" aria-hidden="true">›</span>
+                  <span>Address comment</span><span class="task-chevron" aria-hidden="true">›</span>
                 </button>
               </div>
             {/each}

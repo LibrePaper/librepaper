@@ -15,13 +15,10 @@ const entry = join(temporary, "entry.js");
 writeFileSync(entry, `
 import ${JSON.stringify(join(root, "src/styles/app.css"))};
 import { mount, unmount } from ${JSON.stringify(join(root, "node_modules/svelte/src/index-client.js"))};
-import Comments from ${JSON.stringify(join(root, "src/components/Comments.svelte"))};
 import Diagnostics from ${JSON.stringify(join(root, "src/components/reader/Diagnostics.svelte"))};
-window.rejected=[];
-const comments=['one','two'].map((id,seq)=>({id,seq,motivation:'editing',pass:'pass-1',exact:'Original text',proposed:'Better text',body:'Tighten',source:{path:'a.md',exact:'Original text'},replies:[]}));
-let component=mount(Comments,{target:document.body,props:{comments,canModerate:true,onrejectconfirmed:async item=>{window.rejected.push(item.id);if(item.id==='one')throw Error('Access changed.');}}});
+let component;
 window.diagnostics=async()=>{
-  await unmount(component);
+  if (component) await unmount(component);
   component=mount(Diagnostics,{target:document.body,props:{diagnostics:[{message:'An error',file:'a.md',line:2,revision:'old-sha',source:'old source'}]}});
 };
 `);
@@ -37,16 +34,10 @@ try {
   await new Promise((resolve, reject) => { server.once("error", reject); server.listen(0, "127.0.0.1", resolve); });
   page = await browser("chromium", join(temporary, "profile"), 24000 + Math.floor(Math.random() * 10000));
   await page.navigate(`http://127.0.0.1:${server.address().port}/`);
-  await until("pass grouping", () => page.evaluate('document.body.innerText.includes("2 pending")'), 10000);
-  await page.evaluate('Array.from(document.querySelectorAll("button")).find(b=>b.textContent==="Review next").click()');
-  await until("review focus", () => page.evaluate('Boolean(document.activeElement.closest("#comment-one"))'), 1000);
-  await page.evaluate('Array.from(document.querySelectorAll("button")).find(b=>b.textContent==="Reject all").click()');
-  await until("partial rejection", () => page.evaluate('document.body.innerText.includes("1 rejected; 1 could not be rejected: Access changed.")'), 1000);
-  assert.deepEqual(await page.evaluate("window.rejected"), ["one", "two"]);
   await page.evaluate("window.diagnostics()");
   await until("diagnostic content", () => page.evaluate('document.body.innerText.includes("An error")'), 1000);
   assert.equal(await page.evaluate('document.body.innerText.includes("Fix with assistant")'), false);
-  console.log("assistant-review-browser: grouped review, partial rejection and diagnostics without AI shortcuts passed");
+  console.log("assistant-review-browser: diagnostics without AI shortcuts passed");
 } finally {
   await page?.close();
   if (server) await new Promise((resolve) => server.close(resolve));
