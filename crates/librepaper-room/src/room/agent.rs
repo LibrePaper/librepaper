@@ -661,8 +661,9 @@ impl AgentTrackedCommand {
         })
     }
 
-    /// The edits of one file as the planner wants them: code-point offsets
-    /// into the file as it stands at head, ascending and not overlapping.
+    /// The edits of each file as `track::apply_tracked_edits` takes them:
+    /// UTF-16 offsets into the file as it stands at head, ascending and not
+    /// overlapping.
     fn planned(&self, doc: &LoroDoc) -> Result<Vec<(String, Vec<session::Edit>)>, String> {
         let mut by_file: BTreeMap<&str, Vec<session::Edit>> = BTreeMap::new();
         for edit in &self.edits {
