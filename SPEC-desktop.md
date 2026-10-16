@@ -55,7 +55,7 @@ The desktop app is found next to the running `librepaper` executable, then on `P
 - `desktop()` returns `window.__LIBREPAPER_DESKTOP__` or `null`.
 - Requests go to `desktop().base + "librepaper/local/<route>"` and `desktop().base + "companion/api/<route>"`, with no token.
 - The address, pairing, probe backoff, connect flow, start grace, auto-reconnect, negative cache, `companion_address` fragment and every localStorage key for them are deleted.
-- Status states are `browser` (not in the desktop app), `checking`, `ready`, `unavailable` (the shell answered 502) and `incompatible` (the protocol does not match).
+- Status states are `browser` (not in the desktop app), `checking`, `ready`, `unavailable` (the shell answered 502) and `incompatible` (the protocol does not match). The shell checks the protocol the service prints, and an incompatible service makes the bridge answer 502 with a message to reinstall LibrePaper.
 - In the browser, every place that offered companion features shows one notice: "Computing, agents, folders and backups need the LibrePaper desktop app." It links to the install page and offers "Open in the desktop app" (`librepaper://open?url=<current URL>`).
 
 ## The server

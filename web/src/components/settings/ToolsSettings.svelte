@@ -2,14 +2,14 @@
   import ToolRow from "./ToolRow.svelte";
   import ToolCommand from "./ToolCommand.svelte";
   import DesktopOnly from "../DesktopOnly.svelte";
-  import { capabilities as desktopCapabilities } from "../../lib/desktop/client.js";
+  import { forgetCapabilities } from "../../lib/desktop/client.js";
 
   // The page does not own the machine view; the dialog creates and starts it.
   let { view } = $props();
 
   // The rescan also refreshes what the rest of the page knows about the tools.
   async function rescan() {
-    if (await view.act("rescan", "Tool scan complete.", "/tools/rescan", { method: "POST" })) void desktopCapabilities({ rescan: true }).catch(() => {});
+    if (await view.act("rescan", "Tool scan complete.", "/tools/rescan", { method: "POST" })) forgetCapabilities();
   }
 
   const CONFIGURABLE = ["quarto", "calepin"];

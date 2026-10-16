@@ -192,10 +192,9 @@ export function createPreviewRenderer({
       const options = { ...(manual ? { manual: true } : {}) };
       if (htmlPreview) options.format = "html";
       const current = facts();
-      // Local execution is remembered per (origin, user, document slug) in
-      // local storage, off by default, and forgotten on sign-out. A
-      // remembered preference for a tool that runs the document -- Quarto,
-      // Calepin -- is ignored until permission is granted. A Quarto document
+      // Run code is a switch that is off whenever a document opens and is
+      // never stored. While it is off, a stored preference for a tool that
+      // runs the document -- Quarto, Calepin -- is ignored. A Quarto document
       // is then drawn as the Markdown it is, and a Typst one by this
       // browser's own renderer, rather than by running code without consent.
       const executes = format === "quarto" || ["quarto", "calepin"].includes(current.buildPreferences.tool);

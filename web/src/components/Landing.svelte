@@ -48,6 +48,19 @@
     settingsCategory = category;
     settingsOpen = true;
   }
+
+  // A link from this server, share links included, opens here with its key.
+  // Links are pasted rather than passed by the system, so a key never leaves the page.
+  let linkInput = $state("");
+  let linkError = $state("");
+  function openLink(event) {
+    event.preventDefault();
+    linkError = "";
+    let url;
+    try { url = new URL(linkInput.trim(), location.href); } catch { linkError = "That is not a link."; return; }
+    if (url.origin !== location.origin) { linkError = `Paste a link from ${location.host}.`; return; }
+    location.assign(url.href);
+  }
   // The desktop app asks for Settings from its menu and from Ctrl or Cmd+,.
   $effect(() => {
     const open = () => openSettings();
@@ -956,6 +969,13 @@
 
         {#if narrow && place !== "trash" && !selected.size}<span class="place-count">({shown.length})</span>{/if}
       </div>
+      {#if localBridge.desktop() && place === "projects"}
+      <form class="open-link" onsubmit={openLink}>
+        <input class="input input-sm" type="url" placeholder="Paste a LibrePaper link, such as a share link" aria-label="LibrePaper link" bind:value={linkInput} />
+        <button class="btn btn-sm lp-control-tonal-brand" type="submit">Open</button>
+        {#if linkError}<span class="open-link-error" role="alert">{linkError}</span>{/if}
+      </form>
+      {/if}
 
       <!-- Where a project comes from, for an account that has not made one
            yet. It is above the list rather than in it: a template is
@@ -1292,6 +1312,9 @@
   .projects { display: flex; flex-direction: column; flex: 1 1 auto; min-width: 0; min-height: 0; overflow-y: auto; padding: calc(var(--spacing) * 6) calc(var(--spacing) * 6) calc(var(--spacing) * 10); gap: calc(var(--spacing) * 4); }
   .place-heading { font-size: var(--text-2xl); font-weight: 600; margin: 0; }
   .place-line { display: flex; align-items: center; gap: calc(var(--spacing) * 2); }
+  .open-link { display: flex; flex-wrap: wrap; align-items: center; gap: calc(var(--spacing) * 2); margin: calc(var(--spacing) * 2) 0; }
+  .open-link input { flex: 1; min-width: 12rem; max-width: 32rem; }
+  .open-link-error { color: var(--color-error-text); font-size: var(--text-sm); }
 
   .starters { display: flex; flex-wrap: wrap; align-items: center; gap: calc(var(--spacing) * 2); }
   .new-page { height: calc(100dvh - var(--librepaper-bar)); max-width: none; margin: 0; padding: 0; overflow-y: auto; }

@@ -311,6 +311,11 @@ export async function capabilities({ rescan = false } = {}) {
   return capabilitiesCache;
 }
 
+/** Forgets the tools found, so the next `capabilities()` asks the desktop app again. */
+export function forgetCapabilities() {
+  capabilitiesCache = null;
+}
+
 /** Whether the desktop app found Calepin. */
 export async function calepinAvailable() {
   const found = await capabilities();
