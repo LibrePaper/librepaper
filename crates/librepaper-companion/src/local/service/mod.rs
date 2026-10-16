@@ -1388,13 +1388,22 @@ async fn read_multipart_upload(
 pub(super) fn check_credential(inner: &Inner, headers: &HeaderMap) -> Result<(), Reply> {
     let token = bearer_token(headers).unwrap_or_default();
     if token.is_empty() {
-        return Err(write_json(401, &json!({"error": "missing bearer token"})));
+        return Err(rejected_credential("missing bearer token"));
     }
     if inner.control.accepts(&token, &inner.instance) {
         Ok(())
     } else {
-        Err(write_json(401, &json!({"error": "unauthorized"})))
+        Err(rejected_credential("unauthorized"))
     }
+}
+
+/// A 401 for the service's own credential, marked so the desktop shell can
+/// tell it from other 401s.
+fn rejected_credential(message: &str) -> Reply {
+    let mut response = write_json(401, &json!({"error": message}));
+    // The desktop shell re-reads the service's credential only after this header: a 401 from a route of its own (an agent's token) is passed to the page.
+    set(&mut response, "x-librepaper-credential", "rejected");
+    response
 }
 
 /// The one gate every route but `health` shares: the request must carry the
@@ -2143,15 +2152,24 @@ mod settings_tests {
             let response = authenticate(&inner, &headers, bad_origin).unwrap_err();
             assert_eq!(response.status(), StatusCode::FORBIDDEN);
         }
-        let missing = authenticate(&inner, &HeaderMap::new(), Some("https://paper.example"));
-        assert_eq!(missing.unwrap_err().status(), StatusCode::UNAUTHORIZED);
+        let missing = authenticate(&inner, &HeaderMap::new(), Some("https://paper.example"))
+            .unwrap_err();
+        assert_eq!(missing.status(), StatusCode::UNAUTHORIZED);
+        assert_eq!(
+            missing.headers().get("x-librepaper-credential").unwrap(),
+            "rejected"
+        );
         let mut wrong = HeaderMap::new();
         wrong.insert(
             "authorization",
             HeaderValue::from_static("Bearer not-the-credential"),
         );
-        let wrong = authenticate(&inner, &wrong, Some("https://paper.example"));
-        assert_eq!(wrong.unwrap_err().status(), StatusCode::UNAUTHORIZED);
+        let wrong = authenticate(&inner, &wrong, Some("https://paper.example")).unwrap_err();
+        assert_eq!(wrong.status(), StatusCode::UNAUTHORIZED);
+        assert_eq!(
+            wrong.headers().get("x-librepaper-credential").unwrap(),
+            "rejected"
+        );
     }
 
     #[tokio::test]
