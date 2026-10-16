@@ -28,17 +28,37 @@ pub(super) struct ControlAuth {
 
 impl ControlAuth {
     pub(super) fn create(state_home: &Path, instance: &str) -> Result<Self, String> {
+        let configured = match std::env::var_os("LIBREPAPER_SERVER") {
+            Some(value) => Some(
+                value
+                    .into_string()
+                    .map_err(|_| "LIBREPAPER_SERVER is not valid Unicode".to_string())?,
+            ),
+            None => None,
+        };
+        Self::create_for(state_home, instance, configured.as_deref())
+    }
+
+    /// The desktop app names its server in LIBREPAPER_SERVER every time it
+    /// starts the service, so a server chosen in the app replaces the saved
+    /// one. Without it, the saved server stays, then app.librepaper.org.
+    fn create_for(
+        state_home: &Path,
+        instance: &str,
+        configured: Option<&str>,
+    ) -> Result<Self, String> {
         let path = state_home.join("librepaper").join("local").join(TOKEN_FILE);
         let old = read_private_file(&path).filter(|file| file.instance == instance);
         let token = old
             .as_ref()
             .map(|file| file.token.clone())
             .unwrap_or_else(crate::local::store::random_token);
-        // A saved target remains authoritative if LIBREPAPER_SERVER changes.
-        // Legacy token files migrate only during local service initialization.
-        let server = match old.as_ref().and_then(|file| file.server.as_deref()) {
-            Some(server) => validate_server(server)?,
-            None => configured_server()?,
+        let server = match (
+            configured,
+            old.as_ref().and_then(|file| file.server.as_deref()),
+        ) {
+            (Some(server), _) | (None, Some(server)) => validate_server(server)?,
+            (None, None) => validate_server("https://app.librepaper.org/")?,
         };
         let origin = server.origin().ascii_serialization();
         let file = TokenFile {
@@ -70,17 +90,6 @@ impl ControlAuth {
                 self.token_hash.as_bytes(),
                 hex::encode(Sha256::digest(token.as_bytes())).as_bytes(),
             )
-    }
-}
-
-fn configured_server() -> Result<url::Url, String> {
-    match std::env::var_os("LIBREPAPER_SERVER") {
-        Some(value) => validate_server(
-            value
-                .to_str()
-                .ok_or("LIBREPAPER_SERVER is not valid Unicode")?,
-        ),
-        None => validate_server("https://app.librepaper.org/"),
     }
 }
 
@@ -615,15 +624,15 @@ mod tests {
     #[test]
     fn control_token_is_private_reused_within_instance_and_rotated_on_restart() {
         let state_home = tempfile::tempdir().unwrap();
-        let first = ControlAuth::create(state_home.path(), "one").unwrap();
+        let first = ControlAuth::create_for(state_home.path(), "one", None).unwrap();
         let first_token = token_for_instance(state_home.path(), "one").unwrap();
-        let repeated = ControlAuth::create(state_home.path(), "one").unwrap();
+        let repeated = ControlAuth::create_for(state_home.path(), "one", None).unwrap();
         assert_eq!(
             first_token,
             token_for_instance(state_home.path(), "one").unwrap()
         );
         assert_eq!(first.token_hash, repeated.token_hash);
-        let next = ControlAuth::create(state_home.path(), "two").unwrap();
+        let next = ControlAuth::create_for(state_home.path(), "two", None).unwrap();
         let next_token = token_for_instance(state_home.path(), "two").unwrap();
         assert_ne!(first_token, next_token);
         assert!(token_for_instance(state_home.path(), "one").is_none());
@@ -644,6 +653,23 @@ mod tests {
                 & 0o777;
             assert_eq!(mode, 0o600);
         }
+    }
+
+    #[test]
+    fn the_configured_server_replaces_the_saved_one() {
+        let state_home = tempfile::tempdir().unwrap();
+        let first =
+            ControlAuth::create_for(state_home.path(), "one", Some("https://first.example/"))
+                .unwrap();
+        assert_eq!(first.origin(), "https://first.example");
+        let kept = ControlAuth::create_for(state_home.path(), "one", None).unwrap();
+        assert_eq!(kept.origin(), "https://first.example");
+        let switched =
+            ControlAuth::create_for(state_home.path(), "one", Some("https://second.example/"))
+                .unwrap();
+        assert_eq!(switched.origin(), "https://second.example");
+        assert!(switched.accepts_origin("https://second.example"));
+        assert!(!switched.accepts_origin("https://first.example"));
     }
 
     #[test]
