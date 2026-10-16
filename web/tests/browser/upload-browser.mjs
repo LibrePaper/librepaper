@@ -97,7 +97,7 @@ try {
   // The templates as the page should list them, read from the same directories.
   const FORMAT_IDS = ["markdown", "quarto", "latex", "typst", "html"];
   const templateDir = join(root, "web/src/templates");
-  const builtIn = readdirSync(templateDir).filter((id) => id !== "blank").map((id) => ({
+  const builtIn = readdirSync(templateDir).map((id) => ({
     id,
     name: JSON.parse(readFileSync(join(templateDir, id, "template.json"), "utf8")).name,
     formats: FORMAT_IDS.filter((format) => existsSync(join(templateDir, id, format))),
@@ -159,24 +159,15 @@ try {
   assert.deepEqual(await q("[...document.querySelectorAll('#new-project [role=tab]')].map(node => node.textContent.trim())"), ["Blank", "From Template", "Upload Files"]);
   await until("the suggested name", async () => (await valueOf("#new-project-name")) === "Untitled project 2");
 
-  // b. A name and a format make the project: one file, named by the format,
-  // with the name written into it as its title.
+  // b. A name alone makes the project: nothing is sent but the title, and the
+  // project starts with no files and no format.
+  assert.equal(await exists("#new-project-format"), false, "blank asks for no format");
   await set("#new-project-name", "A Paper You Can Change");
-  await set("#new-project-format", "quarto", "change");
   await submit();
   const made = await sent();
-  assert.deepEqual(made.map((one) => one.name), ["file", "title", "main"]);
-  assert.equal(made[0].filename, "main.qmd");
-  assert.equal(made[1].bytes, "A Paper You Can Change");
-  assert.equal(made[2].bytes, "main.qmd");
-  assert.match(made[0].bytes, /title: "A Paper You Can Change"/);
+  assert.deepEqual(made.map((one) => one.name), ["title"]);
+  assert.equal(made[0].bytes, "A Paper You Can Change");
   assert.deepEqual(await wentWrong(), []);
-
-  await openNew();
-  await set("#new-project-name", "Thesis");
-  await set("#new-project-format", "latex", "change");
-  await submit();
-  assert.equal((await sent())[0].filename, "main.tex");
 
   // c. An unnamed project is refused on the page, and nothing is sent.
   await openNew();
@@ -199,7 +190,7 @@ try {
 
   // e. The template tab: listing, search, filters, sort, selection.
   await openTemplates();
-  assert.equal(await exists('tr[data-template="blank"]'), false, "blank has its own tab");
+  assert.equal(await exists('tr[data-template="blank"]'), true, "the empty document is a template");
   assert.deepEqual(await rows(), catalog.map((one) => one.id));
   await set("#template-search", "letter");
   await until("search narrows", async () => JSON.stringify(await rows()) === '["letter"]');
