@@ -26,6 +26,16 @@ The desktop jobs are cargo-dist `local-artifacts-jobs`, listed in `Cargo.toml`. 
 
 After you edit the dist settings in `Cargo.toml`, regenerate `release.yml` with `dist generate` (dist 0.33.0), then check it with `dist generate --check`.
 
+## Verify a download
+
+Every release file has a build provenance attestation from GitHub Actions. Check it with the GitHub CLI:
+
+```sh
+gh attestation verify librepaper_0.0.44_amd64.deb -R LibrePaper/librepaper
+```
+
+The attestation proves the file was built by this repository's release workflow from the tagged commit. The host job attests every file it attaches to the release (`github-attestations-phase = "host"` in `Cargo.toml`).
+
 ## Shared build action
 
 The `.github/actions/build-desktop` action is used by every desktop workflow.
