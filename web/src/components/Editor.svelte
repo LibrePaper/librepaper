@@ -998,6 +998,39 @@
   /// Shows a file, keeping the state of the one being left. The view is made
   /// once and re-stated, rather than destroyed and rebuilt, so that switching
   /// files does not flash.
+  /// The one replacement that turns `old` into `next`: what lies between
+  /// their common prefix and their common suffix.
+  function textChange(old, next) {
+    let from = 0;
+    while (from < old.length && from < next.length && old.charCodeAt(from) === next.charCodeAt(from)) from++;
+    let oldEnd = old.length;
+    let nextEnd = next.length;
+    while (oldEnd > from && nextEnd > from && old.charCodeAt(oldEnd - 1) === next.charCodeAt(nextEnd - 1)) {
+      oldEnd--;
+      nextEnd--;
+    }
+    return { from, to: oldEnd, insert: next.slice(from, nextEnd) };
+  }
+
+  /// Bring the file on screen up to its LoroText after a local write that did
+  /// not come through this view: accepting or rejecting a change from the
+  /// Changes panel, for one. The binding copies only imported edits into the
+  /// view, so without this the screen would keep the old text. The dispatch is
+  /// marked the way the undo plugin marks its own, as already in the document,
+  /// so the binding does not write it back and tracking does not record it.
+  function reconcileShown() {
+    if (!view || !showing) return;
+    const text = getTextFromDoc(showing);
+    if (!text) return;
+    const old = view.state.doc.toString();
+    const next = text.toString();
+    if (old === next) return;
+    view.dispatch({
+      changes: textChange(old, next),
+      annotations: [loroSyncAnnotation.of("undo"), Transaction.addToHistory.of(false)],
+    });
+  }
+
   function show(id) {
     if (!view || !id || id === showing) return;
     if (showing && activeDocument) stateMap(activeDocument).set(showing, view.state);
@@ -1010,18 +1043,8 @@
     // its CodeMirror binding is not mounted to dispatch those edits. Reconcile
     // the cached state before showing it, preserving its history and selection.
     if (text && state.doc.toString() !== text.toString()) {
-      const old = state.doc.toString();
-      const next = text.toString();
-      let from = 0;
-      while (from < old.length && from < next.length && old.charCodeAt(from) === next.charCodeAt(from)) from++;
-      let oldEnd = old.length;
-      let nextEnd = next.length;
-      while (oldEnd > from && nextEnd > from && old.charCodeAt(oldEnd - 1) === next.charCodeAt(nextEnd - 1)) {
-        oldEnd--;
-        nextEnd--;
-      }
       documentStates.set(id, state.update({
-        changes: { from, to: oldEnd, insert: next.slice(from, nextEnd) },
+        changes: textChange(state.doc.toString(), text.toString()),
         annotations: Transaction.addToHistory.of(false),
       }).state);
     }
@@ -1078,8 +1101,12 @@
       const bibliographyWatcher = scheduleBibliography;
       const unsubscribeBibliography = session.onFiles?.(bibliographyWatcher);
       // Changes imported from other people, or decided by them, arrive in the
-      // document without a keystroke here.
-      const unsubscribeChanges = session.doc.subscribe(() => queueMicrotask(drawChanges));
+      // document without a keystroke here. A local write from outside the
+      // view, such as a decision in the Changes panel, is copied into it.
+      const unsubscribeChanges = session.doc.subscribe((batch) => queueMicrotask(() => {
+        if (batch.by === "local") reconcileShown();
+        drawChanges();
+      }));
       refreshBibliography();
       view.focus();
       return () => {
