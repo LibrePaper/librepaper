@@ -236,7 +236,7 @@ function notRendered(rendering) {
   console.log("local-preview: sync() serializes concurrent calls into one trailing retry");
 }
 
-// Notes the companion returns for outside edits saved as `.local` copies are
+// Notes the desktop app returns for outside edits saved as `.local` copies are
 // kept for the session: a repeated note is not repeated, and a new start
 // replaces the list with what its own initial sync returned.
 {
@@ -368,7 +368,7 @@ console.log("local-preview: all checks passed");
 }
 
 // The old message goes when the next run starts, not when it succeeds: the
-// companion was started after a failure and the retry is still running, so
+// desktop app was started after a failure and the retry is still running, so
 // the panel must not keep saying it was not running. A retry that fails again
 // says so again, with what the new attempt reported.
 {
@@ -383,7 +383,7 @@ console.log("local-preview: all checks passed");
       syncWorkspace: async () => {},
       startLocalPreview: async () => {
         tries += 1;
-        if (tries === 1) throw new Error("LibrePaper Companion is not running");
+        if (tries === 1) throw new Error("The LibrePaper desktop app is not running");
         if (tries === 2) { await gate.promise; throw new Error("Quarto is not installed"); }
         return { id: "third" };
       },
@@ -391,7 +391,7 @@ console.log("local-preview: all checks passed");
     },
   });
   await ctl.start();
-  assert.equal(ctl.state.error, "LibrePaper Companion is not running");
+  assert.equal(ctl.state.error, "The LibrePaper desktop app is not running");
   const retry = ctl.start();
   await new Promise(setImmediate);
   assert.equal(ctl.starting, true, "the retry is in flight");

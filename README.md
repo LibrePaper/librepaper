@@ -20,7 +20,7 @@ released.
 
 ## Install
 
-Follow [the companion page](https://librepaper.org/local-app.html): installer scripts, Homebrew and Scoop.
+Follow [the desktop app page](https://librepaper.org/desktop-app.html).
 
 ## Documentation
 
@@ -29,10 +29,9 @@ sharing and review, agents, the CLI, and self-hosting.
 Its source is in [`docs/`](docs/), and `make site` builds it.
 
 The ordinary CLI covers `login`, `logout`, `list`, and one-shot `export`.
-The root commands operate the companion on your computer, `admin` operates a
-deployment, and `mcp` serves a document's tools to an agent.
+`admin` operates a deployment, and `mcp` serves a document's tools to an agent.
 
-LibrePaper Companion can also keep scheduled ZIP copies of every project
+The desktop app can also keep scheduled ZIP copies of every project
 available to your signed-in account, including shared projects. See the
 [local backups guide](docs/backups.md).
 
@@ -44,7 +43,7 @@ An exported project is a snapshot copy. Editing it does not update the hosted
 document.
 
 - [What is LibrePaper](https://librepaper.org/what.html)
-- [The companion](https://librepaper.org/local-app.html)
+- [The desktop app](https://librepaper.org/desktop-app.html)
 - [Self-hosting](https://librepaper.org/host/simple.html)
 - [Privacy](https://librepaper.org/privacy.html)
 - [Building from source](https://librepaper.org/architecture/building.html)

@@ -3,9 +3,9 @@
 //
 // LaTeX is a browser format, and only a browser format: it compiles in the
 // pinned WebAssembly engine and runs Biber in the browser beside it, so it
-// reaches the companion for nothing at all. No local LaTeX builder is offered
+// reaches the desktop app for nothing at all. No local LaTeX builder is offered
 // here, `engines` is the browser engine choice, and no surface that is about
-// LaTeX may look for the companion on its behalf.
+// LaTeX may look for the desktop app on its behalf.
 export const BUILDERS = Object.freeze([
   { id: "tex", label: "LaTeX", formats: ["latex"], backend: ["browser"], engines: ["pdflatex", "xelatex"] },
   { id: "typst", label: "Typst", formats: ["typst"], backend: ["browser"], engines: [] },
@@ -17,9 +17,8 @@ export const BUILDERS = Object.freeze([
 
 export function buildersFor(format) { return BUILDERS.filter((builder) => builder.formats.includes(format)); }
 
-// A companion that does not speak protocol 2 never reaches "connected"
-// (`companion/client.js`), so a capability response always carries `builders`,
-// and every builder record carries its own explicit operations.
+// A capability response always carries `builders`, and every builder record
+// carries its own explicit operations.
 export function capabilityFor(capabilities, id) {
   const list = capabilities?.builders;
   return Array.isArray(list) ? list.find((entry) => entry.id === id) || null : null;

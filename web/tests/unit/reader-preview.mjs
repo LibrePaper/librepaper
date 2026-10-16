@@ -64,36 +64,29 @@ assert.doesNotMatch(readerSource, /nothing to jump to here/);
 // diagnostics rather than by blanking the frame. The render itself is a
 // module now, so this is asked of the module.
 assert.match(previewSource, /const failed = hasError[\s\S]*?severity: "error"[\s\S]*?diagnostics\.rendered\(\{ page: false, diagnostics: failed \}\)/);
-// Running a document's code is one per-document permission covering both
-// local tools, off for every document until the dialog grants it, and read
-// back from the grant store rather than from a build preference.
+// Running a document's code is off whenever a document opens and is never
+// stored. The switch is the consent, and it is given again each time.
 assert.match(readerSource, /let localExecution = \$state\(false\)/);
-assert.match(readerSource, /async function startLocalExecution\(\)\s*\{\s*localExecutionConsent = false;\s*if \(!granted\(executionScope\(\)\)\) return;\s*localExecution = true;[\s\S]*?setQuartoPreviewMode\("quarto"\)[\s\S]*?setTypstPreviewMode\("calepin"\)/);
-assert.match(readerSource, /async function stopLocalExecution\(\)\s*\{\s*localExecution = false;\s*revoke\(executionScope\(\)\);[\s\S]*?setQuartoPreviewMode\("markdown"\)[\s\S]*?setTypstPreviewMode\("typst"\)/);
-// It is offered under its own heading in the View menu, with a check mark,
-// and choosing it asks rather than acts.
-assert.match(readerSource, /menu-section-label">Local execution<\/div>\s*<Menu\.Item value="local-execution"[\s\S]*?\{localExecution \? "✓" : ""\}/);
-assert.match(readerSource, /const toggleLocalExecution = \(\) => \{\s*if \(localExecution\) void stopLocalExecution\(\);\s*else localExecutionConsent = true;/);
-// The control asks before it runs: the warning is a dialog somebody has to
-// answer, not a tooltip a mouse might hover over.
-assert.match(readerSource, /\{#snippet localExecutionControl\(\)\}[\s\S]*?sourceFormat === "quarto" && mayEdit && !localExecution\}[\s\S]*?<button[\s\S]*?localExecutionConsent = true[\s\S]*?<\/button>/);
-// The dialog's buttons come from Modal's `confirm`, which is what puts focus
-// on the action: this one is answered with Enter like every other question.
-// Only the dialog grants, and what it says names who has to be trusted: the
-// owner and everyone who can edit, since any of them can change the code.
-assert.match(readerSource, /<Modal bind:open=\{localExecutionConsent\}[\s\S]*?confirm=\{\{ label: "Run code on this computer", onclick: \(\) => \{ grant\(executionScope\(\)\); void startLocalExecution\(\); \} \}\}>[\s\S]*?trust the document's owner and everyone who can edit it[\s\S]*?<\/Modal>/);
-assert.equal([...readerSource.matchAll(/\bgrant\(executionScope\(\)\)/g)].length, 1, "nothing but the dialog grants");
-// The permission is read back for whoever is signed in, and a sign-out in
-// another tab (which clears every grant) puts this one back on the browser.
-assert.match(readerSource, /\$effect\(\(\) => \{\s*buildUserId;\s*untrack\(\(\) => syncLocalExecution\(\)\);/);
-assert.match(readerSource, /isGrantKey\(e\.key\) \|\| e\.key === null/);
+assert.doesNotMatch(readerSource, /granted\(|local-execution\.js|localExecutionConsent/);
+assert.match(readerSource, /async function stopLocalExecution\(\)\s*\{\s*localExecution = false;[\s\S]*?setQuartoPreviewMode\("markdown"\)[\s\S]*?setTypstPreviewMode\("typst"\)/);
+// The open-reset effect turns the code off when a document opens, and puts a
+// stored build preference back on the browser's renderer.
+assert.match(readerSource, /SLUG;[\s\S]*?localExecution = false;[\s\S]*?setQuartoPreviewMode\("markdown"\)[\s\S]*?setTypstPreviewMode\("typst"\)/);
+// The switch sits in the top bar and the View menu, and it is the consent.
+assert.match(readerSource, /\{#snippet localExecutionControl\(\)\}[\s\S]*?\{#if runCodeOffered\}[\s\S]*?role="switch"[\s\S]*?aria-checked=\{localExecution\}[\s\S]*?onclick=\{toggleLocalExecution\}/);
+// The switch is offered for every editable Quarto document, and for an
+// editable Typst document only when the desktop app found Calepin.
+assert.match(readerSource, /const runCodeOffered = \$derived\([\s\S]*?sourceFormat === "quarto"[\s\S]*?sourceFormat === "typst"[\s\S]*?calepinFound/);
+assert.match(readerSource, /const toggleLocalExecution = \(\) => \{\s*if \(localExecution\) void stopLocalExecution\(\);\s*else void startLocalExecution\(\);/);
+// There is no confirmation dialog any more.
+assert.doesNotMatch(readerSource, /Run code on this computer/);
 // A PDF from Markdown or Quarto source is a local build, and the preview
 // header -- where the gesture that starts one lives -- is hidden for as long
 // as nothing has been painted. So the card standing in for the missing page
 // has to carry it itself, rather than claim a browser render is under way
 // that can never finish.
 assert.match(readerSource, /const pdfNeedsLocalTool = \$derived\(\s*pdfOutput && \["markdown", "quarto"\]\.includes\(sourceFormat\)/);
-assert.match(readerSource, /\{#if pdfNeedsLocalTool\}[\s\S]*?<h2 class="h4">PDF needs[\s\S]*?\{#if pdfNeedsLocalExecution\}[\s\S]*?localExecutionConsent = true[\s\S]*?<\/button>[\s\S]*?Preview as HTML instead<\/button>[\s\S]*?\{:else\}\s*<h2 class="h4">(?:\{#if previewBusy\}<span class="spinner"><\/span>\{\/if\})?Not yet rendered<\/h2>/);
+assert.match(readerSource, /\{#if pdfNeedsLocalTool\}[\s\S]*?<h2 class="h4">PDF needs[\s\S]*?\{#if pdfNeedsLocalExecution\}[\s\S]*?startLocalExecution[\s\S]*?<\/button>[\s\S]*?Preview as HTML instead<\/button>[\s\S]*?\{:else\}\s*<h2 class="h4">(?:\{#if previewBusy\}<span class="spinner"><\/span>\{\/if\})?Not yet rendered<\/h2>/);
 // Choosing Quarto's own preview is a choice of tool, not of output: a PDF
 // that was asked for survives enabling the thing that can produce it.
 assert.match(readerSource, /async function setQuartoPreviewMode\(mode\)[\s\S]*?output: mode === "markdown" \? "html" : \(buildPreferences\.output \|\| "html"\)/);

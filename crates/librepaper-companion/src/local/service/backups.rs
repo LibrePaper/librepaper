@@ -1,4 +1,4 @@
-//! Persistent, account-scoped companion backups.
+//! Persistent, account-scoped local backups.
 //!
 //! Configuration is local to this companion and keyed by the authenticated
 //! deployment origin plus account id. The only way to set its destination is
@@ -40,16 +40,17 @@ fn valid_frequency(minutes: u64) -> bool {
 }
 
 /// What kind of failure `BackupConfig::error` records, saved beside the text
-/// so nothing has to read the text to decide what to do.
+/// so nothing has to read the text to decide what to do. A kind this build
+/// does not know, such as the retired `disconnected`, reads as `Other`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 enum BackupErrorKind {
-    Disconnected,
     NotSignedIn,
     LoginInvalid,
     LoginRejected,
     AccountMismatch,
     Unverified,
+    #[serde(other)]
     Other,
 }
 
@@ -79,8 +80,6 @@ impl BackupErrorKind {
 /// `Display` is the message the settings page shows.
 #[derive(Debug, thiserror::Error)]
 enum BackupError {
-    #[error("This site is no longer connected.")]
-    Disconnected,
     #[error("Sign in to this account from Settings to authorize backups.")]
     NotSignedIn,
     #[error("cached login is no longer valid; sign in again")]
@@ -117,7 +116,6 @@ impl From<&str> for BackupError {
 impl BackupError {
     fn kind(&self) -> BackupErrorKind {
         match self {
-            Self::Disconnected => BackupErrorKind::Disconnected,
             Self::NotSignedIn => BackupErrorKind::NotSignedIn,
             Self::LoginInvalid => BackupErrorKind::LoginInvalid,
             Self::LoginRejected => BackupErrorKind::LoginRejected,
@@ -410,12 +408,11 @@ pub(super) struct BackupManager {
     authorization_starts: tokio::sync::Semaphore,
 }
 
-/// Short-lived device credentials exist only while a paired browser completes
+/// Short-lived device credentials exist only while the browser completes
 /// a backup authorization. `device_code` never crosses the local HTTP API.
 struct PendingAuthorization {
     origin: String,
     account_id: String,
-    pairing_digest: String,
     device_code: Option<String>,
     expires: Instant,
     completing: bool,
@@ -544,10 +541,8 @@ impl BackupManager {
 
     async fn begin_authorization(
         &self,
-        inner: &Inner,
         origin: &str,
         account_id: &str,
-        pairing_token: &str,
     ) -> Result<(String, String), String> {
         let _start_slot = self.authorization_starts.try_acquire().map_err(|_| {
             "too many backup authorizations are starting; try again shortly".to_string()
@@ -555,7 +550,6 @@ impl BackupManager {
         let origin = crate::local::credentials::origin(origin);
         let key = BackupConfig::key(&origin, account_id);
         let authorization_id = librepaper_base::util::random_token();
-        let pairing_digest = hex::encode(Sha256::digest(pairing_token.as_bytes()));
         {
             let mut pending = self.authorizations.lock().await;
             pending.retain(|_, value| value.expires > Instant::now());
@@ -570,7 +564,6 @@ impl BackupManager {
                 PendingAuthorization {
                     origin: origin.clone(),
                     account_id: account_id.to_owned(),
-                    pairing_digest,
                     device_code: None,
                     expires: Instant::now() + AUTHORIZATION_TTL,
                     completing: false,
@@ -578,9 +571,6 @@ impl BackupManager {
             );
         }
         let attempt = async {
-            if !inner.pairing.authenticate(&origin, pairing_token) {
-                return Err("This site is no longer connected.".into());
-            }
             let client = reqwest::Client::builder()
                 .connect_timeout(Duration::from_secs(5))
                 .timeout(Duration::from_secs(10))
@@ -616,19 +606,11 @@ impl BackupManager {
                     "server returned an invalid account authorization response".to_string()
                 })?
                 .to_owned();
-            if !inner.pairing.authenticate(&origin, pairing_token) {
-                return Err("This site is no longer connected.".into());
-            }
             let mut pending = self.authorizations.lock().await;
             let Some(entry) = pending.get_mut(&authorization_id) else {
                 return Err("account authorization was replaced; start again".into());
             };
-            if entry.expires <= Instant::now()
-                || !librepaper_base::util::constant_time_eq(
-                    entry.pairing_digest.as_bytes(),
-                    hex::encode(Sha256::digest(pairing_token.as_bytes())).as_bytes(),
-                )
-            {
+            if entry.expires <= Instant::now() {
                 return Err("account authorization expired; start again".into());
             }
             entry.device_code = Some(device_code);
@@ -647,24 +629,15 @@ impl BackupManager {
         origin: &str,
         account_id: &str,
         authorization_id: &str,
-        pairing_token: &str,
     ) -> Result<(), String> {
         let origin = crate::local::credentials::origin(origin);
-        let digest = hex::encode(Sha256::digest(pairing_token.as_bytes()));
-        let (device_code, expected_digest) = {
+        let device_code = {
             let mut pending = self.authorizations.lock().await;
             pending.retain(|_, value| value.expires > Instant::now());
             let Some(entry) = pending.get_mut(authorization_id) else {
                 return Err("account authorization expired or was replaced; start again".into());
             };
-            if entry.origin != origin
-                || entry.account_id != account_id
-                || !librepaper_base::util::constant_time_eq(
-                    entry.pairing_digest.as_bytes(),
-                    digest.as_bytes(),
-                )
-                || !inner.pairing.authenticate(&origin, pairing_token)
-            {
+            if entry.origin != origin || entry.account_id != account_id {
                 return Err("account authorization does not match this connection".into());
             }
             if entry.completing {
@@ -674,7 +647,7 @@ impl BackupManager {
                 return Err("account authorization is still starting; retry shortly".into());
             };
             entry.completing = true;
-            (device_code, entry.pairing_digest.clone())
+            device_code
         };
         let result = async {
             let response = reqwest::Client::builder()
@@ -712,10 +685,7 @@ impl BackupManager {
                     "server returned an invalid account authorization response".to_string()
                 })?
                 .to_owned();
-            if !inner.pairing.authenticate(&origin, pairing_token) {
-                return Err("This site is no longer connected.".into());
-            }
-            verify_account_with_token(inner, &origin, account_id, &token)
+            verify_account_with_token(&origin, account_id, &token)
                 .await
                 .map_err(|error| error.to_string())?;
             let mut pending = self.authorizations.lock().await;
@@ -724,13 +694,9 @@ impl BackupManager {
                     && entry.origin == origin
                     && entry.account_id == account_id
                     && entry.completing
-                    && librepaper_base::util::constant_time_eq(
-                        entry.pairing_digest.as_bytes(),
-                        expected_digest.as_bytes(),
-                    )
             });
-            if !still_current || !inner.pairing.authenticate(&origin, pairing_token) {
-                return Err("This site is no longer connected.".into());
+            if !still_current {
+                return Err("account authorization was replaced; start again".into());
             }
             let base = inner.state_home.clone();
             let store_origin = origin.clone();
@@ -740,10 +706,6 @@ impl BackupManager {
             })
             .await
             .map_err(|error| format!("could not save account authorization: {error}"))??;
-            if !inner.pairing.authenticate(&origin, pairing_token) {
-                pending.remove(authorization_id);
-                return Err("This site is no longer connected.".into());
-            }
             pending.remove(authorization_id);
             drop(pending);
             let key = BackupConfig::key(&origin, account_id);
@@ -757,9 +719,6 @@ impl BackupManager {
                 checks.remove(&key);
             }
             self.persist(&state).await?;
-            if !inner.pairing.authenticate(&origin, pairing_token) {
-                return Err("This site is no longer connected.".into());
-            }
             self.changed.notify_one();
             Ok(())
         }
@@ -782,7 +741,6 @@ impl BackupManager {
     async fn choose_destination(
         &self,
         inner: &Inner,
-        headers: &HeaderMap,
         origin: &str,
         account_id: &str,
     ) -> Result<(), Reply> {
@@ -813,12 +771,6 @@ impl BackupManager {
             return Err(write_json(
                 400,
                 &json!({"error":"Select an existing backup destination."}),
-            ));
-        }
-        if authenticate(inner, headers, Some(origin)).is_err() {
-            return Err(write_json(
-                401,
-                &json!({"error":"This site is no longer connected."}),
             ));
         }
         let key = BackupConfig::key(origin, account_id);
@@ -891,7 +843,7 @@ impl BackupManager {
                     .entry(key.clone())
                     .or_insert_with(|| BackupConfig::new(origin, account_id));
                 config.set_error(&error);
-                if error.disables_schedule() || !inner.pairing.has_live_pairing(origin) {
+                if error.disables_schedule() {
                     if config.enabled {
                         config.revision = config.revision.wrapping_add(1);
                         config.run_generation = config.run_generation.wrapping_add(1);
@@ -1013,11 +965,9 @@ impl BackupManager {
                     }
                     Err(error) => {
                         current.set_error(&error);
-                        // Identity mismatch or revoked pairing permanently stops
-                        // scheduled runs until the user explicitly enables again.
-                        if !inner.pairing.has_live_pairing(&current.origin)
-                            || error.disables_schedule()
-                        {
+                        // An identity mismatch permanently stops scheduled
+                        // runs until the user explicitly enables again.
+                        if error.disables_schedule() {
                             if current.enabled {
                                 current.revision = current.revision.wrapping_add(1);
                                 current.run_generation = current.run_generation.wrapping_add(1);
@@ -1097,10 +1047,7 @@ pub(super) async fn handle_get(
         return write_json(400, &json!({"error":"backups needs a valid account query"}));
     };
     let Some(origin) = origin else {
-        return write_json(
-            403,
-            &json!({"error":"backups require a paired site origin"}),
-        );
+        return write_json(403, &json!({"error":"backups require a site origin"}));
     };
     write_json(200, &inner.backups.status(inner, origin, &account_id).await)
 }
@@ -1115,10 +1062,7 @@ pub(super) async fn handle_folder(
         return response;
     }
     let Some(origin) = origin else {
-        return write_json(
-            403,
-            &json!({"error":"backups require a paired site origin"}),
-        );
+        return write_json(403, &json!({"error":"backups require a site origin"}));
     };
     let body = match read_json_body::<AccountBody>(request).await {
         Ok(body) => body,
@@ -1129,7 +1073,7 @@ pub(super) async fn handle_folder(
     }
     match inner
         .backups
-        .choose_destination(inner, headers, origin, &body.account_id)
+        .choose_destination(inner, origin, &body.account_id)
         .await
     {
         Ok(()) => write_json(
@@ -1150,10 +1094,7 @@ pub(super) async fn handle_put(
         return response;
     }
     let Some(origin) = origin else {
-        return write_json(
-            403,
-            &json!({"error":"backups require a paired site origin"}),
-        );
+        return write_json(403, &json!({"error":"backups require a site origin"}));
     };
     let body = match read_json_body::<ConfigureBody>(request).await {
         Ok(body) => body,
@@ -1197,10 +1138,7 @@ pub(super) async fn handle_run(
         return response;
     }
     let Some(origin) = origin else {
-        return write_json(
-            403,
-            &json!({"error":"backups require a paired site origin"}),
-        );
+        return write_json(403, &json!({"error":"backups require a site origin"}));
     };
     let body = match read_json_body::<AccountBody>(request).await {
         Ok(body) => body,
@@ -1228,12 +1166,8 @@ pub(super) async fn handle_authorize(
         return response;
     }
     let Some(origin) = origin else {
-        return write_json(
-            403,
-            &json!({"error":"backups require a paired site origin"}),
-        );
+        return write_json(403, &json!({"error":"backups require a site origin"}));
     };
-    let pairing_token = super::bearer_token(headers).unwrap_or_default();
     let body = match read_json_body::<AccountBody>(request).await {
         Ok(body) => body,
         Err(response) => return response,
@@ -1243,7 +1177,7 @@ pub(super) async fn handle_authorize(
     }
     match inner
         .backups
-        .begin_authorization(inner, origin, &body.account_id, &pairing_token)
+        .begin_authorization(origin, &body.account_id)
         .await
     {
         Ok((authorization_id, user_code)) => write_json(
@@ -1267,12 +1201,8 @@ pub(super) async fn handle_authorize_complete(
         return response;
     }
     let Some(origin) = origin else {
-        return write_json(
-            403,
-            &json!({"error":"backups require a paired site origin"}),
-        );
+        return write_json(403, &json!({"error":"backups require a site origin"}));
     };
-    let pairing_token = super::bearer_token(headers).unwrap_or_default();
     let body = match read_json_body::<CompleteAuthorizationBody>(request).await {
         Ok(body) => body,
         Err(response) => return response,
@@ -1285,13 +1215,7 @@ pub(super) async fn handle_authorize_complete(
     }
     match inner
         .backups
-        .complete_authorization(
-            inner,
-            origin,
-            &body.account_id,
-            &body.authorization_id,
-            &pairing_token,
-        )
+        .complete_authorization(inner, origin, &body.account_id, &body.authorization_id)
         .await
     {
         Ok(()) => write_json(
@@ -1307,26 +1231,19 @@ async fn verify_account(
     origin: &str,
     account_id: &str,
 ) -> Result<String, BackupError> {
-    if !inner.pairing.has_live_pairing(origin) {
-        return Err(BackupError::Disconnected);
-    }
     let token = crate::local::credentials::stored_token_at(&inner.state_home, origin);
     if token.is_empty() {
         return Err(BackupError::NotSignedIn);
     }
-    verify_account_with_token(inner, origin, account_id, &token).await?;
+    verify_account_with_token(origin, account_id, &token).await?;
     Ok(token)
 }
 
 async fn verify_account_with_token(
-    inner: &Inner,
     origin: &str,
     account_id: &str,
     token: &str,
 ) -> Result<(), BackupError> {
-    if !inner.pairing.has_live_pairing(origin) {
-        return Err(BackupError::Disconnected);
-    }
     let client = reqwest::Client::builder()
         .connect_timeout(Duration::from_secs(5))
         .timeout(Duration::from_secs(10))
@@ -1363,9 +1280,6 @@ async fn verify_account_with_token(
     if let Some(error) = identity_error(&identity, account_id) {
         return Err(error);
     }
-    if !inner.pairing.has_live_pairing(origin) {
-        return Err(BackupError::Disconnected);
-    }
     Ok(())
 }
 
@@ -1374,9 +1288,6 @@ async fn run_backup(
     config: &BackupConfig,
 ) -> Result<crate::local::backup::BackupReport, BackupError> {
     let token = verify_account(inner, &config.origin, &config.account_id).await?;
-    if !inner.pairing.has_live_pairing(&config.origin) {
-        return Err(BackupError::Disconnected);
-    }
     crate::local::backup::run_backup(
         &config.origin,
         &token,
@@ -1402,15 +1313,7 @@ pub(super) fn spawn_scheduler(inner: Arc<Inner>) {
                     .collect();
                 let mut due = Vec::new();
                 for (key, config) in candidates {
-                    if !inner.pairing.has_live_pairing(&config.origin) {
-                        if let Some(current) = state.configs.get_mut(&key) {
-                            current.enabled = false;
-                            current.set_error(&BackupError::Disconnected);
-                            current.revision = current.revision.wrapping_add(1);
-                            current.run_generation = current.run_generation.wrapping_add(1);
-                            changed = true;
-                        }
-                    } else if !state.in_flight.contains(&key) && is_due(&config, now) {
+                    if !state.in_flight.contains(&key) && is_due(&config, now) {
                         if !config.destination.is_dir() {
                             if let Some(current) = state.configs.get_mut(&key) {
                                 current.last_attempt = Some(now);
@@ -1463,6 +1366,7 @@ fn unix_now() -> u64 {
 
 #[cfg(test)]
 mod tests {
+    use super::super::test_support::{bearer, inner as test_inner};
     use super::*;
     use axum::extract::{Path as AxumPath, State};
     use axum::routing::{get, post};
@@ -1627,14 +1531,10 @@ mod tests {
         let state_home = tempfile::tempdir().unwrap();
         let cache_home = tempfile::tempdir().unwrap();
         let inner = test_inner(state_home.path(), cache_home.path()).await;
-        let (pairing_token, _) = inner
-            .pairing
-            .issue(&origin, "backup authorization test")
-            .unwrap();
 
         let (authorization_id, user_code) = inner
             .backups
-            .begin_authorization(&inner, &origin, &account_id, &pairing_token)
+            .begin_authorization(&origin, &account_id)
             .await
             .unwrap();
         assert_eq!(user_code, "ABCD-EFGH");
@@ -1643,13 +1543,7 @@ mod tests {
 
         inner
             .backups
-            .complete_authorization(
-                &inner,
-                &origin,
-                &account_id,
-                &authorization_id,
-                &pairing_token,
-            )
+            .complete_authorization(&inner, &origin, &account_id, &authorization_id)
             .await
             .unwrap();
         assert_eq!(
@@ -1666,36 +1560,26 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn browser_authorization_rejects_wrong_account_and_revoked_pairing() {
+    async fn browser_authorization_rejects_wrong_account_and_unknown_authorization() {
         let account_id = uuid::Uuid::now_v7().to_string();
         let (origin, server_task) = start_authorization_fixture(account_id.clone()).await;
         let state_home = tempfile::tempdir().unwrap();
         let cache_home = tempfile::tempdir().unwrap();
         let inner = test_inner(state_home.path(), cache_home.path()).await;
-        let (pairing_token, _) = inner
-            .pairing
-            .issue(&origin, "backup authorization test")
-            .unwrap();
         let (authorization_id, _) = inner
             .backups
-            .begin_authorization(&inner, &origin, &account_id, &pairing_token)
+            .begin_authorization(&origin, &account_id)
             .await
             .unwrap();
         let (replacement_id, _) = inner
             .backups
-            .begin_authorization(&inner, &origin, &account_id, &pairing_token)
+            .begin_authorization(&origin, &account_id)
             .await
             .unwrap();
         assert_ne!(authorization_id, replacement_id);
         assert!(inner
             .backups
-            .complete_authorization(
-                &inner,
-                &origin,
-                &account_id,
-                &authorization_id,
-                &pairing_token
-            )
+            .complete_authorization(&inner, &origin, &account_id, &authorization_id)
             .await
             .unwrap_err()
             .contains("expired or was replaced"));
@@ -1703,38 +1587,13 @@ mod tests {
         let wrong_account = uuid::Uuid::now_v7().to_string();
         assert!(inner
             .backups
-            .complete_authorization(
-                &inner,
-                &origin,
-                &wrong_account,
-                &replacement_id,
-                &pairing_token
-            )
-            .await
-            .unwrap_err()
-            .contains("does not match"));
-        inner.pairing.revoke(&origin);
-        assert!(inner
-            .backups
-            .complete_authorization(
-                &inner,
-                &origin,
-                &account_id,
-                &replacement_id,
-                &pairing_token
-            )
+            .complete_authorization(&inner, &origin, &wrong_account, &replacement_id)
             .await
             .unwrap_err()
             .contains("does not match"));
         assert!(inner
             .backups
-            .complete_authorization(
-                &inner,
-                &origin,
-                &account_id,
-                "unknown-authorization",
-                &pairing_token
-            )
+            .complete_authorization(&inner, &origin, &account_id, "unknown-authorization")
             .await
             .unwrap_err()
             .contains("expired or was replaced"));
@@ -1750,25 +1609,15 @@ mod tests {
         let state_home = tempfile::tempdir().unwrap();
         let cache_home = tempfile::tempdir().unwrap();
         let inner = test_inner(state_home.path(), cache_home.path()).await;
-        let (pairing_token, _) = inner
-            .pairing
-            .issue(&origin, "backup authorization test")
-            .unwrap();
         let (authorization_id, _) = inner
             .backups
-            .begin_authorization(&inner, &origin, &requested_account, &pairing_token)
+            .begin_authorization(&origin, &requested_account)
             .await
             .unwrap();
 
         assert!(inner
             .backups
-            .complete_authorization(
-                &inner,
-                &origin,
-                &requested_account,
-                &authorization_id,
-                &pairing_token
-            )
+            .complete_authorization(&inner, &origin, &requested_account, &authorization_id)
             .await
             .unwrap_err()
             .contains("does not match"));
@@ -1789,13 +1638,9 @@ mod tests {
         let state_home = tempfile::tempdir().unwrap();
         let cache_home = tempfile::tempdir().unwrap();
         let inner = test_inner(state_home.path(), cache_home.path()).await;
-        let (pairing_token, _) = inner
-            .pairing
-            .issue(&origin, "backup authorization test")
-            .unwrap();
         let (authorization_id, _) = inner
             .backups
-            .begin_authorization(&inner, &origin, &account_id, &pairing_token)
+            .begin_authorization(&origin, &account_id)
             .await
             .unwrap();
         inner
@@ -1809,13 +1654,7 @@ mod tests {
 
         assert!(inner
             .backups
-            .complete_authorization(
-                &inner,
-                &origin,
-                &account_id,
-                &authorization_id,
-                &pairing_token
-            )
+            .complete_authorization(&inner, &origin, &account_id, &authorization_id)
             .await
             .unwrap_err()
             .contains("expired or was replaced"));
@@ -1832,13 +1671,9 @@ mod tests {
         let state_home = tempfile::tempdir().unwrap();
         let cache_home = tempfile::tempdir().unwrap();
         let inner = test_inner(state_home.path(), cache_home.path()).await;
-        let (pairing_token, _) = inner
-            .pairing
-            .issue(&origin, "backup authorization race test")
-            .unwrap();
         let (authorization_id, _) = inner
             .backups
-            .begin_authorization(&inner, &origin, &account_id, &pairing_token)
+            .begin_authorization(&origin, &account_id)
             .await
             .unwrap();
 
@@ -1846,7 +1681,6 @@ mod tests {
         let completing_origin = origin.clone();
         let completing_account = account_id.clone();
         let completing_id = authorization_id.clone();
-        let completing_pairing = pairing_token.clone();
         let completion = tokio::spawn(async move {
             completing_inner
                 .backups
@@ -1855,14 +1689,13 @@ mod tests {
                     &completing_origin,
                     &completing_account,
                     &completing_id,
-                    &completing_pairing,
                 )
                 .await
         });
         fixture.identity_started.notified().await;
         let _ = inner
             .backups
-            .begin_authorization(&inner, &origin, &account_id, &pairing_token)
+            .begin_authorization(&origin, &account_id)
             .await
             .unwrap();
         fixture.allow_identity.notify_one();
@@ -1871,7 +1704,7 @@ mod tests {
             .await
             .unwrap()
             .unwrap_err()
-            .contains("no longer connected"));
+            .contains("was replaced"));
         assert!(crate::local::credentials::stored_token_at(&inner.state_home, &origin).is_empty());
         server_task.abort();
     }
@@ -1884,26 +1717,16 @@ mod tests {
         let state_home = tempfile::tempdir().unwrap();
         let cache_home = tempfile::tempdir().unwrap();
         let inner = test_inner(state_home.path(), cache_home.path()).await;
-        let (pairing_token, _) = inner
-            .pairing
-            .issue(&origin, "backup authorization size test")
-            .unwrap();
         let (authorization_id, _) = inner
             .backups
-            .begin_authorization(&inner, &origin, &account_id, &pairing_token)
+            .begin_authorization(&origin, &account_id)
             .await
             .unwrap();
         fixture.oversized_device_token.store(true, Ordering::SeqCst);
 
         assert!(inner
             .backups
-            .complete_authorization(
-                &inner,
-                &origin,
-                &account_id,
-                &authorization_id,
-                &pairing_token
-            )
+            .complete_authorization(&inner, &origin, &account_id, &authorization_id)
             .await
             .unwrap_err()
             .contains("too large"));
@@ -1964,10 +1787,6 @@ mod tests {
         let inner = test_inner(state_home.path(), cache_home.path()).await;
         crate::local::credentials::store_token_at(&inner.state_home, &origin, "backup-test-token")
             .unwrap();
-        let (pairing_token, _) = inner
-            .pairing
-            .issue(&origin, "identity outage test")
-            .unwrap();
         {
             let key = BackupConfig::key(&origin, &account_id);
             let mut state = inner.backups.state.lock().await;
@@ -1981,11 +1800,7 @@ mod tests {
             inner.backups.persist(&state).await.unwrap();
         }
 
-        let mut headers = HeaderMap::new();
-        headers.insert(
-            axum::http::header::AUTHORIZATION,
-            HeaderValue::from_str(&format!("Bearer {pairing_token}")).unwrap(),
-        );
+        let headers = bearer(&inner);
         let response = handle_put(
             &inner,
             &headers,
@@ -2252,33 +2067,6 @@ mod tests {
         (server, task)
     }
 
-    async fn test_inner(state_home: &Path, cache_home: &Path) -> Arc<Inner> {
-        let jobs_root = cache_home.join("jobs");
-        std::fs::create_dir_all(&jobs_root).unwrap();
-        Arc::new(Inner {
-            state_home: state_home.to_path_buf(),
-            folder_dialog: Mutex::new(()),
-            backups: Arc::new(BackupManager::new(state_home)),
-            instance: "backup-test".into(),
-            port: 8764,
-            pairing: pairing::PairingStore::new(state_home, None),
-            quarto_bindings: crate::local::quarto::BindingStore::new(state_home),
-            previews: Mutex::new(Default::default()),
-            runner: Arc::new(super::super::FakeRunner::default()),
-            jobs: Mutex::new(HashMap::new()),
-            queue: Mutex::new(Default::default()),
-            work: Notify::new(),
-            jobs_root,
-            connect_attempts: Mutex::new(HashMap::new()),
-            pending_pairs: Mutex::new(HashMap::new()),
-            assistant_sessions: crate::assistant::registry::SessionRegistry::new(
-                state_home.to_path_buf(),
-            ),
-            approvals: crate::local::approval::ApprovalBroker::default(),
-            control: tokio::sync::Mutex::new(None),
-        })
-    }
-
     async fn configure_scheduled_backup(
         inner: &Inner,
         origin: &str,
@@ -2286,10 +2074,6 @@ mod tests {
         destination: &Path,
     ) {
         crate::local::credentials::store_token_at(&inner.state_home, origin, "backup-test-token")
-            .unwrap();
-        inner
-            .pairing
-            .issue(origin, "backup integration fixture")
             .unwrap();
         let config = BackupConfig {
             enabled: true,
@@ -2376,12 +2160,7 @@ mod tests {
             inner.backups.persist(&state).await.unwrap();
         }
 
-        let (pairing_token, _) = inner.pairing.issue(&server, "manual run test").unwrap();
-        let mut headers = HeaderMap::new();
-        headers.insert(
-            axum::http::header::AUTHORIZATION,
-            HeaderValue::from_str(&format!("Bearer {pairing_token}")).unwrap(),
-        );
+        let headers = bearer(&inner);
         let response = handle_run(
             &inner,
             &headers,
@@ -2460,7 +2239,8 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn backup_status_route_rejects_wrong_origin_and_enable_rejects_mismatched_account() {
+    async fn backup_status_route_needs_credential_and_origin_and_enable_rejects_mismatched_account()
+    {
         let account_id = uuid::Uuid::now_v7().to_string();
         let (server, fixture_task) = start_backup_fixture(account_id.clone()).await;
         let state_home = tempfile::tempdir().unwrap();
@@ -2479,23 +2259,29 @@ mod tests {
         );
         inner.backups.persist(&state).await.unwrap();
         drop(state);
-        let (pairing_token, _) = inner.pairing.issue(&server, "test").unwrap();
-        let mut headers = HeaderMap::new();
-        headers.insert(
-            axum::http::header::AUTHORIZATION,
-            HeaderValue::from_str(&format!("Bearer {pairing_token}")).unwrap(),
-        );
+        let headers = bearer(&inner);
 
-        let wrong_origin = handle_get(
+        let no_credential = handle_get(
             &inner,
-            &headers,
-            Some("http://wrong.example"),
+            &HeaderMap::new(),
+            Some(&server),
             Request::get(format!("{BASE_PATH}/backups?account={account_id}"))
                 .body(Body::empty())
                 .unwrap(),
         )
         .await;
-        assert_eq!(wrong_origin.status(), StatusCode::UNAUTHORIZED);
+        assert_eq!(no_credential.status(), StatusCode::UNAUTHORIZED);
+
+        let no_origin = handle_get(
+            &inner,
+            &headers,
+            None,
+            Request::get(format!("{BASE_PATH}/backups?account={account_id}"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(no_origin.status(), StatusCode::FORBIDDEN);
 
         let mismatch = handle_put(
             &inner,

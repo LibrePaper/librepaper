@@ -82,8 +82,7 @@ struct BindingFile {
 
 /// The one binding id that needs no grant: a document the serving deployment
 /// itself hosts, rendered inside a workspace the server owns. Only a service
-/// started with `with_hosted_workspaces` resolves it; a standalone
-/// `librepaper start` never does.
+/// started with `with_hosted_workspaces` resolves it.
 pub const HOSTED_BINDING: &str = "hosted";
 
 /// The store intentionally takes an explicit config root so tests never need
@@ -150,7 +149,7 @@ impl BindingStore {
         }
         // One workspace per deployment and document: two deployments can
         // mint the same slug, and their trees must never share caches.
-        let origin = super::pairing::normalize_origin(origin);
+        let origin = super::store::normalize_origin(origin);
         let deployment = hex::encode(&Sha256::digest(origin.as_bytes())[..8]);
         let root = base.join(deployment).join(project);
         std::fs::create_dir_all(&root).ok()?;
@@ -219,7 +218,7 @@ impl BindingStore {
         let id = opaque_id();
         let binding = ProjectBinding {
             id,
-            origin: super::pairing::normalize_origin(origin),
+            origin: super::store::normalize_origin(origin),
             project: project.to_string(),
             root,
             entrypoint: entrypoint.to_string(),
@@ -237,7 +236,7 @@ impl BindingStore {
 
     /// Revokes the binding `id` if `origin` owns it, whatever its project.
     pub fn revoke_origin_binding(&self, id: &str, origin: &str) -> Result<bool, String> {
-        let origin = super::pairing::normalize_origin(origin);
+        let origin = super::store::normalize_origin(origin);
         let _transaction = transaction_lock();
         let mut file = self.load_checked()?;
         let old = file.bindings.len();
@@ -254,7 +253,7 @@ impl BindingStore {
         if id == HOSTED_BINDING {
             return self.hosted_binding(origin, project);
         }
-        let origin = super::pairing::normalize_origin(origin);
+        let origin = super::store::normalize_origin(origin);
         self.load().bindings.into_iter().find(|binding| {
             binding.id == id
                 && binding.origin == origin
@@ -280,7 +279,7 @@ impl BindingStore {
     }
 
     pub fn list_scoped(&self, origin: &str, project: &str) -> Vec<ProjectBinding> {
-        let origin = super::pairing::normalize_origin(origin);
+        let origin = super::store::normalize_origin(origin);
         self.load()
             .bindings
             .into_iter()
@@ -310,19 +309,6 @@ impl BindingStore {
         }
         self.save(&file)?;
         Ok(true)
-    }
-
-    pub(crate) fn revoke_origin(&self, origin: &str) -> Result<usize, String> {
-        let origin = super::pairing::normalize_origin(origin);
-        let _transaction = transaction_lock();
-        let mut file = self.load_checked()?;
-        let old = file.bindings.len();
-        file.bindings.retain(|binding| binding.origin != origin);
-        let removed = old - file.bindings.len();
-        if removed > 0 {
-            self.save(&file)?;
-        }
-        Ok(removed)
     }
 
     /// Revalidate the grant and root at each boundary that can follow a queue
@@ -412,14 +398,15 @@ mod validation_tests {
     }
 
     #[test]
-    fn concurrent_grant_from_another_store_does_not_restore_revoked_origin() {
+    fn concurrent_grant_from_another_store_does_not_restore_a_revoked_binding() {
         let state = tempfile::tempdir().unwrap();
         let root = tempfile::tempdir().unwrap();
         std::fs::write(root.path().join("paper.qmd"), "# Paper").unwrap();
         let initial = BindingStore::new(state.path());
-        initial
+        let revoked_id = initial
             .grant("https://revoked.test", "paper", root.path(), "paper.qmd")
-            .unwrap();
+            .unwrap()
+            .id;
 
         let revoker = BindingStore::new(state.path());
         let granter = BindingStore::new(state.path());
@@ -431,7 +418,7 @@ mod validation_tests {
         let revoke_finished = revoke_finished_tx;
         let revoke_thread = std::thread::spawn(move || {
             revoke_started.send(()).unwrap();
-            let result = revoker.revoke_origin("https://revoked.test").map(|_| ());
+            let result = revoker.revoke_any(&revoked_id).map(|_| ());
             revoke_finished.send(result).unwrap();
         });
         let grant_started = started_tx;

@@ -1,14 +1,15 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import vm from "node:vm";
-import * as localBridge from "../../src/lib/companion/client.js";
+import * as localBridge from "../../src/lib/desktop/client.js";
 import { loadRunes } from "../helpers/runes.mjs";
 
 const { createLocalPreview } = await loadRunes(
   new URL("../../src/lib/reader/local-preview.svelte.js", import.meta.url),
 );
-import { _testing, configure, probe, quartoRequest, runBuild, syncWorkspace, startLocalPreview, localPreviewPage, localPreviewStatus, stopLocalPreview, calepinAvailable } from "../../src/lib/companion/client.js";
+import { _testing, configure, quartoRequest, runBuild, syncWorkspace, startLocalPreview, localPreviewPage, localPreviewStatus, stopLocalPreview, calepinAvailable } from "../../src/lib/desktop/client.js";
 import { parameterSha256 } from "../../src/lib/engines/quarto.js";
+import { formOf } from "../helpers/form-body.mjs";
 
 const digest = "a".repeat(64);
 
@@ -59,7 +60,8 @@ async function sha(bytes) {
 }
 
 function setup(fetch) {
-  const values = new Map([["librepaper-local-connections", JSON.stringify({ "example.test": { token: "token" } })]]);
+  const values = new Map();
+  globalThis.window = { __LIBREPAPER_DESKTOP__: { base: "lp-local://localhost/", version: "test" } };
   _testing.reset();
   configure({ origin: "example.test", project: "paper" });
   _testing.inject({ storage: { getItem: (key) => values.get(key) || null, setItem: (key, value) => values.set(key, value) }, fetch, wait: async () => {} });
@@ -81,7 +83,7 @@ const manifestSha = await sha(manifest);
 const posts = [];
 setup(async (url, init = {}) => {
   if (init.method === "POST" && url.endsWith("/jobs")) {
-    posts.push(await init.body.get("job").text());
+    posts.push(await (await formOf(init)).get("job").text());
     return response({ id: "qjob-1", status: "queued" }, 202);
   }
   if (init.method === "GET" && url.endsWith("/jobs/qjob-1")) {
@@ -96,7 +98,7 @@ setup(async (url, init = {}) => {
 });
 // A one-shot Quarto build now travels through the same `runBuild` path as
 // every other builder; the Quarto-specific envelope (`runQuarto`, deleted
-// with the pairing cutover) had no live caller left, so what remains worth
+// with the desktop cutover) had no live caller left, so what remains worth
 // checking here is the bundle collection `runBuild` still relies on.
 const first = await runBuild({
   job: { snapshot: "rev-1", generation: 0 },
@@ -152,7 +154,7 @@ assert.equal(preview.id, "preview-1");
 const previewRequest = JSON.parse(previewCalls[0].init.body);
 assert.equal(previewRequest.manifest[0].sha256, await sha(new TextEncoder().encode("# Preview")));
 assert.equal(previewRequest.manifest[0].path, "paper.qmd");
-assert.equal(previewCalls[0].init.headers.Authorization, "Bearer token");
+assert.equal(previewCalls[0].init.headers.Authorization, undefined, "the page sends no credential");
 assert.equal(previewRequest.token, undefined);
 await stopLocalPreview(preview.id);
 const pdfPreview = await startLocalPreview({job:{binding:"binding-1"}, tree:{main:"paper.qmd",texts:{"paper.qmd":"---\nformat: pdf\n---\n# Preview"}},options:{format:"pdf"}});
@@ -175,7 +177,6 @@ setup(async (url, init = {}) => {
   }
   throw new Error(`unexpected v2 preview request: ${init.method || "GET"} ${url}`);
 });
-await probe({ force: true });
 await startLocalPreview({ job: { binding: "binding-1" }, tree: { main: "paper.qmd", texts: { "paper.qmd": "# Preview" } }, options: {} });
 assert.equal(v2PreviewRequest.protocol, 2);
 assert.equal(v2PreviewRequest.entrypoint, "paper.qmd");
@@ -186,14 +187,14 @@ let syncRequest = null;
 setup(async (url, init = {}) => {
   assert.equal(init.method, "PUT");
   assert.ok(new URL(url).pathname.endsWith("/librepaper/local/workspace"));
-  assert.equal(init.headers.Authorization, "Bearer token");
+  assert.equal(init.headers.Authorization, undefined, "the page sends no credential");
   syncRequest = init;
   return response({ synced: 2 });
 });
 const tree = { main: "paper.qmd", texts: { "paper.qmd": "# Paper" }, assets: { "figures/plot.png": new Uint8Array([1, 2, 3]) } };
 const syncResult = await syncWorkspace({ tree });
 assert.deepEqual(syncResult, { synced: 2 });
-const manifestPart = syncRequest.body.get("manifest");
+const manifestPart = (await formOf(syncRequest)).get("manifest");
 const manifestEntries = JSON.parse(await manifestPart.text());
 assert.deepEqual(
   manifestEntries.map((entry) => entry.path).sort(),
@@ -204,7 +205,7 @@ for (const entry of manifestEntries) {
   assert.equal(entry.sha256, await sha(bytes));
   assert.equal(entry.size, bytes.byteLength);
 }
-const filesInForm = syncRequest.body.getAll("file");
+const filesInForm = (await formOf(syncRequest)).getAll("file");
 assert.equal(filesInForm.length, 2);
 const fileNames = filesInForm.map((part) => part.name).sort();
 assert.deepEqual(fileNames, ["figures/plot.png", "paper.qmd"]);
@@ -318,7 +319,7 @@ console.log("quarto-local: startLocalPreview validates both Calepin and default 
 console.log("quarto-local: localPreviewPage returns pdf bytes as a Uint8Array with kind \"pdf\"");
 
 // Preview lifecycle calls share the format-neutral API, and calepinAvailable
-// reads the last probed capabilities without fetching.
+// reads the capabilities the desktop app reports.
 {
   setup(async (url, init) => {
     if (init.method === "DELETE") return response({ stopped: true });
@@ -326,13 +327,13 @@ console.log("quarto-local: localPreviewPage returns pdf bytes as a Uint8Array wi
   });
   assert.equal((await localPreviewStatus("preview-1")).state, "running");
   await stopLocalPreview("preview-1");
-  assert.equal(calepinAvailable(), false);
+  assert.equal(await calepinAvailable(), false);
   _testing.inject({});
 }
-console.log("quarto-local: preview lifecycle calls work, and calepinAvailable defaults false");
+console.log("quarto-local: preview lifecycle calls work, and calepinAvailable is false without Calepin");
 
 // Exercise the Reader's actual controller configuration with the wire client:
-// a saved folder the companion no longer grants is forgotten, and the live
+// a saved folder the desktop app no longer grants is forgotten, and the live
 // preview falls back to the hosted workspace it just synchronized.
 {
   const reader = readFileSync(new URL("../../src/components/Reader.svelte", import.meta.url), "utf8");
@@ -347,7 +348,8 @@ console.log("quarto-local: preview lifecycle calls work, and calepinAvailable de
           : response({ error: "this project folder is not granted" }, 404);
       }
       if (init.method === "POST" && url.endsWith("/previews")) {
-        const request = init.body?.get ? JSON.parse(await init.body.get("job").text()) : JSON.parse(init.body);
+        const multipart = String(init.headers?.["Content-Type"] || "").startsWith("multipart/form-data");
+        const request = multipart ? JSON.parse(await (await formOf(init)).get("job").text()) : JSON.parse(init.body);
         // The protocol 2 envelope names the binding once, in `workspace`,
         // rather than inside an engine-specific block.
         const binding = request.workspace?.binding_id;

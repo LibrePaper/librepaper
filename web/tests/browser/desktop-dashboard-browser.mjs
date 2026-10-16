@@ -1,0 +1,312 @@
+// End-to-end check for the main Settings dialog's desktop app controls.
+// Uses a real local service process and browser with isolated HOME/state/cache.
+// The page server stands in for the desktop shell: it forwards the page's
+// requests to the local service with the local credential and the page's origin.
+// Run with LIBREPAPER_TEST_BINARY=dist/librepaper.
+
+import assert from "node:assert/strict";
+import { execFile, spawn } from "node:child_process";
+import { promisify } from "node:util";
+import { build } from "vite";
+import { svelte } from "@sveltejs/vite-plugin-svelte";
+import tailwindcss from "@tailwindcss/vite";
+import { createServer } from "node:http";
+import { existsSync, mkdtempSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { dirname, join, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
+import { browser, until, removeTemporary } from "../helpers/browser-driver.mjs";
+
+const here = dirname(fileURLToPath(import.meta.url));
+const root = dirname(dirname(dirname(here)));
+const binary = process.env.LIBREPAPER_TEST_BINARY || join(root, "dist", "librepaper");
+if (!existsSync(binary)) {
+  console.log(`desktop-dashboard-browser: no binary at ${binary}; skipping (build it or set LIBREPAPER_TEST_BINARY)`);
+  process.exit(0);
+}
+
+const temporary = mkdtempSync(join(tmpdir(), "librepaper-settings-check-"));
+const output = join(temporary, "build");
+const entry = join(temporary, "entry.js");
+const harness = join(temporary, "Harness.svelte");
+const stateHome = join(temporary, "state");
+const cacheHome = join(temporary, "cache");
+const appEnv = {
+  ...process.env,
+  HOME: temporary,
+  XDG_STATE_HOME: stateHome,
+  XDG_CACHE_HOME: cacheHome,
+  XDG_CONFIG_HOME: join(temporary, "config"),
+  XDG_DATA_HOME: join(temporary, "data"),
+  DBUS_SESSION_BUS_ADDRESS: `unix:path=${join(temporary, "no-dbus", "bus")}`,
+  LIBREPAPER_SERVER: "",
+};
+delete appEnv.DISPLAY;
+delete appEnv.WAYLAND_DISPLAY;
+
+async function freePort() {
+  const probe = createServer();
+  await new Promise((done) => probe.listen(0, "127.0.0.1", done));
+  const port = probe.address().port;
+  await new Promise((done) => probe.close(done));
+  return port;
+}
+
+writeFileSync(harness, `
+<script>
+  import SettingsDialog from ${JSON.stringify(join(root, "web/src/components/settings/SettingsDialog.svelte"))};
+  let open = $state(true);
+  let category = $state("desktop");
+  window.showSettingsCategory = (next) => category = next;
+</script>
+<SettingsDialog bind:open bind:category sourceFormat="quarto" mayEdit={true} userId="browser-check"
+                remoteConnected={true} />
+`);
+
+writeFileSync(entry, `
+import ${JSON.stringify(join(root, "web/src/styles/app.css"))};
+import { mount } from ${JSON.stringify(join(root, "web/node_modules/svelte/src/index-client.js"))};
+import * as local from ${JSON.stringify(join(root, "web/src/lib/desktop/client.js"))};
+import Harness from ${JSON.stringify(harness)};
+// The page is served from the configured server origin, as the shell would show it.
+local.configure({ origin: location.origin });
+mount(Harness, { target: document.body });
+`);
+
+let app;
+let appDone;
+let b;
+let server;
+let appLog = "";
+
+async function captureSettingsScreenshot() {
+  if (!b || !process.env.LIBREPAPER_SETTINGS_SCREENSHOT) return;
+  const shot = await b.command("Page.captureScreenshot", { format: "png", captureBeyondViewport: true });
+  const screenshot = resolve(process.env.LIBREPAPER_SETTINGS_SCREENSHOT);
+  mkdirSync(dirname(screenshot), { recursive: true });
+  writeFileSync(screenshot, Buffer.from(shot.data, "base64"));
+}
+
+try {
+  await build({
+    configFile: false,
+    root: join(root, "web"),
+    logLevel: "error",
+    plugins: [svelte(), tailwindcss()],
+    build: {
+      outDir: output,
+      emptyOutDir: true,
+      lib: { entry, formats: ["es"], fileName: () => "check.js", cssFileName: "check" },
+      rollupOptions: { output: { codeSplitting: false } },
+    },
+  });
+
+  let endpoint = null;
+  const page = () => `<!doctype html>
+    <html data-theme="librepaper"><head><meta charset="utf-8"><link rel="stylesheet" href="/check.css"><title>LibrePaper Settings</title></head>
+    <body><script>window.__LIBREPAPER_DESKTOP__ = Object.freeze({ base: location.origin + "/__lp/", version: "test" })</script><script type="module" src="/check.js"></script></body></html>`;
+  server = createServer(async (request, response) => {
+    if (request.url.startsWith("/__lp/")) {
+      const chunks = [];
+      for await (const chunk of request) chunks.push(chunk);
+      const origin = `http://${request.headers.host}`;
+      try {
+        const forwarded = await fetch(`${endpoint.address}${request.url.slice("/__lp/".length)}`, {
+          method: request.method,
+          headers: {
+            Authorization: `Bearer ${endpoint.token}`,
+            "X-LibrePaper-Origin": origin,
+            ...(request.headers["content-type"] ? { "content-type": request.headers["content-type"] } : {}),
+          },
+          body: ["GET", "HEAD"].includes(request.method) ? undefined : Buffer.concat(chunks),
+        });
+        response.statusCode = forwarded.status;
+        response.setHeader("content-type", forwarded.headers.get("content-type") || "application/octet-stream");
+        response.end(Buffer.from(await forwarded.arrayBuffer()));
+      } catch (error) {
+        response.statusCode = 502;
+        response.end(JSON.stringify({ error: "service unavailable", detail: String(error) }));
+      }
+    } else if (request.url === "/check.js") {
+      response.setHeader("content-type", "text/javascript");
+      response.end(readFileSync(join(output, "check.js")));
+    } else if (request.url === "/check.css") {
+      response.setHeader("content-type", "text/css");
+      response.end(readFileSync(join(output, "check.css")));
+    } else {
+      response.setHeader("content-type", "text/html");
+      response.end(page());
+    }
+  });
+  await new Promise((done) => server.listen(0, "127.0.0.1", done));
+  const appPort = server.address().port;
+  const appOrigin = `http://127.0.0.1:${appPort}`;
+  appEnv.LIBREPAPER_SERVER = `${appOrigin}/`;
+
+  const companionPort = await freePort();
+  const companionAddress = `http://127.0.0.1:${companionPort}/`;
+  appEnv.LIBREPAPER_LOCAL_PORT = String(companionPort);
+  app = spawn(binary, ["local", "start", "--foreground", "--port", String(companionPort)], {
+    env: appEnv,
+    stdio: ["ignore", "pipe", "pipe"],
+  });
+  appDone = new Promise((done) => app.once("exit", done));
+  app.stdout.on("data", (chunk) => { appLog += chunk; });
+  app.stderr.on("data", (chunk) => { appLog += chunk; });
+
+  await until("local service health", async () => {
+    const response = await fetch(`${companionAddress}librepaper/local/health`).catch(() => null);
+    return Boolean(response && response.ok);
+  }, 15000).catch((error) => { throw new Error(`${error.message}\nlocal service output:\n${appLog}`); });
+
+  // What the shell would learn from `local endpoint`.
+  endpoint = JSON.parse((await promisify(execFile)(binary, ["local", "endpoint"], { env: appEnv, timeout: 20000 })).stdout.trim().split("\n").at(-1));
+  assert.equal(endpoint.address, companionAddress);
+
+  b = await browser("chromium", join(temporary, "chrome"), await freePort());
+  await b.navigate(`${appOrigin}/`);
+  await until("computer management available", () => b.evaluate(`Boolean(document.querySelector("#desktop-activity-heading"))`), 12000);
+
+  assert.equal(await b.evaluate("location.hash"), "", "management does not add a fragment");
+  assert.equal(await b.evaluate("location.href"), `${appOrigin}/`, "management opens in place without changing the document URL");
+  const token = endpoint.token;
+  assert.equal(await b.evaluate(`document.documentElement.innerHTML.includes(${JSON.stringify(token)})`), false, "the token never reaches the page");
+  assert.equal(await b.evaluate('/\\bConnect\\b/.test(document.body.innerText)'), false, "there are no connect controls");
+  assert.equal(await b.evaluate('document.querySelector("#tray-enabled") === null'), true, "there is no tray preference");
+  assert.equal(await b.evaluate(`document.querySelector("#agents-list-heading") === null`), true, "agents have their own category");
+  assert.equal(await b.evaluate('document.body.innerText.includes("Tool search folders")'), false, "tool search folders are not configurable");
+  assert.equal(await b.evaluate('document.querySelector("#desktop-folders-heading") === null'), true, "empty project-folder grants have no heading");
+
+  for (const path of ["/companion", "/companion/", "/companion/index.html", "/companion/app.js", "/companion/style.css"]) {
+    const response = await fetch(`${companionAddress.replace(/\/$/, "")}${path}`);
+    assert.equal(response.status, 404, `standalone page is gone: ${path}`);
+  }
+
+  const apiState = async (headers = {}) => fetch(`${companionAddress}companion/api/state`, {
+    headers: { "X-LibrePaper-Origin": appOrigin, Authorization: `Bearer ${token}`, ...headers },
+  });
+  const trusted = await apiState();
+  assert.equal(trusted.status, 200, "the configured server can use the management API");
+  await captureSettingsScreenshot();
+
+  async function waitForEnabledButton(label, scopeId) {
+    await until(`${label} action enabled`, () => b.evaluate(`(() => {
+      const scope = ${JSON.stringify(scopeId)}
+        ? document.querySelector(${JSON.stringify(scopeId)})?.closest("section")
+        : document;
+      if (!scope) return false;
+      return [...scope.querySelectorAll("button")].some((button) =>
+        button.textContent.trim() === ${JSON.stringify(label)} && !button.disabled
+      );
+    })()`), 10000);
+  }
+  const agentLabel = "Claude";
+  await b.evaluate(`[...document.querySelectorAll(".settings-nav-item")].find((item) => item.textContent.trim() === "AI agents").click()`);
+  await until("agents heading visible", () => b.evaluate("Boolean(document.querySelector('#agents-list-heading'))"), 10000);
+  await b.evaluate(`(() => {
+    const section = document.querySelector("#agents-list-heading").closest("section");
+    const addButton = [...section.querySelectorAll("button")].find((item) => item.textContent.trim() === "Add agent" && item.type !== "submit");
+    addButton?.click();
+  })()`);
+  await b.evaluate(`(() => {
+    const section = document.querySelector("#agents-list-heading").closest("section");
+    section.querySelector('input[name="label"]').value = "Claude";
+    section.querySelector('input[name="label"]').dispatchEvent(new Event("input", { bubbles: true }));
+    section.querySelector('input[name="command"]').value = "librepaper-no-such-executable-for-test --version";
+    section.querySelector('input[name="command"]').dispatchEvent(new Event("input", { bubbles: true }));
+  })()`);
+  await waitForEnabledButton("Add agent", "#agents-list-heading");
+  await b.evaluate(`(() => {
+    const section = document.querySelector("#agents-list-heading").closest("section");
+    [...section.querySelectorAll("button[type='submit']")].find((item) => item.textContent.trim() === "Add agent").click();
+  })()`);
+  await until("invalid executable error", () => b.evaluate(`
+    [...document.querySelector("#agents-list-heading").closest("section").querySelectorAll('[role="alert"]')]
+      .some((node) => node.textContent.trim().length > 0)
+  `), 5000);
+  await new Promise((done) => setTimeout(done, 5500));
+  assert.equal(await b.evaluate(`
+    (() => {
+      const section = document.querySelector("#agents-list-heading").closest("section");
+      return [...section.querySelectorAll('[role="alert"]')].some((node) => node.textContent.trim().length > 0)
+        && section.querySelector('input[name="label"]').value === "Claude"
+        && section.querySelector('input[name="command"]').value === "librepaper-no-such-executable-for-test --version";
+    })()
+  `), true, "agent server error and inputs survive polling");
+  await b.evaluate(`(() => {
+    const section = document.querySelector("#agents-list-heading").closest("section");
+    const field = section.querySelector('input[name="command"]');
+    field.value = ${JSON.stringify(process.execPath)};
+    field.dispatchEvent(new Event("input", { bubbles: true }));
+    [...section.querySelectorAll("button[type='submit']")].find((item) => item.textContent.trim() === "Add agent").click();
+  })()`);
+  let agentId = "";
+  await until("custom agent added through Settings", async () => {
+    const response = await apiState();
+    if (!response.ok) return false;
+    const agent = (await response.json()).custom_agents.find((item) => item.label === agentLabel);
+    if (!agent) return false;
+    agentId = agent.id;
+    return b.evaluate(`(() => {
+      const section = document.querySelector("#agents-list-heading").closest("section");
+      return [...section.querySelectorAll(".setting-title")].filter((item) => item.textContent === ${JSON.stringify(agentLabel)}).length === 1;
+    })()`);
+  }, 10000);
+  await b.evaluate("window.confirm = () => true");
+  await waitForEnabledButton("Remove", "#agents-list-heading");
+  await b.evaluate(`(() => {
+    const section = document.querySelector("#agents-list-heading").closest("section");
+    const row = [...section.querySelectorAll(".setting-row")].find((item) =>
+      [...item.querySelectorAll(".setting-title")].some((title) => title.textContent.trim() === ${JSON.stringify(agentLabel)}));
+    [...row.querySelectorAll("button")].find((button) => button.textContent.trim() === "Remove").click();
+  })()`);
+  await until("custom agent removed through Settings", async () => {
+    const response = await apiState();
+    return response.ok && !(await response.json()).custom_agents.some((item) => item.id === agentId);
+  }, 10000);
+
+  await b.evaluate(`[...document.querySelectorAll(".settings-nav-item")].find((item) => item.textContent.trim() === "Tools").click()`);
+  await b.evaluate('window.showSettingsCategory("tools")');
+  await until("Quarto details available", () => b.evaluate(`Boolean(document.querySelector('#tools-quarto .tool-row-toggle'))`), 10000);
+  await b.evaluate(`(() => {
+    const button = document.querySelector('#tools-quarto .tool-row-toggle');
+    if (button.getAttribute('aria-expanded') !== 'true') button.click();
+  })()`);
+  await until("real Quarto integration in Tools", () => b.evaluate(`
+    document.querySelector(".settings-category")?.textContent.trim() === "Tools"
+      && document.querySelector("#quarto-executable input")?.disabled === false
+  `), 10000);
+  const quartoPath = process.execPath;
+  const quartoArgs = "--profile=test --verbose";
+  await b.evaluate(`(() => {
+    const path = document.querySelector("#quarto-executable input");
+    path.value = ${JSON.stringify(quartoPath)};
+    path.dispatchEvent(new Event("input", { bubbles: true }));
+    const args = document.querySelector("#quarto-arguments input");
+    args.value = ${JSON.stringify(quartoArgs)};
+    args.dispatchEvent(new Event("input", { bubbles: true }));
+  })()`);
+  await waitForEnabledButton("Save", "#quarto-executable");
+  await b.evaluate(`(() => {
+    const section = document.querySelector("#quarto-executable").closest(".tool-command");
+    [...section.querySelectorAll("button")].find((item) => item.textContent.trim() === "Save").click();
+  })()`);
+  await until("Quarto integration path and arguments persisted", async () => {
+    const response = await apiState();
+    if (!response.ok) return false;
+    const quarto = (await response.json()).settings.integrations.quarto;
+    return quarto.path === quartoPath && quarto.args.join(" ") === quartoArgs;
+  }, 10000);
+
+  await captureSettingsScreenshot();
+
+  console.log("desktop-dashboard-browser: shell-forwarded Settings, agent management, and tool commands passed");
+} finally {
+  if (b) await b.close();
+  if (app && app.exitCode === null) {
+    app.kill();
+    await Promise.race([appDone, new Promise((done) => setTimeout(done, 2000))]);
+  }
+  if (server) server.close();
+  removeTemporary(temporary);
+}

@@ -13,17 +13,17 @@ const renderingComponent = await read("RenderingSettings.svelte");
 const remote = await read("RemoteSettings.svelte");
 const statusPill = await read("StatusPill.svelte");
 
-// Rendering, Tools, Companion, Agents, Backups and Account remain navigable
+// Rendering, Tools, Desktop app, Agents, Backups and Account remain navigable
 // for every document format and editing state.
 for (const format of ["latex", "typst", "markdown", "quarto", "html", ""]) {
   for (const mayEdit of [true, false]) {
     const ids = offered({ format, mayEdit, signedIn: false }).map((item) => item.id);
-    for (const id of ["rendering", "tools", "companion", "agents", "backups", "account"]) {
+    for (const id of ["rendering", "tools", "desktop", "agents", "backups", "account"]) {
       assert.ok(ids.includes(id), `${format} (mayEdit=${mayEdit}) offers ${id}`);
     }
   }
 }
-for (const query of ["windows setup", "zotero", "server address", "remote connection", "disconnected sync", "companion address"]) {
+for (const query of ["windows setup", "zotero", "server address", "remote connection", "disconnected sync"]) {
   assert.ok(search(query, { format: "html", mayEdit: false, signedIn: false })?.length, `settings search finds ${query}`);
 }
 
@@ -49,11 +49,9 @@ assert.doesNotMatch(dialog, /quartoExecutionRelevant/);
 assert.match(latexFiles, /id="render-latex-files"/);
 assert.doesNotMatch(dialog, /render-folder/);
 
-// Build settings are global and do not probe on mount. Selecting a local tool
-// does probe. LaTeX engine and Markdown tool
+// Build settings are global. LaTeX engine and Markdown tool
 // selections both present the correct options.
-assert.doesNotMatch(build, /\$effect\([^)]*probe/);
-assert.match(build, /void localBridge\.probe\(\{ force: true \}\)/);
+assert.doesNotMatch(build, /desktop\/client/);
 assert.match(build, /id: "render-latex-engine"/);
 assert.deepEqual([...build.matchAll(/value: "(\w+)", says/g)].map((match) => match[1]), [
   "automatic", "pdflatex", "xelatex",
@@ -65,14 +63,14 @@ for (const format of ["latex", "markdown"]) assert.match(dialog, new RegExp(`<Bu
 // document in the View menu, never chosen once for every document here.
 for (const format of ["typst", "quarto"]) assert.doesNotMatch(dialog, new RegExp(`<BuildSettings format="${format}"`));
 
-// A tool's command fields need the companion and fresh settings before edits
-// apply, and responses are scoped to the connection. Only Quarto and Calepin
+// A tool's command fields need the desktop app and fresh settings before edits
+// apply, and a response for another tool is dropped. Only Quarto and Calepin
 // have commands; Zotero is listed with the other programs.
 assert.match(command, /const canEdit = \$derived\(isConnected && settingsLoaded && !pendingDialogAction\);/);
-assert.match(command, /requestId !== loadId[\s\S]{0,260}local\?\.state !== "connected"/);
+assert.match(command, /requestId !== loadId[\s\S]{0,260}requestedName !== name/);
 assert.match(tools, /const CONFIGURABLE = \["quarto", "calepin"\];/);
 assert.match(tools, /"Zotero"/);
-// Rendering says nothing about the companion; the programs live under Tools.
+// Rendering says nothing about the desktop app; the programs live under Tools.
 assert.doesNotMatch(dialog, /ConnectionRow|ToolCommand/);
 
 // The account page calls the server Remote connection and shows its state as

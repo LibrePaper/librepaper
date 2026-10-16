@@ -10,7 +10,8 @@ resolver = "2"
 members = ["crates/librepaper", "crates/librepaper-shell", "crates/librepaper-base", "crates/librepaper-document", "crates/librepaper-engine", "crates/librepaper-room", "crates/librepaper-server", "crates/librepaper-companion"]
 # The fuzz targets need libFuzzer and a nightly compiler, so they build on
 # their own: `tools/test/suite fuzz`, or `cargo fuzz --fuzz-dir tools/test/fuzz run <target>`.
-exclude = ["tools/test/fuzz"]
+# The desktop shell links the system webview, so it builds on its own: `make desktop`.
+exclude = ["tools/test/fuzz", "desktop"]
 
 # Release packaging is managed by cargo-dist for the sole `librepaper` crate.
 [workspace.metadata.dist]
@@ -26,7 +27,15 @@ targets = [
 installers = ["shell", "powershell"]
 install-updater = true
 github-build-setup = "../dist-build-setup.yml"
-install-success-msg = "LibrePaper Companion is installed. In a new terminal, run: librepaper. Then return to your browser."
+# The desktop app: signed Windows installers, a signed and notarized macOS
+# DMG, and Linux packages (.github/workflows/desktop-*.yml).
+local-artifacts-jobs = ["./desktop-windows", "./desktop-macos", "./desktop-linux"]
+# The desktop updater manifest (.github/workflows/publish-updater.yml).
+publish-jobs = ["./publish-updater"]
+# Prereleases get latest.json too, so a test release exercises it. The app only reads releases/latest, which skips prereleases.
+publish-prereleases = true
+github-custom-job-permissions = { "desktop-windows" = { contents = "read", id-token = "write" }, "desktop-macos" = { contents = "read" }, "desktop-linux" = { contents = "read" }, "publish-updater" = { contents = "write" } }
+install-success-msg = "The LibrePaper command line is installed. In a new terminal, run: librepaper --help"
 
 [profile.release]
 opt-level = 3
@@ -163,13 +172,9 @@ windows-sys = { version = "0.61", features = ["Win32_Storage_FileSystem"] }
 tempfile = "3"
 zip = { version = "2.4", default-features = false, features = ["deflate"] }
 object_store = { version = "0.14", features = ["aws", "fs"] }
-# Native dialogs for the companion's approval and folder prompts, with no
+# Native dialogs for the local service's approval and folder prompts, with no
 # external programs. macOS and Windows use the system toolkits through rfd.
 rfd = "0.15"
-# Optional desktop tray support. Linux is built against the D-Bus KSNI
-# backend, which does not pull GTK or libappindicator into static releases.
-tray-icon = { version = "0.26", default-features = false }
-tao = "0.37"
 # Linux asks the desktop portal for folders. This backend speaks D-Bus in Rust
 # and does not link GTK or libappindicator into static release binaries.
 ashpd = { version = "0.11", default-features = false, features = ["tokio"] }

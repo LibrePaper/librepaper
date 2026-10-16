@@ -10,6 +10,8 @@ agent to comment and edit.
 
 ## Features
 
+Most features work in any web browser. Running code, agents, Zotero and local backups need the [desktop app](desktop-app.html).
+
 Writing:
 
 - Live preview of Markdown, HTML, Typst and LaTeX
@@ -42,4 +44,4 @@ Free and open:
 - Public host at librepaper.org: 50 MB of storage per user and 30 uploads per hour
 - Self-host with one static binary and a Postgres database, on a laptop or a small server
 - Export project source and assets as ordinary files from the CLI
-- Back up every project in an account to local ZIP files with the companion
+- Back up every project in an account to local ZIP files with the desktop app

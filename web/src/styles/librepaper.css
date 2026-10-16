@@ -1026,10 +1026,18 @@ main.reader .cm-scroller, main.reader .panel { overscroll-behavior: contain; }
 [data-scope="switch"][data-part="root"][data-disabled] { cursor: default; opacity: .6; }
 
 /* ------------------------------------------------------------- settings */
-/* The settings dialog: a page-sized card (see Modal's `full`) holding a
-   navigation column and a body that scrolls on its own, and inside the
-   body one shape of row for every setting. */
-.modal-page { height: calc(100dvh - var(--spacing) * 12); }
+/* The settings page (Modal's `page`): the whole viewport, the page's own
+   background, a bar with Back at the top, and the settings below at a
+   readable width. */
+.modal-page { background: var(--color-shell); color: inherit; }
+.modal-page-bar { flex: none; border-bottom: 1px solid var(--color-divider); }
+.modal-page-bar-inner { display: flex; align-items: center; gap: --spacing(3); padding: --spacing(2) --spacing(4); }
+.modal-back { display: inline-flex; align-items: center; gap: --spacing(1.5); padding: --spacing(1.5) --spacing(2); margin-left: calc(var(--spacing) * -2); border: 0; border-radius: var(--radius-base); background: none; color: inherit; font: inherit; cursor: pointer; }
+.modal-back:hover { background-color: var(--color-row-hover); }
+.modal-page-title { margin: 0; padding-left: --spacing(3); border-left: 1px solid var(--color-divider); font-size: var(--text-lg); font-weight: var(--panel-title-weight); }
+.modal-page-body { display: flex; flex: 1 1 auto; min-height: 0; width: 100%; padding: --spacing(6) --spacing(4) 0; }
+/* The settings: a navigation column and a body that scrolls on its own,
+   and inside the body one shape of row for every setting. */
 .settings {
   display: grid;
   grid-template-columns: minmax(0, 11rem) minmax(0, 1fr);
@@ -1047,7 +1055,6 @@ main.reader .cm-scroller, main.reader .panel { overscroll-behavior: contain; }
 .settings-nav-item.current { background-color: var(--color-row-hover); font-weight: var(--panel-title-weight); }
 .settings-nav-entry { padding-left: --spacing(5); font-size: var(--panel-meta-size); color: var(--panel-muted); }
 .settings-nav-empty { padding: --spacing(2); color: var(--panel-muted); }
-.settings-nav-companion { margin-top: auto; padding: --spacing(3) --spacing(2) --spacing(1); border-top: 1px solid var(--color-divider); }
 .settings-body { min-height: 0; overflow-y: auto; padding-right: --spacing(2); overscroll-behavior: contain; }
 .settings :is(button.switch, input, select, textarea):disabled {
   background: var(--color-disabled-bg);
@@ -1116,7 +1123,6 @@ main.reader .cm-scroller, main.reader .panel { overscroll-behavior: contain; }
   .settings { grid-template-columns: minmax(0, 1fr); grid-template-rows: auto minmax(0, 1fr); }
   .settings-nav { flex-direction: row; flex-wrap: wrap; align-items: center; gap: --spacing(1); overflow: visible; padding-right: 0; padding-bottom: --spacing(2); border-right: 0; border-bottom: 1px solid var(--color-divider); }
   .settings-search { width: 100%; margin-bottom: --spacing(1); }
-  .settings-nav-companion { flex-basis: 100%; margin-top: 0; padding: --spacing(1) 0 0; border-top: 0; }
   .settings-nav-item, .settings-nav-entry { width: auto; }
   .setting-row { grid-template-columns: minmax(0, 1fr); }
   .setting-control { justify-content: flex-start; }

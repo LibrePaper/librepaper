@@ -2,7 +2,7 @@
   import Nav from "./Nav.svelte";
   import Icon from "./Icon.svelte";
   import { me as whoami } from "../lib/api.js";
-  import { INSTALL_URL } from "../lib/companion/states.js";
+  import { INSTALL_URL, desktop, shellAction } from "../lib/desktop/client.js";
 
   // The page the server shows when there is more than one way in. It is served
   // for /auth/login, so the choice is made here and every other page can link
@@ -18,6 +18,20 @@
   const next = new URLSearchParams(location.search).get("next") || "/";
   const href = (provider) => `/auth/login/${provider}?next=${encodeURIComponent(next)}`;
   const providers = ["github", "google"];
+
+  // Only the desktop app can switch the server it opens, so only it offers the choice.
+  const inDesktop = Boolean(desktop());
+  let serverUrl = $state("");
+  let serverError = $state("");
+  let choosing = $state(false);
+  async function chooseServer(event) {
+    event.preventDefault();
+    serverError = "";
+    choosing = true;
+    try { await shellAction("server", { url: serverUrl.trim() }); }
+    catch (error) { serverError = error?.message || "The server was not changed."; }
+    finally { choosing = false; }
+  }
 </script>
 
 <Nav {me} signIn={false} />
@@ -28,10 +42,10 @@
       New here? Your account is created the first time you continue. Sign in to read, comment, edit, and create documents and projects.
     </p>
     <!-- The service is young and may change under people, so a local copy kept
-         by the companion is the safety net. -->
+         by the desktop app is the safety net. -->
     <div class="signin-warning" role="note">
       <p><strong>LibrePaper is experimental.</strong> The website and service may change at any time.</p>
-      <p>We recommend you use the <a href={INSTALL_URL}>companion app</a> to make <a href="https://librepaper.org/backups.html">automatic local backups</a> of your projects as you edit them.</p>
+      <p>We recommend you use the <a href={INSTALL_URL}>desktop app</a> to make <a href="https://librepaper.org/backups.html">automatic local backups</a> of your projects as you edit them.</p>
     </div>
     <div class="signin-providers">
       {#each providers.filter((provider) => (me.providers ?? []).includes(provider)) as provider (provider)}
@@ -49,6 +63,17 @@
         </a>
       {/each}
     </div>
+    {#if inDesktop}
+      <details class="signin-server">
+        <summary>Use another server</summary>
+        <p class="signin-server-note">You are signing in to {location.host}. To use a self-hosted LibrePaper server instead, enter its address.</p>
+        <form class="signin-server-form" onsubmit={chooseServer}>
+          <input class="input input-sm" type="url" required placeholder="https://paper.example.org" aria-label="Server address" bind:value={serverUrl} disabled={choosing} />
+          <button class="btn btn-sm lp-control-brand" type="submit" disabled={choosing}>{choosing ? "Waiting..." : "Use this server"}</button>
+        </form>
+        {#if serverError}<p class="signin-server-error" role="alert">{serverError}</p>{/if}
+      </details>
+    {/if}
   </section>
 </main>
 
@@ -165,6 +190,13 @@
     text-decoration: underline;
     font-weight: 600;
   }
+
+  .signin-server { margin-top: 1.5rem; font-size: 0.9375rem; color: var(--color-text-secondary); }
+  .signin-server summary { cursor: pointer; }
+  .signin-server-note { margin: 0.5rem 0; }
+  .signin-server-form { display: flex; gap: 0.5rem; }
+  .signin-server-form input { flex: 1; min-width: 0; }
+  .signin-server-error { margin: 0.5rem 0 0; color: var(--color-error-text); }
 
   @media (max-width: 36rem) {
     .signin-main {

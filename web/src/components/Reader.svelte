@@ -20,9 +20,8 @@
   import { orphanState } from "../lib/orphan.js";
   import * as latex from "../lib/latex.js";
   import { parse as parseSynctex, lineAt as synctexLineAt } from "../lib/synctex.js";
-  import * as localQuarto from "../lib/companion/client.js";
-  import { companion } from "../lib/companion/status.svelte.js";
-  import { backups as backupStatusStore } from "../lib/companion/backups.svelte.js";
+  import * as localQuarto from "../lib/desktop/client.js";
+  import { backups as backupStatusStore } from "../lib/desktop/backups.svelte.js";
   import { basename } from "../lib/file-manager.js";
   import { createAnnotations } from "../lib/reader/annotations.svelte.js";
   import { createReaderBoot } from "../lib/reader/boot.js";
@@ -37,7 +36,6 @@
   import { prepareOfflineProject, preparedProject } from "../lib/offline-projects.js";
   import { cacheCurrentShell } from "../lib/offline-shell.js";
   import { needsSourceRefresh } from "../lib/reader/source-events.js";
-  import { granted, grant, revoke, isGrantKey } from "../lib/local-execution.js";
   import {
     SHELL_HEADERS,
     authHeaders,
@@ -76,7 +74,7 @@
   import { parseRenderOptions } from "../lib/quarto-options.js";
   import SettingsDialog from "./settings/SettingsDialog.svelte";
   import ProjectFolderSetting from "./settings/ProjectFolderSetting.svelte";
-  import CompanionConnection from "./settings/CompanionConnection.svelte";
+  import DesktopOnly from "./DesktopOnly.svelte";
   import { anonymousIdentity, read as readBuildPreferences, update as updateBuildPreferences, writeQuartoOptions } from "../lib/build-preferences.js";
   import Avatar from "./Avatar.svelte";
   import { extractOutline } from "../lib/outline.js";
@@ -150,13 +148,13 @@
   let me = $state({ id: "" });
   const backupStatus = $derived(backupStatusStore.status);
   const backupPillGood = $derived(Boolean(
-    backupStatus.paired && backupStatus.data?.enabled && backupStatus.data?.destination_set
+    backupStatus.active && backupStatus.data?.enabled && backupStatus.data?.destination_set
     && !backupStatus.data?.error && !backupStatus.data?.needs_login && !backupStatus.error,
   ));
   const backupPillLabel = $derived(!me?.id
     ? "Backups unavailable: sign in to an account"
-    : !backupStatus.paired
-      ? "Backups unavailable: connect LibrePaper Companion"
+    : !backupStatus.active
+      ? "Backups unavailable: they need the LibrePaper desktop app"
       : backupStatus.error
         ? `Backup status unavailable: ${backupStatus.error}`
         : backupStatus.data?.needs_login
@@ -260,39 +258,27 @@
   // it, rather than the page keeping a copy of each and a callback to keep
   // the copy honest.
   let localConnectionError = $state("");
-  let localConnecting = $state(false);
   let quartoLiveSyncTimer = null;
   let calepinSyncTimer = null;
   let quartoBindingId = $state("");
-  const localAppStatus = $derived(companion.status);
+  // The desktop app is there or it is not; this page never changes its mind.
+  const hasDesktop = Boolean(localQuarto.desktop());
+  // Whether the desktop app found the calepin command, read once the Typst
+  // preview asks for it.
+  let calepinFound = $state(false);
 
-  /// Points the local-app pairing at this document and picks up whatever
-  /// binding it already remembers for it. Nothing is asked of the local app
-  /// here: reaching loopback is what makes the browser ask the person for
-  /// local network access, and opening a document is not a request for
-  /// anything local. The first gesture that needs the companion --
-  /// `ensureLocalApp`, a local build, the local-app settings -- probes then.
-  /// Which document this browser tab is about, as far as the local app is
-  /// concerned. A pairing token is granted per (origin, project), so this is
-  /// what decides which pairing every later call reads.
+  /// Which document this browser tab is about, as far as the desktop app is
+  /// concerned. It picks up whatever binding the client already remembers for
+  /// it. Nothing is asked of the desktop app here.
   ///
   /// Deliberately not behind a format check. It used to live inside the
   /// Quarto binding lookup below, which meant an HTML or LaTeX document never
   /// scoped the client at all, and anything else that wanted the local app
   /// for that document -- the agent panel -- asked with a null project and
-  /// was refused. Rendering locally and pairing with the local app are
-  /// different questions about the same document.
-  ///
-  /// It stays inside the rule the comment above describes, because it reaches
-  /// nothing: the client only begins probing once something explicitly asks
-  /// it to, so scoping it is bookkeeping, not a request.
+  /// was refused. Rendering locally and using the desktop app are different
+  /// questions about the same document.
   function scopeLocalApp() {
-    localQuarto.configure({ project: SLUG, origin: location.origin, active: mayEdit });
-  }
-
-  /// The execution permission key for this document.
-  function executionScope() {
-    return { origin: location.origin, user: buildUserId, slug: SLUG };
+    localQuarto.configure({ project: SLUG, origin: location.origin });
   }
 
   /// The Quarto project binding this document already has, if any. This one
@@ -302,14 +288,9 @@
   }
   // Which engine draws each format, and what it produces, belong to the
   // build settings along with the preference they follow from; the aliases
-  // are further down, where that module is built. What stays here is the one
-  // thing that is not a preference: running a document's code is remembered
-  // per document in local storage.
-  //
-  // The permission is (origin, user, document slug). It is off by default
-  // for every document, including shared ones. Signing out clears all
-  // permissions. Pairing grants the browser permission to ask, but never
-  // starts document code on its own.
+  // are further down, where that module is built. Whether this document's
+  // code runs is not a preference and is never stored: it is off each time a
+  // document opens.
   let localExecution = $state(false);
 
   async function setLatexOutput(format) {
@@ -346,29 +327,15 @@
     }
   }
 
-  // What running a document's code here actually means. It was a title
-  // attribute on a button, which is to say it was invisible on a touch screen
-  // and delayed on every other: a consequence of this size is asked about,
-  // not hinted at.
-  let localExecutionConsent = $state(false);
-
   // The formats whose local tool runs the document rather than only typesets
-  // it. The permission is remembered per document in this browser, and the
-  // companion is reached only when both permission and format match what is
-  // being read.
+  // it. Running is off whenever a document opens and is never remembered: the
+  // toggle is the consent, and it is given again each time.
   const localExecutionRelevant = $derived.by(() => ["quarto", "typst"].includes(sourceFormat) && mayEdit);
 
-  // Turning it on, once the dialog has been answered: put this format's
-  // engine on the local tool, reach the companion, and remember the
-  // permission. A companion that cannot be reached leaves the choice standing
-  // and says why in Diagnostics, rather than silently undoing what was just
-  // asked for.
-  //
-  // Only the dialog grants. Every other caller, a retry button or the sync
-  // below, reaches this with a permission already on record or not at all.
+  // Turning it on puts this format's engine on the local tool and uses the
+  // desktop app. A browser without the desktop app says so and stays off.
   async function startLocalExecution() {
-    localExecutionConsent = false;
-    if (!granted(executionScope())) return;
+    if (!hasDesktop) { say(localQuarto.DESKTOP_ONLY_MESSAGE, { kind: "problem", id: "reader:desktop-only" }); return; }
     localExecution = true;
     if (!localExecutionRelevant) return;
     if (sourceFormat === "quarto") {
@@ -379,46 +346,33 @@
     }
   }
 
-  // Turning it off puts the browser's own renderer back, stops whatever
-  // the companion was running for this document, and revokes the permission.
+  // Turning it off puts the browser's own renderer back and stops whatever
+  // the desktop app was running for this document.
   async function stopLocalExecution() {
     localExecution = false;
-    revoke(executionScope());
     if (sourceFormat === "quarto") await setQuartoPreviewMode("markdown");
     else if (sourceFormat === "typst") await setTypstPreviewMode("typst");
   }
 
   const toggleLocalExecution = () => {
     if (localExecution) void stopLocalExecution();
-    else localExecutionConsent = true;
+    else void startLocalExecution();
   };
 
-  // Sync localExecution state with the stored permission. Called when
-  // buildUserId changes, and when storage events arrive from other tabs.
-  function syncLocalExecution() {
-    const should = granted(executionScope());
-    if (should && !localExecution) void startLocalExecution();
-    else if (!should && localExecution) void stopLocalExecution();
-  }
-
-  // When the signed-in identity resolves or changes, sync the permission.
+  // A document always opens with its code off. A build preference saved
+  // while it was running must not turn it back on, so the preview starts on
+  // the browser's own renderer.
   $effect(() => {
-    buildUserId;
-    untrack(() => syncLocalExecution());
+    SLUG;
+    untrack(() => {
+      localExecution = false;
+      if (quartoPreviewMode === "quarto") void setQuartoPreviewMode("markdown");
+      if (typstPreviewMode === "calepin") void setTypstPreviewMode("typst");
+    });
   });
 
-  // When another tab grants or revokes the permission, sync this tab.
-  $effect(() => {
-    function handleStorage(e) {
-      if (isGrantKey(e.key) || e.key === null) untrack(() => syncLocalExecution());
-    }
-    window.addEventListener("storage", handleStorage);
-    return () => window.removeEventListener("storage", handleStorage);
-  });
-
-  // Pointing the preview at a document in the other executable format puts
-  // the companion behind that one too, and checks that it is there, without
-  // asking again. The permission belongs to this document, not the session.
+  // Pointing the preview at a file in the other executable format, while Run
+  // code is on, puts the desktop app behind that one too.
   $effect(() => {
     if (!localExecution || !localExecutionRelevant) return;
     const running = sourceFormat === "quarto" ? quartoPreviewMode === "quarto" : typstPreviewMode === "calepin";
@@ -1660,6 +1614,10 @@
   });
   let mayEdit = $state(false);
   let sourceFormat = $state("");
+
+  // Where the toggle is offered: every editable Quarto document, and an
+  // editable Typst document when the desktop app found Calepin.
+  const runCodeOffered = $derived(mayEdit && (sourceFormat === "quarto" || (sourceFormat === "typst" && hasDesktop && calepinFound)));
   let peers = $state(1);
   let participants = $state([]);
   let linked = $state(read(LINKED, false) === true);
@@ -1689,30 +1647,17 @@
     return doc.title || (await renderers.titleOf(tree)) || "Untitled";
   }
 
-  // The whole connection story, on demand and with nothing to type: reach
-  // the local app, and when it is there but has not allowed this site yet,
-  // ask it to connect. What remains for the person is to have started the
-  // app and to click Allow once; the status text says which when it fails.
-  async function ensureLocalApp() {
-    if (localConnecting) return false;
-    localConnecting = true;
-    try {
-      localConnectionError = "";
-      localQuarto.configure({ project: SLUG, origin: location.origin, active: mayEdit });
-      let status = await localQuarto.retry();
-      if (["unreachable", "unauthorized", "reachable"].includes(status.state)) {
-        try { status = await localQuarto.connectApp(); }
-        catch (error) { localConnectionError = error.message; showPanel("diagnostics"); return false; }
-      }
-      if (status.state !== "connected") {
-        localConnectionError = status.instructions || "Local LibrePaper is unavailable.";
-        showPanel("diagnostics");
-        return false;
-      }
-      return true;
-    } finally {
-      localConnecting = false;
+  // Scopes the desktop client to this document and says so in Diagnostics
+  // when this is a browser.
+  function ensureLocalApp() {
+    localConnectionError = "";
+    if (!hasDesktop) {
+      localConnectionError = localQuarto.DESKTOP_ONLY_MESSAGE;
+      showPanel("diagnostics");
+      return false;
     }
+    localQuarto.configure({ project: SLUG, origin: location.origin });
+    return true;
   }
 
   /* --------------------------------------------------------- the timeline */
@@ -1728,20 +1673,20 @@
   // texts -- or null for the document as it stands.
 
   // Whether this browser should be running Quarto's own live preview rather
-  // than showing its own draft rendering: Quarto preview mode chosen, paired,
+  // than showing its own draft rendering: Quarto preview mode chosen, ready,
   // connected, editable, and not looking at history. `editing` (the source
   // pane) is not required -- an editor who has not opened it yet still gets
   // the live pane the moment they are able to edit.
   const quartoLiveActive = $derived.by(() =>
-    sourceFormat === "quarto" && quartoPreviewMode === "quarto" && localExecution && (!buildPreferences.output || ["html", "pdf"].includes(buildPreferences.output)) && (buildPreferences.selection === "automatic" || (buildPreferences.backend === "local" && buildPreferences.tool === "quarto")) && mayEdit && localAppStatus.state === "connected",
+    sourceFormat === "quarto" && quartoPreviewMode === "quarto" && localExecution && (!buildPreferences.output || ["html", "pdf"].includes(buildPreferences.output)) && (buildPreferences.selection === "automatic" || (buildPreferences.backend === "local" && buildPreferences.tool === "quarto")) && mayEdit && hasDesktop,
   );
 
   // Whether this browser should be showing a Typst document's chunks run by
   // Calepin on this computer rather than this browser's own Typst rendering:
-  // the calepin mode chosen, paired, connected, the calepin command itself
+  // the calepin mode chosen, ready, the calepin command itself
   // found, editable, and not looking at history.
   const calepinActive = $derived.by(() =>
-    sourceFormat === "typst" && !typstHtmlPreview && localExecution && typstPreviewMode === "calepin" && buildPreferences.backend === "local" && buildPreferences.tool === "calepin" && mayEdit && localAppStatus.state === "connected" && localQuarto.calepinAvailable(),
+    sourceFormat === "typst" && !typstHtmlPreview && localExecution && typstPreviewMode === "calepin" && buildPreferences.backend === "local" && buildPreferences.tool === "calepin" && mayEdit && hasDesktop && calepinFound,
   );
 
   async function localPreviewTreeNow() {
@@ -1752,7 +1697,7 @@
     return { ...tree, assets: held.assets };
   }
 
-  // A sync can forget a folder the companion no longer grants. Mirroring that
+  // A sync can forget a folder the desktop app no longer grants. Mirroring that
   // here restarts the preview in the hosted workspace.
   const previewClient = {
     ...localQuarto,
@@ -1842,33 +1787,14 @@
     });
   });
 
-  // The person starts the companion after a local run has already failed, from
-  // the settings page or a terminal, so nothing on this page asked for it, and
-  // the panel must not keep saying it is not running. What that failure left
-  // behind is cleared on the change into "connected" (not on every status
-  // object, and not on the first probe, which has nothing to undo): the
-  // connection error, and the failed render's diagnostic, which a live
-  // preview that now takes the pane would never replace. The run is retried
-  // through startLocalExecution; ensureLocalApp would connect again and come
-  // back here. Where no live preview will own the pane, one ordinary render
-  // paints the document and whatever it says now.
-  let previousLocalAppState = null;
+  // Calepin is found by the desktop app, not by this page, so it is asked
+  // when a Typst document opens there. Whether it is found decides whether
+  // the Typst document offers the toggle.
   $effect(() => {
-    const state = localAppStatus.state;
-    const before = previousLocalAppState;
-    previousLocalAppState = state;
-    if (state !== "connected" || !before || before === "unknown" || before === "connected") return;
-    untrack(() => {
-      localConnectionError = "";
-      if (!localExecutionRelevant) return;
-      void startLocalExecution();
-      // Not allowed to run code: the browser's own renderer is drawing this
-      // document, and what it said still stands.
-      if (!localExecution) return;
-      renderStatus.resetFailure();
-      diagnosticPainter.rendered({ page: true });
-      if (!quartoLiveActive && !calepinActive) void paintPreview();
-    });
+    if (!hasDesktop || sourceFormat !== "typst" || !mayEdit) return;
+    let stale = false;
+    localQuarto.calepinAvailable().then((found) => { if (!stale) calepinFound = found; }, () => { if (!stale) calepinFound = false; });
+    return () => { stale = true; };
   });
 
   // The profile and parameters, applied from Settings: kept for every Quarto
@@ -2333,11 +2259,11 @@
       : renderState.failure ? renderState.failureReason || "The build failed without reporting why." : "",
   );
 
-  // Quarto preview mode chosen, but not yet paired with the local app on
-  // this computer: the pane shows the draft, and Diagnostics explains why.
+  // Quarto preview mode chosen, but this is a browser: the pane
+  // shows the draft, and Diagnostics explains why.
   const quartoNeedsLocalApp = $derived(
     sourceFormat === "quarto" && quartoPreviewMode === "quarto" && localExecution && mayEdit &&
-      localAppStatus.state !== "connected",
+      !hasDesktop,
   );
   // A PDF from Markdown or Quarto source is only ever produced by a tool on
   // this computer: this browser's own renderer makes HTML and nothing else.
@@ -2347,11 +2273,11 @@
   // choosing PDF output and then closing, or never installing, the local app.
   const pdfNeedsLocalTool = $derived(
     pdfOutput && ["markdown", "quarto"].includes(sourceFormat) && mayEdit &&
-      (localAppStatus.state !== "connected" || (sourceFormat === "quarto" && !localExecution)),
+      (!hasDesktop || (sourceFormat === "quarto" && !localExecution)),
   );
   // The gesture that is missing, told apart so the card offers one action
-  // rather than a menu: Quarto has to be allowed to run this document's code
-  // before anything else is worth suggesting.
+  // rather than a menu: Run code has to be on before anything else is worth
+  // suggesting.
   const pdfNeedsLocalExecution = $derived(pdfNeedsLocalTool && sourceFormat === "quarto" && !localExecution);
 
   // The way out for an author who wants to keep reading rather than install
@@ -2363,20 +2289,19 @@
   }
 
   // The same two banner cases, for a Typst document with Calepin preview
-  // chosen: not yet connected to the local app, or connected but without the
-  // calepin command itself.
+  // chosen: this is a browser, or the desktop app has no calepin command.
   const typstNeedsLocalApp = $derived(
     sourceFormat === "typst" && !typstHtmlPreview && localExecution && typstPreviewMode === "calepin" && mayEdit &&
-      localAppStatus.state !== "connected",
+      !hasDesktop,
   );
   const typstNeedsCalepinCommand = $derived(
     sourceFormat === "typst" && !typstHtmlPreview && localExecution && typstPreviewMode === "calepin" && mayEdit &&
-      localAppStatus.state === "connected" && !localQuarto.calepinAvailable(),
+      hasDesktop && !calepinFound,
   );
 
   const localAppDiagnostics = $derived([
-    localAppStatus.state !== "connected" ? { severity: "error", message: localConnectionError } : null,
-    quartoNeedsLocalApp && !localConnectionError ? { severity: "warning", message: "The Markdown preview is shown until LibrePaper Companion is connected." } : null,
+    !hasDesktop ? { severity: "error", message: localConnectionError } : null,
+    quartoNeedsLocalApp && !localConnectionError ? { severity: "warning", message: "The Markdown preview is shown. Running code needs the LibrePaper desktop app." } : null,
     typstNeedsCalepinCommand ? { severity: "warning", message: "Calepin preview needs the calepin command on this computer." } : null,
     sourceFormat === "quarto" && quartoPreviewMode === "quarto" && localExecution ? { severity: "error", message: quartoPreviewError } : null,
     ...(sourceFormat === "quarto" && quartoPreviewMode === "quarto" && localExecution ? quartoPreviewKept : []).map((note) => ({ severity: "warning", message: note.charAt(0).toUpperCase() + note.slice(1) + "." })),
@@ -2385,14 +2310,14 @@
   // An item with no message is dropped. An empty error would show as a blank
   // entry and would hide the failed render's own message.
   ].filter((item) => item?.message).map((item) => ({ ...item, source: "local-app" })));
-  // What the Diagnostics panel names when a preview here needs the
-  // companion and it is not connected. Empty when nothing needs it.
-  const companionNeeds = $derived(
-    localAppStatus.state === "connected" ? ""
+  // What the Diagnostics panel names when a preview here needs the desktop
+  // app and this is a browser. Empty when nothing needs it.
+  const desktopNeeds = $derived(
+    hasDesktop ? ""
       : quartoNeedsLocalApp ? "Quarto preview"
       : typstNeedsLocalApp ? "Calepin preview"
-      : pdfNeedsLocalTool ? "the PDF preview"
-      : localConnectionError ? "this preview"
+      : pdfNeedsLocalTool ? "The PDF preview"
+      : localConnectionError ? "This preview"
       : "",
   );
   $effect(() => {
@@ -2734,7 +2659,7 @@
 
   // Settings open as a dialog from the navbar menu or the sidebar. Every entry
   // point opens the same dialog on the category it is about.
-  let settingsOpen = $state(untrack(() => initialSettings === "companion"));
+  let settingsOpen = $state(untrack(() => initialSettings === "desktop"));
   let settingsCategory = $state(untrack(() => initialSettings || "editor"));
   let projectFolderOpen = $state(false);
   let savingTemplate = $state(false);
@@ -2752,6 +2677,12 @@
     settingsCategory = category;
     settingsOpen = true;
   }
+  // The desktop app asks for Settings from its menu and from Ctrl or Cmd+,.
+  $effect(() => {
+    const open = () => openSettings();
+    window.addEventListener("librepaper:open-settings", open);
+    return () => window.removeEventListener("librepaper:open-settings", open);
+  });
 
   // The column at the left, and what is in it: the files, the comments or the
   // history, or "" for closed. One value rather than a switch per panel,
@@ -3187,7 +3118,6 @@
     .then((answer) => {
       workspace.setRules(answer || {});
       if (typeof answer?.latexMirror === "string") latex.at(answer.latexMirror);
-      if (answer?.local_app?.address) localQuarto.setAdvertisedAddress(answer.local_app.address);
     })
     .catch(() => {
       /* the server checks every path again; this only explains it sooner */
@@ -3536,10 +3466,10 @@
     // The role endpoint answer is authoritative for every affordance.
     const ROLES = ["reader", "commenter", "editor", "owner"];
     const allowed = ROLES.indexOf(document_.role) >= ROLES.indexOf("editor");
-    // The local companion must see the resolved permission on its first
+    // The desktop app must see the resolved permission on its first
     // configuration. In particular, account examples arrive as editable
     // Quarto documents; configuring before this assignment leaves the
-    // companion inactive and the pane stuck on its Markdown fallback.
+    // desktop app inactive and the pane stuck on its Markdown fallback.
     mayEdit = Boolean(allowed);
     const offeredRenderers = Array.isArray(document_.renderers) ? document_.renderers : ["markdown"];
     renderers.offerLatex(offeredRenderers.includes("latex"));
@@ -3603,7 +3533,6 @@
 
   $effect(() => {
     markViewed(SLUG);
-    const stopQuartoStatus = companion.watch();
     pendingChat = createPendingChat({
       send: (message) => collaboration?.sendLive(message) || { ok: false },
     });
@@ -3668,7 +3597,6 @@
       // settling pause. Leaving is the moment it is worth most: it is the
       // page this document will open with next time.
       void flushPreview(previewCacheKey());
-      stopQuartoStatus();
       renderCoordinator.invalidate();
       navigationGeneration += 1;
       renderers.cancelPreview();
@@ -3692,9 +3620,9 @@
     };
   });
 
-  // Account scope and companion pairing are the only triggers for reading
-  // backup status. A signed-out or unpaired page never makes a new probe.
-  $effect(() => backupStatusStore.setScope(me?.id, companion.status.state === "connected"));
+  // Account scope and the desktop app are the only triggers for reading
+  // backup status. A signed-out page or a browser never makes a request.
+  $effect(() => backupStatusStore.setScope(me?.id, hasDesktop));
   $effect(() => () => backupStatusStore.reset());
 
   // Ctrl-S reports the durability the server has confirmed for local work.
@@ -3979,15 +3907,11 @@
   <Menu.Item value="preview-file" class="menuitem" disabled={!can["preview-file"]}>Preview this file</Menu.Item>
   <hr class="hr my-1" />
   {@render previewItems()}
-  {#if localExecutionRelevant}
-    <!-- Permission is per (origin, user, document slug), remembered in this
-         browser, and off by default for every document. Signing out revokes
-         all permissions. Offered only where it means something: a LaTeX or
-         HTML document has no local tool that runs it, so the item would warn
-         about arbitrary code execution and then do nothing at all. -->
-    <div class="menu-section-label">Local execution</div>
+  {#if runCodeOffered}
+    <!-- The same switch as the top bar, for widths where the bar has no room for it. Off whenever a document opens, never remembered. -->
+    <div class="menu-section-label">Code</div>
     <Menu.Item value="local-execution" class="menuitem">
-      <span class="menuitem-check">{localExecution ? "✓" : ""}</span>Execute code locally
+      <span class="menuitem-check">{localExecution ? "✓" : ""}</span>Run code
     </Menu.Item>
     <hr class="hr my-1" />
   {/if}
@@ -4005,8 +3929,13 @@
   </div>
 {/snippet}
 {#snippet localExecutionControl()}
-  {#if sourceFormat === "quarto" && mayEdit && !localExecution}
-    <button class="btn btn-sm lp-control-brand reader-local-execution" aria-label="Turn on local execution" title="Turn on local execution" onclick={() => (localExecutionConsent = true)}><span class="execution-full">Turn on local execution</span><span class="execution-short">Run</span></button>
+  {#if runCodeOffered}
+    <label class="run-code-toggle" title="Run this document's code on this computer. Off whenever a document opens.">
+      <button type="button" role="switch" class="switch" aria-checked={localExecution} aria-label="Run code" data-state={localExecution ? "checked" : "unchecked"} onclick={toggleLocalExecution}>
+        <span class="switch-thumb" data-state={localExecution ? "checked" : "unchecked"}></span>
+      </button>
+      <span class="run-code-label">Run code</span>
+    </label>
   {/if}
 {/snippet}
 
@@ -4030,12 +3959,6 @@
            by Diagnostics, so the bar only carries the local execution switch. -->
       {@render localExecutionControl()}
       <div class="connection-settings" role="group" aria-label="Connection settings">
-        <button class="connection-pill local-pill" type="button" onclick={() => openSettings("companion")}
-                aria-label={`Local companion ${localAppStatus.state === "connected" ? "connected" : "disconnected"}; open local settings`}
-                title={`Local companion ${localAppStatus.state === "connected" ? "connected" : "disconnected"}. Open local settings`}>
-          <span class="connection-dot" class:offline={localAppStatus.state !== "connected"} aria-hidden="true"></span>
-          <span>Local</span>
-        </button>
         <button class="connection-pill" type="button" onclick={() => openSettings("account")}
                 aria-label={`Remote server ${connected ? "connected" : "disconnected"}; open account settings`}
                 title={connected ? `${peers} people connected. Open account settings` : `${connectionNote}. Open account settings`}>
@@ -4166,7 +4089,7 @@
   {/snippet}
 
   {#snippet diagnosticsPanel()}
-    <Diagnostics {diagnostics} localAppProblem={localAppDiagnostics.length > 0} {companionNeeds}
+    <Diagnostics {diagnostics} localAppProblem={localAppDiagnostics.length > 0} {desktopNeeds}
       onretrylocal={() => localExecutionRelevant ? startLocalExecution() : ensureLocalApp()}
       main={previewMain || session?.mainPath() || ""}
       canOpen={(item) => Boolean(diagnosticFile(item))} onopen={openDiagnostic}
@@ -4344,12 +4267,12 @@
         {:else}
           <p class="lp-text-secondary text-sm">
             {#if !compilesHere}
-              This browser cannot render this {sourceFormat === "latex" ? "LaTeX" : sourceFormat === "typst" ? "Typst" : sourceFormat === "quarto" ? "Quarto/Markdown" : "Markdown"} source. {sourceFormat === "latex" ? "Configure the browser LaTeX renderer to view it." : "Install LibrePaper Companion to render it on this computer."}
+              This browser cannot render this {sourceFormat === "latex" ? "LaTeX" : sourceFormat === "typst" ? "Typst" : sourceFormat === "quarto" ? "Quarto/Markdown" : "Markdown"} source. {sourceFormat === "latex" ? "Configure the browser LaTeX renderer to view it." : "The LibrePaper desktop app can render it on this computer."}
             {:else}
               Fix the errors in Diagnostics to produce a PDF preview.
             {/if}
           </p>
-          {#if !compilesHere && sourceFormat !== "latex"}<CompanionConnection needs="this preview" />{/if}
+          {#if !compilesHere && sourceFormat !== "latex"}<DesktopOnly feature="This preview" />{/if}
         {/if}
       </div>
     </section>
@@ -4360,15 +4283,15 @@
           <h2 class="h4">PDF needs {sourceFormat === "quarto" ? "Quarto" : "a local build"} on this computer</h2>
           <p class="lp-text-secondary text-sm">
             This browser renders {sourceFormat === "quarto" ? "Quarto" : "Markdown"} to HTML only. The PDF is produced by
-            {sourceFormat === "quarto" ? "Quarto itself" : "Pandoc or Quarto"}, run through LibrePaper Companion,
-            so the preview stays empty until that is connected{sourceFormat === "quarto" ? " and allowed to run this document" : ""}.
+            {sourceFormat === "quarto" ? "Quarto itself" : "Pandoc or Quarto"}, run through the LibrePaper desktop app,
+            so the preview stays empty until you open this document there{sourceFormat === "quarto" ? " and turn on Run code" : ""}.
           </p>
           <div class="notyet-actions">
             {#if pdfNeedsLocalExecution}
-              <button class="btn btn-sm lp-control-brand" onclick={() => (localExecutionConsent = true)}>Turn on local execution</button>
+              <button class="btn btn-sm lp-control-brand" onclick={() => void startLocalExecution()}>Run code</button>
               <button class="btn btn-sm lp-control-tonal-brand" onclick={previewAsHtml}>Preview as HTML instead</button>
             {:else}
-              <CompanionConnection needs="the PDF preview" />
+              <DesktopOnly feature="The PDF preview" />
               <button class="btn btn-sm lp-control-tonal-brand" onclick={previewAsHtml}>Preview as HTML instead</button>
             {/if}
           </div>
@@ -4510,14 +4433,6 @@
   {/snippet}
 </Modal>
 
-<Modal bind:open={localExecutionConsent} title="Run this document's code on this computer?"
-  confirm={{ label: "Run code on this computer", onclick: () => { grant(executionScope()); void startLocalExecution(); } }}>
-  <p class="execution-warning">Quarto or Calepin will run the code in this document on your computer.</p>
-  <p>Code in this document will run with your account's access to your files, network, and credentials. Anyone who can edit this document now or later can change that code, and it will run the next time the preview builds.</p>
-  <p>Only allow this if you trust the document's owner and everyone who can edit it.</p>
-  <p>This permission is remembered for this document in this browser until you turn it off or sign out.</p>
-</Modal>
-
 <Modal bind:open={timeline.state.restoring} title="Restore this version?"
   description={restoreMoved
     ? `The project changed while this was open. Restore ${restoreName} over the project as it now stands? The current version will be preserved in history.`
@@ -4558,14 +4473,13 @@
 <Toasts />
 
 <style>
-  .execution-warning { color: var(--color-warning-text); font-weight: 600; }
+  .run-code-toggle { display: inline-flex; align-items: center; gap: calc(var(--spacing) * 1.5); cursor: pointer; font-size: var(--text-sm); white-space: nowrap; }
   .nav-document {
     display: block;
     max-width: min(38vw, 20rem);
     color: var(--color-text-secondary);
     font-size: var(--text-sm);
   }
-  .execution-short { display: none; }
   /* Adapted widths keep the two faces grouped. Compact widths put them in the
      top bar beside the Menu trigger, with the same column sizing and captions. */
   .face-switch { display: inline-flex; align-items: center; gap: 2px; padding: 2px; border-radius: var(--radius-container); background: var(--color-subtle); }
@@ -4594,11 +4508,6 @@
   /* A heading over a run of items. Aligned with the names rather than with
      the panel edge, so the column the items make starts once. */
   .menu-section-label { padding: calc(var(--spacing) * 2) calc(var(--spacing) * 2.5) calc(var(--spacing) * 0.5) calc(var(--spacing) * 7); color: var(--color-text-secondary); font-size: var(--text-xs); font-weight: 600; text-transform: uppercase; letter-spacing: .05em; }
-  @media (max-width: 600px) {
-    .reader-local-execution { padding-inline: .5rem; }
-    .reader-local-execution .execution-full { display: none; }
-    .reader-local-execution .execution-short { display: inline; }
-  }
   @media (max-width: 760px) {
     :global(main.reader.adapted .sidebar-activity) { display: none; }
   }

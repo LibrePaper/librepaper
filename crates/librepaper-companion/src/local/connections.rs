@@ -5,8 +5,7 @@
 //! own MCP subprocess names a runner record (`librepaper mcp
 //! --connection runner-<hash>`), never a link. This machine holds the
 //! mapping from that name to the protected document URL, in
-//! `<state_home>/librepaper/local/connections.json` at mode 0600, next to the
-//! pairing store that authorizes writing it.
+//! `<state_home>/librepaper/local/connections.json` at mode 0600.
 //!
 //! Three things follow, and all three are the reason for the indirection:
 //! the key never reaches a config file a user might paste or commit; a
@@ -20,7 +19,7 @@ use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
-use super::pairing::write_private_json;
+use super::store::write_private_json;
 use librepaper_base::util::now_unix;
 
 /// How long a connection survives without being resolved. A connection is
@@ -41,8 +40,7 @@ pub struct Connection {
     /// The protected document URL, key fragment included. This is the secret
     /// the whole module exists to keep out of agent configuration.
     pub link: String,
-    /// The browser origin that registered it, so a revoke of a pairing can
-    /// take its connections with it.
+    /// The browser origin that registered it.
     pub origin: String,
     pub created: i64,
     /// Last time an agent resolved this connection.
@@ -85,7 +83,7 @@ pub fn runner_connection_name(credential_url: &str, conversation: &str) -> Strin
 }
 
 impl ConnectionStore {
-    /// `state_home` is an XDG state base, matching `PairingStore::new`.
+    /// `state_home` is an XDG state base, matching `ServiceFile::new`.
     pub fn new(state_home: &Path) -> Self {
         Self {
             dir: state_home.join("librepaper").join("local"),
@@ -151,9 +149,8 @@ impl ConnectionStore {
     }
 
     /// Park the sidebar assistant's own credentials under
-    /// [`runner_connection_name`], recorded with the real pairing origin so
-    /// revoking that pairing also revokes this record. Replaced on every
-    /// runner start.
+    /// [`runner_connection_name`], recorded with the requesting origin.
+    /// Replaced on every runner start.
     pub fn put_runner(
         &self,
         credential_url: &str,
@@ -198,18 +195,6 @@ impl ConnectionStore {
 
     pub fn get(&self, name: &str) -> Option<Connection> {
         self.load().get(name).cloned()
-    }
-
-    /// Drop every connection registered by `origin`. Called when a pairing is
-    /// revoked, so revoking the browser's access also revokes what it handed
-    /// to the agents on this machine.
-    pub fn remove_origin(&self, origin: &str) -> usize {
-        self.update(|all| {
-            let before = all.len();
-            all.retain(|_, entry| entry.origin != origin);
-            Ok(before - all.len())
-        })
-        .unwrap_or(0)
     }
 }
 
@@ -268,24 +253,6 @@ mod tests {
             store.get(&name).unwrap().chat_token.as_deref(),
             Some("token-2")
         );
-    }
-
-    #[test]
-    fn revoking_an_origin_takes_its_connections() {
-        let (_dir, store) = store();
-        store
-            .put_runner("https://d.example/docs/a#k=1", "one", "c1", "t1")
-            .unwrap();
-        store
-            .put_runner("https://d.example/docs/b#k=2", "two", "c2", "t2")
-            .unwrap();
-        assert_eq!(store.remove_origin("one"), 1);
-        assert!(store
-            .get(&runner_connection_name(
-                "https://d.example/docs/b#k=2",
-                "c2"
-            ))
-            .is_some());
     }
 
     #[test]

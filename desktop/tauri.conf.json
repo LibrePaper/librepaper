@@ -1,0 +1,39 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "LibrePaper",
+  "mainBinaryName": "librepaper-desktop",
+  "version": "0.0.42",
+  "identifier": "org.librepaper.desktop",
+  "build": {
+    "frontendDist": "./blank"
+  },
+  "app": {
+    "windows": [],
+    "security": {
+      "csp": null
+    }
+  },
+  "bundle": {
+    "active": true,
+    "targets": "all",
+    "category": "Productivity",
+    "icon": ["icons/icon.png", "icons/icon.ico", "icons/icon.icns"],
+    "externalBin": ["binaries/librepaper"],
+    "linux": {
+      "deb": { "desktopTemplate": "linux/librepaper.desktop" },
+      "rpm": { "desktopTemplate": "linux/librepaper.desktop" }
+    }
+  },
+  "plugins": {
+    "deep-link": {
+      "desktop": {
+        "schemes": ["librepaper"]
+      }
+    },
+    "updater": {
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDBFQzM5RDFFNjNFNUIwN0UKUldSK3NPVmpIcDNERGt1bldzTHpBQjJhcHkwREgvaCtHSmNpWDNkeFNvNzd4bngyNW9KV2I3VDIK",
+      "endpoints": ["https://github.com/LibrePaper/librepaper/releases/latest/download/latest.json"],
+      "windows": { "installMode": "passive" }
+    }
+  }
+}

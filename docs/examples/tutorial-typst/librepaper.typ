@@ -32,6 +32,6 @@ Try changing the estimate and leave a comment on this paragraph. Typst Universe 
 
 == Working with other clients
 
-A document previews as HTML by default; choose Typst PDF preview for printed layout, or stay on the experimental Typst HTML preview for flowing, semantic output. If a document contains executable Calepin chunks, the companion can offer a Calepin PDF preview. A project export creates an independent local copy of source and assets. Readers render the shared source in their browser and do not need Typst installed.
+A document previews as HTML by default; choose Typst PDF preview for printed layout, or stay on the experimental Typst HTML preview for flowing, semantic output. If a document contains executable Calepin chunks, the desktop app can offer a Calepin PDF preview. A project export creates an independent local copy of source and assets. Readers render the shared source in their browser and do not need Typst installed.
 
 #bibliography("references.bib", style: "american-psychological-association")

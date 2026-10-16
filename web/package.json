@@ -21,7 +21,7 @@
     "check:shortcuts": "node tests/unit/commands.mjs && node tests/browser/shortcuts-browser.mjs",
     "check:synctex": "node tests/unit/synctex.mjs",
     "check": "node --experimental-transform-types --test 'tests/unit/*.mjs' 'tests/unit/*.js' 'tests/integration/*.mjs' 'tests/integration/*.js'",
-    "check:companion": "node tests/integration/local-companion.mjs && node tests/integration/companion-lifecycle.mjs && node tests/browser/local-consent-browser.mjs",
+    "check:local-service": "node tests/integration/local-service.mjs",
     "check:browser": "node --test --test-concurrency=4 'tests/browser/*.mjs'",
     "check:math-browser": "node tests/browser/math-browser.mjs",
     "check:history": "node tests/unit/timeline.mjs && node tests/unit/history-calendar.mjs && node tests/unit/activity.mjs && node tests/integration/history-source.mjs && node tests/unit/reader-races.mjs",

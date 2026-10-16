@@ -98,7 +98,7 @@ try {
   };
   const dialog = () => b.evaluate(`(() => {
     const open = document.querySelector('[role="dialog"][data-state="open"]');
-    return open ? (open.querySelector("h2, .h4")?.textContent || "").trim() : "";
+    return open ? (open.querySelector("h2, .h4, .modal-page-title")?.textContent || "").trim() : "";
   })()`);
   const focusIn = () => b.evaluate('document.activeElement?.closest("[id^=sidebar-panel-]")?.id || document.activeElement?.tagName || ""');
   const focusBody = () => b.evaluate('document.getElementById("main").focus()');

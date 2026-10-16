@@ -2,7 +2,7 @@
 // actually uses.
 //
 // These were five separate copies -- in `projection-digest.js`, `latex.js`,
-// `companion/client.js` and `latex/bibliography.js` -- and they had
+// `desktop/client.js` and `latex/bibliography.js` -- and they had
 // already drifted into three different answers for the same input: a string
 // was `null` in one, encoded UTF-8 in another; an unrecognised value was
 // `null` in one and a thrown `TypeError` in another. Collapsing them to a

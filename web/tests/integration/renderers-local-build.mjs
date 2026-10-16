@@ -1,9 +1,10 @@
 // Format routing for protocol-v2 one-shot builders. These checks prove that
-// explicit native Typst and Pandoc selections reach the companion directly
+// explicit native Typst and Pandoc selections reach the desktop app directly
 // and that a local failure is returned instead of starting a browser render.
 import assert from "node:assert/strict";
-import * as client from "../../src/lib/companion/client.js";
+import * as client from "../../src/lib/desktop/client.js";
 import * as renderers from "../../src/lib/renderers.js";
+import { formOf } from "../helpers/form-body.mjs";
 
 globalThis.location = { origin: "https://app.test" };
 
@@ -13,9 +14,6 @@ const storage = {
   setItem: (key, value) => values.set(key, String(value)),
   removeItem: (key) => values.delete(key),
 };
-values.set("librepaper-local-connections", JSON.stringify({
-  "https://app.test": { token: "token", instance: "one" },
-}));
 
 function response(status, body, bytes = null) {
   return {
@@ -32,9 +30,10 @@ async function digest(bytes) {
     .map((byte) => byte.toString(16).padStart(2, "0")).join("");
 }
 
+globalThis.window = { __LIBREPAPER_DESKTOP__: { base: "lp-local://localhost/", version: "test" } };
 client._testing.reset();
 client._testing.inject({ storage, wait: () => Promise.resolve() });
-client.configure({ project: "paper", origin: "https://app.test", active: true });
+client.configure({ project: "paper", origin: "https://app.test" });
 
 let submitted = null;
 let artifact = new TextEncoder().encode("%PDF-typst");
@@ -42,14 +41,13 @@ client._testing.inject({ fetch: async (url, init = {}) => {
   if (url.endsWith("/health")) return response(200, { service: "librepaper-local", protocol: [2], version: "2", instance: "one" });
   if (url.endsWith("/capabilities")) return response(200, { builders: [] });
   if (url.endsWith("/jobs") && init.method === "POST") {
-    submitted = JSON.parse(await init.body.get("job").text());
+    submitted = JSON.parse(await (await formOf(init)).get("job").text());
     return response(202, { id: "build-1" });
   }
   if (url.endsWith("/jobs/build-1")) return response(200, { status: "done", exit: 0, outputs: { [submitted.output]: { size: artifact.byteLength, sha256: await digest(artifact) } }, provenance: { builder: submitted.builder } });
   if (url.endsWith(`/jobs/build-1/files/${submitted.output}`)) return response(200, {}, artifact);
   throw new Error(`unexpected request ${url}`);
 } });
-await client.probe({ force: true });
 
 const typst = await renderers.render(
   { main: "main.typ", texts: { "main.typ": "= Test" }, assets: {} },
@@ -100,7 +98,7 @@ assert.equal(failed.html, null);
 
 client._testing.inject({ fetch: async (url, init = {}) => {
   if (url.endsWith("/jobs") && init.method === "POST") {
-    submitted = JSON.parse(await init.body.get("job").text());
+    submitted = JSON.parse(await (await formOf(init)).get("job").text());
     return response(202, { id: "quarto-hosted" });
   }
   if (url.endsWith("/jobs/quarto-hosted")) return response(200, { status: "failed", exit: 1, error: "fixture stopped after admission", outputs: {} });

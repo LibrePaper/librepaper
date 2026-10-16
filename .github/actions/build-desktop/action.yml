@@ -1,0 +1,128 @@
+# This action builds the CLI, then bundles the desktop app around it.
+# It works on Windows and Linux runners. Signing happens only on Windows, when the extra config sets bundle.windows.signCommand.
+name: "Build the desktop app"
+description: "Build the bundled librepaper CLI and the Tauri desktop bundles."
+
+inputs:
+  version:
+    description: "App version, like 0.0.43 or 0.0.43-rc.1."
+    required: true
+  bundles:
+    description: "Bundle formats for tauri build, like nsis,msi or deb,rpm. Ignored when bundle is false."
+    required: false
+    default: ""
+  cli-version:
+    description: "When set, exported as LIBREPAPER_VERSION for the CLI build."
+    required: false
+    default: ""
+  tauri-config:
+    description: "Path to an extra Tauri JSON config file to merge."
+    required: false
+    default: ""
+  target:
+    description: "Rust target for tauri build, like universal-apple-darwin. Empty builds for the runner."
+    required: false
+    default: ""
+  bundle:
+    description: "false compiles the app without bundling, for a later tauri bundle step."
+    required: false
+    default: "true"
+
+outputs:
+  bundle-dir:
+    description: "Directory that holds the Tauri bundles."
+    value: ${{ github.workspace }}/desktop/target/${{ inputs.target != '' && format('{0}/', inputs.target) || '' }}release/bundle
+
+runs:
+  using: composite
+  steps:
+    - uses: dtolnay/rust-toolchain@stable
+
+    - name: Install the Linux webview libraries
+      if: runner.os == 'Linux'
+      shell: bash
+      run: |
+        sudo apt-get update
+        # mold links the workspace (.cargo/config.toml).
+        sudo apt-get install -y libwebkit2gtk-4.1-dev libgtk-3-dev librsvg2-dev libsoup-3.0-dev libxdo-dev libssl-dev patchelf mold
+
+    - uses: oven-sh/setup-bun@v2
+
+    - name: Fetch pinned CodeMirror and browser renderers
+      shell: bash
+      run: node tools/assets/pins.mjs fetch
+
+    - name: Build the embedded browser app
+      shell: bash
+      run: |
+        cd web
+        bun install --frozen-lockfile
+        bun run build
+        cd ..
+        cp README.md web/dist/README.md
+
+    - name: Build the bundled librepaper binary
+      shell: bash
+      env:
+        CLI_VERSION: ${{ inputs.cli-version }}
+        TARGET: ${{ inputs.target }}
+      run: |
+        if [ -n "$CLI_VERSION" ]; then export LIBREPAPER_VERSION="$CLI_VERSION"; fi
+        # Link the C runtime statically, as cargo-dist does. A Windows install
+        # without the Visual C++ runtime cannot start the binary otherwise.
+        if [ "$RUNNER_OS" = "Windows" ]; then export RUSTFLAGS="-C target-feature=+crt-static"; fi
+        ext=""
+        if [ "$RUNNER_OS" = "Windows" ]; then ext=".exe"; fi
+        mkdir -p desktop/binaries
+        if [ "$TARGET" = "universal-apple-darwin" ]; then
+          # A universal app bundles a universal librepaper: both builds joined by lipo.
+          # Tauri compiles each architecture on its own first, and each of those checks for its own copy.
+          rustup target add aarch64-apple-darwin x86_64-apple-darwin
+          for t in aarch64-apple-darwin x86_64-apple-darwin; do
+            cargo build --locked --profile dist -p librepaper --bin librepaper --target "$t"
+            cp "target/$t/dist/librepaper" "desktop/binaries/librepaper-$t"
+          done
+          lipo -create -output desktop/binaries/librepaper-universal-apple-darwin \
+            target/aarch64-apple-darwin/dist/librepaper target/x86_64-apple-darwin/dist/librepaper
+        else
+          cargo build --locked --profile dist -p librepaper --bin librepaper
+          host="$(rustc -vV | sed -n 's/^host: //p')"
+          cp "target/dist/librepaper$ext" "desktop/binaries/librepaper-$host$ext"
+        fi
+
+    - name: Write the Tauri build config
+      shell: bash
+      env:
+        VERSION: ${{ inputs.version }}
+        EXTRA: ${{ inputs.tauri-config }}
+      run: |
+        node -e '
+          const fs = require("fs");
+          const path = require("path");
+          const isPlain = (v) => v !== null && typeof v === "object" && !Array.isArray(v);
+          const merge = (a, b) => {
+            const out = { ...a };
+            for (const key of Object.keys(b)) {
+              out[key] = isPlain(a[key]) && isPlain(b[key]) ? merge(a[key], b[key]) : b[key];
+            }
+            return out;
+          };
+          let obj = { version: process.env.VERSION };
+          if (process.env.EXTRA) {
+            obj = merge(obj, JSON.parse(fs.readFileSync(process.env.EXTRA, "utf8")));
+          }
+          fs.writeFileSync(path.join(process.env.RUNNER_TEMP, "tauri-build.json"), JSON.stringify(obj, null, 2));
+        '
+
+    - name: Build the desktop app
+      shell: bash
+      env:
+        BUNDLES: ${{ inputs.bundles }}
+        TARGET: ${{ inputs.target }}
+        BUNDLE: ${{ inputs.bundle }}
+      run: |
+        cd desktop
+        args=(build --ci --config "$RUNNER_TEMP/tauri-build.json")
+        if [ -n "$TARGET" ]; then args+=(--target "$TARGET"); fi
+        if [ "$BUNDLE" = "false" ]; then args+=(--no-bundle); else args+=(--bundles "$BUNDLES"); fi
+        bunx @tauri-apps/cli@2.12.1 "${args[@]}" -- --locked

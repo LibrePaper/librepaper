@@ -57,7 +57,6 @@ export async function startDeployment({
   label,
   binary = deploymentBinary(),
   advanced = null,
-  localCompanion = false,
   handle = "tester",
   name = "Tester",
 }) {
@@ -98,7 +97,7 @@ export async function startDeployment({
   // session and never send a request to GitHub.
   const configPath = join(data, "config.toml");
   const config = [
-    "[server]", `address = "127.0.0.1:${port}"`, `local_companion = ${localCompanion}`, "",
+    "[server]", `address = "127.0.0.1:${port}"`, "",
     "[storage]", `directory = ${JSON.stringify(data)}`, 'database_url = { env = "LIBREPAPER_DATABASE_URL" }', "fsync = false", "object_store = \"filesystem\"", "",
     "[auth.github]", 'client_id = { env = "DEV_GITHUB_CLIENT_ID" }', 'client_secret = { env = "DEV_GITHUB_CLIENT_SECRET" }', "",
     "[access]", 'publishers = ["any"]', 'commenters = ["anyone"]', "",

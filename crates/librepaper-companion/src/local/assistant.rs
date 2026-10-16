@@ -2,8 +2,8 @@
 //!
 //! Holding the protected document link is the authority here -- it carries
 //! the document key -- so every route below takes the link directly. A running
-//! session also belongs to the paired origin that started it; another paired
-//! origin holding the same link cannot replace its local credentials.
+//! session also belongs to the origin that started it; another origin
+//! holding the same link cannot replace its local credentials.
 
 use super::protocol;
 use super::service::*;
@@ -13,7 +13,7 @@ use axum::{
 };
 use serde_json::json;
 
-/// Authenticate the request (which requires a paired origin), read and
+/// Authenticate the request, read and
 /// decode the JSON body, and parse its `link` field. Every assistant route
 /// starts here.
 async fn accept<'a, T>(
@@ -26,10 +26,9 @@ where
     T: for<'de> serde::Deserialize<'de> + AsLink,
 {
     authenticate(inner, headers, origin).map_err(Box::new)?;
-    // `authenticate` above already refused a missing Origin header.
+    // `authenticate` above already refused a missing origin.
     let origin = origin.expect("authenticate requires an origin");
     let body = read_json_body::<T>(request).await.map_err(Box::new)?;
-    authenticate(inner, headers, Some(origin)).map_err(Box::new)?;
     let link = match crate::automation::peer::DocumentLink::parse(body.link(), "") {
         Ok(link) => link,
         Err(error) => return Err(Box::new(write_json(400, &json!({"error": error})))),
@@ -92,14 +91,11 @@ pub(super) async fn handle_assistant_start(
         );
     };
     let environment = super::acp_agents::acp_environment(&inner.state_home, &body.agent);
-    let pairing_token = super::service::bearer_token(headers).unwrap_or_default();
     match inner
         .assistant_sessions
         .start(
-            &inner.pairing,
             &parsed_link,
             origin,
-            &pairing_token,
             &body.conversation,
             &body.chat_token,
             &body.agent_token,
@@ -115,7 +111,7 @@ pub(super) async fn handle_assistant_start(
 
 /// Replace the scoped server credential for a live runner. The browser's
 /// signed-in session mints the replacement and transfers only this bearer
-/// over the existing paired loopback channel.
+/// over the existing loopback channel.
 pub(super) async fn handle_assistant_renew(
     inner: &Inner,
     headers: &HeaderMap,
@@ -137,21 +133,9 @@ pub(super) async fn handle_assistant_renew(
         );
     }
     let origin = origin.unwrap_or_default();
-    let pairing_token = super::service::bearer_token(headers).unwrap_or_default();
-    let admission = inner.pairing.admission_gate().lock().await;
-    if let Err(response) = authenticate(inner, headers, Some(origin)) {
-        return response;
-    }
-    drop(admission);
     match inner
         .assistant_sessions
-        .renew_agent_token(
-            &link,
-            origin,
-            &pairing_token,
-            &body.conversation,
-            &body.agent_token,
-        )
+        .renew_agent_token(&link, origin, &body.conversation, &body.agent_token)
         .await
     {
         Ok(()) => write_json(200, &json!({"renewed": true})),

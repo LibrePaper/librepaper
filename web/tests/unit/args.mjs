@@ -1,8 +1,8 @@
-// A command typed in a settings field becomes the argv the companion runs,
+// A command typed in a settings field becomes the argv the desktop app runs,
 // and a saved argv shows again as the same command.
 
 import assert from "node:assert/strict";
-import { joinArgs, splitArgs } from "../../src/lib/companion/args.js";
+import { joinArgs, splitArgs } from "../../src/lib/desktop/args.js";
 
 // --- splitting ---------------------------------------------------------------
 

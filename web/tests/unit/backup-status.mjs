@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { loadRunes } from "../helpers/runes.mjs";
 
 const { createBackupStatus } = await loadRunes(
-  new URL("../../src/lib/companion/backups.svelte.js", import.meta.url),
+  new URL("../../src/lib/desktop/backups.svelte.js", import.meta.url),
 );
 
 let requests = [];
@@ -14,9 +14,9 @@ const bridge = {
 const state = createBackupStatus(bridge);
 
 state.setScope("", false);
-assert.equal(requests.length, 0, "signed-out pages do not ask the companion for backup status");
+assert.equal(requests.length, 0, "signed-out pages do not ask the desktop app for backup status");
 state.setScope("account-a", false);
-assert.equal(requests.length, 0, "an unpaired companion is not probed for backup status");
+assert.equal(requests.length, 0, "a browser without the desktop app is not asked for backup status");
 
 state.setScope("account-a", true);
 assert.equal(requests[0].accountId, "account-a");

@@ -15,7 +15,7 @@ Welcome to LibrePaper. Edit this sentence in the browser and watch the draft upd
 
 ## Source and preview
 
-This file is Quarto. Markdown preview renders a fast, execution-free draft in the browser. Quarto preview asks the local companion to run your installed Quarto, R or Python and displays that local result. The server synchronizes shared source and assets; it neither executes the code cell nor uploads the live preview.
+This file is Quarto. Markdown preview renders a fast, execution-free draft in the browser. Quarto preview asks the desktop app to run your installed Quarto, R or Python and displays that local result. The server synchronizes shared source and assets; it neither executes the code cell nor uploads the live preview.
 
 ## A small scientific example
 
@@ -45,7 +45,7 @@ Quarto combines Markdown prose with executable R or Python cells, captions, and 
 
 ## Working with other clients
 
-Bind the companion to a project folder when private inputs must remain on your computer; readers of the shared project can read its projected source and assets. A project export creates an independent copy of shared source and assets. Uploading a finished HTML file creates an HTML document that readers can open without R, Python, or Quarto.
+Bind the desktop app to a project folder when private inputs must remain on your computer; readers of the shared project can read its projected source and assets. A project export creates an independent copy of shared source and assets. Uploading a finished HTML file creates an HTML document that readers can open without R, Python, or Quarto.
 
 ## References
 

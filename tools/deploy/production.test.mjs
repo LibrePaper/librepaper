@@ -441,7 +441,8 @@ test('the site and redirect blocks go to caddy/local.d/librepaper-org.caddy, onc
     assert.equal(read(file), [
       'librepaper.org {',
       '\tencode zstd gzip',
-      '\tredir /install.html /local-app.html permanent',
+      '\tredir /install.html /desktop-app.html permanent',
+      '\tredir /local-app.html /desktop-app.html permanent',
       '\troot * /srv/site',
       '\tfile_server',
       '}',
@@ -468,7 +469,8 @@ test('site installs the Caddy site block and reloads Caddy without touching the 
     assert.equal(read(file), [
       'librepaper.org {',
       '\tencode zstd gzip',
-      '\tredir /install.html /local-app.html permanent',
+      '\tredir /install.html /desktop-app.html permanent',
+      '\tredir /local-app.html /desktop-app.html permanent',
       '\troot * /srv/site',
       '\tfile_server',
       '}',

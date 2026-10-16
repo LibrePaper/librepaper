@@ -1,4 +1,4 @@
-# The companion: the local app, the assistant and the automation peer.
+# The local service: the loopback service, the assistant and the automation peer.
 # Internal to librepaper.
 [package]
 name = "librepaper-companion"
@@ -60,17 +60,14 @@ uuid.workspace = true
 tempfile.workspace = true
 zip.workspace = true
 
-# Native dialogs for the companion's approval and folder prompts, with no
+# Native dialogs for the local service's folder prompts, with no
 # external programs. macOS and Windows use the system toolkits through rfd.
 [target.'cfg(any(target_os = "macos", windows))'.dependencies]
 rfd.workspace = true
-tray-icon.workspace = true
-tao.workspace = true
 
 # Linux asks the desktop portal for folders through the pure-Rust D-Bus client.
 [target.'cfg(target_os = "linux")'.dependencies]
 ashpd.workspace = true
-tray-icon = { workspace = true, features = ["ksni"] }
 
 
 [dev-dependencies]

@@ -1,0 +1,247 @@
+# cargo-dist calls this workflow as a local-artifacts job on release tags
+# (local-artifacts-jobs in Cargo.toml), so the release waits for it and a
+# signing failure stops the release. It signs with Azure Artifact Signing
+# through GitHub OIDC in the release environment. Tauri also signs the NSIS
+# updater archive with the updater key, so the desktop app can update itself.
+name: Windows desktop app
+
+on:
+  workflow_call:
+    inputs:
+      plan:
+        required: true
+        type: string
+
+jobs:
+  build:
+    name: Signed Windows desktop installers
+    runs-on: windows-2022
+    environment: release
+    permissions:
+      contents: read
+      id-token: write
+    timeout-minutes: 90
+    env:
+      SIGNING_ENDPOINT: ${{ vars.AZURE_SIGNING_ENDPOINT }}
+      SIGNING_ACCOUNT: ${{ vars.AZURE_SIGNING_ACCOUNT || 'librepaper-signing' }}
+      SIGNING_PROFILE: ${{ vars.AZURE_SIGNING_PROFILE }}
+      ARTIFACT_SIGNING_CLIENT: "1.0.128"
+      ARTIFACT_SIGNING_CLIENT_SHA256: "74bd7d27e6ce1051409c38d9b46bc8df0400ecd643d51ffbf2ac00869061e40b"
+      SDK_BUILD_TOOLS: "10.0.28000.2705"
+      SDK_BUILD_TOOLS_SHA256: "8bfdfb6ca2633f531cf80b5fa22512ba61a394d7988f0970db83baadc67929ed"
+    steps:
+      - name: Check the signing settings
+        shell: bash
+        env:
+          HAS_UPDATER_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY != '' }}
+        run: |
+          pattern='^https://[a-z0-9]+\.codesigning\.azure\.net/?$'
+          if [ -z "$SIGNING_ENDPOINT" ]; then
+            echo "::error::Set the AZURE_SIGNING_ENDPOINT variable in the release environment."
+            exit 1
+          fi
+          if [ -z "$SIGNING_PROFILE" ]; then
+            echo "::error::Set the AZURE_SIGNING_PROFILE variable in the release environment."
+            exit 1
+          fi
+          if [[ ! "$SIGNING_ENDPOINT" =~ $pattern ]]; then
+            echo "::error::AZURE_SIGNING_ENDPOINT must look like https://eus.codesigning.azure.net."
+            exit 1
+          fi
+          if [ "$HAS_UPDATER_KEY" != "true" ]; then
+            echo "::error::Set TAURI_SIGNING_PRIVATE_KEY and TAURI_SIGNING_PRIVATE_KEY_PASSWORD in the release environment."
+            exit 1
+          fi
+
+      - name: Read the version from the tag
+        id: version
+        shell: bash
+        run: |
+          TAG="$GITHUB_REF_NAME"
+          VERSION="${TAG#v}"
+          pattern='^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$'
+          if ! [[ "$VERSION" =~ $pattern ]]; then
+            echo "::error::Tag $TAG is not a version tag like v0.0.43."
+            exit 1
+          fi
+          # MSI versions must be numeric, so prereleases ship only the NSIS installer.
+          if [[ "$VERSION" == *-* ]]; then
+            BUNDLES=nsis
+          else
+            BUNDLES=nsis,msi
+          fi
+          {
+            echo "tag=$TAG"
+            echo "version=$VERSION"
+            echo "bundles=$BUNDLES"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Allow long paths in git
+        shell: bash
+        run: git config --global core.longpaths true
+
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+          submodules: recursive
+
+      # The Artifact Signing dlib runs on .NET 8.
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 8.0.x
+
+      - name: Install SignTool and the Artifact Signing dlib
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+
+          function Get-Package($id, $version, $sha256) {
+            $lower = $id.ToLower()
+            $zip = Join-Path $env:RUNNER_TEMP "$id.zip"
+            $dir = Join-Path $env:RUNNER_TEMP $id
+            Invoke-WebRequest -Uri "https://api.nuget.org/v3-flatcontainer/$lower/$version/$lower.$version.nupkg" -OutFile $zip
+            $hash = (Get-FileHash -Algorithm SHA256 -Path $zip).Hash
+            if ($hash.ToLower() -ne $sha256.ToLower()) {
+              throw ("SHA256 mismatch for {0} {1}: {2}" -f $id, $version, $hash)
+            }
+            Expand-Archive -Path $zip -DestinationPath $dir -Force
+            return $dir
+          }
+
+          $client = Get-Package 'Microsoft.ArtifactSigning.Client' $env:ARTIFACT_SIGNING_CLIENT $env:ARTIFACT_SIGNING_CLIENT_SHA256
+          $buildTools = Get-Package 'Microsoft.Windows.SDK.BuildTools' $env:SDK_BUILD_TOOLS $env:SDK_BUILD_TOOLS_SHA256
+
+          $signtool = Join-Path $buildTools 'bin\10.0.28000.0\x64\signtool.exe'
+          $dlib = Join-Path $client 'bin\x64\Azure.CodeSigning.Dlib.dll'
+          if (-not (Test-Path $signtool)) { throw "Missing signtool at $signtool" }
+          if (-not (Test-Path $dlib)) { throw "Missing signing dlib at $dlib" }
+
+          # The dlib signs in through the Azure CLI session that azure/login opened.
+          $metaPath = Join-Path $env:RUNNER_TEMP 'signing-metadata.json'
+          $metadata = @{
+            Endpoint = $env:SIGNING_ENDPOINT
+            CodeSigningAccountName = $env:SIGNING_ACCOUNT
+            CertificateProfileName = $env:SIGNING_PROFILE
+            CorrelationId = "github-$env:GITHUB_RUN_ID-$env:GITHUB_RUN_ATTEMPT"
+            ExcludeCredentials = @(
+              "EnvironmentCredential",
+              "WorkloadIdentityCredential",
+              "ManagedIdentityCredential",
+              "SharedTokenCacheCredential",
+              "VisualStudioCredential",
+              "VisualStudioCodeCredential",
+              "AzurePowerShellCredential",
+              "AzureDeveloperCliCredential",
+              "InteractiveBrowserCredential"
+            )
+          }
+          Set-Content -Path $metaPath -Value (ConvertTo-Json $metadata) -Encoding utf8NoBOM
+
+          # Tauri runs this command on the app, the bundled librepaper.exe, both installers and the NSIS uninstaller.
+          # A failed signature fails the build.
+          $tauriSign = @{
+            bundle = @{
+              createUpdaterArtifacts = $true
+              windows = @{
+                signCommand = @{
+                  cmd = $signtool
+                  args = @("sign", "/v", "/fd", "SHA256", "/tr", "http://timestamp.acs.microsoft.com", "/td", "SHA256", "/dlib", $dlib, "/dmdf", $metaPath, "%1")
+                }
+              }
+            }
+          }
+          Set-Content -Path (Join-Path $env:RUNNER_TEMP 'tauri-sign.json') -Value (ConvertTo-Json $tauriSign -Depth 6) -Encoding utf8NoBOM
+          Add-Content -Path $env:GITHUB_ENV -Value "SIGNTOOL=$signtool`nSIGNING_DLIB=$dlib`nSIGNING_METADATA=$metaPath"
+
+      - name: Sign in to Azure
+        uses: azure/login@v3
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+
+      # Tauri hides signtool's output when a signature fails. Sign a throwaway
+      # copy of signtool first, with the dlib's debug log, so a problem with the
+      # account, the profile or the role shows its real error before the build.
+      - name: Check that Azure signs
+        shell: pwsh
+        run: |
+          $probe = Join-Path $env:RUNNER_TEMP 'sign-probe.exe'
+          Copy-Item $env:SIGNTOOL $probe
+          & $env:SIGNTOOL sign /v /debug /fd SHA256 /tr http://timestamp.acs.microsoft.com /td SHA256 /dlib $env:SIGNING_DLIB /dmdf $env:SIGNING_METADATA $probe
+          if ($LASTEXITCODE -ne 0) { throw "signtool exited with code $LASTEXITCODE" }
+
+      - name: Build the desktop app
+        id: build
+        uses: ./.github/actions/build-desktop
+        with:
+          version: ${{ steps.version.outputs.version }}
+          bundles: ${{ steps.version.outputs.bundles }}
+          cli-version: ${{ steps.version.outputs.tag }}
+          tauri-config: ${{ runner.temp }}\tauri-sign.json
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+
+      - name: Check the signatures
+        shell: pwsh
+        env:
+          BUNDLE_DIR: ${{ steps.build.outputs.bundle-dir }}
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+
+          $installers = @(Get-ChildItem -Path "$env:BUNDLE_DIR\nsis\*.exe")
+          if (Test-Path "$env:BUNDLE_DIR\msi") {
+            $installers += @(Get-ChildItem -Path "$env:BUNDLE_DIR\msi\*.msi")
+          }
+          if ($installers.Count -eq 0) { throw "No installer found under $env:BUNDLE_DIR" }
+
+          # Tauri signs the app while it packages it, and the copy left in
+          # target\release ends up unsigned. The zip gets its own signed copy.
+          $portable = Join-Path $env:RUNNER_TEMP 'portable'
+          New-Item -ItemType Directory -Force -Path $portable | Out-Null
+          Copy-Item 'desktop\target\release\librepaper-desktop.exe' (Join-Path $portable 'librepaper-desktop.exe')
+          Copy-Item 'desktop\binaries\librepaper-x86_64-pc-windows-msvc.exe' (Join-Path $portable 'librepaper.exe')
+          & $env:SIGNTOOL sign /v /fd SHA256 /tr http://timestamp.acs.microsoft.com /td SHA256 /dlib $env:SIGNING_DLIB /dmdf $env:SIGNING_METADATA (Join-Path $portable 'librepaper-desktop.exe')
+          if ($LASTEXITCODE -ne 0) { throw "signtool exited with code $LASTEXITCODE" }
+
+          # Check what users run: the installers, the programs inside the NSIS
+          # installer, and the programs in the zip.
+          $unpacked = Join-Path $env:RUNNER_TEMP 'nsis-unpacked'
+          & 7z x -y "-o$unpacked" ($installers | Where-Object Extension -eq '.exe' | Select-Object -First 1).FullName | Out-Null
+          if ($LASTEXITCODE -ne 0) { throw "7z could not unpack the NSIS installer" }
+          $inside = @(Get-ChildItem -Path $unpacked -Recurse -File -Include 'librepaper-desktop.exe', 'librepaper.exe', 'uninstall.exe')
+          if ($inside.Count -lt 2) { throw "The NSIS installer does not hold the app and librepaper.exe" }
+          $files = @($installers.FullName) + @($inside.FullName) + @((Get-ChildItem -Path $portable -File).FullName)
+
+          foreach ($f in $files) {
+            $s = Get-AuthenticodeSignature -FilePath $f
+            Write-Output "$($f): $($s.Status) $($s.SignerCertificate.Subject)"
+            if ($s.Status -ne 'Valid' -or -not $s.TimeStamperCertificate) {
+              throw "Signature check failed for $f"
+            }
+          }
+
+          $out = Join-Path $env:RUNNER_TEMP 'desktop-release'
+          New-Item -ItemType Directory -Force -Path $out | Out-Null
+          Copy-Item -Path $installers.FullName -Destination $out
+
+          # The updater reads this signature from latest.json.
+          $updaterSig = @(Get-ChildItem -Path "$env:BUNDLE_DIR\nsis\*-setup.exe.sig")
+          if ($updaterSig.Count -ne 1) { throw "Expected one NSIS updater signature, found $($updaterSig.Count)" }
+          Copy-Item -Path $updaterSig[0].FullName -Destination $out
+
+          # Scoop installs this zip: the app and the librepaper command line side by side.
+          Compress-Archive -Path (Join-Path $portable '*') -DestinationPath (Join-Path $out "LibrePaper_$($env:VERSION)_x64-portable.zip")
+          foreach ($asset in Get-ChildItem -Path $out -File) {
+            $hash = (Get-FileHash -Algorithm SHA256 -Path $asset.FullName).Hash.ToLower()
+            Set-Content -Path "$($asset.FullName).sha256" -Value "$hash *$($asset.Name)" -NoNewline -Encoding ascii
+          }
+
+      # Names starting with artifacts- are attached to the GitHub Release by the host job.
+      - uses: actions/upload-artifact@v7
+        with:
+          name: artifacts-desktop-windows
+          path: ${{ runner.temp }}/desktop-release/*
+          if-no-files-found: error

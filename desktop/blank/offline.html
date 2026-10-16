@@ -1,0 +1,180 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>LibrePaper</title>
+<style>
+  :root {
+    color-scheme: light dark;
+    --bg: #f6f6f4;
+    --card: #ffffff;
+    --text: #1d1d1b;
+    --muted: #5c5c57;
+    --line: #d9d9d4;
+    --accent: #2f5d8a;
+    --accent-text: #ffffff;
+    --error: #a33a2a;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #161716;
+      --card: #20221f;
+      --text: #ecebe6;
+      --muted: #a9aaa3;
+      --line: #3a3c37;
+      --accent: #7fb0e0;
+      --accent-text: #10161e;
+      --error: #f08a78;
+    }
+  }
+  html, body { height: 100%; margin: 0; }
+  body {
+    background: var(--bg);
+    color: var(--text);
+    font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 1rem;
+    box-sizing: border-box;
+  }
+  main {
+    background: var(--card);
+    border: 1px solid var(--line);
+    border-radius: 0.75rem;
+    padding: 2rem;
+    max-width: 30rem;
+    width: 100%;
+    box-sizing: border-box;
+  }
+  h1 { font-size: 1.4rem; margin: 0 0 0.75rem; }
+  p { line-height: 1.5; margin: 0 0 1rem; }
+  .muted { color: var(--muted); }
+  button {
+    font: inherit;
+    border-radius: 0.4rem;
+    border: 1px solid var(--line);
+    padding: 0.5rem 1rem;
+    cursor: pointer;
+    background: var(--card);
+    color: var(--text);
+  }
+  button:disabled { opacity: 0.6; cursor: default; }
+  #retry {
+    background: var(--accent);
+    border-color: var(--accent);
+    color: var(--accent-text);
+    font-weight: 600;
+  }
+  #status { min-height: 1.5em; margin-top: 0.75rem; color: var(--muted); }
+  details { margin-top: 1.5rem; border-top: 1px solid var(--line); padding-top: 1rem; }
+  summary { cursor: pointer; font-weight: 600; }
+  form { margin-top: 1rem; display: grid; gap: 0.6rem; }
+  input[type="url"] {
+    font: inherit;
+    padding: 0.5rem;
+    border-radius: 0.4rem;
+    border: 1px solid var(--line);
+    background: var(--bg);
+    color: var(--text);
+    width: 100%;
+    box-sizing: border-box;
+  }
+  #server-error { color: var(--error); min-height: 1.5em; margin: 0; }
+  [hidden] { display: none !important; }
+</style>
+</head>
+<body>
+<main>
+  <h1>LibrePaper can't reach the server</h1>
+  <p>LibrePaper could not open <strong id="host"></strong>. Check your internet connection. If you use your own server, check that it is running.</p>
+  <button type="button" id="retry">Try again</button>
+  <p id="status" role="status"></p>
+
+  <details>
+    <summary>Use another server</summary>
+    <form id="server-form">
+      <input type="url" id="server-input" required placeholder="https://paper.example.org" aria-label="Server address">
+      <button type="submit" id="server-submit">Use this server</button>
+      <p id="server-error" role="alert"></p>
+    </form>
+  </details>
+</main>
+<script>
+  const hostEl = document.getElementById("host");
+  const retryButton = document.getElementById("retry");
+  const statusLine = document.getElementById("status");
+  const form = document.getElementById("server-form");
+  const input = document.getElementById("server-input");
+  const submit = document.getElementById("server-submit");
+  const serverError = document.getElementById("server-error");
+
+  // The shell passes the server address in the query string.
+  const raw = new URLSearchParams(location.search).get("server");
+  let server = null;
+  try {
+    const parsed = new URL(raw);
+    if (parsed.protocol === "https:" || parsed.protocol === "http:") server = parsed;
+  } catch {
+    server = null;
+  }
+
+  if (server) {
+    hostEl.textContent = server.host;
+  } else {
+    hostEl.textContent = "the server";
+    retryButton.hidden = true;
+  }
+
+  async function reachable() {
+    try {
+      await fetch(server, { mode: "no-cors", cache: "no-store" });
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
+  async function retry() {
+    if (!server) return;
+    statusLine.textContent = "Trying...";
+    if (await reachable()) {
+      location.replace(server.href);
+    } else {
+      statusLine.textContent = "Still can't reach it. LibrePaper tries again every 15 seconds.";
+    }
+  }
+
+  retryButton.addEventListener("click", () => retry());
+  if (server) setInterval(retry, 15000);
+
+  form.addEventListener("submit", async (event) => {
+    event.preventDefault();
+    serverError.textContent = "";
+    const shell = window.__LIBREPAPER_DESKTOP__;
+    if (!shell) {
+      serverError.textContent = "This page only works in the LibrePaper app.";
+      return;
+    }
+    submit.disabled = true;
+    try {
+      const res = await fetch(shell.base + "shell/server", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ url: input.value.trim() }),
+      });
+      // On success the shell navigates this window, so nothing else happens here.
+      if (!res.ok) {
+        const body = await res.json().catch(() => ({}));
+        serverError.textContent = body.error || "The server was not changed.";
+      }
+    } catch {
+      serverError.textContent = "The server was not changed.";
+    } finally {
+      submit.disabled = false;
+    }
+  });
+</script>
+</body>
+</html>

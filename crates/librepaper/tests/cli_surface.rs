@@ -38,27 +38,33 @@ fn lists_command(help: &str, command: &str) -> bool {
 #[test]
 fn top_level_help_lists_exactly_the_public_commands() {
     let help = help_of(&["--help"]);
-    for command in [
-        "start",
-        "stop",
-        "status",
-        "install-desktop",
-        "agent",
-        "login",
-        "logout",
-        "list",
-        "export",
-        "local",
-        "admin",
-    ] {
+    for command in ["login", "logout", "list", "export", "admin"] {
         assert!(
             lists_command(&help, command),
             "public command {command:?} is absent from top-level help:\n{help}"
         );
     }
+    for hidden in [
+        "agent",
+        "local",
+        "mcp",
+        "start",
+        "stop",
+        "status",
+        "install-desktop",
+    ] {
+        assert!(
+            !lists_command(&help, hidden),
+            "{hidden:?} should not be listed in top-level help:\n{help}"
+        );
+    }
     assert!(
-        !lists_command(&help, "mcp"),
-        "mcp should not be listed in top-level help:\n{help}"
+        !help.to_lowercase().contains("companion"),
+        "help should not mention the companion:\n{help}"
+    );
+    assert!(
+        !cli(&[]).status.success(),
+        "bare librepaper should print help and not launch anything"
     );
     assert!(
         !cli(&["desktop"]).status.success(),
@@ -85,43 +91,41 @@ fn admin_help_lists_the_admin_commands() {
     );
 }
 
+/// `local` is the desktop app's interface to the background service, and the
+/// sidebar assistant's own chosen agent spawns `mcp`. Both parse, neither is
+/// advertised in root help.
 #[test]
-fn local_help_lists_only_approval_and_pairing_controls() {
-    let help = help_of(&["local", "--help"]);
-    for command in ["approve", "disconnect"] {
+fn machine_invoked_commands_parse_but_are_not_listed() {
+    let root = help_of(&["--help"]);
+    for command in ["local", "mcp"] {
         assert!(
-            lists_command(&help, command),
-            "local command {command:?} is absent from local help:\n{help}"
+            !lists_command(&root, command),
+            "{command:?} should not be listed in top-level help"
+        );
+        assert!(
+            cli(&[command, "--help"]).status.success(),
+            "{command:?} --help should parse"
         );
     }
-    for hidden_command in ["start", "stop", "status", "agent", "open", "tray"] {
+    for command in ["start", "stop", "status", "endpoint", "diagnostics"] {
         assert!(
-            !lists_command(&help, hidden_command),
-            "compatibility command {hidden_command:?} should be hidden from local help:\n{help}"
+            cli(&["local", command, "--help"]).status.success(),
+            "local {command} --help should parse"
         );
     }
 }
 
-/// `local open` answers `librepaper://` links for the operating system, and
-/// the sidebar assistant's own chosen agent spawns `mcp`. Both parse, neither
-/// is advertised.
 #[test]
-fn machine_invoked_commands_parse_but_are_not_listed() {
-    for (parent, command) in [("local", "open"), ("", "mcp")] {
-        let mut path: Vec<&str> = [parent].into_iter().filter(|p| !p.is_empty()).collect();
-        let mut help_args = path.clone();
-        help_args.push("--help");
-        assert!(
-            !lists_command(&help_of(&help_args), command),
-            "{command:?} should not be listed under {parent:?}"
-        );
-        path.extend([command, "--help"]);
-        assert!(cli(&path).status.success(), "{path:?} should parse");
-    }
+fn local_start_flags_are_correct() {
+    let help = help_of(&["local", "start", "--help"]);
+    assert!(help.contains("--foreground"), "{help}");
+    assert!(help.contains("--port"), "{help}");
+    assert!(!help.contains("--at-login"), "{help}");
+    assert!(!help.contains("--tool-path"), "{help}");
 }
 
 /// `librepaper mcp` accepts only `--connection NAME`; a bare positional link
-/// is no longer a way to invoke it, since the companion (the only thing that
+/// is no longer a way to invoke it, since the local service (the only thing that
 /// ever passes credentials to a session) always names a connection.
 #[test]
 fn mcp_requires_a_connection_and_rejects_a_bare_link() {
@@ -138,19 +142,15 @@ fn mcp_requires_a_connection_and_rejects_a_bare_link() {
 }
 
 #[test]
-fn root_and_legacy_agent_paths_list_their_subcommands() {
-    let help = help_of(&["agent", "--help"]);
-    let legacy_help = help_of(&["local", "agent", "--help"]);
-    for command in ["add", "list", "remove"] {
-        assert!(
-            lists_command(&help, command),
-            "agent command {command:?} is absent from root agent help:\n{help}"
-        );
-        assert!(
-            lists_command(&legacy_help, command),
-            "agent command {command:?} is absent from legacy local agent help:\n{legacy_help}"
-        );
-    }
+fn agents_are_managed_in_the_desktop_app_not_the_cli() {
+    assert!(
+        !cli(&["agent", "list"]).status.success(),
+        "agent should fail"
+    );
+    assert!(
+        !cli(&["local", "agent", "list"]).status.success(),
+        "local agent should fail"
+    );
 }
 
 #[test]
@@ -206,30 +206,13 @@ fn export_flags_are_correct() {
 }
 
 #[test]
-fn root_and_legacy_start_flags_are_correct() {
-    let help = help_of(&["start", "--help"]);
-    let legacy_help = help_of(&["local", "start", "--help"]);
-    assert!(
-        help.contains("--foreground"),
-        "--foreground missing from root start help:\n{help}"
-    );
-    assert!(
-        help.contains("--at-login"),
-        "--at-login missing from root start help:\n{help}"
-    );
-    assert!(help.contains("--port"));
-    assert!(legacy_help.contains("--foreground"));
-    assert!(legacy_help.contains("--at-login"));
-    assert!(legacy_help.contains("--port"));
-    assert!(!help.contains("--tool-path"));
-    assert!(!legacy_help.contains("--tool-path"));
-}
-
-#[test]
-fn inherited_companion_env_does_not_reject_other_subcommands() {
+fn inherited_local_port_env_does_not_reject_other_subcommands() {
     let state_home = tempfile::tempdir().unwrap();
     let output = Command::new(env!("CARGO_BIN_EXE_librepaper"))
-        .args(["agent", "list"])
+        .args(["logout"])
+        .env("HOME", state_home.path())
+        .env("XDG_CONFIG_HOME", state_home.path())
+        .env("XDG_DATA_HOME", state_home.path())
         .env_remove("LIBREPAPER_SERVER")
         .env_remove("LIBREPAPER_TOKEN")
         .env("LIBREPAPER_LOCAL_PORT", "9123")
@@ -240,11 +223,23 @@ fn inherited_companion_env_does_not_reject_other_subcommands() {
 }
 
 #[test]
-fn root_launch_flags_cannot_be_combined_with_other_commands() {
+fn removed_root_launch_controls_fail_to_parse() {
     for args in [
+        &["start"][..],
+        &["stop"][..],
+        &["status"][..],
+        &["install-desktop"][..],
+        &["--foreground"][..],
+        &["--at-login"][..],
         &["--port", "9123", "agent", "list"][..],
         &["--foreground", "list"][..],
-        &["--at-login", "admin", "serve"][..],
+        &["local", "approve", "123456"][..],
+        &[
+            "local",
+            "open",
+            "librepaper://open?url=https://app.librepaper.org/",
+        ][..],
+        &["local", "tray"][..],
     ] {
         assert!(!cli(args).status.success(), "{args:?} should be rejected");
     }

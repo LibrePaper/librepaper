@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import { cellFingerprint, composeDraft, contextId, contextFingerprint, escapeHtml, mapQuartoDiagnostics, parseQuarto, virtualTree } from "../../src/lib/engines/quarto.js";
 import { formatOf, outputKind } from "../../src/lib/renderers.js";
-import { quartoRequest } from "../../src/lib/companion/client.js";
+import { quartoRequest } from "../../src/lib/desktop/client.js";
 
 const source = [
   "---", "title: Example", "execute:", "  echo: false", "---", "",
@@ -97,7 +97,7 @@ assert.match(dialectDraft, /^:::$/m);
 assert.doesNotMatch(dialectDraft, /quarto-callout/);
 assert.match(dialectDraft, /See @fig-trend\./, "cross-references inside literal constructs remain source text");
 // The browser draft preserves executable cells as source text. Figure
-// anchors are supplied by Quarto's authoritative companion render.
+// anchors are supplied by Quarto's authoritative Quarto render.
 assert.match(dialectDraft, /plot\(1\)/);
 assert.doesNotMatch(dialectDraft, /quarto-cached-output/);
 assert.doesNotMatch(dialectDraft, /\n---\n/);
@@ -178,8 +178,8 @@ assert.throws(() => quartoRequest({ job: { binding: "x" }, entrypoint: "../paper
 
 const original = "```{r}\nplot(x)\n```\n";
 const inserted = "```{r}\nother()\n```\n" + original;
-const movedDraft = await virtualTree({ main:"main.qmd", texts:{"main.qmd":inserted,"main.md":"Companion source"} });
-assert.equal(movedDraft.texts["main.md"], "Companion source");
+const movedDraft = await virtualTree({ main:"main.qmd", texts:{"main.qmd":inserted,"main.md":"Desktop source"} });
+assert.equal(movedDraft.texts["main.md"], "Desktop source");
 // Every executable cell stays in the transient source draft.
 assert.match(movedDraft.quarto.markdown, /```\{r\}\nother\(\)\n```/);
 assert.match(movedDraft.quarto.markdown, /plot\(x\)/);

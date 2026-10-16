@@ -7,7 +7,6 @@
 # pass CONFIG=path/to/config.toml.
 [server]
 address = "127.0.0.1:8081"
-local_companion = true
 
 [origins]
 app = "http://localhost:8081"

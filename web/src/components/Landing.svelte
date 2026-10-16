@@ -34,20 +34,39 @@
   import Row from "./layout/Row.svelte";
   import ExplorerMenu from "./ExplorerMenu.svelte";
   import { say } from "../lib/toast.svelte.js";
-  import { SHELL_HEADERS, get, getPrivate, me as whoami } from "../lib/api.js";
+  import { SHELL_HEADERS, get, getPrivate, me as whoami, signInHref } from "../lib/api.js";
   import { day as isoDay, since } from "../lib/dates.js";
   import { PROJECT_TABS, PROJECT_TAB_IDS } from "../lib/panels.js";
   import { FORMATS } from "../lib/starter.js";
   import { preparedProjects } from "../lib/offline-projects.js";
-  import * as localBridge from "../lib/companion/client.js";
+  import * as localBridge from "../lib/desktop/client.js";
 
   let { initialSettings = "" } = $props();
-  let settingsOpen = $state(untrack(() => initialSettings === "companion"));
+  let settingsOpen = $state(untrack(() => initialSettings === "desktop"));
   let settingsCategory = $state(untrack(() => initialSettings || "editor"));
   function openSettings(category = "editor") {
     settingsCategory = category;
     settingsOpen = true;
   }
+
+  // A link from this server, share links included, opens here with its key.
+  // Links are pasted rather than passed by the system, so a key never leaves the page.
+  let linkInput = $state("");
+  let linkError = $state("");
+  function openLink(event) {
+    event.preventDefault();
+    linkError = "";
+    let url;
+    try { url = new URL(linkInput.trim(), location.href); } catch { linkError = "That is not a link."; return; }
+    if (url.origin !== location.origin) { linkError = `Paste a link from ${location.host}.`; return; }
+    location.assign(url.href);
+  }
+  // The desktop app asks for Settings from its menu and from Ctrl or Cmd+,.
+  $effect(() => {
+    const open = () => openSettings();
+    window.addEventListener("librepaper:open-settings", open);
+    return () => window.removeEventListener("librepaper:open-settings", open);
+  });
   function focusOnMount(node) {
     node.focus();
   }
@@ -842,14 +861,8 @@
 
   $effect(() => {
     void showOfflineProjects();
-    localBridge.configure({ project: null, origin: location.origin, active: true });
-    // The companion opened Settings, usually to show a site waiting for an
-    // answer. This server pairs without a consent step, so connect at once.
-    if (untrack(() => initialSettings === "companion")) void localBridge.connectApp().catch(() => {});
-    get("/api/config").then((answer) => {
-      rules = answer ?? {};
-      if (answer?.local_app?.address) localBridge.setAdvertisedAddress(answer.local_app.address);
-    }).catch(() => {});
+    localBridge.configure({ project: null, origin: location.origin });
+    get("/api/config").then((answer) => { rules = answer ?? {}; }).catch(() => {});
     // Not the shared me(), which folds a failed request into an empty account:
     // this page needs to tell the two apart in order to say which it is.
     get("/api/me")
@@ -858,6 +871,11 @@
         return {};
       })
       .then(async (who) => {
+        // The desktop app has no front page: a stranger is sent straight to sign-in.
+        if (localBridge.desktop() && reachedServer && !who.name && who.providers?.length) {
+          location.replace(signInHref("/"));
+          return;
+        }
         me = who;
         if (who.can_publish) {
           if (newTab) void loadTemplates();
@@ -951,6 +969,13 @@
 
         {#if narrow && place !== "trash" && !selected.size}<span class="place-count">({shown.length})</span>{/if}
       </div>
+      {#if localBridge.desktop() && place === "projects"}
+      <form class="open-link" onsubmit={openLink}>
+        <input class="input input-sm" type="url" placeholder="Paste a LibrePaper link, such as a share link" aria-label="LibrePaper link" bind:value={linkInput} />
+        <button class="btn btn-sm lp-control-tonal-brand" type="submit">Open</button>
+        {#if linkError}<span class="open-link-error" role="alert">{linkError}</span>{/if}
+      </form>
+      {/if}
 
       <!-- Where a project comes from, for an account that has not made one
            yet. It is above the list rather than in it: a template is
@@ -1287,6 +1312,9 @@
   .projects { display: flex; flex-direction: column; flex: 1 1 auto; min-width: 0; min-height: 0; overflow-y: auto; padding: calc(var(--spacing) * 6) calc(var(--spacing) * 6) calc(var(--spacing) * 10); gap: calc(var(--spacing) * 4); }
   .place-heading { font-size: var(--text-2xl); font-weight: 600; margin: 0; }
   .place-line { display: flex; align-items: center; gap: calc(var(--spacing) * 2); }
+  .open-link { display: flex; flex-wrap: wrap; align-items: center; gap: calc(var(--spacing) * 2); margin: calc(var(--spacing) * 2) 0; }
+  .open-link input { flex: 1; min-width: 12rem; max-width: 32rem; }
+  .open-link-error { color: var(--color-error-text); font-size: var(--text-sm); }
 
   .starters { display: flex; flex-wrap: wrap; align-items: center; gap: calc(var(--spacing) * 2); }
   .new-page { height: calc(100dvh - var(--librepaper-bar)); max-width: none; margin: 0; padding: 0; overflow-y: auto; }

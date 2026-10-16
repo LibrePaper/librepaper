@@ -1,6 +1,7 @@
 <script>
   import { Dialog, Portal } from "@skeletonlabs/skeleton-svelte";
   import IconButton from "./IconButton.svelte";
+  import Icon from "./Icon.svelte";
 
   // Every dialog in the application, so there is one answer to what a dialog
   // is: a card in the middle of a dimmed page, with a heading, whatever it is
@@ -22,8 +23,8 @@
   //
   // `cancelLabel` renames the way out where "Cancel" would be wrong ("Skip",
   // "Sign in"), and `confirm.cancel: false` drops it for a dialog that only
-  // has to be closed. A dialog with no footer at all -- the settings page,
-  // the storage report -- passes no `confirm`.
+  // has to be closed. A dialog with no footer at all -- a page, the storage
+  // report -- passes no `confirm`.
   let {
     open = $bindable(false),
     title,
@@ -33,13 +34,13 @@
     cancelLabel = "Cancel",
     onclose = undefined,
     wide = false,
-    full = false,
+    page = false,
   } = $props();
 
-  // Three sizes: a question, a result to read, or a page -- the settings --
-  // which is as wide as a page and a fixed height, so what is inside it can
-  // keep its own columns and scroll them itself rather than being scrolled.
-  const width = $derived(full ? "max-w-5xl modal-page" : wide ? "max-w-xl" : "max-w-lg");
+  // Two sizes for a card: a question or a result to read. `page` is the
+  // other shape: the whole viewport, with a bar at the top holding a Back
+  // link. It has no footer and no backdrop. Escape and Back both close it.
+  const width = $derived(wide ? "max-w-xl" : "max-w-lg");
 
   // The cross closes the same way Escape does: the dialog's own change
   // handler runs `onclose`, so closing from here says so too.
@@ -88,22 +89,39 @@
      removes the question of where the dialog happens to be mounted. -->
 <Dialog {open} {initialFocusEl} onOpenChange={(event) => { open = event.open; if (!open) onclose?.(); }}>
   <Portal>
-    <Dialog.Backdrop class="fixed inset-0 z-50 bg-black/50 backdrop-blur-xs" />
-    <Dialog.Positioner class="fixed inset-0 z-50 flex items-center justify-center p-4">
-      <Dialog.Content class="card bg-[var(--color-raised)] flex max-h-full w-full flex-col gap-4 p-6 shadow-xl {width}">
-        <header class="flex shrink-0 items-start gap-3">
-          <div class="min-w-0 flex-1">
-            <Dialog.Title class="h4">{title}</Dialog.Title>
-            {#if description}
-              <Dialog.Description class="lp-text-secondary text-sm">{description}</Dialog.Description>
-            {/if}
+    {#if !page}
+      <Dialog.Backdrop class="fixed inset-0 z-50 bg-black/50 backdrop-blur-xs" />
+    {/if}
+    <Dialog.Positioner class={page ? "fixed inset-0 z-50 flex" : "fixed inset-0 z-50 flex items-center justify-center p-4"}>
+      <Dialog.Content class={page ? "modal-page flex h-full w-full flex-col overflow-hidden" : `card bg-[var(--color-raised)] flex max-h-full w-full flex-col gap-4 p-6 shadow-xl ${width}`}>
+        {#if page}
+          <header class="modal-page-bar">
+            <div class="modal-page-bar-inner">
+              <button type="button" class="modal-back" onclick={close}>
+                <Icon name="arrow-left" size={18} />
+                Back
+              </button>
+              <Dialog.Title class="modal-page-title">{title}</Dialog.Title>
+            </div>
+          </header>
+          <div class="modal-page-body">
+            {@render children?.()}
           </div>
-          <IconButton icon="x" label="Close" tone="plain" size="btn-icon-sm" onclick={close} />
-        </header>
-        <div class="flex min-h-0 flex-col gap-3 {full ? 'flex-1 overflow-hidden' : 'overflow-y-auto'}">
-          {@render children?.()}
-        </div>
-        {#if confirm}
+        {:else}
+          <header class="flex shrink-0 items-start gap-3">
+            <div class="min-w-0 flex-1">
+              <Dialog.Title class="h4">{title}</Dialog.Title>
+              {#if description}
+                <Dialog.Description class="lp-text-secondary text-sm">{description}</Dialog.Description>
+              {/if}
+            </div>
+            <IconButton icon="x" label="Close" tone="plain" size="btn-icon-sm" onclick={close} />
+          </header>
+          <div class="flex min-h-0 flex-col gap-3 overflow-y-auto">
+            {@render children?.()}
+          </div>
+        {/if}
+        {#if confirm && !page}
           <footer class="flex shrink-0 justify-end gap-2 pt-2">
             {#if confirm.cancel !== false}
               <button type="button" class="btn lp-control-tonal-brand" onclick={confirm.oncancel ?? close}>

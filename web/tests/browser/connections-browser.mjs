@@ -75,8 +75,7 @@ try {
   await b.navigate(url);
   await until('connection controls',()=>b.evaluate(`(() => {
     const group=document.querySelector('[aria-label="Connection settings"]');
-    return group?.querySelectorAll('.connection-pill').length === 3
-      && Boolean(group.querySelector('.local-pill'))
+    return group?.querySelectorAll('.connection-pill').length === 2
       && Boolean([...group.querySelectorAll('.connection-pill')].find(pill => pill.getAttribute('aria-label')?.includes('Remote server')))
       && Boolean([...group.querySelectorAll('.connection-pill')].find(pill => pill.getAttribute('aria-label')?.includes('open backup settings')));
   })()`),10000);
@@ -95,21 +94,23 @@ try {
   assert.equal(remote.offline,false,'Remote starts connected');
   await b.evaluate('window.roomConnected(false)'); await flush();
   assert.equal((await connectionState('Remote')).offline,true,'Remote pill turns red while disconnected');
-  await clickPill('Local');
-  await until('Companion settings',()=>b.evaluate('document.querySelector(".settings-category")?.textContent.trim() === "Companion"'),3000);
-  assert.equal(await b.evaluate('document.querySelector("#settings-companion .companion-status-label")?.textContent.trim() === "Companion" && Boolean(document.querySelector("#settings-companion .setting-status-pill")?.textContent.trim())'),true,
-    'the settings sidebar shows the Companion status with its pill');
-  assert.equal((await connectionState('Local')).offline,true,'Local pill is red while its app is unavailable');
-  const localActions = await b.evaluate(`(() => {
-    const root=document.querySelector('#companion-connection');
+  await clickPill('Remote');
+  await until('Account settings',()=>b.evaluate('document.querySelector(".settings-category")?.textContent.trim() === "Account"'),3000);
+  assert.equal(await b.evaluate('Boolean(document.querySelector(".local-pill"))'),false,'no desktop app status pill in the bar');
+  await b.evaluate('[...document.querySelectorAll(".settings-nav-item")].find(item => item.textContent.trim() === "Desktop app").click()'); await flush();
+  await until('Desktop app settings',()=>b.evaluate('document.querySelector(".settings-category")?.textContent.trim() === "Desktop app"'),3000);
+  const desktopActions = await b.evaluate(`(() => {
+    const root=document.querySelector('.desktop-only');
     const visible=element => Boolean(element?.getClientRects().length && getComputedStyle(element).visibility !== 'hidden');
-    const install=root?.querySelector('a[href="https://librepaper.org/local-app.html"]');
-    const connect=[...(root?.querySelectorAll('button') || [])].find(button => button.textContent.trim() === 'Connect');
-    return { installVisible:visible(install), connectVisible:visible(connect), connectEnabled:Boolean(connect && !connect.disabled) };
+    const install=root?.querySelector('a[href="https://librepaper.org/desktop-app.html"]');
+    const open=root?.querySelector('a[href^="librepaper://open?url="]');
+    return { message:root?.querySelector('.desktop-only-message')?.textContent.trim(), install:install?.textContent.trim(), open:open?.textContent.trim(), installVisible:visible(install), openVisible:visible(open) };
   })()`);
-  assert.equal(localActions.installVisible,true,'Companion settings shows a visible companion Install link');
-  assert.equal(localActions.connectVisible,true,'Companion settings shows a visible Connect button');
-  assert.equal(localActions.connectEnabled,true,'Companion settings Connect button is enabled');
+  assert.equal(desktopActions.message,'This needs the LibrePaper desktop app.','a browser is told the page needs the desktop app');
+  assert.equal(desktopActions.install,'Get the desktop app');
+  assert.equal(desktopActions.open,'Open in the desktop app');
+  assert.equal(desktopActions.installVisible,true,'Desktop app settings shows a visible install link');
+  assert.equal(desktopActions.openVisible,true,'Desktop app settings shows a visible open link');
 
   await click('[aria-label="Close"]');
   const backup = await connectionState('open backup settings');
@@ -117,8 +118,8 @@ try {
   assert.equal(backup.offline,true,'Backup pill reports unavailable account backups');
   await clickPill('open backup settings');
   await until('Backup settings',()=>b.evaluate('document.querySelector(".backups-intro") && document.querySelector(".settings-category")?.textContent.trim() === "Backups"'),3000);
-  assert.match(await b.evaluate('document.querySelector("#backup-connection .setting-description")?.innerText || ""'),/Sign in to load account backup settings/,
-    'Backup settings explains that account backups require sign-in');
+  assert.equal(await b.evaluate('document.querySelector(".desktop-only .desktop-only-message")?.textContent.trim() || ""'),'This needs the LibrePaper desktop app.',
+    'Backup settings in a browser say they need the desktop app');
   await click('[aria-label="Close"]');
   await clickPill('Remote');
   await until('Account settings',()=>b.evaluate('document.querySelector(".settings-category")?.textContent.trim() === "Account"'),3000);
@@ -134,5 +135,5 @@ try {
   await b.resize(390,844); await flush();
   assert.equal(await b.evaluate('document.querySelectorAll(".connection-pill").length'),0,'no connection lights in a narrow window');
   assert.deepEqual(await b.evaluate('window.testErrors'),[]);
-  console.log('connections-browser: status pills, settings pages, local install links, and narrow-window bounds passed');
+  console.log('connections-browser: status pills, settings pages, desktop app links, and narrow-window bounds passed');
 } finally { await b?.close(); serverHttp?.close(); removeTemporary(temp); }

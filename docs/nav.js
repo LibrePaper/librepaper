@@ -15,7 +15,7 @@
 export const nav = [
   { path: "what", label: "What is LibrePaper" },
   { path: "migration", label: "Migration" },
-  { path: "local-app", label: "Companion" },
+  { path: "desktop-app", label: "Web and desktop app" },
   { path: "backups", label: "Local backups" },
   {
     label: "Computational notebooks",
@@ -26,7 +26,7 @@ export const nav = [
   },
   { path: "collaborate", label: "Collaborate" },
   { path: "agents", label: "Agents" },
-  { path: "cli", label: "CLI" },
+  { path: "cli", label: "Command line" },
   {
     label: "Self-hosting",
     pages: [
@@ -41,7 +41,7 @@ export const nav = [
       { path: "architecture/document", label: "Document and storage" },
       { path: "architecture/review", label: "Comments and track changes" },
       { path: "architecture/rendering", label: "Rendering and live sync" },
-      { path: "architecture/companion", label: "Companion and agents" },
+      { path: "architecture/local-service", label: "Local service and agents" },
       { path: "architecture/building", label: "Building from source" },
     ],
   },

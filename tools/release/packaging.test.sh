@@ -106,6 +106,12 @@ for target in \
 done
 grep -Fq "sha256 \"$MOCK_HASH\"" "$tmp/capture/Formula/librepaper.rb" || fail 'formula missing verified archive hashes'
 grep -Fq 'license "MIT"' "$tmp/capture/Formula/librepaper.rb" || fail 'formula missing MIT license metadata'
+[[ -f "$tmp/capture/Casks/librepaper.rb" ]] || fail 'Homebrew cask was not generated'
+grep -Fq 'app "LibrePaper.app"' "$tmp/capture/Casks/librepaper.rb" || fail 'cask missing app stanza'
+grep -Fq 'auto_updates true' "$tmp/capture/Casks/librepaper.rb" || fail 'cask missing auto_updates stanza'
+grep -Fq "sha256 \"$MOCK_HASH\"" "$tmp/capture/Casks/librepaper.rb" || fail 'cask missing verified DMG hash'
+grep -Fq 'LibrePaper_#{version}_universal.dmg' "$tmp/capture/Casks/librepaper.rb" || fail 'cask missing DMG url'
+grep -Fq 'version "1.2.3"' "$tmp/capture/Casks/librepaper.rb" || fail 'cask has wrong version'
 [[ -e "$tmp/pushed" ]] || fail 'Homebrew formula was not pushed'
 
 reset_mock
@@ -113,7 +119,9 @@ LIBREPAPER_RELEASE_TAG=v1.2.3 bash "$root/tools/release/update-scoop-bucket.sh" 
 [[ -f "$tmp/capture/bucket/librepaper.json" ]] || fail 'Scoop manifest was not generated'
 grep -Fq '"version": "1.2.3"' "$tmp/capture/bucket/librepaper.json" || fail 'manifest has wrong version'
 grep -Fq '"license": "MIT"' "$tmp/capture/bucket/librepaper.json" || fail 'manifest missing MIT license metadata'
-grep -Fq 'librepaper-x86_64-pc-windows-msvc.zip' "$tmp/capture/bucket/librepaper.json" || fail 'manifest missing Windows archive'
+grep -Fq 'LibrePaper_1.2.3_x64-portable.zip' "$tmp/capture/bucket/librepaper.json" || fail 'manifest missing the portable desktop zip'
+grep -Fq '"shortcuts": [["librepaper-desktop.exe", "LibrePaper"]]' "$tmp/capture/bucket/librepaper.json" || fail 'manifest missing the Start menu shortcut'
+grep -Fq 'LibrePaper_$version_x64-portable.zip' "$tmp/capture/bucket/librepaper.json" || fail 'manifest autoupdate missing the portable desktop zip'
 grep -Fq "\"hash\": \"$MOCK_HASH\"" "$tmp/capture/bucket/librepaper.json" || fail 'manifest missing verified archive hash'
 [[ -e "$tmp/pushed" ]] || fail 'Scoop manifest was not pushed'
 
@@ -204,5 +212,7 @@ enabled_restic_commit=$("$real_git" -C "$kit_source" rev-parse HEAD)
 if PATH="${real_git%/*}:$PATH" bash "$root/tools/release/package-deploy-kit.sh" v1.2.3 "$kit_source" "$kit_output" "$enabled_restic_commit" >/dev/null 2>&1; then
   fail 'deploy kit accepted an enabled restic profile'
 fi
+
+node "$root/tools/release/updater-manifest.test.mjs"
 
 echo 'release packaging mocks passed'

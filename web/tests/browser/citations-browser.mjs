@@ -23,7 +23,7 @@ writeFileSync(entry, [
   "import { createClassComponent } from " + imports("web/node_modules/svelte/src/legacy/legacy-client.js") + ";",
   "import { join as joinSession } from " + imports("web/src/lib/collab.js") + ";",
   "import { projectDirectory } from " + imports("web/src/lib/projection.js") + ";",
-  "import { configure as configureCompanion, hasPairing } from " + imports("web/src/lib/companion/client.js") + ";",
+  "import { configure as configureDesktop } from " + imports("web/src/lib/desktop/client.js") + ";",
   "import Editor from " + imports("web/src/components/Editor.svelte") + ";",
   "globalThis.LIBREPAPER_MODULES = { bibliography: '/bibliography.wasm' };",
   "const session = joinSession({ send: () => {}, mayEdit: true });",
@@ -44,8 +44,6 @@ writeFileSync(entry, [
     const base = value.doc.frontiers();
     const baseVersion = value.doc.oplogVersion();
     const sent = [];
-    const pairingKey = "librepaper-local-connections", addressKey = "librepaper-local-address";
-    const oldPairings = localStorage.getItem(pairingKey), oldAddress = localStorage.getItem(addressKey);
     const fetchBefore = globalThis.fetch;
     const zoteroCalls = [];
     const bibliographyReports = [];
@@ -59,10 +57,11 @@ writeFileSync(entry, [
       onbibliography: (report) => bibliographyReports.push(report),
     } });
     try {
-      configureCompanion({ project: "paper", origin: location.origin });
-      localStorage.setItem(pairingKey, JSON.stringify({ [location.origin]: { token: "browser-fixture", expires: Date.now() / 1000 + 3600 } }));
+      configureDesktop({ project: "paper", origin: location.origin });
+      window.__LIBREPAPER_DESKTOP__ = { base: "http://lp-local.localhost/", version: "test" };
       globalThis.fetch = async (input, init) => {
         const url = String(input);
+        if (url.endsWith("/librepaper/local/capabilities")) return new Response(JSON.stringify({ builders: [] }), { status: 200, headers: { "content-type": "application/json" } });
         if (url.includes("/zotero/")) zoteroCalls.push({ url, authorization: init?.headers?.Authorization || "" });
         if (url.includes("/zotero/search?")) return new Response(JSON.stringify({ entries: [{
           citation_key: "Riv2024", authors: ["Jane Smith"], title: "Rivers", year: "2024", item_type: "article", zotero_item: "ITEM123",
@@ -86,7 +85,7 @@ writeFileSync(entry, [
         popup = host.querySelector(".cm-tooltip-autocomplete")?.textContent || "";
         if (popup.includes("Rivers")) break;
       }
-      if (!popup.includes("Rivers")) throw new Error("Zotero fixture did not appear in the citation picker: " + JSON.stringify({ popup, hasPairing: hasPairing(), calls: zoteroCalls, text: view.state.doc.toString() }));
+      if (!popup.includes("Rivers")) throw new Error("Zotero fixture did not appear in the citation picker: " + JSON.stringify({ popup, calls: zoteroCalls, text: view.state.doc.toString() }));
       await new Promise((resolve) => setTimeout(resolve, 100));
       if (!acceptCompletion(view)) throw new Error("the Zotero picker could not accept its selected entry");
       for (let attempt = 0; attempt < 100; attempt++) {
@@ -141,8 +140,7 @@ writeFileSync(entry, [
       };
     } finally {
       globalThis.fetch = fetchBefore;
-      if (oldPairings === null) localStorage.removeItem(pairingKey); else localStorage.setItem(pairingKey, oldPairings);
-      if (oldAddress === null) localStorage.removeItem(addressKey); else localStorage.setItem(addressKey, oldAddress);
+      delete window.__LIBREPAPER_DESKTOP__;
       outbound?.free();
       editor.$destroy();
       host.remove();

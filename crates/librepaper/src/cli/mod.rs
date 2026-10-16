@@ -12,7 +12,7 @@ use serde_json::{json, Value};
 use librepaper_base::config::Configuration;
 use librepaper_base::http::{detail_of, get_as, get_with_token, post_json, text, Credentials};
 use librepaper_base::util::die;
-use librepaper_companion::local::cli::{LaunchArgs, LocalAgentCommand, LocalArgs, LocalCommand};
+use librepaper_companion::local::cli::{LocalArgs, LocalCommand};
 
 mod agent;
 
@@ -26,22 +26,16 @@ pub use documents::*;
 pub use tokens::*;
 
 #[derive(Parser)]
-#[command(name = "librepaper", version = crate::VERSION, about = "launch the companion to connect local tools to documents; host HTML, markdown and typst documents", long_about = None, args_conflicts_with_subcommands = true)]
+#[command(name = "librepaper", version = crate::VERSION, about = "sign in, list and export documents, and administer deployments", long_about = None, arg_required_else_help = true)]
 #[command(
-    after_help = "Run `librepaper` or `librepaper start` to launch the companion, then connect it in Settings → Companion.
-On supported desktops, the companion also shows a tray icon. Choose Settings in its menu to open the Companion section in the main LibrePaper app. Run `librepaper install-desktop` to install a desktop launcher that starts the companion.
-
-To sign in from this terminal, set the deployment and run `librepaper login`:
+    after_help = "To sign in from this terminal, set the deployment and run `librepaper login`:
 
     export LIBREPAPER_SERVER=https://librepaper.example.org
     librepaper login"
 )]
 pub(crate) struct Cli {
     #[command(subcommand)]
-    command: Option<Command>,
-    /// Companion launch options. With no command, `librepaper` launches it.
-    #[command(flatten)]
-    launch: LaunchArgs,
+    command: Command,
 }
 
 /// Deployment credentials: server URL and optional authentication token.
@@ -70,19 +64,6 @@ pub(crate) struct Deployment {
 #[allow(clippy::large_enum_variant)]
 #[derive(Subcommand)]
 pub(crate) enum Command {
-    /// Start the companion (in the background by default)
-    Start(LaunchArgs),
-    /// Ask the companion to stop cleanly
-    Stop,
-    /// Show companion status and available tools
-    Status,
-    /// Install a native launcher for starting the companion.
-    InstallDesktop,
-    /// Manage agents this computer offers to the document sidebar
-    Agent {
-        #[command(subcommand)]
-        command: LocalAgentCommand,
-    },
     /// Sign in through a deployment, in a browser
     Login {
         #[command(flatten)]
@@ -119,10 +100,12 @@ pub(crate) enum Command {
         deployment: Deployment,
     },
     // The one command the sidebar assistant's own agent spawns. Not listed,
-    // because nobody types it; see `agent`.
+    // because nobody types it.
     #[command(hide = true)]
     Mcp(agent::McpArgs),
-    /// Approve requests and disconnect paired websites
+    // The desktop app's interface to the background service. Not listed,
+    // because nobody types it.
+    #[command(hide = true)]
     Local {
         #[command(subcommand)]
         command: LocalCommand,
@@ -271,7 +254,7 @@ pub(crate) enum ModerationCommand {
     },
 }
 
-/// Installs the one process-wide subscriber. Companion commands accept `RUST_LOG`;
+/// Installs the one process-wide subscriber. Local commands accept `RUST_LOG`;
 /// deployment administration keeps its logging filter independent of the environment.
 fn install_subscriber(server_filter: Option<&str>) {
     use std::io::IsTerminal;
@@ -297,8 +280,7 @@ pub fn main() {
     if librepaper_companion::local::folder::run_folder_picker_helper() {
         return;
     }
-    let cli = Cli::parse();
-    let command = cli.command.unwrap_or(Command::Start(cli.launch));
+    let command = Cli::parse().command;
     if needs_local_environment(&command) {
         // SAFETY: this runs synchronously before Tokio creates worker threads,
         // and the environment module documents the same process-startup contract.
@@ -321,14 +303,10 @@ pub fn main() {
 fn needs_local_environment(command: &Command) -> bool {
     matches!(
         command,
-        Command::Start(_) | Command::Status | Command::Agent { .. }
-    ) || matches!(
-        command,
         Command::Local {
             command: LocalCommand::Start(_)
                 | LocalCommand::Status
-                | LocalCommand::Open { .. }
-                | LocalCommand::Agent { .. }
+                | LocalCommand::Diagnostics { .. },
         }
     )
 }
@@ -338,36 +316,6 @@ async fn run(command: Command, postgres_env: Option<&server_config::PostgresEnvS
         install_subscriber(None);
     }
     match command {
-        Command::Start(args) => {
-            librepaper_companion::local::cli::run(LocalArgs {
-                command: LocalCommand::Start(args),
-            })
-            .await
-        }
-        Command::Stop => {
-            librepaper_companion::local::cli::run(LocalArgs {
-                command: LocalCommand::Stop,
-            })
-            .await
-        }
-        Command::Status => {
-            librepaper_companion::local::cli::run(LocalArgs {
-                command: LocalCommand::Status,
-            })
-            .await
-        }
-        Command::InstallDesktop => {
-            match librepaper_companion::local::lifecycle::install_desktop_shortcut() {
-                Ok(path) => println!("LibrePaper launcher installed at {}", path.display()),
-                Err(error) => die(error),
-            }
-        }
-        Command::Agent { command } => {
-            librepaper_companion::local::cli::run(LocalArgs {
-                command: LocalCommand::Agent { command },
-            })
-            .await
-        }
         Command::Login { deployment } => login(deployment.server).await,
         Command::Logout => logout(),
         Command::Admin { command } => run_admin(command, postgres_env).await,
@@ -489,19 +437,6 @@ async fn run_admin(
 fn serve_options(
     resolved: server_config::ResolvedConfig,
 ) -> librepaper_server::server::serve::ServeOptions {
-    let start_local = resolved.local_companion.then(|| {
-        let start: librepaper_server::server::serve::StartLocal = Box::new(|base: PathBuf| {
-            Box::pin(async move {
-                let app = librepaper_companion::local::embedded::start(&base).await?;
-                let stopper = app.clone();
-                Ok(librepaper_server::server::serve::LocalApp {
-                    address: app.address.clone(),
-                    stop: Box::new(move || Box::pin(async move { stopper.stop().await })),
-                })
-            })
-        });
-        start
-    });
     librepaper_server::server::serve::ServeOptions {
         address: resolved.address,
         storage: resolved.storage,
@@ -523,7 +458,6 @@ fn serve_options(
         erase_inactive_after: resolved.erase_inactive_after,
         asset_mirror: resolved.asset_mirror,
         typst_fonts: resolved.typst_fonts,
-        start_local,
         load_shell: librepaper_shell::load_shell,
         latex_release: librepaper_shell::latex_release(),
         config: resolved.config,
@@ -712,85 +646,70 @@ mod socket_policy_tests {
     use clap::CommandFactory;
 
     #[test]
-    fn companion_launch_default_flags_and_explicit_start_parse() {
-        let bare = Cli::try_parse_from(["librepaper"]).unwrap();
-        assert!(bare.command.is_none());
-        assert!(!bare.launch.foreground);
-        assert!(!bare.launch.at_login);
-        assert!(bare.launch.port.is_none());
-
-        let configured =
-            Cli::try_parse_from(["librepaper", "--foreground", "--at-login", "--port", "9123"])
-                .unwrap();
-        assert!(configured.launch.foreground);
-        assert!(configured.launch.at_login);
-        assert_eq!(configured.launch.port, Some(9123));
-        assert!(Cli::try_parse_from(["librepaper", "--tool-path", "/opt/tools"]).is_err());
-        assert!(Cli::try_parse_from(["librepaper", "start", "--tool-path", "/opt/tools"]).is_err());
-        assert!(
-            Cli::try_parse_from(["librepaper", "status", "--tool-path", "/opt/tools"]).is_err()
-        );
-
-        assert!(
-            Cli::try_parse_from(["librepaper", "start", "--foreground", "--port", "9123"]).is_ok()
-        );
-    }
-
-    #[test]
-    fn companion_commands_and_hidden_compatibility_paths_parse() {
+    fn the_bare_command_has_no_launch_and_the_old_root_controls_are_gone() {
+        assert!(Cli::try_parse_from(["librepaper"]).is_err());
         for args in [
+            vec!["librepaper", "start"],
             vec!["librepaper", "stop"],
             vec!["librepaper", "status"],
             vec!["librepaper", "install-desktop"],
-            vec!["librepaper", "agent", "list"],
-            vec!["librepaper", "local", "start", "--foreground"],
-            vec!["librepaper", "local", "stop"],
-            vec!["librepaper", "local", "status"],
-            vec!["librepaper", "local", "agent", "list"],
+            vec!["librepaper", "--foreground"],
+            vec!["librepaper", "--at-login"],
+            vec!["librepaper", "--port", "9123", "list"],
             vec!["librepaper", "local", "approve", "123456"],
-            vec!["librepaper", "local", "disconnect", "https://paper.example"],
+            vec![
+                "librepaper",
+                "local",
+                "open",
+                "librepaper://open?url=https://app.librepaper.org/",
+            ],
+            vec!["librepaper", "local", "tray"],
+            vec!["librepaper", "local", "agent", "list"],
+            vec!["librepaper", "agent", "list"],
+            vec!["librepaper", "desktop"],
         ] {
-            assert!(Cli::try_parse_from(args).is_ok());
+            assert!(Cli::try_parse_from(args.clone()).is_err(), "{args:?}");
         }
-        assert!(Cli::try_parse_from(["librepaper", "desktop"]).is_err());
-        assert!(
-            Cli::try_parse_from(["librepaper", "local", "open", "librepaper://connect"]).is_ok()
-        );
-        assert!(Cli::try_parse_from(["librepaper", "local", "tray"]).is_ok());
     }
 
     #[test]
-    fn launch_options_are_isolated_to_bare_launch_and_help_hides_legacy_controls() {
+    fn local_commands_parse_for_the_desktop_app() {
         for args in [
-            ["librepaper", "--port", "9123", "list"],
-            ["librepaper", "--foreground", "admin", "serve"],
-            ["librepaper", "--at-login", "agent", "list"],
+            vec!["librepaper", "local", "start"],
+            vec![
+                "librepaper",
+                "local",
+                "start",
+                "--foreground",
+                "--port",
+                "9123",
+            ],
+            vec!["librepaper", "local", "stop"],
+            vec!["librepaper", "local", "status"],
+            vec!["librepaper", "local", "endpoint"],
+            vec!["librepaper", "local", "endpoint", "--port", "9123"],
+            vec!["librepaper", "local", "diagnostics"],
+            vec!["librepaper", "local", "diagnostics", "--log-dir"],
         ] {
-            assert!(Cli::try_parse_from(args).is_err());
+            assert!(Cli::try_parse_from(args.clone()).is_ok(), "{args:?}");
         }
+        assert!(
+            Cli::try_parse_from(["librepaper", "local", "start", "--tool-path", "/opt"]).is_err()
+        );
+        assert!(Cli::try_parse_from(["librepaper", "local", "start", "--at-login"]).is_err());
+    }
+
+    #[test]
+    fn help_lists_the_public_commands_and_hides_local() {
         let help = Cli::command().render_help().to_string();
-        for command in [
-            "start",
-            "stop",
-            "status",
-            "install-desktop",
-            "agent",
-            "login",
-            "list",
-            "admin",
-        ] {
+        for command in ["login", "logout", "list", "export", "admin"] {
             assert!(help.contains(command), "missing {command} in {help}");
         }
-        assert!(!help.contains("local start"));
-        let mut root = Cli::command();
-        let local_help = root
-            .find_subcommand_mut("local")
+        assert!(!help.to_lowercase().contains("companion"), "{help}");
+        assert!(Cli::command()
+            .find_subcommand("local")
             .unwrap()
-            .render_help()
-            .to_string();
-        assert!(local_help.contains("approve"));
-        assert!(local_help.contains("disconnect"));
-        assert!(!local_help.contains("start"));
+            .is_hide_set());
     }
 
     #[test]

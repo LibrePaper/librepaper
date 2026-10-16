@@ -2,7 +2,7 @@
 // local app, keep its workspace in sync as the document changes, poll its
 // rendered page and its own status, and tear it down. Quarto's own preview
 // and a Typst document previewed through Calepin are the same shape of job
-// to `web/src/lib/companion/client.js` (`startLocalPreview`, `stopLocalPreview`,
+// to `web/src/lib/desktop/client.js` (`startLocalPreview`, `stopLocalPreview`,
 // `localPreviewStatus`, `localPreviewPage`, `syncWorkspace`) -- this module is
 // the one lifecycle both engines run through, parameterized by `engine`.
 //
@@ -13,11 +13,11 @@
 
 import { createGeneration } from "./generation.js";
 
-/** @typedef {NonNullable<Parameters<typeof import("../companion/client.js").syncWorkspace>[0]["tree"]>} LocalPreviewTree */
-/** @typedef {NonNullable<NonNullable<Parameters<typeof import("../companion/client.js").startLocalPreview>[0]>["options"]>} LocalPreviewOptions */
-/** @typedef {NonNullable<NonNullable<Parameters<typeof import("../companion/client.js").startLocalPreview>[0]>["job"]>} LocalPreviewJob */
-/** @typedef {Awaited<ReturnType<typeof import("../companion/client.js").startLocalPreview>>} LocalPreviewSession */
-/** @typedef {Pick<typeof import("../companion/client.js"), "syncWorkspace" | "localPreviewPage" | "localPreviewStatus" | "startLocalPreview" | "stopLocalPreview">} LocalPreviewClient */
+/** @typedef {NonNullable<Parameters<typeof import("../desktop/client.js").syncWorkspace>[0]["tree"]>} LocalPreviewTree */
+/** @typedef {NonNullable<NonNullable<Parameters<typeof import("../desktop/client.js").startLocalPreview>[0]>["options"]>} LocalPreviewOptions */
+/** @typedef {NonNullable<NonNullable<Parameters<typeof import("../desktop/client.js").startLocalPreview>[0]>["job"]>} LocalPreviewJob */
+/** @typedef {Awaited<ReturnType<typeof import("../desktop/client.js").startLocalPreview>>} LocalPreviewSession */
+/** @typedef {Pick<typeof import("../desktop/client.js"), "syncWorkspace" | "localPreviewPage" | "localPreviewStatus" | "startLocalPreview" | "stopLocalPreview">} LocalPreviewClient */
 /** @typedef {Parameters<ReturnType<typeof import("./frame-preview.js").createFramePreview>["publish"]>[0]} LocalPreviewPayload */
 
 const POLL_FAST_MS = 500;
@@ -71,7 +71,7 @@ export function createLocalPreview({
     rendering: false,
     // The last thing that went wrong, or "" once a new attempt clears it.
     error: "",
-    // Notes the companion returned when it saved a file edited outside
+    // Notes the desktop app returned when it saved a file edited outside
     // LibrePaper as a `.local` copy, for this preview session.
     kept: [],
   });

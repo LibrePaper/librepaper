@@ -256,11 +256,6 @@ pub struct Server {
     /// family the compiler does not embed, or nothing. See
     /// `crate::server::fonts`.
     pub fonts: Option<crate::server::fonts::Library>,
-    /// The address where this deployment's embedded local app listens, or
-    /// nothing if no embedded app is running. Only a browser on this machine
-    /// can reach it; the address is where this deployment's own local app
-    /// listens, meaningful only to a browser on the same host.
-    pub local_app: Option<String>,
     pub cost: Arc<cost::CostMeter>,
     /// Operational measurements exported only on the optional private listener.
     pub metrics: Arc<metrics::Metrics>,
@@ -887,7 +882,6 @@ impl Server {
             latex: None,
             site: None,
             fonts: None,
-            local_app: None,
             cost,
             metrics: Arc::new(metrics::Metrics::new()),
             metrics_listener_slots: Arc::new(tokio::sync::Semaphore::new(

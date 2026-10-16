@@ -18,21 +18,21 @@
 //! works but not fully.
 //!
 //! The built-in table below is a starting guess, not the limit.
-//! `librepaper agent add` declares any ACP-speaking command as an agent
-//! this machine offers, which is how an agent LibrePaper has never heard of
-//! gets driven from the sidebar, and how a changed entry point is corrected
-//! without waiting for a release. That declaration is deliberately a local
-//! command rather than a loopback route: the browser chooses *which* agent,
-//! never *what command*, the same invariant the build protocol keeps by
-//! refusing a caller-supplied `command` (see
-//! `protocol::BuildRequestV2::validate_shape`).
+//! Settings, Agents, Add agent in the desktop app declares any ACP-speaking
+//! command as an agent this machine offers, which is how an agent LibrePaper
+//! has never heard of gets driven from the sidebar, and how a changed entry
+//! point is corrected without waiting for a release. That declaration goes
+//! through the authenticated control API (`service/control.rs`), which only
+//! the desktop shell can reach. A document page chooses *which* agent, never
+//! *what command*, the same invariant the build protocol keeps by refusing a
+//! caller-supplied `command` (see `protocol::BuildRequestV2::validate_shape`).
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
-use super::pairing::{read_json, write_private_json};
+use super::store::{read_json, write_private_json};
 
 #[derive(Clone, Copy, Debug)]
 struct Kind {
@@ -145,9 +145,9 @@ fn kind(id: &str) -> Option<&'static Kind> {
 
 /* ------------------------------------------------ Agents this machine adds */
 
-/// An ACP agent the user declared with `librepaper agent add`. This is
-/// the general answer for any agent not in the built-in table, including one
-/// that does not exist yet.
+/// An ACP agent the user added in the desktop app's settings (Settings,
+/// Agents, Add agent). This is the general answer for any agent not in the
+/// built-in table, including one that does not exist yet.
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 pub struct Custom {
     pub label: String,

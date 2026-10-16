@@ -1,0 +1,78 @@
+# cargo-dist calls this workflow as a local-artifacts job on release tags
+# (local-artifacts-jobs in Cargo.toml), so the release waits for it.
+# It builds the desktop app as .deb and .rpm packages for x86_64 Linux.
+# The packages also install the librepaper command line.
+name: Linux desktop app
+
+on:
+  workflow_call:
+    inputs:
+      plan:
+        required: true
+        type: string
+
+jobs:
+  build:
+    name: Linux desktop packages
+    runs-on: ubuntu-22.04
+    permissions:
+      contents: read
+    timeout-minutes: 90
+    steps:
+      - name: Read the version from the tag
+        id: version
+        shell: bash
+        run: |
+          TAG="$GITHUB_REF_NAME"
+          VERSION="${TAG#v}"
+          pattern='^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$'
+          if ! [[ "$VERSION" =~ $pattern ]]; then
+            echo "::error::Tag $TAG is not a version tag like v0.0.43."
+            exit 1
+          fi
+          # RPM versions cannot contain a hyphen, so prereleases ship only the .deb.
+          if [[ "$VERSION" == *-* ]]; then
+            BUNDLES=deb
+          else
+            BUNDLES=deb,rpm
+          fi
+          {
+            echo "tag=$TAG"
+            echo "version=$VERSION"
+            echo "bundles=$BUNDLES"
+          } >> "$GITHUB_OUTPUT"
+
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+          submodules: recursive
+
+      - name: Build the desktop app
+        id: build
+        uses: ./.github/actions/build-desktop
+        with:
+          version: ${{ steps.version.outputs.version }}
+          bundles: ${{ steps.version.outputs.bundles }}
+          cli-version: ${{ steps.version.outputs.tag }}
+
+      - name: Collect the packages
+        shell: bash
+        env:
+          BUNDLE_DIR: ${{ steps.build.outputs.bundle-dir }}
+        run: |
+          out="$RUNNER_TEMP/desktop-release"
+          mkdir -p "$out"
+          shopt -s nullglob
+          packages=("$BUNDLE_DIR"/deb/*.deb "$BUNDLE_DIR"/rpm/*.rpm)
+          if [ ${#packages[@]} -eq 0 ]; then echo "::error::No package found under $BUNDLE_DIR"; exit 1; fi
+          cp "${packages[@]}" "$out/"
+          cd "$out"
+          for f in *.deb *.rpm; do sha256sum "$f" | awk '{print $1 " *" $2}' > "$f.sha256"; done
+          ls -l
+
+      # Names starting with artifacts- are attached to the GitHub Release by the host job.
+      - uses: actions/upload-artifact@v7
+        with:
+          name: artifacts-desktop-linux
+          path: ${{ runner.temp }}/desktop-release/*
+          if-no-files-found: error

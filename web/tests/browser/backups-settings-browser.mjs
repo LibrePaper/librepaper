@@ -1,4 +1,4 @@
-// Account-wide backup controls need a paired companion and must stay scoped
+// Account-wide backup controls run in the desktop app and must stay scoped
 // to the signed-in account even when an earlier status response arrives late.
 import assert from "node:assert/strict";
 import { build } from "vite";
@@ -17,7 +17,6 @@ const temporary = mkdtempSync(join(tmpdir(), "librepaper-backups-settings-"));
 const output = join(temporary, "build");
 const entry = join(temporary, "entry.js");
 const harness = join(temporary, "Harness.svelte");
-const statusMock = join(temporary, "status.svelte.js");
 const clientMock = join(temporary, "client.js");
 const apiMock = join(temporary, "api.js");
 
@@ -31,27 +30,22 @@ async function freePort() {
 
 writeFileSync(harness, `
 <script>
-  import CompanionConnection from ${JSON.stringify(join(root, "web/src/components/settings/CompanionConnection.svelte"))};
   import BackupsSettings from ${JSON.stringify(join(root, "web/src/components/settings/BackupsSettings.svelte"))};
-  import { backups } from ${JSON.stringify(join(root, "web/src/lib/companion/backups.svelte.js"))};
-  let account = $state({ id: "account-a", provider: "github" });
+  import { backups } from ${JSON.stringify(join(root, "web/src/lib/desktop/backups.svelte.js"))};
+  let account = $state({});
   window.setAccount = (next) => { account = next; };
   window.setBrowserAccount = (next) => { window.browserAccount = next; };
   window.browserAccount = { id: "account-a", provider: "github" };
   window.refreshBackupStatus = () => backups.refresh();
   window.resetBackupStatus = () => backups.reset();
 </script>
-<CompanionConnection id="settings-companion" />
 <BackupsSettings {account} />
 `);
 
-writeFileSync(statusMock, `
-let current = $state.raw({ state: "unreachable" });
-export const companion = { get status() { return current; }, watch() { return () => {}; } };
-window.setPairing = (paired) => { window.pairingVersion = (window.pairingVersion || 0) + 1; current = { state: paired ? "connected" : "unreachable", address: "http://127.0.0.1:8763/", instance: "companion-a" }; };
-`);
-
 writeFileSync(clientMock, `
+export const INSTALL_URL = "https://librepaper.org/desktop-app.html";
+export const DESKTOP_ONLY_MESSAGE = "This needs the LibrePaper desktop app.";
+export const desktop = () => window.__LIBREPAPER_DESKTOP__ ?? null;
 window.backupCalls = [];
 window.backupRequests = [];
 window.backupStatusRequest = (accountId) => new Promise((resolve, reject) => {
@@ -59,14 +53,11 @@ window.backupStatusRequest = (accountId) => new Promise((resolve, reject) => {
   window.backupRequests.push({ resolve, reject, account_id: accountId });
 });
 export function backups(accountId) { return window.backupStatusRequest(accountId); }
-export async function connectApp() { window.connectCalls = (window.connectCalls || 0) + 1; }
 export async function authorizeBackups(accountId, approveCode, isCurrent) {
   window.backupCalls.push({ method: "POST authorize", account_id: accountId });
-  const pairing = window.pairingVersion || 0;
-  const pairingCurrent = () => pairing === (window.pairingVersion || 0);
-  if (!pairingCurrent() || !isCurrent()) throw new Error("The backup authorization scope changed.");
-  await approveCode("ABCD-EFGH", pairingCurrent);
-  if (pairing !== (window.pairingVersion || 0) || !isCurrent()) throw new Error("The backup authorization scope changed.");
+  if (!isCurrent()) throw new Error("The backup authorization scope changed.");
+  await approveCode("ABCD-EFGH", isCurrent);
+  if (!isCurrent()) throw new Error("The backup authorization scope changed.");
   window.backupCalls.push({ method: "POST authorize complete", account_id: accountId });
   return { status: "authorized" };
 }
@@ -83,9 +74,7 @@ export async function runBackups(accountId) {
 
 writeFileSync(apiMock, `
 export async function me() {
-  if (!window.holdMe) return window.browserAccount;
-  window.meStarted = true;
-  return new Promise((resolve) => { window.releaseMe = () => resolve(window.browserAccount); });
+  return window.browserAccount;
 }
 export async function post(path, body) {
   window.apiPosts = window.apiPosts || [];
@@ -107,8 +96,7 @@ const mockModules = {
   enforce: "pre",
   resolveId(source, importer) {
     if (source.endsWith("/lib/api.js")) return apiMock;
-    if (source.endsWith("/lib/companion/status.svelte.js")) return statusMock;
-    if (source.endsWith("/lib/companion/client.js") || (source === "./client.js" && importer?.endsWith("/lib/companion/backups.svelte.js"))) return clientMock;
+    if (source.endsWith("/lib/desktop/client.js") || (source === "./client.js" && importer?.endsWith("/lib/desktop/backups.svelte.js"))) return clientMock;
     return null;
   },
 };
@@ -122,6 +110,8 @@ await build({
 });
 
 const page = `<!doctype html><html><head><meta charset="utf-8"><link rel="stylesheet" href="/check.css"><title>backup settings check</title></head><body><script type="module" src="/check.js"></script></body></html>`;
+// Inside the desktop app the page global exists; the plain page is a browser.
+const desktopPage = page.replace("<body>", "<body><script>window.__LIBREPAPER_DESKTOP__ = { base: 'x', version: 'test' }</script>");
 const server = createServer((request, response) => {
   if (request.url === "/check.js") {
     response.setHeader("content-type", "text/javascript");
@@ -134,7 +124,7 @@ const server = createServer((request, response) => {
     return;
   }
   response.setHeader("content-type", "text/html");
-  response.end(page);
+  response.end(request.url.startsWith("/plain") ? page : desktopPage);
 });
 await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
 const port = server.address().port;
@@ -146,26 +136,23 @@ const resolveStatus = (index, value) => `window.backupRequests[${index}].resolve
 
 try {
   b = await browser("chromium", join(temporary, "chrome"), debugPort);
+  const disabledControls = "document.querySelector('#backup-enable [role=switch]').disabled && document.querySelector('#backup-destination input').disabled && document.querySelector('#backup-destination button').disabled && document.querySelector('#backup-frequency select').disabled && document.querySelector('.backup-status button').disabled";
+  await b.navigate(`http://127.0.0.1:${port}/plain`);
+  await until("browser notice shown", () => b.evaluate("Boolean(document.querySelector('.desktop-only'))"), 10000);
+  assert.equal(await b.evaluate("document.querySelector('.desktop-only-message').textContent.trim()"), "This needs the LibrePaper desktop app.", "a browser is told backups need the desktop app");
+  assert.equal(await b.evaluate("Boolean(document.querySelector('#backup-enable'))"), false, "a browser shows no backup controls");
+  assert.equal(await b.evaluate("window.backupCalls.length"), 0, "a browser is not queried for backup status");
+
   await b.navigate(`http://127.0.0.1:${port}/`);
   await until("backup settings mounted", () => b.evaluate("Boolean(document.querySelector('#backup-enable'))"), 10000);
   const visibleControls = "Boolean(document.querySelector('#backup-enable [role=switch]') && document.querySelector('#backup-destination input') && document.querySelector('#backup-destination button') && document.querySelector('#backup-frequency select') && document.querySelector('.backup-status button'))";
-  assert.equal(await b.evaluate(visibleControls), true, "backup settings remain visible before a companion is connected");
-  assert.equal(await b.evaluate("document.querySelector('#backup-enable [role=switch]').disabled && document.querySelector('#backup-destination input').disabled && document.querySelector('#backup-destination button').disabled && document.querySelector('#backup-frequency select').disabled && document.querySelector('.backup-status button').disabled"), true, "controls are disabled while the companion is disconnected");
-  assert.equal(await b.evaluate("window.backupCalls.length"), 0, "an unpaired companion is not queried for backup status");
+  assert.equal(await b.evaluate(visibleControls), true, "backup settings are visible inside the desktop app");
+  assert.equal(await b.evaluate("window.backupCalls.length"), 0, "a signed-out page is not queried for backup status");
   assert.equal(await b.evaluate("document.querySelector('#backup-enable').innerText.includes('Unknown') && document.querySelector('#backup-frequency').innerText.includes('Unknown')"), true, "unloaded switches and frequency are visibly unknown");
-  assert.equal(await b.evaluate("window.connectCalls || 0"), 0, "opening settings does not start a companion connection");
-
-  await b.evaluate("window.setAccount({})");
-  await until("signed-out prompt shown", () => b.evaluate("document.body.innerText.includes('Sign in')"), 5000);
-  assert.equal(await b.evaluate(visibleControls), true, "backup settings remain visible when signed out");
-  assert.equal(await b.evaluate("document.querySelector('#backup-enable [role=switch]').disabled && document.querySelector('#backup-destination input').disabled && document.querySelector('#backup-destination button').disabled && document.querySelector('#backup-frequency select').disabled && document.querySelector('.backup-status button').disabled"), true, "all account-scoped controls are disabled when signed out");
+  assert.equal(await b.evaluate("document.body.innerText.includes('Sign in')"), true, "signed-out prompt shown");
+  assert.equal(await b.evaluate(disabledControls), true, "all account-scoped controls are disabled when signed out");
   await b.evaluate("window.setAccount({ id: 'account-a', provider: 'github' })");
-  await until("connect prompt restored", () => b.evaluate("document.querySelector('#settings-companion')?.innerText.includes('Not running')"), 5000);
-
-  await b.evaluate(click("#settings-companion button"));
-  await until("existing companion connection flow invoked", () => b.evaluate("window.connectCalls === 1"), 5000);
-  await b.evaluate("window.setPairing(true)");
-  await until("paired status request", () => b.evaluate("window.backupRequests.length === 1"), 5000);
+  await until("signed-in status request", () => b.evaluate("window.backupRequests.length === 1"), 5000);
   assert.equal(await b.evaluate(visibleControls), true, "controls stay mounted while the first status request is pending");
   assert.equal(await b.evaluate("document.querySelector('#backup-enable [role=switch]').disabled && document.querySelector('#backup-destination input').disabled && document.querySelector('#backup-destination button').disabled && document.querySelector('#backup-frequency select').disabled && document.querySelector('.backup-status button').disabled"), true, "controls stay disabled until a valid status arrives");
   assert.match(await b.evaluate("document.body.innerText"), /Loading/, "pending status is described as loading");
@@ -238,7 +225,7 @@ try {
   await until("account B settings shown", () => b.evaluate("document.querySelector('#backup-destination input').value === 'account-b-folder'"), 5000);
   assert.equal(await b.evaluate("document.body.innerText.includes('Backup status unavailable')"), false);
 
-  // Companion-reported authorization errors offer browser approval and keep
+  // Service-reported authorization errors offer browser approval and keep
   // the native-selected folder visible as a read-only path.
   await b.evaluate(resolveStatus(10, { enabled: true, frequency_minutes: 30, destination_set: true, destination: "account-b-folder", running: false, projects: 1, needs_login: true }));
   await until("browser authorization shown", () => b.evaluate("document.body.innerText.includes('Authorize backups')"), 5000);
@@ -255,13 +242,7 @@ try {
   assert.equal(await b.evaluate("document.querySelector('#backup-frequency select').disabled"), true, "a needs-login status prevents changing frequency");
   assert.equal(await b.evaluate("document.querySelector('#backup-destination button').disabled"), false, "folder selection remains available while browser authorization is needed");
 
-  await b.evaluate("window.setBrowserAccount({ id: 'account-b', provider: 'google' }); window.holdMe = true");
-  await b.evaluate(click(".setting-status button"));
-  await until("browser account check pending", () => b.evaluate("window.meStarted === true"), 5000);
-  await b.evaluate("window.setPairing(true); window.releaseMe(); window.holdMe = false");
-  await until("rotated pairing rejected during browser account check", () => b.evaluate("document.body.innerText.includes('backup authorization scope changed')"), 5000);
-  assert.equal(await b.evaluate("window.apiPosts?.length || 0"), 0, "a rotated pairing cannot approve the device code");
-
+  await b.evaluate("window.setBrowserAccount({ id: 'account-b', provider: 'google' })");
   await b.evaluate("window.setBrowserAccount({ id: 'account-a', provider: 'github' })");
   await b.evaluate(click(".setting-status button"));
   await until("changed browser identity rejected", () => b.evaluate("document.body.innerText.includes('signed-in browser account changed')"), 5000);
@@ -271,12 +252,12 @@ try {
   await b.evaluate("window.apiPostError = 'approval refused'");
   await b.evaluate(click(".setting-status button"));
   await until("browser approval failure shown", () => b.evaluate("document.body.innerText.includes('approval refused')"), 5000);
-  assert.equal(await b.evaluate("window.backupCalls.some((call) => call.method === 'POST authorize complete')"), false, "failed browser approval cannot complete companion authorization");
+  assert.equal(await b.evaluate("window.backupCalls.some((call) => call.method === 'POST authorize complete')"), false, "failed browser approval cannot complete desktop app authorization");
   await b.evaluate("window.apiPostError = ''");
   await b.evaluate(click(".setting-status button"));
   await until("browser device approval sent", () => b.evaluate("window.apiPosts?.some((call) => call.path === '/api/auth/device/approve')"), 5000);
   assert.equal(await b.evaluate("window.apiPosts.find((call) => call.path === '/api/auth/device/approve').user_code"), "ABCD-EFGH");
-  await until("companion authorization completed", () => b.evaluate("window.backupCalls.some((call) => call.method === 'POST authorize complete' && call.account_id === 'account-b')"), 5000);
+  await until("desktop app authorization completed", () => b.evaluate("window.backupCalls.some((call) => call.method === 'POST authorize complete' && call.account_id === 'account-b')"), 5000);
   await until("authorization status refresh", () => b.evaluate("window.backupRequests.length === 13"), 5000);
   await b.evaluate(resolveStatus(12, { enabled: false, frequency_minutes: 30, destination_set: true, destination: "account-b-folder", running: false, projects: 1, needs_login: false }));
   await until("controls unlocked after authorization refresh", () => b.evaluate("Boolean(document.querySelector('#backup-enable [role=switch]') && !document.querySelector('#backup-enable [role=switch]').disabled)"), 5000);
@@ -294,8 +275,8 @@ try {
 
   await b.evaluate("void window.refreshBackupStatus()");
   await until("status error refresh requested", () => b.evaluate("window.backupRequests.length === 16"), 5000);
-  await b.evaluate("window.backupRequests[15].reject(new Error('companion offline'))");
-  await until("status error shown", () => b.evaluate("document.body.innerText.includes('companion offline')"), 5000);
+  await b.evaluate("window.backupRequests[15].reject(new Error('service offline'))");
+  await until("status error shown", () => b.evaluate("document.body.innerText.includes('service offline')"), 5000);
   assert.match(await b.evaluate("document.body.innerText"), /Backup status unavailable/);
   assert.equal(await b.evaluate(visibleControls), true, "backup controls remain visible when status loading fails");
   assert.equal(await b.evaluate("document.querySelector('#backup-enable [role=switch]').disabled && document.querySelector('#backup-destination input').disabled && document.querySelector('#backup-destination button').disabled && document.querySelector('#backup-frequency select').disabled && document.querySelector('.backup-status button').disabled"), true, "status failure leaves all backup actions disabled");
@@ -306,14 +287,7 @@ try {
   await b.evaluate(resolveStatus(16, { enabled: true, frequency_minutes: 30, destination_set: true, destination: "recovered-folder", running: false, projects: 1, needs_login: false }));
   await until("valid status recovered", () => b.evaluate("document.querySelector('#backup-destination input').value === 'recovered-folder'"), 5000);
 
-  // Disconnecting after a successful load clears the account's destination and
-  // disables every action while keeping the settings page visible.
-  await b.evaluate("window.setPairing(false)");
-  await until("disconnected settings remain visible", () => b.evaluate("document.querySelector('#settings-companion')?.innerText.includes('Not running') && Boolean(document.querySelector('#backup-enable [role=switch]'))"), 5000);
-  assert.equal(await b.evaluate("document.querySelector('#backup-destination input').value"), "", "disconnecting does not expose the previously loaded folder");
-  assert.equal(await b.evaluate("document.querySelector('#backup-enable [role=switch]').disabled && document.querySelector('#backup-destination input').disabled && document.querySelector('#backup-destination button').disabled && document.querySelector('#backup-frequency select').disabled && document.querySelector('.backup-status button').disabled"), true, "disconnecting disables all backup actions");
-
-  console.log("backups-settings-browser: persistent backup settings, disabled disconnected/loading/error states, needs-login controls, browser authorization, and account-scoped stale replies passed");
+  console.log("backups-settings-browser: persistent backup settings, disabled signed-out/loading/error states, needs-login controls, browser authorization, and account-scoped stale replies passed");
 } finally {
   if (b) await b.close();
   server.close();

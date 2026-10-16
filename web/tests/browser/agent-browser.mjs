@@ -27,7 +27,7 @@ writeFileSync(entry, `
 import ${JSON.stringify(join(root, "src/styles/app.css"))};
 import { mount, unmount } from ${JSON.stringify(join(root, "node_modules/svelte/src/index-client.js"))};
 import Harness from ${JSON.stringify(harness)};
-import * as localBridge from ${JSON.stringify(join(root, "src/lib/companion/client.js"))};
+import * as localBridge from ${JSON.stringify(join(root, "src/lib/desktop/client.js"))};
 // The Reader scopes the local client to the document it loaded; this harness
 // mounts the panel without a Reader, so it stands in for that one step. The
 // panel itself deliberately does not do it: which document the local app is
@@ -36,12 +36,9 @@ localBridge.configure({ project: "paper", origin: location.origin });
 window.calls = [];
 window.previewCalls = [];
 window.sockets = [];
-// A stand-in for the local LibrePaper app on loopback. The connection flow
-// is now a conversation between the browser and this computer, so the panel
-// cannot be exercised at all without one.
+// A stand-in for the desktop app, reached through the page global the
+// harness page defines. The panel cannot be exercised at all without one.
 window.localCalls = [];
-window.launchCalls = [];
-localBridge._testing.inject({launchLink:url=>window.launchCalls.push(url)});
 window.activeRunner = JSON.parse(localStorage.getItem('librepaper-test-active-runner') || 'null');
 window.delayedAssistantStatuses = [];
 window.localAgents = [
@@ -65,21 +62,6 @@ window.fetch = async (url, init) => {
     if (route === 'capabilities') return Response.json({builders:[]});
     if (route === 'settings') return Response.json({version:'test',standalone:false,startup:null,presets:[],grants:[]});
     if (route === 'agents') return Response.json({agents:window.localAgents});
-    if (route === 'pair/request') {
-      // Pairing request: return 202 to indicate it's pending approval.
-      // In headless mode, the companion would print an approval code to stderr.
-      window.pairRequestBodies = [...(window.pairRequestBodies || []), body];
-      return Response.json({}, {status:202});
-    }
-    if (route === 'connect/claim') {
-      // Claim phase: check if pairing was accepted and return token.
-      // The real app would have approved or rejected based on the approve command.
-      window.connectClaimBodies = [...(window.connectClaimBodies || []), body];
-      if (typeof body.origin !== 'string' || !body.origin) return Response.json({error:'bad JSON body'}, {status:400});
-      return window.pairingAccepted
-        ? Response.json({token:'pair-token',expires:Date.now()/1000+3600,instance:'one'})
-        : Response.json({error:'approval was denied'}, {status:403});
-    }
     if (route === 'assistant') {
       // Runners are located by server, document and conversation, not by a
       // separate connection name, so the mock keys the same way.
@@ -166,14 +148,6 @@ window.WebSocket = class {
   emit(frame) { this.onmessage?.({data:JSON.stringify(frame)}); }
   close() { this.readyState=3; this.onclose?.(); }
 };
-// The pairing the panel reads is the one the local compiler already uses, so
-// the harness seeds it exactly as a previously paired browser would hold it,
-// under the real key: the origin. A pairing stored under any other key is
-// not this origin's.
-// The query flag creates a fresh, unpaired page session for the pairing flow.
-window.pairingKey = location.origin;
-if (new URLSearchParams(location.search).has('unpaired')) localStorage.removeItem('librepaper-local-connections');
-else localStorage.setItem('librepaper-local-connections', JSON.stringify({[window.pairingKey]:{token:'pair-token',expires:Date.now()/1000+3600}}));
 let component;
 window.remount = async () => {
   if (component) await unmount(component);
@@ -208,7 +182,7 @@ try {
       return;
     }
     response.setHeader("content-type", "text/html");
-    response.end('<!doctype html><html data-theme="librepaper"><head><link rel="stylesheet" href="/librepaper-web.css"><style>body{display:flex;height:700px;width:360px;overflow:hidden}</style></head><body><script type="module" src="/panel.js"></script></body></html>');
+    response.end('<!doctype html><html data-theme="librepaper"><head><link rel="stylesheet" href="/librepaper-web.css"><style>body{display:flex;height:700px;width:360px;overflow:hidden}</style></head><body><script>if (!location.search.includes("browser")) window.__LIBREPAPER_DESKTOP__ = Object.freeze({ base: "http://127.0.0.1:8763/", version: "test" });</script><script type="module" src="/panel.js"></script></body></html>');
   });
   await new Promise((resolve,reject)=>{server.once("error",reject);server.listen(0,"127.0.0.1",resolve);});
   page=await browser("chromium",join(temporary,"profile"),22000+Math.floor(Math.random()*10000));
@@ -216,34 +190,11 @@ try {
   const appUrl = `http://127.0.0.1:${server.address().port}/`;
   await page.navigate(appUrl);
   await until("live agent panel",()=>page.evaluate("Boolean(document.querySelector('.agent-panel'))"),10000);
-  // A previously saved pairing is data, not permission to contact the local
-  // companion. Wait for both the hosted conversation and the local Connect
-  // prompt to settle before checking the request log.
-  await until("saved-pair Connect prompt and hosted conversation", () => page.evaluate(
-    `Boolean(document.querySelector('.connect-required button')) && (window.calls.some(call=>call.suffix==='') || window.sockets.some(socket=>socket.sent.some(frame=>frame.type==='join')))`), 10000);
-  assert.equal(await page.evaluate("window.localCalls.length"), 0,
-    "mounting with a saved pairing makes no local companion requests before Connect");
-  // A full page reload must preserve the same opt-in boundary. localStorage
-  // still contains the valid saved token, but the new page session waits for
-  // another explicit Connect click.
-  await page.navigate(appUrl);
-  await until("reloaded saved-pair Connect prompt and hosted conversation", () => page.evaluate(
-    `Boolean(document.querySelector('.connect-required button')) && (window.calls.some(call=>call.suffix==='') || window.sockets.some(socket=>socket.sent.some(frame=>frame.type==='join')))`), 10000);
-  assert.equal(await page.evaluate("window.localCalls.length"), 0,
-    "a full page reload with a saved pairing makes no local requests before Connect");
-  await page.evaluate(`Array.from(document.querySelectorAll('.connect-required button')).find(b=>b.textContent.trim()==='Connect').click()`);
-  await until("saved pairing connected by explicit choice", () => page.evaluate(
-    `!document.querySelector('.connect-required') && Boolean(document.querySelector('.agent-settings'))`), 3000);
-  assert.equal(await page.evaluate("window.localCalls.some(call=>call.route==='pair/request')"), false,
-    "Connect reuses a valid saved pairing without requesting a new pairing");
-  assert.equal(await page.evaluate("window.localCalls.some(call=>call.route==='connect/claim')"), false,
-    "Connect reuses a valid saved pairing without claiming a new pairing");
-  assert.equal(await page.evaluate("window.launchCalls.length"), 0,
-    "Connect recognizes the saved pairing without launching the companion protocol");
-  assert.ok(await page.evaluate("window.localCalls.some(call=>call.route==='health')"),
-    "the companion is contacted only after the explicit Connect click");
-  // The composer is rendered only after the local app is connected.
-  await until("runner composer after Connect", () => page.evaluate('document.querySelector(".chat-form")?.dataset.cansend === "true"'), 10000);
+  // Inside the desktop app the panel shows its settings.
+  await until("desktop app ready", () => page.evaluate(
+    `!document.querySelector('.connect-required') && Boolean(document.querySelector('.agent-settings'))`), 10000);
+  // The composer is rendered only after the desktop app is ready.
+  await until("runner composer once ready", () => page.evaluate('document.querySelector(".chat-form")?.dataset.cansend === "true"'), 10000);
   // The Chat tab is the default: the agent/access/start controls live there
   // now, so there is no separate Connection tab to land on first.
   assert.equal(await page.evaluate('document.querySelector("#agent-pane-chat").hidden'), false);
@@ -401,18 +352,18 @@ try {
 
   // The connection flow is a choice of access and a click, with no prompt to
   // paste anywhere. The panel offers the agents the local app actually found.
-  await until("local app paired", () => page.evaluate(`!document.querySelector('.connect-required') && Boolean(document.querySelector('.agent-settings'))`), 3000);
+  await until("desktop app ready", () => page.evaluate(`!document.querySelector('.connect-required') && Boolean(document.querySelector('.agent-settings'))`), 3000);
   await until("agents listed", () => page.evaluate(`Boolean(document.querySelector('select[aria-label=Agent] option[value=claude]'))`), 2000);
 
-  // The "Companion settings" text button is gone from the settings line; each
+  // The "Desktop app settings" text button is gone from the settings line; each
   // pane now carries its own icon button to the same page in its header, and
   // only the Chat pane also carries Clear conversation.
-  assert.ok(await page.evaluate(`Boolean(document.querySelector('#agent-pane-chat button[aria-label="Local companion settings"]'))`),
-    "the Chat pane header offers a way to the companion settings page");
+  assert.ok(await page.evaluate(`Boolean(document.querySelector('#agent-pane-chat button[aria-label="Desktop app settings"]'))`),
+    "the Chat pane header offers a way to the desktop app settings page");
   assert.ok(await page.evaluate(`Boolean(document.querySelector('#agent-pane-chat button[aria-label="Clear conversation"]'))`),
     "the Chat pane header offers Clear conversation");
-  assert.ok(await page.evaluate(`Boolean(document.querySelector('#agent-pane-tasks button[aria-label="Local companion settings"]'))`),
-    "the Tasks pane header also offers a way to the companion settings page");
+  assert.ok(await page.evaluate(`Boolean(document.querySelector('#agent-pane-tasks button[aria-label="Desktop app settings"]'))`),
+    "the Tasks pane header also offers a way to the desktop app settings page");
   assert.equal(await page.evaluate(`Boolean(document.querySelector('#agent-pane-tasks button[aria-label="Clear conversation"]'))`), false,
     "Clear conversation is only in the Chat pane");
 
@@ -437,7 +388,7 @@ try {
   assert.equal(started.body.agent, "claude");
   assert.equal(started.body.chat_token, "secret-token");
   assert.match(started.body.agent_token, /^lpa_test_\d+$/,
-    "the companion receives a short-lived document grant rather than the browser chat token");
+    "the desktop app receives a short-lived document grant rather than the browser chat token");
   const grantRequest = await page.evaluate("window.agentTokenCalls[0]");
   assert.equal(grantRequest.method, "POST");
   assert.equal(grantRequest.headers["X-LibrePaper-Key"], "editor",
@@ -455,7 +406,7 @@ try {
   assert.equal(renewed.body.link, started.body.link);
   assert.equal(renewed.body.conversation, started.body.conversation);
   assert.match(renewed.body.agent_token, /^lpa_test_\d+$/,
-    "renewal sends a freshly minted document grant to the companion");
+    "renewal sends a freshly minted document grant to the desktop app");
   // The agent settings stay visible at all times when paired, and nothing in
   // the pane header stops the agent: sending, changing a select or clearing the
   // conversation is how its state changes.
@@ -697,46 +648,30 @@ try {
   await until("new live channel",()=>page.evaluate(`window.sockets.length === ${beforeNewConversation.sockets + 2}`),10000);
   assert.equal(await page.evaluate('document.querySelector("[role=log]")?.textContent.includes("Explain this")'),false);
   assert.equal(await page.evaluate("window.calls.filter(call=>call.suffix==='').length"),beforeNewConversation.creates + 1);
-  // Pairing, from an unpaired browser. The new flow uses pair/request which
-  // is triggered by the Connect button, not a manual code entry.
-  await page.navigate(`${appUrl}?unpaired=1`);
-  await until("fresh unpaired agent panel", () => page.evaluate("Boolean(document.querySelector('.agent-panel'))"), 10000);
-  await until("pairing prompt and hosted conversation shown", () => page.evaluate(
-    `Boolean(document.querySelector('.connect-required button')) && (window.calls.some(call=>call.suffix==='') || window.sockets.some(socket=>socket.sent.some(frame=>frame.type==='join')))`), 10000);
+  // Outside the desktop app the panel shows the one notice and reaches nothing local.
+  await page.navigate(`${appUrl}?browser=1`);
+  await until("browser agent panel", () => page.evaluate("Boolean(document.querySelector('.agent-panel'))"), 10000);
+  await until("desktop app notice and hosted conversation shown", () => page.evaluate(
+    `Boolean(document.querySelector('.connect-required')) && (window.calls.some(call=>call.suffix==='') || window.sockets.some(socket=>socket.sent.some(frame=>frame.type==='join')))`), 10000);
   assert.equal(await page.evaluate("window.localCalls.length"), 0,
-    "mounting without a pairing makes no local companion requests before Connect");
-  // The Connect button initiates the pairing flow. The way to the companion
-  // settings page is no longer a text button inside .connect-required; it is
-  // the pane header's icon button, present whether or not the app is paired.
-  const requirementButtons = await page.evaluate(`Array.from(document.querySelectorAll('.connect-required button')).map(b=>b.textContent.trim())`);
-  assert.ok(requirementButtons.includes("Connect"), `no Connect button: ${requirementButtons}`);
-  assert.ok(await page.evaluate(`Boolean(document.querySelector('#agent-pane-chat button[aria-label="Local companion settings"]'))`),
-    "the pane header still offers a way to the companion settings page while unpaired");
-  await page.evaluate(`document.querySelector('#agent-pane-chat button[aria-label="Local companion settings"]').click()`);
-  assert.equal(await page.evaluate("window.settingsCalls"), 1, "the not-paired warning offers a way to the companion settings page");
-  // Try Connect when pairing is not yet accepted to trigger a refused response.
-  await page.evaluate(`Array.from(document.querySelectorAll('.connect-required button')).find(b=>b.textContent.trim()==='Connect').click()`);
-  await until("refused pairing is reported in place", () => page.evaluate(
-    `document.querySelector('.connect-required [role=alert]')?.textContent.includes('approval was denied')`), 3000);
-  assert.equal(await page.evaluate("window.localCalls.filter(call=>call.route==='pair/request').length"), 1,
-    "an unpaired browser requests pairing only after Connect");
+    "outside the desktop app nothing local is requested");
+  assert.match(await page.evaluate("document.querySelector('.connect-required').textContent"), /The agent needs the LibrePaper desktop app\./);
+  assert.equal(await page.evaluate(`document.querySelector('.connect-required a[href*="desktop-app"]')?.textContent.trim()`), "Get the desktop app");
+  assert.equal(await page.evaluate(`document.querySelector('.connect-required a[href^="librepaper://open?url="]')?.textContent.trim()`), "Open in the desktop app");
+  assert.deepEqual(await page.evaluate(`Array.from(document.querySelectorAll('.connect-required button')).map(b=>b.textContent.trim())`), [], "there is no Connect button");
+  assert.ok(await page.evaluate(`Boolean(document.querySelector('#agent-pane-chat button[aria-label="Desktop app settings"]'))`),
+    "the pane header still offers a way to the desktop app settings page outside the desktop app");
+  await page.evaluate(`document.querySelector('#agent-pane-chat button[aria-label="Desktop app settings"]').click()`);
+  assert.equal(await page.evaluate("window.settingsCalls"), 1, "the notice pane offers a way to the desktop app settings page");
 
-  // Pairing is scoped to the page's origin, not to a document: the request
-  // names the origin and carries no project.
-  assert.equal(await page.evaluate("window.pairRequestBodies?.at(-1)?.origin === location.origin"), true, "pairing is scoped to this origin");
-  assert.equal(await page.evaluate("'project' in (window.pairRequestBodies?.at(-1) || {})"), false, "the pairing request carries no project");
+  await page.navigate(appUrl);
+  await until("desktop app ready again", () => page.evaluate(
+    `!document.querySelector('.connect-required') && Boolean(document.querySelector('.agent-settings'))`), 10000);
 
-  await page.evaluate("window.pairingAccepted=true");
-  await page.evaluate(`Array.from(document.querySelectorAll('.connect-required button')).find(b=>b.textContent.trim()==='Connect').click()`);
-  await until("pairing succeeds", () => page.evaluate(
-    `!document.querySelector('.connect-required') && Boolean(document.querySelector('.agent-settings'))`), 3000);
-  assert.equal(await page.evaluate("window.localCalls.filter(call=>call.route==='pair/request').length"), 2,
-    "a successful Connect creates the missing pairing after the declined attempt");
-
-  // The agents listed right after pairing must be selectable. A background
+  // The agents listed right after the probe must be selectable. A background
   // refresh that shares the panel's busy flag leaves every row disabled, and
   // a list you cannot click is worse than no list.
-  await until("agents listed after pairing", () => page.evaluate(
+  await until("agents listed once ready", () => page.evaluate(
     `document.querySelectorAll('select[aria-label=Agent] option').length > 0`), 3000);
   assert.equal(
     await page.evaluate(`document.querySelector('select[aria-label=Agent]').disabled`),
@@ -751,7 +686,7 @@ try {
   );
 
   // Reloading the page preserves both the browser's saved assistant record
-  // and the companion's running assistant, just as it would outside this
+  // and the desktop app's running assistant, just as it would outside this
   // harness. The first status request fails transiently; the same mounted
   // panel must retry, restore the saved configuration and attach renewal.
   await choose("Access", "commenter");
@@ -763,10 +698,7 @@ try {
   await until("assistant choice saved before reload", () => page.evaluate(`JSON.parse(localStorage.getItem('librepaper.agent.session.'+location.origin+':paper')||'{}').assistantAccess==='commenter'`), 2000);
   await page.evaluate("localStorage.setItem('librepaper-test-fail-next-status','1')");
   await page.navigate(appUrl);
-  await until("reloaded panel asks to reconnect companion", () => page.evaluate(
-    `Boolean(document.querySelector('.agent-panel')) && Array.from(document.querySelectorAll('button')).some(button=>button.textContent.trim()==='Connect')`), 10000);
-  await page.evaluate(`Array.from(document.querySelectorAll('button')).find(button=>button.textContent.trim()==='Connect').click()`);
-  await until("reloaded panel reconnects to companion", () => page.evaluate(
+  await until("reloaded panel reconnects to the desktop app", () => page.evaluate(
     `window.localCalls.some(call=>call.route==='assistant/status')`), 10000);
   assert.equal(await page.evaluate("window.localCalls.filter(call=>call.route==='assistant/status').length"), 1,
     "the first restore attempt reaches the running assistant");
@@ -776,7 +708,7 @@ try {
     "the agent settings stay visible when an assistant is restored");
   await until("running configuration restored", () => page.evaluate(`document.querySelector('select[aria-label=Agent]')?.value==='claude' && document.querySelector('select[aria-label=Access]')?.value==='commenter'`), 3000);
   assert.equal(await page.evaluate("window.activeRunner !== null"), true,
-    "the companion's assistant remains running across the browser reload");
+    "the desktop app's assistant remains running across the browser reload");
   await page.evaluate("window.renewAgentGrant()");
   await until("restored assistant grant renewed", () => page.evaluate("window.localCalls.some(call=>call.route==='assistant/renew')"), 2000);
   const restoredRenewal = await page.evaluate("window.localCalls.find(call=>call.route==='assistant/renew')");
@@ -798,7 +730,7 @@ try {
   assert.notEqual(await page.evaluate(`document.querySelector('select[aria-label=Access]')?.value`), "editor",
     "an older runner status cannot replace the access choice of a newer conversation");
 
-  console.log("agent-browser: context, recovery, draft, keyboard, short layout, pairing and local session persistence passed");
+  console.log("agent-browser: context, recovery, draft, keyboard, short layout, desktop notice and local session persistence passed");
 } finally {
   await page?.close();
   if(server) await new Promise(resolve=>server.close(resolve));

@@ -5,8 +5,6 @@
 // the server, that a state-changing request came from this page and not from a
 // hostile document on the sibling documents host. It goes on every write and
 // on the listing, never on plain navigation.
-import { revokeAll } from "./local-execution.js";
-
 export const SHELL_HEADERS = { "X-LibrePaper-Client": "shell" };
 
 async function json(response) {
@@ -89,9 +87,6 @@ export const me = () => get("/api/me").catch(() => ({}));
 /// deployment that is its own front page answers with nothing, and the
 /// signed-out reader lands there instead.
 export async function signOut(site = "") {
-  // Somebody who signs out is a stranger again, so no document may run code
-  // on this computer until it is allowed afresh.
-  revokeAll();
   // A GET can be forced onto a signed-in reader cross-site, so signing out is
   // a POST carrying the same header every other state change does.
   await fetch("/auth/logout", { method: "POST", headers: SHELL_HEADERS }).catch(() => {});
@@ -99,8 +94,9 @@ export async function signOut(site = "") {
   // to be signing out from -- a project you can no longer open, a panel with
   // nothing in it -- and somebody who has just signed out is a stranger
   // again, so they get what a stranger gets. `replace`, so Back does not
-  // return to a page that is now somebody else's.
-  location.replace(site || "/");
+  // return to a page that is now somebody else's. The desktop app stays on its
+  // server: "/" sends a stranger to sign-in.
+  location.replace(globalThis.window?.__LIBREPAPER_DESKTOP__ ? "/" : site || "/");
 }
 
 /// Asks the server to erase the signed-in account: what it owns is queued for

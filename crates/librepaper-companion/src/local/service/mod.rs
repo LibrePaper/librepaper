@@ -1,17 +1,16 @@
-//! The loopback HTTP surface `librepaper start` binds:
+//! The loopback HTTP surface `librepaper local start` binds:
 //! every route hangs
 //! under `protocol::BASE_PATH`; nothing else answers on this port.
 //!
-//! Bound to loopback only, `Host`-checked against DNS rebinding, CORS-scoped
-//! to origins that hold a pairing (or, for `health`/`connect`, to any origin
-//! at all -- there is nothing sensitive to leak before a pairing exists).
-//! Every other route is bearer-authenticated, and the token names the
-//! origin it was issued to, and nothing narrower: one pairing covers every
-//! document that site opens. Requests that create something name their
-//! project in the body (or, for the bindings list, the query), and a lookup
-//! by id is scoped to the origin, so an authenticated request for another
-//! origin's job, preview or binding is answered exactly as a stranger's
-//! would be.
+//! Bound to loopback only and `Host`-checked against DNS rebinding. The
+//! desktop shell is the only client: a request carrying a browser `Origin` or
+//! `Sec-Fetch-Site` header is refused, and there is no CORS. Every route but
+//! `health` is bearer-authenticated with the per-instance credential
+//! `librepaper local endpoint` prints, and names the page it speaks for in
+//! `X-LibrePaper-Origin`. Requests that create something name their project
+//! in the body (or, for the bindings list, the query), and a lookup by id is
+//! scoped to that origin, so a request for another origin's job, preview or
+//! binding is answered exactly as a stranger's would be.
 //!
 //! The compilation itself is behind the `Runner` trait so this file never
 //! has to know how a job actually runs. `NativeRunner` calls into
@@ -36,14 +35,13 @@ use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 use tokio::sync::{mpsc, watch, Mutex, Notify};
 
-use crate::local::approval::ApprovalBroker;
-use crate::local::pairing::{self, PairingStore};
 use crate::local::preview;
 use crate::local::protocol::{
     self, Capabilities, JobOptions, JobOutcome, JobRequest, JobStatus, ManifestEntry, Workspace,
     BASE_PATH, MAX_FILES, MAX_JSON_BYTES, MAX_QUARTO_OUTPUT_BYTES, MAX_UPLOAD_BYTES,
     PROTOCOL_VERSIONS,
 };
+use crate::local::store;
 
 /// The last slice of a preview's combined stdout+stderr surfaced in its
 /// status JSON -- enough to show why a render failed, not the whole log.
@@ -53,20 +51,12 @@ use crate::local::quarto::{
 };
 
 mod backups;
-mod consent;
 mod control;
 
 pub(crate) fn control_token_for_instance(state_home: &Path, instance: &str) -> Option<String> {
     control::token_for_instance(state_home, instance)
 }
 
-pub(crate) fn control_settings_url_for_instance(
-    state_home: &Path,
-    port: u16,
-    instance: &str,
-) -> Result<String, String> {
-    control::settings_url_for_instance(state_home, port, instance)
-}
 mod jobs;
 
 pub(super) type Reply = Response<Body>;
@@ -84,10 +74,6 @@ const QUARTO_RECORD_FILE: &str = "quarto-record.json";
 const QUARTO_FILES_DIR: &str = "files";
 const MAX_RECOVERED_QUARTO_JOBS: usize = 128;
 const MAX_RECOVERED_QUARTO_BYTES: usize = 512 * 1024 * 1024;
-
-/// Connection attempts allowed per source IP per rolling minute.
-const CONNECT_RATE_LIMIT: usize = 5;
-const CONNECT_RATE_WINDOW: Duration = Duration::from_secs(60);
 
 /// What executes one job and reports what the machine can do. `service.rs`
 /// only ever sees this trait, never `discovery`/`native` directly, so a
@@ -424,28 +410,12 @@ struct DurableQuartoFile {
     storage: String,
 }
 
-const PAIR_REQUEST_TTL: Duration = Duration::from_secs(120);
-
-struct PendingPair {
-    origin: String,
-    challenge: String,
-    /// Where the consent result page sends the browser back when there is
-    /// no opener to poll claim for it. Required, and checked against the
-    /// same origin as every other field of the pending entry.
-    return_to: String,
-    expires: Instant,
-    token: Option<(String, i64)>,
-    asked: bool,
-    refused: bool,
-}
-
 pub(super) struct Inner {
     pub(super) state_home: PathBuf,
     folder_dialog: Mutex<()>,
     backups: Arc<backups::BackupManager>,
     instance: String,
     port: u16,
-    pub(super) pairing: PairingStore,
     quarto_bindings: BindingStore,
     previews: Mutex<super::preview::Previews>,
     runner: Arc<dyn Runner>,
@@ -454,14 +424,17 @@ pub(super) struct Inner {
     work: Notify,
     /// `<cache_home>/librepaper/local/jobs`; each job gets `<jobs>/<id>/`.
     jobs_root: PathBuf,
-    connect_attempts: Mutex<HashMap<String, VecDeque<Instant>>>,
-    pending_pairs: Mutex<HashMap<String, PendingPair>>,
     /// Every sidebar assistant session this companion is driving, one
     /// supervised tokio task per (document, conversation) pair. See
     /// `crate::assistant::registry`.
     pub(super) assistant_sessions: crate::assistant::registry::SessionRegistry,
-    pub(super) approvals: ApprovalBroker,
-    control: tokio::sync::Mutex<Option<control::ControlAuth>>,
+    /// The one credential that opens this service, and the one origin whose
+    /// pages may manage the machine. Created when the service is built.
+    control: control::ControlAuth,
+    /// Serialises the steps that must not interleave with revoking a binding
+    /// or starting a job or preview: a job and a preview each check the
+    /// other before they begin, and a workspace sync checks its binding.
+    admission: Mutex<()>,
 }
 
 /// The running local service: owns the job table and the background worker
@@ -479,60 +452,35 @@ impl LocalService {
     /// for bounded retry/recovery; interrupted and unknown workspaces are
     /// removed here and are never resumed.
     ///
-    /// The same service, additionally admitting the hosted binding for every
-    /// document and executing it in a workspace under `base`. The runner
-    /// handed in must have been built with the same base. `fixed_code` is
-    /// the pairing code as for `new`; the service inside `librepaper admin serve`
-    /// passes none, since it pairs through its consent page alone.
-    pub fn with_hosted_workspaces_and_code(
+    /// Every document gets the hosted binding, executed in a workspace under
+    /// `base`; the runner handed in must have been built with the same base.
+    /// Fails when the local credential cannot be saved or the configured
+    /// server is invalid.
+    pub fn with_hosted_workspaces(
         port: u16,
         instance: String,
         state_home: &std::path::Path,
         cache_home: &std::path::Path,
         runner: Arc<dyn Runner>,
-        fixed_code: Option<String>,
         base: PathBuf,
-    ) -> Self {
-        Self::build(
-            port,
-            instance,
-            state_home,
-            cache_home,
-            runner,
-            fixed_code,
-            Some(base),
-        )
-    }
-
-    fn build(
-        port: u16,
-        instance: String,
-        state_home: &std::path::Path,
-        cache_home: &std::path::Path,
-        runner: Arc<dyn Runner>,
-        fixed_code: Option<String>,
-        hosted: Option<PathBuf>,
-    ) -> Self {
+    ) -> Result<Self, String> {
         let jobs_root = cache_home.join("librepaper").join("local").join("jobs");
         let _ = std::fs::create_dir_all(&jobs_root);
         let recovered = recover_quarto_jobs(&jobs_root);
+        let control = control::ControlAuth::create(state_home, &instance)?;
         // Any session left `working` by a previous companion process is
         // reconciled to `interrupted` before this companion serves its first
         // assistant route, mirroring `recover_state`'s own semantics rather
         // than replaying it. See `SessionRegistry::recover_at_startup`.
         crate::assistant::registry::SessionRegistry::recover_at_startup(state_home);
         super::integrations::init(state_home);
-        let mut quarto_bindings = BindingStore::new(state_home);
-        if let Some(base) = hosted {
-            quarto_bindings = quarto_bindings.with_hosted_workspaces(base);
-        }
+        let quarto_bindings = BindingStore::new(state_home).with_hosted_workspaces(base);
         let inner = Arc::new(Inner {
             state_home: state_home.to_path_buf(),
             folder_dialog: Mutex::new(()),
             backups: Arc::new(backups::BackupManager::new(state_home)),
             instance,
             port,
-            pairing: PairingStore::new(state_home, fixed_code),
             quarto_bindings,
             previews: Mutex::new(Default::default()),
             runner,
@@ -540,18 +488,16 @@ impl LocalService {
             queue: Mutex::new(VecDeque::new()),
             work: Notify::new(),
             jobs_root,
-            connect_attempts: Mutex::new(HashMap::new()),
-            pending_pairs: Mutex::new(HashMap::new()),
             assistant_sessions: crate::assistant::registry::SessionRegistry::new(
                 state_home.to_path_buf(),
             ),
-            approvals: ApprovalBroker::default(),
-            control: tokio::sync::Mutex::new(None),
+            control,
+            admission: Mutex::new(()),
         });
         tokio::spawn(run_worker(inner.clone()));
         tokio::spawn(run_reaper(inner.clone()));
         backups::spawn_scheduler(inner.clone());
-        LocalService { inner }
+        Ok(LocalService { inner })
     }
 
     pub async fn stop_previews(&self) {
@@ -566,47 +512,6 @@ impl LocalService {
         Router::new()
             .fallback(handle)
             .with_state(self.inner.clone())
-    }
-
-    /// Create the per-instance machine settings credential and return the
-    /// trusted app Settings URL. The credential stays in the URL fragment and
-    /// in its mode-0600 local file; no HTTP response exposes it.
-    pub async fn enable_control_panel(&self) -> Result<String, String> {
-        let auth = control::ControlAuth::create(&self.inner.state_home, &self.inner.instance)?;
-        let url = auth.settings_url(self.inner.port)?;
-        *self.inner.control.lock().await = Some(auth);
-        #[cfg(not(test))]
-        {
-            let state_home = self.inner.state_home.clone();
-            let port = self.inner.port;
-            let instance = self.inner.instance.clone();
-            self.inner.approvals.set_opener(Some(Arc::new(move || {
-                if let Err(error) = super::lifecycle::open_settings(&state_home, port, &instance) {
-                    eprintln!("could not open LibrePaper Settings: {error}");
-                }
-            })));
-        }
-        #[cfg(test)]
-        self.inner.approvals.set_opener(Some(Arc::new(|| {})));
-        Ok(url)
-    }
-
-    /// Explicit local Settings launch entry used by desktop integration.
-    pub async fn open_control_panel(&self) -> Result<(), String> {
-        if self.inner.control.lock().await.is_none() {
-            self.enable_control_panel().await?;
-        }
-        super::lifecycle::open_settings(
-            &self.inner.state_home,
-            self.inner.port,
-            &self.inner.instance,
-        )
-    }
-
-    /// Resolve any in-flight consent handlers as denied before graceful
-    /// service shutdown, so they cannot hold the listener open until timeout.
-    pub async fn deny_pending_approvals(&self) {
-        self.inner.approvals.deny_all();
     }
 }
 
@@ -947,12 +852,11 @@ async fn run_reaper(inner: Arc<Inner>) {
     let mut ticker = tokio::time::interval(Duration::from_secs(30));
     loop {
         ticker.tick().await;
-        let active_pairings = inner.pairing.active_pairings();
         inner
             .previews
             .lock()
             .await
-            .reap(&active_pairings, &inner.quarto_bindings)
+            .reap(&inner.quarto_bindings)
             .await;
         let mut jobs = inner.jobs.lock().await;
         let now = Instant::now();
@@ -979,59 +883,48 @@ async fn handle(
     let headers = request.headers().clone();
     let method = request.method().clone();
     let path = request.uri().path().to_string();
-    let origin = header_str(&headers, "origin").map(str::to_string);
 
     if !host_allowed(&headers, inner.port) {
         // Answered before anything else is even parsed: a request that lies
         // about its own Host is exactly what DNS rebinding looks like, and
         // gets nothing back that would help it try again more precisely.
-        let response = plain(403, "bad host");
-        return if path == "/companion" || path.starts_with("/companion/") {
-            control::apply_headers(response, &path)
-        } else {
-            response
-        };
+        return with_security_headers(plain(403, "bad host"), &path);
     }
+
+    // Browsers never reach the companion directly: the desktop shell does,
+    // and it names the page it speaks for itself. A request that still
+    // carries what a browser adds is a page going around the shell.
+    if headers.contains_key("origin") || headers.contains_key("sec-fetch-site") {
+        let response = write_json(
+            403,
+            &json!({"error": "browsers cannot call the companion directly"}),
+        );
+        return with_security_headers(response, &path);
+    }
+    let origin = header_str(&headers, "x-librepaper-origin").map(str::to_string);
 
     if path == "/companion" || path.starts_with("/companion/") {
-        let response = control::handle(&inner, &method, &path, &headers, peer, request).await;
-        return control::apply_headers(response, &path);
+        let response = control::handle(
+            &inner,
+            &method,
+            &path,
+            &headers,
+            origin.as_deref(),
+            peer,
+            request,
+        )
+        .await;
+        return with_security_headers(response, &path);
     }
 
-    let route = path
-        .strip_prefix(BASE_PATH)
-        .map(|rest| rest.trim_matches('/').to_string());
-    let is_open_route = matches!(
-        route.as_deref(),
-        Some("health") | Some("pair/request") | Some("connect/claim")
-    );
-    let is_preflight = method == Method::OPTIONS;
-
-    let response = if is_preflight {
-        Response::new(Body::empty())
-    } else {
-        match route.as_ref() {
-            None => plain(404, "not found"),
-            Some(rest) => {
-                let segs: Vec<&str> = rest.split('/').filter(|s| !s.is_empty()).collect();
-                dispatch(
-                    &inner,
-                    &method,
-                    &segs,
-                    &headers,
-                    origin.as_deref(),
-                    peer,
-                    request,
-                )
-                .await
-            }
+    let response = match path.strip_prefix(BASE_PATH) {
+        None => plain(404, "not found"),
+        Some(rest) => {
+            let segs: Vec<&str> = rest.split('/').filter(|s| !s.is_empty()).collect();
+            dispatch(&inner, &method, &segs, &headers, origin.as_deref(), request).await
         }
     };
-
-    let allow_origin = origin
-        .as_deref()
-        .is_some_and(|o| is_open_route || inner.pairing.has_live_pairing(o));
-    apply_common_headers(response, origin.as_deref(), allow_origin, is_preflight)
+    with_security_headers(response, &path)
 }
 
 async fn dispatch(
@@ -1040,24 +933,10 @@ async fn dispatch(
     segs: &[&str],
     headers: &HeaderMap,
     origin: Option<&str>,
-    peer: SocketAddr,
     request: Request<Body>,
 ) -> Reply {
     match segs {
         ["health"] if *method == Method::GET => handle_health(inner),
-        ["connect", "claim"] if *method == Method::POST => {
-            consent::handle_pair_claim(inner, request).await
-        }
-        ["pair", "request"] if *method == Method::POST => {
-            consent::handle_pair_request(inner, peer, request).await
-        }
-        // Asked only by this computer's own link handler, never by a page.
-        ["pair", "status"] if *method == Method::GET && origin.is_none() => {
-            consent::handle_pair_status(inner, request).await
-        }
-        ["disconnect"] if *method == Method::POST => {
-            consent::handle_disconnect(inner, headers, origin).await
-        }
         ["bindings"] if *method == Method::GET => {
             handle_bindings_list(inner, headers, origin, request).await
         }
@@ -1086,8 +965,7 @@ async fn dispatch(
             handle_binding_revoke(inner, headers, origin, id).await
         }
         // Connecting an agent. Reading what is installed is a GET; every
-        // route that acts on a document credential is a POST from a paired
-        // origin, so a drive-by page cannot wire up an agent.
+        // route that acts on a document credential is a POST.
         ["agents"] if *method == Method::GET => handle_agents_list(inner, headers, origin).await,
         ["assistant"] if *method == Method::POST => {
             super::assistant::handle_assistant_start(inner, headers, origin, request).await
@@ -1107,17 +985,9 @@ async fn dispatch(
         ["capabilities", "rescan"] if *method == Method::POST => {
             handle_capabilities(inner, headers, origin, true).await
         }
-        // Settings routes (bearer authenticated)
-        ["settings"] if *method == Method::GET => handle_settings(inner, headers, origin).await,
-        ["startup"] if *method == Method::POST => {
-            handle_startup(inner, headers, origin, request).await
-        }
-        ["quit"] if *method == Method::POST => handle_quit(inner, headers, origin).await,
+        // Integration route (bearer authenticated)
         ["integrations", name] if *method == Method::PUT => {
             handle_integration_set(inner, headers, origin, name, request).await
-        }
-        ["approve"] if *method == Method::POST => {
-            handle_approve(inner, peer, headers, request).await
         }
         ["zotero", "search"] if *method == Method::GET => {
             handle_zotero_search(inner, headers, origin, request).await
@@ -1272,10 +1142,7 @@ async fn handle_binding_revoke(
     if let Err(response) = authenticate(inner, headers, origin) {
         return response;
     }
-    let _admission = inner.pairing.admission_gate().lock().await;
-    if let Err(response) = authenticate(inner, headers, origin) {
-        return response;
-    }
+    let _admission = inner.admission.lock().await;
     let revoked = inner
         .quarto_bindings
         .revoke_origin_binding(id, origin.unwrap_or_default());
@@ -1298,7 +1165,7 @@ async fn handle_binding_folder(
         Ok(body) => body,
         Err(response) => return response,
     };
-    let Some(project) = pairing::valid_project(&body.project) else {
+    let Some(project) = store::valid_project(&body.project) else {
         return write_json(400, &json!({"error": "binding needs a valid project"}));
     };
     if let Err(error) = crate::local::quarto::validate_binding_entrypoint(&body.entrypoint) {
@@ -1317,11 +1184,6 @@ async fn handle_binding_folder(
         Ok(root) => root,
         Err(error) => return write_json(400, &json!({"error": error})),
     };
-    // Permission may have been revoked while the user considered the dialog.
-    let _admission = inner.pairing.admission_gate().lock().await;
-    if authenticate(inner, headers, origin).is_err() {
-        return write_json(401, &json!({"error": "This site is no longer connected."}));
-    }
     let binding = match inner.quarto_bindings.grant(
         origin.unwrap_or_default(),
         &project,
@@ -1358,139 +1220,12 @@ async fn handle_capabilities(
     }
     let capabilities = inner.runner.capabilities(refresh).await;
     let mut response = serde_json::to_value(capabilities).unwrap_or(Value::Null);
-    // The configured server's pairing also carries machine management.
-    let manage = match (origin, inner.control.lock().await.as_ref()) {
-        (Some(origin), Some(auth)) => auth.accepts_origin(origin),
-        _ => false,
-    };
+    // The configured server's pages also carry machine management.
+    let manage = origin.is_some_and(|origin| inner.control.accepts_origin(origin));
     if let Some(fields) = response.as_object_mut() {
         fields.insert("manage".into(), Value::Bool(manage));
     }
     write_json(200, &response)
-}
-
-/* ------------------------------------------------------ Settings routes */
-
-async fn handle_settings(inner: &Inner, headers: &HeaderMap, origin: Option<&str>) -> Reply {
-    if let Err(response) = authenticate(inner, headers, origin) {
-        return response;
-    }
-
-    let is_standalone = standalone(inner);
-
-    write_json(
-        200,
-        &json!({
-            "version": crate::VERSION,
-            "standalone": is_standalone,
-            "startup": if is_standalone { Some(super::lifecycle::startup_enabled()) } else { None },
-            "integrations": super::integrations::all(),
-        }),
-    )
-}
-
-#[derive(serde::Deserialize)]
-struct StartupRequest {
-    enabled: bool,
-}
-
-async fn handle_startup(
-    inner: &Inner,
-    headers: &HeaderMap,
-    origin: Option<&str>,
-    request: Request<Body>,
-) -> Reply {
-    if let Err(response) = authenticate(inner, headers, origin) {
-        return response;
-    }
-
-    if !standalone(inner) {
-        return write_json(
-            409,
-            &json!({"error": "startup can only be set on standalone installations"}),
-        );
-    }
-
-    let body = match read_json_body::<StartupRequest>(request).await {
-        Ok(b) => b,
-        Err(response) => return response,
-    };
-
-    let approval = super::approval::Approval {
-        title: "Startup setting".to_string(),
-        message: if body.enabled {
-            "Start companion at login?".to_string()
-        } else {
-            "Disable startup at login?".to_string()
-        },
-        allow_label: if body.enabled {
-            "Start at login"
-        } else {
-            "Disable"
-        }
-        .to_string(),
-        scope: origin.map(str::to_string),
-    };
-
-    let decision = decision_to_result(
-        inner
-            .approvals
-            .ask(&approval, Duration::from_secs(300))
-            .await,
-    );
-    match decision {
-        Ok(()) => {
-            let _admission = inner.pairing.admission_gate().lock().await;
-            if authenticate(inner, headers, origin).is_err() {
-                return write_json(401, &json!({"error": "This site is no longer connected."}));
-            }
-            match super::lifecycle::set_startup(body.enabled) {
-                Ok(()) => write_json(200, &json!({})),
-                Err(error) => write_json(500, &json!({"error": error})),
-            }
-        }
-        Err(response) => response,
-    }
-}
-
-async fn handle_quit(inner: &Inner, headers: &HeaderMap, origin: Option<&str>) -> Reply {
-    if let Err(response) = authenticate(inner, headers, origin) {
-        return response;
-    }
-
-    if !standalone(inner) {
-        return write_json(
-            409,
-            &json!({"error": "quit can only be called on standalone installations"}),
-        );
-    }
-
-    let approval = super::approval::Approval {
-        title: "Quit companion".to_string(),
-        message: "Stop the companion app?".to_string(),
-        allow_label: "Quit".to_string(),
-        scope: origin.map(str::to_string),
-    };
-
-    let decision = decision_to_result(
-        inner
-            .approvals
-            .ask(&approval, Duration::from_secs(300))
-            .await,
-    );
-    match decision {
-        Ok(()) => {
-            let _admission = inner.pairing.admission_gate().lock().await;
-            if authenticate(inner, headers, origin).is_err() {
-                return write_json(401, &json!({"error": "This site is no longer connected."}));
-            }
-            match super::lifecycle::request_stop(&inner.state_home) {
-                Ok(()) => write_json(200, &json!({})),
-                Err(error) => write_json(500, &json!({"error": error})),
-            }
-        }
-        Err(response) => response,
-    }
 }
 
 #[derive(serde::Deserialize)]
@@ -1499,6 +1234,8 @@ struct IntegrationRequest {
     args: Vec<String>,
 }
 
+/// Changes the Quarto or Calepin command. The desktop shell asks the user
+/// before it forwards this request, so the service applies it directly.
 async fn handle_integration_set(
     inner: &Inner,
     headers: &HeaderMap,
@@ -1539,92 +1276,9 @@ async fn handle_integration_set(
         return write_json(200, &json!(custom));
     }
 
-    let origin_name = origin.unwrap_or("unknown");
-    let tool = match which {
-        super::integrations::Integration::Quarto => "Quarto",
-        super::integrations::Integration::Calepin => "Calepin",
-    };
-    let message = if custom == super::integrations::Custom::default() {
-        format!("{origin_name} wants LibrePaper to restore the default {tool} command.")
-    } else {
-        let program = match &custom.path {
-            Some(path) => path.display().to_string(),
-            None => format!("{} (found on PATH)", which.as_str()),
-        };
-        let command = std::iter::once(program)
-            .chain(custom.args.iter().cloned())
-            .collect::<Vec<_>>()
-            .join(" ");
-        format!("{origin_name} wants LibrePaper to run {tool} as:\n\n{command}\n\nOnly allow this if you asked for it.")
-    };
-
-    let approval = super::approval::Approval {
-        title: format!("Change {tool} command"),
-        message,
-        allow_label: "Use it".to_string(),
-        scope: origin.map(str::to_string),
-    };
-
-    let decision = decision_to_result(
-        inner
-            .approvals
-            .ask(&approval, Duration::from_secs(300))
-            .await,
-    );
-    match decision {
-        Ok(()) => {
-            let _admission = inner.pairing.admission_gate().lock().await;
-            if authenticate(inner, headers, origin).is_err() {
-                return write_json(401, &json!({"error": "This site is no longer connected."}));
-            }
-            match super::integrations::set(which, custom.clone()) {
-                Ok(()) => write_json(200, &json!(custom)),
-                Err(error) => write_json(500, &json!({"error": error})),
-            }
-        }
-        Err(response) => response,
-    }
-}
-
-async fn handle_approve(
-    inner: &Inner,
-    peer: SocketAddr,
-    headers: &HeaderMap,
-    request: Request<Body>,
-) -> Reply {
-    if !peer.ip().is_loopback() {
-        return write_json(403, &json!({"error": "loopback only"}));
-    }
-
-    let has_origin = headers.get("origin").is_some();
-    if has_origin {
-        return write_json(403, &json!({"error": "loopback only"}));
-    }
-
-    let token = bearer_token(headers).unwrap_or_default();
-    let control = inner.control.lock().await;
-    if !control
-        .as_ref()
-        .is_some_and(|auth| auth.accepts(&token, &inner.instance))
-    {
-        return write_json(401, &json!({"error":"invalid control credential"}));
-    }
-    drop(control);
-
-    #[derive(serde::Deserialize)]
-    struct ApprovalRequest {
-        code: String,
-    }
-
-    let body = match read_json_body::<ApprovalRequest>(request).await {
-        Ok(b) => b,
-        Err(response) => return response,
-    };
-
-    if inner.approvals.approve_code(&body.code) {
-        write_json(200, &json!({}))
-    } else {
-        write_json(404, &json!({"error": "code not found"}))
+    match super::integrations::set(which, custom.clone()) {
+        Ok(()) => write_json(200, &json!(custom)),
+        Err(error) => write_json(500, &json!({"error": error})),
     }
 }
 
@@ -1729,27 +1383,46 @@ async fn read_multipart_upload(
 
 /* ------------------------------------------------------------- helpers */
 
-/// Checks a request's `Authorization: Bearer <token>` against the `Origin`
-/// header the same token was issued to.
-/// The one gate every route but `health`/`connect` shares.
+/// Whether the request carries the per-instance credential.
+#[allow(clippy::result_large_err)] // the error is a response
+pub(super) fn check_credential(inner: &Inner, headers: &HeaderMap) -> Result<(), Reply> {
+    let token = bearer_token(headers).unwrap_or_default();
+    if token.is_empty() {
+        return Err(rejected_credential("missing bearer token"));
+    }
+    if inner.control.accepts(&token, &inner.instance) {
+        Ok(())
+    } else {
+        Err(rejected_credential("unauthorized"))
+    }
+}
+
+/// A 401 for the service's own credential, marked so the desktop shell can
+/// tell it from other 401s.
+fn rejected_credential(message: &str) -> Reply {
+    let mut response = write_json(401, &json!({"error": message}));
+    // The desktop shell re-reads the service's credential only after this header: a 401 from a route of its own (an agent's token) is passed to the page.
+    set(&mut response, "x-librepaper-credential", "rejected");
+    response
+}
+
+/// The one gate every route but `health` shares: the request must carry the
+/// per-instance credential as `Authorization: Bearer <token>`, and must name
+/// the page it speaks for as a valid origin in `X-LibrePaper-Origin`, which
+/// `handle` passes in as `origin`.
 #[allow(clippy::result_large_err)] // as `server.rs`'s `read_upload`: the error is a response
 pub(super) fn authenticate(
     inner: &Inner,
     headers: &HeaderMap,
     origin: Option<&str>,
 ) -> Result<(), Reply> {
-    let Some(origin) = origin else {
-        return Err(write_json(403, &json!({"error": "missing Origin header"})));
-    };
-    let token = bearer_token(headers).unwrap_or_default();
-    if token.is_empty() {
-        return Err(write_json(401, &json!({"error": "missing bearer token"})));
+    if origin.and_then(store::valid_origin).is_none() {
+        return Err(write_json(
+            403,
+            &json!({"error": "missing or invalid X-LibrePaper-Origin header"}),
+        ));
     }
-    if inner.pairing.authenticate(origin, &token) {
-        Ok(())
-    } else {
-        Err(write_json(401, &json!({"error": "unauthorized"})))
-    }
+    check_credential(inner, headers)
 }
 
 /// The validated `?project=` query parameter, for the routes that carry no
@@ -1758,32 +1431,13 @@ pub(super) fn project_query(uri: &axum::http::Uri) -> Option<String> {
     let query = uri.query()?;
     url::form_urlencoded::parse(query.as_bytes())
         .find(|(name, _)| name == "project")
-        .and_then(|(_, value)| pairing::valid_project(&value))
+        .and_then(|(_, value)| store::valid_project(&value))
 }
 
 /// Whether `entry` belongs to the requesting origin: the whole scope of a
-/// lookup by id, since a pairing covers every project of its origin.
+/// lookup by id, since a request covers every project of its origin.
 fn owned_by(entry: &JobEntry, origin: Option<&str>) -> bool {
-    pairing::normalize_origin(&entry.origin)
-        == pairing::normalize_origin(origin.unwrap_or_default())
-}
-
-fn standalone(inner: &Inner) -> bool {
-    let pairing = super::pairing::PairingStore::new(&inner.state_home, None);
-    pairing
-        .read_service()
-        .is_some_and(|state| state.instance == inner.instance && state.pid == std::process::id())
-}
-
-#[allow(clippy::result_large_err)] // the error is a response
-fn decision_to_result(decision: super::approval::Decision) -> Result<(), Reply> {
-    match decision {
-        super::approval::Decision::Allowed => Ok(()),
-        super::approval::Decision::Denied => Err(write_json(
-            403,
-            &json!({"error": "Not approved on this computer."}),
-        )),
-    }
+    store::normalize_origin(&entry.origin) == store::normalize_origin(origin.unwrap_or_default())
 }
 
 pub(super) fn bearer_token(headers: &HeaderMap) -> Option<String> {
@@ -1848,43 +1502,14 @@ fn set(response: &mut Reply, name: &'static str, value: &str) {
     }
 }
 
-fn apply_common_headers(
-    mut response: Reply,
-    origin: Option<&str>,
-    allow_origin: bool,
-    is_preflight: bool,
-) -> Reply {
+/// Headers every answer carries. The `/companion` routes get the stricter
+/// set `control::apply_headers` adds; neither has CORS, because only the
+/// desktop shell talks to this service and it answers the page itself.
+fn with_security_headers(mut response: Reply, path: &str) -> Reply {
+    if path == "/companion" || path.starts_with("/companion/") {
+        return control::apply_headers(response, path);
+    }
     set(&mut response, "cache-control", "no-store");
-    if is_preflight && response.status() == StatusCode::OK {
-        *response.status_mut() = StatusCode::NO_CONTENT;
-    }
-    if let Some(origin) = origin {
-        set(&mut response, "vary", "Origin");
-        if allow_origin {
-            set(&mut response, "access-control-allow-origin", origin);
-            set(
-                &mut response,
-                "access-control-allow-headers",
-                "authorization, content-type",
-            );
-            if is_preflight {
-                // Without this a preflight allows only the simple methods,
-                // and the browser refuses the PUT that syncs a workspace and
-                // the DELETE that stops a preview before sending either.
-                set(
-                    &mut response,
-                    "access-control-allow-methods",
-                    "GET, POST, PUT, DELETE, OPTIONS",
-                );
-                set(
-                    &mut response,
-                    "access-control-allow-private-network",
-                    "true",
-                );
-                set(&mut response, "access-control-max-age", "600");
-            }
-        }
-    }
     response
 }
 
@@ -1930,13 +1555,10 @@ async fn handle_preview(
     if let Err(e) = authenticate(inner, headers, origin) {
         return e;
     }
-    let origin = pairing::normalize_origin(origin.unwrap_or_default());
+    let origin = store::normalize_origin(origin.unwrap_or_default());
     if let Some(id) = id {
         let mut previews = inner.previews.lock().await;
-        let active_pairings = inner.pairing.active_pairings();
-        previews
-            .reap(&active_pairings, &inner.quarto_bindings)
-            .await;
+        previews.reap(&inner.quarto_bindings).await;
         let Some(preview) = previews.0.get_mut(id).filter(|p| p.origin == origin) else {
             return plain(404, "preview not found");
         };
@@ -1981,13 +1603,10 @@ async fn handle_preview(
         },
         Err(e) => return e,
     };
-    if let Err(response) = authenticate(inner, headers, Some(&origin)) {
-        return response;
-    }
-    if pairing::normalize_origin(&job.origin) != origin {
+    if store::normalize_origin(&job.origin) != origin {
         return plain(403, "preview scope mismatch");
     }
-    if pairing::valid_project(&job.project).is_none() {
+    if store::valid_project(&job.project).is_none() {
         return plain(400, "invalid preview request");
     }
     let mut job = job;
@@ -2008,15 +1627,9 @@ async fn handle_preview(
             return plain(400, "preview source snapshot does not match its inputs");
         }
     }
-    let _admission = inner.pairing.admission_gate().lock().await;
-    if let Err(response) = authenticate(inner, headers, Some(&origin)) {
-        return response;
-    }
+    let _admission = inner.admission.lock().await;
     let mut previews = inner.previews.lock().await;
-    let active_pairings = inner.pairing.active_pairings();
-    previews
-        .reap(&active_pairings, &inner.quarto_bindings)
-        .await;
+    previews.reap(&inner.quarto_bindings).await;
     if inner.jobs.lock().await.values().any(|entry| {
         entry.is_pending()
             && entry.request.inputs.quarto().is_some_and(|q| {
@@ -2054,12 +1667,9 @@ async fn handle_preview_page(
     if let Err(e) = authenticate(inner, headers, origin) {
         return e;
     }
-    let origin = pairing::normalize_origin(origin.unwrap_or_default());
+    let origin = store::normalize_origin(origin.unwrap_or_default());
     let mut previews = inner.previews.lock().await;
-    let active_pairings = inner.pairing.active_pairings();
-    previews
-        .reap(&active_pairings, &inner.quarto_bindings)
-        .await;
+    previews.reap(&inner.quarto_bindings).await;
     let Some(preview) = previews.0.get(id).filter(|p| p.origin == origin) else {
         return plain(404, "preview not found");
     };
@@ -2445,244 +2055,222 @@ mod idempotency_tests {
     }
 }
 
+/// Builders shared by the test modules that drive a whole `Inner`.
 #[cfg(test)]
-mod settings_tests {
+pub(super) mod test_support {
     use super::*;
 
-    async fn test_inner() -> (Arc<Inner>, tempfile::TempDir, tempfile::TempDir) {
-        let state_home = tempfile::tempdir().unwrap();
-        let cache_home = tempfile::tempdir().unwrap();
-        let inner = Arc::new(Inner {
-            state_home: state_home.path().to_path_buf(),
+    pub(in crate::local::service) const PORT: u16 = 8763;
+
+    pub(in crate::local::service) async fn inner(
+        state_home: &Path,
+        cache_home: &Path,
+    ) -> Arc<Inner> {
+        let jobs_root = cache_home.join("jobs");
+        std::fs::create_dir_all(&jobs_root).unwrap();
+        let instance = "test-instance".to_string();
+        Arc::new(Inner {
+            state_home: state_home.to_path_buf(),
             folder_dialog: Mutex::new(()),
-            backups: Arc::new(backups::BackupManager::new(state_home.path())),
-            instance: "test-instance".to_string(),
-            port: 8763,
-            pairing: PairingStore::new(state_home.path(), None),
-            quarto_bindings: BindingStore::new(state_home.path()),
+            backups: Arc::new(backups::BackupManager::new(state_home)),
+            control: control::ControlAuth::create(state_home, &instance).unwrap(),
+            instance,
+            port: PORT,
+            quarto_bindings: BindingStore::new(state_home),
             previews: Mutex::new(Default::default()),
             runner: Arc::new(FakeRunner::default()),
             jobs: Mutex::new(Default::default()),
             queue: Mutex::new(VecDeque::new()),
             work: Notify::new(),
-            jobs_root: cache_home.path().join("jobs"),
-            connect_attempts: Mutex::new(HashMap::new()),
-            pending_pairs: Mutex::new(HashMap::new()),
+            jobs_root,
             assistant_sessions: crate::assistant::registry::SessionRegistry::new(
-                state_home.path().to_path_buf(),
+                state_home.to_path_buf(),
             ),
-            approvals: ApprovalBroker::default(),
-            control: tokio::sync::Mutex::new(None),
-        });
+            admission: Mutex::new(()),
+        })
+    }
+
+    /// The credential `librepaper local endpoint` would print for `inner`.
+    pub(in crate::local::service) fn credential(inner: &Inner) -> String {
+        control::token_for_instance(&inner.state_home, &inner.instance).unwrap()
+    }
+
+    /// The origin allowed to manage the machine, as the shell would send it.
+    pub(in crate::local::service) fn origin(inner: &Inner) -> String {
+        inner.control.origin().to_string()
+    }
+
+    /// Request headers carrying the credential and nothing else.
+    pub(in crate::local::service) fn bearer(inner: &Inner) -> HeaderMap {
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            "authorization",
+            HeaderValue::from_str(&format!("Bearer {}", credential(inner))).unwrap(),
+        );
+        headers
+    }
+}
+
+#[cfg(test)]
+mod settings_tests {
+    use super::test_support::{
+        bearer, credential, inner as build_inner, origin as manage_origin, PORT,
+    };
+    use super::*;
+
+    async fn test_inner() -> (Arc<Inner>, tempfile::TempDir, tempfile::TempDir) {
+        let state_home = tempfile::tempdir().unwrap();
+        let cache_home = tempfile::tempdir().unwrap();
+        let inner = build_inner(state_home.path(), cache_home.path()).await;
         (inner, state_home, cache_home)
     }
 
-    #[tokio::test]
-    async fn backup_routes_require_the_pairing_for_the_request_origin() {
-        let (inner, state_home, _cache_home) = test_inner().await;
-        let (token, _) = inner
-            .pairing
-            .issue("https://paper.example", "test")
-            .unwrap();
-        let mut headers = HeaderMap::new();
-        headers.insert(
-            axum::http::header::AUTHORIZATION,
-            HeaderValue::from_str(&format!("Bearer {token}")).unwrap(),
-        );
-        assert!(authenticate(&inner, &headers, Some("https://paper.example")).is_ok());
-        assert!(authenticate(&inner, &headers, Some("https://other.example")).is_err());
-        assert!(authenticate(&inner, &HeaderMap::new(), Some("https://paper.example")).is_err());
-        drop(state_home);
+    /// One request through `handle`, as the desktop shell would send it.
+    async fn send(inner: &Arc<Inner>, request: Request<Body>) -> Reply {
+        let peer: SocketAddr = "127.0.0.1:12345".parse().unwrap();
+        handle(State(inner.clone()), ConnectInfo(peer), request).await
+    }
+
+    fn shell_request(inner: &Inner, path: &str, origin: &str) -> axum::http::request::Builder {
+        Request::get(path)
+            .header("host", format!("127.0.0.1:{PORT}"))
+            .header("authorization", format!("Bearer {}", credential(inner)))
+            .header("x-librepaper-origin", origin)
     }
 
     #[tokio::test]
-    async fn post_approve_with_origin_header_is_forbidden() {
+    async fn routes_need_the_credential_and_a_valid_origin() {
         let (inner, _state_home, _cache_home) = test_inner().await;
-        let request = Request::post("/approve")
-            .header("origin", "https://example.test")
-            .header("content-type", "application/json")
-            .body(Body::from(r#"{"code":"123456"}"#))
-            .expect("request");
-
-        let peer = "127.0.0.1:12345".parse().expect("addr");
-        let headers = request.headers().clone();
-        let response = handle_approve(&inner, peer, &headers, request).await;
-        assert_eq!(response.status(), StatusCode::FORBIDDEN);
-
-        super::super::approval::unscript();
-    }
-
-    #[tokio::test]
-    async fn cli_approval_requires_instance_control_credential() {
-        super::super::approval::unscript();
-        let (inner, state_home, _cache_home) = test_inner().await;
-        let auth = control::ControlAuth::create(state_home.path(), &inner.instance).unwrap();
-        let token = control::token_for_instance(state_home.path(), &inner.instance).unwrap();
-        *inner.control.lock().await = Some(auth);
-        let (site_token, _) = inner
-            .pairing
-            .issue("https://paper.example", "test")
-            .unwrap();
-        let peer = "127.0.0.1:12345".parse().unwrap();
-
+        let headers = bearer(&inner);
+        assert!(authenticate(&inner, &headers, Some("https://paper.example")).is_ok());
+        assert!(authenticate(&inner, &headers, Some("http://127.0.0.1:5173")).is_ok());
+        for bad_origin in [
+            None,
+            Some("not an origin"),
+            Some("https://paper.example/path"),
+        ] {
+            let response = authenticate(&inner, &headers, bad_origin).unwrap_err();
+            assert_eq!(response.status(), StatusCode::FORBIDDEN);
+        }
+        let missing =
+            authenticate(&inner, &HeaderMap::new(), Some("https://paper.example")).unwrap_err();
+        assert_eq!(missing.status(), StatusCode::UNAUTHORIZED);
+        assert_eq!(
+            missing.headers().get("x-librepaper-credential").unwrap(),
+            "rejected"
+        );
         let mut wrong = HeaderMap::new();
         wrong.insert(
             "authorization",
-            HeaderValue::from_static("Bearer invalid-control-credential"),
+            HeaderValue::from_static("Bearer not-the-credential"),
         );
-        let mut site = HeaderMap::new();
-        site.insert(
-            "authorization",
-            HeaderValue::from_str(&format!("Bearer {site_token}")).unwrap(),
-        );
-        for headers in [HeaderMap::new(), wrong, site] {
-            let request = Request::post("/approve")
-                .header("content-type", "application/json")
-                .body(Body::from(r#"{"code":"123456"}"#))
-                .unwrap();
-            let response = handle_approve(&inner, peer, &headers, request).await;
-            assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
-        }
-
-        let approval = super::super::approval::Approval {
-            title: "test".into(),
-            message: "test".into(),
-            allow_label: "Allow".into(),
-            scope: None,
-        };
-        let broker = inner.approvals.clone();
-        let waiting =
-            tokio::spawn(async move { broker.ask(&approval, Duration::from_secs(5)).await });
-        tokio::task::yield_now().await;
-        let code = inner
-            .approvals
-            .codes_for_test()
-            .pop()
-            .expect("pending code");
-        let mut headers = HeaderMap::new();
-        headers.insert(
-            "authorization",
-            HeaderValue::from_str(&format!("Bearer {token}")).unwrap(),
-        );
-        let request = Request::post("/approve")
-            .header("content-type", "application/json")
-            .body(Body::from(json!({"code":code}).to_string()))
-            .unwrap();
-        let response = handle_approve(&inner, peer, &headers, request).await;
-        assert_eq!(response.status(), StatusCode::OK);
+        let wrong = authenticate(&inner, &wrong, Some("https://paper.example")).unwrap_err();
+        assert_eq!(wrong.status(), StatusCode::UNAUTHORIZED);
         assert_eq!(
-            waiting.await.unwrap(),
-            super::super::approval::Decision::Allowed
+            wrong.headers().get("x-librepaper-credential").unwrap(),
+            "rejected"
         );
     }
 
     #[tokio::test]
-    async fn assistant_start_rechecks_pairing_after_a_delayed_body() {
+    async fn a_browser_origin_or_fetch_metadata_header_is_refused_with_403() {
         let (inner, _state_home, _cache_home) = test_inner().await;
-        let origin = "https://paper.example";
-        let (token, _) = inner.pairing.issue(origin, "test").unwrap();
-        let mut headers = HeaderMap::new();
-        headers.insert("origin", HeaderValue::from_static("https://paper.example"));
-        headers.insert(
-            "authorization",
-            HeaderValue::from_str(&format!("Bearer {token}")).unwrap(),
-        );
-        let (started_tx, started_rx) = tokio::sync::oneshot::channel();
-        let (release_tx, release_rx) = tokio::sync::oneshot::channel::<String>();
-        let body_stream = futures_util::stream::once(async move {
-            let _ = started_tx.send(());
-            let text = release_rx.await.unwrap();
-            Ok::<_, std::io::Error>(axum::body::Bytes::from(text))
-        });
-        let request = Request::post("/assistant")
-            .header("content-type", "application/json")
-            .body(Body::from_stream(body_stream))
-            .unwrap();
-        let request_headers = headers.clone();
-        let service = inner.clone();
-        let pending = tokio::spawn(async move {
-            super::super::assistant::handle_assistant_start(
-                &service,
-                &request_headers,
-                Some(origin),
-                request,
+        for header in ["origin", "sec-fetch-site"] {
+            let request = shell_request(
+                &inner,
+                &format!("{BASE_PATH}/capabilities"),
+                "https://paper.example",
             )
+            .header(header, "https://paper.example")
+            .body(Body::empty())
+            .unwrap();
+            let response = send(&inner, request).await;
+            assert_eq!(response.status(), StatusCode::FORBIDDEN, "{header}");
+            let bytes = axum::body::to_bytes(response.into_body(), 4096)
+                .await
+                .unwrap();
+            let body: Value = serde_json::from_slice(&bytes).unwrap();
+            assert_eq!(body["error"], "browsers cannot call the companion directly");
+        }
+        // Even `health`, which needs no credential, is not for browsers.
+        let request = Request::get(format!("{BASE_PATH}/health"))
+            .header("host", format!("127.0.0.1:{PORT}"))
+            .header("origin", "https://paper.example")
+            .body(Body::empty())
+            .unwrap();
+        assert_eq!(send(&inner, request).await.status(), StatusCode::FORBIDDEN);
+    }
+
+    #[tokio::test]
+    async fn the_shell_with_the_credential_and_an_origin_is_served_without_cors() {
+        let (inner, _state_home, _cache_home) = test_inner().await;
+        let request = shell_request(
+            &inner,
+            &format!("{BASE_PATH}/capabilities"),
+            "https://paper.example",
+        )
+        .body(Body::empty())
+        .unwrap();
+        let response = send(&inner, request).await;
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(response.headers()["cache-control"], "no-store");
+        assert!(response
+            .headers()
+            .keys()
+            .all(|name| !name.as_str().starts_with("access-control-")));
+        let bytes = axum::body::to_bytes(response.into_body(), 1 << 20)
             .await
-        });
-        started_rx.await.unwrap();
-
-        let admission = inner.pairing.admission_gate().lock().await;
-        inner.pairing.revoke_checked(origin).unwrap();
-        drop(admission);
-        release_tx
-            .send(
-                json!({
-                    "link":"https://paper.example/document/paper#key=secret",
-                    "conversation":"conversation-1",
-                    "chat_token":"chat-token",
-                    "agent_token":"grant-token",
-                    "agent":"agent"
-                })
-                .to_string(),
-            )
             .unwrap();
-        let response = pending.await.unwrap();
-        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+        let body: Value = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(body["manage"], false);
+
+        // The configured server's pages also carry machine management.
+        let request = shell_request(
+            &inner,
+            &format!("{BASE_PATH}/capabilities"),
+            &manage_origin(&inner),
+        )
+        .body(Body::empty())
+        .unwrap();
+        let response = send(&inner, request).await;
+        let bytes = axum::body::to_bytes(response.into_body(), 1 << 20)
+            .await
+            .unwrap();
+        let body: Value = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(body["manage"], true);
     }
 
     #[tokio::test]
-    async fn job_upload_rechecks_pairing_after_a_delayed_body() {
+    async fn a_wrong_credential_is_401_and_health_needs_none() {
         let (inner, _state_home, _cache_home) = test_inner().await;
-        let origin = "https://paper.example";
-        let (token, _) = inner.pairing.issue(origin, "test").unwrap();
-        let mut headers = HeaderMap::new();
-        headers.insert("origin", HeaderValue::from_static("https://paper.example"));
-        headers.insert(
-            "authorization",
-            HeaderValue::from_str(&format!("Bearer {token}")).unwrap(),
-        );
-        let job = json!({
-            "protocol":2,"kind":"build","project":"paper","origin":origin,
-            "snapshot":"snapshot","generation":1,"builder":"typst",
-            "workspace":{"mode":"snapshot"},"entrypoint":"main.typ",
-            "output":"pdf","manifest":[]
-        });
-        let payload = format!(
-            "--control-test\r\nContent-Disposition: form-data; name=\"job\"\r\nContent-Type: application/json\r\n\r\n{}\r\n--control-test--\r\n",
-            job
-        );
-        let (started_tx, started_rx) = tokio::sync::oneshot::channel();
-        let (release_tx, release_rx) = tokio::sync::oneshot::channel::<String>();
-        let body_stream = futures_util::stream::once(async move {
-            let _ = started_tx.send(());
-            let text = release_rx.await.unwrap();
-            Ok::<_, std::io::Error>(axum::body::Bytes::from(text))
-        });
-        let request = Request::post("/jobs")
-            .header("content-type", "multipart/form-data; boundary=control-test")
-            .body(Body::from_stream(body_stream))
+        let request = Request::get(format!("{BASE_PATH}/capabilities"))
+            .header("host", format!("127.0.0.1:{PORT}"))
+            .header("authorization", "Bearer not-the-credential")
+            .header("x-librepaper-origin", "https://paper.example")
+            .body(Body::empty())
             .unwrap();
-        let request_headers = headers.clone();
-        let service = inner.clone();
-        let pending = tokio::spawn(async move {
-            jobs::handle_jobs_post(&service, &request_headers, Some(origin), request).await
-        });
-        started_rx.await.unwrap();
+        assert_eq!(
+            send(&inner, request).await.status(),
+            StatusCode::UNAUTHORIZED
+        );
 
-        let admission = inner.pairing.admission_gate().lock().await;
-        inner.pairing.revoke_checked(origin).unwrap();
-        drop(admission);
-        release_tx.send(payload).unwrap();
-        let response = pending.await.unwrap();
-        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
-        assert!(inner.jobs.lock().await.is_empty());
+        let request = Request::get(format!("{BASE_PATH}/health"))
+            .header("host", format!("127.0.0.1:{PORT}"))
+            .body(Body::empty())
+            .unwrap();
+        let response = send(&inner, request).await;
+        assert_eq!(response.status(), StatusCode::OK);
+        let bytes = axum::body::to_bytes(response.into_body(), 4096)
+            .await
+            .unwrap();
+        let body: Value = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(body["instance"], "test-instance");
     }
 
     #[tokio::test]
     async fn concurrent_build_admission_does_not_hold_preview_lock_while_waiting() {
         let (inner, _state_home, _cache_home) = test_inner().await;
         let origin = "https://paper.example";
-        let (token, _) = inner.pairing.issue(origin, "test").unwrap();
         let request_body = format!(
             "--control-test\r\nContent-Disposition: form-data; name=\"job\"\r\nContent-Type: application/json\r\n\r\n{}\r\n--control-test--\r\n",
             json!({
@@ -2692,12 +2280,7 @@ mod settings_tests {
                 "output":"pdf","manifest":[]
             })
         );
-        let mut headers = HeaderMap::new();
-        headers.insert("origin", HeaderValue::from_static("https://paper.example"));
-        headers.insert(
-            "authorization",
-            HeaderValue::from_str(&format!("Bearer {token}")).unwrap(),
-        );
+        let headers = bearer(&inner);
         let request = Request::post("/jobs")
             .header("content-type", "multipart/form-data; boundary=control-test")
             .body(Body::from(request_body))
@@ -2707,7 +2290,7 @@ mod settings_tests {
         // wait. Its staged directory proves the earlier preview conflict
         // check has completed. It must have released previews before waiting
         // here, matching preview startup's admission -> previews lock order.
-        let admission = inner.pairing.admission_gate().lock().await;
+        let admission = inner.admission.lock().await;
         let service = inner.clone();
         let job_headers = headers.clone();
         let build = tokio::spawn(async move {
@@ -2740,56 +2323,15 @@ mod settings_tests {
     #[tokio::test]
     // The store is process-wide; holding its test lock across awaits is the point.
     #[allow(clippy::await_holding_lock)]
-    async fn put_integration_denied_leaves_unchanged() {
+    async fn put_integration_applies_without_asking() {
         let (inner, state_home, _cache_home) = test_inner().await;
         let _lock = super::super::integrations::TEST_LOCK
             .lock()
             .unwrap_or_else(|poison| poison.into_inner());
         super::super::integrations::init(state_home.path());
-        super::super::approval::script(false);
 
-        let (token, _) = inner.pairing.issue("https://example.test", "test").unwrap();
         let request = Request::put("/integrations/quarto")
-            .header("authorization", format!("Bearer {token}"))
-            .header("origin", "https://example.test")
-            .header("content-type", "application/json")
-            .body(Body::from(
-                r#"{"path":"/usr/bin/quarto","args":["--verbose"]}"#,
-            ))
-            .expect("request");
-
-        let response = handle_integration_set(
-            &inner,
-            &request.headers().clone(),
-            Some("https://example.test"),
-            "quarto",
-            request,
-        )
-        .await;
-        assert_eq!(response.status(), StatusCode::FORBIDDEN);
-        assert_eq!(
-            super::super::integrations::get(super::super::integrations::Integration::Quarto),
-            super::super::integrations::Custom::default()
-        );
-
-        super::super::approval::unscript();
-    }
-
-    #[tokio::test]
-    // The store is process-wide; holding its test lock across awaits is the point.
-    #[allow(clippy::await_holding_lock)]
-    async fn put_integration_allowed_persists() {
-        let (inner, state_home, _cache_home) = test_inner().await;
-        let _lock = super::super::integrations::TEST_LOCK
-            .lock()
-            .unwrap_or_else(|poison| poison.into_inner());
-        super::super::integrations::init(state_home.path());
-        super::super::approval::script(true);
-
-        let (token, _) = inner.pairing.issue("https://example.test", "test").unwrap();
-        let request = Request::put("/integrations/quarto")
-            .header("authorization", format!("Bearer {token}"))
-            .header("origin", "https://example.test")
+            .header("authorization", format!("Bearer {}", credential(&inner)))
             .header("content-type", "application/json")
             .body(Body::from(
                 r#"{"path":"/usr/bin/quarto","args":["--verbose"]}"#,
@@ -2813,8 +2355,6 @@ mod settings_tests {
             Some(std::path::PathBuf::from("/usr/bin/quarto"))
         );
         assert_eq!(custom.args, vec!["--verbose"]);
-
-        super::super::approval::unscript();
     }
 
     #[tokio::test]
@@ -2827,10 +2367,8 @@ mod settings_tests {
             .unwrap_or_else(|poison| poison.into_inner());
         super::super::integrations::init(state_home.path());
 
-        let (token, _) = inner.pairing.issue("https://example.test", "test").unwrap();
         let request = Request::put("/integrations/quarto")
-            .header("authorization", format!("Bearer {token}"))
-            .header("origin", "https://example.test")
+            .header("authorization", format!("Bearer {}", credential(&inner)))
             .header("content-type", "application/json")
             .body(Body::from(r#"{"path":"relative/path","args":[]}"#))
             .expect("request");

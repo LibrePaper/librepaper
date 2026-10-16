@@ -30,14 +30,14 @@ const body = (start, end) => {
 // helpers now, so they are sliced in wherever that function is exercised.
 const localAppHelpers = body("  /// Which document this browser tab is about", "  // Which engine draws each format");
 
-// Initial Quarto setup must configure the companion as active for an editor.
+// Initial Quarto setup must configure the desktop app as active for an editor.
 // If permission is assigned afterwards, editable onboarding examples remain
-// on the Markdown fallback even when the local app is already paired.
+// on the Markdown fallback even when the desktop app is already there.
 {
   const prepare = body("  async function prepare(document_)", "  $effect(() => {");
   assert.ok(
     prepare.indexOf("mayEdit = Boolean(allowed)") < prepare.indexOf("scopeLocalApp()"),
-    "prepare resolves edit permission before scoping the local app, whose pairing is active only for an editor",
+    "prepare resolves edit permission before scoping the local app, which is active only for an editor",
   );
 }
 
@@ -1260,8 +1260,8 @@ assert.doesNotMatch(reader, /createRenderingStore|holdRendering|\/renderings\//)
   const file = body('{#snippet fileItems()}', '{/snippet}');
   assert.match(view, /Preview this file/);
   assert.match(view, /@render previewItems\(\)/);
-  // Local execution is its own section of the View menu, not another engine.
-  assert.match(view, /menu-section-label">Local execution<\/div>/);
+  // Running code is its own section of the View menu, not another engine.
+  assert.match(view, /menu-section-label">Code<\/div>/);
   assert.match(view, /value="local-execution"/);
   assert.doesNotMatch(reader, /preview-quarto|preview-calepin|preview-markdown|preview-typst"/);
   assert.doesNotMatch(file, /preview-/);

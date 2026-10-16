@@ -1,11 +1,11 @@
-// v2 companion build contract using the production client and fake HTTP.
+// v2 desktop app build contract using the production client and fake HTTP.
 import assert from "node:assert/strict";
-import * as client from "../../src/lib/companion/client.js";
+import * as client from "../../src/lib/desktop/client.js";
+import { formOf } from "../helpers/form-body.mjs";
 
 const values = new Map();
 const storage = { getItem: (key) => values.get(key) || null, setItem: (key, value) => values.set(key, String(value)), removeItem: (key) => values.delete(key) };
-const scope = "https://app.test";
-values.set("librepaper-local-connections", JSON.stringify({ [scope]: { token: "token", instance: "one" } }));
+globalThis.window = { __LIBREPAPER_DESKTOP__: { base: "lp-local://localhost/", version: "test" } };
 client._testing.reset();
 client._testing.inject({ storage, wait: () => Promise.resolve() });
 client.configure({ project: "paper", origin: "https://app.test" });
@@ -16,13 +16,12 @@ function response(status, body, bytes = null) { return { ok: status >= 200 && st
 client._testing.inject({ fetch: async (url, init = {}) => {
   if (url.endsWith("/health")) return response(200, { service: "librepaper-local", protocol: [2], version: "2", instance: "one" });
   if (url.endsWith("/capabilities")) return response(200, { builders: [{ id: "latexmk", available: true, operations: [{ kind: "build", workspace_modes: ["snapshot"] }] }] });
-  if (url.endsWith("/jobs") && init.method === "POST") { submitted = JSON.parse(await init.body.get("job").text()); return response(202, { id: "job-1" }); }
+  if (url.endsWith("/jobs") && init.method === "POST") { submitted = JSON.parse(await (await formOf(init)).get("job").text()); return response(202, { id: "job-1" }); }
   if (url.endsWith("/jobs/job-1")) return response(200, { id: "job-1", status: "done", exit: 0, outputs: { pdf: { size: artifact.byteLength, sha256: artifactDigest } }, provenance: { builder: "latexmk" } });
   if (url.endsWith("/jobs/job-1/files/pdf")) return response(200, {}, artifact);
   if (url.endsWith("/jobs/job-1/files/log")) return response(200, {}, new Uint8Array());
   throw new Error(`unexpected request ${url}`);
 } });
-await client.probe({ force: true });
 const sourceTreeDigest = "a".repeat(64);
 const result = await client.runBuild({ job: { snapshot: sourceTreeDigest, generation: 4 }, tree: { main: "paper.tex", texts: { "paper.tex": "\\documentclass{article}" }, assets: {} }, builder: "latexmk", engine: "xelatex", output: "pdf", options: { shell_escape: false } });
 assert.equal(result.ok, true);
@@ -52,7 +51,7 @@ const digest = [...new Uint8Array(await crypto.subtle.digest("SHA-256", html))].
 const bundle = { artifact: { entrypoint: "index.html", kind: "html", sha256: digest, size: html.byteLength, mime: "text/html" }, assets: [] };
 client._testing.inject({ fetch: async (url, init = {}) => {
   if (url.endsWith("/jobs") && init.method === "POST") {
-    const request = JSON.parse(await init.body.get("job").text());
+    const request = JSON.parse(await (await formOf(init)).get("job").text());
     assert.equal(request.kind, "build"); assert.equal(request.protocol, 2); assert.equal(request.builder, "quarto");
     assert.equal(request.workspace.mode, "snapshot"); assert.equal(request.entrypoint, "index.qmd");
     assert.equal(request.quarto, undefined);
@@ -122,6 +121,6 @@ client._testing.inject({ fetch: async (url, init = {}) => {
   if (url.endsWith("/jobs") && init.method === "POST") { submissions += 1; throw Object.assign(new Error("response lost"), { name: "Unreachable" }); }
   throw new Error(`unexpected retry request ${url}`);
 } });
-await assert.rejects(client.runBuild({ job: { snapshot: "source", generation: 7 }, tree: { main: "paper.tex", texts: { "paper.tex": "x" }, assets: {} }, builder: "latexmk" }), /not running on this computer/);
+await assert.rejects(client.runBuild({ job: { snapshot: "source", generation: 7 }, tree: { main: "paper.tex", texts: { "paper.tex": "x" }, assets: {} }, builder: "latexmk" }), /could not reach its local service/);
 assert.equal(submissions, 1, "v2 requests without an idempotency key are never retried");
 client._testing.reset();
