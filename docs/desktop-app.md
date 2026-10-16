@@ -10,19 +10,19 @@ Web browsers run every page in a sandbox, so a website cannot run code or use fi
 
 | Feature | Web browser | Desktop app |
 | --- | --- | --- |
-| Write and edit projects | Yes | Yes |
-| Live preview: LaTeX and Typst to PDF, Markdown and Quarto to HTML | Yes | Yes |
-| Real-time collaboration with other editors, comments and track changes ([Collaborate](collaborate.html)) | Yes | Yes |
-| Share links for readers, commenters and editors | Yes | Yes |
-| Version history | Yes | Yes |
-| Download the project or the rendered document | Yes | Yes |
-| BibTeX bibliographies | Yes | Yes |
-| Run R, Python or Julia code in [Quarto](notebooks/quarto.html) and [Calepin](notebooks/calepin.html) | No | Yes |
-| PDF, DOCX and slides from Markdown and Quarto | No | Yes |
-| [AI agents](agents.html) in the sidebar | No | Yes |
-| Cite from your [Zotero](https://www.zotero.org) library (read-only) | No | Yes |
-| [Local backups](backups.html) of every project | No | Yes |
-| A project folder on your disk for code and data | No | Yes |
+| Write and edit projects | ✅ | ✅ |
+| Live preview: LaTeX and Typst to PDF, Markdown and Quarto to HTML | ✅ | ✅ |
+| Real-time collaboration with other editors, comments and track changes ([Collaborate](collaborate.html)) | ✅ | ✅ |
+| Share links for readers, commenters and editors | ✅ | ✅ |
+| Version history | ✅ | ✅ |
+| Download the project or the rendered document | ✅ | ✅ |
+| BibTeX bibliographies | ✅ | ✅ |
+| Run R, Python or Julia code in [Quarto](notebooks/quarto.html) and [Calepin](notebooks/calepin.html) | ❌ | ✅ |
+| PDF, DOCX and slides from Markdown and Quarto | ❌ | ✅ |
+| [AI agents](agents.html) in the sidebar | ❌ | ✅ |
+| Cite from your [Zotero](https://www.zotero.org) library (read-only) | ❌ | ✅ |
+| [Local backups](backups.html) of every project | ❌ | ✅ |
+| A project folder on your disk for code and data | ❌ | ✅ |
 
 - In a browser, the desktop-only features say they need the desktop app and offer to open it.
 - Nothing runs unasked. Folders are granted one at a time through your system's own chooser. Running a document's code is off whenever a document opens, and you turn it on with the Run code switch.
