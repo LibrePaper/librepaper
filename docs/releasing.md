@@ -50,8 +50,10 @@ librepaper.org; that is an operator command described in the private runbook
   release's cargo-dist `.sha256` file. A missing or invalid checksum stops the
   update without changing the package repository.
 - Scoop installs the desktop app from `LibrePaper_<version>_x64-portable.zip`,
-  which holds the signed app and `librepaper.exe`. Homebrew uses the Linux and
-  macOS x86_64 and ARM64 archives and still installs the command line.
+  which holds the signed app and `librepaper.exe`. Homebrew gets a formula for
+  the command line (Linux and macOS archives) and a cask,
+  `brew install --cask vincentarelbundock/tap/librepaper`, for the notarized
+  macOS app from `LibrePaper_<version>_universal.dmg`.
 - User install commands live on the [desktop app page](desktop-app.md). Update it when
   a distribution channel changes.
 
