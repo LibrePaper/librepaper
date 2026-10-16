@@ -2106,6 +2106,7 @@
         : [],
     },
     changes: {},
+    collaboration: unreadChat ? { says: "Collaboration: unread messages", dot: true } : {},
   });
 
   // A reader is told nothing about live editor diagnostics. They cannot fix
