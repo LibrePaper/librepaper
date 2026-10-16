@@ -25,7 +25,10 @@ targets = [
     "x86_64-pc-windows-msvc",
 ]
 installers = ["shell", "powershell"]
-install-updater = true
+install-updater = false
+# The host job attests every release file before publishing: gh attestation verify <file> -R LibrePaper/librepaper
+github-attestations = true
+github-attestations-phase = "host"
 github-build-setup = "../dist-build-setup.yml"
 # The desktop app: signed Windows installers, a signed and notarized macOS
 # DMG, and Linux packages (.github/workflows/desktop-*.yml).
