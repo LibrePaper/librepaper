@@ -654,7 +654,11 @@ fn split_owner(doc: &LoroDoc, text: &LoroText, owner_id: &str, x_id: &str, x: &R
     let left_text: String = chars[..a].iter().collect();
     let right_text: String = chars[a..].iter().collect();
     let others: Vec<&Point> = o.points.iter().filter(|p| p.id != x_id).collect();
-    let left_points: Vec<Point> = others.iter().filter(|p| p.at < a).map(|p| (*p).clone()).collect();
+    let left_points: Vec<Point> = others
+        .iter()
+        .filter(|p| p.at < a)
+        .map(|p| (*p).clone())
+        .collect();
     let right_points: Vec<Point> = others
         .iter()
         .filter(|p| p.at >= a)
@@ -703,7 +707,8 @@ fn split_owner(doc: &LoroDoc, text: &LoroText, owner_id: &str, x_id: &str, x: &R
     }
     if let Some((s, e)) = right_cursors {
         right.id = mint_uuid();
-        map.insert(&right.id, entry_value(&right, &s, e.as_ref())).ok();
+        map.insert(&right.id, entry_value(&right, &s, e.as_ref()))
+            .ok();
     }
 }
 
@@ -1111,11 +1116,13 @@ mod tests {
     fn swallowed_deletion_points_reject_in_either_order() {
         for bob_first in [true, false] {
             let (doc, id) = setup("abcd");
-            let a = apply_tracked_edits(&doc, &id, &[edit(1, 1, "")], &ME, None, 1).unwrap()[0]
-                .clone();
+            let a =
+                apply_tracked_edits(&doc, &id, &[edit(1, 1, "")], &ME, None, 1).unwrap()[0].clone();
             doc.commit();
-            let b = apply_tracked_edits(&doc, &id, &[edit(1, 1, "")], &BOB, None, 2).unwrap()[0]
-                .clone();
+            let b = bobs(
+                apply_tracked_edits(&doc, &id, &[edit(1, 1, "")], &BOB, None, 2).unwrap(),
+                &a,
+            );
             doc.commit();
             assert_eq!(body(&doc, &id), "ad");
             let order = if bob_first { [&b, &a] } else { [&a, &b] };
@@ -1135,16 +1142,32 @@ mod tests {
             let a = apply_tracked_edits(&doc, &id, &[edit(2, 1, "")], &ME, None, 1).unwrap();
             doc.commit();
             assert_eq!(body(&doc, &id), "abde");
-            let b = apply_tracked_edits(&doc, &id, &[edit(1, 2, "")], &BOB, None, 2).unwrap();
+            let b = bobs(
+                apply_tracked_edits(&doc, &id, &[edit(1, 2, "")], &BOB, None, 2).unwrap(),
+                &a[0],
+            );
             doc.commit();
             assert_eq!(body(&doc, &id), "ae");
-            let order = if bob_first { [&b[0], &a[0]] } else { [&a[0], &b[0]] };
+            let order = if bob_first { [&b, &a[0]] } else { [&a[0], &b] };
             for change in order {
                 assert!(reject(&doc, change));
                 doc.commit();
             }
+            // Rejecting Alice first splits Bob's change; the parts are pending.
+            while let Some(c) = resolve_changes(&doc, &id).first() {
+                assert!(reject(&doc, &c.id.clone()));
+                doc.commit();
+            }
             assert_eq!(body(&doc, &id), "abcde");
         }
+    }
+
+    /// Bob's own change among the ids his edit wrote: the edit also rewrites
+    /// the cursor of Alice's change it swallowed.
+    fn bobs(ids: Vec<String>, alice: &str) -> String {
+        ids.into_iter()
+            .find(|id| id != alice)
+            .expect("bob's change")
     }
 
     /// Alice deletes then Bob swallows her point; reject in the given order
@@ -1153,7 +1176,10 @@ mod tests {
         let (doc, id) = setup(start);
         let a = apply_tracked_edits(&doc, &id, &[alice], &ME, None, 1).unwrap()[0].clone();
         doc.commit();
-        let b = apply_tracked_edits(&doc, &id, &[bob], &BOB, None, 2).unwrap()[0].clone();
+        let b = bobs(
+            apply_tracked_edits(&doc, &id, &[bob], &BOB, None, 2).unwrap(),
+            &a,
+        );
         doc.commit();
         (doc, id, a, b)
     }
@@ -1165,11 +1191,8 @@ mod tests {
             ("abcde", (2, 1), (1, 2), "ae", "abcde"),
         ];
         for (start, alice, bob, mid, end) in cases {
-            let (doc, id, a, b) = swallow(
-                start,
-                edit(alice.0, alice.1, ""),
-                edit(bob.0, bob.1, ""),
-            );
+            let (doc, id, a, b) =
+                swallow(start, edit(alice.0, alice.1, ""), edit(bob.0, bob.1, ""));
             assert_eq!(body(&doc, &id), mid);
             assert!(reject(&doc, &a));
             doc.commit();

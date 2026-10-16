@@ -313,7 +313,7 @@ function rejectAll(doc, first) {
 for (const bobFirst of [true, false]) {
   const doc = makeDoc("abcd");
   const [a] = track(doc, 1, 2, "", ME);
-  const [b] = track(doc, 1, 2, "", BOB);
+  const b = track(doc, 1, 2, "", BOB).find((id) => id !== a);
   assert.equal(textOf(doc), "ad");
   const entry = doc.getMap(CHANGES).get(b);
   assert.deepEqual(entry.points, [{ id: a, at: 0 }]);
@@ -327,7 +327,7 @@ for (const bobFirst of [true, false]) {
   const doc = makeDoc("abcde");
   const [a] = track(doc, 2, 3, "", ME);
   assert.equal(textOf(doc), "abde");
-  const [b] = track(doc, 1, 3, "", BOB);
+  const b = track(doc, 1, 3, "", BOB).find((id) => id !== a);
   assert.equal(textOf(doc), "ae");
   assert.deepEqual(doc.getMap(CHANGES).get(b).points, [{ id: a, at: 1 }]);
   rejectAll(doc, bobFirst ? b : a);
@@ -340,7 +340,7 @@ for (const bobFirst of [true, false]) {
 {
   const doc = makeDoc("abcde");
   const [a] = track(doc, 2, 3, "", ME);
-  const [b] = track(doc, 1, 3, "Z", BOB);
+  const b = track(doc, 1, 3, "Z", BOB).find((id) => id !== a);
   assert.equal(textOf(doc), "aZe");
   assert.equal(reject(doc, a), true);
   assert.equal(textOf(doc), "acZe");
@@ -361,7 +361,7 @@ for (const bobFirst of [true, false]) {
 {
   const doc = makeDoc("abcd");
   const [a] = track(doc, 1, 2, "", ME);
-  const [b] = track(doc, 1, 2, "", BOB);
+  const b = track(doc, 1, 2, "", BOB).find((id) => id !== a);
   assert.equal(accept(doc, b), true);
   assert.equal(reject(doc, a), true);
   assert.equal(textOf(doc), "abd");

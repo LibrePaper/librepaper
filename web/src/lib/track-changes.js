@@ -466,7 +466,7 @@ function withPoints(value, points) {
 // owner's inserted span.
 function splitOwner(doc, text, o, xId, x) {
   const map = doc.getMap(CHANGES);
-  const ov = map.get(o.id);
+  const ov = /** @type {any} */ (map.get(o.id));
   const mine = o.points.find((p) => p.id === xId);
   const a = Math.max(0, Math.min(mine.at, o.deleted.length));
   const leftText = o.deleted.slice(0, a);
