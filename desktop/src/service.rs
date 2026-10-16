@@ -73,6 +73,7 @@ impl Service {
 
     /// Starts the service again after it was stopped on purpose, for example
     /// before an update that then failed.
+    #[cfg(any(target_os = "macos", windows))]
     pub async fn restart(&self) {
         *self.endpoint.lock().await = None;
         if let Err(err) = self.current().await {
@@ -336,20 +337,18 @@ mod tests {
 
     #[test]
     fn endpoint_line_with_the_current_protocol_is_compatible() {
-        let endpoint: Endpoint = serde_json::from_str(
-            r#"{"address":"http://127.0.0.1:1/","token":"t","protocol":[2]}"#,
-        )
-        .expect("the line parses");
+        let endpoint: Endpoint =
+            serde_json::from_str(r#"{"address":"http://127.0.0.1:1/","token":"t","protocol":[2]}"#)
+                .expect("the line parses");
         assert_eq!(endpoint.protocol, vec![2]);
         assert!(compatible(&endpoint).is_ok());
     }
 
     #[test]
     fn endpoint_line_with_an_older_protocol_is_refused() {
-        let endpoint: Endpoint = serde_json::from_str(
-            r#"{"address":"http://127.0.0.1:1/","token":"t","protocol":[1]}"#,
-        )
-        .expect("the line parses");
+        let endpoint: Endpoint =
+            serde_json::from_str(r#"{"address":"http://127.0.0.1:1/","token":"t","protocol":[1]}"#)
+                .expect("the line parses");
         assert_eq!(endpoint.protocol, vec![1]);
         assert!(compatible(&endpoint).is_err());
     }

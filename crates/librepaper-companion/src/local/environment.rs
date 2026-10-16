@@ -72,7 +72,12 @@ fn cache_file() -> Option<PathBuf> {
 #[cfg(any(target_os = "macos", target_os = "linux"))]
 fn read_cache(path: &Path) -> Option<OsString> {
     use std::os::unix::ffi::OsStringExt;
-    let age = std::fs::metadata(path).ok()?.modified().ok()?.elapsed().ok()?;
+    let age = std::fs::metadata(path)
+        .ok()?
+        .modified()
+        .ok()?
+        .elapsed()
+        .ok()?;
     if age >= std::time::Duration::from_secs(24 * 60 * 60) {
         return None;
     }
@@ -443,9 +448,7 @@ mod tests {
             .write(true)
             .open(&file)
             .unwrap()
-            .set_modified(
-                std::time::SystemTime::now() - std::time::Duration::from_secs(2 * 86400),
-            )
+            .set_modified(std::time::SystemTime::now() - std::time::Duration::from_secs(2 * 86400))
             .unwrap();
         assert_eq!(read_cache(&file), None);
     }

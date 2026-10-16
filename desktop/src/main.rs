@@ -706,55 +706,6 @@ fn agent_prompt(origin: &str, body: &[u8]) -> Result<Prompt, Box<Response<Vec<u8
     })
 }
 
-#[cfg(test)]
-mod tests {
-    use super::prompt_for;
-    use tauri::http::Method;
-
-    const ORIGIN: &str = "https://librepaper.example";
-    const AGENT: &[u8] = br#"{"label":"Quarto helper","command":["quarto-agent","--stdio"]}"#;
-
-    #[test]
-    fn adding_an_agent_asks_and_names_the_command() {
-        let prompt = prompt_for(ORIGIN, &Method::POST, "/companion/api/agents", AGENT)
-            .ok()
-            .flatten()
-            .expect("a prompt");
-        assert_eq!(prompt.title, "Add an agent");
-        assert!(prompt.message.contains("quarto-agent --stdio"));
-        assert_eq!(prompt.refused, "The agent was not added.");
-    }
-
-    #[test]
-    fn a_doubled_slash_still_asks() {
-        let prompt = prompt_for(ORIGIN, &Method::POST, "/companion/api//agents", AGENT)
-            .ok()
-            .flatten();
-        assert!(prompt.is_some());
-    }
-
-    #[test]
-    fn listing_agents_asks_nothing() {
-        assert!(matches!(
-            prompt_for(ORIGIN, &Method::GET, "/companion/api/agents", &[]),
-            Ok(None)
-        ));
-    }
-
-    #[test]
-    fn deleting_an_agent_asks_nothing() {
-        assert!(matches!(
-            prompt_for(ORIGIN, &Method::DELETE, "/companion/api/agents/x", &[]),
-            Ok(None)
-        ));
-    }
-
-    #[test]
-    fn an_agent_body_that_is_not_json_is_refused() {
-        assert!(prompt_for(ORIGIN, &Method::POST, "/companion/api/agents", b"not json").is_err());
-    }
-}
-
 fn with_origin(mut res: Response<Vec<u8>>, origin: &str) -> Response<Vec<u8>> {
     if let Ok(value) = HeaderValue::from_str(origin) {
         res.headers_mut()
@@ -950,4 +901,53 @@ fn serve_origin(app: &AppHandle, label: &str) -> Option<String> {
         return Some(app_origin().to_string());
     }
     page_origin(app, label)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::prompt_for;
+    use tauri::http::Method;
+
+    const ORIGIN: &str = "https://librepaper.example";
+    const AGENT: &[u8] = br#"{"label":"Quarto helper","command":["quarto-agent","--stdio"]}"#;
+
+    #[test]
+    fn adding_an_agent_asks_and_names_the_command() {
+        let prompt = prompt_for(ORIGIN, &Method::POST, "/companion/api/agents", AGENT)
+            .ok()
+            .flatten()
+            .expect("a prompt");
+        assert_eq!(prompt.title, "Add an agent");
+        assert!(prompt.message.contains("quarto-agent --stdio"));
+        assert_eq!(prompt.refused, "The agent was not added.");
+    }
+
+    #[test]
+    fn a_doubled_slash_still_asks() {
+        let prompt = prompt_for(ORIGIN, &Method::POST, "/companion/api//agents", AGENT)
+            .ok()
+            .flatten();
+        assert!(prompt.is_some());
+    }
+
+    #[test]
+    fn listing_agents_asks_nothing() {
+        assert!(matches!(
+            prompt_for(ORIGIN, &Method::GET, "/companion/api/agents", &[]),
+            Ok(None)
+        ));
+    }
+
+    #[test]
+    fn deleting_an_agent_asks_nothing() {
+        assert!(matches!(
+            prompt_for(ORIGIN, &Method::DELETE, "/companion/api/agents/x", &[]),
+            Ok(None)
+        ));
+    }
+
+    #[test]
+    fn an_agent_body_that_is_not_json_is_refused() {
+        assert!(prompt_for(ORIGIN, &Method::POST, "/companion/api/agents", b"not json").is_err());
+    }
 }

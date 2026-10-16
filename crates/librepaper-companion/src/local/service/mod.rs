@@ -2152,8 +2152,8 @@ mod settings_tests {
             let response = authenticate(&inner, &headers, bad_origin).unwrap_err();
             assert_eq!(response.status(), StatusCode::FORBIDDEN);
         }
-        let missing = authenticate(&inner, &HeaderMap::new(), Some("https://paper.example"))
-            .unwrap_err();
+        let missing =
+            authenticate(&inner, &HeaderMap::new(), Some("https://paper.example")).unwrap_err();
         assert_eq!(missing.status(), StatusCode::UNAUTHORIZED);
         assert_eq!(
             missing.headers().get("x-librepaper-credential").unwrap(),
