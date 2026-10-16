@@ -236,7 +236,8 @@
           // the LoroText already. Each one is planned against the text it
           // started from, chained, and the result is written once so that no
           // cursor is made at an intermediate offset.
-          let live = resolved.map(({ state, ...change }) => change);
+          /** @type {any[]} */
+          let live = resolved.map((change) => ({ ...change }));
           const created = new Set();
           const written = new Set();
           const removed = new Set();
@@ -250,6 +251,7 @@
               edits.push({ from: fromA, to: toA, insert: insert.sliceString(0, insert.length, "\n") });
             });
             const known = new Set(live.map((change) => change.id));
+            /** @type {any[]} */
             const plan = planEdits(transaction.startState.doc.toString(), live, edits, me, {
               run: null,
               now,
@@ -264,9 +266,10 @@
                 if (change.state === "set") written.add(change.id);
               }
             }
-            live = plan.filter((change) => change.state !== "removed").map(({ state, ...change }) => change);
+            live = plan.filter((change) => change.state !== "removed");
           }
           if (tracked && (written.size || removed.size)) {
+            /** @type {any[]} */
             const planned = [
               ...live.filter((change) => written.has(change.id)).map((change) => ({ ...change, state: "set" })),
               ...[...removed].map((id) => ({ id, state: "removed" })),
