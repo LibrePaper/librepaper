@@ -44,7 +44,9 @@ cd librepaper
 
 ## Sign-in
 
-LibrePaper has no passwords of its own. People sign in with GitHub or Google, and the server never sees or stores a password. You register LibrePaper once with the provider, which gives you a client ID and a client secret for `librepaper.toml`. At least one provider is required. Both can be enabled.
+LibrePaper has no passwords of its own. People sign in with GitHub, Google, Microsoft Entra ID or any OpenID Connect provider, and the server never sees or stores a password. You register LibrePaper once with each provider. Each gives you a client ID and a client secret for `librepaper.toml`. At least one provider is required. You can enable several.
+
+An email or `@domain` entry in `[access]` admits whoever any configured provider says owns that address. Turning on a provider means trusting its administrators with every address in your lists, so prefer `@domain` entries for domains the provider owns.
 
 **GitHub.** LibrePaper requests no scopes and receives the account's public login name.
 
@@ -64,6 +66,57 @@ LibrePaper has no passwords of its own. People sign in with GitHub or Google, an
 client_id = "replace"
 client_secret = "replace"
 ```
+
+**Microsoft Entra ID.** Sign-in admits the members and guests of one Microsoft Entra tenant. LibrePaper requests the `openid`, `email` and `profile` scopes.
+
+- Register an app in the Entra admin center. Open App registrations, choose New registration, and pick the option for accounts in this organizational directory only, which is a single tenant.
+- Set the redirect URI to `https://paper.example/auth/callback/entra`. Choose the Web platform.
+- Under Certificates and secrets, add a new client secret. Note its expiry date. Sign-in stops when the secret expires.
+- The `email` scope alone gives the address on the v2.0 endpoint. If a sign-in is refused for a missing address, add the optional claim `email` to the ID token under Token configuration.
+- Copy the Directory (tenant) ID and the Application (client) ID into the `[auth.entra]` table below.
+- To limit sign-in to some people, open Enterprise applications, choose the app, then Properties. Set "Assignment required" to Yes, and assign the users or groups who may sign in.
+- Guests invited to the tenant can sign in too.
+- Some tenants block user consent. An administrator then grants consent once for `openid`, `email` and `profile`.
+- The admin console still signs in with GitHub. An Entra-only deployment registers a GitHub OAuth app and lists its GitHub ID in `[admin]`.
+- Set `session_lifetime` under `[auth]` to `"24h"`. A person removed from the tenant keeps access until the session expires. Without this setting, that is 30 days in the browser and 90 days for a CLI token.
+
+```toml
+[auth]
+session_lifetime = "24h"           # a working day; the default is 30d
+
+[auth.entra]
+tenant = "00000000-0000-0000-0000-000000000000"   # Directory (tenant) ID, a GUID
+client_id = "replace"                             # Application (client) ID
+client_secret = "replace"
+# label = "Contoso"                               # the button text, default Microsoft
+```
+
+**Other OpenID Connect providers.** Any provider with an OpenID Connect discovery document works. Add one `[auth.oidc.<name>]` table for each provider, up to 8. The name uses lowercase letters, digits and hyphens.
+
+- Register LibrePaper as a client, with the callback URL `https://paper.example/auth/callback/oidc-<name>`.
+- The provider must send `email_verified` and mark addresses as verified. AD FS does not, so it is not supported.
+
+Here are examples for Keycloak and GitLab:
+
+```toml
+[auth.oidc.keycloak]
+issuer = "https://sso.example.org/realms/staff"   # the realm's issuer, no trailing path
+client_id = "librepaper"
+client_secret = "replace"
+label = "Example SSO"                             # the button text
+
+[auth.oidc.gitlab]
+issuer = "https://gitlab.com"                     # or your own GitLab
+client_id = "replace"
+client_secret = "replace"
+label = "GitLab"
+# scopes = "openid email profile"                 # the default
+```
+
+**Known limits.**
+
+- One person who signs in through two providers has two accounts. Each account has its own projects.
+- A session outlives a disablement at the provider. It lasts until `session_lifetime` runs out.
 
 ## Configure
 
