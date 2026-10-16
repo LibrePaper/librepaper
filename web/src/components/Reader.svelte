@@ -1139,10 +1139,19 @@
           stale: Boolean(mapped.stale),
         };
       });
+      let decided = decidedHunks.get(proposal.id);
+      if (decided && decided.tip !== proposal.tipBytes) {
+        // Tip changed, hunks were renumbered, drop the stale entry
+        decidedHunks.delete(proposal.id);
+        decided = null;
+      }
       // Keep original base coordinates for the Editor overlay. It may be
       // showing an author's private draft, whose local edits shift these
       // positions differently from the live-document positions used below.
-      drawn.push({ id: proposal.id, author: proposal.author, base: proposal.base, hunks: sourceHunks });
+      // A rejected hunk is no longer drawn, even while the rest of its
+      // proposal is still open.
+      const undecided = sourceHunks.filter((hunk) => decided?.hunks.get(hunk.index) !== "rejected");
+      drawn.push({ id: proposal.id, author: proposal.author, base: proposal.base, hunks: undecided });
       for (const hunk of hunks) {
         const fileId = hunk.file || "";
         const path = hunk.path || (fileId && session.paths?.get(fileId)) || "";
@@ -1162,15 +1171,7 @@
           stale: hunk.stale ? "The text this was written against has changed." : "",
         };
         // If this hunk was decided while the proposal was open, mark it with its status
-        const decided = decidedHunks.get(proposal.id);
-        if (decided) {
-          if (decided.tip === proposal.tipBytes && decided.hunks.has(hunk.index)) {
-            row.status = decided.hunks.get(hunk.index);
-          } else if (decided.tip !== proposal.tipBytes) {
-            // Tip changed, hunks were renumbered, drop the stale entry
-            decidedHunks.delete(proposal.id);
-          }
-        }
+        if (decided?.hunks.has(hunk.index)) row.status = decided.hunks.get(hunk.index);
         rows.push(row);
       }
     }
