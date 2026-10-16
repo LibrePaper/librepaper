@@ -1171,7 +1171,7 @@ mod tests {
     }
 
     #[test]
-    fn cancellation_and_recovery_retain_receipted_suggestions() {
+    fn cancellation_and_recovery_retain_receipted_changes() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("runner.json");
         let journal_path = dir.path().join("runner.journal.json");
@@ -1183,7 +1183,7 @@ mod tests {
             "one",
             "document_propose",
             &request,
-            &json!({"result":{"status":"committed","effects":[{"kind":"suggestion","id":"kept"}]}}),
+            &json!({"result":{"status":"committed","effects":[{"kind":"change","id":"kept"}]}}),
         )
         .unwrap();
         for status in [
@@ -1198,12 +1198,12 @@ mod tests {
             state.admit(task).unwrap();
             finish(&mut state, "one", status, "Stopped");
             assert_eq!(
-                persist_report(&mut state, "one", &path).unwrap().results["suggestions"],
+                persist_report(&mut state, "one", &path).unwrap().results["changes"],
                 json!(["kept"])
             );
         }
         assert_eq!(
-            recover_state(&path).unwrap().task("one").unwrap().results["suggestions"],
+            recover_state(&path).unwrap().task("one").unwrap().results["changes"],
             json!(["kept"])
         );
     }
@@ -1232,11 +1232,11 @@ mod tests {
         let mut task =
             Task::from_message(&json!({"id":"one","role":"user","text":"Edit"})).unwrap();
         task.finish(TaskStatus::Interrupted, "Stopped");
-        task.results = json!({"suggestions":["kept"]});
+        task.results = json!({"changes":["kept"]});
         state.admit(task).unwrap();
         state.save(&path).unwrap();
         assert_eq!(
-            recover_state(&path).unwrap().task("one").unwrap().results["suggestions"],
+            recover_state(&path).unwrap().task("one").unwrap().results["changes"],
             json!(["kept"])
         );
     }

@@ -57,8 +57,8 @@ pub(crate) struct Event {
     /// Committed or replayed document changes this call's response
     /// confirmed, as `{"kind":"application"}` or
     /// `{"kind":"comment","action":<action>}`. Bounded by the same walk
-    /// that produces it; carries no digests, ids, or suggestion entries,
-    /// since suggestions already travel through `result_ids`.
+    /// that produces it; carries no digests, ids, or change entries,
+    /// since tracked changes already travel through `result_ids`.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub confirmed: Vec<Value>,
 }
@@ -484,12 +484,12 @@ impl Journal {
     }
 
     /// What a task achieved, as the sidebar and the runner actually use it:
-    /// the receipt-bound suggestion ids the browser renders, a bounded list
+    /// the receipt-bound tracked-change ids the browser renders, a bounded list
     /// of confirmed document changes (applications and comment actions),
     /// and the refused and unresolved counts the runner reports in its own
     /// summary.
     pub(crate) fn task_results(&self, task_id: &str) -> Value {
-        let mut suggestions = BTreeSet::new();
+        let mut changes = BTreeSet::new();
         let mut confirmed: Vec<Value> = Vec::new();
         let mut confirmed_omitted: u64 = 0;
         let mut refused: u64 = 0;
@@ -502,7 +502,7 @@ impl Journal {
             if !matches!(event.kind.as_str(), "tool_result" | "receipt_reconcile") {
                 continue;
             }
-            suggestions.extend(event.result_ids.iter().cloned());
+            changes.extend(event.result_ids.iter().cloned());
             refused += u64::from(event.refused);
             for effect in &event.confirmed {
                 if confirmed.len() < 32 {
@@ -524,7 +524,7 @@ impl Journal {
             })
             .count();
         serde_json::json!({
-            "suggestions":suggestions,
+            "changes":changes,
             "confirmed":confirmed,
             "confirmed_omitted":confirmed_omitted,
             "refused":refused,
@@ -568,7 +568,7 @@ fn result_ids(tool: &str, response: &Value) -> Vec<String> {
         }
         if matches!(value["status"].as_str(), Some("committed" | "replayed")) {
             for effect in value["effects"].as_array().into_iter().flatten() {
-                if effect.get("kind").and_then(Value::as_str) == Some("suggestion") {
+                if effect.get("kind").and_then(Value::as_str) == Some("change") {
                     if let Some(id) = effect.get("id").and_then(Value::as_str) {
                         if !id.is_empty() && id.len() <= 128 && ids.len() < 100 {
                             ids.insert(id.to_string());
@@ -593,7 +593,7 @@ fn result_ids(tool: &str, response: &Value) -> Vec<String> {
 /// way `main`'s `typed_effects` did: through a batch's `items` and through
 /// an `already_committed` outcome, with `document_result` naming the
 /// original tool. Unlike `typed_effects`, this carries no digests, ids, or
-/// suggestion entries; suggestions already travel through `result_ids`.
+/// change entries; tracked changes already travel through `result_ids`.
 fn confirmed_effects(tool: &str, response: &Value) -> Vec<Value> {
     fn field<'a>(value: &'a Value, key: &str) -> Option<&'a str> {
         value
@@ -768,19 +768,19 @@ mod tests {
     use serde_json::json;
 
     #[test]
-    fn task_results_counts_refusals_and_keeps_receipted_suggestions() {
+    fn task_results_counts_refusals_and_keeps_receipted_changes() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("journal.json");
         let request = json!({"operation":{"epoch":"e","id":"batch"}});
         let response = json!({"result":{"status":"committed","items":[
-            {"status":"committed","effects":[{"kind":"suggestion","id":"kept"}]},
+            {"status":"committed","effects":[{"kind":"change","id":"kept"}]},
             {"error":{"code":"conflict","message":"passage changed"}},
             {"error":{"code":"outcome_unknown","message":"connection lost"}}
         ]}});
         record_tool_call(&path, "task", "document_propose", &request).unwrap();
         record_tool_result(&path, "task", "document_propose", &request, &response).unwrap();
         let summary = Journal::open(&path).unwrap().task_results("task");
-        assert_eq!(summary["suggestions"], json!(["kept"]));
+        assert_eq!(summary["changes"], json!(["kept"]));
         assert_eq!(summary["confirmed"], json!([]));
         assert_eq!(summary["confirmed_omitted"], 0);
         assert_eq!(summary["refused"], 2);
@@ -936,7 +936,7 @@ mod tests {
         let path = dir.path().join("journal.json");
         let request = json!({"operation":{"epoch":"e","id":"i"}});
         let response =
-            json!({"result":{"status":"committed","effects":[{"kind":"suggestion","id":"s1"}]}});
+            json!({"result":{"status":"committed","effects":[{"kind":"change","id":"s1"}]}});
         record_tool_call(&path, "task", "document_propose", &request).unwrap();
         record_tool_result(&path, "task", "document_propose", &request, &response).unwrap();
         let known = Journal::open(&path).unwrap().known_result_ids("task");
@@ -987,7 +987,7 @@ mod tests {
     }
 
     #[test]
-    fn retained_refusal_settles_lookup_without_claiming_a_suggestion() {
+    fn retained_refusal_settles_lookup_without_claiming_a_change() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("journal.json");
         let operation = json!({"epoch":"epoch","id":"refused"});
@@ -1010,7 +1010,7 @@ mod tests {
         let journal = Journal::open(&path).unwrap();
         assert!(journal.pending_operations().is_empty());
         let results = journal.task_results("task");
-        assert_eq!(results["suggestions"], json!([]));
+        assert_eq!(results["changes"], json!([]));
         assert_eq!(results["refused"], 1);
         assert!(!response_settled(
             &json!({"result":{"status":"committed","items":[{"error":{"code":"outcome_unknown"}}]}})
@@ -1018,14 +1018,14 @@ mod tests {
     }
 
     #[test]
-    fn cancelled_proposal_keeps_independent_committed_suggestions() {
+    fn cancelled_proposal_keeps_independent_committed_changes() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("journal.json");
         let operation = json!({"epoch":"epoch","id":"partial"});
         let call = json!({"operation":operation});
         record_tool_call(&path, "task", "document_propose", &call).unwrap();
         let response = json!({"result":{"status":"cancel_requested","items":[
-            {"status":"committed","effects":[{"kind":"suggestion","id":"kept"}]},
+            {"status":"committed","effects":[{"kind":"change","id":"kept"}]},
             {"status":"cancelled"}
         ]}});
         record_tool_result(&path, "task", "document_propose", &call, &response).unwrap();
@@ -1040,7 +1040,7 @@ mod tests {
     }
 
     #[test]
-    fn lookup_from_other_task_cannot_claim_suggestion_ids() {
+    fn lookup_from_other_task_cannot_claim_change_ids() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("journal.json");
         let operation = json!({"epoch":"epoch","id":"owned"});
@@ -1048,7 +1048,7 @@ mod tests {
         record_tool_call(&path, "owner", "document_apply", &owner_call).unwrap();
         let lookup = json!({"target_operation":{"epoch":"epoch","id":"owned"}});
         let response = json!({"result":{"status":"committed","effects":[
-            {"kind":"suggestion","id":"foreign"}
+            {"kind":"change","id":"foreign"}
         ]}});
         record_tool_result(&path, "other", "document_result", &lookup, &response).unwrap();
         assert!(!Journal::open(&path)
