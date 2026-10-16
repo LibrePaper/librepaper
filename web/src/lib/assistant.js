@@ -214,10 +214,15 @@ function knownTaskIds(ids) {
   return kept;
 }
 
+// Starters fill the list up to their own count, so one recent task is not
+// the only row the launcher shows.
 export function recentTasks(ids, limit = 5) {
-  const recent = knownTaskIds(ids).slice(0, limit).map((id) => findTask(id));
-  if (recent.length) return recent;
-  return STARTER_TASK_IDS.map((id) => findTask(id));
+  const recent = knownTaskIds(ids).slice(0, limit);
+  for (const id of STARTER_TASK_IDS) {
+    if (recent.length >= Math.min(limit, STARTER_TASK_IDS.length)) break;
+    if (!recent.includes(id)) recent.push(id);
+  }
+  return recent.map((id) => findTask(id));
 }
 
 export function rememberTask(ids, id, limit = 5) {

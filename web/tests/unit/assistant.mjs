@@ -139,7 +139,8 @@ assert.deepEqual(browseTasks("Document").map((entry) => entry.id), ["outline", "
 // survive garbage input.
 assert.deepEqual(recentTasks([]).map((entry) => entry.id), STARTER_TASK_IDS);
 assert.deepEqual(recentTasks(["proofread", "summarize", "review-argument"]).map((entry) => entry.id), STARTER_TASK_IDS);
-assert.deepEqual(recentTasks(["tighten", "nope", "tighten", "outline"]).map((entry) => entry.id), ["tighten", "outline"]);
+assert.deepEqual(recentTasks(["tighten", "nope", "tighten", "outline"]).map((entry) => entry.id), ["tighten", "outline", "proofread"]);
+assert.deepEqual(recentTasks(["summarize"]).map((entry) => entry.id), ["summarize", "proofread", "review-argument"]);
 assert.deepEqual(recentTasks("tighten").map((entry) => entry.id), STARTER_TASK_IDS);
 assert.deepEqual(recentTasks(null).map((entry) => entry.id), STARTER_TASK_IDS);
 assert.equal(recentTasks(["a", "b", "c", "d", "e", "f"].concat(TASK_CATALOG.map((entry) => entry.id))).length, 5);

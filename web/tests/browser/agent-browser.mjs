@@ -491,7 +491,7 @@ try {
   await until("search narrows", () => page.evaluate('document.querySelectorAll(".task-results .task-row").length===1'), 1000);
   await page.evaluate('document.querySelector(".task-results .task-row").click()');
   await until("preparation view", () => page.evaluate('!!document.querySelector(".task-prepare") && document.querySelector(".task-prepare .attachment").textContent.includes("a.md")'), 1000);
-  assert.equal(await page.evaluate('document.querySelector(".chat-form textarea").value'), "", "opening a task does not write the draft");
+  assert.equal(await page.evaluate('document.querySelector(".chat-form textarea").value'), "First\n\n", "opening a task leaves the chat draft alone");
   assert.equal(await page.evaluate('document.querySelector(".task-scope")'), null, "tighten has a single scope, so none is offered");
   assert.ok((await page.evaluate('document.querySelector(".task-prepare .attachment").textContent')).includes("Selected text"));
   await page.evaluate(`(()=>{const notes=document.querySelector('.task-extra');notes.value='Keep the citations.';notes.dispatchEvent(new Event('input',{bubbles:true}));})()`);
@@ -506,7 +506,7 @@ try {
   // and the panel moves to where the answer will arrive.
   await until("tighten sent", () => page.evaluate("window.sockets[1].sent.some(frame=>frame.task?.kind==='tighten')"), 2000);
   assert.equal(await page.evaluate('document.querySelector("#agent-pane-chat").hidden'), false, "sending a task opens the chat");
-  assert.equal(await page.evaluate('document.querySelector(".chat-form textarea").value'), "", "the task was sent, not left as a draft");
+  assert.equal(await page.evaluate('document.querySelector(".chat-form textarea").value'), "First\n\n", "sending a task leaves the chat draft alone");
   await page.evaluate("window.setProps({path:'b.md'})");
   await until("anchored request", () => page.evaluate("window.sockets[1].sent.some(frame=>frame.task?.kind==='tighten')"), 1000);
   const anchored = await page.evaluate("window.sockets[1].sent.find(frame=>frame.task?.kind==='tighten')");
