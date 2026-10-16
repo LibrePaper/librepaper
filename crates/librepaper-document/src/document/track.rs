@@ -18,7 +18,7 @@ use std::collections::{HashMap, HashSet};
 
 use loro::{
     cursor::{Cursor, PosType, Side},
-    Container, LoroDoc, LoroText, LoroValue, ValueOrContainer,
+    Container, ContainerTrait, LoroDoc, LoroText, LoroValue, ValueOrContainer,
 };
 
 use crate::document::session::{apply_text_edits, Edit, CHANGES, FILES};
@@ -603,7 +603,6 @@ mod tests {
     #[derive(Deserialize)]
     struct FxMe {
         who: String,
-        author: String,
     }
 
     #[derive(Deserialize)]
@@ -798,7 +797,7 @@ mod tests {
             let (doc, id) = setup("one two three four");
             let mut ids = apply_tracked_edits(&doc, &id, &[edit(0, 3, "1")], &ME, None, 1).unwrap();
             doc.commit();
-            ids.extend(apply_tracked_edits(&doc, &id, &[edit(10, 5, "3")], &ME, None, 2).unwrap());
+            ids.extend(apply_tracked_edits(&doc, &id, &[edit(6, 5, "3")], &ME, None, 2).unwrap());
             doc.commit();
             assert_eq!(body(&doc, &id), "1 two 3 four");
             assert_eq!(ids.len(), 2);
