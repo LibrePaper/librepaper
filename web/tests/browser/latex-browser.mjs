@@ -25,7 +25,7 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, writeFil
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { browser, until, removeTemporary } from "../helpers/browser-driver.mjs";
+import { browser, pause, until, removeTemporary } from "../helpers/browser-driver.mjs";
 
 // Usage: node web/tests/browser/latex-browser.mjs [firefox|chromium|both]
 
@@ -210,10 +210,12 @@ async function __librepaperCompile(engineName, tree) {
   let ranBibtex = false;
   let ranMakeindex = false;
   let passes = 0;
+  let firstTimings = null;
   const decoder = new TextDecoder();
   for (let pass = 0; pass < 8; pass++) {
     passes++;
     last = await send("tex", { engine: engineName, main: tree.main });
+    firstTimings ??= last.timings;
     const aux = last.outputs[stem + ".aux"];
     const auxText = aux ? decoder.decode(new Uint8Array(aux)) : "";
     const hasBcf = Boolean(last.outputs[stem + ".bcf"]);
@@ -246,6 +248,7 @@ async function __librepaperCompile(engineName, tree) {
   }
   last.__passes = passes;
   last.__ranBibtex = ranBibtex;
+  last.__firstTimings = firstTimings;
   return last;
 }
 
@@ -382,6 +385,28 @@ async function main(browserName) {
       }
     }
 
+    // --- XeLaTeX on a tree with a subfolder used to hang on mkdir ----------
+    {
+      const tree = {
+        main: "main.tex",
+        texts: {
+          "main.tex": "\\documentclass{article}\\begin{document}Hello \\input{sections/part.tex}\\end{document}\n",
+          "sections/part.tex": "from a subfolder.\n",
+        },
+        assets: {},
+      };
+      const result = await runJob(
+        driver,
+        `__librepaperCompile(${JSON.stringify("xelatex")}, ${JSON.stringify(tree)}).then(${SUMMARY})`,
+        120000,
+      );
+      const inspected = inspectPdfBytes(result.pdf ? Buffer.from(result.pdf, "base64") : null, scratch);
+      log(browserName, `subfolder xelatex: ok=${result.ok} pages=${inspected.pages}`);
+      if (!result.ok || !inspected.pdf || inspected.pages !== 1 || !inspected.text.includes("from a subfolder")) {
+        throw new Error(`subfolder xelatex: expected a one-page PDF containing "from a subfolder" (ok=${result.ok}, pages=${inspected.pages})\n${result.log.slice(-2000)}`);
+      }
+    }
+
     // --- a second tex of the same tree fetches zero new bytes -------------
     {
       await fetch(`${BASE}/__reset`);
@@ -437,6 +462,36 @@ async function main(browserName) {
       log(browserName, `fatal-error recompile: ok=${result.ok} status=${result.status} pdf=${result.pdf ? "present" : "null"}`);
       if (result.pdf !== null) {
         throw new Error(`a fatal \\input error before \\end{document} must yield pdf === null, got a PDF (${Buffer.from(result.pdf, "base64").length} bytes)\nlog tail:\n${result.log.slice(-2000)}`);
+      }
+    }
+
+    // --- a reload restores the working set instead of rebuilding it --------
+    {
+      // The working set is written back without being awaited after a
+      // compile, so give that write a moment to land before the profile is
+      // closed. Then relaunch on the same profile: a new page, a new engine,
+      // and the working set the old page left in Cache Storage.
+      await pause(3000);
+      await driver.close();
+      driver = await browser(browserName, join(scratch, browserName), DEBUG_PORT);
+      await driver.navigate(`${BASE}/`);
+      await until("harness page after reload", () => driver.evaluate("document.readyState === 'complete'"), 20000);
+      await driver.evaluate(PAGE_DRIVER);
+      await driver.evaluate(`__librepaperInit(${JSON.stringify(releaseUrl)})`);
+      const tree = treeOf("article", "main.tex");
+      const result = await runJob(
+        driver,
+        `__librepaperCompile(${JSON.stringify("pdflatex")}, ${JSON.stringify(tree)}).then((r) => ({ ok: r.ok, status: r.status, firstTimings: r.__firstTimings }))`,
+      );
+      const startup = result.firstTimings?.startup?.pdftex;
+      const pass = result.firstTimings?.passes?.[0]?.bundleStats;
+      log(browserName, `reload: ok=${result.ok} workingSetFiles=${startup?.workingSetFiles} indexParsed=${pass?.indexParsed} bundleFetches=${pass?.bundleFetches}`);
+      if (!result.ok) throw new Error("reload: the article compile after relaunch did not succeed");
+      if (!(startup?.workingSetFiles > 0)) {
+        throw new Error(`reload: expected the first tex reply to restore a working set (timings.startup.pdftex.workingSetFiles > 0), got ${JSON.stringify(startup)}`);
+      }
+      if (pass?.indexParsed !== false || pass?.bundleFetches !== 0) {
+        throw new Error(`reload: expected no index parse and no bundle fetch on the first pass, got ${JSON.stringify(pass)}`);
       }
     }
 
