@@ -2091,6 +2091,7 @@
         : [],
     },
     changes: {},
+    collaboration: unreadChat ? { says: "Collaboration: unread messages", dot: true } : {},
   });
 
   // A reader is told nothing about live editor diagnostics. They cannot fix
@@ -3945,7 +3946,7 @@
            panels, File/Edit/Insert/View and the account) and the Preview/Source
            switch. Each carries a caption. The menubar stays mounted but is
            invisible; a menu chosen from Menu opens in the menu's own box. -->
-      <CompactPanelMenu tabs={tabs} {panel} {me} open={shown.comments} onselect={openPanel} onsettings={() => openSettings()}
+      <CompactPanelMenu tabs={tabs} {panel} {me} {badges} open={shown.comments} onselect={openPanel} onsettings={() => openSettings()}
                         menus={compactMenus} onmenu={(id, anchor) => menubar.show(id, anchor)} />
       {@render faceSwitch()}
     {:else}
