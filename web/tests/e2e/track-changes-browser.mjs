@@ -70,6 +70,9 @@ async function main() {
   await until("a change in the panel", () => editor.evaluate(`[...document.querySelectorAll('.change-row .insertion')]
     .some((node) => node.textContent.includes(${JSON.stringify(typed)}))`));
   await until("the typing reached the server", async () => (await sourceText(slug)).includes(typed));
+  // The preview marks it as pending too.
+  await until("the preview marks the pending change", async () => await editor.frameEvaluate(`[...document.querySelectorAll('mark[data-librepaper^="change:"]')]
+    .some((mark) => mark.textContent.includes(${JSON.stringify(typed)}))`).catch(() => false));
 
   // Reject puts the text back as it was and drops the change.
   await editor.evaluate(`document.querySelector('.change-row .row-main').click()`);
