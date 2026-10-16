@@ -22,6 +22,9 @@
     "linux": {
       "deb": { "desktopTemplate": "linux/librepaper.desktop" },
       "rpm": { "desktopTemplate": "linux/librepaper.desktop" }
+    },
+    "windows": {
+      "nsis": { "installerHooks": "windows/installer-hooks.nsh" }
     }
   },
   "plugins": {

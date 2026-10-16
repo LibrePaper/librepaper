@@ -6,13 +6,11 @@ The `librepaper` command hosts a LibrePaper server and scripts your documents. T
 
 ## Install
 
-The Debian, RPM and Scoop desktop packages already include the `librepaper` command. Otherwise, install it with one of these commands.
+The desktop packages already include the `librepaper` command: Homebrew, Scoop, the Windows installer, the `.deb`, the `.rpm` and Nix. See the [desktop app page](desktop-app.html) to install one of them. On a server with no desktop app, install the command alone with this installer.
 
 ```sh
 # Linux and macOS
 curl --proto '=https' --tlsv1.2 -LsSf https://github.com/LibrePaper/librepaper/releases/latest/download/librepaper-installer.sh | sh
-# macOS or Linux with Homebrew
-brew install vincentarelbundock/tap/librepaper
 ```
 
 ## Host a server
