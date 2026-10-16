@@ -36,6 +36,11 @@ pub const PATHS: &str = "paths";
 pub const ASSETS: &str = "assets";
 pub const META: &str = "meta";
 
+/// The root map of pending tracked changes. It is deliberately not in
+/// [`ROOTS`]: the projection and the digest ignore it, so a pending change
+/// never alters what a document says.
+pub const CHANGES: &str = "changes";
+
 /// The key in `meta` that names the main file, by id.
 pub const MAIN: &str = "main";
 
