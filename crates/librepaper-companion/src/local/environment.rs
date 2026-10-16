@@ -93,7 +93,13 @@ fn write_cache(path: &Path, value: &OsStr) {
     if let Some(dir) = path.parent() {
         let _ = std::fs::create_dir_all(dir);
     }
-    let _ = std::fs::write(path, value.as_bytes());
+    // Written aside and renamed, so a start that reads it meanwhile never sees half a PATH.
+    let partial = path.with_extension(format!("{}.partial", std::process::id()));
+    if std::fs::write(&partial, value.as_bytes()).is_ok()
+        && std::fs::rename(&partial, path).is_err()
+    {
+        let _ = std::fs::remove_file(&partial);
+    }
 }
 
 #[cfg(any(target_os = "macos", target_os = "linux"))]
