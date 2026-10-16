@@ -237,6 +237,33 @@ docker compose exec librepaper librepaper admin moderate block-account <uuid> --
 - `/ready` answers 200 only when the app serves requests. The home page alone can look fine while the app is down.
 - Add your email as an alert contact.
 
+### Logs
+
+Every upgrade and every `./manage apply` recreates the app and backup containers, and Docker deletes a container's logs with it. To keep them, send both to the host's journal. This needs systemd-journald, which most Linux servers run. Add this to `compose.override.yaml`, then run `./manage apply`:
+
+```yaml
+services:
+  librepaper:
+    logging:
+      driver: journald
+      options:
+        tag: "{{.Name}}"
+  backup:
+    logging:
+      driver: journald
+      options:
+        tag: "{{.Name}}"
+```
+
+```sh
+./manage logs librepaper                                    # follows the running app, as before
+sudo journalctl -t librepaper-librepaper-1 --since "1 day ago"   # any time, across upgrades
+```
+
+- The journal's own limits decide how long logs stay. By default it uses at most 10% of the disk, up to 4 GB.
+- Logs survive a reboot when the journal is persistent, which is the default on Ubuntu.
+- Without this, `./manage logs` shows only what the current containers logged since they were last recreated.
+
 ### Backup alerts
 
 A backup can fail while the site stays up. Causes include a revoked S3 key and a full repository. [Healthchecks](https://healthchecks.io) alerts when a run fails or when no success arrives in time.
