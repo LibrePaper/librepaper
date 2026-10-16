@@ -241,8 +241,11 @@ fn from_provider_never_shows_an_address_as_the_name() {
     };
     assert_eq!(name(""), "alice.smith");
     assert_eq!(name("   "), "alice.smith");
-    assert_eq!(name("alice.smith@example.org"), "alice.smith");
-    assert_eq!(name("Contact: bob@example.org"), "alice.smith");
+    // An address-shaped name keeps its own local part, which may differ from
+    // the handle's; only an empty name falls back to the handle.
+    assert_eq!(name("alice.p@example.org"), "alice.p");
+    assert_eq!(name("Contact: bob@example.org"), "Contact: bob");
+    assert_eq!(name("@example.org"), "alice.smith");
     assert_eq!(name("  Alice Smith  "), "Alice Smith");
     // A handle with no address in it is its own local part.
     assert_eq!(

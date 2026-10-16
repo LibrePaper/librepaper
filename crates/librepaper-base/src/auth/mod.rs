@@ -248,8 +248,9 @@ impl Identity {
     /// may, and the provider in front is what keeps it out of any other
     /// namespace. A provider may send no name, or an address as the name, and a
     /// comment signed with an address is worse than one signed with its local
-    /// part, so a missing or address-shaped name falls back to the handle's
-    /// local part. No subject means no id, so nobody is signed in. The picture
+    /// part, so an address-shaped name is cut to its own local part and a
+    /// missing name falls back to the handle's. No subject means no id, so
+    /// nobody is signed in. The picture
     /// is kept only if it is an address a page could safely show and a
     /// credential could safely carry.
     pub fn from_provider(
@@ -263,10 +264,14 @@ impl Identity {
         let name: String = name.chars().filter(|c| !c.is_control()).collect();
         let name: String = name.trim().chars().take(MAX_NAME_CHARS).collect();
         let name = name.trim_end();
-        let name = if name.is_empty() || name.contains('@') {
+        let name = match name.split_once('@') {
+            Some((local, _)) => local.trim_end().to_string(),
+            None => name.to_string(),
+        };
+        let name = if name.is_empty() {
             handle.split('@').next().unwrap_or_default().to_string()
         } else {
-            name.to_string()
+            name
         };
         let subject = subject.trim();
         Identity {

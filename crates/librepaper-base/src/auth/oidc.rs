@@ -1993,7 +1993,7 @@ mod tests {
     async fn an_id_token_payload_may_be_padded() {
         let stand = stand_in().await;
         let mut text = claims(&stand.base).to_string();
-        while text.len() % 3 == 0 {
+        while text.len().is_multiple_of(3) {
             text.push(' ');
         }
         let padded = base64::engine::general_purpose::URL_SAFE.encode(text.as_bytes());
