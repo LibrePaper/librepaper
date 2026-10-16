@@ -1,10 +1,10 @@
 <script>
   // Wraps a feature that exists only in the desktop app. Inside the desktop app
   // it renders its children. In a browser it renders one notice with the ways
-  // to get or open the desktop app.
+  // to get or open the desktop app. An optional description says what the feature does.
   import { desktop, INSTALL_URL, DESKTOP_ONLY_MESSAGE } from "../lib/desktop/client.js";
 
-  let { feature = "", id = undefined, children = undefined } = $props();
+  let { feature = "", description = "", id = undefined, children = undefined } = $props();
 
   const available = Boolean(desktop());
   const message = $derived(feature ? `${feature} needs the LibrePaper desktop app.` : DESKTOP_ONLY_MESSAGE);
@@ -17,6 +17,7 @@
   {@render children?.()}
 {:else}
   <div {id} class="desktop-only">
+    {#if description}<p class="desktop-only-description">{description}</p>{/if}
     <p class="desktop-only-message">{message}</p>
     <a class="btn btn-sm lp-control-tonal-brand" href={INSTALL_URL} target="_blank" rel="noreferrer">Get the desktop app</a>
     <a class="btn btn-sm lp-control-brand" href={openLink}>Open in the desktop app</a>
@@ -31,6 +32,10 @@
     gap: calc(var(--spacing) * 2);
     margin-block: calc(var(--spacing) * 3) calc(var(--spacing) * 2);
     font-size: var(--text-sm);
+  }
+  .desktop-only-description {
+    flex-basis: 100%;
+    margin: 0;
   }
   .desktop-only-message {
     flex-basis: 100%;

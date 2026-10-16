@@ -29,7 +29,7 @@
   }
 </script>
 
-<DesktopOnly feature="The project folder setting">
+<DesktopOnly feature="The project folder setting" description="Keep this project in sync with a folder on your computer for live previews.">
 <SettingRow id="render-folder" title="Project folder" description="Folder used for live previews; one-shot builds use a temporary copy.">
   <input class="input input-sm setting-input" type="text" aria-label="Project entrypoint" bind:value={entrypoint} disabled={!canChoose} />
   <button type="button" class="btn btn-sm lp-control-tonal-brand" disabled={!canChoose || !entrypoint.trim()} onclick={() => void chooseFolder()}>{choosingFolder ? "Choosing…" : "Choose folder…"}</button>

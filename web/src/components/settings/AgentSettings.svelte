@@ -36,7 +36,7 @@
   }
 </script>
 
-<DesktopOnly>
+<DesktopOnly description="Chat with Claude, Codex or another coding agent that reads and edits this project.">
 {#if view.available}
   <section class="settings-subsection" id="agents-list" aria-labelledby="agents-list-heading">
     <div class="settings-section-title"><h4 class="settings-subhead" id="agents-list-heading">Agents on this computer</h4></div>

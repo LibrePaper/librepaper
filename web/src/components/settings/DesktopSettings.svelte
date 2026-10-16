@@ -34,7 +34,7 @@
   <p class="setting-description desktop-notice" role="status">{view.notice}</p>
 {/if}
 
-<DesktopOnly>
+<DesktopOnly description="Link projects to folders on your computer and run their code locally.">
 {#if view.available}
   {#if view.list(view.state?.bindings).length}
   <section id="desktop-folders" class="settings-subsection" aria-labelledby="desktop-folders-heading">

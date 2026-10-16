@@ -63,7 +63,7 @@
   }
 </script>
 
-<DesktopOnly>
+<DesktopOnly description="Render Quarto, R and Python documents with the tools installed on your computer.">
 {#if view.error}
   <p class="setting-description tools-error" role="alert">{view.error}</p>
 {/if}
