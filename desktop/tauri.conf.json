@@ -16,6 +16,7 @@
   "bundle": {
     "active": true,
     "targets": "all",
+    "category": "Productivity",
     "icon": ["icons/icon.png", "icons/icon.ico", "icons/icon.icns"],
     "externalBin": ["binaries/librepaper"]
   },
