@@ -30,7 +30,9 @@ github-build-setup = "../dist-build-setup.yml"
 # The desktop app: signed Windows installers, a signed and notarized macOS
 # DMG, and Linux packages (.github/workflows/desktop-*.yml).
 local-artifacts-jobs = ["./desktop-windows", "./desktop-macos", "./desktop-linux"]
-github-custom-job-permissions = { "desktop-windows" = { contents = "read", id-token = "write" }, "desktop-macos" = { contents = "read" }, "desktop-linux" = { contents = "read" } }
+# The desktop updater manifest (.github/workflows/publish-updater.yml).
+publish-jobs = ["./publish-updater"]
+github-custom-job-permissions = { "desktop-windows" = { contents = "read", id-token = "write" }, "desktop-macos" = { contents = "read" }, "desktop-linux" = { contents = "read" }, "publish-updater" = { contents = "write" } }
 install-success-msg = "The LibrePaper command line is installed. In a new terminal, run: librepaper --help"
 
 [profile.release]

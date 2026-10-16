@@ -1,0 +1,32 @@
+# cargo-dist calls this workflow as a publish job on release tags, after the
+# GitHub Release holds every artifact. It publishes latest.json, which the
+# desktop app reads to update itself.
+name: Desktop updater manifest
+
+on:
+  workflow_call:
+    inputs:
+      plan:
+        required: true
+        type: string
+
+jobs:
+  manifest:
+    name: Desktop updater manifest
+    runs-on: ubuntu-22.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v6
+      - name: Publish latest.json
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ fromJson(inputs.plan).announcement_tag }}
+        run: |
+          set -euo pipefail
+          dir="$RUNNER_TEMP/updater"
+          mkdir -p "$dir"
+          gh release download "$TAG" --repo "$GITHUB_REPOSITORY" --pattern '*.sig' --dir "$dir"
+          node tools/release/updater-manifest.mjs --tag "$TAG" --dir "$dir" > "$dir/latest.json"
+          gh release upload "$TAG" "$dir/latest.json" --repo "$GITHUB_REPOSITORY" --clobber

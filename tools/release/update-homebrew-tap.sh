@@ -85,6 +85,8 @@ cask "librepaper" do
 
   app "LibrePaper.app"
 
+  auto_updates true
+
   zap trash: [
     "~/Library/Application Support/org.librepaper.desktop",
     "~/Library/Caches/org.librepaper.desktop",

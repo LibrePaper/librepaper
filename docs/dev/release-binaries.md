@@ -12,7 +12,11 @@ For the release steps, see [Releasing](../releasing.md).
 | `LibrePaper_<version>_x64-setup.exe` (NSIS) | `desktop-windows.yml` | Azure Artifact Signing |
 | `LibrePaper_<version>_x64_en-US.msi` (stable versions only, MSI rejects prerelease versions) | `desktop-windows.yml` | Azure Artifact Signing |
 | `LibrePaper_<version>_x64-portable.zip` (Scoop) | `desktop-windows.yml` | The two programs inside are signed |
+| `LibrePaper_<version>_x64-setup.exe.sig` | `desktop-windows.yml` | Updater signature of the installer, read from `latest.json` |
 | `LibrePaper_<version>_universal.dmg` | `desktop-macos.yml` | Developer ID, notarized and stapled |
+| `LibrePaper_<version>_universal.app.tar.gz` | `desktop-macos.yml` | Updater archive of the app |
+| `LibrePaper_<version>_universal.app.tar.gz.sig` | `desktop-macos.yml` | Updater signature of the archive, read from `latest.json` |
+| `latest.json` | `publish-updater.yml` | No. The desktop app reads its signatures and URLs |
 | `LibrePaper_<version>_amd64.deb` | `desktop-linux.yml` | No |
 | `LibrePaper-<version>-1.x86_64.rpm` (stable versions only) | `desktop-linux.yml` | No |
 
@@ -150,10 +154,22 @@ gh run rerun RUN_ID --failed
 - On macOS, Gatekeeper blocks the unsigned `librepaper` binary from a CLI archive that a browser downloaded. Users must allow it in System Settings, Privacy & Security. The install script and Homebrew are not affected.
 - On Linux, there is no prompt.
 
+## Desktop updates
+
+- The app checks `latest.json` from the latest stable release when it starts. It checks on macOS and on Windows NSIS installs only.
+- Prereleases never reach `releases/latest`, so they never update installed apps.
+- Scoop and Linux packages are updated by their package managers. The app does not update them, and it does not update MSI installs.
+- The Homebrew cask sets `auto_updates true`, so Homebrew leaves updates to the app.
+- The app checks each signature against the public key in `desktop/tauri.conf.json`.
+- The updater key is the secrets `TAURI_SIGNING_PRIVATE_KEY` and `TAURI_SIGNING_PRIVATE_KEY_PASSWORD` in the `release` environment.
+- The maintainer keeps the private key and its password in `~/.config/librepaper-release/`. Back them up somewhere safe. If they are lost, installed apps can never update again.
+- Set `LIBREPAPER_UPDATE_URL` to point a running app at another `latest.json`, for testing.
+
 ## Troubleshooting
 
 | Symptom | Cause | Fix |
 | --- | --- | --- |
+| Release fails with a missing updater signature | TAURI_SIGNING_PRIVATE_KEY is not set or createUpdaterArtifacts did not reach the bundle step | Check the release environment secrets |
 | signtool fails on the first release after setting up Azure | The role assignment had not propagated | Wait, then rerun the failed jobs |
 | The check reports `target\release\librepaper-desktop.exe` as NotSigned | Tauri signs the copy it bundles, not the build output | The zip takes its own signed copy (already handled in the workflow) |
 | `MAC verification failed during PKCS12 import (wrong password?)` | The `.p12` uses the OpenSSL 3 default format | Export it again with `-legacy` |

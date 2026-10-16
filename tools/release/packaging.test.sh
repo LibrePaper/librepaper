@@ -108,6 +108,7 @@ grep -Fq "sha256 \"$MOCK_HASH\"" "$tmp/capture/Formula/librepaper.rb" || fail 'f
 grep -Fq 'license "MIT"' "$tmp/capture/Formula/librepaper.rb" || fail 'formula missing MIT license metadata'
 [[ -f "$tmp/capture/Casks/librepaper.rb" ]] || fail 'Homebrew cask was not generated'
 grep -Fq 'app "LibrePaper.app"' "$tmp/capture/Casks/librepaper.rb" || fail 'cask missing app stanza'
+grep -Fq 'auto_updates true' "$tmp/capture/Casks/librepaper.rb" || fail 'cask missing auto_updates stanza'
 grep -Fq "sha256 \"$MOCK_HASH\"" "$tmp/capture/Casks/librepaper.rb" || fail 'cask missing verified DMG hash'
 grep -Fq 'LibrePaper_#{version}_universal.dmg' "$tmp/capture/Casks/librepaper.rb" || fail 'cask missing DMG url'
 grep -Fq 'version "1.2.3"' "$tmp/capture/Casks/librepaper.rb" || fail 'cask has wrong version'
@@ -211,5 +212,7 @@ enabled_restic_commit=$("$real_git" -C "$kit_source" rev-parse HEAD)
 if PATH="${real_git%/*}:$PATH" bash "$root/tools/release/package-deploy-kit.sh" v1.2.3 "$kit_source" "$kit_output" "$enabled_restic_commit" >/dev/null 2>&1; then
   fail 'deploy kit accepted an enabled restic profile'
 fi
+
+node "$root/tools/release/updater-manifest.test.mjs"
 
 echo 'release packaging mocks passed'

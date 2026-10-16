@@ -1,7 +1,8 @@
 # cargo-dist calls this workflow as a local-artifacts job on release tags
 # (local-artifacts-jobs in Cargo.toml), so the release waits for it and a
 # signing failure stops the release. It signs with Azure Artifact Signing
-# through GitHub OIDC in the release environment. The Tauri updater is not used.
+# through GitHub OIDC in the release environment. Tauri also signs the NSIS
+# updater archive with the updater key, so the desktop app can update itself.
 name: Windows desktop app
 
 on:
@@ -31,6 +32,8 @@ jobs:
     steps:
       - name: Check the signing settings
         shell: bash
+        env:
+          HAS_UPDATER_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY != '' }}
         run: |
           pattern='^https://[a-z0-9]+\.codesigning\.azure\.net/?$'
           if [ -z "$SIGNING_ENDPOINT" ]; then
@@ -43,6 +46,10 @@ jobs:
           fi
           if [[ ! "$SIGNING_ENDPOINT" =~ $pattern ]]; then
             echo "::error::AZURE_SIGNING_ENDPOINT must look like https://eus.codesigning.azure.net."
+            exit 1
+          fi
+          if [ "$HAS_UPDATER_KEY" != "true" ]; then
+            echo "::error::Set TAURI_SIGNING_PRIVATE_KEY and TAURI_SIGNING_PRIVATE_KEY_PASSWORD in the release environment."
             exit 1
           fi
 
@@ -134,6 +141,7 @@ jobs:
           # A failed signature fails the build.
           $tauriSign = @{
             bundle = @{
+              createUpdaterArtifacts = $true
               windows = @{
                 signCommand = @{
                   cmd = $signtool
@@ -171,6 +179,9 @@ jobs:
           bundles: ${{ steps.version.outputs.bundles }}
           cli-version: ${{ steps.version.outputs.tag }}
           tauri-config: ${{ runner.temp }}\tauri-sign.json
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
 
       - name: Check the signatures
         shell: pwsh
@@ -215,6 +226,11 @@ jobs:
           $out = Join-Path $env:RUNNER_TEMP 'desktop-release'
           New-Item -ItemType Directory -Force -Path $out | Out-Null
           Copy-Item -Path $installers.FullName -Destination $out
+
+          # The updater reads this signature from latest.json.
+          $updaterSig = @(Get-ChildItem -Path "$env:BUNDLE_DIR\nsis\*-setup.exe.sig")
+          if ($updaterSig.Count -ne 1) { throw "Expected one NSIS updater signature, found $($updaterSig.Count)" }
+          Copy-Item -Path $updaterSig[0].FullName -Destination $out
 
           # Scoop installs this zip: the app and the librepaper command line side by side.
           Compress-Archive -Path (Join-Path $portable '*') -DestinationPath (Join-Path $out "LibrePaper_$($env:VERSION)_x64-portable.zip")

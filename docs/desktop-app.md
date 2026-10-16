@@ -83,6 +83,10 @@ LIBREPAPER_SERVER=https://paper.example.org/ desktop/target/release/librepaper-d
 
 The desktop app starts its own background local service when it opens. You do not start, stop or pair the local service.
 
+### Updates
+
+On macOS and with the Windows installer, the app checks for a new version when it starts and asks before it installs it. Scoop, Homebrew and the Linux packages update the app through their own commands.
+
 ### Windows
 
 - Ctrl+N (Cmd+N on macOS) opens another window.
