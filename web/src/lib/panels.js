@@ -28,10 +28,10 @@ export const TABS = [
 
 // What a role is offered, where that is less than what the conditions above
 // would otherwise allow. Somebody holding a read link is given the document
-// and nothing around it: there is no panel they can act in, and a rail of
-// icons opening columns that only report on work they cannot do is a
-// workspace pretending they have one. A commenter is given the one panel
-// their link is for, and nothing else -- not the changes queue, not the
+// and the pending changes in it, read only: there is no other panel they can
+// act in, and a rail of icons opening columns that only report on work they
+// cannot do is a workspace pretending they have one. A commenter is given
+// the comments and the same read-only changes, and nothing else -- not the
 // agent, not the history, none of which a comment link can touch.
 //
 // An editor and an owner are not named here: what they are offered is the
@@ -39,7 +39,7 @@ export const TABS = [
 // document always says which one this caller holds, so no role means the
 // document has not answered, and a rail drawn then is one audience's
 // furniture put up and taken down again as soon as the reply lands.
-const ROLE_PANELS = { reader: [], commenter: ["collaboration"], "": [] };
+const ROLE_PANELS = { reader: ["changes"], commenter: ["collaboration", "changes"], "": [] };
 
 // Every panel this browser is offered, in rail order.
 export const tabsFor = (who) => {

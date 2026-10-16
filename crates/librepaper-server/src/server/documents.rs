@@ -45,6 +45,60 @@ struct SnapshotResponse<C> {
     capabilities: Value,
 }
 
+/// The pending tracked changes of every text file, in the shape a reader
+/// gets them: place, author and text, never CRDT bytes or history. Offsets
+/// are UTF-16, the unit the browser slices strings by; `track` keeps code
+/// points.
+fn reader_changes(
+    doc: &loro::LoroDoc,
+    projected: &librepaper_document::document::projection::Projected,
+) -> Vec<Value> {
+    let mut out = Vec::new();
+    for (path, entry) in &projected.projection.files {
+        if entry.kind != "text" {
+            continue;
+        }
+        let text = projected.texts.get(path).map(String::as_str).unwrap_or("");
+        let units = |points: usize| -> usize {
+            text.chars().take(points).map(char::len_utf16).sum()
+        };
+        for change in librepaper_document::document::track::resolve_changes(doc, &entry.id) {
+            let inserted: String = text
+                .chars()
+                .skip(change.from)
+                .take(change.to - change.from)
+                .collect();
+            out.push(json!({
+                "id": change.id,
+                "file": entry.id,
+                "path": path,
+                "author": change.author,
+                "who": change.who,
+                "run": change.run,
+                "at": change.at,
+                "from": units(change.from),
+                "to": units(change.to),
+                "deleted": change.deleted,
+                "inserted": inserted,
+            }));
+        }
+    }
+    out
+}
+
+/// What a reader's etag names: the projection digest and the pending
+/// changes. The projection digest ignores the `changes` root, so an accept
+/// or a reject, which only deletes a record, would otherwise never reach a
+/// reader. `project_digest` itself stays the projection digest, because the
+/// render and the stale-selection check are keyed on text alone.
+fn reader_identity(project_digest: &str, changes: &[Value]) -> String {
+    let mut hash = Sha256::new();
+    hash.update(project_digest.as_bytes());
+    hash.update(b"\n");
+    hash.update(Value::Array(changes.to_vec()).to_string().as_bytes());
+    hex::encode(hash.finalize())
+}
+
 impl Server {
     pub async fn delete_document(&self, slug: &str) -> Result<usize, String> {
         let storage_id = self.store.begin_delete(slug).await?;
@@ -1052,11 +1106,21 @@ impl Server {
             Ok(format) => format,
             Err(error) => return sequencer_reply(&error),
         };
-        // The etag -- and what `source-changed {digest}` on the socket
-        // names (§4.5) -- is the projection digest, not a row number: two
-        // heads with the same files answer the same identity (§2.2).
+        let changes = match room
+            .log()
+            .with_projected_head(|doc, projected| reader_changes(doc, projected))
+            .await
+        {
+            Ok(changes) => changes,
+            Err(error) => return sequencer_reply(&error),
+        };
+        // `project_digest` is the projection digest, not a row number: two
+        // heads with the same files answer the same digest (§2.2). The etag
+        // also covers the pending changes, so an accept or a reject reaches
+        // a reader whose text did not move. The `source-changed` frame
+        // names no identity the browser compares; it only says to refetch.
         let identity = projected.projection.digest();
-        let etag = format!("\"{identity}\"");
+        let etag = format!("\"{}\"", reader_identity(&identity, &changes));
         if header_of(headers, "if-none-match").is_some_and(|value| {
             value
                 .split(',')
@@ -1080,6 +1144,7 @@ impl Server {
                 "main": projected.projection.main,
                 "tree": projected.projection,
                 "texts": projected.texts,
+                "changes": changes,
             }),
         );
         set(&mut response, "etag", &etag);
@@ -1929,5 +1994,61 @@ impl Server {
                 write_json(500, &json!({"error": "could not save that"}))
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod reader_changes_tests {
+    use super::*;
+    use librepaper_base::config::Configuration;
+    use librepaper_document::document::paths::rules;
+    use librepaper_document::document::projection::project;
+    use librepaper_document::document::session::{new_doc, put_text, Edit};
+    use librepaper_document::document::track::{accept, apply_tracked_edits, Author};
+
+    #[test]
+    fn a_reader_gets_utf16_offsets_and_a_moving_identity() {
+        let doc = new_doc();
+        // U+1F600 is two UTF-16 units and one code point.
+        let id = put_text(&doc, "main.md", "\u{1F600} the quick fox");
+        doc.commit();
+        let me = Author {
+            who: "me",
+            author: "Me",
+        };
+        // UTF-16 offsets: the emoji is 2 units, then " the " is 5 more.
+        let edit = Edit {
+            at: 7,
+            delete: 5,
+            insert: "slow".to_string(),
+        };
+        let set = apply_tracked_edits(&doc, &id, &[edit], &me, Some("r1"), 9).unwrap();
+        doc.commit();
+        let config = Configuration::default();
+        let projected = project(&doc, &rules(&config));
+        let changes = reader_changes(&doc, &projected);
+        assert_eq!(changes.len(), 1);
+        let row = &changes[0];
+        assert_eq!(row["id"], set[0].as_str());
+        assert_eq!(row["file"], id.as_str());
+        assert_eq!(row["path"], "main.md");
+        assert_eq!(row["who"], "me");
+        assert_eq!(row["author"], "Me");
+        assert_eq!(row["run"], "r1");
+        assert_eq!(row["at"], 9);
+        assert_eq!(row["from"], 7);
+        assert_eq!(row["to"], 11);
+        assert_eq!(row["deleted"], "quick");
+        assert_eq!(row["inserted"], "slow");
+        assert_eq!(row.as_object().unwrap().len(), 11);
+
+        let before = reader_identity(&projected.projection.digest(), &changes);
+        assert!(accept(&doc, &set[0]));
+        doc.commit();
+        let projected = project(&doc, &rules(&config));
+        let changes = reader_changes(&doc, &projected);
+        assert!(changes.is_empty());
+        let after = reader_identity(&projected.projection.digest(), &changes);
+        assert_ne!(before, after);
     }
 }
