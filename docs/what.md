@@ -45,3 +45,21 @@ Free and open:
 - Self-host with one static binary and a Postgres database, on a laptop or a small server
 - Export project source and assets as ordinary files from the CLI
 - Back up every project in an account to local ZIP files with the desktop app
+
+## Your own fonts
+
+- Upload `.otf` or `.ttf` files into the project. A `fonts/` folder keeps them out of the way.
+- Typst: name the family. Font files anywhere in the project are found.
+
+  ```typst
+  #set text(font: "Fira Sans")
+  ```
+
+- LaTeX: use `fontspec` and name the file. `fontspec` switches the project to XeLaTeX. Fonts are found by file name only, not by family name.
+
+  ```latex
+  \setmainfont{FiraSans-Regular.otf}[Path=fonts/, BoldFont=FiraSans-Bold.otf]
+  ```
+
+- `.woff` and `.woff2` files are for HTML. Typst and LaTeX cannot read them.
+- Everyone who can open the project, read links included, downloads the font files. Check that the font licence allows that.

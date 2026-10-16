@@ -118,7 +118,7 @@ function treeOf(name, main) {
 // --- PDF inspection (pdfinfo/pdftotext, if present) --------------------------
 
 function inspectPdfBytes(bytesArray, scratch) {
-  if (!bytesArray) return { pdf: false, pages: 0, text: "" };
+  if (!bytesArray) return { pdf: false, pages: 0, text: "", fonts: "" };
   const path = join(scratch, `x-${Math.random().toString(36).slice(2)}.pdf`);
   writeFileSync(path, Buffer.from(bytesArray));
   try {
@@ -129,10 +129,16 @@ function inspectPdfBytes(bytesArray, scratch) {
     } catch {
       /* pdftotext missing: page count still answers the assertions that matter most */
     }
-    return { pdf: true, pages: Number(info.match(/^Pages:\s+(\d+)/m)?.[1] || 0), text };
+    let fonts = "";
+    try {
+      fonts = execFileSync("pdffonts", [path], { encoding: "utf8", timeout: 10000 });
+    } catch {
+      /* pdffonts missing: only the project-font check reads this */
+    }
+    return { pdf: true, pages: Number(info.match(/^Pages:\s+(\d+)/m)?.[1] || 0), text, fonts };
   } catch (error) {
     if (["ENOENT", "EPERM", "EACCES"].includes(error.code)) throw error;
-    return { pdf: false, pages: 0, text: "" };
+    return { pdf: false, pages: 0, text: "", fonts: "" };
   }
 }
 
@@ -330,6 +336,7 @@ async function main(browserName) {
       { id: "paper", engine: "pdflatex" },
       { id: "packages", engine: "pdflatex" },
       { id: "xetex", engine: "xelatex" },
+      { id: "project-font", engine: "xelatex" },
     ];
 
     for (const c of cases) {
@@ -354,6 +361,9 @@ async function main(browserName) {
       }
       if (expected.synctex && !result.synctex) {
         throw new Error(`${c.id}: expected a .synctex.gz, got none`);
+      }
+      if (c.id === "project-font" && !inspected.fonts.includes("JetBrainsMonoNF-Regular")) {
+        throw new Error(`project-font: the PDF does not embed the project font JetBrainsMonoNF-Regular; pdffonts said:\n${inspected.fonts}`);
       }
       if (c.id === "paper") {
         // The citation must actually be typeset -- BibTeX ran and its .bbl

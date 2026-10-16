@@ -26,6 +26,7 @@ const EXAMPLES = [
   { name: "broken", engine: "pdflatex", negative: true },
   { name: "xetex", engine: "xelatex" },
   { name: "unicode-fonts", engine: "xelatex", unicode: true },
+  { name: "project-font", engine: "xelatex" },
   { name: "packages", engine: "pdflatex", bibtex: true },
 ];
 

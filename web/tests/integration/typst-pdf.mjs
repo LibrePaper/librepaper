@@ -1,5 +1,5 @@
 // Integration check against the actual built WASM, using Poppler as an
-// independent PDF parser. Run after `node tools/assets/pins.mjs fetch`; requires pdfinfo/pdftotext.
+// independent PDF parser. Run after `node tools/assets/pins.mjs fetch`; requires pdfinfo/pdftotext/pdffonts.
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
@@ -43,6 +43,21 @@ try {
   assert.equal(broken.bytes.length, 0);
   assert.ok(broken.diagnostics.some((item) => item.severity === "error"));
   assert.deepEqual(first.bytes, preserved, "later compilation must not overwrite an earlier PDF");
+
+  // A font the user uploaded into a subfolder: Typst finds it by family name,
+  // embeds it, and does not report the family as unknown.
+  const projectSource = `#set text(font: "JetBrainsMono Nerd Font")\nProject font check.\n`;
+  handOver(wasm, {
+    main: "project-font.typ",
+    texts: { "project-font.typ": projectSource },
+    assets: { "fonts/ProjectMono-Regular.ttf": new Uint8Array(readFileSync(new URL("fonts/ProjectMono-Regular.ttf", corpus))) },
+  });
+  const projectFont = call(wasm, "compile", projectSource, "PDF fixture");
+  const projectPdf = inspect(projectFont, "project-font");
+  assert.ok(projectPdf.text.includes("Project font check."));
+  const fonts = execFileSync("pdffonts", [join(directory, "project-font.pdf")], { encoding: "utf8", env: { ...process.env, LC_ALL: "C" } });
+  assert.ok(fonts.includes("JetBrainsMonoNF-Regular"), `PDF does not embed the project font:\n${fonts}`);
+  assert.equal(projectFont.diagnostics.some((item) => /unknown font/i.test(item.message ?? "")), false, JSON.stringify(projectFont.diagnostics));
 
   const times = [];
   const memories = [];

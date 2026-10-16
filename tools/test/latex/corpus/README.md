@@ -46,6 +46,13 @@ with a `main.tex`; each has a distinct purpose:
   wasm-latex package recorder also compiles it so the named-font and
   `unicode-math` package requests reach the mirror.
 
+- **`project-font/`** holds a document that uses a font the project uploaded:
+  `fonts/ProjectMono-Regular.ttf` (with its `fonts/OFL.txt` licence), named
+  through `fontspec` as `\setmainfont{ProjectMono-Regular.ttf}[Path=fonts/]`.
+  It proves a font in a project subfolder is found and embedded: the PDF must
+  carry `JetBrainsMonoNF-Regular`. The browser test checks that with pdffonts.
+  One page under XeLaTeX.
+
 - **`e2e/`** holds fixtures for `web/tests/e2e/latex-e2e.mjs` and the LaTeX browser test.
   `biber/` is a biblatex document built with biber; `native/` uses pgfplots, which the
   mirror cannot draw, so it needs the local companion's TeX Live.
@@ -60,8 +67,8 @@ with a `main.tex`; each has a distinct purpose:
 - `pages.json` is the page count a TeX Live on this machine gives each
   browser-comparison document. The TeX Live oracle also checks
   `unicode-fonts` as a separate positive glyph-coverage sample; the browser
-  harness compares only its explicit `article`, `paper`, `packages`, and
-  `xetex` cases.
+  harness compares only its explicit `article`, `paper`, `packages`,
+  `xetex` and `project-font` cases.
 - `broken/expected.json` holds the diagnostics, per engine.
 
 Nothing here is checked into the mirror and nothing here is uploaded

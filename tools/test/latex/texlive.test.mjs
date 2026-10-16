@@ -5,7 +5,7 @@ import { join } from "node:path";
 import test from "node:test";
 import { compileCorpus } from "./texlive.mjs";
 
-const fixtureNames = ["article", "paper", "broken", "xetex", "unicode-fonts", "packages"];
+const fixtureNames = ["article", "paper", "broken", "xetex", "unicode-fonts", "project-font", "packages"];
 const fakeEngine = `#!${process.execPath}
 const fs = require('node:fs');
 const path = require('node:path');
@@ -17,7 +17,7 @@ if (name === 'broken') {
   fs.writeFileSync('main.log', 'Undefined control sequence.\\nFile chapters/missing.tex not found.\\nFatal error occurred\\n');
   process.exit(1);
 }
-const pages = { article: 3, paper: 4, xetex: 1, 'unicode-fonts': 1, packages: 2 }[name];
+const pages = { article: 3, paper: 4, xetex: 1, 'unicode-fonts': 1, 'project-font': 1, packages: 2 }[name];
 const missing = name === 'unicode-fonts' && process.env.FAKE_MISSING_GLYPH ? 'Missing character: There is no Greek glyph.\\n' : '';
 const output = process.env.FAKE_ZERO_PAGES === name ? '' : 'Output written on main.pdf (' + pages + ' pages, 1 byte).\\n';
 fs.writeFileSync('main.log', missing + output);

@@ -1,0 +1,26 @@
+% A font uploaded into a project subfolder.
+%
+% The font file lives in `fonts/`, not beside `main.tex`. `fontspec` finds it
+% by file name under `Path=fonts/`, and XeTeX embeds it. The PDF therefore
+% carries the font's PostScript name, `JetBrainsMonoNF-Regular`, and pdffonts
+% lists it. The font is small and has printable ASCII glyphs only, so one line
+% of ASCII body text is enough. Its licence is `fonts/OFL.txt`.
+%
+% Passing means the project font was found and embedded from a subfolder.
+% It does not test any other font lookup.
+\documentclass[11pt]{article}
+
+\usepackage{fontspec}
+
+\setmainfont{ProjectMono-Regular.ttf}[Path=fonts/]
+
+\title{A Project Font}
+\author{The LibrePaper Corpus}
+\date{}
+
+\begin{document}
+\maketitle
+
+Set in a font the project uploaded: the quick brown fox jumps over the lazy dog.
+
+\end{document}
