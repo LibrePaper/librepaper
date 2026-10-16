@@ -49,12 +49,22 @@ Cursors:
 - Nothing inserted: `start = text.getCursor(from, -1)`, attached to the
   character after the deletion point; at the end of the text Loro returns a
   cursor with no id, which stays at the end. `end = null`.
-- Resolving: `from = pos(start)`, `to = end ? pos(end) : from`. If `to < from`,
-  the inserted text is gone: treat it as `to = from`.
-- Loro JS `getCursor`/`getCursorPos` take and return Unicode code points;
-  CodeMirror and `LoroText.insert/delete` in JS use UTF-16. Convert at the
-  boundary with the helpers `Editor.svelte` already uses. The planner below
-  works in one unit throughout (UTF-16 in the browser, code points in Rust).
+- Resolving: a Loro cursor resolves to the index of the character it is
+  attached to, whatever its side. So `from = pos(start)` and
+  `to = end ? pos(end) + 1 : from`. When the attached character was deleted,
+  Loro answers with the position it had and an `update` cursor (found by
+  walking history, which is slow and fails after a trim); then `to = pos(end)`
+  without the `+ 1`. If `to < from`, the inserted text is gone: treat it as
+  `to = from`.
+- Units: in loro-crdt JS, `getCursor`, `getCursorPos`, `insert` and `delete`
+  all use UTF-16, the same as CodeMirror, so the browser converts nothing. In
+  Rust, `get_cursor`, `get_cursor_pos`, `insert` and `delete` use Unicode code
+  points. The planner works in one unit throughout (UTF-16 in the browser,
+  code points in Rust).
+- Healing: `prune` also rewrites an entry whose cursor came back with an
+  `update`, storing the updated cursor, so a deleted anchor is looked up the
+  slow way once. The planner marks every change the edit overlaps as `set`, so
+  its cursors are written fresh against live characters.
 
 A change is **orphaned** when its file is gone or its `start` cursor cannot be
 resolved. A change is **empty** when `from == to` and `deleted == ""`. Both
