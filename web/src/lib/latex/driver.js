@@ -119,8 +119,8 @@ class EngineDriver {
     this.onDownload = onDownload;
     this.worker = null;
     // Reply queues keyed by the reply's own `cmd`. A command with no reply at
-    // all (setmainfile, and every worker's `mkdir`... no, mkdir does reply)
-    // never enqueues here.
+    // all (setmainfile, settexliveurl, grace, and mkdir on xetex and dvipdfm;
+    // see mkdir) never enqueues here.
     this.pending = new Map();
     this.madeDirs = new Set();
     // Resolver evidence for a package file (kpathsea format 26, `.sty`/
@@ -324,6 +324,13 @@ class EngineDriver {
       built = built ? `${built}/${part}` : part;
       if (this.madeDirs.has(built)) continue;
       this.madeDirs.add(built);
+      // The xetex and dvipdfm workers create the directory but never answer
+      // mkdir, so waiting would hang. Workers run messages in posted order,
+      // so a writefile sent after this one still finds the directory.
+      if (this.kind === "xetex" || this.kind === "dvipdfm") {
+        this._tell({ cmd: "mkdir", url: built });
+        continue;
+      }
       await this._ask({ cmd: "mkdir", url: built }, "mkdir").catch(() => {});
     }
   }
