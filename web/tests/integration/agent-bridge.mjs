@@ -10,6 +10,8 @@ import { mkdtemp, mkdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createInterface } from "node:readline";
+import { LoroDoc } from "loro-crdt";
+import { listChanges } from "../../src/lib/track-changes.js";
 import { deploymentBinary, startDeployment } from "../helpers/deployment.mjs";
 
 const deployment = await startDeployment({ label: "agent_bridge" });
@@ -142,15 +144,30 @@ try {
   // for a reload.
   await seen("comments-changed", (frame) => frame.type === "comments-changed" && frame.state?.total === 1);
 
-  // A suggestion's before and after come from its proposal, so an open page
-  // must be sent the proposal itself, not only told the comments moved.
+  // A suggestion pass is a tracked change in the document. The open page is
+  // sent it as an ordinary document update, so it holds the change without a
+  // reload; no message of its own announces it.
+  const mirror = new LoroDoc();
+  const base64 = (text) => Uint8Array.from(Buffer.from(text, "base64"));
+  const joinFrame = frames.find((frame) => frame.type === "doc-rows");
+  for (const update of joinFrame.updates || []) mirror.import(base64(update));
   const proposed = await call("document_propose", {
     view_id: read.structuredContent.view_id, publish: "suggestions", validation: "source",
     patches: [{ range_id: rangeId, replacement: "The revised paragraph" }],
   });
   assert.notEqual(proposed.isError, true, JSON.stringify(proposed));
-  const announced = await seen("proposal-changed", (frame) => frame.type === "proposal-changed");
-  assert.ok(announced.proposal?.id && announced.proposal.branch, `the page gets the whole proposal: ${JSON.stringify(announced).slice(0, 300)}`);
+  assert.ok(JSON.stringify(proposed.structuredContent).includes('"kind":"change"'),
+    `the pass reports its effects as changes: ${JSON.stringify(proposed.structuredContent).slice(0, 400)}`);
+  assert.equal(frames.some((frame) => String(frame.type).startsWith("proposal")), false, "no proposal frame exists any more");
+  await seen("the tracked change as a document update", (frame) => frame.type === "doc-update");
+  for (const frame of frames.filter((item) => item.type === "doc-update")) mirror.import(base64(frame.update));
+  const changes = listChanges(mirror);
+  assert.equal(changes.length, 1, `the page holds one pending change: ${JSON.stringify(changes)}`);
+  assert.equal(changes[0].inserted, "The revised paragraph");
+  assert.ok(changes[0].deleted.includes("first paragraph"), "the change keeps the words it replaced");
+  assert.equal(changes[0].author, "Opus 5.5", "the change carries the model name");
+  assert.match(changes[0].who, /^agent:/, "and an agent key, not an account");
+  assert.ok(changes[0].run, "a pass tags its changes with a run");
   page.close();
   const stored = await fetch(`${deployment.base}/api/documents/${slug}/comments`, {
     headers: { "x-librepaper-client": "1", cookie: deployment.cookie },
@@ -158,7 +175,7 @@ try {
   const bodies = (stored.comments || stored.items || stored).map?.((item) => item.body) || [];
   assert.ok(bodies.includes("Checked end to end."), `the comment is stored: ${JSON.stringify(stored).slice(0, 400)}`);
   const items = stored.comments || stored.items || stored;
-  assert.ok(items.length >= 2 && items.every((item) => item.creator === "Opus 5.5"), `the agent's comment and suggestion carry the model name: ${JSON.stringify(items.map((item) => item.creator))}`);
+  assert.ok(items.length >= 1 && items.every((item) => item.creator === "Opus 5.5"), `the agent's comment carries the model name: ${JSON.stringify(items.map((item) => item.creator))}`);
   console.log("agent-bridge: tools listed, read, and a comment stored through the real bridge");
 } finally {
   bridge?.kill();
