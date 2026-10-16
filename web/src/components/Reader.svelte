@@ -2724,6 +2724,7 @@
   // The tabs this browser is offered. Which reader may see which panel is
   // written with the panels, in lib/panels.js; this only says who is asking.
   const tabs = $derived(tabsFor({ role: doc.role, mayEdit, editing, canSeeSharing, canPublish }));
+  const agentOffered = $derived(tabs.some((tab) => tab.id === "agent"));
   // Where the column goes back to when what it showed is taken away: the
   // files for an editor, the comments for a commenter, and for a reader no
   // column at all -- there is nothing they are offered to go back to.
@@ -4046,8 +4047,7 @@
     <Agent slug={SLUG} link={linkFor(SLUG)} canShare={doc.role === "owner"}
       path={session?.paths?.get(openFile) || ""} selection={pending}
       revision={pending?.revision || ""} request={assistantRequest}
-      {comments} {diagnostics} oncommenttask={askCommentAssistant}
-      ondiagnostictask={askDiagnostic} onreview={reviewAssistantResults} onpreview={previewAssistant}
+      {comments} {diagnostics} onreview={reviewAssistantResults} onpreview={previewAssistant}
       onsettings={() => openSettings("agents")} userName={identity || doc.commenting_as || "You"} />
   {/snippet}
 
@@ -4058,6 +4058,7 @@
       canComment={mayChat}
       onreveal={revealAnnotation} selected={selectedAnnotation} onresolve={resolve}
       ondelete={askDelete} ondeletemany={askDeleteMany} onreply={reply}
+      onagent={agentOffered ? askCommentAssistant : undefined}
       {composing} {needsLogin} signInHref={signInHref()}
       page={annotations.state.page}
       onloadmore={() => void annotations.loadMore()}
@@ -4095,6 +4096,7 @@
       canOpen={(item) => Boolean(diagnosticFile(item))} onopen={openDiagnostic}
       provenance={renderState.lastLatexResult?.provenance || null}
       attempts={renderState.lastLatexResult?.attempts || []}
+      onagent={agentOffered ? askDiagnostic : undefined}
       log={renderState.lastLatexResult?.log || ""} />
   {/snippet}
 

@@ -1,6 +1,7 @@
 <script>
   import PanelHeader from "../PanelHeader.svelte";
   import DesktopOnly from "../DesktopOnly.svelte";
+  import IconButton from "../IconButton.svelte";
   import { provenanceSentence } from "../../lib/latex/status-text.js";
 
   let {
@@ -27,6 +28,8 @@
     // -- the transcript is the only account there is, and a person who knows
     // LaTeX can read it faster than anyone can improve the parser.
     log = "",
+    // Asks the agent to fix one diagnostic. Absent where no agent is offered.
+    onagent = undefined,
   } = $props();
   const errors = $derived(diagnostics.filter((item) => item.severity !== "warning" && item.severity !== "info"));
   const warnings = $derived(diagnostics.filter((item) => item.severity === "warning"));
@@ -101,9 +104,14 @@
       <ul class="space-y-3 mb-4">
         {#each group.items as item}
           <li class="rounded-container border border-[var(--color-divider)] p-3">
-            <span class="badge mb-2 lp-tone-{group.tone}">
-              {group.tone === "error" ? "Error" : group.tone === "warning" ? "Warning" : "Note"}
-            </span>
+            <div class="flex items-center justify-between gap-2 mb-2">
+              <span class="badge lp-tone-{group.tone}">
+                {group.tone === "error" ? "Error" : group.tone === "warning" ? "Warning" : "Note"}
+              </span>
+              {#if onagent}
+                <IconButton icon="bot" label="Fix diagnostic with agent" onclick={() => onagent(item)} />
+              {/if}
+            </div>
             <p class="whitespace-pre-wrap break-words">{item.message}</p>
             {#if item.file || item.line > 0}
               <div class="panel-meta mt-2 break-all">
