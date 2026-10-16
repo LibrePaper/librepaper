@@ -17,6 +17,16 @@ pub const LINK_DEFAULT_SECONDS: i64 = 7 * 24 * 3600;
 
 pub(super) const MAX_LINK_LABEL: usize = 80;
 
+/// Reads a budget that may be omitted, null or a number. Omitted is None (the
+/// default), null is Some(None) and a number is Some(Some(n)), so the three
+/// cases stay apart.
+fn double_option<'de, D>(deserializer: D) -> Result<Option<Option<i64>>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    Option::<i64>::deserialize(deserializer).map(Some)
+}
+
 /// What one call to the share route asks for. Every field is optional, and
 /// several may arrive together: a revoke and a mint in one round trip is a
 /// rotation asked for the long way.
@@ -47,20 +57,21 @@ pub(super) struct LinkRequest {
     /// on rotation preserves the current label; an empty string clears it.
     #[serde(default)]
     pub(super) label: Option<String>,
-    /// Comment actions per clock hour for this link. Omitted uses the
-    /// deployment's ordinary comment limit.
-    #[serde(default)]
-    pub(super) budget: Option<i64>,
+    /// Comment actions per clock hour for this link. Omitted keeps the budget
+    /// the link already has; null returns it to the deployment's ordinary
+    /// comment limit; a number sets it.
+    #[serde(default, deserialize_with = "double_option")]
+    pub(super) budget: Option<Option<i64>>,
 }
 
 /// A change to the link a role already holds, once the request's words have
 /// been read: the role it names, an expiry only where one was asked for, a memo
-/// only where one was sent, and the budget as it stands.
+/// only where one was sent, and a budget only where one was sent.
 struct LinkSettings {
     role: Role,
     until: Option<String>,
     label: Option<String>,
-    budget: Option<i64>,
+    budget: Option<Option<i64>>,
 }
 
 /// The word a link's role or a revoke may be spelled with. The document
@@ -249,10 +260,9 @@ impl Server {
         };
         let headers = request.headers().clone();
         let method = request.method().clone();
-        let query = request.uri().query().map(str::to_string);
-        let who = self
-            .viewer(&entry, &headers, arrival, query.as_deref())
-            .await;
+        // The link key arrives in its header. The query form is for the socket
+        // handshake only.
+        let who = self.viewer(&entry, &headers, arrival, None).await;
         if who.auth_failed {
             return write_json(
                 401,
@@ -293,9 +303,7 @@ impl Server {
             Ok(None) => return write_json(404, &json!({"error": "not found"})),
             Err(response) => return response,
         };
-        let current_who = self
-            .viewer(&current_entry, &headers, arrival, query.as_deref())
-            .await;
+        let current_who = self.viewer(&current_entry, &headers, arrival, None).await;
         if current_who.auth_failed || !current_who.at_least(Role::Owner) {
             return write_json(403, &json!({"error": "ownership changed"}));
         }
@@ -318,7 +326,7 @@ impl Server {
                 Ok(until) => until,
                 Err(message) => return write_json(400, &json!({"error": message})),
             };
-            if wanted.budget.is_some_and(|budget| budget < 0) {
+            if matches!(wanted.budget, Some(Some(budget)) if budget < 0) {
                 return write_json(
                     400,
                     &json!({"error": "a link budget is a non-negative number of comments per hour"}),
@@ -336,7 +344,7 @@ impl Server {
                 since: librepaper_base::util::timestamp(),
                 until,
                 label: label.unwrap_or_default(),
-                budget: wanted.budget,
+                budget: wanted.budget.unwrap_or(None),
             });
         }
 
@@ -363,7 +371,7 @@ impl Server {
                     Err(message) => return write_json(400, &json!({"error": message})),
                 }
             };
-            if wanted.budget.is_some_and(|budget| budget < 0) {
+            if matches!(wanted.budget, Some(Some(budget)) if budget < 0) {
                 return write_json(
                     400,
                     &json!({"error": "a link budget is a non-negative number of comments per hour"}),
@@ -409,8 +417,8 @@ impl Server {
                     let mut link = link.clone();
                     // CLI callers may rotate a key without repeating its
                     // memo. An explicit empty label clears it; an omitted one
-                    // preserves it. A missing budget returns to the ordinary
-                    // deployment limit.
+                    // preserves it. An omitted budget keeps the link's budget;
+                    // null returns it to the deployment's ordinary limit.
                     if let Some(existing) = entry.link_for(link.granted()) {
                         if asked
                             .link
@@ -428,6 +436,13 @@ impl Server {
                             .is_some_and(|wanted| wanted.until.trim().is_empty())
                         {
                             link.until.clone_from(&existing.until);
+                        }
+                        if asked
+                            .link
+                            .as_ref()
+                            .is_some_and(|wanted| wanted.budget.is_none())
+                        {
+                            link.budget = existing.budget;
                         }
                     }
                     entry.set_link(link);
@@ -450,7 +465,9 @@ impl Server {
                     if let Some(label) = &settings.label {
                         link.label.clone_from(label);
                     }
-                    link.budget = settings.budget;
+                    if let Some(budget) = settings.budget {
+                        link.budget = budget;
+                    }
                     entry.set_link(link);
                 }
                 Ok(())
@@ -553,11 +570,7 @@ impl Server {
             // the choices that would actually be accepted.
             "publishers": self.publishers.public_description(),
             "commenters_policy": self.commenters.public_description(),
-            // Whether editing, and commenting, ask for a sign-in at all: a
-            // link cannot carry a role the deployment itself would refuse an
-            // anonymous caller.
-            "edit_needs_signin": true,
-            "comment_needs_signin": !self.commenters.public,
+            // Every link needs a signed-in account, see may_read in mod.rs, so there is nothing to flag per role.
         })
     }
 
@@ -812,5 +825,20 @@ mod link_expiry_tests {
         let until = librepaper_base::util::parse_timestamp(&until).expect("expiry is a timestamp");
 
         assert!((before + 7 * 24 * 3600..=after + 7 * 24 * 3600).contains(&until));
+    }
+}
+
+#[cfg(test)]
+mod request_shape_tests {
+    use super::*;
+
+    #[test]
+    fn a_budget_is_omitted_null_or_a_number() {
+        let omitted: LinkRequest = serde_json::from_str(r#"{"role":"reader"}"#).unwrap();
+        assert_eq!(omitted.budget, None);
+        let cleared: LinkRequest = serde_json::from_str(r#"{"role":"reader","budget":null}"#).unwrap();
+        assert_eq!(cleared.budget, Some(None));
+        let set: LinkRequest = serde_json::from_str(r#"{"role":"reader","budget":5}"#).unwrap();
+        assert_eq!(set.budget, Some(Some(5)));
     }
 }
