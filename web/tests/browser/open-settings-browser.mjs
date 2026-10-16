@@ -80,7 +80,8 @@ try {
   await until('Reader is ready',()=>b.evaluate(`Boolean(document.querySelector('button[role=switch][aria-label="Run code"]') || document.querySelector('.connection-pill'))`),10000);
 
   // The shell's shortcut: Settings is not open yet, and the event opens it.
-  const settingsOpen = () => b.evaluate(`Boolean(document.querySelector('.settings-nav'))`);
+  // The Settings page stays mounted while closed, so only a visible one counts.
+  const settingsOpen = () => b.evaluate(`Boolean(document.querySelector('.settings-nav')?.checkVisibility())`);
   assert.equal(await settingsOpen(), false, 'Settings starts closed');
   await b.evaluate('window.dispatchEvent(new CustomEvent("librepaper:open-settings"))');
   await until('Settings page is shown',settingsOpen,5000);
