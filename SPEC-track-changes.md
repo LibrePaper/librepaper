@@ -37,21 +37,33 @@ container), written whole with `map.set(id, value)` and removed with
   run:       string | null,   // optional group tag
   start:     Uint8Array,      // encoded Loro Cursor (Cursor.encode())
   end:       Uint8Array|null, // encoded Loro Cursor, null when nothing is inserted
-  deleted:   string           // the original text this change removed, in order
+  deleted:   string,          // the original text this change removed, in order
+  points:    [{ id: string, at: number }]  // optional, omitted when empty
 }
 ```
+
+`points` records foreign deletions that this change swallowed. When an edit
+deletes a range that holds another change's deleted text (a pure deletion
+point inside the range, or a foreign insertion that the edit deletes whole and
+that collapses to a point), the change the editor owns after the edit lists it
+as `{ id, at }`. `at` is the number of original characters of `deleted` that
+precede that change's point in document order (UTF-16 in the browser, code
+points in Rust). A merge carries the points of the changes it absorbs and
+shifts each `at` by the deleted text that now lands before it.
 
 Cursors:
 - Inserted text `I` at `[from, to)`, non-empty: `start = text.getCursor(from, -1)`
   (attached to the first character of `I`, left side) and
   `end = text.getCursor(to - 1, 1)` (attached to the last character of `I`,
-  right side).
+  right side). In the browser, `to - 1` is the start index of the last code
+  point, so for a surrogate pair it is `to - 2`.
 - Nothing inserted: `start = text.getCursor(from, -1)`, attached to the
   character after the deletion point; at the end of the text Loro returns a
   cursor with no id, which stays at the end. `end = null`.
 - Resolving: a Loro cursor resolves to the index of the character it is
   attached to, whatever its side. So `from = pos(start)` and
-  `to = end ? pos(end) + 1 : from`. When the attached character was deleted,
+  `to = end ? pos(end) + w : from`, where `w` is the width of the character at
+  `pos(end)` (2 UTF-16 units for a surrogate pair in the browser, else 1). When the attached character was deleted,
   Loro answers with the position it had and an `update` cursor (found by
   walking history, which is slow and fails after a trim); then `to = pos(end)`
   without the `+ 1`. If `to < from`, the inserted text is gone: treat it as
@@ -138,7 +150,12 @@ in UTF-16).
 Both are one local Loro commit by the deciding editor:
 - `accept(doc, id)`: `changes.delete(id)`.
 - `reject(doc, id)`: resolve; `text.delete(from, to - from)`;
-  `text.insert(from, deleted)`; `changes.delete(id)`.
+  `text.insert(from, deleted)`; for each entry of `points` whose change still
+  exists and is still a pure deletion, rewrite that change's `start` to
+  `text.getCursor(from + at, -1)` with `end = null`; `changes.delete(id)`.
+  This keeps the order of two deletions that were anchored at the same
+  character, so rejecting them in any order restores the original text.
+- On `accept`, the `points` go with the record.
 
 They are plain document edits: they sync through the normal update path, need
 no server message and no table, and the reviewer's undo takes them back. Two

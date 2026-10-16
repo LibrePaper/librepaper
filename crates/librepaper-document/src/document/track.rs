@@ -29,6 +29,14 @@ pub struct Author<'a> {
     pub author: &'a str,
 }
 
+/// A foreign deletion this change swallowed: the id of that change and the
+/// number of original characters of `deleted` that precede it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Point {
+    pub id: String,
+    pub at: usize,
+}
+
 /// A pending change with its cursors resolved to offsets in the text now.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ResolvedChange {
@@ -43,6 +51,8 @@ pub struct ResolvedChange {
     pub to: usize,
     /// The original text this change removed.
     pub deleted: String,
+    /// Foreign deletions this change swallowed, by place inside `deleted`.
+    pub points: Vec<Point>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -202,6 +212,57 @@ fn plan_one(
             pieces.push((start, 1, text[start..re].iter().collect()));
         }
         pieces.sort_by_key(|p| (p.0, p.1));
+        // Original characters of the new `deleted` text that precede `p`.
+        let before = |p: usize| -> usize {
+            let own: usize = affected
+                .iter()
+                .filter(|&&i| list[i].from <= p)
+                .map(|&i| list[i].deleted.chars().count())
+                .sum();
+            let orig: usize = runs
+                .iter()
+                .map(|&(rs, re)| re.min(p).saturating_sub(rs))
+                .sum();
+            own + orig
+        };
+        let mut points: Vec<Point> = Vec::new();
+        for (k, &i) in affected.iter().enumerate() {
+            if list[i].points.is_empty() {
+                continue;
+            }
+            let own: usize = affected[..k]
+                .iter()
+                .map(|&j| list[j].deleted.chars().count())
+                .sum();
+            let orig: usize = runs
+                .iter()
+                .map(|&(rs, re)| re.min(list[i].from).saturating_sub(rs))
+                .sum();
+            for pt in &list[i].points {
+                points.push(Point {
+                    id: pt.id.clone(),
+                    at: pt.at + own + orig,
+                });
+            }
+        }
+        if t > f {
+            for (i, c) in list.iter().enumerate() {
+                if affected.contains(&i) || c.deleted.is_empty() {
+                    continue;
+                }
+                let swallowed = if c.from == c.to {
+                    f <= c.from && c.from < t
+                } else {
+                    c.from >= f && c.to <= t
+                };
+                if swallowed {
+                    points.push(Point {
+                        id: c.id.clone(),
+                        at: before(c.from),
+                    });
+                }
+            }
+        }
         let deleted: String = pieces.into_iter().map(|p| p.2).collect();
         let first = affected.first().map(|&i| &list[i]);
         let mut from = f;
@@ -226,6 +287,7 @@ fn plan_one(
             from,
             to,
             deleted,
+            points,
         };
         dirty.insert(merged.id.clone());
         out.push(merged);
@@ -377,6 +439,26 @@ fn read_entry(doc: &LoroDoc, id: &str) -> Option<Read> {
         _ => 0,
     };
     let run = string_field(&m, "run");
+    let points = match m.get("points") {
+        Some(LoroValue::List(items)) => items
+            .iter()
+            .filter_map(|item| {
+                let LoroValue::Map(pm) = item else {
+                    return None;
+                };
+                let at = match pm.get("at")? {
+                    LoroValue::I64(v) => usize::try_from(*v).ok()?,
+                    LoroValue::Double(v) if *v >= 0.0 => *v as usize,
+                    _ => return None,
+                };
+                Some(Point {
+                    id: string_field(pm, "id")?,
+                    at,
+                })
+            })
+            .collect(),
+        _ => Vec::new(),
+    };
     Some(Read {
         change: ResolvedChange {
             id: id.to_string(),
@@ -388,6 +470,7 @@ fn read_entry(doc: &LoroDoc, id: &str) -> Option<Read> {
             from,
             to,
             deleted: string_field(&m, "deleted")?,
+            points,
         },
         start_update: start_pos.update,
         end_update,
@@ -424,6 +507,19 @@ fn entry_value(c: &ResolvedChange, start: &Cursor, end: Option<&Cursor>) -> Loro
         end.map_or(LoroValue::Null, |e| LoroValue::from(e.encode())),
     );
     m.insert("deleted".into(), LoroValue::from(c.deleted.as_str()));
+    if !c.points.is_empty() {
+        let list: Vec<LoroValue> = c
+            .points
+            .iter()
+            .map(|p| {
+                let mut pm: HashMap<String, LoroValue> = HashMap::new();
+                pm.insert("id".into(), LoroValue::from(p.id.as_str()));
+                pm.insert("at".into(), LoroValue::Double(p.at as f64));
+                LoroValue::from(pm)
+            })
+            .collect();
+        m.insert("points".into(), LoroValue::from(list));
+    }
     LoroValue::from(m)
 }
 
@@ -540,6 +636,21 @@ pub fn reject(doc: &LoroDoc, id: &str) -> bool {
             if !c.deleted.is_empty() {
                 text.insert(c.from, &c.deleted).ok();
             }
+            // Deletions this change swallowed move back to where they sat
+            // inside it.
+            for pt in &c.points {
+                let Some(target) = read_entry(doc, &pt.id) else {
+                    continue;
+                };
+                let t = &target.change;
+                if t.file != c.file || t.to != t.from {
+                    continue;
+                }
+                let Some(start) = text.get_cursor(c.from + pt.at, Side::Left) else {
+                    continue;
+                };
+                map.insert(&pt.id, entry_value(t, &start, None)).ok();
+            }
         }
     }
     map.delete(id).is_ok()
@@ -593,12 +704,19 @@ mod tests {
     const FIXTURES: &str = include_str!("../../../../web/tests/fixtures/track-changes.json");
 
     #[derive(Deserialize)]
+    struct FxPoint {
+        id: String,
+        at: usize,
+    }
+
+    #[derive(Deserialize)]
     struct FxChange {
         id: String,
         who: String,
         from: usize,
         to: usize,
         deleted: String,
+        points: Option<Vec<FxPoint>>,
     }
 
     #[derive(Deserialize)]
@@ -647,7 +765,20 @@ mod tests {
             from: cp(s, c.from),
             to: cp(s, c.to),
             deleted: c.deleted.clone(),
+            points: points_of(c),
         }
+    }
+
+    /// The fixture's points with `at` converted from UTF-16 to code points.
+    fn points_of(c: &FxChange) -> Vec<Point> {
+        c.points
+            .iter()
+            .flatten()
+            .map(|p| Point {
+                id: p.id.clone(),
+                at: cp(&c.deleted, p.at),
+            })
+            .collect()
     }
 
     #[test]
@@ -678,20 +809,33 @@ mod tests {
                 format!("new-{counter}")
             };
             let plan = plan_edits(&fx.before, &changes, &edits, &me, None, 1, &mut mint);
-            let mut got: Vec<(String, String, usize, usize, String)> = plan
+            // Points are compared only when the fixture lists them.
+            let listed: HashSet<String> = fx
+                .expect
+                .iter()
+                .filter(|c| c.points.is_some())
+                .map(|c| c.id.clone())
+                .collect();
+            type Row = (String, String, usize, usize, String, Vec<Point>);
+            let mut got: Vec<Row> = plan
                 .into_iter()
                 .filter(|p| p.state != PlanState::Removed)
                 .map(|p| {
                     let c = p.change;
-                    (c.id, c.who, c.from, c.to, c.deleted)
+                    let pts = if listed.contains(&c.id) {
+                        c.points
+                    } else {
+                        Vec::new()
+                    };
+                    (c.id, c.who, c.from, c.to, c.deleted, pts)
                 })
                 .collect();
-            let mut want: Vec<(String, String, usize, usize, String)> = fx
+            let mut want: Vec<Row> = fx
                 .expect
                 .iter()
                 .map(|c| {
                     let r = resolved(&fx.after, c);
-                    (r.id, r.who, r.from, r.to, r.deleted)
+                    (r.id, r.who, r.from, r.to, r.deleted, r.points)
                 })
                 .collect();
             got.sort_by_key(|c| (c.2, c.3, c.0.clone()));
@@ -865,5 +1009,50 @@ mod tests {
         assert_eq!(prune(&doc), 2);
         assert_eq!(resolve_changes(&doc, &id).len(), 1);
         assert_eq!(prune(&doc), 0);
+    }
+
+    const BOB: Author<'static> = Author {
+        who: "bob",
+        author: "Bob",
+    };
+
+    #[test]
+    fn swallowed_deletion_points_reject_in_either_order() {
+        for bob_first in [true, false] {
+            let (doc, id) = setup("abcd");
+            let a = apply_tracked_edits(&doc, &id, &[edit(1, 1, "")], &ME, None, 1).unwrap()[0]
+                .clone();
+            doc.commit();
+            let b = apply_tracked_edits(&doc, &id, &[edit(1, 1, "")], &BOB, None, 2).unwrap()[0]
+                .clone();
+            doc.commit();
+            assert_eq!(body(&doc, &id), "ad");
+            let order = if bob_first { [&b, &a] } else { [&a, &b] };
+            for change in order {
+                assert!(reject(&doc, change));
+                doc.commit();
+            }
+            assert_eq!(body(&doc, &id), "abcd");
+            assert!(resolve_changes(&doc, &id).is_empty());
+        }
+    }
+
+    #[test]
+    fn a_swallowed_point_in_the_middle_of_the_new_deletion() {
+        for bob_first in [true, false] {
+            let (doc, id) = setup("abcde");
+            let a = apply_tracked_edits(&doc, &id, &[edit(2, 1, "")], &ME, None, 1).unwrap();
+            doc.commit();
+            assert_eq!(body(&doc, &id), "abde");
+            let b = apply_tracked_edits(&doc, &id, &[edit(1, 2, "")], &BOB, None, 2).unwrap();
+            doc.commit();
+            assert_eq!(body(&doc, &id), "ae");
+            let order = if bob_first { [&b[0], &a[0]] } else { [&a[0], &b[0]] };
+            for change in order {
+                assert!(reject(&doc, change));
+                doc.commit();
+            }
+            assert_eq!(body(&doc, &id), "abcde");
+        }
     }
 }
