@@ -219,7 +219,7 @@ fn plan_one(
             }
         }
         let merged = ResolvedChange {
-            id: first.map_or_else(|| mint(), |c| c.id.clone()),
+            id: first.map_or_else(&mut *mint, |c| c.id.clone()),
             // The writer fills in the file of a new change.
             file: first.map_or_else(String::new, |c| c.file.clone()),
             who: step.me.who.to_string(),
@@ -406,7 +406,7 @@ pub fn resolve_changes(doc: &LoroDoc, file_id: &str) -> Vec<ResolvedChange> {
     let mut out: Vec<ResolvedChange> = doc
         .get_map(CHANGES)
         .keys()
-        .filter_map(|id| read_entry(doc, &id.to_string()).map(|r| r.change))
+        .filter_map(|id| read_entry(doc, id.as_ref()).map(|r| r.change))
         .filter(|c| c.file == file_id && (c.from < c.to || !c.deleted.is_empty()))
         .collect();
     out.sort_by(|a, b| (a.from, a.to, &a.id).cmp(&(b.from, b.to, &b.id)));
