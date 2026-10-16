@@ -24,7 +24,6 @@ mod ownership;
 pub use operation_outcomes::OperationReceipt;
 mod persistence;
 pub use persistence::PersistenceConnection;
-mod proposals;
 mod repository;
 
 #[cfg(test)]
@@ -43,7 +42,6 @@ pub use moderation::{
     ModerationAction, ModerationOverview,
 };
 pub use ownership::WriterLease;
-pub use proposals::{NewProposal, StoredDecision, StoredProposal, StoredProposalOutcome};
 pub use repository::{
     AccountRecord, AssetRecord, DocumentRecord, DocumentStorage, NewAccount, NewAsset, NewDocument,
 };
@@ -1245,7 +1243,6 @@ mod tests {
             author_key: format!("account:{author}"),
             author_label: "Reviewer".into(),
             color: None,
-            proposal_id: None,
             original_anchor: anchor,
             presentation: PresentationContext::default(),
             render_digest: None,
@@ -1646,7 +1643,7 @@ mod tests {
         assert_eq!(reply.id, reply_retried.id);
         assert_eq!(
             catalog
-                .annotations(first.id, None, 500, true)
+                .annotations(first.id, None, 500)
                 .await
                 .unwrap()
                 .len(),

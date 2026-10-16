@@ -96,46 +96,6 @@ async fn composite_references_reject_cross_document_provenance() {
     let catalog = catalog().await;
     let mut tx = catalog.pool().begin().await.unwrap();
     let (owner, first, second) = seed_documents(&mut tx).await;
-    let proposal = Uuid::now_v7();
-    sqlx::query(
-        "INSERT INTO document_proposals(id,document_id,author,owner_key,base_frontiers,
-                                        tip_frontiers,branch_bytes)
-         VALUES($1,$2,'author','owner-key','base'::bytea,'tip'::bytea,'branch'::bytea)",
-    )
-    .bind(proposal)
-    .bind(first)
-    .execute(&mut *tx)
-    .await
-    .unwrap();
-
-    sqlx::query("SAVEPOINT mismatched_proposal")
-        .execute(&mut *tx)
-        .await
-        .unwrap();
-    let suggestion = sqlx::query(
-        "INSERT INTO annotations(id,document_id,kind,body,author_key,author_label,
-                                source_sequence,frontier,target_kind,proposal_id)
-         VALUES($1,$2,'suggestion','body','author','Author',0,'f'::bytea,'document',$3)",
-    )
-    .bind(Uuid::now_v7())
-    .bind(second)
-    .bind(proposal)
-    .execute(&mut *tx)
-    .await;
-    assert_eq!(
-        suggestion
-            .as_ref()
-            .unwrap_err()
-            .as_database_error()
-            .and_then(|error| error.constraint()),
-        Some("annotations_document_proposal_fkey"),
-        "suggestion must reference a proposal in its document"
-    );
-    sqlx::query("ROLLBACK TO SAVEPOINT mismatched_proposal")
-        .execute(&mut *tx)
-        .await
-        .unwrap();
-
     let link_hash = [0xa5_u8; 32];
     sqlx::query(
         "INSERT INTO share_links(id,document_id,role,token_hash) VALUES($1,$2,'editor',$3)",

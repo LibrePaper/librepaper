@@ -88,7 +88,7 @@ librepaper-base = { path = "../librepaper-base" }
 librepaper-document = { path = "../librepaper-document" }
 # The log, the PostgreSQL catalogue and the blob store.
 librepaper-engine = { path = "../librepaper-engine" }
-# One live document: the room, its comments, proposals and anchoring.
+# One live document: the room, its comments and anchoring.
 librepaper-room = { path = "../librepaper-room" }
 # The HTTP service.
 librepaper-server = { path = "../librepaper-server" }

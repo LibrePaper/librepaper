@@ -2,8 +2,7 @@
 //!
 //! The server stores and forwards source bytes and reads only their headers
 //! to do so. Whenever it does have to know what the
-//! bytes *mean* -- to render for a reader, to anchor a comment, to evaluate a
-//! proposal, to export -- it asks this function, and this function is total:
+//! bytes *mean* -- to render for a reader, to anchor a comment, to export -- it asks this function, and this function is total:
 //! every `LoroDoc`, however malformed, projects to exactly one directory.
 //! Nothing here writes to the document. There is no repair pass any more,
 //! because there is nothing to repair: a shape the schema does not use is
