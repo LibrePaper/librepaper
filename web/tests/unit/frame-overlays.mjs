@@ -31,6 +31,18 @@ assert.deepEqual(sent, [
   },
 ]);
 
+const changes = [
+  { id: "c1", start: 20, end: 24, deleted: "old", author: "Ada" },
+  { id: "c2", start: 30, end: 30, deleted: "", author: "Bo" },
+];
+assert.equal(overlays.annotations(comments, changes), true);
+assert.deepEqual(sent.at(-1).ranges.slice(1), [
+  { id: "change:c1", start: 20, end: 24, motivation: "change", deleted: "old", author: "Ada" },
+  { id: "change:c2", start: 30, end: 30, motivation: "change", author: "Bo" },
+]);
+assert.equal(overlays.annotations(comments, changes), false);
+assert.equal(overlays.annotations(comments), true);
+
 assert.equal(overlays.annotations(comments), false);
 assert.equal(overlays.selection("passage"), true);
 assert.equal(overlays.selection("passage"), false);
