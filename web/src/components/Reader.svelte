@@ -675,10 +675,10 @@
   }
 
   // A task's tracked changes are reviewed in the Changes panel, narrowed to
-  // the pass that made them when the rows carry a run.
+  // the ids the task returned. Separate runs of one task all stay on show.
   async function reviewAssistantResults({ changes: ids = [] }) {
     const made = changeRows.find((row) => ids.includes(row.id));
-    changesRun = made?.run || "";
+    changesIds = ids.filter((id) => changeRows.some((row) => row.id === id));
     await showPanel("changes");
     if (made) await revealChange(made);
   }
@@ -909,9 +909,9 @@
   // arrives here the same way.
   let changeRows = $state([]);
   let selectedChange = $state(null);
-  // The run the Changes panel opens filtered to, when a task sent the reader
-  // there.
-  let changesRun = $state("");
+  // The change ids the Changes panel opens filtered to, when a task sent the
+  // reader there.
+  let changesIds = $state([]);
 
   function recomputeChanges() {
     if (!session) {
@@ -3610,7 +3610,7 @@
 
   {#snippet changesPanel()}
     <Changes changes={changeRows} {files} {identity} {tracking} canTrack={mayEdit && editing}
-      canReview={mayEdit} selected={selectedChange} run={changesRun}
+      canReview={mayEdit} selected={selectedChange} ids={changesIds}
       ontracking={setTracking} onaccept={acceptChange} onreject={rejectChange} onreveal={revealChange} />
     {@render pendingRecovery("changes")}
   {/snippet}
