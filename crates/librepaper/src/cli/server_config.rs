@@ -967,8 +967,7 @@ fn entra_tenant_id(value: &str) -> Result<String, String> {
     let tenant = value.to_ascii_lowercase();
     if matches!(tenant.as_str(), "common" | "organizations" | "consumers") {
         return Err(
-            "auth.entra.tenant must name one tenant; multi-tenant sign-in is not supported"
-                .into(),
+            "auth.entra.tenant must name one tenant; multi-tenant sign-in is not supported".into(),
         );
     }
     if !is_guid(&tenant) {
@@ -1000,7 +999,9 @@ fn tenant_of_entra_issuer(issuer: &str) -> &str {
 /// https, or http on loopback, with no query and no fragment.
 fn check_issuer(key: &str, issuer: &str) -> Result<(), String> {
     let refused = || {
-        format!("{key} must be an https:// URL (http:// only on localhost) with no query or fragment")
+        format!(
+            "{key} must be an https:// URL (http:// only on localhost) with no query or fragment"
+        )
     };
     let parsed = url::Url::parse(issuer).map_err(|_| refused())?;
     if parsed.query().is_some() || parsed.fragment().is_some() {
@@ -2175,8 +2176,8 @@ client_secret = { file = "missing-oauth-secret" }
             error.contains("auth.google.client_id and client_secret must be configured together"),
             "{error}"
         );
-        let error =
-            load_text("[auth.google]\nclient_id = \" \"\nclient_secret = \"secret\"\n").unwrap_err();
+        let error = load_text("[auth.google]\nclient_id = \" \"\nclient_secret = \"secret\"\n")
+            .unwrap_err();
         assert!(
             error.contains("auth.google.client_id and client_secret must not be blank"),
             "{error}"
@@ -2201,7 +2202,10 @@ client_secret = { file = "missing-oauth-secret" }
         );
         let cases: Vec<(String, &str)> = vec![
             (entra_text(ENTRA_TENANT, "client_id = \"id\"\n"), pair),
-            (entra_text(ENTRA_TENANT, "client_secret = \"secret\"\n"), pair),
+            (
+                entra_text(ENTRA_TENANT, "client_secret = \"secret\"\n"),
+                pair,
+            ),
             (
                 entra_text(
                     ENTRA_TENANT,
@@ -2214,7 +2218,10 @@ client_secret = { file = "missing-oauth-secret" }
                 "[auth.entra]\nclient_id = \"id\"\nclient_secret = \"secret\"\n".to_owned(),
                 "auth.entra.tenant is required",
             ),
-            (entra_text("contoso.onmicrosoft.com", ENTRA_CREDENTIALS), domain),
+            (
+                entra_text("contoso.onmicrosoft.com", ENTRA_CREDENTIALS),
+                domain,
+            ),
             (entra_text("0000-0000", ENTRA_CREDENTIALS), guid),
             (
                 entra_text("00000000000000000000000000000000", ENTRA_CREDENTIALS),
@@ -2253,7 +2260,10 @@ client_secret = { file = "missing-oauth-secret" }
     fn custom_entries_pass_and_refuse_by_rule() {
         let loaded = load_text(&custom_entry("keycloak", CUSTOM_BODY)).unwrap();
         assert_eq!(oidc_ids(&loaded), ["oidc-keycloak"]);
-        assert_eq!(loaded.oidc[0].issuer, "https://sso.example.org/realms/staff");
+        assert_eq!(
+            loaded.oidc[0].issuer,
+            "https://sso.example.org/realms/staff"
+        );
         assert_eq!(loaded.oidc[0].label, "Example SSO");
 
         for issuer in [
@@ -2262,7 +2272,10 @@ client_secret = { file = "missing-oauth-secret" }
             "http://[::1]:8080",
         ] {
             let body = CUSTOM_BODY.replace("https://sso.example.org/realms/staff", issuer);
-            assert!(load_text(&custom_entry("keycloak", &body)).is_ok(), "{issuer}");
+            assert!(
+                load_text(&custom_entry("keycloak", &body)).is_ok(),
+                "{issuer}"
+            );
         }
 
         let custom_error = |body: &str| load_text(&custom_entry("keycloak", body)).unwrap_err();
@@ -2285,7 +2298,10 @@ client_secret = { file = "missing-oauth-secret" }
         assert!(custom_error(&body).contains(
             "auth.oidc.keycloak.client_id and client_secret must be configured together"
         ));
-        let body = CUSTOM_BODY.replace("client_id = \"librepaper\"\nclient_secret = \"custom-secret\"\n", "");
+        let body = CUSTOM_BODY.replace(
+            "client_id = \"librepaper\"\nclient_secret = \"custom-secret\"\n",
+            "",
+        );
         assert!(custom_error(&body)
             .contains("auth.oidc.keycloak.client_id and client_secret must be set"));
         let body = CUSTOM_BODY.replace("custom-secret", " ");
@@ -2295,16 +2311,18 @@ client_secret = { file = "missing-oauth-secret" }
         let label_error = "auth.oidc.keycloak.label must be 1 to 40 characters";
         let long_label = "x".repeat(41);
         for label in ["", " ", "Bad\\u0007Label", long_label.as_str()] {
-            let body = CUSTOM_BODY.replace(
-                "label = \"Example SSO\"",
-                &format!("label = \"{}\"", label),
-            );
+            let body =
+                CUSTOM_BODY.replace("label = \"Example SSO\"", &format!("label = \"{}\"", label));
             assert!(custom_error(&body).contains(label_error), "{label}");
         }
-        let body = CUSTOM_BODY.replace("label = \"Example SSO\"", &format!("label = \"{}\"", "x".repeat(40)));
+        let body = CUSTOM_BODY.replace(
+            "label = \"Example SSO\"",
+            &format!("label = \"{}\"", "x".repeat(40)),
+        );
         assert!(load_text(&custom_entry("keycloak", &body)).is_ok());
 
-        let scopes_error = "auth.oidc.keycloak.scopes must contain openid and be at most 200 characters";
+        let scopes_error =
+            "auth.oidc.keycloak.scopes must contain openid and be at most 200 characters";
         for scopes in [
             "profile email".to_owned(),
             String::new(),
@@ -2489,5 +2507,4 @@ client_secret = { file = "missing-oauth-secret" }
         }
         assert!(toml::from_str::<toml::Value>(&shown).is_ok());
     }
-
 }

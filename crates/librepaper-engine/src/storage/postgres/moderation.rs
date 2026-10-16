@@ -1133,9 +1133,21 @@ mod tests {
         let provider = format!("oidc-test-{}", &suffix[..12]);
         let first = "https://idp.example.test/realms/one";
         let second = "https://idp.example.test/realms/two";
-        assert_eq!(catalog.bind_sign_in_issuer(&provider, first).await.unwrap(), first);
-        assert_eq!(catalog.bind_sign_in_issuer(&provider, first).await.unwrap(), first);
-        assert_eq!(catalog.bind_sign_in_issuer(&provider, second).await.unwrap(), first);
+        assert_eq!(
+            catalog.bind_sign_in_issuer(&provider, first).await.unwrap(),
+            first
+        );
+        assert_eq!(
+            catalog.bind_sign_in_issuer(&provider, first).await.unwrap(),
+            first
+        );
+        assert_eq!(
+            catalog
+                .bind_sign_in_issuer(&provider, second)
+                .await
+                .unwrap(),
+            first
+        );
         let stored: String =
             sqlx::query_scalar("SELECT issuer FROM sign_in_issuers WHERE provider=$1")
                 .bind(&provider)

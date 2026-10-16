@@ -93,16 +93,15 @@ async fn stand_in() -> String {
 
 /// A custom provider whose endpoints are the stand-in's, so no discovery runs.
 fn provider(issuer: &str, slug: &str, label: &str) -> OidcProvider {
-    let provider =
-        OidcProvider::custom(slug, issuer, CLIENT_ID, "stand-in-secret", label, None)
-            .with_endpoints(Endpoints {
-                issuer: issuer.to_string(),
-                authorization: format!("{issuer}/authorize"),
-                token: format!("{issuer}/token"),
-                userinfo: None,
-                iss_in_response: false,
-                basic_auth: false,
-            });
+    let provider = OidcProvider::custom(slug, issuer, CLIENT_ID, "stand-in-secret", label, None)
+        .with_endpoints(Endpoints {
+            issuer: issuer.to_string(),
+            authorization: format!("{issuer}/authorize"),
+            token: format!("{issuer}/token"),
+            userinfo: None,
+            iss_in_response: false,
+            basic_auth: false,
+        });
     assert_eq!(provider.id, format!("oidc-{slug}"));
     provider
 }
@@ -471,7 +470,10 @@ async fn a_custom_provider_signs_somebody_in() {
         .collect();
     assert_eq!(query["client_id"], CLIENT_ID);
     assert_eq!(query["state"], started.state);
-    assert_eq!(query["redirect_uri"], format!("{READER}/auth/callback/{ID}"));
+    assert_eq!(
+        query["redirect_uri"],
+        format!("{READER}/auth/callback/{ID}")
+    );
 
     // The state cookie says which provider began the sign-in.
     let fields: Vec<&str> = started
@@ -565,10 +567,7 @@ async fn a_state_cookie_from_before_providers_were_named_is_refused() {
         return;
     };
     // The three fields every sign-in carried before the provider was one.
-    let old = format!(
-        "{}=the-state|%2Fdocs|the-verifier",
-        state_cookie_name()
-    );
+    let old = format!("{}=the-state|%2Fdocs|the-verifier", state_cookie_name());
     for path in [
         format!("/auth/callback/{ID}?code=the-code&state=the-state"),
         "/auth/callback?code=the-code&state=the-state".to_string(),
@@ -793,7 +792,10 @@ async fn a_shorter_session_lifetime_bounds_the_cookie_and_the_device_token() {
     };
     let (cookie, ahead, token) = lifetimes(&fixture).await;
     assert_eq!(cookie, 7200);
-    assert!((ahead - 7200).abs() <= 60, "the signed expiry is {ahead}s out");
+    assert!(
+        (ahead - 7200).abs() <= 60,
+        "the signed expiry is {ahead}s out"
+    );
     assert_eq!(token, 7200);
 }
 

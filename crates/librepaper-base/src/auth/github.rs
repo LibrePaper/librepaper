@@ -128,8 +128,8 @@ impl GithubApp {
         let (status, body) = read_capped(response)
             .await
             .map_err(|err| format!("github: {err}"))?;
-        let reply: Reply = serde_json::from_slice(&body)
-            .map_err(|_| format!("github returned {status}"))?;
+        let reply: Reply =
+            serde_json::from_slice(&body).map_err(|_| format!("github returned {status}"))?;
         if reply.access_token.is_empty() {
             if reply.error_description.is_empty() {
                 return Err(format!("github returned {status}"));
@@ -267,8 +267,8 @@ impl GithubApp {
         let (_, body) = read_capped(response)
             .await
             .map_err(|_| "github returned no login".to_string())?;
-        let user: GithubUser = serde_json::from_slice(&body)
-            .map_err(|_| "github returned no login".to_string())?;
+        let user: GithubUser =
+            serde_json::from_slice(&body).map_err(|_| "github returned no login".to_string())?;
         if user.login.is_empty() {
             return Err("github returned no login".to_string());
         }

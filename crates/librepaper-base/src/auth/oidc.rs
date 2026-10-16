@@ -82,7 +82,9 @@ pub fn acceptable_provider_url(url: &str) -> Result<(), String> {
     match parsed.scheme() {
         "https" => Ok(()),
         "http" if is_loopback(&parsed) => Ok(()),
-        "http" => Err(format!("{shown} is http, which is only allowed on loopback")),
+        "http" => Err(format!(
+            "{shown} is http, which is only allowed on loopback"
+        )),
         scheme => Err(format!("{shown} has the scheme {scheme}, not https")),
     }
 }
@@ -364,9 +366,14 @@ impl OidcProvider {
         let subject = self
             .check_id_token(&claims, &endpoints.issuer, now_unix())
             .map_err(SignInError::Provider)?;
-        let profile = profile_claims(&claims, &endpoints, tokens.access_token.as_deref(), &subject)
-            .await
-            .map_err(SignInError::Provider)?;
+        let profile = profile_claims(
+            &claims,
+            &endpoints,
+            tokens.access_token.as_deref(),
+            &subject,
+        )
+        .await
+        .map_err(SignInError::Provider)?;
         self.identity(&subject, &claims, &profile)
     }
 
@@ -528,7 +535,9 @@ impl OidcProvider {
                 if !matches!(domain, "gmail.com" | "googlemail.com")
                     && !text(claims, "hd").eq_ignore_ascii_case(domain)
                 {
-                    return Err(SignInError::Refused(UNVERIFIED_WORKSPACE_DOMAIN.to_string()));
+                    return Err(SignInError::Refused(
+                        UNVERIFIED_WORKSPACE_DOMAIN.to_string(),
+                    ));
                 }
                 Ok(Identity::from_provider(
                     &self.id, subject, &email, name, picture,
@@ -589,8 +598,8 @@ struct Tokens {
 /// Fetches and checks the discovery document. Takes a provider-request
 /// permit like every other call to a provider.
 async fn discover(issuer: &str) -> Result<Endpoints, String> {
-    let _permit = try_provider_request()
-        .ok_or_else(|| "authentication service is busy".to_string())?;
+    let _permit =
+        try_provider_request().ok_or_else(|| "authentication service is busy".to_string())?;
     let target = format!("{}/.well-known/openid-configuration", trim_issuer(issuer));
     let response = provider_client()
         .get(&target)
@@ -634,8 +643,8 @@ fn read_discovery(issuer: &str, document: &Value) -> Result<Endpoints, String> {
             Some(_) => Err(format!("{name} is not a URL")),
         }
     };
-    let authorization =
-        endpoint("authorization_endpoint")?.ok_or("the discovery document has no authorization_endpoint")?;
+    let authorization = endpoint("authorization_endpoint")?
+        .ok_or("the discovery document has no authorization_endpoint")?;
     let token =
         endpoint("token_endpoint")?.ok_or("the discovery document has no token_endpoint")?;
     let userinfo = endpoint("userinfo_endpoint")?;
@@ -804,10 +813,7 @@ fn form_encode(value: &str) -> String {
 
 /// A string claim, or "" when it is absent or not a string.
 fn text<'a>(claims: &'a Map<String, Value>, key: &str) -> &'a str {
-    claims
-        .get(key)
-        .and_then(Value::as_str)
-        .unwrap_or_default()
+    claims.get(key).and_then(Value::as_str).unwrap_or_default()
 }
 
 /// `email_verified` as providers send it: a boolean, or the string "true".
@@ -926,7 +932,8 @@ mod tests {
 
         /// The token endpoint answers with this id token and an access token.
         fn reply_with_token(&self, token: &str) {
-            let body = json!({"id_token": token, "access_token": "access-1", "token_type": "Bearer"});
+            let body =
+                json!({"id_token": token, "access_token": "access-1", "token_type": "Bearer"});
             self.set_token(200, body.to_string());
         }
 
@@ -979,11 +986,10 @@ mod tests {
         let form = url::form_urlencoded::parse(body.as_bytes())
             .into_owned()
             .collect();
-        stand
-            .token_requests
-            .lock()
-            .unwrap()
-            .push(TokenRequest { authorization, form });
+        stand.token_requests.lock().unwrap().push(TokenRequest {
+            authorization,
+            form,
+        });
         let (status, body) = {
             let script = stand.script();
             (script.token_status, script.token_body.clone())
@@ -1407,9 +1413,18 @@ mod tests {
             entra_issuer("9188040D-6C67-4C5B-B112-36A304B66DAD"),
             "https://login.microsoftonline.com/9188040d-6c67-4c5b-b112-36a304b66dad/v2.0"
         );
-        assert_eq!(trim_issuer("https://idp.example.org/"), "https://idp.example.org");
-        assert_eq!(trim_issuer("https://idp.example.org"), "https://idp.example.org");
-        assert_eq!(trim_issuer("https://idp.example.org//"), "https://idp.example.org/");
+        assert_eq!(
+            trim_issuer("https://idp.example.org/"),
+            "https://idp.example.org"
+        );
+        assert_eq!(
+            trim_issuer("https://idp.example.org"),
+            "https://idp.example.org"
+        );
+        assert_eq!(
+            trim_issuer("https://idp.example.org//"),
+            "https://idp.example.org/"
+        );
     }
 
     #[test]
@@ -1478,15 +1493,26 @@ mod tests {
         assert!(debug.contains("https://sso.example.org"));
         assert!(!debug.contains("do-not-print"));
         assert!(debug.contains("REDACTED"));
-        let google = format!("{:?}", OidcProvider::google("public-client", "do-not-print"));
+        let google = format!(
+            "{:?}",
+            OidcProvider::google("public-client", "do-not-print")
+        );
         assert!(!google.contains("do-not-print"));
     }
 
     #[test]
     fn sign_in_errors_have_a_status_and_a_message_that_hides_the_reason() {
         let cases = [
-            (SignInError::Busy, 503, "authentication service is busy; retry shortly"),
-            (SignInError::State, 400, "sign-in state did not match; try again"),
+            (
+                SignInError::Busy,
+                503,
+                "authentication service is busy; retry shortly",
+            ),
+            (
+                SignInError::State,
+                400,
+                "sign-in state did not match; try again",
+            ),
             (
                 SignInError::Discovery("secret reason".to_string()),
                 502,
@@ -1524,7 +1550,10 @@ mod tests {
             .start(REDIRECT, "state-1", "verifier-1")
             .await
             .unwrap();
-        assert!(url.starts_with(&format!("{}/authorize?", stand.base)), "{url}");
+        assert!(
+            url.starts_with(&format!("{}/authorize?", stand.base)),
+            "{url}"
+        );
         let pairs = query(&url);
         assert_eq!(pairs.len(), 7, "{pairs:?}");
         for (key, expected) in [
@@ -1549,7 +1578,10 @@ mod tests {
             authorization: format!("{}/authorize?tenant=abc&flag=1", stand.base),
             ..endpoints_at(&stand, &stand.base)
         });
-        let url = provider.start(REDIRECT, "state-1", "verifier-1").await.unwrap();
+        let url = provider
+            .start(REDIRECT, "state-1", "verifier-1")
+            .await
+            .unwrap();
         let pairs = query(&url);
         assert_eq!(value_of(&pairs, "tenant"), Some("abc".to_string()));
         assert_eq!(value_of(&pairs, "flag"), Some("1".to_string()));
@@ -1660,7 +1692,10 @@ mod tests {
         });
         stand.reply_with(&claims(&stand.base));
         let result = sign_in(&provider).await;
-        assert!(matches!(result, Err(SignInError::Exchange(_))), "{result:?}");
+        assert!(
+            matches!(result, Err(SignInError::Exchange(_))),
+            "{result:?}"
+        );
         // The redirect pointed at the real token endpoint, which was never asked.
         assert!(stand.token_requests().is_empty());
     }
@@ -1668,10 +1703,7 @@ mod tests {
     #[tokio::test]
     async fn a_token_reply_over_the_cap_is_refused() {
         let stand = stand_in().await;
-        stand.set_token(
-            200,
-            json!({"id_token": "x".repeat(70_000)}).to_string(),
-        );
+        stand.set_token(200, json!({"id_token": "x".repeat(70_000)}).to_string());
         let error = sign_in(&custom(&stand)).await.unwrap_err();
         let SignInError::Exchange(reason) = &error else {
             panic!("expected an exchange error, got {error:?}");
@@ -1694,7 +1726,10 @@ mod tests {
         assert!(reason.contains("invalid_grant"), "{reason}");
         assert!(reason.contains("SECRET-DETAIL"), "{reason}");
         assert_eq!(error.status(), 400);
-        assert_eq!(error.message("Example SSO"), "Example SSO refused the sign-in");
+        assert_eq!(
+            error.message("Example SSO"),
+            "Example SSO refused the sign-in"
+        );
 
         stand.set_token(
             400,
@@ -1715,7 +1750,10 @@ mod tests {
             (200, json!({"access_token": "a"}).to_string()),
             (200, json!({"id_token": ""}).to_string()),
             (200, "not json".to_string()),
-            (500, json!({"id_token": id_token(&claims(&stand.base))}).to_string()),
+            (
+                500,
+                json!({"id_token": id_token(&claims(&stand.base))}).to_string(),
+            ),
             (302, String::new()),
         ] {
             stand.set_token(status, body.clone());
@@ -1736,9 +1774,16 @@ mod tests {
         let provider = custom(&stand);
         let ask = |iss: Option<&'static str>| {
             let provider = provider.clone();
-            async move { provider.sign_in("code-1", REDIRECT, "verifier-1", iss).await }
+            async move {
+                provider
+                    .sign_in("code-1", REDIRECT, "verifier-1", iss)
+                    .await
+            }
         };
-        assert_eq!(ask(Some("https://evil.example")).await, Err(SignInError::State));
+        assert_eq!(
+            ask(Some("https://evil.example")).await,
+            Err(SignInError::State)
+        );
         // Exact, not trimmed.
         let with_slash = format!("{}/", stand.base);
         let result = provider
@@ -1762,7 +1807,12 @@ mod tests {
         let provider = custom(&promised);
         assert_eq!(sign_in(&provider).await, Err(SignInError::State));
         let result = provider
-            .sign_in("code-1", REDIRECT, "verifier-1", Some(promised.base.as_str()))
+            .sign_in(
+                "code-1",
+                REDIRECT,
+                "verifier-1",
+                Some(promised.base.as_str()),
+            )
             .await;
         assert!(result.is_ok(), "{result:?}");
         // The code is not spent on a refusal.
@@ -1788,13 +1838,19 @@ mod tests {
         let now = now_unix();
         let good = claims(&stand.base);
         let cases = [
-            ("wrong iss", with(good.clone(), "iss", json!("https://evil.example"))),
+            (
+                "wrong iss",
+                with(good.clone(), "iss", json!("https://evil.example")),
+            ),
             ("no iss", without(good.clone(), "iss")),
             (
                 "scheme-less google iss on a custom provider",
                 with(good.clone(), "iss", json!("accounts.google.com")),
             ),
-            ("wrong aud", with(good.clone(), "aud", json!("another-client"))),
+            (
+                "wrong aud",
+                with(good.clone(), "aud", json!("another-client")),
+            ),
             ("no aud", without(good.clone(), "aud")),
             ("numeric aud", with(good.clone(), "aud", json!(5))),
             (
@@ -1811,20 +1867,35 @@ mod tests {
             ),
             (
                 "wrong azp with an array aud",
-                merged(good.clone(), json!({"aud": [CLIENT, "other"], "azp": "other"})),
+                merged(
+                    good.clone(),
+                    json!({"aud": [CLIENT, "other"], "azp": "other"}),
+                ),
             ),
             ("null azp", with(good.clone(), "azp", Value::Null)),
             ("expired", with(good.clone(), "exp", json!(now - 120))),
             ("no exp", without(good.clone(), "exp")),
-            ("exp as text", with(good.clone(), "exp", json!((now + 3600).to_string()))),
-            ("iat in the future", with(good.clone(), "iat", json!(now + 600))),
+            (
+                "exp as text",
+                with(good.clone(), "exp", json!((now + 3600).to_string())),
+            ),
+            (
+                "iat in the future",
+                with(good.clone(), "iat", json!(now + 600)),
+            ),
             ("no iat", without(good.clone(), "iat")),
             ("empty sub", with(good.clone(), "sub", json!(""))),
             ("no sub", without(good.clone(), "sub")),
             ("numeric sub", with(good.clone(), "sub", json!(7))),
-            ("256 byte sub", with(good.clone(), "sub", json!("s".repeat(256)))),
+            (
+                "256 byte sub",
+                with(good.clone(), "sub", json!("s".repeat(256))),
+            ),
             ("sub with a bar", with(good.clone(), "sub", json!("a|b"))),
-            ("sub with a control", with(good.clone(), "sub", json!("a\nb"))),
+            (
+                "sub with a control",
+                with(good.clone(), "sub", json!("a\nb")),
+            ),
         ];
         for (name, claims) in cases {
             let result = signed_in(&stand, &provider, claims).await;
@@ -1840,16 +1911,37 @@ mod tests {
         let good = claims(&stand.base);
         let cases = [
             ("aud as one string", good.clone()),
-            ("aud array of one", with(good.clone(), "aud", json!([CLIENT]))),
+            (
+                "aud array of one",
+                with(good.clone(), "aud", json!([CLIENT])),
+            ),
             (
                 "aud array of several with azp",
-                merged(good.clone(), json!({"aud": [CLIENT, "other"], "azp": CLIENT})),
+                merged(
+                    good.clone(),
+                    json!({"aud": [CLIENT, "other"], "azp": CLIENT}),
+                ),
             ),
-            ("azp with a string aud", with(good.clone(), "azp", json!(CLIENT))),
-            ("exp inside the leeway", with(good.clone(), "exp", json!(now - 30))),
-            ("iat inside the leeway", with(good.clone(), "iat", json!(now + 200))),
-            ("fractional exp", with(good.clone(), "exp", json!(now as f64 + 3600.5))),
-            ("255 byte sub", with(good.clone(), "sub", json!("s".repeat(255)))),
+            (
+                "azp with a string aud",
+                with(good.clone(), "azp", json!(CLIENT)),
+            ),
+            (
+                "exp inside the leeway",
+                with(good.clone(), "exp", json!(now - 30)),
+            ),
+            (
+                "iat inside the leeway",
+                with(good.clone(), "iat", json!(now + 200)),
+            ),
+            (
+                "fractional exp",
+                with(good.clone(), "exp", json!(now as f64 + 3600.5)),
+            ),
+            (
+                "255 byte sub",
+                with(good.clone(), "sub", json!("s".repeat(255))),
+            ),
         ];
         for (name, claims) in cases {
             let result = signed_in(&stand, &provider, claims).await;
@@ -1881,8 +1973,14 @@ mod tests {
             ("one part", "token".to_string()),
             ("bad base64", "header.!!!not base64!!!.sig".to_string()),
             ("not json", format!("header.{}.sig", base64url(b"not json"))),
-            ("a json array", format!("header.{}.sig", base64url(b"[1, 2]"))),
-            ("a json string", format!("header.{}.sig", base64url(b"\"text\""))),
+            (
+                "a json array",
+                format!("header.{}.sig", base64url(b"[1, 2]")),
+            ),
+            (
+                "a json string",
+                format!("header.{}.sig", base64url(b"\"text\"")),
+            ),
         ];
         for (name, token) in cases {
             stand.reply_with_token(&token);
@@ -1915,17 +2013,16 @@ mod tests {
             200,
             json!({"sub": "subject-1", "email": "other@example.org", "email_verified": true}),
         );
-        let identity = signed_in(&stand, &provider, claims(&stand.base)).await.unwrap();
+        let identity = signed_in(&stand, &provider, claims(&stand.base))
+            .await
+            .unwrap();
         assert_eq!(identity.handle, "alice@example.org");
         assert!(stand.userinfo_requests().is_empty());
 
         let identity = signed_in(
             &stand,
             &provider,
-            without(
-                without(claims(&stand.base), "email"),
-                "email_verified",
-            ),
+            without(without(claims(&stand.base), "email"), "email_verified"),
         )
         .await
         .unwrap();
@@ -1947,7 +2044,10 @@ mod tests {
         let result = signed_in(&stand, &custom(&stand), bare.clone()).await;
         assert!(is_provider_error(&result), "{result:?}");
         // No sub at all is another subject too.
-        stand.set_userinfo(200, json!({"email": "mallory@example.org", "email_verified": true}));
+        stand.set_userinfo(
+            200,
+            json!({"email": "mallory@example.org", "email_verified": true}),
+        );
         let result = signed_in(&stand, &custom(&stand), bare).await;
         assert!(is_provider_error(&result), "{result:?}");
     }
@@ -2126,7 +2226,11 @@ mod tests {
             identity.picture,
             "https://lh3.googleusercontent.com/a/photo=s96-c"
         );
-        let token = with(claims(GOOGLE_ISSUER), "email", json!("alice@googlemail.com"));
+        let token = with(
+            claims(GOOGLE_ISSUER),
+            "email",
+            json!("alice@googlemail.com"),
+        );
         assert!(signed_in(&stand, &google(&stand), token).await.is_ok());
     }
 
@@ -2179,7 +2283,9 @@ mod tests {
     #[tokio::test]
     async fn entra_signs_in_by_oid_within_its_tenant() {
         let stand = stand_in().await;
-        let identity = signed_in(&stand, &entra(&stand), entra_claims()).await.unwrap();
+        let identity = signed_in(&stand, &entra(&stand), entra_claims())
+            .await
+            .unwrap();
         assert_eq!(identity.provider, "entra");
         assert_eq!(identity.id, format!("entra:{OID}"));
         assert_ne!(identity.id, "entra:subject-1");
@@ -2197,7 +2303,11 @@ mod tests {
     #[tokio::test]
     async fn entra_refuses_another_tenant() {
         let stand = stand_in().await;
-        let other = with(entra_claims(), "tid", json!("11111111-1111-1111-1111-111111111111"));
+        let other = with(
+            entra_claims(),
+            "tid",
+            json!("11111111-1111-1111-1111-111111111111"),
+        );
         let text = refusal(signed_in(&stand, &entra(&stand), other).await);
         assert_eq!(
             text,
@@ -2205,7 +2315,10 @@ mod tests {
         );
         let none = without(entra_claims(), "tid");
         let text = refusal(signed_in(&stand, &entra(&stand), none).await);
-        assert!(text.contains("does not belong to the organisation"), "{text}");
+        assert!(
+            text.contains("does not belong to the organisation"),
+            "{text}"
+        );
         // A token from another tenant's issuer fails the issuer check first.
         let issued_elsewhere = with(
             entra_claims(),
@@ -2287,18 +2400,29 @@ mod tests {
         let expected =
             "this Example SSO account has no verified email address, so it cannot be signed in";
         let unverified = with(claims(&stand.base), "email_verified", json!(false));
-        assert_eq!(refusal(signed_in(&stand, &provider, unverified).await), expected);
+        assert_eq!(
+            refusal(signed_in(&stand, &provider, unverified).await),
+            expected
+        );
         let absent = without(claims(&stand.base), "email_verified");
-        assert_eq!(refusal(signed_in(&stand, &provider, absent).await), expected);
+        assert_eq!(
+            refusal(signed_in(&stand, &provider, absent).await),
+            expected
+        );
         let no_email = without(claims(&stand.base), "email");
-        assert_eq!(refusal(signed_in(&stand, &provider, no_email).await), expected);
+        assert_eq!(
+            refusal(signed_in(&stand, &provider, no_email).await),
+            expected
+        );
     }
 
     #[tokio::test]
     async fn a_custom_provider_keys_accounts_on_sub_under_its_own_prefix() {
         let stand = stand_in().await;
         let provider = custom(&stand);
-        let identity = signed_in(&stand, &provider, claims(&stand.base)).await.unwrap();
+        let identity = signed_in(&stand, &provider, claims(&stand.base))
+            .await
+            .unwrap();
         assert_eq!(identity.provider, "oidc-x");
         assert_eq!(identity.id, "oidc-x:subject-1");
         assert_eq!(identity.handle, "alice@example.org");
@@ -2318,7 +2442,11 @@ mod tests {
         let token = with(base.clone(), "preferred_username", json!("alice_p"));
         let identity = signed_in(&stand, &provider, token).await.unwrap();
         assert_eq!(identity.name, "alice_p");
-        let token = with(base.clone(), "preferred_username", json!("alice.p@example.org"));
+        let token = with(
+            base.clone(),
+            "preferred_username",
+            json!("alice.p@example.org"),
+        );
         let identity = signed_in(&stand, &provider, token).await.unwrap();
         assert_eq!(identity.name, "alice.p");
         let identity = signed_in(&stand, &provider, base.clone()).await.unwrap();
@@ -2326,7 +2454,11 @@ mod tests {
         let token = with(base, "name", json!("alice@example.org"));
         let identity = signed_in(&stand, &provider, token).await.unwrap();
         assert_eq!(identity.name, "alice");
-        let token = with(claims(&stand.base), "picture", json!("http://insecure.example/a.png"));
+        let token = with(
+            claims(&stand.base),
+            "picture",
+            json!("http://insecure.example/a.png"),
+        );
         let identity = signed_in(&stand, &provider, token).await.unwrap();
         assert_eq!(identity.picture, "");
     }

@@ -245,12 +245,16 @@ fn from_provider_never_shows_an_address_as_the_name() {
     assert_eq!(name("Contact: bob@example.org"), "alice.smith");
     assert_eq!(name("  Alice Smith  "), "Alice Smith");
     // A handle with no address in it is its own local part.
-    assert_eq!(Identity::from_provider("github", "1", "Alice", "", "").name, "alice");
+    assert_eq!(
+        Identity::from_provider("github", "1", "Alice", "", "").name,
+        "alice"
+    );
 }
 
 #[test]
 fn from_provider_cleans_and_limits_the_name() {
-    let name = |given: &str| Identity::from_provider("oidc-x", "1", "alice@example.org", given, "").name;
+    let name =
+        |given: &str| Identity::from_provider("oidc-x", "1", "alice@example.org", given, "").name;
     assert_eq!(name(&"a".repeat(150)), "a".repeat(100));
     assert_eq!(name(&"a".repeat(100)), "a".repeat(100));
     // The limit counts characters and never cuts one in half.
@@ -274,7 +278,10 @@ fn from_provider_filters_the_picture() {
     assert_eq!(picture(""), "");
     assert_eq!(picture("http://pictures.example/a.png"), "");
     assert_eq!(picture("https://pictures.example/a|b.png"), "");
-    assert_eq!(picture(&format!("https://pictures.example/{}", "x".repeat(600))), "");
+    assert_eq!(
+        picture(&format!("https://pictures.example/{}", "x".repeat(600))),
+        ""
+    );
 }
 
 #[test]
@@ -368,7 +375,15 @@ fn sessions_naming_no_acceptable_provider_are_anonymous() {
             read_device(&key, &sign_device(&key, &who, expiry)),
         )
     };
-    for provider in ["oidc-", "OIDC-x", "oidc-X", "evil|x", "microsoft", "oidc", ""] {
+    for provider in [
+        "oidc-",
+        "OIDC-x",
+        "oidc-X",
+        "evil|x",
+        "microsoft",
+        "oidc",
+        "",
+    ] {
         let (session, device) = signed(provider, &format!("{provider}:42"));
         assert!(!session.is_signed_in(), "{provider:?}");
         assert!(!device.is_signed_in(), "{provider:?}");

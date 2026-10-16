@@ -161,9 +161,13 @@ fn read_callback(
 /// An OAuth error code is shown only when it looks like one. The value is
 /// the provider's, or whoever built the link, and ends up on a page.
 fn shown_error(code: &str) -> &str {
-    let plausible = (1..=40).contains(&code.len())
-        && code.bytes().all(|b| b.is_ascii_lowercase() || b == b'_');
-    if plausible { code } else { "error" }
+    let plausible =
+        (1..=40).contains(&code.len()) && code.bytes().all(|b| b.is_ascii_lowercase() || b == b'_');
+    if plausible {
+        code
+    } else {
+        "error"
+    }
 }
 
 /// The first `limit` characters, for a log line that quotes a provider.
@@ -283,7 +287,10 @@ impl Server {
             Ok(url) => begin.redirect(id, &url, &next, https),
             Err(reason) => {
                 tracing::warn!("could not start a sign-in with {id}: {reason}");
-                plain(502, "the sign-in provider is unavailable; try again shortly")
+                plain(
+                    502,
+                    "the sign-in provider is unavailable; try again shortly",
+                )
             }
         }
     }
@@ -319,7 +326,11 @@ impl Server {
             );
             return plain(
                 400,
-                &format!("{} refused the sign-in: {}", provider.label, shown_error(error)),
+                &format!(
+                    "{} refused the sign-in: {}",
+                    provider.label,
+                    shown_error(error)
+                ),
             );
         }
         let code = query.get("code").map(String::as_str).unwrap_or_default();
