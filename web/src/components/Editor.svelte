@@ -163,7 +163,7 @@
   import { bibliographyCache, bibliographyCacheKey, bibliographyCompletion, bibliographyNeedsAnalysis, citationContext, planZoteroImport } from "../lib/bibliography.js";
   import { desktop, searchZotero, zoteroItem } from "../lib/desktop/client.js";
   import { changeMarks, setChangeMarks } from "../lib/change-marks.js";
-  import { recordEdits, resolveChanges, trackedSplice, prune } from "../lib/track-changes.js";
+  import { CHANGES, recordEdits, resolveChanges, trackedSplice, prune } from "../lib/track-changes.js";
   import { DIRECTORY_ORIGIN } from "../lib/project-session.js";
   import { projectDirectory } from "../lib/projection.js";
   import { attachEditorZoom } from "../lib/editor-zoom.js";
@@ -217,6 +217,11 @@
   ///
   /// A transaction carrying the binding's annotation is its own write or an
   /// undo, and is already in the document.
+  ///
+  /// Every local edit, tracked or not, also prunes: an untracked edit can
+  /// delete the character a pending change's cursor is attached to, and the
+  /// prune rewrites that cursor against live text while the history that
+  /// locates it is still there.
   function trackChanges(fileId) {
     return ViewPlugin.define(() => {
       const doc = session.doc;
@@ -226,23 +231,24 @@
       return {
         update(update) {
           if (!update.docChanged) return;
-          let recorded = false;
-          if (tracked) {
-            for (const transaction of update.transactions) {
-              if (!transaction.docChanged || transaction.annotation(loroSyncAnnotation) !== undefined) continue;
+          let local = false;
+          for (const transaction of update.transactions) {
+            if (!transaction.docChanged || transaction.annotation(loroSyncAnnotation) !== undefined) continue;
+            local = true;
+            if (tracked) {
               const edits = [];
               transaction.changes.iterChanges((fromA, toA, fromB, toB, insert) => {
                 edits.push({ from: fromA, to: toA, insert: insert.sliceString(0, insert.length, "\n") });
               });
               recordEdits(doc, fileId, transaction.startState.doc.toString(), resolved, edits, me);
               refresh();
-              recorded = true;
             }
           }
-          if (recorded) {
+          if (local && doc.getMap(CHANGES).size) {
             prune(doc);
             doc.commit();
-          } else refresh();
+          }
+          refresh();
         },
         destroy() {
           subscription();
