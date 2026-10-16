@@ -42,6 +42,11 @@ sudo zypper install ./LibrePaper-<version>-1.x86_64.rpm    # openSUSE
 - On Linux, open LibrePaper from your applications menu, or run `librepaper-desktop` in a terminal.
 - The Linux package is named `libre-paper`: remove it with `sudo apt remove libre-paper` or `sudo dnf remove libre-paper`.
 - macOS: download `LibrePaper_<version>_universal.dmg` from the release, open it and drag LibrePaper to Applications. It runs on Apple Silicon and Intel Macs.
+- macOS with Homebrew:
+
+```sh
+brew install --cask vincentarelbundock/tap/librepaper
+```
 - To build from source:
 
 ```sh

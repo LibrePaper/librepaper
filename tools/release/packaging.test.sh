@@ -106,6 +106,11 @@ for target in \
 done
 grep -Fq "sha256 \"$MOCK_HASH\"" "$tmp/capture/Formula/librepaper.rb" || fail 'formula missing verified archive hashes'
 grep -Fq 'license "MIT"' "$tmp/capture/Formula/librepaper.rb" || fail 'formula missing MIT license metadata'
+[[ -f "$tmp/capture/Casks/librepaper.rb" ]] || fail 'Homebrew cask was not generated'
+grep -Fq 'app "LibrePaper.app"' "$tmp/capture/Casks/librepaper.rb" || fail 'cask missing app stanza'
+grep -Fq "sha256 \"$MOCK_HASH\"" "$tmp/capture/Casks/librepaper.rb" || fail 'cask missing verified DMG hash'
+grep -Fq 'LibrePaper_#{version}_universal.dmg' "$tmp/capture/Casks/librepaper.rb" || fail 'cask missing DMG url'
+grep -Fq 'version "1.2.3"' "$tmp/capture/Casks/librepaper.rb" || fail 'cask has wrong version'
 [[ -e "$tmp/pushed" ]] || fail 'Homebrew formula was not pushed'
 
 reset_mock
