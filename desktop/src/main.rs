@@ -2,6 +2,7 @@
 
 mod servers;
 mod service;
+mod shell_log;
 #[cfg(any(target_os = "macos", windows))]
 mod updater;
 
@@ -15,6 +16,7 @@ use tauri::webview::NewWindowResponse;
 use tauri::{
     App, AppHandle, Manager, RunEvent, UriSchemeResponder, WebviewUrl, WebviewWindowBuilder,
 };
+use tauri_plugin_clipboard_manager::ClipboardExt;
 use tauri_plugin_deep_link::DeepLinkExt;
 use tauri_plugin_dialog::{DialogExt, MessageDialogButtons, MessageDialogKind};
 use tauri_plugin_opener::OpenerExt;
@@ -48,7 +50,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         }))
         .plugin(tauri_plugin_deep_link::init())
         .plugin(tauri_plugin_dialog::init())
-        .plugin(tauri_plugin_opener::init());
+        .plugin(tauri_plugin_opener::init())
+        .plugin(tauri_plugin_clipboard_manager::init());
     #[cfg(any(target_os = "macos", windows))]
     let builder = builder.plugin(tauri_plugin_updater::Builder::new().build());
     let app = builder
@@ -67,6 +70,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 }
 
 fn setup(app: &mut App) -> Result<(), Box<dyn std::error::Error>> {
+    if let Ok(dir) = app.path().app_log_dir() {
+        shell_log::init(dir);
+    }
     let servers = Servers::load(app.handle())?;
     let first = servers
         .first()
@@ -86,7 +92,7 @@ fn setup(app: &mut App) -> Result<(), Box<dyn std::error::Error>> {
 
     if cfg!(any(target_os = "linux", windows)) {
         if let Err(err) = app.deep_link().register_all() {
-            eprintln!("could not register the librepaper:// scheme: {err}");
+            shell_log::write(&format!("could not register the librepaper:// scheme: {err}"));
         }
     }
     let links = app.handle().clone();
@@ -159,11 +165,11 @@ fn open_window(app: &AppHandle, url: Url) -> tauri::Result<tauri::WebviewWindow>
                 if let Err(err) =
                     opener.run_on_main_thread(move || show(&app, Target::NewWindow, url))
                 {
-                    eprintln!("could not open a window: {err}");
+                    shell_log::write(&format!("could not open a window: {err}"));
                 }
             } else if matches!(url.scheme(), "http" | "https") {
                 if let Err(err) = opener.opener().open_url(url.as_str(), None::<&str>) {
-                    eprintln!("could not open the browser: {err}");
+                    shell_log::write(&format!("could not open the browser: {err}"));
                 }
             }
             NewWindowResponse::Deny
@@ -183,21 +189,21 @@ fn show(app: &AppHandle, target: Target, url: Url) {
                 .or_else(|| windows.values().next());
             let Some(window) = window else {
                 if let Err(err) = open_window(app, url) {
-                    eprintln!("could not open a window: {err}");
+                    shell_log::write(&format!("could not open a window: {err}"));
                 }
                 return;
             };
             if let Err(err) = window.navigate(url) {
-                eprintln!("navigation failed: {err}");
+                shell_log::write(&format!("navigation failed: {err}"));
             }
         }
         Target::NewWindow => match open_window(app, url) {
             Ok(window) => {
                 if let Err(err) = window.set_focus() {
-                    eprintln!("could not focus the window: {err}");
+                    shell_log::write(&format!("could not focus the window: {err}"));
                 }
             }
-            Err(err) => eprintln!("could not open a window: {err}"),
+            Err(err) => shell_log::write(&format!("could not open a window: {err}")),
         },
     }
 }
@@ -287,7 +293,7 @@ fn add_server(app: &AppHandle, target: Target, url: Url) {
             let mut servers = shell.servers.lock().expect("server list lock");
             servers.add(&url);
             if let Err(err) = servers.save(&app) {
-                eprintln!("could not save desktop.json: {err}");
+                shell_log::write(&format!("could not save desktop.json: {err}"));
             }
         }
         show(&app, target, url);
@@ -356,13 +362,128 @@ fn serve(app: &AppHandle, label: String, request: Request<Vec<u8>>, responder: U
                 show(&main, Target::NewWindow, url);
             }
         }) {
-            eprintln!("could not open a window: {err}");
+            shell_log::write(&format!("could not open a window: {err}"));
         }
         let res = Response::builder()
             .status(StatusCode::NO_CONTENT)
             .body(Vec::new())
             .expect("an empty response is valid");
         return responder.respond(with_origin(res, &origin));
+    }
+
+    // Copies the report to the clipboard. The page only learns that it was copied.
+    if request.method() == Method::POST && request.uri().path() == "/shell/diagnostics" {
+        let app = app.clone();
+        tauri::async_runtime::spawn(async move {
+            let copied: Result<(), String> = match service::diagnostics(&[]).await {
+                Ok(report) => {
+                    let text = format!(
+                        "LibrePaper desktop app {}\n\n{report}\nDesktop log, last 100 lines:\n{}\n",
+                        env!("CARGO_PKG_VERSION"),
+                        shell_log::tail(100)
+                    );
+                    app.clipboard().write_text(text).map_err(|err| err.to_string())
+                }
+                Err(err) => Err(err),
+            };
+            let res = match copied {
+                Ok(()) => no_content(),
+                Err(err) => {
+                    let error = format!("Could not copy the diagnostics: {err}");
+                    json_error(StatusCode::INTERNAL_SERVER_ERROR, &error)
+                }
+            };
+            responder.respond(with_origin(res, &origin));
+        });
+        return;
+    }
+
+    // Opens the service's log folder in the file manager.
+    if request.method() == Method::POST && request.uri().path() == "/shell/open-logs" {
+        let app = app.clone();
+        tauri::async_runtime::spawn(async move {
+            let opened: Result<(), String> = match service::diagnostics(&["--log-dir"]).await {
+                Ok(out) => app
+                    .opener()
+                    .open_path(out.trim(), None::<&str>)
+                    .map_err(|err| err.to_string()),
+                Err(err) => Err(err),
+            };
+            let res = match opened {
+                Ok(()) => no_content(),
+                Err(err) => {
+                    let error = format!("Could not open the log folder: {err}");
+                    json_error(StatusCode::INTERNAL_SERVER_ERROR, &error)
+                }
+            };
+            responder.respond(with_origin(res, &origin));
+        });
+        return;
+    }
+
+    // Switches the app to another server, after a native confirmation.
+    if request.method() == Method::POST && request.uri().path() == "/shell/server" {
+        let Ok(choice) = serde_json::from_slice::<ServerChoice>(request.body()) else {
+            let res = json_error(StatusCode::BAD_REQUEST, "The body must be JSON.");
+            return responder.respond(with_origin(res, &origin));
+        };
+        let url = servers::accepted(choice.url.trim())
+            .and_then(|url| Url::parse(&format!("{}/", url.origin().ascii_serialization())).ok());
+        let Some(url) = url else {
+            let res = json_error(
+                StatusCode::BAD_REQUEST,
+                "Enter the server's address, starting with https://",
+            );
+            return responder.respond(with_origin(res, &origin));
+        };
+        let app = app.clone();
+        tauri::async_runtime::spawn(async move {
+            let shown = url.origin().ascii_serialization();
+            let message = format!(
+                "Use {shown} as your LibrePaper server?\n\nThe app opens {shown} now and every time it starts. That server can use this computer's tools through the app, so only choose a server you trust."
+            );
+            let asked = app.clone();
+            let allowed = tauri::async_runtime::spawn_blocking(move || {
+                asked
+                    .dialog()
+                    .message(message)
+                    .title("Use another server")
+                    .kind(MessageDialogKind::Warning)
+                    .buttons(MessageDialogButtons::OkCancelCustom(
+                        "Use this server".into(),
+                        "Cancel".into(),
+                    ))
+                    .blocking_show()
+            })
+            .await
+            .unwrap_or(false);
+            if !allowed {
+                let res = json_error(StatusCode::FORBIDDEN, "The server was not changed.");
+                return responder.respond(with_origin(res, &origin));
+            }
+            {
+                let shell = app.state::<Shell>();
+                let mut servers = shell.servers.lock().expect("server list lock");
+                servers.make_default(&url);
+                if let Err(err) = servers.save(&app) {
+                    shell_log::write(&format!("could not save desktop.json: {err}"));
+                }
+            }
+            responder.respond(with_origin(no_content(), &origin));
+            // The window that asked is moved to the new server.
+            let nav = app.clone();
+            let result = app.run_on_main_thread(move || {
+                if let Some(window) = nav.get_webview_window(&label) {
+                    if let Err(err) = window.navigate(url) {
+                        shell_log::write(&format!("navigation failed: {err}"));
+                    }
+                }
+            });
+            if let Err(err) = result {
+                shell_log::write(&format!("navigation failed: {err}"));
+            }
+        });
+        return;
     }
 
     let (parts, body) = request.into_parts();
@@ -413,6 +534,11 @@ fn serve(app: &AppHandle, label: String, request: Request<Vec<u8>>, responder: U
         };
         responder.respond(with_origin(res, &origin));
     });
+}
+
+#[derive(serde::Deserialize)]
+struct ServerChoice {
+    url: String,
 }
 
 #[derive(serde::Deserialize)]
@@ -490,6 +616,13 @@ fn with_origin(mut res: Response<Vec<u8>>, origin: &str) -> Response<Vec<u8>> {
     res.headers_mut()
         .insert(header::VARY, HeaderValue::from_static("Origin"));
     res
+}
+
+fn no_content() -> Response<Vec<u8>> {
+    Response::builder()
+        .status(StatusCode::NO_CONTENT)
+        .body(Vec::new())
+        .expect("an empty response is valid")
 }
 
 fn forbidden() -> Response<Vec<u8>> {

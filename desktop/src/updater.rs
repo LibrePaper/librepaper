@@ -12,7 +12,7 @@ pub fn spawn(app: AppHandle) {
     }
     tauri::async_runtime::spawn(async move {
         if let Err(err) = check(&app).await {
-            eprintln!("update check failed: {err}");
+            crate::shell_log::write(&format!("update check failed: {err}"));
         }
     });
 }

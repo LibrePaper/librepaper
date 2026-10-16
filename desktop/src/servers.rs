@@ -61,6 +61,13 @@ impl Servers {
     pub fn add(&mut self, url: &Url) {
         self.servers.push(url.origin().ascii_serialization());
     }
+
+    /// Puts this server first, so the app opens it from now on.
+    pub fn make_default(&mut self, url: &Url) {
+        let origin = url.origin().ascii_serialization();
+        self.servers.retain(|raw| accepted(raw).map_or(true, |known| known.origin().ascii_serialization() != origin));
+        self.servers.insert(0, origin);
+    }
 }
 
 // Plain http is only accepted on loopback, so a development server can run
@@ -78,4 +85,41 @@ pub fn accepted(raw: &str) -> Option<Url> {
 fn file(app: &AppHandle) -> Result<PathBuf, String> {
     let dir = app.path().app_config_dir().map_err(|err| err.to_string())?;
     Ok(dir.join("desktop.json"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn list_of(raw: &[&str]) -> Servers {
+        Servers {
+            servers: raw.iter().map(|s| s.to_string()).collect(),
+            from_env: false,
+        }
+    }
+
+    fn url(raw: &str) -> Url {
+        accepted(raw).expect("the test address is accepted")
+    }
+
+    #[test]
+    fn make_default_moves_a_known_server_to_the_front() {
+        let mut list = list_of(&["https://a.example", "https://b.example"]);
+        list.make_default(&url("https://b.example/some/page"));
+        assert_eq!(list.servers, vec!["https://b.example", "https://a.example"]);
+    }
+
+    #[test]
+    fn make_default_adds_a_new_server_at_the_front() {
+        let mut list = list_of(&["https://a.example"]);
+        list.make_default(&url("https://c.example/"));
+        assert_eq!(list.servers, vec!["https://c.example", "https://a.example"]);
+    }
+
+    #[test]
+    fn accepted_allows_https_and_loopback_http_only() {
+        assert!(accepted("http://example.org").is_none());
+        assert!(accepted("http://127.0.0.1:8080").is_some());
+        assert!(accepted("https://example.org").is_some());
+    }
 }

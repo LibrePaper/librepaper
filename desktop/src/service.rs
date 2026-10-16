@@ -46,7 +46,7 @@ impl Service {
     // another request may already have changed state.
     pub async fn warm(&self) {
         if let Err(err) = self.current().await {
-            eprintln!("local service did not start: {err}");
+            crate::shell_log::write(&format!("local service did not start: {err}"));
         }
     }
 
@@ -122,6 +122,31 @@ pub async fn endpoint() -> Result<Endpoint, String> {
         .find(|line| !line.trim().is_empty())
         .ok_or("librepaper local endpoint printed nothing")?;
     serde_json::from_str(line).map_err(|err| format!("unreadable endpoint: {err}"))
+}
+
+// Runs `librepaper local diagnostics` with extra arguments and returns what it printed.
+pub async fn diagnostics(args: &[&str]) -> Result<String, String> {
+    let mut command = tokio::process::Command::new(binary());
+    command
+        .args(["local", "diagnostics"])
+        .args(args)
+        .stdin(Stdio::null());
+    // CREATE_NO_WINDOW: a GUI app spawning a console program would flash a console window.
+    #[cfg(windows)]
+    command.creation_flags(0x0800_0000);
+    let output = command
+        .output()
+        .await
+        .map_err(|err| format!("cannot run librepaper: {err}"))?;
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+        return Err(if stderr.is_empty() {
+            "librepaper local diagnostics failed".to_string()
+        } else {
+            stderr
+        });
+    }
+    Ok(String::from_utf8_lossy(&output.stdout).into_owned())
 }
 
 // Stops the background service when the app quits. Errors are ignored, and a
