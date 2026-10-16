@@ -806,7 +806,8 @@ async fn a_shorter_session_lifetime_bounds_the_cookie_and_the_device_token() {
         (ahead - 7200).abs() <= 60,
         "the signed expiry is {ahead}s out"
     );
-    assert_eq!(token, 7200);
+    // The token ends with the session that approved it, read a moment later.
+    assert!((7200 - 60..=7200).contains(&token), "token {token}");
 }
 
 #[tokio::test]

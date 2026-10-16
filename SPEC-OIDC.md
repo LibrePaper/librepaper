@@ -575,7 +575,9 @@ librepaper.org. That stays in "Later". What ships now is a bound:
   deadline the server cannot read (a GitHub bearer, an agent grant) cannot
   approve a device code.
 - The inactive-account erasure floor (`parse_inactive_after` in `serve.rs`)
-  is twice the configured lifetime instead of twice the constant.
+  stays twice `SESSION_MAX_AGE`, whatever the setting. Credentials issued
+  before a lifetime change keep their own expiry, and a short setting must
+  not make a two-hour erasure window legal.
 - Sessions do not renew on use. Somebody cut off mid-edit sees the reader's
   "Sign in required" or a stalled room socket, signs in again and resyncs.
   Sliding renewal is a follow-up if a fixed day proves annoying.

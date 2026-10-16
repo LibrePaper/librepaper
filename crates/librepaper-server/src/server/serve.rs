@@ -314,12 +314,12 @@ fn storage_policy(config: &Configuration) -> librepaper_engine::storage::postgre
 
 /// Seconds without a sign-in after which an account is erased; zero keeps them.
 /// A window under two session lifetimes would erase people who still sign in.
-pub(crate) fn parse_inactive_after(
-    value: &str,
-    session_lifetime: std::time::Duration,
-) -> Result<i64, String> {
+/// The floor is twice `SESSION_MAX_AGE` whatever `auth.session_lifetime`
+/// says: credentials issued before the setting was shortened keep their own
+/// expiry, and a short setting must not make a two-hour erasure window legal.
+pub(crate) fn parse_inactive_after(value: &str) -> Result<i64, String> {
     let seconds = parse_retention(value)?;
-    let floor = 2 * session_lifetime.as_secs() as i64;
+    let floor = 2 * SESSION_MAX_AGE.as_secs() as i64;
     if seconds != 0 && seconds < floor {
         return Err(format!("must be at least {}", describe_seconds(floor)));
     }
@@ -338,11 +338,8 @@ pub fn validate_serve_options(options: &ServeOptions) -> Result<(), String> {
         .map_err(|error| format!("retention.expire_after: {error}"))?;
     parse_expire_from(options.expire_from.as_deref().unwrap_or(""))
         .map_err(|error| format!("retention.expire_from: {error}"))?;
-    parse_inactive_after(
-        options.erase_inactive_after.as_deref().unwrap_or(""),
-        options.session_lifetime.unwrap_or(SESSION_MAX_AGE),
-    )
-    .map_err(|error| format!("retention.erase_inactive_after: {error}"))?;
+    parse_inactive_after(options.erase_inactive_after.as_deref().unwrap_or(""))
+        .map_err(|error| format!("retention.erase_inactive_after: {error}"))?;
     configured_origins(options)?;
     let github_id = non_blank(options.github_client_id.as_deref()).is_some();
     let github_secret = non_blank(options.github_client_secret.as_deref()).is_some();
@@ -396,11 +393,9 @@ pub async fn serve(options: ServeOptions) {
     let deployment_paths = storage.paths().unwrap_or_else(|err| die(err));
     let retention = parse_retention(options.expire_after.as_deref().unwrap_or(""))
         .unwrap_or_else(|err| die(format!("{err}; use a duration such as 24h or 30d")));
-    let inactive_after = parse_inactive_after(
-        options.erase_inactive_after.as_deref().unwrap_or(""),
-        options.session_lifetime.unwrap_or(SESSION_MAX_AGE),
-    )
-    .unwrap_or_else(|err| die(format!("retention.erase_inactive_after: {err}")));
+    let inactive_after =
+        parse_inactive_after(options.erase_inactive_after.as_deref().unwrap_or(""))
+            .unwrap_or_else(|err| die(format!("retention.erase_inactive_after: {err}")));
     // The origin pair is settled before storage is opened or a port claimed.
     // Two origins that share a host are not a deployment with a weaker
     // boundary; they are a deployment with none, so this refuses to start
@@ -836,32 +831,15 @@ mod site_origin_tests {
 mod inactive_account_tests {
     use super::*;
 
-    use librepaper_base::auth::SESSION_MAX_AGE;
-    use std::time::Duration;
-
     #[test]
     fn the_inactive_account_window_is_off_or_at_least_two_sessions() {
-        assert_eq!(parse_inactive_after("", SESSION_MAX_AGE).unwrap(), 0);
-        assert_eq!(parse_inactive_after("off", SESSION_MAX_AGE).unwrap(), 0);
-        assert_eq!(
-            parse_inactive_after("365d", SESSION_MAX_AGE).unwrap(),
-            365 * 86_400
-        );
-        assert_eq!(
-            parse_inactive_after("60d", SESSION_MAX_AGE).unwrap(),
-            60 * 86_400
-        );
-        assert!(parse_inactive_after("59d", SESSION_MAX_AGE).is_err());
-        assert!(parse_inactive_after("30d", SESSION_MAX_AGE).is_err());
-        assert!(parse_inactive_after("soon", SESSION_MAX_AGE).is_err());
-    }
-
-    #[test]
-    fn a_shorter_session_lowers_the_floor_of_the_inactive_account_window() {
-        let a_day = Duration::from_secs(24 * 3600);
-        assert_eq!(parse_inactive_after("2d", a_day).unwrap(), 2 * 86_400);
-        assert!(parse_inactive_after("1d", a_day).is_err());
-        assert_eq!(parse_inactive_after("off", a_day).unwrap(), 0);
+        assert_eq!(parse_inactive_after("").unwrap(), 0);
+        assert_eq!(parse_inactive_after("off").unwrap(), 0);
+        assert_eq!(parse_inactive_after("365d").unwrap(), 365 * 86_400);
+        assert_eq!(parse_inactive_after("60d").unwrap(), 60 * 86_400);
+        assert!(parse_inactive_after("59d").is_err());
+        assert!(parse_inactive_after("30d").is_err());
+        assert!(parse_inactive_after("soon").is_err());
     }
 }
 
