@@ -444,6 +444,58 @@ export function accept(doc, id) {
   return true;
 }
 
+// The pending change, if any, that lists `id` in its `points`.
+function findOwner(doc, id, file) {
+  for (const [oid, ov] of doc.getMap(CHANGES).entries()) {
+    if (oid === id || !Array.isArray(ov?.points)) continue;
+    if (!ov.points.some((p) => p && p.id === id)) continue;
+    const found = resolveEntry(doc, oid, ov);
+    if (found && found.file === file) return found;
+  }
+  return null;
+}
+
+function withPoints(value, points) {
+  const { points: _drop, ...rest } = value;
+  return points.length > 0 ? { ...rest, points } : rest;
+}
+
+// `x` was rejected and its text is back at `x.from`. Its owner `o` swallowed it
+// at offset `a` of `o.deleted`, so the owner splits there: the part before
+// stays as a pure deletion anchored on x's text, the part after keeps the
+// owner's inserted span.
+function splitOwner(doc, text, o, xId, x) {
+  const map = doc.getMap(CHANGES);
+  const ov = map.get(o.id);
+  const mine = o.points.find((p) => p.id === xId);
+  const a = Math.max(0, Math.min(mine.at, o.deleted.length));
+  const leftText = o.deleted.slice(0, a);
+  const rightText = o.deleted.slice(a);
+  const others = o.points.filter((p) => p.id !== xId);
+  const leftPoints = others.filter((p) => p.at < a);
+  const rightPoints = others.filter((p) => p.at >= a).map((p) => ({ id: p.id, at: p.at - a }));
+  const hasInserted = o.to > o.from;
+  let right = null;
+  if (rightText !== "" || hasInserted) {
+    right = hasInserted
+      ? withPoints({ ...ov, deleted: rightText }, rightPoints)
+      : withPoints(
+          { ...ov, deleted: rightText, start: text.getCursor(x.from + x.deleted.length, -1).encode(), end: null },
+          rightPoints,
+        );
+  }
+  if (leftText === "") {
+    if (right) map.set(o.id, right);
+    else map.delete(o.id);
+    return;
+  }
+  map.set(
+    o.id,
+    withPoints({ ...ov, deleted: leftText, start: text.getCursor(x.from, -1).encode(), end: null }, leftPoints),
+  );
+  if (right) map.set(crypto.randomUUID(), right);
+}
+
 /**
  * Rejects a change: puts the original text back, then drops the record.
  * Returns false when the id is unknown. An orphaned record is only dropped.
@@ -458,8 +510,10 @@ export function reject(doc, id) {
   const resolved = resolveEntry(doc, id, value);
   if (resolved) {
     const text = fileText(doc, resolved.file);
+    const owner = findOwner(doc, id, resolved.file);
     if (resolved.to > resolved.from) text.delete(resolved.from, resolved.to - resolved.from);
     if (resolved.deleted) text.insert(resolved.from, resolved.deleted);
+    if (owner) splitOwner(doc, text, owner, id, resolved);
     // Deletions this change swallowed move back to where they sat inside it.
     for (const pt of resolved.points ?? []) {
       const target = map.get(pt.id);

@@ -620,6 +620,93 @@ pub fn accept(doc: &LoroDoc, id: &str) -> bool {
     map.delete(id).is_ok()
 }
 
+/// The pending change, if any, that lists `id` in its `points`.
+fn find_owner(doc: &LoroDoc, id: &str, file: &str) -> Option<ResolvedChange> {
+    let map = doc.get_map(CHANGES);
+    for key in map.keys() {
+        if key.as_ref() == id {
+            continue;
+        }
+        let Some(r) = read_entry(doc, key.as_ref()) else {
+            continue;
+        };
+        if r.change.file == file && r.change.points.iter().any(|p| p.id == id) {
+            return Some(r.change);
+        }
+    }
+    None
+}
+
+/// `x` was rejected and its text is back at `x.from`. Its owner swallowed it
+/// at offset `a` of the owner's `deleted`, so the owner splits there: the part
+/// before stays a pure deletion anchored on x's text, the part after keeps the
+/// owner's inserted span.
+fn split_owner(doc: &LoroDoc, text: &LoroText, owner_id: &str, x_id: &str, x: &ResolvedChange) {
+    // Read again: the text under the owner moved when x's text came back.
+    let Some(Read { change: o, .. }) = read_entry(doc, owner_id) else {
+        return;
+    };
+    let Some(mine) = o.points.iter().find(|p| p.id == x_id) else {
+        return;
+    };
+    let chars: Vec<char> = o.deleted.chars().collect();
+    let a = mine.at.min(chars.len());
+    let left_text: String = chars[..a].iter().collect();
+    let right_text: String = chars[a..].iter().collect();
+    let others: Vec<&Point> = o.points.iter().filter(|p| p.id != x_id).collect();
+    let left_points: Vec<Point> = others.iter().filter(|p| p.at < a).map(|p| (*p).clone()).collect();
+    let right_points: Vec<Point> = others
+        .iter()
+        .filter(|p| p.at >= a)
+        .map(|p| Point {
+            id: p.id.clone(),
+            at: p.at - a,
+        })
+        .collect();
+    let has_inserted = o.to > o.from;
+    let map = doc.get_map(CHANGES);
+
+    let mut right = ResolvedChange {
+        deleted: right_text,
+        points: right_points,
+        ..o.clone()
+    };
+    let right_cursors = if has_inserted {
+        let start = text.get_cursor(o.from, Side::Left);
+        let end = text.get_cursor(o.to - 1, Side::Right);
+        start.map(|s| (s, end))
+    } else if !right.deleted.is_empty() {
+        text.get_cursor(x.from + x.deleted.chars().count(), Side::Left)
+            .map(|s| (s, None))
+    } else {
+        None
+    };
+
+    if left_text.is_empty() {
+        match right_cursors {
+            Some((s, e)) => {
+                map.insert(&o.id, entry_value(&right, &s, e.as_ref())).ok();
+            }
+            None => {
+                map.delete(&o.id).ok();
+            }
+        }
+        return;
+    }
+    let left = ResolvedChange {
+        deleted: left_text,
+        points: left_points,
+        ..o.clone()
+    };
+    if let Some(s) = text.get_cursor(x.from, Side::Left) {
+        map.insert(&o.id, entry_value(&left, &s, None)).ok();
+    }
+    if let Some((s, e)) = right_cursors {
+        right.id = mint_uuid();
+        map.insert(&right.id, entry_value(&right, &s, e.as_ref())).ok();
+    }
+}
+
 /// Rejects a change: puts `deleted` back in place of the inserted text, then
 /// drops the record. Returns false when there is no such change. An orphaned
 /// record is only dropped. Does not commit.
@@ -630,11 +717,15 @@ pub fn reject(doc: &LoroDoc, id: &str) -> bool {
     }
     if let Some(Read { change: c, .. }) = read_entry(doc, id) {
         if let Some(text) = text_of(doc, &c.file) {
+            let owner = find_owner(doc, id, &c.file);
             if c.to > c.from {
                 text.delete(c.from, c.to - c.from).ok();
             }
             if !c.deleted.is_empty() {
                 text.insert(c.from, &c.deleted).ok();
+            }
+            if let Some(o) = owner {
+                split_owner(doc, &text, &o.id, id, &c);
             }
             // Deletions this change swallowed move back to where they sat
             // inside it.
@@ -1054,5 +1145,62 @@ mod tests {
             }
             assert_eq!(body(&doc, &id), "abcde");
         }
+    }
+
+    /// Alice deletes then Bob swallows her point; reject in the given order
+    /// ("a" is Alice's change, "b" is Bob's).
+    fn swallow(start: &str, alice: Edit, bob: Edit) -> (LoroDoc, String, String, String) {
+        let (doc, id) = setup(start);
+        let a = apply_tracked_edits(&doc, &id, &[alice], &ME, None, 1).unwrap()[0].clone();
+        doc.commit();
+        let b = apply_tracked_edits(&doc, &id, &[bob], &BOB, None, 2).unwrap()[0].clone();
+        doc.commit();
+        (doc, id, a, b)
+    }
+
+    #[test]
+    fn rejecting_the_swallowed_change_first_splits_the_owner() {
+        let cases = [
+            ("abcd", (1, 1), (1, 1), "ad", "abcd"),
+            ("abcde", (2, 1), (1, 2), "ae", "abcde"),
+        ];
+        for (start, alice, bob, mid, end) in cases {
+            let (doc, id, a, b) = swallow(
+                start,
+                edit(alice.0, alice.1, ""),
+                edit(bob.0, bob.1, ""),
+            );
+            assert_eq!(body(&doc, &id), mid);
+            assert!(reject(&doc, &a));
+            doc.commit();
+            while let Some(c) = resolve_changes(&doc, &id).first() {
+                assert!(reject(&doc, &c.id.clone()));
+                doc.commit();
+            }
+            assert_eq!(body(&doc, &id), end, "{start}");
+            assert!(resolve_changes(&doc, &id).is_empty());
+            let _ = b;
+        }
+    }
+
+    #[test]
+    fn the_owner_is_a_replacement_and_the_swallowed_change_goes_first() {
+        let (doc, id, a, b) = swallow("abcde", edit(2, 1, ""), edit(1, 2, "Z"));
+        assert_eq!(body(&doc, &id), "aZe");
+        assert!(reject(&doc, &a));
+        doc.commit();
+        assert_eq!(body(&doc, &id), "acZe");
+        let pending = resolve_changes(&doc, &id);
+        assert_eq!(pending.len(), 2);
+        let left = pending.iter().find(|c| c.id == b).unwrap();
+        assert_eq!((left.from, left.to, left.deleted.as_str()), (1, 1, "b"));
+        let right = pending.iter().find(|c| c.id != b).unwrap();
+        assert_eq!((right.from, right.to, right.deleted.as_str()), (2, 3, "d"));
+        assert!(reject(&doc, &b));
+        doc.commit();
+        assert_eq!(body(&doc, &id), "abcZe");
+        assert!(reject(&doc, &right.id));
+        doc.commit();
+        assert_eq!(body(&doc, &id), "abcde");
     }
 }

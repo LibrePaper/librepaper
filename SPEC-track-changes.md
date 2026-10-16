@@ -153,6 +153,15 @@ Both are one local Loro commit by the deciding editor:
   `text.insert(from, deleted)`; for each entry of `points` whose change still
   exists and is still a pure deletion, rewrite that change's `start` to
   `text.getCursor(from + at, -1)` with `end = null`; `changes.delete(id)`.
+  If the change being rejected is itself listed in the `points` of another
+  pending change `O` (same file), `O` splits at offset `a`: the part holding
+  `deleted[..a]` becomes a pure deletion anchored on the first character of
+  the restored text, and the part holding `deleted[a..]` keeps `O`'s inserted
+  span, or, with none, anchors on the character after the restored text. `O`
+  keeps its id on the left part, or on the right part when the left is empty;
+  the other part gets a new id with the same `who`, `author`, `run` and `at`.
+  A part with no deleted text and no inserted span is dropped. `O`'s other
+  points go left with their offset when `at < a`, else right with `at - a`.
   This keeps the order of two deletions that were anchored at the same
   character, so rejecting them in any order restores the original text.
 - On `accept`, the `points` go with the record.
