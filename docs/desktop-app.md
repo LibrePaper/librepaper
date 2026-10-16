@@ -76,13 +76,6 @@ sudo dnf remove librepaper                        # remove it
 sudo zypper install ./librepaper-<version>-1.x86_64.rpm
 ```
 
-- Arch Linux: download `librepaper-<version>-1-x86_64.pkg.tar.zst` from the release, then run:
-
-```sh
-sudo pacman -U ./librepaper-<version>-1-x86_64.pkg.tar.zst
-sudo pacman -R librepaper                         # remove it
-```
-
 - Nix (x86_64 Linux only):
 
 ```sh

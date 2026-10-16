@@ -1,6 +1,6 @@
 # cargo-dist calls this workflow as a local-artifacts job on release tags
 # (local-artifacts-jobs in Cargo.toml), so the release waits for it.
-# It builds the desktop app as .deb and .rpm packages for x86_64 Linux, and an Arch package for stable versions.
+# It builds the desktop app as .deb and .rpm packages for x86_64 Linux.
 # The packages also install the librepaper command line.
 name: Linux desktop app
 
@@ -68,23 +68,6 @@ jobs:
           cp "${packages[@]}" "$out/"
           cd "$out"
           for f in *.deb *.rpm; do sha256sum "$f" | awk '{print $1 " *" $2}' > "$f.sha256"; done
-          ls -l
-
-      # pacman versions cannot contain a hyphen, so prereleases skip the Arch package.
-      - name: Build the Arch package
-        if: ${{ !contains(steps.version.outputs.version, '-') }}
-        shell: bash
-        env:
-          VERSION: ${{ steps.version.outputs.version }}
-        run: |
-          out="$RUNNER_TEMP/desktop-release"
-          shopt -s nullglob
-          debs=("$out"/*.deb)
-          if [ ${#debs[@]} -ne 1 ]; then echo "::error::Expected one .deb in $out, found ${#debs[@]}"; exit 1; fi
-          deb="${debs[0]}"
-          bash tools/release/build-arch-package.sh "$VERSION" "$deb" "$out"
-          cd "$out"
-          for f in *.pkg.tar.zst; do sha256sum "$f" | awk '{print $1 " *" $2}' > "$f.sha256"; done
           ls -l
 
       # Names starting with artifacts- are attached to the GitHub Release by the host job.
