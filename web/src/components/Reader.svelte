@@ -2725,7 +2725,8 @@
   // The tabs this browser is offered. Which reader may see which panel is
   // written with the panels, in lib/panels.js; this only says who is asking.
   const tabs = $derived(tabsFor({ role: doc.role, mayEdit, editing, canSeeSharing, canPublish }));
-  const agentOffered = $derived(tabs.some((tab) => tab.id === "agent"));
+  // The robot buttons hand work to the agent, which runs only in the desktop app.
+  const agentOffered = $derived(tabs.some((tab) => tab.id === "agent") && Boolean(localQuarto.desktop()));
   // Where the column goes back to when what it showed is taken away: the
   // files for an editor, the comments for a commenter, and for a reader no
   // column at all -- there is nothing they are offered to go back to.

@@ -104,7 +104,7 @@
       <ul class="space-y-3 mb-4">
         {#each group.items as item}
           <li class="rounded-container border border-[var(--color-divider)] p-3">
-            <div class="flex items-center justify-between gap-2 mb-2">
+            <div class="flex items-center justify-between gap-2 mb-2 diagnostic-head">
               <span class="badge lp-tone-{group.tone}">
                 {group.tone === "error" ? "Error" : group.tone === "warning" ? "Warning" : "Note"}
               </span>
@@ -159,3 +159,8 @@
     </details>
   {/if}
 </section>
+
+<style>
+  .diagnostic-head :global(.icon-control) { box-sizing: border-box; width: 32px; height: 32px; min-width: 32px; min-height: 32px; padding: 0; }
+  .diagnostic-head :global(.icon-control svg) { width: 16px; height: 16px; }
+</style>
