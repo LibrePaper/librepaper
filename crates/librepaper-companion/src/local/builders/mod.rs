@@ -167,16 +167,17 @@ fn typst_plan(
     }
     Ok(CommandPlan {
         executable: tool(tools, "typst")?,
-        args: {
-            let args = vec![
-                "compile".into(),
-                "--root".into(),
-                workspace.display().to_string(),
-                entrypoint.display().to_string(),
-                output.display().to_string(),
-            ];
-            args
-        },
+        // The project's own font files are found wherever they sit in it,
+        // the same as in the browser.
+        args: vec![
+            "compile".into(),
+            "--root".into(),
+            workspace.display().to_string(),
+            "--font-path".into(),
+            workspace.display().to_string(),
+            entrypoint.display().to_string(),
+            output.display().to_string(),
+        ],
         cwd: workspace.to_path_buf(),
         output: output.to_path_buf(),
         environment: BTreeMap::new(),
@@ -246,6 +247,30 @@ mod tests {
             };
             assert!(plan(&request, &BTreeMap::new(), root.path()).is_err());
         }
+    }
+
+    #[test]
+    fn typst_plan_passes_the_workspace_as_font_path() {
+        let root = tempfile::tempdir().expect("tempdir");
+        std::fs::write(root.path().join("main.typ"), "= Title").expect("source");
+        let typst = root.path().join("typst-bin");
+        std::fs::write(&typst, "").expect("tool");
+        let tools = BTreeMap::from([("typst".to_string(), typst)]);
+        let request = BuildRequest {
+            builder: BuilderId::Typst,
+            engine: None,
+            entrypoint: "main.typ".into(),
+            output: Output::Pdf,
+            options: BTreeMap::new(),
+        };
+        let command = plan(&request, &tools, root.path()).expect("typst plan");
+        let workspace = root.path().display().to_string();
+        let flag = command
+            .args
+            .iter()
+            .position(|arg| arg == "--font-path")
+            .expect("--font-path flag");
+        assert_eq!(command.args[flag + 1], workspace);
     }
 
     // LaTeX is built in the browser: no TeX builder is nameable on the wire.
