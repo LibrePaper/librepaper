@@ -325,6 +325,7 @@ function nextProject() {
 
   // Always asks for a rerun, so the loop's next-iteration deadline check --
   // not `MAX_PASSES` -- is what has to stop it.
+  latex._testing.retireWorker();
   const previousWorker = worker();
   FakeWorker.nextTexReplies = [async () => {
     clock = 1001;
@@ -640,9 +641,9 @@ function nextProject() {
   assert.equal(compilingWorker.dead, false, "the stale job does not affect the replacement worker");
 }
 
-// Canceling a hung helper must retire its worker before a replacement can
-// reuse it; otherwise the old helper's deadline retires the replacement's
-// in-flight RPC and makes that newer compile fail.
+// A canceled hung helper is an orphan: the worker stays until the helper's
+// own deadline fires and retires it. The replacement waits for that, so the
+// old deadline can never retire the replacement's in-flight RPC.
 {
   latex.at("/deadline-helper-cancel/");
   const previousWorker = worker();
@@ -656,12 +657,13 @@ function nextProject() {
   await new Promise((resolve) => setTimeout(resolve, 1000));
   latex.cancel();
   await assert.rejects(canceled, (error) => error.name === "Superseded");
-  assert.equal(firstWorker.dead, true, "cancel retires a worker with an unanswered helper RPC");
+  assert.equal(firstWorker.dead, false, "cancel keeps a worker with an unanswered helper RPC until its deadline");
 
   let finishReplacementTex;
   FakeWorker.nextTexReplies = [() => new Promise((resolve) => { finishReplacementTex = resolve; })];
   const replacement = latex.compile(tree("main.tex", "replacement compile"));
   const replacementWorker = await untilWorker(firstWorker);
+  assert.equal(firstWorker.dead, true, "the orphan's deadline retired the unresponsive worker");
   await untilMessage(replacementWorker, (message) => message.cmd === "tex");
   await new Promise((resolve) => setTimeout(resolve, 650));
   assert.equal(replacementWorker.dead, false, "the canceled helper's deadline cannot retire the replacement worker");
@@ -700,8 +702,12 @@ latex._testing.inject({ deadlineMs: latex.DEADLINE_MS });
   latex.cancel(); // `stale` rejects now; its eventual response is discarded
   await assert.rejects(stale, (error) => error.name === "Superseded");
 
-  FakeWorker.nextTexReplies = [{ status: 0, pdf: PDF, synctex: null, log: "fresh", outputs: {} }];
-  const fresh = await latex.compile(tree("main.tex", "fresh"));
+  // The worker survives the cancel, so the fresh job reuses it and waits for
+  // the stale reply before it sends anything.
+  staleWorker.texReplies = [{ status: 0, pdf: PDF, synctex: null, log: "fresh", outputs: {} }];
+  const freshPending = latex.compile(tree("main.tex", "fresh"));
+  releaseStale();
+  const fresh = await freshPending;
   assert.equal(fresh.ok, true);
   assert.equal(latex.status().lastResult.job.generation, fresh.job.generation);
 
@@ -732,15 +738,13 @@ latex._testing.inject({ deadlineMs: latex.DEADLINE_MS });
   assert.equal(before.ok, true);
   const bibtexBefore = FakeWorker.totalBibtexCalls;
 
-  // `setSettings` drops the configured release, so the *next* compile that
-  // actually reaches `ensureWorker` may end up on a fresh worker instance --
-  // track BibTeX calls at the class level rather than per-instance so this
-  // assertion survives that either way.
+  // `setSettings` keeps the warm worker; BibTeX calls are still tracked at
+  // the class level so this assertion does not depend on which instance runs.
   latex.setSettings({ release: "r1" }); // a settings call is itself the change event; it invalidates reuse
 
   FakeWorker.nextTexReplies = [undefinedCitation, settled];
   FakeWorker.nextBibtexReplies = [{ status: 0, bbl: enc.encode("BBL-a"), blg: "" }];
-  worker().texReplies = [undefinedCitation, settled]; // in case the existing worker is reused instead
+  worker().texReplies = [undefinedCitation, settled]; // the existing worker is reused
   worker().bibtexReplies = [{ status: 0, bbl: enc.encode("BBL-a"), blg: "" }];
   const after = await latex.compile(t);
   assert.equal(after.ok, true);
@@ -793,6 +797,111 @@ latex._testing.inject({ deadlineMs: latex.DEADLINE_MS });
   assert.match(result.failure.message, /only speaks format 2/);
   assert.match(result.failure.message, /make mirror/);
   assert.doesNotMatch(result.failure.message, /undefined/);
+}
+
+// ============================================================================
+// Warm worker: a settings change keeps it, a cancel orphans its calls instead
+// of retiring it, and the compile result carries the engines' timings.
+// ============================================================================
+{
+  const okReply = (extra = {}) => ({ status: 0, pdf: PDF, synctex: null, log: "", outputs: {}, ...extra });
+  // Scripts the next tex replies on the live worker, or on the one the next
+  // compile creates.
+  const script = (replies) => {
+    FakeWorker.nextTexReplies = [...replies];
+    if (worker()) worker().texReplies = [...replies];
+  };
+  const texCount = (target) => target.messages.filter((m) => m.cmd === "tex").length;
+  latex._testing.inject({ worker: FakeWorker, fetch: fakeFetch, deadlineMs: latex.DEADLINE_MS });
+  latex.configure({ project: nextProject(), settings: { engine: "pdflatex" } });
+
+  // 1. setSettings followed by a compile reuses the same worker instance.
+  script([okReply()]);
+  assert.equal((await latex.compile(tree("main.tex", "warm one"))).ok, true);
+  FakeWorker.nextTexReplies = null;
+  const warm = worker();
+  const configuresBefore = warm.messages.filter((m) => m.cmd === "configure").length;
+  const previousOnCreate = FakeWorker.onCreate;
+  let constructed = 0;
+  FakeWorker.onCreate = (instance) => {
+    constructed += 1;
+    previousOnCreate(instance);
+  };
+  latex.setSettings({ output: "pdf" });
+  script([okReply()]);
+  assert.equal((await latex.compile(tree("main.tex", "warm two"))).ok, true);
+  FakeWorker.nextTexReplies = null;
+  assert.equal(constructed, 0, "a settings change constructs no new worker");
+  assert.equal(worker(), warm, "the same worker instance served the compile");
+  assert.equal(warm.dead, false, "a settings change does not terminate the worker");
+  assert.equal(warm.messages.filter((m) => m.cmd === "configure").length, configuresBefore, "no configure was re-sent");
+
+  // 2. Cancel during an in-flight tex call keeps the worker, rejects the
+  // caller at once, and the next compile waits for the orphaned reply.
+  let answerOrphan;
+  warm.texReplies = [() => new Promise((resolve) => { answerOrphan = () => resolve(okReply()); })];
+  const texBefore = texCount(warm);
+  const stale = latex.compile(tree("main.tex", "orphaned"));
+  const staleOutcome = stale.catch((error) => error);
+  assert.ok(await until(() => texCount(warm) > texBefore), "the tex call reached the worker");
+  latex.cancel();
+  assert.equal((await staleOutcome).name, "Superseded", "the cancelled compile rejects with Superseded");
+  assert.equal(warm.dead, false, "cancel does not terminate the worker");
+  warm.texReplies = [okReply()];
+  const messagesAtCancel = warm.messages.length;
+  const next = latex.compile(tree("main.tex", "after the orphan"));
+  await new Promise((resolve) => setTimeout(resolve, 100));
+  assert.equal(warm.messages.length, messagesAtCancel, "the next compile sends nothing while the orphan is unanswered");
+  answerOrphan();
+  assert.equal((await next).ok, true);
+  assert.equal(warm.messages[messagesAtCancel].cmd, "stage", "the first command after the orphaned reply is stage");
+  assert.equal(warm.messages.slice(messagesAtCancel).some((m) => m.cmd === "configure"), false, "the worker was reused without a configure");
+  assert.equal(worker(), warm);
+  assert.equal(warm.dead, false);
+  FakeWorker.onCreate = previousOnCreate;
+
+  // 3. An orphan whose reply never comes gets the worker retired when its
+  // timer fires, and the next compile runs on a fresh worker.
+  latex._testing.inject({ deadlineMs: 400 });
+  FakeWorker.dropNextCommand = "tex";
+  const silentBefore = texCount(warm);
+  const silent = latex.compile(tree("main.tex", "silent"));
+  const silentOutcome = silent.catch((error) => error);
+  assert.ok(await until(() => texCount(warm) > silentBefore), "the unanswered tex call reached the worker");
+  latex.cancel();
+  assert.equal((await silentOutcome).name, "Superseded");
+  assert.equal(warm.dead, false, "the worker lives until the orphan's timer fires");
+  assert.ok(await until(() => warm.dead, 2000), "the orphan's timer retired the unresponsive worker");
+  FakeWorker.nextTexReplies = [okReply()];
+  const afterSilence = await latex.compile(tree("main.tex", "after silence"));
+  FakeWorker.nextTexReplies = null;
+  assert.equal(afterSilence.ok, true);
+  assert.notEqual(worker(), warm, "the next compile ran on a fresh worker");
+  latex._testing.inject({ deadlineMs: latex.DEADLINE_MS });
+
+  // 4. The result carries timings merged from every tex reply of the job.
+  const firstPass = {
+    startup: { pdftex: { assetsMs: 1 } },
+    passes: [{ kind: "pdftex", phaseTimings: { run: 5 }, bundleStats: { memoHits: 2 } }],
+  };
+  const secondPass = {
+    startup: {},
+    passes: [{ kind: "pdftex", phaseTimings: { run: 3 }, bundleStats: null }],
+  };
+  script([
+    okReply({ log: "Rerun to get cross-references right.", timings: firstPass }),
+    okReply({ timings: secondPass }),
+  ]);
+  const timed = await latex.compile(tree("main.tex", "two passes"));
+  assert.equal(timed.ok, true);
+  assert.deepEqual(timed.timings, {
+    startup: { pdftex: { assetsMs: 1 } },
+    passes: [...firstPass.passes, ...secondPass.passes],
+  }, "startup objects are merged and passes concatenated");
+  script([okReply()]);
+  assert.equal((await latex.compile(tree("main.tex", "no timings"))).timings, null, "a reply without timings gives null");
+  FakeWorker.nextTexReplies = null;
+  latex._testing.reset();
 }
 
 // ============================================================================
@@ -1141,7 +1250,7 @@ console.log("latex controller: queue, bibliography reuse, routing and lifecycle 
 {
   latex._testing.inject({ worker: FakeWorker, fetch: fakeFetch });
   latex.configure({ project: nextProject(), settings: { engine: 'auto', release: 'r1' } });
-  worker().texReplies = [
+  FakeWorker.nextTexReplies = [
     { status: 1, pdf: null, synctex: null, log: '! Undefined control sequence.\nl.3 \\directlua\n', outputs: {} },
   ];
   const result = await latex.compile(tree('main.tex', '\\directlua{tex.print(1)}'));
@@ -1172,7 +1281,7 @@ console.log("latex controller: queue, bibliography reuse, routing and lifecycle 
 {
   latex._testing.inject({ worker: FakeWorker, fetch: fakeFetch });
   latex.configure({ project: nextProject(), settings: { engine: 'pdflatex', release: 'r1' } });
-  worker().texReplies = [
+  FakeWorker.nextTexReplies = [
     { status: 1, pdf: null, synctex: null, log: '! Package minted Error: You must invoke LaTeX with the -shell-escape flag.\n', outputs: {} },
   ];
   const result = await latex.compile(tree('main.tex', '\\usepackage{minted}'));

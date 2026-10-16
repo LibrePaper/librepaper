@@ -80,13 +80,20 @@ function dirname(path) {
   return at < 0 ? null : path.slice(0, at);
 }
 
+/// Helper engines a project engine may call on after the pass, which a stage
+/// for a different project engine must not retire.
+const HELPER_KINDS = new Set(["bibtex", "bibtex8", "makeindex"]);
+
 const OUTPUT_EXTENSIONS = ["aux", "bcf", "idx", "ind", "ilg", "bbl", "blg", "toc", "lof", "lot", "out", "run.xml"];
 
 class Worker2 {
   constructor() {
     this.base = null;
     this.release = null;
-    this.engines = new Map(); // kind -> engine driver
+    this.engines = new Map(); // kind -> ready engine driver
+    this.starting = new Map(); // kind -> Promise of the driver being started
+    // Kinds whose startup timings an earlier `tex` reply already carried.
+    this.reported = new Set();
     // The release's `bundles.json`, fetched once
     // in `configure` below. Bundle mode is the only mode a worker speaks any
     // more -- there is no per-file TeX Live snapshot mirror left to fall
@@ -178,9 +185,30 @@ class Worker2 {
 
   // -- engine lifecycle ---------------------------------------------------
 
+  /// The ready engine for `kind`, starting it if need be. Concurrent callers
+  /// (a stage and a bibtex prewarm, say) share one start.
   async ensureEngine(kind) {
     const existing = this.engines.get(kind);
     if (existing) return existing;
+    let starting = this.starting.get(kind);
+    if (!starting) {
+      starting = this.startEngine(kind).then(
+        (engine) => {
+          this.starting.delete(kind);
+          this.engines.set(kind, engine);
+          return engine;
+        },
+        (error) => {
+          this.starting.delete(kind);
+          throw error;
+        },
+      );
+      this.starting.set(kind, starting);
+    }
+    return starting;
+  }
+
+  async startEngine(kind) {
     // Bundle mode is the only mode this worker speaks now (see `configure`),
     // and every shipped engine resolves through it except LuaTeX, which is
     // not shipped at all -- there is no per-file path left to fall back to
@@ -234,41 +262,38 @@ class Worker2 {
       onProgress: (progress) => this.emit("progress", progress),
       onDownload: (info) => this.emit("downloading", info),
     });
-    this.engines.set(kind, engine);
     try {
       await engine.init();
+      // The engine restores its working set and unpacks bundles on demand
+      // once it has this index -- the index is the only package metadata
+      // needed before a compile.
+      await engine.loadBundleIndex(this.bundleIndexBytes);
+      // XeTeX alone needs its ICU data table: without it, in bundle mode,
+      // the worker would try to fetch `icudt68l.dat` by name from the
+      // endpoint (which does not exist for a bundled release) and fail, and
+      // font-by-name lookups would fail too. Fetched and verified through
+      // the same digest-checked path as the format bytes, then inflated
+      // client-side since the release ships it gzipped (`icudt68l.dat.gz`,
+      // 11 MiB, versus 27 MiB raw -- over the static-asset limit).
+      if (kind === "xetex" && spec.icu) {
+        const info = this.release.files?.[spec.icu];
+        if (info) {
+          const response = await fetchVerified(this.release, resolve(this.base, info.url), {
+            sha256: info.sha256,
+            size: info.size,
+          });
+          const gz = new Uint8Array(await response.arrayBuffer());
+          if (typeof DecompressionStream === "undefined") {
+            throw new Error("this browser has no DecompressionStream, needed to inflate the bundled XeTeX ICU data");
+          }
+          const stream = new Response(gz).body.pipeThrough(new DecompressionStream("gzip"));
+          const icuBytes = new Uint8Array(await new Response(stream).arrayBuffer());
+          await engine.loadIcuData(icuBytes);
+        }
+      }
     } catch (error) {
       engine.terminate();
-      this.engines.delete(kind);
       throw error;
-    }
-    // The worker itself preloads from Cache Storage and unpacks bundles on
-    // demand once it has this index -- the index is the only package metadata
-    // needed before a
-    // compile; bundles are fetched lazily on demand.
-    await engine.loadBundleIndex(this.bundleIndexBytes);
-    // XeTeX alone needs its ICU data table: without it, in bundle mode,
-    // the worker would try to fetch `icudt68l.dat` by name from the
-    // endpoint (which does not exist for a bundled release) and fail, and
-    // font-by-name lookups would fail too. Fetched and verified through
-    // the same digest-checked path as the format bytes, then inflated
-    // client-side since the release ships it gzipped (`icudt68l.dat.gz`,
-    // 11 MiB, versus 27 MiB raw -- over the static-asset limit).
-    if (kind === "xetex" && spec.icu) {
-      const info = this.release.files?.[spec.icu];
-      if (info) {
-        const response = await fetchVerified(this.release, resolve(this.base, info.url), {
-          sha256: info.sha256,
-          size: info.size,
-        });
-        const gz = new Uint8Array(await response.arrayBuffer());
-        if (typeof DecompressionStream === "undefined") {
-          throw new Error("this browser has no DecompressionStream, needed to inflate the bundled XeTeX ICU data");
-        }
-        const stream = new Response(gz).body.pipeThrough(new DecompressionStream("gzip"));
-        const icuBytes = new Uint8Array(await new Response(stream).arrayBuffer());
-        await engine.loadIcuData(icuBytes);
-      }
     }
     return engine;
   }
@@ -280,12 +305,17 @@ class Worker2 {
     if (!kinds) throw new Error(`unknown engine ${engineName}`);
     this.tree = tree;
     this.engineName = engineName;
-    const engines = [];
-    for (const kind of kinds) {
-      const engine = await this.ensureEngine(kind);
-      await engine.flushCache();
-      engines.push(engine);
+    // Engines of another project engine are dead weight now; the helpers
+    // stay because any project engine may call on them.
+    await this.retireWhere((kind) => !kinds.includes(kind) && !HELPER_KINDS.has(kind));
+    const engines = await Promise.all(kinds.map((kind) => this.ensureEngine(kind)));
+    // A .bib in the tree means a bibtex pass is likely, so start its engine
+    // while TeX runs. `bibtex()` joins the start; a failure surfaces there.
+    const paths = [...Object.keys(tree.texts ?? {}), ...Object.keys(tree.assets ?? {})];
+    if (engineName !== "latexml" && paths.some((path) => path.endsWith(".bib"))) {
+      this.ensureEngine("bibtex").catch(() => {});
     }
+    for (const engine of engines) await engine.flushCache();
     // Fresh /work for every engine, then the whole tree, one directory at a
     // time -- `flushcache` above is the only way any of these controllers
     // clears `/work`, so a file removed from the tree is genuinely absent
@@ -335,6 +365,7 @@ class Worker2 {
     // ordinary failure so it can name the package instead of "the document
     // failed to compile".
     let mirrorAbsent = pass.mirrorAbsent || [];
+    const passes = [{ kind: kinds[0], phaseTimings: pass.phaseTimings ?? null, bundleStats: pass.bundleStats ?? null }];
 
     if (engineName === "xelatex") {
       // XeTeX's own controller hands back the .xdv content in the same
@@ -353,6 +384,7 @@ class Worker2 {
         ok = made.ok && !!pdf;
         status = made.status;
         mirrorAbsent = [...mirrorAbsent, ...(made.mirrorAbsent || [])];
+        passes.push({ kind: "dvipdfm", phaseTimings: made.phaseTimings ?? null, bundleStats: made.bundleStats ?? null });
       } else {
         ok = false;
       }
@@ -381,9 +413,18 @@ class Worker2 {
       transfer.push(bytes.buffer);
     }
 
+    // Startup timings go out once per engine start, not on every reply.
+    const startup = {};
+    for (const [kind, engine] of this.engines) {
+      if (this.reported.has(kind) || !engine.timings) continue;
+      this.reported.add(kind);
+      startup[kind] = engine.timings;
+    }
+
     return {
       ok: true,
       status,
+      timings: { startup, passes },
       pdf: pdf ? pdf.buffer : null,
       synctex: synctex ? synctex.buffer : null,
       log,
@@ -472,9 +513,23 @@ class Worker2 {
 
   // -- retire -------------------------------------------------------------
 
+  /// Terminates every engine, ready or still starting, whose kind `test`
+  /// accepts.
+  async retireWhere(test) {
+    for (const [kind, starting] of [...this.starting]) {
+      if (!test(kind)) continue;
+      await starting.catch(() => {});
+    }
+    for (const [kind, engine] of [...this.engines]) {
+      if (!test(kind)) continue;
+      engine.terminate();
+      this.engines.delete(kind);
+      this.reported.delete(kind);
+    }
+  }
+
   async retire() {
-    for (const engine of this.engines.values()) engine.terminate();
-    this.engines.clear();
+    await this.retireWhere(() => true);
     this.tree = null;
     this.engineName = null;
     return { ok: true };
