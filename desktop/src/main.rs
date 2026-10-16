@@ -62,6 +62,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .plugin(tauri_plugin_clipboard_manager::init());
     #[cfg(any(target_os = "macos", windows))]
     let builder = builder.plugin(tauri_plugin_updater::Builder::new().build());
+    #[cfg(target_os = "macos")]
+    let builder = builder
+        .menu(menu)
+        .on_menu_event(|app, event| menu_event(app, event.id().as_ref()));
     let app = builder
         .register_asynchronous_uri_scheme_protocol("lp-local", |ctx, request, responder| {
             let label = ctx.webview_label().to_string();
@@ -143,13 +147,23 @@ fn desktop_script() -> String {
     )
 }
 
-// Ctrl or Cmd+N asks the shell for a new window. Only the top frame sends it.
+// Ctrl or Cmd+N asks the shell for a new window, Ctrl or Cmd+W closes this
+// one, and Ctrl or Cmd+, opens Settings. Only the top frame sends them.
 const NEW_WINDOW_SCRIPT: &str = r#"if (window.top === window) {
   window.addEventListener("keydown", (event) => {
     const mod = /Mac/.test(navigator.platform) ? event.metaKey : event.ctrlKey;
-    if (event.defaultPrevented || !mod || event.shiftKey || event.altKey || event.key.toLowerCase() !== "n") return;
-    event.preventDefault();
-    fetch("{base}shell/new-window", { method: "POST" }).catch(() => {});
+    if (event.defaultPrevented || !mod || event.shiftKey || event.altKey) return;
+    const key = event.key.toLowerCase();
+    if (key === "n") {
+      event.preventDefault();
+      fetch("{base}shell/new-window", { method: "POST" }).catch(() => {});
+    } else if (key === "w") {
+      event.preventDefault();
+      fetch("{base}shell/close-window", { method: "POST" }).catch(() => {});
+    } else if (key === ",") {
+      event.preventDefault();
+      window.dispatchEvent(new CustomEvent("librepaper:open-settings"));
+    }
   });
   // WebKitGTK does not ask the shell about a target="_blank" link, only about
   // window.open, so such a click becomes window.open.
@@ -195,13 +209,7 @@ fn open_window(app: &AppHandle, url: Url) -> tauri::Result<tauri::WebviewWindow>
 fn show(app: &AppHandle, target: Target, url: Url) {
     match target {
         Target::Current => {
-            let windows = app.webview_windows();
-            let window = windows
-                .values()
-                .find(|window| window.is_focused().unwrap_or(false))
-                .or_else(|| windows.get("main"))
-                .or_else(|| windows.values().next());
-            let Some(window) = window else {
+            let Some(window) = focused_window(app) else {
                 if let Err(err) = open_window(app, url) {
                     shell_log::write(&format!("could not open a window: {err}"));
                 }
@@ -385,25 +393,30 @@ fn serve(app: &AppHandle, label: String, request: Request<Vec<u8>>, responder: U
         return responder.respond(with_origin(res, &origin));
     }
 
+    // The shortcut in the page closes its own window. Windows are closed on
+    // the main thread, like the ones it opens.
+    if request.method() == Method::POST && request.uri().path() == "/shell/close-window" {
+        let main = app.clone();
+        let label = label.clone();
+        if let Err(err) = app.run_on_main_thread(move || {
+            if let Some(window) = main.get_webview_window(&label) {
+                let _ = window.close();
+            }
+        }) {
+            shell_log::write(&format!("could not close a window: {err}"));
+        }
+        let res = Response::builder()
+            .status(StatusCode::NO_CONTENT)
+            .body(Vec::new())
+            .expect("an empty response is valid");
+        return responder.respond(with_origin(res, &origin));
+    }
+
     // Copies the report to the clipboard. The page only learns that it was copied.
     if request.method() == Method::POST && request.uri().path() == "/shell/diagnostics" {
         let app = app.clone();
         tauri::async_runtime::spawn(async move {
-            let copied: Result<(), String> = match service::diagnostics(&[]).await {
-                Ok(report) => {
-                    let text = format!(
-                        "LibrePaper desktop app {}\n\n{report}\nDesktop log ({}), last 100 lines:\n{}\n",
-                        env!("CARGO_PKG_VERSION"),
-                        shell_log::location(),
-                        shell_log::tail(100)
-                    );
-                    app.clipboard()
-                        .write_text(text)
-                        .map_err(|err| err.to_string())
-                }
-                Err(err) => Err(err),
-            };
-            let res = match copied {
+            let res = match copy_diagnostics(&app).await {
                 Ok(()) => no_content(),
                 Err(err) => {
                     let error = format!("Could not copy the diagnostics: {err}");
@@ -669,4 +682,77 @@ fn unavailable(detail: &str) -> Response<Vec<u8>> {
         .header(header::CONTENT_TYPE, "application/json")
         .body(body)
         .expect("the error response is valid")
+}
+
+// Copies the diagnostics report to the clipboard. The page only learns whether it worked.
+async fn copy_diagnostics(app: &AppHandle) -> Result<(), String> {
+    let report = service::diagnostics(&[]).await?;
+    let text = format!(
+        "LibrePaper desktop app {}\n\n{report}\nDesktop log ({}), last 100 lines:\n{}\n",
+        env!("CARGO_PKG_VERSION"),
+        shell_log::location(),
+        shell_log::tail(100)
+    );
+    app.clipboard()
+        .write_text(text)
+        .map_err(|err| err.to_string())
+}
+
+// The standard macOS menu, with Settings in the app menu and LibrePaper's
+// own entries in Help. Windows and Linux windows keep no menu bar: the same
+// actions are in Settings and on the keyboard.
+#[cfg(target_os = "macos")]
+fn menu(app: &AppHandle) -> tauri::Result<tauri::menu::Menu<tauri::Wry>> {
+    use tauri::menu::{Menu, MenuItem, PredefinedMenuItem, HELP_SUBMENU_ID};
+    let menu = Menu::default(app)?;
+    let settings = MenuItem::with_id(app, "settings", "Settings…", true, Some("CmdOrCtrl+,"))?;
+    if let Some(first) = menu.items()?.first().and_then(|item| item.as_submenu().cloned()) {
+        first.insert_items(&[&PredefinedMenuItem::separator(app)?, &settings], 1)?;
+    }
+    if let Some(help) = menu.get(HELP_SUBMENU_ID).and_then(|item| item.as_submenu().cloned()) {
+        help.append_items(&[
+            &MenuItem::with_id(app, "diagnostics", "Copy Diagnostics", true, None::<&str>)?,
+            &MenuItem::with_id(app, "report", "Report a Problem…", true, None::<&str>)?,
+            &MenuItem::with_id(app, "updates", "Check for Updates…", true, None::<&str>)?,
+        ])?;
+    }
+    Ok(menu)
+}
+
+#[cfg(target_os = "macos")]
+fn menu_event(app: &AppHandle, id: &str) {
+    match id {
+        "settings" => {
+            if let Some(window) = focused_window(app) {
+                let _ = window.eval("window.dispatchEvent(new CustomEvent(\"librepaper:open-settings\"))");
+            }
+        }
+        "diagnostics" => {
+            let app = app.clone();
+            tauri::async_runtime::spawn(async move {
+                match copy_diagnostics(&app).await {
+                    Ok(()) => crate::notice::show(&app, "Diagnostics copied. Paste them into a bug report.", 4000),
+                    Err(err) => crate::notice::show(&app, &err, 6000),
+                }
+            });
+        }
+        "report" => {
+            if let Err(err) = app.opener().open_url("https://github.com/LibrePaper/librepaper/issues", None::<&str>) {
+                shell_log::write(&format!("could not open the browser: {err}"));
+            }
+        }
+        "updates" => crate::updater::check_now(app.clone()),
+        _ => {}
+    }
+}
+
+// The window the person is using, or the first one.
+fn focused_window(app: &AppHandle) -> Option<tauri::WebviewWindow> {
+    let windows = app.webview_windows();
+    windows
+        .values()
+        .find(|window| window.is_focused().unwrap_or(false))
+        .cloned()
+        .or_else(|| windows.get("main").cloned())
+        .or_else(|| windows.values().next().cloned())
 }

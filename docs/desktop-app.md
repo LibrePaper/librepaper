@@ -90,8 +90,14 @@ On macOS and with the Windows installer, the app checks for a new version when i
 ### Windows
 
 - Ctrl+N (Cmd+N on macOS) opens another window.
+- Ctrl+W (Cmd+W on macOS) closes the window.
+- Ctrl+, (Cmd+, on macOS) opens Settings.
 - Starting the app again opens another window in the running app.
 - A link to your server that opens in a new tab opens in a new window. Other links open in your browser.
 - Closing the last window quits the app and stops the local service.
+
+### Help
+
+On macOS, the Help menu copies diagnostics, opens the issue tracker and checks for updates. On every system, Settings, Desktop app, Diagnostics copies the same report.
 
 To build from a checkout, see [building from source](architecture/building.html).
