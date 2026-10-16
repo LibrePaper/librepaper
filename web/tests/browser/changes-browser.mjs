@@ -267,9 +267,9 @@ try {
   // bulk verb continue to name the same rows.
   await ev("window.show()");
   await ev("window.menu('Select multiple')");
-  await ev('window.pick("c1")');
+  await ev('window.pick("c2")');
   await waitFor("selected before filtering", 'window.selectedCount() === "1 selected"');
-  await ev('window.filter("notes.md")');
+  await ev('window.filter("paper.md")');
   await waitFor("hidden tick cleared", 'window.selectedCount() === "0 selected"');
 
   // The whole queue at once, from the menu, and only after being asked twice.
