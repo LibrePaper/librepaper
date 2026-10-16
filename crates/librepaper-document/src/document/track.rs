@@ -546,8 +546,8 @@ pub fn reject(doc: &LoroDoc, id: &str) -> bool {
 
 /// Removes every orphaned, malformed or empty entry and returns how many it
 /// removed. An entry whose cursor came back with a replacement is rewritten
-/// with it, so a deleted anchor is looked up the slow way once; that does not
-/// count. An editor calls this in its next local commit. Does not commit.
+/// with fresh cursors made from its resolved span, so a deleted anchor is
+/// looked up the slow way once; that does not count. An editor calls this in its next local commit. Does not commit.
 pub fn prune(doc: &LoroDoc) -> usize {
     let map = doc.get_map(CHANGES);
     let ids: Vec<String> = map.keys().map(|k| k.to_string()).collect();
@@ -564,18 +564,21 @@ pub fn prune(doc: &LoroDoc) -> usize {
         if read.start_update.is_none() && read.end_update.is_none() {
             continue;
         }
-        let Some(ValueOrContainer::Value(LoroValue::Map(m))) = map.get(&id) else {
+        // Loro's replacement cursor sits on the next live character, which
+        // the end rule would overshoot. Write fresh cursors from the span.
+        let c = &read.change;
+        let Some(text) = text_of(doc, &c.file) else {
             continue;
         };
-        let mut healed: HashMap<String, LoroValue> =
-            m.iter().map(|(k, v)| (k.clone(), v.clone())).collect();
-        if let Some(c) = &read.start_update {
-            healed.insert("start".into(), LoroValue::from(c.encode()));
-        }
-        if let Some(c) = &read.end_update {
-            healed.insert("end".into(), LoroValue::from(c.encode()));
-        }
-        map.insert(&id, LoroValue::from(healed)).ok();
+        let Some(start) = text.get_cursor(c.from, Side::Left) else {
+            continue;
+        };
+        let end = if c.to > c.from {
+            text.get_cursor(c.to - 1, Side::Right)
+        } else {
+            None
+        };
+        map.insert(&id, entry_value(c, &start, end.as_ref())).ok();
     }
     removed
 }
