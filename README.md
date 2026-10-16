@@ -29,8 +29,7 @@ sharing and review, agents, the CLI, and self-hosting.
 Its source is in [`docs/`](docs/), and `make site` builds it.
 
 The ordinary CLI covers `login`, `logout`, `list`, and one-shot `export`.
-`agent` manages the agents the desktop app offers, `admin` operates a
-deployment, and `mcp` serves a document's tools to an agent.
+`admin` operates a deployment, and `mcp` serves a document's tools to an agent.
 
 The desktop app can also keep scheduled ZIP copies of every project
 available to your signed-in account, including shared projects. See the

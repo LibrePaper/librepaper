@@ -1,48 +1,21 @@
 ---
-title: "The CLI"
+title: "Command line"
 ---
 
-## Desktop app
+The `librepaper` command hosts a LibrePaper server and scripts your documents. To write, install the [desktop app](desktop-app.html) instead. You do not need the command line.
 
-The [desktop app](desktop-app.html) runs its own local service. You do not start, stop or pair it from the CLI.
+## Install
 
-The desktop app finds document tools from the `PATH` it inherits when it starts. Set a tool's executable explicitly in its Integrations settings when it is not on `PATH`.
-
-For local backups, see [backups](backups.html).
-
-## Export
+The Debian, RPM and Scoop desktop packages already include the `librepaper` command. Otherwise, install it with one of these commands.
 
 ```sh
-librepaper export c9k ./paper-copy              # immutable snapshot
-librepaper export c9k ./paper-copy --key URL    # read as share-link holder
-librepaper export c9k ./paper-copy --at "v1"    # historical version
+# Linux and macOS
+curl --proto '=https' --tlsv1.2 -LsSf https://github.com/LibrePaper/librepaper/releases/latest/download/librepaper-installer.sh | sh
+# macOS or Linux with Homebrew
+brew install vincentarelbundock/tap/librepaper
 ```
 
-## Document commands
-
-Pass the server address by flag or environment variable:
-
-```sh
-librepaper <COMMAND> --server https://librepaper.arelbundock.com
-export LIBREPAPER_SERVER="https://librepaper.arelbundock.com"
-```
-
-## Authenticate
-
-```sh
-librepaper login      # prints code and URL to sign in (valid 90 days)
-librepaper logout     # remove the cached token from this computer
-```
-
-Tokens copied elsewhere remain usable until they expire or are separately revoked. Removing the local cached token does not revoke them.
-
-## List
-
-```sh
-librepaper list       # show ID, date, and title
-```
-
-## Self-host
+## Host a server
 
 ```sh
 librepaper admin serve --config /etc/librepaper/librepaper.toml
@@ -60,12 +33,36 @@ database URLs. Backup configuration lives separately in
 `/etc/resticprofile/resticprofile.toml`. See the [hosting page](host/advanced.html#backups) for
 scheduled backups and recovery.
 
-## Agents
+## Script your documents
+
+### Document commands
+
+Pass the server address by flag or environment variable:
 
 ```sh
-librepaper agent list              # list configured agents
-librepaper agent add <id> -- <cmd> # add agent command
-librepaper agent remove <id>       # remove agent
+librepaper <COMMAND> --server https://librepaper.arelbundock.com
+export LIBREPAPER_SERVER="https://librepaper.arelbundock.com"
 ```
 
-See [agents page](agents.html).
+### Authenticate
+
+```sh
+librepaper login      # prints code and URL to sign in (valid 90 days)
+librepaper logout     # remove the cached token from this computer
+```
+
+Tokens copied elsewhere remain usable until they expire or are separately revoked. Removing the local cached token does not revoke them.
+
+### List
+
+```sh
+librepaper list       # show ID, date, and title
+```
+
+### Export
+
+```sh
+librepaper export c9k ./paper-copy              # immutable snapshot
+librepaper export c9k ./paper-copy --key URL    # read as share-link holder
+librepaper export c9k ./paper-copy --at "v1"    # historical version
+```

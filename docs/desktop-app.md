@@ -38,7 +38,7 @@ sudo dnf install ./LibrePaper-<version>-1.x86_64.rpm       # Fedora
 sudo zypper install ./LibrePaper-<version>-1.x86_64.rpm    # openSUSE
 ```
 
-- The Scoop package, the Debian package and the RPM package also install the `librepaper` command line.
+- The Scoop package, the Debian package and the RPM package also install the [`librepaper` command line](cli.html), which hosts servers and runs scripts. You do not need it to write.
 - On Linux, open LibrePaper from your applications menu, or run `librepaper-desktop` in a terminal.
 - The Linux package is named `libre-paper`: remove it with `sudo apt remove libre-paper` or `sudo dnf remove libre-paper`.
 - macOS: download `LibrePaper_<version>_universal.dmg` from the release, open it and drag LibrePaper to Applications. It runs on Apple Silicon and Intel Macs.

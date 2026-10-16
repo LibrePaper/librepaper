@@ -10,11 +10,13 @@ The [Agent Client Protocol](https://agentclientprotocol.com) (ACP) starts your a
 
 Agents run in the [desktop app](desktop-app.html). The app finds agents installed on your computer, starts the one you pick, and hands it the document tools.
 
-To offer another ACP agent in the app, add its command with the CLI. Everything after `--` is the command.
+To offer another ACP agent in the app, add it in Settings.
 
-```sh
-# Any other ACP agent
-librepaper agent add myagent --label "My Agent" -- myagent --acp
-```
+1. Open Settings and go to Agents.
+2. Click Add agent.
+3. Enter a Name and a Command. The command is the program and its arguments, as you would type them in a terminal, for example `myagent --acp`.
+4. Click Add agent.
+
+To remove an added agent, click Remove next to it.
 
 > **Warning:** An agent reading a shared document reads text anyone with edit access wrote, so treat it as acting on their instructions too.
