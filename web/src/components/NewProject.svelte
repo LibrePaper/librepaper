@@ -1,8 +1,8 @@
 <script>
   import { untrack } from "svelte";
   import { Tabs } from "@skeletonlabs/skeleton-svelte";
-  // The New project page: three ways to begin, one name. Blank starts from a
-  // format, From Template from a catalog, Upload Files from what the person
+  // The New project page: three ways to begin, one name. Blank starts empty,
+  // From Template starts from a catalog, Upload Files from what the person
   // already has. Nothing here creates a project until Create project is
   // pressed; switching tabs and picking a template only change what the
   // button would make.
@@ -74,10 +74,6 @@
     ontab?.(id);
   }
 
-  /* ------------------------------------------------------------- blank */
-
-  let blankFormat = $state(untrack(() => (FORMATS.some((each) => each.id === initialFormat) ? initialFormat : rememberedFormat() || FORMATS[0].id)));
-
   /* ---------------------------------------------------------- template */
 
   let query = $state("");
@@ -85,7 +81,10 @@
   let sort = $state("name-asc");
   let selectedId = $state(untrack(() => initialTemplate));
   // The format picked for each template, so going back to one finds it as left.
-  let chosenFormats = $state({});
+  // A template opened with a format (from the starter row) starts in that format.
+  let chosenFormats = $state(untrack(() => (
+    initialTemplate && FORMATS.some((each) => each.id === initialFormat) ? { [initialTemplate]: initialFormat } : {}
+  )));
 
   const templates = $derived(catalog(BUILT_IN, templateRows));
   const shown = $derived(browse(templates, { query, format: formatFilter, sort }));
@@ -280,8 +279,9 @@
     try {
       let response;
       if (tab === "blank") {
-        remember(blankFormat);
-        response = await publishBuiltIn("blank", blankFormat, title);
+        const form = new FormData();
+        form.append("title", title);
+        response = await upload(form);
       } else if (tab === "template") {
         if (selected.custom) {
           response = await fetch(`/api/documents/${selected.id}/fork`, {
@@ -381,12 +381,6 @@
       {#if tab === "blank"}
         <form id="new-project-form" class="np-form" onsubmit={create}>
           {@render nameField()}
-          <label class="np-field" for="new-project-format">
-            <span class="np-label">Format</span>
-            <select id="new-project-format" class="select" bind:value={blankFormat}>
-              {#each FORMATS as format}<option value={format.id}>{format.name}</option>{/each}
-            </select>
-          </label>
           {@render problem()}
           <div class="np-actions">
             <button type="submit" class="btn btn-sm new-project-create lp-control-brand" disabled={busy}>{busy ? "Creating…" : "Create project"}</button>

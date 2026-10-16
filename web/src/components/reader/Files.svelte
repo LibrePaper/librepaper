@@ -43,7 +43,6 @@
   const chosen = $derived(entries.filter((entry) => selected.includes(nodeKey(entry))));
   const currentFolder = $derived(chosen.length === 1 ? (chosen[0].kind === "folder" ? chosen[0].path : parentPath(chosen[0].path)) : "");
   const deleting = $derived(dialog?.type === "delete" ? files.filter((file) => dialog.entries.some((entry) => entry.path === file.path || entry.kind === "folder" && inside(file.path, entry.path))) : []);
-  const protectedSelection = $derived(deleting.some((file) => file.main));
   const openPath = $derived(files.find((file) => file.id === open)?.path);
 
   onDestroy(() => { clearTimeout(hoverTimer); settleConflict?.(false); });
@@ -366,7 +365,7 @@
       {#if node.kind === "text" && !node.main}<Menu.Item value="main" class="menuitem">Set as main file</Menu.Item>{/if}
     {/if}
     <Menu.Item value="download" class="menuitem">Download</Menu.Item>
-    {#if mayEdit}<Menu.Item value="delete" class="menuitem" disabled={node.main}>Delete…</Menu.Item>{/if}
+    {#if mayEdit}<Menu.Item value="delete" class="menuitem">Delete…</Menu.Item>{/if}
   </ExplorerMenu>
 {/snippet}
 
@@ -417,14 +416,12 @@
   confirm={{
     label: dialog?.type === "delete" ? "Delete" : "Move",
     tone: dialog?.type === "delete" ? "error" : "primary",
-    disabled: protectedSelection,
     onclick: confirm,
     oncancel: () => { dialog = null; refusal = ""; },
   }}>
   {#if dialog?.type === "delete"}
     <p>{dialog.entries.map((entry) => basename(entry.path)).join(", ")}</p>
     <p>{deleting.length} {deleting.length === 1 ? "file" : "files"} will be deleted. This cannot be undone.</p>
-    {#if protectedSelection}<p class="refusal">Choose another main file before deleting this file or its folder.</p>{/if}
   {:else if dialog}
     <label for="move-destination">Destination folder</label>
     <select id="move-destination" class="select" bind:value={destination}>

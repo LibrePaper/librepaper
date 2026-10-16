@@ -8,11 +8,10 @@ import { basename, copyPath, inside, parentPath } from "./file-manager.js";
 
 const MAIN_ORDER = ["tex", "typ", "qmd", "md"];
 
-/// Built-in templates and the caller's own, as one list. Blank has its own tab,
-/// so it is left out here.
+/// Built-in templates and the caller's own, as one list. The Blank tab is not
+/// a template; the built-in empty document is one of the templates.
 export function catalog(builtIn, customRows = []) {
   const shipped = builtIn
-    .filter((template) => template.id !== "blank")
     .map((template) => ({
       id: template.id,
       name: template.name,
