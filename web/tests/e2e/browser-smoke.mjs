@@ -559,7 +559,7 @@ async function run() {
 
   await reloadPage(editor, "offline draft");
   await requiredUntil("the remote connection after reload", () => editor.eval(`
-    return Boolean(document.querySelector('button[aria-label^="Remote server connected"]'));
+    return Boolean(document.querySelector('nav .presence') && !document.querySelector('nav .presence .presence-offline'));
   `), 20000);
   // Reconnection can confirm the submission before reload. A confirmed
   // comment must not be submitted a second time through Retry.
@@ -585,7 +585,7 @@ async function run() {
     return Boolean(button && !button.disabled);
   `));
   const retryControlDetail = retryReady ? "" : await editor.eval(`return JSON.stringify({
-    remote: document.querySelector('button[aria-label^="Remote server"]')?.getAttribute("aria-label") ?? null,
+    remote: document.querySelector('nav .presence')?.getAttribute("aria-label") ?? null,
     pending: document.querySelector('[aria-label="Unconfirmed comments"]')?.outerHTML.slice(0, 900) ?? null,
     saved: localStorage.getItem("librepaper-submissions-${slug}"),
   })`);
