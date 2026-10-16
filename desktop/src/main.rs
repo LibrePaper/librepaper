@@ -529,7 +529,7 @@ fn serve(app: &AppHandle, label: String, request: Request<Vec<u8>>, responder: U
     }
 
     let (parts, body) = request.into_parts();
-    let prompt = match integration_prompt(&origin, &parts.method, parts.uri.path(), &body) {
+    let prompt = match prompt_for(&origin, &parts.method, parts.uri.path(), &body) {
         Ok(prompt) => prompt,
         Err(res) => return responder.respond(with_origin(*res, &origin)),
     };
@@ -548,8 +548,14 @@ fn serve(app: &AppHandle, label: String, request: Request<Vec<u8>>, responder: U
     let app = app.clone();
     tauri::async_runtime::spawn(async move {
         // The page is a remote site, so the shell asks before it lets the page
-        // choose which program runs Quarto or Calepin documents.
-        if let Some((title, message)) = prompt {
+        // choose which program runs Quarto or Calepin documents, or adds an
+        // agent that LibrePaper runs.
+        if let Some(Prompt {
+            title,
+            message,
+            refused,
+        }) = prompt
+        {
             let asked = app.clone();
             let allowed = tauri::async_runtime::spawn_blocking(move || {
                 asked
@@ -566,7 +572,7 @@ fn serve(app: &AppHandle, label: String, request: Request<Vec<u8>>, responder: U
             .await
             .unwrap_or(false);
             if !allowed {
-                let res = json_error(StatusCode::FORBIDDEN, "The command was not changed.");
+                let res = json_error(StatusCode::FORBIDDEN, refused);
                 return responder.respond(with_origin(res, &origin));
             }
         }
@@ -591,31 +597,57 @@ struct IntegrationChange {
     args: Vec<String>,
 }
 
-// A confirmation's title and message.
-type Prompt = (String, String);
+#[derive(serde::Deserialize)]
+struct AgentDeclaration {
+    label: String,
+    #[serde(default)]
+    command: Vec<String>,
+}
 
-// Returns the title and message of the confirmation a change needs, or None
-// for any request that is not a PUT to an integration.
-fn integration_prompt(
+// A confirmation's title and message, and the refusal sent when the person cancels.
+struct Prompt {
+    title: String,
+    message: String,
+    refused: &'static str,
+}
+
+// Returns the confirmation a request needs, or None for any request that
+// does not change an integration or add an agent.
+fn prompt_for(
     origin: &str,
     method: &Method,
     path: &str,
     body: &[u8],
 ) -> Result<Option<Prompt>, Box<Response<Vec<u8>>>> {
-    // Split the path the way the local service routes it, empty segments
-    // dropped, so a doubled slash cannot reach the route without the prompt.
-    let segments: Vec<&str> = path
-        .strip_prefix("/librepaper/local")
+    let local = route(path, "/librepaper/local");
+    if *method == Method::PUT && local.first() == Some(&"integrations") {
+        return integration_prompt(origin, &local, body).map(Some);
+    }
+    let api = route(path, "/companion/api");
+    if *method == Method::POST && api == ["agents"] {
+        return agent_prompt(origin, body).map(Some);
+    }
+    Ok(None)
+}
+
+// Splits the path the way the local service routes it, empty segments
+// dropped, so a doubled slash cannot reach a route without the prompt.
+fn route<'a>(path: &'a str, prefix: &str) -> Vec<&'a str> {
+    path.strip_prefix(prefix)
         .map(|rest| {
             rest.split('/')
                 .filter(|segment| !segment.is_empty())
                 .collect()
         })
-        .unwrap_or_default();
-    if *method != Method::PUT || segments.first() != Some(&"integrations") {
-        return Ok(None);
-    }
-    let name = if segments.len() == 2 { segments[1] } else { "" };
+        .unwrap_or_default()
+}
+
+fn integration_prompt(
+    origin: &str,
+    route: &[&str],
+    body: &[u8],
+) -> Result<Prompt, Box<Response<Vec<u8>>>> {
+    let name = if route.len() == 2 { route[1] } else { "" };
     let tool = match name {
         "quarto" => "Quarto",
         "calepin" => "Calepin",
@@ -648,7 +680,79 @@ fn integration_prompt(
             )
         }
     };
-    Ok(Some((title, message)))
+    Ok(Prompt {
+        title,
+        message,
+        refused: "The command was not changed.",
+    })
+}
+
+fn agent_prompt(origin: &str, body: &[u8]) -> Result<Prompt, Box<Response<Vec<u8>>>> {
+    let Ok(AgentDeclaration { label, command }) = serde_json::from_slice::<AgentDeclaration>(body)
+    else {
+        return Err(Box::new(json_error(
+            StatusCode::BAD_REQUEST,
+            "the body must be JSON",
+        )));
+    };
+    let command = command.join(" ");
+    let message = format!(
+        "{origin} wants to add an agent named \"{label}\" that runs:\n\n{command}\n\nLibrePaper runs this program on your computer whenever the agent starts. Only allow this if you asked for it."
+    );
+    Ok(Prompt {
+        title: "Add an agent".to_string(),
+        message,
+        refused: "The agent was not added.",
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::prompt_for;
+    use tauri::http::Method;
+
+    const ORIGIN: &str = "https://librepaper.example";
+    const AGENT: &[u8] = br#"{"label":"Quarto helper","command":["quarto-agent","--stdio"]}"#;
+
+    #[test]
+    fn adding_an_agent_asks_and_names_the_command() {
+        let prompt = prompt_for(ORIGIN, &Method::POST, "/companion/api/agents", AGENT)
+            .ok()
+            .flatten()
+            .expect("a prompt");
+        assert_eq!(prompt.title, "Add an agent");
+        assert!(prompt.message.contains("quarto-agent --stdio"));
+        assert_eq!(prompt.refused, "The agent was not added.");
+    }
+
+    #[test]
+    fn a_doubled_slash_still_asks() {
+        let prompt = prompt_for(ORIGIN, &Method::POST, "/companion/api//agents", AGENT)
+            .ok()
+            .flatten();
+        assert!(prompt.is_some());
+    }
+
+    #[test]
+    fn listing_agents_asks_nothing() {
+        assert!(matches!(
+            prompt_for(ORIGIN, &Method::GET, "/companion/api/agents", &[]),
+            Ok(None)
+        ));
+    }
+
+    #[test]
+    fn deleting_an_agent_asks_nothing() {
+        assert!(matches!(
+            prompt_for(ORIGIN, &Method::DELETE, "/companion/api/agents/x", &[]),
+            Ok(None)
+        ));
+    }
+
+    #[test]
+    fn an_agent_body_that_is_not_json_is_refused() {
+        assert!(prompt_for(ORIGIN, &Method::POST, "/companion/api/agents", b"not json").is_err());
+    }
 }
 
 fn with_origin(mut res: Response<Vec<u8>>, origin: &str) -> Response<Vec<u8>> {

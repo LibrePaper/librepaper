@@ -12,11 +12,16 @@ use tokio::sync::Mutex;
 // Set when the app starts to quit or to install an update, so the watcher stops.
 pub static QUITTING: AtomicBool = AtomicBool::new(false);
 
-// The shell only needs these two fields. serde ignores the rest of the line.
+// The local service protocol this shell speaks.
+const PROTOCOL: u32 = 2;
+
+// The shell needs these fields. serde ignores the rest of the line.
 #[derive(Clone, Deserialize)]
 pub struct Endpoint {
     address: String,
     token: String,
+    #[serde(default)]
+    protocol: Vec<u32>,
 }
 
 pub struct Forward {
@@ -48,10 +53,6 @@ impl Service {
         }
     }
 
-    // A failed connection or a 401 means the service restarted or its
-    // credential changed. The endpoint is read again and the request is sent
-    // once more. A reset mid-request is retried only for GET and HEAD, since
-    // another request may already have changed state.
     pub async fn warm(&self) {
         if let Err(err) = self.current().await {
             crate::shell_log::write(&format!("local service did not start: {err}"));
@@ -65,6 +66,15 @@ impl Service {
             format!("{}/", server.origin().ascii_serialization());
         *self.endpoint.lock().await = None;
         let _ = tokio::task::spawn_blocking(stop_running).await;
+        if let Err(err) = self.current().await {
+            crate::shell_log::write(&format!("local service did not start: {err}"));
+        }
+    }
+
+    /// Starts the service again after it was stopped on purpose, for example
+    /// before an update that then failed.
+    pub async fn restart(&self) {
+        *self.endpoint.lock().await = None;
         if let Err(err) = self.current().await {
             crate::shell_log::write(&format!("local service did not start: {err}"));
         }
@@ -99,12 +109,23 @@ impl Service {
         }
     }
 
+    // A failed connection means the service restarted. A 401 marked
+    // x-librepaper-credential: rejected means the bridge's credential is wrong.
+    // In either case the endpoint is read again and the request is sent once
+    // more. A reset mid-request is retried only for GET and HEAD, since another
+    // request may already have changed state. Any other 401 is relayed as it is.
     pub async fn forward(&self, request: Forward) -> Result<Response<Vec<u8>>, String> {
         let mut endpoint = self.current().await?;
         let mut retried = false;
         loop {
             match self.send(&endpoint, &request).await {
-                Ok(res) if res.status() == StatusCode::UNAUTHORIZED && !retried => {}
+                Ok(res)
+                    if res.status() == StatusCode::UNAUTHORIZED
+                        && !retried
+                        && res
+                            .headers()
+                            .get("x-librepaper-credential")
+                            .is_some_and(|value| value == "rejected") => {}
                 Ok(res) => return relay(res).await,
                 Err(err)
                     if !retried
@@ -194,7 +215,21 @@ async fn endpoint(server: &str) -> Result<Endpoint, String> {
         .lines()
         .find(|line| !line.trim().is_empty())
         .ok_or("librepaper local endpoint printed nothing")?;
-    serde_json::from_str(line).map_err(|err| format!("unreadable endpoint: {err}"))
+    let endpoint: Endpoint =
+        serde_json::from_str(line).map_err(|err| format!("unreadable endpoint: {err}"))?;
+    compatible(&endpoint)?;
+    Ok(endpoint)
+}
+
+// Refuses a service that speaks another protocol than this shell does.
+fn compatible(endpoint: &Endpoint) -> Result<(), String> {
+    if endpoint.protocol.contains(&PROTOCOL) {
+        return Ok(());
+    }
+    Err(format!(
+        "This LibrePaper app and its bundled librepaper command are different versions (the service speaks protocol {:?}, the app {PROTOCOL}). Reinstall LibrePaper.",
+        endpoint.protocol
+    ))
 }
 
 // Runs `librepaper local diagnostics` with extra arguments and returns what it printed.
@@ -231,7 +266,7 @@ pub fn stop() {
 
 // Runs `librepaper local stop` and waits up to five seconds for it. A server
 // switch uses this without setting QUITTING, so the watcher keeps running.
-fn stop_running() {
+pub(crate) fn stop_running() {
     #[cfg(windows)]
     use std::os::windows::process::CommandExt;
 
@@ -296,8 +331,28 @@ async fn relay(res: reqwest::Response) -> Result<Response<Vec<u8>>, String> {
 
 #[cfg(test)]
 mod tests {
-    use super::RELAYED;
+    use super::{compatible, Endpoint, RELAYED};
     use tauri::http::HeaderName;
+
+    #[test]
+    fn endpoint_line_with_the_current_protocol_is_compatible() {
+        let endpoint: Endpoint = serde_json::from_str(
+            r#"{"address":"http://127.0.0.1:1/","token":"t","protocol":[2]}"#,
+        )
+        .expect("the line parses");
+        assert_eq!(endpoint.protocol, vec![2]);
+        assert!(compatible(&endpoint).is_ok());
+    }
+
+    #[test]
+    fn endpoint_line_with_an_older_protocol_is_refused() {
+        let endpoint: Endpoint = serde_json::from_str(
+            r#"{"address":"http://127.0.0.1:1/","token":"t","protocol":[1]}"#,
+        )
+        .expect("the line parses");
+        assert_eq!(endpoint.protocol, vec![1]);
+        assert!(compatible(&endpoint).is_err());
+    }
 
     #[test]
     fn relayed_headers_include_the_preview_poller_headers() {

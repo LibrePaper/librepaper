@@ -2,7 +2,7 @@
 //! Releases publish a signed latest.json, and the plugin checks the signature
 //! against the public key in tauri.conf.json before it installs anything.
 
-use tauri::AppHandle;
+use tauri::{AppHandle, Manager};
 use tauri_plugin_dialog::{DialogExt, MessageDialogButtons, MessageDialogKind};
 use tauri_plugin_updater::{Update, UpdaterExt};
 
@@ -113,7 +113,7 @@ async fn check(app: &AppHandle, manual: bool) -> Result<(), String> {
     };
     // The new version replaces librepaper beside the app, so the running
     // service stops first.
-    tauri::async_runtime::spawn_blocking(crate::service::stop)
+    tauri::async_runtime::spawn_blocking(crate::service::stop_running)
         .await
         .map_err(|err| err.to_string())?;
     crate::notice::show(
@@ -121,7 +121,15 @@ async fn check(app: &AppHandle, manual: bool) -> Result<(), String> {
         "Installing the update. LibrePaper restarts in a moment.",
         0,
     );
-    update.install(bytes).map_err(|err| err.to_string())?;
+    if let Err(err) = update.install(bytes) {
+        app.state::<crate::service::Service>().restart().await;
+        crate::notice::show(
+            app,
+            "The update could not be installed. LibrePaper keeps running this version.",
+            6000,
+        );
+        return Err(err.to_string());
+    }
     app.restart()
 }
 
