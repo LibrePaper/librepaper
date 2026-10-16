@@ -3,9 +3,9 @@
 // server (serve.mjs), then for each session opens the harness page in a real
 // browser on one shared profile and compiles docs/examples/tutorial-latex
 // through the real controller (web/src/lib/latex.js). Each session compiles
-// cold, then warm after a one-word edit. Session 0 is a first visit; later
-// sessions relaunch on the same profile, so they see the working set the
-// earlier ones left behind. The bundleStats counters are cumulative per engine.
+// cold, then again warm (same tree, fresh project caches, warm engines).
+// Session 0 is a first visit; later sessions relaunch on the same profile,
+// so they see the working set the earlier ones left behind. The bundleStats counters are cumulative per engine.
 //
 //     node tools/test/latex/cold-start.mjs [--engine pdflatex|xelatex] [--sessions 3] [--browser chromium|firefox] [--mirror DIR]
 //
@@ -58,15 +58,6 @@ function readTree(directory) {
   return { main: MAIN, texts, assets };
 }
 
-// The warm compile: one word added to the main file, so the engines are
-// reused and only the document changes.
-function warmEdit(tree) {
-  const before = tree.texts[MAIN];
-  const after = before.replace("\\begin{document}", "\\begin{document}\nWarm");
-  if (after === before) throw new Error(`${MAIN} has no \\begin{document} to edit`);
-  return { ...tree, texts: { ...tree.texts, [MAIN]: after } };
-}
-
 function releaseId() {
   if (!existsSync(MIRROR)) throw new Error(`no LaTeX mirror at ${MIRROR}; build wasm-latex next to this checkout or pass --mirror DIR`);
   const ids = readdirSync(MIRROR, { withFileTypes: true })
@@ -77,10 +68,10 @@ function releaseId() {
 }
 
 // Runs in the page. Returns a summary, never the PDF bytes.
-const COMPILE = `async (releaseUrl, engine, tree) => {
+const COMPILE = `async (releaseUrl, engine, tree, project) => {
   const latex = await import("/src/lib/latex.js");
   latex.at(releaseUrl);
-  latex.configure({ project: "cold-start", settings: { engine } });
+  latex.configure({ project, settings: { engine } });
   const assets = {};
   for (const path of Object.keys(tree.assets)) assets[path] = new Uint8Array(tree.assets[path]);
   const started = performance.now();
@@ -116,19 +107,22 @@ function printStartup(startup) {
 function printPasses(passes) {
   for (const pass of passes || []) {
     const b = pass.bundleStats ?? {};
-    console.log(`    pass    ${String(pass.kind).padEnd(8)} texRun ${ms(pass.phaseTimings?.texRun)} indexParsed ${b.indexParsed} indexParse ${ms(b.indexParseMs)} memo ${b.memoHits ?? "-"}/${b.memoMisses ?? "-"} fetches ${b.bundleFetches ?? "-"} in ${ms(b.bundleFetchMs)} hash ${ms(b.hashMs)}`);
+    console.log(`    pass    ${String(pass.kind).padEnd(8)} texRun ${ms(pass.phaseTimings?.texRunMs)} indexParsed ${b.indexParsed} indexParse ${ms(b.indexParseMs)} memo ${b.memoHits ?? "-"}/${b.memoMisses ?? "-"} fetches ${b.bundleFetches ?? "-"} in ${ms(b.bundleFetchMs)} hash ${ms(b.hashMs)}`);
   }
 }
 
-async function runSession(index, releaseUrl, profile, cold, warm) {
+async function runSession(index, releaseUrl, profile, tree) {
   const driver = await browser(BROWSER, profile, DEBUG_PORT);
   try {
     await driver.navigate(`${BASE}/`);
     await until("harness page", () => driver.evaluate("document.readyState === 'complete'"), 20000);
-    const compile = (tree) => runJob(driver, `(${COMPILE})(${JSON.stringify(releaseUrl)}, ${JSON.stringify(ENGINE)}, ${JSON.stringify(tree)})`);
-    const first = await compile(cold);
+    const compile = (project) => runJob(driver, `(${COMPILE})(${JSON.stringify(releaseUrl)}, ${JSON.stringify(ENGINE)}, ${JSON.stringify(tree)}, ${JSON.stringify(project)})`);
+    const first = await compile("cold-start");
     if (!first.ok) throw new Error(`session ${index}: cold compile failed (${first.status})\n${first.log}`);
-    const second = await compile(warm);
+    // The same tree under another project: the warm engines are kept, but the
+    // controller's bibliography and aux caches start empty, so the warm run
+    // does exactly the passes the cold one did.
+    const second = await compile("cold-start-warm");
     if (!second.ok) throw new Error(`session ${index}: warm compile failed (${second.status})\n${second.log}`);
     const label = index === 0 ? "first visit" : "reload";
     console.log(`session ${index} (${label}): cold ${ms(first.ms)} ms, warm ${ms(second.ms)} ms, ratio ${(first.ms / second.ms).toFixed(1)}x`);
@@ -147,8 +141,7 @@ async function main() {
   if (!["chromium", "firefox"].includes(BROWSER)) throw new Error(`--browser must be chromium or firefox; got ${BROWSER}`);
   if (!Number.isInteger(SESSIONS) || SESSIONS < 1) throw new Error(`--sessions must be a positive integer; got ${SESSIONS}`);
   const releaseUrl = `${BASE}/mirror/${releaseId()}/`;
-  const cold = readTree(PROJECT);
-  const warm = warmEdit(cold);
+  const tree = readTree(PROJECT);
   const scratch = mkdtempSync(join(tmpdir(), "librepaper-cold-start-"));
   const server = spawn(process.execPath, [join(HERE, "serve.mjs"), "--port", String(PORT), "--mirror", MIRROR], {
     stdio: ["ignore", "pipe", "pipe"],
@@ -159,9 +152,9 @@ async function main() {
   server.stderr.on("data", (b) => { serverLog += b; });
   try {
     await until("mirror server", async () => (await fetch(`${releaseUrl}release.json`)).ok, 20000);
-    console.log(`cold-start: ${BROWSER}, ${ENGINE}, ${SESSIONS} session(s), ${Object.keys(cold.texts).length} text file(s), ${Object.keys(cold.assets).length} asset(s)`);
+    console.log(`cold-start: ${BROWSER}, ${ENGINE}, ${SESSIONS} session(s), ${Object.keys(tree.texts).length} text file(s), ${Object.keys(tree.assets).length} asset(s)`);
     for (let index = 0; index < SESSIONS; index++) {
-      await runSession(index, releaseUrl, join(scratch, BROWSER), cold, warm);
+      await runSession(index, releaseUrl, join(scratch, BROWSER), tree);
     }
   } catch (error) {
     console.error(serverLog);
