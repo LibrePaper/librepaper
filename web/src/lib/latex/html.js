@@ -85,6 +85,8 @@ export function createHtmlCompiler({
   let running = false;
   let cancelActive = null;
   let epoch = 0;
+  // Engines whose start-up timings an earlier result already carried.
+  const reported = new WeakSet();
 
   function retire() {
     engine?.terminate();
@@ -206,6 +208,11 @@ export function createHtmlCompiler({
     // A WASM trap can leave Rust's thread-local state borrowed or incomplete.
     // Document errors are reusable; a failed runtime needs a fresh worker.
     if (result.status < 0) retire();
+    const startup = {};
+    if (target.timings && !reported.has(target)) {
+      reported.add(target);
+      startup.latexml = target.timings;
+    }
     const ok = result.ok && typeof result.html === "string" && result.html.length > 0;
     return {
       html: ok ? result.html : null,
@@ -214,6 +221,10 @@ export function createHtmlCompiler({
       seconds: (Date.now() - started) / 1000,
       log: result.log,
       diagnostics: result.diagnostics?.length ? result.diagnostics : ok ? [] : logDiagnostics(result.log, tree.main),
+      timings: {
+        startup,
+        passes: [{ kind: "latexml", phaseTimings: result.phaseTimings ?? null, bundleStats: result.bundleStats ?? null }],
+      },
     };
   }
 

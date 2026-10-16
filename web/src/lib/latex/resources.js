@@ -1,6 +1,6 @@
 // The shared TeX Live cache: Cache Storage, namespaced by release digest,
-// with sha256 verification on the way in and a bounded record of what a
-// project has actually pulled through it.
+// with sha256 verification on the way in, plus one working set per engine
+// kind: the resolver answers and files a kind actually used.
 //
 // This deliberately duplicates `../cache.js` rather than reusing it. That
 // file caches document assets under their bare URL and never verifies bytes
@@ -12,9 +12,9 @@
 // project's rendered pages, and vice versa.
 //
 // Everything here runs unbundled under Node for `latex-resources.mjs`, so it
-// only touches `caches`, `fetch`, `crypto.subtle`, `localStorage` and
-// `navigator.storage` through the global object -- Node 24 provides the
-// first three natively and the check fakes the rest.
+// only touches `caches`, `fetch`, `crypto.subtle` and `navigator.storage`
+// through the global object -- Node 24 provides the first three natively and
+// the check fakes the rest.
 //
 // `fetchVerified` and `prefetch` take a `release` alongside the shapes the
 // interface spec lists (section 2.5): `worker.js` (this package) owns one
@@ -25,8 +25,10 @@
 import { sha256Hex } from "../digest.js";
 
 const PREFIX = "librepaper-latex-";
-const REMEMBER_KEY = "librepaper-latex-used";
-const REMEMBER_LIMIT = 2000;
+/// The engine cache from before working sets: one shared Cache Storage name
+/// holding every bundle, never scoped to a release.
+const LEGACY_BUNDLES = "librepaper-bundles";
+const WORKING_SET_PREFIX = "https://librepaper.invalid/working-set/";
 
 /** @typedef {{digest?: string}} LatexRelease */
 /** @typedef {{sha256?: string, size?: number, signal?: AbortSignal}} VerificationMetadata */
@@ -165,29 +167,6 @@ export async function clear() {
   if (!globalThis.caches?.keys) return;
   const names = (await caches.keys()).filter((name) => name.startsWith(PREFIX));
   await Promise.all(names.map((name) => caches.delete(name)));
-  try {
-    localStorage?.removeItem?.(REMEMBER_KEY);
-  } catch {
-    /* no localStorage (private window, Node) */
-  }
-}
-
-/// Whether the texlive keys a project has actually used (recorded via
-/// `remember`) are all present in this release's cache. `keys` are
-/// `{key, url}` pairs -- `key` is the manifest key (`pdftex/26/amsmath.sty`,
-/// used for reporting) and `url` is the fetchable mirror URL that was cached
-/// under; a bare string is accepted too and used as both.
-export async function readiness(release, keys) {
-  const list = Array.isArray(keys) ? keys : [];
-  const store = await openStore(release);
-  const missing = [];
-  for (const entry of list) {
-    const key = typeof entry === "string" ? entry : entry.key;
-    const url = typeof entry === "string" ? entry : entry.url;
-    const hit = store && url ? await store.match(url).catch(() => null) : null;
-    if (!hit) missing.push(key);
-  }
-  return { ready: missing.length === 0, missing };
 }
 
 let persisted = null;
@@ -205,40 +184,85 @@ export function persist() {
   return persisted;
 }
 
-/// Records that a project used a texlive key, bounded to `REMEMBER_LIMIT`
-/// keys per release so an old, abandoned project cannot grow this list
-/// forever. Oldest entries are dropped first (insertion order), matching the
-/// intuition that recently-used keys are the ones worth keeping for offline
-/// readiness.
-export function remember(release, key) {
-  let store;
+/// A working set is the resolver answers one engine kind gave (`resolutions`)
+/// and a tar of the files they point at. It lives in the release's own cache,
+/// so `size()` counts it and `clear()` removes it with everything else.
+/// Body: 4-byte little-endian JSON length, the JSON, then the tar.
+/** @param {string} kind */
+function workingSetKey(kind) {
+  return `${WORKING_SET_PREFIX}${kind}`;
+}
+
+/** @param {LatexRelease} release @param {string} kind @param {{resolutions: unknown[], files: Uint8Array}} set */
+export async function writeWorkingSet(release, kind, { resolutions, files }) {
+  const store = await openStore(release);
+  if (!store) return;
+  const json = new TextEncoder().encode(JSON.stringify(resolutions));
+  const body = new Uint8Array(4 + json.length + files.length);
+  new DataView(body.buffer).setUint32(0, json.length, true);
+  body.set(json, 4);
+  body.set(files, 4 + json.length);
+  const response = new Response(body, {
+    headers: {
+      "content-length": String(body.length),
+      "x-librepaper-sha256": await sha256Hex(body),
+    },
+  });
+  await store.put(workingSetKey(kind), response).catch(() => {
+    /* a full or refused quota only costs the next start its warm cache */
+  });
+}
+
+/// Storage is best effort: any failure reads as "no working set". An entry
+/// that fails verification is deleted so it is not re-read on every start.
+/** @param {LatexRelease} release @param {string} kind @returns {Promise<{resolutions: unknown[], files: Uint8Array}|null>} */
+export async function readWorkingSet(release, kind) {
   try {
-    const raw = localStorage?.getItem?.(REMEMBER_KEY);
-    store = raw ? JSON.parse(raw) : {};
+    const store = await openStore(release);
+    if (!store) return null;
+    const key = workingSetKey(kind);
+    const hit = await store.match(key);
+    if (!hit) return null;
+    const body = new Uint8Array(await hit.arrayBuffer());
+    let resolutions = null;
+    let files = null;
+    if ((await sha256Hex(body)) === hit.headers.get("x-librepaper-sha256") && body.length >= 4) {
+      const length = new DataView(body.buffer, body.byteOffset, body.byteLength).getUint32(0, true);
+      if (4 + length <= body.length) {
+        try {
+          resolutions = JSON.parse(new TextDecoder().decode(body.subarray(4, 4 + length)));
+          files = body.subarray(4 + length);
+        } catch {
+          resolutions = null;
+        }
+      }
+    }
+    if (!Array.isArray(resolutions) || !files) {
+      await store.delete(key).catch(() => {});
+      return null;
+    }
+    return { resolutions, files };
   } catch {
-    store = {};
-  }
-  const ns = namespace(release);
-  const list = Array.isArray(store[ns]) ? store[ns] : [];
-  if (!list.includes(key)) list.push(key);
-  while (list.length > REMEMBER_LIMIT) list.shift();
-  store[ns] = list;
-  try {
-    localStorage?.setItem?.(REMEMBER_KEY, JSON.stringify(store));
-  } catch {
-    /* storage full or unavailable: remembering is best-effort */
+    return null;
   }
 }
 
-/// The keys remembered for a release (used by callers that want "the
-/// resources this project has actually used" without tracking it
-/// themselves, e.g. to build the `keys` argument to `readiness`).
-export function remembered(release) {
-  try {
-    const raw = localStorage?.getItem?.(REMEMBER_KEY);
-    const store = raw ? JSON.parse(raw) : {};
-    return Array.isArray(store[namespace(release)]) ? store[namespace(release)] : [];
-  } catch {
-    return [];
+const evictions = new Map();
+
+/// Drops the caches of every other release, and `librepaper-bundles`, which
+/// is the pre-working-set engine cache and was never release-scoped. Once per
+/// namespace for the page's lifetime; the promise never rejects.
+/** @param {LatexRelease} release */
+export function evictOtherReleases(release) {
+  const current = namespace(release);
+  if (!evictions.has(current)) {
+    evictions.set(current, (async () => {
+      if (!globalThis.caches?.keys) return;
+      const names = await caches.keys();
+      await Promise.all(names
+        .filter((name) => (name.startsWith(PREFIX) && name !== current) || name === LEGACY_BUNDLES)
+        .map((name) => caches.delete(name)));
+    })().catch(() => {}));
   }
+  return evictions.get(current);
 }

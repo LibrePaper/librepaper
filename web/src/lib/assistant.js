@@ -50,42 +50,83 @@ export function captureAttachment(selection, path = "", revision = "") {
 export const TASK_CATALOG = [
   { id: "proofread", kind: "proofread", category: "Writing", label: "Proofread",
     description: "Correct spelling, grammar, and wording while preserving meaning.",
+    keywords: ["grammar", "spelling", "typos", "errors", "mistakes"],
     prompt: "Proofread {target}." },
   { id: "tighten", kind: "tighten", category: "Writing", label: "Tighten",
     description: "Cut redundancy and shorten without losing substance.",
+    keywords: ["shorter", "concise", "shorten", "trim", "cut"],
     scopes: ["selection"], prompt: "Tighten {target}." },
   { id: "rewrite", kind: "rewrite", category: "Writing", label: "Rewrite",
     description: "Rework the wording for clarity and flow.",
+    keywords: ["rephrase", "reword", "clarity", "flow"],
     scopes: ["selection"], prompt: "Rewrite {target}." },
   { id: "explain", kind: "explain", category: "Writing", label: "Explain",
     description: "Say what this passage claims and how it is put together.",
+    keywords: ["meaning", "understand", "clarify", "unclear"],
     prompt: "Explain {target}." },
 
   { id: "review-argument", kind: "explain", category: "Review", label: "Review the argument",
     description: "Name unsupported claims, gaps in reasoning, and weak transitions.",
+    keywords: ["logic", "reasoning", "claims", "critique", "support"],
     prompt: "Review the argument in {target}. Name unsupported claims, gaps in reasoning, and weak transitions." },
   { id: "check-consistency", kind: "explain", category: "Review", label: "Check consistency",
     description: "Look for terminology, notation, and definitions that disagree with each other.",
+    keywords: ["terminology", "notation", "definitions", "consistent", "conflicts"],
     prompt: "Check {target} for inconsistent terminology, notation, and definitions." },
   { id: "check-citations", kind: "explain", category: "Review", label: "Check citations",
     description: "Check that each citation resolves in the bibliography and supports its claim.",
+    keywords: ["references", "bibliography", "sources", "cite", "refs"],
     prompt: "Check the citations in {target}: each one should resolve in the bibliography and support the claim it is attached to." },
   { id: "suggest-improvements", kind: "proofread", category: "Review", label: "Suggest improvements",
     description: "Propose concrete anchored edits rather than commentary.",
+    keywords: ["edits", "feedback", "improve", "suggestions", "better"],
     prompt: "Suggest concrete improvements to {target} as anchored edits." },
 
   { id: "outline", kind: "outline", category: "Document", label: "Outline",
     description: "List the headings and what each section does.",
+    keywords: ["headings", "structure", "sections", "layout", "toc"],
     scopes: ["file", "document"], prompt: "Outline {target}: list the headings and say what each section does." },
   { id: "summarize", kind: "explain", category: "Document", label: "Summarize",
     description: "Summarize the argument in a few paragraphs.",
+    keywords: ["summary", "abstract", "overview", "tldr", "recap"],
     scopes: ["file", "document"], prompt: "Summarize {target}." },
 ];
+
+// Tasks that the editor offers without any typing, and that a first-time
+// reader sees before the recents list has anything in it.
+export const STARTER_TASK_IDS = ["proofread", "summarize", "review-argument"];
+
+// Context tasks are offered only when the reader is already looking at a
+// comment, suggestion, or diagnostic. They are never searched or browsed.
+export const CONTEXT_TASKS = [
+  { id: "address-comment", kind: "respond", category: "Context", label: "Address comment",
+    description: "Answer the comment, and change the passage it is about when that helps.",
+    prompt: "Address this comment." },
+  { id: "refine-suggestion", kind: "refine", category: "Context", label: "Refine suggestion",
+    description: "Improve the suggested edit while keeping its intent.",
+    scopes: ["selection"], prompt: "Refine this suggestion." },
+  { id: "fix-diagnostic", kind: "fix", category: "Context", label: "Fix diagnostic",
+    description: "Find what causes this compiler message and fix the source.",
+    scopes: ["file", "document"], prompt: "Fix this diagnostic." },
+];
+
+export const TASK_CATEGORIES = [...new Set(TASK_CATALOG.map((entry) => entry.category))];
 
 export const TASK_TARGETS = { selection: "the selected passage", file: "this file", document: "the whole document" };
 
 export function findTask(id) {
-  return TASK_CATALOG.find((entry) => entry.id === id) || null;
+  return TASK_CATALOG.find((entry) => entry.id === id)
+    || CONTEXT_TASKS.find((entry) => entry.id === id)
+    || null;
+}
+
+// The entry a kind is shown as. A catalog id wins, then the first catalog
+// entry of that kind, then a context entry.
+export function taskForKind(kind) {
+  return TASK_CATALOG.find((entry) => entry.id === kind)
+    || TASK_CATALOG.find((entry) => entry.kind === kind)
+    || CONTEXT_TASKS.find((entry) => entry.kind === kind)
+    || null;
 }
 
 export function taskScopes(entry) {
@@ -108,30 +149,86 @@ export function taskPrompt(entry, scope) {
     .replaceAll("{target}", TASK_TARGETS[scope] || TASK_TARGETS.document);
 }
 
-// A command-palette match: every word the user typed has to appear somewhere
-// in the entry, and a hit on the label outranks a hit on the description.
+function editDistance(a, b) {
+  let previous = Array.from({ length: b.length + 1 }, (_, j) => j);
+  for (let i = 1; i <= a.length; i += 1) {
+    const current = [i];
+    for (let j = 1; j <= b.length; j += 1) {
+      const cost = a[i - 1] === b[j - 1] ? 0 : 1;
+      current[j] = Math.min(previous[j] + 1, current[j - 1] + 1, previous[j - 1] + cost);
+    }
+    previous = current;
+  }
+  return previous[b.length];
+}
+
+// The best tier a single query word reaches in an entry, or null when the
+// word does not match at all. Lower tiers are stronger matches.
+function wordTier(word, entry, phrase) {
+  const label = entry.label.toLowerCase();
+  const labelWords = label.split(/\s+/);
+  const keywords = entry.keywords || [];
+  const context = `${entry.description || ""} ${entry.category || ""}`.toLowerCase();
+  if (label.startsWith(phrase)) return 0;
+  if (labelWords.some((item) => item.startsWith(word))) return 1;
+  if (label.includes(word)) return 2;
+  if (keywords.some((item) => item.startsWith(word) || item.includes(word))) return 3;
+  if (context.includes(word)) return 4;
+  const limit = word.length >= 7 ? 2 : word.length >= 4 ? 1 : 0;
+  if (limit && [...labelWords, ...keywords].some((item) => (
+    editDistance(word, item) <= limit || editDistance(word, item.slice(0, word.length)) <= limit
+  ))) return 5;
+  return null;
+}
+
+// A command-palette match: every word the user typed has to match somewhere
+// in the entry. Matches are ranked by the sum of their word tiers, and typos
+// still find an entry through the fuzzy tier.
 export function searchTasks(query, catalog = TASK_CATALOG) {
   const words = String(query || "").toLowerCase().split(/\s+/).filter(Boolean);
   if (!words.length) return [...catalog];
+  const phrase = words.join(" ");
   const scored = [];
   for (const entry of catalog) {
-    const label = entry.label.toLowerCase();
-    const haystack = `${label} ${entry.category} ${entry.description || ""} ${entry.kind}`.toLowerCase();
-    if (!words.every((word) => haystack.includes(word))) continue;
-    const rank = label.startsWith(words[0]) ? 0 : words.every((word) => label.includes(word)) ? 1 : 2;
-    scored.push({ entry, rank });
+    const tiers = words.map((word) => wordTier(word, entry, phrase));
+    if (tiers.some((tier) => tier === null)) continue;
+    scored.push({ entry, score: tiers.reduce((sum, tier) => sum + tier, 0) });
   }
-  return scored.sort((a, b) => a.rank - b.rank).map((item) => item.entry);
+  return scored.sort((a, b) => a.score - b.score).map((item) => item.entry);
 }
 
-export function groupTasks(entries) {
-  const groups = [];
-  for (const entry of entries) {
-    const group = groups.find((item) => item.category === entry.category);
-    if (group) group.tasks.push(entry);
-    else groups.push({ category: entry.category, tasks: [entry] });
+export function browseTasks(category = "", catalog = TASK_CATALOG) {
+  return catalog
+    .filter((entry) => !category || entry.category === category)
+    .sort((a, b) => a.label.localeCompare(b.label));
+}
+
+// Known catalog ids in their first-seen order, with garbage and repeats dropped.
+function knownTaskIds(ids) {
+  if (!Array.isArray(ids)) return [];
+  const kept = [];
+  for (const id of ids) {
+    if (kept.includes(id) || !TASK_CATALOG.some((entry) => entry.id === id)) continue;
+    kept.push(id);
   }
-  return groups;
+  return kept;
+}
+
+// Starters fill the list up to their own count, so one recent task is not
+// the only row the launcher shows.
+export function recentTasks(ids, limit = 5) {
+  const recent = knownTaskIds(ids).slice(0, limit);
+  for (const id of STARTER_TASK_IDS) {
+    if (recent.length >= Math.min(limit, STARTER_TASK_IDS.length)) break;
+    if (!recent.includes(id)) recent.push(id);
+  }
+  return recent.map((id) => findTask(id));
+}
+
+export function rememberTask(ids, id, limit = 5) {
+  const previous = knownTaskIds(ids).filter((item) => item !== id);
+  if (!TASK_CATALOG.some((entry) => entry.id === id)) return previous.slice(0, limit);
+  return [id, ...previous].slice(0, limit);
 }
 
 export function scopeLabel(scope, { path = "", attached = null } = {}) {
@@ -176,17 +273,24 @@ export function taskNeedsAnchor(task) {
   return task?.scope === "selection" && ["tighten", "rewrite", "refine"].includes(task?.kind);
 }
 
-export function capabilityAllows(capabilities, task, { attached = null, path = "" } = {}) {
+// The reason a task cannot run here, or "" when it may run. The checks are
+// the same ones capabilityAllows has always made, in the same order.
+export function taskBlocker(capabilities, task, { attached = null, path = "" } = {}) {
   const caps = normalizeCapabilities(capabilities);
-  if (!task || !TASK_KINDS.includes(task.kind) || !TASK_SCOPES.includes(task.scope)) return false;
-  if (!caps.verified || !caps.can_read) return false;
-  if (["tighten", "rewrite", "refine"].includes(task.kind) && task.scope !== "selection") return false;
-  if (task.scope === "selection" && !attached) return false;
-  if (taskNeedsAnchor(task) && !text(attached?.selection?.exact).trim()) return false;
-  if (task.scope === "file" && !path) return false;
-  if (["tighten", "rewrite", "proofread", "fix", "refine"].includes(task.kind) && !caps.can_suggest) return false;
-  if (task.kind === "respond" && !caps.can_reply) return false;
-  return true;
+  if (!task || !TASK_KINDS.includes(task.kind) || !TASK_SCOPES.includes(task.scope)) return "This task cannot run here.";
+  if (!caps.verified) return "Connect an agent to check access for this task.";
+  if (!caps.can_read) return "You need read access to run this task.";
+  if (["tighten", "rewrite", "refine"].includes(task.kind) && task.scope !== "selection") return "This task works on a selected passage.";
+  if (task.scope === "selection" && !attached) return "Select text in the editor to use this task.";
+  if (taskNeedsAnchor(task) && !text(attached?.selection?.exact).trim()) return "Select the passage in the source to use this task.";
+  if (task.scope === "file" && !path) return "Open a file to use this task.";
+  if (["tighten", "rewrite", "proofread", "fix", "refine"].includes(task.kind) && !caps.can_suggest) return "You need edit access to run this task.";
+  if (task.kind === "respond" && !caps.can_reply) return "You need comment access to run this task.";
+  return "";
+}
+
+export function capabilityAllows(capabilities, task, context = {}) {
+  return taskBlocker(capabilities, task, context) === "";
 }
 
 // The compact diagnostic entry a task's context carries, distinct from

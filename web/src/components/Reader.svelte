@@ -1139,10 +1139,19 @@
           stale: Boolean(mapped.stale),
         };
       });
+      let decided = decidedHunks.get(proposal.id);
+      if (decided && decided.tip !== proposal.tipBytes) {
+        // Tip changed, hunks were renumbered, drop the stale entry
+        decidedHunks.delete(proposal.id);
+        decided = null;
+      }
       // Keep original base coordinates for the Editor overlay. It may be
       // showing an author's private draft, whose local edits shift these
       // positions differently from the live-document positions used below.
-      drawn.push({ id: proposal.id, author: proposal.author, base: proposal.base, hunks: sourceHunks });
+      // A rejected hunk is no longer drawn, even while the rest of its
+      // proposal is still open.
+      const undecided = sourceHunks.filter((hunk) => decided?.hunks.get(hunk.index) !== "rejected");
+      drawn.push({ id: proposal.id, author: proposal.author, base: proposal.base, hunks: undecided });
       for (const hunk of hunks) {
         const fileId = hunk.file || "";
         const path = hunk.path || (fileId && session.paths?.get(fileId)) || "";
@@ -1162,15 +1171,7 @@
           stale: hunk.stale ? "The text this was written against has changed." : "",
         };
         // If this hunk was decided while the proposal was open, mark it with its status
-        const decided = decidedHunks.get(proposal.id);
-        if (decided) {
-          if (decided.tip === proposal.tipBytes && decided.hunks.has(hunk.index)) {
-            row.status = decided.hunks.get(hunk.index);
-          } else if (decided.tip !== proposal.tipBytes) {
-            // Tip changed, hunks were renumbered, drop the stale entry
-            decidedHunks.delete(proposal.id);
-          }
-        }
+        if (decided?.hunks.has(hunk.index)) row.status = decided.hunks.get(hunk.index);
         rows.push(row);
       }
     }
@@ -2724,6 +2725,8 @@
   // The tabs this browser is offered. Which reader may see which panel is
   // written with the panels, in lib/panels.js; this only says who is asking.
   const tabs = $derived(tabsFor({ role: doc.role, mayEdit, editing, canSeeSharing, canPublish }));
+  // The robot buttons hand work to the agent, which runs only in the desktop app.
+  const agentOffered = $derived(tabs.some((tab) => tab.id === "agent") && Boolean(localQuarto.desktop()));
   // Where the column goes back to when what it showed is taken away: the
   // files for an editor, the comments for a commenter, and for a reader no
   // column at all -- there is nothing they are offered to go back to.
@@ -4046,8 +4049,7 @@
     <Agent slug={SLUG} link={linkFor(SLUG)} canShare={doc.role === "owner"}
       path={session?.paths?.get(openFile) || ""} selection={pending}
       revision={pending?.revision || ""} request={assistantRequest}
-      {comments} {diagnostics} oncommenttask={askCommentAssistant}
-      ondiagnostictask={askDiagnostic} onreview={reviewAssistantResults} onpreview={previewAssistant}
+      {comments} {diagnostics} onreview={reviewAssistantResults} onpreview={previewAssistant}
       onsettings={() => openSettings("agents")} userName={identity || doc.commenting_as || "You"} />
   {/snippet}
 
@@ -4058,6 +4060,7 @@
       canComment={mayChat}
       onreveal={revealAnnotation} selected={selectedAnnotation} onresolve={resolve}
       ondelete={askDelete} ondeletemany={askDeleteMany} onreply={reply}
+      onagent={agentOffered ? askCommentAssistant : undefined}
       {composing} {needsLogin} signInHref={signInHref()}
       page={annotations.state.page}
       onloadmore={() => void annotations.loadMore()}
@@ -4095,6 +4098,7 @@
       canOpen={(item) => Boolean(diagnosticFile(item))} onopen={openDiagnostic}
       provenance={renderState.lastLatexResult?.provenance || null}
       attempts={renderState.lastLatexResult?.attempts || []}
+      onagent={agentOffered ? askDiagnostic : undefined}
       log={renderState.lastLatexResult?.log || ""} />
   {/snippet}
 
