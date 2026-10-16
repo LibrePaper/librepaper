@@ -28,8 +28,9 @@ The design is conservative on purpose:
 - Existing GitHub and Google accounts keep their ids. Existing sessions stay
   valid. No registered redirect URI changes.
 - One optional setting, `auth.session_lifetime`, bounds how long a sign-in
-  lasts without the provider being asked again. Absent, nothing changes: 30
-  days in a browser, 90 days for a CLI token.
+  lasts without the provider being asked again. Absent, a browser session
+  lasts the 30 days of today. A CLI token never outlives the browser
+  session that approved it.
 
 ## Goals
 
@@ -196,8 +197,9 @@ of `oidc`. `Server::oidc(id)` finds one entry. Every `match` on
 
 ```toml
 # New, optional. Bounds how long a browser session and a CLI token last.
-# Retention syntax: "24h", "7d", at most 30d. Absent, sessions keep today's
-# lifetimes: 30 days in a browser, 90 days for a CLI token.
+# Retention syntax: "24h", "7d", at most 30d. Absent, a browser session
+# lasts today's 30 days. A CLI token never outlives the session that
+# approved it.
 [auth]
 session_lifetime = "24h"
 
@@ -561,11 +563,17 @@ on every provider and a new consent screen for every Google account on
 librepaper.org. That stays in "Later". What ships now is a bound:
 
 - `auth.session_lifetime` (see "Configuration") is optional. Absent, a
-  browser session lasts `SESSION_MAX_AGE` (30 days) and a device token
-  `DEVICE_TOKEN_MAX_AGE` (90 days), as today. Set, it bounds both: the
-  cookie lasts the setting and a device token `min(90 days, the setting)`.
-  `Server::bound_sessions` is the one place that rule lives.
-  `SESSION_MAX_AGE` is also the setting's upper bound.
+  browser session lasts `SESSION_MAX_AGE` (30 days), as today. Set, it
+  bounds the cookie to the setting and a device token to
+  `min(DEVICE_TOKEN_MAX_AGE, the setting)`. `Server::bound_sessions` is the
+  one place that rule lives. `SESSION_MAX_AGE` is also the setting's upper
+  bound.
+- A device token never outlives the credential that approved it. Approval
+  records the approver's own deadline (the session cookie's or the bearer
+  token's), and the new token is capped at it. Without this a token could
+  approve its own successor forever, past any bound. A credential whose
+  deadline the server cannot read (a GitHub bearer, an agent grant) cannot
+  approve a device code.
 - The inactive-account erasure floor (`parse_inactive_after` in `serve.rs`)
   is twice the configured lifetime instead of twice the constant.
 - Sessions do not renew on use. Somebody cut off mid-edit sees the reader's
@@ -729,6 +737,8 @@ Threats and what stops each one:
 | Provider error text shown to users | `error_description` is logged, never rendered. |
 | Secrets in logs | Every config and provider struct redacts secrets in `Debug`. A test checks each one. |
 | Unverified Entra addresses (the nOAuth class) | Single tenant only. Multi-tenant values refused at load. |
+| A device token renewing itself past the session bound | Approval records the approver's deadline; the token it produces is capped at it. |
+| Userinfo address under the id token's verified flag | The flag is dropped when the address comes from userinfo; userinfo must vouch for its own address. |
 
 HTTP client for provider calls:
 
@@ -804,7 +814,8 @@ comments, plain sentences, no em or en dashes.
       GitHub id in `[admin]` to use it.
     - Set `session_lifetime = "24h"` under `[auth]`. A person removed from
       the tenant keeps access until their session expires; without the
-      setting that is 30 days in the browser and 90 days for a CLI token.
+      setting that is 30 days. A CLI token ends with the browser session
+      that approved it.
   - New "Other OpenID Connect providers": the `[auth.oidc.<slug>]` table,
     the callback `https://paper.example/auth/callback/oidc-<slug>`, and
     one example each for Keycloak and GitLab. One line says a provider
@@ -897,7 +908,8 @@ PR #44 test helper is a fine starting shape.
 - With `session_lifetime` of two hours, a sign-in sets a cookie whose
   `Max-Age` is 7200 and whose signed expiry is two hours out, and a device
   token issued afterwards expires in two hours. With the default, the
-  cookie lasts 30 days and the token 90.
+  cookie lasts 30 days and the token ends with the session that approved
+  it.
 - The admin console's GitHub sign-in tests pass unchanged.
 
 ### Postgres-gated tests
@@ -1037,4 +1049,5 @@ security-relevant core is piece 1, around 350 lines without tests.
   nobody has asked for AD FS. Every other provider named here sends
   `email_verified`.
 - `auth.session_lifetime` ships now, deployment-wide and optional. Absent
-  keeps today's 30 and 90 days. The refresh-token re-check waits.
+  keeps today's 30 days. A device token ends with the credential that
+  approved it. The refresh-token re-check waits.

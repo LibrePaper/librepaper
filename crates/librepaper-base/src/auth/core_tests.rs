@@ -219,7 +219,7 @@ fn github_identities_keep_their_shape() {
 fn from_provider_builds_the_id_without_touching_the_subject() {
     let who = Identity::from_provider(
         "oidc-x",
-        " github:583231 ",
+        "github:583231",
         " Alice@Example.ORG ",
         "Alice",
         "",
@@ -229,6 +229,11 @@ fn from_provider_builds_the_id_without_touching_the_subject() {
     assert_eq!(who.handle, "alice@example.org");
     assert_eq!(who.name, "Alice");
     assert!(who.session_generation.is_empty());
+    // A padded subject is another subject, not the same one trimmed.
+    assert_eq!(
+        Identity::from_provider("oidc-x", " github:583231 ", "a@example.org", "", "").id,
+        "oidc-x: github:583231 "
+    );
     // No subject, no id, so nobody is signed in.
     let nobody = Identity::from_provider("entra", "  ", "alice@example.org", "Alice", "");
     assert!(!nobody.is_signed_in());

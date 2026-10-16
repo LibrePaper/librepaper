@@ -663,9 +663,8 @@ pub async fn serve(options: ServeOptions) {
         );
     }
     println!(
-        "  sign-in lasts {} in a browser, {} for a device token",
-        describe_seconds(instance.session_lifetime.as_secs() as i64),
-        describe_seconds(instance.device_token_lifetime.as_secs() as i64)
+        "  sign-in lasts {}",
+        describe_seconds(instance.session_lifetime.as_secs() as i64)
     );
     super::host_metrics::warn(&config, &deployment_paths.deployment, blobs.is_local());
     if std::io::stdout().is_terminal() {

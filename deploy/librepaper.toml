@@ -39,7 +39,7 @@ client_secret = "replace"
 # label = "Example SSO"                             # the button text
 
 # [auth]
-# session_lifetime = "24h"   # 1h to 30d. Absent, a browser session lasts 30 days and a CLI token 90.
+# session_lifetime = "24h"   # 1h to 30d. Absent, a browser session lasts 30 days.
 
 # The bundled database, over the socket compose.yaml shares with it. For a
 # database elsewhere, write the full URL here, with ?sslmode=verify-full for a managed service:

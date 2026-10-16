@@ -78,7 +78,7 @@ client_secret = "replace"
 - Guests invited to the tenant can sign in too.
 - Some tenants block user consent. An administrator then grants consent once for `openid`, `email` and `profile`.
 - The admin console still signs in with GitHub. An Entra-only deployment registers a GitHub OAuth app and lists its GitHub ID in `[admin]`.
-- Set `session_lifetime` under `[auth]` to `"24h"`. A person removed from the tenant keeps access until the session expires. Without this setting, that is 30 days in the browser and 90 days for a CLI token.
+- Set `session_lifetime` under `[auth]` to `"24h"`. A person removed from the tenant keeps access until the session expires. Without this setting, that is 30 days. A CLI token ends with the browser session that approved it.
 
 ```toml
 [auth]
@@ -182,7 +182,7 @@ client_secret = "replace"
 # label = "Example SSO"                             # the button text
 
 # [auth]
-# session_lifetime = "24h"   # 1h to 30d. Absent, a browser session lasts 30 days and a CLI token 90.
+# session_lifetime = "24h"   # 1h to 30d. Absent, a browser session lasts 30 days.
 
 # The bundled database, over the socket compose.yaml shares with it. For a
 # database elsewhere, write the full URL here, with ?sslmode=verify-full for a managed service:

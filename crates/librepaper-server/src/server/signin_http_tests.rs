@@ -280,6 +280,18 @@ impl Fixture {
         }
         Answer::of(request.send().await.unwrap()).await
     }
+
+    /// A POST as a terminal makes it: a bearer token, no cookie and none of
+    /// the browser's cross-site headers.
+    async fn post_bearer(&self, path: &str, bearer: &str, body: &Value) -> Answer {
+        let request = self
+            .client
+            .post(format!("{}{path}", self.base))
+            .header("host", HOST)
+            .header("authorization", format!("Bearer {bearer}"))
+            .json(body);
+        Answer::of(request.send().await.unwrap()).await
+    }
 }
 
 fn state_cookie_name() -> String {
@@ -799,7 +811,7 @@ async fn a_shorter_session_lifetime_bounds_the_cookie_and_the_device_token() {
 
 #[tokio::test]
 #[ignore = "requires LIBREPAPER_TEST_POSTGRES_URL"]
-async fn the_default_session_lifetime_is_thirty_days_and_a_token_ninety() {
+async fn the_default_session_lifetime_is_thirty_days_and_a_token_ends_with_its_session() {
     let Some(fixture) = fixture(false, None, |idp| vec![provider(idp, "x", LABEL)]).await else {
         return;
     };
@@ -810,6 +822,70 @@ async fn the_default_session_lifetime_is_thirty_days_and_a_token_ninety() {
         (ahead - cookie).abs() <= 60,
         "the signed expiry is {ahead}s out"
     );
-    assert_eq!(token, 90 * 24 * 3600);
-    assert_eq!(token, DEVICE_TOKEN_MAX_AGE.as_secs() as i64);
+    // The token was approved by that session, so it ends with it. The ninety
+    // days of DEVICE_TOKEN_MAX_AGE are a ceiling it never reaches.
+    assert!((cookie - 60..=cookie).contains(&token), "token {token}");
+    assert!(token < DEVICE_TOKEN_MAX_AGE.as_secs() as i64);
+}
+
+#[tokio::test]
+#[ignore = "requires LIBREPAPER_TEST_POSTGRES_URL"]
+async fn a_device_token_never_outlives_the_credential_that_approved_it() {
+    let Some(fixture) = fixture(false, None, |idp| vec![provider(idp, "x", LABEL)]).await else {
+        return;
+    };
+    // `session_of` signs a session that expires in an hour, far short of the
+    // ninety days a token would otherwise get.
+    let session = session_of(&fixture, ID, "short@example.org").await;
+    let asked = fixture
+        .post_json("/api/auth/device", None, &json!({}))
+        .await
+        .json();
+    let approved = fixture
+        .post_json(
+            "/api/auth/device/approve",
+            Some(&session),
+            &json!({"user_code": asked["user_code"]}),
+        )
+        .await;
+    assert_eq!(approved.status, 200, "{}", approved.body);
+    let token = fixture
+        .post_json(
+            "/api/auth/device/token",
+            None,
+            &json!({"device_code": asked["device_code"]}),
+        )
+        .await;
+    assert_eq!(token.status, 200, "{}", token.body);
+    let token = token.json();
+    let expires_in = token["expires_in"].as_i64().unwrap();
+    assert!((1..=3600).contains(&expires_in), "expires_in {expires_in}");
+
+    // Nor can the token approve a longer-lived successor for itself.
+    let bearer = token["token"].as_str().unwrap().to_string();
+    let asked = fixture
+        .post_json("/api/auth/device", None, &json!({}))
+        .await
+        .json();
+    let approved = fixture
+        .post_bearer(
+            "/api/auth/device/approve",
+            &bearer,
+            &json!({"user_code": asked["user_code"]}),
+        )
+        .await;
+    assert_eq!(approved.status, 200, "{}", approved.body);
+    let renewed = fixture
+        .post_json(
+            "/api/auth/device/token",
+            None,
+            &json!({"device_code": asked["device_code"]}),
+        )
+        .await
+        .json();
+    let renewed_in = renewed["expires_in"].as_i64().unwrap();
+    assert!(
+        renewed_in <= expires_in,
+        "renewed {renewed_in} > {expires_in}"
+    );
 }

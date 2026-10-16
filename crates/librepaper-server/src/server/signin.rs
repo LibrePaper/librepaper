@@ -592,6 +592,19 @@ impl Server {
         }
     }
 
+    /// When the credential on this request stops being valid: the session
+    /// cookie's expiry, or a device token's. Nothing for a request carrying
+    /// neither, including a GitHub bearer and an agent grant, whose deadlines
+    /// this server cannot read.
+    fn credential_deadline(&self, headers: &HeaderMap, arrival: &Arrival) -> Option<i64> {
+        if let Some(authorization) = header_of(headers, "authorization") {
+            let token = authorization.strip_prefix("Bearer ")?;
+            return device_deadline(&self.key, token);
+        }
+        let cookie = cookie(headers, &cookie_name(arrival.is_https(), SESSION_COOKIE))?;
+        session_deadline(&self.key, &cookie)
+    }
+
     /// The approval page, served the way the sign-in page is: the same bytes
     /// to every caller, never stored by a cache, and a line of text for a
     /// caller that cannot take HTML. The page asks `/api/me` for the account
@@ -681,7 +694,15 @@ impl Server {
                 if !who.is_signed_in() {
                     return write_json(401, &json!({"error": "sign in to approve"}));
                 }
-                if !self.pending.approve(&field("user_code"), &who) {
+                // The token this approval produces must not outlive the
+                // credential approving it, or a token could approve its own
+                // successor forever, past any bound the operator set. A
+                // credential with no deadline this server can read (a GitHub
+                // bearer, an agent grant) cannot approve.
+                let Some(deadline) = self.credential_deadline(headers, arrival) else {
+                    return write_json(401, &json!({"error": "sign in to approve"}));
+                };
+                if !self.pending.approve(&field("user_code"), &who, deadline) {
                     return plain(404, "that code is not one this server is waiting for");
                 }
                 write_json(200, &json!({"approved": true}))
@@ -694,15 +715,20 @@ impl Server {
                     write_json(400, &json!({"error": "authorization_pending"}))
                 }
                 DeviceOutcome::Expired => write_json(400, &json!({"error": "expired_token"})),
-                DeviceOutcome::Approved(who) => {
+                DeviceOutcome::Approved(who, deadline) => {
                     // Bounded together with browser sessions when the operator
-                    // set a lifetime; see `Server::bound_sessions`.
-                    let seconds = self.device_token_lifetime.as_secs() as i64;
+                    // set a lifetime (see `Server::bound_sessions`), and never
+                    // past the deadline of the credential that approved it.
+                    let now = now_unix();
+                    let expiry = (now + self.device_token_lifetime.as_secs() as i64).min(deadline);
+                    if expiry <= now {
+                        return write_json(400, &json!({"error": "expired_token"}));
+                    }
                     // Device credentials have their own purpose and versioned
                     // envelope. Browser session cookies remain a separate
                     // credential even though both carry the same identity.
-                    let token = sign_device(&self.key, &who, now_unix() + seconds);
-                    write_json(200, &json!({"token": token, "expires_in": seconds}))
+                    let token = sign_device(&self.key, &who, expiry);
+                    write_json(200, &json!({"token": token, "expires_in": expiry - now}))
                 }
             },
             _ => plain(404, "not found"),

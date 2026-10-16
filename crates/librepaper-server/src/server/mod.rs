@@ -26,11 +26,12 @@ use crate::server::origins::{
 };
 use librepaper_base::auth::pseudonym::pseudonym_for;
 use librepaper_base::auth::{
-    cookie_name, normalized, now_unix, pkce_verifier, random_token, read_agent_grant, read_device,
-    read_session, read_visitor, sign_device, sign_session, sign_visitor, Accounts, DeviceOutcome,
-    GithubAccounts, GithubApp, Identity, OidcProvider, PendingCodes, Policy, TokenCache,
-    AGENT_GRANT_PREFIX, DEVICE_POLL_INTERVAL, DEVICE_TOKEN_MAX_AGE, DEVICE_TOKEN_PREFIX,
-    PROVIDER_GITHUB, SESSION_COOKIE, SESSION_MAX_AGE, STATE_COOKIE, VISITOR_COOKIE,
+    cookie_name, device_deadline, normalized, now_unix, pkce_verifier, random_token,
+    read_agent_grant, read_device, read_session, read_visitor, session_deadline, sign_device,
+    sign_session, sign_visitor, Accounts, DeviceOutcome, GithubAccounts, GithubApp, Identity,
+    OidcProvider, PendingCodes, Policy, TokenCache, AGENT_GRANT_PREFIX, DEVICE_POLL_INTERVAL,
+    DEVICE_TOKEN_MAX_AGE, DEVICE_TOKEN_PREFIX, PROVIDER_GITHUB, SESSION_COOKIE, SESSION_MAX_AGE,
+    STATE_COOKIE, VISITOR_COOKIE,
 };
 use librepaper_base::config::Configuration;
 use librepaper_base::shell::{renderers, ShellFile};
@@ -220,8 +221,9 @@ pub struct Server {
     /// How long a browser session lasts: `SESSION_MAX_AGE`, unless the
     /// operator bounded sessions with `bound_sessions`.
     pub session_lifetime: std::time::Duration,
-    /// How long a device token lasts: `DEVICE_TOKEN_MAX_AGE`, or the
-    /// operator's bound when that is shorter.
+    /// The most a device token lasts: `DEVICE_TOKEN_MAX_AGE`, or the
+    /// operator's bound when that is shorter. The credential that approved
+    /// it caps it further, so in practice it ends with a browser session.
     pub device_token_lifetime: std::time::Duration,
     pub key: Vec<u8>,
     pub tokens: TokenCache,

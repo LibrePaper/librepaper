@@ -273,10 +273,11 @@ impl Identity {
         } else {
             name
         };
-        let subject = subject.trim();
+        // The subject is kept exactly as the provider sent it. Trimming it
+        // would fold two subjects the provider tells apart into one account.
         Identity {
             provider: provider.to_string(),
-            id: if subject.is_empty() {
+            id: if subject.trim().is_empty() {
                 String::new()
             } else {
                 format!("{provider}:{subject}")
@@ -579,34 +580,43 @@ pub fn read_device(key: &[u8], token: &str) -> Identity {
 }
 
 fn read_identity(key: &[u8], purpose: &str, credential: &str) -> Identity {
-    let Some(versioned) = credential.strip_prefix("v2.") else {
-        return Identity::anonymous();
-    };
-    let Some((payload, signature)) = versioned.split_once('.') else {
-        return Identity::anonymous();
-    };
+    read_credential(key, purpose, credential)
+        .map(|(identity, _)| identity)
+        .unwrap_or_default()
+}
+
+/// When a session cookie stops being valid, for one that is valid now. A
+/// credential approved from another must never outlive it, so the approver's
+/// deadline is read here and caps whatever it approves.
+pub fn session_deadline(key: &[u8], cookie: &str) -> Option<i64> {
+    read_credential(key, "session", cookie).map(|(_, deadline)| deadline)
+}
+
+/// The same for a device token.
+pub fn device_deadline(key: &[u8], token: &str) -> Option<i64> {
+    let token = token.strip_prefix(DEVICE_TOKEN_PREFIX)?;
+    read_credential(key, "device", token).map(|(_, deadline)| deadline)
+}
+
+fn read_credential(key: &[u8], purpose: &str, credential: &str) -> Option<(Identity, i64)> {
+    let versioned = credential.strip_prefix("v2.")?;
+    let (payload, signature) = versioned.split_once('.')?;
     if !verifies(key, &format!("{purpose}-v2"), payload, signature) {
-        return Identity::anonymous();
+        return None;
     }
-    let Ok(raw) = base64::engine::general_purpose::URL_SAFE_NO_PAD.decode(payload) else {
-        return Identity::anonymous();
-    };
-    let Ok(text) = String::from_utf8(raw) else {
-        return Identity::anonymous();
-    };
+    let raw = base64::engine::general_purpose::URL_SAFE_NO_PAD
+        .decode(payload)
+        .ok()?;
+    let text = String::from_utf8(raw).ok()?;
     // A profile name may contain bars, so only the last bar separates expiry.
-    let Some((front, expiry)) = text.rsplit_once('|') else {
-        return Identity::anonymous();
-    };
-    let Ok(expiry) = expiry.parse::<i64>() else {
-        return Identity::anonymous();
-    };
+    let (front, expiry) = text.rsplit_once('|')?;
+    let expiry = expiry.parse::<i64>().ok()?;
     if now_unix() >= expiry {
-        return Identity::anonymous();
+        return None;
     }
     let fields: Vec<&str> = front.splitn(6, '|').collect();
     let [provider, handle, id, generation, picture, name] = fields[..] else {
-        return Identity::anonymous();
+        return None;
     };
     let provider_identity = id
         .strip_prefix(&format!("{provider}:"))
@@ -616,16 +626,17 @@ fn read_identity(key: &[u8], purpose: &str, credential: &str) -> Identity {
         || handle.is_empty()
         || (!provider_identity && !catalog_identity)
     {
-        return Identity::anonymous();
+        return None;
     }
-    Identity {
+    let identity = Identity {
         provider: provider.into(),
         handle: handle.into(),
         id: id.into(),
         session_generation: generation.into(),
         picture: acceptable_picture(picture),
         name: name.into(),
-    }
+    };
+    Some((identity, expiry))
 }
 
 /// "<token>.<signature>" for a freshly minted visitor token, so a browser

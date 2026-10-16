@@ -498,7 +498,9 @@ impl OidcProvider {
         let subject = text(claims, "sub");
         if subject.is_empty()
             || subject.len() > SUBJECT_LIMIT
-            || subject.chars().any(|c| c.is_control() || c == '|')
+            || subject
+                .chars()
+                .any(|c| c.is_control() || c.is_whitespace() || c == '|')
         {
             return Err("the id token has no usable sub".to_string());
         }
@@ -734,6 +736,12 @@ async fn profile_claims(
         return Ok(profile);
     };
     let info = userinfo(url, access_token, subject).await?;
+    // The verified flag belongs with the address it came with. An id token
+    // that vouched for an address it did not name vouches for nothing here,
+    // so userinfo must vouch for its own. A refusal in the id token stands.
+    if truthy(profile.get("email_verified")) {
+        profile.remove("email_verified");
+    }
     for key in PROFILE_CLAIMS {
         if profile.contains_key(key) {
             continue;
@@ -1893,6 +1901,10 @@ mod tests {
             ),
             ("sub with a bar", with(good.clone(), "sub", json!("a|b"))),
             (
+                "sub with spaces",
+                with(good.clone(), "sub", json!(" alice ")),
+            ),
+            (
                 "sub with a control",
                 with(good.clone(), "sub", json!("a\nb")),
             ),
@@ -2031,6 +2043,36 @@ mod tests {
             stand.userinfo_requests(),
             vec![Some("Bearer access-1".to_string())]
         );
+    }
+
+    #[tokio::test]
+    async fn userinfo_must_vouch_for_the_address_it_supplies() {
+        let stand = stand_in().await;
+        let provider = custom(&stand);
+        // The id token vouches for an address it does not name.
+        let vouching = with(
+            without(claims(&stand.base), "email"),
+            "email_verified",
+            json!(true),
+        );
+        stand.set_userinfo(
+            200,
+            json!({"sub": "subject-1", "email": "other@example.org", "email_verified": false}),
+        );
+        let result = signed_in(&stand, &provider, vouching.clone()).await;
+        assert!(matches!(result, Err(SignInError::Refused(_))), "{result:?}");
+        stand.set_userinfo(
+            200,
+            json!({"sub": "subject-1", "email": "other@example.org"}),
+        );
+        let result = signed_in(&stand, &provider, vouching.clone()).await;
+        assert!(matches!(result, Err(SignInError::Refused(_))), "{result:?}");
+        stand.set_userinfo(
+            200,
+            json!({"sub": "subject-1", "email": "other@example.org", "email_verified": true}),
+        );
+        let identity = signed_in(&stand, &provider, vouching).await.unwrap();
+        assert_eq!(identity.handle, "other@example.org");
     }
 
     #[tokio::test]

@@ -69,7 +69,7 @@ pub(crate) struct ResolvedConfig {
     pub(crate) github_client_secret: Option<String>,
     pub(crate) oidc: Vec<OidcProvider>,
     pub(crate) session_lifetime: Option<std::time::Duration>,
-    session_lifetime_text: String,
+    session_lifetime_text: Option<String>,
     pub(crate) publishers: Vec<String>,
     pub(crate) commenters: Vec<String>,
     pub(crate) simulate_activity: Option<u32>,
@@ -836,6 +836,13 @@ pub(crate) fn load_with_postgres_env(
 /// Largest number of custom OpenID Connect providers.
 const MAX_OIDC_PROVIDERS: usize = 8;
 
+/// The providers, the session lifetime as written, and as a duration.
+type ResolvedAuth = (
+    Vec<OidcProvider>,
+    Option<String>,
+    Option<std::time::Duration>,
+);
+
 /// Resolves the OpenID Connect providers and the browser session lifetime.
 /// Providers come out in sign-in page order: Google, Entra, then the custom
 /// entries sorted by slug.
@@ -845,7 +852,7 @@ fn resolve_auth(
     custom: BTreeMap<String, Custom>,
     session_lifetime: Option<Input<String>>,
     r: &mut Resolver<'_>,
-) -> Result<(Vec<OidcProvider>, String, Option<std::time::Duration>), String> {
+) -> Result<ResolvedAuth, String> {
     let mut providers = Vec::new();
 
     let google_id = r.optional("auth.google.client_id", google.client_id)?;
@@ -938,11 +945,7 @@ fn resolve_auth(
             Some(std::time::Duration::from_secs(seconds as u64))
         }
     };
-    Ok((
-        providers,
-        configured.unwrap_or_else(|| "30d".to_owned()),
-        session_lifetime,
-    ))
+    Ok((providers, configured, session_lifetime))
 }
 
 /// client_id and client_secret come as a pair. Neither set means the table
@@ -1330,12 +1333,14 @@ pub(crate) fn show_resolved(c: &ResolvedConfig) -> String {
     );
 
     section(&mut out, "auth");
-    value(
+    // Unset means a browser session keeps its 30d and a device token ends
+    // with the session that approved it, which no single value would show.
+    optional(
         &mut out,
         &c.sources,
         "auth.session_lifetime",
         "session_lifetime",
-        &quote(&c.session_lifetime_text),
+        c.session_lifetime_text.as_deref(),
     );
 
     section(&mut out, "auth.github");
@@ -2468,7 +2473,7 @@ client_secret = { file = "missing-oauth-secret" }
         }
         let loaded = load_text("").unwrap();
         assert_eq!(loaded.session_lifetime, None);
-        assert!(show_resolved(&loaded).contains("session_lifetime = \"30d\""));
+        assert!(show_resolved(&loaded).contains("# session_lifetime is unset"));
     }
 
     #[test]
