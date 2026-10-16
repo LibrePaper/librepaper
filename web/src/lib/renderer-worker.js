@@ -1,8 +1,8 @@
 import { load, call } from "./renderer-wasm.js";
 import { renderResolving } from "./needs.js";
 
-// What earlier compiles fetched -- packages and fonts -- for the life of
-// this worker. See `needs.js`.
+// What earlier compiles fetched -- packages -- for the life of this worker.
+// See `needs.js`.
 const fetched = new Map();
 /** @typedef {{tree: object, title: string, format?: string, old?: string, new?: string, source?: string}} RendererArgs */
 /** @typedef {{id: string, url: string, operation: string, args: RendererArgs}} RendererRequest */
@@ -10,19 +10,8 @@ const fetched = new Map();
 /** @type {RendererWorkerScope} */
 const rendererScope = /** @type {RendererWorkerScope} */ (/** @type {unknown} */ (self));
 
-function fontsIndex() {
-  try {
-    return new URL("/api/fonts/index.json", self.location.href).href;
-  } catch {
-    return "";
-  }
-}
-
 async function render(wasm, tree, title, format) {
-  const { bytes, text, kind, ok, diagnostics } = await renderResolving(wasm, tree, title, fetched, {
-    format,
-    fontsIndex: fontsIndex(),
-  });
+  const { bytes, text, kind, ok, diagnostics } = await renderResolving(wasm, tree, title, fetched, { format });
   if (ok && format === "html" && kind === "html") return { html: text, diagnostics };
   if (ok && format === "pdf" && kind === "pdf") return { pdf: bytes.buffer, diagnostics };
   // Markdown and the other generic renderers do not carry a requested Typst

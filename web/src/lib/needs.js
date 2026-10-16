@@ -1,5 +1,4 @@
-// What a typst compile could not find, fetched: packages from the registry,
-// fonts from this deployment's library.
+// What a typst compile could not find, fetched: packages from the registry.
 //
 // The compiler never fetches. It answers what it went looking for and did
 // not find -- the `needs` export, beside the diagnostics -- and this fetches
@@ -8,9 +7,8 @@
 // fetched is kept for the life of the worker, because `clear_files` empties
 // the map before every compile and a keystroke is a compile.
 //
-// A package version never changes once published, and a font file is
-// addressed by its digest, so both are cached forever by URL (see
-// `cache.js`); the second document that imports cetz costs nothing.
+// A package version never changes once published, so it is cached forever by
+// URL (see `cache.js`); the second document that imports cetz costs nothing.
 
 import { cached } from "./cache.js";
 import { call, handOver, needsOf } from "./renderer-wasm.js";
@@ -54,44 +52,11 @@ async function gunzip(response) {
   return new Uint8Array(await new Response(stream).arrayBuffer());
 }
 
-/// The families this deployment has been asked for and does not serve, so
-/// the index is not read again for them on every keystroke.
-const lacking = new Set();
-const indexes = new Map();
-const INDEX_RETRY_MS = 30_000;
-
-/** @typedef {{families: Record<string, string[]>}} FontIndex */
-/** @param {unknown} value @returns {value is FontIndex} */
-function isFontIndex(value) {
-  if (!value || typeof value !== "object" || !("families" in value) || !value.families || typeof value.families !== "object") return false;
-  return Object.values(value.families).every((files) => Array.isArray(files) && files.every((file) => typeof file === "string"));
-}
-
-function fontIndex(url) {
-  if (!url) return Promise.resolve(null);
-  const held = indexes.get(url);
-  if (held && (held.retryAt === 0 || held.retryAt > Date.now())) return held.promise;
-  const pending = fetch(url)
-    .then(async (response) => {
-      if (!response.ok) throw new Error(`font index request failed (${response.status})`);
-      const value = await response.json();
-      if (!isFontIndex(value)) throw new Error("invalid font index response");
-      return value;
-    })
-    .catch(() => {
-      const failed = indexes.get(url);
-      if (failed?.promise === pending) failed.retryAt = Date.now() + INDEX_RETRY_MS;
-      return null;
-    });
-  indexes.set(url, { promise: pending, retryAt: 0 });
-  return pending;
-}
-
-/// Fetches what `needs` lists and the map does not have, into `fetched`.
-/// Resolves to whether anything arrived: a compile with nothing new to read
-/// would only say the same thing again.
-/** @param {{packages?: {url?: string, dir: string}[], fonts?: string[]}} needs @param {Map<string, Uint8Array>} fetched @param {{fontsIndex?: string}} [options] */
-export async function fetchNeeds(needs, fetched, { fontsIndex } = {}) {
+/// Fetches the packages `needs` lists and the map does not have, into
+/// `fetched`. Resolves to whether anything arrived: a compile with nothing new
+/// to read would only say the same thing again.
+/** @param {{packages?: {url?: string, dir: string}[]}} needs @param {Map<string, Uint8Array>} fetched */
+export async function fetchNeeds(needs, fetched) {
   let arrived = false;
   for (const pkg of needs.packages || []) {
     if (!pkg.url || fetched.has(`${pkg.dir}/typst.toml`)) continue;
@@ -101,26 +66,6 @@ export async function fetchNeeds(needs, fetched, { fontsIndex } = {}) {
       fetched.set(`${pkg.dir}/${name}`, body);
     }
     arrived ||= fetched.has(`${pkg.dir}/typst.toml`);
-  }
-  const families = (needs.fonts || []).filter((family) => !lacking.has(family));
-  if (families.length) {
-    const known = await fontIndex(fontsIndex);
-    for (const family of families) {
-      const files = known?.families?.[family];
-      if (known && (!Array.isArray(files) || !files.length)) {
-        lacking.add(family);
-        continue;
-      }
-      if (!known) continue;
-      for (const file of files) {
-        const path = `@fonts/${family}/${file.split("/").pop()}`;
-        if (fetched.has(path)) continue;
-        const response = await cached(new URL(file, fontsIndex).href);
-        if (!response.ok) continue;
-        fetched.set(path, new Uint8Array(await response.arrayBuffer()));
-        arrived = true;
-      }
-    }
   }
   return arrived;
 }
@@ -147,8 +92,8 @@ export async function renderResolving(wasm, tree, title, fetched, options = {}) 
     const source = tree.texts?.[tree.main] ?? "";
     const result = call(wasm, compileExport, source, title);
     const needs = needsOf(wasm);
-    const wanting = needs && (needs.packages.length || needs.fonts.length);
+    const wanting = needs && needs.packages.length;
     if (!wanting || round >= ROUNDS) return result;
-    if (!(await fetchNeeds(needs, fetched, options))) return result;
+    if (!(await fetchNeeds(needs, fetched))) return result;
   }
 }
