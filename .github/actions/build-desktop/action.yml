@@ -76,9 +76,11 @@ runs:
         mkdir -p desktop/binaries
         if [ "$TARGET" = "universal-apple-darwin" ]; then
           # A universal app bundles a universal librepaper: both builds joined by lipo.
+          # Tauri compiles each architecture on its own first, and each of those checks for its own copy.
           rustup target add aarch64-apple-darwin x86_64-apple-darwin
           for t in aarch64-apple-darwin x86_64-apple-darwin; do
             cargo build --locked --profile dist -p librepaper --bin librepaper --target "$t"
+            cp "target/$t/dist/librepaper" "desktop/binaries/librepaper-$t"
           done
           lipo -create -output desktop/binaries/librepaper-universal-apple-darwin \
             target/aarch64-apple-darwin/dist/librepaper target/x86_64-apple-darwin/dist/librepaper
