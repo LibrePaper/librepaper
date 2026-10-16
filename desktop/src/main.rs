@@ -6,6 +6,7 @@ mod service;
 mod shell_log;
 #[cfg(any(target_os = "macos", windows))]
 mod updater;
+mod zoom;
 
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Mutex;
@@ -93,6 +94,7 @@ fn setup(app: &mut App) -> Result<(), Box<dyn std::error::Error>> {
         servers: Mutex::new(servers),
     });
     app.manage(Service::new(&first));
+    app.manage(zoom::Zoom::load(app.handle()));
 
     // Starts the local service before the page asks for it.
     let warm = app.handle().clone();
@@ -148,13 +150,24 @@ fn desktop_script() -> String {
 }
 
 // Ctrl or Cmd+N asks the shell for a new window, Ctrl or Cmd+W closes this
-// one, and Ctrl or Cmd+, opens Settings. Only the top frame sends them.
+// one, and Ctrl or Cmd+, opens Settings. Ctrl or Cmd with =, - or 0 zooms
+// every window. Only the top frame sends them.
 const NEW_WINDOW_SCRIPT: &str = r#"if (window.top === window) {
   window.addEventListener("keydown", (event) => {
     const mod = /Mac/.test(navigator.platform) ? event.metaKey : event.ctrlKey;
-    if (event.defaultPrevented || !mod || event.shiftKey || event.altKey) return;
+    if (event.defaultPrevented || !mod || event.altKey) return;
     const key = event.key.toLowerCase();
-    if (key === "n") {
+    if (event.shiftKey && key !== "+") return;
+    if (key === "=" || key === "+") {
+      event.preventDefault();
+      fetch("{base}shell/zoom-in", { method: "POST" }).catch(() => {});
+    } else if (key === "-") {
+      event.preventDefault();
+      fetch("{base}shell/zoom-out", { method: "POST" }).catch(() => {});
+    } else if (key === "0") {
+      event.preventDefault();
+      fetch("{base}shell/zoom-reset", { method: "POST" }).catch(() => {});
+    } else if (key === "n") {
       event.preventDefault();
       fetch("{base}shell/new-window", { method: "POST" }).catch(() => {});
     } else if (key === "w") {
@@ -204,6 +217,8 @@ fn open_window(app: &AppHandle, url: Url) -> tauri::Result<tauri::WebviewWindow>
             NewWindowResponse::Deny
         })
         .build()?;
+    // New windows open at the saved zoom.
+    let _ = window.set_zoom(app.state::<zoom::Zoom>().get());
     check_server(app, window.label().to_string(), checked);
     Ok(window)
 }
@@ -409,6 +424,27 @@ fn serve(app: &AppHandle, label: String, request: Request<Vec<u8>>, responder: U
             }
         }) {
             shell_log::write(&format!("could not close a window: {err}"));
+        }
+        let res = Response::builder()
+            .status(StatusCode::NO_CONTENT)
+            .body(Vec::new())
+            .expect("an empty response is valid");
+        return responder.respond(with_origin(res, &origin));
+    }
+
+    // The zoom shortcuts in the page. Every window takes the new level.
+    let zoom_step = match request.uri().path() {
+        "/shell/zoom-in" => Some(zoom::Step::In),
+        "/shell/zoom-out" => Some(zoom::Step::Out),
+        "/shell/zoom-reset" => Some(zoom::Step::Reset),
+        _ => None,
+    };
+    if let Some(step) = zoom_step.filter(|_| request.method() == Method::POST) {
+        let main = app.clone();
+        if let Err(err) =
+            app.run_on_main_thread(move || main.state::<zoom::Zoom>().apply(&main, step))
+        {
+            shell_log::write(&format!("could not zoom: {err}"));
         }
         let res = Response::builder()
             .status(StatusCode::NO_CONTENT)
