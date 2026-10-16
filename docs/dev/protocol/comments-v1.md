@@ -39,7 +39,7 @@ that fit are loaded, except for the one-row oversize case.
   tie-breaker handles rows with equal timestamps.
 - A cursor is base64url JSON containing protocol version, document ID,
   optional thread ID, viewer option key, timestamp in microseconds, and row
-  ID. It binds a position to its document, thread, and suggestion visibility.
+  ID. It binds a position to its document and thread.
 - Authorization is checked on every request before the cursor is decoded. A
   cursor grants no access by itself.
 - Each page's sizing and row reads share a short repeatable-read transaction.

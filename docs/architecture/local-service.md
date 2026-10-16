@@ -24,7 +24,7 @@ Users never start, stop or pair the local service. The desktop app runs it. Fold
 
 An agent edits via MCP to the server. MCP owns transport, and the room owns effects and durability. A caller supplies source tree identity and immutable byte ranges. The validator produces a new source. Patches whose ranges don't match are refused. Validated batches apply in one commit.
 
-Agent work arrives as a [tracked change](review.html#track-changes) branch and is reviewed and decided like human suggestions. Nothing enters the document without a decision. An agent's authority is its link. The caller's session never widens it.
+Agent work arrives as [tracked changes](review.html#track-changes) in the document, and editors accept or reject each one. An agent's authority is its link. The caller's session never widens it.
 
 The private assistant channel is a short-lived rendezvous between browser and runner. The server relays bounded events while both sockets are connected. It is not a queue or transcript store.
 

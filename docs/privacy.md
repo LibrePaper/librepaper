@@ -16,7 +16,7 @@ librepaper.org and your files are hosted in Canada.
 
 - **Accounts** keep the sign-in provider and account ID, a handle, a display name, an email address (Google only), and when the account was created and last used.
 - **Documents** keep the title, format, owner, dates, every file and the edit history.
-- **Comments, highlights, suggestions and replies** keep their author and the passage they refer to.
+- **Comments, highlights and replies** keep their author and the passage they refer to.
 - **Sharing** records who each document is shared with. A share link is stored as a hash and as an encrypted copy that lets the owner copy it again.
 - **Operational numbers** count requests, response times, memory, disk and CPU once a minute. They carry no user, document or network identifiers. Only the administrators can see them.
 

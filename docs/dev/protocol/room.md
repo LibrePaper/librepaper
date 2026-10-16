@@ -36,8 +36,6 @@ uses a stable UUID `temp_id` across retries.
 | `reply` | `comment_id`, `body` | Adds a reply to a thread. |
 | `resolve` | `comment_id`, `resolved` | `false` reopens. |
 | `delete` | `comment_id` | Deletes an annotation. |
-| `refine` | `comment_id`, `proposed`, `expected_proposed`, `revision` | Optional `body`; replaces a pending suggestion without changing its anchor. |
-| `accept` / `reject` | `comment_id` | Decides a pending suggestion; requires editor access. |
 
 The server supplies author, timestamps, and the source version used for the
 anchor. Clients submit the selected rendered words and surrounding context;
@@ -54,10 +52,6 @@ one of `exact`, `modified`, `ambiguous`, `deleted`, or `unresolved`.
 
 - A stale selection can return `type: "error"` with `code: "stale_selection"`;
   clients may retry while preserving the submission.
-- A suggestion `refine` must match both the expected proposal and its source
-  revision. Accept applies the suggestion in the same fenced transaction as
-  the source update; a changed passage returns `stale: true`. Reject resolves
-  without changing source.
 - Creation and decision retries use stored request identities where
   supported. A repeated operation returns its recorded result or a no-op;
   a lost response can also be reconciled through the agent operation receipt
@@ -140,31 +134,14 @@ send or receive source CRDT updates. Source synchronization is editor-only.
   | `pending_budget` | yes | Deployment pending-work budget is full; pressure exemption. |
   | `refused` | no | Non-retryable ceiling; counts toward socket closure. |
 
-Other room frames include `doc-label`, annotation action results, proposal
-responses, and `source-changed`. Request IDs correlate operations; clients
+Other room frames include `doc-label`, annotation action results, and
+`source-changed`. Request IDs correlate operations; clients
 that need correlation should send them. Unauthorized operations receive an
 explicit error.
 
-### Tracked proposals
+### Tracked changes
 
-- A proposal is a separate editor branch visible in editor proposal lists.
-  The first `proposal-open` uses a UUID as both proposal ID and request ID;
-  `proposal-update` includes the latest acknowledged `expected_version`.
-  The server rejects stale versions with a conflict and returns the current
-  version, base, and tip. Only the authenticated owner may update a live
-  proposal. Older rows without recorded ownership are read-only; an editor
-  may discard them.
-- Updates carry the complete branch; retrying the same branch bytes and tip is
-  idempotent.
-- On reconnect, list open proposals and replay known IDs. Use `resume: true` for
-  an acknowledged ID: the server returns its live row or retained outcome,
-  and reports `status_unknown` rather than recreating an expired proposal.
-- Outcomes are retained for 30 days. Keep a local draft if an outcome is no
-  longer available.
-- A suggestion-linked proposal can be decided atomically with `all: true`,
-  `tip`, and `accepted`; typed tracked changes decide one hunk at a time.
-  Acceptance is refused if a reviewed span changed concurrently. An editor can
-  discard an unwanted proposal without importing its branch into source.
+Tracked changes are ordinary document updates. They have no messages of their own. Accepting or rejecting one is a normal document edit that syncs through the same update path. See [track changes](../../architecture/review.html#track-changes).
 
 ## Recovery and compatibility
 
@@ -183,6 +160,5 @@ protocol versions are independent. Comments are paged under
 Implementation: [server/socket.rs](../../../crates/librepaper-server/src/server/socket.rs),
 [room/message.rs](../../../crates/librepaper-room/src/room/message.rs),
 [room/label.rs](../../../crates/librepaper-room/src/room/label.rs),
-[room/proposals.rs](../../../crates/librepaper-room/src/room/proposals.rs),
 [automation/peer.rs](../../../crates/librepaper-companion/src/automation/peer.rs),
 [web/src/lib/room.js](../../../web/src/lib/room.js).

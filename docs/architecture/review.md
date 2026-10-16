@@ -27,15 +27,19 @@ current CLI has no comments-to-Markdown or JSON-LD export.
 
 ## Track changes
 
-A tracked change is a branch. It forks the document at a known point. Everything awaiting a decision is one object:
-- typing with Track changes on (usually one hunk)
-- a suggestion from a comment thread (one hunk)
-- an agent run (many hunks)
+Track changes are part of the shared document. A tracked edit goes into the text at once, like any other edit. The document also records it as a pending change. The editor, read links, agents and exports all show the text with every pending change in it.
 
-All appear in the Changes pane. The stored object is called a proposal. A branch is stored as a blob of operations alongside a Postgres row. It is not a room, has no sockets, and holds nothing in the shared document.
+- A change is one region. Original text that was deleted is replaced by the text now inserted. Replacing "cat" with "tabby" is one change. Either side can be empty.
+- The record keeps the deleted text and two cursors, one at each end of the inserted text. The cursors follow the text as others edit around it.
+- Accept removes the record. The text stays.
+- Reject puts the deleted text back in place of the inserted text, then removes the record.
+- Each change is decided on its own, in any order. Changes never depend on each other. The session that made a change does not matter.
+- A run tag groups the changes from one agent pass. Editors can filter by run and accept all changes from a run. The tag never links changes together.
 
-A hunk is a maximal run of non-retain operations. Replacing "cat" with "tabby" is one decision, not two. Character-level raw differences are grouped. Two changes separated by eight or fewer retained units are one hunk. A decision names a hunk by branch, base, tip and index.
+The model has these limits.
 
-Accepting a whole branch imports it. Accepting part of one: (1) import the branch, (2) compute inverse difference, (3) keep only rejected hunks, (4) apply as reviewer. The result is the accepted subset with accepted text attributed to author and removal to reviewer. Steps 1-4 are atomic. Nothing intermediate is persisted.
+- Two editors who reject the same change at the same moment put the deleted text back twice.
+- Editing inside someone else's insertion does not nest. A deletion there shrinks their text. An insertion splits it in two.
+- A rejected deletion returns as new characters. Comments on the old characters may not reattach exactly.
+- After a history trim, a change whose text was trimmed away is pruned.
 
-Two branches touching the same passage are grouped into one card. Adjacent edits are not grouped.
