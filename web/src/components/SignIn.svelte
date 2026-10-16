@@ -1,6 +1,7 @@
 <script>
   import Nav from "./Nav.svelte";
   import Icon from "./Icon.svelte";
+  import Logo from "./Logo.svelte";
   import { me as whoami } from "../lib/api.js";
   import { INSTALL_URL, desktop, shellAction } from "../lib/desktop/client.js";
 
@@ -21,6 +22,7 @@
 
   // Only the desktop app can switch the server it opens, so only it offers the choice.
   const inDesktop = Boolean(desktop());
+  let changing = $state(false);
   let serverUrl = $state("");
   let serverError = $state("");
   let choosing = $state(false);
@@ -36,11 +38,11 @@
 
 <Nav {me} signIn={false} />
 <main id="main" tabindex="-1" class="signin-main">
-  <section class="signin-card" aria-labelledby="signin-title">
-    <h1 id="signin-title">Sign in or create an account</h1>
-    <p class="signin-description">
-      New here? Your account is created the first time you continue. Sign in to read, comment, edit, and create documents and projects.
-    </p>
+  <section class="signin-form" aria-labelledby="signin-title">
+    <div class="signin-head">
+      <Logo size="signin" />
+      <h1 id="signin-title">Sign in or create an account</h1>
+    </div>
     <!-- The service is young and may change under people, so a local copy kept
          by the desktop app is the safety net. -->
     <div class="signin-warning" role="note">
@@ -63,56 +65,62 @@
         </a>
       {/each}
     </div>
-    {#if inDesktop}
-      <details class="signin-server">
-        <summary>Use another server</summary>
-        <p class="signin-server-note">You are signing in to {location.host}. To use a self-hosted LibrePaper server instead, enter its address.</p>
-        <form class="signin-server-form" onsubmit={chooseServer}>
-          <input class="input input-sm" type="url" required placeholder="https://paper.example.org" aria-label="Server address" bind:value={serverUrl} disabled={choosing} />
-          <button class="btn btn-sm lp-control-brand" type="submit" disabled={choosing}>{choosing ? "Waiting..." : "Use this server"}</button>
-        </form>
-        {#if serverError}<p class="signin-server-error" role="alert">{serverError}</p>{/if}
-      </details>
-    {/if}
   </section>
+  {#if inDesktop}
+    <!-- The desktop app confirms the switch in its own native dialog, so the page asks nothing more. -->
+    <footer class="signin-server">
+      {#if changing}
+        <form class="signin-server-form" onsubmit={chooseServer}>
+          <label for="signin-server-url">You are signing in to {location.host}. Enter another server's address.</label>
+          <div class="signin-server-row">
+            <input id="signin-server-url" class="input input-sm" type="url" required placeholder="https://paper.example.org" bind:value={serverUrl} disabled={choosing} />
+            <button class="btn btn-sm lp-control-brand" type="submit" disabled={choosing}>{choosing ? "Waiting..." : "Use this server"}</button>
+          </div>
+          <button class="signin-server-link" type="button" onclick={() => { changing = false; serverError = ""; }}>Cancel</button>
+          {#if serverError}<p class="signin-server-error" role="alert">{serverError}</p>{/if}
+        </form>
+      {:else}
+        <span class="signin-server-host">{location.host}</span>
+        <button class="signin-server-link signin-server-change" type="button" onclick={() => (changing = true)}>Change server</button>
+      {/if}
+    </footer>
+  {/if}
 </main>
 
 <style>
   .signin-main {
     min-height: calc(100dvh - var(--librepaper-bar));
     display: grid;
-    place-items: center;
-    padding: 2.5rem 1rem 5rem;
+    grid-template-rows: 1fr auto;
+    justify-items: center;
+    padding: 2.5rem 1rem 1rem;
   }
 
-  .signin-card {
-    width: min(100%, 30rem);
-    padding: 2.75rem;
-    border: 1px solid var(--color-divider);
-    border-radius: 12px;
-    background: var(--color-raised);
+  .signin-form {
+    align-self: center;
+    display: grid;
+    gap: 1.5rem;
+    width: min(100%, 26rem);
     color: var(--color-text);
+  }
+
+  .signin-head {
+    display: grid;
+    gap: 1.25rem;
   }
 
   h1 {
     margin: 0;
     color: var(--color-text);
-    font-size: 2rem;
+    font-size: 1.5rem;
     font-weight: 650;
-    line-height: 1.2;
-  }
-
-  .signin-description {
-    margin: 0.875rem 0 0;
-    color: var(--color-text-secondary);
-    font-size: 1rem;
-    line-height: 1.5;
+    line-height: 1.25;
+    text-wrap: balance;
   }
 
   .signin-providers {
     display: grid;
     gap: 0.75rem;
-    margin-top: 1.875rem;
   }
 
   .signin-provider {
@@ -166,7 +174,6 @@
   }
 
   .signin-warning {
-    margin-top: 1.5rem;
     padding: 0.875rem 1rem;
     border: 1px solid var(--color-warning-border);
     border-left: 4px solid var(--color-warning-solid);
@@ -191,26 +198,65 @@
     font-weight: 600;
   }
 
-  .signin-server { margin-top: 1.5rem; font-size: 0.9375rem; color: var(--color-text-secondary); }
-  .signin-server summary { cursor: pointer; }
-  .signin-server-note { margin: 0.5rem 0; }
-  .signin-server-form { display: flex; gap: 0.5rem; }
-  .signin-server-form input { flex: 1; min-width: 0; }
-  .signin-server-error { margin: 0.5rem 0 0; color: var(--color-error-text); }
+  .signin-server {
+    width: 100%;
+    display: flex;
+    flex-wrap: wrap;
+    justify-content: space-between;
+    align-items: baseline;
+    gap: 0.25rem 1rem;
+    padding-top: 2rem;
+    font-size: 0.8125rem;
+    color: var(--color-text-secondary);
+  }
+
+  .signin-server-form {
+    display: grid;
+    gap: 0.5rem;
+    width: min(100%, 26rem);
+    margin-inline: auto;
+  }
+
+  .signin-server-row {
+    display: flex;
+    gap: 0.5rem;
+  }
+
+  .signin-server-row input {
+    flex: 1;
+    min-width: 0;
+  }
+
+  .signin-server-link {
+    justify-self: start;
+    padding: 0;
+    border: 0;
+    background: none;
+    color: inherit;
+    font: inherit;
+    text-decoration: underline;
+    cursor: pointer;
+  }
+
+  .signin-server-link:focus-visible {
+    outline: 2px solid var(--color-brand);
+    outline-offset: 2px;
+  }
+
+  .signin-server-error {
+    margin: 0;
+    color: var(--color-error-text);
+  }
 
   @media (max-width: 36rem) {
     .signin-main {
-      padding: 1.5rem 1rem 3rem;
-    }
-
-    .signin-card {
-      padding: 1.5rem;
+      padding: 1.5rem 1rem 1rem;
     }
   }
 
   @media (max-height: 40rem) {
-    .signin-main {
-      place-items: start center;
+    .signin-form {
+      align-self: start;
     }
   }
 </style>
