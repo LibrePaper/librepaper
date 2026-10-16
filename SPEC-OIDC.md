@@ -27,9 +27,9 @@ The design is conservative on purpose:
   the console.
 - Existing GitHub and Google accounts keep their ids. Existing sessions stay
   valid. No registered redirect URI changes.
-- One setting, `auth.session_lifetime`, bounds how long a sign-in lasts
-  without the provider being asked again. The default is the 30 days of
-  today, so nothing changes where it is not set.
+- One optional setting, `auth.session_lifetime`, bounds how long a sign-in
+  lasts without the provider being asked again. Absent, nothing changes: 30
+  days in a browser, 90 days for a CLI token.
 
 ## Goals
 
@@ -195,10 +195,11 @@ of `oidc`. `Server::oidc(id)` finds one entry. Every `match` on
 ### Tables
 
 ```toml
-# New, optional. How long a browser session and a CLI token last. Retention
-# syntax: "24h", "7d". Default 30d, which is what every deployment has today.
+# New, optional. Bounds how long a browser session and a CLI token last.
+# Retention syntax: "24h", "7d", at most 30d. Absent, sessions keep today's
+# lifetimes: 30 days in a browser, 90 days for a CLI token.
 [auth]
-session_lifetime = "30d"
+session_lifetime = "24h"
 
 # Unchanged.
 [auth.github]
@@ -559,11 +560,12 @@ refresh token, and that means server-side storage, `offline_access` consent
 on every provider and a new consent screen for every Google account on
 librepaper.org. That stays in "Later". What ships now is a bound:
 
-- `auth.session_lifetime` (see "Configuration") replaces the fixed
-  `SESSION_MAX_AGE` as the browser cookie's lifetime. `SESSION_MAX_AGE`
-  stays as the default value and the upper bound.
-- A device token lasts `min(DEVICE_TOKEN_MAX_AGE, session_lifetime)`. With
-  the default, that is the 90 days of today.
+- `auth.session_lifetime` (see "Configuration") is optional. Absent, a
+  browser session lasts `SESSION_MAX_AGE` (30 days) and a device token
+  `DEVICE_TOKEN_MAX_AGE` (90 days), as today. Set, it bounds both: the
+  cookie lasts the setting and a device token `min(90 days, the setting)`.
+  `Server::bound_sessions` is the one place that rule lives.
+  `SESSION_MAX_AGE` is also the setting's upper bound.
 - The inactive-account erasure floor (`parse_inactive_after` in `serve.rs`)
   is twice the configured lifetime instead of twice the constant.
 - Sessions do not renew on use. Somebody cut off mid-edit sees the reader's
@@ -874,7 +876,7 @@ PR #44 test helper is a fine starting shape.
 - Each validation rule in "Validation at load time" has a passing and a
   failing case. An uppercase tenant GUID is accepted and comes out
   lowercased. `session_lifetime` accepts `24h` and `7d`, refuses `30m`,
-  `31d`, `never` and `0`, and defaults to 30 days.
+  `31d`, `never` and `0`, and is absent by default.
 - The redacted config dump (`server_config.rs` around line 1071) shows the
   new tables without secrets.
 
@@ -1034,5 +1036,5 @@ security-relevant core is piece 1, around 350 lines without tests.
 - No `email_trusted`. It was the one setting that weakened a check, and
   nobody has asked for AD FS. Every other provider named here sends
   `email_verified`.
-- `auth.session_lifetime` ships now, deployment-wide, default 30 days. The
-  refresh-token re-check waits.
+- `auth.session_lifetime` ships now, deployment-wide and optional. Absent
+  keeps today's 30 and 90 days. The refresh-token re-check waits.

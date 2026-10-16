@@ -68,7 +68,7 @@ pub(crate) struct ResolvedConfig {
     pub(crate) github_client_id: Option<String>,
     pub(crate) github_client_secret: Option<String>,
     pub(crate) oidc: Vec<OidcProvider>,
-    pub(crate) session_lifetime: std::time::Duration,
+    pub(crate) session_lifetime: Option<std::time::Duration>,
     session_lifetime_text: String,
     pub(crate) publishers: Vec<String>,
     pub(crate) commenters: Vec<String>,
@@ -845,7 +845,7 @@ fn resolve_auth(
     custom: BTreeMap<String, Custom>,
     session_lifetime: Option<Input<String>>,
     r: &mut Resolver<'_>,
-) -> Result<(Vec<OidcProvider>, String, std::time::Duration), String> {
+) -> Result<(Vec<OidcProvider>, String, Option<std::time::Duration>), String> {
     let mut providers = Vec::new();
 
     let google_id = r.optional("auth.google.client_id", google.client_id)?;
@@ -922,19 +922,26 @@ fn resolve_auth(
     }
     check_issuers(&providers)?;
 
-    let session_lifetime_text =
-        r.value("auth.session_lifetime", session_lifetime, "30d".to_owned())?;
-    // Parse failures and never, off and zero all fall outside the range.
-    let seconds = librepaper_document::document::retention::parse_retention(&session_lifetime_text)
-        .unwrap_or(0);
-    let longest = SESSION_MAX_AGE.as_secs() as i64;
-    if !(3600..=longest).contains(&seconds) {
-        return Err("auth.session_lifetime must be between 1h and 30d".into());
-    }
+    // Absent, a browser session and a device token keep their own lifetimes.
+    // Set, it bounds both. The dump shows the text as the operator wrote it.
+    let configured = r.optional("auth.session_lifetime", session_lifetime)?;
+    let session_lifetime = match &configured {
+        None => None,
+        Some(text) => {
+            // Parse failures and never, off and zero all fall outside the range.
+            let seconds =
+                librepaper_document::document::retention::parse_retention(text).unwrap_or(0);
+            let longest = SESSION_MAX_AGE.as_secs() as i64;
+            if !(3600..=longest).contains(&seconds) {
+                return Err("auth.session_lifetime must be between 1h and 30d".into());
+            }
+            Some(std::time::Duration::from_secs(seconds as u64))
+        }
+    };
     Ok((
         providers,
-        session_lifetime_text,
-        std::time::Duration::from_secs(seconds as u64),
+        configured.unwrap_or_else(|| "30d".to_owned()),
+        session_lifetime,
     ))
 }
 
@@ -2432,26 +2439,26 @@ client_secret = { file = "missing-oauth-secret" }
         );
     }
 
-    fn session_lifetime(text: &str) -> Result<std::time::Duration, String> {
+    fn session_lifetime(text: &str) -> Result<Option<std::time::Duration>, String> {
         load_text(&format!("[auth]\nsession_lifetime = \"{}\"\n", text))
             .map(|loaded| loaded.session_lifetime)
     }
 
     #[test]
-    fn session_lifetime_is_bounded_and_defaults_to_thirty_days() {
+    fn session_lifetime_is_bounded_and_absent_by_default() {
         assert_eq!(
             session_lifetime("24h").unwrap(),
-            std::time::Duration::from_secs(86_400)
+            Some(std::time::Duration::from_secs(86_400))
         );
         assert_eq!(
             session_lifetime("7d").unwrap(),
-            std::time::Duration::from_secs(7 * 86_400)
+            Some(std::time::Duration::from_secs(7 * 86_400))
         );
         assert_eq!(
             session_lifetime("1h").unwrap(),
-            std::time::Duration::from_secs(3_600)
+            Some(std::time::Duration::from_secs(3_600))
         );
-        assert_eq!(session_lifetime("30d").unwrap(), SESSION_MAX_AGE);
+        assert_eq!(session_lifetime("30d").unwrap(), Some(SESSION_MAX_AGE));
         for text in ["30m", "31d", "never", "0"] {
             let error = session_lifetime(text).unwrap_err();
             assert!(
@@ -2460,7 +2467,7 @@ client_secret = { file = "missing-oauth-secret" }
             );
         }
         let loaded = load_text("").unwrap();
-        assert_eq!(loaded.session_lifetime, SESSION_MAX_AGE);
+        assert_eq!(loaded.session_lifetime, None);
         assert!(show_resolved(&loaded).contains("session_lifetime = \"30d\""));
     }
 

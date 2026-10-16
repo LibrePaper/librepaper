@@ -179,9 +179,7 @@ async fn fixture(
     );
     server.origins = Origins::configure(READER, Some(DOCS)).unwrap();
     server.oidc = providers(&idp);
-    if let Some(lifetime) = lifetime {
-        server.session_lifetime = lifetime;
-    }
+    server.bound_sessions(lifetime);
     let server = Arc::new(server);
 
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();

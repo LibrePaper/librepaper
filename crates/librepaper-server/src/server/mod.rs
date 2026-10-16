@@ -217,9 +217,12 @@ pub struct Server {
     /// deployment switches are, so a server without any is simply a server
     /// with one provider.
     pub oidc: Vec<OidcProvider>,
-    /// How long a browser session lasts, and the most a device token lasts
-    /// too. `SESSION_MAX_AGE` unless the operator chose a shorter one.
+    /// How long a browser session lasts: `SESSION_MAX_AGE`, unless the
+    /// operator bounded sessions with `bound_sessions`.
     pub session_lifetime: std::time::Duration,
+    /// How long a device token lasts: `DEVICE_TOKEN_MAX_AGE`, or the
+    /// operator's bound when that is shorter.
+    pub device_token_lifetime: std::time::Duration,
     pub key: Vec<u8>,
     pub tokens: TokenCache,
     pub config: Arc<Configuration>,
@@ -875,6 +878,7 @@ impl Server {
             app,
             oidc: Vec::new(),
             session_lifetime: SESSION_MAX_AGE,
+            device_token_lifetime: DEVICE_TOKEN_MAX_AGE,
             key,
             tokens: TokenCache::new(),
             config,
@@ -1218,6 +1222,17 @@ impl Server {
             label: provider.label.clone(),
         }));
         providers
+    }
+
+    /// Bounds every credential's lifetime to the operator's setting, or leaves
+    /// each its own: a browser session `SESSION_MAX_AGE`, a device token
+    /// `DEVICE_TOKEN_MAX_AGE`. A device token never outlasts the bound, so an
+    /// operator who sets one sets both.
+    pub fn bound_sessions(&mut self, lifetime: Option<std::time::Duration>) {
+        self.session_lifetime = lifetime.unwrap_or(SESSION_MAX_AGE);
+        self.device_token_lifetime = lifetime.map_or(DEVICE_TOKEN_MAX_AGE, |bound| {
+            bound.min(DEVICE_TOKEN_MAX_AGE)
+        });
     }
 
     /// The configured OpenID Connect provider with this id, if there is one.

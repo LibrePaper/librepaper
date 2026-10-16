@@ -10,7 +10,9 @@ use tokio::net::TcpListener;
 
 use crate::server::origins::{Origins, DOCS_PREFIX};
 use crate::server::Server;
-use librepaper_base::auth::{session_key_file, trim_issuer, GithubApp, OidcProvider, Policy};
+use librepaper_base::auth::{
+    session_key_file, trim_issuer, GithubApp, OidcProvider, Policy, SESSION_MAX_AGE,
+};
 use librepaper_base::config::Configuration;
 use librepaper_base::shell::ShellFile;
 use librepaper_base::util::die;
@@ -38,10 +40,11 @@ pub struct ServeOptions {
     /// order the sign-in page offers them, with their credentials resolved
     /// from the TOML configuration. GitHub is not among them.
     pub oidc: Vec<OidcProvider>,
-    /// How long a browser session and a device token last before the person
-    /// signs in again. Already checked to lie between an hour and the thirty
-    /// days of `SESSION_MAX_AGE`.
-    pub session_lifetime: std::time::Duration,
+    /// A bound on how long a browser session and a device token last before
+    /// the person signs in again, or nothing, which leaves each its own
+    /// lifetime. Already checked to lie between an hour and the thirty days
+    /// of `SESSION_MAX_AGE`.
+    pub session_lifetime: Option<std::time::Duration>,
     pub publishers: Option<String>,
     pub commenters: Option<String>,
     /// Write each new account's starter documents as though they had been
@@ -337,7 +340,7 @@ pub fn validate_serve_options(options: &ServeOptions) -> Result<(), String> {
         .map_err(|error| format!("retention.expire_from: {error}"))?;
     parse_inactive_after(
         options.erase_inactive_after.as_deref().unwrap_or(""),
-        options.session_lifetime,
+        options.session_lifetime.unwrap_or(SESSION_MAX_AGE),
     )
     .map_err(|error| format!("retention.erase_inactive_after: {error}"))?;
     configured_origins(options)?;
@@ -395,7 +398,7 @@ pub async fn serve(options: ServeOptions) {
         .unwrap_or_else(|err| die(format!("{err}; use a duration such as 24h or 30d")));
     let inactive_after = parse_inactive_after(
         options.erase_inactive_after.as_deref().unwrap_or(""),
-        options.session_lifetime,
+        options.session_lifetime.unwrap_or(SESSION_MAX_AGE),
     )
     .unwrap_or_else(|err| die(format!("retention.erase_inactive_after: {err}")));
     // The origin pair is settled before storage is opened or a port claimed.
@@ -599,7 +602,7 @@ pub async fn serve(options: ServeOptions) {
     );
     instance.install_writer(writer);
     instance.oidc = options.oidc;
-    instance.session_lifetime = options.session_lifetime;
+    instance.bound_sessions(options.session_lifetime);
     instance.simulate_activity = options.simulate_activity;
     instance.origins = origins.clone();
     instance.paths = Some(deployment_paths.clone());
@@ -660,8 +663,9 @@ pub async fn serve(options: ServeOptions) {
         );
     }
     println!(
-        "  sign-in lasts {}",
-        describe_seconds(instance.session_lifetime.as_secs() as i64)
+        "  sign-in lasts {} in a browser, {} for a device token",
+        describe_seconds(instance.session_lifetime.as_secs() as i64),
+        describe_seconds(instance.device_token_lifetime.as_secs() as i64)
     );
     super::host_metrics::warn(&config, &deployment_paths.deployment, blobs.is_local());
     if std::io::stdout().is_terminal() {

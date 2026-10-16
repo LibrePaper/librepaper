@@ -695,9 +695,9 @@ impl Server {
                 }
                 DeviceOutcome::Expired => write_json(400, &json!({"error": "expired_token"})),
                 DeviceOutcome::Approved(who) => {
-                    // A device token never outlasts a browser session: an
-                    // operator who bounds one bounds the other.
-                    let seconds = DEVICE_TOKEN_MAX_AGE.min(self.session_lifetime).as_secs() as i64;
+                    // Bounded together with browser sessions when the operator
+                    // set a lifetime; see `Server::bound_sessions`.
+                    let seconds = self.device_token_lifetime.as_secs() as i64;
                     // Device credentials have their own purpose and versioned
                     // envelope. Browser session cookies remain a separate
                     // credential even though both carry the same identity.

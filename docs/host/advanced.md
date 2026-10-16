@@ -32,7 +32,7 @@ Each provider has its own table in `librepaper.toml`. The keys are:
 - `[auth.github]` and `[auth.google]` take `client_id` and `client_secret`.
 - `[auth.entra]` takes `tenant`, `client_id`, `client_secret` and `label`. The tenant is the Directory (tenant) ID, a GUID. The label is the button text and defaults to `Microsoft`.
 - `[auth.oidc.<name>]` takes `issuer`, `client_id`, `client_secret`, `label` and `scopes`. The label is required. The scopes default to `openid email profile`. You can add up to 8 tables.
-- `[auth]` takes `session_lifetime`, from `1h` to `30d`. It defaults to `30d`. It bounds browser sessions and CLI tokens. Sessions do not renew on use.
+- `[auth]` takes `session_lifetime`, from `1h` to `30d`. It is optional. Absent, a browser session lasts 30 days and a CLI token 90 days. Set, it bounds both. Sessions do not renew on use.
 
 `[access]` says who may publish and comment:
 
