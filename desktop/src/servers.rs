@@ -66,7 +66,7 @@ impl Servers {
     pub fn make_default(&mut self, url: &Url) {
         let origin = url.origin().ascii_serialization();
         self.servers.retain(|raw| {
-            accepted(raw).map_or(true, |known| known.origin().ascii_serialization() != origin)
+            accepted(raw).is_none_or(|known| known.origin().ascii_serialization() != origin)
         });
         self.servers.insert(0, origin);
     }
