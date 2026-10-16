@@ -46,7 +46,7 @@ try {
 
   // A font the user uploaded into a subfolder: Typst finds it by family name,
   // embeds it, and does not report the family as unknown.
-  const projectSource = `#set text(font: "JetBrainsMono Nerd Font")\nProject font check.\n`;
+  const projectSource = `#set text(font: "JetBrainsMono NF")\nProject font check.\n`;
   handOver(wasm, {
     main: "project-font.typ",
     texts: { "project-font.typ": projectSource },
