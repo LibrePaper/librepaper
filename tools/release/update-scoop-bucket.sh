@@ -33,7 +33,7 @@ cat > bucket/librepaper.json <<MANIFEST
             "hash": "${actual}"
         }
     },
-    "bin": "librepaper.exe",
+    "bin": ["librepaper.exe", "librepaper-desktop.exe"],
     "shortcuts": [["librepaper-desktop.exe", "LibrePaper"]],
     "checkver": {
         "github": "https://github.com/LibrePaper/librepaper"
@@ -49,7 +49,7 @@ cat > bucket/librepaper.json <<MANIFEST
         }
     },
     "notes": [
-        "Start LibrePaper from the Start menu. The librepaper command line is installed too.",
+        "Start LibrePaper from the Start menu or with librepaper-desktop. The librepaper command line is installed too.",
         "The app needs Microsoft Edge WebView2, which Windows 10 and 11 include.",
         "Upgrade with: scoop update librepaper"
     ]

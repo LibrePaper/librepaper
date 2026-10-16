@@ -38,7 +38,15 @@ set -euo pipefail
 case "$1" in
   clone)
     mkdir -p "$3"
+    if [[ "${MOCK_SEED_FORMULA:-0}" == 1 ]]; then
+      mkdir -p "$3/Formula"
+      touch "$3/Formula/librepaper.rb"
+    fi
     touch "$MOCK_GIT_CLONED"
+    ;;
+  rm)
+    mkdir -p "$MOCK_CAPTURE_DIR"
+    touch "$MOCK_CAPTURE_DIR/removed-$(basename "${@: -1}")"
     ;;
   add)
     destination="$MOCK_CAPTURE_DIR/$2"
@@ -95,24 +103,18 @@ fi
 [[ ! -e "$tmp/cloned" ]] || fail 'checksum failure reached git clone'
 
 reset_mock
-LIBREPAPER_RELEASE_TAG=v1.2.3 bash "$root/tools/release/update-homebrew-tap.sh" >/dev/null
-[[ -f "$tmp/capture/Formula/librepaper.rb" ]] || fail 'Homebrew formula was not generated'
-for target in \
-  x86_64-unknown-linux-musl \
-  aarch64-unknown-linux-musl \
-  x86_64-apple-darwin \
-  aarch64-apple-darwin; do
-  grep -Fq "librepaper-$target.tar.xz" "$tmp/capture/Formula/librepaper.rb" || fail "formula missing $target archive"
-done
-grep -Fq "sha256 \"$MOCK_HASH\"" "$tmp/capture/Formula/librepaper.rb" || fail 'formula missing verified archive hashes'
-grep -Fq 'license "MIT"' "$tmp/capture/Formula/librepaper.rb" || fail 'formula missing MIT license metadata'
+MOCK_SEED_FORMULA=1 LIBREPAPER_RELEASE_TAG=v1.2.3 bash "$root/tools/release/update-homebrew-tap.sh" >/dev/null
+[[ ! -e "$tmp/capture/Formula/librepaper.rb" ]] || fail 'Homebrew formula was generated'
+[[ -e "$tmp/capture/removed-librepaper.rb" ]] || fail 'old Homebrew formula was not removed'
 [[ -f "$tmp/capture/Casks/librepaper.rb" ]] || fail 'Homebrew cask was not generated'
 grep -Fq 'app "LibrePaper.app"' "$tmp/capture/Casks/librepaper.rb" || fail 'cask missing app stanza'
+grep -Fq 'Contents/MacOS/librepaper-desktop"' "$tmp/capture/Casks/librepaper.rb" || fail 'cask missing desktop binary stanza'
+grep -Fq 'Contents/MacOS/librepaper"' "$tmp/capture/Casks/librepaper.rb" || fail 'cask missing CLI binary stanza'
 grep -Fq 'auto_updates true' "$tmp/capture/Casks/librepaper.rb" || fail 'cask missing auto_updates stanza'
 grep -Fq "sha256 \"$MOCK_HASH\"" "$tmp/capture/Casks/librepaper.rb" || fail 'cask missing verified DMG hash'
 grep -Fq 'LibrePaper_#{version}_universal.dmg' "$tmp/capture/Casks/librepaper.rb" || fail 'cask missing DMG url'
 grep -Fq 'version "1.2.3"' "$tmp/capture/Casks/librepaper.rb" || fail 'cask has wrong version'
-[[ -e "$tmp/pushed" ]] || fail 'Homebrew formula was not pushed'
+[[ -e "$tmp/pushed" ]] || fail 'Homebrew cask was not pushed'
 
 reset_mock
 LIBREPAPER_RELEASE_TAG=v1.2.3 bash "$root/tools/release/update-scoop-bucket.sh" >/dev/null
@@ -121,6 +123,7 @@ grep -Fq '"version": "1.2.3"' "$tmp/capture/bucket/librepaper.json" || fail 'man
 grep -Fq '"license": "MIT"' "$tmp/capture/bucket/librepaper.json" || fail 'manifest missing MIT license metadata'
 grep -Fq 'LibrePaper_1.2.3_x64-portable.zip' "$tmp/capture/bucket/librepaper.json" || fail 'manifest missing the portable desktop zip'
 grep -Fq '"shortcuts": [["librepaper-desktop.exe", "LibrePaper"]]' "$tmp/capture/bucket/librepaper.json" || fail 'manifest missing the Start menu shortcut'
+grep -Fq '"bin": ["librepaper.exe", "librepaper-desktop.exe"]' "$tmp/capture/bucket/librepaper.json" || fail 'manifest does not put both programs on PATH'
 grep -Fq 'LibrePaper_$version_x64-portable.zip' "$tmp/capture/bucket/librepaper.json" || fail 'manifest autoupdate missing the portable desktop zip'
 grep -Fq "\"hash\": \"$MOCK_HASH\"" "$tmp/capture/bucket/librepaper.json" || fail 'manifest missing verified archive hash'
 [[ -e "$tmp/pushed" ]] || fail 'Scoop manifest was not pushed'
