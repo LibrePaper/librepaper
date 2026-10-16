@@ -2679,6 +2679,12 @@
     settingsCategory = category;
     settingsOpen = true;
   }
+  // The desktop app asks for Settings from its menu and from Ctrl or Cmd+,.
+  $effect(() => {
+    const open = () => openSettings();
+    window.addEventListener("librepaper:open-settings", open);
+    return () => window.removeEventListener("librepaper:open-settings", open);
+  });
 
   // The column at the left, and what is in it: the files, the comments or the
   // history, or "" for closed. One value rather than a switch per panel,
