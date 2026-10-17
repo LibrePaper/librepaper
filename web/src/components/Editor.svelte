@@ -254,7 +254,7 @@
       const doc = session.doc;
       return {
         update(update) {
-          if (isLocal(update)) snapshot = resolveChanges(doc, fileId);
+          if (tracked && isLocal(update)) snapshot = resolveChanges(doc, fileId);
         },
       };
     });
