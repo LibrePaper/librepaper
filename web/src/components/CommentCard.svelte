@@ -168,11 +168,12 @@
   let editing = $state(null);
   let editBody = $state("");
   let editField = $state(null);
-  // A highlight has nothing of its own to say, so nothing on its card is
-  // edited. A pending or unconfirmed item has no id the room knows yet.
+  // A highlight has no body of its own to edit, but the replies under it are
+  // ordinary discussion. A pending or unconfirmed item has no id the room
+  // knows yet.
   const editable = (target) => Boolean(target?.mine) && !target.temp_id && !target.pending;
   const canEditNote = $derived(!isHighlight && canComment && editable(comment));
-  const canEditPost = (post) => !isHighlight && canComment && Boolean(post.reply) && editable(post.reply);
+  const canEditPost = (post) => canComment && Boolean(post.reply) && editable(post.reply);
 
   async function startEdit(id, body) {
     expanded = true;
