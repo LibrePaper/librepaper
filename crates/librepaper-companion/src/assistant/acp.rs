@@ -555,7 +555,7 @@ impl Agent {
                         let announced = Arc::clone(&permission_announced);
                         tokio::spawn(async move {
                             let tool = announced.tool_for(&request.tool_call).await;
-                            let _ = events
+                            let sent = events
                                 .send(Event::Permission {
                                     handle: Box::new(Permission {
                                         responder: std::sync::Mutex::new(responder),
@@ -568,6 +568,11 @@ impl Agent {
                                     allow_once,
                                 })
                                 .await;
+                            // A runner that has gone away cannot answer, so
+                            // the agent is told no rather than left waiting.
+                            if let Err(tokio::sync::mpsc::error::SendError(Event::Permission { handle, .. })) = sent {
+                                let _ = handle.respond(None);
+                            }
                         });
                         Ok(())
                     },
@@ -815,14 +820,17 @@ mod tests {
             "mcpServer": {"name": "librepaper", "source": "config"},
         }});
         assert_eq!(
-            librepaper_tool(&tool_call(
-                Some("librepaper - document_comment (MCP)"),
-                Some(claude)
-            ), None),
+            librepaper_tool(
+                &tool_call(Some("librepaper - document_comment (MCP)"), Some(claude)),
+                None
+            ),
             Some("document_comment")
         );
         assert_eq!(
-            librepaper_tool(&tool_call(Some("mcp__librepaper__document_apply"), None), None),
+            librepaper_tool(
+                &tool_call(Some("mcp__librepaper__document_apply"), None),
+                None
+            ),
             Some("document_apply")
         );
     }
@@ -879,7 +887,10 @@ mod tests {
     #[test]
     fn codex_namespaced_title_matches_exactly() {
         assert_eq!(
-            librepaper_tool(&tool_call(Some("mcp.librepaper.document_apply"), None), None),
+            librepaper_tool(
+                &tool_call(Some("mcp.librepaper.document_apply"), None),
+                None
+            ),
             Some("document_apply")
         );
         assert_eq!(
@@ -887,7 +898,10 @@ mod tests {
             None
         );
         assert_eq!(
-            librepaper_tool(&tool_call(Some("mcp.librepaper.document_apply x"), None), None),
+            librepaper_tool(
+                &tool_call(Some("mcp.librepaper.document_apply x"), None),
+                None
+            ),
             None
         );
     }
@@ -904,7 +918,10 @@ mod tests {
             calls.get("call-1"),
             Some(announced("librepaper", "document_read"))
         );
-        calls.record("partial", Some(&serde_json::json!({"server": "librepaper"})));
+        calls.record(
+            "partial",
+            Some(&serde_json::json!({"server": "librepaper"})),
+        );
         calls.record("none", None);
         assert_eq!(calls.get("partial"), None);
         assert_eq!(calls.get("none"), None);

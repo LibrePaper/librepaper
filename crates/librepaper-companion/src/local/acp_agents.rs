@@ -398,7 +398,7 @@ mod tests {
             acp_fetch: fetch,
             acp_note: None,
             executable_env: None,
-        env: &[],
+            env: &[],
         }
     }
 
@@ -576,8 +576,10 @@ mod tests {
         let codex = KINDS.iter().find(|kind| kind.id == "codex").expect("codex");
         assert_eq!(codex.executable_env, Some("CODEX_PATH"));
         assert!(codex.acp_fetch.is_some());
-        assert!(environment_for(codex)
-            .contains(&("INITIAL_AGENT_MODE".to_string(), "workspace-write".to_string())));
+        assert!(environment_for(codex).contains(&(
+            "INITIAL_AGENT_MODE".to_string(),
+            "workspace-write".to_string()
+        )));
     }
 
     #[test]
