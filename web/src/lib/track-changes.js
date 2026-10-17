@@ -114,7 +114,9 @@ function planOne(cur, changes, gaps, ef, et, insert, me, run, now, mintId, untra
   }
   for (const g of swallowedGaps) for (const f of g.fragments) {
     const c = changes.find((x) => x.id === f.change);
-    if (c && c.who === me.who && !hasSpan(c)) owned.add(c.id);
+    // A fragment read as a change of its own is not joined: it has no record
+    // to merge into, and it never leaves the gap it is in.
+    if (c && c.who === me.who && !hasSpan(c) && !c.orphan) owned.add(c.id);
   }
   // Pure deletion of text inside inserted spans only, by nobody of mine: the
   // spans shrink and nothing is recorded, unless original text is involved.

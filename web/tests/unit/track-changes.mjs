@@ -571,6 +571,23 @@ const orphanFields = (text) => ({
   assert.equal(textOf(first), "acd");
 }
 
+// The author replaces text right before a fragment of theirs that is read as a
+// change of its own. That fragment is not joined into the new change: it has no
+// record to merge into. The new span is tracked, both deletions stay pending,
+// nothing is written over the fragment record, and rejecting all restores.
+{
+  const doc = makeDoc("aef", 1);
+  putRecord(doc, "orphan", { ...orphanFields(doc.getMap("files").get("f1")), text: "d", who: "me", author: "Me" });
+  doc.commit();
+  track(doc, 0, 1, "Q", ME);
+  assert.equal(textOf(doc), "Qef");
+  const rows = resolveChanges(doc, "f1").map((r) => [textOf(doc).slice(r.from, r.to), r.deleted]).sort();
+  assert.deepEqual(rows, [["", "d"], ["Q", "a"]]);
+  assert.deepEqual([...doc.getMap(CHANGES).values()].map((v) => v.get("kind")).sort(), ["change", "fragment", "fragment"]);
+  for (const r of resolveChanges(doc, "f1")) reject(doc, r.id);
+  assert.equal(textOf(doc), "adef");
+}
+
 // Two sessions of one author. Session a deletes "bc" and a reviewer accepts that
 // change while session b, not yet synced, deletes "d" under it. Both sessions
 // read the orphan as one row, and rejecting it restores the text on both.

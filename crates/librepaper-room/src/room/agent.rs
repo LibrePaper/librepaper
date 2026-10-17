@@ -1035,7 +1035,12 @@ mod tests {
     fn doc_with_files(tree: &SourceTree<'_>) -> LoroDoc {
         let doc = session::new_doc();
         for (path, file) in &tree.files {
-            assert!(session::put_text_with_id(&doc, file.file_id, path, file.text));
+            assert!(session::put_text_with_id(
+                &doc,
+                file.file_id,
+                path,
+                file.text
+            ));
         }
         doc
     }

@@ -316,7 +316,9 @@ fn plan_one(
     for g in &swallowed {
         for f in &g.fragments {
             if let Some((c, _)) = changes.iter().find(|(c, _)| c.id == f.change) {
-                if c.who == me.who && !has_span(c) {
+                // A fragment read as a change of its own is not joined: it
+                // has no record to merge into, and it never leaves its gap.
+                if c.who == me.who && !has_span(c) && !c.orphan {
                     push_unique(&mut owned, &c.id);
                 }
             }
@@ -3665,6 +3667,44 @@ mod tests {
         assert_eq!(body(&doc, &id), "abc");
         assert!(resolve_changes(&doc, &id).is_empty());
         assert!(doc.get_map(CHANGES).keys().next().is_none());
+    }
+
+    #[test]
+    fn an_orphan_fragment_of_mine_is_not_joined() {
+        // The author replaces text right before a fragment of theirs that is
+        // read as a change of its own. It is not joined into the new change,
+        // since it has no record to merge into: the new span is tracked, both
+        // deletions stay pending, nothing is written over the fragment record,
+        // and rejecting everything restores the text.
+        let (doc, id) = setup("abc");
+        orphan_fragment(&doc, &id);
+        apply_tracked_edits(&doc, &id, &[edit(0, 1, "Q")], &who_of("bob"), None, 2).unwrap();
+        doc.commit();
+        assert_eq!(body(&doc, &id), "Qbc");
+        let text: Vec<char> = body(&doc, &id).chars().collect();
+        let mut rows: Vec<(String, String)> = resolve_changes(&doc, &id)
+            .iter()
+            .map(|c| (text[c.from..c.to].iter().collect(), c.deleted.clone()))
+            .collect();
+        rows.sort();
+        assert_eq!(
+            rows,
+            vec![
+                (String::new(), "X".to_string()),
+                ("Q".to_string(), "a".to_string())
+            ]
+        );
+        let mut kinds: Vec<String> = records(&doc)
+            .iter()
+            .filter_map(|(_, m)| str_of(m, "kind"))
+            .collect();
+        kinds.sort();
+        assert_eq!(kinds, ["change", "fragment", "fragment"]);
+        for c in resolve_changes(&doc, &id) {
+            assert!(reject(&doc, &c.id));
+        }
+        doc.commit();
+        assert_eq!(body(&doc, &id), "aXbc");
     }
 
     #[test]
