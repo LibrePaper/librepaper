@@ -1,0 +1,25 @@
+#!/usr/bin/env bash
+# Print the path of a detached worktree checked out at REF, creating it if needed.
+#
+# The demo shows main, so it builds from this worktree and not from the current
+# checkout. A feature checkout with uncommitted changes cannot leak into the demo.
+# The worktree lives in the git directory, so cargo clean and make clean cannot
+# remove it. Ignored build outputs are kept so later builds stay incremental.
+set -euo pipefail
+
+REF="${1:?usage: tools/dev/demo/worktree REF}"
+if ! git rev-parse --verify --quiet "$REF^{commit}" >/dev/null; then
+  echo "demo: no commit named $REF" >&2
+  exit 1
+fi
+
+dir="$(git rev-parse --path-format=absolute --git-common-dir)/librepaper-demo"
+
+if ! git worktree list --porcelain | grep -qx "worktree $dir"; then
+  git worktree prune >&2
+  git worktree add --quiet --detach "$dir" "$REF" >&2
+else
+  git -C "$dir" checkout --quiet --force --detach "$REF" >&2
+fi
+
+echo "$dir"

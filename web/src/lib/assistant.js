@@ -70,8 +70,8 @@ export const TASK_CATALOG = [
     keywords: ["logic", "reasoning", "claims", "critique", "support"],
     prompt: "Review the argument in {target}. Name unsupported claims, gaps in reasoning, and weak transitions." },
   { id: "check-consistency", kind: "explain", category: "Review", label: "Check consistency",
-    description: "Look for terminology, notation, and definitions that disagree with each other.",
-    keywords: ["terminology", "notation", "definitions", "consistent", "conflicts"],
+    description: "Find contradictions and inconsistent terminology, notation, or definitions.",
+    keywords: ["terminology", "notation", "definitions", "consistent", "conflicts", "contradictions", "contradict"],
     prompt: "Check {target} for inconsistent terminology, notation, and definitions." },
   { id: "check-citations", kind: "explain", category: "Review", label: "Check citations",
     description: "Check that each citation resolves in the bibliography and supports its claim.",
@@ -91,10 +91,6 @@ export const TASK_CATALOG = [
     keywords: ["summary", "abstract", "overview", "tldr", "recap"],
     scopes: ["file", "document"], prompt: "Summarize {target}." },
 ];
-
-// Tasks that the editor offers without any typing, and that a first-time
-// reader sees before the recents list has anything in it.
-export const STARTER_TASK_IDS = ["proofread", "summarize", "review-argument"];
 
 // Context tasks are offered only when the reader is already looking at a
 // comment or diagnostic. They are never searched or browsed.
@@ -194,38 +190,21 @@ export function searchTasks(query, catalog = TASK_CATALOG) {
   return scored.sort((a, b) => a.score - b.score).map((item) => item.entry);
 }
 
-export function browseTasks(category = "", catalog = TASK_CATALOG) {
-  return catalog
-    .filter((entry) => !category || entry.category === category)
-    .sort((a, b) => a.label.localeCompare(b.label));
-}
-
-// Known catalog ids in their first-seen order, with garbage and repeats dropped.
-function knownTaskIds(ids) {
-  if (!Array.isArray(ids)) return [];
-  const kept = [];
-  for (const id of ids) {
-    if (kept.includes(id) || !TASK_CATALOG.some((entry) => entry.id === id)) continue;
-    kept.push(id);
+// The catalog as the Tasks browser shows it: one section per category, in
+// the order categories first appear, each keeping the catalog's own order.
+// A category narrows it to that one section.
+export function taskSections(category = "", catalog = TASK_CATALOG) {
+  const sections = [];
+  for (const entry of catalog) {
+    if (category && entry.category !== category) continue;
+    let section = sections.find((item) => item.category === entry.category);
+    if (!section) {
+      section = { category: entry.category, entries: [] };
+      sections.push(section);
+    }
+    section.entries.push(entry);
   }
-  return kept;
-}
-
-// Starters fill the list up to their own count, so one recent task is not
-// the only row the launcher shows.
-export function recentTasks(ids, limit = 5) {
-  const recent = knownTaskIds(ids).slice(0, limit);
-  for (const id of STARTER_TASK_IDS) {
-    if (recent.length >= Math.min(limit, STARTER_TASK_IDS.length)) break;
-    if (!recent.includes(id)) recent.push(id);
-  }
-  return recent.map((id) => findTask(id));
-}
-
-export function rememberTask(ids, id, limit = 5) {
-  const previous = knownTaskIds(ids).filter((item) => item !== id);
-  if (!TASK_CATALOG.some((entry) => entry.id === id)) return previous.slice(0, limit);
-  return [id, ...previous].slice(0, limit);
+  return sections;
 }
 
 export function scopeLabel(scope, { path = "", attached = null } = {}) {
