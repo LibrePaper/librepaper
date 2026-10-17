@@ -177,6 +177,12 @@ function applyTo(option, doc, from, to) {
   }
 }
 
+// The subfigure placement is optional, the width is required.
+{
+  const subfigure = PACKAGES.subcaption.environments.find((item) => item.name === "subfigure");
+  assert.equal(subfigure.snippet, "[t]{${1:0.45}\\linewidth}\n\t${0}");
+}
+
 // --- latex-workshop.json ----------------------------------------------------
 {
   const data = JSON.parse(readFileSync(new URL("../../src/lib/completion/latex-workshop.json", import.meta.url), "utf8"));
