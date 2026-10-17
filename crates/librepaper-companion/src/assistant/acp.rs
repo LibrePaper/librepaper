@@ -448,6 +448,10 @@ pub(super) enum Event {
         tool: Option<&'static str>,
         /// The option that allows this one call, when the agent offers one.
         allow_once: Option<String>,
+        /// How many turns had ended when the request arrived. The runner
+        /// counts `TurnEnded` in the same order, so a request resolved after
+        /// its turn ended is recognised as stale.
+        turn: u64,
     },
     Options(serde_json::Value),
     TurnEnded(Result<StopReason, String>),
@@ -593,6 +597,8 @@ impl Agent {
         let ready_tx = Arc::new(Mutex::new(Some(ready_tx)));
         let session_ready = Arc::clone(&ready_tx);
         let permission_events = events_tx.clone();
+        let turns = Arc::new(std::sync::atomic::AtomicU64::new(0));
+        let permission_turns = Arc::clone(&turns);
         let announced = Arc::new(ToolCalls::default());
         let permission_announced = Arc::clone(&announced);
         let exit_events = events_tx.clone();
@@ -617,6 +623,7 @@ impl Agent {
                         let options = browser_permission_options(&request.options);
                         let details = permission_details(&request.tool_call);
                         let allow_once = allow_option(&request.options);
+                        let turn = permission_turns.load(std::sync::atomic::Ordering::SeqCst);
                         // The announcement may still be queued behind this
                         // request, so the lookup runs off the dispatch task.
                         let events = permission_events.clone();
@@ -638,6 +645,7 @@ impl Agent {
                                     option_ids,
                                     tool,
                                     allow_once,
+                                    turn,
                                 })
                                 .await;
                             // A runner that has gone away cannot answer, so
@@ -671,6 +679,7 @@ impl Agent {
                                     command = commands_rx.recv() => match command {
                                         Some(Command::Prompt(prompt)) => {
                                             if let Err(error) = session.send_prompt(prompt) {
+                                                turns.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
                                                 let _ = events_tx.send(Event::TurnEnded(Err(error.to_string()))).await;
                                             }
                                         }
@@ -683,6 +692,7 @@ impl Agent {
                                     },
                                     update = session.read_update() => match update? {
                                         SessionMessage::StopReason(reason) => {
+                                            turns.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
                                             if events_tx.send(Event::TurnEnded(Ok(reason))).await.is_err() {
                                                 return Ok(());
                                             }

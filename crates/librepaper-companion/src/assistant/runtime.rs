@@ -338,15 +338,21 @@ enum PermissionDecision<'a> {
 }
 
 /// `active` is `None` with no task running, else whether that task is being
-/// cancelled. A request outside a live task is refused, so a late request
-/// cannot authorize a write after Cancel or after the turn ended. Inside one,
-/// a LibrePaper tool the access level allows is approved without asking.
+/// cancelled. `stale` is true when the request arrived in a turn that has
+/// since ended. A request outside a live task, or from an ended turn, is
+/// refused, so a late request cannot authorize a write after Cancel, after
+/// the turn ended, or inside the next task. Inside a live turn, a LibrePaper
+/// tool the access level allows is approved without asking.
 fn permission_decision<'a>(
+    stale: bool,
     active: Option<bool>,
     access: &str,
     tool: Option<&str>,
     allow_once: Option<&'a str>,
 ) -> PermissionDecision<'a> {
+    if stale {
+        return PermissionDecision::Refuse;
+    }
     match (active, tool, allow_once) {
         (None | Some(true), _, _) => PermissionDecision::Refuse,
         (Some(false), Some(tool), Some(option)) if acp::access_allows(access, tool) => {
@@ -736,6 +742,9 @@ async fn execute(peer: &AutomationPeer, config: &Config, lease: &Lease) -> Resul
     // user's.
     let mut session_id = agent.session_id().to_string();
     let mut options = agent.options().clone();
+    // Turns this agent has ended, counted as its `TurnEnded` events arrive.
+    // Each permission request carries the count from when it arrived.
+    let mut turns_ended: u64 = 0;
     publish_agent_label(&session_path, &options)?;
     // ACP has no place to put developer instructions on a session, so they
     // lead the first prompt of this process. Once per runner start, not once
@@ -867,6 +876,7 @@ async fn execute(peer: &AutomationPeer, config: &Config, lease: &Lease) -> Resul
                     if connected && stopping.is_none() { runner_journal::set_session_epoch(&session_path, current_epoch.as_deref())?; }
                     session_id = agent.session_id().to_string();
                     options = agent.options().clone();
+                    turns_ended = 0;
                     publish_agent_label(&session_path, &options)?;
                     instructions = Some(context::instructions(&lease.location.directory)?);
                     commands.clear();
@@ -1064,8 +1074,9 @@ async fn execute(peer: &AutomationPeer, config: &Config, lease: &Lease) -> Resul
                             acp::Update::Commands(_) | acp::Update::Ignored => {}
                         }
                     }
-                    acp::Event::Permission { handle, message, options, details, option_ids, tool, allow_once } => {
+                    acp::Event::Permission { handle, message, options, details, option_ids, tool, allow_once, turn } => {
                         match permission_decision(
+                            turn != turns_ended,
                             active.as_ref().map(|current| current.cancelling),
                             &config.access,
                             tool,
@@ -1105,6 +1116,7 @@ async fn execute(peer: &AutomationPeer, config: &Config, lease: &Lease) -> Resul
                         }
                     }
                     acp::Event::TurnEnded(outcome) => {
+                        turns_ended += 1;
                         let Some(current)=active.as_mut() else { continue; };
                         let id=current.id.clone();
                         retain_partial_answer(&mut state, &id, current);
@@ -1350,25 +1362,46 @@ mod tests {
         use PermissionDecision::*;
         let tool = Some("document_comment");
         let once = Some("once");
-        assert_eq!(permission_decision(None, "editor", tool, once), Refuse);
         assert_eq!(
-            permission_decision(Some(true), "editor", tool, once),
+            permission_decision(false, None, "editor", tool, once),
             Refuse
         );
         assert_eq!(
-            permission_decision(Some(true), "editor", None, once),
+            permission_decision(false, Some(true), "editor", tool, once),
             Refuse
         );
         assert_eq!(
-            permission_decision(Some(false), "editor", tool, once),
+            permission_decision(false, Some(true), "editor", None, once),
+            Refuse
+        );
+        assert_eq!(
+            permission_decision(false, Some(false), "editor", tool, once),
             Allow("once")
         );
         assert_eq!(
-            permission_decision(Some(false), "commenter", Some("document_apply"), once),
+            permission_decision(
+                false,
+                Some(false),
+                "commenter",
+                Some("document_apply"),
+                once
+            ),
             Ask
         );
-        assert_eq!(permission_decision(Some(false), "editor", None, once), Ask);
-        assert_eq!(permission_decision(Some(false), "editor", tool, None), Ask);
+        assert_eq!(
+            permission_decision(false, Some(false), "editor", None, once),
+            Ask
+        );
+        assert_eq!(
+            permission_decision(false, Some(false), "editor", tool, None),
+            Ask
+        );
+        // A request from a turn that has ended is refused even inside the
+        // next live task.
+        assert_eq!(
+            permission_decision(true, Some(false), "editor", tool, once),
+            Refuse
+        );
     }
 
     /// The bridge reads whatever the file holds at any moment, so it must be
