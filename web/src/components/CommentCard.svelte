@@ -27,6 +27,9 @@
     onresolve,
     ondelete,
     onreply,
+    // Saves a new body for this comment, or for one of its replies (reply is
+    // null for the comment itself).
+    onedit,
     // Asks the agent to act on this comment. Absent where no agent is offered.
     onagent,
     cardIdPrefix = "comment",
@@ -158,6 +161,53 @@
     replyBody = "";
     replying = false;
   }
+
+  // Only the author edits, one item at a time. `editing` is the key of the
+  // post being edited, the same key the thread gives it: "note-<id>" for the
+  // comment, "reply-<id>" for a reply.
+  let editing = $state(null);
+  let editBody = $state("");
+  let editField = $state(null);
+  // A highlight has nothing of its own to say, so nothing on its card is
+  // edited. A pending or unconfirmed item has no id the room knows yet.
+  const editable = (target) => Boolean(target?.mine) && !target.temp_id && !target.pending;
+  const canEditNote = $derived(!isHighlight && canComment && editable(comment));
+  const canEditPost = (post) => !isHighlight && canComment && Boolean(post.reply) && editable(post.reply);
+
+  async function startEdit(id, body) {
+    expanded = true;
+    editBody = body || "";
+    editing = id;
+    await tick();
+    editField?.focus();
+  }
+
+  function stopEdit() {
+    editing = null;
+    editBody = "";
+  }
+
+  // Enter makes a new line here, as it is in a note; Ctrl or Cmd with Enter
+  // saves, and Escape lets the words go.
+  function editKeys(event) {
+    if (event.key === "Escape") {
+      event.preventDefault();
+      stopEdit();
+      return;
+    }
+    if (event.key !== "Enter" || !(event.ctrlKey || event.metaKey) || event.isComposing) return;
+    event.preventDefault();
+    event.currentTarget.form?.requestSubmit();
+  }
+
+  // An empty body, or one that says what was already said, sends nothing and
+  // just closes the editor.
+  function submitEdit(event, post) {
+    event.preventDefault();
+    const next = editBody.trim();
+    if (next && next !== (post.body || "").trim()) onedit?.(comment, post.reply, next);
+    stopEdit();
+  }
 </script>
 
 <!-- The whole card is the click target for opening a resolved note, which is
@@ -236,7 +286,43 @@
               <small class="panel-meta">{moment(run.created)}</small>
             </div>
             {#each run.posts as post (post.id)}
-              {#if post.body}<p class="post" title={stamp(post.created)}>{post.body}</p>{/if}
+              {#if editing === post.id}
+                <form class="flex flex-col gap-2" onsubmit={(event) => submitEdit(event, post)}>
+                  <textarea
+                    class="textarea"
+                    aria-label="Edit"
+                    placeholder="Edit · Ctrl+Enter saves · Esc cancels"
+                    rows="3"
+                    maxlength="5000"
+                    bind:this={editField}
+                    bind:value={editBody}
+                    onkeydown={editKeys}
+                  ></textarea>
+                  <div class="edit-actions">
+                    <button type="button" class="btn btn-sm lp-control-tonal-brand" onclick={stopEdit}>Cancel</button>
+                    <button type="submit" class="btn btn-sm lp-control-tonal-brand">Save</button>
+                  </div>
+                </form>
+              {:else if post.body}
+                <div class="post-row">
+                  <p class="post" title={stamp(post.created)}>{post.body}</p>
+                  {#if canEditPost(post)}
+                    <IconButton
+                      icon="pencil"
+                      label="Edit reply"
+                      tone="plain"
+                      size="btn-icon-sm"
+                      onclick={(e) => {
+                        e.stopPropagation();
+                        void startEdit(post.id, post.body);
+                      }}
+                    />
+                  {/if}
+                </div>
+                {#if post.edited}
+                  <p class="panel-meta edited" title={`Edited ${stamp(post.edited)}`}>edited {moment(post.edited)}</p>
+                {/if}
+              {/if}
             {/each}
           </div>
         {/each}
@@ -286,6 +372,16 @@
           e.stopPropagation();
           expanded = false;
           onresolve?.(comment);
+        }}
+      />
+    {/if}
+    {#if canEditNote}
+      <IconButton
+        icon="pencil"
+        label="Edit comment"
+        onclick={(e) => {
+          e.stopPropagation();
+          void startEdit(`note-${comment.id}`, comment.body);
         }}
       />
     {/if}
@@ -350,6 +446,10 @@
   .run-author { min-width: 0; overflow: hidden; font-size: 14px; font-weight: 600; line-height: 1.3; text-overflow: ellipsis; white-space: nowrap; }
   .run-head :global(.panel-meta) { flex: none; font-size: 13px; line-height: 1.3; }
   .post { margin: 0; overflow-wrap: anywhere; white-space: pre-wrap; font-size: 15px; line-height: 1.4; }
+  .post-row { display: flex; align-items: flex-start; gap: 4px; min-width: 0; }
+  .post-row .post { flex: 1 1 auto; min-width: 0; }
+  .edited { margin: 0; font-size: 13px; line-height: 1.3; }
+  .edit-actions { display: flex; justify-content: flex-end; gap: 6px; }
   /* The highlighted words, in the highlight's own colour when it has one.
      Quiet enough to read as a quotation rather than as something said. */
   .quote { margin: 0; border-color: color-mix(in oklab, currentColor 30%, transparent); color: var(--panel-muted); overflow-wrap: anywhere; }

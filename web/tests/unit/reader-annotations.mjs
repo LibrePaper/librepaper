@@ -317,5 +317,51 @@ const page = (comments, { next = null, complete = !next, total, open = total, re
 }
 
 
+// Edits: the author's own words are changed at once and sent, and what the
+// room says back is what the card keeps. A comment and a reply take the same
+// frame, with the reply's id when there is one.
+{
+  const editSent = [];
+  const editor = createAnnotations({
+    slug: "edit-check",
+    anchor: () => {},
+    repaint: () => {},
+    send: (message) => editSent.push(message),
+  });
+  editor.seed(
+    [{ id: "owned", body: "First", mine: true, replies: [{ id: "answer", body: "Reply", mine: true }] }],
+    { total: 1, open: 1, replies: 1, revision: "e1", complete: true },
+  );
+  const owned = editor.state.comments[0];
+  const answer = owned.replies[0];
+
+  editor.edit(owned, null, "Second");
+  assert.equal(owned.body, "Second", "an edited comment shows its new body at once");
+  assert.deepEqual(editSent.at(-1), { type: "edit", comment_id: "owned", body: "Second" });
+
+  editor.edit(owned, answer, "Changed reply");
+  assert.equal(answer.body, "Changed reply", "an edited reply shows its new body at once");
+  assert.deepEqual(editSent.at(-1), { type: "edit", comment_id: "owned", reply_id: "answer", body: "Changed reply" });
+
+  editor.reply(owned, "Mine", "Me");
+  assert.equal(owned.replies.at(-1).mine, true, "a reply made here is marked as this browser's");
+
+  const state = { total: 1, open: 1, replies: 2, revision: "e2" };
+  editor.receive({ type: "edit", comment_id: "owned", reply_id: null, body: "From the room", edited: "2026-10-17T09:00:00Z", state });
+  assert.equal(owned.body, "From the room");
+  assert.equal(owned.edited, "2026-10-17T09:00:00Z");
+  assert.equal(editor.state.page.revision, "e2");
+
+  editor.receive({ type: "edit", comment_id: "owned", reply_id: "answer", body: "Room reply", edited: "2026-10-17T09:01:00Z", state });
+  assert.equal(answer.body, "Room reply");
+  assert.equal(answer.edited, "2026-10-17T09:01:00Z");
+  assert.equal(owned.edited, "2026-10-17T09:00:00Z", "editing a reply does not stamp the comment");
+
+  const before = JSON.stringify(editor.state.comments);
+  assert.equal(editor.receive({ type: "edit", comment_id: "nobody", reply_id: null, body: "Lost", edited: "2026-10-17T09:02:00Z" }), true);
+  assert.equal(editor.receive({ type: "edit", comment_id: "owned", reply_id: "nobody", body: "Lost", edited: "2026-10-17T09:02:00Z" }), true);
+  assert.equal(JSON.stringify(editor.state.comments), before, "an edit for a row this browser does not hold changes nothing");
+}
+
 assert.ok(paints > 0);
 console.log("reader-annotations: optimistic writes, authoritative reconciliation, bounded paging, retries and decisions passed");
