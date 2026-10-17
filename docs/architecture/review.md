@@ -35,6 +35,8 @@ Track changes are part of the shared document. A tracked edit goes into the text
 - Accept removes the record. The text stays.
 - Reject removes the inserted text and puts the change's fragments back where their gaps are. Other changes' fragments in those gaps become gaps of their own on either side of the restored text, so whatever is decided first, the text comes back in the order it had.
 - Each change is decided on its own, in any order. Changes never depend on each other. The session that made a change does not matter.
+- Every row is derived from the records at read time, never repaired by a write. A fragment whose change was accepted while it was written is read as a change of its own, so a reader who never edits sees the same rows as the author.
+- Edits made with tracking off, in the editor or by an agent's patch on the server, go through the same planner. Pending spans shrink, move or split around them, and nothing is recorded for them.
 - A run tag groups the changes from one agent pass. Editors can filter by run and accept all changes from a run. The tag never links changes together.
 
 Pending changes are shown in two places, and both read the records directly, so both are exact.
