@@ -40,13 +40,7 @@ assert.deepEqual(sent.at(-1).ranges.slice(1), [
   { id: "change:c1", start: 20, end: 24, motivation: "change", deleted: "old", author: "Ada" },
   { id: "change:c2", start: 30, end: 30, motivation: "change", author: "Bo" },
 ]);
-assert.equal("grow" in sent.at(-1).ranges[1], false);
 assert.equal(overlays.annotations(comments, changes), false);
-assert.equal(overlays.annotations(comments), true);
-
-const growing = [{ id: "g1", start: 40, end: 44, deleted: "", author: "Ada", grow: true }];
-assert.equal(overlays.annotations(comments, growing), true);
-assert.deepEqual(sent.at(-1).ranges.at(-1), { id: "change:g1", start: 40, end: 44, motivation: "change", author: "Ada", grow: true });
 assert.equal(overlays.annotations(comments), true);
 
 assert.equal(overlays.annotations(comments), false);

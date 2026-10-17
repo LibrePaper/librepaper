@@ -44,7 +44,6 @@ export function createFrameOverlays({ ready, send }) {
         motivation: "change",
         deleted: row.deleted || undefined,
         author: row.author,
-        grow: row.grow || undefined,
       });
     }
     return deliver(
