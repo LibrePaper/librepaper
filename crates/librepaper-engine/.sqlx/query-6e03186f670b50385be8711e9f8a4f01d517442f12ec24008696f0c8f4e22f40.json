@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "SELECT id,annotation_id,author_account_id,author_key,author_label,body,created_at,updated_at FROM replies WHERE id=$1",
+  "query": "SELECT id,annotation_id,author_account_id,author_key,author_label,body,created_at,updated_at,edited_at FROM replies WHERE id=$1",
   "describe": {
     "columns": [
       {
@@ -42,6 +42,11 @@
         "ordinal": 7,
         "name": "updated_at",
         "type_info": "Timestamptz"
+      },
+      {
+        "ordinal": 8,
+        "name": "edited_at",
+        "type_info": "Timestamptz"
       }
     ],
     "parameters": {
@@ -57,8 +62,9 @@
       false,
       false,
       false,
-      false
+      false,
+      true
     ]
   },
-  "hash": "a4138fdb183b04386c4a5a1e814ed75a89544c39674f22a66887a43db16352ef"
+  "hash": "6e03186f670b50385be8711e9f8a4f01d517442f12ec24008696f0c8f4e22f40"
 }
