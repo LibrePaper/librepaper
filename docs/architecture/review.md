@@ -29,10 +29,11 @@ current CLI has no comments-to-Markdown or JSON-LD export.
 
 Track changes are part of the shared document. A tracked edit goes into the text at once, like any other edit. The document also records it as a pending change. The editor, read links, agents and exports all show the text with every pending change in it.
 
-- A change is one region. Original text that was deleted is replaced by the text now inserted. Replacing "cat" with "tabby" is one change. Either side can be empty.
-- The record keeps the deleted text and two cursors, one at each end of the inserted text. The cursors follow the text as others edit around it.
+- A change is one author's edit of one region: the text it inserted and the original text it deleted. Replacing "cat" with "tabby" is one change. Either side can be empty.
+- A change record keeps two cursors, one at each end of the inserted text. The cursors follow the text as others edit around it.
+- Deleted text lives in gaps. A gap is one point in the text where text was taken out. It holds the deleted texts that sat there as an ordered list of fragments, each owned by a change. There is one gap per point, so several authors deleting around the same place put their fragments in one gap in document order.
 - Accept removes the record. The text stays.
-- Reject puts the deleted text back in place of the inserted text, then removes the record.
+- Reject removes the inserted text and puts the change's fragments back where their gaps are. Other changes' fragments in those gaps become gaps of their own on either side of the restored text, so whatever is decided first, the text comes back in the order it had.
 - Each change is decided on its own, in any order. Changes never depend on each other. The session that made a change does not matter.
 - A run tag groups the changes from one agent pass. Editors can filter by run and accept all changes from a run. The tag never links changes together.
 
@@ -49,5 +50,5 @@ The model has these limits.
 - Editing inside someone else's insertion does not nest. A deletion there shrinks their text. An insertion splits it in two.
 - A rejected deletion returns as new characters. Comments on the old characters may not reattach exactly.
 - After a history trim, a change whose text was trimmed away is pruned.
-- Deletions by several authors that meet at one point, with one inside another, can come back in the wrong order when they are rejected one at a time. The record of each deletion names the deletions it swallowed, and that is not enough to order three or more. Tracked as kata em90.
+- Two editors deciding different changes with fragments in one gap at the same moment race on that gap's record. The later write wins.
 
