@@ -205,13 +205,20 @@ wipe:  ## Delete the local deployment -- database and data directory -- and star
 # TOML file.
 DEMO_KEYS ?= tools/dev/keys.yaml
 DEMO_REF ?= main
+# Paths given here are relative to this checkout, so the demo worktree gets
+# them as absolute paths on its command line, where they also override
+# MAKEFLAGS. A mirror URL passes through unchanged. An unsupplied CONFIG is
+# dropped from the environment, where `export` put its default.
+DEMO_MIRROR := $(if $(filter http://% https://%,$(MIRROR)),$(MIRROR),$(abspath $(or $(MIRROR),../wasm-latex/mirror)))
+DEMO_ARGS   := MIRROR="$(DEMO_MIRROR)" $(if $(CONFIG_WAS_SUPPLIED),CONFIG="$(abspath $(CONFIG))")
 demo:  ## Run a local Docker deployment of main (DEMO_REF= picks another commit)
 	@tree=$$(tools/dev/demo/worktree "$(DEMO_REF)") && echo "demo: $(DEMO_REF) at $$(git -C "$$tree" rev-parse --short HEAD) in $$tree" && \
-		exec env -u CONFIG $(MAKE) -C "$$tree" --no-print-directory demo-checkout
+		env -u CONFIG $(MAKE) -C "$$tree" --no-print-directory web $(DEMO_ARGS) && \
+		exec env -u CONFIG $(MAKE) -C "$$tree" --no-print-directory demo-checkout $(DEMO_ARGS)
 
-# The demo checkout is the worktree that demo runs in. Its web build is needed
-# because the image copies web/dist, and a new worktree has none.
-demo-checkout: $(SHELL_OUT)
+# demo-checkout runs in the demo worktree. demo builds web first, because the
+# image copies web/dist and a new worktree has none.
+demo-checkout:
 	@if [ "$(CONFIG_WAS_SUPPLIED)" = yes ]; then \
 		echo "demo: using CONFIG=$(CONFIG)"; \
 		exec $(MAKE) --no-print-directory demo-run CONFIG="$(CONFIG)"; \
@@ -245,7 +252,7 @@ demo-wipe:  ## Stop the demo and explicitly delete its named volumes
 # PORT, tools/dev/demo/desktop starts the demo and stops it when the app closes.
 demo-desktop:  ## Open the desktop app against the demo of main, starting the demo when none is running
 	@tree=$$(tools/dev/demo/worktree "$(DEMO_REF)") && \
-		exec env -u CONFIG $(MAKE) -C "$$tree" --no-print-directory demo-desktop-checkout
+		exec env -u CONFIG $(MAKE) -C "$$tree" --no-print-directory demo-desktop-checkout $(DEMO_ARGS)
 
 demo-desktop-checkout: desktop
 	@PORT="$(PORT)" tools/dev/demo/desktop
