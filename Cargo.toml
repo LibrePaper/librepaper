@@ -50,6 +50,14 @@ codegen-units = 4
 [profile.dist]
 inherits = "release"
 
+# The local demo builds with this profile. A demo needs no LTO, and without
+# it the large server crate compiles in parallel and incrementally.
+[profile.demo]
+inherits = "release"
+lto = false
+codegen-units = 256
+incremental = true
+
 # The edit-test loop rebuilds one very large test binary, and full debuginfo
 # is the bulk of what it writes and links. Line tables keep backtraces
 # pointing at file and line -- which is all a failing assertion needs -- and

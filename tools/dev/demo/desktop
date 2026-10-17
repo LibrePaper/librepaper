@@ -11,7 +11,7 @@ set -euo pipefail
 ROOT=$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)
 PORT="${PORT:-8081}"
 URL="http://localhost:$PORT/"
-APP="$ROOT/desktop/target/release/librepaper-desktop"
+APP="$ROOT/desktop/target/${CARGO_PROFILE:-release}/librepaper-desktop"
 answers() { curl -fsS -o /dev/null "$URL" 2>/dev/null; }
 
 if answers; then

@@ -7,6 +7,7 @@ services:
       dockerfile: tools/docker/Dockerfile
       args:
         SOURCE: checkout
+        CARGO_PROFILE: ${LIBREPAPER_DEMO_CARGO_PROFILE:-demo}
     environment:
       LIBREPAPER_DEMO_APP_ORIGIN: ${LIBREPAPER_DEMO_APP_ORIGIN:-http://localhost:8081}
       LIBREPAPER_DEMO_SITE_ORIGIN: ${LIBREPAPER_DEMO_SITE_ORIGIN:-http://localhost:8082}
@@ -26,6 +27,7 @@ services:
       target: backup
       args:
         SOURCE: checkout
+        CARGO_PROFILE: ${LIBREPAPER_DEMO_CARGO_PROFILE:-demo}
     environment:
       LIBREPAPER_DEMO_APP_ORIGIN: ${LIBREPAPER_DEMO_APP_ORIGIN:-http://localhost:8081}
       LIBREPAPER_DEMO_SITE_ORIGIN: ${LIBREPAPER_DEMO_SITE_ORIGIN:-http://localhost:8082}
