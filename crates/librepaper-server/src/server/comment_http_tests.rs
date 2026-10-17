@@ -765,7 +765,12 @@ async fn only_the_author_edits_a_comment_or_a_reply() {
     let (page, _) = room.comment_page(None, 50, &author, false).await.unwrap();
     let found = page.iter().find(|c| c.comment.id == comment_id).unwrap();
     assert_eq!(found.comment.body, "better words");
-    deployment.catalog.close().await;
+    // The fixture holds the writer lease on a pooled connection, and
+    // closing the pool waits for it, so drop the fixture first.
+    let catalog = deployment.catalog.clone();
+    drop(room);
+    drop(deployment);
+    catalog.close().await;
 }
 
 fn urlencode(value: &str) -> String {
