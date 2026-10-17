@@ -447,11 +447,21 @@ export function createAnnotations({ slug, key = "", anchor, repaint, send, rende
       repaint();
       send({ type: "delete", comment_id: item.id });
     },
-    edit(item, reply, body) {
-      (reply || item).body = body;
+    async edit(item, reply, body) {
+      const target = reply || item;
+      const previous = target.body;
+      target.body = body;
       publish();
       if (!reply) repaint();
-      send({ type: "edit", comment_id: item.id, ...(reply ? { reply_id: reply.id } : {}), body });
+      const result = await send({ type: "edit", comment_id: item.id, ...(reply ? { reply_id: reply.id } : {}), body });
+      if (!result || result.ok === false) {
+        // The room never took the words, so put the old body back and say why.
+        target.body = previous;
+        publish();
+        if (!reply) repaint();
+        return { ok: false, message: result?.error?.message || "That edit could not be saved." };
+      }
+      return { ok: true };
     },
   };
 }

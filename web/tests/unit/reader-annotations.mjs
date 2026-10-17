@@ -363,5 +363,31 @@ const page = (comments, { next = null, complete = !next, total, open = total, re
   assert.equal(JSON.stringify(editor.state.comments), before, "an edit for a row this browser does not hold changes nothing");
 }
 
+// A save the room refuses puts the previous words back and says why.
+{
+  const refused = createAnnotations({
+    slug: "edit-refused",
+    anchor: () => {},
+    repaint: () => {},
+    send: () => Promise.resolve({ ok: false, error: new Error("offline") }),
+  });
+  refused.seed(
+    [{ id: "owned", body: "First", mine: true, replies: [{ id: "answer", body: "Reply", mine: true }] }],
+    { total: 1, open: 1, replies: 1, revision: "r1", complete: true },
+  );
+  const owned = refused.state.comments[0];
+  const answer = owned.replies[0];
+
+  const failedComment = refused.edit(owned, null, "new");
+  assert.equal(owned.body, "new", "the new words show until the room answers");
+  assert.deepEqual(await failedComment, { ok: false, message: "offline" });
+  assert.equal(owned.body, "First", "a refused comment edit goes back to the original body");
+
+  const failedReply = refused.edit(owned, answer, "new reply");
+  assert.equal(answer.body, "new reply");
+  assert.deepEqual(await failedReply, { ok: false, message: "offline" });
+  assert.equal(answer.body, "Reply", "a refused reply edit goes back to the original body");
+}
+
 assert.ok(paints > 0);
 console.log("reader-annotations: optimistic writes, authoritative reconciliation, bounded paging, retries and decisions passed");

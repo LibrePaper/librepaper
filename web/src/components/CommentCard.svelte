@@ -168,6 +168,7 @@
   let editing = $state(null);
   let editBody = $state("");
   let editField = $state(null);
+  let editError = $state("");
   // A highlight has no body of its own to edit, but the replies under it are
   // ordinary discussion. A pending or unconfirmed item has no id the room
   // knows yet.
@@ -178,6 +179,7 @@
   async function startEdit(id, body) {
     expanded = true;
     editBody = body || "";
+    editError = "";
     editing = id;
     await tick();
     editField?.focus();
@@ -186,6 +188,7 @@
   function stopEdit() {
     editing = null;
     editBody = "";
+    editError = "";
   }
 
   // Enter makes a new line here, as it is in a note; Ctrl or Cmd with Enter
@@ -203,11 +206,22 @@
 
   // An empty body, or one that says what was already said, sends nothing and
   // just closes the editor.
-  function submitEdit(event, post) {
+  // A save the room refuses reopens the editor on the same post with the text
+  // still in it, and says why.
+  async function submitEdit(event, post) {
     event.preventDefault();
     const next = editBody.trim();
-    if (next && next !== (post.body || "").trim()) onedit?.(comment, post.reply, next);
+    const changed = Boolean(next) && next !== (post.body || "").trim();
     stopEdit();
+    if (!changed) return;
+    const result = await onedit?.(comment, post.reply, next);
+    if (result && result.ok === false) {
+      editing = post.id;
+      editBody = next;
+      editError = result.message;
+      await tick();
+      editField?.focus();
+    }
   }
 </script>
 
@@ -299,6 +313,9 @@
                     bind:value={editBody}
                     onkeydown={editKeys}
                   ></textarea>
+                  {#if editError}
+                    <p class="panel-meta" role="alert">{editError}</p>
+                  {/if}
                   <div class="edit-actions">
                     <button type="button" class="btn btn-sm lp-control-tonal-brand" onclick={stopEdit}>Cancel</button>
                     <button type="submit" class="btn btn-sm lp-control-tonal-brand">Save</button>
