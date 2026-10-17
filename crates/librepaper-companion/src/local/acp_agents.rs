@@ -163,6 +163,8 @@ pub struct Detected {
     /// A known limitation of an agent the sidebar *can* drive. Empty when
     /// there is nothing to warn about.
     pub assistant_note: String,
+    /// The command that installs a fetched adapter for good, so it is not fetched on every run. Empty when nothing is fetched.
+    pub assistant_install: String,
     /// This agent's section of the setup page, which the page links to.
     /// Empty for an agent added in Settings.
     pub assistant_docs: String,
@@ -308,6 +310,7 @@ pub fn detect(state_home: &Path) -> Vec<Detected> {
             existing.assistant_fetches = false;
             existing.assistant_blocked = String::new();
             existing.assistant_note = String::new();
+            existing.assistant_install = String::new();
             continue;
         }
         found.push(Detected {
@@ -317,6 +320,7 @@ pub fn detect(state_home: &Path) -> Vec<Detected> {
             assistant_fetches: false,
             assistant_blocked: String::new(),
             assistant_note: String::new(),
+            assistant_install: String::new(),
             assistant_docs: String::new(),
         });
     }
@@ -346,18 +350,18 @@ fn docs_url(kind: &Kind) -> String {
     }
 }
 
-/// The note shown next to a drivable agent. A fetched adapter also says how to
-/// install it for good, so it is not fetched again on every run.
-fn note(kind: &Kind, fetched: bool) -> String {
-    let install = match (fetched, kind.npm) {
-        (true, Some(package)) => Some(format!("To install it for good: npm install -g {package}")),
-        _ => None,
-    };
-    [kind.acp_note.map(str::to_string), install]
-        .into_iter()
-        .flatten()
-        .collect::<Vec<_>>()
-        .join(" ")
+/// The note shown next to a drivable agent.
+fn note(kind: &Kind) -> String {
+    kind.acp_note.unwrap_or_default().to_string()
+}
+
+/// The command that installs a fetched adapter for good. Empty when nothing is
+/// fetched or the adapter has no npm package.
+fn install(kind: &Kind, fetched: bool) -> String {
+    match (fetched, kind.npm) {
+        (true, Some(package)) => format!("npm install -g {package}"),
+        _ => String::new(),
+    }
 }
 
 fn built_in() -> Vec<Detected> {
@@ -376,7 +380,11 @@ fn built_in() -> Vec<Detected> {
                     None => blocked_message(kind),
                 },
                 assistant_note: match adapter {
-                    Some(found) => note(kind, matches!(found, Adapter::Fetched(_))),
+                    Some(_) => note(kind),
+                    None => String::new(),
+                },
+                assistant_install: match adapter {
+                    Some(found) => install(kind, matches!(found, Adapter::Fetched(_))),
                     None => String::new(),
                 },
                 assistant_docs: docs_url(kind),
@@ -707,13 +715,14 @@ mod tests {
     fn a_fetched_adapter_says_how_to_install_it_for_good() {
         let codex = kind("codex").expect("codex");
         let claude = kind("claude").expect("claude");
-        let fetched = note(codex, true);
-        assert!(fetched.contains(codex.acp_note.expect("codex note")));
-        assert!(fetched.contains("npm install -g @agentclientprotocol/codex-acp"));
-        assert!(note(claude, false).is_empty());
+        assert_eq!(note(codex), codex.acp_note.expect("codex note"));
+        assert!(note(claude).is_empty());
         assert_eq!(
-            note(claude, true),
-            "To install it for good: npm install -g @agentclientprotocol/claude-agent-acp"
+            install(claude, true),
+            "npm install -g @agentclientprotocol/claude-agent-acp"
         );
+        assert!(install(claude, false).is_empty());
+        // opencode has no npm package to install.
+        assert!(install(kind("opencode").expect("opencode"), true).is_empty());
     }
 }

@@ -42,8 +42,8 @@ window.localCalls = [];
 window.activeRunner = JSON.parse(localStorage.getItem('librepaper-test-active-runner') || 'null');
 window.delayedAssistantStatuses = [];
 window.localAgents = [
-  {id:'claude',label:'Claude Code',path:'/usr/bin/claude',configurable:true,assistant:true,assistant_fetches:false,assistant_blocked:'',assistant_note:'',restart:'Restart Claude Code'},
-  {id:'pi',label:'Pi',path:'/usr/bin/pi',configurable:false,assistant:true,assistant_fetches:true,assistant_blocked:'',assistant_note:"Pi's ACP adapter has incomplete MCP support, so the document tools may not reach it",restart:'Restart Pi'},
+  {id:'claude',label:'Claude Code',path:'/usr/bin/claude',configurable:true,assistant:true,assistant_fetches:false,assistant_blocked:'',assistant_note:'',assistant_install:'',restart:'Restart Claude Code'},
+  {id:'pi',label:'Pi',path:'/usr/bin/pi',configurable:false,assistant:true,assistant_fetches:true,assistant_blocked:'',assistant_note:"Pi's ACP adapter has incomplete MCP support, so the document tools may not reach it",assistant_install:'npm install -g pi-acp',restart:'Restart Pi'},
 ];
 // Let the browser test drive the otherwise two-minute grant renewal without
 // waiting for wall-clock time. Keep every other interval on its real timer.
@@ -430,7 +430,7 @@ try {
   // Starting it would fetch its adapter, so the panel says so beforehand.
   assert.match(
     await page.evaluate(`document.querySelector("[data-adapter-fetch]")?.textContent`),
-    /downloads its adapter the first time/,
+    /downloads its adapter\. To install it for good, run npm install -g pi-acp/,
   );
 
   await page.evaluate(`(()=>{const input=document.querySelector('textarea[placeholder]');input.value='First';input.dispatchEvent(new Event('input',{bubbles:true}));input.dispatchEvent(new KeyboardEvent('keydown',{key:'Enter',ctrlKey:true,bubbles:true}));})()`);

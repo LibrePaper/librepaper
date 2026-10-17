@@ -16,6 +16,10 @@
 
   const agentStatus = (agent) => agent.assistant_blocked ? { label: "Needs setup", tone: "warn" } : agent.assistant ? { label: "Ready", tone: "good" } : { label: "Not supported", tone: "neutral" };
 
+  // A blocked agent never fetches, so its reason and its note are the whole text.
+  const fetchText = (agent) => ["Downloads its adapter each time you use it.", agent.assistant_install ? `To install it for good, run ${agent.assistant_install}.` : ""].filter(Boolean).join(" ");
+  const agentDescription = (agent) => [agent.assistant_blocked || agent.assistant_note, agent.assistant_fetches ? fetchText(agent) : ""].filter(Boolean).join(" ");
+
   async function addAgent(event) {
     event.preventDefault();
     if (view.pending) return;
@@ -45,13 +49,13 @@
     {#each detectedAgents as agent (agent.id)}
       {#if agent.assistant_blocked}
         <!-- An older desktop app sends no assistant_docs, so the link falls back to the agents page. -->
-        <ToolRow title={agent.label || agent.id} description={agent.assistant_blocked || agent.assistant_note || (agent.assistant_fetches ? "Downloads its adapter the first time you use it." : "")} status={agentStatus(agent)}>
+        <ToolRow title={agent.label || agent.id} description={agentDescription(agent)} status={agentStatus(agent)}>
           {#snippet actions()}
             <a class="btn btn-sm lp-control-tonal-brand" href={agent.assistant_docs || "https://librepaper.org/agents.html"} target="_blank" rel="noreferrer">Setup instructions</a>
           {/snippet}
         </ToolRow>
       {:else}
-        <ToolRow title={agent.label || agent.id} description={agent.assistant_note || (agent.assistant_fetches ? "Downloads its adapter the first time you use it." : "")} status={agentStatus(agent)} />
+        <ToolRow title={agent.label || agent.id} description={agentDescription(agent)} status={agentStatus(agent)} />
       {/if}
     {/each}
     {#each view.list(view.state?.custom_agents) as agent (agent.id)}
