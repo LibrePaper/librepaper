@@ -1066,6 +1066,10 @@ pub struct AssistantRequest {
     pub agent_token: String,
     /// Which detected agent to drive. It must advertise ACP support.
     pub agent: String,
+    /// What the assistant may do in the document, as the browser's Access
+    /// choice: "commenter" or "editor". It decides which LibrePaper tool
+    /// permission requests the runner approves without asking.
+    pub access: String,
 }
 
 impl std::fmt::Debug for AssistantRequest {
@@ -1092,6 +1096,7 @@ mod tests {
             chat_token: "chat-secret".into(),
             agent_token: "lpa_agent-secret".into(),
             agent: "agent".into(),
+            access: "commenter".into(),
         };
         let renewal = AssistantRenewal {
             link: request.link.clone(),

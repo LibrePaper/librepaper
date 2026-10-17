@@ -158,12 +158,13 @@ impl SessionRegistry {
         agent_token: &str,
         agent: &[String],
         agent_environment: &[(String, String)],
+        access: &str,
     ) -> Result<(), String> {
         let key = lifecycle::session_key(link, conversation)?;
         let gate = self.start_gate.lock().await;
         let requester = crate::local::store::normalize_origin(origin);
         self.reap(&key).await;
-        let wanted = lifecycle::configuration_hash(link, agent);
+        let wanted = lifecycle::configuration_hash(link, agent, access);
         let current = {
             let sessions = self.sessions.lock().unwrap_or_else(|e| e.into_inner());
             match sessions.get(&key) {
@@ -194,6 +195,7 @@ impl SessionRegistry {
                 agent.to_vec(),
                 self.state_home.clone(),
                 agent_environment.to_vec(),
+                access.to_string(),
             )?;
             self.publish_runner_connection(link, origin, conversation, chat_token)?;
             let grant = Some(peer.token_source());
@@ -688,6 +690,7 @@ mod tests {
                 "invalid-agent-token",
                 &[],
                 &[],
+                "commenter",
             )
             .await
             .unwrap_err();
