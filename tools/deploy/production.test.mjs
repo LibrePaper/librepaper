@@ -61,7 +61,16 @@ function mockCommand(dir, name, contents) {
 // modes and renames are real. docker and rsync are mocked, and every call is
 // appended to one events file, tab separated:
 // kind, then the arguments.
+// The server's public address, and the DNS records the dig mock serves: one
+// "name TYPE address" line each. Every deployed name and the ssh host resolve to it.
+const productionAddress = '15.235.24.221';
+const deployNames = ['librepaper.org', 'app.librepaper.org', 'docs.librepaper.org', 'admin.librepaper.org', 'www.librepaper.org', 'librepaper.com', 'www.librepaper.com', sshHost.split('@')[1]];
+function defaultDnsRecords() {
+  return deployNames.map((name) => `${name} A ${productionAddress}`);
+}
+
 function fixture({
+  dnsRecords = null,
   githubClientSecret = 'github-secret',
   adminRootStatus = '302',
   adminRootLocation = 'https://github.com/login/oauth/authorize?client_id=x&redirect_uri=https%3A%2F%2Fadmin.librepaper.org%2Fauth%2Fcallback&scope=&state=y',
@@ -87,14 +96,22 @@ function fixture({
   const oauthCallsFile = path.join(root, 'oauth-calls');
   const curlCallsFile = path.join(root, 'curl-calls');
   const eventsFile = path.join(root, 'events');
+  const dnsFile = path.join(root, 'dns');
+  const zone = dnsRecords ?? defaultDnsRecords().filter((line) => !(adminDnsMissing && line.startsWith('admin.librepaper.org ')));
+  writeFileSync(dnsFile, zone.map((line) => `${line}\n`).join(''));
 
   mockCommand(bin, 'make', 'printf "make\\n" >> "$EVENTS_FILE"; printf called >> "$MAKE_CALLED_FILE"; exit 0');
   mockCommand(bin, 'dig', `
-query="$2"
-if [ "$ADMIN_DNS_MISSING" = 1 ] && [ "$query" = admin.librepaper.org ]; then
-  exit 0
-fi
-printf "192.0.2.7\\n"
+name=""
+type=A
+for arg do
+  case "$arg" in
+    +*) ;;
+    A | AAAA) type="$arg" ;;
+    *) name="$arg" ;;
+  esac
+done
+awk -v name="$name" -v type="$type" '$1 == name && $2 == type { print $3 }' "$DNS_ZONE"
 `);
   mockCommand(bin, 'sops', `
 for arg do
@@ -243,7 +260,8 @@ fi`);
       REMOTE_ROOT: remote,
       EVENTS_FILE: eventsFile,
       MANAGE_FAILURE: manageFailure ? '1' : '0',
-      ADMIN_DNS_MISSING: adminDnsMissing ? '1' : '0',
+      DNS_ZONE: dnsFile,
+      ADDRESSES: productionAddress,
       TMPDIR: temp,
       MAKE_CALLED_FILE: makeCalledFile,
       OAUTH_CALLS_FILE: oauthCallsFile,
@@ -564,7 +582,57 @@ test('deploy fails at DNS check when admin.librepaper.org is missing, mentions t
   try {
     const result = run(f, 'deploy', 'v0.0.24');
     assert.notEqual(result.status, 0);
-    assert.match(result.stderr, /admin\.librepaper\.org.*does not resolve/);
+    assert.match(result.stderr, /admin\.librepaper\.org has no A record/);
+    assert.deepEqual(readdirSync(f.remote), []);
+    assert.deepEqual(events(f), []);
+  } finally {
+    f.cleanup();
+  }
+});
+
+test('deploy passes the DNS check when every name resolves only to ADDRESSES', () => {
+  const f = fixture();
+  try {
+    const result = run(f, 'deploy', 'v0.0.24');
+    assert.equal(result.status, 0, result.stderr || result.stdout);
+    assert.match(result.stdout, /names -> 15\.235\.24\.221/);
+  } finally {
+    f.cleanup();
+  }
+});
+
+test('deploy fails at DNS check when a name has an extra A record outside ADDRESSES, before any remote call', () => {
+  const f = fixture({ dnsRecords: [...defaultDnsRecords(), 'app.librepaper.org A 192.0.2.7'] });
+  try {
+    const result = run(f, 'deploy', 'v0.0.24');
+    assert.notEqual(result.status, 0);
+    assert.match(result.stderr, /app\.librepaper\.org resolves to 192\.0\.2\.7, which is not in ADDRESSES/);
+    assert.deepEqual(readdirSync(f.remote), []);
+    assert.deepEqual(events(f), []);
+  } finally {
+    f.cleanup();
+  }
+});
+
+test('deploy fails at DNS check when a name has a stray AAAA record, before any remote call', () => {
+  const f = fixture({ dnsRecords: [...defaultDnsRecords(), 'librepaper.org AAAA 2001:db8::7'] });
+  try {
+    const result = run(f, 'deploy', 'v0.0.24');
+    assert.notEqual(result.status, 0);
+    assert.match(result.stderr, /librepaper\.org resolves to 2001:db8::7, which is not in ADDRESSES/);
+    assert.deepEqual(readdirSync(f.remote), []);
+    assert.deepEqual(events(f), []);
+  } finally {
+    f.cleanup();
+  }
+});
+
+test('deploy fails at DNS check when a name has no A record, before any remote call', () => {
+  const f = fixture({ dnsRecords: defaultDnsRecords().filter((line) => !line.startsWith('docs.librepaper.org ')) });
+  try {
+    const result = run(f, 'deploy', 'v0.0.24');
+    assert.notEqual(result.status, 0);
+    assert.match(result.stderr, /docs\.librepaper\.org has no A record/);
     assert.deepEqual(readdirSync(f.remote), []);
     assert.deepEqual(events(f), []);
   } finally {

@@ -6,6 +6,7 @@ set -euo pipefail
 cd "$(dirname "${BASH_SOURCE[0]}")/../.."
 
 HOST="${HOST:-ubuntu@librepaper.org}"
+ADDRESSES="${ADDRESSES:-15.235.24.221}"  # the server's public addresses (space-separated), independent of DNS
 SITE=librepaper.org       # landing page and manual, from docs/_site (make site)
 APP=app.librepaper.org    # the application: origin in tools/deploy/production.toml
 DOCS=docs.librepaper.org  # published documents: origin in tools/deploy/production.toml
@@ -117,16 +118,51 @@ site_sync() {
 	ok "synced"
 }
 
+in_addresses() {
+	case " $ADDRESSES " in
+		*" $1 "*) return 0 ;;
+	esac
+	return 1
+}
+
+# dns_addresses TYPE NAME prints the A or AAAA addresses of NAME, one per line.
+# dig also prints the target of a CNAME first; only address lines are kept.
+dns_addresses() {
+	local type="$1" name="$2" line
+	while IFS= read -r line; do
+		case "$type" in
+			A) [[ "$line" =~ ^[0-9]+(\.[0-9]+){3}$ ]] || continue ;;
+			AAAA) [[ "$line" == *:* && "$line" =~ ^[0-9A-Fa-f:.]+$ ]] || continue ;;
+		esac
+		printf '%s\n' "$line"
+	done < <(dig +short "$type" "$name")
+}
+
+# check_dns_name NAME dies unless NAME has an A record and every A and AAAA
+# address it returns is in ADDRESSES.
+check_dns_name() {
+	local name="$1" address
+	[ -n "$(dns_addresses A "$name")" ] || die "$name has no A record: add it at Hover"
+	while IFS= read -r address; do
+		[ -n "$address" ] || continue
+		in_addresses "$address" || die "$name resolves to $address, which is not in ADDRESSES ($ADDRESSES): fix the record at Hover"
+	done < <(dns_addresses A "$name"; dns_addresses AAAA "$name")
+}
+
 check_production_dns() {
-	step "DNS: every name -> the address of $SITE"
-	local ip name names=0
-	ip=$(dig +short "$SITE" | tail -n 1)
-	[ -n "$ip" ] || die "$SITE does not resolve"
+	step "DNS: every name -> $ADDRESSES"
+	local name names=0 target="${HOST##*@}"
 	for name in "$SITE" "$APP" "$DOCS" "$ADMIN_NAME" ${REDIRECTS//,/}; do
-		[ "$(dig +short "$name" | tail -n 1)" = "$ip" ] || die "$name does not resolve to $ip yet: add its A record at Hover"
+		check_dns_name "$name"
 		names=$((names + 1))
 	done
-	ok "$names names -> $ip"
+	# The ssh target must be one of the server's addresses, or a name that resolves to them.
+	if [[ "$target" =~ ^[0-9.]+$ || "$target" == *:* ]]; then
+		in_addresses "$target" || die "$HOST is not in ADDRESSES ($ADDRESSES): set HOST to an address the server has"
+	else
+		check_dns_name "$target"
+	fi
+	ok "$names names -> $ADDRESSES"
 }
 
 RENDERED_KEYS=0
@@ -193,6 +229,7 @@ usage: tools/deploy/production <command>
 
 Environment:
   HOST=ubuntu@librepaper.org   ssh target (use the IP before DNS resolves)
+  ADDRESSES=15.235.24.221      server addresses DNS must resolve to (space-separated)
 USAGE
 }
 
