@@ -28,6 +28,10 @@
     // -- the transcript is the only account there is, and a person who knows
     // LaTeX can read it faster than anyone can improve the parser.
     log = "",
+    // undefined keeps the LaTeX rule (open when there are errors); a tool
+    // whose summary already says why passes false so its full output stays
+    // folded.
+    logOpen = undefined,
     // Asks the agent to fix one diagnostic. Absent where no agent is offered.
     onagent = undefined,
   } = $props();
@@ -83,7 +87,7 @@
   {#if transcript}
     <!-- Open on a failed compile: a run that produced no document is exactly
          when the transcript is what the person came here for. -->
-    <details class="mb-4" open={errors.length > 0}>
+    <details class="mb-4" open={logOpen ?? errors.length > 0}>
       <summary class="panel-section-title">Compile log</summary>
       <div class="mt-2 flex gap-2">
         <button type="button" class="btn btn-sm lp-control-tonal-brand"

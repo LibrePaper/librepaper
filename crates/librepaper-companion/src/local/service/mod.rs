@@ -35,6 +35,7 @@ use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 use tokio::sync::{mpsc, watch, Mutex, Notify};
 
+use crate::local::builders::diagnostics::failure_reason;
 use crate::local::preview;
 use crate::local::protocol::{
     self, Capabilities, JobOptions, JobOutcome, JobRequest, JobStatus, ManifestEntry, Workspace,
@@ -1598,6 +1599,7 @@ async fn handle_preview(
                     "page": page,
                     "rendering": rendering,
                     "log_tail": log_tail,
+                    "error": failure_reason(&log_tail),
                 }),
             );
         }

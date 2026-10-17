@@ -7,6 +7,9 @@ export function createRenderStatus() {
     failure: false,
     failureReason: "",
     lastLatexResult: null,
+    // The tool's full output for the last render that produced one, whatever
+    // the format; LaTeX keeps its richer `lastLatexResult` alongside it.
+    lastLog: "",
     docxArtifact: null,
   });
 
@@ -30,6 +33,7 @@ export function createRenderStatus() {
       state.failureReason = "";
     },
     recordLatex(result) { state.lastLatexResult = result; },
+    recordLog(log) { state.lastLog = log || ""; },
     recordDocx(value) { state.docxArtifact = value; },
     clearDocx() { state.docxArtifact = null; },
   };
