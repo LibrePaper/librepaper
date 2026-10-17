@@ -163,7 +163,8 @@ pub struct Detected {
     /// A known limitation of an agent the sidebar *can* drive. Empty when
     /// there is nothing to warn about.
     pub assistant_note: String,
-    /// The command that installs a fetched adapter for good, so it is not fetched on every run. Empty when nothing is fetched.
+    /// The command that installs a fetched adapter for good, so it is not
+    /// fetched on every run. Empty when nothing is fetched.
     pub assistant_install: String,
     /// This agent's section of the setup page, which the page links to.
     /// Empty for an agent added in Settings.
