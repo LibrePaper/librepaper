@@ -137,12 +137,15 @@ reader who has never edited sees the same row as the author does, and
 `prune` has nothing to repair. The fragment keeps pointing at the change it
 had.
 
-Absorbed changes: when an edit merges several of the author's own changes
-into one, the records absorbed into the merged change are not deleted. They
-are planned `kept` with `emptied` and an empty span, and `prune` drops them
-once they have rested empty, like any other emptied record. Deleting them at
-once would discard an extension of the same span by the author's other
-session, and the text that session inserted would lose its tracking.
+Absorbed changes: when an edit joins the author's own deletions into one
+change, the records whose fragments it relabels are not deleted. They are
+planned `kept` with `emptied`, and `prune` drops them once they have rested
+empty, like any other emptied record. Deleting them at once would discard
+what the author's other session was adding to them. Spans are never absorbed:
+a record whose span survives is still a change of its own, since a span lives
+in its record's cursors and cannot be relabelled without a write that would
+race the author's other session. A change whose span the edit deleted whole
+but whose fragments remain is a deletion from then on, not an empty record.
 
 Rows: a change's `deleted` text is the concatenation of its fragments in
 document order, across gaps. Its position is its span, or the gap of its first
@@ -191,16 +194,19 @@ Rules, for one edit `[ef, et)` with `insert`:
    is `kept`.
 2. **Original text** inside `[ef, et)` and outside every span is what `me`
    deleted. Each run of it becomes a fragment owned by `me`'s change.
-3. **Affected own changes** are `me`'s changes with a span touching `[ef, et]`
-   (ends included), and `me`'s changes with no span that have a fragment in a
-   gap at a position in `[ef, et]`. A span of `me`'s elsewhere stays its own
-   change even when a fragment of it sits at the edit: one change holds one
-   span, and a span never widens over text that is not its own. The affected
-   changes and the new edit merge into one change, which keeps the lowest id
-   by position; the others are `kept` as emptied records (see Absorbed
-   changes), and their fragments in every gap of the file, not only the
-   swallowed ones, take the merged id (those gaps are `set`). If the edit deletes original text or inserts text and no own change
-   is affected, a new change is made.
+3. **Affected own changes** are the first of `me`'s spans touching `[ef, et]`
+   (ends included), by position, and `me`'s changes with no span that have a
+   fragment in a gap at a position in `[ef, et]`. One change holds one span,
+   and spans never merge: a second own span touching the edit is handled like
+   any other author's span (rule 1), so it shrinks, splits or moves and keeps
+   its record and its text. A span of `me`'s elsewhere stays its own change
+   even when a fragment of it sits at the edit, and a span never widens over
+   text that is not its own. The affected changes and the new edit make one
+   change, which keeps the lowest id by position; the other affected deletion
+   changes are `kept` as emptied records (see Absorbed changes), and their
+   fragments in every gap of the file, not only the swallowed ones, take the
+   merged id (those gaps are `set`). If the edit deletes original text or
+   inserts text and no own change is affected, a new change is made.
 4. **Swallowed gaps.** Every gap at a position in `[ef, et]` merges into one
    gap with the new fragments. Walking `ef..et`, the gaps at `p` come first
    (in their order; an untracked edit elsewhere can have left two on one
@@ -386,3 +392,8 @@ suggestion wording from `docs/architecture/document.md`,
   before the trim may be orphaned and is pruned.
 - Two peers editing the very same point at the same moment can leave the
   fragments there in either order. Nothing is lost.
+- A change decided while its author, in a session that has not synced yet,
+  is still extending its inserted text: the decision deletes the record, and
+  the text added in the meantime stays in the document untracked. The text
+  is not lost. Deletions added in the meantime are kept as changes of their
+  own (see Orphans).

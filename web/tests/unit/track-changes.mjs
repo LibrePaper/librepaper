@@ -124,8 +124,9 @@ for (const f of fixtures) {
     { now: 5, mintId: () => "new-1" },
   );
   assert.deepEqual(gone.changes.map((c) => [c.id, c.state, Boolean(c.emptied)]), [["a", "kept", true]]);
-  // Own changes merged into one: the absorbed record stays, kept and emptied at
-  // the end of the merged span, and the merged one is the one set.
+  // Two own spans touching one edit: the first takes the edit and is set.
+  // The second is handled like any other span. Here the edit deleted it
+  // whole, so it is kept and emptied at the end of the first's span.
   const merged = planEdits(
     "aXbcYdef",
     {
@@ -586,6 +587,30 @@ const orphanFields = (text) => ({
   assert.deepEqual([...doc.getMap(CHANGES).values()].map((v) => v.get("kind")).sort(), ["change", "fragment", "fragment"]);
   for (const r of resolveChanges(doc, "f1")) reject(doc, r.id);
   assert.equal(textOf(doc), "adef");
+}
+
+// Two own insertions around a deletion stay two changes: X at 0 and Y at 2 of
+// "ab", then the "a" between them deleted. The first span takes the deletion,
+// the second keeps its record and its text, and each is decided on its own.
+{
+  const doc = makeDoc("ab", 1);
+  track(doc, 0, 0, "X", ME);
+  track(doc, 2, 2, "Y", ME);
+  track(doc, 1, 2, "", ME);
+  assert.equal(textOf(doc), "XYb");
+  const rows = resolveChanges(doc, "f1");
+  assert.deepEqual(rows.map((r) => [textOf(doc).slice(r.from, r.to), r.deleted]).sort(), [["X", "a"], ["Y", ""]]);
+  const copy = new LoroDoc();
+  copy.setPeerId(2);
+  copy.import(doc.export({ mode: "snapshot" }));
+  const first = rows.find((r) => r.deleted === "a").id;
+  const second = rows.find((r) => r.deleted === "").id;
+  accept(doc, first);
+  reject(doc, second);
+  assert.equal(textOf(doc), "Xb");
+  reject(copy, first);
+  reject(copy, second);
+  assert.equal(textOf(copy), "ab");
 }
 
 // Two sessions of one author. Session a deletes "bc" and a reviewer accepts that

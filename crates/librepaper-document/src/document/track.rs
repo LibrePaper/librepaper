@@ -307,11 +307,18 @@ fn plan_one(
     // sits in a swallowed gap. A span of mine elsewhere stays its own change:
     // one change holds one span, and a span never widens over text that is
     // not its own.
+    // Spans never merge: a change holds one span, and a record is never
+    // emptied for another record's sake. Only the first own span touching the
+    // edit takes it; another own span there is handled like any other span, so
+    // it shrinks, splits or moves and keeps its record and its text.
     let mut owned: Vec<String> = Vec::new();
-    for (c, _) in &changes {
-        if c.who == me.who && has_span(c) && c.from <= et && c.to >= ef {
-            push_unique(&mut owned, &c.id);
-        }
+    let first_span = changes
+        .iter()
+        .filter(|(c, _)| c.who == me.who && has_span(c) && c.from <= et && c.to >= ef)
+        .map(|(c, _)| c)
+        .min_by(|a, b| a.from.cmp(&b.from).then_with(|| a.id.cmp(&b.id)));
+    if let Some(c) = first_span {
+        push_unique(&mut owned, &c.id);
     }
     for g in &swallowed {
         for f in &g.fragments {
@@ -425,10 +432,10 @@ fn plan_one(
     for (c, st) in &changes {
         if let Some(m) = &mine {
             if owned.contains(&c.id) {
-                // Absorbed into the merged change. Its record stays, untouched
-                // and empty: another session of the author may be extending its
-                // span at this moment, and that extension must keep a record to
-                // live under. Prune drops it once it has rested empty.
+                // Mine, or an own deletion whose fragments now carry the merged
+                // id. The latter's record stays, untouched and empty: another
+                // session of the author may be adding to it at this moment, and
+                // prune drops it once it has rested empty.
                 if c.id != m.id {
                     out.push((
                         ChangeRecord {
@@ -635,6 +642,13 @@ fn plan_one(
         .iter()
         .flat_map(|(g, _)| g.fragments.iter().map(|f| f.change.clone()))
         .collect();
+    // A change whose span went but whose deletions remain is a deletion now,
+    // not an empty record.
+    for (c, _) in out.iter_mut() {
+        if c.emptied && referenced.contains(&c.id) {
+            c.emptied = false;
+        }
+    }
     let mut live: Vec<Row> = out
         .into_iter()
         .filter(|(c, _)| has_span(c) || referenced.contains(&c.id) || c.emptied)
@@ -3705,6 +3719,54 @@ mod tests {
         }
         doc.commit();
         assert_eq!(body(&doc, &id), "aXbc");
+    }
+
+    #[test]
+    fn two_own_spans_around_a_deletion_stay_two_changes() {
+        // X at 0 and Y at 2 of "ab" are two insertions by one author. Deleting
+        // the "a" between them does not merge them: the first span takes the
+        // deletion, the second keeps its record, and each is decided alone.
+        let (a, id) = setup("ab");
+        let p = who_of("p");
+        apply_tracked_edits(&a, &id, &[edit(0, 0, "X")], &p, None, 1).unwrap();
+        a.commit();
+        apply_tracked_edits(&a, &id, &[edit(2, 0, "Y")], &p, None, 1).unwrap();
+        a.commit();
+        apply_tracked_edits(&a, &id, &[edit(1, 1, "")], &p, None, 2).unwrap();
+        a.commit();
+        assert_eq!(body(&a, &id), "XYb");
+        let text: Vec<char> = body(&a, &id).chars().collect();
+        let mut rows: Vec<(String, String)> = resolve_changes(&a, &id)
+            .iter()
+            .map(|c| (text[c.from..c.to].iter().collect(), c.deleted.clone()))
+            .collect();
+        rows.sort();
+        assert_eq!(
+            rows,
+            vec![
+                ("X".to_string(), "a".to_string()),
+                ("Y".to_string(), String::new())
+            ]
+        );
+        let b = new_doc();
+        b.import(&a.export(loro::ExportMode::snapshot()).unwrap())
+            .unwrap();
+        let rows = resolve_changes(&a, &id);
+        let first = rows.iter().find(|c| c.deleted == "a").unwrap().id.clone();
+        let second = rows
+            .iter()
+            .find(|c| c.deleted.is_empty())
+            .unwrap()
+            .id
+            .clone();
+        assert!(accept(&a, &first));
+        assert!(reject(&a, &second));
+        a.commit();
+        assert_eq!(body(&a, &id), "Xb");
+        assert!(reject(&b, &first));
+        assert!(reject(&b, &second));
+        b.commit();
+        assert_eq!(body(&b, &id), "ab");
     }
 
     #[test]

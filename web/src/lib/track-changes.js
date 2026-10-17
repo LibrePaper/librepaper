@@ -108,10 +108,13 @@ function planOne(cur, changes, gaps, ef, et, insert, me, run, now, mintId, untra
   // span joins when one of its fragments sits in a swallowed gap. A span of
   // mine elsewhere stays its own change: one change holds one span, and a
   // span never widens over text that is not its own.
-  for (const c of changes) {
-    if (c.who !== me.who) continue;
-    if (hasSpan(c) && c.from <= et && c.to >= ef) owned.add(c.id);
-  }
+  // Spans never merge: a change holds one span, and a record is never
+  // emptied for another record's sake. Only the first own span touching
+  // the edit takes it; another own span there is handled like any other
+  // span, so it shrinks, splits or moves and keeps its record and its text.
+  const touching = changes.filter((c) => c.who === me.who && hasSpan(c) && c.from <= et && c.to >= ef)
+    .sort((a, b) => a.from - b.from || (a.id < b.id ? -1 : 1));
+  if (touching.length > 0) owned.add(touching[0].id);
   for (const g of swallowedGaps) for (const f of g.fragments) {
     const c = changes.find((x) => x.id === f.change);
     // A fragment read as a change of its own is not joined: it has no record
@@ -178,10 +181,10 @@ function planOne(cur, changes, gaps, ef, et, insert, me, run, now, mintId, untra
   const newSpans = [];
   for (const c of changes) {
     if (mine && owned.has(c.id)) {
-      // Absorbed into the merged change. Its record stays, untouched and
-      // empty: another session of the author may be extending its span at
-      // this moment, and that extension must keep a record to live under.
-      // Prune drops it once it has rested empty.
+      // Mine, or an own deletion whose fragments now carry the merged id. The
+      // latter's record stays, untouched and empty: another session of the
+      // author may be adding to it at this moment, and prune drops it once it
+      // has rested empty.
       if (c.id !== mine.id) outChanges.push({ ...c, from: ef + len, to: ef + len, emptied: true });
       continue;
     }
@@ -267,6 +270,9 @@ function planOne(cur, changes, gaps, ef, et, insert, me, run, now, mintId, untra
   }
   // A change with no span and no fragment is gone.
   const referenced = new Set(outGaps.flatMap((g) => g.fragments.map((f) => f.change)));
+  // A change whose span went but whose deletions remain is a deletion now,
+  // not an empty record.
+  for (const c of outChanges) if (c.emptied && referenced.has(c.id)) delete c.emptied;
   const live = outChanges.filter((c) => hasSpan(c) || referenced.has(c.id) || c.emptied);
   live.sort((a, b) => a.from - b.from || a.to - b.to);
   outGaps.sort((a, b) => a.at - b.at);

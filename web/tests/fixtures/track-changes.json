@@ -264,7 +264,7 @@
     }
   },
   {
-    "name": "deleting across two own changes and the text between is one change",
+    "name": "deleting across two own changes and the text between keeps two changes",
     "before": "aXbcdYe",
     "state": {
       "changes": [
@@ -321,6 +321,12 @@
           "who": "me",
           "from": 1,
           "to": 1
+        },
+        {
+          "id": "b",
+          "who": "me",
+          "from": 1,
+          "to": 1
         }
       ],
       "gaps": [
@@ -329,7 +335,11 @@
           "fragments": [
             {
               "change": "a",
-              "text": "wbcdz"
+              "text": "wbcd"
+            },
+            {
+              "change": "b",
+              "text": "z"
             }
           ]
         }
@@ -1067,7 +1077,7 @@
   },
   {
     "name": "astral characters count as two UTF-16 units: replace after one",
-    "before": "a😀b😀c",
+    "before": "a\ud83d\ude00b\ud83d\ude00c",
     "state": {
       "changes": [],
       "gaps": []
@@ -1083,7 +1093,7 @@
         "insert": "X"
       }
     ],
-    "after": "a😀X😀c",
+    "after": "a\ud83d\ude00X\ud83d\ude00c",
     "expect": {
       "changes": [
         {
@@ -1108,7 +1118,7 @@
   },
   {
     "name": "astral characters: typing extends an own insertion that holds one",
-    "before": "a😀b",
+    "before": "a\ud83d\ude00b",
     "state": {
       "changes": [
         {
@@ -1131,7 +1141,7 @@
         "insert": "Z"
       }
     ],
-    "after": "a😀Zb",
+    "after": "a\ud83d\ude00Zb",
     "expect": {
       "changes": [
         {
@@ -1146,7 +1156,7 @@
   },
   {
     "name": "astral characters: deleting an original astral character records it whole",
-    "before": "a😀b",
+    "before": "a\ud83d\ude00b",
     "state": {
       "changes": [],
       "gaps": []
@@ -1178,7 +1188,7 @@
           "fragments": [
             {
               "change": "new-1",
-              "text": "😀"
+              "text": "\ud83d\ude00"
             }
           ]
         }

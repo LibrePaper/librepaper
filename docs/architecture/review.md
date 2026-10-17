@@ -53,4 +53,5 @@ The model has these limits.
 - A rejected deletion returns as new characters. Comments on the old characters may not reattach exactly.
 - After a history trim, a change whose text was trimmed away is pruned.
 - Two people editing the very same point at the same moment can leave the deleted fragments there in either order. Nothing is lost.
+- A change accepted or rejected while its author is still typing into it in a session that has not synced keeps the text typed in the meantime, but that text is no longer tracked.
 
