@@ -43,7 +43,7 @@ WEB_BUILD := web/bun.lock web/tools/vendor-katex.mjs web/tools/compress-shell.mj
 WEB     := $(shell find web/src web/public -type f -not -path 'web/src/site/*') $(wildcard web/pages/*.html web/package.json web/vite.config.js web/vite.frame.config.js) $(WEB_BUILD)
 SOURCES := $(shell find crates -type f -not -path '*/target/*') $(shell find docs/examples -type f) Cargo.toml Cargo.lock .cargo/config.toml assets.lock
 
-.PHONY: help build install desktop test test-rust check fmt serve demo demo-run demo-stop demo-wipe demo-desktop wipe kill clean snapshot web pins site site-serve
+.PHONY: help build install desktop test test-rust check fmt serve demo demo-run demo-checkout demo-stop demo-wipe demo-desktop demo-desktop-checkout wipe kill clean snapshot web pins site site-serve
 
 help:  ## Display this help screen
 	@printf "\033[1mAvailable commands:\033[0m\n\n"
@@ -195,13 +195,23 @@ wipe:  ## Delete the local deployment -- database and data directory -- and star
 # number overrides the three weeks. It applies to the examples an account is
 # given at first sign-in, so changing it means `demo-wipe` and signing in again.
 #
-# The demo uses the deployment services with an image built from this checkout.
+# The demo builds main in a worktree under the git directory (.git/librepaper-demo),
+# not in the current checkout, so unfinished work cannot leak into it. DEMO_REF=
+# picks another branch or commit. The demo uses the deployment services with an
+# image built from that worktree.
 # Its named volumes and Compose project are separate from the native dev server.
 # Publishing needs sign-in, so `demo` uses SOPS keys when available; otherwise
 # it starts without sign-in. CONFIG= may select an explicitly container-ready
 # TOML file.
 DEMO_KEYS ?= tools/dev/keys.yaml
-demo:  ## Run a local Docker deployment (21 days of simulated activity)
+DEMO_REF ?= main
+demo:  ## Run a local Docker deployment of main (DEMO_REF= picks another commit)
+	@tree=$$(tools/dev/demo/worktree "$(DEMO_REF)") && echo "demo: $(DEMO_REF) at $$(git -C "$$tree" rev-parse --short HEAD) in $$tree" && \
+		exec env -u CONFIG $(MAKE) -C "$$tree" --no-print-directory demo-checkout
+
+# The demo checkout is the worktree that demo runs in. Its web build is needed
+# because the image copies web/dist, and a new worktree has none.
+demo-checkout: $(SHELL_OUT)
 	@if [ "$(CONFIG_WAS_SUPPLIED)" = yes ]; then \
 		echo "demo: using CONFIG=$(CONFIG)"; \
 		exec $(MAKE) --no-print-directory demo-run CONFIG="$(CONFIG)"; \
@@ -229,11 +239,16 @@ demo-stop:  ## Stop the demo containers and retain their named volumes
 demo-wipe:  ## Stop the demo and explicitly delete its named volumes
 	@tools/dev/demo/compose wipe
 
-# The desktop app normally opens app.librepaper.org. LIBREPAPER_SERVER points it
-# at the demo instead, so the whole stack under test is the checkout.
-demo-desktop: desktop  ## Open the desktop app against a running demo (start make demo first)
-	@curl -fsS -o /dev/null "http://localhost:$(PORT)/" || { echo "demo-desktop: nothing answers on http://localhost:$(PORT). Run make demo first."; exit 1; }
-	@LIBREPAPER_SERVER="http://localhost:$(PORT)/" desktop/target/release/librepaper-desktop
+# The desktop app normally opens app.librepaper.org. The demo builds main in the
+# worktree under the git directory (see demo), so the app is built there too and
+# opens against the demo. DEMO_REF= picks another commit. When nothing answers on
+# PORT, tools/dev/demo/desktop starts the demo and stops it when the app closes.
+demo-desktop:  ## Open the desktop app against the demo of main, starting the demo when none is running
+	@tree=$$(tools/dev/demo/worktree "$(DEMO_REF)") && \
+		exec env -u CONFIG $(MAKE) -C "$$tree" --no-print-directory demo-desktop-checkout
+
+demo-desktop-checkout: desktop
+	@PORT="$(PORT)" tools/dev/demo/desktop
 
 # --- the web app -----------------------------------------------------------
 #
