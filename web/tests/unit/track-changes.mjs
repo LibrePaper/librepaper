@@ -6,7 +6,7 @@
 // a remote peer typing beside a pending insertion does not grow it, that nested
 // deletions come back in every order, that records of the earlier model are
 // read in place, convert when touched and then decide in any order, that a
-// record rests before prune drops it, that a settled stale cursor is healed,
+// empty record is marked, then rests, before prune drops it, that a settled stale cursor is healed,
 // that a fragment whose change is gone is re-parented, and that two sessions of
 // one author converge. The seeded fuzzers at the end check random histories
 // against their oracles, and two peers editing at once must converge.
@@ -81,8 +81,7 @@ for (const f of fixtures) {
     changes: f.state.changes.map((c) => ({ ...c, author: c.who, run: null, at: 1 })),
     gaps: f.state.gaps.map((g, i) => ({ ...g, id: "gap-" + i })),
   };
-  // The fixtures describe one session, so every stored fragment may join.
-  const planned = planEdits(f.before, state, f.edits, f.me, { now: 2, mintId: () => "new-" + ++n, untracked: Boolean(f.untracked), joinable: () => true });
+  const planned = planEdits(f.before, state, f.edits, f.me, { now: 2, mintId: () => "new-" + ++n, untracked: Boolean(f.untracked) });
   // A foreign span the edit emptied stays in the planner's output with
   // emptied set. It holds no text, so the fixture does not describe it.
   const changes = planned.changes.filter((c) => c.state !== "removed" && !c.emptied).sort(byPlace);
@@ -115,7 +114,7 @@ for (const f of fixtures) {
   const states = Object.fromEntries(planned.changes.map((c) => [c.id, c.state]));
   assert.deepEqual(states, { a: "set", b: "kept" });
   assert.equal(planned.changes.find((c) => c.id === "a").at, 5);
-  // A span deleted whole is removed.
+  // A span deleted whole, the author's own included, stays as an emptied record.
   const gone = planEdits(
     "abXYcd",
     { changes: [{ id: "a", who: "me", author: "Me", run: null, at: 1, from: 2, to: 4 }], gaps: [] },
@@ -123,7 +122,7 @@ for (const f of fixtures) {
     ME,
     { now: 5, mintId: () => "new-1" },
   );
-  assert.deepEqual(gone.changes.map((c) => [c.id, c.state]), [["a", "removed"]]);
+  assert.deepEqual(gone.changes.map((c) => [c.id, c.state, Boolean(c.emptied)]), [["a", "kept", true]]);
   // The run tag lands on new changes.
   const tagged = planEdits("", { changes: [], gaps: [] }, [{ from: 0, to: 0, insert: "x" }], ME, {
     run: "pass-1",
@@ -399,7 +398,14 @@ for (const bobFirst of [true, false]) {
   doc.commit();
   assert.equal(resolveChanges(doc, "f1").length, 1);
   assert.equal(listChanges(doc).length, 1);
-  assert.equal(prune(doc), 2);
+  // The orphan goes at once. The empty record is only marked: it has not rested.
+  assert.equal(prune(doc), 1);
+  doc.commit();
+  assert.equal(map.size, 3);
+  assert.equal(typeof map.get("empty").get("emptied"), "number");
+  map.get("empty").set("emptied", 0);
+  doc.commit();
+  assert.equal(prune(doc), 1);
   doc.commit();
   // The change and its fragment are left.
   assert.equal(map.size, 2);
@@ -450,8 +456,8 @@ for (const decide of [accept, reject]) {
 }
 
 // A change emptied by another author's deletion leaves the rows at once but
-// stays in the map until it has rested: prune keeps a fresh record and drops
-// one that has rested.
+// stays in the map until prune has seen it empty for a while: the first prune
+// marks it and keeps it, and one marked long enough ago is dropped.
 {
   const doc = makeDoc("abcd");
   const [alice] = track(doc, 2, 2, "XY", ALICE);
@@ -462,11 +468,36 @@ for (const decide of [accept, reject]) {
   assert.equal(prune(doc), 0);
   doc.commit();
   assert.notEqual(doc.getMap(CHANGES).get(alice), undefined);
-  doc.getMap(CHANGES).get(alice).set("at", 0);
+  doc.getMap(CHANGES).get(alice).set("emptied", 0);
   doc.commit();
   assert.equal(prune(doc), 1);
   doc.commit();
   assert.equal(doc.getMap(CHANGES).get(alice), undefined);
+}
+
+// Settling: the first prune that sees a record empty marks it, and a later prune
+// drops it once the mark is older than a minute. A record found live again
+// loses its mark.
+{
+  const doc = makeDoc("abcd");
+  const [alice] = track(doc, 2, 2, "XY", ALICE);
+  track(doc, 2, 4, "", BOB);
+  const map = doc.getMap(CHANGES);
+  assert.equal(prune(doc), 0);
+  doc.commit();
+  assert.equal(typeof map.get(alice).get("emptied"), "number");
+  map.get(alice).set("emptied", 0);
+  doc.commit();
+  assert.equal(prune(doc), 1);
+  doc.commit();
+  assert.equal(map.get(alice), undefined);
+  const [live] = track(doc, 1, 1, "Q", ME);
+  map.get(live).set("emptied", 5);
+  doc.commit();
+  assert.equal(prune(doc), 0);
+  doc.commit();
+  assert.notEqual(map.get(live), undefined);
+  assert.equal(map.get(live).get("emptied"), undefined);
 }
 
 // A fragment whose change is gone, as a peer leaves it when it decides that
@@ -563,8 +594,9 @@ for (const decide of [accept, reject]) {
   const plan = planEdits("aZcd", pre, [{ from: 1, to: 2, insert: "" }], ME, { now: 9, mintId: () => "n" });
   const ids = writePlanned(doc, "f1", plan);
   doc.commit();
-  // My own span, deleted whole by me, leaves a pure deletion of "b".
-  assert.equal(ids.length, 1);
+  // My own span, deleted whole by me, leaves a pure deletion of "b". Its record
+  // is not rewritten: the fragment is what remains.
+  assert.equal(ids.length, 0);
   assert.deepEqual(resolveChanges(doc, "f1").map((c) => [c.from, c.to, c.deleted]), [[1, 1, "b"]]);
   assert.equal(resolveChanges(doc, "f1")[0].deleted, "b");
 }
@@ -688,13 +720,16 @@ for (const order of [["bob", "alice"], ["alice", "bob"]]) {
   assert.equal(resolveChanges(doc, "f1").length, 3);
 }
 
-// A tracked deletion right before the gap swallows it. The records it swallows
-// are rewritten as containers, and rejecting everything restores the text.
+// A tracked deletion right before the gap swallows it. The legacy fragments keep
+// their anchors and ranks, so nothing about them is written: their records stay
+// plain, and only the new change and its fragment are containers. Rejecting
+// everything restores the text.
 {
   const doc = oldAliceBob();
   track(doc, 0, 1, "", ME);
   assert.equal(textOf(doc), "e");
-  assert.equal(plainCount(doc), 0);
+  const kinds = [...doc.getMap(CHANGES).entries()].map(([, v]) => (v instanceof LoroMap ? v.get("kind") : "plain")).sort();
+  assert.deepEqual(kinds, ["change", "fragment", "plain", "plain"]);
   for (const r of resolveChanges(doc, "f1")) reject(doc, r.id);
   assert.equal(textOf(doc), "abcde");
   assert.equal(resolveChanges(doc, "f1").length, 0);
@@ -786,6 +821,84 @@ for (const order of permutations(["cara", "bob", "alice"])) {
   syncBoth(a, b);
   assert.equal(textOf(a), "abcdef");
   assert.equal(textOf(b), "abcdef");
+}
+
+// An insertion deleted whole by one session while the other extends it. The
+// extension stays tracked, and rejecting everything gives back "ab".
+{
+  const a = makeDoc("ab", 1);
+  track(a, 1, 1, "XY", ME);
+  const b = new LoroDoc();
+  b.setPeerId(2);
+  b.import(a.export({ mode: "snapshot" }));
+  track(a, 1, 3, "", ME);
+  prune(a);
+  a.commit();
+  track(b, 3, 3, "Z", ME);
+  syncBoth(a, b);
+  assert.equal(textOf(a), textOf(b));
+  assert.deepEqual(resolveChanges(a, "f1").map((c) => c.to - c.from), [1]);
+  for (const r of resolveChanges(a, "f1")) reject(a, r.id);
+  assert.equal(textOf(a), "ab");
+}
+
+// An insertion older than a minute, deleted by a peer that prunes at once, while
+// the author extends it. The extension is still tracked.
+{
+  const a = makeDoc("ab", 1);
+  track(a, 1, 1, "XY", ME);
+  for (const [, v] of a.getMap(CHANGES).entries()) if (v instanceof LoroMap) v.set("at", 0);
+  a.commit();
+  const b = new LoroDoc();
+  b.setPeerId(2);
+  b.import(a.export({ mode: "snapshot" }));
+  track(a, 1, 3, "", BOB);
+  prune(a);
+  a.commit();
+  track(b, 3, 3, "Z", ME);
+  syncBoth(a, b);
+  assert.deepEqual(resolveChanges(a, "f1").map((c) => c.who + ":" + (c.to - c.from)), ["me:1"]);
+  for (const r of resolveChanges(a, "f1")) reject(a, r.id);
+  assert.equal(textOf(a), "ab");
+}
+
+// The author extends a deletion while a reviewer accepts the original change.
+// After the sync and a prune, the new deletion is a row of its own.
+{
+  const a = makeDoc("abcde", 1);
+  track(a, 1, 2, "", ME);
+  const b = new LoroDoc();
+  b.setPeerId(2);
+  b.import(a.export({ mode: "snapshot" }));
+  track(a, 1, 2, "", ME);
+  accept(b, resolveChanges(b, "f1")[0].id);
+  syncBoth(a, b);
+  prune(a);
+  a.commit();
+  syncBoth(a, b);
+  assert.equal(textOf(a), textOf(b));
+  assert.deepEqual(resolveChanges(a, "f1").map((c) => c.deleted), ["c"]);
+  for (const r of resolveChanges(a, "f1")) reject(a, r.id);
+  assert.equal(textOf(a), "acde");
+}
+
+// The same, with the reviewer rejecting the original change: rejecting
+// everything restores the text.
+{
+  const a = makeDoc("abcde", 1);
+  track(a, 1, 2, "", ME);
+  const b = new LoroDoc();
+  b.setPeerId(2);
+  b.import(a.export({ mode: "snapshot" }));
+  track(a, 1, 2, "", ME);
+  reject(b, resolveChanges(b, "f1")[0].id);
+  syncBoth(a, b);
+  prune(a);
+  a.commit();
+  syncBoth(a, b);
+  assert.equal(textOf(a), textOf(b));
+  for (const r of resolveChanges(a, "f1")) reject(a, r.id);
+  assert.equal(textOf(a), "abcde");
 }
 
 // ---------------------------------------------------------------------------

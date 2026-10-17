@@ -24,20 +24,6 @@ export const CHANGES = "changes";
 // stale cursors, so that its author's other session has time to sync.
 const SETTLE_MS = 60_000;
 
-// Fragment ids this process minted, per document: the only stored fragments a
-// planner here may extend in place.
-/** @type {WeakMap<object, Set<string>>} */
-const createdHere = new WeakMap();
-/**
- * @param {import("loro-crdt").LoroDoc} doc
- * @returns {Set<string>}
- */
-function created(doc) {
-  let set = createdHere.get(doc);
-  if (!set) { set = new Set(); createdHere.set(doc, set); }
-  return set;
-}
-
 // A gap is not stored. It is the fragments that resolve to one offset, and its
 // id only names it within one plan.
 /**
@@ -54,7 +40,7 @@ function created(doc) {
  * @typedef {Change & { deleted: string }} Row
  * @typedef {Change & { state: "kept" | "set" | "removed", emptied?: boolean }} PlannedChange
  * @typedef {Gap & { state: "kept" | "set" | "removed" }} PlannedGap
- * @typedef {{ changes: PlannedChange[], gaps: PlannedGap[], dropped: string[] }} PlannedState
+ * @typedef {{ changes: PlannedChange[], gaps: PlannedGap[] }} PlannedState
  */
 
 // ---------------------------------------------------------------------------
@@ -67,22 +53,17 @@ function created(doc) {
  * and are planned in order with a running adjustment. Positions in the result
  * are in the coordinates of the text after the batch. Removed items keep their
  * last values. With `untracked` the edits make no change of mine and record
- * nothing; the spans and gaps still follow the text. `dropped` lists the ids
- * of fragment records joined into a neighbour, whose records go.
- *
- * `joinable` names the stored fragment ids this session may rewrite: the ones
- * it minted. Adjacent fragments join into one record only when both may be
- * rewritten, so a stored fragment another session may be extending keeps its
- * own record. Without it only fragments not yet stored join.
+ * nothing; the spans and gaps still follow the text. Adjacent pieces of one
+ * change join into one fragment only while neither is stored yet.
  *
  * @param {string} before
  * @param {FileState} state
  * @param {Edit[]} edits
  * @param {Me} me
- * @param {{ run?: string | null, now: number, mintId: () => string, untracked?: boolean, joinable?: (id: string) => boolean }} opts
+ * @param {{ run?: string | null, now: number, mintId: () => string, untracked?: boolean }} opts
  * @returns {PlannedState}
  */
-export function planEdits(before, state, edits, me, { run = null, now, mintId, untracked = false, joinable = () => false }) {
+export function planEdits(before, state, edits, me, { run = null, now, mintId, untracked = false }) {
   let cur = before;
   let changes = state.changes.map((c) => ({ ...c, state: "kept" }));
   let gaps = state.gaps.map((g) => ({ ...g, fragments: g.fragments.map((f) => ({ ...f })), state: "kept" }));
@@ -90,15 +71,13 @@ export function planEdits(before, state, edits, me, { run = null, now, mintId, u
   const originalGaps = new Set(state.gaps.map((g) => g.id));
   const removedChanges = new Map();
   const removedGaps = new Map();
-  // Fragments joined into a neighbour along the way; their records go.
-  const dropped = [];
   let adj = 0;
   for (const edit of edits) {
     const ef = edit.from + adj;
     const et = edit.to + adj;
     const insert = edit.insert;
     if (ef === et && insert.length === 0) continue;
-    const step = planOne(cur, changes, gaps, ef, et, insert, me, run, now, mintId, untracked, dropped, joinable);
+    const step = planOne(cur, changes, gaps, ef, et, insert, me, run, now, mintId, untracked);
     for (const c of changes) if (!step.changes.some((x) => x.id === c.id) && originalChanges.has(c.id)) removedChanges.set(c.id, { ...c, state: "removed" });
     for (const g of gaps) if (!step.gaps.some((x) => x.id === g.id) && originalGaps.has(g.id)) removedGaps.set(g.id, { ...g, state: "removed" });
     changes = step.changes;
@@ -111,7 +90,6 @@ export function planEdits(before, state, edits, me, { run = null, now, mintId, u
   return {
     changes: [...changes, ...removedChanges.values()],
     gaps: [...gaps, ...removedGaps.values()],
-    dropped,
   };
 }
 
@@ -119,7 +97,7 @@ function hasSpan(c) {
   return c.to > c.from;
 }
 
-function planOne(cur, changes, gaps, ef, et, insert, me, run, now, mintId, untracked, dropped, joinable) {
+function planOne(cur, changes, gaps, ef, et, insert, me, run, now, mintId, untracked) {
   const len = insert.length;
   const delta = len - (et - ef);
   // Own changes this edit touches: a span overlapping or adjacent, or a
@@ -176,23 +154,21 @@ function planOne(cur, changes, gaps, ef, et, insert, me, run, now, mintId, untra
   const splitAtEnd = len > 0 && !ownAtEnd;
   const merged = [];
   const after = [];
-  // Adjacent fragments of one change join into one record only when both may
-  // be rewritten here: a fragment made in this session, or one not yet
-  // stored. A stored fragment another session may be extending at this very
-  // moment keeps its own record, so neither write is lost. The record of the
-  // one that joins goes.
-  const mayJoin = (f) => !f.id || joinable(f.id);
-  const pushFragment = (list, change, text, id) => {
+  // Adjacent pieces of one change join into one fragment only while neither is
+  // stored yet. A stored fragment is never rewritten or dropped here: its
+  // author's other session may be extending it, or a reviewer deciding its
+  // change, at this very moment, and either write would be lost. A stored
+  // fragment keeps its id and rank through the walk, so writing the gap back
+  // changes nothing about it unless the order asks for it.
+  const pushFragment = (list, change, text, id, rank) => {
     const last = list[list.length - 1];
-    if (last && last.change === change && mayJoin(last) && (!id || joinable(id))) {
-      last.text += text;
-      if (id) dropped.push(id);
-    } else list.push({ change, text, ...(id ? { id } : {}) });
+    if (last && last.change === change && !last.id && !id) last.text += text;
+    else list.push({ change, text, ...(id ? { id } : {}), ...(typeof rank === "number" ? { rank } : {}) });
   };
   for (let p = ef; p <= et; p++) {
     const target = splitAtEnd && p === et ? after : merged;
     // Untracked edits can leave two gaps on one point; every one of them is taken.
-    for (const g of swallowedGaps) if (g.at === p) for (const f of g.fragments) pushFragment(target, mine && owned.has(f.change) ? mine.id : f.change, f.text, f.id);
+    for (const g of swallowedGaps) if (g.at === p) for (const f of g.fragments) pushFragment(target, mine && owned.has(f.change) ? mine.id : f.change, f.text, f.id, f.rank);
     if (p < et && !spanAt(p) && records) pushFragment(merged, mine.id, cur[p]);
   }
   // Spans.
@@ -221,15 +197,11 @@ function planOne(cur, changes, gaps, ef, et, insert, me, run, now, mintId, untra
     const from = c.from < ef ? c.from : ef + len;
     const to = c.to > et ? c.to + delta : (c.from < ef ? ef : ef + len);
     if (to > from) outChanges.push({ ...c, from, to, state: "set" });
-    else if (owned.has(c.id)) {
-      // My own span, deleted whole by me: the change goes unless fragments
-      // of it remain elsewhere.
-      outChanges.push({ ...c, from: ef + len, to: ef + len, state: "set" });
-    } else {
-      // Another author's whole span went from this view. The record stays,
-      // untouched: its author may be extending it at this moment, and a stale
-      // cursor resolves to the right place anyway. Prune drops it later if it
-      // is still empty.
+    else {
+      // The whole span went from this view. The record stays, untouched: its
+      // author, in this or another session, may be extending it at this
+      // moment, and a stale cursor resolves to the right place anyway. Prune
+      // drops it once it has rested empty for a while.
       outChanges.push({ ...c, from: ef + len, to: ef + len, emptied: true });
     }
   }
@@ -262,8 +234,8 @@ function planOne(cur, changes, gaps, ef, et, insert, me, run, now, mintId, untra
     const there = outGaps.filter((g) => g.at === pos);
     if (there.length > 0) {
       const list = [];
-      for (const g of there) for (const f of g.fragments) pushFragment(list, f.change, f.text, f.id);
-      for (const f of merged) pushFragment(list, f.change, f.text, f.id);
+      for (const g of there) for (const f of g.fragments) pushFragment(list, f.change, f.text, f.id, f.rank);
+      for (const f of merged) pushFragment(list, f.change, f.text, f.id, f.rank);
       const rest = outGaps.filter((g) => g.at !== pos);
       rest.push({ ...there[0], fragments: list, state: "set" });
       outGaps.length = 0;
@@ -280,7 +252,7 @@ function planOne(cur, changes, gaps, ef, et, insert, me, run, now, mintId, untra
       const g = outGaps[i];
       if (!g.fragments.some((f) => owned.has(f.change) && f.change !== mine.id)) continue;
       const list = [];
-      for (const f of g.fragments) pushFragment(list, owned.has(f.change) ? mine.id : f.change, f.text, f.id);
+      for (const f of g.fragments) pushFragment(list, owned.has(f.change) ? mine.id : f.change, f.text, f.id, f.rank);
       outGaps[i] = { ...g, fragments: list, state: "set" };
     }
   }
@@ -775,7 +747,7 @@ function writeFragment(doc, id, fileId, f, startBytes, at, rank, owner, heal = f
 }
 
 // Writes the fragments of one gap at `at`: each its own record, with rank.
-// A fragment with no id gets a fresh one, which this session may join later.
+// A fragment with no id gets a fresh one.
 // Returns false when no cursor can be made.
 function writeGap(doc, text, fileId, at, fragments, owners = new Map(), heal = false) {
   const start = text.getCursor(at, -1);
@@ -784,7 +756,7 @@ function writeGap(doc, text, fileId, at, fragments, owners = new Map(), heal = f
   const ranks = rankGap(fragments);
   const bytes = start.encode();
   fragments.forEach((f, i) => {
-    if (!f.id) { f.id = crypto.randomUUID(); created(doc).add(f.id); }
+    if (!f.id) f.id = crypto.randomUUID();
     writeFragment(doc, f.id, fileId, f, bytes, at, ranks[i], owners.get(f.change), heal);
   });
   return true;
@@ -812,7 +784,6 @@ export function writePlanned(doc, fileId, plan) {
     if (g.state === "removed") { for (const f of g.fragments) if (f.id && !live.has(f.id)) map.delete(f.id); }
     else if (g.state === "set") writeGap(doc, text, fileId, g.at, g.fragments, owners);
   }
-  for (const id of plan.dropped ?? []) if (!live.has(id)) map.delete(id);
   for (const c of plan.changes) {
     if (c.state === "removed") map.delete(c.id);
     else if (c.state === "set" && writeChange(doc, text, fileId, c)) written.push(c.id);
@@ -836,7 +807,7 @@ export function writePlanned(doc, fileId, plan) {
  */
 export function recordEdits(doc, fileId, before, preResolved, edits, me, { run = null, now = Date.now() } = {}) {
   if (!fileText(doc, fileId)) return [];
-  const plan = planEdits(before, preResolved, edits, me, { run, now, mintId: () => crypto.randomUUID(), joinable: (id) => created(doc).has(id) });
+  const plan = planEdits(before, preResolved, edits, me, { run, now, mintId: () => crypto.randomUUID() });
   return writePlanned(doc, fileId, plan);
 }
 
@@ -1000,8 +971,9 @@ export function rejectMany(doc, ids) {
 }
 
 /**
- * Drops orphaned records, and empty ones that have rested, re-parents fragments
- * whose change is gone, and re-anchors stale cursors that have rested too.
+ * Drops orphaned records, and empty ones that have stayed empty a while,
+ * re-parents fragments whose change is gone, and re-anchors stale cursors that
+ * have rested too.
  * Legacy records with nothing left are dropped as well; the others are read in
  * place. Does not commit. Returns the number of records deleted; re-parented
  * records are not counted.
@@ -1034,14 +1006,19 @@ export function prune(doc) {
     }
     const liveIds = new Set(changes.map((c) => c.id));
     for (const g of gaps) for (const f of g.fragments) liveIds.add(f.id);
-    // An empty record is dropped, and a stale cursor healed onto a live
-    // character, only once the record has rested for a while: its author may
-    // still be extending it in a session that has not synced yet, and a
-    // write here would race that one.
-    const settled = (v) => { const at = v.get("at"); return typeof at !== "number" || at < Date.now() - SETTLE_MS; };
+    // An empty record is dropped only once it has rested empty for a while: its
+    // author may still be extending it in a session that has not synced yet.
+    // The rest starts when a prune first sees it empty (`emptied`), not at its
+    // last edit, so an old insertion deleted a moment ago still gets its grace.
+    // A record found live again loses the mark.
+    const now = Date.now();
+    const settled = (v) => { const at = v.get("at"); return typeof at !== "number" || at < now - SETTLE_MS; };
     for (const [id, v] of [...map.entries()]) {
       if (!(v instanceof LoroMap) || v.get("file") !== file) continue;
-      if (!liveIds.has(id) && settled(v)) { map.delete(id); count += 1; }
+      const emptiedAt = v.get("emptied");
+      if (liveIds.has(id)) { if (emptiedAt !== undefined) v.delete("emptied"); continue; }
+      if (typeof emptiedAt !== "number") { v.set("emptied", now); continue; }
+      if (emptiedAt < now - SETTLE_MS) { map.delete(id); count += 1; }
     }
     // A legacy record with nothing left to show is dropped too.
     for (const [id, v] of legacyRecords(doc, file)) if (!liveIds.has(id) && !v.points?.length) { map.delete(id); count += 1; }
