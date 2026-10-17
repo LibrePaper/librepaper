@@ -200,6 +200,9 @@ fn open_window(app: &AppHandle, url: Url) -> tauri::Result<tauri::WebviewWindow>
         .title("LibrePaper")
         .inner_size(1280.0, 860.0)
         .initialization_script(desktop_script())
+        // Tauri's own drop handler swallows file drops, so the page's HTML
+        // drop events (the file explorer upload) never fire without this.
+        .disable_drag_drop_handler()
         .on_new_window(move |url, _features| {
             let origin = url.origin().ascii_serialization();
             if trusted(&opener, &origin) {
