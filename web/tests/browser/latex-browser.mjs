@@ -390,10 +390,9 @@ async function main(browserName) {
       const tree = {
         main: "main.tex",
         texts: {
-          // T1 fonts, as the tutorial uses: the default OpenType Latin Modern
-          // does not load in the browser XeTeX yet (kata q625), and this
-          // case is about the subfolder, not the fonts.
-          "main.tex": "\\documentclass{article}\\usepackage[T1]{fontenc}\\begin{document}Hello \\input{sections/part.tex}\\end{document}\n",
+          // No fontenc and no fontspec, so XeTeX asks for its default font,
+          // the OpenType Latin Modern, by a bare file name (kata q625).
+          "main.tex": "\\documentclass{article}\\begin{document}Hello \\input{sections/part.tex}\\end{document}\n",
           "sections/part.tex": "from a subfolder.\n",
         },
         assets: {},
@@ -405,8 +404,8 @@ async function main(browserName) {
       );
       const inspected = inspectPdfBytes(result.pdf ? Buffer.from(result.pdf, "base64") : null, scratch);
       log(browserName, `subfolder xelatex: ok=${result.ok} pages=${inspected.pages}`);
-      if (!result.ok || !inspected.pdf || inspected.pages !== 1 || !inspected.text.includes("from a subfolder")) {
-        throw new Error(`subfolder xelatex: expected a one-page PDF containing "from a subfolder" (ok=${result.ok}, pages=${inspected.pages})\n${result.log.slice(-2000)}`);
+      if (!result.ok || !inspected.pdf || inspected.pages !== 1 || !inspected.text.includes("Hello") || !inspected.text.includes("from a subfolder") || /not loadable/.test(result.log)) {
+        throw new Error(`subfolder xelatex: expected a one-page PDF in the default font containing "Hello from a subfolder" (ok=${result.ok}, pages=${inspected.pages})\n${result.log.slice(-2000)}`);
       }
     }
 
