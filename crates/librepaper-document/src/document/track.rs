@@ -44,8 +44,9 @@ pub struct ChangeRecord {
     /// Code point offsets of the inserted text, `from <= to`.
     pub from: usize,
     pub to: usize,
-    /// A foreign span this edit emptied. It stays in the plan with `from == to`
-    /// so that it is kept rather than treated as gone; it is never written.
+    /// A span this edit emptied, the author's own included. It stays in the
+    /// plan with `from == to` so that it is kept rather than treated as gone;
+    /// it is never written.
     pub emptied: bool,
     /// Its stored cursors resolve to a replaced character. Set by the reader.
     pub stale: bool,
@@ -95,13 +96,11 @@ pub enum PlanState {
 }
 
 /// The planned records of one file, in the coordinates of the text after the
-/// batch. `dropped` lists fragment records joined into a neighbour, which are
-/// to be deleted.
+/// batch.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Plan {
     pub changes: Vec<(ChangeRecord, PlanState)>,
     pub gaps: Vec<(Gap, PlanState)>,
-    pub dropped: Vec<String>,
 }
 
 /// A pending change with its span resolved to offsets in the text now, and
@@ -135,11 +134,11 @@ type GapRow = (Gap, PlanState);
 /// With `untracked`, the edits record nothing and change nobody's records
 /// except to move, shrink, split and merge them.
 ///
-/// `joinable` admits the stored fragment ids this caller may rewrite. Adjacent
-/// fragments of one change join into one record only when both may be
-/// rewritten: a fragment with no id, or one whose id `joinable` admits. A
-/// stored fragment that another session of the same author may be extending
-/// keeps its own record.
+/// A stored fragment is never rewritten or dropped here, whoever stored it. Its
+/// author's other session may be extending it, or a reviewer may be deciding
+/// its change, at this very moment, and either write would be lost. So adjacent
+/// pieces join into one fragment only while neither is stored, and a span that
+/// an edit empties stays as an empty record for prune to settle.
 #[allow(clippy::too_many_arguments)]
 pub fn plan_edits(
     before: &str,
@@ -150,7 +149,6 @@ pub fn plan_edits(
     now_ms: i64,
     untracked: bool,
     mint: &mut dyn FnMut() -> String,
-    joinable: &dyn Fn(&str) -> bool,
 ) -> Plan {
     let mut cur: Vec<char> = before.chars().collect();
     let mut changes: Vec<Row> = state
@@ -168,7 +166,6 @@ pub fn plan_edits(
     let mut removed_changes: BTreeMap<String, Row> = BTreeMap::new();
     let mut removed_gaps: BTreeMap<String, GapRow> = BTreeMap::new();
     let mut adj: isize = 0;
-    let mut dropped: Vec<String> = Vec::new();
 
     for (from, to, insert) in edits {
         let ef = (*from as isize + adj) as usize;
@@ -188,9 +185,7 @@ pub fn plan_edits(
             run,
             now_ms,
             untracked,
-            &mut dropped,
             mint,
-            joinable,
         );
         for (c, _) in &changes {
             if original_changes.contains(&c.id) && !next_changes.iter().any(|(n, _)| n.id == c.id) {
@@ -225,7 +220,6 @@ pub fn plan_edits(
     Plan {
         changes: out_changes,
         gaps: out_gaps,
-        dropped,
     }
 }
 
@@ -242,39 +236,24 @@ fn span_end_at(changes: &[Row], p: usize) -> Option<usize> {
         .map(|(c, _)| c.to)
 }
 
-/// Whether the planner may rewrite a fragment: one with no record yet, or one
-/// the caller admits through `joinable`.
-fn may_rewrite(id: Option<&str>, joinable: &dyn Fn(&str) -> bool) -> bool {
-    id.is_none_or(joinable)
-}
-
-/// Appends `text` owned by `change`, joining it to the last fragment when that
-/// one has the same owner and both may be rewritten. The record id of a
-/// fragment joined away is reported in `dropped`.
+/// Appends `text` owned by `change`, joining it to the last fragment only when
+/// neither has a stored id. A stored fragment keeps its record and its rank.
 fn push_fragment(
     list: &mut Vec<Fragment>,
     change: &str,
     text: &str,
     id: Option<&str>,
-    dropped: &mut Vec<String>,
-    joinable: &dyn Fn(&str) -> bool,
+    rank: Option<f64>,
 ) {
     match list.last_mut() {
-        Some(last)
-            if last.change == change
-                && may_rewrite(last.id.as_deref(), joinable)
-                && may_rewrite(id, joinable) =>
-        {
+        Some(last) if last.change == change && last.id.is_none() && id.is_none() => {
             last.text.push_str(text);
-            if let Some(id) = id {
-                dropped.push(id.to_string());
-            }
         }
         _ => list.push(Fragment {
             id: id.map(str::to_string),
             change: change.to_string(),
             text: text.to_string(),
-            rank: None,
+            rank,
             stale: false,
         }),
     }
@@ -308,9 +287,7 @@ fn plan_one(
     run: Option<&str>,
     now: i64,
     untracked: bool,
-    dropped: &mut Vec<String>,
     mint: &mut dyn FnMut() -> String,
-    joinable: &dyn Fn(&str) -> bool,
 ) -> (Vec<Row>, Vec<GapRow>) {
     let len = insert.len();
     let delta = len as isize - (et - ef) as isize;
@@ -425,12 +402,12 @@ fn plan_one(
                 } else {
                     &mut merged
                 };
-                push_fragment(target, change, &f.text, f.id.as_deref(), dropped, joinable);
+                push_fragment(target, change, &f.text, f.id.as_deref(), f.rank);
             }
         }
         if let (Some(m), Some(ch)) = (&mine, cur.get(p)) {
             if p < et && span_end_at(&changes, p).is_none() {
-                push_fragment(&mut merged, &m.id, &ch.to_string(), None, dropped, joinable);
+                push_fragment(&mut merged, &m.id, &ch.to_string(), None, None);
             }
         }
     }
@@ -514,8 +491,8 @@ fn plan_one(
         } else {
             // The whole span went from this view. The record stays, untouched:
             // its author may be extending it at this moment, and a stale cursor
-            // resolves to the right place anyway. It is kept, never written, and
-            // prune drops it later if it is still empty.
+            // resolves to the right place anyway. It is kept, never written. Prune
+            // marks it, and drops it once it has rested empty for a while.
             out.push((
                 ChangeRecord {
                     from: ef + len,
@@ -563,25 +540,11 @@ fn plan_one(
             let mut list: Vec<Fragment> = Vec::new();
             for (g, _) in &there {
                 for f in &g.fragments {
-                    push_fragment(
-                        &mut list,
-                        &f.change,
-                        &f.text,
-                        f.id.as_deref(),
-                        dropped,
-                        joinable,
-                    );
+                    push_fragment(&mut list, &f.change, &f.text, f.id.as_deref(), f.rank);
                 }
             }
             for f in &merged {
-                push_fragment(
-                    &mut list,
-                    &f.change,
-                    &f.text,
-                    f.id.as_deref(),
-                    dropped,
-                    joinable,
-                );
+                push_fragment(&mut list, &f.change, &f.text, f.id.as_deref(), f.rank);
             }
             out_gaps.retain(|(g, _)| g.at != pos);
             out_gaps.push((
@@ -635,14 +598,7 @@ fn plan_one(
                 } else {
                     f.change.as_str()
                 };
-                push_fragment(
-                    &mut list,
-                    change,
-                    &f.text,
-                    f.id.as_deref(),
-                    dropped,
-                    joinable,
-                );
+                push_fragment(&mut list, change, &f.text, f.id.as_deref(), f.rank);
             }
             g.fragments = list;
             *st = PlanState::Set;
@@ -1674,11 +1630,6 @@ pub fn write_planned(doc: &LoroDoc, file_id: &str, plan: &Plan) -> Vec<String> {
             PlanState::Kept => {}
         }
     }
-    for id in &plan.dropped {
-        if !live.contains(id) {
-            root.delete(id).ok();
-        }
-    }
     let mut written = Vec::new();
     for (c, st) in &plan.changes {
         match st {
@@ -1732,7 +1683,6 @@ fn apply_planned(
     run: Option<&str>,
     now_ms: i64,
     untracked: bool,
-    joinable: &dyn Fn(&str) -> bool,
 ) -> Result<Option<Plan>, String> {
     let text = text_of(doc, file_id).ok_or_else(|| "the file does not exist".to_string())?;
     let before = text.to_string();
@@ -1758,7 +1708,7 @@ fn apply_planned(
 
     let mut mint = mint_uuid;
     let plan = plan_edits(
-        &before, &state, &planned, by, run, now_ms, untracked, &mut mint, joinable,
+        &before, &state, &planned, by, run, now_ms, untracked, &mut mint,
     );
     Ok(Some(plan))
 }
@@ -1776,7 +1726,7 @@ pub fn apply_tracked_edits(
     run: Option<&str>,
     now_ms: i64,
 ) -> Result<Vec<String>, String> {
-    let plan = apply_planned(doc, file_id, edits, by, run, now_ms, false, &|_| false)?;
+    let plan = apply_planned(doc, file_id, edits, by, run, now_ms, false)?;
     Ok(plan.map_or_else(Vec::new, |plan| write_planned(doc, file_id, &plan)))
 }
 
@@ -1791,7 +1741,7 @@ pub fn untracked_edits(doc: &LoroDoc, file_id: &str, edits: &[Edit]) -> Result<(
         who: "",
         author: "",
     };
-    if let Some(plan) = apply_planned(doc, file_id, edits, &nobody, None, 0, true, &|_| false)? {
+    if let Some(plan) = apply_planned(doc, file_id, edits, &nobody, None, 0, true)? {
         write_planned(doc, file_id, &plan);
     }
     Ok(())
@@ -2012,7 +1962,8 @@ pub fn reject_many<S: AsRef<str>>(doc: &LoroDoc, ids: &[S]) -> usize {
     count
 }
 
-/// How long a record rests before `prune` drops it when it is empty, or heals a
+/// How long an empty record rests, from the first prune that sees it empty,
+/// before `prune` drops it, and how long a record rests before `prune` heals a
 /// stale cursor on it: its author's other session needs time to sync.
 const SETTLE_MS: i64 = 60_000;
 
@@ -2022,8 +1973,8 @@ fn now_ms() -> i64 {
         .map_or(0, |d| d.as_millis() as i64)
 }
 
-/// Whether record `id` has rested long enough to be dropped or healed. A record
-/// with no `at` has.
+/// Whether record `id` has rested long enough to have a stale cursor healed. A
+/// record with no `at` has.
 fn settled(root: &LoroMap, id: &str, now: i64) -> bool {
     match record_map(root, id).and_then(|m| num_of(&m, "at")) {
         None => true,
@@ -2032,9 +1983,11 @@ fn settled(root: &LoroMap, id: &str, now: i64) -> bool {
 }
 
 /// Drops empty records, re-parents fragments whose change is gone, and heals
-/// stale cursors. Records of a file with no text are dropped. An empty record,
-/// or a stale cursor, is touched only once it has settled. Returns the number of
-/// records deleted. Does not commit.
+/// stale cursors. Records of a file with no text are dropped. An empty record is
+/// dropped only once a prune has seen it empty for a while: the first prune that
+/// finds it empty marks it `emptied`, and a record found live again loses the
+/// mark. A stale cursor is healed only once its record has settled. Returns the
+/// number of records deleted. Does not commit.
 pub fn prune(doc: &LoroDoc) -> usize {
     let root = doc.get_map(CHANGES);
     let files: BTreeSet<String> = records(doc)
@@ -2097,9 +2050,21 @@ pub fn prune(doc: &LoroDoc) -> usize {
             if str_of(&m, "file").as_deref() != Some(file.as_str()) {
                 continue;
             }
-            if !live.contains(&id) && settled(&root, &id, now) {
-                root.delete(&id).ok();
-                removed += 1;
+            if live.contains(&id) {
+                if m.get("emptied").is_some() {
+                    m.delete("emptied").ok();
+                }
+                continue;
+            }
+            match num_of(&m, "emptied") {
+                None => {
+                    m.insert("emptied", LoroValue::Double(now as f64)).ok();
+                }
+                Some(since) if (since as i64) < now - SETTLE_MS => {
+                    root.delete(&id).ok();
+                    removed += 1;
+                }
+                Some(_) => {}
             }
         }
         // A legacy record with nothing left to show is dropped too.
@@ -2290,7 +2255,6 @@ mod tests {
                 2,
                 fx.untracked,
                 &mut mint,
-                &|_| true,
             );
 
             let mut got_changes: Vec<ChangeRow> = plan
@@ -2626,7 +2590,17 @@ mod tests {
         // A record without a kind is not ours to touch.
         doc.get_map(CHANGES).insert("junk", 1).unwrap();
         doc.commit();
-        assert_eq!(prune(&doc), 2);
+        // The orphan goes. The empty record is only marked: its settling starts.
+        assert_eq!(prune(&doc), 1);
+        doc.commit();
+        let root = doc.get_map(CHANGES);
+        assert!(record_map(&root, "empty").is_some());
+        record_map(&root, "empty")
+            .unwrap()
+            .insert("emptied", LoroValue::Double(0.0))
+            .unwrap();
+        doc.commit();
+        assert_eq!(prune(&doc), 1);
         assert!(doc.get_map(CHANGES).get("junk").is_some());
         assert_eq!(resolve_changes(&doc, &id).len(), 1);
         assert_eq!(prune(&doc), 0);
@@ -3394,12 +3368,153 @@ mod tests {
         let (doc, id) = setup("abc");
         empty_record(&doc, "fresh", &id, now_ms() as f64);
         empty_record(&doc, "old", &id, 1.0);
+        // The old one was first seen empty long ago.
+        let root = doc.get_map(CHANGES);
+        record_map(&root, "old")
+            .unwrap()
+            .insert("emptied", LoroValue::Double(1.0))
+            .unwrap();
         doc.commit();
         assert_eq!(prune(&doc), 1);
         doc.commit();
         assert!(doc.get_map(CHANGES).get("fresh").is_some());
         assert!(doc.get_map(CHANGES).get("old").is_none());
         assert!(resolve_changes(&doc, &id).is_empty());
+    }
+
+    #[test]
+    fn settling_counts_from_the_first_prune_that_saw_the_record_empty() {
+        // The first prune that finds an empty record marks it and keeps it. It
+        // drops it only once that mark is old.
+        let (doc, id) = setup("abc");
+        empty_record(&doc, "empty", &id, 1.0);
+        doc.commit();
+        assert_eq!(prune(&doc), 0);
+        doc.commit();
+        let root = doc.get_map(CHANGES);
+        let m = record_map(&root, "empty").expect("kept by the first prune");
+        assert!(num_of(&m, "emptied").is_some());
+        m.insert("emptied", LoroValue::Double(0.0)).unwrap();
+        doc.commit();
+        assert_eq!(prune(&doc), 1);
+        doc.commit();
+        assert!(root.get("empty").is_none());
+        assert!(resolve_changes(&doc, &id).is_empty());
+    }
+
+    #[test]
+    fn an_own_insertion_deleted_whole_while_another_session_extends_it() {
+        // The author's session deletes her own insertion and prunes, while her
+        // other session extends it. The extension survives, and rejecting it
+        // restores the text.
+        let (a, id) = setup("ab");
+        let p = who_of("p");
+        apply_tracked_edits(&a, &id, &[edit(1, 0, "XY")], &p, None, 1).unwrap();
+        a.commit();
+        let b = new_doc();
+        b.import(&a.export(loro::ExportMode::snapshot()).unwrap())
+            .unwrap();
+        apply_tracked_edits(&a, &id, &[edit(1, 2, "")], &p, None, 2).unwrap();
+        a.commit();
+        prune(&a);
+        a.commit();
+        apply_tracked_edits(&b, &id, &[edit(3, 0, "Z")], &p, None, 3).unwrap();
+        b.commit();
+        sync(&a, &b);
+        assert_eq!(body(&a, &id), body(&b, &id));
+        let rows = resolve_changes(&a, &id);
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].to - rows[0].from, 1);
+        reject_where(&a, &id, |_| true);
+        a.commit();
+        assert_eq!(body(&a, &id), "ab");
+    }
+
+    #[test]
+    fn an_old_insertion_deleted_by_a_peer_while_its_author_extends_it() {
+        // The insertion is old enough to be healed by age. A peer deletes it and
+        // prunes at once, while its author extends it on another session. The
+        // extension survives, and rejecting it restores the text.
+        let (a, id) = setup("ab");
+        let p = who_of("p");
+        apply_tracked_edits(&a, &id, &[edit(1, 0, "XY")], &p, None, 1).unwrap();
+        a.commit();
+        let root = a.get_map(CHANGES);
+        let keys: Vec<String> = root.keys().map(|k| k.to_string()).collect();
+        for k in &keys {
+            if let Some(m) = record_map(&root, k) {
+                m.insert("at", LoroValue::Double(0.0)).unwrap();
+            }
+        }
+        a.commit();
+        let b = new_doc();
+        b.import(&a.export(loro::ExportMode::snapshot()).unwrap())
+            .unwrap();
+        apply_tracked_edits(&a, &id, &[edit(1, 2, "")], &who_of("q"), None, 2).unwrap();
+        a.commit();
+        prune(&a);
+        a.commit();
+        apply_tracked_edits(&b, &id, &[edit(3, 0, "Z")], &p, None, 3).unwrap();
+        b.commit();
+        sync(&a, &b);
+        assert_eq!(row_summary(&a, &id), ["p:+1"]);
+        assert_eq!(row_summary(&b, &id), ["p:+1"]);
+        reject_where(&a, &id, |_| true);
+        a.commit();
+        assert_eq!(body(&a, &id), "ab");
+    }
+
+    #[test]
+    fn extending_a_deletion_while_a_reviewer_accepts_it() {
+        let (a, id) = setup("abcde");
+        let p = who_of("p");
+        apply_tracked_edits(&a, &id, &[edit(1, 1, "")], &p, None, 1).unwrap();
+        a.commit();
+        let b = new_doc();
+        b.import(&a.export(loro::ExportMode::snapshot()).unwrap())
+            .unwrap();
+        // The author deletes c on this session, extending the deletion of b.
+        apply_tracked_edits(&a, &id, &[edit(1, 1, "")], &p, None, 2).unwrap();
+        a.commit();
+        // A reviewer accepts the change to b on the other session.
+        let first = resolve_changes(&b, &id)[0].id.clone();
+        assert!(accept(&b, &first));
+        b.commit();
+        sync(&a, &b);
+        prune(&a);
+        a.commit();
+        sync(&a, &b);
+        assert_eq!(body(&a, &id), body(&b, &id));
+        let rows = resolve_changes(&a, &id);
+        let deleted: Vec<&str> = rows.iter().map(|c| c.deleted.as_str()).collect();
+        assert_eq!(deleted, ["c"]);
+        reject_where(&a, &id, |_| true);
+        a.commit();
+        assert_eq!(body(&a, &id), "acde");
+    }
+
+    #[test]
+    fn extending_a_deletion_while_a_reviewer_rejects_it() {
+        let (a, id) = setup("abcde");
+        let p = who_of("p");
+        apply_tracked_edits(&a, &id, &[edit(1, 1, "")], &p, None, 1).unwrap();
+        a.commit();
+        let b = new_doc();
+        b.import(&a.export(loro::ExportMode::snapshot()).unwrap())
+            .unwrap();
+        apply_tracked_edits(&a, &id, &[edit(1, 1, "")], &p, None, 2).unwrap();
+        a.commit();
+        let first = resolve_changes(&b, &id)[0].id.clone();
+        assert!(reject(&b, &first));
+        b.commit();
+        sync(&a, &b);
+        prune(&a);
+        a.commit();
+        sync(&a, &b);
+        assert_eq!(body(&a, &id), body(&b, &id));
+        reject_where(&a, &id, |_| true);
+        a.commit();
+        assert_eq!(body(&a, &id), "abcde");
     }
 
     #[test]
@@ -3566,18 +3681,25 @@ mod tests {
             assert_eq!(legacy_records(&doc, &id).len(), 2);
         }
         {
-            // Deleting a swallows the gap, so every record is converted, and
-            // rejecting everything restores the text.
+            // Deleting a swallows the gap, but the legacy records keep their
+            // anchor and rank, so nothing of theirs is written. Only Cara's new
+            // change and fragment are containers, and rejecting everything
+            // restores the text.
             let (doc, id) = build();
             apply_tracked_edits(&doc, &id, &[edit(0, 1, "")], &who_of("cara"), None, 1).unwrap();
             doc.commit();
             let root = doc.get_map(CHANGES);
-            let keys: Vec<String> = root.keys().map(|k| k.to_string()).collect();
-            assert!(
-                keys.iter().all(|k| record_map(&root, k).is_some()),
-                "a plain record is left"
-            );
-            assert_eq!(keys.len(), 7);
+            let mut kinds: Vec<String> = Vec::new();
+            let mut plain = 0;
+            for k in root.keys().map(|k| k.to_string()).collect::<Vec<String>>() {
+                match record_map(&root, &k) {
+                    Some(m) => kinds.push(str_of(&m, "kind").unwrap_or_default()),
+                    None => plain += 1,
+                }
+            }
+            kinds.sort();
+            assert_eq!(kinds, ["change", "fragment"]);
+            assert_eq!(plain, 2, "the legacy records are no longer plain values");
             reject_where(&doc, &id, |_| true);
             doc.commit();
             assert_eq!(body(&doc, &id), "abcde");
