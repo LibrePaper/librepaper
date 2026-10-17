@@ -220,6 +220,7 @@ Reader and Changes panel:
   download, `trackedProposalStatus` and its persistence warnings, the
   stale-suggestion merge editor. `MergeEditor` stays for History.
 - Readers without edit rights see the rows with no buttons.
+- The rendered preview does not paint pending changes. The code pane and the Changes panel are the two views, and both are exact; the source-to-rendered matching the comments use is a heuristic and is not used for changes.
 - The run-code-style rule still applies: tracking is off on every open.
 
 Comment suggestions go away entirely: no `editing` motivation, no

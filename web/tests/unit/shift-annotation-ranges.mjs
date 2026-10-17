@@ -20,27 +20,3 @@ assert.deepEqual(
 );
 const zeroWidth = shiftAnnotationRanges("abcdef", "abXcdef", [{ id: "caret", start: 2, end: 2 }])[0];
 assert.equal(zeroWidth.start, zeroWidth.end, "zero-width offsets remain ordered through an insertion");
-assert.deepEqual(
-  shiftAnnotationRanges("abcdef", "abXcdef", [{ id: "grows", start: 0, end: 2, grow: true }]),
-  [{ id: "grows", start: 0, end: 3, grow: true }],
-);
-assert.deepEqual(
-  shiftAnnotationRanges("abcdef", "Xabcdef", [{ id: "grows-left", start: 0, end: 2, grow: true }]),
-  [{ id: "grows-left", start: 0, end: 3, grow: true }],
-);
-assert.deepEqual(
-  shiftAnnotationRanges("abcdef", "abef", [{ id: "grows-deleted", start: 0, end: 2, grow: true }]),
-  [{ id: "grows-deleted", start: 0, end: 2, grow: true }],
-);
-assert.deepEqual(
-  shiftAnnotationRanges("abcdef", "abcdXef", [{ id: "grows-apart", start: 0, end: 2, grow: true }]),
-  [{ id: "grows-apart", start: 0, end: 2, grow: true }],
-);
-assert.deepEqual(
-  shiftAnnotationRanges("abcdef", "abcdXef", [{ id: "grows-after", start: 5, end: 6, grow: true }]),
-  [{ id: "grows-after", start: 6, end: 7, grow: true }],
-);
-assert.deepEqual(
-  shiftAnnotationRanges("abcdef", "abcdXef", [{ id: "grows-at-start", start: 4, end: 6, grow: true }]),
-  [{ id: "grows-at-start", start: 4, end: 7, grow: true }],
-);

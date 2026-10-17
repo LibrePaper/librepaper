@@ -409,57 +409,8 @@
   $effect(() => { void selectedAnnotation; applySelection(); });
 
   function applyHighlights() {
-    frameOverlays.annotations(comments, changeMarks);
+    frameOverlays.annotations(comments);
   }
-
-  // Pending changes drawn on the page: each row's source range mapped to
-  // rendered offsets the way a comment's source range is. An insertion maps its
-  // inserted text. A pure deletion has no text left, so it maps the character
-  // after it (or before it at the end of a file) and keeps a point.
-  let changeMarks = [];
-  function anchorChanges() {
-    changeMarks = [];
-    if (docText === null || !changeRows.length) return;
-    const tree = treeNow();
-    for (const row of changeRows) {
-      const text = tree.texts[row.path];
-      if (typeof text !== "string") continue;
-      const format = renderers.formatOf(row.path) || sourceFormat;
-      const inserted = row.after.length > 0;
-      let start;
-      let end;
-      if (inserted) {
-        const range = sync.documentRangeFor(text, row.position, row.position + row.after.length, docText, format);
-        if (!range) continue;
-        ({ start, end } = range);
-      } else if (row.position < text.length) {
-        const range = sync.documentRangeFor(text, row.position, row.position + 1, docText, format);
-        if (!range) continue;
-        start = end = range.start;
-      } else {
-        const range = sync.documentRangeFor(text, row.position - 1, row.position, docText, format);
-        if (!range) continue;
-        start = end = range.end;
-      }
-      // The viewer's own insertion grows as they type, so its mark grows too.
-      changeMarks.push({
-        id: row.id,
-        start,
-        end,
-        deleted: row.before,
-        author: row.author,
-        grow: inserted && row.who === trackingMe.who,
-      });
-    }
-  }
-  $effect(() => {
-    void changeRows;
-    if (!frameReady || docText === null) return;
-    untrack(() => {
-      anchorChanges();
-      applyHighlights();
-    });
-  });
 
   // Source resolution determines whether the passage survived. Rendered
   // matching only locates its display mark; for readers, whose source state
@@ -513,9 +464,7 @@
 
   function reanchor() {
     if (!frameReady || !commentsReady || docText === null) return;
-    settleReview();
     anchorComments(comments);
-    anchorChanges();
     annotations.publish();
     applyHighlights();
     tracePassages();
@@ -692,13 +641,6 @@
   }
 
   async function focusAnnotation(id) {
-    if (String(id).startsWith("change:")) {
-      const row = changeRows.find((item) => String(item.id) === String(id).slice("change:".length));
-      if (!row) return;
-      await showPanel("changes");
-      await revealChange(row);
-      return;
-    }
     const comment = comments.find((item) => item.id === id);
     if (!comment) return;
     selectedAnnotation = String(comment.id);
@@ -968,20 +910,7 @@
   let changesUnsubscribe = null;
   function refreshReview() {
     clearTimeout(reviewTimer);
-    reviewTimer = setTimeout(() => {
-      reviewTimer = null;
-      recomputeChanges();
-    }, REVIEW_COALESCE_MS);
-  }
-
-  /// Settle the rows at once rather than after the pause. The frame has just
-  /// published new text, and marks drawn from rows that lag it would leave the
-  /// words just typed unmarked until the pause ends.
-  function settleReview() {
-    if (reviewTimer === null) return;
-    clearTimeout(reviewTimer);
-    reviewTimer = null;
-    recomputeChanges();
+    reviewTimer = setTimeout(recomputeChanges, REVIEW_COALESCE_MS);
   }
 
   // Whether what this browser types is recorded as a pending change. The
