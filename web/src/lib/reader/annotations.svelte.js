@@ -145,7 +145,7 @@ export function createAnnotations({ slug, key = "", anchor, repaint, send, rende
   function reply(parent, body, creator) {
     const temp_id = crypto.randomUUID();
     parent.replies = [...parent.replies, {
-      id: temp_id, body, creator: creator || "Anonymous", created: new Date().toISOString(), temp_id,
+      id: temp_id, body, creator: creator || "Anonymous", created: new Date().toISOString(), temp_id, mine: true,
     }];
     publish();
     // The server determines the author; the optimistic name is never sent.
@@ -252,6 +252,21 @@ export function createAnnotations({ slug, key = "", anchor, repaint, send, rende
       if (!hasState && item.resolved !== event.resolved) countBy(0, event.resolved ? -1 : 1);
       item.resolved = event.resolved;
       item.resolved_at = event.resolved_at;
+      publish();
+      repaint();
+    } else if (event.type === "edit") {
+      // The author's own words, changed in place: the comment's body, or one
+      // of its replies'. The room says when it was edited, and that is what
+      // the card shows, so the time is never this browser's guess.
+      applyEventState(event);
+      const item = list().find((candidate) => candidate.id === event.comment_id);
+      if (!item) return true;
+      const target = event.reply_id == null
+        ? item
+        : item.replies?.find((candidate) => candidate.id === event.reply_id);
+      if (!target) return true;
+      target.body = event.body;
+      target.edited = event.edited;
       publish();
       repaint();
     } else if (event.type === "comments-changed") {
@@ -431,6 +446,12 @@ export function createAnnotations({ slug, key = "", anchor, repaint, send, rende
       update(list().filter((candidate) => candidate !== item));
       repaint();
       send({ type: "delete", comment_id: item.id });
+    },
+    edit(item, reply, body) {
+      (reply || item).body = body;
+      publish();
+      if (!reply) repaint();
+      send({ type: "edit", comment_id: item.id, ...(reply ? { reply_id: reply.id } : {}), body });
     },
   };
 }

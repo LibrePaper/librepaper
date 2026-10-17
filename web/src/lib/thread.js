@@ -24,12 +24,14 @@ export function named(creator) {
 /// that author is written down.
 export function threadRuns(comment) {
   const posts = [
-    { id: `note-${comment?.id}`, creator: comment?.creator, created: comment?.created, body: comment?.body },
+    { id: `note-${comment?.id}`, creator: comment?.creator, created: comment?.created, body: comment?.body, edited: comment?.edited, reply: null },
     ...(comment?.replies ?? []).map((reply) => ({
       id: `reply-${reply.id}`,
       creator: reply.creator,
       created: reply.created,
       body: reply.body,
+      edited: reply.edited,
+      reply,
     })),
   ];
   const runs = [];

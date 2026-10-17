@@ -828,6 +828,7 @@
   }
 
   const resolve = annotations.resolve;
+  const edit = annotations.edit;
 
   function askDelete(comment) {
     askDeleteMany([comment]);
@@ -3647,7 +3648,7 @@
       commentingAs={doc.commenting_as || "Anonymous"} {canModerate} {went} {replacements}
       canComment={mayChat}
       onreveal={revealAnnotation} selected={selectedAnnotation} onresolve={resolve}
-      ondelete={askDelete} ondeletemany={askDeleteMany} onreply={reply}
+      ondelete={askDelete} ondeletemany={askDeleteMany} onreply={reply} onedit={edit}
       onagent={agentOffered ? askCommentAssistant : undefined}
       {composing} {needsLogin} signInHref={signInHref()}
       page={annotations.state.page}
