@@ -1,5 +1,7 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+#[cfg(target_os = "linux")]
+mod drop;
 mod notice;
 mod servers;
 mod service;
@@ -95,6 +97,8 @@ fn setup(app: &mut App) -> Result<(), Box<dyn std::error::Error>> {
     });
     app.manage(Service::new(&first));
     app.manage(zoom::Zoom::load(app.handle()));
+    #[cfg(target_os = "linux")]
+    app.manage(drop::Dropped::default());
 
     // Starts the local service before the page asks for it.
     let warm = app.handle().clone();
@@ -142,7 +146,11 @@ fn desktop_script() -> String {
     } else {
         "lp-local://localhost/"
     };
-    let shortcut = NEW_WINDOW_SCRIPT.replace("{base}", base);
+    let mut shortcut = NEW_WINDOW_SCRIPT.replace("{base}", base);
+    if cfg!(target_os = "linux") {
+        shortcut.push('\n');
+        shortcut.push_str(&DROP_SCRIPT.replace("{base}", base));
+    }
     format!(
         "window.__LIBREPAPER_DESKTOP__ = Object.freeze({{ base: \"{base}\", version: \"{}\" }});\n{shortcut}",
         env!("CARGO_PKG_VERSION")
@@ -188,6 +196,56 @@ const NEW_WINDOW_SCRIPT: &str = r#"if (window.top === window) {
   });
 }"#;
 
+// WebKitGTK hides dropped files from the page, so the shell takes the drop and
+// calls these two functions. The drag events carry an empty placeholder file so
+// the page treats them as a file drag. The drop fetches the real files from the
+// shell and hands them over in an expando on the DataTransfer, with their
+// relative paths and the dropped folders.
+const DROP_SCRIPT: &str = r#"if (window.top === window) {
+  let last = null;
+  const fire = (type, target, x, y, dataTransfer) =>
+    target.dispatchEvent(new DragEvent(type, {
+      bubbles: true, cancelable: true, composed: true, clientX: x, clientY: y, dataTransfer,
+    }));
+  const placeholder = () => {
+    const transfer = new DataTransfer();
+    transfer.items.add(new File([], ""));
+    return transfer;
+  };
+  window.__librepaperDrag = (kind, x, y) => {
+    if (kind === "leave") {
+      if (last) fire("dragleave", last, 0, 0, placeholder());
+      last = null;
+      return;
+    }
+    const target = document.elementFromPoint(x, y) || document.body;
+    const transfer = placeholder();
+    if (target !== last) {
+      if (last) fire("dragleave", last, x, y, transfer);
+      fire("dragenter", target, x, y, transfer);
+      last = target;
+    }
+    fire("dragover", target, x, y, transfer);
+  };
+  window.__librepaperDrop = async (token, x, y, listing) => {
+    last = null;
+    try {
+      const files = await Promise.all(listing.files.map(async (entry) => {
+        const response = await fetch(`{base}shell/dropped/${token}/${entry.index}`);
+        if (!response.ok) throw new Error(`HTTP ${response.status}`);
+        const name = entry.path.split("/").pop();
+        return { file: new File([await response.blob()], name), path: entry.path };
+      }));
+      const transfer = new DataTransfer();
+      for (const { file } of files) transfer.items.add(file);
+      transfer.librepaperDropped = { files, folders: listing.folders };
+      fire("drop", document.elementFromPoint(x, y) || document.body, x, y, transfer);
+    } catch (err) {
+      console.error("could not read the dropped files", err);
+    }
+  };
+}"#;
+
 fn open_window(app: &AppHandle, url: Url) -> tauri::Result<tauri::WebviewWindow> {
     let label = if app.get_webview_window("main").is_none() {
         "main".to_string()
@@ -196,13 +254,10 @@ fn open_window(app: &AppHandle, url: Url) -> tauri::Result<tauri::WebviewWindow>
     };
     let opener = app.clone();
     let checked = url.clone();
-    let window = WebviewWindowBuilder::new(app, label, WebviewUrl::External(url))
+    let builder = WebviewWindowBuilder::new(app, label, WebviewUrl::External(url))
         .title("LibrePaper")
         .inner_size(1280.0, 860.0)
         .initialization_script(desktop_script())
-        // Tauri's own drop handler swallows file drops, so the page's HTML
-        // drop events (the file explorer upload) never fire without this.
-        .disable_drag_drop_handler()
         .on_new_window(move |url, _features| {
             let origin = url.origin().ascii_serialization();
             if trusted(&opener, &origin) {
@@ -218,8 +273,19 @@ fn open_window(app: &AppHandle, url: Url) -> tauri::Result<tauri::WebviewWindow>
                 }
             }
             NewWindowResponse::Deny
-        })
-        .build()?;
+        });
+    // Tauri's own drop handler swallows file drops, so the page's HTML drop
+    // events (the file explorer upload) never fire without this. Windows and
+    // macOS pass the files to the page. WebKitGTK hides dropped files from the
+    // page, so on Linux the handler stays on and drop.rs hands the files over.
+    #[cfg(not(target_os = "linux"))]
+    let builder = builder.disable_drag_drop_handler();
+    let window = builder.build()?;
+    #[cfg(target_os = "linux")]
+    {
+        let target = window.clone();
+        window.on_window_event(move |event| drop::handle(&target, event));
+    }
     #[cfg(target_os = "macos")]
     mark_scheme_secure(&window);
     // New windows open at the saved zoom.
@@ -474,6 +540,41 @@ fn serve(app: &AppHandle, label: String, request: Request<Vec<u8>>, responder: U
             .body(Vec::new())
             .expect("an empty response is valid");
         return responder.respond(with_origin(res, &origin));
+    }
+
+    // Linux only: a file the shell took from a drop. The request must name the
+    // trusted origin, because a frame or image load must not read local files.
+    #[cfg(target_os = "linux")]
+    if request.method() == Method::GET {
+        if let Some(rest) = request.uri().path().strip_prefix("/shell/dropped/") {
+            if request.headers().get(header::ORIGIN).is_none() {
+                return responder.respond(forbidden());
+            }
+            let path = rest.split_once('/').and_then(|(token, index)| {
+                let token = token.parse::<u64>().ok()?;
+                let index = index.parse::<usize>().ok()?;
+                app.state::<drop::Dropped>().take(token, index)
+            });
+            let Some(path) = path else {
+                let res = json_error(StatusCode::NOT_FOUND, "no such file");
+                return responder.respond(with_origin(res, &origin));
+            };
+            tauri::async_runtime::spawn_blocking(move || {
+                let res = match std::fs::read(&path) {
+                    Ok(bytes) => Response::builder()
+                        .status(StatusCode::OK)
+                        .header(header::CONTENT_TYPE, "application/octet-stream")
+                        .body(bytes)
+                        .expect("the file response is valid"),
+                    Err(err) => {
+                        shell_log::write(&format!("could not read a dropped file: {err}"));
+                        json_error(StatusCode::INTERNAL_SERVER_ERROR, "could not read the file")
+                    }
+                };
+                responder.respond(with_origin(res, &origin));
+            });
+            return;
+        }
     }
 
     // The zoom shortcuts in the page. Every window takes the new level.
