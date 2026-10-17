@@ -50,7 +50,8 @@ pub(crate) struct Event {
     /// the argument or the permission at fault.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub detail: Option<String>,
-    /// How many individual operations this call's response refused. Old
+    /// How many individual operations this call's response refused, for tools
+    /// that change the document. Refused reads are kept in `detail` only. Old
     /// journal files omit this field, which defaults to zero.
     #[serde(default, skip_serializing_if = "is_zero")]
     pub refused: u32,
@@ -687,6 +688,16 @@ pub(crate) fn record_tool_call(
     Ok(identity)
 }
 
+/// Tools that change the document. Only their refusals reach the task
+/// summary. A refused read is the agent's own mistake, which it sees and
+/// retries, so it is recorded in `detail` and not counted.
+fn changes_document(tool: &str) -> bool {
+    matches!(
+        tool,
+        "document_propose" | "document_apply" | "document_comment" | "document_result"
+    )
+}
+
 /// Record only the bounded receipt metadata after a tool response arrives.
 pub(crate) fn record_tool_result(
     path: &Path,
@@ -740,7 +751,11 @@ pub(crate) fn record_tool_result(
         ids.clone(),
         status,
         detail,
-        refusals.len() as u32,
+        if changes_document(tool) {
+            refusals.len() as u32
+        } else {
+            0
+        },
         confirmed,
     )?;
     if tool == "document_result" && response_settled(response) {
@@ -1015,6 +1030,26 @@ mod tests {
         assert!(!response_settled(
             &json!({"result":{"status":"committed","items":[{"error":{"code":"outcome_unknown"}}]}})
         ));
+    }
+
+    #[test]
+    fn refused_read_is_recorded_but_not_counted() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("journal.json");
+        let request = json!({"start":0,"end":2000});
+        record_tool_call(&path, "task", "document_read", &request).unwrap();
+        let response = json!({"error":{"code":"invalid_query","message":"source range 0..2000 is outside the file"}});
+        record_tool_result(&path, "task", "document_read", &request, &response).unwrap();
+        let journal = Journal::open(&path).unwrap();
+        assert_eq!(journal.task_results("task")["refused"], 0);
+        assert!(journal
+            .events()
+            .last()
+            .unwrap()
+            .detail
+            .as_deref()
+            .unwrap_or_default()
+            .contains("outside the file"));
     }
 
     #[test]
