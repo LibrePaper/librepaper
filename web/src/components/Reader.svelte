@@ -1,5 +1,5 @@
 <script>
-  import { listChanges, accept, reject, rejectMany } from "../lib/track-changes.js";
+  import { listChanges, accept, reject, rejectMany, migrateChanges } from "../lib/track-changes.js";
   // One document: the source beside it, the page itself, and everything said
   // about it.
   import { aboutWholeDocument, anchorAll, flatten, placeSources, shownSelector } from "../lib/anchor.js";
@@ -2979,6 +2979,9 @@
         // can move them, an accept or reject included, and that is not a text
         // event. Imports from other peers arrive here as well.
         changesUnsubscribe = active?.doc.subscribe(refreshReview) || null;
+        // Old records are converted when the live document arrives, so the
+        // Changes panel lists them at once.
+        if (active?.doc.getMap("changes").size && migrateChanges(active.doc)) active.doc.commit();
         refreshReview();
         workspace.attach(active);
         refreshFiles();
