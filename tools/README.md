@@ -22,7 +22,7 @@ tools/
     db                        persistent Postgres in Docker; wipe, sqlx-check, sqlx-prepare, test
     windows-vm                Windows 11 VM in quickemu for desktop app QA; cached ISO, snapshots, cross-compiled build
     dev.toml, dev-oauth.toml  configs for make serve; keys.yaml holds the dev OAuth app
-    demo/                     make demo: compose (run, stop, wipe), the container configs, the Caddyfile
+    demo/                     make demo: compose (run, stop, wipe), the container configs, the Caddyfile; worktree (main's checkout for the demo), desktop (make demo-desktop)
     *.test.mjs                checks on the Makefile and the Loro pin
     windows-vm.check.mjs      the windows-vm checks, run by tools/test/suite windows-vm, not make test
     windows-vm.qga.mjs        QEMU guest agent client; bootstrap runs the installer in the VM through it
