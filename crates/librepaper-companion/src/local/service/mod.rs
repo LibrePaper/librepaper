@@ -57,6 +57,14 @@ pub(crate) fn control_token_for_instance(state_home: &Path, instance: &str) -> O
     control::token_for_instance(state_home, instance)
 }
 
+pub(crate) fn control_server_for_instance(state_home: &Path, instance: &str) -> Option<String> {
+    control::server_for_instance(state_home, instance)
+}
+
+pub(crate) fn normalized_server(raw: &str) -> Result<String, String> {
+    control::normalized_server(raw)
+}
+
 mod jobs;
 
 pub(super) type Reply = Response<Body>;
