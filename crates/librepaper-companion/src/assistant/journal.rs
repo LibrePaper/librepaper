@@ -1043,8 +1043,7 @@ mod tests {
         let journal = Journal::open(&path).unwrap();
         assert_eq!(journal.task_results("task")["refused"], 0);
         assert!(journal
-            .disk
-            .events
+            .events()
             .last()
             .unwrap()
             .detail
