@@ -656,8 +656,10 @@ fn source_query(
         None
     };
     let line_range = line_number_range(source, query).transpose()?;
+    // An end past the file reads to the end of the file. Agents guess a
+    // generous end, and refusing it only costs a retry.
     let (mut start, mut end) = match direct_range {
-        Some(range) => range,
+        Some((start, end)) => (start, end.min(source.len())),
         None => line_range.unwrap_or((0, source.len())),
     };
     if output_kind == "section" {
@@ -1878,6 +1880,21 @@ mod tests {
         .expect("source query");
         assert_eq!(result["results"][0]["blocks"][0]["source"], "# Intro\n😀");
         assert_eq!(result["results"][0]["blocks"][0]["range"]["end_byte"], 12);
+    }
+
+    #[test]
+    fn source_clamps_an_end_past_the_file() {
+        let main = "# Intro\n😀 repeated repeated\nlast\n";
+        let result = read(
+            &snapshot(),
+            &[json!({"kind":"source","path":"main.md",
+            "start":0,"end":100000})],
+            QueryBudget::default(),
+        )
+        .expect("source query");
+        let block = &result["results"][0]["blocks"][0];
+        assert_eq!(block["source"], main);
+        assert_eq!(block["range"]["end_byte"], main.len());
     }
 
     #[test]
