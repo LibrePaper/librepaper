@@ -2237,6 +2237,8 @@ dependencies = [
 name = "librepaper-desktop"
 version = "0.0.42"
 dependencies = [
+ "objc2",
+ "objc2-foundation",
  "reqwest 0.12.28",
  "serde",
  "serde_json",
