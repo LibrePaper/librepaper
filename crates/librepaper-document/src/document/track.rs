@@ -115,6 +115,10 @@ type GapRow = (Gap, PlanState);
 /// edits before it. The result holds every record that was or is now live, in
 /// the coordinates of the text after the whole batch, and the records that
 /// went away, marked `Removed`.
+///
+/// With `untracked`, the edits record nothing and change nobody's records
+/// except to move, shrink, split and merge them.
+#[allow(clippy::too_many_arguments)]
 pub fn plan_edits(
     before: &str,
     state: &FileState,
@@ -122,6 +126,7 @@ pub fn plan_edits(
     me: &Author,
     run: Option<&str>,
     now_ms: i64,
+    untracked: bool,
     mint: &mut dyn FnMut() -> String,
 ) -> Plan {
     let mut cur: Vec<char> = before.chars().collect();
@@ -158,6 +163,7 @@ pub fn plan_edits(
             me,
             run,
             now_ms,
+            untracked,
             mint,
         );
         for (c, _) in &changes {
@@ -246,6 +252,7 @@ fn plan_one(
     me: &Author,
     run: Option<&str>,
     now: i64,
+    untracked: bool,
     mint: &mut dyn FnMut() -> String,
 ) -> (Vec<Row>, Vec<GapRow>) {
     let len = insert.len();
@@ -258,8 +265,11 @@ fn plan_one(
         .map(|(g, _)| g.clone())
         .collect();
 
-    // Own changes the edit touches: a span overlapping [ef, et], or a
-    // fragment in a swallowed gap.
+    // Own changes the edit touches. A span of mine joins when it touches
+    // [ef, et]. A change of mine with no span joins when one of its fragments
+    // sits in a swallowed gap. A span of mine elsewhere stays its own change:
+    // one change holds one span, and a span never widens over text that is
+    // not its own.
     let mut owned: Vec<String> = Vec::new();
     for (c, _) in &changes {
         if c.who == me.who && has_span(c) && c.from <= et && c.to >= ef {
@@ -269,7 +279,7 @@ fn plan_one(
     for g in &swallowed {
         for f in &g.fragments {
             if let Some((c, _)) = changes.iter().find(|(c, _)| c.id == f.change) {
-                if c.who == me.who {
+                if c.who == me.who && !has_span(c) {
                     push_unique(&mut owned, &c.id);
                 }
             }
@@ -278,8 +288,13 @@ fn plan_one(
 
     // Original text inside [ef, et) that the edit removes makes a record; so
     // does inserted text. A deletion inside insertions only shrinks them.
+    // An untracked edit records nothing and makes no change of mine: spans
+    // still shrink, move and split, and swallowed gaps still merge at `ef`.
     let original = (ef..et).any(|p| span_end_at(&changes, p).is_none());
-    let records = original || len > 0;
+    let records = !untracked && (original || len > 0);
+    if untracked {
+        owned.clear();
+    }
 
     // The change this edit writes: the first owned one by position, or a new
     // one. Its span is widened over the owned spans below.
@@ -328,16 +343,18 @@ fn plan_one(
     // Merged fragments: walking [ef, et], the gap at p comes first, then the
     // original character at p. Text that sat at et goes after the new span
     // when text is inserted and no own change claims that point.
-    let end_gap = swallowed.iter().find(|g| g.at == et);
     let own_at_end = changes
         .iter()
         .any(|(c, _)| c.who == me.who && has_span(c) && c.from == et && owned.contains(&c.id))
-        || end_gap.is_some_and(|g| g.fragments.iter().any(|f| owned.contains(&f.change)));
+        || swallowed
+            .iter()
+            .any(|g| g.at == et && g.fragments.iter().any(|f| owned.contains(&f.change)));
     let split_at_end = len > 0 && !own_at_end;
     let mut merged: Vec<Fragment> = Vec::new();
     let mut after: Vec<Fragment> = Vec::new();
     for p in ef..=et {
-        if let Some(g) = swallowed.iter().find(|g| g.at == p) {
+        // Untracked edits can leave two gaps on one point; every one is taken.
+        for g in swallowed.iter().filter(|g| g.at == p) {
             for f in &g.fragments {
                 let change: &str = match &mine {
                     Some(m) if owned.contains(&f.change) => m.id.as_str(),
@@ -452,19 +469,32 @@ fn plan_one(
     let mut ids: Vec<String> = swallowed.iter().map(|g| g.id.clone()).collect();
     let pos = mine.as_ref().map_or(ef, |m| m.from);
     if !merged.is_empty() {
-        if let Some(idx) = out_gaps.iter().position(|(g, _)| g.at == pos) {
-            let mut list = out_gaps[idx].0.fragments.clone();
+        // One gap per position: every gap already at the span's start, which
+        // held text replaced by its earlier part, takes the new fragments
+        // after its own, in order.
+        let there: Vec<GapRow> = out_gaps
+            .iter()
+            .filter(|(g, _)| g.at == pos)
+            .cloned()
+            .collect();
+        if let Some((first, _)) = there.first() {
+            let mut list: Vec<Fragment> = Vec::new();
+            for (g, _) in &there {
+                for f in &g.fragments {
+                    push_fragment(&mut list, &f.change, &f.text);
+                }
+            }
             for f in &merged {
                 push_fragment(&mut list, &f.change, &f.text);
             }
-            let base = out_gaps[idx].0.clone();
-            out_gaps[idx] = (
+            out_gaps.retain(|(g, _)| g.at != pos);
+            out_gaps.push((
                 Gap {
                     fragments: list,
-                    ..base
+                    ..first.clone()
                 },
                 PlanState::Set,
-            );
+            ));
         } else {
             let id = take_id(&mut ids, mint);
             out_gaps.push((
@@ -487,6 +517,31 @@ fn plan_one(
             },
             PlanState::Set,
         ));
+    }
+
+    // The changes that merged into mine are gone; their fragments anywhere
+    // else now belong to mine.
+    if let Some(m) = &mine {
+        for (g, st) in out_gaps.iter_mut() {
+            if !g
+                .fragments
+                .iter()
+                .any(|f| owned.contains(&f.change) && f.change != m.id)
+            {
+                continue;
+            }
+            let mut list: Vec<Fragment> = Vec::new();
+            for f in &g.fragments {
+                let change = if owned.contains(&f.change) {
+                    m.id.as_str()
+                } else {
+                    f.change.as_str()
+                };
+                push_fragment(&mut list, change, &f.text);
+            }
+            g.fragments = list;
+            *st = PlanState::Set;
+        }
     }
 
     // A change with no span and no fragment is gone. A pure deletion sits at
@@ -689,7 +744,7 @@ fn resolve_file(doc: &LoroDoc, file_id: &str) -> (FileState, Stale) {
             _ => {}
         }
     }
-    gaps.sort_by_key(|g| g.at);
+    gaps.sort_by(|a, b| a.at.cmp(&b.at).then_with(|| a.id.cmp(&b.id)));
     let mut live: Vec<ChangeRecord> = Vec::new();
     for mut c in changes {
         if c.to == c.from {
@@ -856,19 +911,19 @@ fn mint_uuid() -> String {
     )
 }
 
-/// Applies `edits` (UTF-16, measured against the file as it is now, ascending
-/// and non-overlapping, as `apply_edits_at` takes them) to the file's text and
-/// records them as tracked changes by `by`. Returns the ids of the change
-/// records it set. Errors, leaving the document untouched, when the file is
-/// missing or the edits do not fit its text. Does not commit.
-pub fn apply_tracked_edits(
+/// Applies `edits` to the file's text and plans their records. `None` when
+/// `untracked` and the file has no records to keep in step. Errors, leaving
+/// the document untouched, when the file is missing or the edits do not fit
+/// its text. Does not commit.
+fn apply_planned(
     doc: &LoroDoc,
     file_id: &str,
     edits: &[Edit],
     by: &Author,
     run: Option<&str>,
     now_ms: i64,
-) -> Result<Vec<String>, String> {
+    untracked: bool,
+) -> Result<Option<Plan>, String> {
     let text = text_of(doc, file_id).ok_or_else(|| "the file does not exist".to_string())?;
     let before = text.to_string();
     // Resolved before the text moves: the cursors are read where they stand.
@@ -887,10 +942,49 @@ pub fn apply_tracked_edits(
     if !apply_text_edits(&text, edits) {
         return Err("an edit does not fit the file".to_string());
     }
+    if untracked && state.changes.is_empty() && state.gaps.is_empty() {
+        return Ok(None);
+    }
 
     let mut mint = mint_uuid;
-    let plan = plan_edits(&before, &state, &planned, by, run, now_ms, &mut mint);
-    Ok(write_planned(doc, file_id, &plan))
+    let plan = plan_edits(
+        &before, &state, &planned, by, run, now_ms, untracked, &mut mint,
+    );
+    Ok(Some(plan))
+}
+
+/// Applies `edits` (UTF-16, measured against the file as it is now, ascending
+/// and non-overlapping, as `apply_edits_at` takes them) to the file's text and
+/// records them as tracked changes by `by`. Returns the ids of the change
+/// records it set. Errors, leaving the document untouched, when the file is
+/// missing or the edits do not fit its text. Does not commit.
+pub fn apply_tracked_edits(
+    doc: &LoroDoc,
+    file_id: &str,
+    edits: &[Edit],
+    by: &Author,
+    run: Option<&str>,
+    now_ms: i64,
+) -> Result<Vec<String>, String> {
+    let plan = apply_planned(doc, file_id, edits, by, run, now_ms, false)?;
+    Ok(plan.map_or_else(Vec::new, |plan| write_planned(doc, file_id, &plan)))
+}
+
+/// Applies `edits` to the file's text without tracking, keeping the records in
+/// step: pending spans shrink, move or split around them, and gaps the edits
+/// collapse merge in order. Records nothing and makes no change of anyone's.
+/// Errors, leaving the document untouched, when the file is missing or the
+/// edits do not fit its text. Does not commit.
+pub fn untracked_edits(doc: &LoroDoc, file_id: &str, edits: &[Edit]) -> Result<(), String> {
+    // Nobody and no time: an untracked edit makes no change of its own.
+    let nobody = Author {
+        who: "",
+        author: "",
+    };
+    if let Some(plan) = apply_planned(doc, file_id, edits, &nobody, None, 0, true)? {
+        write_planned(doc, file_id, &plan);
+    }
+    Ok(())
 }
 
 /// Accepts a change: its fragments leave every gap (a gap left empty goes),
@@ -1172,6 +1266,8 @@ mod tests {
         state: FxState,
         me: FxMe,
         edits: Vec<FxEdit>,
+        #[serde(default)]
+        untracked: bool,
         after: String,
         expect: FxState,
     }
@@ -1265,7 +1361,16 @@ mod tests {
                 counter += 1;
                 format!("new-{counter}")
             };
-            let plan = plan_edits(&fx.before, &state, &edits, &me, None, 2, &mut mint);
+            let plan = plan_edits(
+                &fx.before,
+                &state,
+                &edits,
+                &me,
+                None,
+                2,
+                fx.untracked,
+                &mut mint,
+            );
 
             let mut got_changes: Vec<ChangeRow> = plan
                 .changes
@@ -1754,6 +1859,81 @@ mod tests {
         assert!(resolve_changes(&doc, &id).is_empty());
     }
 
+    /// Rejects every live change of the file that `keep` admits.
+    fn reject_where(doc: &LoroDoc, id: &str, keep: impl Fn(&ResolvedChange) -> bool) {
+        let ids: Vec<String> = resolve_changes(doc, id)
+            .into_iter()
+            .filter(|c| keep(c))
+            .map(|c| c.id)
+            .collect();
+        for cid in &ids {
+            assert!(reject(doc, cid), "{cid} is not a change");
+        }
+    }
+
+    #[test]
+    fn rejecting_a_restored_fragment_before_a_later_edit() {
+        // Alice deletes c. Bob replaces b and d with Z, and Alice is rejected,
+        // so c comes back in front of Z. Bob then inserts before c, and every
+        // change of Bob is rejected.
+        let (doc, id) = setup("abcde");
+        apply_tracked_edits(&doc, &id, &[edit(2, 1, "")], &who_of("alice"), None, 1).unwrap();
+        doc.commit();
+        apply_tracked_edits(&doc, &id, &[edit(1, 2, "Z")], &who_of("bob"), None, 2).unwrap();
+        doc.commit();
+        assert_eq!(body(&doc, &id), "aZe");
+        reject_where(&doc, &id, |c| c.who == "alice");
+        doc.commit();
+        assert_eq!(body(&doc, &id), "acZe");
+        apply_tracked_edits(&doc, &id, &[edit(1, 0, "Q")], &who_of("bob"), None, 3).unwrap();
+        doc.commit();
+        assert_eq!(body(&doc, &id), "aQcZe");
+        reject_where(&doc, &id, |c| c.who == "bob");
+        doc.commit();
+        assert_eq!(body(&doc, &id), "abcde");
+    }
+
+    #[test]
+    fn rejecting_an_author_after_a_merge_across_a_restored_fragment() {
+        let (doc, id) = setup("abcdef");
+        apply_tracked_edits(&doc, &id, &[edit(0, 1, "")], &who_of("m"), None, 1).unwrap();
+        doc.commit();
+        apply_tracked_edits(&doc, &id, &[edit(2, 1, "")], &who_of("n"), None, 2).unwrap();
+        doc.commit();
+        apply_tracked_edits(&doc, &id, &[edit(1, 2, "")], &who_of("m"), None, 3).unwrap();
+        doc.commit();
+        assert_eq!(body(&doc, &id), "bf");
+        reject_where(&doc, &id, |c| c.who == "n");
+        doc.commit();
+        assert_eq!(body(&doc, &id), "bdf");
+        apply_tracked_edits(&doc, &id, &[edit(0, 1, "")], &who_of("m"), None, 4).unwrap();
+        doc.commit();
+        assert_eq!(body(&doc, &id), "df");
+        reject_where(&doc, &id, |c| c.who == "m");
+        doc.commit();
+        assert_eq!(body(&doc, &id), "abcdef");
+    }
+
+    #[test]
+    fn rejecting_everything_after_an_untracked_collapse_of_two_gaps() {
+        let (doc, id) = setup("abcde");
+        apply_tracked_edits(&doc, &id, &[edit(1, 1, "")], &who_of("p"), None, 1).unwrap();
+        doc.commit();
+        apply_tracked_edits(&doc, &id, &[edit(2, 1, "")], &who_of("q"), None, 2).unwrap();
+        doc.commit();
+        assert_eq!(body(&doc, &id), "ace");
+        untracked_edits(&doc, &id, &[edit(1, 1, "")]).unwrap();
+        prune(&doc);
+        doc.commit();
+        assert_eq!(body(&doc, &id), "ae");
+        apply_tracked_edits(&doc, &id, &[edit(1, 0, "X")], &who_of("r"), None, 3).unwrap();
+        doc.commit();
+        assert_eq!(body(&doc, &id), "aXe");
+        reject_where(&doc, &id, |_| true);
+        doc.commit();
+        assert_eq!(body(&doc, &id), "abde");
+    }
+
     #[test]
     fn seeded_fuzz_pure_deletions() {
         // Random pure deletions by random authors. Oracle: in any decision
@@ -1930,6 +2110,204 @@ mod tests {
                 assert_eq!(final_inserted, expected_inserted, "{label}");
                 assert_eq!(doc.get_map(CHANGES).keys().count(), 0, "{label}");
             }
+        }
+    }
+
+    /// The oracle's state of one character in the interleaved fuzz.
+    #[derive(Clone, Copy, PartialEq, Debug)]
+    enum Mark {
+        /// In the text, or back in it after a rejection.
+        Live,
+        /// Deleted by a tracked change of the author with this index.
+        Deleted(usize),
+        /// A tracked insertion nobody has decided yet.
+        Pending,
+        /// Gone for good.
+        Gone,
+    }
+
+    struct CharState {
+        /// Original or untracked text, with no pending change of its own.
+        plain: bool,
+        /// The author index of a tracked insertion.
+        by: usize,
+        state: Mark,
+    }
+
+    /// Accepts or rejects every live change of author `w` by its verdict, and
+    /// moves the oracle's characters to match.
+    fn decide_author(
+        doc: &LoroDoc,
+        id: &str,
+        chars: &mut HashMap<char, CharState>,
+        verdict: &[bool; 4],
+        w: usize,
+    ) {
+        let ids: Vec<String> = resolve_changes(doc, id)
+            .into_iter()
+            .filter(|c| c.who == AUTHORS[w])
+            .map(|c| c.id)
+            .collect();
+        for cid in &ids {
+            if verdict[w] {
+                assert!(accept(doc, cid), "{cid} is not a change");
+            } else {
+                assert!(reject(doc, cid), "{cid} is not a change");
+            }
+        }
+        doc.commit();
+        for c in chars.values_mut() {
+            if c.plain && c.state == Mark::Deleted(w) {
+                c.state = if verdict[w] { Mark::Gone } else { Mark::Live };
+            } else if !c.plain && c.by == w && c.state == Mark::Pending {
+                if verdict[w] {
+                    c.plain = true;
+                    c.state = Mark::Live;
+                } else {
+                    c.state = Mark::Gone;
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn seeded_fuzz_interleaved() {
+        // Tracked edits, untracked edits and per-author decisions, with authors
+        // editing again after being decided. Every character is unique, so one
+        // state per character is the oracle: a plain character is live, deleted
+        // by a tracked change of its author, or gone; a tracked insertion is
+        // pending until its author decides it, and vanishes if it is deleted
+        // first. Original characters keep their order.
+        let mut rng = Lcg::new(23);
+        let mut insert_counter: u32 = 0;
+        for iter in 0..120 {
+            let start: String = ALPHA[..5 + rng.pick(8)].to_string();
+            let (doc, id) = setup(&start);
+            let mut chars: HashMap<char, CharState> = start
+                .chars()
+                .map(|c| {
+                    (
+                        c,
+                        CharState {
+                            plain: true,
+                            by: 0,
+                            state: Mark::Live,
+                        },
+                    )
+                })
+                .collect();
+            let mut verdict = [false; 4];
+            for v in verdict.iter_mut() {
+                *v = rng.rnd() < 0.5;
+            }
+            let mut log: Vec<String> = Vec::new();
+            let steps = 3 + rng.pick(6);
+            for _ in 0..steps {
+                let kind = rng.rnd();
+                if kind < 0.2 {
+                    let w = rng.pick(4);
+                    decide_author(&doc, &id, &mut chars, &verdict, w);
+                    let word = if verdict[w] { "accept" } else { "reject" };
+                    log.push(format!("decide {}={word}", AUTHORS[w]));
+                    continue;
+                }
+                let text: Vec<char> = body(&doc, &id).chars().collect();
+                let from = rng.pick(text.len() + 1);
+                let len = rng.pick((text.len() - from).min(4) + 1);
+                let ins: Option<char> = if len == 0 || rng.rnd() < 0.3 {
+                    let ch = char::from_u32(0x391 + insert_counter % 24).unwrap();
+                    insert_counter += 1;
+                    Some(ch)
+                } else {
+                    None
+                };
+                if len == 0 && ins.is_none() {
+                    continue;
+                }
+                let ins_text = ins.map_or(String::new(), |ch| ch.to_string());
+                let untracked = kind > 0.85;
+                let w = if untracked { None } else { Some(rng.pick(4)) };
+                let label = w.map_or("untracked", |w| AUTHORS[w]);
+                log.push(format!("{label} {from}-{} '{ins_text}'", from + len));
+                for ch in &text[from..from + len] {
+                    let c = chars.get_mut(ch).expect("every text character is tracked");
+                    c.state = if c.plain {
+                        match w {
+                            Some(w) => Mark::Deleted(w),
+                            None => Mark::Gone,
+                        }
+                    } else {
+                        Mark::Gone
+                    };
+                }
+                if let (Some(ch), Some(w)) = (ins, w) {
+                    chars.insert(
+                        ch,
+                        CharState {
+                            plain: false,
+                            by: w,
+                            state: Mark::Pending,
+                        },
+                    );
+                } else if let Some(ch) = ins {
+                    chars.insert(
+                        ch,
+                        CharState {
+                            plain: true,
+                            by: 0,
+                            state: Mark::Live,
+                        },
+                    );
+                }
+                match w {
+                    None => {
+                        untracked_edits(&doc, &id, &[edit(from, len, &ins_text)]).unwrap_or_else(
+                            |e| panic!("iter={iter} start={start} log={log:?}: {e}"),
+                        );
+                        prune(&doc);
+                    }
+                    Some(w) => {
+                        apply_tracked_edits(
+                            &doc,
+                            &id,
+                            &[edit(from, len, &ins_text)],
+                            &who_of(AUTHORS[w]),
+                            None,
+                            1,
+                        )
+                        .unwrap_or_else(|e| panic!("iter={iter} start={start} log={log:?}: {e}"));
+                    }
+                }
+                doc.commit();
+            }
+
+            for w in 0..4 {
+                decide_author(&doc, &id, &mut chars, &verdict, w);
+            }
+            let final_text = body(&doc, &id);
+            let mut expected: Vec<char> = chars
+                .iter()
+                .filter(|(_, c)| c.state == Mark::Live)
+                .map(|(ch, _)| *ch)
+                .collect();
+            expected.sort();
+            let mut got: Vec<char> = final_text.chars().collect();
+            got.sort();
+            let originals: String = final_text
+                .chars()
+                .filter(|ch| start.contains(*ch))
+                .collect();
+            let want_originals: String = start
+                .chars()
+                .filter(|ch| chars[ch].state == Mark::Live)
+                .collect();
+            let left = doc.get_map(CHANGES).keys().count();
+            let label = format!(
+                "iter={iter} start={start} verdict={verdict:?} log={log:?} -> {final_text:?} expected={expected:?}"
+            );
+            assert_eq!(got, expected, "{label}");
+            assert_eq!(originals, want_originals, "{label}");
+            assert_eq!(left, 0, "{label}");
         }
     }
 }
