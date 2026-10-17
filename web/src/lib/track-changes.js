@@ -38,7 +38,7 @@ const SETTLE_MS = 60_000;
  * @typedef {{ id: string, change: string, text: string, rank: number, at: number, stale: boolean, who: any, author: any, run: any, when: any }} OrphanFragment
  * @typedef {{ changes: Change[], gaps: Gap[] }} FileState
  * @typedef {Change & { deleted: string }} Row
- * @typedef {Change & { state: "kept" | "set" | "removed", emptied?: boolean }} PlannedChange
+ * @typedef {Change & { state: "kept" | "set" | "removed", emptied?: boolean, orphan?: boolean }} PlannedChange
  * @typedef {Gap & { state: "kept" | "set" | "removed" }} PlannedGap
  * @typedef {{ changes: PlannedChange[], gaps: PlannedGap[] }} PlannedState
  */
