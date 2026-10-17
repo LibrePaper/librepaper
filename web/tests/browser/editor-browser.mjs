@@ -123,7 +123,7 @@ window.peerChangeCheck = async () => {
     added: [...host.querySelectorAll(".change-added")].map((node) => node.textContent),
     removed: [...host.querySelectorAll("del.change-removed")].map((node) => node.textContent),
     mine: host.querySelectorAll(".change-mine").length,
-    entries: value.doc.getMap("changes").size,
+    entries: [...value.doc.getMap("changes").entries()].filter(([, v]) => v?.kind === "change").length,
   };
   component.$destroy();
   host.remove();
@@ -533,30 +533,33 @@ window.trackingCheck = async () => {
   });
   await tick();
   const changes = () => value.doc.getMap("changes");
+  // A replacement is two records (a change and a gap), so only change rows count.
+  const changeIds = () => [...changes().entries()].filter(([, v]) => v?.kind === "change").map(([id]) => id);
+  const rows = () => [...changes().entries()].filter(([, v]) => v?.kind === "change").length;
   const on = (tracked.startTracking(), tracked.trackingOn());
   const view = EditorView.findFromDOM(host.querySelector(".cm-editor"));
   view.dispatch({ changes: { from: 0, insert: "TRACKED " }, userEvent: "input.type" });
   await tick();
   await tick();
-  const first = { text: value.textOf(id).toString(), entries: changes().size, ids: [...changes().keys()] };
+  const first = { text: value.textOf(id).toString(), entries: rows(), ids: changeIds() };
   const drawn = host.querySelectorAll(".change-added.change-mine").length;
   view.dispatch({ changes: { from: 8, insert: "more " }, userEvent: "input.type" });
   await tick();
   await tick();
-  const second = { text: value.textOf(id).toString(), entries: changes().size, same: [...changes().keys()][0] === first.ids[0] };
+  const second = { text: value.textOf(id).toString(), entries: rows(), same: changeIds()[0] === first.ids[0] };
   const { undo } = await import(${JSON.stringify(join(root, "web/src/lib/loro-undo.js"))});
   await new Promise((resolve) => setTimeout(resolve, 1100));
   undo(view);
   await tick();
   await tick();
-  const undone = { text: value.textOf(id).toString(), entries: changes().size };
+  const undone = { text: value.textOf(id).toString(), entries: rows() };
   tracked.stopTracking();
   const off = tracked.trackingOn();
   const stopped = EditorView.findFromDOM(host.querySelector(".cm-editor"));
   stopped.dispatch({ changes: { from: 0, insert: "DIRECT " }, userEvent: "input.type" });
   await tick();
   await tick();
-  const direct = { text: value.textOf(id).toString(), entries: changes().size };
+  const direct = { text: value.textOf(id).toString(), entries: rows() };
   tracked.$destroy();
   host.remove();
   value.leave();

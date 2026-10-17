@@ -185,7 +185,7 @@
   import { completionExtension, formatOfPath } from "../lib/completion/index.js";
   import { desktop, searchZotero, zoteroItem } from "../lib/desktop/client.js";
   import { changeMarks, setChangeMarks } from "../lib/change-marks.js";
-  import { CHANGES, planEdits, writePlanned, resolveChanges, trackedSplice, prune } from "../lib/track-changes.js";
+  import { CHANGES, planEdits, writePlanned, resolveFile, trackedSplice, prune } from "../lib/track-changes.js";
   import { DIRECTORY_ORIGIN } from "../lib/project-session.js";
   import { projectDirectory } from "../lib/projection.js";
   import { attachEditorZoom } from "../lib/editor-zoom.js";
@@ -221,7 +221,7 @@
     if (!view || !showing || !session) return;
     view.dispatch({
       effects: setChangeMarks.of({
-        changes: resolveChanges(session.doc, showing),
+        ...resolveFile(session.doc, showing),
         me,
         selected: selectedChange,
       }),
@@ -267,8 +267,8 @@
   /// prune rewrites that cursor against live text while the history that
   /// locates it is still there.
   function trackChanges(fileId) {
-    /** @type {any[]} */
-    let snapshot = [];
+    /** @type {{changes: any[], gaps: any[]}} */
+    let snapshot = { changes: [], gaps: [] };
     // A local edit is a user transaction that changed the text.
     const isLocal = (update) => update.docChanged
       && update.transactions.some((transaction) => transaction.docChanged && transaction.annotation(loroSyncAnnotation) === undefined);
@@ -276,7 +276,7 @@
       const doc = session.doc;
       return {
         update(update) {
-          if (tracked && isLocal(update)) snapshot = resolveChanges(doc, fileId);
+          if (tracked && isLocal(update)) snapshot = resolveFile(doc, fileId);
         },
       };
     });
@@ -289,11 +289,8 @@
           // the LoroText already. Each one is planned against the text it
           // started from, chained, and the result is written once so that no
           // cursor is made at an intermediate offset.
-          /** @type {any[]} */
-          let live = snapshot.map((change) => ({ ...change }));
-          const created = new Set();
-          const written = new Set();
-          const removed = new Set();
+          let state = snapshot;
+          const touched = new Set();
           const now = Date.now();
           if (tracked) {
             for (const transaction of update.transactions) {
@@ -302,36 +299,39 @@
               transaction.changes.iterChanges((fromA, toA, fromB, toB, insert) => {
                 edits.push({ from: fromA, to: toA, insert: insert.sliceString(0, insert.length, "\n") });
               });
-              const known = new Set(live.map((change) => change.id));
-              /** @type {any[]} */
-              const plan = planEdits(transaction.startState.doc.toString(), live, edits, me, {
+              /** @type {any} */
+              const plan = planEdits(transaction.startState.doc.toString(), state, edits, me, {
                 run: null,
                 now,
                 mintId: () => crypto.randomUUID(),
               });
-              for (const change of plan) {
-                if (change.state === "removed") {
-                  if (created.has(change.id)) written.delete(change.id);
-                  else removed.add(change.id);
-                } else {
-                  if (!known.has(change.id)) created.add(change.id);
-                  if (change.state === "set") written.add(change.id);
-                }
-              }
-              live = plan.filter((change) => change.state !== "removed");
+              for (const item of [...plan.changes, ...plan.gaps]) if (item.state !== "kept") touched.add(item.id);
+              state = {
+                changes: plan.changes.filter((change) => change.state !== "removed"),
+                gaps: plan.gaps.filter((gap) => gap.state !== "removed"),
+              };
             }
-            if (written.size || removed.size) {
-              /** @type {any[]} */
-              const planned = [
-                ...live.filter((change) => written.has(change.id)).map((change) => ({ ...change, state: "set" })),
-                ...[...removed].map((id) => ({ id, state: "removed" })),
-              ];
+            if (touched.size) {
+              // Everything the batch touched is written once, against the final
+              // text; what it dropped is deleted; the rest keeps its cursors.
+              const keptChanges = new Set(state.changes.map((change) => change.id));
+              const keptGaps = new Set(state.gaps.map((gap) => gap.id));
+              const planned = {
+                changes: [
+                  ...state.changes.map((change) => ({ ...change, state: touched.has(change.id) ? "set" : "kept" })),
+                  ...snapshot.changes.filter((change) => !keptChanges.has(change.id)).map((change) => ({ ...change, state: "removed" })),
+                ],
+                gaps: [
+                  ...state.gaps.map((gap) => ({ ...gap, state: touched.has(gap.id) ? "set" : "kept" })),
+                  ...snapshot.gaps.filter((gap) => !keptGaps.has(gap.id)).map((gap) => ({ ...gap, state: "removed" })),
+                ],
+              };
               writePlanned(doc, fileId, planned);
             }
           }
           if (doc.getMap(CHANGES).size) prune(doc);
           doc.commit();
-          snapshot = [];
+          snapshot = { changes: [], gaps: [] };
         },
       };
     }));
