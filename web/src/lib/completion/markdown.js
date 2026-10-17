@@ -6,6 +6,8 @@ import { dirname, normalizePath, pathOptions, resolvePath } from "./paths.js";
 const MARKDOWN_PATH = /\.(?:md|markdown|qmd)$/i;
 const IMAGE_EXTENSIONS = ["png", "jpg", "jpeg", "gif", "svg", "webp", "pdf"];
 const PATH_CHARS = /^[^()\s]*$/;
+// A file name with no "#", so typing one asks for anchors again.
+const FILE_PATH = /^[^()\s#]*$/;
 const IMAGE = /!\[[^\]]*\]\(([^()\s]*)$/;
 const LINK = /(?:^|[^!])\[[^\]]*\]\(([^()\s]*)$/;
 const REFERENCE = /\[[^\]]*\]\[([^[\]\s]*)$/;
@@ -198,7 +200,7 @@ export function markdownCompletion(project) {
     const hash = partial.indexOf("#");
     if (hash < 0) {
       const files = pathOptions(current.files, directory);
-      return result(from, PATH_CHARS, [...files, ...anchorOptions(text, "#")]);
+      return result(from, FILE_PATH, [...files, ...anchorOptions(text, "#")]);
     }
     const file = partial.slice(0, hash);
     if (!file) return result(from, PATH_CHARS, anchorOptions(text, "#"));

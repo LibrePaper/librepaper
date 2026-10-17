@@ -76,6 +76,14 @@ const labels = (result) => (result ? result.options.map((option) => option.label
   assert.deepEqual(labels(result), ["../img.png", "intro.md", "other.md", "#overview"]);
 }
 
+// The file list stops matching at "#", so the anchors are asked for again.
+{
+  const { result } = complete("[x](oth|", { files: ["chapters/other.md"] });
+  assert.ok(result.validFor.test("other.md"));
+  assert.equal(result.validFor.test("other.md#"), false);
+  assert.equal(result.validFor.test("#"), false);
+}
+
 // "other.md#" offers that file's headings, written as typed.
 {
   const { result, pos } = complete("[x](other.md#|", {
