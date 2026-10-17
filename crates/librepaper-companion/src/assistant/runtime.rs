@@ -549,22 +549,12 @@ async fn publish_answer(
     Ok(())
 }
 
-async fn emit_options(transport: &Transport, options: &Value) -> Result<(), String> {
-    emit(
-        transport,
-        json!({"type":"options","id":event_id(),"options":options}),
-    )
-    .await
-}
-
 async fn reconcile(
     transport: &Transport,
     state: &mut State,
     session_id: &str,
-    options: &Value,
 ) -> Result<(), String> {
     emit(transport,json!({"type":"capabilities","id":event_id(),"session_id":session_id,"capabilities":{"steer":false,"cancel":true,"preview":true,"input":true}})).await?;
-    emit_options(transport, options).await?;
     let ids = state
         .tasks
         .iter()
@@ -853,7 +843,7 @@ async fn execute(peer: &AutomationPeer, config: &Config, lease: &Lease) -> Resul
                     publish_agent_label(&session_path, &options)?;
                     instructions = Some(context::instructions(&lease.location.directory)?);
                     commands.clear();
-                    if connected { reconcile(&transport, &mut state, &session_id, &options).await?; }
+                    if connected { reconcile(&transport, &mut state, &session_id).await?; }
                 }
                 if let Some(current)=active.as_mut() {
                     if current.pending.front().is_some_and(|pending|pending.deadline<=now) {
@@ -914,7 +904,7 @@ async fn execute(peer: &AutomationPeer, config: &Config, lease: &Lease) -> Resul
                         current_epoch=execution_epoch;
                         if browser && stopping.is_none() {
                             runner_journal::set_session_epoch(&session_path, current_epoch.as_deref())?;
-                            reconcile(&transport,&mut state, &session_id, &options).await?;
+                            reconcile(&transport,&mut state, &session_id).await?;
                         } else {
                             runner_journal::set_session_epoch(&session_path, None)?;
                         }
@@ -1023,7 +1013,6 @@ async fn execute(peer: &AutomationPeer, config: &Config, lease: &Lease) -> Resul
                     acp::Event::Options(updated) => {
                         options = updated;
                         publish_agent_label(&session_path, &options)?;
-                        if connected { emit_options(&transport, &options).await?; }
                     }
                     acp::Event::Update(update) => {
                         let Some(current)=active.as_mut() else { continue; };
