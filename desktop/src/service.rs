@@ -217,11 +217,18 @@ struct Health {
     instance: String,
 }
 
+// Set by the first endpoint call after the app starts, so that call refreshes the login-shell PATH.
+static REFRESHED: AtomicBool = AtomicBool::new(false);
+
 async fn endpoint(server: &str) -> Result<Endpoint, String> {
     let mut command = tokio::process::Command::new(binary());
     command.args(["local", "endpoint"]).stdin(Stdio::null());
     // The service accepts management requests for this one site only.
     command.env("LIBREPAPER_SERVER", server);
+    // Read by librepaper-companion `local::environment` (REFRESH_ENV).
+    if !REFRESHED.swap(true, Ordering::SeqCst) {
+        command.env("LIBREPAPER_REFRESH_LOGIN_PATH", "1");
+    }
     // CREATE_NO_WINDOW: a GUI app spawning a console program would flash a console window.
     #[cfg(windows)]
     command.creation_flags(0x0800_0000);

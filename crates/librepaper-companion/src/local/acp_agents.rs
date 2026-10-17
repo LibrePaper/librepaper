@@ -34,6 +34,9 @@ use serde::{Deserialize, Serialize};
 
 use super::store::{read_json, write_private_json};
 
+/// The setup page for every agent, one section each.
+const DOCS: &str = "https://librepaper.org/agents.html";
+
 #[derive(Clone, Copy, Debug)]
 struct Kind {
     id: &'static str,
@@ -53,6 +56,12 @@ struct Kind {
     /// working but does change what to expect. Shown next to the agent rather
     /// than discovered when a task mysteriously does nothing.
     acp_note: Option<&'static str>,
+    /// The npm package that provides `acp[0]`, for an agent whose ACP entry
+    /// point ships separately. Named when the adapter is missing.
+    npm: Option<&'static str>,
+    /// The anchor of this agent's section on the setup page at `DOCS`, or
+    /// empty when the page has none.
+    docs: &'static str,
     /// The environment variable through which the adapter is told where the
     /// agent's own executable is, so it runs the installed agent rather than
     /// a copy of its own.
@@ -69,6 +78,8 @@ const KINDS: &[Kind] = &[
         acp: &["claude-agent-acp"],
         acp_fetch: Some(&["npx", "-y", "@agentclientprotocol/claude-agent-acp"]),
         acp_note: None,
+        npm: Some("@agentclientprotocol/claude-agent-acp"),
+        docs: "claude-code",
         executable_env: Some("CLAUDE_CODE_EXECUTABLE"),
         env: &[],
     },
@@ -81,6 +92,8 @@ const KINDS: &[Kind] = &[
         acp_note: Some(
             "A `librepaper` entry in your own Codex config makes the adapter skip LibrePaper's tools.",
         ),
+        npm: Some("@agentclientprotocol/codex-acp"),
+        docs: "codex",
         executable_env: Some("CODEX_PATH"),
         // In its default mode the adapter lets Codex's own reviewer approve
         // tools, so the user's Access choice is never consulted. In
@@ -94,6 +107,9 @@ const KINDS: &[Kind] = &[
         acp: &["gemini", "--experimental-acp"],
         acp_fetch: None,
         acp_note: None,
+        npm: None,
+        // The setup page has no section for it yet.
+        docs: "",
         executable_env: None,
         env: &[],
     },
@@ -107,6 +123,8 @@ const KINDS: &[Kind] = &[
         acp: &["opencode", "acp"],
         acp_fetch: None,
         acp_note: None,
+        npm: None,
+        docs: "opencode",
         executable_env: None,
         env: &[],
     },
@@ -122,6 +140,8 @@ const KINDS: &[Kind] = &[
         acp_note: Some(
             "Pi needs the pi-mcp-adapter extension and a librepaper entry in ~/.config/mcp/mcp.json",
         ),
+        npm: Some("pi-acp"),
+        docs: "pi",
         executable_env: None,
         env: &[],
     },
@@ -143,6 +163,9 @@ pub struct Detected {
     /// A known limitation of an agent the sidebar *can* drive. Empty when
     /// there is nothing to warn about.
     pub assistant_note: String,
+    /// This agent's section of the setup page, which the page links to.
+    /// Empty for an agent added in Settings.
+    pub assistant_docs: String,
 }
 
 fn kind(id: &str) -> Option<&'static Kind> {
@@ -294,9 +317,47 @@ pub fn detect(state_home: &Path) -> Vec<Detected> {
             assistant_fetches: false,
             assistant_blocked: String::new(),
             assistant_note: String::new(),
+            assistant_docs: String::new(),
         });
     }
     found
+}
+
+/// Why an agent cannot be driven without its ACP adapter, and how to set it up.
+fn blocked_message(kind: &Kind) -> String {
+    match kind.npm {
+        Some(package) => format!(
+            "{} needs its ACP adapter, which needs Node.js 22 or newer. Install Node.js, run `npm install -g {package}`, then restart LibrePaper.",
+            kind.label
+        ),
+        None => format!(
+            "Install {} to use {} in LibrePaper.",
+            kind.acp[0], kind.label
+        ),
+    }
+}
+
+/// The setup page, at this agent's section when the page has one.
+fn docs_url(kind: &Kind) -> String {
+    if kind.docs.is_empty() {
+        DOCS.to_string()
+    } else {
+        format!("{DOCS}#{}", kind.docs)
+    }
+}
+
+/// The note shown next to a drivable agent. A fetched adapter also says how to
+/// install it for good, so it is not fetched again on every run.
+fn note(kind: &Kind, fetched: bool) -> String {
+    let install = match (fetched, kind.npm) {
+        (true, Some(package)) => Some(format!("To install it for good: npm install -g {package}")),
+        _ => None,
+    };
+    [kind.acp_note.map(str::to_string), install]
+        .into_iter()
+        .flatten()
+        .collect::<Vec<_>>()
+        .join(" ")
 }
 
 fn built_in() -> Vec<Detected> {
@@ -312,15 +373,13 @@ fn built_in() -> Vec<Detected> {
                 assistant_fetches: matches!(adapter, Some(Adapter::Fetched(_))),
                 assistant_blocked: match adapter {
                     Some(_) => String::new(),
-                    None => format!(
-                        "Install {} to use {} in LibrePaper.",
-                        kind.acp[0], kind.label
-                    ),
+                    None => blocked_message(kind),
                 },
                 assistant_note: match adapter {
-                    Some(_) => kind.acp_note.unwrap_or_default().to_string(),
+                    Some(found) => note(kind, matches!(found, Adapter::Fetched(_))),
                     None => String::new(),
                 },
+                assistant_docs: docs_url(kind),
             })
         })
         .collect()
@@ -397,6 +456,8 @@ mod tests {
             acp,
             acp_fetch: fetch,
             acp_note: None,
+            npm: None,
+            docs: "test",
             executable_env: None,
             env: &[],
         }
@@ -606,5 +667,53 @@ mod tests {
         let kind_no_env = kind_with(&["sh"], None);
         let env = environment_for(&kind_no_env);
         assert!(env.is_empty());
+    }
+
+    #[test]
+    fn a_blocked_claude_says_how_to_get_its_adapter() {
+        let message = blocked_message(kind("claude").expect("claude"));
+        assert!(message.contains("npm install -g @agentclientprotocol/claude-agent-acp"));
+        assert!(message.contains("Node.js 22"));
+        assert!(message.ends_with("then restart LibrePaper."));
+    }
+
+    #[test]
+    fn a_blocked_agent_without_npm_says_how_to_install_its_adapter() {
+        let gemini = kind("gemini").expect("gemini");
+        assert_eq!(
+            blocked_message(gemini),
+            "Install gemini to use Gemini CLI in LibrePaper."
+        );
+    }
+
+    #[test]
+    fn each_agent_links_to_its_setup_section() {
+        assert_eq!(
+            docs_url(kind("claude").expect("claude")),
+            "https://librepaper.org/agents.html#claude-code"
+        );
+        assert_eq!(
+            docs_url(kind("codex").expect("codex")),
+            "https://librepaper.org/agents.html#codex"
+        );
+        // No section yet: the page itself.
+        assert_eq!(
+            docs_url(kind("gemini").expect("gemini")),
+            "https://librepaper.org/agents.html"
+        );
+    }
+
+    #[test]
+    fn a_fetched_adapter_says_how_to_install_it_for_good() {
+        let codex = kind("codex").expect("codex");
+        let claude = kind("claude").expect("claude");
+        let fetched = note(codex, true);
+        assert!(fetched.contains(codex.acp_note.expect("codex note")));
+        assert!(fetched.contains("npm install -g @agentclientprotocol/codex-acp"));
+        assert!(note(claude, false).is_empty());
+        assert_eq!(
+            note(claude, true),
+            "To install it for good: npm install -g @agentclientprotocol/claude-agent-acp"
+        );
     }
 }

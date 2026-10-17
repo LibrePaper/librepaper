@@ -12,6 +12,11 @@ use std::path::{Path, PathBuf};
 #[cfg(any(target_os = "macos", target_os = "linux", all(unix, test)))]
 const MAX_SHELL_OUTPUT: usize = 64 * 1024;
 
+/// Set to any non-empty value to run the login shell at this start, even when
+/// the cache is fresh. The desktop app sets it on the first service start after
+/// it starts.
+pub const REFRESH_ENV: &str = "LIBREPAPER_REFRESH_LOGIN_PATH";
+
 /// Initialize the process PATH on macOS and Linux. This must run before threads start.
 ///
 /// The login shell runs at most once a day, here at startup, before any thread
@@ -19,7 +24,9 @@ const MAX_SHELL_OUTPUT: usize = 64 * 1024;
 /// within 24 hours of that file's last write uses the cache without running the
 /// shell. Otherwise the shell is run synchronously and the cache is rewritten. A
 /// tool installed since the last run is found by the next day's start, or at
-/// once after deleting the cache file.
+/// once after deleting the cache file. When `REFRESH_ENV` is set, the shell runs
+/// even if the cache is fresh, so the desktop app's restarts find new tools. If
+/// the shell fails, the cache is used as it would have been.
 ///
 /// # Safety
 /// Call only during synchronous startup before Tokio or any other threads are
@@ -29,14 +36,20 @@ const MAX_SHELL_OUTPUT: usize = 64 * 1024;
 pub unsafe fn initialize() {
     let inherited = std::env::var_os("PATH").unwrap_or_default();
     let cache = cache_file();
-    let shell = match cache.as_deref().and_then(read_cache) {
+    let refresh = wants_refresh(std::env::var_os(REFRESH_ENV).as_deref());
+    let cached = if refresh {
+        None
+    } else {
+        cache.as_deref().and_then(read_cache)
+    };
+    let shell = match cached {
         Some(path) => Some(path),
         None => {
             let fresh = shell_path();
             if let (Some(file), Some(fresh)) = (cache.as_deref(), fresh.as_deref()) {
                 write_cache(file, fresh);
             }
-            fresh
+            fresh.or_else(|| cache.as_deref().and_then(read_cache))
         }
     };
     let dirs = resolve_path(&inherited, home_directory(), shell);
@@ -65,6 +78,12 @@ fn cache_file() -> Option<PathBuf> {
     crate::local::paths::state_home()
         .ok()
         .map(|home| home.join("librepaper/local/login-path"))
+}
+
+/// Whether a value of `REFRESH_ENV` asks for a fresh login-shell PATH.
+#[cfg(any(target_os = "macos", target_os = "linux", all(test, unix)))]
+fn wants_refresh(value: Option<&OsStr>) -> bool {
+    value.is_some_and(|value| !value.is_empty())
 }
 
 /// The cached PATH, or None when the file is missing, empty, or its last write
@@ -415,6 +434,13 @@ mod tests {
             select_shell(None, None, &[Path::new("/bin/sh")]),
             Some(PathBuf::from("/bin/sh"))
         );
+    }
+
+    #[test]
+    fn refresh_env_is_wanted_only_when_non_empty() {
+        assert!(!wants_refresh(None));
+        assert!(!wants_refresh(Some(OsStr::new(""))));
+        assert!(wants_refresh(Some(OsStr::new("1"))));
     }
 
     #[test]

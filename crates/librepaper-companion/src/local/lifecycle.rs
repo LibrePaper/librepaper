@@ -99,6 +99,8 @@ fn background_command(executable: PathBuf, port: u16) -> Command {
     if port != 0 {
         command.args(["--port", &port.to_string()]);
     }
+    // The endpoint call that spawns this child has just refreshed the cached PATH.
+    command.env_remove(super::environment::REFRESH_ENV);
     command
 }
 
@@ -235,6 +237,15 @@ mod tests {
             command_arguments(&command),
             vec!["local", "start", "--foreground"]
         );
+    }
+
+    #[test]
+    fn detached_child_does_not_refresh_the_login_path_again() {
+        let command = background_command(PathBuf::from("librepaper"), 0);
+        let name = std::ffi::OsStr::new(crate::local::environment::REFRESH_ENV);
+        assert!(command
+            .get_envs()
+            .any(|(key, value)| key == name && value.is_none()));
     }
 
     #[test]
