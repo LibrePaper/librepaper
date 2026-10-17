@@ -389,7 +389,8 @@ const page = (comments, { next = null, complete = !next, total, open = total, re
   assert.equal(answer.body, "Reply", "a refused reply edit goes back to the original body");
 }
 
-// A failure that arrives after a newer edit has landed leaves the newer words.
+// One save at a time per item: a second save while the first is in flight is
+// turned away, so a failure never restores another unsaved body.
 {
   const answers = [];
   const overlapping = createAnnotations({
@@ -404,12 +405,23 @@ const page = (comments, { next = null, complete = !next, total, open = total, re
   );
   const owned = overlapping.state.comments[0];
   const first = overlapping.edit(owned, null, "second");
-  const later = overlapping.edit(owned, null, "third");
-  answers[1]({ ok: true });
-  assert.deepEqual(await later, { ok: true });
+  assert.deepEqual(
+    await overlapping.edit(owned, null, "third"),
+    { ok: false, stale: false, message: "The previous edit is still being saved." },
+  );
+  assert.equal(answers.length, 1, "the turned-away edit sends nothing");
+  assert.equal(owned.body, "second");
   answers[0]({ ok: false, error: new Error("offline") });
-  assert.deepEqual(await first, { ok: false, stale: true, message: "offline" });
-  assert.equal(owned.body, "third", "a stale failure does not overwrite a newer edit");
+  assert.deepEqual(await first, { ok: false, stale: false, message: "offline" });
+  assert.equal(owned.body, "First", "only the saved body comes back");
+
+  // A peer's saved edit that lands while ours is in flight wins over our
+  // failure.
+  const mine = overlapping.edit(owned, null, "mine");
+  overlapping.receive({ type: "edit", comment_id: "owned", reply_id: null, body: "peer", edited: "2026-10-17T10:00:00Z" });
+  answers[1]({ ok: false, error: new Error("offline") });
+  assert.deepEqual(await mine, { ok: false, stale: true, message: "offline" });
+  assert.equal(owned.body, "peer");
 }
 
 assert.ok(paints > 0);

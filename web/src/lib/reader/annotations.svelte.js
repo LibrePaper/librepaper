@@ -84,6 +84,8 @@ export function createAnnotations({ slug, key = "", anchor, repaint, send, rende
       busy: false,
     };
   }
+  // The comments and replies with an edit on its way to the room.
+  const savingEdits = new Set();
   const outbox = submissions({ slug, changed: (items) => (state.unconfirmed = items) });
   const list = () => state.comments;
   const update = (next) => (state.comments = next);
@@ -448,16 +450,28 @@ export function createAnnotations({ slug, key = "", anchor, repaint, send, rende
       send({ type: "delete", comment_id: item.id });
     },
     async edit(item, reply, body) {
+      // One save at a time for each comment or reply. Two in flight would
+      // each remember the other's unsaved words as the body to go back to.
+      const key = `${item.id}/${reply?.id ?? ""}`;
+      if (savingEdits.has(key)) {
+        return { ok: false, stale: false, message: "The previous edit is still being saved." };
+      }
+      savingEdits.add(key);
       const target = reply || item;
       const previous = target.body;
       target.body = body;
       publish();
       if (!reply) repaint();
-      const result = await send({ type: "edit", comment_id: item.id, ...(reply ? { reply_id: reply.id } : {}), body });
+      let result;
+      try {
+        result = await send({ type: "edit", comment_id: item.id, ...(reply ? { reply_id: reply.id } : {}), body });
+      } finally {
+        savingEdits.delete(key);
+      }
       if (!result || result.ok === false) {
         // The room never took the words, so put the old body back and say
-        // why. Unless something newer has replaced them meanwhile: a later
-        // edit or a peer's event wins over this stale failure.
+        // why. Unless a peer's edit has replaced them meanwhile: that one
+        // was saved, and this failure is stale.
         const stale = target.body !== body;
         if (!stale) {
           target.body = previous;
