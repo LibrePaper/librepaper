@@ -68,12 +68,16 @@ already carrying ranks that rise in that order keep them; the others take a
 value between their neighbours (midpoints, or one past the end), so a peer
 adding a fragment beside another's does not move it.
 
-Joins: adjacent fragments of one change become one record only when both may
-be rewritten by this session: a fragment not yet stored, or one this session
-minted (`joinable` in the planner; the browser passes the ids it created, the
-server passes none). A stored fragment that another session of the same
-author may be extending at this moment keeps its own record, so neither
-session's deletion is lost. Rows concatenate fragments either way.
+Joins and rewrites: the planner never rewrites or drops a stored fragment.
+Adjacent pieces of one change join into one fragment only while neither is
+stored yet; a stored fragment keeps its id and its rank through a walk, so
+writing a gap back changes nothing about it unless the order asks for a new
+rank. A stored fragment may be extended by its author's other session, or its
+change decided by a reviewer, at any moment, and a rewrite or a drop here
+would lose that peer's write. Rows concatenate fragments either way. The
+planner never drops a change record either: a span emptied by an edit, the
+author's own included, stays as an empty record that prune drops once it has
+rested.
 
 A fragment never sits inside a span in one peer's sequence of edits, but a
 span its author extends leftward while another peer anchors a fragment on its
@@ -110,10 +114,13 @@ Cursors and the write discipline:
   and need no conversion.
 
 Settling: `prune` drops an empty record (a change with no span and no
-fragment, or a fragment of a change that no longer exists after re-parenting)
-and heals a stale cursor onto a live character only when the record's `at` is
-older than a minute, so that its author's other session has had time to sync
-what it was doing to it. Healing is a forced write (`heal`): the ordinary
+fragment) only once it has rested empty for a minute, so that its author's
+other session has had time to sync what it was doing to it. The rest starts
+when a prune first sees the record empty, which it marks on the record
+(`emptied`), not at the record's last edit: an old insertion deleted a moment
+ago still gets its grace. A record found live again loses the mark. A stale
+cursor is healed onto a live character only when the record's `at` is older
+than a minute. Healing is a forced write (`heal`): the ordinary
 suppression of a cursor write whose position would not change does not apply,
 so a settled stale cursor is looked up the slow way once and then rests on a
 live character. A fragment whose change was decided while the

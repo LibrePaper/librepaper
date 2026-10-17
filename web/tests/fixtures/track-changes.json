@@ -1264,13 +1264,13 @@
       "changes": [
         {
           "id": "a",
-          "who": "bob",
+          "who": "alice",
           "from": 1,
           "to": 1
         },
         {
           "id": "b",
-          "who": "alice",
+          "who": "bob",
           "from": 1,
           "to": 1
         }
@@ -1280,15 +1280,15 @@
           "at": 1,
           "fragments": [
             {
-              "change": "a",
+              "change": "b",
               "text": "b"
             },
             {
-              "change": "b",
+              "change": "a",
               "text": "c"
             },
             {
-              "change": "a",
+              "change": "b",
               "text": "d"
             }
           ]
@@ -1311,13 +1311,13 @@
       "changes": [
         {
           "id": "a",
-          "who": "bob",
+          "who": "alice",
           "from": 0,
           "to": 0
         },
         {
           "id": "b",
-          "who": "alice",
+          "who": "bob",
           "from": 0,
           "to": 0
         },
@@ -1337,15 +1337,15 @@
               "text": "a"
             },
             {
-              "change": "a",
+              "change": "b",
               "text": "b"
             },
             {
-              "change": "b",
+              "change": "a",
               "text": "c"
             },
             {
-              "change": "a",
+              "change": "b",
               "text": "d"
             }
           ]
@@ -1359,13 +1359,13 @@
     "state": {
       "changes": [
         {
-          "id": "a",
+          "id": "b",
           "who": "bob",
           "from": 2,
           "to": 2
         },
         {
-          "id": "b",
+          "id": "a",
           "who": "alice",
           "from": 2,
           "to": 2
@@ -1376,11 +1376,11 @@
           "at": 2,
           "fragments": [
             {
-              "change": "a",
+              "change": "b",
               "text": "cd"
             },
             {
-              "change": "b",
+              "change": "a",
               "text": "ef"
             }
           ]
@@ -1403,13 +1403,13 @@
       "changes": [
         {
           "id": "a",
-          "who": "bob",
+          "who": "alice",
           "from": 1,
           "to": 1
         },
         {
           "id": "b",
-          "who": "alice",
+          "who": "bob",
           "from": 1,
           "to": 1
         }
@@ -1419,15 +1419,15 @@
           "at": 1,
           "fragments": [
             {
-              "change": "b",
+              "change": "a",
               "text": "b"
             },
             {
-              "change": "a",
+              "change": "b",
               "text": "cd"
             },
             {
-              "change": "b",
+              "change": "a",
               "text": "ef"
             }
           ]
