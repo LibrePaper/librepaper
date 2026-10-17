@@ -27,8 +27,10 @@ Deleted from the companion: `pair/request`, `connect/claim`, `pair/status`, `dis
 `librepaper local endpoint` (hidden) starts the local service in the background if it is not running, waits until `health` answers, and prints one line of JSON:
 
 ```json
-{"address":"http://127.0.0.1:8763/","token":"<credential>","instance":"<id>","version":"0.0.42","protocol":[2]}
+{"address":"http://127.0.0.1:54321/","token":"<credential>","instance":"<id>","version":"0.0.42","protocol":[2]}
 ```
+
+The service listens on a port the system picks on each start, so the address must always be read from `librepaper local endpoint`. The shell checks that the health `instance` matches before it trusts the address. `version` and `protocol` are the running service's own. When a running service has another version or protocol than the command, or accepts another server than `LIBREPAPER_SERVER` names, `endpoint` stops it and starts a new one.
 
 It exits non-zero with a message on stderr when the local service cannot start. The shell runs it at startup and again whenever a forwarded request fails to connect or gets 401. Tests that drive a real companion use it the same way.
 

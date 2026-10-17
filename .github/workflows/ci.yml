@@ -34,6 +34,22 @@ jobs:
           texlive-bibtex-extra texlive-xetex biber
       - run: make test
 
+  # The local service runs on every desktop platform, so how it starts, picks
+  # its port and is found runs on Windows and macOS too. Linux is covered by
+  # `make test` above. Only those modules for now: other tests in the crate
+  # still assume Linux temporary folders and file names.
+  companion:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo test --locked -p librepaper-companion -- local::lifecycle local::cli local::service::control
+
   # `crates/librepaper-engine/.sqlx/` is the compile-time SQL cache: it is what lets an offline build
   # verify every query against `crates/librepaper-engine/migrations/postgres/
   # 0001_catalog.sql` without a live database, and it goes stale the moment a

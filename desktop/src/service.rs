@@ -22,6 +22,8 @@ pub struct Endpoint {
     token: String,
     #[serde(default)]
     protocol: Vec<u32>,
+    #[serde(default)]
+    instance: String,
 }
 
 pub struct Forward {
@@ -81,8 +83,8 @@ impl Service {
         }
     }
 
-    // Checks every 10 seconds that the service still answers on its port.
-    // When it stopped, it is started again and the windows say so.
+    // Checks every 10 seconds that the service at its address is the one this
+    // shell started. When it is gone, it is started again and the windows say so.
     pub async fn watch(&self, app: tauri::AppHandle) {
         loop {
             tokio::time::sleep(Duration::from_secs(10)).await;
@@ -92,7 +94,7 @@ impl Service {
             let Some(endpoint) = self.endpoint.lock().await.clone() else {
                 continue;
             };
-            if answers(&endpoint.address).await {
+            if self.is_ours(&endpoint).await {
                 continue;
             }
             crate::shell_log::write("the local service stopped; starting it again");
@@ -172,30 +174,61 @@ impl Service {
         }
         builder.send().await
     }
+
+    // Whether the service at the address is the one this shell started. The
+    // health request carries no token, so the instance id is what tells.
+    async fn is_ours(&self, endpoint: &Endpoint) -> bool {
+        let url = format!(
+            "{}/librepaper/local/health",
+            endpoint.address.trim_end_matches('/')
+        );
+        let Ok(response) = self
+            .http
+            .get(url)
+            .timeout(Duration::from_secs(2))
+            .send()
+            .await
+        else {
+            return false;
+        };
+        if !response.status().is_success() {
+            return false;
+        }
+        match response.bytes().await {
+            Ok(body) => health_matches(&body, &endpoint.instance),
+            Err(_) => false,
+        }
+    }
 }
 
-// Whether something accepts connections at the service address.
-async fn answers(address: &str) -> bool {
-    let Ok(url) = url::Url::parse(address) else {
+// The health answer names the service and its instance. An empty instance
+// never matches, so an endpoint without one is never trusted.
+fn health_matches(body: &[u8], instance: &str) -> bool {
+    if instance.is_empty() {
         return false;
-    };
-    let Ok(addrs) = url.socket_addrs(|| None) else {
-        return false;
-    };
-    let Some(addr) = addrs.first() else {
-        return false;
-    };
-    matches!(
-        tokio::time::timeout(Duration::from_secs(2), tokio::net::TcpStream::connect(addr)).await,
-        Ok(Ok(_))
-    )
+    }
+    serde_json::from_slice::<Health>(body)
+        .is_ok_and(|health| health.service == "librepaper-local" && health.instance == instance)
 }
+
+#[derive(Deserialize)]
+struct Health {
+    service: String,
+    instance: String,
+}
+
+// Set by the first endpoint call after the app starts, so that call refreshes the login-shell PATH.
+static REFRESHED: AtomicBool = AtomicBool::new(false);
 
 async fn endpoint(server: &str) -> Result<Endpoint, String> {
     let mut command = tokio::process::Command::new(binary());
     command.args(["local", "endpoint"]).stdin(Stdio::null());
     // The service accepts management requests for this one site only.
     command.env("LIBREPAPER_SERVER", server);
+    // Read by librepaper-companion `local::environment` (REFRESH_ENV).
+    if !REFRESHED.swap(true, Ordering::SeqCst) {
+        command.env("LIBREPAPER_REFRESH_LOGIN_PATH", "1");
+    }
     // CREATE_NO_WINDOW: a GUI app spawning a console program would flash a console window.
     #[cfg(windows)]
     command.creation_flags(0x0800_0000);
@@ -332,7 +365,7 @@ async fn relay(res: reqwest::Response) -> Result<Response<Vec<u8>>, String> {
 
 #[cfg(test)]
 mod tests {
-    use super::{compatible, Endpoint, RELAYED};
+    use super::{compatible, health_matches, Endpoint, RELAYED};
     use tauri::http::HeaderName;
 
     #[test]
@@ -351,6 +384,43 @@ mod tests {
                 .expect("the line parses");
         assert_eq!(endpoint.protocol, vec![1]);
         assert!(compatible(&endpoint).is_err());
+    }
+
+    #[test]
+    fn endpoint_line_without_instance_parses_with_an_empty_instance() {
+        let endpoint: Endpoint =
+            serde_json::from_str(r#"{"address":"http://127.0.0.1:1/","token":"t","protocol":[2]}"#)
+                .expect("the line parses");
+        assert!(endpoint.instance.is_empty());
+    }
+
+    #[test]
+    fn health_of_our_instance_is_ours() {
+        let body = br#"{"service":"librepaper-local","instance":"abc","protocol":[2]}"#;
+        assert!(health_matches(body, "abc"));
+    }
+
+    #[test]
+    fn health_of_another_instance_is_not_ours() {
+        let body = br#"{"service":"librepaper-local","instance":"xyz"}"#;
+        assert!(!health_matches(body, "abc"));
+    }
+
+    #[test]
+    fn health_of_another_service_is_not_ours() {
+        let body = br#"{"service":"something-else","instance":"abc"}"#;
+        assert!(!health_matches(body, "abc"));
+    }
+
+    #[test]
+    fn garbage_health_is_not_ours() {
+        assert!(!health_matches(b"\x00\xffnot json", "abc"));
+    }
+
+    #[test]
+    fn empty_expected_instance_is_never_ours() {
+        let body = br#"{"service":"librepaper-local","instance":""}"#;
+        assert!(!health_matches(body, ""));
     }
 
     #[test]

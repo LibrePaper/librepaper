@@ -19,6 +19,54 @@ To offer another ACP agent in the app, add it in Settings.
 
 To remove an added agent, click Remove next to it.
 
+## Before you start
+
+Claude Code and Codex reach LibrePaper through ACP adapters published on npm. The adapters need Node.js 22 or newer.
+
+- macOS: `brew install node`
+- Windows: `winget install OpenJS.NodeJS.LTS`
+- Linux: install the current LTS from https://nodejs.org. Distribution packages are often older than 22.
+
+After you install anything for an agent, restart LibrePaper so the app finds it.
+
+## Claude Code
+
+Claude Code runs through the `@agentclientprotocol/claude-agent-acp` adapter.
+
+```sh
+# Install Claude Code on macOS or Linux
+curl -fsSL https://claude.ai/install.sh | bash
+# Install Claude Code on Windows, in PowerShell
+irm https://claude.ai/install.ps1 | iex
+# Log in to Claude Code before first use
+claude
+# Install the adapter
+npm install -g @agentclientprotocol/claude-agent-acp
+```
+
+Restart LibrePaper.
+
+- Without the adapter, the app can fetch it with `npx` on first use. It asks first. Installing it keeps a version that does not change under you.
+
+## Codex
+
+Codex runs through the `@agentclientprotocol/codex-acp` adapter. The app fetches it with `npx` when it is not installed.
+
+```sh
+# Install Codex
+npm install -g @openai/codex
+# Log in to Codex before first use
+codex login
+# Install the adapter
+npm install -g @agentclientprotocol/codex-acp
+```
+
+Restart LibrePaper.
+
+- LibrePaper starts the adapter in workspace-write mode, so your Access choice decides which document tools run without asking.
+- Do not add a `librepaper` server to your own Codex config. The adapter then skips the one LibrePaper hands it.
+- On Windows, Codex support is experimental. LibrePaper uses a Codex installed in Windows, not one inside WSL.
+
 ## Pi
 
 Pi needs the `pi-mcp-adapter` extension to reach the document tools.
@@ -40,18 +88,6 @@ Add this entry to `~/.config/mcp/mcp.json`:
 - `directTools` puts the document tools in Pi's own tool list.
 - Use the global file. Pi skips unapproved project servers in the headless mode LibrePaper uses.
 - The macOS `.dmg` does not put `librepaper` on your PATH. Set `command` to `/Applications/LibrePaper.app/Contents/MacOS/librepaper` instead.
-
-## Codex
-
-Codex runs through the `@agentclientprotocol/codex-acp` adapter. The app fetches it with `npx` when it is not installed.
-
-```sh
-# Log in to Codex before first use
-codex login
-```
-
-- LibrePaper starts the adapter in workspace-write mode, so your Access choice decides which document tools run without asking.
-- Do not add a `librepaper` server to your own Codex config. The adapter then skips the one LibrePaper hands it.
 
 ## opencode
 

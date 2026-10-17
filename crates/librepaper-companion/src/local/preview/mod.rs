@@ -228,10 +228,11 @@ fn tail_within(s: &str, max_bytes: usize) -> String {
     s[boundary..].to_string()
 }
 
-/// The last `max_bytes` of a session's combined stdout+stderr log.
+/// The last `max_bytes` of a session's combined stdout+stderr log, without
+/// terminal colour codes.
 pub(crate) async fn log_tail(session: &Session, max_bytes: usize) -> String {
     let log = session.log.lock().await;
-    tail_within(&log, max_bytes)
+    crate::local::builders::diagnostics::strip_ansi(&tail_within(&log, max_bytes))
 }
 
 /// What a log pump task needs to drive `rendering`/`latest` for one session,

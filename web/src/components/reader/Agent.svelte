@@ -766,7 +766,8 @@
   </div>
   <!-- Why sending cannot start this agent, or what its route cannot do. -->
   {#if chosenInstalled?.assistant_blocked || chosenInstalled?.assistant_note}
-    <p class="panel-meta" data-agent-note={chosenInstalled.id}>{chosenInstalled.assistant_blocked}{chosenInstalled.assistant_note}</p>
+    <!-- An older desktop app sends no assistant_docs, so the link falls back to the agents page. -->
+    <p class="panel-meta" data-agent-note={chosenInstalled.id}>{chosenInstalled.assistant_blocked}{chosenInstalled.assistant_note}{#if chosenInstalled.assistant_blocked} <a href={chosenInstalled.assistant_docs || "https://librepaper.org/agents.html"} target="_blank" rel="noreferrer">Setup instructions</a>{/if}</p>
   {/if}
   {#if assistant.agent !== chosenAgent && chosenInstalled?.assistant_fetches}
     <p class="panel-meta" data-adapter-fetch>Starting it downloads its adapter the first time.</p>

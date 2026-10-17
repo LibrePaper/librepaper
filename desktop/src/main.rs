@@ -217,10 +217,38 @@ fn open_window(app: &AppHandle, url: Url) -> tauri::Result<tauri::WebviewWindow>
             NewWindowResponse::Deny
         })
         .build()?;
+    #[cfg(target_os = "macos")]
+    mark_scheme_secure(&window);
     // New windows open at the saved zoom.
     let _ = window.set_zoom(app.state::<zoom::Zoom>().get());
     check_server(app, window.label().to_string(), checked);
     Ok(window)
+}
+
+// WebKit treats lp-local as insecure, so an https page's fetch to it is
+// blocked as mixed content before the request reaches the shell, unless the
+// scheme is registered as secure. Only a private WebKit method does that; a
+// macOS without it leaves the scheme as it was and the log says so.
+#[cfg(target_os = "macos")]
+fn mark_scheme_secure(window: &tauri::WebviewWindow) {
+    let result = window.with_webview(|webview| unsafe {
+        use objc2::runtime::{AnyObject, Sel};
+        use objc2::{msg_send, sel};
+        let view = webview.inner() as *mut AnyObject;
+        let config: *mut AnyObject = msg_send![view, configuration];
+        let pool: *mut AnyObject = msg_send![config, processPool];
+        let register: Sel = sel!(_registerURLSchemeAsSecure:);
+        let available: bool = msg_send![pool, respondsToSelector: register];
+        if !available {
+            shell_log::write("this macOS cannot mark lp-local as secure; https pages may not reach the local service");
+            return;
+        }
+        let scheme = objc2_foundation::NSString::from_str("lp-local");
+        let _: () = msg_send![pool, _registerURLSchemeAsSecure: &*scheme];
+    });
+    if let Err(err) = result {
+        shell_log::write(&format!("could not mark lp-local as secure: {err}"));
+    }
 }
 
 // Shows a URL in the focused window, or in a new window.

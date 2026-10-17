@@ -6,7 +6,8 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::time::Duration;
 
-use super::protocol::{BASE_PATH, DEFAULT_PORT};
+use super::protocol::{Health, BASE_PATH, PROTOCOL_VERSIONS};
+use super::service::{control_server_for_instance, normalized_server};
 use super::store::{ServiceFile, ServiceState};
 
 /// The folder that holds the service lock, the stop request and companion.log.
@@ -41,29 +42,44 @@ pub fn stop_requested(state_home: &Path) -> bool {
     })
 }
 
-async fn reachable(state: &ServiceState) -> bool {
-    let Ok(client) = reqwest::Client::builder()
+async fn fetch_health(state: &ServiceState) -> Option<Health> {
+    let client = reqwest::Client::builder()
         .no_proxy()
         .timeout(Duration::from_millis(500))
         .build()
-    else {
-        return false;
-    };
+        .ok()?;
     let url = format!("http://127.0.0.1:{}{BASE_PATH}/health", state.port);
-    let Ok(response) = client.get(url).send().await else {
-        return false;
-    };
-    response
-        .json::<super::protocol::Health>()
+    let health = client
+        .get(url)
+        .send()
         .await
-        .is_ok_and(|health| {
-            health.service == "librepaper-local" && health.instance == state.instance
-        })
+        .ok()?
+        .json::<Health>()
+        .await
+        .ok()?;
+    (health.service == "librepaper-local" && health.instance == state.instance).then_some(health)
 }
 
-pub async fn running(state_home: &Path) -> Option<ServiceState> {
+async fn reachable(state: &ServiceState) -> bool {
+    fetch_health(state).await.is_some()
+}
+
+pub async fn running(state_home: &Path) -> Option<(ServiceState, Health)> {
     let state = ServiceFile::new(state_home).read()?;
-    reachable(&state).await.then_some(state)
+    let health = fetch_health(&state).await?;
+    Some((state, health))
+}
+
+/// Whether a running service may be reused: the same build and protocol set
+/// as this binary, and the server the caller asks for when it asks for one.
+fn reusable(health: &Health, saved_server: Option<&str>, wanted_server: Option<&str>) -> bool {
+    let same_protocol = health.protocol.len() == PROTOCOL_VERSIONS.len()
+        && PROTOCOL_VERSIONS
+            .iter()
+            .all(|version| health.protocol.contains(version));
+    health.version == crate::VERSION
+        && same_protocol
+        && wanted_server.is_none_or(|wanted| saved_server == Some(wanted))
 }
 
 /// Whether another process holds the service lock: a service that is running
@@ -79,13 +95,12 @@ fn lock_held(state_home: &Path) -> bool {
 
 fn background_command(executable: PathBuf, port: u16) -> Command {
     let mut command = Command::new(executable);
-    command.args([
-        "local",
-        "start",
-        "--foreground",
-        "--port",
-        &if port == 0 { DEFAULT_PORT } else { port }.to_string(),
-    ]);
+    command.args(["local", "start", "--foreground"]);
+    if port != 0 {
+        command.args(["--port", &port.to_string()]);
+    }
+    // The endpoint call that spawns this child has just refreshed the cached PATH.
+    command.env_remove(super::environment::REFRESH_ENV);
     command
 }
 
@@ -93,16 +108,29 @@ fn background_command(executable: PathBuf, port: u16) -> Command {
 /// running instance answered, not merely that a process was spawned. When two
 /// callers race on a cold start, the child that loses the service lock exits
 /// and its caller waits for the winner instead of failing.
-pub async fn spawn_background(port: u16) -> Result<ServiceState, String> {
+pub async fn spawn_background(port: u16) -> Result<(ServiceState, Health), String> {
     let state_home = crate::local::paths::state_home_or_die();
-    if let Some(state) = running(&state_home).await {
+    let wanted_server = std::env::var_os("LIBREPAPER_SERVER")
+        .map(|value| {
+            value
+                .into_string()
+                .map_err(|_| "LIBREPAPER_SERVER is not valid Unicode".to_string())
+                .and_then(|raw| normalized_server(&raw))
+        })
+        .transpose()?;
+    if let Some((state, health)) = running(&state_home).await {
         if port != 0 && port != state.port {
             return Err(format!(
                 "The local service already runs on port {}. Stop it before changing ports.",
                 state.port
             ));
         }
-        return Ok(state);
+        let saved_server = control_server_for_instance(&state_home, &state.instance);
+        if reusable(&health, saved_server.as_deref(), wanted_server.as_deref()) {
+            return Ok((state, health));
+        }
+        // Built from another version or protocol, or for another server: replace it.
+        stop(&state_home).await?;
     }
     let executable = super::paths::current_executable()?;
     let mut command = background_command(executable, port);
@@ -139,8 +167,8 @@ pub async fn spawn_background(port: u16) -> Result<ServiceState, String> {
         .map_err(|error| format!("could not launch the local service: {error}"))?;
     let deadline = tokio::time::Instant::now() + Duration::from_secs(15);
     loop {
-        if let Some(state) = running(&state_home).await {
-            return Ok(state);
+        if let Some(found) = running(&state_home).await {
+            return Ok(found);
         }
         if let Some(status) = child.try_wait().map_err(|error| error.to_string())? {
             if !lock_held(&state_home) {
@@ -165,7 +193,7 @@ pub async fn spawn_background(port: u16) -> Result<ServiceState, String> {
 /// Stops the running service and waits for it to clean up. Succeeds at once
 /// when none is running.
 pub async fn stop(state_home: &Path) -> Result<(), String> {
-    let Some(state) = running(state_home).await else {
+    let Some((state, _)) = running(state_home).await else {
         return Ok(());
     };
     request_stop(state_home)?;
@@ -195,17 +223,65 @@ pub async fn stop(state_home: &Path) -> Result<(), String> {
 mod tests {
     use super::*;
 
-    #[test]
-    fn detached_child_starts_the_service_in_the_foreground() {
-        let command = background_command(PathBuf::from("librepaper"), 8763);
-        let arguments: Vec<_> = command
+    fn command_arguments(command: &Command) -> Vec<String> {
+        command
             .get_args()
             .map(|argument| argument.to_string_lossy().into_owned())
-            .collect();
+            .collect()
+    }
+
+    #[test]
+    fn detached_child_starts_the_service_in_the_foreground() {
+        let command = background_command(PathBuf::from("librepaper"), 0);
         assert_eq!(
-            arguments,
-            vec!["local", "start", "--foreground", "--port", "8763"]
+            command_arguments(&command),
+            vec!["local", "start", "--foreground"]
         );
+    }
+
+    #[test]
+    fn detached_child_does_not_refresh_the_login_path_again() {
+        let command = background_command(PathBuf::from("librepaper"), 0);
+        let name = std::ffi::OsStr::new(crate::local::environment::REFRESH_ENV);
+        assert!(command
+            .get_envs()
+            .any(|(key, value)| key == name && value.is_none()));
+    }
+
+    #[test]
+    fn detached_child_passes_an_explicit_port() {
+        let command = background_command(PathBuf::from("librepaper"), 9123);
+        assert_eq!(
+            command_arguments(&command),
+            vec!["local", "start", "--foreground", "--port", "9123"]
+        );
+    }
+
+    #[test]
+    fn a_running_service_is_reused_only_when_it_matches() {
+        let health = Health {
+            service: "librepaper-local".into(),
+            protocol: PROTOCOL_VERSIONS.to_vec(),
+            version: crate::VERSION.into(),
+            instance: "abc123".into(),
+        };
+        let server = Some("https://app.example/");
+        assert!(reusable(&health, server, server));
+        assert!(reusable(&health, server, None));
+        assert!(!reusable(&health, None, server));
+        assert!(!reusable(&health, Some("https://other.example/"), server));
+
+        let other_version = Health {
+            version: "0.0.0-other".into(),
+            ..health.clone()
+        };
+        assert!(!reusable(&other_version, server, server));
+
+        let other_protocol = Health {
+            protocol: vec![PROTOCOL_VERSIONS[0] + 1],
+            ..health.clone()
+        };
+        assert!(!reusable(&other_protocol, server, server));
     }
 
     #[test]

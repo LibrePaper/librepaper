@@ -64,13 +64,16 @@ export function createLocalPreview({
   // What the page draws. Owned here rather than mirrored into the page
   // through callbacks: these are facts about a preview, the preview is this
   // module, and a mirror is one more thing that can disagree.
-  /** @type {{ session: LocalPreviewSession | null, starting: boolean, rendering: boolean, error: string, kept: string[] }} */
+  /** @type {{ session: LocalPreviewSession | null, starting: boolean, rendering: boolean, error: string, log: string, kept: string[] }} */
   const state = $state({
     session: null, // the bridge's { id, url, ... }, or null while idle
     starting: false,
     rendering: false,
     // The last thing that went wrong, or "" once a new attempt clears it.
     error: "",
+    // The whole log the engine wrote before it ended, so the one-line error
+    // above is not the only account of why it stopped.
+    log: "",
     // Notes the desktop app returned when it saved a file edited outside
     // LibrePaper as a `.local` copy, for this preview session.
     kept: [],
@@ -150,9 +153,10 @@ export function createLocalPreview({
 
   // Any `state` other than "running" -- the process exited, whether it
   // finished cleanly or failed -- ends the session: the poller stops, the
-  // bridge is told to drop it, the last log line is reported, and the
-  // caller's `onEnded` gets a chance to repaint its own fallback preview.
-  function endSession(message) {
+  // bridge is told to drop it, the service's reason is reported (or the last
+  // log line when there is none), and the caller's `onEnded` gets a chance to
+  // repaint its own fallback preview.
+  function endSession(message, log = "") {
     const active = state.session;
     if (!active) return;
     state.session = null;
@@ -160,6 +164,7 @@ export function createLocalPreview({
     stopStatusPoll();
     void local.stopLocalPreview(active.id).catch(() => {});
     state.error = message || "";
+    state.log = log;
     onEnded?.();
   }
 
@@ -170,8 +175,12 @@ export function createLocalPreview({
         .then((status) => {
           if (isDisposed() || state.session?.id !== id) return;
           if (status?.state && status.state !== "running") {
+            // The service picks the explanatory lines out of the log; the last
+            // log line is only a fallback for services that don't send `error`
+            // (Quarto's last line is always a generic warning).
+            const reason = String(status.error || "").trim();
             const line = String(status.log_tail || "").trim().split("\n").filter(Boolean).pop();
-            endSession(line || `${label} preview ended`);
+            endSession(reason || line || `${label} preview ended`, String(status.log_tail || ""));
             return;
           }
           if (state.session?.id === id) statusTimer = setTimer(tick, STATUS_POLL_MS);
@@ -206,6 +215,7 @@ export function createLocalPreview({
     const stopped = lifecycle.mark();
     const cancelled = () => isDisposed() || stopped();
     state.error = "";
+    state.log = "";
     state.kept = [];
     setStarting(true);
     try {

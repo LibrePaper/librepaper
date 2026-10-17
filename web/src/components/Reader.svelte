@@ -3661,7 +3661,8 @@
       provenance={renderState.lastLatexResult?.provenance || null}
       attempts={renderState.lastLatexResult?.attempts || []}
       onagent={agentOffered ? askDiagnostic : undefined}
-      log={renderState.lastLatexResult?.log || ""} />
+      log={renderState.lastLatexResult?.log || (quartoPreviewError && quartoPreviewController.state.log) || (calepinPreviewError && calepinPreviewController.state.log) || renderState.lastLog || ""}
+      logOpen={renderState.lastLatexResult ? undefined : false} />
   {/snippet}
 
   {#snippet historyPanel()}
