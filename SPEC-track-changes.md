@@ -52,7 +52,7 @@ same moment both keep their write. Two kinds, told apart by `kind`:
   text:   string,          // one piece of deleted text
   start:  Uint8Array,      // Cursor on the character right after it, or the end of the text
   rank:   number,          // order among the fragments at one point
-  who, author, run, at     // copied from the change, so an orphan can be re-parented
+  who, author, run, at     // copied from the change, so an orphan can stand on its own
 }
 ```
 
@@ -119,14 +119,30 @@ other session has had time to sync what it was doing to it. The rest starts
 when a prune first sees the record empty, which it marks on the record
 (`emptied`), not at the record's last edit: an old insertion deleted a moment
 ago still gets its grace. A record found live again loses the mark. A stale
-cursor is healed onto a live character only when the record's `at` is older
-than a minute. Healing is a forced write (`heal`): the ordinary
-suppression of a cursor write whose position would not change does not apply,
-so a settled stale cursor is looked up the slow way once and then rests on a
-live character. A fragment whose change was decided while the
-fragment was written (an orphan) is re-parented by `prune` to a fresh change
-record built from the author fields the fragment carries, so the deletion it
-records can still be decided.
+cursor is healed onto a live character the same way: the first prune that
+sees it stale marks the record (`stale`), and a later prune heals it once the
+mark is a minute old. The grace is not counted from the record's `at`: the
+author may be moving that very end of the span in a session that has not
+synced yet, and an immediate heal would race it. A cursor found live again
+loses the mark, and a heal removes it. Healing is a forced write (`heal`): the
+ordinary suppression of a cursor write whose position would not change does
+not apply, so a settled stale cursor is looked up the slow way once and then
+rests on a live character.
+
+Orphans: a fragment whose change was decided while the fragment was written
+has no change record. It is read as a change of its own, under the fragment's
+id, with the author fields the fragment carries, and decided like any other:
+accept drops it, reject puts its text back. Nothing is written for that, so a
+reader who has never edited sees the same row as the author does, and
+`prune` has nothing to repair. The fragment keeps pointing at the change it
+had.
+
+Absorbed changes: when an edit merges several of the author's own changes
+into one, the records absorbed into the merged change are not deleted. They
+are planned `kept` with `emptied` and an empty span, and `prune` drops them
+once they have rested empty, like any other emptied record. Deleting them at
+once would discard an extension of the same span by the author's other
+session, and the text that session inserted would lose its tracking.
 
 Rows: a change's `deleted` text is the concatenation of its fragments in
 document order, across gaps. Its position is its span, or the gap of its first
@@ -181,9 +197,9 @@ Rules, for one edit `[ef, et)` with `insert`:
    change even when a fragment of it sits at the edit: one change holds one
    span, and a span never widens over text that is not its own. The affected
    changes and the new edit merge into one change, which keeps the lowest id
-   by position; the others are `removed`, and their fragments in every gap of
-   the file, not only the swallowed ones, take the merged id (those gaps are
-   `set`). If the edit deletes original text or inserts text and no own change
+   by position; the others are `kept` as emptied records (see Absorbed
+   changes), and their fragments in every gap of the file, not only the
+   swallowed ones, take the merged id (those gaps are `set`). If the edit deletes original text or inserts text and no own change
    is affected, a new change is made.
 4. **Swallowed gaps.** Every gap at a position in `[ef, et]` merges into one
    gap with the new fragments. Walking `ef..et`, the gaps at `p` come first
@@ -198,13 +214,14 @@ Rules, for one edit `[ef, et)` with `insert`:
    position that already has a gap (the span's start after a merge with an
    earlier own span) joins that gap after its fragments. There is one gap per
    position.
-5. A change with no span and no fragment left is `removed`. A gap with no
-   fragment is `removed`.
+5. A change with no span and no fragment left is `kept` with `emptied`; its
+   record waits for `prune`. A gap with no fragment is `removed`.
 6. A multi-range edit is planned range by range, in order, each range in the
    coordinates left by the ranges before it, exactly as
    `web/vendor/loro-codemirror/sync.ts` writes them.
 7. **Untracked edits are planned too** (`untracked: true`), by the browser
-   for every local edit while tracking is off, when the file has records. An
+   for every local edit while tracking is off, and by the server for an
+   agent's untracked patches (`track::untracked_edits`), when the file has records. An
    untracked edit records nothing and makes no change: spans still shrink,
    move and split around it, and the gaps it collapses merge in order at
    `ef`. Without this, deleting the text between two gaps leaves two gaps on
