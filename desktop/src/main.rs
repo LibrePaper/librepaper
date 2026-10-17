@@ -556,7 +556,8 @@ fn serve(app: &AppHandle, label: String, request: Request<Vec<u8>>, responder: U
                 app.state::<drop::Dropped>().take(token, index)
             });
             let Some(path) = path else {
-                return responder.respond(json_error(StatusCode::NOT_FOUND, "no such file"));
+                let res = json_error(StatusCode::NOT_FOUND, "no such file");
+                return responder.respond(with_origin(res, &origin));
             };
             tauri::async_runtime::spawn_blocking(move || {
                 let res = match std::fs::read(&path) {
