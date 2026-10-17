@@ -185,7 +185,7 @@
   import { completionExtension, formatOfPath } from "../lib/completion/index.js";
   import { desktop, searchZotero, zoteroItem } from "../lib/desktop/client.js";
   import { changeMarks, setChangeMarks } from "../lib/change-marks.js";
-  import { CHANGES, planEdits, writePlanned, resolveFile, trackedSplice, untrackedSplice, prune, migrateChanges } from "../lib/track-changes.js";
+  import { CHANGES, planEdits, writePlanned, resolveFile, trackedSplice, untrackedSplice, prune } from "../lib/track-changes.js";
   import { DIRECTORY_ORIGIN } from "../lib/project-session.js";
   import { projectDirectory } from "../lib/projection.js";
   import { attachEditorZoom } from "../lib/editor-zoom.js";
@@ -281,12 +281,7 @@
       const doc = session.doc;
       return {
         update(update) {
-          if (isLocal(update) && doc.getMap(CHANGES).size) {
-            // Old-model records are converted first, so the snapshot never
-            // reads one as plain text. The write joins the commit below.
-            migrateChanges(doc);
-            snapshot = resolveFile(doc, fileId);
-          }
+          if (isLocal(update) && doc.getMap(CHANGES).size) snapshot = resolveFile(doc, fileId);
         },
       };
     });
@@ -1239,8 +1234,6 @@
       });
       untrack(() => viewCallbacks.set(view, { onsave, onquit }));
       syncKeys(view);
-      // An opened document's old records are converted before anything reads them.
-      if (session.doc.getMap(CHANGES).size && migrateChanges(session.doc)) session.doc.commit();
       drawChanges();
       if (initial.first) session.inFile?.(initial.first);
       const bibliographyWatcher = scheduleBibliography;
