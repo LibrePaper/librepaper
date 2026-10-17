@@ -1026,10 +1026,11 @@ export async function agents() {
 /** Start the sidebar assistant, driving the chosen installed agent directly
  * against the document link. The link crosses loopback once, here: no
  * connection name, config file, command line or transcript holds the key. */
-export async function startAssistant({ link = "", conversation = "", chatToken = "", agentToken = "", agent = "" } = {}) {
+export async function startAssistant({ link = "", conversation = "", chatToken = "", agentToken = "", agent = "", access = "" } = {}) {
   return assistantCall("POST", "assistant", {
     link: String(link || ""), conversation: String(conversation || ""),
     chat_token: String(chatToken || ""), agent_token: String(agentToken || ""), agent: String(agent || ""),
+    access: String(access || ""),
   });
 }
 
