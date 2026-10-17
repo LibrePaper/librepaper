@@ -398,6 +398,10 @@ impl Server {
                         return Some(redirect(&local_path(&next)));
                     }
                 }
+                // Somebody who has just signed out is shown the page, even with
+                // one provider. Following the provider would sign them straight
+                // back in while it still remembers them.
+                let signed_out = query.contains_key("signed_out");
                 let providers = self.providers();
                 match providers.as_slice() {
                     // Nothing to sign in to: this deployment is open to
@@ -408,7 +412,7 @@ impl Server {
                     )),
                     // One provider is not a choice, so it is not offered as
                     // one.
-                    [only] => Some(redirect(&format!(
+                    [only] if !signed_out => Some(redirect(&format!(
                         "/auth/login/{}?next={}",
                         only.id,
                         url_escape(&next)

@@ -85,7 +85,7 @@ try {
 
   // Signing out in the desktop app stays on the server, not the marketing site.
   await tab.evaluate("window.signOut('https://example.invalid/')");
-  await until("back at the root", () => tab.evaluate("location.origin + location.pathname").then((here) => here === `${origin}/`));
+  await until("back at the sign-in page, marked as signed out", () => tab.evaluate("location.origin + location.pathname + location.search").then((here) => here === `${origin}/auth/login?signed_out=1`));
 } finally {
   await tab?.close();
   server?.close();

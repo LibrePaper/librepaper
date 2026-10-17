@@ -427,6 +427,25 @@ async fn a_deployment_with_one_oidc_provider_sends_the_door_straight_to_it() {
 
 #[tokio::test]
 #[ignore = "requires LIBREPAPER_TEST_POSTGRES_URL"]
+async fn a_signed_out_visitor_sees_the_page_even_with_one_provider() {
+    let Some(fixture) = fixture(false, None, |idp| vec![provider(idp, "x", LABEL)]).await else {
+        return;
+    };
+    let answer = fixture
+        .get("/auth/login?signed_out=1&next=%2Fdocs", None)
+        .await;
+    assert_eq!(answer.status, 200, "{}", answer.body);
+    assert!(
+        answer
+            .body
+            .contains(&format!("/auth/login/{ID}?next=%2Fdocs")),
+        "{}",
+        answer.body
+    );
+}
+
+#[tokio::test]
+#[ignore = "requires LIBREPAPER_TEST_POSTGRES_URL"]
 async fn a_deployment_with_two_providers_offers_the_choice() {
     let Some(fixture) = fixture(true, None, |idp| vec![provider(idp, "x", LABEL)]).await else {
         return;

@@ -17,6 +17,7 @@
   // Carried through from the query rather than read off location.pathname:
   // this page is not where the person was going.
   const next = new URLSearchParams(location.search).get("next") || "/";
+  const signedOut = new URLSearchParams(location.search).has("signed_out");
   const href = (provider) => `/auth/login/${provider.id}?next=${encodeURIComponent(next)}`;
 
   // Only the desktop app can switch the server it opens, so only it offers the choice.
@@ -42,6 +43,7 @@
       <Logo size="signin" />
       <h1 id="signin-title">Sign in or create an account</h1>
     </div>
+    {#if signedOut}<p class="signin-signed-out" role="status">You are signed out.</p>{/if}
     <!-- The service is young and may change under people, so a local copy kept
          by the desktop app is the safety net. -->
     <div class="signin-warning" role="note">
@@ -117,6 +119,11 @@
     font-weight: 650;
     line-height: 1.25;
     text-wrap: balance;
+  }
+
+  .signin-signed-out {
+    margin: 0;
+    color: var(--color-text-secondary);
   }
 
   .signin-providers {
