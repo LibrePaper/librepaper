@@ -23,6 +23,7 @@ use super::protocol::{
     QuartoCoverage, QuartoJobOptions, QuartoRenderPolicy, Tool, ToolVersions, Workspace,
     MAX_QUARTO_OUTPUT_BYTES, MAX_QUARTO_OUTPUT_FILES, MAX_UPLOAD_BYTES, QUARTO_COLLECTOR_VERSION,
 };
+use crate::local::builders::diagnostics::{failure_reason, strip_ansi};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct SourceInventory {
@@ -738,7 +739,10 @@ pub async fn run_job_with_bindings(
     command
         .env("LIBREPAPER_QUARTO_CELL_MANIFEST", &cell_manifest)
         .env("LIBREPAPER_QUARTO_INLINE_RECORDS", &inline_records)
-        .env("QUARTO_LOG_LEVEL", "WARNING")
+        // Quarto's default level. At WARNING it hides why an engine failed,
+        // such as a missing R package and how to install it, and keeps only
+        // "Error encountered when rendering files".
+        .env("QUARTO_LOG_LEVEL", "INFO")
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped())
@@ -792,7 +796,7 @@ pub async fn run_job_with_bindings(
         log.push_str(note);
         log.push('\n');
     }
-    log.push_str(&String::from_utf8_lossy(&log_bytes));
+    log.push_str(&strip_ansi(&String::from_utf8_lossy(&log_bytes)));
     let exit = match outcome {
         super::native::RunOutcome::Exited(code) => code,
         super::native::RunOutcome::Canceled => return canceled(&request, &job_id),
@@ -804,6 +808,10 @@ pub async fn run_job_with_bindings(
         }
     };
     if exit != 0 {
+        let error = match failure_reason(&log) {
+            Some(reason) => format!("Quarto render failed: {reason}"),
+            None => "Quarto render failed".into(),
+        };
         return JobOutcome {
             status: JobStatus {
                 id: job_id,
@@ -811,7 +819,7 @@ pub async fn run_job_with_bindings(
                 status: "failed".into(),
                 stage: "rendering".into(),
                 exit,
-                error: Some("Quarto render failed".into()),
+                error: Some(error),
                 snapshot: request.snapshot,
                 generation: request.generation,
                 log_tail: log,

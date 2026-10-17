@@ -36,3 +36,7 @@ tauri-build = { version = "2", features = [] }
 [profile.release]
 lto = "thin"
 strip = true
+
+[target.'cfg(target_os = "macos")'.dependencies]
+objc2 = "0.6"
+objc2-foundation = "0.3"

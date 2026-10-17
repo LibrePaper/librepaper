@@ -35,6 +35,7 @@ use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 use tokio::sync::{mpsc, watch, Mutex, Notify};
 
+use crate::local::builders::diagnostics::failure_reason;
 use crate::local::preview;
 use crate::local::protocol::{
     self, Capabilities, JobOptions, JobOutcome, JobRequest, JobStatus, ManifestEntry, Workspace,
@@ -55,6 +56,14 @@ mod control;
 
 pub(crate) fn control_token_for_instance(state_home: &Path, instance: &str) -> Option<String> {
     control::token_for_instance(state_home, instance)
+}
+
+pub(crate) fn control_server_for_instance(state_home: &Path, instance: &str) -> Option<String> {
+    control::server_for_instance(state_home, instance)
+}
+
+pub(crate) fn normalized_server(raw: &str) -> Result<String, String> {
+    control::normalized_server(raw)
 }
 
 mod jobs;
@@ -1590,6 +1599,7 @@ async fn handle_preview(
                     "page": page,
                     "rendering": rendering,
                     "log_tail": log_tail,
+                    "error": failure_reason(&log_tail),
                 }),
             );
         }

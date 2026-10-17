@@ -207,6 +207,10 @@ export function createPreviewRenderer({
       debug("preview: result", Boolean(rendered?.pdf), rendered?.ok, rendered?.failure?.message || "");
       if (facts().disposed) return;
       if (format === "latex" && !htmlPreview) status.recordLatex(rendered);
+      // Every other format keeps its tool's output too, so a failed Quarto or
+      // Calepin run can show its whole log. Each render replaces the last one,
+      // including with "" when this one produced none.
+      else status.recordLog(rendered?.log || "");
       const { html, pdf, artifact, artifactKind, synctex, diagnostics: said, log } = rendered;
       const contextual = (said || []).map((item) => diagnosticContext(item, source, identity));
       // An in-flight preview may finish after another keystroke: HTML and

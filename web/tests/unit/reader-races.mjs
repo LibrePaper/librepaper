@@ -230,6 +230,7 @@ const context = (values) => {
     failed: (reason) => { ctx.renderState.failure = true; ctx.renderState.failureReason = String(reason || "could not render"); },
     resetFailure: () => { ctx.renderState.failure = false; ctx.renderState.failureReason = ""; },
     recordLatex: (result) => { ctx.renderState.lastLatexResult = result; },
+    recordLog: (log) => { ctx.renderState.lastLog = log || ""; },
     recordDocx: (value) => { ctx.renderState.docxArtifact = value; },
     clearDocx: () => { ctx.renderState.docxArtifact = null; },
   };
@@ -269,6 +270,7 @@ const preview = (values = {}) => {
     failed: (reason) => { state.failure = true; state.failureReason = String(reason || "could not render"); },
     resetFailure: () => { state.failure = false; state.failureReason = ""; },
     recordLatex: (result) => { state.lastLatexResult = result; },
+    recordLog: (log) => { state.lastLog = log || ""; },
     recordDocx: (value) => { state.docxArtifact = value; },
     clearDocx: () => { state.docxArtifact = null; },
   };

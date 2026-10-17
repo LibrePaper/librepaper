@@ -834,7 +834,7 @@ export async function startLocalPreview({ engine = "quarto", job = {}, tree, opt
 export async function stopLocalPreview(id) {
   await send("DELETE", `previews/${encodeURIComponent(id)}`);
 }
-/** @param {string} id @returns {Promise<{ state?: string, log_tail?: string }>} */
+/** @param {string} id @returns {Promise<{ state?: string, log_tail?: string, error?: string | null }>} */
 export async function localPreviewStatus(id) {
   const response = await send("GET", `previews/${encodeURIComponent(id)}`);
   return response.json();

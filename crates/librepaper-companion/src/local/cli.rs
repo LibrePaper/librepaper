@@ -12,7 +12,7 @@ use tokio::net::TcpListener;
 use clap::{Args, Subcommand};
 
 use crate::local::paths::state_home_or_die as state_home;
-use crate::local::protocol::{self, DEFAULT_PORT};
+use crate::local::protocol;
 use crate::local::service::{LocalService, NativeRunner, Runner};
 use crate::local::store::{ServiceFile, ServiceState};
 use librepaper_base::util::die;
@@ -23,7 +23,7 @@ pub struct LaunchArgs {
     /// Run in the foreground of this process instead of in the background
     #[arg(long)]
     pub foreground: bool,
-    /// Port to listen on (default 8763)
+    /// Port to listen on (default: a free port the system picks)
     #[arg(
         long,
         value_name = "PORT",
@@ -46,7 +46,7 @@ pub enum LocalCommand {
     /// Start the service if needed and print how to reach it as one JSON
     /// line: address, credential, instance, version and protocol.
     Endpoint {
-        /// Port to start on when the service is not running (default 8763)
+        /// Port to start on when the service is not running (default: a free port the system picks)
         #[arg(long, value_name = "PORT", env = "LIBREPAPER_LOCAL_PORT")]
         port: Option<u16>,
     },
@@ -95,7 +95,7 @@ fn cache_home() -> PathBuf {
 
 async fn start_background(port: u16) {
     match crate::local::lifecycle::spawn_background(port).await {
-        Ok(state) => println!("Local service ready on port {}.", state.port),
+        Ok((state, _)) => println!("Local service ready on port {}.", state.port),
         Err(error) => die(error),
     }
 }
@@ -103,7 +103,6 @@ async fn start_background(port: u16) {
 async fn start_foreground(port: u16) {
     let state_home = state_home();
     let service_file = ServiceFile::new(&state_home);
-    let port = if port == 0 { DEFAULT_PORT } else { port };
 
     let local_dir = state_home.join("librepaper/local");
     if let Err(error) = std::fs::create_dir_all(&local_dir) {
@@ -127,6 +126,12 @@ async fn start_foreground(port: u16) {
              listening there."
         )),
         Err(err) => die(format!("could not listen on 127.0.0.1:{port}: {err}")),
+    };
+    // Port 0 lets the system pick a free port, so two users on one machine
+    // do not collide. Everything after this uses the port it picked.
+    let port = match listener.local_addr() {
+        Ok(addr) => addr.port(),
+        Err(err) => die(format!("could not read the listening port: {err}")),
     };
     // Best-effort: some machines have IPv6 disabled entirely, and the
     // loopback service works fine on IPv4 alone when it is.
@@ -228,7 +233,7 @@ async fn stop() {
 /// desktop app reads: where to reach it and the credential that opens it.
 /// Exits non-zero with a message when the service cannot be reached.
 async fn endpoint(port: u16) {
-    let state = crate::local::lifecycle::spawn_background(port)
+    let (state, health) = crate::local::lifecycle::spawn_background(port)
         .await
         .unwrap_or_else(|error| die(error));
     let Some(token) =
@@ -236,16 +241,18 @@ async fn endpoint(port: u16) {
     else {
         die("Local control credential is unavailable");
     };
-    println!("{}", endpoint_line(&state, &token));
+    println!("{}", endpoint_line(&state, &health, &token));
 }
 
-fn endpoint_line(state: &ServiceState, token: &str) -> String {
+/// Reports the running service's own version and protocol, which may differ
+/// from this command's when an older service was left running.
+fn endpoint_line(state: &ServiceState, health: &protocol::Health, token: &str) -> String {
     json!({
         "address": format!("http://127.0.0.1:{}/", state.port),
         "token": token,
         "instance": state.instance,
-        "version": crate::VERSION,
-        "protocol": protocol::PROTOCOL_VERSIONS,
+        "version": health.version,
+        "protocol": health.protocol,
     })
     .to_string()
 }
@@ -401,13 +408,30 @@ mod tests {
             pid: 1,
             started: 0,
         };
-        let line = endpoint_line(&state, "secret-token");
+        let health = protocol::Health {
+            service: "librepaper-local".into(),
+            protocol: vec![7],
+            version: "9.9.9-test".into(),
+            instance: "abc123".into(),
+        };
+        let line = endpoint_line(&state, &health, "secret-token");
         assert!(!line.contains('\n'));
         let value: serde_json::Value = serde_json::from_str(&line).unwrap();
         assert_eq!(value["address"], "http://127.0.0.1:8763/");
         assert_eq!(value["token"], "secret-token");
         assert_eq!(value["instance"], "abc123");
-        assert_eq!(value["version"], crate::VERSION);
-        assert_eq!(value["protocol"], json!(protocol::PROTOCOL_VERSIONS));
+        assert_eq!(value["version"], "9.9.9-test");
+        assert_eq!(value["protocol"], json!([7]));
+    }
+
+    #[tokio::test]
+    async fn two_services_on_one_machine_get_different_free_ports() {
+        let first = TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
+        let second = TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
+        let first_port = first.local_addr().unwrap().port();
+        let second_port = second.local_addr().unwrap().port();
+        assert_ne!(first_port, 0);
+        assert_ne!(second_port, 0);
+        assert_ne!(first_port, second_port);
     }
 }

@@ -111,11 +111,22 @@ fn validate_server(raw: &str) -> Result<url::Url, String> {
     Ok(server)
 }
 
+pub(crate) fn normalized_server(raw: &str) -> Result<String, String> {
+    Ok(validate_server(raw)?.to_string())
+}
+
 pub(super) fn token_for_instance(state_home: &Path, instance: &str) -> Option<String> {
     let path = state_home.join("librepaper").join("local").join(TOKEN_FILE);
     read_private_file(&path)
         .filter(|file| file.instance == instance)
         .map(|file| file.token)
+}
+
+pub(super) fn server_for_instance(state_home: &Path, instance: &str) -> Option<String> {
+    let path = state_home.join("librepaper").join("local").join(TOKEN_FILE);
+    read_private_file(&path)
+        .filter(|file| file.instance == instance)
+        .and_then(|file| file.server)
 }
 
 fn read_private_file(path: &Path) -> Option<TokenFile> {
