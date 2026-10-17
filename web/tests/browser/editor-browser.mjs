@@ -123,7 +123,7 @@ window.peerChangeCheck = async () => {
     added: [...host.querySelectorAll(".change-added")].map((node) => node.textContent),
     removed: [...host.querySelectorAll("del.change-removed")].map((node) => node.textContent),
     mine: host.querySelectorAll(".change-mine").length,
-    entries: [...value.doc.getMap("changes").entries()].filter(([, v]) => v?.kind === "change").length,
+    entries: [...value.doc.getMap("changes").entries()].filter(([, v]) => (typeof v?.get === "function" ? v.get("kind") : v?.kind) === "change").length,
   };
   component.$destroy();
   host.remove();
@@ -534,8 +534,8 @@ window.trackingCheck = async () => {
   await tick();
   const changes = () => value.doc.getMap("changes");
   // A replacement is two records (a change and a gap), so only change rows count.
-  const changeIds = () => [...changes().entries()].filter(([, v]) => v?.kind === "change").map(([id]) => id);
-  const rows = () => [...changes().entries()].filter(([, v]) => v?.kind === "change").length;
+  const changeIds = () => [...changes().entries()].filter(([, v]) => (typeof v?.get === "function" ? v.get("kind") : v?.kind) === "change").map(([id]) => id);
+  const rows = () => [...changes().entries()].filter(([, v]) => (typeof v?.get === "function" ? v.get("kind") : v?.kind) === "change").length;
   const on = (tracked.startTracking(), tracked.trackingOn());
   const view = EditorView.findFromDOM(host.querySelector(".cm-editor"));
   view.dispatch({ changes: { from: 0, insert: "TRACKED " }, userEvent: "input.type" });
