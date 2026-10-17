@@ -50,6 +50,9 @@ pub struct ChangeRecord {
     pub emptied: bool,
     /// Its stored cursors resolve to a replaced character. Set by the reader.
     pub stale: bool,
+    /// A fragment read as a change of its own, because its change record is
+    /// gone. Set by the reader. It has no record of its own to write.
+    pub orphan: bool,
 }
 
 /// Original text deleted by one change, as it sits in a gap. Each fragment is
@@ -343,6 +346,7 @@ fn plan_one(
                 run: run.map(str::to_string).or_else(|| c.run.clone()),
                 at: now,
                 emptied: false,
+                orphan: false,
                 ..c.clone()
             },
             None => ChangeRecord {
@@ -355,6 +359,7 @@ fn plan_one(
                 to: ef,
                 emptied: false,
                 stale: false,
+                orphan: false,
             },
         });
     }
@@ -416,8 +421,25 @@ fn plan_one(
     let mut out: Vec<Row> = Vec::new();
     let mut new_spans: Vec<Row> = Vec::new();
     for (c, st) in &changes {
-        if mine.is_some() && owned.contains(&c.id) {
-            continue;
+        if let Some(m) = &mine {
+            if owned.contains(&c.id) {
+                // Absorbed into the merged change. Its record stays, untouched
+                // and empty: another session of the author may be extending its
+                // span at this moment, and that extension must keep a record to
+                // live under. Prune drops it once it has rested empty.
+                if c.id != m.id {
+                    out.push((
+                        ChangeRecord {
+                            from: ef + len,
+                            to: ef + len,
+                            emptied: true,
+                            ..c.clone()
+                        },
+                        PlanState::Kept,
+                    ));
+                }
+                continue;
+            }
         }
         if !has_span(c) {
             out.push((c.clone(), *st));
@@ -734,8 +756,8 @@ fn resolved_span(doc: &LoroDoc, text: &LoroText, m: &LoroMap) -> Option<(usize, 
     Some((s.offset, to.max(s.offset)))
 }
 
-/// The author fields a fragment record carries, so that `prune` can give the
-/// fragment a change of its own when its change record is gone.
+/// The author fields a fragment record carries, so that `resolve_file` can read
+/// a fragment whose change record is gone as a change of its own.
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct Authorship {
     id: String,
@@ -752,12 +774,10 @@ struct Stored {
     authorship: Authorship,
 }
 
-/// What `resolve_file` reads: the live state, and the fragments whose change
-/// record is gone.
+/// What `resolve_file` reads: the live state.
 #[derive(Default)]
 struct Resolved {
     state: FileState,
-    orphans: Vec<Authorship>,
 }
 
 /// Reads a fragment record. Left out when its cursor, text or change is missing.
@@ -821,14 +841,16 @@ fn read_change(doc: &LoroDoc, text: &LoroText, id: &str, m: &LoroMap) -> Option<
         to,
         emptied: false,
         stale,
+        orphan: false,
     })
 }
 
 /// Resolves the records of one file against its text now. Gaps are derived:
 /// the fragments that resolve to one offset, in rank order. A change with no
 /// span takes its place from its first fragment, and one with neither span nor
-/// fragment is left out. Fragments whose change record is gone come back as
-/// orphans. Records without a known `kind` are ignored.
+/// fragment is left out. A fragment whose change record is gone is read as a
+/// change of its own, under its own id, when it has author fields; without
+/// them it is left out. Records without a known `kind` are ignored.
 fn resolve_file(doc: &LoroDoc, file_id: &str) -> Resolved {
     let Some(text) = text_of(doc, file_id) else {
         return Resolved::default();
@@ -881,6 +903,7 @@ fn resolve_file(doc: &LoroDoc, file_id: &str) -> Resolved {
             to,
             emptied: false,
             stale,
+            orphan: false,
         });
     }
     for (id, m) in records(doc) {
@@ -893,16 +916,38 @@ fn resolve_file(doc: &LoroDoc, file_id: &str) -> Resolved {
             _ => {}
         }
     }
-    let known: HashSet<String> = changes.iter().map(|c| c.id.clone()).collect();
-    let mut orphans: Vec<Authorship> = Vec::new();
-    let mut live: Vec<Stored> = Vec::new();
-    for s in stored {
+    // A fragment whose change record is gone was written while someone accepted
+    // that change. The deletion it records is still pending, so it is read as a
+    // change of its own, under the fragment's id, and decided like any other.
+    // Nothing is written for it: every reader derives the same row.
+    let mut known: HashSet<String> = changes.iter().map(|c| c.id.clone()).collect();
+    for s in stored.iter_mut() {
+        let Some(who) = s.authorship.who.clone() else {
+            continue;
+        };
         if known.contains(&s.fragment.change) {
-            live.push(s);
-        } else {
-            orphans.push(s.authorship);
+            continue;
         }
+        let id = s.authorship.id.clone();
+        s.fragment.change = id.clone();
+        known.insert(id.clone());
+        changes.push(ChangeRecord {
+            id,
+            author: s.authorship.author.clone().unwrap_or_else(|| who.clone()),
+            who,
+            run: s.authorship.run.clone(),
+            at: s.authorship.at.unwrap_or(0),
+            from: s.point,
+            to: s.point,
+            emptied: false,
+            stale: s.fragment.stale,
+            orphan: true,
+        });
     }
+    let mut live: Vec<Stored> = stored
+        .into_iter()
+        .filter(|s| known.contains(&s.fragment.change))
+        .collect();
     // A fragment never sits inside a span: one anchored strictly inside a span
     // is placed at the span's start, since its text preceded the span.
     for s in live.iter_mut() {
@@ -953,7 +998,6 @@ fn resolve_file(doc: &LoroDoc, file_id: &str) -> Resolved {
     out.sort_by(|a, b| (a.from, a.to, &a.id).cmp(&(b.from, b.to, &b.id)));
     Resolved {
         state: FileState { changes: out, gaps },
-        orphans,
     }
 }
 
@@ -1303,7 +1347,7 @@ fn deleted_of(gaps: &[Gap], id: &str) -> String {
 }
 
 /// The pending changes of one file, resolved against its text now and sorted
-/// by `(from, to, id)`. Orphaned and empty changes are left out.
+/// by `(from, to, id)`. Empty changes are left out.
 pub fn resolve_changes(doc: &LoroDoc, file_id: &str) -> Vec<ResolvedChange> {
     let state = resolve_file(doc, file_id).state;
     state
@@ -1550,7 +1594,11 @@ fn write_fragment(
             m
         }
     };
-    put(&m, "change", LoroValue::from(f.change.as_str()));
+    // A fragment read as its own change keeps the change it had: its stored
+    // pointer stays at the gone change.
+    if f.change != id {
+        put(&m, "change", LoroValue::from(f.change.as_str()));
+    }
     put(&m, "text", LoroValue::from(f.text.as_str()));
     let stale_start = heal
         && bytes_of(&m, "start")
@@ -1566,7 +1614,8 @@ fn write_fragment(
 
 /// Writes the fragments of one gap at `at`, each its own record, with ranks from
 /// `rank_gap`. A fragment without an id gets a fresh one. Writes nothing when no
-/// cursor can be made at `at`. `heal` is passed on to `write_fragment`.
+/// cursor can be made at `at`, and returns true otherwise. `heal` is passed on
+/// to `write_fragment`.
 fn write_gap(
     doc: &LoroDoc,
     text: &LoroText,
@@ -1575,9 +1624,9 @@ fn write_gap(
     fragments: &[Fragment],
     owners: &HashMap<String, ChangeRecord>,
     heal: bool,
-) {
+) -> bool {
     let Some(start) = text.get_cursor(at, Side::Left) else {
-        return;
+        return false;
     };
     let bytes = start.encode();
     let ranks = rank_gap(fragments);
@@ -1596,6 +1645,7 @@ fn write_gap(
             heal,
         );
     }
+    true
 }
 
 /// Writes a plan against the file's current text. Does not commit. Returns the
@@ -1626,7 +1676,9 @@ pub fn write_planned(doc: &LoroDoc, file_id: &str, plan: &Plan) -> Vec<String> {
                     }
                 }
             }
-            PlanState::Set => write_gap(doc, &text, file_id, g.at, &g.fragments, &owners, false),
+            PlanState::Set => {
+                write_gap(doc, &text, file_id, g.at, &g.fragments, &owners, false);
+            }
             PlanState::Kept => {}
         }
     }
@@ -1637,7 +1689,7 @@ pub fn write_planned(doc: &LoroDoc, file_id: &str, plan: &Plan) -> Vec<String> {
                 root.delete(&c.id).ok();
             }
             PlanState::Set => {
-                if write_change(doc, &text, file_id, c, false) {
+                if !c.orphan && write_change(doc, &text, file_id, c, false) {
                     written.push(c.id.clone());
                 }
             }
@@ -1897,18 +1949,28 @@ fn restore_change(doc: &LoroDoc, text: &LoroText, file: &str, id: &str) {
     }
 }
 
-/// Whether `id` is a change record of the `changes` root.
-fn is_change(root: &LoroMap, id: &str) -> bool {
-    record_map(root, id).is_some_and(|m| str_of(&m, "kind").as_deref() == Some("change"))
+/// Whether `id` names a record a decision applies to: a change record, or a
+/// fragment record whose change is gone, which is read as a change of its own.
+fn decidable(root: &LoroMap, id: &str) -> bool {
+    let Some(m) = record_map(root, id) else {
+        return false;
+    };
+    match str_of(&m, "kind").as_deref() {
+        Some("change") => true,
+        Some("fragment") => !str_of(&m, "change")
+            .and_then(|parent| record_map(root, &parent))
+            .is_some_and(|p| str_of(&p, "kind").as_deref() == Some("change")),
+        _ => false,
+    }
 }
 
 /// Accepts a change: its fragments leave every gap (a gap left empty goes), and
-/// its record is dropped. The text stays. Returns false when `id` is not a
-/// change record. Does not commit.
+/// its record is dropped. The text stays. Returns false when `id` is neither a
+/// change record nor a fragment read as one. Does not commit.
 pub fn accept(doc: &LoroDoc, id: &str) -> bool {
     convert_plain(doc, id);
     let root = doc.get_map(CHANGES);
-    if !is_change(&root, id) {
+    if !decidable(&root, id) {
         return false;
     }
     for (fid, m) in records(doc) {
@@ -1923,12 +1985,13 @@ pub fn accept(doc: &LoroDoc, id: &str) -> bool {
 }
 
 /// Rejects a change: puts its text back where it was, then drops its fragments
-/// and its record. Returns false when `id` is not a change record. Does not
-/// commit.
+/// and its record. A fragment read as a change of its own restores its text the
+/// same way. Returns false when `id` is neither a change record nor a fragment
+/// read as one. Does not commit.
 pub fn reject(doc: &LoroDoc, id: &str) -> bool {
     convert_plain(doc, id);
     let root = doc.get_map(CHANGES);
-    if !is_change(&root, id) {
+    if !decidable(&root, id) {
         return false;
     }
     let file = record_map(&root, id).and_then(|m| str_of(&m, "file"));
@@ -1973,28 +2036,30 @@ fn now_ms() -> i64 {
         .map_or(0, |d| d.as_millis() as i64)
 }
 
-/// Whether record `id` has rested long enough to have a stale cursor healed. A
-/// record with no `at` has.
-fn settled(root: &LoroMap, id: &str, now: i64) -> bool {
-    match record_map(root, id).and_then(|m| num_of(&m, "at")) {
-        None => true,
-        Some(at) => (at as i64) < now - SETTLE_MS,
-    }
+/// Drops empty records and heals stale cursors. Records of a file with no text
+/// are dropped. Returns the number of records deleted. Does not commit. See
+/// `prune_at`.
+pub fn prune(doc: &LoroDoc) -> usize {
+    prune_at(doc, now_ms())
 }
 
-/// Drops empty records, re-parents fragments whose change is gone, and heals
-/// stale cursors. Records of a file with no text are dropped. An empty record is
-/// dropped only once a prune has seen it empty for a while: the first prune that
-/// finds it empty marks it `emptied`, and a record found live again loses the
-/// mark. A stale cursor is healed only once its record has settled. Returns the
-/// number of records deleted. Does not commit.
-pub fn prune(doc: &LoroDoc) -> usize {
+/// `prune`, with the clock given, so that a test can let time pass.
+///
+/// An empty record is dropped only once a prune has seen it empty for a while:
+/// the first prune that finds it empty marks it `emptied`, and a record found
+/// live again loses the mark. A stale cursor is healed the same way: the first
+/// prune that finds it stale marks its record `stale`, and the heal waits until
+/// that mark is old. A record whose cursor is live again loses the mark, and
+/// the mark goes once the cursor is healed. Derived orphan changes are skipped
+/// by the heal, since their fragments are healed as gap fragments. Records of a
+/// file with no text are dropped. Returns the number of records deleted. Does
+/// not commit.
+pub fn prune_at(doc: &LoroDoc, now: i64) -> usize {
     let root = doc.get_map(CHANGES);
     let files: BTreeSet<String> = records(doc)
         .iter()
         .filter_map(|(_, m)| str_of(m, "file"))
         .collect();
-    let now = now_ms();
     let mut removed = 0;
     for file in files {
         let Some(text) = text_of(doc, &file) else {
@@ -2006,33 +2071,7 @@ pub fn prune(doc: &LoroDoc) -> usize {
             }
             continue;
         };
-        let mut resolved = resolve_file(doc, &file);
-        // A fragment whose change was decided while it was written gets a change
-        // of its own, so the deletion it records can still be decided.
-        if !resolved.orphans.is_empty() {
-            for o in std::mem::take(&mut resolved.orphans) {
-                let Some(who) = o.who.clone() else {
-                    continue;
-                };
-                let cid = mint_uuid();
-                let c = ChangeRecord {
-                    id: cid.clone(),
-                    author: o.author.unwrap_or_else(|| who.clone()),
-                    who,
-                    run: o.run,
-                    at: o.at.unwrap_or(now),
-                    from: 0,
-                    to: 0,
-                    emptied: false,
-                    stale: false,
-                };
-                write_change(doc, &text, &file, &c, false);
-                if let Some(m) = record_map(&root, &o.id) {
-                    m.insert("change", LoroValue::from(cid.as_str())).ok();
-                }
-            }
-            resolved = resolve_file(doc, &file);
-        }
+        let resolved = resolve_file(doc, &file);
         let live: HashSet<String> = resolved
             .state
             .changes
@@ -2074,18 +2113,66 @@ pub fn prune(doc: &LoroDoc) -> usize {
                 removed += 1;
             }
         }
+        // A stale cursor is healed only once a prune has seen it stale for a
+        // while, counted from that first sight rather than from the record's
+        // last edit: the author may be moving that very end of the span in a
+        // session that has not synced yet, and the heal would race it.
+        let stale_settled = |id: &str| -> bool {
+            let Some(m) = record_map(&root, id) else {
+                return true;
+            };
+            match num_of(&m, "stale") {
+                None => {
+                    m.insert("stale", LoroValue::Double(now as f64)).ok();
+                    false
+                }
+                Some(since) => (since as i64) < now - SETTLE_MS,
+            }
+        };
+        let unmark = |id: &str| {
+            if let Some(m) = record_map(&root, id) {
+                if m.get("stale").is_some() {
+                    m.delete("stale").ok();
+                }
+            }
+        };
         for g in &resolved.state.gaps {
-            let all_settled = g
+            if !g.stale {
+                for f in &g.fragments {
+                    if let Some(id) = f.id.as_deref() {
+                        unmark(id);
+                    }
+                }
+                continue;
+            }
+            let all_settled: Vec<bool> = g
                 .fragments
                 .iter()
-                .all(|f| f.id.as_deref().is_none_or(|id| settled(&root, id, now)));
-            if g.stale && all_settled {
-                write_gap(doc, &text, &file, g.at, &g.fragments, &HashMap::new(), true);
+                .map(|f| f.id.as_deref().is_none_or(|id| stale_settled(id)))
+                .collect();
+            if all_settled.iter().all(|settled| *settled)
+                && write_gap(doc, &text, &file, g.at, &g.fragments, &HashMap::new(), true)
+            {
+                for f in &g.fragments {
+                    if let Some(id) = f.id.as_deref() {
+                        unmark(id);
+                    }
+                }
             }
         }
         for c in &resolved.state.changes {
-            if c.stale && c.to > c.from && settled(&root, &c.id, now) {
-                write_change(doc, &text, &file, c, true);
+            if c.orphan {
+                continue;
+            }
+            if !c.stale {
+                unmark(c.id.as_str());
+                continue;
+            }
+            if c.to > c.from
+                && stale_settled(c.id.as_str())
+                && write_change(doc, &text, &file, c, true)
+            {
+                unmark(c.id.as_str());
             }
         }
     }
@@ -2211,6 +2298,7 @@ mod tests {
                         to: cp(&fx.before, c.to),
                         emptied: false,
                         stale: false,
+                        orphan: false,
                     })
                     .collect(),
                 gaps: fx
@@ -3517,19 +3605,17 @@ mod tests {
         assert_eq!(body(&a, &id), "abcde");
     }
 
-    #[test]
-    fn an_orphan_fragment_is_reparented() {
-        // A fragment whose change was decided while it was written: its change
-        // record is gone, and only its author fields remain.
-        let (doc, id) = setup("abc");
-        let text = text_of(&doc, &id).unwrap();
+    /// Stores a fragment "X" of bob's at offset 1 of `file`, whose change record
+    /// is gone: only its author fields remain.
+    fn orphan_fragment(doc: &LoroDoc, file: &str) {
+        let text = text_of(doc, file).unwrap();
         let cursor = text.get_cursor(1, Side::Left).unwrap().encode();
         let frag = doc
             .get_map(CHANGES)
             .insert_container("frag", LoroMap::new())
             .unwrap();
         frag.insert("kind", LoroValue::from("fragment")).unwrap();
-        frag.insert("file", LoroValue::from(id.as_str())).unwrap();
+        frag.insert("file", LoroValue::from(file)).unwrap();
         frag.insert("change", LoroValue::from("gone")).unwrap();
         frag.insert("text", LoroValue::from("X")).unwrap();
         frag.insert("start", LoroValue::from(cursor)).unwrap();
@@ -3539,11 +3625,17 @@ mod tests {
         frag.insert("run", LoroValue::Null).unwrap();
         frag.insert("at", LoroValue::Double(1.0)).unwrap();
         doc.commit();
-        assert!(resolve_changes(&doc, &id).is_empty());
-        assert_eq!(prune(&doc), 0);
-        doc.commit();
+    }
+
+    #[test]
+    fn an_orphan_fragment_is_read_as_its_own_change() {
+        // A fragment whose change was decided while it was written. Its change
+        // record is gone, so it reads as a change of its own, with no prune.
+        let (doc, id) = setup("abc");
+        orphan_fragment(&doc, &id);
         let rows = resolve_changes(&doc, &id);
         assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].id, "frag");
         assert_eq!(
             (
                 rows[0].who.as_str(),
@@ -3553,9 +3645,64 @@ mod tests {
             ("bob", "Bob", "X")
         );
         assert_eq!((rows[0].from, rows[0].to), (1, 1));
-        assert!(reject(&doc, &rows[0].id));
+        // Prune leaves the live record alone: it is not marked empty.
+        assert_eq!(prune(&doc), 0);
+        doc.commit();
+        let root = doc.get_map(CHANGES);
+        assert!(record_map(&root, "frag").unwrap().get("emptied").is_none());
+        assert!(reject(&doc, "frag"));
         doc.commit();
         assert_eq!(body(&doc, &id), "aXbc");
+        assert!(root.keys().next().is_none());
+    }
+
+    #[test]
+    fn an_orphan_fragment_accepted_keeps_its_text() {
+        let (doc, id) = setup("abc");
+        orphan_fragment(&doc, &id);
+        assert!(accept(&doc, "frag"));
+        doc.commit();
+        assert_eq!(body(&doc, &id), "abc");
+        assert!(resolve_changes(&doc, &id).is_empty());
+        assert!(doc.get_map(CHANGES).keys().next().is_none());
+    }
+
+    #[test]
+    fn a_merge_of_own_changes_keeps_a_peer_session_extension() {
+        // Session a has two own insertions, and session b, which has not synced,
+        // is a copy taken before the merge. Session a merges both into one
+        // replacement and prunes. Session b appends after the second insertion.
+        // Both sides converge, the two pending spans survive, and rejecting
+        // every change restores the text.
+        let (a, id) = setup("abcdef");
+        let p = who_of("p");
+        apply_tracked_edits(&a, &id, &[edit(1, 0, "X")], &p, None, 1).unwrap();
+        a.commit();
+        apply_tracked_edits(&a, &id, &[edit(4, 0, "Y")], &p, None, 2).unwrap();
+        a.commit();
+        let b = new_doc();
+        b.import(&a.export(loro::ExportMode::snapshot()).unwrap())
+            .unwrap();
+        apply_tracked_edits(&a, &id, &[edit(1, 4, "Z")], &p, None, 3).unwrap();
+        a.commit();
+        prune(&a);
+        a.commit();
+        apply_tracked_edits(&b, &id, &[edit(5, 0, "Q")], &p, None, 4).unwrap();
+        b.commit();
+        sync(&a, &b);
+        assert_eq!(body(&a, &id), body(&b, &id));
+        let text: Vec<char> = body(&a, &id).chars().collect();
+        let mut spans: Vec<String> = resolve_changes(&a, &id)
+            .iter()
+            .map(|c| text[c.from..c.to].iter().collect())
+            .collect();
+        spans.sort();
+        assert_eq!(spans, ["Q", "Z"]);
+        reject_where(&a, &id, |_| true);
+        a.commit();
+        sync(&a, &b);
+        assert_eq!(body(&a, &id), "abcdef");
+        assert_eq!(body(&b, &id), "abcdef");
     }
 
     #[test]
@@ -3709,8 +3856,9 @@ mod tests {
 
     #[test]
     fn a_settled_stale_cursor_is_healed() {
-        // A fragment is anchored on d, which a raw edit then deletes. Once its
-        // record has settled, prune moves the cursor onto a live character.
+        // A fragment is anchored on d, which a raw edit then deletes. The first
+        // prune that sees the cursor stale only marks it. Once that mark is old,
+        // a later prune heals the cursor onto a live character and drops the mark.
         let (doc, id) = setup("abcdef");
         apply_tracked_edits(&doc, &id, &[edit(2, 1, "")], &who_of("p"), None, 1).unwrap();
         doc.commit();
@@ -3720,15 +3868,16 @@ mod tests {
         assert!(before[0].stale);
         let fid = before[0].fragments[0].id.clone().unwrap();
         let root = doc.get_map(CHANGES);
-        record_map(&root, &fid)
-            .unwrap()
-            .insert("at", LoroValue::Double(0.0))
-            .unwrap();
+        let now = now_ms();
+        prune_at(&doc, now);
         doc.commit();
-        prune(&doc);
+        assert!(num_of(&record_map(&root, &fid).unwrap(), "stale").is_some());
+        assert!(resolve_file(&doc, &id).state.gaps[0].stale);
+        prune_at(&doc, now + 120_000);
         doc.commit();
         let after = resolve_file(&doc, &id).state.gaps;
         assert!(!after[0].stale);
         assert_eq!(after[0].at, 2);
+        assert!(record_map(&root, &fid).unwrap().get("stale").is_none());
     }
 }
