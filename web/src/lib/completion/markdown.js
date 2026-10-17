@@ -46,7 +46,7 @@ function markdownLines(text) {
 
 // GitHub-style slug as comrak produces it for header ids.
 function slug(title) {
-  return title.toLowerCase().replace(/[^\p{L}\p{N} _-]/gu, "").replace(/ /g, "-");
+  return title.toLowerCase().replace(/[^\p{L}\p{M}\p{N} _-]/gu, "").replace(/ /g, "-");
 }
 
 // ATX headings outside code, with ids in document order.

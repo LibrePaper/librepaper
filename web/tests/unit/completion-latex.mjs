@@ -86,7 +86,7 @@ function applyTo(option, doc, from, to) {
 // --- \begin{ insertion ------------------------------------------------------
 {
   const doc = "\\begin{ite";
-  const result = complete(doc, { texts: { "main.tex": "\\newenvironment{proof}{}{}" } });
+  const result = complete(doc, { texts: { "preamble.tex": "\\newenvironment{proof}{}{}" } });
   const itemize = result.options.find((option) => option.label === "itemize");
   assert.ok(itemize);
   const inserted = applyTo(itemize, doc, 7, doc.length);
@@ -104,7 +104,7 @@ function applyTo(option, doc, from, to) {
 
 // Environments defined in the project and from packages loaded in the project.
 {
-  const texts = { "main.tex": "\\usepackage{mathtools}\n\\newenvironment{proof}{}{}" };
+  const texts = { "preamble.tex": "\\usepackage{mathtools}\n\\newenvironment{proof}{}{}" };
   const result = complete("\\begin{", { texts });
   const labels = labelsOf(result);
   assert.ok(labels.includes("proof"));
@@ -115,7 +115,7 @@ function applyTo(option, doc, from, to) {
 // --- \partial commands ----------------------------------------------------
 {
   const doc = "\\cr";
-  const result = complete(doc, { texts: { "main.tex": "\\usepackage{cleveref}" } });
+  const result = complete(doc, { texts: { "preamble.tex": "\\usepackage{cleveref}" } });
   assert.equal(result.from, 1);
   assert.ok(labelsOf(result).includes("cref"));
 }
@@ -124,7 +124,7 @@ function applyTo(option, doc, from, to) {
 // the name is part of the snippet, so it is inserted after the backslash.
 {
   const doc = "\\pa";
-  const result = complete(doc, { texts: { "main.tex": "\\newcommand{\\pair}[2]{(#1, #2)}" } });
+  const result = complete(doc, { texts: { "preamble.tex": "\\newcommand{\\pair}[2]{(#1, #2)}" } });
   const pair = result.options.find((option) => option.label === "pair");
   assert.ok(pair);
   assert.equal(result.from, 1);
@@ -133,7 +133,7 @@ function applyTo(option, doc, from, to) {
 
 // Project definitions come first and win over the built-in list.
 {
-  const result = complete("\\", { texts: { "main.tex": "\\def\\begin{}\n\\newcommand\\hello{hi}" } });
+  const result = complete("\\", { texts: { "preamble.tex": "\\def\\begin{}\n\\newcommand\\hello{hi}" } });
   const names = result.options.map((option) => option.label);
   assert.ok(names.includes("hello"));
   assert.equal(names.filter((name) => name === "begin").length, 1);

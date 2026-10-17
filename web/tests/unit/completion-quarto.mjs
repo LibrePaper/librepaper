@@ -1,5 +1,6 @@
 // Quarto completion over real EditorState and CompletionContext objects. The
-// cursor is the "|" in each document; it is removed before the state is built.
+// cursor is the last "|" in each document (a "#|" cell option comes before it);
+// it is removed before the state is built.
 import assert from "node:assert/strict";
 import { EditorState } from "@codemirror/state";
 import { CompletionContext } from "@codemirror/autocomplete";
@@ -7,8 +8,8 @@ import schema from "../../src/lib/completion/quarto-schema.json" with { type: "j
 import { quartoCompletion, quartoLabels } from "../../src/lib/completion/quarto.js";
 
 function complete(doc, { format = "quarto", texts = {}, path = "main.qmd", explicit = false } = {}) {
-  const pos = doc.indexOf("|");
-  const state = EditorState.create({ doc: doc.replace("|", "") });
+  const pos = doc.lastIndexOf("|");
+  const state = EditorState.create({ doc: doc.slice(0, pos) + doc.slice(pos + 1) });
   const context = new CompletionContext(state, pos, explicit);
   let reads = 0;
   const project = () => ({

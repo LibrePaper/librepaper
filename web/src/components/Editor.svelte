@@ -1004,6 +1004,7 @@
   }
   // Project facts for completion sources. The edited file's path and format are
   // read now; the project walk runs only when a source first asks for texts or files.
+  /** @returns {import("../lib/completion/paths.js").CompletionProject} */
   function completionProject() {
     const doc = session.doc;
     const path = pathOfDoc(doc, showing);
@@ -1017,6 +1018,7 @@
       path,
       format: formatOfPath(path),
       get texts() {
+        /** @type {Record<string, string>} */
         const texts = {};
         for (const [file, text] of Object.entries(load().texts)) texts[file] = String(text ?? "");
         return texts;

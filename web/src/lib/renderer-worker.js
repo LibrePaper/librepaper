@@ -13,7 +13,8 @@ const rendererScope = /** @type {RendererWorkerScope} */ (/** @type {unknown} */
 // Editor completion asks the module what can be typed at the cursor. A module
 // built before completion has no answer, which is not an error: the editor
 // simply shows nothing.
-function complete(wasm, { tree, path, source, offset, explicit }) {
+/** @param {import("./renderer-wasm.js").RendererWasm} wasm @param {RendererArgs} args */
+function complete(wasm, { tree, path = "", source = "", offset = 0, explicit = false }) {
   if (typeof wasm.complete !== "function") return null;
   handOver(wasm, tree);
   const request = JSON.stringify({ path, source, offset, explicit, files: Object.keys(tree.files || tree.texts || {}) });
