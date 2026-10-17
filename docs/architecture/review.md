@@ -36,10 +36,18 @@ Track changes are part of the shared document. A tracked edit goes into the text
 - Each change is decided on its own, in any order. Changes never depend on each other. The session that made a change does not matter.
 - A run tag groups the changes from one agent pass. Editors can filter by run and accept all changes from a run. The tag never links changes together.
 
+Pending changes are shown in two places, and both read the records directly, so both are exact.
+
+- The code pane marks inserted text and shows deleted text struck through where it was taken out.
+- The Changes panel lists every change with its deleted and inserted text, for editors and for readers.
+
+The rendered preview does not paint changes. This is out of scope. The outputs are too diverse: HTML from Markdown, Typst and LaTeX, and PDF from Typst and LaTeX. Placing a change on the page goes through the same word matching comments use, which is a heuristic. Math, tables, code and macros have no prose to match, a deletion has no text left to mark, and a PDF text layer cannot hold a struck-through span. Comments keep their marks on the page because a comment that lands a little off is still readable. A change mark that is missing or on the wrong word misleads a reviewer.
+
 The model has these limits.
 
 - Two editors who reject the same change at the same moment put the deleted text back twice.
 - Editing inside someone else's insertion does not nest. A deletion there shrinks their text. An insertion splits it in two.
 - A rejected deletion returns as new characters. Comments on the old characters may not reattach exactly.
 - After a history trim, a change whose text was trimmed away is pruned.
+- Deletions by several authors that meet at one point, with one inside another, can come back in the wrong order when they are rejected one at a time. The record of each deletion names the deletions it swallowed, and that is not enough to order three or more. Tracked as kata em90.
 
