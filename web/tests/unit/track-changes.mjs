@@ -4,11 +4,12 @@
 // Loro tests pin what the planner cannot: that cursors resolve back to the
 // planned offsets, that a decision restores the right text in any order, that
 // a remote peer typing beside a pending insertion does not grow it, that nested
-// deletions come back in every order, that records of the earlier model convert
-// and then decide in any order, that a record rests before prune drops it, and
-// that a fragment whose change is gone is re-parented. The seeded fuzzers at the
-// end check random histories against their oracles, and two peers editing at
-// once must converge.
+// deletions come back in every order, that records of the earlier model are
+// read in place, convert when touched and then decide in any order, that a
+// record rests before prune drops it, that a settled stale cursor is healed,
+// that a fragment whose change is gone is re-parented, and that two sessions of
+// one author converge. The seeded fuzzers at the end check random histories
+// against their oracles, and two peers editing at once must converge.
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { LoroDoc, LoroMap, LoroText } from "loro-crdt";
@@ -16,7 +17,6 @@ import {
   CHANGES,
   accept,
   listChanges,
-  migrateChanges,
   planEdits,
   prune,
   recordEdits,
@@ -81,7 +81,8 @@ for (const f of fixtures) {
     changes: f.state.changes.map((c) => ({ ...c, author: c.who, run: null, at: 1 })),
     gaps: f.state.gaps.map((g, i) => ({ ...g, id: "gap-" + i })),
   };
-  const planned = planEdits(f.before, state, f.edits, f.me, { now: 2, mintId: () => "new-" + ++n, untracked: Boolean(f.untracked) });
+  // The fixtures describe one session, so every stored fragment may join.
+  const planned = planEdits(f.before, state, f.edits, f.me, { now: 2, mintId: () => "new-" + ++n, untracked: Boolean(f.untracked), joinable: () => true });
   // A foreign span the edit emptied stays in the planner's output with
   // emptied set. It holds no text, so the fixture does not describe it.
   const changes = planned.changes.filter((c) => c.state !== "removed" && !c.emptied).sort(byPlace);
@@ -169,19 +170,20 @@ function copyRecord(doc, from, to, overrides) {
   return putRecord(doc, to, { ...fields, ...overrides });
 }
 
-// The container records of one kind.
-function recordsOf(doc, kind) {
-  return [...doc.getMap(CHANGES).entries()]
-    .map(([, v]) => v)
-    .filter((v) => v instanceof LoroMap && v.get("kind") === kind);
+// Two copies of one document exchange their updates both ways.
+function syncBoth(a, b) {
+  a.import(b.export({ mode: "update", from: a.oplogVersion() }));
+  b.import(a.export({ mode: "update", from: b.oplogVersion() }));
 }
 
-// The fragments of the file in rank order, as { change, text }.
-function fragmentsOf(doc) {
-  return recordsOf(doc, "fragment")
-    .sort((a, b) => a.get("rank") - b.get("rank"))
-    .map((v) => ({ change: v.get("change"), text: v.get("text") }));
-}
+// The rows of the file, sorted, with the fields that identify them.
+const rowsOf = (doc) =>
+  resolveChanges(doc, "f1")
+    .map(({ id, who, from, to, deleted }) => ({ id, who, from, to, deleted }))
+    .sort(byJson);
+
+// How many records are still plain values, the earlier model.
+const plainCount = (doc) => [...doc.getMap(CHANGES).entries()].filter(([, v]) => !(v instanceof LoroMap)).length;
 
 // ---------------------------------------------------------------------------
 // recordEdits then resolveChanges agrees with the fixtures
@@ -421,7 +423,8 @@ for (const decide of [accept, reject]) {
   assert.equal(map.size, 0);
 }
 
-// prune converts a record written in the earlier model.
+// prune reads a record of the earlier model in place: the row is there, the
+// plain record stays plain, and nothing is dropped.
 {
   const doc = makeDoc("abcd");
   const text = doc.getMap("files").get("f1");
@@ -438,14 +441,12 @@ for (const decide of [accept, reject]) {
     deleted: "b",
   });
   doc.commit();
-  assert.deepEqual(resolveChanges(doc, "f1"), []);
+  const row = { id: "old", who: "me", from: 1, to: 2, deleted: "b" };
+  assert.deepEqual(rowsOf(doc), [row]);
   assert.equal(prune(doc), 0);
   doc.commit();
-  const kinds = [...doc.getMap(CHANGES).entries()].map(([, v]) => v.get("kind")).sort();
-  assert.deepEqual(kinds, ["change", "fragment"]);
-  assert.deepEqual(resolveChanges(doc, "f1"), [
-    { id: "old", who: "me", author: "Me", run: null, at: 1, from: 1, to: 2, deleted: "b" },
-  ]);
+  assert.equal(plainCount(doc), 1);
+  assert.deepEqual(rowsOf(doc), [row]);
 }
 
 // A change emptied by another author's deletion leaves the rows at once but
@@ -495,6 +496,25 @@ for (const decide of [accept, reject]) {
   assert.equal(reject(doc, rows[0].id), true);
   assert.equal(textOf(doc), "abcd");
   assert.equal(resolveChanges(doc, "f1").length, 0);
+}
+
+// A raw deletion takes the character a fragment is anchored on, which leaves
+// its cursor stale. Once the record has rested, prune heals the cursor onto a
+// live character, and the fragment stays where it was.
+{
+  const doc = makeDoc("abcdef");
+  track(doc, 2, 3, "", ME);
+  doc.getMap("files").get("f1").delete(2, 1);
+  doc.commit();
+  const [before] = resolveFile(doc, "f1").gaps;
+  assert.equal(before.stale, true);
+  doc.getMap(CHANGES).get(before.fragments[0].id).set("at", 0);
+  doc.commit();
+  prune(doc);
+  doc.commit();
+  const [after] = resolveFile(doc, "f1").gaps;
+  assert.equal(after.stale, false);
+  assert.equal(after.at, 2);
 }
 
 // ---------------------------------------------------------------------------
@@ -636,80 +656,67 @@ function oldCara() {
   return doc;
 }
 
+// The records are read in place: the rows show them, nothing is written, and
+// the gap holds the fragments in order.
 {
   const doc = oldAliceBob();
-  assert.equal(prune(doc), 0);
-  doc.commit();
-  const kinds = [...doc.getMap(CHANGES).entries()].map(([, v]) => v.get("kind")).sort();
-  assert.deepEqual(kinds, ["change", "change", "fragment", "fragment", "fragment"]);
-  assert.deepEqual(fragmentsOf(doc), [
-    { change: "bob", text: "b" },
-    { change: "alice", text: "c" },
-    { change: "bob", text: "d" },
+  assert.deepEqual(rowsOf(doc), [
+    { id: "alice", who: "alice", from: 1, to: 1, deleted: "c" },
+    { id: "bob", who: "bob", from: 1, to: 1, deleted: "bd" },
   ]);
-  for (const order of [["bob", "alice"], ["alice", "bob"]]) {
-    const copy = oldAliceBob();
-    prune(copy);
-    copy.commit();
-    for (const id of order) assert.equal(reject(copy, id), true);
-    assert.equal(textOf(copy), "abcde", `old records, ${order}`);
-    assert.equal(resolveChanges(copy, "f1").length, 0);
-  }
+  assert.deepEqual(resolveFile(doc, "f1").gaps.map((g) => g.fragments.map((f) => f.text)), [["b", "c", "d"]]);
+  assert.equal(plainCount(doc), 2);
+  assert.equal(prune(doc), 0);
+  assert.equal(plainCount(doc), 2);
 }
 
+// Rejecting in either order restores the text. Each reject converts the records
+// it decides, so the file reads as containers from then on.
+for (const order of [["bob", "alice"], ["alice", "bob"]]) {
+  const doc = oldAliceBob();
+  for (const id of order) assert.equal(reject(doc, id), true, `old records, ${order}`);
+  assert.equal(textOf(doc), "abcde", `old records, ${order}`);
+  assert.equal(resolveChanges(doc, "f1").length, 0);
+}
+
+// A tracked edit elsewhere in the file leaves the plain records as they are.
+{
+  const doc = oldAliceBob();
+  track(doc, 2, 2, "X", ME);
+  assert.equal(textOf(doc), "aeX");
+  assert.equal(plainCount(doc), 2);
+  assert.equal(resolveChanges(doc, "f1").length, 3);
+}
+
+// A tracked deletion right before the gap swallows it. The records it swallows
+// are rewritten as containers, and rejecting everything restores the text.
+{
+  const doc = oldAliceBob();
+  track(doc, 0, 1, "", ME);
+  assert.equal(textOf(doc), "e");
+  assert.equal(plainCount(doc), 0);
+  for (const r of resolveChanges(doc, "f1")) reject(doc, r.id);
+  assert.equal(textOf(doc), "abcde");
+  assert.equal(resolveChanges(doc, "f1").length, 0);
+}
+
+// Cara's three levels: the rows show all three, the gap holds the four
+// fragments in order, and rejecting them in any order restores the text.
 {
   const doc = oldCara();
-  assert.equal(prune(doc), 0);
-  doc.commit();
-  const kinds = [...doc.getMap(CHANGES).entries()].map(([, v]) => v.get("kind")).sort();
-  assert.deepEqual(kinds, ["change", "change", "change", "fragment", "fragment", "fragment", "fragment"]);
-  assert.deepEqual(fragmentsOf(doc), [
-    { change: "cara", text: "a" },
-    { change: "bob", text: "b" },
-    { change: "alice", text: "c" },
-    { change: "bob", text: "d" },
-  ]);
-  for (const order of permutations(["cara", "bob", "alice"])) {
-    const copy = oldCara();
-    prune(copy);
-    copy.commit();
-    for (const id of order) assert.equal(reject(copy, id), true, `old records, ${order}`);
-    assert.equal(textOf(copy), "abcde", `old records, three levels, ${order}`);
-    assert.equal(resolveChanges(copy, "f1").length, 0);
-  }
+  assert.deepEqual(rowsOf(doc).map(({ id, deleted }) => [id, deleted]), [["alice", "c"], ["bob", "bd"], ["cara", "a"]]);
+  assert.deepEqual(resolveFile(doc, "f1").gaps.map((g) => g.fragments.map((f) => f.text)), [["a", "b", "c", "d"]]);
+  assert.equal(plainCount(doc), 3);
+}
+for (const order of permutations(["cara", "bob", "alice"])) {
+  const copy = oldCara();
+  for (const id of order) assert.equal(reject(copy, id), true, `old records, ${order}`);
+  assert.equal(textOf(copy), "abcde", `old records, three levels, ${order}`);
+  assert.equal(resolveChanges(copy, "f1").length, 0);
 }
 
-// Two peers convert the same old document. They write the same records under
-// the same ids, so importing each other's copy leaves one set of each.
-{
-  const a = oldAliceBob();
-  const b = new LoroDoc();
-  b.setPeerId(2);
-  b.import(a.export({ mode: "snapshot" }));
-  assert.equal(migrateChanges(a), 2);
-  assert.equal(migrateChanges(b), 2);
-  assert.equal(migrateChanges(b), 0);
-  a.commit();
-  b.commit();
-  a.import(b.export({ mode: "update" }));
-  b.import(a.export({ mode: "update" }));
-  assert.equal(a.getMap(CHANGES).size, 5);
-  assert.equal(b.getMap(CHANGES).size, 5);
-  assert.deepEqual(fragmentsOf(a), [
-    { change: "bob", text: "b" },
-    { change: "alice", text: "c" },
-    { change: "bob", text: "d" },
-  ]);
-  assert.equal(resolveChanges(b, "f1").length, 2);
-  assert.equal(reject(a, "alice"), true);
-  assert.equal(reject(a, "bob"), true);
-  assert.equal(textOf(a), "abcde");
-  assert.equal(resolveChanges(a, "f1").length, 0);
-}
-
-// An old pending insertion migrates to a change with a span. A deletion inside
-// that span shrinks it and records nothing, and rejecting what is left gives
-// back the text without the insertion.
+// An old pending insertion is read as a span. A deletion inside that span
+// shrinks it, and rejecting what is left gives back the text without it.
 {
   const doc = makeDoc("ab");
   const text = doc.getMap("files").get("f1");
@@ -725,8 +732,7 @@ function oldCara() {
     deleted: "",
   });
   doc.commit();
-  assert.equal(migrateChanges(doc), 1);
-  doc.commit();
+  assert.equal(plainCount(doc), 1);
   assert.deepEqual(resolveChanges(doc, "f1").map(({ from, to, deleted }) => [from, to, deleted]), [[1, 3, ""]]);
   const count = doc.getMap(CHANGES).size;
   trackedSplice(doc, "f1", 1, 2, "", ME);
@@ -736,6 +742,50 @@ function oldCara() {
   assert.equal(doc.getMap(CHANGES).size, count);
   for (const row of resolveChanges(doc, "f1")) reject(doc, row.id);
   assert.equal(textOf(doc), "ab");
+}
+
+// Two copies read the same old record. One converts it by editing next to it,
+// the other edits elsewhere. After syncing both ways the rows agree, and
+// rejecting everything on one copy and syncing leaves the start text on both.
+{
+  const a = oldAliceBob();
+  const b = new LoroDoc();
+  b.setPeerId(2);
+  b.import(a.export({ mode: "snapshot" }));
+  track(a, 0, 1, "", ME);
+  track(b, 2, 2, "X", ME);
+  syncBoth(a, b);
+  assert.equal(textOf(a), "eX");
+  assert.equal(textOf(b), "eX");
+  assert.deepEqual(rowsOf(a), rowsOf(b));
+  for (const r of resolveChanges(a, "f1")) reject(a, r.id);
+  syncBoth(a, b);
+  assert.equal(textOf(a), "abcde");
+  assert.equal(textOf(b), "abcde");
+  assert.equal(resolveChanges(b, "f1").length, 0);
+}
+
+// ---------------------------------------------------------------------------
+// Two sessions of one author
+
+// One author in two sessions, each with its own copy. The first session deletes
+// c. Then the sessions delete b in one and d in the other. After syncing, both
+// deletions are kept, and rejecting everything restores the text.
+{
+  const a = makeDoc("abcdef", 1);
+  track(a, 2, 3, "", ME);
+  const b = new LoroDoc();
+  b.setPeerId(2);
+  b.import(a.export({ mode: "snapshot" }));
+  track(a, 1, 2, "", ME);
+  track(b, 2, 3, "", ME);
+  syncBoth(a, b);
+  assert.equal(textOf(a), textOf(b));
+  assert.equal(textOf(a), "aef");
+  for (const r of resolveChanges(a, "f1")) reject(a, r.id);
+  syncBoth(a, b);
+  assert.equal(textOf(a), "abcdef");
+  assert.equal(textOf(b), "abcdef");
 }
 
 // ---------------------------------------------------------------------------
