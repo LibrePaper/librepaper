@@ -134,6 +134,12 @@ type GapRow = (Gap, PlanState);
 ///
 /// With `untracked`, the edits record nothing and change nobody's records
 /// except to move, shrink, split and merge them.
+///
+/// `joinable` admits the stored fragment ids this caller may rewrite. Adjacent
+/// fragments of one change join into one record only when both may be
+/// rewritten: a fragment with no id, or one whose id `joinable` admits. A
+/// stored fragment that another session of the same author may be extending
+/// keeps its own record.
 #[allow(clippy::too_many_arguments)]
 pub fn plan_edits(
     before: &str,
@@ -144,6 +150,7 @@ pub fn plan_edits(
     now_ms: i64,
     untracked: bool,
     mint: &mut dyn FnMut() -> String,
+    joinable: &dyn Fn(&str) -> bool,
 ) -> Plan {
     let mut cur: Vec<char> = before.chars().collect();
     let mut changes: Vec<Row> = state
@@ -183,6 +190,7 @@ pub fn plan_edits(
             untracked,
             &mut dropped,
             mint,
+            joinable,
         );
         for (c, _) in &changes {
             if original_changes.contains(&c.id) && !next_changes.iter().any(|(n, _)| n.id == c.id) {
@@ -234,18 +242,29 @@ fn span_end_at(changes: &[Row], p: usize) -> Option<usize> {
         .map(|(c, _)| c.to)
 }
 
+/// Whether the planner may rewrite a fragment: one with no record yet, or one
+/// the caller admits through `joinable`.
+fn may_rewrite(id: Option<&str>, joinable: &dyn Fn(&str) -> bool) -> bool {
+    id.is_none_or(joinable)
+}
+
 /// Appends `text` owned by `change`, joining it to the last fragment when that
-/// one has the same owner. The record id of a fragment joined away is reported
-/// in `dropped`.
+/// one has the same owner and both may be rewritten. The record id of a
+/// fragment joined away is reported in `dropped`.
 fn push_fragment(
     list: &mut Vec<Fragment>,
     change: &str,
     text: &str,
     id: Option<&str>,
     dropped: &mut Vec<String>,
+    joinable: &dyn Fn(&str) -> bool,
 ) {
     match list.last_mut() {
-        Some(last) if last.change == change => {
+        Some(last)
+            if last.change == change
+                && may_rewrite(last.id.as_deref(), joinable)
+                && may_rewrite(id, joinable) =>
+        {
             last.text.push_str(text);
             if let Some(id) = id {
                 dropped.push(id.to_string());
@@ -291,6 +310,7 @@ fn plan_one(
     untracked: bool,
     dropped: &mut Vec<String>,
     mint: &mut dyn FnMut() -> String,
+    joinable: &dyn Fn(&str) -> bool,
 ) -> (Vec<Row>, Vec<GapRow>) {
     let len = insert.len();
     let delta = len as isize - (et - ef) as isize;
@@ -405,12 +425,12 @@ fn plan_one(
                 } else {
                     &mut merged
                 };
-                push_fragment(target, change, &f.text, f.id.as_deref(), dropped);
+                push_fragment(target, change, &f.text, f.id.as_deref(), dropped, joinable);
             }
         }
         if let (Some(m), Some(ch)) = (&mine, cur.get(p)) {
             if p < et && span_end_at(&changes, p).is_none() {
-                push_fragment(&mut merged, &m.id, &ch.to_string(), None, dropped);
+                push_fragment(&mut merged, &m.id, &ch.to_string(), None, dropped, joinable);
             }
         }
     }
@@ -543,11 +563,25 @@ fn plan_one(
             let mut list: Vec<Fragment> = Vec::new();
             for (g, _) in &there {
                 for f in &g.fragments {
-                    push_fragment(&mut list, &f.change, &f.text, f.id.as_deref(), dropped);
+                    push_fragment(
+                        &mut list,
+                        &f.change,
+                        &f.text,
+                        f.id.as_deref(),
+                        dropped,
+                        joinable,
+                    );
                 }
             }
             for f in &merged {
-                push_fragment(&mut list, &f.change, &f.text, f.id.as_deref(), dropped);
+                push_fragment(
+                    &mut list,
+                    &f.change,
+                    &f.text,
+                    f.id.as_deref(),
+                    dropped,
+                    joinable,
+                );
             }
             out_gaps.retain(|(g, _)| g.at != pos);
             out_gaps.push((
@@ -601,7 +635,14 @@ fn plan_one(
                 } else {
                     f.change.as_str()
                 };
-                push_fragment(&mut list, change, &f.text, f.id.as_deref(), dropped);
+                push_fragment(
+                    &mut list,
+                    change,
+                    &f.text,
+                    f.id.as_deref(),
+                    dropped,
+                    joinable,
+                );
             }
             g.fragments = list;
             *st = PlanState::Set;
@@ -838,6 +879,54 @@ fn resolve_file(doc: &LoroDoc, file_id: &str) -> Resolved {
     };
     let mut changes: Vec<ChangeRecord> = Vec::new();
     let mut stored: Vec<Stored> = Vec::new();
+    // Records of the earlier model are read in place, as the changes and
+    // fragments they stand for. Nothing is written until one of them is.
+    for (c, fragments) in expand_legacy(&legacy_records(doc, file_id)) {
+        for (fragment, anchor) in fragments {
+            let Some(pos) = cursor_pos(doc, &text, &anchor) else {
+                continue;
+            };
+            let id = fragment.id.clone().unwrap_or_default();
+            stored.push(Stored {
+                point: pos.offset,
+                fragment: Fragment {
+                    stale: pos.stale,
+                    ..fragment
+                },
+                authorship: Authorship {
+                    id,
+                    who: None,
+                    author: None,
+                    run: None,
+                    at: None,
+                },
+            });
+        }
+        let (mut from, mut to, mut stale) = (0, 0, false);
+        if let Some(end) = &c.end {
+            let (Some(s), Some(e)) = (
+                cursor_pos(doc, &text, &c.start),
+                cursor_pos(doc, &text, end),
+            ) else {
+                continue;
+            };
+            from = s.offset;
+            stale = s.stale || e.stale;
+            let exclusive = if e.stale { e.offset } else { e.offset + 1 };
+            to = exclusive.max(from);
+        }
+        changes.push(ChangeRecord {
+            id: c.id,
+            who: c.who,
+            author: c.author,
+            run: c.run,
+            at: c.at,
+            from,
+            to,
+            emptied: false,
+            stale,
+        });
+    }
     for (id, m) in records(doc) {
         if str_of(&m, "file").as_deref() != Some(file_id) {
             continue;
@@ -856,6 +945,13 @@ fn resolve_file(doc: &LoroDoc, file_id: &str) -> Resolved {
             live.push(s);
         } else {
             orphans.push(s.authorship);
+        }
+    }
+    // A fragment never sits inside a span: one anchored strictly inside a span
+    // is placed at the span's start, since its text preceded the span.
+    for s in live.iter_mut() {
+        if let Some(c) = changes.iter().find(|c| c.from < s.point && s.point < c.to) {
+            s.point = c.from;
         }
     }
     live.sort_by(|a, b| {
@@ -905,6 +1001,342 @@ fn resolve_file(doc: &LoroDoc, file_id: &str) -> Resolved {
     }
 }
 
+/// A record of the earlier model, read in place. It is a plain value, not a
+/// container. It stands for a change with the deleted text it owns, and for the
+/// pure deletions it swallowed, which it names as points.
+#[derive(Clone, Debug, PartialEq)]
+struct LegacyRecord {
+    deleted: String,
+    start: Vec<u8>,
+    end: Option<Vec<u8>>,
+    who: String,
+    author: String,
+    run: Option<String>,
+    at: i64,
+    /// The record ids of the pure deletions swallowed here, each with its code
+    /// point offset in `deleted`.
+    points: Vec<(String, usize)>,
+}
+
+/// A legacy record as the change it stands for. Its fragments are listed apart,
+/// each with the start cursor it is anchored on.
+#[derive(Clone, Debug, PartialEq)]
+struct LegacyChange {
+    id: String,
+    who: String,
+    author: String,
+    run: Option<String>,
+    at: i64,
+    start: Vec<u8>,
+    end: Option<Vec<u8>>,
+}
+
+fn plain_str(v: &LoroValue) -> Option<String> {
+    match v {
+        LoroValue::String(s) => Some(s.to_string()),
+        _ => None,
+    }
+}
+
+fn plain_bytes(v: &LoroValue) -> Option<Vec<u8>> {
+    match v {
+        LoroValue::Binary(b) => Some(b.to_vec()),
+        _ => None,
+    }
+}
+
+fn plain_num(v: &LoroValue) -> Option<f64> {
+    match v {
+        LoroValue::Double(x) => Some(*x),
+        LoroValue::I64(x) => Some(*x as f64),
+        _ => None,
+    }
+}
+
+/// The code point index of a UTF-16 offset in `s`. An offset inside a surrogate
+/// pair names the character after it.
+fn utf16_to_code_point(s: &str, units: usize) -> usize {
+    let mut seen = 0;
+    for (i, ch) in s.chars().enumerate() {
+        if seen >= units {
+            return i;
+        }
+        seen += ch.len_utf16();
+    }
+    s.chars().count()
+}
+
+/// The plain-value records of the earlier model that belong to `file_id`, by id.
+/// Their point offsets are converted from UTF-16 to code points.
+fn legacy_records(doc: &LoroDoc, file_id: &str) -> BTreeMap<String, LegacyRecord> {
+    let root = doc.get_map(CHANGES);
+    let ids: Vec<String> = root.keys().map(|k| k.to_string()).collect();
+    let mut out = BTreeMap::new();
+    for id in ids {
+        let Some(ValueOrContainer::Value(LoroValue::Map(m))) = root.get(&id) else {
+            continue;
+        };
+        if m.get("file").and_then(plain_str).as_deref() != Some(file_id) {
+            continue;
+        }
+        let Some(deleted) = m.get("deleted").and_then(plain_str) else {
+            continue;
+        };
+        let Some(start) = m.get("start").and_then(plain_bytes) else {
+            continue;
+        };
+        let points: Vec<(String, usize)> = match m.get("points") {
+            Some(LoroValue::List(list)) => list
+                .iter()
+                .filter_map(|p| match p {
+                    LoroValue::Map(p) => {
+                        let units = p.get("at").and_then(plain_num)?;
+                        let at = utf16_to_code_point(&deleted, units.max(0.0) as usize);
+                        Some((p.get("id").and_then(plain_str)?, at))
+                    }
+                    _ => None,
+                })
+                .collect(),
+            _ => Vec::new(),
+        };
+        out.insert(
+            id,
+            LegacyRecord {
+                end: m.get("end").and_then(plain_bytes),
+                who: m.get("who").and_then(plain_str).unwrap_or_default(),
+                author: m.get("author").and_then(plain_str).unwrap_or_default(),
+                run: m.get("run").and_then(plain_str),
+                at: m.get("at").and_then(plain_num).map_or(0, |v| v as i64),
+                deleted,
+                start,
+                points,
+            },
+        );
+    }
+    out
+}
+
+/// The deleted text of legacy record `id` as pieces, each with the id of the
+/// change it belongs to. The text is split at each point, and the pointed
+/// record's pieces go in between. A point that another point of the same owner
+/// also lists is expanded inside that inner owner only.
+fn legacy_pieces(
+    records: &BTreeMap<String, LegacyRecord>,
+    id: &str,
+    visited: &mut HashSet<String>,
+) -> Vec<(String, String)> {
+    let Some(v) = records.get(id) else {
+        return Vec::new();
+    };
+    if !visited.insert(id.to_string()) {
+        return Vec::new();
+    }
+    let known: Vec<&(String, usize)> = v
+        .points
+        .iter()
+        .filter(|(p, _)| records.contains_key(p.as_str()))
+        .collect();
+    let mut inner: HashSet<&str> = HashSet::new();
+    for (p, _) in &known {
+        if let Some(owner) = records.get(p.as_str()) {
+            inner.extend(owner.points.iter().map(|(q, _)| q.as_str()));
+        }
+    }
+    let mut kept: Vec<&(String, usize)> = known
+        .into_iter()
+        .filter(|(p, _)| !inner.contains(p.as_str()))
+        .collect();
+    kept.sort_by_key(|point| point.1);
+    let chars: Vec<char> = v.deleted.chars().collect();
+    let mut pieces: Vec<(String, String)> = Vec::new();
+    let mut cursor = 0;
+    for (p, at) in kept {
+        if *at > cursor {
+            pieces.push((
+                id.to_string(),
+                chars[cursor..*at].iter().collect::<String>(),
+            ));
+        }
+        pieces.extend(legacy_pieces(records, p, visited));
+        cursor = cursor.max(*at);
+    }
+    if cursor < chars.len() {
+        pieces.push((id.to_string(), chars[cursor..].iter().collect::<String>()));
+    }
+    pieces
+}
+
+/// A legacy record expanded: its change, and its fragments each paired with
+/// the anchor bytes they inherit from it.
+type LegacyExpansion = (LegacyChange, Vec<(Fragment, Vec<u8>)>);
+
+/// Each legacy record as the change it stands for, with the fragments it owns.
+/// Fragment ids are `<record id>:<index>`, the rank is the index, and each
+/// fragment is anchored on the start cursor of the record that holds it. A
+/// record that another one points at has no fragments of its own.
+fn expand_legacy(records: &BTreeMap<String, LegacyRecord>) -> Vec<LegacyExpansion> {
+    let pointed: HashSet<&str> = records
+        .values()
+        .flat_map(|v| v.points.iter().map(|(p, _)| p.as_str()))
+        .filter(|p| records.contains_key(*p))
+        .collect();
+    let mut visited: HashSet<String> = HashSet::new();
+    let mut out: Vec<LegacyExpansion> = Vec::new();
+    for (id, v) in records {
+        let change = LegacyChange {
+            id: id.clone(),
+            who: v.who.clone(),
+            author: v.author.clone(),
+            run: v.run.clone(),
+            at: v.at,
+            start: v.start.clone(),
+            end: v.end.clone(),
+        };
+        if pointed.contains(id.as_str()) {
+            out.push((change, Vec::new()));
+            continue;
+        }
+        let fragments: Vec<(Fragment, Vec<u8>)> = legacy_pieces(records, id, &mut visited)
+            .into_iter()
+            .enumerate()
+            .map(|(i, (owner, text))| {
+                let fragment = Fragment {
+                    id: Some(format!("{id}:{i}")),
+                    change: owner,
+                    text,
+                    rank: Some(i as f64),
+                    stale: false,
+                };
+                (fragment, v.start.clone())
+            })
+            .collect();
+        out.push((change, fragments));
+    }
+    out
+}
+
+/// Rewrites legacy record `id` as containers. The group is the outer record
+/// that holds its fragments and the records those fragments name: each change
+/// record goes under its own id, and the outer record's fragments under their
+/// derived ids. The plain records are deleted. Returns false when `id` is not a
+/// legacy record of `file_id`.
+fn convert_legacy(doc: &LoroDoc, file_id: &str, id: &str) -> bool {
+    let records = legacy_records(doc, file_id);
+    if !records.contains_key(id) {
+        return false;
+    }
+    let expanded = expand_legacy(&records);
+    // The outer record holding this id's fragments, which may be another one.
+    let Some(outer) = expanded
+        .iter()
+        .position(|(c, fs)| c.id == id && !fs.is_empty())
+        .or_else(|| {
+            expanded
+                .iter()
+                .position(|(_, fs)| fs.iter().any(|(f, _)| f.change == id))
+        })
+        .or_else(|| expanded.iter().position(|(c, _)| c.id == id))
+    else {
+        return false;
+    };
+    let outer_fragments = expanded[outer].1.clone();
+    let mut group = vec![outer];
+    group.extend((0..expanded.len()).filter(|&i| {
+        i != outer
+            && outer_fragments
+                .iter()
+                .any(|(f, _)| f.change == expanded[i].0.id)
+    }));
+    let owners: HashMap<&str, &LegacyChange> = group
+        .iter()
+        .map(|&i| (expanded[i].0.id.as_str(), &expanded[i].0))
+        .collect();
+    let root = doc.get_map(CHANGES);
+    for &i in &group {
+        let c = &expanded[i].0;
+        root.delete(&c.id).ok();
+        let Ok(m) = root.insert_container(&c.id, LoroMap::new()) else {
+            continue;
+        };
+        m.insert("kind", LoroValue::from("change")).ok();
+        m.insert("file", LoroValue::from(file_id)).ok();
+        m.insert("who", LoroValue::from(c.who.as_str())).ok();
+        m.insert("author", LoroValue::from(c.author.as_str())).ok();
+        m.insert("run", run_value(c.run.as_deref())).ok();
+        m.insert("at", LoroValue::Double(c.at as f64)).ok();
+        // A span keeps its start only together with its end.
+        let (start, end) = match &c.end {
+            Some(end) => (
+                LoroValue::from(c.start.clone()),
+                LoroValue::from(end.clone()),
+            ),
+            None => (LoroValue::Null, LoroValue::Null),
+        };
+        m.insert("start", start).ok();
+        m.insert("end", end).ok();
+    }
+    for (f, anchor) in &outer_fragments {
+        let Some(fid) = &f.id else {
+            continue;
+        };
+        root.delete(fid).ok();
+        let Ok(m) = root.insert_container(fid, LoroMap::new()) else {
+            continue;
+        };
+        let owner = owners.get(f.change.as_str()).copied();
+        m.insert("kind", LoroValue::from("fragment")).ok();
+        m.insert("file", LoroValue::from(file_id)).ok();
+        m.insert("who", LoroValue::from(owner.map_or("", |o| o.who.as_str())))
+            .ok();
+        m.insert(
+            "author",
+            LoroValue::from(owner.map_or("", |o| o.author.as_str())),
+        )
+        .ok();
+        m.insert("run", run_value(owner.and_then(|o| o.run.as_deref())))
+            .ok();
+        m.insert("at", LoroValue::Double(owner.map_or(0, |o| o.at) as f64))
+            .ok();
+        m.insert("change", LoroValue::from(f.change.as_str())).ok();
+        m.insert("text", LoroValue::from(f.text.as_str())).ok();
+        m.insert("start", LoroValue::from(anchor.clone())).ok();
+        m.insert("rank", LoroValue::Double(rank_of(f))).ok();
+    }
+    true
+}
+
+/// The legacy record a fragment id `<record id>:<index>` names, when the id has
+/// that shape.
+fn legacy_prefix(id: &str) -> Option<&str> {
+    let (legacy, _) = id.rsplit_once(':')?;
+    (!legacy.is_empty()).then_some(legacy)
+}
+
+/// Makes record `id` a container before it is written: converts the legacy
+/// record it is, or the one its fragment id names.
+fn materialize(doc: &LoroDoc, file_id: &str, id: &str) {
+    let root = doc.get_map(CHANGES);
+    if record_map(&root, id).is_some() {
+        return;
+    }
+    let legacy_id = if root.get(id).is_some() {
+        id
+    } else {
+        legacy_prefix(id).unwrap_or(id)
+    };
+    convert_legacy(doc, file_id, legacy_id);
+}
+
+/// Converts the legacy record `id`, when it is one, before a decision reads it.
+fn convert_plain(doc: &LoroDoc, id: &str) {
+    let root = doc.get_map(CHANGES);
+    if let Some(ValueOrContainer::Value(LoroValue::Map(m))) = root.get(id) {
+        if let Some(file) = m.get("file").and_then(plain_str) {
+            convert_legacy(doc, &file, id);
+        }
+    }
+}
+
 /// The deleted text of change `id`: its fragments in gap order.
 fn deleted_of(gaps: &[Gap], id: &str) -> String {
     gaps.iter()
@@ -939,8 +1371,10 @@ pub fn resolve_changes(doc: &LoroDoc, file_id: &str) -> Vec<ResolvedChange> {
 /// cursor is rewritten only when it would resolve to another offset than the
 /// stored one does, so a span that shrank needs no write, and two peers moving
 /// its two ends at once both keep their write. Nothing is written over a cursor
-/// with null. Returns false when no cursor can be made.
-fn write_change(doc: &LoroDoc, text: &LoroText, file: &str, c: &ChangeRecord) -> bool {
+/// with null. With `heal`, a stale cursor is rewritten even where it resolves
+/// to the right offset. A legacy record is converted first. Returns false when
+/// no cursor can be made.
+fn write_change(doc: &LoroDoc, text: &LoroText, file: &str, c: &ChangeRecord, heal: bool) -> bool {
     let cursors = if c.to > c.from {
         match (
             text.get_cursor(c.from, Side::Left),
@@ -952,6 +1386,7 @@ fn write_change(doc: &LoroDoc, text: &LoroText, file: &str, c: &ChangeRecord) ->
     } else {
         None
     };
+    materialize(doc, file, &c.id);
     let root = doc.get_map(CHANGES);
     let m = match record_map(&root, &c.id) {
         Some(m) => m,
@@ -971,10 +1406,18 @@ fn write_change(doc: &LoroDoc, text: &LoroText, file: &str, c: &ChangeRecord) ->
     match cursors {
         Some((start, end)) => {
             let have = resolved_span(doc, text, &m);
-            if have.map(|h| h.0) != Some(c.from) {
+            let stale_start = heal
+                && bytes_of(&m, "start")
+                    .and_then(|b| cursor_pos(doc, text, &b))
+                    .is_some_and(|p| p.stale);
+            let stale_end = heal
+                && bytes_of(&m, "end")
+                    .and_then(|b| cursor_pos(doc, text, &b))
+                    .is_some_and(|p| p.stale);
+            if have.map(|h| h.0) != Some(c.from) || stale_start {
                 m.insert("start", LoroValue::from(start)).ok();
             }
-            if have.map(|h| h.1) != Some(c.to) {
+            if have.map(|h| h.1) != Some(c.to) || stale_end {
                 m.insert("end", LoroValue::from(end)).ok();
             }
         }
@@ -1093,7 +1536,9 @@ fn rank_gap(fragments: &[Fragment]) -> Vec<f64> {
 
 /// Writes one fragment record: a new container, with its owner's author fields
 /// when it has an owner, or only the keys that changed. The start cursor moves
-/// only when it would resolve elsewhere.
+/// only when it would resolve elsewhere, or when `heal` finds it stale. A
+/// fragment of a legacy record converts that record, with its whole group, only
+/// when something about the fragment changes.
 #[allow(clippy::too_many_arguments)]
 fn write_fragment(
     doc: &LoroDoc,
@@ -1105,8 +1550,33 @@ fn write_fragment(
     at: usize,
     rank: f64,
     owner: Option<&ChangeRecord>,
+    heal: bool,
 ) {
     let root = doc.get_map(CHANGES);
+    if record_map(&root, id).is_none() {
+        if let Some(legacy_id) = legacy_prefix(id) {
+            let records = legacy_records(doc, file);
+            if let Some(legacy) = records.get(legacy_id) {
+                let index = id.rsplit(':').next().and_then(|i| i.parse::<usize>().ok());
+                let was = index.and_then(|i| {
+                    expand_legacy(&records)
+                        .into_iter()
+                        .find(|(c, _)| c.id == legacy_id)
+                        .and_then(|(_, fragments)| fragments.into_iter().nth(i))
+                });
+                let same = !heal
+                    && was.is_some_and(|(w, _)| {
+                        w.change == f.change && w.text == f.text && w.rank == Some(rank)
+                    })
+                    && (same_cursor(&legacy.start, start)
+                        || cursor_pos(doc, text, &legacy.start).is_some_and(|p| p.offset == at));
+                if same {
+                    return;
+                }
+                convert_legacy(doc, file, legacy_id);
+            }
+        }
+    }
     let m = match record_map(&root, id) {
         Some(m) => m,
         None => {
@@ -1126,13 +1596,21 @@ fn write_fragment(
     };
     put(&m, "change", LoroValue::from(f.change.as_str()));
     put(&m, "text", LoroValue::from(f.text.as_str()));
-    move_cursor(doc, text, &m, "start", start, at);
+    let stale_start = heal
+        && bytes_of(&m, "start")
+            .and_then(|b| cursor_pos(doc, text, &b))
+            .is_some_and(|p| p.stale);
+    if stale_start {
+        m.insert("start", LoroValue::from(start.to_vec())).ok();
+    } else {
+        move_cursor(doc, text, &m, "start", start, at);
+    }
     put(&m, "rank", LoroValue::Double(rank));
 }
 
 /// Writes the fragments of one gap at `at`, each its own record, with ranks from
 /// `rank_gap`. A fragment without an id gets a fresh one. Writes nothing when no
-/// cursor can be made at `at`.
+/// cursor can be made at `at`. `heal` is passed on to `write_fragment`.
 fn write_gap(
     doc: &LoroDoc,
     text: &LoroText,
@@ -1140,6 +1618,7 @@ fn write_gap(
     at: usize,
     fragments: &[Fragment],
     owners: &HashMap<String, ChangeRecord>,
+    heal: bool,
 ) {
     let Some(start) = text.get_cursor(at, Side::Left) else {
         return;
@@ -1158,6 +1637,7 @@ fn write_gap(
             at,
             rank,
             owners.get(f.change.as_str()),
+            heal,
         );
     }
 }
@@ -1190,7 +1670,7 @@ pub fn write_planned(doc: &LoroDoc, file_id: &str, plan: &Plan) -> Vec<String> {
                     }
                 }
             }
-            PlanState::Set => write_gap(doc, &text, file_id, g.at, &g.fragments, &owners),
+            PlanState::Set => write_gap(doc, &text, file_id, g.at, &g.fragments, &owners, false),
             PlanState::Kept => {}
         }
     }
@@ -1206,7 +1686,7 @@ pub fn write_planned(doc: &LoroDoc, file_id: &str, plan: &Plan) -> Vec<String> {
                 root.delete(&c.id).ok();
             }
             PlanState::Set => {
-                if write_change(doc, &text, file_id, c) {
+                if write_change(doc, &text, file_id, c, false) {
                     written.push(c.id.clone());
                 }
             }
@@ -1243,6 +1723,7 @@ fn mint_uuid() -> String {
 /// `untracked` and the file has no records to keep in step. Errors, leaving
 /// the document untouched, when the file is missing or the edits do not fit
 /// its text. Does not commit.
+#[allow(clippy::too_many_arguments)]
 fn apply_planned(
     doc: &LoroDoc,
     file_id: &str,
@@ -1251,6 +1732,7 @@ fn apply_planned(
     run: Option<&str>,
     now_ms: i64,
     untracked: bool,
+    joinable: &dyn Fn(&str) -> bool,
 ) -> Result<Option<Plan>, String> {
     let text = text_of(doc, file_id).ok_or_else(|| "the file does not exist".to_string())?;
     let before = text.to_string();
@@ -1276,7 +1758,7 @@ fn apply_planned(
 
     let mut mint = mint_uuid;
     let plan = plan_edits(
-        &before, &state, &planned, by, run, now_ms, untracked, &mut mint,
+        &before, &state, &planned, by, run, now_ms, untracked, &mut mint, joinable,
     );
     Ok(Some(plan))
 }
@@ -1294,7 +1776,7 @@ pub fn apply_tracked_edits(
     run: Option<&str>,
     now_ms: i64,
 ) -> Result<Vec<String>, String> {
-    let plan = apply_planned(doc, file_id, edits, by, run, now_ms, false)?;
+    let plan = apply_planned(doc, file_id, edits, by, run, now_ms, false, &|_| false)?;
     Ok(plan.map_or_else(Vec::new, |plan| write_planned(doc, file_id, &plan)))
 }
 
@@ -1309,7 +1791,7 @@ pub fn untracked_edits(doc: &LoroDoc, file_id: &str, edits: &[Edit]) -> Result<(
         who: "",
         author: "",
     };
-    if let Some(plan) = apply_planned(doc, file_id, edits, &nobody, None, 0, true)? {
+    if let Some(plan) = apply_planned(doc, file_id, edits, &nobody, None, 0, true, &|_| false)? {
         write_planned(doc, file_id, &plan);
     }
     Ok(())
@@ -1325,7 +1807,18 @@ fn flush(doc: &LoroDoc, text: &LoroText, file: &str, anchor: usize, pending: &mu
         let bytes = start.encode();
         for f in pending.iter() {
             if let Some(id) = &f.id {
-                write_fragment(doc, text, file, id, f, &bytes, anchor, rank_of(f), None);
+                write_fragment(
+                    doc,
+                    text,
+                    file,
+                    id,
+                    f,
+                    &bytes,
+                    anchor,
+                    rank_of(f),
+                    None,
+                    false,
+                );
             }
         }
     }
@@ -1387,14 +1880,14 @@ fn restore_group(
         text.insert(pos, &f.text).ok();
         for c in edges {
             if c.to == pos {
-                write_change(doc, text, file, &c);
+                write_change(doc, text, file, &c, false);
             } else {
                 let shifted = ChangeRecord {
                     from: c.from + n,
                     to: c.to + n,
                     ..c
                 };
-                write_change(doc, text, file, &shifted);
+                write_change(doc, text, file, &shifted, false);
             }
         }
         flush(doc, text, file, pos, &mut pending);
@@ -1463,6 +1956,7 @@ fn is_change(root: &LoroMap, id: &str) -> bool {
 /// its record is dropped. The text stays. Returns false when `id` is not a
 /// change record. Does not commit.
 pub fn accept(doc: &LoroDoc, id: &str) -> bool {
+    convert_plain(doc, id);
     let root = doc.get_map(CHANGES);
     if !is_change(&root, id) {
         return false;
@@ -1482,6 +1976,7 @@ pub fn accept(doc: &LoroDoc, id: &str) -> bool {
 /// and its record. Returns false when `id` is not a change record. Does not
 /// commit.
 pub fn reject(doc: &LoroDoc, id: &str) -> bool {
+    convert_plain(doc, id);
     let root = doc.get_map(CHANGES);
     if !is_change(&root, id) {
         return false;
@@ -1578,7 +2073,7 @@ pub fn prune(doc: &LoroDoc) -> usize {
                     emptied: false,
                     stale: false,
                 };
-                write_change(doc, &text, &file, &c);
+                write_change(doc, &text, &file, &c, false);
                 if let Some(m) = record_map(&root, &o.id) {
                     m.insert("change", LoroValue::from(cid.as_str())).ok();
                 }
@@ -1607,18 +2102,25 @@ pub fn prune(doc: &LoroDoc) -> usize {
                 removed += 1;
             }
         }
+        // A legacy record with nothing left to show is dropped too.
+        for (id, rec) in legacy_records(doc, &file) {
+            if !live.contains(&id) && rec.points.is_empty() {
+                root.delete(&id).ok();
+                removed += 1;
+            }
+        }
         for g in &resolved.state.gaps {
             let all_settled = g
                 .fragments
                 .iter()
                 .all(|f| f.id.as_deref().is_none_or(|id| settled(&root, id, now)));
             if g.stale && all_settled {
-                write_gap(doc, &text, &file, g.at, &g.fragments, &HashMap::new());
+                write_gap(doc, &text, &file, g.at, &g.fragments, &HashMap::new(), true);
             }
         }
         for c in &resolved.state.changes {
             if c.stale && c.to > c.from && settled(&root, &c.id, now) {
-                write_change(doc, &text, &file, c);
+                write_change(doc, &text, &file, c, true);
             }
         }
     }
@@ -1788,6 +2290,7 @@ mod tests {
                 2,
                 fx.untracked,
                 &mut mint,
+                &|_| true,
             );
 
             let mut got_changes: Vec<ChangeRow> = plan
@@ -2938,5 +3441,172 @@ mod tests {
         assert!(reject(&doc, &rows[0].id));
         doc.commit();
         assert_eq!(body(&doc, &id), "aXbc");
+    }
+
+    #[test]
+    fn two_sessions_of_one_author_lose_nothing() {
+        // Two sessions of one author edit the same text. The server never joins
+        // fragments, so each session keeps its own records.
+        let (a, id) = setup("abcdef");
+        apply_tracked_edits(&a, &id, &[edit(2, 1, "")], &who_of("p"), None, 1).unwrap();
+        a.commit();
+        let b = new_doc();
+        b.import(&a.export(loro::ExportMode::snapshot()).unwrap())
+            .unwrap();
+        // Session a deletes b, next to its own c.
+        apply_tracked_edits(&a, &id, &[edit(1, 1, "")], &who_of("p"), None, 2).unwrap();
+        a.commit();
+        // Session b deletes d.
+        apply_tracked_edits(&b, &id, &[edit(2, 1, "")], &who_of("p"), None, 2).unwrap();
+        b.commit();
+        sync(&a, &b);
+        assert_eq!(body(&a, &id), body(&b, &id));
+        let ids: Vec<String> = resolve_changes(&a, &id).into_iter().map(|c| c.id).collect();
+        for cid in &ids {
+            assert!(reject(&a, cid), "{cid} is not a change");
+            a.commit();
+        }
+        sync(&a, &b);
+        assert_eq!(body(&a, &id), "abcdef");
+        assert_eq!(body(&b, &id), "abcdef");
+    }
+
+    /// A plain record of the earlier model, as the browser wrote it before the
+    /// change records became containers.
+    fn legacy_value(
+        file: &str,
+        who: &str,
+        deleted: &str,
+        anchor: &[u8],
+        points: &[(&str, f64)],
+    ) -> LoroValue {
+        let mut map: HashMap<&str, LoroValue> = HashMap::new();
+        map.insert("file", LoroValue::from(file));
+        map.insert("who", LoroValue::from(who));
+        map.insert("author", LoroValue::from(who));
+        map.insert("at", LoroValue::Double(1.0));
+        map.insert("run", LoroValue::Null);
+        map.insert("start", LoroValue::from(anchor));
+        map.insert("end", LoroValue::Null);
+        map.insert("deleted", LoroValue::from(deleted));
+        if !points.is_empty() {
+            let list: Vec<LoroValue> = points
+                .iter()
+                .map(|(id, at)| {
+                    LoroValue::from(HashMap::from([
+                        ("id", LoroValue::from(*id)),
+                        ("at", LoroValue::Double(*at)),
+                    ]))
+                })
+                .collect();
+            map.insert("points", LoroValue::from(list));
+        }
+        LoroValue::from(map)
+    }
+
+    #[test]
+    fn legacy_records_are_read_in_place_and_converted_on_touch() {
+        // Alice deleted c. Bob deleted b and d, with a swallowed pure deletion of
+        // Alice's c between them, so his record points at hers. Both sit at the
+        // same character of "ae".
+        let build = || {
+            let (doc, id) = setup("ae");
+            let anchor = text_of(&doc, &id)
+                .unwrap()
+                .get_cursor(1, Side::Left)
+                .unwrap()
+                .encode();
+            let root = doc.get_map(CHANGES);
+            root.insert("alice", legacy_value(&id, "alice", "c", &anchor, &[]))
+                .unwrap();
+            root.insert(
+                "bob",
+                legacy_value(&id, "bob", "bd", &anchor, &[("alice", 1.0)]),
+            )
+            .unwrap();
+            doc.commit();
+            (doc, id)
+        };
+        {
+            let (doc, id) = build();
+            let rows: Vec<(String, String)> = resolve_changes(&doc, &id)
+                .into_iter()
+                .map(|c| (c.who, c.deleted))
+                .collect();
+            assert_eq!(
+                rows,
+                [
+                    ("alice".to_string(), "c".to_string()),
+                    ("bob".to_string(), "bd".to_string()),
+                ]
+            );
+            let state = resolve_file(&doc, &id).state;
+            assert_eq!(state.gaps.len(), 1);
+            let texts: Vec<&str> = state.gaps[0]
+                .fragments
+                .iter()
+                .map(|f| f.text.as_str())
+                .collect();
+            assert_eq!(texts, ["b", "c", "d"]);
+        }
+        for order in [["bob", "alice"], ["alice", "bob"]] {
+            let (doc, id) = build();
+            for cid in order {
+                assert!(reject(&doc, cid), "{cid} is not a change");
+                doc.commit();
+            }
+            assert_eq!(body(&doc, &id), "abcde", "{order:?}");
+            assert!(resolve_changes(&doc, &id).is_empty());
+        }
+        {
+            // An edit elsewhere leaves the plain records where they are.
+            let (doc, id) = build();
+            apply_tracked_edits(&doc, &id, &[edit(2, 0, "X")], &who_of("cara"), None, 1).unwrap();
+            doc.commit();
+            assert_eq!(legacy_records(&doc, &id).len(), 2);
+        }
+        {
+            // Deleting a swallows the gap, so every record is converted, and
+            // rejecting everything restores the text.
+            let (doc, id) = build();
+            apply_tracked_edits(&doc, &id, &[edit(0, 1, "")], &who_of("cara"), None, 1).unwrap();
+            doc.commit();
+            let root = doc.get_map(CHANGES);
+            let keys: Vec<String> = root.keys().map(|k| k.to_string()).collect();
+            assert!(
+                keys.iter().all(|k| record_map(&root, k).is_some()),
+                "a plain record is left"
+            );
+            assert_eq!(keys.len(), 7);
+            reject_where(&doc, &id, |_| true);
+            doc.commit();
+            assert_eq!(body(&doc, &id), "abcde");
+            assert!(resolve_changes(&doc, &id).is_empty());
+        }
+    }
+
+    #[test]
+    fn a_settled_stale_cursor_is_healed() {
+        // A fragment is anchored on d, which a raw edit then deletes. Once its
+        // record has settled, prune moves the cursor onto a live character.
+        let (doc, id) = setup("abcdef");
+        apply_tracked_edits(&doc, &id, &[edit(2, 1, "")], &who_of("p"), None, 1).unwrap();
+        doc.commit();
+        text_of(&doc, &id).unwrap().delete(2, 1).unwrap();
+        doc.commit();
+        let before = resolve_file(&doc, &id).state.gaps;
+        assert!(before[0].stale);
+        let fid = before[0].fragments[0].id.clone().unwrap();
+        let root = doc.get_map(CHANGES);
+        record_map(&root, &fid)
+            .unwrap()
+            .insert("at", LoroValue::Double(0.0))
+            .unwrap();
+        doc.commit();
+        prune(&doc);
+        doc.commit();
+        let after = resolve_file(&doc, &id).state.gaps;
+        assert!(!after[0].stale);
+        assert_eq!(after[0].at, 2);
     }
 }
