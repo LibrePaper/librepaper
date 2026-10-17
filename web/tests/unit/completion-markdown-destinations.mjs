@@ -39,7 +39,7 @@ const option = (result, label) => result.options.find((item) => item.label === l
 {
   const { result } = complete("[x](|", { files: ["100%.pdf", "50%20off.pdf"] });
   assert.equal(option(result, "100%.pdf").apply, "100%25.pdf");
-  assert.equal(option(result, "50%20off.pdf").apply, "50%20off.pdf");
+  assert.equal(option(result, "50%20off.pdf").apply, "50%2520off.pdf");
 }
 
 // Link targets get the same forms.
@@ -81,4 +81,12 @@ const option = (result, label) => result.options.find((item) => item.label === l
   const { result } = complete("![a](fi|", { files: ["figs/x.png"] });
   assert.ok(result);
   assert.equal(option(result, "figs/x.png").apply, "figs/x.png");
+}
+
+// A raw "%" in a name survives the round trip: the applied text decodes back to
+// the file, so anchor completion finds it.
+{
+  const texts = { "50%20off.md": "## Deal" };
+  const { result } = complete("[x](50%2520off.md#|", { texts, files: Object.keys(texts) });
+  assert.deepEqual(result.options.map((item) => item.label), ["50%2520off.md#deal"]);
 }

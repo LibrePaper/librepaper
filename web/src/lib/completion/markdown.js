@@ -171,10 +171,11 @@ function unwrapTarget(text) {
   return text.replace(/^<|>$/g, "");
 }
 
-// Escapes a path for a link destination. A "%" is escaped unless it starts an escape.
+// Escapes a project path for a link destination. Paths are raw names, so
+// every "%" is literal and is escaped, which keeps decoding exact.
 function escapeDestination(path) {
   return path
-    .replace(/%(?![0-9A-Fa-f]{2})/g, "%25")
+    .replace(/%/g, "%25")
     .replace(/#/g, "%23")
     .replace(/</g, "%3C")
     .replace(/>/g, "%3E");

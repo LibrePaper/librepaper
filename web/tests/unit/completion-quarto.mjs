@@ -150,3 +150,9 @@ const labels = (result) => (result ? result.options.map((option) => option.label
   }
   assert.ok(JSON.stringify(schema).length < 200_000);
 }
+
+// A label in the cell header counts like a #| label line.
+{
+  const texts = { "a.qmd": "```{r, label=\"fig-plot\"}\nplot(1)\n```\n\n```{python label='tbl-x'}\n1\n```\n" };
+  assert.deepEqual(quartoLabels(texts).map((label) => label.id), ["fig-plot", "tbl-x"]);
+}

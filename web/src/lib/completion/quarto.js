@@ -14,6 +14,7 @@ const LABEL = new RegExp(`^(?:${KIND_ALTERNATION})-[\\w-]+$`);
 const LABEL_PARTIAL = new RegExp(`^(?:${KIND_ALTERNATION})-[\\w-]*$`);
 const ATTRIBUTE_ID = new RegExp(`\\{#((?:${KIND_ALTERNATION})-[\\w-]+)(?=[\\s}])`, "g");
 const CELL_LABEL = /^#\|\s*label:\s*["']?([^\s"']+)/;
+const HEADER_LABEL = /[\s,]label\s*=\s*["']?([^\s"',}]+)/;
 const FENCE = /^ {0,3}(`{3,}|~{3,})(.*)$/;
 
 const byName = (a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0);
@@ -80,6 +81,12 @@ function labelsIn(text, path) {
   lines.forEach((line, index) => {
     const fence = states[index];
     if (fence) {
+      // An executable cell can name itself in its header: {r, label="fig-x"}.
+      if (fence.info.startsWith("{") && states[index - 1] !== fence) {
+        const header = fence.info.match(HEADER_LABEL);
+        if (header && LABEL.test(header[1])) add(header[1], index);
+        return;
+      }
       const match = fence.info.startsWith("{") && line.match(CELL_LABEL);
       if (match && LABEL.test(match[1])) add(match[1], index);
       return;
