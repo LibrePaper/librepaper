@@ -770,7 +770,7 @@
     <p class="panel-meta" data-agent-note={chosenInstalled.id}>{chosenInstalled.assistant_blocked}{chosenInstalled.assistant_note}{#if chosenInstalled.assistant_blocked} <a href={chosenInstalled.assistant_docs || "https://librepaper.org/agents.html"} target="_blank" rel="noreferrer">Setup instructions</a>{/if}</p>
   {/if}
   {#if assistant.agent !== chosenAgent && chosenInstalled?.assistant_fetches}
-    <p class="panel-meta" data-adapter-fetch>Starting it downloads its adapter.{#if chosenInstalled.assistant_install} To install it for good, run <code>{chosenInstalled.assistant_install}</code>.{/if}</p>
+    <p class="panel-meta" data-adapter-fetch>Starting it downloads its adapter.{#if chosenInstalled.assistant_install}{" "}To install it for good, run <code>{chosenInstalled.assistant_install}</code>.{/if}</p>
   {/if}
   <ChatComposer placeholder="Ask your agent…" canSend={!busy && (sendable || startable)} draft={draft} ondraft={(value) => draft = value} onsend={send}
                 onstop={assistant.running && activeTask ? () => void act(() => client.cancel(activeTask.id)) : null}

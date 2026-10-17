@@ -260,7 +260,7 @@ test("demo runs the demo worktree with this checkout's paths made absolute", asy
       "MAKE=" + fixture.mockMake, "DEMO_REF=topic", "CONFIG=custom.toml", "MIRROR=mirror", "demo",
     ], { cwd: fixture.directory, encoding: "utf8", timeout: 20000, env: fixture.environment });
     assert.equal(result.status, 0, result.stderr || result.stdout);
-    const args = "MIRROR=" + join(fixture.directory, "mirror") + " CONFIG=" + join(fixture.directory, "custom.toml");
+    const args = "MIRROR=" + join(fixture.directory, "mirror") + " CARGO_PROFILE=demo CONFIG=" + join(fixture.directory, "custom.toml");
     assert.deepEqual((await demoLogs(fixture)).make.trim().split("\n"), [
       "topic",
       "-C " + tree + " --no-print-directory web " + args,

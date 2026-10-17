@@ -36,6 +36,7 @@ async function makeFixture({ port = 8081, sitePort = 8082, commandLineServer, co
     await readFile(join(root, "tools", "dev", "demo", "mirror-check")), { mode: 0o755 });
   await writeFile(join(directory, "deploy", "librepaper.toml"),
     await readFile(join(root, "deploy", "librepaper.toml")));
+  await writeFile(join(directory, "assets.lock"), "# empty lock\n");
   await writeFile(join(directory, "deploy", "resticprofile.toml"), "# empty backup config\n");
   if (config) await writeFile(join(directory, "custom.toml"), "[server]\naddress = \"0.0.0.0:8080\"\n");
 
