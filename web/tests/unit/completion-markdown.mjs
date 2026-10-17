@@ -26,6 +26,17 @@ assert.deepEqual(ids("---\ntitle: x\n# not\n---\n# Real"), ["real"]);
 // Lines that only look like headings are ignored.
 assert.deepEqual(ids("#hashtag\n####### seven"), []);
 
+// The id comes from the heading's text, not its markdown.
+assert.deepEqual(ids("# [Intro](other.md)"), ["intro"]);
+assert.deepEqual(ids("# The **bold** move"), ["the-bold-move"]);
+assert.deepEqual(ids("# Using `npm`"), ["using-npm"]);
+assert.deepEqual(ids("# snake_case name"), ["snake_case-name"]);
+assert.deepEqual(ids("# A &amp; B"), ["a--b"]);
+assert.deepEqual(ids("# ![Logo](a.png) and [ref][1]"), ["logo-and-ref"]);
+assert.deepEqual(ids("# It&#39;s <em>here</em>"), ["its-here"]);
+assert.deepEqual(ids("# Visit <https://a.b>"), ["visit-httpsab"]);
+assert.deepEqual(ids("# __init__ file"), ["init-file"]);
+
 // Labels carry the path and the 1-based line, and skip non-Markdown files.
 assert.deepEqual(
   markdownLabels({ "a.md": "# Top\n## Two", "b.txt": "# No", "c.qmd": "# Quarto" }),

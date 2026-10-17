@@ -49,6 +49,31 @@ function slug(title) {
   return title.toLowerCase().replace(/[^\p{L}\p{M}\p{N} _-]/gu, "").replace(/ /g, "-");
 }
 
+// The text a heading shows. comrak builds the id from this, not from the
+// markdown, so links, code and emphasis are reduced to their text first.
+function headingText(title) {
+  return title
+    .replace(/!\[([^\]]*)\]\([^)]*\)/g, "$1")
+    .replace(/\[([^\]]*)\]\([^)]*\)/g, "$1")
+    .replace(/\[([^\]]*)\]\[[^\]]*\]/g, "$1")
+    .replace(/<((?:https?|mailto|ftp):[^>\s]*)>/g, "$1")
+    .replace(/(`+)([^`]*?)\1/g, "$2")
+    .replace(/<[^>]*>/g, "")
+    .replace(/&(#\d+|amp|lt|gt|quot);/g, (all, name) => {
+      if (name[0] !== "#") return { amp: "&", lt: "<", gt: ">", quot: '"' }[name];
+      const code = Number(name.slice(1));
+      return code <= 0x10ffff ? String.fromCodePoint(code) : all;
+    })
+    .replace(/\*/g, "")
+    // An underscore run is emphasis when it touches a word on one side only.
+    .replace(/_+/g, (run, offset, whole) => {
+      const before = offset > 0 && /[\p{L}\p{N}]/u.test(whole[offset - 1]);
+      const end = offset + run.length;
+      const after = end < whole.length && /[\p{L}\p{N}]/u.test(whole[end]);
+      return before !== after ? "" : run;
+    });
+}
+
 // ATX headings outside code, with ids in document order.
 function headingsOf(text) {
   const used = new Set();
@@ -67,7 +92,7 @@ function headingsOf(text) {
     }
     title = title.replace(/[ \t]*\{[^{}]*\}[ \t]*$/, "").trim();
     if (!explicit) {
-      const base = slug(title);
+      const base = slug(headingText(title));
       if (!base) continue;
       id = base;
       for (let n = 1; used.has(id); n++) id = `${base}-${n}`;
