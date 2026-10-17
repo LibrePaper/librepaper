@@ -25,7 +25,7 @@ export function createFrameOverlays({ ready, send }) {
     return true;
   }
 
-  function annotations(comments, changes = []) {
+  function annotations(comments) {
     const nextHighlights = comments
       .filter((comment) => !comment.orphaned && comment.start != null)
       .map((comment) => ({
@@ -36,16 +36,6 @@ export function createFrameOverlays({ ready, send }) {
         resolved: Boolean(comment.resolved),
         color: comment.color || undefined,
       }));
-    for (const row of changes) {
-      nextHighlights.push({
-        id: "change:" + row.id,
-        start: row.start,
-        end: row.end,
-        motivation: "change",
-        deleted: row.deleted || undefined,
-        author: row.author,
-      });
-    }
     return deliver(
       { type: "highlight", ranges: nextHighlights },
       () => highlights,

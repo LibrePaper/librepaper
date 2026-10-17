@@ -422,11 +422,9 @@ fn apply_patch_edits(
         by_path.entry(&patch.path).or_default().push(patch);
     }
     for (path, mut patches) in by_path {
-        // `apply_edits_at` validates ascending, non-overlapping edits before
-        // applying them in reverse. At a shared boundary, sorting by end
-        // places an insertion before the replacement that starts there; the
-        // reverse application then leaves the inserted text before the
-        // replacement's output.
+        // The edits must be ascending and non-overlapping. At a shared boundary,
+        // sorting by end places an insertion before the replacement that starts
+        // there, so the inserted text comes before the replacement's output.
         patches.sort_by_key(|patch| (patch.start, patch.end));
         let original = tree
             .files
@@ -440,11 +438,15 @@ fn apply_patch_edits(
                 insert: patch.replacement.clone(),
             })
             .collect();
-        // `apply_edits_at`, not `apply_path_edits`: the latter encodes a
-        // per-file diff against the document's vector before and after, and
-        // this caller throws it away. `Head::prepare` exports the command's
-        // whole diff once, which is the batch that actually gets written.
-        if !session::apply_edits_at(doc, path, &edits) {
+        // The edits go through the planner, so pending change records shrink,
+        // move or split around them: an untracked patch cannot land inside
+        // someone's span, and a deletion over one does not leave its cursors
+        // stale. `apply_edits_at` is not used because it writes the text alone.
+        // `apply_path_edits` is not used either: it encodes a per-file diff
+        // against the document's vector before and after, and this caller throws
+        // that away. `Head::prepare` exports the command's whole diff once, which
+        // is the batch that actually gets written.
+        if track::untracked_edits(doc, original.file_id, &edits).is_err() {
             return Err(format!("patch edits could not be applied to file: {path}"));
         }
     }
@@ -983,7 +985,7 @@ mod tests {
         let files = [(
             "paper.md".to_string(),
             SourceFile {
-                file_id: "file-1",
+                file_id: "paper.md",
                 text,
             },
         )]
@@ -1020,7 +1022,7 @@ mod tests {
                     (
                         path.to_string(),
                         SourceFile {
-                            file_id: "file-1",
+                            file_id: path,
                             text,
                         },
                     )
@@ -1033,7 +1035,12 @@ mod tests {
     fn doc_with_files(tree: &SourceTree<'_>) -> LoroDoc {
         let doc = session::new_doc();
         for (path, file) in &tree.files {
-            session::put_text(&doc, path, file.text);
+            assert!(session::put_text_with_id(
+                &doc,
+                file.file_id,
+                path,
+                file.text
+            ));
         }
         doc
     }
@@ -1041,7 +1048,7 @@ mod tests {
     fn patch(path: &str, text: &str, start: usize, end: usize, replacement: &str) -> Patch {
         Patch {
             path: path.into(),
-            file_id: "file-1".into(),
+            file_id: path.into(),
             start,
             end,
             exact: text[start..end].into(),
@@ -1056,7 +1063,7 @@ mod tests {
             &base,
             vec![Patch {
                 path: "paper.md".into(),
-                file_id: "file-1".into(),
+                file_id: "paper.md".into(),
                 start: 1,
                 end: 3,
                 exact: "zz".into(),
@@ -1072,7 +1079,7 @@ mod tests {
             vec![
                 Patch {
                     path: "paper.md".into(),
-                    file_id: "file-1".into(),
+                    file_id: "paper.md".into(),
                     start: 1,
                     end: 4,
                     exact: "bcd".into(),
@@ -1080,7 +1087,7 @@ mod tests {
                 },
                 Patch {
                     path: "paper.md".into(),
-                    file_id: "file-1".into(),
+                    file_id: "paper.md".into(),
                     start: 3,
                     end: 5,
                     exact: "de".into(),
@@ -1156,13 +1163,54 @@ mod tests {
             ],
         );
         let doc = session::new_doc();
-        session::put_text(&doc, "a.md", "before");
+        assert!(session::put_text_with_id(&doc, "a.md", "a.md", "before"));
         let staged = doc.fork();
 
         let error = apply_patch_edits(&staged, &tree, &request).unwrap_err();
 
         assert!(error.contains("z.md"));
         assert_eq!(session::texts_of(&doc)["a.md"], "before");
+    }
+
+    #[test]
+    fn an_untracked_patch_stays_out_of_a_pending_span() {
+        // A tracked insertion of XY by one author, then an untracked patch that
+        // inserts Q between X and Y. The patch goes through the planner, so the
+        // span splits around it and Q sits in no pending span.
+        let before = tree("abcdef");
+        let doc = doc_with_files(&before);
+        let by = track::Author {
+            who: "p",
+            author: "P",
+        };
+        track::apply_tracked_edits(
+            &doc,
+            "paper.md",
+            &[session::Edit {
+                at: 1,
+                delete: 0,
+                insert: "XY".into(),
+            }],
+            &by,
+            None,
+            1,
+        )
+        .expect("the tracked insertion fits");
+        doc.commit();
+        let current = tree("aXYbcdef");
+        let request = request(&current, vec![patch("paper.md", "aXYbcdef", 2, 2, "Q")]);
+
+        apply_patch_edits(&doc, &current, &request).expect("the patch fits");
+        doc.commit();
+
+        assert_eq!(session::texts_of(&doc)["paper.md"], "aXQYbcdef");
+        let text: Vec<char> = "aXQYbcdef".chars().collect();
+        let mut spans: Vec<String> = track::resolve_changes(&doc, "paper.md")
+            .iter()
+            .map(|c| text[c.from..c.to].iter().collect())
+            .collect();
+        spans.sort();
+        assert_eq!(spans, ["X", "Y"]);
     }
 
     #[test]

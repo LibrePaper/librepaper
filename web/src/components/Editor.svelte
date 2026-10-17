@@ -108,6 +108,19 @@
   // whatever `cm.cm6` names, looked up here to find which editor asked.
   const viewCallbacks = new WeakMap();
 
+  // Vim's `u` leaves one cursor at the start of what came back, in normal
+  // mode. The undo plugin puts back the selection the change was made with,
+  // in a timeout of its own, and Vim's `dd` made that selection a line; a
+  // range put back from outside reads to Vim as visual mode, and the next
+  // keys go wrong. So once that selection has landed it is collapsed, which
+  // also takes Vim out of visual mode.
+  function settleAfterHistory(view) {
+    setTimeout(() => {
+      const range = view.state.selection.main;
+      if (!range.empty) view.dispatch({ selection: { anchor: range.from } });
+    }, 0);
+  }
+
   function defineExCommands(Vim) {
     if (exCommandsDefined) return;
     exCommandsDefined = true;
@@ -127,8 +140,16 @@
       quit(cm);
     });
     // Vim's built-in `u` and Ctrl-R route through their respective handlers.
-    Vim.defineAction("loroUndo", (cm) => undoFn(cm.cm6));
-    Vim.defineAction("loroRedo", (cm) => redoFn(cm.cm6));
+    Vim.defineAction("loroUndo", (cm) => {
+      const done = undoFn(cm.cm6);
+      if (done) settleAfterHistory(cm.cm6);
+      return done;
+    });
+    Vim.defineAction("loroRedo", (cm) => {
+      const done = redoFn(cm.cm6);
+      if (done) settleAfterHistory(cm.cm6);
+      return done;
+    });
     Vim.mapCommand("u", "action", "loroUndo", {}, {});
     Vim.mapCommand("<C-r>", "action", "loroRedo", {}, {});
   }
@@ -164,7 +185,7 @@
   import { completionExtension, formatOfPath } from "../lib/completion/index.js";
   import { desktop, searchZotero, zoteroItem } from "../lib/desktop/client.js";
   import { changeMarks, setChangeMarks } from "../lib/change-marks.js";
-  import { CHANGES, planEdits, writePlanned, resolveChanges, trackedSplice, prune } from "../lib/track-changes.js";
+  import { CHANGES, planEdits, writePlanned, resolveFile, trackedSplice, untrackedSplice, prune } from "../lib/track-changes.js";
   import { DIRECTORY_ORIGIN } from "../lib/project-session.js";
   import { projectDirectory } from "../lib/projection.js";
   import { attachEditorZoom } from "../lib/editor-zoom.js";
@@ -200,21 +221,43 @@
     if (!view || !showing || !session) return;
     view.dispatch({
       effects: setChangeMarks.of({
-        changes: resolveChanges(session.doc, showing),
+        ...resolveFile(session.doc, showing),
         me,
         selected: selectedChange,
       }),
     });
   }
 
+  // One redraw per tick, however many commits and transactions asked for it.
+  let drawQueued = false;
+  function scheduleDraw() {
+    if (drawQueued) return;
+    drawQueued = true;
+    queueMicrotask(() => {
+      drawQueued = false;
+      drawChanges();
+    });
+  }
+
   /// Takes each local, user transaction as a tracked change while tracking is
-  /// on. Installed right after the binding, so by the time `update` runs the
-  /// binding has already written the text and committed it.
+  /// on. The sync binding sits between the two plugins returned here, and
+  /// neither of them writes text.
   ///
-  /// The planner needs the changes as they were before that write, so the
-  /// list is cached and refreshed after every update and after every document
-  /// event. Loro delivers events in a microtask, so the cache is still the
-  /// old list while the binding's own update runs.
+  /// Loro delivers subscription events synchronously inside `doc.commit()`.
+  /// A list cached from those events would already be re-resolved against the
+  /// edited text by the time a plugin behind the binding runs, so the records
+  /// are read from the document at the point they are needed.
+  ///
+  /// `before` runs ahead of the binding and reads the records while the text
+  /// is still as it was. `after` runs behind the binding. It plans against
+  /// that snapshot, in the coordinates of each transaction's start state,
+  /// writes the records, prunes and commits.
+  ///
+  /// `after` has the lowest precedence. Vim's undo boundary plugin also has
+  /// the lowest precedence, and it sits earlier in the extensions. It restores
+  /// Loro's merge interval right after the binding commits the first edit of
+  /// a Vim command. The records committed here then join that edit's undo step
+  /// instead of making their own.
   ///
   /// A transaction carrying the binding's annotation is its own write or an
   /// undo, and is already in the document.
@@ -223,72 +266,84 @@
   /// delete the character a pending change's cursor is attached to, and the
   /// prune rewrites that cursor against live text while the history that
   /// locates it is still there.
+  ///
+  /// While tracking is off, an edit is still planned, untracked. It records
+  /// nothing and changes no text, but pending spans shrink, move or split
+  /// around it, and the gaps it collapses merge in order. With no records in
+  /// the document, nothing is planned.
   function trackChanges(fileId) {
-    return ViewPlugin.define(() => {
+    /** @type {{changes: any[], gaps: any[]}} */
+    let snapshot = { changes: [], gaps: [] };
+    // A local edit is a user transaction that changed the text.
+    const isLocal = (update) => update.docChanged
+      && update.transactions.some((transaction) => transaction.docChanged && transaction.annotation(loroSyncAnnotation) === undefined);
+    const before = ViewPlugin.define(() => {
       const doc = session.doc;
-      let resolved = resolveChanges(doc, fileId);
-      const refresh = () => { resolved = resolveChanges(doc, fileId); };
-      const subscription = doc.subscribe(refresh);
       return {
         update(update) {
-          if (!update.docChanged) return;
-          let local = false;
+          if (isLocal(update) && doc.getMap(CHANGES).size) snapshot = resolveFile(doc, fileId);
+        },
+      };
+    });
+    const after = Prec.lowest(ViewPlugin.define(() => {
+      const doc = session.doc;
+      return {
+        update(update) {
+          if (!isLocal(update)) return;
           // The sync plugin has written every transaction of this update to
           // the LoroText already. Each one is planned against the text it
           // started from, chained, and the result is written once so that no
           // cursor is made at an intermediate offset.
-          /** @type {any[]} */
-          let live = resolved.map((change) => ({ ...change }));
-          const created = new Set();
-          const written = new Set();
-          const removed = new Set();
+          let state = snapshot;
+          const touched = new Set();
           const now = Date.now();
-          for (const transaction of update.transactions) {
-            if (!transaction.docChanged || transaction.annotation(loroSyncAnnotation) !== undefined) continue;
-            local = true;
-            if (!tracked) continue;
-            const edits = [];
-            transaction.changes.iterChanges((fromA, toA, fromB, toB, insert) => {
-              edits.push({ from: fromA, to: toA, insert: insert.sliceString(0, insert.length, "\n") });
-            });
-            const known = new Set(live.map((change) => change.id));
-            /** @type {any[]} */
-            const plan = planEdits(transaction.startState.doc.toString(), live, edits, me, {
-              run: null,
-              now,
-              mintId: () => crypto.randomUUID(),
-            });
-            for (const change of plan) {
-              if (change.state === "removed") {
-                if (created.has(change.id)) written.delete(change.id);
-                else removed.add(change.id);
-              } else {
-                if (!known.has(change.id)) created.add(change.id);
-                if (change.state === "set") written.add(change.id);
-              }
+          if (tracked || snapshot.changes.length || snapshot.gaps.length) {
+            for (const transaction of update.transactions) {
+              if (!transaction.docChanged || transaction.annotation(loroSyncAnnotation) !== undefined) continue;
+              const edits = [];
+              transaction.changes.iterChanges((fromA, toA, fromB, toB, insert) => {
+                edits.push({ from: fromA, to: toA, insert: insert.sliceString(0, insert.length, "\n") });
+              });
+              /** @type {any} */
+              const plan = planEdits(transaction.startState.doc.toString(), state, edits, me, {
+                run: null,
+                untracked: !tracked,
+                now,
+                mintId: () => crypto.randomUUID(),
+              });
+              for (const item of [...plan.changes, ...plan.gaps]) if (item.state !== "kept") touched.add(item.id);
+              state = {
+                changes: plan.changes.filter((change) => change.state !== "removed"),
+                gaps: plan.gaps.filter((gap) => gap.state !== "removed"),
+              };
             }
-            live = plan.filter((change) => change.state !== "removed");
+            if (touched.size) {
+              // Everything the batch touched is written once, against the final
+              // text; the rest keeps its cursors.
+              // Gaps are named by position, which moves between steps, so every
+              // gap of the final state is handed over as set: a fragment whose
+              // cursor and rank already hold is not written again.
+              const keptChanges = new Set(state.changes.map((change) => change.id));
+              const planned = {
+                changes: [
+                  ...state.changes.map((change) => ({ ...change, state: touched.has(change.id) ? "set" : "kept" })),
+                  ...snapshot.changes.filter((change) => !keptChanges.has(change.id)).map((change) => ({ ...change, state: "removed" })),
+                ],
+                gaps: [
+                  ...state.gaps.map((gap) => ({ ...gap, state: "set" })),
+                  ...snapshot.gaps.map((gap) => ({ ...gap, state: "removed" })),
+                ],
+              };
+              writePlanned(doc, fileId, planned);
+            }
           }
-          if (tracked && (written.size || removed.size)) {
-            /** @type {any[]} */
-            const planned = [
-              ...live.filter((change) => written.has(change.id)).map((change) => ({ ...change, state: "set" })),
-              ...[...removed].map((id) => ({ id, state: "removed" })),
-            ];
-            writePlanned(doc, fileId, planned);
-            refresh();
-          }
-          if (local && doc.getMap(CHANGES).size) {
-            prune(doc);
-            doc.commit();
-          }
-          refresh();
-        },
-        destroy() {
-          subscription();
+          if (doc.getMap(CHANGES).size) prune(doc);
+          doc.commit();
+          snapshot = { changes: [], gaps: [] };
         },
       };
-    });
+    }));
+    return { before, after };
   }
 
   let parsedBibliography = $state(null);
@@ -298,15 +353,15 @@
   let undoManager = null;
   let undoManagerDoc = null;
 
-  /// Writes one edit into a file's text. Tracked, it is also recorded as a
-  /// pending change. The caller commits.
+  /// Writes one edit into a file's text. Either way the library's splice keeps
+  /// pending spans and gaps in step with the text. Tracked, the edit is also
+  /// recorded as a pending change. The caller commits.
   function writeText(fileId, text, from, to, insert) {
     if (tracked) {
       trackedSplice(session.doc, fileId, from, to, insert, me);
       return;
     }
-    if (to > from) text.delete(from, to - from);
-    if (insert) text.insert(from, insert);
+    untrackedSplice(session.doc, fileId, from, to, insert);
   }
 
   /// Start recording what is typed as tracked changes.
@@ -852,6 +907,7 @@
       ? `user-color-${who.color.slice(1).toLowerCase()}`
       : "";
 
+    const tracking = trackChanges(id);
     return EditorState.create({
       doc: text.toString(),
       extensions: [
@@ -918,15 +974,18 @@
         // is bound to one text at a time (the one in 'showing'), and the
         // getTextFromDoc function returns that text. Multiple editors may be
         // open on different files at once; they all share the same LoroDoc.
+        // Before the binding, so the records are read before the text is written.
+        tracking.before,
         LoroExtensions(bound, session.ephemeral && { user: { name: userName, colorClassName }, ephemeral: session.ephemeral }, manager, () => text),
         // After the binding, so the text is written when this one looks.
-        trackChanges(id),
+        tracking.after,
         EditorView.updateListener.of((update) => {
           if (update.docChanged) {
             // The marks were mapped through the edit. Drawing them again from
             // the document picks up the change the edit just recorded, and
-            // has to happen after the transaction rather than inside it.
-            queueMicrotask(drawChanges);
+            // has to happen after the transaction rather than inside it. The
+            // draw is queued, so the commits of one tick share one redraw.
+            scheduleDraw();
             onchange?.();
           }
           // Only a deliberate move counts: typing moves the caret constantly,
@@ -1178,7 +1237,7 @@
       // view, such as a decision in the Changes panel, is copied into it.
       const unsubscribeChanges = session.doc.subscribe((batch) => queueMicrotask(() => {
         if (batch.by === "local") reconcileShown();
-        drawChanges();
+        scheduleDraw();
       }));
       refreshBibliography();
       view.focus();

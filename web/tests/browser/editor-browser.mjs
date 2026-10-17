@@ -52,7 +52,7 @@ import MergeEditor from ${JSON.stringify(join(root, "web/src/components/MergeEdi
 import Editor from ${JSON.stringify(join(root, "web/src/components/Editor.svelte"))};
 import Diagnostics from ${JSON.stringify(join(root, "web/src/components/reader/Diagnostics.svelte"))};
 import { join as joinSession } from ${JSON.stringify(join(root, "web/src/lib/collab.js"))};
-import { trackedSplice } from ${JSON.stringify(join(root, "web/src/lib/track-changes.js"))};
+import { rejectMany, resolveChanges, trackedSplice } from ${JSON.stringify(join(root, "web/src/lib/track-changes.js"))};
 import { durableProjectPersistence, prepareOfflineProject, preparedProject } from ${JSON.stringify(join(root, "web/src/lib/offline-projects.js"))};
 import { createClassComponent } from ${JSON.stringify(join(root, "web/node_modules/svelte/src/legacy/legacy-client.js"))};
 
@@ -123,7 +123,7 @@ window.peerChangeCheck = async () => {
     added: [...host.querySelectorAll(".change-added")].map((node) => node.textContent),
     removed: [...host.querySelectorAll("del.change-removed")].map((node) => node.textContent),
     mine: host.querySelectorAll(".change-mine").length,
-    entries: value.doc.getMap("changes").size,
+    entries: [...value.doc.getMap("changes").entries()].filter(([, v]) => (typeof v?.get === "function" ? v.get("kind") : v?.kind) === "change").length,
   };
   component.$destroy();
   host.remove();
@@ -533,34 +533,219 @@ window.trackingCheck = async () => {
   });
   await tick();
   const changes = () => value.doc.getMap("changes");
+  // A replacement is two records (a change and a gap), so only change rows count.
+  const changeIds = () => [...changes().entries()].filter(([, v]) => (typeof v?.get === "function" ? v.get("kind") : v?.kind) === "change").map(([id]) => id);
+  const rows = () => [...changes().entries()].filter(([, v]) => (typeof v?.get === "function" ? v.get("kind") : v?.kind) === "change").length;
   const on = (tracked.startTracking(), tracked.trackingOn());
   const view = EditorView.findFromDOM(host.querySelector(".cm-editor"));
   view.dispatch({ changes: { from: 0, insert: "TRACKED " }, userEvent: "input.type" });
   await tick();
   await tick();
-  const first = { text: value.textOf(id).toString(), entries: changes().size, ids: [...changes().keys()] };
+  const first = { text: value.textOf(id).toString(), entries: rows(), ids: changeIds() };
   const drawn = host.querySelectorAll(".change-added.change-mine").length;
   view.dispatch({ changes: { from: 8, insert: "more " }, userEvent: "input.type" });
   await tick();
   await tick();
-  const second = { text: value.textOf(id).toString(), entries: changes().size, same: [...changes().keys()][0] === first.ids[0] };
+  const second = { text: value.textOf(id).toString(), entries: rows(), same: changeIds()[0] === first.ids[0] };
   const { undo } = await import(${JSON.stringify(join(root, "web/src/lib/loro-undo.js"))});
   await new Promise((resolve) => setTimeout(resolve, 1100));
   undo(view);
   await tick();
   await tick();
-  const undone = { text: value.textOf(id).toString(), entries: changes().size };
+  const undone = { text: value.textOf(id).toString(), entries: rows() };
   tracked.stopTracking();
   const off = tracked.trackingOn();
   const stopped = EditorView.findFromDOM(host.querySelector(".cm-editor"));
   stopped.dispatch({ changes: { from: 0, insert: "DIRECT " }, userEvent: "input.type" });
   await tick();
   await tick();
-  const direct = { text: value.textOf(id).toString(), entries: changes().size };
+  const direct = { text: value.textOf(id).toString(), entries: rows() };
   tracked.$destroy();
   host.remove();
   value.leave();
   return { on, off, first, drawn, second, undone, direct };
+};
+// Edits made while tracking is on, scored against the pending records they
+// leave behind. Each scenario mounts its own editor on a fresh document, runs
+// its edits, reads the records and the text, then rejects every record to see
+// whether the original text comes back.
+window.trackingEditsCheck = async () => {
+  const startText = "first line\\nsecond line\\nthird line\\n";
+  const scenario = async (name, keys, run) => {
+    const value = joinSession({ send: () => {}, mayEdit: true });
+    const id = value.addText(name + ".md", startText);
+    value.setMain(id);
+    const host = document.createElement("section");
+    document.body.append(host);
+    const component = createClassComponent({
+      component: Editor,
+      target: host,
+      props: { session: value, format: "markdown", file: id, editable: true, keys, me: { who: "me", author: "Me" } },
+    });
+    await tick();
+    for (let attempt = 0; keys === "vim" && attempt < 100 && !host.querySelector(".cm-vim-panel"); attempt++) {
+      await new Promise((resolve) => setTimeout(resolve, 10));
+    }
+    component.startTracking();
+    const view = EditorView.findFromDOM(host.querySelector(".cm-editor"));
+    view.focus();
+    const press = (key, code, modifiers = {}) => view.contentDOM.dispatchEvent(new KeyboardEvent("keydown", {
+      key, code, bubbles: true, cancelable: true, ...modifiers,
+    }));
+    const type = async (characters) => {
+      for (const character of characters) {
+        const position = view.state.selection.main.head;
+        view.dispatch({
+          changes: { from: position, insert: character },
+          selection: { anchor: position + character.length },
+          userEvent: "input.type",
+        });
+        await tick();
+      }
+    };
+    await run({ view, press, type, session: value, id, component });
+    await tick();
+    await new Promise((resolve) => setTimeout(resolve, 30));
+    const records = resolveChanges(value.doc, id).map((change) => ({ from: change.from, to: change.to, deleted: change.deleted }));
+    const text = value.textOf(id).toString();
+    rejectMany(value.doc, resolveChanges(value.doc, id).map((change) => change.id));
+    await tick();
+    const restored = value.textOf(id).toString();
+    const selectionEmpty = view.state.selection.main.empty;
+    const visual = Boolean(view.cm?.state?.vim?.visualMode);
+    component.$destroy();
+    host.remove();
+    value.leave();
+    return { original: startText, records, text, restored, selectionEmpty, visual };
+  };
+  return {
+    backspace: await scenario("backspace", "default", async ({ view, type }) => {
+      view.dispatch({ selection: { anchor: 11 } });
+      await type("Z");
+      view.dispatch({ changes: { from: 11, to: 12 }, selection: { anchor: 11 }, userEvent: "delete.backward" });
+      await tick();
+    }),
+    deleteOverOwn: await scenario("deleteOverOwn", "default", async ({ view, type }) => {
+      view.dispatch({ selection: { anchor: 11 } });
+      await type("NEW ");
+      view.dispatch({ changes: { from: 11, to: 27 }, userEvent: "delete.selection" });
+      await tick();
+    }),
+    typeAtOwnDeletion: await scenario("typeAtOwnDeletion", "default", async ({ view, type }) => {
+      view.dispatch({ changes: { from: 11, to: 23 }, userEvent: "delete.selection" });
+      await tick();
+      view.dispatch({ selection: { anchor: 11 } });
+      await tick();
+      await type("ne");
+    }),
+    vimInsertThenDd: await scenario("vimInsertThenDd", "vim", async ({ view, press, type }) => {
+      view.dispatch({ selection: { anchor: 11 } });
+      await tick();
+      press("i", "KeyI");
+      await tick();
+      await type("NE");
+      press("Escape", "Escape");
+      await tick();
+      press("d", "KeyD");
+      await tick();
+      press("d", "KeyD");
+      await tick();
+    }),
+    vimDdUndo: await scenario("vimDdUndo", "vim", async ({ view, press }) => {
+      view.dispatch({ selection: { anchor: 11 } });
+      await tick();
+      press("d", "KeyD");
+      await tick();
+      press("d", "KeyD");
+      await tick();
+      press("u", "KeyU");
+      await tick();
+      await new Promise((resolve) => setTimeout(resolve, 50));
+    }),
+    vimBackspaceAcross: await scenario("vimBackspaceAcross", "vim", async ({ view, press, type }) => {
+      view.dispatch({ selection: { anchor: 11 } });
+      await tick();
+      press("i", "KeyI");
+      await tick();
+      await type("AB");
+      for (let count = 0; count < 4; count++) {
+        const head = view.state.selection.main.head;
+        view.dispatch({
+          changes: { from: head - 1, to: head },
+          selection: { anchor: head - 1 },
+          userEvent: "delete.backward",
+        });
+        await tick();
+      }
+      press("Escape", "Escape");
+      await tick();
+    }),
+    vimDdUndoTwice: await scenario("vimDdUndoTwice", "vim", async ({ view, press }) => {
+      view.dispatch({ selection: { anchor: 11 } });
+      await tick();
+      for (let round = 0; round < 2; round++) {
+        press("d", "KeyD");
+        await tick();
+        press("d", "KeyD");
+        await tick();
+        await new Promise((resolve) => setTimeout(resolve, 50));
+        press("u", "KeyU");
+        await tick();
+        await new Promise((resolve) => setTimeout(resolve, 50));
+      }
+    }),
+    untrackedCollapse: await scenario("untrackedCollapse", "default", async ({ view, session, id, component }) => {
+      // Two tracked deletions, then an untracked deletion of the text between them,
+      // then rejecting both: the text comes back in order.
+      view.dispatch({ changes: { from: 11, to: 17 }, userEvent: "delete.selection" });
+      await tick();
+      view.dispatch({ changes: { from: 12, to: 17 }, userEvent: "delete.selection" });
+      await tick();
+      component.stopTracking();
+      view.dispatch({ changes: { from: 11, to: 12 }, userEvent: "delete.selection" });
+      await tick();
+      component.startTracking();
+    }),
+  };
+};
+// A document with records of the earlier model: the editor converts them when
+// it opens, the row shows at once, and deleting part of the old pending
+// insertion shrinks it instead of recording it as original text.
+window.migrationCheck = async () => {
+  const value = joinSession({ send: () => {}, mayEdit: true });
+  const id = value.addText("old.md", "aXYb");
+  value.setMain(id);
+  const text = value.textOf(id);
+  value.doc.getMap("changes").set("old-1", {
+    file: id, who: "me", author: "Me", at: 1, run: null,
+    start: text.getCursor(1, -1).encode(), end: text.getCursor(2, 1).encode(), deleted: "",
+  });
+  value.doc.commit();
+  const host = document.createElement("section");
+  document.body.append(host);
+  const component = createClassComponent({
+    component: Editor, target: host,
+    props: { session: value, format: "markdown", file: id, editable: true, me: { who: "me", author: "Me" } },
+  });
+  await tick();
+  await tick();
+  const rows = resolveChanges(value.doc, id).map((c) => ({ from: c.from, to: c.to, deleted: c.deleted }));
+  const kindsOf = () => [...value.doc.getMap("changes").entries()].map(([, v]) => (typeof v.get === "function" ? v.get("kind") : "old")).sort();
+  const kinds = kindsOf();
+  component.startTracking();
+  const view = EditorView.findFromDOM(host.querySelector(".cm-editor"));
+  view.dispatch({ changes: { from: 1, to: 2 }, userEvent: "delete.selection" });
+  await tick();
+  await tick();
+  const after = resolveChanges(value.doc, id).map((c) => ({ from: c.from, to: c.to, deleted: c.deleted }));
+  const kindsAfter = kindsOf();
+  rejectMany(value.doc, resolveChanges(value.doc, id).map((c) => c.id));
+  await tick();
+  const restored = value.textOf(id).toString();
+  component.$destroy();
+  host.remove();
+  value.leave();
+  return { rows, kinds, after, kindsAfter, restored };
 };
 window.diagnosticsCheck = async () => {
   const host = document.createElement("aside");
@@ -905,6 +1090,34 @@ try {
   assert.equal(tracked.direct.text, "DIRECT alpha", "editing after stopping did not reach the document");
   assert.equal(tracked.direct.entries, 0, "typing with tracking off recorded a change");
   console.log("editor-browser: tracked typing is recorded as one change, undone with its text, and not recorded when off");
+  const edits = await evaluate("trackingEditsCheck()");
+  assert.deepEqual(edits.backspace.records, [], "backspacing a tracked keystroke recorded it as a deletion");
+  assert.equal(edits.backspace.text, edits.backspace.original);
+  assert.deepEqual(edits.deleteOverOwn.records, [{ from: 11, to: 11, deleted: "second line\n" }], "deleting over an own insertion recorded the inserted text as deleted");
+  assert.equal(edits.deleteOverOwn.restored, edits.deleteOverOwn.original, "rejecting did not restore the original after deleting over an own insertion");
+  assert.deepEqual(edits.typeAtOwnDeletion.records, [{ from: 11, to: 13, deleted: "second line\n" }], "typing at an own deletion did not merge into one replacement");
+  assert.equal(edits.typeAtOwnDeletion.restored, edits.typeAtOwnDeletion.original);
+  assert.deepEqual(edits.vimInsertThenDd.records, [{ from: 11, to: 11, deleted: "second line\n" }], "vim dd over a line with own typing recorded the typed text as deleted");
+  assert.equal(edits.vimInsertThenDd.restored, edits.vimInsertThenDd.original);
+  assert.equal(edits.vimDdUndo.text, edits.vimDdUndo.original, "vim u after a tracked dd did not restore the line");
+  assert.deepEqual(edits.vimDdUndo.records, [], "vim u after a tracked dd left or lost its record out of step with the text");
+  assert.deepEqual(edits.vimBackspaceAcross.records, [{ from: 9, to: 9, deleted: "e\n" }], "backspacing across own typing into original text recorded the wrong deletion");
+  assert.equal(edits.vimBackspaceAcross.restored, edits.vimBackspaceAcross.original);
+  assert.equal(edits.vimDdUndoTwice.text, edits.vimDdUndoTwice.original, "the second vim u after a dd did not restore the line");
+  assert.deepEqual(edits.vimDdUndoTwice.records, []);
+  assert.equal(edits.vimDdUndoTwice.selectionEmpty, true, "vim u left a range selected");
+  assert.equal(edits.vimDdUndoTwice.visual, false, "vim u left the editor in visual mode");
+  // The untracked deletion of the space is permanent; the two tracked ones come back in order around where it was.
+  assert.equal(edits.untrackedCollapse.restored, "first line\nsecondline\nthird line\n", "two deletions collapsed by an untracked edit did not come back in order");
+  assert.deepEqual(edits.untrackedCollapse.records.map((r) => r.deleted).sort(), ["line\n", "second"], "the untracked deletion between two tracked ones was recorded or lost one");
+  console.log("editor-browser: tracked edits are planned against the records before the write, and a vim undo takes text and record together");
+  const migration = await evaluate("migrationCheck()");
+  assert.deepEqual(migration.rows, [{ from: 1, to: 3, deleted: "" }], "an old-model record was not read in place when the editor opened");
+  assert.deepEqual(migration.kinds, ["old"], "an old-model record was converted on open; it should be read in place");
+  assert.deepEqual(migration.after, [{ from: 1, to: 2, deleted: "" }], "deleting part of an old pending insertion recorded it as original text");
+  assert.deepEqual(migration.kindsAfter, ["change"], "editing an old pending insertion did not convert its record");
+  assert.equal(migration.restored, "ab", "rejecting the converted change did not restore the original");
+  console.log("editor-browser: records of the earlier model are read in place and converted when edited");
   const zoom = await evaluate("editorZoomCheck()");
   assert.deepEqual(zoom, { before: "14px", prevented: true, grown: "28px", storedGrown: "28", shrunk: "10px", storedShrunk: "10" }, "ctrl+wheel over the source sizes its text and remembers it");
   console.log("editor-browser: ctrl+wheel over the source sizes its text and remembers it");

@@ -118,7 +118,7 @@ window.trackedMultiFileInsertCheck=async()=>{
   const projectedEdit=branch.files.find(file=>file.path===path)?.text==='% tracked\\n'+targetBefore;
   component.releaseInsertContext(branch);
   const entries=[...session.doc.getMap('changes').values()];
-  const changeFiles=[...new Set(entries.map(entry=>entry.file))].sort();
+  const changeFiles=[...new Set(entries.map(entry=>(typeof entry.get === "function" ? entry.get("file") : entry.file)))].sort();
   const expectedFiles=[chapter,targetId].sort();
   const shown=view().state.doc.toString();
   component.stopTracking();await tick();

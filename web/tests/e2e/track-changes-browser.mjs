@@ -71,11 +71,7 @@ async function main() {
   await until("a change in the panel", () => editor.evaluate(`[...document.querySelectorAll('.change-row .insertion')]
     .some((node) => node.textContent.includes(${JSON.stringify(typed)}))`));
   await until("the typing reached the server", async () => (await sourceText(slug)).includes(typed));
-  // The preview marks it as pending too.
-  await until("the preview marks the pending change", async () => await editor.frameEvaluate(`[...document.querySelectorAll('mark[data-librepaper^="change:"]')]
-    .some((mark) => mark.textContent.includes(${JSON.stringify(typed)}))`).catch(() => false));
-
-  // A person with only a read link sees the same mark and a read-only row.
+  // A person with only a read link sees a read-only row for the change.
   const shareUrl = new URL(document.share_url, browserBase);
   reader = await browser("chromium", join(profile, "reader"), port + 1);
   const readerId = deployment.postgres.seedRegisteredAccount({
@@ -87,9 +83,6 @@ async function main() {
   await reader.setCookie("librepaper_session", readerCookie.slice(readerCookie.indexOf("=") + 1), browserBase);
   await reader.resize(1400, 900);
   await reader.navigate(shareUrl.href);
-  const readerMarked = `[...document.querySelectorAll('mark[data-librepaper^="change:"]')]
-    .some((mark) => mark.textContent.includes(${JSON.stringify(typed)}))`;
-  await until("the reader's preview marks the pending change", async () => await reader.frameEvaluate(readerMarked).catch(() => false));
   assert.equal(await reader.evaluate(`Boolean(document.querySelector('.cm-content'))`), false, "the reader has no source pane");
   await openChanges(reader);
   await until("the reader's Changes row", () => reader.evaluate(`[...document.querySelectorAll('.change-row .insertion')]
@@ -103,7 +96,6 @@ async function main() {
   await editor.evaluate(`document.querySelector('.change-row .row-action.reject').click()`);
   await until("the text is restored in the editor", () => editor.evaluate(`!document.querySelector('.cm-content').textContent.includes(${JSON.stringify(typed)})`));
   await until("the change is gone", () => editor.evaluate(`document.querySelectorAll('.change-row').length === 0`));
-  await until("the reader's mark is gone without a reload", async () => !(await reader.frameEvaluate(readerMarked).catch(() => true)));
   await until("the reader's row is gone", () => reader.evaluate(`document.querySelectorAll('.change-row').length === 0`));
   await until("the restored text is durable", async () => (await sourceText(slug)) === source);
 
