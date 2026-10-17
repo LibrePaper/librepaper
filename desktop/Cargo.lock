@@ -2235,7 +2235,7 @@ dependencies = [
 
 [[package]]
 name = "librepaper-desktop"
-version = "0.0.42"
+version = "0.0.44"
 dependencies = [
  "reqwest 0.12.28",
  "serde",

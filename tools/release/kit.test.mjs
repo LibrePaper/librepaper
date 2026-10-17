@@ -32,6 +32,14 @@ test('the kit pins the application and backup images to the workspace version', 
   assert.deepEqual(pins, [`v${version}`, `v${version}`], 'run tools/release/version to update the kit pins');
 });
 
+// tools/release/version sets both desktop files.
+test('the desktop app carries the workspace version', () => {
+  const version = readFileSync(path.join(repo, 'Cargo.toml'), 'utf8').match(/^version = "([^"]+)"/m)[1];
+  const cargo = readFileSync(path.join(repo, 'desktop/Cargo.toml'), 'utf8').match(/^version = "([^"]+)"/m)[1];
+  const tauri = JSON.parse(readFileSync(path.join(repo, 'desktop/tauri.conf.json'), 'utf8')).version;
+  assert.deepEqual([cargo, tauri], [version, version], 'run tools/release/version to update the desktop version');
+});
+
 // docs/host/simple.md shows the kit's librepaper.toml in full; keep the copy exact.
 test('the simple deployment page shows the kit librepaper.toml as shipped', () => {
   const page = readFileSync(path.join(repo, 'docs/host/simple.md'), 'utf8');
