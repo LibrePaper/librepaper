@@ -115,7 +115,10 @@ pub fn handle(window: &WebviewWindow, event: &WindowEvent) {
     match event {
         DragDropEvent::Enter { position, .. } | DragDropEvent::Over { position } => {
             let (x, y) = page_point(window, position.x, position.y);
-            call(window, format!("window.__librepaperDrag?.(\"over\", {x}, {y})"));
+            call(
+                window,
+                format!("window.__librepaperDrag?.(\"over\", {x}, {y})"),
+            );
         }
         DragDropEvent::Leave => call(window, "window.__librepaperDrag?.(\"leave\")".to_string()),
         DragDropEvent::Drop { paths, position } => {
@@ -168,7 +171,11 @@ mod tests {
         std::fs::write(root.join("loose.txt"), "l").unwrap();
 
         let listing = list(&[docs.clone(), root.join("loose.txt")]);
-        let names: Vec<&str> = listing.files.iter().map(|(name, _)| name.as_str()).collect();
+        let names: Vec<&str> = listing
+            .files
+            .iter()
+            .map(|(name, _)| name.as_str())
+            .collect();
         assert_eq!(
             names,
             ["docs/a.txt", "docs/b.txt", "docs/sub/c.txt", "loose.txt"]
@@ -188,7 +195,11 @@ mod tests {
         std::os::unix::fs::symlink(dir.join("real.txt"), dir.join("alias.txt")).unwrap();
 
         let listing = list(&[dir]);
-        let names: Vec<&str> = listing.files.iter().map(|(name, _)| name.as_str()).collect();
+        let names: Vec<&str> = listing
+            .files
+            .iter()
+            .map(|(name, _)| name.as_str())
+            .collect();
         assert_eq!(names, ["dir/real.txt"]);
         assert_eq!(listing.folders, ["dir"]);
         let _ = std::fs::remove_dir_all(&root);
