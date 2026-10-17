@@ -13,8 +13,8 @@
 //!
 //! They reach ACP by different routes, and the difference is the user's to
 //! know rather than ours to hide: opencode and Gemini speak it natively,
-//! Claude Code and Pi through an adapter fetched on first use, Codex through
-//! one installed separately. `acp_note` carries a limitation of a route that
+//! Claude Code, Codex and Pi through an adapter fetched on first use.
+//! `acp_note` carries a limitation of a route that
 //! works but not fully.
 //!
 //! The built-in table below is a starting guess, not the limit.
@@ -57,6 +57,8 @@ struct Kind {
     /// agent's own executable is, so it runs the installed agent rather than
     /// a copy of its own.
     executable_env: Option<&'static str>,
+    /// Environment variables always set for the adapter.
+    env: &'static [(&'static str, &'static str)],
 }
 
 const KINDS: &[Kind] = &[
@@ -68,19 +70,22 @@ const KINDS: &[Kind] = &[
         acp_fetch: Some(&["npx", "-y", "@agentclientprotocol/claude-agent-acp"]),
         acp_note: None,
         executable_env: Some("CLAUDE_CODE_EXECUTABLE"),
+        env: &[],
     },
     Kind {
         id: "codex",
         label: "Codex",
         executable: "codex",
         acp: &["codex-acp"],
-        // Codex's ACP adapter is distributed as a binary rather than from a
-        // registry this can fetch, so there is nothing honest to offer here.
-        // The sidebar names the missing adapter instead of guessing at a
-        // package and failing at the moment the user presses start.
-        acp_fetch: None,
-        acp_note: None,
-        executable_env: None,
+        acp_fetch: Some(&["npx", "-y", "@agentclientprotocol/codex-acp"]),
+        acp_note: Some(
+            "A `librepaper` entry in your own Codex config makes the adapter skip LibrePaper's tools.",
+        ),
+        executable_env: Some("CODEX_PATH"),
+        // In its default mode the adapter lets Codex's own reviewer approve
+        // tools, so the user's Access choice is never consulted. In
+        // workspace-write mode the request reaches LibrePaper.
+        env: &[("INITIAL_AGENT_MODE", "workspace-write")],
     },
     Kind {
         id: "gemini",
@@ -90,6 +95,7 @@ const KINDS: &[Kind] = &[
         acp_fetch: None,
         acp_note: None,
         executable_env: None,
+        env: &[],
     },
     Kind {
         id: "opencode",
@@ -102,6 +108,7 @@ const KINDS: &[Kind] = &[
         acp_fetch: None,
         acp_note: None,
         executable_env: None,
+        env: &[],
     },
     Kind {
         id: "pi",
@@ -116,6 +123,7 @@ const KINDS: &[Kind] = &[
             "Pi needs the pi-mcp-adapter extension and a librepaper entry in ~/.config/mcp/mcp.json",
         ),
         executable_env: None,
+        env: &[],
     },
 ];
 
@@ -362,12 +370,17 @@ pub fn acp_environment(state_home: &Path, id: &str) -> Vec<(String, String)> {
 }
 
 fn environment_for(kind: &Kind) -> Vec<(String, String)> {
-    let Some(variable) = kind.executable_env else {
-        return Vec::new();
-    };
-    on_path(kind.executable)
-        .map(|path| vec![(variable.to_string(), path.to_string_lossy().into_owned())])
-        .unwrap_or_default()
+    let mut environment = kind
+        .env
+        .iter()
+        .map(|(name, value)| (name.to_string(), value.to_string()))
+        .collect::<Vec<_>>();
+    if let Some(variable) = kind.executable_env {
+        if let Some(path) = on_path(kind.executable) {
+            environment.push((variable.to_string(), path.to_string_lossy().into_owned()));
+        }
+    }
+    environment
 }
 
 #[cfg(test)]
@@ -385,6 +398,7 @@ mod tests {
             acp_fetch: fetch,
             acp_note: None,
             executable_env: None,
+        env: &[],
         }
     }
 
@@ -555,6 +569,15 @@ mod tests {
             .find(|kind| kind.id == "claude")
             .expect("claude");
         assert_eq!(claude.executable_env, Some("CLAUDE_CODE_EXECUTABLE"));
+    }
+
+    #[test]
+    fn codex_starts_in_workspace_write_mode() {
+        let codex = KINDS.iter().find(|kind| kind.id == "codex").expect("codex");
+        assert_eq!(codex.executable_env, Some("CODEX_PATH"));
+        assert!(codex.acp_fetch.is_some());
+        assert!(environment_for(codex)
+            .contains(&("INITIAL_AGENT_MODE".to_string(), "workspace-write".to_string())));
     }
 
     #[test]
