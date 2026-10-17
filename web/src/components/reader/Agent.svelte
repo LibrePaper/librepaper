@@ -841,7 +841,7 @@
         {#if TASK_CATEGORIES.length <= 4}
           <div class="task-categories" role="group" aria-label="Category">
             {#each ["", ...TASK_CATEGORIES] as name (name)}
-              <button class="task-category" aria-pressed={!searching && category === name} onclick={() => pickCategory(name)}>{name || "All"}</button>
+              <button class="task-category" aria-pressed={category === name} onclick={() => pickCategory(name)}>{name || "All"}</button>
             {/each}
           </div>
         {/if}
