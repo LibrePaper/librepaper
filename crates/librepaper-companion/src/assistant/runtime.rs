@@ -329,6 +329,33 @@ fn bridge_timeout_message(agent: &[String]) -> String {
     }
 }
 
+/// What to do with an agent's permission request.
+#[derive(Debug, PartialEq)]
+enum PermissionDecision<'a> {
+    Refuse,
+    Allow(&'a str),
+    Ask,
+}
+
+/// `active` is `None` with no task running, else whether that task is being
+/// cancelled. A request outside a live task is refused, so a late request
+/// cannot authorize a write after Cancel or after the turn ended. Inside one,
+/// a LibrePaper tool the access level allows is approved without asking.
+fn permission_decision<'a>(
+    active: Option<bool>,
+    access: &str,
+    tool: Option<&str>,
+    allow_once: Option<&'a str>,
+) -> PermissionDecision<'a> {
+    match (active, tool, allow_once) {
+        (None | Some(true), _, _) => PermissionDecision::Refuse,
+        (Some(false), Some(tool), Some(option)) if acp::access_allows(access, tool) => {
+            PermissionDecision::Allow(option)
+        }
+        _ => PermissionDecision::Ask,
+    }
+}
+
 /// A successful `session/new` only proves that the ACP agent started. Wait for
 /// the actual child MCP bridge to answer `tools/list` before calling the runner
 /// ready. Each launch gets a fresh marker token so a stale file cannot satisfy
@@ -1038,11 +1065,15 @@ async fn execute(peer: &AutomationPeer, config: &Config, lease: &Lease) -> Resul
                         }
                     }
                     acp::Event::Permission { handle, message, options, details, option_ids, tool, allow_once } => {
-                        if let (Some(tool), Some(option)) = (tool, allow_once.as_deref()) {
-                            if acp::access_allows(&config.access, tool) {
-                                (*handle).respond(Some(option))?;
-                                continue;
-                            }
+                        match permission_decision(
+                            active.as_ref().map(|current| current.cancelling),
+                            &config.access,
+                            tool,
+                            allow_once.as_deref(),
+                        ) {
+                            PermissionDecision::Refuse => { (*handle).respond(None)?; continue; }
+                            PermissionDecision::Allow(option) => { (*handle).respond(Some(option))?; continue; }
+                            PermissionDecision::Ask => {}
                         }
                         let Some(current)=active.as_mut() else { (*handle).respond(None)?; continue; };
                         let base_size = message.len()+serde_json::to_vec(&options).map_err(|e|e.to_string())?.len();
@@ -1310,6 +1341,34 @@ mod tests {
         // `acp::bridge_environment`, not here.
         assert!(!names.contains(&crate::local::connections::GRANT_FILE_VARIABLE));
         assert!(!names.contains(&crate::local::connections::CONNECTION_VARIABLE));
+    }
+
+    /// A permission request is approved unasked only inside a live task that
+    /// is not being cancelled.
+    #[test]
+    fn permissions_outside_a_live_task_are_refused() {
+        use PermissionDecision::*;
+        let tool = Some("document_comment");
+        let once = Some("once");
+        assert_eq!(permission_decision(None, "editor", tool, once), Refuse);
+        assert_eq!(
+            permission_decision(Some(true), "editor", tool, once),
+            Refuse
+        );
+        assert_eq!(
+            permission_decision(Some(true), "editor", None, once),
+            Refuse
+        );
+        assert_eq!(
+            permission_decision(Some(false), "editor", tool, once),
+            Allow("once")
+        );
+        assert_eq!(
+            permission_decision(Some(false), "commenter", Some("document_apply"), once),
+            Ask
+        );
+        assert_eq!(permission_decision(Some(false), "editor", None, once), Ask);
+        assert_eq!(permission_decision(Some(false), "editor", tool, None), Ask);
     }
 
     /// The bridge reads whatever the file holds at any moment, so it must be
