@@ -317,23 +317,29 @@ impl Drop for Agent {
     }
 }
 
-/// The environment of the document bridge, the agent's MCP child: the
-/// runner's own environment plus two entries kept out of the agent's own
-/// process environment. XDG_STATE_HOME points the bridge at the companion's
-/// own connections.json, which an embedded companion keeps outside the
-/// agent's XDG_STATE_HOME, while the agent keeps its own state where it
-/// always does. LIBREPAPER_RUNNER_GRANT_FILE names the private file holding
-/// the scoped grant the bridge must authenticate with. Only the path travels
-/// here, never the grant: the agent is handed this whole environment in
-/// `session/new` so that it can spawn the bridge, and it may log or echo it.
+/// The environment of the document bridge, the agent's MCP child, and of the
+/// agent process itself. Every entry is a LIBREPAPER_* variable, so the agent's
+/// own XDG_STATE_HOME and HOME are never touched.
+/// LIBREPAPER_BRIDGE_STATE_HOME points the bridge at the companion's own
+/// connections.json, LIBREPAPER_MCP_CONNECTION names the runner record, and
+/// LIBREPAPER_RUNNER_GRANT_FILE names the private file holding the scoped
+/// grant the bridge must authenticate with. Only the path travels here, never
+/// the grant. An agent that drops the `mcpServers` of `session/new` (pi-acp)
+/// still passes this environment on to a `librepaper mcp` server the user
+/// configured in the agent itself.
 pub(super) fn bridge_environment(
     environment: &[(String, String)],
+    connection: &str,
     state_home: &Path,
     grant_file: &Path,
 ) -> Vec<(String, String)> {
     let mut bridge = environment.to_vec();
     bridge.push((
-        "XDG_STATE_HOME".into(),
+        crate::local::connections::CONNECTION_VARIABLE.into(),
+        connection.into(),
+    ));
+    bridge.push((
+        crate::local::connections::STATE_HOME_VARIABLE.into(),
         state_home.to_string_lossy().into_owned(),
     ));
     bridge.push((
@@ -341,6 +347,23 @@ pub(super) fn bridge_environment(
         grant_file.to_string_lossy().into_owned(),
     ));
     bridge
+}
+
+/// An agent that answers `session/new` with an authentication error needs its
+/// own login. Say which one, and keep the agent's message.
+fn login_hint(error: &str, command: &[String]) -> String {
+    if !error.to_lowercase().contains("authentication") {
+        return error.to_string();
+    }
+    let is_pi = command
+        .iter()
+        .any(|part| Path::new(part).file_stem().is_some_and(|name| name == "pi-acp"));
+    let step = if is_pi {
+        "run `pi` in a terminal and type /login"
+    } else {
+        "log in with the agent's own login command"
+    };
+    format!("{error}. To fix this, {step}, then start the assistant again.")
 }
 
 impl Agent {
@@ -368,7 +391,8 @@ impl Agent {
         let path = std::env::join_paths(paths).map_err(|error| error.to_string())?;
         let mut config = AcpAgentConfig::new(program).args(arguments.iter().cloned());
         config = config.env("PATH", path.to_string_lossy());
-        for (name, value) in environment {
+        let bridge = bridge_environment(environment, connection, state_home, grant_file);
+        for (name, value) in &bridge {
             config = config.env(name, value);
         }
         // ACP carries the authoritative cwd on session/new. PWD also keeps
@@ -393,9 +417,9 @@ impl Agent {
 
         let server = McpServer::Stdio(
             McpServerStdio::new("librepaper", executable)
-                .args(vec!["mcp".into(), "--connection".into(), connection.into()])
+                .args(vec!["mcp".into()])
                 .env(
-                    bridge_environment(environment, state_home, grant_file)
+                    bridge
                         .into_iter()
                         .map(|(name, value)| {
                             agent_client_protocol::schema::v1::EnvVariable::new(name, value)
@@ -535,7 +559,7 @@ impl Agent {
                 Ok(Ok(Ok(ready))) => ready,
                 Ok(Ok(Err(error))) => {
                     task.abort();
-                    return Err(error);
+                    return Err(login_hint(&error, command));
                 }
                 Ok(Err(_)) => {
                     task.abort();
@@ -627,34 +651,37 @@ fn translate_update(update: SessionUpdate) -> Update {
 mod tests {
     use super::*;
 
-    /// The grant file is named in the bridge's environment and not in the
-    /// agent's process environment, which is `environment` as given, and no
-    /// entry in either carries a grant value.
+    /// The bridge environment holds only LIBREPAPER_* additions to the given
+    /// environment, and no entry carries a grant value.
     #[test]
-    fn the_grant_file_is_named_only_in_the_bridge_environment() {
+    fn the_bridge_environment_adds_only_librepaper_variables() {
         let agent = vec![(
             "LIBREPAPER_RUNNER_JOURNAL".to_string(),
             "/tmp/runner.journal.json".to_string(),
         )];
         let bridge = bridge_environment(
             &agent,
+            "runner-x",
             Path::new("/tmp/companion-state"),
             Path::new("/tmp/companion-state/librepaper/local/runner-x.grant"),
         );
-        assert!(!agent
-            .iter()
-            .any(|(name, _)| name == crate::local::connections::GRANT_FILE_VARIABLE));
         assert!(bridge.contains(&(
             crate::local::connections::GRANT_FILE_VARIABLE.to_string(),
             "/tmp/companion-state/librepaper/local/runner-x.grant".to_string(),
         )));
         assert!(bridge.contains(&(
-            "XDG_STATE_HOME".to_string(),
+            "LIBREPAPER_BRIDGE_STATE_HOME".to_string(),
             "/tmp/companion-state".to_string(),
+        )));
+        assert!(bridge.contains(&(
+            "LIBREPAPER_MCP_CONNECTION".to_string(),
+            "runner-x".to_string(),
         )));
         assert!(bridge
             .iter()
-            .chain(agent.iter())
+            .all(|(name, _)| name.starts_with("LIBREPAPER_")));
+        assert!(bridge
+            .iter()
             .all(|(_, value)| !value.contains(librepaper_base::auth::AGENT_GRANT_PREFIX)));
     }
 

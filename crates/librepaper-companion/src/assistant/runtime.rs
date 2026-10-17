@@ -314,6 +314,21 @@ async fn reachable_or_refuse(peer: &AutomationPeer) -> Result<(), String> {
     }
 }
 
+/// The message for a bridge that never answered, with the next step for the
+/// agent in use.
+fn bridge_timeout_message(agent: &[String]) -> String {
+    let names: Vec<&str> = agent
+        .iter()
+        .filter_map(|part| Path::new(part).file_stem()?.to_str())
+        .collect();
+    let base = "agent session started, but its document bridge did not discover the required LibrePaper tools within 25 seconds";
+    match () {
+        _ if names.contains(&"pi-acp") => format!("{base}. Install pi-mcp-adapter and add the librepaper server to ~/.config/mcp/mcp.json (see the Agents docs)"),
+        _ if names.contains(&"opencode") => format!("{base}. Check that opencode has a provider configured (opencode auth login) and see its log in ~/.local/share/opencode/log"),
+        _ => base.into(),
+    }
+}
+
 /// A successful `session/new` only proves that the ACP agent started. Wait for
 /// the actual child MCP bridge to answer `tools/list` before calling the runner
 /// ready. Each launch gets a fresh marker token so a stale file cannot satisfy
@@ -382,7 +397,7 @@ async fn start_agent_with_bridge(
     .await;
     let result = match ready {
         Ok(result) => result,
-        Err(_) => Err("agent session started, but its document bridge did not discover the required LibrePaper tools within 25 seconds".into()),
+        Err(_) => Err(bridge_timeout_message(&config.agent)),
     };
     let _ = tokio::fs::remove_file(&marker).await;
     if let Err(error) = result {
@@ -1302,9 +1317,10 @@ mod tests {
         // the private connection record, never through this environment.
         assert!(!names.contains(&"LIBREPAPER_DOCUMENT"));
         assert!(!names.contains(&"LIBREPAPER_CHAT_TOKEN"));
-        // The agent shares this environment, so the grant file is named only
-        // in the bridge's own (`acp::bridge_environment`).
+        // The grant file path and the connection are added by
+        // `acp::bridge_environment`, not here.
         assert!(!names.contains(&crate::local::connections::GRANT_FILE_VARIABLE));
+        assert!(!names.contains(&crate::local::connections::CONNECTION_VARIABLE));
     }
 
     /// The bridge reads whatever the file holds at any moment, so it must be

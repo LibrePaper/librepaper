@@ -19,4 +19,33 @@ To offer another ACP agent in the app, add it in Settings.
 
 To remove an added agent, click Remove next to it.
 
+## Pi
+
+Pi needs the `pi-mcp-adapter` extension to reach the document tools.
+
+```sh
+# Install the MCP extension for Pi
+pi install npm:pi-mcp-adapter
+# Log in to a model provider
+pi    # then type /login
+```
+
+Add this entry to `~/.config/mcp/mcp.json`:
+
+```json
+{ "mcpServers": { "librepaper": { "command": "librepaper", "args": ["mcp"], "lifecycle": "keep-alive", "directTools": true } } }
+```
+
+- `keep-alive` makes Pi connect at start, so LibrePaper sees the tools.
+- `directTools` puts the document tools in Pi's own tool list.
+- Use the global file. Pi skips unapproved project servers in the headless mode LibrePaper uses.
+- The macOS `.dmg` does not put `librepaper` on your PATH. Use the absolute path to the `librepaper` binary inside the app as `command`.
+
+## opencode
+
+```sh
+# Log in to a model provider before first use
+opencode auth login
+```
+
 > **Warning:** An agent reading a shared document reads text anyone with edit access wrote, so treat it as acting on their instructions too.

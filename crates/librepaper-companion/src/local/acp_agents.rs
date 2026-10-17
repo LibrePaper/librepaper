@@ -109,13 +109,11 @@ const KINDS: &[Kind] = &[
         executable: "pi",
         acp: &["pi-acp"],
         acp_fetch: Some(&["npx", "-y", "pi-acp"]),
-        // The adapter translates ACP onto `pi --mode rpc`, and its MCP
-        // integration is incomplete. The document tools are the only way this
-        // session can touch the document, so that limitation is the
-        // difference between a working assistant and a silent one. Said here
-        // rather than left for the user to infer from a task that does nothing.
+        // pi-acp stores the ACP client's MCP servers and never hands them to
+        // Pi. The document tools reach Pi only through the pi-mcp-adapter
+        // extension, which reads the global ~/.config/mcp/mcp.json.
         acp_note: Some(
-            "Pi's ACP adapter has incomplete MCP support, so the document tools may not reach it",
+            "Pi needs the pi-mcp-adapter extension and a librepaper entry in ~/.config/mcp/mcp.json",
         ),
         executable_env: None,
     },
@@ -501,12 +499,11 @@ mod tests {
 
     #[test]
     fn a_known_adapter_limitation_travels_with_the_agent() {
-        // Pi's adapter reaches ACP through `pi --mode rpc` and its MCP
-        // support is incomplete. The document tools are this session's only
-        // route to the document, so a silent assistant is the failure mode
-        // that warning exists to prevent.
+        // pi-acp never hands the client's MCP servers to Pi. The document
+        // tools are this session's only route to the document, so a silent
+        // assistant is the failure mode that warning exists to prevent.
         let pi = KINDS.iter().find(|kind| kind.id == "pi").expect("pi");
-        assert!(pi.acp_note.is_some_and(|note| note.contains("MCP")));
+        assert!(pi.acp_note.is_some_and(|note| note.contains("pi-mcp-adapter")));
         // opencode speaks ACP natively and takes MCP servers from the client,
         // so it needs no adapter, no fetch and no caveat.
         let opencode = KINDS
