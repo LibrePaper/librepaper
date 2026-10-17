@@ -422,6 +422,14 @@ const page = (comments, { next = null, complete = !next, total, open = total, re
   answers[1]({ ok: false, error: new Error("offline") });
   assert.deepEqual(await mine, { ok: false, stale: true, message: "offline" });
   assert.equal(owned.body, "peer");
+
+  // The room confirming these very words, as a reconnect's refresh would,
+  // also makes a later failure stale.
+  const same = overlapping.edit(owned, null, "kept");
+  overlapping.receive({ type: "edit", comment_id: "owned", reply_id: null, body: "kept", edited: "2026-10-17T10:05:00Z" });
+  answers[2]({ ok: false, error: new Error("timed out") });
+  assert.deepEqual(await same, { ok: false, stale: true, message: "timed out" });
+  assert.equal(owned.body, "kept", "a confirmed body is never rolled back");
 }
 
 assert.ok(paints > 0);

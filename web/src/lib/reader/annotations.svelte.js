@@ -459,6 +459,7 @@ export function createAnnotations({ slug, key = "", anchor, repaint, send, rende
       savingEdits.add(key);
       const target = reply || item;
       const previous = target.body;
+      const confirmed = target.edited;
       target.body = body;
       publish();
       if (!reply) repaint();
@@ -470,9 +471,10 @@ export function createAnnotations({ slug, key = "", anchor, repaint, send, rende
       }
       if (!result || result.ok === false) {
         // The room never took the words, so put the old body back and say
-        // why. Unless a peer's edit has replaced them meanwhile: that one
-        // was saved, and this failure is stale.
-        const stale = target.body !== body;
+        // why. Unless the room has spoken for this item meanwhile, with a
+        // peer's edit or with these very words after a reconnect: a newer
+        // `edited` stamp is saved, and this failure is stale.
+        const stale = target.body !== body || target.edited !== confirmed;
         if (!stale) {
           target.body = previous;
           publish();
