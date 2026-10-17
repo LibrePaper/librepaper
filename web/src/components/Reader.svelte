@@ -401,7 +401,8 @@
   // agent's DOM was rebuilt then and needs the full repaint regardless.
   // The annotation singled out last, from either side: a card clicked in the
   // sidebar or a mark clicked in the document. Its card wears a ring and the
-  // frame rings its passage, and both stay until another one is chosen.
+  // frame rings its passage. It clears when the comment panel closes or the
+  // reader clicks somewhere other than a comment card or a mark.
   let selectedAnnotation = $state("");
   function applySelection() {
     frameOverlays.selection(selectedAnnotation);
@@ -519,6 +520,9 @@
         break;
       case "focus":
         void focusAnnotation(message.id);
+        break;
+      case "unfocus":
+        selectedAnnotation = "";
         break;
       case "scroll":
         noteScroll(
@@ -2220,6 +2224,19 @@
   let mobileView = $state("sidebar");
   let preferredPane = $state("document");
   let collaborationTab = $state("comments");
+  // The selected comment lasts only while the comment panel is open.
+  $effect(() => { if (panel !== "collaboration") selectedAnnotation = ""; });
+  // A click outside a comment card or a mark clears the selection. Clicks in
+  // the frame do not reach this listener; the frame reports them as "unfocus".
+  $effect(() => {
+    const clear = (event) => {
+      if (selectedAnnotation && !(event.target instanceof Element && event.target.closest(".comment-card"))) {
+        selectedAnnotation = "";
+      }
+    };
+    document.addEventListener("pointerdown", clear);
+    return () => document.removeEventListener("pointerdown", clear);
+  });
   const sourceSide = $derived(prefs.sourceSide);
   const keys = $derived(prefs.keys);
   const sizes = $derived(prefs.sizes);

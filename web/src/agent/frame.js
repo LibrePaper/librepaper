@@ -629,6 +629,11 @@ import { watchPinch } from "../lib/pinch.js";
   // the editor can put its caret in the same place. Only the position is sent;
   // a click that lands on nothing textual says nothing.
   document.addEventListener("click", (event) => {
+    // A click that is not on a mark clears the ring; mark clicks are handled by mark.onclick.
+    if (selectedId && !(event.target instanceof Element && event.target.closest("mark[data-librepaper]"))) {
+      select("");
+      post({ type: "unfocus" });
+    }
     const pdf = globalThis.librepaperViewer?.pointFromClient?.(event.clientX, event.clientY) || null;
     if (!table.nodes.length) {
       if (pdf) post({ type: "pdf-caret", pdf });

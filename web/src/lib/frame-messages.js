@@ -79,6 +79,7 @@ export function validateFrameMessage(input) {
     }
     case "annotate":
     case "disarm":
+    case "unfocus":
       return { type: input.type };
     case "focus":
       return boundedString(input.id, MAX_ID) && input.id.length ? { type: "focus", id: input.id } : null;
