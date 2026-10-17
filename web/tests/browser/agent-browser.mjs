@@ -459,7 +459,7 @@ try {
   // must not immediately reattach the passage from props.
   await page.evaluate("window.setProps({selection:{exact:'same',source:{path:'a.md',exact:'same',prefix:'before ',suffix:' after',position:20},revision:'captured-a'},request:{id:'new-selection',selection:{exact:'same',source:{path:'a.md',exact:'same',prefix:'before ',suffix:' after',position:20}},revision:'captured-a'}})");
   await until("selection request applied", () => page.evaluate('document.querySelector("#agent-pane-tasks").hidden===false && document.querySelector(".context-summary").textContent.includes("a.md")'), 1000);
-  // The launcher lists a few tasks, search narrows them, a row opens an inline
+  // The browser lists the catalog, search narrows it, a row opens an inline
   // preparation view, and only sending it writes anything.
   await page.evaluate(`(()=>{const search=document.querySelector('.task-search');search.value='tight';search.dispatchEvent(new Event('input',{bubbles:true}));})()`);
   await until("search narrows", () => page.evaluate('document.querySelectorAll(".task-results .task-row").length===1'), 1000);
@@ -571,35 +571,49 @@ try {
   await page.evaluate('document.querySelector("#agent-tab-tasks").click()');
   assert.equal(await page.evaluate('document.querySelector("#agent-pane-chat").hidden'), true);
   await page.evaluate(`(()=>{const search=document.querySelector('.task-search');search.value='';search.dispatchEvent(new Event('input',{bubbles:true}));})()`);
-  await until("recent tasks listed", () => page.evaluate('document.querySelectorAll(".task-results .task-row").length>=3'), 1000);
+  await until("catalog listed", () => page.evaluate('document.querySelectorAll(".task-results .task-row").length===10 && document.querySelectorAll(".task-section").length===3'), 1000);
   // The runner went away earlier in this file, and a task cannot be sent to
   // an assistant that is not there. Bring it back first: the panel refusing
   // is the correct behaviour, not something to click through.
   await page.evaluate("window.sockets.at(-1).emit({type:'presence',agent:true,browser:true})");
   const search = (text) => page.evaluate(`(()=>{const search=document.querySelector('.task-search');search.value=${JSON.stringify(text)};search.dispatchEvent(new Event('input',{bubbles:true}));})()`);
   await search("Explain");
-  await page.evaluate('Array.from(document.querySelectorAll(".task-results .task-row")).find(row=>row.textContent==="Explain").click()');
+  await page.evaluate('Array.from(document.querySelectorAll(".task-results .task-row")).find(row=>row.querySelector(".task-name").textContent==="Explain").click()');
   await until("runner back", () => page.evaluate(`Array.from(document.querySelectorAll(".task-prepare button")).some(b=>b.textContent==="Send to agent" && !b.disabled)`), 2000);
   await page.evaluate('Array.from(document.querySelectorAll(".task-prepare button")).find(b=>b.textContent==="Send to agent").click()');
   await until("preset opens chat", () => page.evaluate('!document.querySelector("#agent-pane-chat").hidden'), 1000);
 
-  // The launcher is a combobox: arrow keys move the highlight, Enter opens the
-  // row, and Back returns with the query as it was.
+  // Enter in the search box opens the first result, and Back returns with the
+  // query as it was.
   await page.evaluate('document.querySelector("#agent-tab-tasks").click()');
   await until("launcher back", () => page.evaluate('!!document.querySelector(".task-search")'), 1000);
   await search("summ");
   const key = (name) => page.evaluate(`document.querySelector('.task-search').dispatchEvent(new KeyboardEvent('keydown',{key:${JSON.stringify(name)},bubbles:true,cancelable:true}))`);
-  await key("Home"); await key("ArrowDown"); await key("ArrowUp"); await key("Enter");
+  await key("Enter");
   await until("keyboard opens Summarize", () => page.evaluate('document.querySelector(".task-prepare .task-title")?.textContent==="Summarize"'), 1000);
   await page.evaluate('document.querySelector(".task-back").click()');
   await until("back restores the query", () => page.evaluate('document.querySelector(".task-search")?.value==="summ" && document.activeElement===document.querySelector(".task-search")'), 1000);
   await search("zzzqqq");
   await until("no match", () => page.evaluate('document.body.innerText.includes("No matching tasks")'), 1000);
   await search("");
-  await page.evaluate('Array.from(document.querySelectorAll("button")).find(b=>b.textContent==="Browse all tasks").click()');
-  await until("browse lists the catalog", () => page.evaluate('document.querySelectorAll(".task-results .task-row").length===10'), 1000);
-  await page.evaluate('Array.from(document.querySelectorAll("button")).find(b=>b.getAttribute("aria-label")==="Back").click()');
-  await until("browse closed", () => page.evaluate('!document.querySelector(".task-category")'), 1000);
+  const click = (selector, text) => page.evaluate(`Array.from(document.querySelectorAll(${JSON.stringify(selector)})).find(b=>b.textContent.trim().startsWith(${JSON.stringify(text)})).click()`);
+  const rowCount = () => page.evaluate('document.querySelectorAll(".task-results .task-row").length');
+  await click(".task-category", "Document");
+  await until("category filters", () => page.evaluate('document.querySelectorAll(".task-results .task-row").length===2 && !document.querySelector(".task-section")'), 1000);
+  await search("tight");
+  await until("query resets the category", () => page.evaluate('Array.from(document.querySelectorAll(".task-category")).find(b=>b.textContent==="All").getAttribute("aria-pressed")==="true"'), 1000);
+  await search("");
+  await click(".task-category", "All");
+  await until("full catalog again", () => page.evaluate('document.querySelectorAll(".task-section").length===3'), 1000);
+  const full = await rowCount();
+  await click(".task-section", "Writing");
+  await until("section collapsed", async () => (await page.evaluate('Array.from(document.querySelectorAll(".task-section")).find(b=>b.textContent.startsWith("Writing")).getAttribute("aria-expanded")'))==="false" && await rowCount()===full-4, 1000);
+  await page.evaluate('document.querySelector(".task-results .task-row").click()');
+  await until("collapsed task opens", () => page.evaluate('!!document.querySelector(".task-prepare")'), 1000);
+  await page.evaluate('document.querySelector(".task-back").click()');
+  await until("collapse survives back", () => page.evaluate('Array.from(document.querySelectorAll(".task-section")).find(b=>b.textContent.startsWith("Writing"))?.getAttribute("aria-expanded")==="false"'), 1000);
+  await click(".task-section", "Writing");
+  await until("section expanded", async () => await rowCount()===full, 1000);
 
   // A comment or diagnostic opens its own preparation view in the Tasks pane.
   await page.evaluate("window.setProps({comments:[{id:'task-comment',body:'Clarify this',replies:[]}],diagnostics:[{message:'Compile error',file:'error.typ',line:3,revision:'old-sha',source:'old source'}]})");
