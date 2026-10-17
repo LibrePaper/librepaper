@@ -185,7 +185,7 @@
   import { completionExtension, formatOfPath } from "../lib/completion/index.js";
   import { desktop, searchZotero, zoteroItem } from "../lib/desktop/client.js";
   import { changeMarks, setChangeMarks } from "../lib/change-marks.js";
-  import { CHANGES, planEdits, writePlanned, resolveFile, trackedSplice, prune } from "../lib/track-changes.js";
+  import { CHANGES, planEdits, writePlanned, resolveFile, trackedSplice, untrackedSplice, prune, migrateChanges } from "../lib/track-changes.js";
   import { DIRECTORY_ORIGIN } from "../lib/project-session.js";
   import { projectDirectory } from "../lib/projection.js";
   import { attachEditorZoom } from "../lib/editor-zoom.js";
@@ -281,7 +281,12 @@
       const doc = session.doc;
       return {
         update(update) {
-          if (isLocal(update) && doc.getMap(CHANGES).size) snapshot = resolveFile(doc, fileId);
+          if (isLocal(update) && doc.getMap(CHANGES).size) {
+            // Old-model records are converted first, so the snapshot never
+            // reads one as plain text. The write joins the commit below.
+            migrateChanges(doc);
+            snapshot = resolveFile(doc, fileId);
+          }
         },
       };
     });
@@ -351,15 +356,15 @@
   let undoManager = null;
   let undoManagerDoc = null;
 
-  /// Writes one edit into a file's text. Tracked, it is also recorded as a
-  /// pending change. The caller commits.
+  /// Writes one edit into a file's text. Either way the library's splice keeps
+  /// pending spans and gaps in step with the text. Tracked, the edit is also
+  /// recorded as a pending change. The caller commits.
   function writeText(fileId, text, from, to, insert) {
     if (tracked) {
       trackedSplice(session.doc, fileId, from, to, insert, me);
       return;
     }
-    if (to > from) text.delete(from, to - from);
-    if (insert) text.insert(from, insert);
+    untrackedSplice(session.doc, fileId, from, to, insert);
   }
 
   /// Start recording what is typed as tracked changes.
@@ -1226,6 +1231,8 @@
       });
       untrack(() => viewCallbacks.set(view, { onsave, onquit }));
       syncKeys(view);
+      // An opened document's old records are converted before anything reads them.
+      if (session.doc.getMap(CHANGES).size && migrateChanges(session.doc)) session.doc.commit();
       drawChanges();
       if (initial.first) session.inFile?.(initial.first);
       const bibliographyWatcher = scheduleBibliography;

@@ -3,17 +3,20 @@
 // The shared fixtures pin the planner; the Rust port runs the same file. The
 // Loro tests pin what the planner cannot: that cursors resolve back to the
 // planned offsets, that a decision restores the right text in any order, that
-// a remote peer typing beside a pending insertion does not grow it, and that
-// nested deletions come back in every order, and that records of the earlier
-// model convert to gaps that decide in any order. The seeded fuzz at the end
-// checks random histories against their oracles.
+// a remote peer typing beside a pending insertion does not grow it, that nested
+// deletions come back in every order, that records of the earlier model convert
+// and then decide in any order, that a record rests before prune drops it, and
+// that a fragment whose change is gone is re-parented. The seeded fuzzers at the
+// end check random histories against their oracles, and two peers editing at
+// once must converge.
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
-import { Cursor, LoroDoc, LoroText } from "loro-crdt";
+import { LoroDoc, LoroMap, LoroText } from "loro-crdt";
 import {
   CHANGES,
   accept,
   listChanges,
+  migrateChanges,
   planEdits,
   prune,
   recordEdits,
@@ -79,7 +82,9 @@ for (const f of fixtures) {
     gaps: f.state.gaps.map((g, i) => ({ ...g, id: "gap-" + i })),
   };
   const planned = planEdits(f.before, state, f.edits, f.me, { now: 2, mintId: () => "new-" + ++n, untracked: Boolean(f.untracked) });
-  const changes = planned.changes.filter((c) => c.state !== "removed").sort(byPlace);
+  // A foreign span the edit emptied stays in the planner's output with
+  // emptied set. It holds no text, so the fixture does not describe it.
+  const changes = planned.changes.filter((c) => c.state !== "removed" && !c.emptied).sort(byPlace);
   const gaps = planned.gaps.filter((g) => g.state !== "removed").sort(byAt);
   assert.deepEqual(
     changes.map(({ id, who, from, to }) => ({ id, who, from, to })),
@@ -147,6 +152,35 @@ function track(doc, from, to, insert, me = ME, opts) {
   const ids = trackedSplice(doc, "f1", from, to, insert, me, opts);
   doc.commit();
   return ids;
+}
+
+// Writes a record as a map container with the given fields, one key at a time,
+// the way a peer writes it.
+function putRecord(doc, id, fields) {
+  const record = doc.getMap(CHANGES).setContainer(id, new LoroMap());
+  for (const [key, value] of Object.entries(fields)) record.set(key, value);
+  return record;
+}
+
+// Writes a copy of a record under another id, with some fields replaced.
+function copyRecord(doc, from, to, overrides) {
+  const source = doc.getMap(CHANGES).get(from);
+  const fields = Object.fromEntries([...source.keys()].map((key) => [key, source.get(key)]));
+  return putRecord(doc, to, { ...fields, ...overrides });
+}
+
+// The container records of one kind.
+function recordsOf(doc, kind) {
+  return [...doc.getMap(CHANGES).entries()]
+    .map(([, v]) => v)
+    .filter((v) => v instanceof LoroMap && v.get("kind") === kind);
+}
+
+// The fragments of the file in rank order, as { change, text }.
+function fragmentsOf(doc) {
+  return recordsOf(doc, "fragment")
+    .sort((a, b) => a.get("rank") - b.get("rank"))
+    .map((v) => ({ change: v.get("change"), text: v.get("text") }));
 }
 
 // ---------------------------------------------------------------------------
@@ -249,7 +283,7 @@ for (const [original, from, to, insert] of [
   assert.notEqual(textOf(doc), original);
   assert.equal(reject(doc, id), true);
   assert.equal(textOf(doc), original, `reject ${original} ${from} ${to} ${insert}`);
-  assert.equal(doc.getMap(CHANGES).size, 0);
+  assert.equal(resolveChanges(doc, "f1").length, 0);
 }
 
 // Two changes decided in either order.
@@ -261,7 +295,7 @@ for (const order of [0, 1]) {
   const ids = order === 0 ? [a, b] : [b, a];
   for (const id of ids) assert.equal(reject(doc, id), true);
   assert.equal(textOf(doc), "one two three");
-  assert.equal(doc.getMap(CHANGES).size, 0);
+  assert.equal(resolveChanges(doc, "f1").length, 0);
 }
 {
   const doc = makeDoc("one two three");
@@ -289,7 +323,7 @@ for (const bobFirst of [true, false]) {
   assert.equal(textOf(doc), "aZe");
   assert.equal(rejectMany(doc, bobFirst ? [b, a] : [a, b]), 2);
   assert.equal(textOf(doc), "abcde", `rejectMany: bobFirst=${bobFirst}`);
-  assert.equal(doc.getMap(CHANGES).size, 0);
+  assert.equal(resolveChanges(doc, "f1").length, 0);
 }
 
 // Rejecting one change leaves the other's text and its record in place.
@@ -328,7 +362,8 @@ for (const bobFirst of [true, false]) {
   assert.equal(textOf(b), "helloab world");
 }
 
-// A peer deletes the last character of a pending insertion; prune heals it.
+// A peer deletes the last character of a pending insertion. The span still
+// resolves to the text left, and prune keeps the record as it is.
 {
   const a = makeDoc("hello world", 1);
   track(a, 5, 5, "XYZ");
@@ -344,9 +379,6 @@ for (const bobFirst of [true, false]) {
   assert.deepEqual([list[0].from, list[0].to], [5, 7]);
   assert.equal(prune(a), 0);
   a.commit();
-  const entry = a.getMap(CHANGES).get(list[0].id);
-  const end = a.getCursorPos(Cursor.decode(entry.end));
-  assert.equal(end.update, undefined);
   assert.deepEqual(resolveChanges(a, "f1").map((c) => [c.from, c.to]), [[5, 7]]);
 }
 
@@ -357,18 +389,17 @@ for (const bobFirst of [true, false]) {
   const doc = makeDoc("abcd");
   const [keep] = track(doc, 1, 2, "Z");
   const map = doc.getMap(CHANGES);
-  const live = map.get(keep);
-  // Empty: a change with no insertion and no fragment.
+  // Empty: a change with no insertion and no fragment, and nothing recent.
   const text = doc.getMap("files").get("f1");
-  map.set("empty", { ...live, start: text.getCursor(0, -1).encode(), end: null });
-  // Orphaned: the file is gone.
-  map.set("orphan", { ...live, file: "missing" });
+  putRecord(doc, "empty", { kind: "change", file: "f1", who: "me", author: "Me", run: null, at: 0, start: text.getCursor(0, -1).encode(), end: null });
+  // Orphaned: the file is gone, and the record has rested.
+  copyRecord(doc, keep, "orphan", { file: "missing", at: 0 });
   doc.commit();
   assert.equal(resolveChanges(doc, "f1").length, 1);
   assert.equal(listChanges(doc).length, 1);
   assert.equal(prune(doc), 2);
   doc.commit();
-  // The change and its gap are left.
+  // The change and its fragment are left.
   assert.equal(map.size, 2);
   assert.notEqual(map.get(keep), undefined);
   assert.equal(prune(doc), 0);
@@ -380,7 +411,7 @@ for (const decide of [accept, reject]) {
   const doc = makeDoc("abcd");
   const [id] = track(doc, 1, 2, "Z");
   const map = doc.getMap(CHANGES);
-  for (const [key, value] of [...map.entries()]) map.set(key, { ...value, file: "missing" });
+  for (const [, value] of [...map.entries()]) value.set("file", "missing");
   doc.commit();
   assert.equal(decide(doc, id), true);
   assert.equal(textOf(doc), "aZcd");
@@ -410,11 +441,60 @@ for (const decide of [accept, reject]) {
   assert.deepEqual(resolveChanges(doc, "f1"), []);
   assert.equal(prune(doc), 0);
   doc.commit();
-  const kinds = [...doc.getMap(CHANGES).entries()].map(([, v]) => v.kind).sort();
-  assert.deepEqual(kinds, ["change", "gap"]);
+  const kinds = [...doc.getMap(CHANGES).entries()].map(([, v]) => v.get("kind")).sort();
+  assert.deepEqual(kinds, ["change", "fragment"]);
   assert.deepEqual(resolveChanges(doc, "f1"), [
     { id: "old", who: "me", author: "Me", run: null, at: 1, from: 1, to: 2, deleted: "b" },
   ]);
+}
+
+// A change emptied by another author's deletion leaves the rows at once but
+// stays in the map until it has rested: prune keeps a fresh record and drops
+// one that has rested.
+{
+  const doc = makeDoc("abcd");
+  const [alice] = track(doc, 2, 2, "XY", ALICE);
+  track(doc, 2, 4, "", BOB);
+  assert.equal(textOf(doc), "abcd");
+  assert.equal(resolveChanges(doc, "f1").length, 0);
+  assert.notEqual(doc.getMap(CHANGES).get(alice), undefined);
+  assert.equal(prune(doc), 0);
+  doc.commit();
+  assert.notEqual(doc.getMap(CHANGES).get(alice), undefined);
+  doc.getMap(CHANGES).get(alice).set("at", 0);
+  doc.commit();
+  assert.equal(prune(doc), 1);
+  doc.commit();
+  assert.equal(doc.getMap(CHANGES).get(alice), undefined);
+}
+
+// A fragment whose change is gone, as a peer leaves it when it decides that
+// change, is re-parented by prune onto a change of its own. The change shows as
+// a row with the fragment's text, and rejecting the row puts the text back.
+{
+  const doc = makeDoc("acd");
+  const text = doc.getMap("files").get("f1");
+  putRecord(doc, "orphan", {
+    kind: "fragment",
+    file: "f1",
+    change: "gone",
+    text: "b",
+    start: text.getCursor(1, -1).encode(),
+    rank: 0,
+    who: "bob",
+    author: "Bob",
+    run: null,
+    at: 1,
+  });
+  doc.commit();
+  assert.equal(resolveChanges(doc, "f1").length, 0);
+  assert.equal(prune(doc), 0);
+  doc.commit();
+  const rows = resolveChanges(doc, "f1");
+  assert.deepEqual(rows.map(({ who, from, to, deleted }) => ({ who, from, to, deleted })), [{ who: "bob", from: 1, to: 1, deleted: "b" }]);
+  assert.equal(reject(doc, rows[0].id), true);
+  assert.equal(textOf(doc), "abcd");
+  assert.equal(resolveChanges(doc, "f1").length, 0);
 }
 
 // ---------------------------------------------------------------------------
@@ -428,7 +508,7 @@ for (const decide of [accept, reject]) {
   assert.deepEqual([list[0].from, list[0].to], [1, 4]);
   assert.equal(reject(doc, id), true);
   assert.equal(textOf(doc), "ab");
-  assert.equal(doc.getMap(CHANGES).size, 0);
+  assert.equal(resolveChanges(doc, "f1").length, 0);
 }
 
 // A change written the way Rust writes it: the end cursor sits on the emoji's
@@ -436,7 +516,7 @@ for (const decide of [accept, reject]) {
 {
   const doc = makeDoc("a😀b");
   const text = doc.getMap("files").get("f1");
-  doc.getMap(CHANGES).set("rust", {
+  putRecord(doc, "rust", {
     kind: "change",
     file: "f1",
     author: "Me",
@@ -456,14 +536,16 @@ for (const decide of [accept, reject]) {
 // writePlanned writes a plan and deletes removed ids.
 {
   const doc = makeDoc("abcd");
-  const [old] = track(doc, 1, 2, "Z");
+  track(doc, 1, 2, "Z");
   const pre = resolveFile(doc, "f1");
   const text = doc.getMap("files").get("f1");
   text.delete(1, 1);
   const plan = planEdits("aZcd", pre, [{ from: 1, to: 2, insert: "" }], ME, { now: 9, mintId: () => "n" });
   const ids = writePlanned(doc, "f1", plan);
   doc.commit();
-  assert.deepEqual(ids, [old]);
+  // My own span, deleted whole by me, leaves a pure deletion of "b".
+  assert.equal(ids.length, 1);
+  assert.deepEqual(resolveChanges(doc, "f1").map((c) => [c.from, c.to, c.deleted]), [[1, 1, "b"]]);
   assert.equal(resolveChanges(doc, "f1")[0].deleted, "b");
 }
 
@@ -484,7 +566,7 @@ function buildNested(start, steps) {
     const name = String.fromCharCode(97 + i);
     const got = trackedSplice(doc, "f1", from, to, insert, { who: name, author: name.toUpperCase() });
     doc.commit();
-    ids.push(got.find((id) => !ids.includes(id)));
+    ids.push(got.find((id) => doc.getMap(CHANGES).get(id)?.get("who") === name));
   });
   return { doc, ids };
 }
@@ -507,13 +589,13 @@ for (const [start, steps] of nested) {
     for (const k of order) if (doc.getMap(CHANGES).get(ids[k])) reject(doc, ids[k]);
     for (const id of [...doc.getMap(CHANGES).keys()]) reject(doc, id);
     assert.equal(textOf(doc), start, `${label}: one at a time in ${order}`);
-    assert.equal(doc.getMap(CHANGES).size, 0, `${label}: no record left, one at a time in ${order}`);
+    assert.equal(resolveChanges(doc, "f1").length, 0, `${label}: no record left, one at a time in ${order}`);
   }
   for (const order of orders) {
     const { doc, ids } = buildNested(start, steps);
     rejectMany(doc, order.map((k) => ids[k]));
     assert.equal(textOf(doc), start, `${label}: rejectMany in ${order}`);
-    assert.equal(doc.getMap(CHANGES).size, 0, `${label}: no record left after rejectMany in ${order}`);
+    assert.equal(resolveChanges(doc, "f1").length, 0, `${label}: no record left after rejectMany in ${order}`);
   }
 }
 
@@ -524,7 +606,7 @@ for (const [start, steps] of nested) {
   assert.equal(reject(doc, ids[0]), true);
   assert.equal(reject(doc, ids[2]), true);
   assert.equal(textOf(doc), "ace");
-  assert.equal(doc.getMap(CHANGES).size, 0);
+  assert.equal(resolveChanges(doc, "f1").length, 0);
 }
 
 // ---------------------------------------------------------------------------
@@ -558,11 +640,9 @@ function oldCara() {
   const doc = oldAliceBob();
   assert.equal(prune(doc), 0);
   doc.commit();
-  const entries = [...doc.getMap(CHANGES).entries()];
-  assert.equal(entries.filter(([, v]) => v.kind === "change").length, 2);
-  const gaps = entries.filter(([, v]) => v.kind === "gap");
-  assert.equal(gaps.length, 1);
-  assert.deepEqual(gaps[0][1].fragments, [
+  const kinds = [...doc.getMap(CHANGES).entries()].map(([, v]) => v.get("kind")).sort();
+  assert.deepEqual(kinds, ["change", "change", "fragment", "fragment", "fragment"]);
+  assert.deepEqual(fragmentsOf(doc), [
     { change: "bob", text: "b" },
     { change: "alice", text: "c" },
     { change: "bob", text: "d" },
@@ -573,7 +653,7 @@ function oldCara() {
     copy.commit();
     for (const id of order) assert.equal(reject(copy, id), true);
     assert.equal(textOf(copy), "abcde", `old records, ${order}`);
-    assert.equal(copy.getMap(CHANGES).size, 0);
+    assert.equal(resolveChanges(copy, "f1").length, 0);
   }
 }
 
@@ -581,11 +661,9 @@ function oldCara() {
   const doc = oldCara();
   assert.equal(prune(doc), 0);
   doc.commit();
-  const entries = [...doc.getMap(CHANGES).entries()];
-  assert.equal(entries.filter(([, v]) => v.kind === "change").length, 3);
-  const gaps = entries.filter(([, v]) => v.kind === "gap");
-  assert.equal(gaps.length, 1);
-  assert.deepEqual(gaps[0][1].fragments, [
+  const kinds = [...doc.getMap(CHANGES).entries()].map(([, v]) => v.get("kind")).sort();
+  assert.deepEqual(kinds, ["change", "change", "change", "fragment", "fragment", "fragment", "fragment"]);
+  assert.deepEqual(fragmentsOf(doc), [
     { change: "cara", text: "a" },
     { change: "bob", text: "b" },
     { change: "alice", text: "c" },
@@ -597,8 +675,67 @@ function oldCara() {
     copy.commit();
     for (const id of order) assert.equal(reject(copy, id), true, `old records, ${order}`);
     assert.equal(textOf(copy), "abcde", `old records, three levels, ${order}`);
-    assert.equal(copy.getMap(CHANGES).size, 0);
+    assert.equal(resolveChanges(copy, "f1").length, 0);
   }
+}
+
+// Two peers convert the same old document. They write the same records under
+// the same ids, so importing each other's copy leaves one set of each.
+{
+  const a = oldAliceBob();
+  const b = new LoroDoc();
+  b.setPeerId(2);
+  b.import(a.export({ mode: "snapshot" }));
+  assert.equal(migrateChanges(a), 2);
+  assert.equal(migrateChanges(b), 2);
+  assert.equal(migrateChanges(b), 0);
+  a.commit();
+  b.commit();
+  a.import(b.export({ mode: "update" }));
+  b.import(a.export({ mode: "update" }));
+  assert.equal(a.getMap(CHANGES).size, 5);
+  assert.equal(b.getMap(CHANGES).size, 5);
+  assert.deepEqual(fragmentsOf(a), [
+    { change: "bob", text: "b" },
+    { change: "alice", text: "c" },
+    { change: "bob", text: "d" },
+  ]);
+  assert.equal(resolveChanges(b, "f1").length, 2);
+  assert.equal(reject(a, "alice"), true);
+  assert.equal(reject(a, "bob"), true);
+  assert.equal(textOf(a), "abcde");
+  assert.equal(resolveChanges(a, "f1").length, 0);
+}
+
+// An old pending insertion migrates to a change with a span. A deletion inside
+// that span shrinks it and records nothing, and rejecting what is left gives
+// back the text without the insertion.
+{
+  const doc = makeDoc("ab");
+  const text = doc.getMap("files").get("f1");
+  text.insert(1, "XY");
+  doc.getMap(CHANGES).set("old", {
+    file: "f1",
+    who: "me",
+    author: "Me",
+    at: 1,
+    run: null,
+    start: text.getCursor(1, -1).encode(),
+    end: text.getCursor(2, 1).encode(),
+    deleted: "",
+  });
+  doc.commit();
+  assert.equal(migrateChanges(doc), 1);
+  doc.commit();
+  assert.deepEqual(resolveChanges(doc, "f1").map(({ from, to, deleted }) => [from, to, deleted]), [[1, 3, ""]]);
+  const count = doc.getMap(CHANGES).size;
+  trackedSplice(doc, "f1", 1, 2, "", ME);
+  doc.commit();
+  assert.equal(textOf(doc), "aYb");
+  assert.deepEqual(resolveChanges(doc, "f1").map(({ from, to }) => [from, to]), [[1, 2]]);
+  assert.equal(doc.getMap(CHANGES).size, count);
+  for (const row of resolveChanges(doc, "f1")) reject(doc, row.id);
+  assert.equal(textOf(doc), "ab");
 }
 
 // ---------------------------------------------------------------------------
@@ -669,7 +806,7 @@ function oldCara() {
       (kind === "accept" ? accept : reject)(doc, id);
     }
     assert.equal(textOf(doc), expected, label);
-    assert.equal(doc.getMap(CHANGES).size, 0, label);
+    assert.equal(resolveChanges(doc, "f1").length, 0, label);
   }
 }
 
@@ -722,7 +859,7 @@ function oldCara() {
     const finalInserted = [...final].filter((ch) => ch.charCodeAt(0) >= 0x300).sort().join("");
     assert.equal(finalOriginal.join(""), expectedOriginal.join(""), label);
     assert.equal(finalInserted, expectedInserted.sort().join(""), label);
-    assert.equal(doc.getMap(CHANGES).size, 0, label);
+    assert.equal(resolveChanges(doc, "f1").length, 0, label);
   }
 }
 
@@ -800,8 +937,77 @@ function oldCara() {
     const expectedOriginals = [...start].filter((ch) => chars.get(ch).state === "live").join("");
     assert.equal([...final].sort().join(""), expected, label);
     assert.equal([...final].filter((ch) => start.includes(ch)).join(""), expectedOriginals, label);
-    assert.equal(doc.getMap(CHANGES).size, 0, label);
+    assert.equal(resolveChanges(doc, "f1").length, 0, label);
   }
 }
+
+// ---------------------------------------------------------------------------
+// Seeded fuzz: two peers edit the same text at the same moment, then exchange
+// updates. The peers must converge on the same text and the same rows, and
+// rejecting every change must give back the start text's characters. "apart"
+// keeps a character between the two regions an edit touches; "touching" lets
+// them meet.
+
+// Two regions of the text, the first ending before the second starts.
+function regions(text, rng, apart) {
+  const cut = apart ? 2 + rng.pick(Math.max(1, text.length - 3)) : 1 + rng.pick(Math.max(1, text.length - 2));
+  const f1 = rng.pick(cut);
+  const t1 = f1 + rng.pick(Math.min(3, cut - f1) + 1);
+  const f2 = apart ? cut + 1 + rng.pick(Math.max(1, text.length - cut - 1)) : cut + rng.pick(Math.max(1, text.length - cut));
+  const t2 = Math.min(text.length, f2 + rng.pick(3));
+  return { f1, t1, f2, t2 };
+}
+
+function twoPeers(variant) {
+  const apart = variant === "apart";
+  const rng = random(31);
+  const CASES = 150;
+  let insertCounter = 0;
+  let misordered = 0;
+  for (let iter = 0; iter < CASES; iter++) {
+    const start = "abcdefghijkl".slice(0, 7 + rng.pick(6));
+    const a = makeDoc(start, 1);
+    const b = new LoroDoc();
+    b.setPeerId(2);
+    b.import(a.export({ mode: "snapshot" }));
+    const sync = () => {
+      a.import(b.export({ mode: "update", from: a.oplogVersion() }));
+      b.import(a.export({ mode: "update", from: b.oplogVersion() }));
+    };
+    const rowKeys = (doc) => resolveChanges(doc, "f1").map((c) => `${c.who}:${c.deleted}+${c.to - c.from}`).sort().join(" ");
+    const log = [];
+    const where = () => `two peers ${variant} case=${iter} start=${start} log=${JSON.stringify(log)}`;
+    try {
+      for (let round = 0; round < 2 + rng.pick(3); round++) {
+        const text = textOf(a);
+        if (text.length < 4) break;
+        const { f1, t1, f2, t2 } = regions(text, rng, apart);
+        const i1 = t1 === f1 || rng.rnd() < 0.3 ? String.fromCharCode(0x391 + (insertCounter++ % 24)) : "";
+        const i2 = t2 === f2 || rng.rnd() < 0.3 ? String.fromCharCode(0x391 + (insertCounter++ % 24)) : "";
+        if (f1 === t1 && !i1) continue;
+        // Alice edits the right region and Bob the left one, both against the same text.
+        log.push(`A ${f2}-${t2} '${i2}' | B ${f1}-${t1} '${i1}'`);
+        if (t2 > f2 || i2) track(a, f2, t2, i2, ALICE);
+        track(b, f1, t1, i1, BOB);
+        sync();
+        assert.equal(textOf(a), textOf(b), where());
+        assert.equal(rowKeys(a), rowKeys(b), where());
+      }
+      for (const r of resolveChanges(a, "f1")) reject(a, r.id);
+      sync();
+      const sorted = (t) => [...t].sort().join("");
+      assert.equal(sorted(textOf(a)), sorted(start), where());
+      assert.equal(textOf(a), textOf(b), where());
+      assert.equal(resolveChanges(a, "f1").length, 0, where());
+      if (textOf(a) !== start) misordered += 1;
+    } catch (e) {
+      throw new Error(`${where()}: ${e.message}`);
+    }
+  }
+  assert.ok(misordered < CASES / 4, `two peers ${variant}: the order differed in ${misordered} of ${CASES} cases`);
+}
+
+twoPeers("apart");
+twoPeers("touching");
 
 console.log("track-changes: ok");
