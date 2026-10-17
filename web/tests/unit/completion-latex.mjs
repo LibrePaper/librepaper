@@ -102,6 +102,21 @@ function applyTo(option, doc, from, to) {
   assert.equal(once.split("\\end{itemize}").length - 1, 1);
 }
 
+// closeBrackets() leaves a "}" after the cursor. Accepting replaces it, so
+// the brace is not doubled, for a partial name and for a whole one.
+{
+  const expected = "\\begin{itemize}\n\t\\item \n\\end{itemize}";
+  const partial = complete("\\begin{ite}", { pos: 10 }).options.find((option) => option.label === "itemize");
+  assert.equal(applyTo(partial, "\\begin{ite}", 7, 10), expected);
+
+  const whole = complete("\\begin{itemize}", { pos: 14 }).options.find((option) => option.label === "itemize");
+  assert.equal(applyTo(whole, "\\begin{itemize}", 7, 14), expected);
+
+  // Without a brace after the cursor, nothing else is removed.
+  const bare = complete("\\begin{ite", { pos: 10 }).options.find((option) => option.label === "itemize");
+  assert.equal(applyTo(bare, "\\begin{ite", 7, 10), expected);
+}
+
 // Environments defined in the project and from packages loaded in the project.
 {
   const texts = { "preamble.tex": "\\usepackage{mathtools}\n\\newenvironment{proof}{}{}" };
