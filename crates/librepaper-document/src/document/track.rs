@@ -1,10 +1,13 @@
 //! Tracked changes: Word's model on the shared Loro document.
 //!
 //! A tracked edit goes into the text at once, like any edit, and the `changes`
-//! root records it as a pending change: the original text it removed
-//! (`deleted`) and a pair of cursors around the text it put there. Accepting
-//! drops the record. Rejecting puts `deleted` back where the new text was,
-//! then drops the record. See `SPEC-track-changes.md`.
+//! root records it as a pending change. A change is one author's edit of one
+//! region: the text it inserted (its span, two cursors) and the original text
+//! it deleted. Deleted text lives in gaps: a gap is one point of the text, and
+//! it holds the deleted texts that sat there as fragments, in document order,
+//! each owned by a change. Accepting drops a change's fragments and its record.
+//! Rejecting puts its text back where it was, then drops the record. See
+//! `SPEC-track-changes.md`.
 //!
 //! [`plan_edits`] is pure and has a twin in `web/src/lib/track-changes.js`;
 //! both run `web/tests/fixtures/track-changes.json`. Everything here counts in
@@ -14,7 +17,7 @@
 //! None of the writers here commit. The caller owns the transaction, the same
 //! as with `apply_edits_at`.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 
 use loro::{
     cursor::{Cursor, PosType, Side},
@@ -29,15 +32,64 @@ pub struct Author<'a> {
     pub author: &'a str,
 }
 
-/// A foreign deletion this change swallowed: the id of that change and the
-/// number of original characters of `deleted` that precede it.
+/// A pending change as the planner sees it. `from == to` for a change with no
+/// span; it then sits at the gap of its first fragment.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct Point {
+pub struct ChangeRecord {
     pub id: String,
-    pub at: usize,
+    pub who: String,
+    pub author: String,
+    pub run: Option<String>,
+    pub at: i64,
+    /// Code point offsets of the inserted text, `from <= to`.
+    pub from: usize,
+    pub to: usize,
 }
 
-/// A pending change with its cursors resolved to offsets in the text now.
+/// Original text deleted by one change, as it sits in a gap.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Fragment {
+    pub change: String,
+    pub text: String,
+}
+
+/// The deleted texts at one point of the text, in document order.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Gap {
+    pub id: String,
+    pub at: usize,
+    pub fragments: Vec<Fragment>,
+}
+
+/// The live records of one file, resolved against its text now.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct FileState {
+    /// Sorted by `(from, to, id)`.
+    pub changes: Vec<ChangeRecord>,
+    /// Sorted by `at`.
+    pub gaps: Vec<Gap>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PlanState {
+    /// Unchanged apart from shifting; its cursors still hold.
+    Kept,
+    /// New or changed; its entry must be written.
+    Set,
+    /// Gone; its entry must be deleted.
+    Removed,
+}
+
+/// The planned records of one file, in the coordinates of the text after the
+/// batch.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Plan {
+    pub changes: Vec<(ChangeRecord, PlanState)>,
+    pub gaps: Vec<(Gap, PlanState)>,
+}
+
+/// A pending change with its span resolved to offsets in the text now, and
+/// its deleted text joined from its fragments in document order.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ResolvedChange {
     pub id: String,
@@ -51,326 +103,431 @@ pub struct ResolvedChange {
     pub to: usize,
     /// The original text this change removed.
     pub deleted: String,
-    /// Foreign deletions this change swallowed, by place inside `deleted`.
-    pub points: Vec<Point>,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum PlanState {
-    /// Unchanged apart from shifting; its cursors still hold.
-    Kept,
-    /// New or changed; its entry must be written.
-    Set,
-    /// Gone; its entry must be deleted.
-    Removed,
-}
+type Row = (ChangeRecord, PlanState);
+type GapRow = (Gap, PlanState);
 
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct Planned {
-    pub change: ResolvedChange,
-    pub state: PlanState,
-}
-
-/// Plans a batch of edits against the pending changes of one file.
+/// Plans a batch of edits against the pending records of one file.
 ///
 /// `edits` are `(from, to, insert)` in the coordinates of `before`, ascending
 /// and non-overlapping. They are applied in order, each one adjusted by the
-/// edits before it. The result is every change that was or is now pending,
-/// in the coordinates of the text after the whole batch, sorted by `from`.
+/// edits before it. The result holds every record that was or is now live, in
+/// the coordinates of the text after the whole batch, and the records that
+/// went away, marked `Removed`.
 pub fn plan_edits(
     before: &str,
-    changes: &[ResolvedChange],
+    state: &FileState,
     edits: &[(usize, usize, String)],
     me: &Author,
     run: Option<&str>,
     now_ms: i64,
     mint: &mut dyn FnMut() -> String,
-) -> Vec<Planned> {
-    let mut text: Vec<char> = before.chars().collect();
-    let mut list: Vec<ResolvedChange> = changes.to_vec();
-    list.sort_by_key(|c| (c.from, c.to));
-    let mut dirty: HashSet<String> = HashSet::new();
-    let mut running: isize = 0;
+) -> Plan {
+    let mut cur: Vec<char> = before.chars().collect();
+    let mut changes: Vec<Row> = state
+        .changes
+        .iter()
+        .map(|c| (c.clone(), PlanState::Kept))
+        .collect();
+    let mut gaps: Vec<GapRow> = state
+        .gaps
+        .iter()
+        .map(|g| (g.clone(), PlanState::Kept))
+        .collect();
+    let original_changes: HashSet<String> = state.changes.iter().map(|c| c.id.clone()).collect();
+    let original_gaps: HashSet<String> = state.gaps.iter().map(|g| g.id.clone()).collect();
+    let mut removed_changes: BTreeMap<String, Row> = BTreeMap::new();
+    let mut removed_gaps: BTreeMap<String, GapRow> = BTreeMap::new();
+    let mut adj: isize = 0;
 
     for (from, to, insert) in edits {
+        let ef = (*from as isize + adj) as usize;
+        let et = (*to as isize + adj) as usize;
         let ins: Vec<char> = insert.chars().collect();
-        if from == to && ins.is_empty() {
+        if ef == et && ins.is_empty() {
             continue;
         }
-        let f = (*from as isize + running) as usize;
-        let t = (*to as isize + running) as usize;
-        let step = Step {
-            f,
-            t,
-            ins: &ins,
+        let (next_changes, next_gaps) = plan_one(
+            &cur,
+            changes.clone(),
+            gaps.clone(),
+            ef,
+            et,
+            &ins,
             me,
             run,
             now_ms,
-        };
-        list = plan_one(&text, list, &step, &mut dirty, mint);
-        text.splice(f..t, ins.iter().copied());
-        running += ins.len() as isize - (t - f) as isize;
+            mint,
+        );
+        for (c, _) in &changes {
+            if original_changes.contains(&c.id) && !next_changes.iter().any(|(n, _)| n.id == c.id) {
+                removed_changes.insert(c.id.clone(), (c.clone(), PlanState::Removed));
+            }
+        }
+        for (g, _) in &gaps {
+            if original_gaps.contains(&g.id) && !next_gaps.iter().any(|(n, _)| n.id == g.id) {
+                removed_gaps.insert(g.id.clone(), (g.clone(), PlanState::Removed));
+            }
+        }
+        changes = next_changes;
+        gaps = next_gaps;
+        cur.splice(ef..et, ins.iter().copied());
+        adj += ins.len() as isize - (et - ef) as isize;
     }
 
-    let live: HashSet<&str> = list.iter().map(|c| c.id.as_str()).collect();
-    let mut out: Vec<Planned> = list
-        .iter()
-        .map(|c| Planned {
-            state: if dirty.contains(&c.id) {
-                PlanState::Set
-            } else {
-                PlanState::Kept
-            },
-            change: c.clone(),
-        })
-        .collect();
-    for c in changes {
-        if !live.contains(c.id.as_str()) {
-            out.push(Planned {
-                change: c.clone(),
-                state: PlanState::Removed,
-            });
+    for (c, st) in changes.iter_mut() {
+        if !original_changes.contains(&c.id) && *st == PlanState::Kept {
+            *st = PlanState::Set;
         }
     }
-    out.sort_by_key(|p| (p.state == PlanState::Removed, p.change.from, p.change.to));
-    out
+    for (g, st) in gaps.iter_mut() {
+        if !original_gaps.contains(&g.id) && *st == PlanState::Kept {
+            *st = PlanState::Set;
+        }
+    }
+    let mut out_changes = changes;
+    out_changes.extend(removed_changes.into_values());
+    let mut out_gaps = gaps;
+    out_gaps.extend(removed_gaps.into_values());
+    Plan {
+        changes: out_changes,
+        gaps: out_gaps,
+    }
 }
 
-/// One edit of a batch, already in the coordinates of the running text.
-struct Step<'a> {
-    f: usize,
-    t: usize,
-    ins: &'a [char],
-    me: &'a Author<'a>,
-    run: Option<&'a str>,
-    now_ms: i64,
+fn has_span(c: &ChangeRecord) -> bool {
+    c.to > c.from
 }
 
-/// Plans one edit. `list` is sorted by `from`; so is the result.
+/// The end of the span that holds `p`, if any change inserted the character
+/// at `p`.
+fn span_end_at(changes: &[Row], p: usize) -> Option<usize> {
+    changes
+        .iter()
+        .find(|(c, _)| has_span(c) && c.from <= p && p < c.to)
+        .map(|(c, _)| c.to)
+}
+
+fn push_fragment(list: &mut Vec<Fragment>, change: &str, text: &str) {
+    match list.last_mut() {
+        Some(last) if last.change == change => last.text.push_str(text),
+        _ => list.push(Fragment {
+            change: change.to_string(),
+            text: text.to_string(),
+        }),
+    }
+}
+
+fn push_unique(ids: &mut Vec<String>, id: &str) {
+    if !ids.iter().any(|x| x == id) {
+        ids.push(id.to_string());
+    }
+}
+
+/// The next gap id: a swallowed gap's id is reused first, then a fresh one.
+fn take_id(ids: &mut Vec<String>, mint: &mut dyn FnMut() -> String) -> String {
+    if ids.is_empty() {
+        mint()
+    } else {
+        ids.remove(0)
+    }
+}
+
+/// Plans one edit `[ef, et)` with `insert`, in the coordinates of `cur`.
+#[allow(clippy::too_many_arguments)]
 fn plan_one(
-    text: &[char],
-    list: Vec<ResolvedChange>,
-    step: &Step,
-    dirty: &mut HashSet<String>,
+    cur: &[char],
+    changes: Vec<Row>,
+    gaps: Vec<GapRow>,
+    ef: usize,
+    et: usize,
+    insert: &[char],
+    me: &Author,
+    run: Option<&str>,
+    now: i64,
     mint: &mut dyn FnMut() -> String,
-) -> Vec<ResolvedChange> {
-    let (f, t, n) = (step.f, step.t, step.ins.len());
-    let delta = n as isize - (t - f) as isize;
+) -> (Vec<Row>, Vec<GapRow>) {
+    let len = insert.len();
+    let delta = len as isize - (et - ef) as isize;
     let shift = |p: usize| (p as isize + delta) as usize;
 
-    // Runs of original text the edit deletes: [f, t) outside every change.
-    let mut runs: Vec<(usize, usize)> = Vec::new();
-    let mut pos = f;
-    for c in list.iter() {
-        if c.from >= t {
-            break;
+    let swallowed: Vec<Gap> = gaps
+        .iter()
+        .filter(|(g, _)| g.at >= ef && g.at <= et)
+        .map(|(g, _)| g.clone())
+        .collect();
+
+    // Own changes the edit touches: a span overlapping [ef, et], or a
+    // fragment in a swallowed gap.
+    let mut owned: Vec<String> = Vec::new();
+    for (c, _) in &changes {
+        if c.who == me.who && has_span(c) && c.from <= et && c.to >= ef {
+            push_unique(&mut owned, &c.id);
         }
-        if c.to <= pos {
-            continue;
-        }
-        if c.from > pos {
-            runs.push((pos, c.from));
-        }
-        pos = pos.max(c.to);
     }
-    if pos < t {
-        runs.push((pos, t));
-    }
-
-    // Only an edit that deletes original text or inserts makes or merges an
-    // own change. A deletion inside insertions just shrinks them.
-    let trigger = !runs.is_empty() || n > 0;
-    let affected: Vec<usize> = if trigger {
-        (0..list.len())
-            .filter(|&i| {
-                let c = &list[i];
-                c.who == step.me.who && c.from <= t && c.to >= f
-            })
-            .collect()
-    } else {
-        Vec::new()
-    };
-
-    let mut out: Vec<ResolvedChange> = Vec::new();
-
-    if trigger {
-        // (position, kind, text): an own change's `deleted` sits at its
-        // position, and an own pure deletion inside a run splits the run.
-        let mut pieces: Vec<(usize, u8, String)> = Vec::new();
-        for &i in &affected {
-            pieces.push((list[i].from, 0, list[i].deleted.clone()));
-        }
-        for &(rs, re) in &runs {
-            let mut start = rs;
-            for &i in &affected {
-                let p = list[i].from;
-                if list[i].from == list[i].to && p > start && p < re {
-                    pieces.push((start, 1, text[start..p].iter().collect()));
-                    start = p;
+    for g in &swallowed {
+        for f in &g.fragments {
+            if let Some((c, _)) = changes.iter().find(|(c, _)| c.id == f.change) {
+                if c.who == me.who {
+                    push_unique(&mut owned, &c.id);
                 }
             }
-            pieces.push((start, 1, text[start..re].iter().collect()));
         }
-        pieces.sort_by_key(|p| (p.0, p.1));
-        // Original characters of the new `deleted` text that precede `p`.
-        let before = |p: usize| -> usize {
-            let own: usize = affected
-                .iter()
-                .filter(|&&i| list[i].from <= p)
-                .map(|&i| list[i].deleted.chars().count())
-                .sum();
-            let orig: usize = runs
-                .iter()
-                .map(|&(rs, re)| re.min(p).saturating_sub(rs))
-                .sum();
-            own + orig
-        };
-        let mut points: Vec<Point> = Vec::new();
-        for (k, &i) in affected.iter().enumerate() {
-            if list[i].points.is_empty() {
+    }
+
+    // Original text inside [ef, et) that the edit removes makes a record; so
+    // does inserted text. A deletion inside insertions only shrinks them.
+    let original = (ef..et).any(|p| span_end_at(&changes, p).is_none());
+    let records = original || len > 0;
+
+    // The change this edit writes: the first owned one by position, or a new
+    // one. Its span is widened over the owned spans below.
+    let mut mine: Option<ChangeRecord> = None;
+    if records {
+        let first = owned
+            .iter()
+            .filter_map(|id| changes.iter().find(|(c, _)| &c.id == id).map(|(c, _)| c))
+            .min_by_key(|c| c.from);
+        mine = Some(match first {
+            Some(c) => ChangeRecord {
+                run: run.map(str::to_string).or_else(|| c.run.clone()),
+                at: now,
+                ..c.clone()
+            },
+            None => ChangeRecord {
+                id: mint(),
+                who: me.who.to_string(),
+                author: me.author.to_string(),
+                run: run.map(str::to_string),
+                at: now,
+                from: ef,
+                to: ef,
+            },
+        });
+    }
+    if let Some(m) = mine.as_mut() {
+        let mut from = ef;
+        let mut to = ef + len;
+        for id in &owned {
+            let Some((c, _)) = changes.iter().find(|(c, _)| &c.id == id) else {
+                continue;
+            };
+            if !has_span(c) {
                 continue;
             }
-            let own: usize = affected[..k]
-                .iter()
-                .map(|&j| list[j].deleted.chars().count())
-                .sum();
-            let orig: usize = runs
-                .iter()
-                .map(|&(rs, re)| re.min(list[i].from).saturating_sub(rs))
-                .sum();
-            for pt in &list[i].points {
-                points.push(Point {
-                    id: pt.id.clone(),
-                    at: pt.at + own + orig,
-                });
+            from = from.min(c.from);
+            if c.to > et {
+                to = to.max(shift(c.to));
             }
         }
-        if t > f {
-            for (i, c) in list.iter().enumerate() {
-                if affected.contains(&i) || c.deleted.is_empty() {
-                    continue;
-                }
-                // A pure deletion right after the range (`c.from == t`) is
-                // recorded too, so the order of the two deletions is kept.
-                let swallowed = if c.from == c.to {
-                    f <= c.from && c.from <= t
-                } else {
-                    c.from >= f && c.to <= t
+        m.from = from;
+        m.to = to;
+    }
+
+    // Merged fragments: walking [ef, et], the gap at p comes first, then the
+    // original character at p. Text that sat at et goes after the new span
+    // when text is inserted and no own change claims that point.
+    let end_gap = swallowed.iter().find(|g| g.at == et);
+    let own_at_end = changes
+        .iter()
+        .any(|(c, _)| c.who == me.who && has_span(c) && c.from == et && owned.contains(&c.id))
+        || end_gap.is_some_and(|g| g.fragments.iter().any(|f| owned.contains(&f.change)));
+    let split_at_end = len > 0 && !own_at_end;
+    let mut merged: Vec<Fragment> = Vec::new();
+    let mut after: Vec<Fragment> = Vec::new();
+    for p in ef..=et {
+        if let Some(g) = swallowed.iter().find(|g| g.at == p) {
+            for f in &g.fragments {
+                let change: &str = match &mine {
+                    Some(m) if owned.contains(&f.change) => m.id.as_str(),
+                    _ => f.change.as_str(),
                 };
-                if swallowed && !points.iter().any(|pt| pt.id == c.id) {
-                    points.push(Point {
-                        id: c.id.clone(),
-                        at: before(c.from),
-                    });
-                }
+                let target = if split_at_end && p == et {
+                    &mut after
+                } else {
+                    &mut merged
+                };
+                push_fragment(target, change, &f.text);
             }
         }
-        let deleted: String = pieces.into_iter().map(|p| p.2).collect();
-        let first = affected.first().map(|&i| &list[i]);
-        let mut from = f;
-        let mut to = f + n;
-        for &i in &affected {
-            from = from.min(list[i].from);
-            if list[i].to > t {
-                to = to.max(shift(list[i].to));
+        if let Some(m) = &mine {
+            if p < et && span_end_at(&changes, p).is_none() {
+                push_fragment(&mut merged, &m.id, &cur[p].to_string());
             }
         }
-        let merged = ResolvedChange {
-            id: first.map_or_else(&mut *mint, |c| c.id.clone()),
-            // The writer fills in the file of a new change.
-            file: first.map_or_else(String::new, |c| c.file.clone()),
-            who: step.me.who.to_string(),
-            author: step.me.author.to_string(),
-            run: step
-                .run
-                .map(str::to_string)
-                .or_else(|| first.and_then(|c| c.run.clone())),
-            at: step.now_ms,
-            from,
-            to,
-            deleted,
-            points,
-        };
-        dirty.insert(merged.id.clone());
-        out.push(merged);
     }
 
-    for (i, c) in list.iter().enumerate() {
-        if affected.contains(&i) {
+    // Spans: foreign spans shrink, move or split around the edit.
+    let mut out: Vec<Row> = Vec::new();
+    let mut new_spans: Vec<Row> = Vec::new();
+    for (c, st) in &changes {
+        if mine.is_some() && owned.contains(&c.id) {
             continue;
         }
-        if trigger && n > 0 && c.from < f && f < c.to {
-            let mut head = c.clone();
-            head.to = f;
-            dirty.insert(head.id.clone());
-            out.push(head);
-            if c.to > t {
-                let mut tail = c.clone();
-                tail.id = mint();
-                tail.from = f + n;
-                tail.to = shift(c.to);
-                tail.deleted = String::new();
-                // The deletions this change swallowed stay with the head,
-                // which keeps the deleted text they sit in.
-                tail.points = Vec::new();
-                dirty.insert(tail.id.clone());
-                out.push(tail);
-            }
+        if !has_span(c) || c.to <= ef {
+            out.push((c.clone(), *st));
             continue;
         }
-        let mut moved = c.clone();
-        if c.from == c.to {
-            moved.from = map_point(c.from, f, t, n);
-            moved.to = moved.from;
-            if t > f && f <= c.from && c.from < t {
-                dirty.insert(c.id.clone());
-            }
+        if c.from >= et {
+            out.push((
+                ChangeRecord {
+                    from: shift(c.from),
+                    to: shift(c.to),
+                    ..c.clone()
+                },
+                *st,
+            ));
+            continue;
+        }
+        if c.from < ef && c.to > et && len > 0 {
+            out.push((
+                ChangeRecord {
+                    to: ef,
+                    ..c.clone()
+                },
+                PlanState::Set,
+            ));
+            let id = mint();
+            new_spans.push((
+                ChangeRecord {
+                    id,
+                    from: ef + len,
+                    to: shift(c.to),
+                    ..c.clone()
+                },
+                PlanState::Set,
+            ));
+            continue;
+        }
+        let from = if c.from < ef { c.from } else { ef + len };
+        let to = if c.to > et {
+            shift(c.to)
+        } else if c.from < ef {
+            ef
         } else {
-            moved.from = map_start(c.from, f, t, n);
-            moved.to = map_end(c.to, f, t, n);
-            if moved.to < moved.from {
-                moved.from = moved.to;
+            ef + len
+        };
+        if to > from {
+            out.push((
+                ChangeRecord {
+                    from,
+                    to,
+                    ..c.clone()
+                },
+                PlanState::Set,
+            ));
+        } else {
+            out.push((
+                ChangeRecord {
+                    from: ef + len,
+                    to: ef + len,
+                    ..c.clone()
+                },
+                PlanState::Set,
+            ));
+        }
+    }
+    out.extend(new_spans);
+    if let Some(m) = &mine {
+        out.push((m.clone(), PlanState::Set));
+    }
+
+    // Gaps: those before the edit stay, those after shift; the swallowed ones
+    // merge into one gap at the merged span's start (or at ef without a span).
+    let mut out_gaps: Vec<GapRow> = Vec::new();
+    for (g, st) in &gaps {
+        if g.at < ef {
+            out_gaps.push((g.clone(), *st));
+        } else if g.at > et {
+            out_gaps.push((
+                Gap {
+                    at: shift(g.at),
+                    ..g.clone()
+                },
+                *st,
+            ));
+        }
+    }
+    let mut ids: Vec<String> = swallowed.iter().map(|g| g.id.clone()).collect();
+    let pos = mine.as_ref().map_or(ef, |m| m.from);
+    if !merged.is_empty() {
+        if let Some(idx) = out_gaps.iter().position(|(g, _)| g.at == pos) {
+            let mut list = out_gaps[idx].0.fragments.clone();
+            for f in &merged {
+                push_fragment(&mut list, &f.change, &f.text);
             }
-            if c.from < t && c.to > f {
-                dirty.insert(c.id.clone());
+            let base = out_gaps[idx].0.clone();
+            out_gaps[idx] = (
+                Gap {
+                    fragments: list,
+                    ..base
+                },
+                PlanState::Set,
+            );
+        } else {
+            let id = take_id(&mut ids, mint);
+            out_gaps.push((
+                Gap {
+                    id,
+                    at: pos,
+                    fragments: merged,
+                },
+                PlanState::Set,
+            ));
+        }
+    }
+    if !after.is_empty() {
+        let id = take_id(&mut ids, mint);
+        out_gaps.push((
+            Gap {
+                id,
+                at: ef + len,
+                fragments: after,
+            },
+            PlanState::Set,
+        ));
+    }
+
+    // A change with no span and no fragment is gone. A pure deletion sits at
+    // the gap of its first fragment.
+    let referenced: HashSet<String> = out_gaps
+        .iter()
+        .flat_map(|(g, _)| g.fragments.iter().map(|f| f.change.clone()))
+        .collect();
+    let mut live: Vec<Row> = out
+        .into_iter()
+        .filter(|(c, _)| has_span(c) || referenced.contains(&c.id))
+        .collect();
+    live.sort_by_key(|(c, _)| (c.from, c.to));
+    out_gaps.sort_by_key(|(g, _)| g.at);
+    for (c, _) in live.iter_mut() {
+        if has_span(c) {
+            continue;
+        }
+        if let Some((g, _)) = out_gaps
+            .iter()
+            .find(|(g, _)| g.fragments.iter().any(|f| f.change == c.id))
+        {
+            if c.from != g.at {
+                c.from = g.at;
+                c.to = g.at;
             }
         }
-        out.push(moved);
     }
-
-    out.retain(|c| c.from != c.to || !c.deleted.is_empty());
-    out.sort_by_key(|c| (c.from, c.to));
-    out
+    (live, out_gaps)
 }
 
-fn map_start(p: usize, ef: usize, et: usize, len: usize) -> usize {
-    if p < ef {
-        p
-    } else if p >= et {
-        p + len - (et - ef)
-    } else {
-        ef + len
+/// The raw entry `id` in the `changes` root, when it is a map.
+fn record(doc: &LoroDoc, id: &str) -> Option<loro::LoroMapValue> {
+    match doc.get_map(CHANGES).get(id)? {
+        ValueOrContainer::Value(LoroValue::Map(m)) => Some(m),
+        _ => None,
     }
 }
 
-fn map_end(p: usize, ef: usize, et: usize, len: usize) -> usize {
-    if p <= ef {
-        p
-    } else if p > et {
-        p + len - (et - ef)
-    } else {
-        ef
-    }
-}
-
-fn map_point(p: usize, ef: usize, et: usize, len: usize) -> usize {
-    if p < ef {
-        p
-    } else if p >= et {
-        p + len - (et - ef)
-    } else {
-        ef
-    }
+fn record_ids(doc: &LoroDoc) -> Vec<String> {
+    doc.get_map(CHANGES).keys().map(|k| k.to_string()).collect()
 }
 
 fn text_of(doc: &LoroDoc, file_id: &str) -> Option<LoroText> {
@@ -394,129 +551,238 @@ fn bytes_field(m: &loro::LoroMapValue, key: &str) -> Option<Vec<u8>> {
     }
 }
 
-/// An entry read back, with the replacement cursors Loro offers when an
-/// anchor character was deleted.
-struct Read {
-    change: ResolvedChange,
-    start_update: Option<Cursor>,
-    end_update: Option<Cursor>,
-}
-
-/// The entry for `id` with its cursors resolved, or `None` when it is not a
-/// well-formed entry or is orphaned (its file or start cursor is gone). An
-/// empty change is returned; callers that list changes drop it.
-///
-/// A cursor resolves to the index of the character it is attached to. The end
-/// cursor is attached to the last inserted character, so `to` is one past it,
-/// unless that character was deleted: then Loro answers with an `update` and
-/// the position the character had, which is already the end.
-fn read_entry(doc: &LoroDoc, id: &str) -> Option<Read> {
-    let ValueOrContainer::Value(LoroValue::Map(m)) = doc.get_map(CHANGES).get(id)? else {
+/// The fragments of a gap record. `None` when the field is not a list;
+/// malformed and empty-text fragments are left out.
+fn fragments_field(m: &loro::LoroMapValue) -> Option<Vec<Fragment>> {
+    let LoroValue::List(items) = m.get("fragments")? else {
         return None;
     };
-    let file = string_field(&m, "file")?;
-    let text = text_of(doc, &file)?;
-    let start = Cursor::decode(&bytes_field(&m, "start")?).ok()?;
-    if start.container != text.id() {
-        return None;
-    }
-    let start_pos = doc.get_cursor_pos(&start).ok()?;
-    let from = start_pos.current.pos;
-    let mut end_update = None;
-    let to = match bytes_field(&m, "end") {
-        Some(bytes) => {
-            let end = Cursor::decode(&bytes).ok()?;
-            if end.container != text.id() {
-                return None;
-            }
-            let end_pos = doc.get_cursor_pos(&end).ok()?;
-            let live = end_pos.update.is_none();
-            end_update = end_pos.update;
-            end_pos.current.pos + usize::from(live)
-        }
-        None => from,
-    };
-    // An end before the start means the inserted text is gone.
-    let to = to.max(from);
-    let at = match m.get("at") {
-        Some(LoroValue::I64(v)) => *v,
-        Some(LoroValue::Double(v)) => *v as i64,
-        _ => 0,
-    };
-    let run = string_field(&m, "run");
-    let deleted = string_field(&m, "deleted")?;
-    // Stored `at` counts UTF-16 units of `deleted`; here it counts code points.
-    let points = match m.get("points") {
-        Some(LoroValue::List(items)) => items
+    Some(
+        items
             .iter()
             .filter_map(|item| {
                 let LoroValue::Map(pm) = item else {
                     return None;
                 };
-                let at = match pm.get("at")? {
-                    LoroValue::I64(v) => usize::try_from(*v).ok()?,
-                    LoroValue::Double(v) if *v >= 0.0 => *v as usize,
-                    _ => return None,
-                };
-                Some(Point {
-                    id: string_field(pm, "id")?,
-                    at: utf16_to_cp(&deleted, at),
-                })
+                let change = string_field(pm, "change")?;
+                let text = string_field(pm, "text")?;
+                (!text.is_empty()).then_some(Fragment { change, text })
             })
             .collect(),
-        _ => Vec::new(),
-    };
-    Some(Read {
-        change: ResolvedChange {
-            id: id.to_string(),
-            file,
-            who: string_field(&m, "who")?,
-            author: string_field(&m, "author")?,
-            run,
-            at,
-            from,
-            to,
-            deleted,
-            points,
-        },
-        start_update: start_pos.update,
-        end_update,
+    )
+}
+
+/// A cursor resolved to its offset in `text`. `stale` when Loro answered with
+/// a replacement because its character was deleted.
+struct Pos {
+    offset: usize,
+    stale: bool,
+}
+
+fn cursor_pos(doc: &LoroDoc, text: &LoroText, bytes: &[u8]) -> Option<Pos> {
+    let cursor = Cursor::decode(bytes).ok()?;
+    if cursor.container != text.id() {
+        return None;
+    }
+    let found = doc.get_cursor_pos(&cursor).ok()?;
+    Some(Pos {
+        offset: found.current.pos,
+        stale: found.update.is_some(),
     })
 }
 
-/// The pending changes of one file, resolved against its text now and sorted
-/// by `from`. Orphaned and empty changes are left out.
-pub fn resolve_changes(doc: &LoroDoc, file_id: &str) -> Vec<ResolvedChange> {
-    let mut out: Vec<ResolvedChange> = doc
-        .get_map(CHANGES)
-        .keys()
-        .filter_map(|id| read_entry(doc, id.as_ref()).map(|r| r.change))
-        .filter(|c| c.file == file_id && (c.from < c.to || !c.deleted.is_empty()))
-        .collect();
-    out.sort_by(|a, b| (a.from, a.to, &a.id).cmp(&(b.from, b.to, &b.id)));
-    out
+/// The ids whose cursors came back with a replacement.
+#[derive(Default)]
+struct Stale {
+    changes: HashSet<String>,
+    gaps: HashSet<String>,
 }
 
-/// The code point offset in `s` of a UTF-16 offset.
-fn utf16_to_cp(s: &str, utf16: usize) -> usize {
-    let mut units = 0;
-    for (i, ch) in s.chars().enumerate() {
-        if units >= utf16 {
-            return i;
+/// Resolves the live records of one file against its text now. A change with
+/// no span takes its place from its first fragment; one with neither span nor
+/// fragment is empty and left out. Records without a `kind` are ignored.
+fn resolve_file(doc: &LoroDoc, file_id: &str) -> (FileState, Stale) {
+    let mut stale = Stale::default();
+    let Some(text) = text_of(doc, file_id) else {
+        return (FileState::default(), stale);
+    };
+    let mut changes: Vec<ChangeRecord> = Vec::new();
+    let mut gaps: Vec<Gap> = Vec::new();
+    for id in record_ids(doc) {
+        let Some(m) = record(doc, &id) else {
+            continue;
+        };
+        if string_field(&m, "file").as_deref() != Some(file_id) {
+            continue;
         }
-        units += ch.len_utf16();
+        match string_field(&m, "kind").as_deref() {
+            Some("gap") => {
+                let Some(start) = bytes_field(&m, "start") else {
+                    continue;
+                };
+                let Some(fragments) = fragments_field(&m) else {
+                    continue;
+                };
+                if fragments.is_empty() {
+                    continue;
+                }
+                let Some(pos) = cursor_pos(doc, &text, &start) else {
+                    continue;
+                };
+                if pos.stale {
+                    stale.gaps.insert(id.clone());
+                }
+                gaps.push(Gap {
+                    id,
+                    at: pos.offset,
+                    fragments,
+                });
+            }
+            Some("change") => {
+                let Some(who) = string_field(&m, "who") else {
+                    continue;
+                };
+                let Some(author) = string_field(&m, "author") else {
+                    continue;
+                };
+                let at = match m.get("at") {
+                    Some(LoroValue::I64(v)) => *v,
+                    Some(LoroValue::Double(v)) => *v as i64,
+                    _ => 0,
+                };
+                let (from, to, is_stale) = match bytes_field(&m, "start") {
+                    None => (0, 0, false),
+                    Some(start) => {
+                        let Some(s) = cursor_pos(doc, &text, &start) else {
+                            continue;
+                        };
+                        let mut to = s.offset;
+                        let mut is_stale = s.stale;
+                        if let Some(end) = bytes_field(&m, "end") {
+                            let Some(e) = cursor_pos(doc, &text, &end) else {
+                                continue;
+                            };
+                            if e.stale {
+                                is_stale = true;
+                            }
+                            // A live end cursor sits on the last inserted
+                            // character; a replaced one already is the end.
+                            to = if e.stale { e.offset } else { e.offset + 1 };
+                            to = to.max(s.offset);
+                        }
+                        (s.offset, to, is_stale)
+                    }
+                };
+                if is_stale {
+                    stale.changes.insert(id.clone());
+                }
+                changes.push(ChangeRecord {
+                    id,
+                    who,
+                    author,
+                    run: string_field(&m, "run"),
+                    at,
+                    from,
+                    to,
+                });
+            }
+            _ => {}
+        }
     }
-    s.chars().count()
+    gaps.sort_by_key(|g| g.at);
+    let mut live: Vec<ChangeRecord> = Vec::new();
+    for mut c in changes {
+        if c.to == c.from {
+            let Some(g) = gaps
+                .iter()
+                .find(|g| g.fragments.iter().any(|f| f.change == c.id))
+            else {
+                continue;
+            };
+            c.from = g.at;
+            c.to = g.at;
+        }
+        live.push(c);
+    }
+    live.sort_by(|a, b| (a.from, a.to, &a.id).cmp(&(b.from, b.to, &b.id)));
+    (
+        FileState {
+            changes: live,
+            gaps,
+        },
+        stale,
+    )
 }
 
-/// The UTF-16 offset in `s` of a code point offset.
-fn cp_to_utf16(s: &str, cp: usize) -> usize {
-    s.chars().take(cp).map(char::len_utf16).sum()
+/// The deleted text of change `id`: its fragments in gap order.
+fn deleted_of(gaps: &[Gap], id: &str) -> String {
+    gaps.iter()
+        .flat_map(|g| g.fragments.iter())
+        .filter(|f| f.change == id)
+        .map(|f| f.text.as_str())
+        .collect()
 }
 
-fn entry_value(c: &ResolvedChange, start: &Cursor, end: Option<&Cursor>) -> LoroValue {
+/// The pending changes of one file, resolved against its text now and sorted
+/// by `(from, to, id)`. Orphaned and empty changes are left out.
+pub fn resolve_changes(doc: &LoroDoc, file_id: &str) -> Vec<ResolvedChange> {
+    let (state, _) = resolve_file(doc, file_id);
+    state
+        .changes
+        .iter()
+        .map(|c| ResolvedChange {
+            id: c.id.clone(),
+            file: file_id.to_string(),
+            who: c.who.clone(),
+            author: c.author.clone(),
+            run: c.run.clone(),
+            at: c.at,
+            from: c.from,
+            to: c.to,
+            deleted: deleted_of(&state.gaps, &c.id),
+        })
+        .collect()
+}
+
+/// The stored form of a gap.
+fn gap_map(file: &str, start: Vec<u8>, fragments: &[Fragment]) -> LoroValue {
     let mut m: HashMap<String, LoroValue> = HashMap::new();
-    m.insert("file".into(), LoroValue::from(c.file.as_str()));
+    m.insert("kind".into(), LoroValue::from("gap"));
+    m.insert("file".into(), LoroValue::from(file));
+    m.insert("start".into(), LoroValue::from(start));
+    let list: Vec<LoroValue> = fragments
+        .iter()
+        .map(|f| {
+            let mut fm: HashMap<String, LoroValue> = HashMap::new();
+            fm.insert("change".into(), LoroValue::from(f.change.as_str()));
+            fm.insert("text".into(), LoroValue::from(f.text.as_str()));
+            LoroValue::from(fm)
+        })
+        .collect();
+    m.insert("fragments".into(), LoroValue::from(list));
+    LoroValue::from(m)
+}
+
+/// The stored form of a gap at `at`. `None` when the text has no cursor there.
+fn gap_value(text: &LoroText, file: &str, at: usize, fragments: &[Fragment]) -> Option<LoroValue> {
+    let start = text.get_cursor(at, Side::Left)?;
+    Some(gap_map(file, start.encode(), fragments))
+}
+
+/// The stored form of a change. A change with a span gets cursors on its
+/// first and last inserted characters; one without gets none.
+fn change_value(text: &LoroText, file: &str, c: &ChangeRecord) -> Option<LoroValue> {
+    let (start, end) = if c.to > c.from {
+        (
+            Some(text.get_cursor(c.from, Side::Left)?),
+            Some(text.get_cursor(c.to - 1, Side::Right)?),
+        )
+    } else {
+        (None, None)
+    };
+    let mut m: HashMap<String, LoroValue> = HashMap::new();
+    m.insert("kind".into(), LoroValue::from("change"));
+    m.insert("file".into(), LoroValue::from(file));
     m.insert("author".into(), LoroValue::from(c.author.as_str()));
     m.insert("who".into(), LoroValue::from(c.who.as_str()));
     // The browser writes a JS number, which Loro stores as a double.
@@ -525,29 +791,53 @@ fn entry_value(c: &ResolvedChange, start: &Cursor, end: Option<&Cursor>) -> Loro
         "run".into(),
         c.run.as_deref().map_or(LoroValue::Null, LoroValue::from),
     );
-    m.insert("start".into(), LoroValue::from(start.encode()));
+    m.insert(
+        "start".into(),
+        start.map_or(LoroValue::Null, |s| LoroValue::from(s.encode())),
+    );
     m.insert(
         "end".into(),
         end.map_or(LoroValue::Null, |e| LoroValue::from(e.encode())),
     );
-    m.insert("deleted".into(), LoroValue::from(c.deleted.as_str()));
-    if !c.points.is_empty() {
-        let list: Vec<LoroValue> = c
-            .points
-            .iter()
-            .map(|p| {
-                let mut pm: HashMap<String, LoroValue> = HashMap::new();
-                pm.insert("id".into(), LoroValue::from(p.id.as_str()));
-                pm.insert(
-                    "at".into(),
-                    LoroValue::Double(cp_to_utf16(&c.deleted, p.at) as f64),
-                );
-                LoroValue::from(pm)
-            })
-            .collect();
-        m.insert("points".into(), LoroValue::from(list));
+    Some(LoroValue::from(m))
+}
+
+/// Writes the planned records of `file_id` against its current text. Does not
+/// commit. Returns the ids of the change records it set.
+pub fn write_planned(doc: &LoroDoc, file_id: &str, plan: &Plan) -> Vec<String> {
+    let Some(text) = text_of(doc, file_id) else {
+        return Vec::new();
+    };
+    let map = doc.get_map(CHANGES);
+    for (g, st) in &plan.gaps {
+        match st {
+            PlanState::Removed => {
+                map.delete(&g.id).ok();
+            }
+            PlanState::Set => {
+                if let Some(v) = gap_value(&text, file_id, g.at, &g.fragments) {
+                    map.insert(&g.id, v).ok();
+                }
+            }
+            PlanState::Kept => {}
+        }
     }
-    LoroValue::from(m)
+    let mut written = Vec::new();
+    for (c, st) in &plan.changes {
+        match st {
+            PlanState::Removed => {
+                map.delete(&c.id).ok();
+            }
+            PlanState::Set => {
+                if let Some(v) = change_value(&text, file_id, c) {
+                    map.insert(&c.id, v).ok();
+                    written.push(c.id.clone());
+                }
+            }
+            PlanState::Kept => {}
+        }
+    }
+    written
 }
 
 /// A random version 4 UUID in its hyphenated form.
@@ -568,9 +858,9 @@ fn mint_uuid() -> String {
 
 /// Applies `edits` (UTF-16, measured against the file as it is now, ascending
 /// and non-overlapping, as `apply_edits_at` takes them) to the file's text and
-/// records them as tracked changes by `by`. Returns the ids of the changes it
-/// created or changed. Errors, leaving the document untouched, when the file
-/// is missing or the edits do not fit its text. Does not commit.
+/// records them as tracked changes by `by`. Returns the ids of the change
+/// records it set. Errors, leaving the document untouched, when the file is
+/// missing or the edits do not fit its text. Does not commit.
 pub fn apply_tracked_edits(
     doc: &LoroDoc,
     file_id: &str,
@@ -581,276 +871,250 @@ pub fn apply_tracked_edits(
 ) -> Result<Vec<String>, String> {
     let text = text_of(doc, file_id).ok_or_else(|| "the file does not exist".to_string())?;
     let before = text.to_string();
-    let pending = resolve_changes(doc, file_id);
+    // Resolved before the text moves: the cursors are read where they stand.
+    let (state, _) = resolve_file(doc, file_id);
 
     let to_cp = |utf16: usize| {
         text.convert_pos(utf16, PosType::Utf16, PosType::Unicode)
             .ok_or_else(|| "an edit does not fit the file".to_string())
     };
-    let mut planned_edits: Vec<(usize, usize, String)> = Vec::with_capacity(edits.len());
+    let mut planned: Vec<(usize, usize, String)> = Vec::with_capacity(edits.len());
     for e in edits {
         let from = to_cp(e.at)?;
         let to = to_cp(e.at.saturating_add(e.delete))?;
-        planned_edits.push((from, to, e.insert.clone()));
+        planned.push((from, to, e.insert.clone()));
     }
     if !apply_text_edits(&text, edits) {
         return Err("an edit does not fit the file".to_string());
     }
 
     let mut mint = mint_uuid;
-    let plan = plan_edits(
-        &before,
-        &pending,
-        &planned_edits,
-        by,
-        run,
-        now_ms,
-        &mut mint,
-    );
-    let map = doc.get_map(CHANGES);
-    let mut set = Vec::new();
-    for p in plan {
-        match p.state {
-            PlanState::Kept => {}
-            PlanState::Removed => {
-                map.delete(&p.change.id).ok();
-            }
-            PlanState::Set => {
-                let c = &p.change;
-                let Some(start) = text.get_cursor(c.from, Side::Left) else {
-                    continue;
-                };
-                let end = if c.to > c.from {
-                    text.get_cursor(c.to - 1, Side::Right)
-                } else {
-                    None
-                };
-                let mut c = c.clone();
-                c.file = file_id.to_string();
-                map.insert(&c.id, entry_value(&c, &start, end.as_ref()))
-                    .ok();
-                set.push(c.id);
-            }
-        }
-    }
-    Ok(set)
+    let plan = plan_edits(&before, &state, &planned, by, run, now_ms, &mut mint);
+    Ok(write_planned(doc, file_id, &plan))
 }
 
-/// Accepts a change: drops the record and keeps the text. Returns false when
-/// there is no such change. An orphaned record is dropped too. Does not
-/// commit.
+/// Accepts a change: its fragments leave every gap (a gap left empty goes),
+/// and its record is dropped. The text stays. Returns false when `id` is not
+/// a change record. Does not commit.
 pub fn accept(doc: &LoroDoc, id: &str) -> bool {
-    let map = doc.get_map(CHANGES);
-    if map.get(id).is_none() {
+    let Some(m) = record(doc, id) else {
+        return false;
+    };
+    if string_field(&m, "kind").as_deref() != Some("change") {
         return false;
     }
-    map.delete(id).is_ok()
-}
-
-/// The pending change, if any, that lists `id` in its `points`.
-fn find_owner(doc: &LoroDoc, id: &str, file: &str) -> Option<ResolvedChange> {
     let map = doc.get_map(CHANGES);
-    for key in map.keys() {
-        if key.as_ref() == id {
-            continue;
-        }
-        let Some(r) = read_entry(doc, key.as_ref()) else {
+    for gid in record_ids(doc) {
+        let Some(gm) = record(doc, &gid) else {
             continue;
         };
-        if r.change.file == file && r.change.points.iter().any(|p| p.id == id) {
-            return Some(r.change);
+        if string_field(&gm, "kind").as_deref() != Some("gap") {
+            continue;
         }
+        let Some(fragments) = fragments_field(&gm) else {
+            continue;
+        };
+        let kept: Vec<Fragment> = fragments
+            .iter()
+            .filter(|f| f.change != id)
+            .cloned()
+            .collect();
+        if kept.len() == fragments.len() {
+            continue;
+        }
+        if kept.is_empty() {
+            map.delete(&gid).ok();
+            continue;
+        }
+        let (Some(file), Some(start)) = (string_field(&gm, "file"), bytes_field(&gm, "start"))
+        else {
+            continue;
+        };
+        map.insert(&gid, gap_map(&file, start, &kept)).ok();
     }
-    None
+    map.delete(id).ok();
+    true
 }
 
-/// `x` was rejected and its text is back at `x.from`. Its owner swallowed it
-/// at offset `a` of the owner's `deleted`, so the owner splits there: the part
-/// before stays a pure deletion anchored on x's text, the part after keeps the
-/// owner's inserted span.
-fn split_owner(doc: &LoroDoc, text: &LoroText, owner_id: &str, x_id: &str, x: &ResolvedChange) {
-    // Read again: the text under the owner moved when x's text came back.
-    let Some(Read { change: o, .. }) = read_entry(doc, owner_id) else {
+/// Writes the pending run of other changes' fragments as a new gap at
+/// `anchor`, and empties the run.
+fn put_run(doc: &LoroDoc, text: &LoroText, file: &str, anchor: usize, pending: &mut Vec<Fragment>) {
+    if pending.is_empty() {
         return;
-    };
-    let Some(mine) = o.points.iter().find(|p| p.id == x_id) else {
-        return;
-    };
-    let chars: Vec<char> = o.deleted.chars().collect();
-    let a = mine.at.min(chars.len());
-    let left_text: String = chars[..a].iter().collect();
-    let right_text: String = chars[a..].iter().collect();
-    let others: Vec<&Point> = o.points.iter().filter(|p| p.id != x_id).collect();
-    let left_points: Vec<Point> = others
+    }
+    if let Some(v) = gap_value(text, file, anchor, pending.as_slice()) {
+        doc.get_map(CHANGES).insert(&mint_uuid(), v).ok();
+    }
+    pending.clear();
+}
+
+/// Puts the gaps in `list` back at `at`. Walks their fragments in order: the
+/// rejected change's text is inserted where the walk stands, and each run of
+/// other changes' fragments becomes a gap anchored on the character after it.
+fn put_back(doc: &LoroDoc, text: &LoroText, file: &str, id: &str, at: usize, mut list: Vec<Gap>) {
+    list.sort_by_key(|g| g.at);
+    let fragments: Vec<Fragment> = list
         .iter()
-        .filter(|p| p.at < a)
-        .map(|p| (*p).clone())
+        .flat_map(|g| g.fragments.iter().cloned())
         .collect();
-    let right_points: Vec<Point> = others
-        .iter()
-        .filter(|p| p.at >= a)
-        .map(|p| Point {
-            id: p.id.clone(),
-            at: p.at - a,
-        })
-        .collect();
-    let has_inserted = o.to > o.from;
     let map = doc.get_map(CHANGES);
+    for g in &list {
+        map.delete(&g.id).ok();
+    }
+    let mut pos = at;
+    let mut pending: Vec<Fragment> = Vec::new();
+    for f in fragments {
+        if f.change == id {
+            text.insert(pos, &f.text).ok();
+            put_run(doc, text, file, pos, &mut pending);
+            pos += f.text.chars().count();
+        } else {
+            pending.push(f);
+        }
+    }
+    put_run(doc, text, file, pos, &mut pending);
+}
 
-    let mut right = ResolvedChange {
-        deleted: right_text,
-        points: right_points,
-        ..o.clone()
-    };
-    let right_cursors = if has_inserted {
-        let start = text.get_cursor(o.from, Side::Left);
-        let end = text.get_cursor(o.to - 1, Side::Right);
-        start.map(|s| (s, end))
-    } else if !right.deleted.is_empty() {
-        text.get_cursor(x.from + x.deleted.chars().count(), Side::Left)
-            .map(|s| (s, None))
-    } else {
-        None
-    };
-
-    if left_text.is_empty() {
-        match right_cursors {
-            Some((s, e)) => {
-                map.insert(&o.id, entry_value(&right, &s, e.as_ref())).ok();
-            }
-            None => {
-                map.delete(&o.id).ok();
+/// Puts back the text of change `id` and the gaps it sat in. The gaps beyond
+/// its span come back first, while its text still holds their offsets; then
+/// the span goes, and the gaps at and before it come back.
+fn restore_change(doc: &LoroDoc, text: &LoroText, file: &str, id: &str) {
+    let (state, _) = resolve_file(doc, file);
+    let span = state
+        .changes
+        .iter()
+        .find(|c| c.id == id)
+        .filter(|c| c.to > c.from)
+        .map(|c| (c.from, c.to));
+    // The gaps to put back: every gap holding this change's fragments and,
+    // with a span, every gap from its start to the character after it. Those
+    // collapse onto the span's start when it goes.
+    let mut groups: BTreeMap<usize, Vec<Gap>> = BTreeMap::new();
+    for g in &state.gaps {
+        let attached = span.is_some_and(|(from, to)| g.at >= from && g.at <= to);
+        if !attached && !g.fragments.iter().any(|f| f.change == id) {
+            continue;
+        }
+        let at = match span {
+            Some((from, _)) if attached => from,
+            _ => g.at,
+        };
+        groups.entry(at).or_default().push(g.clone());
+    }
+    let positions: Vec<usize> = groups.keys().rev().copied().collect();
+    for at in &positions {
+        let beyond = match span {
+            Some((_, to)) => *at > to,
+            None => true,
+        };
+        if beyond {
+            if let Some(list) = groups.remove(at) {
+                put_back(doc, text, file, id, *at, list);
             }
         }
-        return;
     }
-    let left = ResolvedChange {
-        deleted: left_text,
-        points: left_points,
-        ..o.clone()
-    };
-    if let Some(s) = text.get_cursor(x.from, Side::Left) {
-        map.insert(&o.id, entry_value(&left, &s, None)).ok();
+    if let Some((from, to)) = span {
+        text.delete(from, to - from).ok();
     }
-    if let Some((s, e)) = right_cursors {
-        right.id = mint_uuid();
-        map.insert(&right.id, entry_value(&right, &s, e.as_ref()))
-            .ok();
+    for at in &positions {
+        if let Some(list) = groups.remove(at) {
+            put_back(doc, text, file, id, *at, list);
+        }
     }
 }
 
-/// Rejects a change: puts `deleted` back in place of the inserted text, then
-/// drops the record. Returns false when there is no such change. An orphaned
-/// record is only dropped. Does not commit.
+/// Rejects a change: puts its text back where it was, then drops its record.
+/// Returns false when `id` is not a change record. Does not commit.
 pub fn reject(doc: &LoroDoc, id: &str) -> bool {
-    let map = doc.get_map(CHANGES);
-    if map.get(id).is_none() {
+    let Some(m) = record(doc, id) else {
+        return false;
+    };
+    if string_field(&m, "kind").as_deref() != Some("change") {
         return false;
     }
-    if let Some(Read { change: c, .. }) = read_entry(doc, id) {
-        if let Some(text) = text_of(doc, &c.file) {
-            let owner = find_owner(doc, id, &c.file);
-            if c.to > c.from {
-                text.delete(c.from, c.to - c.from).ok();
-            }
-            if !c.deleted.is_empty() {
-                text.insert(c.from, &c.deleted).ok();
-            }
-            if let Some(o) = owner {
-                split_owner(doc, &text, &o.id, id, &c);
-            }
-            // Deletions this change swallowed move back to where they sat
-            // inside it.
-            for pt in &c.points {
-                let Some(target) = read_entry(doc, &pt.id) else {
-                    continue;
-                };
-                let t = &target.change;
-                if t.file != c.file || t.to != t.from {
-                    continue;
-                }
-                let Some(start) = text.get_cursor(c.from + pt.at, Side::Left) else {
-                    continue;
-                };
-                map.insert(&pt.id, entry_value(t, &start, None)).ok();
-            }
+    if let Some(file) = string_field(&m, "file") {
+        if let Some(text) = text_of(doc, &file) {
+            restore_change(doc, &text, &file, id);
         }
     }
-    map.delete(id).is_ok()
+    doc.get_map(CHANGES).delete(id).ok();
+    true
 }
 
-/// Rejects several changes. A selected change that lists another selected
-/// change in its `points` goes first, so the pair restores in order. If
-/// rejecting a change splits an owner that was not selected, the owner's parts
-/// stay pending. Returns the number of changes rejected. Does not commit.
+/// Rejects each distinct id in turn and returns how many were rejected. Does
+/// not commit.
 pub fn reject_many<S: AsRef<str>>(doc: &LoroDoc, ids: &[S]) -> usize {
-    let map = doc.get_map(CHANGES);
-    let mut pending: Vec<String> = Vec::new();
+    let mut seen: HashSet<String> = HashSet::new();
+    let mut count = 0;
     for id in ids {
         let id = id.as_ref();
-        if map.get(id).is_some() && !pending.iter().any(|p| p == id) {
-            pending.push(id.to_string());
-        }
-    }
-    let mut count = 0;
-    while !pending.is_empty() {
-        let mut listed: HashSet<String> = HashSet::new();
-        for owner in &pending {
-            if let Some(r) = read_entry(doc, owner) {
-                for p in &r.change.points {
-                    if p.id != *owner {
-                        listed.insert(p.id.clone());
-                    }
-                }
-            }
-        }
-        let i = pending
-            .iter()
-            .position(|id| !listed.contains(id))
-            .unwrap_or(0);
-        let id = pending.remove(i);
-        if reject(doc, &id) {
+        if seen.insert(id.to_string()) && reject(doc, id) {
             count += 1;
         }
     }
     count
 }
 
-/// Removes every orphaned, malformed or empty entry and returns how many it
-/// removed. An entry whose cursor came back with a replacement is rewritten
-/// with fresh cursors made from its resolved span, so a deleted anchor is
-/// looked up the slow way once; that does not count. An editor calls this in its next local commit. Does not commit.
+/// Removes every change or gap record that does not resolve to a live one, and
+/// returns how many it removed. A record whose cursor came back with a
+/// replacement is rewritten with fresh cursors, which does not count. Records
+/// without a `kind` are left alone. Does not commit.
 pub fn prune(doc: &LoroDoc) -> usize {
     let map = doc.get_map(CHANGES);
-    let ids: Vec<String> = map.keys().map(|k| k.to_string()).collect();
+    let files: BTreeSet<String> = record_ids(doc)
+        .iter()
+        .filter_map(|id| {
+            let m = record(doc, id)?;
+            let kind = string_field(&m, "kind")?;
+            if kind != "change" && kind != "gap" {
+                return None;
+            }
+            string_field(&m, "file")
+        })
+        .collect();
     let mut removed = 0;
-    for id in ids {
-        let read = read_entry(doc, &id)
-            .filter(|r| r.change.from < r.change.to || !r.change.deleted.is_empty());
-        let Some(read) = read else {
-            if map.delete(&id).is_ok() {
+    for file in files {
+        let (state, stale) = resolve_file(doc, &file);
+        let live: HashSet<String> = state
+            .changes
+            .iter()
+            .map(|c| c.id.clone())
+            .chain(state.gaps.iter().map(|g| g.id.clone()))
+            .collect();
+        for id in record_ids(doc) {
+            let Some(m) = record(doc, &id) else {
+                continue;
+            };
+            if string_field(&m, "file").as_deref() != Some(file.as_str()) {
+                continue;
+            }
+            if !matches!(
+                string_field(&m, "kind").as_deref(),
+                Some("change") | Some("gap")
+            ) {
+                continue;
+            }
+            if !live.contains(&id) {
+                map.delete(&id).ok();
                 removed += 1;
             }
-            continue;
-        };
-        if read.start_update.is_none() && read.end_update.is_none() {
-            continue;
         }
-        // Loro's replacement cursor sits on the next live character, which
-        // the end rule would overshoot. Write fresh cursors from the span.
-        let c = &read.change;
-        let Some(text) = text_of(doc, &c.file) else {
-            continue;
-        };
-        let Some(start) = text.get_cursor(c.from, Side::Left) else {
-            continue;
-        };
-        let end = if c.to > c.from {
-            text.get_cursor(c.to - 1, Side::Right)
-        } else {
-            None
-        };
-        map.insert(&id, entry_value(c, &start, end.as_ref())).ok();
+        if let Some(text) = text_of(doc, &file) {
+            for g in &state.gaps {
+                if stale.gaps.contains(&g.id) {
+                    if let Some(v) = gap_value(&text, &file, g.at, &g.fragments) {
+                        map.insert(&g.id, v).ok();
+                    }
+                }
+            }
+            for c in &state.changes {
+                if c.to > c.from && stale.changes.contains(&c.id) {
+                    if let Some(v) = change_value(&text, &file, c) {
+                        map.insert(&c.id, v).ok();
+                    }
+                }
+            }
+        }
     }
     removed
 }
@@ -864,9 +1128,9 @@ mod tests {
     const FIXTURES: &str = include_str!("../../../../web/tests/fixtures/track-changes.json");
 
     #[derive(Deserialize)]
-    struct FxPoint {
-        id: String,
-        at: usize,
+    struct FxFragment {
+        change: String,
+        text: String,
     }
 
     #[derive(Deserialize)]
@@ -875,8 +1139,18 @@ mod tests {
         who: String,
         from: usize,
         to: usize,
-        deleted: String,
-        points: Option<Vec<FxPoint>>,
+    }
+
+    #[derive(Deserialize)]
+    struct FxGap {
+        at: usize,
+        fragments: Vec<FxFragment>,
+    }
+
+    #[derive(Deserialize)]
+    struct FxState {
+        changes: Vec<FxChange>,
+        gaps: Vec<FxGap>,
     }
 
     #[derive(Deserialize)]
@@ -895,11 +1169,11 @@ mod tests {
     struct Fixture {
         name: String,
         before: String,
-        changes: Vec<FxChange>,
+        state: FxState,
         me: FxMe,
         edits: Vec<FxEdit>,
         after: String,
-        expect: Vec<FxChange>,
+        expect: FxState,
     }
 
     /// Converts a UTF-16 offset in `s` to a code point offset.
@@ -914,78 +1188,29 @@ mod tests {
         s.chars().count()
     }
 
-    fn resolved(s: &str, c: &FxChange) -> ResolvedChange {
-        ResolvedChange {
-            id: c.id.clone(),
-            file: "f".into(),
-            who: c.who.clone(),
-            author: c.who.clone(),
-            run: None,
-            at: 0,
-            from: cp(s, c.from),
-            to: cp(s, c.to),
-            deleted: c.deleted.clone(),
-            points: points_of(c),
-        }
-    }
-
-    /// The fixture's points with `at` converted from UTF-16 to code points.
-    fn points_of(c: &FxChange) -> Vec<Point> {
-        c.points
-            .iter()
-            .flatten()
-            .map(|p| Point {
-                id: p.id.clone(),
-                at: cp(&c.deleted, p.at),
+    fn frags(list: &[FxFragment]) -> Vec<Fragment> {
+        list.iter()
+            .map(|f| Fragment {
+                change: f.change.clone(),
+                text: f.text.clone(),
             })
             .collect()
     }
 
-    #[test]
-    fn a_split_tail_claims_none_of_the_heads_points() {
-        let owner = ResolvedChange {
-            id: "o".into(),
-            file: "f".into(),
-            who: "alice".into(),
-            author: "Alice".into(),
-            run: None,
-            at: 1,
-            from: 1,
-            to: 5,
-            deleted: "xy".into(),
-            points: vec![Point {
-                id: "p".into(),
-                at: 1,
-            }],
-        };
-        let mut n = 0;
-        let mut mint = || {
-            n += 1;
-            format!("new-{n}")
-        };
-        let plan = plan_edits(
-            "aWXYZb",
-            &[owner],
-            &[(3, 3, "q".to_string())],
-            &BOB,
-            None,
-            2,
-            &mut mint,
-        );
-        let head = plan.iter().find(|p| p.change.id == "o").unwrap();
-        assert_eq!(head.change.points.len(), 1);
-        for p in plan
+    /// A row of the fixture comparison: id, who, from, to.
+    type ChangeRow = (String, String, usize, usize);
+    /// A gap of the fixture comparison: at, then (change, text) fragments.
+    type GapRow = (usize, Vec<(String, String)>);
+
+    fn sort_changes(rows: &mut [ChangeRow]) {
+        rows.sort_by(|a, b| (a.2, a.3, &a.0).cmp(&(b.2, b.3, &b.0)));
+    }
+
+    fn fragment_pairs(gap: &Gap) -> Vec<(String, String)> {
+        gap.fragments
             .iter()
-            .filter(|p| p.change.who == "alice" && p.change.id != "o")
-        {
-            assert!(p.change.points.is_empty(), "the tail claims no points");
-            assert!(p.change.deleted.is_empty());
-        }
-        assert!(
-            plan.iter()
-                .any(|p| p.change.who == "alice" && p.change.id != "o"),
-            "the insertion split"
-        );
+            .map(|f| (f.change.clone(), f.text.clone()))
+            .collect()
     }
 
     #[test]
@@ -993,8 +1218,33 @@ mod tests {
         let fixtures: Vec<Fixture> = serde_json::from_str(FIXTURES).unwrap();
         assert!(!fixtures.is_empty());
         for fx in fixtures {
-            let changes: Vec<ResolvedChange> =
-                fx.changes.iter().map(|c| resolved(&fx.before, c)).collect();
+            let state = FileState {
+                changes: fx
+                    .state
+                    .changes
+                    .iter()
+                    .map(|c| ChangeRecord {
+                        id: c.id.clone(),
+                        who: c.who.clone(),
+                        author: c.who.clone(),
+                        run: None,
+                        at: 1,
+                        from: cp(&fx.before, c.from),
+                        to: cp(&fx.before, c.to),
+                    })
+                    .collect(),
+                gaps: fx
+                    .state
+                    .gaps
+                    .iter()
+                    .enumerate()
+                    .map(|(i, g)| Gap {
+                        id: format!("gap-{i}"),
+                        at: cp(&fx.before, g.at),
+                        fragments: frags(&g.fragments),
+                    })
+                    .collect(),
+            };
             let edits: Vec<(usize, usize, String)> = fx
                 .edits
                 .iter()
@@ -1015,39 +1265,53 @@ mod tests {
                 counter += 1;
                 format!("new-{counter}")
             };
-            let plan = plan_edits(&fx.before, &changes, &edits, &me, None, 1, &mut mint);
-            // Points are compared only when the fixture lists them.
-            let listed: HashSet<String> = fx
-                .expect
+            let plan = plan_edits(&fx.before, &state, &edits, &me, None, 2, &mut mint);
+
+            let mut got_changes: Vec<ChangeRow> = plan
+                .changes
                 .iter()
-                .filter(|c| c.points.is_some())
-                .map(|c| c.id.clone())
+                .filter(|(_, st)| *st != PlanState::Removed)
+                .map(|(c, _)| (c.id.clone(), c.who.clone(), c.from, c.to))
                 .collect();
-            type Row = (String, String, usize, usize, String, Vec<Point>);
-            let mut got: Vec<Row> = plan
-                .into_iter()
-                .filter(|p| p.state != PlanState::Removed)
-                .map(|p| {
-                    let c = p.change;
-                    let pts = if listed.contains(&c.id) {
-                        c.points
-                    } else {
-                        Vec::new()
-                    };
-                    (c.id, c.who, c.from, c.to, c.deleted, pts)
-                })
+            let mut got_gaps: Vec<GapRow> = plan
+                .gaps
+                .iter()
+                .filter(|(_, st)| *st != PlanState::Removed)
+                .map(|(g, _)| (g.at, fragment_pairs(g)))
                 .collect();
-            let mut want: Vec<Row> = fx
+            let mut want_changes: Vec<ChangeRow> = fx
                 .expect
+                .changes
                 .iter()
                 .map(|c| {
-                    let r = resolved(&fx.after, c);
-                    (r.id, r.who, r.from, r.to, r.deleted, r.points)
+                    (
+                        c.id.clone(),
+                        c.who.clone(),
+                        cp(&fx.after, c.from),
+                        cp(&fx.after, c.to),
+                    )
                 })
                 .collect();
-            got.sort_by_key(|c| (c.2, c.3, c.0.clone()));
-            want.sort_by_key(|c| (c.2, c.3, c.0.clone()));
-            assert_eq!(got, want, "fixture: {}", fx.name);
+            let mut want_gaps: Vec<GapRow> = fx
+                .expect
+                .gaps
+                .iter()
+                .map(|g| {
+                    (
+                        cp(&fx.after, g.at),
+                        g.fragments
+                            .iter()
+                            .map(|f| (f.change.clone(), f.text.clone()))
+                            .collect(),
+                    )
+                })
+                .collect();
+            sort_changes(&mut got_changes);
+            sort_changes(&mut want_changes);
+            got_gaps.sort();
+            want_gaps.sort();
+            assert_eq!(got_changes, want_changes, "fixture: {}", fx.name);
+            assert_eq!(got_gaps, want_gaps, "fixture gaps: {}", fx.name);
         }
     }
 
@@ -1055,6 +1319,80 @@ mod tests {
         who: "me",
         author: "Me",
     };
+    const BOB: Author<'static> = Author {
+        who: "bob",
+        author: "Bob",
+    };
+    const CARA: Author<'static> = Author {
+        who: "cara",
+        author: "Cara",
+    };
+    const DAN: Author<'static> = Author {
+        who: "dan",
+        author: "Dan",
+    };
+
+    /// The author of the `i`th edit of a shape.
+    fn author_for(i: usize) -> Author<'static> {
+        match i % 4 {
+            0 => ME,
+            1 => BOB,
+            2 => CARA,
+            _ => DAN,
+        }
+    }
+
+    fn who_of(w: &str) -> Author<'_> {
+        Author { who: w, author: w }
+    }
+
+    const ALPHA: &str = "abcdefghijkl";
+    const AUTHORS: [&str; 4] = ["p", "q", "r", "s"];
+
+    /// The generator of the JS fuzzers. The product is a double, rounded
+    /// before the low 31 bits are taken, as the JS arithmetic does it.
+    struct Lcg {
+        seed: u64,
+    }
+
+    impl Lcg {
+        fn new(seed: u64) -> Self {
+            Lcg { seed }
+        }
+
+        fn rnd(&mut self) -> f64 {
+            let x = self.seed as f64 * 1_103_515_245.0 + 12_345.0;
+            self.seed = (x % 4_294_967_296.0) as u64 & 0x7fff_ffff;
+            self.seed as f64 / 2_147_483_647.0
+        }
+
+        fn pick(&mut self, n: usize) -> usize {
+            (self.rnd() * n as f64).floor() as usize
+        }
+
+        fn shuffle<T>(&mut self, xs: &mut [T]) {
+            for i in (1..xs.len()).rev() {
+                let j = self.pick(i + 1);
+                xs.swap(i, j);
+            }
+        }
+    }
+
+    fn permutations<T: Clone>(items: &[T]) -> Vec<Vec<T>> {
+        if items.is_empty() {
+            return vec![Vec::new()];
+        }
+        let mut out = Vec::new();
+        for i in 0..items.len() {
+            let mut rest = items.to_vec();
+            let head = rest.remove(i);
+            for mut tail in permutations(&rest) {
+                tail.insert(0, head.clone());
+                out.push(tail);
+            }
+        }
+        out
+    }
 
     fn setup(body: &str) -> (LoroDoc, String) {
         let doc = new_doc();
@@ -1073,6 +1411,53 @@ mod tests {
             delete,
             insert: insert.to_string(),
         }
+    }
+
+    /// Applies a shape's edits, each by its own author, committing after each.
+    fn build_shape(start: &str, edits: &[(usize, usize, &str)]) -> (LoroDoc, String) {
+        let (doc, id) = setup(start);
+        for (i, &(from, len, insert)) in edits.iter().enumerate() {
+            apply_tracked_edits(
+                &doc,
+                &id,
+                &[edit(from, len, insert)],
+                &author_for(i),
+                None,
+                1,
+            )
+            .unwrap();
+            doc.commit();
+        }
+        (doc, id)
+    }
+
+    /// The id of each live change of `id`, by its author key. Each author in
+    /// the shapes below has one change.
+    fn who_ids(doc: &LoroDoc, id: &str) -> HashMap<String, String> {
+        resolve_changes(doc, id)
+            .into_iter()
+            .map(|c| (c.who, c.id))
+            .collect()
+    }
+
+    /// Bob's own change among the ids his edit wrote.
+    fn bobs(ids: Vec<String>, alice: &str) -> String {
+        ids.into_iter()
+            .find(|id| id != alice)
+            .expect("bob's change")
+    }
+
+    /// Alice deletes, then Bob's edit swallows her gap. Returns both ids.
+    fn swallow(start: &str, alice: Edit, bob: Edit) -> (LoroDoc, String, String, String) {
+        let (doc, id) = setup(start);
+        let a = apply_tracked_edits(&doc, &id, &[alice], &ME, None, 1).unwrap()[0].clone();
+        doc.commit();
+        let b = bobs(
+            apply_tracked_edits(&doc, &id, &[bob], &BOB, None, 2).unwrap(),
+            &a,
+        );
+        doc.commit();
+        (doc, id, a, b)
     }
 
     #[test]
@@ -1207,24 +1592,37 @@ mod tests {
         doc.import(&other.export(loro::ExportMode::all_updates()).unwrap())
             .unwrap();
         doc.commit();
-        assert!(orphan.len() == 1);
-        // The orphan's file is in the document, so it resolves. Delete the
-        // file to orphan it, then add a record that is not a map.
+        assert_eq!(orphan.len(), 1);
+        // The orphan's file is gone, so its record resolves to nothing.
         doc.get_map(FILES).delete(&other_id).unwrap();
+        // An empty record: no span and no fragment.
+        let mut empty: HashMap<String, LoroValue> = HashMap::new();
+        for (k, v) in [
+            ("kind", LoroValue::from("change")),
+            ("file", LoroValue::from(id.as_str())),
+            ("who", LoroValue::from("me")),
+            ("author", LoroValue::from("Me")),
+            ("at", LoroValue::Double(1.0)),
+            ("run", LoroValue::Null),
+            ("start", LoroValue::Null),
+            ("end", LoroValue::Null),
+        ] {
+            empty.insert(k.to_string(), v);
+        }
+        doc.get_map(CHANGES)
+            .insert("empty", LoroValue::from(empty))
+            .unwrap();
+        // A record without a kind is not ours to touch.
         doc.get_map(CHANGES).insert("junk", 1).unwrap();
         doc.commit();
         assert_eq!(prune(&doc), 2);
+        assert!(doc.get_map(CHANGES).get("junk").is_some());
         assert_eq!(resolve_changes(&doc, &id).len(), 1);
         assert_eq!(prune(&doc), 0);
     }
 
-    const BOB: Author<'static> = Author {
-        who: "bob",
-        author: "Bob",
-    };
-
     #[test]
-    fn swallowed_deletion_points_reject_in_either_order() {
+    fn swallowed_deletions_reject_in_either_order() {
         for bob_first in [true, false] {
             let (doc, id) = setup("abcd");
             let a =
@@ -1247,167 +1645,31 @@ mod tests {
     }
 
     #[test]
-    fn a_swallowed_point_in_the_middle_of_the_new_deletion() {
+    fn a_deletion_inside_a_deletion_restores_in_either_order() {
         for bob_first in [true, false] {
             let (doc, id) = setup("abcde");
-            let a = apply_tracked_edits(&doc, &id, &[edit(2, 1, "")], &ME, None, 1).unwrap();
+            let a =
+                apply_tracked_edits(&doc, &id, &[edit(2, 1, "")], &ME, None, 1).unwrap()[0].clone();
             doc.commit();
             assert_eq!(body(&doc, &id), "abde");
             let b = bobs(
                 apply_tracked_edits(&doc, &id, &[edit(1, 2, "")], &BOB, None, 2).unwrap(),
-                &a[0],
+                &a,
             );
             doc.commit();
             assert_eq!(body(&doc, &id), "ae");
-            let order = if bob_first { [&b, &a[0]] } else { [&a[0], &b] };
-            for change in order {
-                assert!(reject(&doc, change));
-                doc.commit();
-            }
-            // Rejecting Alice first splits Bob's change; the parts are pending.
-            while let Some(c) = resolve_changes(&doc, &id).first() {
-                assert!(reject(&doc, &c.id.clone()));
-                doc.commit();
-            }
-            assert_eq!(body(&doc, &id), "abcde");
-        }
-    }
-
-    /// Bob's own change among the ids his edit wrote: the edit also rewrites
-    /// the cursor of Alice's change it swallowed.
-    fn bobs(ids: Vec<String>, alice: &str) -> String {
-        ids.into_iter()
-            .find(|id| id != alice)
-            .expect("bob's change")
-    }
-
-    /// Alice deletes then Bob swallows her point; reject in the given order
-    /// ("a" is Alice's change, "b" is Bob's).
-    fn swallow(start: &str, alice: Edit, bob: Edit) -> (LoroDoc, String, String, String) {
-        let (doc, id) = setup(start);
-        let a = apply_tracked_edits(&doc, &id, &[alice], &ME, None, 1).unwrap()[0].clone();
-        doc.commit();
-        let b = bobs(
-            apply_tracked_edits(&doc, &id, &[bob], &BOB, None, 2).unwrap(),
-            &a,
-        );
-        doc.commit();
-        (doc, id, a, b)
-    }
-
-    #[test]
-    fn rejecting_the_swallowed_change_first_splits_the_owner() {
-        let cases = [
-            ("abcd", (1, 1), (1, 1), "ad", "abcd"),
-            ("abcde", (2, 1), (1, 2), "ae", "abcde"),
-        ];
-        for (start, alice, bob, mid, end) in cases {
-            let (doc, id, a, b) =
-                swallow(start, edit(alice.0, alice.1, ""), edit(bob.0, bob.1, ""));
-            assert_eq!(body(&doc, &id), mid);
-            assert!(reject(&doc, &a));
-            doc.commit();
-            while let Some(c) = resolve_changes(&doc, &id).first() {
-                assert!(reject(&doc, &c.id.clone()));
-                doc.commit();
-            }
-            assert_eq!(body(&doc, &id), end, "{start}");
-            assert!(resolve_changes(&doc, &id).is_empty());
-            let _ = b;
-        }
-    }
-
-    #[test]
-    fn the_owner_is_a_replacement_and_the_swallowed_change_goes_first() {
-        let (doc, id, a, b) = swallow("abcde", edit(2, 1, ""), edit(1, 2, "Z"));
-        assert_eq!(body(&doc, &id), "aZe");
-        assert!(reject(&doc, &a));
-        doc.commit();
-        assert_eq!(body(&doc, &id), "acZe");
-        let pending = resolve_changes(&doc, &id);
-        assert_eq!(pending.len(), 2);
-        let left = pending.iter().find(|c| c.id == b).unwrap();
-        assert_eq!((left.from, left.to, left.deleted.as_str()), (1, 1, "b"));
-        let right = pending.iter().find(|c| c.id != b).unwrap();
-        assert_eq!((right.from, right.to, right.deleted.as_str()), (2, 3, "d"));
-        assert!(reject(&doc, &b));
-        doc.commit();
-        assert_eq!(body(&doc, &id), "abcZe");
-        assert!(reject(&doc, &right.id));
-        doc.commit();
-        assert_eq!(body(&doc, &id), "abcde");
-    }
-
-    #[test]
-    fn a_deletion_right_after_the_range_is_recorded_as_a_point() {
-        for bob_first in [true, false] {
-            let (doc, id, a, b) = swallow("abcd", edit(2, 1, ""), edit(1, 1, ""));
-            assert_eq!(body(&doc, &id), "ad");
-            let bob = resolve_changes(&doc, &id)
-                .into_iter()
-                .find(|c| c.id == b)
-                .unwrap();
-            assert_eq!(
-                bob.points,
-                vec![Point {
-                    id: a.clone(),
-                    at: 1
-                }]
-            );
             let order = if bob_first { [&b, &a] } else { [&a, &b] };
             for change in order {
                 assert!(reject(&doc, change));
                 doc.commit();
             }
-            assert_eq!(body(&doc, &id), "abcd");
+            assert_eq!(body(&doc, &id), "abcde");
             assert!(resolve_changes(&doc, &id).is_empty());
         }
     }
 
     #[test]
-    fn points_are_stored_in_utf16_units() {
-        // Bob deletes "\u{1F600}b"; Alice's deletion of "c" sat after "b".
-        let (doc, id, a, b) = swallow("a\u{1F600}bcd", edit(4, 1, ""), edit(1, 3, ""));
-        let stored = match doc.get_map(CHANGES).get(&b) {
-            Some(ValueOrContainer::Value(LoroValue::Map(m))) => m,
-            _ => panic!("entry"),
-        };
-        let Some(LoroValue::List(points)) = stored.get("points") else {
-            panic!("points");
-        };
-        let LoroValue::Map(pm) = &points[0] else {
-            panic!("point");
-        };
-        assert!(matches!(pm.get("at"), Some(LoroValue::Double(v)) if *v == 3.0));
-        let read = resolve_changes(&doc, &id)
-            .into_iter()
-            .find(|c| c.id == b)
-            .unwrap();
-        assert_eq!(
-            read.points,
-            vec![Point {
-                id: a.clone(),
-                at: 2
-            }]
-        );
-        // A hand-written entry reads the same way.
-        let text = text_of(&doc, &id).unwrap();
-        let start = text.get_cursor(1, Side::Left).unwrap();
-        let mut c = read.clone();
-        c.id = "hand".into();
-        c.points = vec![Point { id: a, at: 2 }];
-        doc.get_map(CHANGES)
-            .insert("hand", entry_value(&c, &start, None))
-            .unwrap();
-        let hand = read_entry(&doc, "hand").unwrap().change;
-        assert_eq!(hand.points[0].at, 2);
-        assert!(reject(&doc, &b));
-        doc.commit();
-        assert_eq!(body(&doc, &id), "a\u{1F600}bd");
-    }
-
-    #[test]
-    fn reject_many_puts_owners_first_in_either_order() {
+    fn reject_many_restores_in_either_order() {
         for bob_first in [true, false] {
             let (doc, id, a, b) = swallow("abcde", edit(2, 1, ""), edit(1, 2, "Z"));
             assert_eq!(body(&doc, &id), "aZe");
@@ -1423,12 +1685,248 @@ mod tests {
         }
     }
 
+    /// Nested deletions: (start, edits as (from, len, insert)). Edit i is made
+    /// by `author_for(i)`.
+    const SHAPES: &[(&str, &[(usize, usize, &str)])] = &[
+        ("abcde", &[(2, 1, ""), (1, 2, ""), (0, 1, "")]),
+        ("abcde", &[(2, 1, "X"), (1, 3, ""), (0, 1, "")]),
+        ("abcdefg", &[(3, 1, ""), (2, 3, ""), (1, 2, ""), (0, 1, "")]),
+        (
+            "abcdefgh",
+            &[(3, 1, ""), (2, 2, ""), (1, 2, ""), (0, 2, "")],
+        ),
+        ("abcdefgh", &[(3, 1, ""), (2, 2, ""), (0, 5, "")]),
+        ("abcdefg", &[(1, 1, ""), (4, 1, ""), (0, 5, "")]),
+        (
+            "abcdefgh",
+            &[(1, 1, ""), (4, 1, ""), (0, 5, ""), (0, 1, "")],
+        ),
+    ];
+
     #[test]
-    fn reject_many_leaves_the_parts_of_an_unselected_owner_pending() {
-        let (doc, id, a, _b) = swallow("abcde", edit(2, 1, ""), edit(1, 2, "Z"));
-        assert_eq!(reject_many(&doc, &[a]), 1);
+    fn nested_deletions_restore_in_any_order() {
+        for (start, edits) in SHAPES {
+            let (probe, pid) = build_shape(start, edits);
+            let whos: Vec<String> = resolve_changes(&probe, &pid)
+                .into_iter()
+                .map(|c| c.who)
+                .collect();
+            assert!(!whos.is_empty(), "{start} {edits:?}");
+            for order in permutations(&whos) {
+                // One at a time.
+                let (doc, id) = build_shape(start, edits);
+                let ids = who_ids(&doc, &id);
+                for w in &order {
+                    let cid = ids.get(w).unwrap().clone();
+                    assert!(reject(&doc, &cid), "{start} {edits:?} {order:?}");
+                    doc.commit();
+                }
+                assert_eq!(body(&doc, &id), *start, "{start} {edits:?} {order:?}");
+                assert!(resolve_changes(&doc, &id).is_empty());
+
+                // All at once.
+                let (doc, id) = build_shape(start, edits);
+                let ids = who_ids(&doc, &id);
+                let list: Vec<String> = order.iter().map(|w| ids.get(w).unwrap().clone()).collect();
+                assert_eq!(reject_many(&doc, &list), list.len());
+                doc.commit();
+                assert_eq!(body(&doc, &id), *start, "many: {start} {edits:?} {order:?}");
+                assert!(resolve_changes(&doc, &id).is_empty());
+            }
+        }
+    }
+
+    #[test]
+    fn accepting_the_middle_change_and_rejecting_the_others_gives_ace() {
+        let (doc, id) = build_shape("abcde", SHAPES[0].1);
+        let rows = resolve_changes(&doc, &id);
+        for c in rows.iter().filter(|c| c.who == "bob") {
+            assert!(accept(&doc, &c.id));
+        }
+        for c in rows.iter().filter(|c| c.who != "bob") {
+            assert!(reject(&doc, &c.id));
+        }
         doc.commit();
-        assert_eq!(body(&doc, &id), "acZe");
-        assert_eq!(resolve_changes(&doc, &id).len(), 2);
+        assert_eq!(body(&doc, &id), "ace");
+        assert!(resolve_changes(&doc, &id).is_empty());
+    }
+
+    #[test]
+    fn seeded_fuzz_pure_deletions() {
+        // Random pure deletions by random authors. Oracle: in any decision
+        // order, an original character survives iff its deleter was rejected,
+        // and no record is left behind.
+        for seed in [7, 11] {
+            let mut rng = Lcg::new(seed);
+            for iter in 0..150 {
+                let start: String = ALPHA[..5 + rng.pick(8)].to_string();
+                let (doc, id) = setup(&start);
+                let mut cur: Vec<char> = start.chars().collect();
+                let mut steps: Vec<(usize, usize, &str)> = Vec::new();
+                let n = 2 + rng.pick(4);
+                let mut i = 0;
+                while i < n && !cur.is_empty() {
+                    let from = rng.pick(cur.len());
+                    let len = 1 + rng.pick((cur.len() - from).min(4));
+                    let w = AUTHORS[rng.pick(4)];
+                    steps.push((from, from + len, w));
+                    apply_tracked_edits(&doc, &id, &[edit(from, len, "")], &who_of(w), None, 1)
+                        .unwrap();
+                    doc.commit();
+                    cur.drain(from..from + len);
+                    i += 1;
+                }
+                let rows = resolve_changes(&doc, &id);
+                let mut decisions: Vec<(String, bool, String)> = Vec::new();
+                for r in &rows {
+                    let accept_it = rng.rnd() < 0.5;
+                    decisions.push((r.id.clone(), accept_it, r.deleted.clone()));
+                }
+                let gone: String = decisions
+                    .iter()
+                    .filter(|d| d.1)
+                    .map(|d| d.2.as_str())
+                    .collect();
+                let expected: String = start.chars().filter(|c| !gone.contains(*c)).collect();
+                rng.shuffle(&mut decisions);
+                let label = format!(
+                    "seed={seed} iter={iter} start={start} steps={steps:?} decisions={decisions:?}"
+                );
+                for (cid, accept_it, _) in &decisions {
+                    if doc.get_map(CHANGES).get(cid).is_none() {
+                        continue;
+                    }
+                    if *accept_it {
+                        assert!(accept(&doc, cid), "{label}");
+                    } else {
+                        assert!(reject(&doc, cid), "{label}");
+                    }
+                    doc.commit();
+                }
+                assert_eq!(body(&doc, &id), expected, "{label}");
+                assert_eq!(doc.get_map(CHANGES).keys().count(), 0, "{label}");
+            }
+        }
+    }
+
+    #[test]
+    fn seeded_fuzz_with_insertions() {
+        // Random deletions, insertions and replacements by random authors.
+        // Oracle: an original character is gone iff its first deleter was
+        // accepted, an inserted character is kept iff its author was accepted,
+        // and the original characters keep their order.
+        for seed in [7u64, 11] {
+            let mut rng = Lcg::new(seed);
+            let mut insert_counter: u32 = 0;
+            for iter in 0..150 {
+                let start: String = ALPHA[..5 + rng.pick(8)].to_string();
+                let (doc, id) = setup(&start);
+                // Each character with the index of the author who inserted it.
+                let mut model: Vec<(char, Option<usize>)> =
+                    start.chars().map(|c| (c, None)).collect();
+                // Original character to the index of the author who deleted it first.
+                let mut deleted_by: HashMap<char, usize> = HashMap::new();
+                let mut steps: Vec<(usize, usize, String, &str)> = Vec::new();
+                let n = 2 + rng.pick(5);
+                for _ in 0..n {
+                    let w = rng.pick(4);
+                    let from = rng.pick(model.len() + 1);
+                    let len = rng.pick((model.len() - from).min(4) + 1);
+                    let mut ins = String::new();
+                    if len == 0 || rng.rnd() < 0.4 {
+                        let k = 1 + rng.pick(2);
+                        for _ in 0..k {
+                            ins.push(char::from_u32(0x391 + insert_counter % 24).unwrap());
+                            insert_counter += 1;
+                        }
+                    }
+                    if len == 0 && ins.is_empty() {
+                        continue;
+                    }
+                    steps.push((from, from + len, ins.clone(), AUTHORS[w]));
+                    apply_tracked_edits(
+                        &doc,
+                        &id,
+                        &[edit(from, len, &ins)],
+                        &who_of(AUTHORS[w]),
+                        None,
+                        1,
+                    )
+                    .unwrap();
+                    doc.commit();
+                    for (ch, by) in &model[from..from + len] {
+                        if by.is_none() && !deleted_by.contains_key(ch) {
+                            deleted_by.insert(*ch, w);
+                        }
+                    }
+                    let inserted: Vec<(char, Option<usize>)> =
+                        ins.chars().map(|c| (c, Some(w))).collect();
+                    let tail = model.split_off(from + len);
+                    model.truncate(from);
+                    model.extend(inserted);
+                    model.extend(tail);
+                    let text: String = model.iter().map(|(c, _)| *c).collect();
+                    assert_eq!(
+                        body(&doc, &id),
+                        text,
+                        "seed={seed} iter={iter} start={start} steps={steps:?}"
+                    );
+                }
+
+                let mut verdict = [false; 4];
+                for v in verdict.iter_mut() {
+                    *v = rng.rnd() < 0.5;
+                }
+                let label = format!(
+                    "seed={seed} iter={iter} start={start} steps={steps:?} accept={verdict:?}"
+                );
+                let rows = resolve_changes(&doc, &id);
+                let mut order = rows.clone();
+                rng.shuffle(&mut order);
+                for r in &order {
+                    if doc.get_map(CHANGES).get(&r.id).is_none() {
+                        continue;
+                    }
+                    let idx = AUTHORS.iter().position(|a| *a == r.who).unwrap();
+                    if verdict[idx] {
+                        assert!(accept(&doc, &r.id), "{label}");
+                    } else {
+                        assert!(reject(&doc, &r.id), "{label}");
+                    }
+                    doc.commit();
+                }
+
+                let expected_original: Vec<char> = start
+                    .chars()
+                    .filter(|ch| match deleted_by.get(ch) {
+                        None => true,
+                        Some(&w) => !verdict[w],
+                    })
+                    .collect();
+                let mut expected_inserted: Vec<char> = model
+                    .iter()
+                    .filter_map(|(c, by)| match by {
+                        Some(w) if verdict[*w] => Some(*c),
+                        _ => None,
+                    })
+                    .collect();
+                expected_inserted.sort();
+                let final_chars: Vec<char> = body(&doc, &id).chars().collect();
+                let final_original: Vec<char> = final_chars
+                    .iter()
+                    .copied()
+                    .filter(|c| (*c as u32) < 0x300)
+                    .collect();
+                let mut final_inserted: Vec<char> = final_chars
+                    .iter()
+                    .copied()
+                    .filter(|c| (*c as u32) >= 0x300)
+                    .collect();
+                final_inserted.sort();
+                assert_eq!(final_original, expected_original, "{label}");
+                assert_eq!(final_inserted, expected_inserted, "{label}");
+                assert_eq!(doc.get_map(CHANGES).keys().count(), 0, "{label}");
+            }
+        }
     }
 }
