@@ -98,12 +98,12 @@ const EDITOR_TOOLS: [&str; 2] = ["document_propose", "document_apply"];
 /// `librepaper`.
 const MCP_PREFIX: &str = "mcp__librepaper__";
 
-/// The LibrePaper document tool a permission request is for. The adapter
-/// states the full tool name in `_meta.claudeCode.toolName` and the server
-/// in `_meta.claudeCode.mcpServer.name`; that name wins when present.
-/// Otherwise the call title must be exactly the bare tool name. Only the
-/// bare name and `mcp__librepaper__<tool>` match, and a request that names
-/// any other MCP server never does.
+/// The LibrePaper document tool a permission request is for, only when the
+/// request proves the tool comes from the `librepaper` MCP server. Claude's
+/// adapter states the server in `_meta.claudeCode.mcpServer.name` and the
+/// tool in `_meta.claudeCode.toolName`. Without that metadata the name must
+/// carry the `mcp__librepaper__` namespace. A bare title such as
+/// `document_comment` could belong to any tool, so it goes to the user.
 fn librepaper_tool(
     tool_call: &agent_client_protocol::schema::v1::ToolCallUpdate,
 ) -> Option<&'static str> {
@@ -111,20 +111,19 @@ fn librepaper_tool(
         .meta
         .as_ref()
         .and_then(|meta| meta.get("claudeCode"));
-    if let Some(server) = claude
+    let server = claude
         .and_then(|claude| claude.get("mcpServer"))
         .and_then(|server| server.get("name"))
-        .and_then(serde_json::Value::as_str)
-    {
-        if server != "librepaper" {
-            return None;
-        }
-    }
+        .and_then(serde_json::Value::as_str);
     let name = claude
         .and_then(|claude| claude.get("toolName"))
         .and_then(serde_json::Value::as_str)
         .or(tool_call.fields.title.as_deref())?;
-    let bare = name.strip_prefix(MCP_PREFIX).unwrap_or(name);
+    let bare = match server {
+        Some("librepaper") => name.strip_prefix(MCP_PREFIX).unwrap_or(name),
+        Some(_) => return None,
+        None => name.strip_prefix(MCP_PREFIX)?,
+    };
     COMMENTER_TOOLS
         .iter()
         .chain(EDITOR_TOOLS.iter())
@@ -705,7 +704,7 @@ mod tests {
     }
 
     #[test]
-    fn claude_mcp_tool_names_and_bare_names_match() {
+    fn claude_and_namespaced_tool_names_match() {
         let claude = serde_json::json!({"claudeCode": {
             "toolName": "mcp__librepaper__document_comment",
             "mcpServer": {"name": "librepaper", "source": "config"},
@@ -718,10 +717,6 @@ mod tests {
             Some("document_comment")
         );
         assert_eq!(
-            librepaper_tool(&tool_call(Some("document_read"), None)),
-            Some("document_read")
-        );
-        assert_eq!(
             librepaper_tool(&tool_call(Some("mcp__librepaper__document_apply"), None)),
             Some("document_apply")
         );
@@ -731,6 +726,11 @@ mod tests {
     fn unknown_and_foreign_tools_do_not_match() {
         assert_eq!(librepaper_tool(&tool_call(Some("Bash"), None)), None);
         assert_eq!(librepaper_tool(&tool_call(None, None)), None);
+        // A bare title names no server, so any tool could carry it.
+        assert_eq!(
+            librepaper_tool(&tool_call(Some("document_read"), None)),
+            None
+        );
         assert_eq!(
             librepaper_tool(&tool_call(Some("mcp__other__document_read"), None)),
             None
