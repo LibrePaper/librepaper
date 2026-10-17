@@ -5,7 +5,7 @@
 // project defines or loads is read from its own sources.
 import { snippet, snippetCompletion } from "@codemirror/autocomplete";
 import workshop from "./latex-workshop.json" with { type: "json" };
-import { PACKAGES } from "./latex-packages.js";
+import { CORE, PACKAGES } from "./latex-packages.js";
 import { pathOptions } from "./paths.js";
 
 const REFERENCE = /\\(?:ref|eqref|pageref|autoref|cref|Cref|nameref)\*?\{([^{}]*)$/;
@@ -122,6 +122,8 @@ function arityTemplate(arity) {
 // Built once at module load: the LaTeX-Workshop lists and each package's list.
 const WORKSHOP_COMMANDS = workshop.commands.map((item) => commandEntry(item.name, item.snippet, item.detail));
 const WORKSHOP_ENVIRONMENTS = workshop.environments.map((item) => environmentEntry(item.name, item.snippet, "environment"));
+const CORE_COMMANDS = CORE.commands.map((item) => commandEntry(item.name, item.snippet, item.detail ?? "LaTeX"));
+const CORE_ENVIRONMENTS = CORE.environments.map((item) => environmentEntry(item.name, item.snippet, "environment"));
 const PACKAGE_COMMANDS = Object.fromEntries(Object.entries(PACKAGES).map(([name, entry]) => [
   name,
   entry.commands.map((item) => commandEntry(item.name, item.snippet, item.detail ?? name)),
@@ -226,6 +228,7 @@ export function latexCompletion(project) {
       const packages = loadedPackages(found.packages);
       const entries = unique([
         ...found.environments.map((name) => environmentEntry(name, undefined, "defined in project")),
+        ...CORE_ENVIRONMENTS,
         ...WORKSHOP_ENVIRONMENTS,
         ...packages.flatMap((name) => PACKAGE_ENVIRONMENTS[name]),
       ]);
@@ -248,6 +251,7 @@ export function latexCompletion(project) {
           item.arity ? `${item.name}${arityTemplate(item.arity)}` : undefined,
           "defined in project",
         )),
+        ...CORE_COMMANDS,
         ...WORKSHOP_COMMANDS,
         ...packages.flatMap((name) => PACKAGE_COMMANDS[name]),
       ]);
