@@ -68,6 +68,19 @@ already carrying ranks that rise in that order keep them; the others take a
 value between their neighbours (midpoints, or one past the end), so a peer
 adding a fragment beside another's does not move it.
 
+Joins: adjacent fragments of one change become one record only when both may
+be rewritten by this session: a fragment not yet stored, or one this session
+minted (`joinable` in the planner; the browser passes the ids it created, the
+server passes none). A stored fragment that another session of the same
+author may be extending at this moment keeps its own record, so neither
+session's deletion is lost. Rows concatenate fragments either way.
+
+A fragment never sits inside a span in one peer's sequence of edits, but a
+span its author extends leftward while another peer anchors a fragment on its
+first character leaves one there after they sync. On read, such a fragment is
+placed at the span's start: its text preceded the span's then first
+character.
+
 Cursors and the write discipline:
 - Span `[from, to)`: `start = text.getCursor(from, -1)`, `end =
   text.getCursor(to - 1, 1)` (in the browser `to - 1` is the start index of
@@ -100,7 +113,10 @@ Settling: `prune` drops an empty record (a change with no span and no
 fragment, or a fragment of a change that no longer exists after re-parenting)
 and heals a stale cursor onto a live character only when the record's `at` is
 older than a minute, so that its author's other session has had time to sync
-what it was doing to it. A fragment whose change was decided while the
+what it was doing to it. Healing is a forced write (`heal`): the ordinary
+suppression of a cursor write whose position would not change does not apply,
+so a settled stale cursor is looked up the slow way once and then rests on a
+live character. A fragment whose change was decided while the
 fragment was written (an orphan) is re-parented by `prune` to a fresh change
 record built from the author fields the fragment carries, so the deletion it
 records can still be decided.
@@ -119,17 +135,18 @@ still restore its text twice, as before.
 
 Records of the earlier model (plain values with no `kind`, a `deleted` string
 with `start` and `end` cursors, and an optional `points` list of swallowed
-pure deletions with their UTF-16 offset `at` in `deleted`) are converted by
-the browser's `migrateChanges`, which the editor runs when it opens a
-document, before every snapshot it plans against, and at the start of
-`trackedSplice`, `untrackedSplice` and `recordEdits`. Each old record becomes
-a change container under its own id. Its `deleted` text splits at each
-point's `at`, and the pointed change's text (and, nested, its own points)
-sits between the pieces, in one gap at the owner's anchor; a point that
-another point of the same owner also lists is expanded only inside that inner
-one. The fragments get ids derived from the owner's id and their index, so two
-peers converting the same document write the same records. The server
-ignores old records until an editor has converted them.
+pure deletions with their UTF-16 offset `at` in `deleted`) are **read in
+place**: both planners expand them, when resolving a file, into the change
+and the fragments they stand for (the owner's `deleted` split at each point's
+`at`, the pointed deletions between the pieces, nested points inside their
+inner owner; fragment ids `<owner id>:<index>`, rank the index, anchored on
+the owner's `start`). Nothing is written on open, so two peers opening an old
+document never race. An old record is rewritten as containers (`convertLegacy`:
+the owner, the records it points at, and their fragments, under those same
+ids) the first time something has to be written to it: a planner write that
+changes one of its fragments or its span, or a decision on it. The one race
+left is two peers converting the same old record at the same moment, which is
+the same race as two peers editing one change at once and is rarer still.
 
 ## The planner (pure, shared by JS and Rust)
 
