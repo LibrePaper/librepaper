@@ -201,7 +201,6 @@ const NEW_WINDOW_SCRIPT: &str = r#"if (window.top === window) {
 // the page treats them as a file drag. The drop fetches the real files from the
 // shell and hands them over in an expando on the DataTransfer, with their
 // relative paths and the dropped folders.
-#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
 const DROP_SCRIPT: &str = r#"if (window.top === window) {
   let last = null;
   const fire = (type, target, x, y, dataTransfer) =>
