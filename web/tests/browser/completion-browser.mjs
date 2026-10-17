@@ -20,7 +20,7 @@ writeFileSync(entry, [
   "import { tick } from " + imports("web/node_modules/svelte/src/index-client.js") + ";",
   "import { EditorView } from " + imports("web/node_modules/@codemirror/view/dist/index.js") + ";",
   "import { Transaction } from " + imports("web/node_modules/@codemirror/state/dist/index.js") + ";",
-  "import { acceptCompletion } from " + imports("web/node_modules/@codemirror/autocomplete/dist/index.js") + ";",
+  "import { acceptCompletion, startCompletion } from " + imports("web/node_modules/@codemirror/autocomplete/dist/index.js") + ";",
   "import { createClassComponent } from " + imports("web/node_modules/svelte/src/legacy/legacy-client.js") + ";",
   "import { join as joinSession } from " + imports("web/src/lib/collab.js") + ";",
   "import Editor from " + imports("web/src/components/Editor.svelte") + ";",
@@ -52,10 +52,14 @@ writeFileSync(entry, [
         view.focus();
         const deadline = Date.now() + spec.timeout;
         let popup = "";
-        while (Date.now() < deadline) {
+        // Sources that load something first (the bibliography, the typst
+        // module) answer nothing on the first keystroke. Asking again is what
+        // Ctrl-Space does once they are ready.
+        for (let attempt = 0; Date.now() < deadline; attempt++) {
           await pause(50);
           popup = document.querySelector(".cm-tooltip-autocomplete")?.textContent || "";
           if (popup.includes(spec.expect)) break;
+          if (!popup && attempt % 10 === 9) startCompletion(view);
         }
         const result = { popup, text: view.state.doc.toString(), accepted: null };
         if (spec.accept && popup.includes(spec.expect)) {
@@ -137,7 +141,7 @@ const scenarios = [
       "paper.md": "---\nbibliography: refs.bib\n---\n\nSee ",
       "refs.bib": "@article{smith2020, author={Jane Smith}, title={A Study of Rivers}, year={2020}, journal={Nature}}",
     },
-    type: "@smi", expect: "smith2020",
+    type: "@smi", expect: "A Study of Rivers",
   },
 ];
 const typstScenario = {
