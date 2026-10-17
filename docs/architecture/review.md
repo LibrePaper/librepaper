@@ -31,7 +31,7 @@ Track changes are part of the shared document. A tracked edit goes into the text
 
 - A change is one author's edit of one region: the text it inserted and the original text it deleted. Replacing "cat" with "tabby" is one change. Either side can be empty.
 - A change record keeps two cursors, one at each end of the inserted text. The cursors follow the text as others edit around it.
-- Deleted text lives in gaps. A gap is one point in the text where text was taken out. It holds the deleted texts that sat there as an ordered list of fragments, each owned by a change. There is one gap per point, so several authors deleting around the same place put their fragments in one gap in document order.
+- Deleted text is kept as fragments. A fragment is one piece of deleted text with its own cursor on the character that followed it and a rank. The fragments that resolve to one point form a gap, in rank order, so several authors deleting around the same place come back in document order. No record is ever moved, so two people editing near one point at the same moment never overwrite each other.
 - Accept removes the record. The text stays.
 - Reject removes the inserted text and puts the change's fragments back where their gaps are. Other changes' fragments in those gaps become gaps of their own on either side of the restored text, so whatever is decided first, the text comes back in the order it had.
 - Each change is decided on its own, in any order. Changes never depend on each other. The session that made a change does not matter.
@@ -50,5 +50,5 @@ The model has these limits.
 - Editing inside someone else's insertion does not nest. A deletion there shrinks their text. An insertion splits it in two.
 - A rejected deletion returns as new characters. Comments on the old characters may not reattach exactly.
 - After a history trim, a change whose text was trimmed away is pruned.
-- Two editors deciding different changes with fragments in one gap at the same moment race on that gap's record. The later write wins.
+- Two people editing the very same point at the same moment can leave the deleted fragments there in either order. Nothing is lost.
 
