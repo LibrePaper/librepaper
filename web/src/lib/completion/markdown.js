@@ -177,6 +177,7 @@ function escapeDestination(path) {
   return path
     .replace(/%/g, "%25")
     .replace(/#/g, "%23")
+    .replace(/\?/g, "%3F")
     .replace(/</g, "%3C")
     .replace(/>/g, "%3E");
 }

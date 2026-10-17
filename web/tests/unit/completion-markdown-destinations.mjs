@@ -90,3 +90,9 @@ const option = (result, label) => result.options.find((item) => item.label === l
   const { result } = complete("[x](50%2520off.md#|", { texts, files: Object.keys(texts) });
   assert.deepEqual(result.options.map((item) => item.label), ["50%2520off.md#deal"]);
 }
+
+// A "?" in a name is not a query.
+{
+  const { result } = complete("[x](|", { files: ["notes?draft.md"] });
+  assert.equal(option(result, "notes?draft.md").apply, "notes%3Fdraft.md");
+}

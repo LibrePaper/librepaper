@@ -16,7 +16,7 @@ const PACKAGE = /\\usepackage(?:\[[^\]]*\])?\{([^{}]*)$/;
 const ENVIRONMENT = /\\begin\{([A-Za-z*]*)$/;
 const COMMAND = /(?<!\\)\\([A-Za-z]*)$/;
 
-const DEFINED_COMMAND = /\\(?:re)?newcommand\*?\s*(?:\{\\([A-Za-z]+)\}|\\([A-Za-z]+))\s*(?:\[(\d)\])?/g;
+const DEFINED_COMMAND = /\\(?:re)?newcommand\*?\s*(?:\{\\([A-Za-z]+)\}|\\([A-Za-z]+))\s*(?:\[(\d)\](\s*\[)?)?/g;
 const DEFINED_OPERATOR = /\\DeclareMathOperator\*?\s*\{\\([A-Za-z]+)\}/g;
 const DEFINED_DEF = /\\def\\([A-Za-z]+)/g;
 const DEFINED_ENVIRONMENT = /\\(?:re)?newenvironment\*?\{([A-Za-z]+\*?)\}/g;
@@ -74,7 +74,9 @@ function definitions(texts) {
   for (const text of Object.values(texts)) {
     const code = codeOf(text);
     for (const match of code.matchAll(DEFINED_COMMAND)) {
-      commands.push({ name: match[1] || match[2], arity: Number(match[3] || 0) });
+      // With a default, the first argument is optional and is left out.
+      const arity = Number(match[3] || 0) - (match[4] ? 1 : 0);
+      commands.push({ name: match[1] || match[2], arity: Math.max(0, arity) });
     }
     for (const match of code.matchAll(DEFINED_OPERATOR)) commands.push({ name: match[1], arity: 0 });
     for (const match of code.matchAll(DEFINED_DEF)) commands.push({ name: match[1], arity: 0 });

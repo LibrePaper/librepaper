@@ -78,22 +78,31 @@ function labelsIn(text, path) {
   const states = fenceStates(lines);
   const found = [];
   const add = (id, index) => found.push({ id, kind: id.slice(0, id.indexOf("-")), path, line: index + 1 });
+  // One label per executable cell. A "#| label:" line overrides a label in
+  // the header ({r, label="fig-x"}), as Quarto reads them.
+  const cells = new Map();
   lines.forEach((line, index) => {
     const fence = states[index];
     if (fence) {
-      // An executable cell can name itself in its header: {r, label="fig-x"}.
-      if (fence.info.startsWith("{") && states[index - 1] !== fence) {
+      if (!fence.info.startsWith("{")) return;
+      const cell = cells.get(fence) || {};
+      cells.set(fence, cell);
+      if (states[index - 1] !== fence) {
         const header = fence.info.match(HEADER_LABEL);
-        if (header && LABEL.test(header[1])) add(header[1], index);
+        if (header && LABEL.test(header[1])) cell.header = { id: header[1], index };
         return;
       }
-      const match = fence.info.startsWith("{") && line.match(CELL_LABEL);
-      if (match && LABEL.test(match[1])) add(match[1], index);
+      const match = line.match(CELL_LABEL);
+      if (match && LABEL.test(match[1]) && !cell.option) cell.option = { id: match[1], index };
       return;
     }
     for (const match of line.replace(/`[^`]*`/g, "").matchAll(ATTRIBUTE_ID)) add(match[1], index);
   });
-  return found;
+  for (const cell of cells.values()) {
+    const label = cell.option || cell.header;
+    if (label) add(label.id, label.index);
+  }
+  return found.sort((a, b) => a.line - b.line);
 }
 
 /**

@@ -195,3 +195,11 @@ function applyTo(option, doc, from, to) {
     assert.equal(snippet.includes("TM_"), false, `${item.name}: ${snippet}`);
   }
 }
+
+// A command whose first argument has a default leaves the optional one out.
+{
+  const doc = "\\fo";
+  const result = complete(doc, { texts: { "preamble.tex": "\\newcommand{\\foo}[2][default]{#1 #2}" } });
+  const foo = result.options.find((option) => option.label === "foo");
+  assert.equal(applyTo(foo, doc, 1, doc.length), "\\foo{}");
+}

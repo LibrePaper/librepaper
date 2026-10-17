@@ -156,3 +156,9 @@ const labels = (result) => (result ? result.options.map((option) => option.label
   const texts = { "a.qmd": "```{r, label=\"fig-plot\"}\nplot(1)\n```\n\n```{python label='tbl-x'}\n1\n```\n" };
   assert.deepEqual(quartoLabels(texts).map((label) => label.id), ["fig-plot", "tbl-x"]);
 }
+
+// A #| label line wins over a header label in the same cell.
+{
+  const texts = { "a.qmd": "```{r, label=\"fig-old\"}\n#| label: fig-new\nplot(1)\n```\n" };
+  assert.deepEqual(quartoLabels(texts).map((label) => label.id), ["fig-new"]);
+}
