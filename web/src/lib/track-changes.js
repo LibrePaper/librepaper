@@ -32,7 +32,7 @@ const SETTLE_MS = 60_000;
  * @typedef {{ id?: string, change: string, text: string, rank?: number }} Fragment
  * @typedef {{ id: string, change: string, text: string, rank: number, stale: boolean }} ResolvedFragment
  * @typedef {{ id: string, who: string, author: string, run: string | null, at: number, from: number, to: number }} Change
- * @typedef {Change & { stale: boolean, hasCursor: boolean, legacy?: boolean }} ResolvedChange
+ * @typedef {Change & { stale: boolean, hasCursor: boolean, legacy?: boolean, orphan?: boolean }} ResolvedChange
  * @typedef {{ id: string, at: number, fragments: Fragment[] }} Gap
  * @typedef {{ id: string, at: number, fragments: ResolvedFragment[], stale: boolean }} ResolvedGap
  * @typedef {{ id: string, change: string, text: string, rank: number, at: number, stale: boolean, who: any, author: any, run: any, when: any }} OrphanFragment
@@ -175,7 +175,14 @@ function planOne(cur, changes, gaps, ef, et, insert, me, run, now, mintId, untra
   const outChanges = [];
   const newSpans = [];
   for (const c of changes) {
-    if (mine && owned.has(c.id)) continue;
+    if (mine && owned.has(c.id)) {
+      // Absorbed into the merged change. Its record stays, untouched and
+      // empty: another session of the author may be extending its span at
+      // this moment, and that extension must keep a record to live under.
+      // Prune drops it once it has rested empty.
+      if (c.id !== mine.id) outChanges.push({ ...c, from: ef + len, to: ef + len, emptied: true });
+      continue;
+    }
     if (!hasSpan(c)) {
       // A pure-deletion change: its place follows its fragments. Keep it unless
       // all its fragments vanished (handled below).
@@ -336,7 +343,8 @@ const byRank = (a, b) => a.rank - b.rank || (a.id < b.id ? -1 : a.id > b.id ? 1 
  * fragments that resolve to one offset, in rank order. A change's `stale` flag
  * is set when one of its cursors pointed at a deleted character, and a gap's
  * when one of its fragments did. Records that do not resolve are left out.
- * `orphans` are the fragments whose change is gone.
+ * A fragment whose change is gone is read as a change of its own, under its
+ * own id, when it has an author; `orphans` are the others, which prune drops.
  *
  * @param {import("loro-crdt").LoroDoc} doc
  * @param {string} fileId
@@ -412,9 +420,17 @@ export function resolveFile(doc, fileId) {
       changes.push({ id, who: value.get("who"), author: value.get("author"), run: value.get("run") ?? null, at: value.get("at"), from, to, stale, hasCursor: startBytes instanceof Uint8Array });
     }
   }
-  // Fragments of a change that no longer exists were accepted by someone
-  // else while they were written; they are inert and prune drops them.
+  // A fragment whose change is gone was written while someone accepted that
+  // change. The deletion it records is still pending, so it is read as a
+  // change of its own, under the fragment's id, and decided like any other.
+  // Nothing is written for that: every reader derives the same row.
   const known = new Set(changes.map((c) => c.id));
+  for (const f of /** @type {any[]} */ (fragments)) {
+    if (known.has(f.change) || typeof f.who !== "string") continue;
+    f.change = f.id;
+    known.add(f.id);
+    changes.push({ id: f.id, who: f.who, author: f.author ?? f.who, run: f.run ?? null, at: typeof f.when === "number" ? f.when : 0, from: f.at, to: f.at, stale: f.stale, hasCursor: false, orphan: true });
+  }
   const live = fragments.filter((f) => known.has(f.change));
   // A fragment never sits inside a span in one peer's sequence of edits, but
   // a span extended leftward by its author while another peer anchored a
@@ -704,7 +720,8 @@ function rankGap(fragments) {
 
 // Writes one fragment: a new container, or the keys of an existing one that
 // changed. `owner` names the change the fragment belongs to, for the author
-// fields a fragment carries so that it can be re-parented if its change goes.
+// fields a fragment carries so that it can be read as a change of its own if
+// its change goes.
 // A fragment of a legacy record is converted together with that record, and
 // only when something about it changes.
 function writeFragment(doc, id, fileId, f, startBytes, at, rank, owner, heal = false) {
@@ -737,7 +754,8 @@ function writeFragment(doc, id, fileId, f, startBytes, at, rank, owner, heal = f
       record.set("at", owner.at);
     }
   }
-  if (record.get("change") !== f.change) record.set("change", f.change);
+  // A fragment read as its own change keeps pointing at the change it had.
+  if (f.change !== id && record.get("change") !== f.change) record.set("change", f.change);
   if (record.get("text") !== f.text) record.set("text", f.text);
   if (startBytes) {
     if (heal && cursorPos(doc, record.get("start"))?.stale) record.set("start", startBytes);
@@ -786,7 +804,7 @@ export function writePlanned(doc, fileId, plan) {
   }
   for (const c of plan.changes) {
     if (c.state === "removed") map.delete(c.id);
-    else if (c.state === "set" && writeChange(doc, text, fileId, c)) written.push(c.id);
+    else if (c.state === "set" && !c.orphan && writeChange(doc, text, fileId, c)) written.push(c.id);
   }
   return written;
 }
@@ -865,11 +883,21 @@ export function accept(doc, id) {
   const plain = /** @type {any} */ (map.get(id));
   if (plain !== undefined && !(plain instanceof LoroMap) && typeof plain.file === "string") convertLegacy(doc, plain.file, id);
   const value = map.get(id);
-  if (!(value instanceof LoroMap) || value.get("kind") !== "change") return false;
+  if (!(value instanceof LoroMap) || !decidable(map, value)) return false;
   for (const [fid, fv] of [...map.entries()]) if (fv instanceof LoroMap && fv.get("kind") === "fragment" && fv.get("change") === id) map.delete(fid);
   map.delete(id);
   doc.commit();
   return true;
+}
+
+// A record a decision applies to: a change, or a fragment whose change is
+// gone, which is read as a change of its own.
+function decidable(map, value) {
+  const kind = value.get("kind");
+  if (kind === "change") return true;
+  if (kind !== "fragment") return false;
+  const parent = map.get(value.get("change"));
+  return !(parent instanceof LoroMap && parent.get("kind") === "change");
 }
 
 // Rejects one change without committing. See `reject`.
@@ -878,7 +906,7 @@ function rejectOne(doc, id) {
   const plain = /** @type {any} */ (map.get(id));
   if (plain !== undefined && !(plain instanceof LoroMap) && typeof plain.file === "string") convertLegacy(doc, plain.file, id);
   const value = map.get(id);
-  if (!(value instanceof LoroMap) || value.get("kind") !== "change") return false;
+  if (!(value instanceof LoroMap) || !decidable(map, value)) return false;
   const file = /** @type {string} */ (value.get("file"));
   const text = fileText(doc, file);
   if (text) {
@@ -943,8 +971,8 @@ function rejectOne(doc, id) {
 
 /**
  * Rejects a change: puts the original text back, then drops the record.
- * Returns false when the id is not a change record. An orphaned record is only
- * dropped.
+ * Returns false when the id is not a change record. A fragment whose change is
+ * gone is read as a change of its own, and is rejected the same way.
  *
  * @param {import("loro-crdt").LoroDoc} doc
  * @param {string} id
@@ -971,17 +999,17 @@ export function rejectMany(doc, ids) {
 }
 
 /**
- * Drops orphaned records, and empty ones that have stayed empty a while,
- * re-parents fragments whose change is gone, and re-anchors stale cursors that
- * have rested too.
- * Legacy records with nothing left are dropped as well; the others are read in
- * place. Does not commit. Returns the number of records deleted; re-parented
- * records are not counted.
+ * Drops the records of files that are gone, empty records that have stayed
+ * empty a while, and legacy records with nothing left to show. Re-anchors stale
+ * cursors that have stayed stale a while. A fragment whose change is gone is
+ * read as a change of its own (see `resolveFile`), so prune keeps it. Does not
+ * commit. Returns the number of records deleted.
  *
  * @param {import("loro-crdt").LoroDoc} doc
+ * @param {number} [now] the clock in milliseconds; tests pass a later time
  * @returns {number}
  */
-export function prune(doc) {
+export function prune(doc, now = Date.now()) {
   const map = doc.getMap(CHANGES);
   let count = 0;
   const files = new Set();
@@ -992,18 +1020,7 @@ export function prune(doc) {
       for (const [id, v] of [...map.entries()]) { if (v instanceof LoroMap && v.get("file") === file) { map.delete(id); count += 1; } }
       continue;
     }
-    let { changes, gaps, orphans } = resolveFile(doc, file);
-    // A fragment whose change was decided while it was written is given a
-    // change of its own, so the deletion it records can still be decided.
-    if (orphans.length > 0) {
-      for (const f of orphans) {
-        if (typeof f.who !== "string") continue;
-        const id = crypto.randomUUID();
-        writeChange(doc, text, file, { id, who: f.who, author: f.author ?? f.who, run: f.run ?? null, at: typeof f.when === "number" ? f.when : Date.now(), from: 0, to: 0 });
-        /** @type {LoroMap} */ (map.get(f.id)).set("change", id);
-      }
-      ({ changes, gaps } = resolveFile(doc, file));
-    }
+    const { changes, gaps } = resolveFile(doc, file);
     const liveIds = new Set(changes.map((c) => c.id));
     for (const g of gaps) for (const f of g.fragments) liveIds.add(f.id);
     // An empty record is dropped only once it has rested empty for a while: its
@@ -1011,8 +1028,6 @@ export function prune(doc) {
     // The rest starts when a prune first sees it empty (`emptied`), not at its
     // last edit, so an old insertion deleted a moment ago still gets its grace.
     // A record found live again loses the mark.
-    const now = Date.now();
-    const settled = (v) => { const at = v.get("at"); return typeof at !== "number" || at < now - SETTLE_MS; };
     for (const [id, v] of [...map.entries()]) {
       if (!(v instanceof LoroMap) || v.get("file") !== file) continue;
       const emptiedAt = v.get("emptied");
@@ -1022,9 +1037,28 @@ export function prune(doc) {
     }
     // A legacy record with nothing left to show is dropped too.
     for (const [id, v] of legacyRecords(doc, file)) if (!liveIds.has(id) && !v.points?.length) { map.delete(id); count += 1; }
-    const settledRecord = (id) => { const v = map.get(id); return v instanceof LoroMap ? settled(v) : true; };
-    for (const g of gaps) if (g.stale && g.fragments.every((f) => settledRecord(f.id))) writeGap(doc, text, file, g.at, g.fragments, new Map(), true);
-    for (const c of changes) if (c.stale && c.to > c.from && settledRecord(c.id)) writeChange(doc, text, file, c, true);
+    // A stale cursor is healed only once a prune has seen it stale for a
+    // while, counted from that first sight (`stale`), not from the record's
+    // last edit: the author may be moving that very end of the span in a
+    // session that has not synced yet, and the heal would race it. A cursor
+    // found live again loses the mark.
+    const staleSettled = (id) => {
+      const v = map.get(id);
+      if (!(v instanceof LoroMap)) return true;
+      const since = v.get("stale");
+      if (typeof since !== "number") { v.set("stale", now); return false; }
+      return since < now - SETTLE_MS;
+    };
+    const unmark = (id) => { const v = map.get(id); if (v instanceof LoroMap && v.get("stale") !== undefined) v.delete("stale"); };
+    for (const g of gaps) {
+      if (!g.stale) { for (const f of g.fragments) unmark(f.id); continue; }
+      if (g.fragments.map((f) => staleSettled(f.id)).every(Boolean) && writeGap(doc, text, file, g.at, g.fragments, new Map(), true)) for (const f of g.fragments) unmark(f.id);
+    }
+    for (const c of changes) {
+      if (c.orphan) continue;
+      if (!c.stale) { unmark(c.id); continue; }
+      if (c.to > c.from && staleSettled(c.id) && writeChange(doc, text, file, c, true)) unmark(c.id);
+    }
   }
   return count;
 }

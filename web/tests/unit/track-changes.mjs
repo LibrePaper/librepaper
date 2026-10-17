@@ -6,9 +6,10 @@
 // a remote peer typing beside a pending insertion does not grow it, that nested
 // deletions come back in every order, that records of the earlier model are
 // read in place, convert when touched and then decide in any order, that a
-// empty record is marked, then rests, before prune drops it, that a settled stale cursor is healed,
-// that a fragment whose change is gone is re-parented, and that two sessions of
-// one author converge. The seeded fuzzers at the end check random histories
+// empty record is marked, then rests, before prune drops it, that a stale cursor
+// is marked first and healed once the mark has rested, that a fragment whose
+// change is gone is read as a change of its own, and that two sessions of one
+// author converge. The seeded fuzzers at the end check random histories
 // against their oracles, and two peers editing at once must converge.
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
@@ -123,6 +124,25 @@ for (const f of fixtures) {
     { now: 5, mintId: () => "new-1" },
   );
   assert.deepEqual(gone.changes.map((c) => [c.id, c.state, Boolean(c.emptied)]), [["a", "kept", true]]);
+  // Own changes merged into one: the absorbed record stays, kept and emptied at
+  // the end of the merged span, and the merged one is the one set.
+  const merged = planEdits(
+    "aXbcYdef",
+    {
+      changes: [
+        { id: "x", who: "me", author: "Me", run: null, at: 1, from: 1, to: 2 },
+        { id: "y", who: "me", author: "Me", run: null, at: 1, from: 4, to: 5 },
+      ],
+      gaps: [],
+    },
+    [{ from: 1, to: 5, insert: "Z" }],
+    ME,
+    { now: 5, mintId: () => "new-2" },
+  );
+  const absorbed = merged.changes.find((c) => c.id === "y");
+  assert.deepEqual([absorbed.state, Boolean(absorbed.emptied), absorbed.from, absorbed.to], ["kept", true, 2, 2]);
+  assert.equal(merged.changes.find((c) => c.id === "x").state, "set");
+  assert.equal(merged.changes.some((c) => c.state === "removed"), false);
   // The run tag lands on new changes.
   const tagged = planEdits("", { changes: [], gaps: [] }, [{ from: 0, to: 0, insert: "x" }], ME, {
     run: "pass-1",
@@ -501,37 +521,130 @@ for (const decide of [accept, reject]) {
 }
 
 // A fragment whose change is gone, as a peer leaves it when it decides that
-// change, is re-parented by prune onto a change of its own. The change shows as
-// a row with the fragment's text, and rejecting the row puts the text back.
+// change, is read as a change of its own, under the fragment's id. The row
+// shows at once, with no write and no prune. Prune leaves it alone, and
+// rejecting the row puts the text back and empties the records.
+const orphanFields = (text) => ({
+  kind: "fragment",
+  file: "f1",
+  change: "gone",
+  text: "b",
+  start: text.getCursor(1, -1).encode(),
+  rank: 0,
+  who: "bob",
+  author: "Bob",
+  run: null,
+  at: 1,
+});
 {
   const doc = makeDoc("acd");
-  const text = doc.getMap("files").get("f1");
-  putRecord(doc, "orphan", {
-    kind: "fragment",
-    file: "f1",
-    change: "gone",
-    text: "b",
-    start: text.getCursor(1, -1).encode(),
-    rank: 0,
-    who: "bob",
-    author: "Bob",
-    run: null,
-    at: 1,
-  });
+  putRecord(doc, "orphan", orphanFields(doc.getMap("files").get("f1")));
   doc.commit();
-  assert.equal(resolveChanges(doc, "f1").length, 0);
+  const map = doc.getMap(CHANGES);
+  const rows = rowsOf(doc);
+  assert.deepEqual(rows, [{ id: "orphan", who: "bob", from: 1, to: 1, deleted: "b" }]);
+  assert.deepEqual([...map.values()].map((v) => v.get("kind")), ["fragment"]);
   assert.equal(prune(doc), 0);
   doc.commit();
-  const rows = resolveChanges(doc, "f1");
-  assert.deepEqual(rows.map(({ who, from, to, deleted }) => ({ who, from, to, deleted })), [{ who: "bob", from: 1, to: 1, deleted: "b" }]);
-  assert.equal(reject(doc, rows[0].id), true);
+  assert.equal(map.get("orphan").get("emptied"), undefined);
+  assert.deepEqual(rowsOf(doc), rows);
+  assert.equal(reject(doc, "orphan"), true);
   assert.equal(textOf(doc), "abcd");
+  assert.equal(map.size, 0);
   assert.equal(resolveChanges(doc, "f1").length, 0);
 }
 
+// The same orphan on a second copy: accepting it there leaves the text and
+// empties the records, and the first copy agrees once the copies sync.
+{
+  const first = makeDoc("acd", 1);
+  putRecord(first, "orphan", orphanFields(first.getMap("files").get("f1")));
+  first.commit();
+  const second = new LoroDoc();
+  second.setPeerId(2);
+  second.import(first.export({ mode: "snapshot" }));
+  assert.equal(accept(second, "orphan"), true);
+  assert.equal(textOf(second), "acd");
+  assert.equal(second.getMap(CHANGES).size, 0);
+  syncBoth(first, second);
+  assert.equal(first.getMap(CHANGES).size, 0);
+  assert.equal(textOf(first), "acd");
+}
+
+// Two sessions of one author. Session a deletes "bc" and a reviewer accepts that
+// change while session b, not yet synced, deletes "d" under it. Both sessions
+// read the orphan as one row, and rejecting it restores the text on both.
+{
+  const a = makeDoc("abcdef", 1);
+  track(a, 1, 3, "", ME);
+  const b = new LoroDoc();
+  b.setPeerId(2);
+  b.import(a.export({ mode: "snapshot" }));
+  accept(a, resolveChanges(a, "f1")[0].id);
+  assert.equal(textOf(a), "adef");
+  track(b, 1, 2, "", ME);
+  syncBoth(a, b);
+  assert.equal(textOf(a), "aef");
+  assert.equal(textOf(b), "aef");
+  const [row] = rowsOf(a);
+  assert.deepEqual([row.who, row.deleted, row.from, row.to], ["me", "d", 1, 1]);
+  assert.deepEqual(rowsOf(b), rowsOf(a));
+  assert.deepEqual([...a.getMap(CHANGES).values()].map((v) => v.get("kind")), ["fragment"]);
+  assert.equal(reject(a, row.id), true);
+  assert.equal(textOf(a), "adef");
+  syncBoth(a, b);
+  assert.equal(textOf(b), "adef");
+  assert.equal(resolveChanges(b, "f1").length, 0);
+}
+
+// Two sessions of one author merge their own changes while another session
+// extends the absorbed one. The extension keeps its record, and nothing of it
+// is lost on rejection.
+{
+  const a = makeDoc("abcdef", 1);
+  track(a, 1, 1, "X", ME);
+  track(a, 4, 4, "Y", ME);
+  const b = new LoroDoc();
+  b.setPeerId(2);
+  b.import(a.export({ mode: "snapshot" }));
+  track(a, 1, 5, "Z", ME);
+  prune(a);
+  a.commit();
+  track(b, 5, 5, "Q", ME);
+  syncBoth(a, b);
+  assert.equal(textOf(a), textOf(b));
+  const spans = resolveChanges(a, "f1").map((c) => textOf(a).slice(c.from, c.to)).sort();
+  assert.deepEqual(spans, ["Q", "Z"]);
+  for (const r of resolveChanges(a, "f1")) reject(a, r.id);
+  assert.equal(textOf(a), "abcdef");
+}
+
+// An old insertion whose start a peer deletes while its author prepends. The
+// peer's prune sees the start stale and only marks it, so the author's prepend
+// is still tracked after the sessions sync.
+{
+  const a = makeDoc("ab", 1);
+  track(a, 1, 1, "XY", ME);
+  for (const [, v] of a.getMap(CHANGES).entries()) if (v instanceof LoroMap) v.set("at", 0);
+  a.commit();
+  const b = new LoroDoc();
+  b.setPeerId(2);
+  b.import(a.export({ mode: "snapshot" }));
+  track(a, 1, 2, "", ALICE);
+  prune(a);
+  a.commit();
+  track(b, 1, 1, "W", ME);
+  syncBoth(a, b);
+  assert.equal(textOf(a), textOf(b));
+  assert.deepEqual(resolveChanges(a, "f1").map((c) => textOf(a).slice(c.from, c.to)), ["WY"]);
+  for (const r of resolveChanges(a, "f1")) reject(a, r.id);
+  assert.equal(textOf(a), "ab");
+}
+
 // A raw deletion takes the character a fragment is anchored on, which leaves
-// its cursor stale. Once the record has rested, prune heals the cursor onto a
-// live character, and the fragment stays where it was.
+// its cursor stale. The first prune that sees it stale only marks it. Once the
+// mark has rested, prune heals the cursor onto a live character, and the
+// fragment stays where it was.
 {
   const doc = makeDoc("abcdef");
   track(doc, 2, 3, "", ME);
@@ -539,13 +652,40 @@ for (const decide of [accept, reject]) {
   doc.commit();
   const [before] = resolveFile(doc, "f1").gaps;
   assert.equal(before.stale, true);
-  doc.getMap(CHANGES).get(before.fragments[0].id).set("at", 0);
+  const id = before.fragments[0].id;
+  assert.equal(prune(doc), 0);
   doc.commit();
-  prune(doc);
+  assert.equal(typeof doc.getMap(CHANGES).get(id).get("stale"), "number");
+  assert.equal(resolveFile(doc, "f1").gaps[0].stale, true);
+  prune(doc, Date.now() + 120_000);
   doc.commit();
   const [after] = resolveFile(doc, "f1").gaps;
   assert.equal(after.stale, false);
   assert.equal(after.at, 2);
+  assert.equal(doc.getMap(CHANGES).get(id).get("stale"), undefined);
+}
+
+// A stale cursor that is found live again loses its mark: a peer re-anchors the
+// fragment on the live character "e", and the next prune removes the mark.
+{
+  const doc = makeDoc("abcdef");
+  track(doc, 2, 3, "", ME);
+  const text = doc.getMap("files").get("f1");
+  text.delete(2, 1);
+  doc.commit();
+  const [gap] = resolveFile(doc, "f1").gaps;
+  assert.equal(gap.stale, true);
+  const id = gap.fragments[0].id;
+  prune(doc);
+  doc.commit();
+  assert.equal(typeof doc.getMap(CHANGES).get(id).get("stale"), "number");
+  doc.getMap(CHANGES).get(id).set("start", text.getCursor(2, -1).encode());
+  doc.commit();
+  assert.equal(resolveFile(doc, "f1").gaps[0].stale, false);
+  prune(doc);
+  doc.commit();
+  assert.equal(doc.getMap(CHANGES).get(id).get("stale"), undefined);
+  assert.equal(resolveFile(doc, "f1").gaps[0].at, 2);
 }
 
 // ---------------------------------------------------------------------------
