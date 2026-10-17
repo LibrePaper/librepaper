@@ -52,7 +52,7 @@ import MergeEditor from ${JSON.stringify(join(root, "web/src/components/MergeEdi
 import Editor from ${JSON.stringify(join(root, "web/src/components/Editor.svelte"))};
 import Diagnostics from ${JSON.stringify(join(root, "web/src/components/reader/Diagnostics.svelte"))};
 import { join as joinSession } from ${JSON.stringify(join(root, "web/src/lib/collab.js"))};
-import { trackedSplice } from ${JSON.stringify(join(root, "web/src/lib/track-changes.js"))};
+import { rejectMany, resolveChanges, trackedSplice } from ${JSON.stringify(join(root, "web/src/lib/track-changes.js"))};
 import { durableProjectPersistence, prepareOfflineProject, preparedProject } from ${JSON.stringify(join(root, "web/src/lib/offline-projects.js"))};
 import { createClassComponent } from ${JSON.stringify(join(root, "web/node_modules/svelte/src/legacy/legacy-client.js"))};
 
@@ -562,6 +562,121 @@ window.trackingCheck = async () => {
   value.leave();
   return { on, off, first, drawn, second, undone, direct };
 };
+// Edits made while tracking is on, scored against the pending records they
+// leave behind. Each scenario mounts its own editor on a fresh document, runs
+// its edits, reads the records and the text, then rejects every record to see
+// whether the original text comes back.
+window.trackingEditsCheck = async () => {
+  const startText = "first line\\nsecond line\\nthird line\\n";
+  const scenario = async (name, keys, run) => {
+    const value = joinSession({ send: () => {}, mayEdit: true });
+    const id = value.addText(name + ".md", startText);
+    value.setMain(id);
+    const host = document.createElement("section");
+    document.body.append(host);
+    const component = createClassComponent({
+      component: Editor,
+      target: host,
+      props: { session: value, format: "markdown", file: id, editable: true, keys, me: { who: "me", author: "Me" } },
+    });
+    await tick();
+    for (let attempt = 0; keys === "vim" && attempt < 100 && !host.querySelector(".cm-vim-panel"); attempt++) {
+      await new Promise((resolve) => setTimeout(resolve, 10));
+    }
+    component.startTracking();
+    const view = EditorView.findFromDOM(host.querySelector(".cm-editor"));
+    view.focus();
+    const press = (key, code, modifiers = {}) => view.contentDOM.dispatchEvent(new KeyboardEvent("keydown", {
+      key, code, bubbles: true, cancelable: true, ...modifiers,
+    }));
+    const type = async (characters) => {
+      for (const character of characters) {
+        const position = view.state.selection.main.head;
+        view.dispatch({
+          changes: { from: position, insert: character },
+          selection: { anchor: position + character.length },
+          userEvent: "input.type",
+        });
+        await tick();
+      }
+    };
+    await run({ view, press, type, session: value, id });
+    await tick();
+    await new Promise((resolve) => setTimeout(resolve, 30));
+    const records = resolveChanges(value.doc, id).map((change) => ({ from: change.from, to: change.to, deleted: change.deleted }));
+    const text = value.textOf(id).toString();
+    rejectMany(value.doc, resolveChanges(value.doc, id).map((change) => change.id));
+    await tick();
+    const restored = value.textOf(id).toString();
+    component.$destroy();
+    host.remove();
+    value.leave();
+    return { original: startText, records, text, restored };
+  };
+  return {
+    backspace: await scenario("backspace", "default", async ({ view, type }) => {
+      view.dispatch({ selection: { anchor: 11 } });
+      await type("Z");
+      view.dispatch({ changes: { from: 11, to: 12 }, selection: { anchor: 11 }, userEvent: "delete.backward" });
+      await tick();
+    }),
+    deleteOverOwn: await scenario("deleteOverOwn", "default", async ({ view, type }) => {
+      view.dispatch({ selection: { anchor: 11 } });
+      await type("NEW ");
+      view.dispatch({ changes: { from: 11, to: 27 }, userEvent: "delete.selection" });
+      await tick();
+    }),
+    typeAtOwnDeletion: await scenario("typeAtOwnDeletion", "default", async ({ view, type }) => {
+      view.dispatch({ changes: { from: 11, to: 23 }, userEvent: "delete.selection" });
+      await tick();
+      view.dispatch({ selection: { anchor: 11 } });
+      await tick();
+      await type("ne");
+    }),
+    vimInsertThenDd: await scenario("vimInsertThenDd", "vim", async ({ view, press, type }) => {
+      view.dispatch({ selection: { anchor: 11 } });
+      await tick();
+      press("i", "KeyI");
+      await tick();
+      await type("NE");
+      press("Escape", "Escape");
+      await tick();
+      press("d", "KeyD");
+      await tick();
+      press("d", "KeyD");
+      await tick();
+    }),
+    vimDdUndo: await scenario("vimDdUndo", "vim", async ({ view, press }) => {
+      view.dispatch({ selection: { anchor: 11 } });
+      await tick();
+      press("d", "KeyD");
+      await tick();
+      press("d", "KeyD");
+      await tick();
+      press("u", "KeyU");
+      await tick();
+      await new Promise((resolve) => setTimeout(resolve, 50));
+    }),
+    vimBackspaceAcross: await scenario("vimBackspaceAcross", "vim", async ({ view, press, type }) => {
+      view.dispatch({ selection: { anchor: 11 } });
+      await tick();
+      press("i", "KeyI");
+      await tick();
+      await type("AB");
+      for (let count = 0; count < 4; count++) {
+        const head = view.state.selection.main.head;
+        view.dispatch({
+          changes: { from: head - 1, to: head },
+          selection: { anchor: head - 1 },
+          userEvent: "delete.backward",
+        });
+        await tick();
+      }
+      press("Escape", "Escape");
+      await tick();
+    }),
+  };
+};
 window.diagnosticsCheck = async () => {
   const host = document.createElement("aside");
   document.body.append(host);
@@ -905,6 +1020,20 @@ try {
   assert.equal(tracked.direct.text, "DIRECT alpha", "editing after stopping did not reach the document");
   assert.equal(tracked.direct.entries, 0, "typing with tracking off recorded a change");
   console.log("editor-browser: tracked typing is recorded as one change, undone with its text, and not recorded when off");
+  const edits = await evaluate("trackingEditsCheck()");
+  assert.deepEqual(edits.backspace.records, [], "backspacing a tracked keystroke recorded it as a deletion");
+  assert.equal(edits.backspace.text, edits.backspace.original);
+  assert.deepEqual(edits.deleteOverOwn.records, [{ from: 11, to: 11, deleted: "second line\n" }], "deleting over an own insertion recorded the inserted text as deleted");
+  assert.equal(edits.deleteOverOwn.restored, edits.deleteOverOwn.original, "rejecting did not restore the original after deleting over an own insertion");
+  assert.deepEqual(edits.typeAtOwnDeletion.records, [{ from: 11, to: 13, deleted: "second line\n" }], "typing at an own deletion did not merge into one replacement");
+  assert.equal(edits.typeAtOwnDeletion.restored, edits.typeAtOwnDeletion.original);
+  assert.deepEqual(edits.vimInsertThenDd.records, [{ from: 11, to: 11, deleted: "second line\n" }], "vim dd over a line with own typing recorded the typed text as deleted");
+  assert.equal(edits.vimInsertThenDd.restored, edits.vimInsertThenDd.original);
+  assert.equal(edits.vimDdUndo.text, edits.vimDdUndo.original, "vim u after a tracked dd did not restore the line");
+  assert.deepEqual(edits.vimDdUndo.records, [], "vim u after a tracked dd left or lost its record out of step with the text");
+  assert.deepEqual(edits.vimBackspaceAcross.records, [{ from: 9, to: 9, deleted: "e\n" }], "backspacing across own typing into original text recorded the wrong deletion");
+  assert.equal(edits.vimBackspaceAcross.restored, edits.vimBackspaceAcross.original);
+  console.log("editor-browser: tracked edits are planned against the records before the write, and a vim undo takes text and record together");
   const zoom = await evaluate("editorZoomCheck()");
   assert.deepEqual(zoom, { before: "14px", prevented: true, grown: "28px", storedGrown: "28", shrunk: "10px", storedShrunk: "10" }, "ctrl+wheel over the source sizes its text and remembers it");
   console.log("editor-browser: ctrl+wheel over the source sizes its text and remembers it");
