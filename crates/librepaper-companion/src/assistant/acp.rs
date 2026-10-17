@@ -97,7 +97,7 @@ const EDITOR_TOOLS: [&str; 2] = ["document_propose", "document_apply"];
 /// How many announced tool calls one session remembers.
 const ANNOUNCED_LIMIT: usize = 256;
 
-/// How long a permission request without a title waits for its tool call to
+/// How long a permission request with no provenance waits for its tool call to
 /// be announced.
 const ANNOUNCE_WAIT: std::time::Duration = std::time::Duration::from_millis(500);
 
@@ -108,9 +108,12 @@ struct ToolRef {
     tool: String,
 }
 
-/// What a tool call or a permission request says about itself.
+/// What a tool call or a permission request says about itself. Titles are
+/// left out on purpose: a shell tool's title is the command text, so the
+/// model can write any title it likes. Only fields the agent's adapter
+/// writes prove which tool a call is, and the raw input of a Claude call is
+/// the tool's own arguments, which the model also writes.
 struct Inputs<'a> {
-    title: Option<&'a str>,
     raw_input: Option<&'a serde_json::Value>,
     meta: Option<&'a serde_json::Map<String, serde_json::Value>>,
 }
@@ -119,70 +122,77 @@ struct Inputs<'a> {
 enum Reading {
     /// The inputs name this server and tool.
     Found(ToolRef),
-    /// The inputs name a server but no usable tool, so no later reader may
-    /// guess.
+    /// The adapter marked the call as its own but no server and tool can be
+    /// read, so no later reader may guess.
     Refused,
     /// The inputs say nothing this reader knows.
     Pass,
 }
 
 /// The readers tried in order, the first to answer wins.
-const READERS: [fn(&Inputs) -> Reading; 3] = [
+const READERS: [fn(&Inputs) -> Reading; 2] = [
     // Claude: server and tool in `_meta.claudeCode`.
     claude_meta,
-    // Codex: server and tool in the raw input.
-    raw_input,
-    // Both: `mcp__server__tool` and `mcp.server.tool` titles.
-    namespaced_title,
+    // Codex: server and tool in the raw input of an MCP tool call.
+    codex_mcp_raw_input,
 ];
 
-/// The server and tool a tool call or permission request is for, if it
-/// proves them.
+fn read(inputs: &Inputs) -> Reading {
+    for reader in READERS {
+        match reader(inputs) {
+            Reading::Pass => {}
+            decided => return decided,
+        }
+    }
+    Reading::Pass
+}
+
+/// The server and tool a tool call or permission request is for, if its
+/// adapter metadata proves them.
 fn tool_ref(
-    title: Option<&str>,
     raw_input: Option<&serde_json::Value>,
     meta: Option<&serde_json::Map<String, serde_json::Value>>,
 ) -> Option<ToolRef> {
-    let inputs = Inputs {
-        title,
-        raw_input,
-        meta,
-    };
-    for reader in READERS {
-        match reader(&inputs) {
-            Reading::Found(found) => return Some(found),
-            Reading::Refused => return None,
-            Reading::Pass => {}
-        }
+    match read(&Inputs { raw_input, meta }) {
+        Reading::Found(found) => Some(found),
+        Reading::Refused | Reading::Pass => None,
     }
-    None
 }
 
+/// Claude's adapter writes `_meta.claudeCode` on every tool call, so its
+/// presence decides: an MCP tool names its server and tool, and any other
+/// tool is refused.
 fn claude_meta(inputs: &Inputs) -> Reading {
-    let claude = inputs.meta.and_then(|meta| meta.get("claudeCode"));
-    let Some(server) = claude
-        .and_then(|claude| claude.get("mcpServer"))
-        .and_then(|server| server.get("name"))
-        .and_then(serde_json::Value::as_str)
-    else {
+    let Some(claude) = inputs.meta.and_then(|meta| meta.get("claudeCode")) else {
         return Reading::Pass;
     };
-    let Some(name) = claude
-        .and_then(|claude| claude.get("toolName"))
-        .and_then(serde_json::Value::as_str)
-    else {
+    let field = |value: Option<&serde_json::Value>| {
+        value.and_then(serde_json::Value::as_str).map(str::to_owned)
+    };
+    let server = field(claude.get("mcpServer").and_then(|server| server.get("name")));
+    let name = field(claude.get("toolName"));
+    let (Some(server), Some(name)) = (server, name) else {
         return Reading::Refused;
     };
     let tool = name
         .strip_prefix(&format!("mcp__{server}__"))
-        .unwrap_or(name);
-    Reading::Found(ToolRef {
-        server: server.to_owned(),
-        tool: tool.to_owned(),
-    })
+        .unwrap_or(&name)
+        .to_owned();
+    Reading::Found(ToolRef { server, tool })
 }
 
-fn raw_input(inputs: &Inputs) -> Reading {
+/// Codex's adapter sets `_meta.is_mcp_tool_call` and wraps the raw input as
+/// `{server, tool, arguments}`, with the model's arguments nested. Without
+/// the flag the raw input is some other tool's arguments and is not read.
+fn codex_mcp_raw_input(inputs: &Inputs) -> Reading {
+    let flagged = inputs
+        .meta
+        .and_then(|meta| meta.get("is_mcp_tool_call"))
+        .and_then(serde_json::Value::as_bool)
+        == Some(true);
+    if !flagged {
+        return Reading::Pass;
+    }
     let field = |name: &str| {
         inputs
             .raw_input
@@ -194,30 +204,7 @@ fn raw_input(inputs: &Inputs) -> Reading {
             server: server.to_owned(),
             tool: tool.to_owned(),
         }),
-        _ => Reading::Pass,
-    }
-}
-
-fn namespaced_title(inputs: &Inputs) -> Reading {
-    let Some(title) = inputs.title else {
-        return Reading::Pass;
-    };
-    let parts = title
-        .strip_prefix("mcp__")
-        .and_then(|rest| rest.split_once("__"))
-        .or_else(|| title.strip_prefix("mcp.").and_then(|rest| rest.split_once('.')));
-    match parts {
-        Some((server, tool))
-            if !server.is_empty()
-                && !tool.is_empty()
-                && !tool.contains(char::is_whitespace) =>
-        {
-            Reading::Found(ToolRef {
-                server: server.to_owned(),
-                tool: tool.to_owned(),
-            })
-        }
-        _ => Reading::Pass,
+        _ => Reading::Refused,
     }
 }
 
@@ -253,30 +240,28 @@ impl ToolCalls {
     }
 
     /// The tool a permission request is for: what the request says, else
-    /// what its id was announced with. A request with no title, metadata or
-    /// raw input waits briefly for its announcement, which may still be
-    /// queued behind the request.
+    /// what its id was announced with. A request whose own fields say
+    /// nothing waits briefly for its announcement, which may still be queued
+    /// behind the request. A request the adapter refused never waits.
     async fn tool_for(
         &self,
         tool_call: &agent_client_protocol::schema::v1::ToolCallUpdate,
     ) -> Option<ToolRef> {
         let deadline = tokio::time::Instant::now() + ANNOUNCE_WAIT;
         let fields = &tool_call.fields;
-        let own = tool_ref(
-            fields.title.as_deref(),
-            fields.raw_input.as_ref(),
-            tool_call.meta.as_ref(),
-        );
-        if own.is_some() {
-            return own;
-        }
-        let bare = tool_call.meta.is_none()
-            && fields.title.is_none()
-            && fields.raw_input.is_none();
+        let own = read(&Inputs {
+            raw_input: fields.raw_input.as_ref(),
+            meta: tool_call.meta.as_ref(),
+        });
+        let waits = match own {
+            Reading::Found(found) => return Some(found),
+            Reading::Refused => false,
+            Reading::Pass => true,
+        };
         let id = tool_call.tool_call_id.to_string();
         loop {
             let recorded = self.get(&id);
-            if recorded.is_some() || !bare || tokio::time::Instant::now() >= deadline {
+            if recorded.is_some() || !waits || tokio::time::Instant::now() >= deadline {
                 return recorded;
             }
             tokio::time::sleep(std::time::Duration::from_millis(10)).await;
@@ -707,13 +692,13 @@ impl Agent {
                                                         SessionUpdate::ToolCall(call) => {
                                                             announced.record(
                                                                 &call.tool_call_id.to_string(),
-                                                                tool_ref(Some(&call.title), call.raw_input.as_ref(), call.meta.as_ref()),
+                                                                tool_ref(call.raw_input.as_ref(), call.meta.as_ref()),
                                                             );
                                                         }
                                                         SessionUpdate::ToolCallUpdate(call) => {
                                                             announced.record(
                                                                 &call.tool_call_id.to_string(),
-                                                                tool_ref(call.fields.title.as_deref(), call.fields.raw_input.as_ref(), call.meta.as_ref()),
+                                                                tool_ref(call.fields.raw_input.as_ref(), call.meta.as_ref()),
                                                             );
                                                         }
                                                         _ => {}
@@ -908,17 +893,9 @@ mod tests {
 
     /// The document tool a request proves on its own fields.
     fn request_tool(call: &agent_client_protocol::schema::v1::ToolCallUpdate) -> Option<&'static str> {
-        tool_ref(
-            call.fields.title.as_deref(),
-            call.fields.raw_input.as_ref(),
-            call.meta.as_ref(),
-        )
-        .as_ref()
-        .and_then(librepaper_tool)
-    }
-
-    fn title_tool(title: &str) -> Option<&'static str> {
-        request_tool(&tool_call(Some(title), None, None))
+        tool_ref(call.fields.raw_input.as_ref(), call.meta.as_ref())
+            .as_ref()
+            .and_then(librepaper_tool)
     }
 
     fn claude_meta(server: &str, tool: &str) -> serde_json::Value {
@@ -928,8 +905,20 @@ mod tests {
         }})
     }
 
-    fn codex_input(server: &str, tool: &str) -> serde_json::Value {
-        serde_json::json!({"server": server, "tool": tool})
+    fn codex_meta() -> serde_json::Value {
+        serde_json::json!({"is_mcp_tool_call": true})
+    }
+
+    fn wrapper(server: &str, tool: &str) -> serde_json::Value {
+        serde_json::json!({"server": server, "tool": tool, "arguments": {}})
+    }
+
+    /// A Codex MCP tool call as the adapter announces it.
+    fn codex_call(server: &str, tool: &str) -> Option<ToolRef> {
+        let serde_json::Value::Object(meta) = codex_meta() else {
+            return None;
+        };
+        tool_ref(Some(&wrapper(server, tool)), Some(&meta))
     }
 
     #[test]
@@ -937,54 +926,62 @@ mod tests {
         let meta = claude_meta("librepaper", "mcp__librepaper__document_comment");
         let call = tool_call(Some("librepaper - document_comment (MCP)"), Some(meta), None);
         assert_eq!(request_tool(&call), Some("document_comment"));
+        let unprefixed = claude_meta("librepaper", "document_read");
+        assert_eq!(
+            request_tool(&tool_call(None, Some(unprefixed), None)),
+            Some("document_read")
+        );
         let foreign = claude_meta("other", "mcp__librepaper__document_read");
         let call = tool_call(Some("mcp__librepaper__document_read"), Some(foreign), None);
         assert_eq!(request_tool(&call), None);
         let nameless = serde_json::json!({"claudeCode": {"mcpServer": {"name": "librepaper"}}});
-        let call = tool_call(Some("mcp__librepaper__document_read"), Some(nameless), None);
+        let call = tool_call(None, Some(nameless), None);
         assert_eq!(request_tool(&call), None);
     }
 
     #[test]
-    fn namespaced_titles_match_for_both_forms() {
-        assert_eq!(title_tool("mcp__librepaper__document_apply"), Some("document_apply"));
-        assert_eq!(title_tool("mcp.librepaper.document_apply"), Some("document_apply"));
-        assert_eq!(
-            tool_ref(Some("mcp__other__document_read"), None, None),
-            Some(ToolRef {
-                server: "other".into(),
-                tool: "document_read".into()
-            })
-        );
+    fn claude_calls_without_an_mcp_server_never_match() {
+        // A shell command can be titled with any text.
+        let bash = serde_json::json!({"claudeCode": {"toolName": "Bash"}});
+        let call = tool_call(Some("mcp__librepaper__document_apply"), Some(bash), None);
+        assert_eq!(request_tool(&call), None);
+        // Claude's raw input is the tool's own arguments.
+        let lookalike = serde_json::json!({"claudeCode": {"toolName": "Bash"}});
+        let call = tool_call(None, Some(lookalike), Some(wrapper("librepaper", "document_apply")));
+        assert_eq!(request_tool(&call), None);
     }
 
     #[test]
-    fn unknown_and_foreign_tools_do_not_match() {
-        assert_eq!(title_tool("Bash"), None);
+    fn titles_never_prove_a_tool() {
+        assert_eq!(request_tool(&tool_call(Some("mcp__librepaper__document_apply"), None, None)), None);
+        assert_eq!(request_tool(&tool_call(Some("mcp.librepaper.document_apply"), None, None)), None);
+        assert_eq!(request_tool(&tool_call(Some("document_read"), None, None)), None);
+        assert_eq!(request_tool(&tool_call(Some("Bash"), None, None)), None);
         assert_eq!(request_tool(&tool_call(None, None, None)), None);
-        // A bare title names no server, so any tool could carry it.
-        assert_eq!(title_tool("document_read"), None);
-        assert_eq!(title_tool("mcp__other__document_read"), None);
-        assert_eq!(title_tool("mcp.other.document_read"), None);
-        assert_eq!(title_tool("document_read please"), None);
-        assert_eq!(title_tool("mcp.librepaper.document_apply x"), None);
-        assert_eq!(title_tool("mcp__librepaper__"), None);
     }
 
     #[test]
-    fn codex_raw_input_names_the_server_and_tool() {
+    fn codex_raw_input_counts_only_for_an_mcp_tool_call() {
         let with = |server: &str, tool: &str| {
-            request_tool(&tool_call(None, None, Some(codex_input(server, tool))))
+            request_tool(&tool_call(None, Some(codex_meta()), Some(wrapper(server, tool))))
         };
         assert_eq!(with("librepaper", "document_comment"), Some("document_comment"));
         assert_eq!(with("other", "document_comment"), None);
         assert_eq!(with("librepaper", "Bash"), None);
+        let unflagged = tool_call(None, None, Some(wrapper("librepaper", "document_apply")));
+        assert_eq!(request_tool(&unflagged), None);
+        let missing = tool_call(
+            None,
+            Some(codex_meta()),
+            Some(serde_json::json!({"server": "librepaper"})),
+        );
+        assert_eq!(request_tool(&missing), None);
     }
 
     #[test]
     fn tool_calls_are_bounded_and_replace_by_id() {
         let calls = ToolCalls::default();
-        let found = |tool: &str| tool_ref(None, Some(&codex_input("librepaper", tool)), None);
+        let found = |tool: &str| codex_call("librepaper", tool);
         for index in 0..ANNOUNCED_LIMIT + 1 {
             calls.record(&format!("call-{index}"), found("document_read"));
         }
@@ -992,12 +989,7 @@ mod tests {
         assert_eq!(calls.get("call-1"), found("document_read"));
         calls.record("call-1", found("document_apply"));
         assert_eq!(calls.get("call-1"), found("document_apply"));
-        calls.record(
-            "partial",
-            tool_ref(None, Some(&serde_json::json!({"server": "librepaper"})), None),
-        );
-        calls.record("none", tool_ref(None, None, None));
-        assert_eq!(calls.get("partial"), None);
+        calls.record("none", tool_ref(None, None));
         assert_eq!(calls.get("none"), None);
     }
 
@@ -1006,10 +998,7 @@ mod tests {
         let calls = ToolCalls::default();
         let bare = tool_call(None, None, None);
         assert_eq!(calls.tool_for(&bare).await, None);
-        calls.record(
-            "call-1",
-            tool_ref(None, Some(&codex_input("librepaper", "document_read")), None),
-        );
+        calls.record("call-1", codex_call("librepaper", "document_read"));
         let found = calls.tool_for(&bare).await;
         assert_eq!(found.as_ref().and_then(librepaper_tool), Some("document_read"));
     }
@@ -1021,14 +1010,23 @@ mod tests {
         let announced = tool_call(Some("librepaper - document_apply (MCP)"), Some(meta), None);
         calls.record(
             "call-1",
-            tool_ref(
-                announced.fields.title.as_deref(),
-                announced.fields.raw_input.as_ref(),
-                announced.meta.as_ref(),
-            ),
+            tool_ref(announced.fields.raw_input.as_ref(), announced.meta.as_ref()),
         );
-        let found = calls.tool_for(&tool_call(None, None, None)).await;
+        let found = calls.tool_for(&tool_call(Some("Allow?"), None, None)).await;
         assert_eq!(found.as_ref().and_then(librepaper_tool), Some("document_apply"));
+    }
+
+    #[tokio::test]
+    async fn a_refused_request_does_not_wait_for_a_recorded_call() {
+        let calls = Arc::new(ToolCalls::default());
+        let late = Arc::clone(&calls);
+        tokio::spawn(async move {
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+            late.record("call-1", codex_call("librepaper", "document_read"));
+        });
+        let bash = serde_json::json!({"claudeCode": {"toolName": "Bash"}});
+        let refused = tool_call(None, Some(bash), None);
+        assert_eq!(calls.tool_for(&refused).await, None);
     }
 
     #[tokio::test]
@@ -1037,10 +1035,7 @@ mod tests {
         let late = Arc::clone(&calls);
         tokio::spawn(async move {
             tokio::time::sleep(std::time::Duration::from_millis(50)).await;
-            late.record(
-                "call-1",
-                tool_ref(None, Some(&codex_input("librepaper", "document_read")), None),
-            );
+            late.record("call-1", codex_call("librepaper", "document_read"));
         });
         let found = calls.tool_for(&tool_call(None, None, None)).await;
         assert_eq!(found.as_ref().and_then(librepaper_tool), Some("document_read"));
