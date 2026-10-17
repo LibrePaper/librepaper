@@ -12,6 +12,8 @@ BIN     := dist/librepaper
 PREFIX  ?= $(HOME)/.local
 BINDIR  ?= $(PREFIX)/bin
 DESTDIR ?=
+# The cargo profile for the server and desktop builds. The demo targets set it to demo, which skips LTO.
+CARGO_PROFILE ?= release
 # The browser renderers, fetched into web/wasm (not embedded in the binary):
 # tests read them, and tools/assets/mirror publish sends them to the asset mirror.
 WASM    := web/wasm/markdown.wasm
@@ -66,19 +68,19 @@ desktop: $(BIN)  ## Build the desktop app (desktop/target/release/librepaper-des
 	mkdir -p desktop/binaries && \
 	cp $(BIN) desktop/binaries/librepaper-$$triple$$ext && \
 	if [ -e /etc/NIXOS ]; then \
-		nix-shell -p pkg-config webkitgtk_4_1 gtk3 libsoup_3 glib-networking --run 'cargo build --release --manifest-path desktop/Cargo.toml'; \
+		nix-shell -p pkg-config webkitgtk_4_1 gtk3 libsoup_3 glib-networking --run 'cargo build --profile $(CARGO_PROFILE) --manifest-path desktop/Cargo.toml'; \
 	else \
-		cargo build --release --manifest-path desktop/Cargo.toml; \
+		cargo build --profile $(CARGO_PROFILE) --manifest-path desktop/Cargo.toml; \
 	fi
 
 # Rebuilt whenever any source or page changes.
 $(BIN): $(SOURCES) $(SHELL_OUT)
 	@mkdir -p $(dir $@)
-	@cargo build --release -p librepaper
+	@cargo build --profile $(CARGO_PROFILE) -p librepaper
 	@# Copied beside and renamed over: a server running from the old binary
 	@# keeps its file open, which makes an overwrite fail with "text file
 	@# busy" while a rename just leaves it holding the old inode.
-	@cp target/release/librepaper $@.tmp && mv -f $@.tmp $@
+	@cp target/$(CARGO_PROFILE)/librepaper $@.tmp && mv -f $@.tmp $@
 	@size=$$(wc -c < "$@"); echo "$@ ($$((size / 1024 / 1024)) MiB) -- deploys on its own"
 
 # The suite reads the built shell -- a test that asserts a page names its own
@@ -210,7 +212,7 @@ DEMO_REF ?= main
 # MAKEFLAGS. A mirror URL passes through unchanged. An unsupplied CONFIG is
 # dropped from the environment, where `export` put its default.
 DEMO_MIRROR := $(if $(filter http://% https://%,$(MIRROR)),$(MIRROR),$(abspath $(or $(MIRROR),../wasm-latex/mirror)))
-DEMO_ARGS   := MIRROR="$(DEMO_MIRROR)" $(if $(CONFIG_WAS_SUPPLIED),CONFIG="$(abspath $(CONFIG))")
+DEMO_ARGS   := MIRROR="$(DEMO_MIRROR)" CARGO_PROFILE=demo $(if $(CONFIG_WAS_SUPPLIED),CONFIG="$(abspath $(CONFIG))")
 demo:  ## Run a local Docker deployment of main (DEMO_REF= picks another commit)
 	@tree=$$(tools/dev/demo/worktree "$(DEMO_REF)") && echo "demo: $(DEMO_REF) at $$(git -C "$$tree" rev-parse --short HEAD) in $$tree" && \
 		env -u CONFIG $(MAKE) -C "$$tree" --no-print-directory web $(DEMO_ARGS) && \
@@ -236,7 +238,7 @@ demo-checkout:
 
 demo-run: CONFIG := $(if $(CONFIG_WAS_SUPPLIED),$(CONFIG),tools/dev/demo/config.toml)
 demo-run:
-	@tools/assets/mirror check
+	@MIRROR="$(MIRROR)" tools/dev/demo/mirror-check
 	@LIBREPAPER_APP_ORIGIN=http://localhost:$(PORT) $(MAKE) --no-print-directory site
 	@CONFIG="$(CONFIG)" PORT="$(PORT)" SITE_PORT="$(SITE_PORT)" OPEN="$(OPEN)" tools/dev/demo/compose run
 
@@ -255,7 +257,7 @@ demo-desktop:  ## Open the desktop app against the demo of main, starting the de
 		exec env -u CONFIG $(MAKE) -C "$$tree" --no-print-directory demo-desktop-checkout $(DEMO_ARGS)
 
 demo-desktop-checkout: desktop
-	@PORT="$(PORT)" tools/dev/demo/desktop
+	@PORT="$(PORT)" CARGO_PROFILE="$(CARGO_PROFILE)" tools/dev/demo/desktop
 
 # --- the web app -----------------------------------------------------------
 #

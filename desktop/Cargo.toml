@@ -37,6 +37,14 @@ tauri-build = { version = "2", features = [] }
 lto = "thin"
 strip = true
 
+# The demo-desktop target builds with this profile. A demo needs no LTO, and
+# without it the desktop crate compiles in parallel and incrementally.
+[profile.demo]
+inherits = "release"
+lto = false
+codegen-units = 256
+incremental = true
+
 [target.'cfg(target_os = "macos")'.dependencies]
 objc2 = "0.6"
 objc2-foundation = "0.3"

@@ -1,0 +1,35 @@
+#!/usr/bin/env bash
+# Check the LaTeX mirror for the demo, and skip the check while nothing has changed.
+#
+# tools/assets/mirror check re-hashes every file in the mirror, which takes
+# seconds for a multi-gigabyte mirror. A passing check writes a stamp. The next
+# run skips the check when the stamp holds the same MIRROR and assets.lock, and
+# no file under a local mirror is newer than the stamp. A URL mirror has no local
+# files to compare, so only the path and the lock decide for it.
+#
+# Run from the repo root with MIRROR in the environment, as tools/assets/mirror reads it.
+set -euo pipefail
+
+MIRROR="${MIRROR:-../wasm-latex/mirror}"
+STAMP="target/demo-mirror-checked"
+lock_sum="$(sha256sum assets.lock | cut -d ' ' -f 1)"
+
+unchanged() {
+  [ -f "$STAMP" ] || return 1
+  [ "$(sed -n '1p' "$STAMP")" = "$MIRROR" ] || return 1
+  [ "$(sed -n '2p' "$STAMP")" = "$lock_sum" ] || return 1
+  case "$MIRROR" in
+    http://* | https://*) return 0 ;;
+  esac
+  [ -d "$MIRROR" ] || return 1
+  [ -z "$(find "$MIRROR" -newer "$STAMP" -print -quit)" ]
+}
+
+if unchanged; then
+  echo "demo: mirror unchanged since the last check"
+  exit 0
+fi
+
+tools/assets/mirror check
+mkdir -p target
+printf '%s\n%s\n' "$MIRROR" "$lock_sum" > "$STAMP"

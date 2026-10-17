@@ -8,6 +8,8 @@
 # `librepaper` (or LIBREPAPER_BINARY) from the build context instead. Every
 # build uses the repository root as its context. For `SOURCE=checkout`, run
 # `make web` first so `web/dist` is ready to embed; BuildKit skips unused stages.
+# CARGO_PROFILE picks the cargo profile for SOURCE=checkout (default release);
+# the demo passes demo, which skips LTO.
 #
 #   docker build -f tools/docker/Dockerfile --build-arg LIBREPAPER_VERSION=<compatible-tag> -t librepaper .
 #   docker build -f tools/docker/Dockerfile --build-arg SOURCE=local -t librepaper .
@@ -61,6 +63,7 @@ RUN chmod 0755 /usr/local/bin/librepaper
 
 FROM ${RUST_BUILDER_IMAGE} AS checkout-build
 ARG TARGETARCH
+ARG CARGO_PROFILE=release
 WORKDIR /src
 RUN apk add --no-cache build-base cmake musl-dev perl
 COPY Cargo.toml Cargo.lock README.md assets.lock ./
@@ -79,9 +82,9 @@ RUN --mount=type=cache,target=/usr/local/cargo/registry \
 		*) echo "build: checkout source does not support $TARGETARCH" >&2; exit 1 ;; \
 	esac; \
 	rustup target add "$target"; \
-	cargo build --locked --release --target "$target" -p librepaper --bin librepaper; \
+	cargo build --locked --profile "$CARGO_PROFILE" --target "$target" -p librepaper --bin librepaper; \
 	mkdir -p /out; \
-	cp "/src/target/$target/release/librepaper" /out/librepaper
+	cp "/src/target/$target/$CARGO_PROFILE/librepaper" /out/librepaper
 
 FROM base AS checkout
 COPY --from=checkout-build /out/librepaper /usr/local/bin/librepaper
