@@ -169,7 +169,11 @@ fn claude_meta(inputs: &Inputs) -> Reading {
     let field = |value: Option<&serde_json::Value>| {
         value.and_then(serde_json::Value::as_str).map(str::to_owned)
     };
-    let server = field(claude.get("mcpServer").and_then(|server| server.get("name")));
+    let server = field(
+        claude
+            .get("mcpServer")
+            .and_then(|server| server.get("name")),
+    );
     let name = field(claude.get("toolName"));
     let (Some(server), Some(name)) = (server, name) else {
         return Reading::Refused;
@@ -892,7 +896,9 @@ mod tests {
     }
 
     /// The document tool a request proves on its own fields.
-    fn request_tool(call: &agent_client_protocol::schema::v1::ToolCallUpdate) -> Option<&'static str> {
+    fn request_tool(
+        call: &agent_client_protocol::schema::v1::ToolCallUpdate,
+    ) -> Option<&'static str> {
         tool_ref(call.fields.raw_input.as_ref(), call.meta.as_ref())
             .as_ref()
             .and_then(librepaper_tool)
@@ -924,7 +930,11 @@ mod tests {
     #[test]
     fn claude_metadata_names_the_server_and_tool() {
         let meta = claude_meta("librepaper", "mcp__librepaper__document_comment");
-        let call = tool_call(Some("librepaper - document_comment (MCP)"), Some(meta), None);
+        let call = tool_call(
+            Some("librepaper - document_comment (MCP)"),
+            Some(meta),
+            None,
+        );
         assert_eq!(request_tool(&call), Some("document_comment"));
         let unprefixed = claude_meta("librepaper", "document_read");
         assert_eq!(
@@ -947,15 +957,36 @@ mod tests {
         assert_eq!(request_tool(&call), None);
         // Claude's raw input is the tool's own arguments.
         let lookalike = serde_json::json!({"claudeCode": {"toolName": "Bash"}});
-        let call = tool_call(None, Some(lookalike), Some(wrapper("librepaper", "document_apply")));
+        let call = tool_call(
+            None,
+            Some(lookalike),
+            Some(wrapper("librepaper", "document_apply")),
+        );
         assert_eq!(request_tool(&call), None);
     }
 
     #[test]
     fn titles_never_prove_a_tool() {
-        assert_eq!(request_tool(&tool_call(Some("mcp__librepaper__document_apply"), None, None)), None);
-        assert_eq!(request_tool(&tool_call(Some("mcp.librepaper.document_apply"), None, None)), None);
-        assert_eq!(request_tool(&tool_call(Some("document_read"), None, None)), None);
+        assert_eq!(
+            request_tool(&tool_call(
+                Some("mcp__librepaper__document_apply"),
+                None,
+                None
+            )),
+            None
+        );
+        assert_eq!(
+            request_tool(&tool_call(
+                Some("mcp.librepaper.document_apply"),
+                None,
+                None
+            )),
+            None
+        );
+        assert_eq!(
+            request_tool(&tool_call(Some("document_read"), None, None)),
+            None
+        );
         assert_eq!(request_tool(&tool_call(Some("Bash"), None, None)), None);
         assert_eq!(request_tool(&tool_call(None, None, None)), None);
     }
@@ -963,9 +994,16 @@ mod tests {
     #[test]
     fn codex_raw_input_counts_only_for_an_mcp_tool_call() {
         let with = |server: &str, tool: &str| {
-            request_tool(&tool_call(None, Some(codex_meta()), Some(wrapper(server, tool))))
+            request_tool(&tool_call(
+                None,
+                Some(codex_meta()),
+                Some(wrapper(server, tool)),
+            ))
         };
-        assert_eq!(with("librepaper", "document_comment"), Some("document_comment"));
+        assert_eq!(
+            with("librepaper", "document_comment"),
+            Some("document_comment")
+        );
         assert_eq!(with("other", "document_comment"), None);
         assert_eq!(with("librepaper", "Bash"), None);
         let unflagged = tool_call(None, None, Some(wrapper("librepaper", "document_apply")));
@@ -1000,7 +1038,10 @@ mod tests {
         assert_eq!(calls.tool_for(&bare).await, None);
         calls.record("call-1", codex_call("librepaper", "document_read"));
         let found = calls.tool_for(&bare).await;
-        assert_eq!(found.as_ref().and_then(librepaper_tool), Some("document_read"));
+        assert_eq!(
+            found.as_ref().and_then(librepaper_tool),
+            Some("document_read")
+        );
     }
 
     #[tokio::test]
@@ -1013,7 +1054,10 @@ mod tests {
             tool_ref(announced.fields.raw_input.as_ref(), announced.meta.as_ref()),
         );
         let found = calls.tool_for(&tool_call(Some("Allow?"), None, None)).await;
-        assert_eq!(found.as_ref().and_then(librepaper_tool), Some("document_apply"));
+        assert_eq!(
+            found.as_ref().and_then(librepaper_tool),
+            Some("document_apply")
+        );
     }
 
     #[tokio::test]
@@ -1038,7 +1082,10 @@ mod tests {
             late.record("call-1", codex_call("librepaper", "document_read"));
         });
         let found = calls.tool_for(&tool_call(None, None, None)).await;
-        assert_eq!(found.as_ref().and_then(librepaper_tool), Some("document_read"));
+        assert_eq!(
+            found.as_ref().and_then(librepaper_tool),
+            Some("document_read")
+        );
         let never = ToolCalls::default();
         assert_eq!(never.tool_for(&tool_call(None, None, None)).await, None);
     }
