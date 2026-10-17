@@ -266,6 +266,11 @@
   /// delete the character a pending change's cursor is attached to, and the
   /// prune rewrites that cursor against live text while the history that
   /// locates it is still there.
+  ///
+  /// While tracking is off, an edit is still planned, untracked. It records
+  /// nothing and changes no text, but pending spans shrink, move or split
+  /// around it, and the gaps it collapses merge in order. With no records in
+  /// the document, nothing is planned.
   function trackChanges(fileId) {
     /** @type {{changes: any[], gaps: any[]}} */
     let snapshot = { changes: [], gaps: [] };
@@ -276,7 +281,7 @@
       const doc = session.doc;
       return {
         update(update) {
-          if (tracked && isLocal(update)) snapshot = resolveFile(doc, fileId);
+          if (isLocal(update) && doc.getMap(CHANGES).size) snapshot = resolveFile(doc, fileId);
         },
       };
     });
@@ -292,7 +297,7 @@
           let state = snapshot;
           const touched = new Set();
           const now = Date.now();
-          if (tracked) {
+          if (tracked || snapshot.changes.length || snapshot.gaps.length) {
             for (const transaction of update.transactions) {
               if (!transaction.docChanged || transaction.annotation(loroSyncAnnotation) !== undefined) continue;
               const edits = [];
@@ -302,6 +307,7 @@
               /** @type {any} */
               const plan = planEdits(transaction.startState.doc.toString(), state, edits, me, {
                 run: null,
+                untracked: !tracked,
                 now,
                 mintId: () => crypto.randomUUID(),
               });
