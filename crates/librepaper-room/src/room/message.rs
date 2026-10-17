@@ -169,6 +169,19 @@ pub enum KnownMessage {
         #[serde(default)]
         request_id: String,
     },
+    #[serde(rename = "edit")]
+    Edit {
+        #[serde(default)]
+        comment_id: String,
+        #[serde(default)]
+        reply_id: String,
+        #[serde(default)]
+        body: String,
+        #[serde(default)]
+        temp_id: String,
+        #[serde(default)]
+        request_id: String,
+    },
     #[serde(rename = "delete")]
     Delete {
         #[serde(default)]
@@ -206,6 +219,7 @@ impl KnownMessage {
                 | "comment"
                 | "reply"
                 | "resolve"
+                | "edit"
                 | "delete"
         )
     }
@@ -224,6 +238,7 @@ impl KnownMessage {
             Self::Comment { .. } => "comment",
             Self::Reply { .. } => "reply",
             Self::Resolve { .. } => "resolve",
+            Self::Edit { .. } => "edit",
             Self::Delete { .. } => "delete",
         }
     }
@@ -239,11 +254,17 @@ impl KnownMessage {
             | Comment
             | Reply
             | Resolve
+            | Edit
             | Delete
     );
-    string_field!(temp_id, temp_id, Chat | Comment | Reply | Resolve | Delete);
-    string_field!(comment_id, comment_id, Reply | Resolve | Delete);
-    string_field!(body, body, Chat | Comment | Reply);
+    string_field!(
+        temp_id,
+        temp_id,
+        Chat | Comment | Reply | Resolve | Edit | Delete
+    );
+    string_field!(comment_id, comment_id, Reply | Resolve | Edit | Delete);
+    string_field!(reply_id, reply_id, Edit);
+    string_field!(body, body, Chat | Comment | Reply | Edit);
     string_field!(motivation, motivation, Comment);
     string_field!(render_digest, render_digest, Comment);
     string_field!(creator, creator, Comment | Reply);
@@ -314,6 +335,9 @@ impl Message {
             Self::Known(v) => f(v),
             Self::Unknown(_) => T::default(),
         }
+    }
+    pub fn reply_id(&self) -> &str {
+        self.string(KnownMessage::reply_id)
     }
     pub fn body(&self) -> &str {
         self.string(KnownMessage::body)
@@ -403,6 +427,21 @@ mod tests {
             (v.kind(), v.comment_id(), v.temp_id(), v.request_id()),
             ("future", "c", "t", "r")
         );
+    }
+
+    #[test]
+    fn an_edit_frame_carries_its_reply_id_only_when_it_names_one() {
+        let v: Message = serde_json::from_str(
+            r#"{"type":"edit","comment_id":"c","reply_id":"r","body":"new","temp_id":"t","request_id":"q"}"#,
+        )
+        .unwrap();
+        assert_eq!(
+            (v.kind(), v.comment_id(), v.reply_id(), v.body(), v.temp_id(), v.request_id()),
+            ("edit", "c", "r", "new", "t", "q")
+        );
+        let v: Message = serde_json::from_str(r#"{"type":"edit","comment_id":"c","body":"new"}"#)
+            .unwrap();
+        assert_eq!(v.reply_id(), "");
     }
 
     #[test]

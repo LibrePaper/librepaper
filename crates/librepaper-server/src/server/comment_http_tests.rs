@@ -611,6 +611,163 @@ async fn the_wire_sees_every_comment_past_the_first_page_and_can_resolve_one() {
     deployment.catalog.close().await;
 }
 
+/// A frame through `apply_from`, as the given viewer and attribution key.
+async fn send(
+    deployment: &Deployment,
+    room: &librepaper_room::room::Room,
+    frame: serde_json::Value,
+    who: &Viewer,
+    author: &str,
+) -> (serde_json::Value, bool) {
+    let incoming: RoomMessage = serde_json::from_value(frame).unwrap();
+    deployment
+        .server
+        .apply_from(room, incoming, "203.0.113.9", who, author)
+        .await
+}
+
+#[tokio::test]
+#[ignore = "requires LIBREPAPER_TEST_POSTGRES_URL"]
+async fn only_the_author_edits_a_comment_or_a_reply() {
+    let Some(deployment) = deployment("http-edit-own").await else {
+        return;
+    };
+    let room = deployment
+        .server
+        .documents
+        .rooms
+        .get(&deployment.slug)
+        .await
+        .unwrap();
+    let commenter = viewer(
+        deployment.commenter_id,
+        "commenter",
+        &deployment.commenter_session_generation,
+        Role::Commenter,
+    );
+    let owner = viewer(
+        deployment.owner_id,
+        "owner",
+        &deployment.owner_session_generation,
+        Role::Editor,
+    );
+    let author = format!("account:{}", deployment.commenter_id);
+    let owner_key = format!("account:{}", deployment.owner_id);
+
+    let (made, ok) = send(&deployment, &room, comment_body(), &commenter, &author).await;
+    assert!(ok, "{made}");
+    let comment_id = made["comment"]["id"].as_str().unwrap().to_string();
+    let (replied, ok) = send(
+        &deployment,
+        &room,
+        json!({"type": "reply", "comment_id": comment_id, "body": "first words"}),
+        &commenter,
+        &author,
+    )
+    .await;
+    assert!(ok, "{replied}");
+    let reply_id = replied["reply"]["id"].as_str().unwrap().to_string();
+
+    // The author changes the comment, and then the reply.
+    let (edited, ok) = send(
+        &deployment,
+        &room,
+        json!({"type": "edit", "comment_id": comment_id, "body": "  better words  "}),
+        &commenter,
+        &author,
+    )
+    .await;
+    assert!(ok, "{edited}");
+    assert_eq!(edited["type"], "edit");
+    assert_eq!(edited["comment_id"], comment_id.as_str());
+    assert!(edited["reply_id"].is_null());
+    assert_eq!(edited["body"], "better words");
+    assert!(edited["edited"].as_str().is_some_and(|t| !t.is_empty()));
+
+    let (edited_reply, ok) = send(
+        &deployment,
+        &room,
+        json!({"type": "edit", "comment_id": comment_id, "reply_id": reply_id,
+               "body": "better reply"}),
+        &commenter,
+        &author,
+    )
+    .await;
+    assert!(ok, "{edited_reply}");
+    assert_eq!(edited_reply["reply_id"], reply_id.as_str());
+    assert_eq!(edited_reply["body"], "better reply");
+
+    // A later page shows both, with the stamp, and the reply is the viewer's.
+    let (page, _) = room.comment_page(None, 50, &author, false).await.unwrap();
+    let found = page
+        .iter()
+        .find(|c| c.comment.id == comment_id)
+        .expect("the comment is on the page");
+    assert_eq!(found.comment.body, "better words");
+    assert!(found.comment.edited.is_some());
+    assert_eq!(found.comment.replies[0].body, "better reply");
+    assert!(found.comment.replies[0].edited.is_some());
+    assert!(found.comment.replies[0].mine);
+
+    // Nobody else may: not another commenter, and not the owner.
+    let (refused, ok) = send(
+        &deployment,
+        &room,
+        json!({"type": "edit", "comment_id": comment_id, "body": "forged"}),
+        &commenter,
+        "account:someone-else",
+    )
+    .await;
+    assert!(!ok, "{refused}");
+    assert!(refused["message"]
+        .as_str()
+        .is_some_and(|m| m.contains("your own")));
+    let (refused, ok) = send(
+        &deployment,
+        &room,
+        json!({"type": "edit", "comment_id": comment_id, "body": "forged"}),
+        &owner,
+        &owner_key,
+    )
+    .await;
+    assert!(!ok, "the owner may delete but not edit: {refused}");
+    let (refused, ok) = send(
+        &deployment,
+        &room,
+        json!({"type": "edit", "comment_id": comment_id, "reply_id": reply_id,
+               "body": "forged"}),
+        &owner,
+        &owner_key,
+    )
+    .await;
+    assert!(!ok, "{refused}");
+
+    // An id that names nothing is refused too, and the body is unchanged.
+    let (refused, ok) = send(
+        &deployment,
+        &room,
+        json!({"type": "edit", "comment_id": Uuid::new_v4().to_string(), "body": "x"}),
+        &commenter,
+        &author,
+    )
+    .await;
+    assert!(!ok, "{refused}");
+    let (refused, ok) = send(
+        &deployment,
+        &room,
+        json!({"type": "edit", "comment_id": comment_id,
+               "reply_id": Uuid::new_v4().to_string(), "body": "x"}),
+        &commenter,
+        &author,
+    )
+    .await;
+    assert!(!ok, "{refused}");
+    let (page, _) = room.comment_page(None, 50, &author, false).await.unwrap();
+    let found = page.iter().find(|c| c.comment.id == comment_id).unwrap();
+    assert_eq!(found.comment.body, "better words");
+    deployment.catalog.close().await;
+}
+
 fn urlencode(value: &str) -> String {
     url::form_urlencoded::byte_serialize(value.as_bytes()).collect()
 }

@@ -1764,9 +1764,10 @@ impl Server {
                     .command(authority, &mut add_reply)
                     .await
                     .map_err(command_error_value)?;
-                Ok(
-                    json!({"type": "reply", "comment_id": outcome.comment_id, "reply": outcome.reply}),
-                )
+                // `reply_author` is read and removed by `prepare_comment_event`,
+                // which is how the sender's own view marks the reply `mine`.
+                Ok(json!({"type": "reply", "comment_id": outcome.comment_id,
+                    "reply": outcome.reply, "reply_author": outcome.reply.author}))
             }
             RoomCommand::Resolve {
                 comment_id,
@@ -1786,6 +1787,30 @@ impl Server {
                     .map_err(command_error_value)?;
                 Ok(json!({"type": "resolve", "comment_id": outcome.comment_id,
                     "resolved": outcome.resolved, "resolved_at": outcome.resolved_at}))
+            }
+            RoomCommand::Edit {
+                comment_id,
+                reply_id,
+                body,
+                ..
+            } => {
+                let mut edit = librepaper_room::room::EditComment::new(
+                    catalog.clone(),
+                    document_id,
+                    comment_id,
+                    reply_id,
+                    config,
+                    &body,
+                    author,
+                )
+                .map_err(|error| json!({"type": "error", "message": error}))?;
+                let outcome = room
+                    .command(authority, &mut edit)
+                    .await
+                    .map_err(command_error_value)?;
+                Ok(json!({"type": "edit", "comment_id": outcome.comment_id,
+                    "reply_id": outcome.reply_id, "body": outcome.body,
+                    "edited": outcome.edited}))
             }
             RoomCommand::Delete { comment_id, .. } => {
                 let parsed_id = comment_id;

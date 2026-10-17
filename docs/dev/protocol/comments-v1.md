@@ -55,8 +55,16 @@ that fit are loaded, except for the one-row oversize case.
 - After registering a socket as a subscriber, the server sends
   `{"type":"hello","comments":[...first page...],"state":{...}}`.
 - Individual mutations are sent as bounded `comment`, `reply`, `resolve`,
-  `delete`, `refine`, `accept`, or `reject` events. Events carry viewer
+  `edit`, `delete`, `refine`, `accept`, or `reject` events. Events carry viewer
   specific state counts.
+- `edit` changes the body of a comment or a reply. Only its author may; the
+  owner may delete but not edit. No history is kept.
+  - Client frame, also accepted by `POST /api/documents/{slug}/comments`:
+    `{"type":"edit","comment_id":...,"reply_id":...,"body":...}`. Omit
+    `reply_id` to edit the comment itself.
+  - Event: `{"type":"edit","comment_id":...,"reply_id":...|null,"body":...,`
+    `"edited":...,"state":{...}}`. It carries no comment row.
+  - Comments and replies gain `edited` once edited. Replies carry `mine`.
 - `comments-changed` carries updated state counts but no comment rows. Clients
   re-read pages when an event describes a batch or other change that cannot
   be represented by a single row event.

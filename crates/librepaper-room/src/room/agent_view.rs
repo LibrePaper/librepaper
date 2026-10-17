@@ -119,6 +119,7 @@ impl Room {
             .iter()
             .map(|reply| {
                 let mut value = serde_json::to_value(reply).unwrap_or(Value::Null);
+                value["mine"] = json!(!author.is_empty() && reply.author == author);
                 if let Some(at) = reply.at {
                     value["cursor"] = json!(comments::encode_cursor(
                         self.document_id,

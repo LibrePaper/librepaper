@@ -272,9 +272,14 @@ impl Server {
             },
             None => None,
         };
+        let author = self.comment_author(&headers, arrival, &who.id);
         match room.reply_page(comment_id, after, limit).await {
             Ok(None) => write_json(404, &json!({"error": "not found"})),
-            Ok(Some(page)) => write_json(
+            Ok(Some(mut page)) => {
+                for reply in &mut page.replies {
+                    reply.mine = !author.is_empty() && reply.author == author;
+                }
+                write_json(
                 200,
                 &json!({
                     "version": 1,
@@ -287,7 +292,8 @@ impl Server {
                     "oversize": page.oversize,
                     "total": page.total,
                 }),
-            ),
+                )
+            }
             Err(error) => refused("read replies", &error),
         }
     }

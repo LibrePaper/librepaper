@@ -11,7 +11,7 @@
 //! `evaluate` has no database access -- it runs with the sequencer's lock
 //! held and nothing else may run meanwhile, which is precisely what makes it
 //! safe to trust. So a command that needs to know something about an
-//! *existing* row (a comment being resolved or deleted) is
+//! *existing* row (a comment being resolved, edited or deleted) is
 //! constructed with that already read by its caller, before `room.command`
 //! is called, and re-validates what it needs of it against `tx` inside
 //! `transact`, which does have a connection.
@@ -64,6 +64,17 @@ pub struct Reply {
     pub body: String,
     pub creator: String,
     pub created: String,
+    /// When the author last changed the body; absent until the first edit.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub edited: Option<String>,
+    /// Who wrote this reply, checked server-side and never shown. Only
+    /// what [`Reply::mine`] is derived from.
+    #[serde(default, skip_serializing)]
+    pub author: String,
+    /// Whether the viewer wrote this reply. Set when a view is made for a
+    /// caller; false on a row not yet shown to anyone.
+    #[serde(default)]
+    pub mine: bool,
     /// This row's own place in its thread's traversal, so a consumer
     /// that stops part-way through a page can continue from exactly the
     /// row it stopped at. Never on the wire: a cursor is, and this is what
@@ -112,6 +123,9 @@ pub struct Comment {
     pub creator: String,
     #[serde(default)]
     pub created: String,
+    /// When the author last changed the body; absent until the first edit.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub edited: Option<String>,
     #[serde(default)]
     pub resolved: bool,
     #[serde(default)]
@@ -226,11 +240,16 @@ pub struct CommentEvent {
     editor: Option<Comment>,
     reader: Option<Comment>,
     state: Option<librepaper_engine::storage::postgres::AnnotationState>,
+    /// The attribution key of the reply a `reply` event announces, taken
+    /// off the payload so it is never sent. Only the sender's own view
+    /// uses it, to mark that reply `mine`.
+    reply_author: String,
 }
 
 impl CommentEvent {
     fn bare(payload: Value) -> Self {
         Self {
+            reply_author: String::new(),
             payload,
             carries_comment: false,
             editor: None,
@@ -262,6 +281,11 @@ impl CommentEvent {
             (true, None) if !is_owner => json!({"type": "annotation-redacted"}),
             _ => self.payload.clone(),
         };
+        if !author.is_empty() && self.reply_author == author {
+            if let Some(reply) = event.get_mut("reply") {
+                reply["mine"] = json!(true);
+            }
+        }
         if let Some(state) = &self.state {
             event["state"] = comment_state_json(state);
         }
@@ -284,6 +308,9 @@ impl CommentView {
         let mine = !author.is_empty() && comment.author == author;
         let deletable = deletable(comment, author, is_owner);
         let mut comment = comment.clone();
+        for reply in &mut comment.replies {
+            reply.mine = !author.is_empty() && reply.author == author;
+        }
         if !is_owner {
             comment.original_anchor = None;
             comment.attachment = None;
@@ -467,6 +494,7 @@ fn annotation_row_to_comment(
         body: row.body.clone(),
         creator: row.author_label.clone(),
         created: format_time(row.created_at),
+        edited: row.edited_at.map(format_time),
         resolved: row.resolved_at.is_some(),
         resolved_at: row.resolved_at.map(format_time),
         replies,
@@ -487,6 +515,9 @@ fn reply_row_to_reply(row: ReplyRecord) -> Reply {
         body: row.body,
         creator: row.author_label,
         created: format_time(row.created_at),
+        edited: row.edited_at.map(format_time),
+        author: row.author_key,
+        mine: false,
         at: Some(Position {
             created: row.created_at,
             id: row.id,
@@ -1451,6 +1482,128 @@ impl SequencerCommand for DeleteComment {
     }
 }
 
+/// Changes the body of a comment or a reply. Only its author may: the
+/// document's owner may delete someone else's words but not rewrite them.
+/// No history is kept; the row records only when it was last edited.
+pub struct EditComment {
+    catalog: Arc<PostgresCatalog>,
+    document_id: Uuid,
+    comment_id: Uuid,
+    reply_id: Option<Uuid>,
+    body: String,
+    author_key: String,
+    actor: MutationAuthorization,
+}
+
+impl EditComment {
+    pub fn new(
+        catalog: Arc<PostgresCatalog>,
+        document_id: Uuid,
+        comment_id: Uuid,
+        reply_id: Option<Uuid>,
+        config: &Configuration,
+        body: &str,
+        author: &CommentAuthor,
+    ) -> Result<Self, String> {
+        let body = clean(body, config.caps.body).trim().to_string();
+        if body.is_empty() {
+            return Err("comment body is required".into());
+        }
+        Ok(Self {
+            catalog,
+            document_id,
+            comment_id,
+            reply_id,
+            body,
+            author_key: author.key.clone(),
+            actor: author.authorization.clone(),
+        })
+    }
+}
+
+pub struct EditOutcome {
+    pub comment_id: Uuid,
+    pub reply_id: Option<Uuid>,
+    pub body: String,
+    pub edited: String,
+}
+
+impl SequencerCommand for EditComment {
+    type Output = EditOutcome;
+
+    fn name(&self) -> &'static str {
+        "edit"
+    }
+
+    fn authority(&self) -> Rung {
+        Rung::Commenter
+    }
+
+    fn evaluate(&mut self, _head: &Head<'_>) -> Result<Option<PreparedSource>, CommandError> {
+        Ok(None)
+    }
+
+    fn transact<'a>(
+        &'a mut self,
+        tx: &'a mut Transaction<'_, Postgres>,
+        _evidence: &'a Evidence,
+    ) -> BoxFuture<'a, Result<Self::Output, CommandError>> {
+        Box::pin(async move {
+            let refused = || CommandError::Conflict("you may only edit your own comments".into());
+            let edited = match self.reply_id {
+                None => {
+                    let existing =
+                        find_annotation(&self.catalog, tx, self.document_id, self.comment_id)
+                            .await?;
+                    if self.author_key.is_empty() || existing.author_key != self.author_key {
+                        return Err(refused());
+                    }
+                    self.catalog
+                        .edit_annotation_body_authorized(
+                            tx,
+                            self.document_id,
+                            self.comment_id,
+                            &self.body,
+                            &self.actor,
+                        )
+                        .await?
+                }
+                Some(reply_id) => {
+                    let writer = self
+                        .catalog
+                        .reply_author_key_in_transaction(
+                            tx,
+                            self.document_id,
+                            self.comment_id,
+                            reply_id,
+                        )
+                        .await?
+                        .ok_or_else(|| CommandError::Conflict("unknown reply".into()))?;
+                    if self.author_key.is_empty() || writer != self.author_key {
+                        return Err(refused());
+                    }
+                    self.catalog
+                        .edit_reply_body_authorized(
+                            tx,
+                            self.document_id,
+                            self.comment_id,
+                            reply_id,
+                            &self.body,
+                            &self.actor,
+                        )
+                        .await?
+                }
+            };
+            Ok(EditOutcome {
+                comment_id: self.comment_id,
+                reply_id: self.reply_id,
+                body: self.body.clone(),
+                edited: format_time(edited),
+            })
+        })
+    }
+}
+
 // -- broadcasting ---------------------------------------------------------
 
 impl Room {
@@ -1482,7 +1635,7 @@ impl Room {
     /// `deletable`, which are derived from the row already in hand.
     pub async fn prepare_comment_event(&self, payload: &Value) -> CommentEvent {
         let kind = payload.get("type").and_then(Value::as_str);
-        if !matches!(kind, Some("comment" | "reply" | "delete" | "resolve")) {
+        if !matches!(kind, Some("comment" | "reply" | "delete" | "resolve" | "edit")) {
             return CommentEvent::bare(payload.clone());
         }
         if kind == Some("delete") {
@@ -1500,6 +1653,11 @@ impl Room {
             _ => None,
         };
         let mut event = CommentEvent::bare(payload.clone());
+        if let Some(fields) = event.payload.as_object_mut() {
+            if let Some(Value::String(key)) = fields.remove("reply_author") {
+                event.reply_author = key;
+            }
+        }
         event.carries_comment = id.is_some();
         if let Some(id) = id {
             event.editor = self.event_comment(id).await;
