@@ -1,0 +1,4646 @@
+{
+  "source": "quarto-dev/quarto-cli@45cc5991938018ca5e69a92aa73d4daa504e05f1",
+  "document": [
+    {
+      "name": "CJKmainfont",
+      "description": "The CJK main font family for use with `xelatex` or `lualatex`.",
+      "values": [],
+      "formats": [
+        "$pdf-all"
+      ]
+    },
+    {
+      "name": "CJKoptions",
+      "description": "The CJK font options for use with `xelatex` or `lualatex`.",
+      "values": [],
+      "formats": [
+        "$pdf-all"
+      ]
+    },
+    {
+      "name": "abbreviations",
+      "description": "Specifies a custom abbreviations file, with abbreviations one to a line.",
+      "values": [],
+      "formats": []
+    },
+    {
+      "name": "about",
+      "description": "Specifies that the page is an 'about' page and which template to use when laying out the page.",
+      "values": [
+        "broadside",
+        "jolla",
+        "marquee",
+        "solana",
+        "trestles"
+      ],
+      "formats": [
+        "$html-doc"
+      ]
+    },
+    {
+      "name": "abstract",
+      "description": "Summary of document",
+      "values": [],
+      "formats": [
+        "$asciidoc-all",
+        "$epub-all",
+        "$html-doc",
+        "$jats-all",
+        "$pdf-all",
+        "context",
+        "docx",
+        "ms",
+        "odt"
+      ]
+    },
+    {
+      "name": "abstract-title",
+      "description": "Title used to label document abstract",
+      "values": [],
+      "formats": [
+        "$epub-all",
+        "$html-doc",
+        "docx",
+        "typst"
+      ]
+    },
+    {
+      "name": "adjusting",
+      "description": "Adjusts text to the left, right, center, or both margins (`l`, `r`, `c`, or `b`).",
+      "values": [
+        "b",
+        "c",
+        "l",
+        "r"
+      ],
+      "formats": [
+        "man"
+      ]
+    },
+    {
+      "name": "affiliation",
+      "description": "The list of organizations with which contributors are affiliated.",
+      "values": [],
+      "formats": [
+        "$jats-all"
+      ]
+    },
+    {
+      "name": "aliases",
+      "description": "URLs that alias this document, when included in a website.",
+      "values": [],
+      "formats": [
+        "$html-doc"
+      ]
+    },
+    {
+      "name": "anchor-sections",
+      "description": "Enables hover over a section title to see an anchor link.",
+      "values": [
+        "false",
+        "true"
+      ],
+      "formats": [
+        "$html-doc"
+      ]
+    },
+    {
+      "name": "appendix-cite-as",
+      "description": "Controls the formats which are provided in the citation section of the appendix (`false`, `display`, or `bibtex`).",
+      "values": [
+        "bibtex",
+        "display",
+        "false",
+        "true"
+      ],
+      "formats": [
+        "$html-doc"
+      ]
+    },
+    {
+      "name": "appendix-style",
+      "description": "The layout of the appendix for this document (`none`, `plain`, or `default`)",
+      "values": [
+        "default",
+        "none",
+        "plain"
+      ],
+      "formats": [
+        "$html-doc"
+      ]
+    },
+    {
+      "name": "article",
+      "description": "Information concerning the article that identifies or describes it.",
+      "values": [],
+      "formats": [
+        "$jats-all"
+      ]
+    },
+    {
+      "name": "ascii",
+      "description": "Use only ASCII characters in output.",
+      "values": [
+        "false",
+        "true"
+      ],
+      "formats": [
+        "$html-all",
+        "$markdown-all",
+        "$pdf-all",
+        "ms"
+      ]
+    },
+    {
+      "name": "aspectratio",
+      "description": "The aspect ratio for this presentation.",
+      "values": [],
+      "formats": [
+        "beamer"
+      ]
+    },
+    {
+      "name": "author",
+      "description": "Author or authors of the document",
+      "values": [],
+      "formats": []
+    },
+    {
+      "name": "author-meta",
+      "description": "Sets the author metadata for the document",
+      "values": [],
+      "formats": [
+        "$html-files",
+        "$pdf-all"
+      ]
+    },
+    {
+      "name": "auto-animate",
+      "description": "Globally enable/disable auto-animate (enabled by default)",
+      "values": [
+        "false",
+        "true"
+      ],
+      "formats": [
+        "revealjs"
+      ]
+    },
+    {
+      "name": "auto-animate-duration",
+      "description": "Duration (in seconds) of auto-animate transition",
+      "values": [],
+      "formats": [
+        "revealjs"
+      ]
+    },
+    {
+      "name": "auto-animate-easing",
+      "description": "Default CSS easing function for auto-animation",
+      "values": [],
+      "formats": [
+        "revealjs"
+      ]
+    },
+    {
+      "name": "auto-animate-styles",
+      "description": "CSS properties that can be auto-animated (positional styles like top, left, etc. are always animated).",
+      "values": [],
+      "formats": [
+        "revealjs"
+      ]
+    },
+    {
+      "name": "auto-animate-unmatched",
+      "description": "Auto-animate unmatched elements.",
+      "values": [
+        "false",
+        "true"
+      ],
+      "formats": [
+        "revealjs"
+      ]
+    },
+    {
+      "name": "auto-play-media",
+      "description": "Autoplay embedded media (`null`, `true`, or `false`). Default is `null` (only when `autoplay` attribute is specified)",
+      "values": [],
+      "formats": [
+        "revealjs"
+      ]
+    },
+    {
+      "name": "auto-slide",
+      "description": "Automatically progress all slides at the specified interval",
+      "values": [],
+      "formats": [
+        "revealjs"
+      ]
+    },
+    {
+      "name": "auto-slide-method",
+      "description": "Navigation method to use when auto sliding (defaults to navigateNext)",
+      "values": [],
+      "formats": [
+        "revealjs"
+      ]
+    },
+    {
+      "name": "auto-slide-stoppable",
+      "description": "Stop auto-sliding after user input",
+      "values": [
+        "false",
+        "true"
+      ],
+      "formats": [
+        "revealjs"
+      ]
+    },
+    {
+      "name": "auto-stretch",
+      "description": "For slides with a single top-level image, automatically stretch it to fill the slide.",
+      "values": [
+        "false",
+        "true"
+      ],
+      "formats": [
+        "revealjs"
+      ]
+    },
+    {
+      "name": "axe",
+      "description": "When defined, run axe-core accessibility tests on the document.",
+      "values": [
+        "false",
+        "true"
+      ],
+      "formats": [
+        "$html-files"
+      ]
+    },
+    {
+      "name": "back-to-top-navigation",
+      "description": "Setting this to false hides the 'back to top' navigation button on this page.",
+      "values": [
+        "false",
+        "true"
+      ],
+      "formats": [
+        "$html-doc"
+      ]
+    },
+    {
+      "name": "background-transition",
+      "description": "Transition style for full page slide backgrounds",
+      "values": [
+        "concave",
+        "convex",
+        "fade",
+        "none",
+        "slide",
+        "zoom"
+      ],
+      "formats": [
+        "revealjs"
+      ]
+    },
+    {
+      "name": "backgroundcolor",
+      "description": "Sets the CSS `background-color` property on the html element.",
+      "values": [],
+      "formats": [
+        "$html-doc"
+      ]
+    },
+    {
+      "name": "beamerarticle",
+      "description": "Whether to produce a Beamer article from this presentation.",
+      "values": [
+        "false",
+        "true"
+      ],
+      "formats": [
+        "pdf"
+      ]
+    },
+    {
+      "name": "beameroption",
+      "description": "Add an extra Beamer option using `\\setbeameroption{}`.",
+      "values": [],
+      "formats": [
+        "beamer"
+      ]
+    },
+    {
+      "name": "belongs-to-collection",
+      "description": "Identifies the name of a collection to which the EPUB Publication belongs.",
+      "values": [],
+      "formats": [
+        "$epub-all"
+      ]
+    },
+    {
+      "name": "biblatexoptions",
+      "description": "A list of options for BibLaTeX.",
+      "values": [],
+      "formats": [
+        "$pdf-all"
+      ]
+    },
+    {
+      "name": "biblio-config",
+      "description": "Controls whether to output bibliography configuration for `natbib` or `biblatex` when cite method is not `citeproc`.",
+      "values": [
+        "false",
+        "true"
+      ],
+      "formats": [
+        "$pdf-all"
+      ]
+    },
+    {
+      "name": "biblio-style",
+      "description": "The bibliography style to use (e.g. `\\bibliographystyle{dinat}`) when using `natbib` or `biblatex`.",
+      "values": [],
+      "formats": [
+        "$pdf-all"
+      ]
+    },
+    {
+      "name": "biblio-title",
+      "description": "The bibliography title to use when using `natbib` or `biblatex`.",
+      "values": [],
+      "formats": [
+        "$pdf-all"
+      ]
+    },
+    {
+      "name": "bibliography",
+      "description": "Document bibliography (BibTeX or CSL). May be a single file or a list of files",
+      "values": [],
+      "formats": []
+    },
+    {
+      "name": "bibliographystyle",
+      "description": "The bibliography style to use (e.g. `#set bibliography(style: \"apa\")`) when using typst built-in citation system (e.g when not `citeproc: true`).",
+      "values": [],
+      "formats": [
+        "typst"
+      ]
+    },
+    {
+      "name": "block-headings",
+      "description": "Make `\\paragraph` and `\\subparagraph` free-standing rather than run-in.",
+      "values": [
+        "false",
+        "true"
+      ],
+      "formats": [
+        "$pdf-all"
+      ]
+    },
+    {
+      "name": "body-classes",
+      "description": "Classes to apply to the body of the document.",
+      "values": [],
+      "formats": [
+        "$html-doc"
+      ]
+    },
+    {
+      "name": "brand",
+      "description": "Branding information to use for this document. If a string, the path to a brand file. If false, don't use branding on this document. If an object, an inline brand definition, or an object with light and dark brand paths or definitions.",
+      "values": [],
+      "formats": []
+    },
+    {
+      "name": "brand-mode",
+      "description": "The brand mode to use for rendering the document, `light` or `dark`.",
+      "values": [
+        "dark",
+        "light"
+      ],
+      "formats": [
+        "revealjs",
+        "typst"
+      ]
+    },
+    {
+      "name": "bread-crumbs",
+      "description": "Setting this to false hides the navigation breadcrumbs on this page.",
+      "values": [
+        "false",
+        "true"
+      ],
+      "formats": [
+        "$html-doc"
+      ]
+    },
+    {
+      "name": "cache",
+      "description": "Cache results of computations.",
+      "values": [
+        "false",
+        "refresh",
+        "true"
+      ],
+      "formats": []
+    },
+    {
+      "name": "canonical-url",
+      "description": "Include a canonical link tag in website pages",
+      "values": [
+        "false",
+        "true"
+      ],
+      "formats": [
+        "$html-doc"
+      ]
+    },
+    {
+      "name": "category",
+      "description": "The document category.",
+      "values": [],
+      "formats": [
+        "$office-all"
+      ]
+    },
+    {
+      "name": "center",
+      "description": "Vertical centering of slides",
+      "values": [
+        "false",
+        "true"
+      ],
+      "formats": [
+        "revealjs"
+      ]
+    },
+    {
+      "name": "center-title-slide",
+      "description": "Vertical centering of title slide",
+      "values": [
+        "false",
+        "true"
+      ],
+      "formats": [
+        "revealjs"
+      ]
+    },
+    {
+      "name": "chalkboard",
+      "description": "Configuration for revealjs chalkboard.",
+      "values": [
+        "false",
+        "true"
+      ],
+      "formats": [
+        "revealjs"
+      ]
+    },
+    {
+      "name": "citation",
+      "description": "Citation information for the document itself.",
+      "values": [
+        "false",
+        "true"
+      ],
+      "formats": []
+    },
+    {
+      "name": "citation-abbreviations",
+      "description": "JSON file containing abbreviations of journals that should be used in formatted bibliographies.",
+      "values": [],
+      "formats": []
+    },
+    {
+      "name": "citation-location",
+      "description": "Where citation information should be displayed (`document` or `margin`)",
+      "values": [
+        "document",
+        "margin"
+      ],
+      "formats": [
+        "$html-doc",
+        "typst"
+      ]
+    },
+    {
+      "name": "citations-hover",
+      "description": "Enables a hover popup for citation that shows the reference information.",
+      "values": [
+        "false",
+        "true"
+      ],
+      "formats": [
+        "$html-files"
+      ]
+    },
+    {
+      "name": "cite-method",
+      "description": "Method used to format citations (`citeproc`, `natbib`, or `biblatex`).",
+      "values": [
+        "biblatex",
+        "citeproc",
+        "natbib"
+      ],
+      "formats": [
+        "$pdf-all"
+      ]
+    },
+    {
+      "name": "citecolor",
+      "description": "The color used for citation links.",
+      "values": [],
+      "formats": [
+        "$pdf-all",
+        "typst"
+      ]
+    },
+    {
+      "name": "citeproc",
+      "description": "Turn on built-in citation processing",
+      "values": [
+        "false",
+        "true"
+      ],
+      "formats": []
+    },
+    {
+      "name": "classoption",
+      "description": "Options for the document class,",
+      "values": [],
+      "formats": [
+        "$html-files",
+        "$pdf-all"
+      ]
+    },
+    {
+      "name": "code-annotations",
+      "description": "The style to use when displaying code annotations",
+      "values": [
+        "below",
+        "false",
+        "hover",
+        "none",
+        "select",
+        "true"
+      ],
+      "formats": []
+    },
+    {
+      "name": "code-block-bg",
+      "description": "Show a background color for code blocks.",
+      "values": [
+        "false",
+        "true"
+      ],
+      "formats": [
+        "$html-doc",
+        "$pdf-all"
+      ]
+    },
+    {
+      "name": "code-block-border-left",
+      "description": "Show a thick left border on code blocks.",
+      "values": [
+        "false",
+        "true"
+      ],
+      "formats": [
+        "$html-doc",
+        "$pdf-all"
+      ]
+    },
+    {
+      "name": "code-block-height",
+      "description": "Sets the maximum height for source code blocks that appear in the presentation.",
+      "values": [],
+      "formats": [
+        "revealjs"
+      ]
+    },
+    {
+      "name": "code-copy",
+      "description": "Enable a code copy icon for code blocks.",
+      "values": [
+        "false",
+        "hover",
+        "true"
+      ],
+      "formats": [
+        "$html-all"
+      ]
+    },
+    {
+      "name": "code-link",
+      "description": "Enables hyper-linking of functions within code blocks to their online documentation.",
+      "values": [
+        "false",
+        "true"
+      ],
+      "formats": [
+        "$html-files"
+      ]
+    },
+    {
+      "name": "code-links",
+      "description": "A list of links that should be displayed below the table of contents in an `Code Links` section.",
+      "values": [],
+      "formats": [
+        "$html-doc"
+      ]
+    },
+    {
+      "name": "code-tools",
+      "description": "Include a code tools menu (for hiding and showing code).",
+      "values": [
+        "false",
+        "true"
+      ],
+      "formats": [
+        "$html-doc"
+      ]
+    },
+    {
+      "name": "codefont",
+      "description": "Sets the font used for code in Typst output.",
+      "values": [],
+      "formats": [
+        "typst"
+      ]
+    },
+    {
+      "name": "colorlinks",
+      "description": "Add color to link text, automatically enabled if any of `linkcolor`, `filecolor`, `citecolor`, `urlcolor`, or `toccolor` are set.",
+      "values": [
+        "false",
+        "true"
+      ],
+      "formats": [
+        "$pdf-all"
+      ]
+    },
+    {
+      "name": "colortheme",
+      "description": "The Beamer color theme for this presentation, passed to `\\usecolortheme`.",
+      "values": [],
+      "formats": [
+        "beamer"
+      ]
+    },
+    {
+      "name": "colorthemeoptions",
+      "description": "The Beamer color theme options for this presentation, passed to `\\usecolortheme`.",
+      "values": [],
+      "formats": [
+        "beamer"
+      ]
+    },
+    {
+      "name": "columns",
+      "description": "For text formats, specify length of lines in characters. For `typst`, number of columns for body text.",
+      "values": [],
+      "formats": [
+        "!$docbook-all",
+        "!$html-all",
+        "!$odt-all",
+        "!$office-all",
+        "!$pdf-all",
+        "typst"
+      ]
+    },
+    {
+      "name": "comments",
+      "description": "Configuration for document commenting.",
+      "values": [],
+      "formats": [
+        "$html-files"
+      ]
+    },
+    {
+      "name": "contrastcolor",
+      "description": "Color for links to other content within the document.",
+      "values": [],
+      "formats": [
+        "context"
+      ]
+    },
+    {
+      "name": "contributor",
+      "description": "Contributors to this publication.",
+      "values": [],
+      "formats": [
+        "$epub-all"
+      ]
+    },
+    {
+      "name": "controls",
+      "description": "Show arrow controls for navigating through slides (`true`, `false`, or `auto`).",
+      "values": [
+        "auto",
+        "false",
+        "true"
+      ],
+      "formats": [
+        "revealjs"
+      ]
+    },
+    {
+      "name": "controls-back-arrows",
+      "description": "Visibility rule for backwards navigation arrows (`faded`, `hidden`, or `visible`).",
+      "values": [
+        "faded",
+        "hidden",
+        "visible"
+      ],
+      "formats": [
+        "revealjs"
+      ]
+    },
+    {
+      "name": "controls-layout",
+      "description": "Location for navigation controls (`edges` or `bottom-right`)",
+      "values": [
+        "bottom-right",
+        "edges"
+      ],
+      "formats": [
+        "revealjs"
+      ]
+    },
+    {
+      "name": "controls-tutorial",
+      "description": "Help the user learn the controls by providing visual hints.",
+      "values": [
+        "false",
+        "true"
+      ],
+      "formats": [
+        "revealjs"
+      ]
+    },
+    {
+      "name": "copyright",
+      "description": "Licensing and copyright information.",
+      "values": [],
+      "formats": [
+        "$jats-all"
+      ]
+    },
+    {
+      "name": "coverage",
+      "description": "Text describing the coverage of this publication.",
+      "values": [],
+      "formats": [
+        "$epub-all"
+      ]
+    },
+    {
+      "name": "creator",
+      "description": "Creators of this publication.",
+      "values": [],
+      "formats": [
+        "$epub-all"
+      ]
+    },
+    {
+      "name": "crossref",
+      "description": "Configuration for cross-reference labels and prefixes.",
+      "values": [],
+      "formats": []
+    },
+    {
+      "name": "crossrefs-hover",
+      "description": "Enables a hover popup for cross references that shows the item being referenced.",
+      "values": [
+        "false",
+        "true"
+      ],
+      "formats": [
+        "$html-files"
+      ]
+    },
+    {
+      "name": "csl",
+      "description": "Citation Style Language file to use for formatting references.",
+      "values": [],
+      "formats": []
+    },
+    {
+      "name": "css",
+      "description": "One or more CSS style sheets.",
+      "values": [],
+      "formats": [
+        "$html-all"
+      ]
+    },
+    {
+      "name": "css-property-processing",
+      "description": "CSS property translation",
+      "values": [
+        "none",
+        "translate"
+      ],
+      "formats": [
+        "typst"
+      ]
+    },
+    {
+      "name": "date",
+      "description": "Document date",
+      "values": [],
+      "formats": []
+    },
+    {
+      "name": "date-format",
+      "description": "Date format for the document",
+      "values": [],
+      "formats": []
+    },
+    {
+      "name": "date-meta",
+      "description": "Sets the date metadata for the document",
+      "values": [],
+      "formats": [
+        "$html-all",
+        "$pdf-all"
+      ]
+    },
+    {
+      "name": "date-modified",
+      "description": "Document date modified",
+      "values": [],
+      "formats": [
+        "$html-doc"
+      ]
+    },
+    {
+      "name": "default-image-extension",
+      "description": "Specify a default extension to use when image paths/URLs have no extension.",
+      "values": [],
+      "formats": []
+    },
+    {
+      "name": "default-timing",
+      "description": "Expected average seconds per slide (used by pacing timer in speaker view)",
+      "values": [],
+      "formats": [
+        "revealjs"
+      ]
+    },
+    {
+      "name": "description",
+      "description": "The document description. Some applications show this as `Comments` metadata.",
+      "values": [],
+      "formats": [
+        "$office-all",
+        "odt"
+      ]
+    },
+    {
+      "name": "description-meta",
+      "description": "Sets the description metadata for the document",
+      "values": [],
+      "formats": [
+        "$html-files"
+      ]
+    },
+    {
+      "name": "df-print",
+      "description": "Method used to print tables in Knitr engine documents (`default`, `kable`, `tibble`, or `paged`). Uses `default` if not specified.",
+      "values": [
+        "default",
+        "kable",
+        "paged",
+        "tibble"
+      ],
+      "formats": []
+    },
+    {
+      "name": "dir",
+      "description": "The base script direction for the document (`rtl` or `ltr`).",
+      "values": [
+        "ltr",
+        "rtl"
+      ],
+      "formats": []
+    },
+    {
+      "name": "disable-layout",
+      "description": "Disables the default reveal.js slide layout (scaling and centering)",
+      "values": [
+        "false",
+        "true"
+      ],
+      "formats": [
+        "revealjs"
+      ]
+    },
+    {
+      "name": "documentclass",
+      "description": "The document class.",
+      "values": [],
+      "formats": [
+        "$pdf-all"
+      ]
+    },
+    {
+      "name": "doi",
+      "description": "Displays the document Digital Object Identifier in the header.",
+      "values": [],
+      "formats": [
+        "$html-doc"
+      ]
+    },
+    {
+      "name": "dpi",
+      "description": "Specify the default dpi (dots per inch) value for conversion from pixels to inch/ centimeters and vice versa.",
+      "values": [],
+      "formats": []
+    },
+    {
+      "name": "editor",
+      "description": "Visual editor configuration",
+      "values": [
+        "source",
+        "visual"
+      ],
+      "formats": []
+    },
+    {
+      "name": "editor_options",
+      "description": "Editor-specific options (used by RStudio and Positron).",
+      "values": [],
+      "formats": []
+    },
+    {
+      "name": "email-obfuscation",
+      "description": "Method for obfuscating mailto: links in HTML documents.",
+      "values": [
+        "javascript",
+        "none",
+        "references"
+      ],
+      "formats": [
+        "$html-files"
+      ]
+    },
+    {
+      "name": "email-version",
+      "description": "Email format version",
+      "values": [],
+      "formats": [
+        "email"
+      ]
+    },
+    {
+      "name": "embed-resources",
+      "description": "Produce a standalone HTML file with no external dependencies",
+      "values": [
+        "false",
+        "true"
+      ],
+      "formats": [
+        "$html-files"
+      ]
+    },
+    {
+      "name": "engine",
+      "description": "Engine used for executable code blocks.",
+      "values": [],
+      "formats": []
+    },
+    {
+      "name": "eol",
+      "description": "Manually specify line endings (`lf`, `crlf`, or `native`).",
+      "values": [
+        "crlf",
+        "lf",
+        "native"
+      ],
+      "formats": [
+        "!$docbook-all",
+        "!$html-all",
+        "!$odt-all",
+        "!$office-all",
+        "!$pdf-all"
+      ]
+    },
+    {
+      "name": "epub-chapter-level",
+      "description": "Specify the heading level at which to split the EPUB into separate chapter files.",
+      "values": [],
+      "formats": [
+        "$epub-all"
+      ]
+    },
+    {
+      "name": "epub-cover-image",
+      "description": "Use the specified image as the EPUB cover. It is recommended that the image be less than 1000px in width and height.",
+      "values": [],
+      "formats": [
+        "$epub-all"
+      ]
+    },
+    {
+      "name": "epub-fonts",
+      "description": "Embed the specified fonts in the EPUB",
+      "values": [],
+      "formats": [
+        "$epub-all"
+      ]
+    },
+    {
+      "name": "epub-metadata",
+      "description": "Look in the specified XML file for metadata for the EPUB. The file should contain a series of [Dublin Core elements](https://www.dublincore.org/specifications/dublin-core/dces/).",
+      "values": [],
+      "formats": [
+        "$epub-all"
+      ]
+    },
+    {
+      "name": "epub-subdirectory",
+      "description": "Specify the subdirectory in the OCF container that is to hold the EPUB-specific contents. The default is `EPUB`. To put the EPUB contents in the top level, use an empty string.",
+      "values": [],
+      "formats": [
+        "$epub-all"
+      ]
+    },
+    {
+      "name": "epub-title-page",
+      "description": "If false, disables the generation of a title page.",
+      "values": [
+        "false",
+        "true"
+      ],
+      "formats": [
+        "$epub-all"
+      ]
+    },
+    {
+      "name": "expandable",
+      "description": "Make card content expandable (default: `true`)",
+      "values": [
+        "false",
+        "true"
+      ],
+      "formats": [
+        "dashboard"
+      ]
+    },
+    {
+      "name": "extract-media",
+      "description": "Extract images and other media contained in or linked from the source document to the path DIR.",
+      "values": [],
+      "formats": []
+    },
+    {
+      "name": "fail-if-warnings",
+      "description": "Exit with error status if there are any warnings.",
+      "values": [
+        "false",
+        "true"
+      ],
+      "formats": []
+    },
+    {
+      "name": "fig-asp",
+      "description": "The aspect ratio of the plot, i.e., the ratio of height/width.",
+      "values": [],
+      "formats": []
+    },
+    {
+      "name": "fig-dpi",
+      "description": "Default DPI for figures generated by Matplotlib or R graphics",
+      "values": [],
+      "formats": []
+    },
+    {
+      "name": "fig-format",
+      "description": "Default format for figures generated by Matplotlib or R graphics (`retina`, `png`, `jpeg`, `svg`, or `pdf`)",
+      "values": [
+        "jpeg",
+        "pdf",
+        "png",
+        "retina",
+        "svg"
+      ],
+      "formats": []
+    },
+    {
+      "name": "fig-height",
+      "description": "Default height for figures generated by Matplotlib or R graphics",
+      "values": [],
+      "formats": []
+    },
+    {
+      "name": "fig-responsive",
+      "description": "Whether to make images in this document responsive.",
+      "values": [
+        "false",
+        "true"
+      ],
+      "formats": [
+        "$html-all"
+      ]
+    },
+    {
+      "name": "fig-width",
+      "description": "Default width for figures generated by Matplotlib or R graphics",
+      "values": [],
+      "formats": []
+    },
+    {
+      "name": "filecolor",
+      "description": "The color used for external links.",
+      "values": [],
+      "formats": [
+        "$pdf-all",
+        "typst"
+      ]
+    },
+    {
+      "name": "filters",
+      "description": "Specify executables or Lua scripts to be used as a filter transforming the pandoc AST after the input is parsed and before the output is written.",
+      "values": [],
+      "formats": []
+    },
+    {
+      "name": "font-paths",
+      "description": "Adds additional directories to search for fonts when compiling with Typst.",
+      "values": [],
+      "formats": [
+        "typst"
+      ]
+    },
+    {
+      "name": "fontcolor",
+      "description": "Sets the CSS `color` property.",
+      "values": [],
+      "formats": [
+        "$html-doc"
+      ]
+    },
+    {
+      "name": "fontenc",
+      "description": "Allows font encoding to be specified through `fontenc` package.",
+      "values": [],
+      "formats": [
+        "$pdf-all"
+      ]
+    },
+    {
+      "name": "fontfamily",
+      "description": "Font package to use when compiling a PDF with the `pdflatex` `pdf-engine`.",
+      "values": [],
+      "formats": [
+        "$pdf-all",
+        "ms"
+      ]
+    },
+    {
+      "name": "fontfamilyoptions",
+      "description": "Options for the package used as `fontfamily`.",
+      "values": [],
+      "formats": [
+        "$pdf-all"
+      ]
+    },
+    {
+      "name": "fontsize",
+      "description": "Sets the main font size for the document.",
+      "values": [],
+      "formats": [
+        "$html-doc",
+        "$pdf-all",
+        "context",
+        "typst"
+      ]
+    },
+    {
+      "name": "fonttheme",
+      "description": "The Beamer font theme for this presentation, passed to `\\usefonttheme`.",
+      "values": [],
+      "formats": [
+        "beamer"
+      ]
+    },
+    {
+      "name": "fontthemeoptions",
+      "description": "The Beamer font theme options for this presentation, passed to `\\usefonttheme`.",
+      "values": [],
+      "formats": [
+        "beamer"
+      ]
+    },
+    {
+      "name": "footer",
+      "description": "The footer for man pages.",
+      "values": [],
+      "formats": [
+        "man"
+      ]
+    },
+    {
+      "name": "footertext",
+      "description": "Text to be in a running footer.",
+      "values": [],
+      "formats": [
+        "context"
+      ]
+    },
+    {
+      "name": "footnotes-hover",
+      "description": "Enables a hover popup for footnotes that shows the footnote contents.",
+      "values": [
+        "false",
+        "true"
+      ],
+      "formats": [
+        "$html-files"
+      ]
+    },
+    {
+      "name": "format",
+      "description": "Output format the document renders to.",
+      "values": [
+        "beamer",
+        "docx",
+        "epub",
+        "gfm",
+        "html",
+        "latex",
+        "pdf",
+        "pptx",
+        "revealjs",
+        "typst"
+      ],
+      "formats": []
+    },
+    {
+      "name": "format-links",
+      "description": "Controls whether links to other rendered formats are displayed in HTML output.",
+      "values": [
+        "false",
+        "true"
+      ],
+      "formats": [
+        "$html-doc"
+      ]
+    },
+    {
+      "name": "fragment-in-url",
+      "description": "Include the current fragment in the URL",
+      "values": [
+        "false",
+        "true"
+      ],
+      "formats": [
+        "revealjs"
+      ]
+    },
+    {
+      "name": "fragments",
+      "description": "Turns fragments on and off globally",
+      "values": [
+        "false",
+        "true"
+      ],
+      "formats": [
+        "revealjs"
+      ]
+    },
+    {
+      "name": "freeze",
+      "description": "Re-use previous computational output when rendering",
+      "values": [
+        "auto",
+        "false",
+        "true"
+      ],
+      "formats": []
+    },
+    {
+      "name": "from",
+      "description": "Format to read from",
+      "values": [],
+      "formats": []
+    },
+    {
+      "name": "funding",
+      "description": "Information about the funding of the research reported in the article (for example, grants, contracts, sponsors) and any open access fees for the article itself",
+      "values": [],
+      "formats": []
+    },
+    {
+      "name": "geometry",
+      "description": "Options for the geometry package.",
+      "values": [],
+      "formats": [
+        "$pdf-all"
+      ]
+    },
+    {
+      "name": "grid",
+      "description": "Properties of the grid system used to layout Quarto HTML and Typst pages.",
+      "values": [],
+      "formats": [
+        "$html-doc",
+        "typst"
+      ]
+    },
+    {
+      "name": "group-position",
+      "description": "Indicates the numeric position in which this publication belongs relative to other works belonging to the same `belongs-to-collection` field.",
+      "values": [],
+      "formats": [
+        "$epub-all"
+      ]
+    },
+    {
+      "name": "hash",
+      "description": "Add the current slide to the URL hash",
+      "values": [
+        "false",
+        "true"
+      ],
+      "formats": [
+        "revealjs"
+      ]
+    },
+    {
+      "name": "hash-one-based-index",
+      "description": "Use 1 based indexing for hash links to match slide number",
+      "values": [
+        "false",
+        "true"
+      ],
+      "formats": [
+        "revealjs"
+      ]
+    },
+    {
+      "name": "hash-type",
+      "description": "URL hash type (`number` or `title`)",
+      "values": [
+        "number",
+        "title"
+      ],
+      "formats": [
+        "revealjs"
+      ]
+    },
+    {
+      "name": "header",
+      "description": "The header for man pages.",
+      "values": [],
+      "formats": [
+        "man"
+      ]
+    },
+    {
+      "name": "headertext",
+      "description": "Text to be in a running header.",
+      "values": [],
+      "formats": [
+        "context"
+      ]
+    },
+    {
+      "name": "height",
+      "description": "The 'normal' height of the presentation",
+      "values": [],
+      "formats": [
+        "revealjs"
+      ]
+    },
+    {
+      "name": "help",
+      "description": "Show a help overlay when the `?` key is pressed",
+      "values": [
+        "false",
+        "true"
+      ],
+      "formats": [
+        "revealjs"
+      ]
+    },
+    {
+      "name": "hide-cursor-time",
+      "description": "Time before the cursor is hidden (in ms)",
+      "values": [],
+      "formats": [
+        "revealjs"
+      ]
+    },
+    {
+      "name": "hide-inactive-cursor",
+      "description": "Hide cursor if inactive",
+      "values": [
+        "false",
+        "true"
+      ],
+      "formats": [
+        "revealjs"
+      ]
+    },
+    {
+      "name": "history",
+      "description": "Push each slide change to the browser history",
+      "values": [
+        "false",
+        "true"
+      ],
+      "formats": [
+        "revealjs"
+      ]
+    },
+    {
+      "name": "html-math-method",
+      "description": "Method use to render math in HTML output",
+      "values": [],
+      "formats": [
+        "$epub-all",
+        "$html-doc",
+        "gfm"
+      ]
+    },
+    {
+      "name": "html-pre-tag-processing",
+      "description": "If `none`, ignore any divs with `html-pre-tag-processing=parse` enabled.",
+      "values": [
+        "none",
+        "parse"
+      ],
+      "formats": [
+        "typst"
+      ]
+    },
+    {
+      "name": "html-q-tags",
+      "description": "Use `<q>` tags for quotes in HTML.",
+      "values": [
+        "false",
+        "true"
+      ],
+      "formats": [
+        "$html-all"
+      ]
+    },
+    {
+      "name": "html-table-processing",
+      "description": "If `none`, do not process tables in HTML input.",
+      "values": [
+        "none"
+      ],
+      "formats": []
+    },
+    {
+      "name": "hyperrefoptions",
+      "description": "Additional non-color options for the hyperref package.",
+      "values": [],
+      "formats": [
+        "$pdf-all"
+      ]
+    },
+    {
+      "name": "hyphenate",
+      "description": "Whether to hyphenate text at line breaks even in words that do not contain hyphens.",
+      "values": [
+        "false",
+        "true"
+      ],
+      "formats": [
+        "man"
+      ]
+    },
+    {
+      "name": "ibooks",
+      "description": "iBooks specific metadata options.",
+      "values": [],
+      "formats": [
+        "$epub-all"
+      ]
+    },
+    {
+      "name": "identifier",
+      "description": "The identifier for this publication.",
+      "values": [],
+      "formats": [
+        "$epub-all"
+      ]
+    },
+    {
+      "name": "identifier-prefix",
+      "description": "Specify a prefix to be added to all identifiers and internal links.",
+      "values": [],
+      "formats": [
+        "$docbook-all",
+        "$html-files",
+        "$markdown-all",
+        "haddock"
+      ]
+    },
+    {
+      "name": "image",
+      "description": "The path to a preview image for this document.",
+      "values": [
+        "false",
+        "true"
+      ],
+      "formats": [
+        "$html-doc"
+      ]
+    },
+    {
+      "name": "image-alt",
+      "description": "The alt text for preview image on this page.",
+      "values": [],
+      "formats": [
+        "$html-doc"
+      ]
+    },
+    {
+      "name": "image-lazy-loading",
+      "description": "If true, this page's image in a listing will only load when it comes into view.",
+      "values": [
+        "false",
+        "true"
+      ],
+      "formats": [
+        "$html-doc"
+      ]
+    },
+    {
+      "name": "image-title",
+      "description": "The title for the main image on the about page.",
+      "values": [],
+      "formats": [
+        "$html-doc"
+      ]
+    },
+    {
+      "name": "include-after-body",
+      "description": "Include content at the end of the document body immediately after the markdown content. While it will be included before the closing `</body>` tag in HTML and the `\\end{document}` command in LaTeX, this option refers to the end of the markdown content. A string value or an object with key \"file\" indicates a filename whose contents are to be included An object with key \"text\" indicates textual content to be included",
+      "values": [],
+      "formats": []
+    },
+    {
+      "name": "include-before-body",
+      "description": "Include contents at the beginning of the document body (e.g. after the `<body>` tag in HTML, or the `\\begin{document}` command in LaTeX). A string value or an object with key \"file\" indicates a filename whose contents are to be included An object with key \"text\" indicates textual content to be included",
+      "values": [],
+      "formats": []
+    },
+    {
+      "name": "include-in-header",
+      "description": "Include contents at the end of the header. This can be used, for example, to include special CSS or JavaScript in HTML documents. A string value or an object with key \"file\" indicates a filename whose contents are to be included An object with key \"text\" indicates textual content to be included",
+      "values": [],
+      "formats": []
+    },
+    {
+      "name": "includesource",
+      "description": "Whether to include all source documents as file attachments in the PDF file.",
+      "values": [
+        "false",
+        "true"
+      ],
+      "formats": [
+        "context"
+      ]
+    },
+    {
+      "name": "incremental",
+      "description": "Make list items in slide shows display incrementally (one by one). The default is for lists to be displayed all at once.",
+      "values": [
+        "false",
+        "true"
+      ],
+      "formats": [
+        "$html-pres",
+        "beamer",
+        "pptx"
+      ]
+    },
+    {
+      "name": "indent",
+      "description": "Whether to use document class settings for indentation.",
+      "values": [
+        "false",
+        "true"
+      ],
+      "formats": [
+        "$pdf-all",
+        "ms"
+      ]
+    },
+    {
+      "name": "indented-code-classes",
+      "description": "Specify classes to use for all indented code blocks",
+      "values": [],
+      "formats": [
+        "$html-all",
+        "$pdf-all",
+        "docx",
+        "ms"
+      ]
+    },
+    {
+      "name": "indenting",
+      "description": "Set the indentation of paragraphs with one or more options.",
+      "values": [],
+      "formats": [
+        "context"
+      ]
+    },
+    {
+      "name": "innertheme",
+      "description": "The Beamer inner theme for this presentation, passed to `\\useinnertheme`.",
+      "values": [],
+      "formats": [
+        "beamer"
+      ]
+    },
+    {
+      "name": "innerthemeoptions",
+      "description": "The Beamer inner theme options for this presentation, passed to `\\useinnertheme`.",
+      "values": [],
+      "formats": [
+        "beamer"
+      ]
+    },
+    {
+      "name": "institute",
+      "description": "Author affiliations for the presentation.",
+      "values": [],
+      "formats": [
+        "$html-pres",
+        "beamer"
+      ]
+    },
+    {
+      "name": "interlinespace",
+      "description": "Adjusts line spacing using the `\\setupinterlinespace` command.",
+      "values": [],
+      "formats": [
+        "context"
+      ]
+    },
+    {
+      "name": "ipynb-filters",
+      "description": "Filters to pre-process ipynb files before rendering to markdown",
+      "values": [],
+      "formats": []
+    },
+    {
+      "name": "ipynb-output",
+      "description": "Determines which ipynb cell output formats are rendered (`none`, `all`, or `best`).",
+      "values": [
+        "all",
+        "best",
+        "none"
+      ],
+      "formats": [
+        "ipynb"
+      ]
+    },
+    {
+      "name": "ipynb-shell-interactivity",
+      "description": "Specify which nodes should be run interactively (displaying output from expressions)",
+      "values": [
+        "all",
+        "last",
+        "last_expr",
+        "last_expr_or_assign",
+        "none"
+      ],
+      "formats": []
+    },
+    {
+      "name": "journal",
+      "description": "Information on the journal in which the article is published.",
+      "values": [],
+      "formats": [
+        "$jats-all"
+      ]
+    },
+    {
+      "name": "julia",
+      "description": "Configures the Julia engine.",
+      "values": [],
+      "formats": []
+    },
+    {
+      "name": "jump-to-slide",
+      "description": "Deactivate jump to slide feature.",
+      "values": [
+        "false",
+        "true"
+      ],
+      "formats": [
+        "revealjs"
+      ]
+    },
+    {
+      "name": "jupyter",
+      "description": "Configures the Jupyter engine.",
+      "values": [
+        "false",
+        "true"
+      ],
+      "formats": []
+    },
+    {
+      "name": "keep-ipynb",
+      "description": "Keep the notebook file generated from executing code.",
+      "values": [
+        "false",
+        "true"
+      ],
+      "formats": []
+    },
+    {
+      "name": "keep-md",
+      "description": "Keep the markdown file generated by executing code",
+      "values": [
+        "false",
+        "true"
+      ],
+      "formats": []
+    },
+    {
+      "name": "keep-tex",
+      "description": "Keep the intermediate tex file used during render.",
+      "values": [
+        "false",
+        "true"
+      ],
+      "formats": [
+        "beamer",
+        "pdf"
+      ]
+    },
+    {
+      "name": "keep-typ",
+      "description": "Keep the intermediate typst file used during render.",
+      "values": [
+        "false",
+        "true"
+      ],
+      "formats": [
+        "typst"
+      ]
+    },
+    {
+      "name": "keyboard",
+      "description": "Enable keyboard shortcuts for navigation",
+      "values": [
+        "false",
+        "true"
+      ],
+      "formats": [
+        "revealjs"
+      ]
+    },
+    {
+      "name": "keywords",
+      "description": "List of keywords to be included in the document metadata.",
+      "values": [],
+      "formats": [
+        "$asciidoc-all",
+        "$html-files",
+        "$office-all",
+        "$pdf-all",
+        "context",
+        "odt"
+      ]
+    },
+    {
+      "name": "knitr",
+      "description": "Set Knitr options.",
+      "values": [
+        "false",
+        "true"
+      ],
+      "formats": []
+    },
+    {
+      "name": "lang",
+      "description": "Identifies the main language of the document (e.g. `en` or `en-GB`).",
+      "values": [],
+      "formats": []
+    },
+    {
+      "name": "language",
+      "description": "YAML file containing custom language translations",
+      "values": [],
+      "formats": []
+    },
+    {
+      "name": "latex-auto-install",
+      "description": "Enable/disable automatic LaTeX package installation",
+      "values": [
+        "false",
+        "true"
+      ],
+      "formats": [
+        "beamer",
+        "pdf"
+      ]
+    },
+    {
+      "name": "latex-auto-mk",
+      "description": "Use Quarto's built-in PDF rendering wrapper",
+      "values": [
+        "false",
+        "true"
+      ],
+      "formats": [
+        "beamer",
+        "pdf"
+      ]
+    },
+    {
+      "name": "latex-clean",
+      "description": "Clean intermediates after compilation.",
+      "values": [
+        "false",
+        "true"
+      ],
+      "formats": [
+        "beamer",
+        "pdf"
+      ]
+    },
+    {
+      "name": "latex-input-paths",
+      "description": "Array of paths LaTeX should search for inputs.",
+      "values": [],
+      "formats": [
+        "beamer",
+        "pdf"
+      ]
+    },
+    {
+      "name": "latex-makeindex",
+      "description": "Program to use for `makeindex`.",
+      "values": [],
+      "formats": [
+        "beamer",
+        "pdf"
+      ]
+    },
+    {
+      "name": "latex-makeindex-opts",
+      "description": "Array of command line options for `makeindex`.",
+      "values": [],
+      "formats": [
+        "beamer",
+        "pdf"
+      ]
+    },
+    {
+      "name": "latex-max-runs",
+      "description": "Maximum number of compilation passes.",
+      "values": [],
+      "formats": [
+        "beamer",
+        "pdf"
+      ]
+    },
+    {
+      "name": "latex-min-runs",
+      "description": "Minimum number of compilation passes.",
+      "values": [],
+      "formats": [
+        "beamer",
+        "pdf"
+      ]
+    },
+    {
+      "name": "latex-output-dir",
+      "description": "Output directory for intermediates and PDF.",
+      "values": [],
+      "formats": [
+        "beamer",
+        "pdf"
+      ]
+    },
+    {
+      "name": "latex-tinytex",
+      "description": "Set to `false` to prevent an installation of TinyTex from being used to compile PDF documents.",
+      "values": [
+        "false",
+        "true"
+      ],
+      "formats": [
+        "beamer",
+        "pdf"
+      ]
+    },
+    {
+      "name": "latex-tlmgr-opts",
+      "description": "Array of command line options for `tlmgr`.",
+      "values": [],
+      "formats": [
+        "beamer",
+        "pdf"
+      ]
+    },
+    {
+      "name": "layout",
+      "description": "The options for margins and text layout for this document.",
+      "values": [],
+      "formats": [
+        "context"
+      ]
+    },
+    {
+      "name": "license",
+      "description": "The License for this document, if any. (e.g. `CC BY`)",
+      "values": [],
+      "formats": [
+        "$html-doc",
+        "$jats-all"
+      ]
+    },
+    {
+      "name": "lightbox",
+      "description": "Enable or disable lightbox treatment for images in this document. See [Lightbox Figures](https://quarto.org/docs/output-formats/html-lightbox-figures.html) for more details.",
+      "values": [
+        "auto",
+        "false",
+        "true"
+      ],
+      "formats": [
+        "$html-doc"
+      ]
+    },
+    {
+      "name": "lineheight",
+      "description": "The line height, for example, `12p`.",
+      "values": [],
+      "formats": [
+        "ms"
+      ]
+    },
+    {
+      "name": "linestretch",
+      "description": "Sets the line height or spacing for text in the document.",
+      "values": [],
+      "formats": [
+        "$html-doc",
+        "$pdf-all",
+        "context",
+        "typst"
+      ]
+    },
+    {
+      "name": "link-bibliography",
+      "description": "If true, DOIs, PMCIDs, PMID, and URLs in bibliographies will be rendered as hyperlinks.",
+      "values": [
+        "false",
+        "true"
+      ],
+      "formats": [
+        "$pdf-all",
+        "docx"
+      ]
+    },
+    {
+      "name": "link-citations",
+      "description": "If true, citations will be hyperlinked to the corresponding bibliography entries (for author-date and numerical styles only). Defaults to false.",
+      "values": [
+        "false",
+        "true"
+      ],
+      "formats": [
+        "$pdf-all",
+        "docx"
+      ]
+    },
+    {
+      "name": "link-external-filter",
+      "description": "A regular expression that can be used to determine whether a link is an internal link.",
+      "values": [],
+      "formats": [
+        "$html-doc",
+        "revealjs"
+      ]
+    },
+    {
+      "name": "link-external-icon",
+      "description": "Show a special icon next to links that leave the current site.",
+      "values": [
+        "false",
+        "true"
+      ],
+      "formats": [
+        "$html-doc",
+        "revealjs"
+      ]
+    },
+    {
+      "name": "link-external-newwindow",
+      "description": "Open external links in a new browser window or tab (rather than navigating the current tab).",
+      "values": [
+        "false",
+        "true"
+      ],
+      "formats": [
+        "$html-doc",
+        "revealjs"
+      ]
+    },
+    {
+      "name": "linkcolor",
+      "description": "Sets the color of hyperlinks in the document.",
+      "values": [],
+      "formats": [
+        "$html-doc",
+        "$pdf-all",
+        "context",
+        "typst"
+      ]
+    },
+    {
+      "name": "links-as-notes",
+      "description": "Causes links to be printed as footnotes.",
+      "values": [
+        "false",
+        "true"
+      ],
+      "formats": [
+        "$pdf-all"
+      ]
+    },
+    {
+      "name": "linkstyle",
+      "description": "The typeface style for links in the document.",
+      "values": [],
+      "formats": [
+        "context"
+      ]
+    },
+    {
+      "name": "list-tables",
+      "description": "If true, tables are formatted as RST list tables.",
+      "values": [
+        "false",
+        "true"
+      ],
+      "formats": [
+        "rst"
+      ]
+    },
+    {
+      "name": "listing",
+      "description": "Automatically generate the contents of a page from a list of Quarto documents or other custom data.",
+      "values": [
+        "false",
+        "true"
+      ],
+      "formats": [
+        "$html-doc"
+      ]
+    },
+    {
+      "name": "listings",
+      "description": "Use the listings package for LaTeX code blocks.",
+      "values": [
+        "false",
+        "true"
+      ],
+      "formats": [
+        "$pdf-all"
+      ]
+    },
+    {
+      "name": "lof",
+      "description": "Print a list of figures in the document.",
+      "values": [
+        "false",
+        "true"
+      ],
+      "formats": [
+        "$pdf-all",
+        "typst"
+      ]
+    },
+    {
+      "name": "logo",
+      "description": "Logo image(s) (placed on the left side of the navigation bar)",
+      "values": [],
+      "formats": [
+        "dashboard"
+      ]
+    },
+    {
+      "name": "loop",
+      "description": "Loop the presentation",
+      "values": [
+        "false",
+        "true"
+      ],
+      "formats": [
+        "revealjs"
+      ]
+    },
+    {
+      "name": "lot",
+      "description": "Print a list of tables in the document.",
+      "values": [
+        "false",
+        "true"
+      ],
+      "formats": [
+        "$pdf-all",
+        "typst"
+      ]
+    },
+    {
+      "name": "mainfont",
+      "description": "Sets the main font for the document.",
+      "values": [],
+      "formats": [
+        "$html-doc",
+        "$pdf-all",
+        "context",
+        "typst"
+      ]
+    },
+    {
+      "name": "mainfontoptions",
+      "description": "The main font options for use with `xelatex` or `lualatex`.",
+      "values": [],
+      "formats": [
+        "$pdf-all"
+      ]
+    },
+    {
+      "name": "margin",
+      "description": "Margin settings for Reveal.js or Typst output.",
+      "values": [],
+      "formats": [
+        "revealjs",
+        "typst"
+      ]
+    },
+    {
+      "name": "margin-bottom",
+      "description": "Sets the bottom margin of the document.",
+      "values": [],
+      "formats": [
+        "$html-files",
+        "$pdf-all",
+        "context"
+      ]
+    },
+    {
+      "name": "margin-footer",
+      "description": "Markdown to place below margin content on this page (text or file path), after the `website` margin footer.",
+      "values": [],
+      "formats": [
+        "$html-doc"
+      ]
+    },
+    {
+      "name": "margin-geometry",
+      "description": "Advanced geometry settings for Typst margin layout.",
+      "values": [],
+      "formats": [
+        "typst"
+      ]
+    },
+    {
+      "name": "margin-header",
+      "description": "Markdown to place above margin content on this page (text or file path), after the `website` margin header.",
+      "values": [],
+      "formats": [
+        "$html-doc"
+      ]
+    },
+    {
+      "name": "margin-left",
+      "description": "Sets the left margin of the document.",
+      "values": [],
+      "formats": [
+        "$html-files",
+        "$pdf-all",
+        "context"
+      ]
+    },
+    {
+      "name": "margin-right",
+      "description": "Sets the right margin of the document.",
+      "values": [],
+      "formats": [
+        "$html-files",
+        "$pdf-all",
+        "context"
+      ]
+    },
+    {
+      "name": "margin-top",
+      "description": "Sets the top margin of the document.",
+      "values": [],
+      "formats": [
+        "$html-files",
+        "$pdf-all",
+        "context"
+      ]
+    },
+    {
+      "name": "markdown-headings",
+      "description": "Specify whether to use `atx` (`#`-prefixed) or `setext` (underlined) headings for level 1 and 2 headings (`atx` or `setext`).",
+      "values": [
+        "atx",
+        "setext"
+      ],
+      "formats": [
+        "$markdown-all",
+        "ipynb"
+      ]
+    },
+    {
+      "name": "mathfont",
+      "description": "The math font family for use with `xelatex`, `lualatex`, or Typst.",
+      "values": [],
+      "formats": [
+        "$pdf-all",
+        "typst"
+      ]
+    },
+    {
+      "name": "mathfontoptions",
+      "description": "The math font options for use with `xelatex` or `lualatex`.",
+      "values": [],
+      "formats": [
+        "$pdf-all"
+      ]
+    },
+    {
+      "name": "max-scale",
+      "description": "Bounds for largest possible scale to apply to content",
+      "values": [],
+      "formats": [
+        "revealjs"
+      ]
+    },
+    {
+      "name": "max-width",
+      "description": "Adds a css `max-width` to the body Element.",
+      "values": [],
+      "formats": [
+        "$html-files"
+      ]
+    },
+    {
+      "name": "menu",
+      "description": "Configuration for revealjs menu.",
+      "values": [
+        "false",
+        "true"
+      ],
+      "formats": [
+        "revealjs"
+      ]
+    },
+    {
+      "name": "mermaid",
+      "description": "Mermaid diagram options",
+      "values": [],
+      "formats": [
+        "$html-files"
+      ]
+    },
+    {
+      "name": "metadata-files",
+      "description": "Include files with YAML metadata",
+      "values": [],
+      "formats": []
+    },
+    {
+      "name": "microtypeoptions",
+      "description": "Options to pass to the microtype package.",
+      "values": [],
+      "formats": [
+        "$pdf-all"
+      ]
+    },
+    {
+      "name": "min-scale",
+      "description": "Bounds for smallest possible scale to apply to content",
+      "values": [],
+      "formats": [
+        "revealjs"
+      ]
+    },
+    {
+      "name": "minimal",
+      "description": "Disables the built in html features like theming, anchor sections, code block behavior, and more.",
+      "values": [
+        "false",
+        "true"
+      ],
+      "formats": [
+        "$html-doc"
+      ]
+    },
+    {
+      "name": "mobile-view-distance",
+      "description": "Number of slides away from the current slide to pre-load resources for (on mobile devices).",
+      "values": [],
+      "formats": [
+        "revealjs"
+      ]
+    },
+    {
+      "name": "monobackgroundcolor",
+      "description": "Sets the CSS `background-color` property on code elements and adds extra padding.",
+      "values": [],
+      "formats": [
+        "dzslides",
+        "html",
+        "html4",
+        "html5",
+        "s5",
+        "slideous",
+        "slidy"
+      ]
+    },
+    {
+      "name": "monofont",
+      "description": "Sets the font used for when displaying code.",
+      "values": [],
+      "formats": [
+        "$html-doc",
+        "$pdf-all",
+        "context"
+      ]
+    },
+    {
+      "name": "monofontoptions",
+      "description": "The monospace font options for use with `xelatex` or `lualatex`.",
+      "values": [],
+      "formats": [
+        "$pdf-all"
+      ]
+    },
+    {
+      "name": "mouse-wheel",
+      "description": "Enable slide navigation via mouse wheel",
+      "values": [
+        "false",
+        "true"
+      ],
+      "formats": [
+        "revealjs"
+      ]
+    },
+    {
+      "name": "multiplex",
+      "description": "Configuration for reveal presentation multiplexing.",
+      "values": [
+        "false",
+        "true"
+      ],
+      "formats": [
+        "revealjs"
+      ]
+    },
+    {
+      "name": "natbiboptions",
+      "description": "One or more options to provide for `natbib` when generating a bibliography.",
+      "values": [],
+      "formats": [
+        "$pdf-all"
+      ]
+    },
+    {
+      "name": "nav-buttons",
+      "description": "Links to display on the dashboard navigation bar",
+      "values": [],
+      "formats": [
+        "dashboard"
+      ]
+    },
+    {
+      "name": "navigation",
+      "description": "Controls navigation symbols for the presentation (`empty`, `frame`, `vertical`, or `horizontal`)",
+      "values": [
+        "empty",
+        "frame",
+        "horizontal",
+        "vertical"
+      ],
+      "formats": [
+        "beamer"
+      ]
+    },
+    {
+      "name": "navigation-mode",
+      "description": "Navigation progression (`linear`, `vertical`, or `grid`)",
+      "values": [
+        "grid",
+        "linear",
+        "vertical"
+      ],
+      "formats": [
+        "revealjs"
+      ]
+    },
+    {
+      "name": "notebook-links",
+      "description": "Controls the display of links to notebooks that provided embedded content or are created from documents.",
+      "values": [
+        "false",
+        "global",
+        "inline",
+        "true"
+      ],
+      "formats": [
+        "$html-doc"
+      ]
+    },
+    {
+      "name": "notebook-preview-options",
+      "description": "Options for controlling the display and behavior of Notebook previews.",
+      "values": [],
+      "formats": [
+        "$html-doc"
+      ]
+    },
+    {
+      "name": "notebook-subarticles",
+      "description": "Controls whether referenced notebooks are embedded in JATS output as subarticles.",
+      "values": [
+        "false",
+        "true"
+      ],
+      "formats": [
+        "$jats-all"
+      ]
+    },
+    {
+      "name": "notebook-view",
+      "description": "Configures the HTML viewer for notebooks that provide embedded content.",
+      "values": [
+        "false",
+        "true"
+      ],
+      "formats": [
+        "$html-doc"
+      ]
+    },
+    {
+      "name": "notes",
+      "description": "Additional notes concerning the whole article. Added to the article's frontmatter via the [`<notes>`](https://jats.nlm.nih.gov/publishing/tag-library/1.2/element/notes.html) element.",
+      "values": [],
+      "formats": [
+        "$jats-all"
+      ]
+    },
+    {
+      "name": "notes-after-punctuation",
+      "description": "Places footnote references or superscripted numerical citations after following punctuation.",
+      "values": [
+        "false",
+        "true"
+      ],
+      "formats": [
+        "$pdf-all",
+        "docx"
+      ]
+    },
+    {
+      "name": "number-depth",
+      "description": "The depth to which sections should be numbered.",
+      "values": [],
+      "formats": [
+        "$html-all",
+        "$pdf-all",
+        "docx"
+      ]
+    },
+    {
+      "name": "number-offset",
+      "description": "Offset for section headings in output (offsets are 0 by default)",
+      "values": [],
+      "formats": [
+        "$html-all"
+      ]
+    },
+    {
+      "name": "number-sections",
+      "description": "Number section headings",
+      "values": [
+        "false",
+        "true"
+      ],
+      "formats": []
+    },
+    {
+      "name": "ojs-engine",
+      "description": "If `true`, force the presence of the OJS runtime. If `false`, force the absence instead. If unset, the OJS runtime is included only if OJS cells are present in the document.",
+      "values": [
+        "false",
+        "true"
+      ],
+      "formats": [
+        "$html-files"
+      ]
+    },
+    {
+      "name": "open-graph",
+      "description": "Publish open graph metadata for this page. Options set here are merged with the `open-graph` options of the `website` metadata. Set to `false` to omit open graph metadata from this page.",
+      "values": [
+        "false",
+        "true"
+      ],
+      "formats": [
+        "$html-doc"
+      ]
+    },
+    {
+      "name": "order",
+      "description": "Order for document when included in a website automatic sidebar menu.",
+      "values": [],
+      "formats": []
+    },
+    {
+      "name": "orientation",
+      "description": "Default orientation for dashboard content (default `rows`)",
+      "values": [
+        "columns",
+        "rows"
+      ],
+      "formats": [
+        "dashboard"
+      ]
+    },
+    {
+      "name": "other-links",
+      "description": "A list of links that should be displayed below the table of contents in an `Other Links` section.",
+      "values": [],
+      "formats": [
+        "$html-doc"
+      ]
+    },
+    {
+      "name": "outertheme",
+      "description": "The Beamer outer theme for this presentation, passed to `\\useoutertheme`.",
+      "values": [],
+      "formats": [
+        "beamer"
+      ]
+    },
+    {
+      "name": "outerthemeoptions",
+      "description": "The Beamer outer theme options for this presentation, passed to `\\useoutertheme`.",
+      "values": [],
+      "formats": [
+        "beamer"
+      ]
+    },
+    {
+      "name": "output-ext",
+      "description": "Extension to use for generated output file",
+      "values": [],
+      "formats": []
+    },
+    {
+      "name": "output-file",
+      "description": "Output file to write to",
+      "values": [],
+      "formats": []
+    },
+    {
+      "name": "output-location",
+      "description": "Location of output relative to the code that generated it (`default`, `fragment`, `slide`, `column`, or `column-location`)",
+      "values": [
+        "column",
+        "column-fragment",
+        "default",
+        "fragment",
+        "slide"
+      ],
+      "formats": [
+        "revealjs"
+      ]
+    },
+    {
+      "name": "overview",
+      "description": "Enable the slide overview mode",
+      "values": [
+        "false",
+        "true"
+      ],
+      "formats": [
+        "revealjs"
+      ]
+    },
+    {
+      "name": "page-layout",
+      "description": "The page layout to use for this document (`article`, `full`, or `custom`)",
+      "values": [
+        "article",
+        "custom",
+        "full"
+      ],
+      "formats": [
+        "$html-doc"
+      ]
+    },
+    {
+      "name": "page-navigation",
+      "description": "Show (`true`) or hide (`false`) the next and previous page links in the footer of this page.",
+      "values": [
+        "false",
+        "true"
+      ],
+      "formats": [
+        "$html-doc"
+      ]
+    },
+    {
+      "name": "page-numbering",
+      "description": "Schema to use for numbering pages, e.g. `1` or `i`, or `false` to omit page numbering.",
+      "values": [
+        "false",
+        "true"
+      ],
+      "formats": [
+        "typst"
+      ]
+    },
+    {
+      "name": "page-progression-direction",
+      "description": "Sets the global direction in which content flows (`ltr` or `rtl`)",
+      "values": [
+        "ltr",
+        "rtl"
+      ],
+      "formats": [
+        "$epub-all"
+      ]
+    },
+    {
+      "name": "page-width",
+      "description": "Target page width for output (used to compute columns widths for `layout` divs)",
+      "values": [],
+      "formats": [
+        "$odt-all",
+        "docx"
+      ]
+    },
+    {
+      "name": "pagenumbering",
+      "description": "Sets the page numbering style and location for the document.",
+      "values": [],
+      "formats": [
+        "context"
+      ]
+    },
+    {
+      "name": "pagestyle",
+      "description": "Control the `\\pagestyle{}` for the document.",
+      "values": [],
+      "formats": [
+        "$pdf-all"
+      ]
+    },
+    {
+      "name": "pagetitle",
+      "description": "Sets the title metadata for the document",
+      "values": [],
+      "formats": [
+        "$html-files"
+      ]
+    },
+    {
+      "name": "papersize",
+      "description": "The paper size for the document.",
+      "values": [],
+      "formats": [
+        "$pdf-all",
+        "typst"
+      ]
+    },
+    {
+      "name": "parallax-background-horizontal",
+      "description": "Number of pixels to move the parallax background horizontally per slide.",
+      "values": [],
+      "formats": [
+        "revealjs"
+      ]
+    },
+    {
+      "name": "parallax-background-image",
+      "description": "Parallax background image",
+      "values": [],
+      "formats": [
+        "revealjs"
+      ]
+    },
+    {
+      "name": "parallax-background-size",
+      "description": "Parallax background size (e.g. '2100px 900px')",
+      "values": [],
+      "formats": [
+        "revealjs"
+      ]
+    },
+    {
+      "name": "parallax-background-vertical",
+      "description": "Number of pixels to move the parallax background vertically per slide.",
+      "values": [],
+      "formats": [
+        "revealjs"
+      ]
+    },
+    {
+      "name": "pause",
+      "description": "Flags whether it should be possible to pause the presentation (blackout)",
+      "values": [
+        "false",
+        "true"
+      ],
+      "formats": [
+        "revealjs"
+      ]
+    },
+    {
+      "name": "pdf-engine",
+      "description": "Use the specified engine when producing PDF output.",
+      "values": [
+        "context",
+        "latexmk",
+        "lualatex",
+        "pagedjs-cli",
+        "pdflatex",
+        "pdfroff",
+        "prince",
+        "tectonic",
+        "typst",
+        "weasyprint",
+        "wkhtmltopdf",
+        "xelatex"
+      ],
+      "formats": [
+        "$pdf-all",
+        "context",
+        "ms"
+      ]
+    },
+    {
+      "name": "pdf-engine-opt",
+      "description": "Use the given string as a command-line argument to the `pdf-engine`.",
+      "values": [],
+      "formats": [
+        "$pdf-all",
+        "context",
+        "ms"
+      ]
+    },
+    {
+      "name": "pdf-engine-opts",
+      "description": "Pass multiple command-line arguments to the `pdf-engine`.",
+      "values": [],
+      "formats": [
+        "$pdf-all",
+        "context",
+        "ms"
+      ]
+    },
+    {
+      "name": "pdf-max-pages-per-slide",
+      "description": "Slides that are too tall to fit within a single page will expand onto multiple pages",
+      "values": [],
+      "formats": [
+        "revealjs"
+      ]
+    },
+    {
+      "name": "pdf-page-height-offset",
+      "description": "Offset used to reduce the height of content within exported PDF pages.",
+      "values": [],
+      "formats": [
+        "revealjs"
+      ]
+    },
+    {
+      "name": "pdf-separate-fragments",
+      "description": "Prints each fragment on a separate slide",
+      "values": [
+        "false",
+        "true"
+      ],
+      "formats": [
+        "revealjs"
+      ]
+    },
+    {
+      "name": "pdf-standard",
+      "description": "PDF conformance standard (e.g., ua-2, a-2b, 1.7)",
+      "values": [
+        "1.4",
+        "1.5",
+        "1.6",
+        "1.7",
+        "2.0",
+        "a-1a",
+        "a-1b",
+        "a-2a",
+        "a-2b",
+        "a-2u",
+        "a-3a",
+        "a-3b",
+        "a-3u",
+        "a-4",
+        "a-4e",
+        "a-4f",
+        "ua-1",
+        "ua-2",
+        "x-4",
+        "x-4p",
+        "x-5g",
+        "x-5n",
+        "x-5pg",
+        "x-6",
+        "x-6n",
+        "x-6p"
+      ],
+      "formats": [
+        "$pdf-all",
+        "typst"
+      ]
+    },
+    {
+      "name": "pdfa",
+      "description": "Adds the necessary setup to the document preamble to generate PDF/A of the type specified.",
+      "values": [
+        "false",
+        "true"
+      ],
+      "formats": [
+        "context"
+      ]
+    },
+    {
+      "name": "pdfaiccprofile",
+      "description": "When used in conjunction with `pdfa`, specifies the ICC profile to use in the PDF, e.g. `default.cmyk`.",
+      "values": [],
+      "formats": [
+        "context"
+      ]
+    },
+    {
+      "name": "pdfaintent",
+      "description": "When used in conjunction with `pdfa`, specifies the output intent for the colors.",
+      "values": [],
+      "formats": [
+        "context"
+      ]
+    },
+    {
+      "name": "plotly-connected",
+      "description": "If true, use the \"notebook_connected\" plotly renderer, which downloads its dependencies from a CDN and requires an internet connection to view.",
+      "values": [
+        "false",
+        "true"
+      ],
+      "formats": []
+    },
+    {
+      "name": "pointsize",
+      "description": "The point size, for example, `10p`.",
+      "values": [],
+      "formats": [
+        "ms"
+      ]
+    },
+    {
+      "name": "preload-iframes",
+      "description": "Global override for preloading lazy-loaded iframes (`null`, `true`, or `false`).",
+      "values": [],
+      "formats": [
+        "revealjs"
+      ]
+    },
+    {
+      "name": "preserve-tabs",
+      "description": "Preserve tabs within code instead of converting them to spaces.",
+      "values": [
+        "false",
+        "true"
+      ],
+      "formats": [
+        "!$docbook-all",
+        "!$html-all",
+        "!$odt-all",
+        "!$office-all",
+        "!$pdf-all"
+      ]
+    },
+    {
+      "name": "preview-links",
+      "description": "Open links in an iframe preview overlay (`true`, `false`, or `auto`)",
+      "values": [
+        "auto",
+        "false",
+        "true"
+      ],
+      "formats": [
+        "revealjs"
+      ]
+    },
+    {
+      "name": "preview-mode",
+      "description": "The mode to use when previewing this document.",
+      "values": [],
+      "formats": [
+        "$jats-all",
+        "gfm"
+      ]
+    },
+    {
+      "name": "progress",
+      "description": "Display a presentation progress bar",
+      "values": [
+        "false",
+        "true"
+      ],
+      "formats": [
+        "revealjs"
+      ]
+    },
+    {
+      "name": "quarto-required",
+      "description": "semver version range for required quarto version",
+      "values": [],
+      "formats": []
+    },
+    {
+      "name": "reference-doc",
+      "description": "Use the specified file as a style reference in producing a docx, pptx, or odt file.",
+      "values": [],
+      "formats": [
+        "$office-all",
+        "odt"
+      ]
+    },
+    {
+      "name": "reference-location",
+      "description": "Location for footnotes and references",
+      "values": [
+        "block",
+        "document",
+        "margin",
+        "section"
+      ],
+      "formats": [
+        "$html-files",
+        "$markdown-all",
+        "muse",
+        "pdf",
+        "typst"
+      ]
+    },
+    {
+      "name": "relation",
+      "description": "Text describing the relation of this publication.",
+      "values": [],
+      "formats": [
+        "$epub-all"
+      ]
+    },
+    {
+      "name": "repo-actions",
+      "description": "Setting this to false prevents the `repo-actions` from appearing on this page. Other possible values are `none` or one or more of `edit`, `source`, and `issue`, *e.g.* `[edit, source, issue]`.",
+      "values": [
+        "edit",
+        "false",
+        "issue",
+        "none",
+        "source",
+        "true"
+      ],
+      "formats": [
+        "$html-doc"
+      ]
+    },
+    {
+      "name": "resource-path",
+      "description": "List of paths to search for images and other resources.",
+      "values": [],
+      "formats": []
+    },
+    {
+      "name": "resources",
+      "description": "Path (or glob) to files to publish with this document.",
+      "values": [],
+      "formats": [
+        "$html-all"
+      ]
+    },
+    {
+      "name": "respect-user-color-scheme",
+      "description": "Enables setting dark mode based on the `prefers-color-scheme` media query.",
+      "values": [
+        "false",
+        "true"
+      ],
+      "formats": [
+        "$html-doc"
+      ]
+    },
+    {
+      "name": "respond-to-hash-changes",
+      "description": "Monitor the hash and change slides accordingly",
+      "values": [
+        "false",
+        "true"
+      ],
+      "formats": [
+        "revealjs"
+      ]
+    },
+    {
+      "name": "revealjs-url",
+      "description": "Directory containing reveal.js files.",
+      "values": [],
+      "formats": [
+        "revealjs"
+      ]
+    },
+    {
+      "name": "rights",
+      "description": "Text describing the rights of this publication.",
+      "values": [],
+      "formats": [
+        "$epub-all"
+      ]
+    },
+    {
+      "name": "rtl",
+      "description": "Change the presentation direction to be RTL",
+      "values": [
+        "false",
+        "true"
+      ],
+      "formats": [
+        "revealjs"
+      ]
+    },
+    {
+      "name": "s5-url",
+      "description": "The base url for s5 presentations.",
+      "values": [],
+      "formats": [
+        "s5"
+      ]
+    },
+    {
+      "name": "sansfont",
+      "description": "The sans serif font family for use with `xelatex` or `lualatex`.",
+      "values": [],
+      "formats": [
+        "$pdf-all"
+      ]
+    },
+    {
+      "name": "sansfontoptions",
+      "description": "The sans serif font options for use with `xelatex` or `lualatex`.",
+      "values": [],
+      "formats": [
+        "$pdf-all"
+      ]
+    },
+    {
+      "name": "scroll-view",
+      "description": "Control the scroll view feature of Revealjs",
+      "values": [
+        "false",
+        "true"
+      ],
+      "formats": [
+        "revealjs"
+      ]
+    },
+    {
+      "name": "scrollable",
+      "description": "Allow content that overflows slides vertically to scroll",
+      "values": [
+        "false",
+        "true"
+      ],
+      "formats": [
+        "revealjs"
+      ]
+    },
+    {
+      "name": "scrolling",
+      "description": "Use scrolling rather than fill layout (default: `false`)",
+      "values": [
+        "false",
+        "true"
+      ],
+      "formats": [
+        "dashboard"
+      ]
+    },
+    {
+      "name": "search",
+      "description": "Setting this to false prevents this document from being included in searches.",
+      "values": [
+        "false",
+        "true"
+      ],
+      "formats": [
+        "$html-doc"
+      ]
+    },
+    {
+      "name": "section",
+      "description": "The section number in man pages.",
+      "values": [],
+      "formats": [
+        "man"
+      ]
+    },
+    {
+      "name": "section-divs",
+      "description": "Wrap sections in `<section>` tags and attach identifiers to the enclosing `<section>` rather than the heading itself.",
+      "values": [
+        "false",
+        "true"
+      ],
+      "formats": [
+        "$html-doc"
+      ]
+    },
+    {
+      "name": "section-numbering",
+      "description": "Schema to use for numbering sections, e.g. `1.A.1`",
+      "values": [],
+      "formats": [
+        "typst"
+      ]
+    },
+    {
+      "name": "section-titles",
+      "description": "Whether to enable title pages for new sections.",
+      "values": [
+        "false",
+        "true"
+      ],
+      "formats": [
+        "beamer"
+      ]
+    },
+    {
+      "name": "self-contained-math",
+      "description": "Embed math libraries (e.g. MathJax) within `self-contained` output.",
+      "values": [
+        "false",
+        "true"
+      ],
+      "formats": [
+        "$html-files"
+      ]
+    },
+    {
+      "name": "shift-heading-level-by",
+      "description": "Shift heading levels by a positive or negative integer. For example, with `shift-heading-level-by: -1`, level 2 headings become level 1 headings.",
+      "values": [],
+      "formats": []
+    },
+    {
+      "name": "shortcodes",
+      "description": "Specify Lua scripts that implement shortcode handlers",
+      "values": [],
+      "formats": []
+    },
+    {
+      "name": "shorthands",
+      "description": "Enable babel language-specific shorthands in LaTeX output.",
+      "values": [
+        "false",
+        "true"
+      ],
+      "formats": [
+        "beamer",
+        "pdf"
+      ]
+    },
+    {
+      "name": "show-notes",
+      "description": "Make speaker notes visible to all viewers",
+      "values": [
+        "false",
+        "separate-page",
+        "true"
+      ],
+      "formats": [
+        "revealjs"
+      ]
+    },
+    {
+      "name": "show-slide-number",
+      "description": "Contexts in which the slide number appears (`all`, `print`, or `speaker`)",
+      "values": [
+        "all",
+        "print",
+        "speaker"
+      ],
+      "formats": [
+        "revealjs"
+      ]
+    },
+    {
+      "name": "shuffle",
+      "description": "Randomize the order of slides each time the presentation loads",
+      "values": [
+        "false",
+        "true"
+      ],
+      "formats": [
+        "revealjs"
+      ]
+    },
+    {
+      "name": "slide-level",
+      "description": "Specifies that headings with the specified level create slides. Headings above this level in the hierarchy are used to divide the slide show into sections.",
+      "values": [],
+      "formats": [
+        "$html-pres",
+        "beamer",
+        "pptx"
+      ]
+    },
+    {
+      "name": "slide-number",
+      "description": "Display the page number of the current slide",
+      "values": [
+        "c",
+        "c/t",
+        "false",
+        "h.v",
+        "h/v",
+        "true"
+      ],
+      "formats": [
+        "revealjs"
+      ]
+    },
+    {
+      "name": "slide-tone",
+      "description": "Play a subtle sound when changing slides",
+      "values": [
+        "false",
+        "true"
+      ],
+      "formats": [
+        "revealjs"
+      ]
+    },
+    {
+      "name": "slideous-url",
+      "description": "The base url for Slideous presentations.",
+      "values": [],
+      "formats": [
+        "slideous"
+      ]
+    },
+    {
+      "name": "slidy-url",
+      "description": "The base url for Slidy presentations.",
+      "values": [],
+      "formats": [
+        "slidy"
+      ]
+    },
+    {
+      "name": "smaller",
+      "description": "Use a smaller default font for slide content",
+      "values": [
+        "false",
+        "true"
+      ],
+      "formats": [
+        "revealjs"
+      ]
+    },
+    {
+      "name": "smooth-scroll",
+      "description": "Enables smooth scrolling within the page.",
+      "values": [
+        "false",
+        "true"
+      ],
+      "formats": [
+        "$html-doc"
+      ]
+    },
+    {
+      "name": "split-level",
+      "description": "Specify the heading level at which to split the EPUB into separate chapter files.",
+      "values": [],
+      "formats": [
+        "$epub-all",
+        "chunkedhtml"
+      ]
+    },
+    {
+      "name": "strip-comments",
+      "description": "Strip out HTML comments in source, rather than passing them on to output.",
+      "values": [
+        "false",
+        "true"
+      ],
+      "formats": [
+        "$html-files",
+        "$markdown-all",
+        "textile"
+      ]
+    },
+    {
+      "name": "subject",
+      "description": "The document subject",
+      "values": [],
+      "formats": [
+        "$epub-all",
+        "$office-all",
+        "$pdf-all",
+        "odt"
+      ]
+    },
+    {
+      "name": "subtitle",
+      "description": "Identifies the subtitle of the document.",
+      "values": [],
+      "formats": [
+        "$html-all",
+        "$pdf-all",
+        "context",
+        "docx",
+        "muse",
+        "odt"
+      ]
+    },
+    {
+      "name": "syntax-definitions",
+      "description": "KDE language syntax definition files (XML)",
+      "values": [],
+      "formats": [
+        "$html-all",
+        "$pdf-all",
+        "docx",
+        "ms",
+        "typst"
+      ]
+    },
+    {
+      "name": "syntax-highlighting",
+      "description": "Specifies the coloring style to be used in highlighted source code.",
+      "values": [],
+      "formats": [
+        "$html-all",
+        "$pdf-all",
+        "docx",
+        "ms",
+        "typst"
+      ]
+    },
+    {
+      "name": "tab-stop",
+      "description": "Specify the number of spaces per tab (default is 4).",
+      "values": [],
+      "formats": [
+        "!$docbook-all",
+        "!$html-all",
+        "!$odt-all",
+        "!$office-all",
+        "!$pdf-all"
+      ]
+    },
+    {
+      "name": "tabsets",
+      "description": "Enables tabsets to present content.",
+      "values": [
+        "false",
+        "true"
+      ],
+      "formats": [
+        "$html-doc"
+      ]
+    },
+    {
+      "name": "tags",
+      "description": "List of keywords. Items are used as contents of the [`<kwd>`](https://jats.nlm.nih.gov/publishing/tag-library/1.2/element/kwd.html) element; the elements are grouped in a [`<kwd-group>`](https://jats.nlm.nih.gov/publishing/tag-library/1.2/element/kwd-group.html) with the [`kwd-group-type`](https://jats.nlm.nih.gov/publishing/tag-library/1.2/attribute/kwd-group-type.html) value `author`.",
+      "values": [],
+      "formats": [
+        "$jats-all"
+      ]
+    },
+    {
+      "name": "template",
+      "description": "Use the specified file as a custom template for the generated document.",
+      "values": [],
+      "formats": []
+    },
+    {
+      "name": "template-partials",
+      "description": "Include the specified files as partials accessible to the template for the generated content.",
+      "values": [],
+      "formats": []
+    },
+    {
+      "name": "thanks",
+      "description": "The contents of an acknowledgments footnote after the document title.",
+      "values": [],
+      "formats": [
+        "$pdf-all",
+        "typst"
+      ]
+    },
+    {
+      "name": "theme",
+      "description": "Theme name, theme scss file, or a mix of both.",
+      "values": [],
+      "formats": [
+        "$html-doc",
+        "beamer",
+        "dashboard",
+        "revealjs"
+      ]
+    },
+    {
+      "name": "themeoptions",
+      "description": "Options passed to LaTeX Beamer themes inside `\\usetheme`.",
+      "values": [],
+      "formats": [
+        "beamer"
+      ]
+    },
+    {
+      "name": "theorem-appearance",
+      "description": "Visual style for theorem environments in Typst output.",
+      "values": [
+        "clouds",
+        "fancy",
+        "rainbow",
+        "simple"
+      ],
+      "formats": [
+        "typst"
+      ]
+    },
+    {
+      "name": "title",
+      "description": "Document title",
+      "values": [],
+      "formats": []
+    },
+    {
+      "name": "title-block-banner",
+      "description": "Apply a banner style treatment to the title block.",
+      "values": [
+        "false",
+        "true"
+      ],
+      "formats": [
+        "$html-doc"
+      ]
+    },
+    {
+      "name": "title-block-banner-color",
+      "description": "Sets the color of text elements in a banner style title block.",
+      "values": [],
+      "formats": [
+        "$html-doc"
+      ]
+    },
+    {
+      "name": "title-block-categories",
+      "description": "Enables or disables the display of categories in the title block.",
+      "values": [
+        "false",
+        "true"
+      ],
+      "formats": [
+        "$html-doc"
+      ]
+    },
+    {
+      "name": "title-block-style",
+      "description": "The layout of the title block for this document (`none`, `plain`, or `default`).",
+      "values": [
+        "default",
+        "manuscript",
+        "none",
+        "plain"
+      ],
+      "formats": [
+        "$html-doc"
+      ]
+    },
+    {
+      "name": "title-meta",
+      "description": "Sets the title metadata for the document",
+      "values": [],
+      "formats": [
+        "$pdf-all"
+      ]
+    },
+    {
+      "name": "title-prefix",
+      "description": "Specify STRING as a prefix at the beginning of the title that appears in the HTML header (but not in the title as it appears at the beginning of the body)",
+      "values": [],
+      "formats": [
+        "$html-files"
+      ]
+    },
+    {
+      "name": "title-slide-attributes",
+      "description": "Additional attributes for the title slide of a reveal.js presentation.",
+      "values": [],
+      "formats": [
+        "revealjs"
+      ]
+    },
+    {
+      "name": "title-slide-style",
+      "description": "The title slide style. Use `pandoc` to select the Pandoc default title slide style.",
+      "values": [
+        "default",
+        "pandoc"
+      ],
+      "formats": [
+        "revealjs"
+      ]
+    },
+    {
+      "name": "titlegraphic",
+      "description": "The image for the title slide.",
+      "values": [],
+      "formats": [
+        "beamer"
+      ]
+    },
+    {
+      "name": "toc",
+      "description": "Include an automatically generated table of contents",
+      "values": [
+        "false",
+        "true"
+      ],
+      "formats": [
+        "!$docbook-all",
+        "!$jats-all",
+        "!man"
+      ]
+    },
+    {
+      "name": "toc-depth",
+      "description": "Specify the number of section levels to include in the table of contents. The default is 3",
+      "values": [],
+      "formats": [
+        "!$docbook-all",
+        "!$jats-all",
+        "!beamer",
+        "!man"
+      ]
+    },
+    {
+      "name": "toc-expand",
+      "description": "Specifies the depth of items in the table of contents that should be displayed as expanded in HTML output. Use `true` to expand all or `false` to collapse all.",
+      "values": [
+        "false",
+        "true"
+      ],
+      "formats": [
+        "$html-doc"
+      ]
+    },
+    {
+      "name": "toc-indent",
+      "description": "The amount of indentation to use for each level of the table of contents. The default is \"1.5em\".",
+      "values": [],
+      "formats": [
+        "typst"
+      ]
+    },
+    {
+      "name": "toc-location",
+      "description": "Location for table of contents (`body`, `left`, `right` (default), `left-body`, `right-body`).",
+      "values": [
+        "body",
+        "left",
+        "left-body",
+        "right",
+        "right-body"
+      ],
+      "formats": [
+        "$html-doc"
+      ]
+    },
+    {
+      "name": "toc-title",
+      "description": "The title used for the table of contents.",
+      "values": [],
+      "formats": [
+        "$epub-all",
+        "$html-doc",
+        "$odt-all",
+        "$office-all",
+        "$pdf-all",
+        "revealjs"
+      ]
+    },
+    {
+      "name": "toccolor",
+      "description": "The color used for links in the Table of Contents using color options allowed by `xcolor`",
+      "values": [],
+      "formats": [
+        "$pdf-all"
+      ]
+    },
+    {
+      "name": "top-level-division",
+      "description": "Treat top-level headings as the given division type (`default`, `section`, `chapter`, or `part`). The hierarchy order is part, chapter, then section; all headings are shifted such that the top-level heading becomes the specified type.",
+      "values": [
+        "chapter",
+        "default",
+        "part",
+        "section"
+      ],
+      "formats": [
+        "$docbook-all",
+        "$pdf-all",
+        "context",
+        "tei"
+      ]
+    },
+    {
+      "name": "touch",
+      "description": "Enable touch navigation on devices with touch input",
+      "values": [
+        "false",
+        "true"
+      ],
+      "formats": [
+        "revealjs"
+      ]
+    },
+    {
+      "name": "trace",
+      "description": "Display trace debug output.",
+      "values": [
+        "false",
+        "true"
+      ],
+      "formats": []
+    },
+    {
+      "name": "transition",
+      "description": "Transition style for slides",
+      "values": [
+        "concave",
+        "convex",
+        "fade",
+        "none",
+        "slide",
+        "zoom"
+      ],
+      "formats": [
+        "revealjs"
+      ]
+    },
+    {
+      "name": "transition-speed",
+      "description": "Slide transition speed (`default`, `fast`, or `slow`)",
+      "values": [
+        "default",
+        "fast",
+        "slow"
+      ],
+      "formats": [
+        "revealjs"
+      ]
+    },
+    {
+      "name": "twitter-card",
+      "description": "Publish twitter card metadata for this page. Options set here are merged with the `twitter-card` options of the `website` metadata. Set to `false` to omit twitter card metadata from this page.",
+      "values": [
+        "false",
+        "true"
+      ],
+      "formats": [
+        "$html-doc"
+      ]
+    },
+    {
+      "name": "type",
+      "description": "Text describing the specialized type of this publication.",
+      "values": [],
+      "formats": [
+        "$epub-all"
+      ]
+    },
+    {
+      "name": "urlcolor",
+      "description": "The color used for linked URLs using color options allowed by `xcolor`",
+      "values": [],
+      "formats": [
+        "$pdf-all"
+      ]
+    },
+    {
+      "name": "use-rsvg-convert",
+      "description": "If `true`, attempt to use `rsvg-convert` to convert SVG images to PDF.",
+      "values": [
+        "false",
+        "true"
+      ],
+      "formats": [
+        "$pdf-all"
+      ]
+    },
+    {
+      "name": "variant",
+      "description": "Enable and disable extensions for markdown output (e.g. \"+emoji\")",
+      "values": [],
+      "formats": [
+        "$markdown-all"
+      ]
+    },
+    {
+      "name": "view-distance",
+      "description": "Number of slides away from the current slide to pre-load resources for",
+      "values": [],
+      "formats": [
+        "revealjs"
+      ]
+    },
+    {
+      "name": "whitespace",
+      "description": "Set the spacing between paragraphs, for example `none`, `small.",
+      "values": [],
+      "formats": [
+        "context"
+      ]
+    },
+    {
+      "name": "width",
+      "description": "The 'normal' width of the presentation",
+      "values": [],
+      "formats": [
+        "revealjs"
+      ]
+    },
+    {
+      "name": "wrap",
+      "description": "Determine how text is wrapped in the output (`auto`, `none`, or `preserve`).",
+      "values": [
+        "auto",
+        "none",
+        "preserve"
+      ],
+      "formats": [
+        "!$docbook-all",
+        "!$html-all",
+        "!$odt-all",
+        "!$office-all",
+        "!$pdf-all"
+      ]
+    },
+    {
+      "name": "zotero",
+      "description": "Enable (`true`) or disable (`false`) Zotero for a document. Alternatively, provide a list of one or more Zotero group libraries to use with the document.",
+      "values": [
+        "false",
+        "true"
+      ],
+      "formats": []
+    }
+  ],
+  "cell": [
+    {
+      "name": "animation-hook",
+      "description": "Hook function to create animations in HTML output",
+      "values": [],
+      "engines": [
+        "knitr"
+      ]
+    },
+    {
+      "name": "aniopts",
+      "description": "Extra options for animations",
+      "values": [],
+      "engines": [
+        "knitr"
+      ]
+    },
+    {
+      "name": "attr-error",
+      "description": "Attribute(s) for error output",
+      "values": [],
+      "engines": [
+        "knitr"
+      ]
+    },
+    {
+      "name": "attr-message",
+      "description": "Attribute(s) for message output",
+      "values": [],
+      "engines": [
+        "knitr"
+      ]
+    },
+    {
+      "name": "attr-output",
+      "description": "Attribute(s) for text/console output",
+      "values": [],
+      "engines": [
+        "knitr"
+      ]
+    },
+    {
+      "name": "attr-source",
+      "description": "Attribute(s) for source code blocks",
+      "values": [],
+      "engines": [
+        "knitr"
+      ]
+    },
+    {
+      "name": "attr-warning",
+      "description": "Attribute(s) for warning output",
+      "values": [],
+      "engines": [
+        "knitr"
+      ]
+    },
+    {
+      "name": "autodep",
+      "description": "Detect cache dependencies automatically via usage of global variables",
+      "values": [
+        "false",
+        "true"
+      ],
+      "engines": [
+        "knitr"
+      ]
+    },
+    {
+      "name": "cache",
+      "description": "Whether to cache a code chunk.",
+      "values": [
+        "false",
+        "true"
+      ],
+      "engines": [
+        "knitr"
+      ]
+    },
+    {
+      "name": "cache-comments",
+      "description": "Prevent comment changes from invalidating the cache for a chunk",
+      "values": [
+        "false",
+        "true"
+      ],
+      "engines": [
+        "knitr"
+      ]
+    },
+    {
+      "name": "cache-globals",
+      "description": "Variables names that are not created from the current chunk",
+      "values": [
+        "false",
+        "true"
+      ],
+      "engines": [
+        "knitr"
+      ]
+    },
+    {
+      "name": "cache-lazy",
+      "description": "Whether to `lazyLoad()` or directly `load()` objects",
+      "values": [
+        "false",
+        "true"
+      ],
+      "engines": [
+        "knitr"
+      ]
+    },
+    {
+      "name": "cache-rebuild",
+      "description": "Force rebuild of cache for chunk",
+      "values": [
+        "false",
+        "true"
+      ],
+      "engines": [
+        "knitr"
+      ]
+    },
+    {
+      "name": "cache-vars",
+      "description": "Variable names to be saved in the cache database.",
+      "values": [],
+      "engines": [
+        "knitr"
+      ]
+    },
+    {
+      "name": "cap-location",
+      "description": "Where to place figure and table captions (`top`, `bottom`, or `margin`)",
+      "values": [
+        "bottom",
+        "margin",
+        "top"
+      ],
+      "engines": []
+    },
+    {
+      "name": "child",
+      "description": "One or more paths of child documents to be knitted and input into the main document.",
+      "values": [],
+      "engines": [
+        "knitr"
+      ]
+    },
+    {
+      "name": "class-error",
+      "description": "Class name(s) for error output",
+      "values": [],
+      "engines": [
+        "knitr"
+      ]
+    },
+    {
+      "name": "class-message",
+      "description": "Class name(s) for message output",
+      "values": [],
+      "engines": [
+        "knitr"
+      ]
+    },
+    {
+      "name": "class-output",
+      "description": "Class name(s) for text/console output",
+      "values": [],
+      "engines": [
+        "knitr"
+      ]
+    },
+    {
+      "name": "class-source",
+      "description": "Class name(s) for source code blocks",
+      "values": [],
+      "engines": [
+        "knitr"
+      ]
+    },
+    {
+      "name": "class-warning",
+      "description": "Class name(s) for warning output",
+      "values": [],
+      "engines": [
+        "knitr"
+      ]
+    },
+    {
+      "name": "classes",
+      "description": "Classes to apply to cell container",
+      "values": [],
+      "engines": []
+    },
+    {
+      "name": "code",
+      "description": "String containing code to execute for this chunk",
+      "values": [],
+      "engines": [
+        "knitr"
+      ]
+    },
+    {
+      "name": "code-fold",
+      "description": "Collapse code into an HTML `<details>` tag so the user can display it on-demand.",
+      "values": [
+        "false",
+        "show",
+        "true"
+      ],
+      "engines": []
+    },
+    {
+      "name": "code-line-numbers",
+      "description": "Include line numbers in code block output (`true` or `false`)",
+      "values": [
+        "false",
+        "true"
+      ],
+      "engines": []
+    },
+    {
+      "name": "code-overflow",
+      "description": "Choose whether to `scroll` or `wrap` when code lines are too wide for their container.",
+      "values": [
+        "scroll",
+        "wrap"
+      ],
+      "engines": []
+    },
+    {
+      "name": "code-summary",
+      "description": "Summary text to use for code blocks collapsed using `code-fold`",
+      "values": [],
+      "engines": []
+    },
+    {
+      "name": "collapse",
+      "description": "Collapse all the source and output blocks from one code chunk into a single block",
+      "values": [
+        "false",
+        "true"
+      ],
+      "engines": [
+        "knitr"
+      ]
+    },
+    {
+      "name": "color",
+      "description": "For code cells that produce a valuebox, the color of the valuebox.s",
+      "values": [
+        "danger",
+        "dark",
+        "info",
+        "light",
+        "primary",
+        "secondary",
+        "success",
+        "warning"
+      ],
+      "engines": []
+    },
+    {
+      "name": "column",
+      "description": "Page column for output",
+      "values": [],
+      "engines": []
+    },
+    {
+      "name": "comment",
+      "description": "Prefix to be added before each line of text output.",
+      "values": [],
+      "engines": [
+        "knitr"
+      ]
+    },
+    {
+      "name": "content",
+      "description": "The type of dashboard element being produced by this code cell.",
+      "values": [
+        "card-sidebar",
+        "card-toolbar",
+        "sidebar",
+        "toolbar",
+        "valuebox"
+      ],
+      "engines": []
+    },
+    {
+      "name": "context",
+      "description": "Context to execute cell within.",
+      "values": [],
+      "engines": [
+        "jupyter"
+      ]
+    },
+    {
+      "name": "dependson",
+      "description": "Explicitly specify cache dependencies for this chunk (one or more chunk labels)",
+      "values": [],
+      "engines": [
+        "knitr"
+      ]
+    },
+    {
+      "name": "echo",
+      "description": "Include cell source code in rendered output.",
+      "values": [
+        "false",
+        "fenced",
+        "true"
+      ],
+      "engines": []
+    },
+    {
+      "name": "error",
+      "description": "Include errors in the output (note that this implies that errors executing code will not halt processing of the document).",
+      "values": [
+        "false",
+        "true"
+      ],
+      "engines": []
+    },
+    {
+      "name": "eval",
+      "description": "Evaluate code cells (if `false` just echos the code into output).",
+      "values": [
+        "false",
+        "true"
+      ],
+      "engines": []
+    },
+    {
+      "name": "expandable",
+      "description": "Make dashboard card content expandable (default: `true`)",
+      "values": [
+        "false",
+        "true"
+      ],
+      "engines": []
+    },
+    {
+      "name": "external",
+      "description": "Externalize tikz graphics (pre-compile to PDF)",
+      "values": [
+        "false",
+        "true"
+      ],
+      "engines": [
+        "knitr"
+      ]
+    },
+    {
+      "name": "fig-align",
+      "description": "Figure horizontal alignment (`default`, `left`, `right`, or `center`)",
+      "values": [
+        "center",
+        "default",
+        "left",
+        "right"
+      ],
+      "engines": []
+    },
+    {
+      "name": "fig-alt",
+      "description": "Alternative text to be used in the `alt` attribute of HTML images.",
+      "values": [],
+      "engines": []
+    },
+    {
+      "name": "fig-asp",
+      "description": "The aspect ratio of the plot, i.e., the ratio of height/width. When `fig-asp` is specified, the height of a plot (the option `fig-height`) is calculated from `fig-width * fig-asp`.",
+      "values": [],
+      "engines": [
+        "knitr"
+      ]
+    },
+    {
+      "name": "fig-cap",
+      "description": "Figure caption",
+      "values": [],
+      "engines": []
+    },
+    {
+      "name": "fig-cap-location",
+      "description": "Where to place figure captions (`top`, `bottom`, or `margin`)",
+      "values": [
+        "bottom",
+        "margin",
+        "top"
+      ],
+      "engines": []
+    },
+    {
+      "name": "fig-column",
+      "description": "Page column for figure output",
+      "values": [],
+      "engines": []
+    },
+    {
+      "name": "fig-dpi",
+      "description": "Default DPI for figures",
+      "values": [],
+      "engines": [
+        "knitr"
+      ]
+    },
+    {
+      "name": "fig-env",
+      "description": "LaTeX environment for figure output",
+      "values": [],
+      "engines": []
+    },
+    {
+      "name": "fig-format",
+      "description": "Default output format for figures (`retina`, `png`, `jpeg`, `svg`, or `pdf`)",
+      "values": [
+        "jpeg",
+        "pdf",
+        "png",
+        "retina",
+        "svg"
+      ],
+      "engines": [
+        "knitr"
+      ]
+    },
+    {
+      "name": "fig-height",
+      "description": "Default height for figures",
+      "values": [],
+      "engines": [
+        "knitr"
+      ]
+    },
+    {
+      "name": "fig-keep",
+      "description": "How plots in chunks should be kept.",
+      "values": [
+        "all",
+        "first",
+        "high",
+        "last",
+        "none"
+      ],
+      "engines": [
+        "knitr"
+      ]
+    },
+    {
+      "name": "fig-link",
+      "description": "Hyperlink target for the figure",
+      "values": [],
+      "engines": []
+    },
+    {
+      "name": "fig-pos",
+      "description": "LaTeX figure position arrangement to be used in `\\begin{figure}[]`.",
+      "values": [],
+      "engines": []
+    },
+    {
+      "name": "fig-scap",
+      "description": "A short caption (only used in LaTeX output)",
+      "values": [],
+      "engines": []
+    },
+    {
+      "name": "fig-show",
+      "description": "How to show/arrange the plots",
+      "values": [
+        "animate",
+        "asis",
+        "hide",
+        "hold"
+      ],
+      "engines": [
+        "knitr"
+      ]
+    },
+    {
+      "name": "fig-subcap",
+      "description": "Figure subcaptions",
+      "values": [],
+      "engines": []
+    },
+    {
+      "name": "fig-width",
+      "description": "Default width for figures",
+      "values": [],
+      "engines": [
+        "knitr"
+      ]
+    },
+    {
+      "name": "file",
+      "description": "File containing code to execute for this chunk",
+      "values": [],
+      "engines": [
+        "knitr"
+      ]
+    },
+    {
+      "name": "height",
+      "description": "Percentage or absolute pixel height for dashboard card (defaults to evenly spaced across column)",
+      "values": [],
+      "engines": []
+    },
+    {
+      "name": "html-table-processing",
+      "description": "If `none`, do not process raw HTML table in cell output and leave it as-is",
+      "values": [
+        "none"
+      ],
+      "engines": []
+    },
+    {
+      "name": "id",
+      "description": "Notebook cell identifier",
+      "values": [],
+      "engines": [
+        "jupyter"
+      ]
+    },
+    {
+      "name": "include",
+      "description": "Catch all for preventing any output (code or results) from being included in output.",
+      "values": [
+        "false",
+        "true"
+      ],
+      "engines": []
+    },
+    {
+      "name": "interval",
+      "description": "Time interval (number of seconds) between animation frames.",
+      "values": [],
+      "engines": [
+        "knitr"
+      ]
+    },
+    {
+      "name": "label",
+      "description": "Unique label for code cell",
+      "values": [],
+      "engines": []
+    },
+    {
+      "name": "layout",
+      "description": "2d-array of widths where the first dimension specifies columns and the second rows.",
+      "values": [],
+      "engines": []
+    },
+    {
+      "name": "layout-align",
+      "description": "Horizontal alignment for layout content (`default`, `left`, `right`, or `center`)",
+      "values": [
+        "center",
+        "default",
+        "left",
+        "right"
+      ],
+      "engines": []
+    },
+    {
+      "name": "layout-ncol",
+      "description": "Layout output blocks into columns",
+      "values": [],
+      "engines": []
+    },
+    {
+      "name": "layout-nrow",
+      "description": "Layout output blocks into rows",
+      "values": [],
+      "engines": []
+    },
+    {
+      "name": "layout-valign",
+      "description": "Vertical alignment for layout content (`default`, `top`, `center`, or `bottom`)",
+      "values": [
+        "bottom",
+        "center",
+        "default",
+        "top"
+      ],
+      "engines": []
+    },
+    {
+      "name": "lst-cap",
+      "description": "Caption for code listing",
+      "values": [],
+      "engines": []
+    },
+    {
+      "name": "lst-label",
+      "description": "Unique label for code listing (used in cross references)",
+      "values": [],
+      "engines": []
+    },
+    {
+      "name": "message",
+      "description": "Include messages in rendered output.",
+      "values": [
+        "NA"
+      ],
+      "engines": [
+        "knitr"
+      ]
+    },
+    {
+      "name": "out-extra",
+      "description": "Additional raw LaTeX or HTML options to be applied to figures",
+      "values": [],
+      "engines": [
+        "knitr"
+      ]
+    },
+    {
+      "name": "out-height",
+      "description": "Height of plot in the output document",
+      "values": [],
+      "engines": [
+        "knitr"
+      ]
+    },
+    {
+      "name": "out-width",
+      "description": "Width of plot in the output document",
+      "values": [],
+      "engines": [
+        "knitr"
+      ]
+    },
+    {
+      "name": "output",
+      "description": "Include the results of executing the code in the output (specify `asis` to treat output as raw markdown with no enclosing containers).",
+      "values": [
+        "asis",
+        "false",
+        "true"
+      ],
+      "engines": []
+    },
+    {
+      "name": "output-location",
+      "description": "Location of output relative to the code that generated it (`default`, `fragment`, `slide`, `column`, or `column-location`)",
+      "values": [
+        "column",
+        "column-fragment",
+        "default",
+        "fragment",
+        "slide"
+      ],
+      "engines": []
+    },
+    {
+      "name": "padding",
+      "description": "Padding around dashboard card content (default `8px`)",
+      "values": [],
+      "engines": []
+    },
+    {
+      "name": "panel",
+      "description": "Panel type for cell output (`tabset`, `input`, `sidebar`, `fill`, `center`)",
+      "values": [
+        "center",
+        "fill",
+        "input",
+        "sidebar",
+        "tabset"
+      ],
+      "engines": []
+    },
+    {
+      "name": "prompt",
+      "description": "Whether to add the prompt characters in R code.",
+      "values": [
+        "false",
+        "true"
+      ],
+      "engines": [
+        "knitr"
+      ]
+    },
+    {
+      "name": "purl",
+      "description": "Include chunk when extracting code with `knitr::purl()`",
+      "values": [
+        "false",
+        "true"
+      ],
+      "engines": [
+        "knitr"
+      ]
+    },
+    {
+      "name": "renderings",
+      "description": "Array of rendering names, e.g. `[light, dark]`",
+      "values": [],
+      "engines": []
+    },
+    {
+      "name": "results",
+      "description": "How to display text results",
+      "values": [
+        "asis",
+        "hide",
+        "hold",
+        "markup"
+      ],
+      "engines": [
+        "knitr"
+      ]
+    },
+    {
+      "name": "sanitize",
+      "description": "sanitize tikz graphics (escape special LaTeX characters).",
+      "values": [
+        "false",
+        "true"
+      ],
+      "engines": [
+        "knitr"
+      ]
+    },
+    {
+      "name": "tags",
+      "description": "Array of tags for notebook cell",
+      "values": [],
+      "engines": [
+        "jupyter"
+      ]
+    },
+    {
+      "name": "tbl-cap",
+      "description": "Table caption",
+      "values": [],
+      "engines": []
+    },
+    {
+      "name": "tbl-cap-location",
+      "description": "Where to place table captions (`top`, `bottom`, or `margin`)",
+      "values": [
+        "bottom",
+        "margin",
+        "top"
+      ],
+      "engines": []
+    },
+    {
+      "name": "tbl-column",
+      "description": "Page column for table output",
+      "values": [],
+      "engines": []
+    },
+    {
+      "name": "tbl-colwidths",
+      "description": "Apply explicit table column widths",
+      "values": [
+        "auto",
+        "false",
+        "true"
+      ],
+      "engines": [
+        "jupyter",
+        "knitr"
+      ]
+    },
+    {
+      "name": "tbl-subcap",
+      "description": "Table subcaptions",
+      "values": [],
+      "engines": []
+    },
+    {
+      "name": "tidy",
+      "description": "Whether to reformat R code.",
+      "values": [
+        "false",
+        "formatR",
+        "styler",
+        "true"
+      ],
+      "engines": [
+        "knitr"
+      ]
+    },
+    {
+      "name": "tidy-opts",
+      "description": "List of options to pass to `tidy` handler",
+      "values": [],
+      "engines": [
+        "knitr"
+      ]
+    },
+    {
+      "name": "title",
+      "description": "Title displayed in dashboard card header",
+      "values": [],
+      "engines": []
+    },
+    {
+      "name": "warning",
+      "description": "Include warnings in rendered output.",
+      "values": [
+        "false",
+        "true"
+      ],
+      "engines": []
+    },
+    {
+      "name": "width",
+      "description": "Percentage or absolute pixel width for dashboard card (defaults to evenly spaced across row)",
+      "values": [],
+      "engines": []
+    }
+  ]
+}

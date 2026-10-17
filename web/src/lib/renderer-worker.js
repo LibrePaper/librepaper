@@ -1,14 +1,32 @@
-import { load, call } from "./renderer-wasm.js";
+import { load, call, handOver } from "./renderer-wasm.js";
 import { renderResolving } from "./needs.js";
 
 // What earlier compiles fetched -- packages -- for the life of this worker.
 // See `needs.js`.
 const fetched = new Map();
-/** @typedef {{tree: object, title: string, format?: string, old?: string, new?: string, source?: string}} RendererArgs */
+/** @typedef {{tree: object, title: string, format?: string, old?: string, new?: string, source?: string, path?: string, offset?: number, explicit?: boolean}} RendererArgs */
 /** @typedef {{id: string, url: string, operation: string, args: RendererArgs}} RendererRequest */
 /** @typedef {{location: Location, onmessage: ((event: MessageEvent<RendererRequest>) => void) | null, postMessage: (message: unknown, transfer?: Transferable[]) => void}} RendererWorkerScope */
 /** @type {RendererWorkerScope} */
 const rendererScope = /** @type {RendererWorkerScope} */ (/** @type {unknown} */ (self));
+
+// Editor completion asks the module what can be typed at the cursor. A module
+// built before completion has no answer, which is not an error: the editor
+// simply shows nothing.
+/** @param {import("./renderer-wasm.js").RendererWasm} wasm @param {RendererArgs} args */
+function complete(wasm, { tree, path = "", source = "", offset = 0, explicit = false }) {
+  if (typeof wasm.complete !== "function") return null;
+  handOver(wasm, tree);
+  // A fresh module has none of the packages fetched by earlier renders.
+  for (const [file, bytes] of fetched) {
+    if (file in (tree.texts || {}) || file in (tree.assets || {})) continue;
+    call(wasm, "add_file", file, bytes);
+  }
+  const request = JSON.stringify({ path, source, offset, explicit, files: Object.keys(tree.files || tree.texts || {}) });
+  const { bytes } = call(wasm, "complete", request);
+  const text = new TextDecoder().decode(bytes);
+  return text ? JSON.parse(text) : null;
+}
 
 async function render(wasm, tree, title, format) {
   const { bytes, text, kind, ok, diagnostics } = await renderResolving(wasm, tree, title, fetched, { format });
@@ -43,6 +61,7 @@ rendererScope.onmessage = ({ data: { id, url, operation, args } }) => {
         const raw = call(wasm, "word_diff", args.old, args.new).text;
         result = JSON.parse(raw || "[]");
       }
+      else if (operation === "complete") result = complete(wasm, args);
       else if (operation === "failure") result = call(wasm, "failure_page", args.title).text;
       else if (operation !== "warm") throw new Error(`Unknown renderer operation: ${operation}`);
       const transfer = result?.pdf instanceof ArrayBuffer ? [result.pdf] : [];
