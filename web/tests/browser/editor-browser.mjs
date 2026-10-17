@@ -52,7 +52,7 @@ import MergeEditor from ${JSON.stringify(join(root, "web/src/components/MergeEdi
 import Editor from ${JSON.stringify(join(root, "web/src/components/Editor.svelte"))};
 import Diagnostics from ${JSON.stringify(join(root, "web/src/components/reader/Diagnostics.svelte"))};
 import { join as joinSession } from ${JSON.stringify(join(root, "web/src/lib/collab.js"))};
-import { migrateChanges, rejectMany, resolveChanges, trackedSplice } from ${JSON.stringify(join(root, "web/src/lib/track-changes.js"))};
+import { rejectMany, resolveChanges, trackedSplice } from ${JSON.stringify(join(root, "web/src/lib/track-changes.js"))};
 import { durableProjectPersistence, prepareOfflineProject, preparedProject } from ${JSON.stringify(join(root, "web/src/lib/offline-projects.js"))};
 import { createClassComponent } from ${JSON.stringify(join(root, "web/node_modules/svelte/src/legacy/legacy-client.js"))};
 
@@ -730,20 +730,22 @@ window.migrationCheck = async () => {
   await tick();
   await tick();
   const rows = resolveChanges(value.doc, id).map((c) => ({ from: c.from, to: c.to, deleted: c.deleted }));
-  const kinds = [...value.doc.getMap("changes").entries()].map(([, v]) => (typeof v.get === "function" ? v.get("kind") : "old")).sort();
+  const kindsOf = () => [...value.doc.getMap("changes").entries()].map(([, v]) => (typeof v.get === "function" ? v.get("kind") : "old")).sort();
+  const kinds = kindsOf();
   component.startTracking();
   const view = EditorView.findFromDOM(host.querySelector(".cm-editor"));
   view.dispatch({ changes: { from: 1, to: 2 }, userEvent: "delete.selection" });
   await tick();
   await tick();
   const after = resolveChanges(value.doc, id).map((c) => ({ from: c.from, to: c.to, deleted: c.deleted }));
+  const kindsAfter = kindsOf();
   rejectMany(value.doc, resolveChanges(value.doc, id).map((c) => c.id));
   await tick();
   const restored = value.textOf(id).toString();
   component.$destroy();
   host.remove();
   value.leave();
-  return { rows, kinds, after, restored };
+  return { rows, kinds, after, kindsAfter, restored };
 };
 window.diagnosticsCheck = async () => {
   const host = document.createElement("aside");
@@ -1110,11 +1112,12 @@ try {
   assert.deepEqual(edits.untrackedCollapse.records.map((r) => r.deleted).sort(), ["line\n", "second"], "the untracked deletion between two tracked ones was recorded or lost one");
   console.log("editor-browser: tracked edits are planned against the records before the write, and a vim undo takes text and record together");
   const migration = await evaluate("migrationCheck()");
-  assert.deepEqual(migration.rows, [{ from: 1, to: 3, deleted: "" }], "an old-model record was not converted and shown when the editor opened");
-  assert.deepEqual(migration.kinds, ["change"], "the old record was not replaced by a change container");
+  assert.deepEqual(migration.rows, [{ from: 1, to: 3, deleted: "" }], "an old-model record was not read in place when the editor opened");
+  assert.deepEqual(migration.kinds, ["old"], "an old-model record was converted on open; it should be read in place");
   assert.deepEqual(migration.after, [{ from: 1, to: 2, deleted: "" }], "deleting part of an old pending insertion recorded it as original text");
+  assert.deepEqual(migration.kindsAfter, ["change"], "editing an old pending insertion did not convert its record");
   assert.equal(migration.restored, "ab", "rejecting the converted change did not restore the original");
-  console.log("editor-browser: records of the earlier model are converted when the editor opens");
+  console.log("editor-browser: records of the earlier model are read in place and converted when edited");
   const zoom = await evaluate("editorZoomCheck()");
   assert.deepEqual(zoom, { before: "14px", prevented: true, grown: "28px", storedGrown: "28", shrunk: "10px", storedShrunk: "10" }, "ctrl+wheel over the source sizes its text and remembers it");
   console.log("editor-browser: ctrl+wheel over the source sizes its text and remembers it");
