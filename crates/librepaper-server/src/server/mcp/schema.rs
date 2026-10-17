@@ -27,6 +27,51 @@ pub(super) fn tools() -> &'static Vec<Value> {
     &tools_file().tools
 }
 
+/// The tools that only an Editor may call. The server refuses each of them
+/// for a Commenter, so a Commenter is not offered them.
+const EDITOR_TOOLS: [&str; 2] = ["document_propose", "document_apply"];
+
+/// The tools a caller may be offered: every served tool when `editor` is
+/// true, and every served tool except `EDITOR_TOOLS` when it is not. A
+/// Commenter gets read, comment and result only, and the comment tool without
+/// the `label` action, which the server also refuses below Editor.
+pub(super) fn served_tools(editor: bool) -> Vec<Value> {
+    all_served_tools()
+        .iter()
+        .filter(|tool| {
+            editor
+                || !tool["name"]
+                    .as_str()
+                    .is_some_and(|name| EDITOR_TOOLS.contains(&name))
+        })
+        .map(|tool| {
+            if editor {
+                tool.clone()
+            } else {
+                commenter_view(tool)
+            }
+        })
+        .collect()
+}
+
+/// A Commenter's copy of a tool. Only `document_comment` differs: its
+/// `label` action and the description that mentions labels are removed.
+fn commenter_view(tool: &Value) -> Value {
+    let mut tool = tool.clone();
+    if tool["name"] == "document_comment" {
+        tool["description"] = Value::from(
+            "Create or reply to comments and resolve threads, conditional on their captured version.",
+        );
+        if let Some(actions) = tool
+            .pointer_mut("/inputSchema/properties/action/enum")
+            .and_then(Value::as_array_mut)
+        {
+            actions.retain(|action| action != "label");
+        }
+    }
+    tool
+}
+
 /// The tools as served to the model: every `$ref` expanded inline, since a
 /// client reads one schema per tool and does not resolve JSON Schema
 /// references itself, and with `operation`/`target_operation` removed from
@@ -36,7 +81,7 @@ pub(super) fn tools() -> &'static Vec<Value> {
 /// get its epoch or id wrong. The server's own validation schema (`tools()`)
 /// is unchanged: the wire contract the bridge and the server keep between
 /// themselves still requires it.
-pub(super) fn served_tools() -> &'static Vec<Value> {
+fn all_served_tools() -> &'static Vec<Value> {
     static SERVED: OnceLock<Vec<Value>> = OnceLock::new();
     SERVED.get_or_init(|| {
         tools()
@@ -226,7 +271,7 @@ mod tests {
     /// it.
     #[test]
     fn served_tools_omit_the_operation_fields_the_bridge_now_injects() {
-        for tool in served_tools() {
+        for tool in served_tools(true) {
             let properties = &tool["inputSchema"]["properties"];
             assert!(properties.get("operation").is_none(), "{}", tool["name"]);
             assert!(
@@ -240,7 +285,8 @@ mod tests {
                 .unwrap_or_default();
             assert!(!required.iter().any(|name| name == "operation"));
         }
-        let result = served_tools()
+        let served = served_tools(true);
+        let result = served
             .iter()
             .find(|t| t["name"] == "document_result")
             .expect("result");
@@ -259,5 +305,50 @@ mod tests {
             .find(|t| t["name"] == "document_propose")
             .expect("propose")["inputSchema"];
         assert!(propose["properties"]["operation"].is_object());
+    }
+
+    /// A Commenter is offered only the tools it can use; an Editor is offered
+    /// all of them.
+    #[test]
+    fn commenters_are_offered_no_editor_only_tools() {
+        let commenter_tools = served_tools(false);
+        let commenter: Vec<&str> = commenter_tools
+            .iter()
+            .filter_map(|tool| tool["name"].as_str())
+            .collect();
+        assert_eq!(
+            commenter,
+            ["document_read", "document_comment", "document_result"]
+        );
+        let editor_tools = served_tools(true);
+        let editor: Vec<&str> = editor_tools
+            .iter()
+            .filter_map(|tool| tool["name"].as_str())
+            .collect();
+        assert!(editor.contains(&"document_propose"));
+        assert!(editor.contains(&"document_apply"));
+        assert_eq!(editor.len(), 5);
+        // Labelling needs Editor: a Commenter's document_comment offers no
+        // `label` action and its description does not mention labels.
+        let comment_for = |editor: bool| {
+            served_tools(editor)
+                .into_iter()
+                .find(|t| t["name"] == "document_comment")
+                .expect("document_comment")
+        };
+        let commenter_comment = comment_for(false);
+        let commenter_actions = commenter_comment["inputSchema"]["properties"]["action"]["enum"]
+            .as_array()
+            .expect("commenter action enum");
+        assert!(!commenter_actions.contains(&json!("label")));
+        let description = commenter_comment["description"]
+            .as_str()
+            .expect("commenter description");
+        assert!(!description.contains("label"), "{description}");
+        let editor_actions = comment_for(true)["inputSchema"]["properties"]["action"]["enum"]
+            .as_array()
+            .cloned()
+            .expect("editor action enum");
+        assert!(editor_actions.contains(&json!("label")));
     }
 }

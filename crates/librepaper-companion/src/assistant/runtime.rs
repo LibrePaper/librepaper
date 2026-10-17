@@ -31,6 +31,9 @@ pub struct Config {
     /// to the agent's own executable when the adapter needs to know where
     /// to find it.
     pub agent_environment: Vec<(String, String)>,
+    /// The browser's Access choice, "commenter" or "editor". It decides which
+    /// LibrePaper tool permission requests are approved without asking.
+    pub access: String,
 }
 pub fn config(
     conversation: String,
@@ -38,6 +41,7 @@ pub fn config(
     agent: Vec<String>,
     state_home: PathBuf,
     agent_environment: Vec<(String, String)>,
+    access: String,
 ) -> Result<Config, String> {
     if agent.is_empty() || agent[0].trim().is_empty() {
         return Err("no agent command configured for the sidebar assistant".into());
@@ -48,6 +52,7 @@ pub fn config(
         agent,
         state_home,
         agent_environment,
+        access,
     })
 }
 fn event_id() -> String {
@@ -309,6 +314,54 @@ async fn reachable_or_refuse(peer: &AutomationPeer) -> Result<(), String> {
     }
 }
 
+/// The message for a bridge that never answered, with the next step for the
+/// agent in use.
+fn bridge_timeout_message(agent: &[String]) -> String {
+    let names: Vec<&str> = agent
+        .iter()
+        .filter_map(|part| Path::new(part).file_stem()?.to_str())
+        .collect();
+    let base = "agent session started, but its document bridge did not discover the required LibrePaper tools within 25 seconds";
+    match () {
+        _ if names.contains(&"pi-acp") => format!("{base}. Install pi-mcp-adapter and add the librepaper server to ~/.config/mcp/mcp.json (see the Agents docs)"),
+        _ if names.contains(&"opencode") => format!("{base}. Check that opencode has a provider configured (opencode auth login) and see its log in ~/.local/share/opencode/log"),
+        _ => base.into(),
+    }
+}
+
+/// What to do with an agent's permission request.
+#[derive(Debug, PartialEq)]
+enum PermissionDecision<'a> {
+    Refuse,
+    Allow(&'a str),
+    Ask,
+}
+
+/// `active` is `None` with no task running, else whether that task is being
+/// cancelled. `stale` is true when the request arrived in a turn that has
+/// since ended. A request outside a live task, or from an ended turn, is
+/// refused, so a late request cannot authorize a write after Cancel, after
+/// the turn ended, or inside the next task. Inside a live turn, a LibrePaper
+/// tool the access level allows is approved without asking.
+fn permission_decision<'a>(
+    stale: bool,
+    active: Option<bool>,
+    access: &str,
+    tool: Option<&str>,
+    allow_once: Option<&'a str>,
+) -> PermissionDecision<'a> {
+    if stale {
+        return PermissionDecision::Refuse;
+    }
+    match (active, tool, allow_once) {
+        (None | Some(true), _, _) => PermissionDecision::Refuse,
+        (Some(false), Some(tool), Some(option)) if acp::access_allows(access, tool) => {
+            PermissionDecision::Allow(option)
+        }
+        _ => PermissionDecision::Ask,
+    }
+}
+
 /// A successful `session/new` only proves that the ACP agent started. Wait for
 /// the actual child MCP bridge to answer `tools/list` before calling the runner
 /// ready. Each launch gets a fresh marker token so a stale file cannot satisfy
@@ -377,7 +430,7 @@ async fn start_agent_with_bridge(
     .await;
     let result = match ready {
         Ok(result) => result,
-        Err(_) => Err("agent session started, but its document bridge did not discover the required LibrePaper tools within 25 seconds".into()),
+        Err(_) => Err(bridge_timeout_message(&config.agent)),
     };
     let _ = tokio::fs::remove_file(&marker).await;
     if let Err(error) = result {
@@ -529,22 +582,12 @@ async fn publish_answer(
     Ok(())
 }
 
-async fn emit_options(transport: &Transport, options: &Value) -> Result<(), String> {
-    emit(
-        transport,
-        json!({"type":"options","id":event_id(),"options":options}),
-    )
-    .await
-}
-
 async fn reconcile(
     transport: &Transport,
     state: &mut State,
     session_id: &str,
-    options: &Value,
 ) -> Result<(), String> {
     emit(transport,json!({"type":"capabilities","id":event_id(),"session_id":session_id,"capabilities":{"steer":false,"cancel":true,"preview":true,"input":true}})).await?;
-    emit_options(transport, options).await?;
     let ids = state
         .tasks
         .iter()
@@ -699,6 +742,9 @@ async fn execute(peer: &AutomationPeer, config: &Config, lease: &Lease) -> Resul
     // user's.
     let mut session_id = agent.session_id().to_string();
     let mut options = agent.options().clone();
+    // Turns this agent has ended, counted as its `TurnEnded` events arrive.
+    // Each permission request carries the count from when it arrived.
+    let mut turns_ended: u64 = 0;
     publish_agent_label(&session_path, &options)?;
     // ACP has no place to put developer instructions on a session, so they
     // lead the first prompt of this process. Once per runner start, not once
@@ -830,10 +876,11 @@ async fn execute(peer: &AutomationPeer, config: &Config, lease: &Lease) -> Resul
                     if connected && stopping.is_none() { runner_journal::set_session_epoch(&session_path, current_epoch.as_deref())?; }
                     session_id = agent.session_id().to_string();
                     options = agent.options().clone();
+                    turns_ended = 0;
                     publish_agent_label(&session_path, &options)?;
                     instructions = Some(context::instructions(&lease.location.directory)?);
                     commands.clear();
-                    if connected { reconcile(&transport, &mut state, &session_id, &options).await?; }
+                    if connected { reconcile(&transport, &mut state, &session_id).await?; }
                 }
                 if let Some(current)=active.as_mut() {
                     if current.pending.front().is_some_and(|pending|pending.deadline<=now) {
@@ -894,7 +941,7 @@ async fn execute(peer: &AutomationPeer, config: &Config, lease: &Lease) -> Resul
                         current_epoch=execution_epoch;
                         if browser && stopping.is_none() {
                             runner_journal::set_session_epoch(&session_path, current_epoch.as_deref())?;
-                            reconcile(&transport,&mut state, &session_id, &options).await?;
+                            reconcile(&transport,&mut state, &session_id).await?;
                         } else {
                             runner_journal::set_session_epoch(&session_path, None)?;
                         }
@@ -941,16 +988,6 @@ async fn execute(peer: &AutomationPeer, config: &Config, lease: &Lease) -> Resul
                                     if let Some(task)=state.task_mut(id){task.request_cancel();}
                                 } else if state.task(id).is_some_and(|task|task.status==TaskStatus::Queued) { finish(&mut state,id,TaskStatus::Cancelled,"Queued task cancelled"); }
                                 if state.task(id).is_some(){report_task(&transport,&mut state,id,&lease.location.state).await?;}
-                            }
-                            "set_option"=> {
-                                if let (Some(id), Some(chosen)) = (value["option"].as_str(), value["value"].as_str()) {
-                                    match agent.set_option(id, chosen).await {
-                                        Ok(updated) => options = updated,
-                                        Err(error) => tracing::warn!("could not set agent option {id}: {error}"),
-                                    }
-                                    publish_agent_label(&session_path, &options)?;
-                                    emit_options(&transport, &options).await?;
-                                }
                             }
                             "input"=> {
                                 if let Some(current)=active.as_mut().filter(|task|value["task_id"]==task.id) {
@@ -1013,7 +1050,6 @@ async fn execute(peer: &AutomationPeer, config: &Config, lease: &Lease) -> Resul
                     acp::Event::Options(updated) => {
                         options = updated;
                         publish_agent_label(&session_path, &options)?;
-                        if connected { emit_options(&transport, &options).await?; }
                     }
                     acp::Event::Update(update) => {
                         let Some(current)=active.as_mut() else { continue; };
@@ -1038,7 +1074,18 @@ async fn execute(peer: &AutomationPeer, config: &Config, lease: &Lease) -> Resul
                             acp::Update::Commands(_) | acp::Update::Ignored => {}
                         }
                     }
-                    acp::Event::Permission { handle, message, options, details, option_ids } => {
+                    acp::Event::Permission { handle, message, options, details, option_ids, tool, allow_once, turn } => {
+                        match permission_decision(
+                            turn != turns_ended,
+                            active.as_ref().map(|current| current.cancelling),
+                            &config.access,
+                            tool,
+                            allow_once.as_deref(),
+                        ) {
+                            PermissionDecision::Refuse => { (*handle).respond(None)?; continue; }
+                            PermissionDecision::Allow(option) => { (*handle).respond(Some(option))?; continue; }
+                            PermissionDecision::Ask => {}
+                        }
                         let Some(current)=active.as_mut() else { (*handle).respond(None)?; continue; };
                         let base_size = message.len()+serde_json::to_vec(&options).map_err(|e|e.to_string())?.len();
                         let details = if base_size.saturating_add(serde_json::to_vec(&details).map_err(|e|e.to_string())?.len()) > 12*1024 { Value::Null } else { details };
@@ -1069,6 +1116,7 @@ async fn execute(peer: &AutomationPeer, config: &Config, lease: &Lease) -> Resul
                         }
                     }
                     acp::Event::TurnEnded(outcome) => {
+                        turns_ended += 1;
                         let Some(current)=active.as_mut() else { continue; };
                         let id=current.id.clone();
                         retain_partial_answer(&mut state, &id, current);
@@ -1301,9 +1349,59 @@ mod tests {
         // the private connection record, never through this environment.
         assert!(!names.contains(&"LIBREPAPER_DOCUMENT"));
         assert!(!names.contains(&"LIBREPAPER_CHAT_TOKEN"));
-        // The agent shares this environment, so the grant file is named only
-        // in the bridge's own (`acp::bridge_environment`).
+        // The grant file path and the connection are added by
+        // `acp::bridge_environment`, not here.
         assert!(!names.contains(&crate::local::connections::GRANT_FILE_VARIABLE));
+        assert!(!names.contains(&crate::local::connections::CONNECTION_VARIABLE));
+    }
+
+    /// A permission request is approved unasked only inside a live task that
+    /// is not being cancelled.
+    #[test]
+    fn permissions_outside_a_live_task_are_refused() {
+        use PermissionDecision::*;
+        let tool = Some("document_comment");
+        let once = Some("once");
+        assert_eq!(
+            permission_decision(false, None, "editor", tool, once),
+            Refuse
+        );
+        assert_eq!(
+            permission_decision(false, Some(true), "editor", tool, once),
+            Refuse
+        );
+        assert_eq!(
+            permission_decision(false, Some(true), "editor", None, once),
+            Refuse
+        );
+        assert_eq!(
+            permission_decision(false, Some(false), "editor", tool, once),
+            Allow("once")
+        );
+        assert_eq!(
+            permission_decision(
+                false,
+                Some(false),
+                "commenter",
+                Some("document_apply"),
+                once
+            ),
+            Ask
+        );
+        assert_eq!(
+            permission_decision(false, Some(false), "editor", None, once),
+            Ask
+        );
+        assert_eq!(
+            permission_decision(false, Some(false), "editor", tool, None),
+            Ask
+        );
+        // A request from a turn that has ended is refused even inside the
+        // next live task.
+        assert_eq!(
+            permission_decision(true, Some(false), "editor", tool, once),
+            Refuse
+        );
     }
 
     /// The bridge reads whatever the file holds at any moment, so it must be
@@ -1369,7 +1467,8 @@ mod tests {
             Some("t".into()),
             Vec::new(),
             state_home.clone(),
-            Vec::new()
+            Vec::new(),
+            "commenter".into()
         )
         .is_err());
         assert!(config(
@@ -1377,7 +1476,8 @@ mod tests {
             Some("t".into()),
             vec!["  ".into()],
             state_home.clone(),
-            Vec::new()
+            Vec::new(),
+            "commenter".into()
         )
         .is_err());
         let config = config(
@@ -1386,6 +1486,7 @@ mod tests {
             vec!["claude-agent-acp".into()],
             state_home,
             Vec::new(),
+            "commenter".into(),
         )
         .expect("an installed agent");
         assert_eq!(config.agent, vec!["claude-agent-acp".to_string()]);

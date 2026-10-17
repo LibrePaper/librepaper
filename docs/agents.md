@@ -19,4 +19,45 @@ To offer another ACP agent in the app, add it in Settings.
 
 To remove an added agent, click Remove next to it.
 
+## Pi
+
+Pi needs the `pi-mcp-adapter` extension to reach the document tools.
+
+```sh
+# Install the MCP extension for Pi
+pi install npm:pi-mcp-adapter
+# Log in to a model provider
+pi    # then type /login
+```
+
+Add this entry to `~/.config/mcp/mcp.json`:
+
+```json
+{ "mcpServers": { "librepaper": { "command": "librepaper", "args": ["mcp"], "lifecycle": "keep-alive", "directTools": true } } }
+```
+
+- `keep-alive` makes Pi connect at start, so LibrePaper sees the tools.
+- `directTools` puts the document tools in Pi's own tool list.
+- Use the global file. Pi skips unapproved project servers in the headless mode LibrePaper uses.
+- The macOS `.dmg` does not put `librepaper` on your PATH. Set `command` to `/Applications/LibrePaper.app/Contents/MacOS/librepaper` instead.
+
+## Codex
+
+Codex runs through the `@agentclientprotocol/codex-acp` adapter. The app fetches it with `npx` when it is not installed.
+
+```sh
+# Log in to Codex before first use
+codex login
+```
+
+- LibrePaper starts the adapter in workspace-write mode, so your Access choice decides which document tools run without asking.
+- Do not add a `librepaper` server to your own Codex config. The adapter then skips the one LibrePaper hands it.
+
+## opencode
+
+```sh
+# Log in to a model provider before first use
+opencode auth login
+```
+
 > **Warning:** An agent reading a shared document reads text anyone with edit access wrote, so treat it as acting on their instructions too.

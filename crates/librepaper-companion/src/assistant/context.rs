@@ -32,8 +32,8 @@ pub(super) fn instructions(directory: &Path) -> Result<String, String> {
          proofread or rewrite authorizes proposing tracked changes, not direct application. \
          Never claim a tracked change is accepted, and never claim successful compilation without a matching \
          document_result receipt or render result. \
-         For multi-change publication, always use independent batch items; private staging alone may use one \
-         atomic multi-patch candidate. Treat uncertain writes as unknown: a tool call that reports its outcome \
+         Several patches published together land as one pass, all or none; batch: independent applies to \
+         private staging only. Treat uncertain writes as unknown: a tool call that reports its outcome \
          as unknown has already been checked once on your behalf, and repeating it under new arguments cannot \
          make it safe. A bounded reread may refresh expired \
          read context while preserving the intended occurrence; never replay an uncertain write. If supplied \
@@ -75,8 +75,8 @@ mod tests {
         assert!(text.contains("plain-prose answer"));
         assert!(text.contains("uncertain writes as unknown"));
         assert!(text.contains("editor role ceiling"));
-        assert!(text.contains("independent batch items"));
-        assert!(text.contains("private staging alone may use one"));
+        assert!(text.contains("batch: independent applies to"));
+        assert!(!text.contains("always use independent batch items"));
         assert!(!text.contains("when outcomes may stand separately"));
         // The writing rules still travel with the session.
         assert!(text.contains("document_propose"));

@@ -67,17 +67,16 @@
   let assistant = $state({ running: false, agent: "", access: "" });
   const paired = Boolean(local.desktop());
   const chosenInstalled = $derived(installed.find((entry) => entry.id === chosenAgent) || null);
-  // The four access levels, as a choice rather than four commands: each row
-  // carries its own explanation, so the panel never defines them twice.
-  // No read-only level. The document's MCP surface admits a commenter at
-  // minimum and answers a reader link with a flat 404 (server/mcp.rs), so an
-  // assistant on a read link starts, receives no tools at all and cannot say
-  // why. Offering a level the product cannot serve is worse than not offering
-  // it: Comment is the narrowest that works, and it still writes nothing the
-  // reader has not accepted.
+  // The access levels, as a choice rather than commands: each row carries its
+  // own explanation, so the panel never defines them twice. There is no
+  // read-only level. The document's MCP surface admits a commenter at minimum
+  // and answers a reader link with a flat 404 (server/mcp.rs), so an assistant
+  // on a read link would start with no tools and could not say why. Comment is
+  // the narrowest level that works, and it writes only comments. Edit is needed
+  // for tracked changes.
   const roles = [
-    { id: "commenter", label: "Comment", help: "Read and comment" },
-    { id: "editor", label: "Edit", help: "Apply source changes when asked", warn: true },
+    { id: "commenter", label: "Comment", help: "Read and comment. Cannot change text" },
+    { id: "editor", label: "Edit", help: "Make tracked changes and apply edits when asked", warn: true },
   ];
   const currentRole = $derived.by(() => !caps.verified ? "" : caps.can_edit ? "editor" : caps.can_comment ? "commenter" : caps.can_read ? "reader" : "");
   // Without sharing rights the panel can only hand out the access the reader
@@ -208,29 +207,9 @@
     return `${mins}:${secs.toString().padStart(2, '0')}`;
   }
 
-  // The model the running agent offers to choose, when it offers one. Its pick
-  // is remembered per agent and re-applied to each new session of that agent.
-  const modelOption = $derived((connection.agentOptions || []).find((option) => option.category === "model") || null);
-  const modelName = $derived(modelOption?.choices?.find((choice) => choice.value === modelOption.current)?.name || "");
-  const modelKey = () => `librepaper.agent.model.${assistant.agent || chosenAgent}`;
-  let modelApplied = "";
-  $effect(() => {
-    if (!modelOption) { modelApplied = ""; return; }
-    const wanted = lastUsed(modelKey());
-    const attempt = `${modelOption.id}=${wanted}`;
-    if (!wanted || wanted === modelOption.current || modelApplied === attempt
-        || !modelOption.choices.some((choice) => choice.value === wanted)) return;
-    modelApplied = attempt;
-    void client.setOption(modelOption.id, wanted);
-  });
-  function chooseModel(value) {
-    rememberLastUsed(modelKey(), value);
-    void client.setOption(modelOption.id, value);
-  }
-
   const progress = $derived(
     activeTask?.status === "working"
-      ? `${runningLabel}${modelName ? ` · ${modelName}` : ""} ·${humanizeTool(activeTask.message) || 'Working'}… · ${formatElapsed(elapsedTime)}`
+      ? `${runningLabel} ·${humanizeTool(activeTask.message) || 'Working'}… · ${formatElapsed(elapsedTime)}`
       : activeTask?.status === "needs_input" ? "Waiting for permission" : "");
 
   function validDocumentLink() {
@@ -334,7 +313,7 @@
     const agentToken = await mintAgentGrant(agentLink || link);
     const answer = await local.startAssistant({
       link: agentLink || link, conversation: connection.id,
-      chatToken: connection.token, agentToken, agent: chosenAgent,
+      chatToken: connection.token, agentToken, agent: chosenAgent, access: mode,
     });
     if (!answer?.running) throw new Error(answer?.error || "The assistant did not start.");
     assistant = { running: true, agent: chosenAgent, access: mode };
@@ -669,11 +648,11 @@
     </div>
   {/snippet}
   <!-- The gear at the top of each pane is the one way to the desktop app
-       settings now; the Chat pane also gets Clear conversation beside it. -->
+       settings now; the Chat pane also gets New conversation beside it. -->
   {#snippet paneHeader(withNewConversation)}
     <div class="pane-header">
       {#if withNewConversation && connection.id}
-        <IconButton icon="eraser" label="Clear conversation" tone="plain" size="btn-icon-sm"
+        <IconButton icon="eraser" label="New conversation" tone="plain" size="btn-icon-sm"
                     disabled={busy} onclick={() => void newConversation()} />
       {/if}
       <IconButton icon="sliders" label="Desktop app settings" tone="plain" size="btn-icon-sm"
@@ -771,8 +750,7 @@
   {/if}
   <!-- Which agent, with what access: one quiet line, since both nearly always
        stay as they were last time. Sending starts the agent; changing either
-       while it runs restarts it; the model, when the agent offers one,
-       changes in place. -->
+       while it runs restarts it. -->
   <div class="agent-settings">
     {#if installed.length}
       <select class="agent-setting" aria-label="Agent" disabled={busy} value={chosenAgent}
@@ -784,13 +762,6 @@
               onchange={(event) => void choose(() => access = event.currentTarget.value)}>
         {#each roles as entry}<option value={entry.id} disabled={!roleOffered(entry)} title={entry.help}>{entry.label}</option>{/each}
       </select>
-      {#if modelOption}
-        <span aria-hidden="true">·</span>
-        <select class="agent-setting" aria-label="Model" disabled={busy} value={modelOption.current}
-                onchange={(event) => chooseModel(event.currentTarget.value)}>
-          {#each modelOption.choices as choice (choice.value)}<option value={choice.value}>{choice.name}</option>{/each}
-        </select>
-      {/if}
     {:else}
       <span>No supported coding agent was found on this computer.</span>
     {/if}
@@ -903,7 +874,7 @@
   .agent-panel :global([role="tabpanel"]) { overflow-y:auto; gap:calc(var(--spacing) * 2); }
   .agent-panel :global(#agent-pane-chat) { overflow:hidden; }
   .agent-panel > :global(p[role="alert"]) { padding-inline:var(--panel-padding); }
-  /* The gear (and, in Chat, Clear conversation) sits above everything else in
+  /* The gear (and, in Chat, New conversation) sits above everything else in
      its pane, aligned right: it is upkeep, not the point of the pane. */
   .pane-header { display:flex; justify-content:flex-end; gap:calc(var(--spacing) * .5); }
   .chat-history { display:flex; flex:1 1 0; min-height:0; flex-direction:column; gap:calc(var(--spacing) * 2); overflow-y:auto; }
