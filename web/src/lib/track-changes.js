@@ -613,7 +613,8 @@ export function listChanges(doc) {
   const out = [];
   const seen = new Set();
   for (const [, value] of doc.getMap(CHANGES).entries()) {
-    const file = value instanceof LoroMap ? value.get("file") : undefined;
+    // Legacy records are plain values and name their file too.
+    const file = value instanceof LoroMap ? value.get("file") : /** @type {any} */ (value)?.file;
     if (typeof file !== "string" || seen.has(file)) continue;
     seen.add(file);
     const text = fileText(doc, file);

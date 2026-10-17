@@ -1060,4 +1060,17 @@ function twoPeers(variant) {
 twoPeers("apart");
 twoPeers("touching");
 
+
+// A document whose only records are legacy ones still lists them, and listing
+// converts nothing.
+{
+  const doc = makeDoc("ae");
+  const text = doc.getMap("files").get("f1");
+  doc.getMap(CHANGES).set("alice", { file: "f1", who: "alice", author: "Alice", at: 1, run: null, start: text.getCursor(1, -1).encode(), end: null, deleted: "c" });
+  doc.commit();
+  const rows = listChanges(doc);
+  assert.deepEqual(rows.map((r) => [r.file, r.who, r.deleted, r.inserted]), [["f1", "alice", "c", ""]]);
+  assert.equal([...doc.getMap(CHANGES).values()].every((v) => !(v instanceof LoroMap)), true);
+}
+
 console.log("track-changes: ok");
