@@ -351,9 +351,9 @@ fn plan_one(
                 push_fragment(target, change, &f.text);
             }
         }
-        if let Some(m) = &mine {
+        if let (Some(m), Some(ch)) = (&mine, cur.get(p)) {
             if p < et && span_end_at(&changes, p).is_none() {
-                push_fragment(&mut merged, &m.id, &cur[p].to_string());
+                push_fragment(&mut merged, &m.id, &ch.to_string());
             }
         }
     }
@@ -1685,9 +1685,12 @@ mod tests {
         }
     }
 
-    /// Nested deletions: (start, edits as (from, len, insert)). Edit i is made
-    /// by `author_for(i)`.
-    const SHAPES: &[(&str, &[(usize, usize, &str)])] = &[
+    /// A start text and its edits as (from, len, insert). Edit i is made by
+    /// `author_for(i)`.
+    type Shape = (&'static str, &'static [(usize, usize, &'static str)]);
+
+    /// Nested deletions.
+    const SHAPES: &[Shape] = &[
         ("abcde", &[(2, 1, ""), (1, 2, ""), (0, 1, "")]),
         ("abcde", &[(2, 1, "X"), (1, 3, ""), (0, 1, "")]),
         ("abcdefg", &[(3, 1, ""), (2, 3, ""), (1, 2, ""), (0, 1, "")]),
