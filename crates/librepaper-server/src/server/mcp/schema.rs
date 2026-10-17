@@ -33,7 +33,8 @@ const EDITOR_TOOLS: [&str; 2] = ["document_propose", "document_apply"];
 
 /// The tools a caller may be offered: every served tool when `editor` is
 /// true, and every served tool except `EDITOR_TOOLS` when it is not. A
-/// Commenter gets read, comment and result only.
+/// Commenter gets read, comment and result only, and the comment tool without
+/// the `label` action, which the server also refuses below Editor.
 pub(super) fn served_tools(editor: bool) -> Vec<Value> {
     all_served_tools()
         .iter()
@@ -43,8 +44,32 @@ pub(super) fn served_tools(editor: bool) -> Vec<Value> {
                     .as_str()
                     .is_some_and(|name| EDITOR_TOOLS.contains(&name))
         })
-        .cloned()
+        .map(|tool| {
+            if editor {
+                tool.clone()
+            } else {
+                commenter_view(tool)
+            }
+        })
         .collect()
+}
+
+/// A Commenter's copy of a tool. Only `document_comment` differs: its
+/// `label` action and the description that mentions labels are removed.
+fn commenter_view(tool: &Value) -> Value {
+    let mut tool = tool.clone();
+    if tool["name"] == "document_comment" {
+        tool["description"] = Value::from(
+            "Create or reply to comments and resolve threads, conditional on their captured version.",
+        );
+        if let Some(actions) = tool
+            .pointer_mut("/inputSchema/properties/action/enum")
+            .and_then(Value::as_array_mut)
+        {
+            actions.retain(|action| action != "label");
+        }
+    }
+    tool
 }
 
 /// The tools as served to the model: every `$ref` expanded inline, since a
@@ -303,5 +328,27 @@ mod tests {
         assert!(editor.contains(&"document_propose"));
         assert!(editor.contains(&"document_apply"));
         assert_eq!(editor.len(), 5);
+        // Labelling needs Editor: a Commenter's document_comment offers no
+        // `label` action and its description does not mention labels.
+        let comment_for = |editor: bool| {
+            served_tools(editor)
+                .into_iter()
+                .find(|t| t["name"] == "document_comment")
+                .expect("document_comment")
+        };
+        let commenter_comment = comment_for(false);
+        let commenter_actions = commenter_comment["inputSchema"]["properties"]["action"]["enum"]
+            .as_array()
+            .expect("commenter action enum");
+        assert!(!commenter_actions.contains(&json!("label")));
+        let description = commenter_comment["description"]
+            .as_str()
+            .expect("commenter description");
+        assert!(!description.contains("label"), "{description}");
+        let editor_actions = comment_for(true)["inputSchema"]["properties"]["action"]["enum"]
+            .as_array()
+            .cloned()
+            .expect("editor action enum");
+        assert!(editor_actions.contains(&json!("label")));
     }
 }

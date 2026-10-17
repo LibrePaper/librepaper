@@ -39,7 +39,7 @@ Add this entry to `~/.config/mcp/mcp.json`:
 - `keep-alive` makes Pi connect at start, so LibrePaper sees the tools.
 - `directTools` puts the document tools in Pi's own tool list.
 - Use the global file. Pi skips unapproved project servers in the headless mode LibrePaper uses.
-- The macOS `.dmg` does not put `librepaper` on your PATH. Use the absolute path to the `librepaper` binary inside the app as `command`.
+- The macOS `.dmg` does not put `librepaper` on your PATH. Set `command` to `/Applications/LibrePaper.app/Contents/MacOS/librepaper` instead.
 
 ## opencode
 
