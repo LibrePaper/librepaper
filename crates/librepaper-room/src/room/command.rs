@@ -324,7 +324,8 @@ mod tests {
 
     #[test]
     fn an_edit_of_a_comment_names_no_reply() {
-        let frame = format!(r#"{{"type":"edit","comment_id":"{NAMED}","body":"new","temp_id":"t"}}"#);
+        let frame =
+            format!(r#"{{"type":"edit","comment_id":"{NAMED}","body":"new","temp_id":"t"}}"#);
         let Ok(Command::Edit {
             comment_id,
             reply_id,

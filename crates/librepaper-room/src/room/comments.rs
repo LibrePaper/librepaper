@@ -1635,7 +1635,10 @@ impl Room {
     /// `deletable`, which are derived from the row already in hand.
     pub async fn prepare_comment_event(&self, payload: &Value) -> CommentEvent {
         let kind = payload.get("type").and_then(Value::as_str);
-        if !matches!(kind, Some("comment" | "reply" | "delete" | "resolve" | "edit")) {
+        if !matches!(
+            kind,
+            Some("comment" | "reply" | "delete" | "resolve" | "edit")
+        ) {
             return CommentEvent::bare(payload.clone());
         }
         if kind == Some("delete") {

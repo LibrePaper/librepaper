@@ -280,18 +280,18 @@ impl Server {
                     reply.mine = !author.is_empty() && reply.author == author;
                 }
                 write_json(
-                200,
-                &json!({
-                    "version": 1,
-                    "protocol": "librepaper.comments.v1",
-                    "comment_id": comment,
-                    "replies": page.replies,
-                    "next_cursor": page.next.map(|at| librepaper_room::room::comments::encode_cursor(
-                        room.document_id, Some(comment_id), at)),
-                    "complete": page.complete,
-                    "oversize": page.oversize,
-                    "total": page.total,
-                }),
+                    200,
+                    &json!({
+                        "version": 1,
+                        "protocol": "librepaper.comments.v1",
+                        "comment_id": comment,
+                        "replies": page.replies,
+                        "next_cursor": page.next.map(|at| librepaper_room::room::comments::encode_cursor(
+                            room.document_id, Some(comment_id), at)),
+                        "complete": page.complete,
+                        "oversize": page.oversize,
+                        "total": page.total,
+                    }),
                 )
             }
             Err(error) => refused("read replies", &error),

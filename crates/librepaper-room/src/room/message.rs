@@ -436,11 +436,18 @@ mod tests {
         )
         .unwrap();
         assert_eq!(
-            (v.kind(), v.comment_id(), v.reply_id(), v.body(), v.temp_id(), v.request_id()),
+            (
+                v.kind(),
+                v.comment_id(),
+                v.reply_id(),
+                v.body(),
+                v.temp_id(),
+                v.request_id()
+            ),
             ("edit", "c", "r", "new", "t", "q")
         );
-        let v: Message = serde_json::from_str(r#"{"type":"edit","comment_id":"c","body":"new"}"#)
-            .unwrap();
+        let v: Message =
+            serde_json::from_str(r#"{"type":"edit","comment_id":"c","body":"new"}"#).unwrap();
         assert_eq!(v.reply_id(), "");
     }
 
