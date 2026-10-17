@@ -98,19 +98,109 @@ const EDITOR_TOOLS: [&str; 2] = ["document_propose", "document_apply"];
 /// `librepaper`.
 const MCP_PREFIX: &str = "mcp__librepaper__";
 
+/// The prefix Codex's adapter puts on a tool title from the MCP server named
+/// `librepaper`.
+const CODEX_PREFIX: &str = "mcp.librepaper.";
+
+/// How many announced tool calls one session remembers.
+const ANNOUNCED_LIMIT: usize = 256;
+
+/// How long a permission request without a title waits for its tool call to
+/// be announced.
+const ANNOUNCE_WAIT: std::time::Duration = std::time::Duration::from_millis(500);
+
+/// The (server, tool) pair each tool call announced in a session update,
+/// keyed by tool call id. Codex's adapter announces the call with its raw
+/// input first and then asks permission with the bare id only.
+#[derive(Default)]
+struct AnnouncedTools(Mutex<std::collections::VecDeque<(String, (String, String))>>);
+
+impl AnnouncedTools {
+    /// Remember the server and tool of an announced call, if its raw input
+    /// names both. The oldest entry is dropped past the limit.
+    fn record(&self, id: &str, raw_input: Option<&serde_json::Value>) {
+        let field = |name: &str| {
+            raw_input
+                .and_then(|raw| raw.get(name))
+                .and_then(serde_json::Value::as_str)
+        };
+        let (Some(server), Some(tool)) = (field("server"), field("tool")) else {
+            return;
+        };
+        let Ok(mut calls) = self.0.lock() else {
+            return;
+        };
+        calls.retain(|(known, _)| known != id);
+        calls.push_back((id.to_owned(), (server.to_owned(), tool.to_owned())));
+        while calls.len() > ANNOUNCED_LIMIT {
+            calls.pop_front();
+        }
+    }
+
+    fn get(&self, id: &str) -> Option<(String, String)> {
+        let calls = self.0.lock().ok()?;
+        calls
+            .iter()
+            .find(|(known, _)| known == id)
+            .map(|(_, call)| call.clone())
+    }
+
+    /// The LibrePaper document tool a permission request is for. A request
+    /// with no title and no Claude metadata is Codex's bare form, so it
+    /// waits briefly for its announcement, which may still be queued behind
+    /// the request.
+    async fn tool_for(
+        &self,
+        tool_call: &agent_client_protocol::schema::v1::ToolCallUpdate,
+    ) -> Option<&'static str> {
+        let deadline = tokio::time::Instant::now() + ANNOUNCE_WAIT;
+        loop {
+            let announced = self.get(&tool_call.tool_call_id.to_string());
+            if let Some(tool) = librepaper_tool(tool_call, announced.as_ref()) {
+                return Some(tool);
+            }
+            let bare = tool_call.meta.is_none() && tool_call.fields.title.is_none();
+            if !bare || announced.is_some() || tokio::time::Instant::now() >= deadline {
+                return None;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+    }
+}
+
+fn document_tool(name: &str) -> Option<&'static str> {
+    COMMENTER_TOOLS
+        .iter()
+        .chain(EDITOR_TOOLS.iter())
+        .find(|tool| **tool == name)
+        .copied()
+}
+
 /// The LibrePaper document tool a permission request is for, only when the
 /// request proves the tool comes from the `librepaper` MCP server. Claude's
 /// adapter states the server in `_meta.claudeCode.mcpServer.name` and the
-/// tool in `_meta.claudeCode.toolName`. Without that metadata the name must
-/// carry the `mcp__librepaper__` namespace. A bare title such as
+/// tool in `_meta.claudeCode.toolName`. Codex's adapter announces the call
+/// with its server and tool before asking, so `announced` carries that pair
+/// for the request's tool call id. Otherwise the title must carry the
+/// `mcp__librepaper__` or `mcp.librepaper.` namespace. A bare title such as
 /// `document_comment` could belong to any tool, so it goes to the user.
 fn librepaper_tool(
     tool_call: &agent_client_protocol::schema::v1::ToolCallUpdate,
+    announced: Option<&(String, String)>,
 ) -> Option<&'static str> {
     let claude = tool_call
         .meta
         .as_ref()
         .and_then(|meta| meta.get("claudeCode"));
+    if claude.is_none() {
+        if let Some((server, tool)) = announced {
+            return if server == "librepaper" {
+                document_tool(tool)
+            } else {
+                None
+            };
+        }
+    }
     let server = claude
         .and_then(|claude| claude.get("mcpServer"))
         .and_then(|server| server.get("name"))
@@ -122,13 +212,11 @@ fn librepaper_tool(
     let bare = match server {
         Some("librepaper") => name.strip_prefix(MCP_PREFIX).unwrap_or(name),
         Some(_) => return None,
-        None => name.strip_prefix(MCP_PREFIX)?,
+        None => name
+            .strip_prefix(MCP_PREFIX)
+            .or_else(|| name.strip_prefix(CODEX_PREFIX))?,
     };
-    COMMENTER_TOOLS
-        .iter()
-        .chain(EDITOR_TOOLS.iter())
-        .find(|tool| **tool == bare)
-        .copied()
+    document_tool(bare)
 }
 
 /// Whether the access level lets the assistant call this tool unasked.
@@ -437,6 +525,8 @@ impl Agent {
         let ready_tx = Arc::new(Mutex::new(Some(ready_tx)));
         let session_ready = Arc::clone(&ready_tx);
         let permission_events = events_tx.clone();
+        let announced = Arc::new(AnnouncedTools::default());
+        let permission_announced = Arc::clone(&announced);
         let exit_events = events_tx.clone();
 
         let task = tokio::spawn(async move {
@@ -458,22 +548,27 @@ impl Agent {
                             .collect::<Vec<_>>();
                         let options = browser_permission_options(&request.options);
                         let details = permission_details(&request.tool_call);
-                        let tool = librepaper_tool(&request.tool_call);
                         let allow_once = allow_option(&request.options);
-                        permission_events
-                            .send(Event::Permission {
-                                handle: Box::new(Permission {
-                                    responder: std::sync::Mutex::new(responder),
-                                }),
-                                message,
-                                options,
-                                details,
-                                option_ids,
-                                tool,
-                                allow_once,
-                            })
-                            .await
-                            .map_err(|error| agent_client_protocol::Error::internal_error().data(error.to_string()))?;
+                        // The announcement may still be queued behind this
+                        // request, so the lookup runs off the dispatch task.
+                        let events = permission_events.clone();
+                        let announced = Arc::clone(&permission_announced);
+                        tokio::spawn(async move {
+                            let tool = announced.tool_for(&request.tool_call).await;
+                            let _ = events
+                                .send(Event::Permission {
+                                    handle: Box::new(Permission {
+                                        responder: std::sync::Mutex::new(responder),
+                                    }),
+                                    message,
+                                    options,
+                                    details,
+                                    option_ids,
+                                    tool,
+                                    allow_once,
+                                })
+                                .await;
+                        });
                         Ok(())
                     },
                     agent_client_protocol::on_receive_request!(),
@@ -517,8 +612,18 @@ impl Agent {
                                         }
                                         SessionMessage::SessionMessage(dispatch) => {
                                             let tx = events_tx.clone();
+                                            let announced = Arc::clone(&announced);
                                             MatchDispatch::new(dispatch)
                                                 .if_notification(async move |notification: SessionNotification| {
+                                                    match &notification.update {
+                                                        SessionUpdate::ToolCall(call) => {
+                                                            announced.record(&call.tool_call_id.to_string(), call.raw_input.as_ref());
+                                                        }
+                                                        SessionUpdate::ToolCallUpdate(call) => {
+                                                            announced.record(&call.tool_call_id.to_string(), call.fields.raw_input.as_ref());
+                                                        }
+                                                        _ => {}
+                                                    }
                                                     let event = match notification.update {
                                                         SessionUpdate::ConfigOptionUpdate(update) => {
                                                             Some(Event::Options(model_options(&update.config_options)))
@@ -713,30 +818,30 @@ mod tests {
             librepaper_tool(&tool_call(
                 Some("librepaper - document_comment (MCP)"),
                 Some(claude)
-            )),
+            ), None),
             Some("document_comment")
         );
         assert_eq!(
-            librepaper_tool(&tool_call(Some("mcp__librepaper__document_apply"), None)),
+            librepaper_tool(&tool_call(Some("mcp__librepaper__document_apply"), None), None),
             Some("document_apply")
         );
     }
 
     #[test]
     fn unknown_and_foreign_tools_do_not_match() {
-        assert_eq!(librepaper_tool(&tool_call(Some("Bash"), None)), None);
-        assert_eq!(librepaper_tool(&tool_call(None, None)), None);
+        assert_eq!(librepaper_tool(&tool_call(Some("Bash"), None), None), None);
+        assert_eq!(librepaper_tool(&tool_call(None, None), None), None);
         // A bare title names no server, so any tool could carry it.
         assert_eq!(
-            librepaper_tool(&tool_call(Some("document_read"), None)),
+            librepaper_tool(&tool_call(Some("document_read"), None), None),
             None
         );
         assert_eq!(
-            librepaper_tool(&tool_call(Some("mcp__other__document_read"), None)),
+            librepaper_tool(&tool_call(Some("mcp__other__document_read"), None), None),
             None
         );
         assert_eq!(
-            librepaper_tool(&tool_call(Some("document_read please"), None)),
+            librepaper_tool(&tool_call(Some("document_read please"), None), None),
             None
         );
         let foreign = serde_json::json!({"claudeCode": {
@@ -744,9 +849,84 @@ mod tests {
             "mcpServer": {"name": "other", "source": "config"},
         }});
         assert_eq!(
-            librepaper_tool(&tool_call(Some("document_read"), Some(foreign))),
+            librepaper_tool(&tool_call(Some("document_read"), Some(foreign)), None),
             None
         );
+    }
+
+    fn announced(server: &str, tool: &str) -> (String, String) {
+        (server.to_owned(), tool.to_owned())
+    }
+
+    #[test]
+    fn codex_requests_match_through_the_announced_call() {
+        let bare = tool_call(None, None);
+        assert_eq!(
+            librepaper_tool(&bare, Some(&announced("librepaper", "document_comment"))),
+            Some("document_comment")
+        );
+        assert_eq!(
+            librepaper_tool(&bare, Some(&announced("other", "document_comment"))),
+            None
+        );
+        assert_eq!(
+            librepaper_tool(&bare, Some(&announced("librepaper", "Bash"))),
+            None
+        );
+        assert_eq!(librepaper_tool(&bare, None), None);
+    }
+
+    #[test]
+    fn codex_namespaced_title_matches_exactly() {
+        assert_eq!(
+            librepaper_tool(&tool_call(Some("mcp.librepaper.document_apply"), None), None),
+            Some("document_apply")
+        );
+        assert_eq!(
+            librepaper_tool(&tool_call(Some("mcp.other.document_apply"), None), None),
+            None
+        );
+        assert_eq!(
+            librepaper_tool(&tool_call(Some("mcp.librepaper.document_apply x"), None), None),
+            None
+        );
+    }
+
+    #[test]
+    fn announced_tools_are_bounded_and_need_both_fields() {
+        let calls = AnnouncedTools::default();
+        let raw = |tool: &str| serde_json::json!({"server": "librepaper", "tool": tool});
+        for index in 0..ANNOUNCED_LIMIT + 1 {
+            calls.record(&format!("call-{index}"), Some(&raw("document_read")));
+        }
+        assert_eq!(calls.get("call-0"), None);
+        assert_eq!(
+            calls.get("call-1"),
+            Some(announced("librepaper", "document_read"))
+        );
+        calls.record("partial", Some(&serde_json::json!({"server": "librepaper"})));
+        calls.record("none", None);
+        assert_eq!(calls.get("partial"), None);
+        assert_eq!(calls.get("none"), None);
+    }
+
+    #[tokio::test]
+    async fn bare_request_waits_for_a_late_announcement() {
+        let calls = Arc::new(AnnouncedTools::default());
+        let late = Arc::clone(&calls);
+        tokio::spawn(async move {
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+            late.record(
+                "call-1",
+                Some(&serde_json::json!({"server": "librepaper", "tool": "document_read"})),
+            );
+        });
+        assert_eq!(
+            calls.tool_for(&tool_call(None, None)).await,
+            Some("document_read")
+        );
+        let never = AnnouncedTools::default();
+        assert_eq!(never.tool_for(&tool_call(None, None)).await, None);
     }
 
     #[test]

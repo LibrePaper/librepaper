@@ -41,6 +41,18 @@ Add this entry to `~/.config/mcp/mcp.json`:
 - Use the global file. Pi skips unapproved project servers in the headless mode LibrePaper uses.
 - The macOS `.dmg` does not put `librepaper` on your PATH. Set `command` to `/Applications/LibrePaper.app/Contents/MacOS/librepaper` instead.
 
+## Codex
+
+Codex runs through the `@agentclientprotocol/codex-acp` adapter. The app fetches it with `npx` when it is not installed.
+
+```sh
+# Log in to Codex before first use
+codex login
+```
+
+- LibrePaper starts the adapter in workspace-write mode, so your Access choice decides which document tools run without asking.
+- Do not add a `librepaper` server to your own Codex config. The adapter then skips the one LibrePaper hands it.
+
 ## opencode
 
 ```sh
