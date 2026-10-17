@@ -31,11 +31,8 @@ use crate::automation::peer::AutomationPeer;
 
 /// The tools every assistant session needs. A Commenter is served only these;
 /// `document_propose` and `document_apply` are offered to an Editor alone.
-const REQUIRED_ASSISTANT_TOOLS: [&str; 3] = [
-    "document_read",
-    "document_comment",
-    "document_result",
-];
+const REQUIRED_ASSISTANT_TOOLS: [&str; 3] =
+    ["document_read", "document_comment", "document_result"];
 
 /// The tools whose arguments need an operation identity injected. The served
 /// schemas omit `operation` entirely, so a model never sees or mints one.

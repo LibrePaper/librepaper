@@ -503,7 +503,9 @@ mod tests {
         // tools are this session's only route to the document, so a silent
         // assistant is the failure mode that warning exists to prevent.
         let pi = KINDS.iter().find(|kind| kind.id == "pi").expect("pi");
-        assert!(pi.acp_note.is_some_and(|note| note.contains("pi-mcp-adapter")));
+        assert!(pi
+            .acp_note
+            .is_some_and(|note| note.contains("pi-mcp-adapter")));
         // opencode speaks ACP natively and takes MCP servers from the client,
         // so it needs no adapter, no fetch and no caveat.
         let opencode = KINDS

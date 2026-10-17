@@ -13,10 +13,11 @@ use std::sync::{Arc, Mutex};
 use agent_client_protocol::schema::{
     v1::{
         CancelNotification, ContentBlock, InitializeRequest, McpServer, McpServerStdio,
-        NewSessionRequest, PermissionOption, PermissionOptionId, PermissionOptionKind, RequestPermissionOutcome,
-        RequestPermissionRequest, RequestPermissionResponse, SelectedPermissionOutcome,
-        SessionConfigKind, SessionConfigOption, SessionConfigOptionCategory,
-        SessionConfigSelectOptions, SessionNotification, SessionUpdate, StopReason,
+        NewSessionRequest, PermissionOption, PermissionOptionId, PermissionOptionKind,
+        RequestPermissionOutcome, RequestPermissionRequest, RequestPermissionResponse,
+        SelectedPermissionOutcome, SessionConfigKind, SessionConfigOption,
+        SessionConfigOptionCategory, SessionConfigSelectOptions, SessionNotification,
+        SessionUpdate, StopReason,
     },
     ProtocolVersion,
 };
@@ -355,9 +356,11 @@ fn login_hint(error: &str, command: &[String]) -> String {
     if !error.to_lowercase().contains("authentication") {
         return error.to_string();
     }
-    let is_pi = command
-        .iter()
-        .any(|part| Path::new(part).file_stem().is_some_and(|name| name == "pi-acp"));
+    let is_pi = command.iter().any(|part| {
+        Path::new(part)
+            .file_stem()
+            .is_some_and(|name| name == "pi-acp")
+    });
     let step = if is_pi {
         "run `pi` in a terminal and type /login"
     } else {
@@ -708,7 +711,10 @@ mod tests {
             "mcpServer": {"name": "librepaper", "source": "config"},
         }});
         assert_eq!(
-            librepaper_tool(&tool_call(Some("librepaper - document_comment (MCP)"), Some(claude))),
+            librepaper_tool(&tool_call(
+                Some("librepaper - document_comment (MCP)"),
+                Some(claude)
+            )),
             Some("document_comment")
         );
         assert_eq!(
