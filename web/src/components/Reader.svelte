@@ -441,7 +441,15 @@
         if (!range) continue;
         start = end = range.end;
       }
-      changeMarks.push({ id: row.id, start, end, deleted: row.before, author: row.author });
+      // The viewer's own insertion grows as they type, so its mark grows too.
+      changeMarks.push({
+        id: row.id,
+        start,
+        end,
+        deleted: row.before,
+        author: row.author,
+        grow: inserted && row.who === trackingMe.who,
+      });
     }
   }
   $effect(() => {
@@ -505,6 +513,7 @@
 
   function reanchor() {
     if (!frameReady || !commentsReady || docText === null) return;
+    settleReview();
     anchorComments(comments);
     anchorChanges();
     annotations.publish();
@@ -959,7 +968,20 @@
   let changesUnsubscribe = null;
   function refreshReview() {
     clearTimeout(reviewTimer);
-    reviewTimer = setTimeout(recomputeChanges, REVIEW_COALESCE_MS);
+    reviewTimer = setTimeout(() => {
+      reviewTimer = null;
+      recomputeChanges();
+    }, REVIEW_COALESCE_MS);
+  }
+
+  /// Settle the rows at once rather than after the pause. The frame has just
+  /// published new text, and marks drawn from rows that lag it would leave the
+  /// words just typed unmarked until the pause ends.
+  function settleReview() {
+    if (reviewTimer === null) return;
+    clearTimeout(reviewTimer);
+    reviewTimer = null;
+    recomputeChanges();
   }
 
   // Whether what this browser types is recorded as a pending change. The
