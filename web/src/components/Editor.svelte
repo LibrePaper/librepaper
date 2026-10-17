@@ -757,6 +757,11 @@
     const tree = treeForDoc(doc);
     const mainPath = tree.main || path;
     const mainText = tree.texts?.[mainPath] || "";
+    // The stable container behind each path, kept beside the target rather than
+    // in the context. applyInsertResult compares against it, so a path that
+    // names a different file by the time the dialog applies is refused.
+    target.fileIds = new Map(Object.keys(tree.texts || {}).map(filePath => [filePath, textIdForPath(doc, filePath)]));
+    if (path) target.fileIds.set(path, showing);
     return {
       format: insertFormat,
       path,
@@ -841,6 +846,10 @@
       if (!Number.isInteger(edit?.from) || !Number.isInteger(edit?.to) || typeof edit.insert !== "string") return false;
       const path = edit.path || capturedContext.path;
       const fileId = textIdForPath(doc, path);
+      // A path can name a different file by the time the dialog applies: a
+      // collaborator may have renamed the file away and created another at the
+      // same path. Refuse the whole insertion rather than redirect the edit.
+      if (target.fileIds.get(path) !== fileId) return false;
       const fileText = getTextFromDoc(fileId);
       const snapshot = path === capturedContext.path ? capturedContext.text : capturedContext.files?.find(file => file.path === path)?.text;
       if (!fileText || typeof snapshot !== "string" || edit.from < 0 || edit.to < edit.from || edit.to > snapshot.length) return false;
