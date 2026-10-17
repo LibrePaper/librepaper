@@ -29,13 +29,10 @@ use serde_json::{json, Value};
 use crate::assistant::journal as runner_journal;
 use crate::automation::peer::AutomationPeer;
 
-const REQUIRED_ASSISTANT_TOOLS: [&str; 5] = [
-    "document_read",
-    "document_propose",
-    "document_apply",
-    "document_comment",
-    "document_result",
-];
+/// The tools every assistant session needs. A Commenter is served only these;
+/// `document_propose` and `document_apply` are offered to an Editor alone.
+const REQUIRED_ASSISTANT_TOOLS: [&str; 3] =
+    ["document_read", "document_comment", "document_result"];
 
 /// The tools whose arguments need an operation identity injected. The served
 /// schemas omit `operation` entirely, so a model never sees or mints one.
@@ -339,9 +336,14 @@ mod tests {
             "document_result",
         ];
         assert!(missing_assistant_tools(all).is_empty());
+        assert!(
+            missing_assistant_tools(["document_read", "document_comment", "document_result"])
+                .is_empty(),
+            "a commenter's reduced list is accepted"
+        );
         assert_eq!(
-            missing_assistant_tools(all.into_iter().filter(|name| *name != "document_apply")),
-            ["document_apply"]
+            missing_assistant_tools(["document_read", "document_result"]),
+            ["document_comment"]
         );
     }
 

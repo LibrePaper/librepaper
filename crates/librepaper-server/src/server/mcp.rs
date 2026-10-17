@@ -267,13 +267,17 @@ impl Server {
         // written against the source it quotes; every mutation is gated per
         // tool below, so a commenter reaches comments and nothing that
         // touches source. A reader cannot use it at all, through a link or
-        // an ambient signed-in identity.
+        // an ambient signed-in identity. A commenter is also offered only
+        // the tools it can call, so it never sees the editor-only ones.
         if !who.at_least(Role::Commenter) || !self.may_read(&entry, &who) {
             return plain(404, "not found");
         }
         let mut reply = write_json(
             200,
-            &json!({"instructions": INSTRUCTIONS, "tools": schema::served_tools()}),
+            &json!({
+                "instructions": INSTRUCTIONS,
+                "tools": schema::served_tools(who.at_least(Role::Editor)),
+            }),
         );
         set(&mut reply, "cache-control", "no-store");
         reply

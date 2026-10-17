@@ -81,6 +81,12 @@ pub(super) async fn handle_assistant_start(
             &json!({"error": "sign in to authorize the local assistant"}),
         );
     }
+    if !matches!(body.access.as_str(), "commenter" | "editor") {
+        return write_json(
+            400,
+            &json!({"error": "access must be \"commenter\" or \"editor\""}),
+        );
+    }
     // An agent that cannot be driven is reported as such rather than silently
     // replaced by a different one. Which model runs is the user's choice, and
     // substituting it quietly would be the opposite of bringing your own.
@@ -101,6 +107,7 @@ pub(super) async fn handle_assistant_start(
             &body.agent_token,
             &command,
             &environment,
+            &body.access,
         )
         .await
     {

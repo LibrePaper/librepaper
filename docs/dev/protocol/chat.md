@@ -58,8 +58,6 @@ task execution, durable task state, and reconnect recovery.
 | `cancel` | browser → agent | Requests cancellation by `task_id`. The runner reports the actual outcome; cancellation does not undo accepted document edits. |
 | `input` | browser → agent | Responds to a pending input with matching `task_id` and `request_id`, an offered option, or `{ "cancelled": true }`. |
 | `capabilities` | agent → browser | Boolean flags describing supported controls. |
-| `options` | agent → browser | Current runner options. |
-| `set_option` | browser → agent | Sets an option by `option` and `value`. |
 | `preview_request` | agent → browser | Requests candidate rendering by identity and revision; source is fetched separately. |
 | `preview_result` | browser → agent | Returns result for a known preview request, with matching request/task and revision IDs and bounded diagnostics. |
 
@@ -106,9 +104,9 @@ The runner's preview request carries `candidate_id`, `candidate_token`,
 `task_id`, `base_revision`, and `revision`; the browser's `preview_result`
 echoes the request ID and those revisions with `ok` and `diagnostics`.
 
-Only the agent may send `task`, `answer`, `capabilities`, `options`, and
-`preview_request`. Only the browser may send `cancel`, `input`, `set_option`,
-and `preview_result`. `message` may travel in either direction. The server
+Only the agent may send `task`, `answer`, `capabilities`, and
+`preview_request`. Only the browser may send `cancel`, `input`, and
+`preview_result`. `message` may travel in either direction. The server
 rejects wrong-role events, invalid or oversized values, and delivery without
 a connected recipient.
 

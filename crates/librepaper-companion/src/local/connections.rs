@@ -34,6 +34,15 @@ pub const IDLE_TTL_SECONDS: i64 = 90 * 24 * 3600;
 /// sidebar runner and must use that grant rather than this computer's login.
 pub const GRANT_FILE_VARIABLE: &str = "LIBREPAPER_RUNNER_GRANT_FILE";
 
+/// The variable that names the runner record `librepaper mcp` serves when no
+/// `--connection` is given.
+pub const CONNECTION_VARIABLE: &str = "LIBREPAPER_MCP_CONNECTION";
+
+/// The variable that points `librepaper mcp` at the companion's state home,
+/// where connections.json lives. It takes precedence over the XDG default so
+/// the agent's own XDG_STATE_HOME is never touched.
+pub const STATE_HOME_VARIABLE: &str = "LIBREPAPER_BRIDGE_STATE_HOME";
+
 /// One document an agent on this computer may reach.
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 pub struct Connection {

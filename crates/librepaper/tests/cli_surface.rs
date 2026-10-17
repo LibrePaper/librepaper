@@ -124,9 +124,8 @@ fn local_start_flags_are_correct() {
     assert!(!help.contains("--tool-path"), "{help}");
 }
 
-/// `librepaper mcp` accepts only `--connection NAME`; a bare positional link
-/// is no longer a way to invoke it, since the local service (the only thing that
-/// ever passes credentials to a session) always names a connection.
+/// `librepaper mcp` takes no positional link. Without `--connection` it needs
+/// `LIBREPAPER_MCP_CONNECTION` and otherwise fails with a clear message.
 #[test]
 fn mcp_requires_a_connection_and_rejects_a_bare_link() {
     assert!(
@@ -135,9 +134,15 @@ fn mcp_requires_a_connection_and_rejects_a_bare_link() {
             .success(),
         "mcp with a positional link should fail to parse"
     );
+    let output = Command::new(env!("CARGO_BIN_EXE_librepaper"))
+        .args(["mcp"])
+        .env_remove("LIBREPAPER_MCP_CONNECTION")
+        .output()
+        .expect("CLI starts");
+    assert!(!output.status.success());
     assert!(
-        !cli(&["mcp"]).status.success(),
-        "mcp with no --connection should fail to parse"
+        String::from_utf8_lossy(&output.stderr).contains("LIBREPAPER_MCP_CONNECTION"),
+        "{output:?}"
     );
 }
 
