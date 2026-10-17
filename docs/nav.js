@@ -46,5 +46,6 @@ export const nav = [
   },
   { path: "migration", label: "Migration" },
   { path: "privacy", label: "Privacy and data retention" },
+  { path: "faq", label: "FAQ" },
   { path: "contact", label: "Contact" },
 ];
