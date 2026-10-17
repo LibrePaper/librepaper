@@ -21,7 +21,7 @@ use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 
 use loro::{
     cursor::{Cursor, PosType, Side},
-    Container, ContainerTrait, LoroDoc, LoroText, LoroValue, ValueOrContainer,
+    Container, ContainerTrait, LoroDoc, LoroMap, LoroText, LoroValue, ValueOrContainer,
 };
 
 use crate::document::session::{apply_text_edits, Edit, CHANGES, FILES};
@@ -44,25 +44,39 @@ pub struct ChangeRecord {
     /// Code point offsets of the inserted text, `from <= to`.
     pub from: usize,
     pub to: usize,
+    /// A foreign span this edit emptied. It stays in the plan with `from == to`
+    /// so that it is kept rather than treated as gone; it is never written.
+    pub emptied: bool,
+    /// Its stored cursors resolve to a replaced character. Set by the reader.
+    pub stale: bool,
 }
 
-/// Original text deleted by one change, as it sits in a gap.
-#[derive(Clone, Debug, PartialEq, Eq)]
+/// Original text deleted by one change, as it sits in a gap. Each fragment is
+/// its own record once stored.
+#[derive(Clone, Debug, PartialEq)]
 pub struct Fragment {
+    /// The record's id. `None` for a fragment the planner made and not yet stored.
+    pub id: Option<String>,
     pub change: String,
     pub text: String,
+    /// Order among the fragments at one point. `None` until stored.
+    pub rank: Option<f64>,
+    /// Its cursor resolved to a replaced character. Set by the reader.
+    pub stale: bool,
 }
 
 /// The deleted texts at one point of the text, in document order.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct Gap {
     pub id: String,
     pub at: usize,
     pub fragments: Vec<Fragment>,
+    /// Some fragment's cursor resolved to a replaced character. Set by the reader.
+    pub stale: bool,
 }
 
 /// The live records of one file, resolved against its text now.
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, PartialEq)]
 pub struct FileState {
     /// Sorted by `(from, to, id)`.
     pub changes: Vec<ChangeRecord>,
@@ -81,11 +95,13 @@ pub enum PlanState {
 }
 
 /// The planned records of one file, in the coordinates of the text after the
-/// batch.
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
+/// batch. `dropped` lists fragment records joined into a neighbour, which are
+/// to be deleted.
+#[derive(Clone, Debug, Default, PartialEq)]
 pub struct Plan {
     pub changes: Vec<(ChangeRecord, PlanState)>,
     pub gaps: Vec<(Gap, PlanState)>,
+    pub dropped: Vec<String>,
 }
 
 /// A pending change with its span resolved to offsets in the text now, and
@@ -145,6 +161,7 @@ pub fn plan_edits(
     let mut removed_changes: BTreeMap<String, Row> = BTreeMap::new();
     let mut removed_gaps: BTreeMap<String, GapRow> = BTreeMap::new();
     let mut adj: isize = 0;
+    let mut dropped: Vec<String> = Vec::new();
 
     for (from, to, insert) in edits {
         let ef = (*from as isize + adj) as usize;
@@ -164,6 +181,7 @@ pub fn plan_edits(
             run,
             now_ms,
             untracked,
+            &mut dropped,
             mint,
         );
         for (c, _) in &changes {
@@ -199,6 +217,7 @@ pub fn plan_edits(
     Plan {
         changes: out_changes,
         gaps: out_gaps,
+        dropped,
     }
 }
 
@@ -215,12 +234,29 @@ fn span_end_at(changes: &[Row], p: usize) -> Option<usize> {
         .map(|(c, _)| c.to)
 }
 
-fn push_fragment(list: &mut Vec<Fragment>, change: &str, text: &str) {
+/// Appends `text` owned by `change`, joining it to the last fragment when that
+/// one has the same owner. The record id of a fragment joined away is reported
+/// in `dropped`.
+fn push_fragment(
+    list: &mut Vec<Fragment>,
+    change: &str,
+    text: &str,
+    id: Option<&str>,
+    dropped: &mut Vec<String>,
+) {
     match list.last_mut() {
-        Some(last) if last.change == change => last.text.push_str(text),
+        Some(last) if last.change == change => {
+            last.text.push_str(text);
+            if let Some(id) = id {
+                dropped.push(id.to_string());
+            }
+        }
         _ => list.push(Fragment {
+            id: id.map(str::to_string),
             change: change.to_string(),
             text: text.to_string(),
+            rank: None,
+            stale: false,
         }),
     }
 }
@@ -253,6 +289,7 @@ fn plan_one(
     run: Option<&str>,
     now: i64,
     untracked: bool,
+    dropped: &mut Vec<String>,
     mint: &mut dyn FnMut() -> String,
 ) -> (Vec<Row>, Vec<GapRow>) {
     let len = insert.len();
@@ -308,6 +345,7 @@ fn plan_one(
             Some(c) => ChangeRecord {
                 run: run.map(str::to_string).or_else(|| c.run.clone()),
                 at: now,
+                emptied: false,
                 ..c.clone()
             },
             None => ChangeRecord {
@@ -318,6 +356,8 @@ fn plan_one(
                 at: now,
                 from: ef,
                 to: ef,
+                emptied: false,
+                stale: false,
             },
         });
     }
@@ -365,12 +405,12 @@ fn plan_one(
                 } else {
                     &mut merged
                 };
-                push_fragment(target, change, &f.text);
+                push_fragment(target, change, &f.text, f.id.as_deref(), dropped);
             }
         }
         if let (Some(m), Some(ch)) = (&mine, cur.get(p)) {
             if p < et && span_end_at(&changes, p).is_none() {
-                push_fragment(&mut merged, &m.id, &ch.to_string());
+                push_fragment(&mut merged, &m.id, &ch.to_string(), None, dropped);
             }
         }
     }
@@ -382,18 +422,35 @@ fn plan_one(
         if mine.is_some() && owned.contains(&c.id) {
             continue;
         }
-        if !has_span(c) || c.to <= ef {
+        if !has_span(c) {
             out.push((c.clone(), *st));
             continue;
         }
+        // A span whose boundary sits exactly at an insertion point is written
+        // again: a cursor left on a deleted character there could drift across
+        // the new text, and the write re-pins it only if it did.
+        if c.to <= ef {
+            let state = if len > 0 && c.to == ef {
+                PlanState::Set
+            } else {
+                *st
+            };
+            out.push((c.clone(), state));
+            continue;
+        }
         if c.from >= et {
+            let state = if len > 0 && c.from == et {
+                PlanState::Set
+            } else {
+                *st
+            };
             out.push((
                 ChangeRecord {
                     from: shift(c.from),
                     to: shift(c.to),
                     ..c.clone()
                 },
-                *st,
+                state,
             ));
             continue;
         }
@@ -435,13 +492,18 @@ fn plan_one(
                 PlanState::Set,
             ));
         } else {
+            // The whole span went from this view. The record stays, untouched:
+            // its author may be extending it at this moment, and a stale cursor
+            // resolves to the right place anyway. It is kept, never written, and
+            // prune drops it later if it is still empty.
             out.push((
                 ChangeRecord {
                     from: ef + len,
                     to: ef + len,
+                    emptied: true,
                     ..c.clone()
                 },
-                PlanState::Set,
+                PlanState::Kept,
             ));
         }
     }
@@ -481,11 +543,11 @@ fn plan_one(
             let mut list: Vec<Fragment> = Vec::new();
             for (g, _) in &there {
                 for f in &g.fragments {
-                    push_fragment(&mut list, &f.change, &f.text);
+                    push_fragment(&mut list, &f.change, &f.text, f.id.as_deref(), dropped);
                 }
             }
             for f in &merged {
-                push_fragment(&mut list, &f.change, &f.text);
+                push_fragment(&mut list, &f.change, &f.text, f.id.as_deref(), dropped);
             }
             out_gaps.retain(|(g, _)| g.at != pos);
             out_gaps.push((
@@ -502,6 +564,7 @@ fn plan_one(
                     id,
                     at: pos,
                     fragments: merged,
+                    stale: false,
                 },
                 PlanState::Set,
             ));
@@ -514,6 +577,7 @@ fn plan_one(
                 id,
                 at: ef + len,
                 fragments: after,
+                stale: false,
             },
             PlanState::Set,
         ));
@@ -537,7 +601,7 @@ fn plan_one(
                 } else {
                     f.change.as_str()
                 };
-                push_fragment(&mut list, change, &f.text);
+                push_fragment(&mut list, change, &f.text, f.id.as_deref(), dropped);
             }
             g.fragments = list;
             *st = PlanState::Set;
@@ -552,7 +616,7 @@ fn plan_one(
         .collect();
     let mut live: Vec<Row> = out
         .into_iter()
-        .filter(|(c, _)| has_span(c) || referenced.contains(&c.id))
+        .filter(|(c, _)| has_span(c) || referenced.contains(&c.id) || c.emptied)
         .collect();
     live.sort_by_key(|(c, _)| (c.from, c.to));
     out_gaps.sort_by_key(|(g, _)| g.at);
@@ -573,58 +637,64 @@ fn plan_one(
     (live, out_gaps)
 }
 
-/// The raw entry `id` in the `changes` root, when it is a map.
-fn record(doc: &LoroDoc, id: &str) -> Option<loro::LoroMapValue> {
-    match doc.get_map(CHANGES).get(id)? {
-        ValueOrContainer::Value(LoroValue::Map(m)) => Some(m),
+/// The record `id` of the `changes` root, when it is a map container.
+fn record_map(root: &LoroMap, id: &str) -> Option<LoroMap> {
+    match root.get(id)? {
+        ValueOrContainer::Container(Container::Map(m)) => Some(m),
         _ => None,
     }
 }
 
-fn record_ids(doc: &LoroDoc) -> Vec<String> {
-    doc.get_map(CHANGES).keys().map(|k| k.to_string()).collect()
+/// Every map record of the `changes` root. Plain values are left out.
+fn records(doc: &LoroDoc) -> Vec<(String, LoroMap)> {
+    let root = doc.get_map(CHANGES);
+    let ids: Vec<String> = root.keys().map(|k| k.to_string()).collect();
+    ids.into_iter()
+        .filter_map(|id| record_map(&root, &id).map(|m| (id, m)))
+        .collect()
 }
 
-fn text_of(doc: &LoroDoc, file_id: &str) -> Option<LoroText> {
-    match doc.get_map(FILES).get(file_id)? {
-        ValueOrContainer::Container(Container::Text(t)) => Some(t),
-        _ => None,
-    }
-}
-
-fn string_field(m: &loro::LoroMapValue, key: &str) -> Option<String> {
+fn str_of(m: &LoroMap, key: &str) -> Option<String> {
     match m.get(key)? {
-        LoroValue::String(s) => Some(s.to_string()),
+        ValueOrContainer::Value(LoroValue::String(s)) => Some(s.to_string()),
         _ => None,
     }
 }
 
-fn bytes_field(m: &loro::LoroMapValue, key: &str) -> Option<Vec<u8>> {
+fn bytes_of(m: &LoroMap, key: &str) -> Option<Vec<u8>> {
     match m.get(key)? {
-        LoroValue::Binary(b) => Some(b.to_vec()),
+        ValueOrContainer::Value(LoroValue::Binary(b)) => Some(b.to_vec()),
         _ => None,
     }
 }
 
-/// The fragments of a gap record. `None` when the field is not a list;
-/// malformed and empty-text fragments are left out.
-fn fragments_field(m: &loro::LoroMapValue) -> Option<Vec<Fragment>> {
-    let LoroValue::List(items) = m.get("fragments")? else {
-        return None;
+/// A number field. The browser writes JS numbers, which Loro stores as doubles.
+fn num_of(m: &LoroMap, key: &str) -> Option<f64> {
+    match m.get(key)? {
+        ValueOrContainer::Value(LoroValue::Double(v)) => Some(v),
+        ValueOrContainer::Value(LoroValue::I64(v)) => Some(v as f64),
+        _ => None,
+    }
+}
+
+/// Sets `key` to `value` unless it already holds it.
+fn put(m: &LoroMap, key: &str, value: LoroValue) {
+    let same = match m.get(key) {
+        Some(ValueOrContainer::Value(v)) => v == value,
+        _ => false,
     };
-    Some(
-        items
-            .iter()
-            .filter_map(|item| {
-                let LoroValue::Map(pm) = item else {
-                    return None;
-                };
-                let change = string_field(pm, "change")?;
-                let text = string_field(pm, "text")?;
-                (!text.is_empty()).then_some(Fragment { change, text })
-            })
-            .collect(),
-    )
+    if !same {
+        m.insert(key, value).ok();
+    }
+}
+
+fn run_value(run: Option<&str>) -> LoroValue {
+    run.map_or(LoroValue::Null, LoroValue::from)
+}
+
+/// A fragment's rank. A fragment the planner made has none yet and reads as 0.
+fn rank_of(f: &Fragment) -> f64 {
+    f.rank.unwrap_or(0.0)
 }
 
 /// A cursor resolved to its offset in `text`. `stale` when Loro answered with
@@ -646,127 +716,193 @@ fn cursor_pos(doc: &LoroDoc, text: &LoroText, bytes: &[u8]) -> Option<Pos> {
     })
 }
 
-/// The ids whose cursors came back with a replacement.
-#[derive(Default)]
-struct Stale {
-    changes: HashSet<String>,
-    gaps: HashSet<String>,
+/// Whether two encoded cursors are attached to the same character (or the same
+/// end) on the same side. Compared by what they are attached to, because one
+/// position can encode in more than one way.
+fn same_cursor(a: &[u8], b: &[u8]) -> bool {
+    match (Cursor::decode(a), Cursor::decode(b)) {
+        (Ok(x), Ok(y)) => x.id == y.id && x.side == y.side && x.container == y.container,
+        _ => false,
+    }
 }
 
-/// Resolves the live records of one file against its text now. A change with
-/// no span takes its place from its first fragment; one with neither span nor
-/// fragment is empty and left out. Records without a `kind` are ignored.
-fn resolve_file(doc: &LoroDoc, file_id: &str) -> (FileState, Stale) {
-    let mut stale = Stale::default();
+/// The span a change record's stored cursors resolve to now, or `None` when the
+/// record holds no span.
+fn resolved_span(doc: &LoroDoc, text: &LoroText, m: &LoroMap) -> Option<(usize, usize)> {
+    let s = cursor_pos(doc, text, &bytes_of(m, "start")?)?;
+    let e = cursor_pos(doc, text, &bytes_of(m, "end")?)?;
+    // A live end sits on the last inserted character; a replaced one is the
+    // exclusive end already.
+    let to = if e.stale { e.offset } else { e.offset + 1 };
+    Some((s.offset, to.max(s.offset)))
+}
+
+/// The author fields a fragment record carries, so that `prune` can give the
+/// fragment a change of its own when its change record is gone.
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct Authorship {
+    id: String,
+    who: Option<String>,
+    author: Option<String>,
+    run: Option<String>,
+    at: Option<i64>,
+}
+
+/// A fragment record as read, before its gap is known.
+struct Stored {
+    point: usize,
+    fragment: Fragment,
+    authorship: Authorship,
+}
+
+/// What `resolve_file` reads: the live state, and the fragments whose change
+/// record is gone.
+#[derive(Default)]
+struct Resolved {
+    state: FileState,
+    orphans: Vec<Authorship>,
+}
+
+/// Reads a fragment record. Left out when its cursor, text or change is missing.
+fn read_fragment(doc: &LoroDoc, text: &LoroText, id: &str, m: &LoroMap) -> Option<Stored> {
+    let start = bytes_of(m, "start")?;
+    let change = str_of(m, "change")?;
+    let body = str_of(m, "text")?;
+    if body.is_empty() {
+        return None;
+    }
+    let pos = cursor_pos(doc, text, &start)?;
+    Some(Stored {
+        point: pos.offset,
+        fragment: Fragment {
+            id: Some(id.to_string()),
+            change,
+            text: body,
+            rank: Some(num_of(m, "rank").unwrap_or(0.0)),
+            stale: pos.stale,
+        },
+        authorship: Authorship {
+            id: id.to_string(),
+            who: str_of(m, "who"),
+            author: str_of(m, "author"),
+            run: str_of(m, "run"),
+            at: num_of(m, "at").map(|v| v as i64),
+        },
+    })
+}
+
+/// Reads a change record. Left out when its author fields or cursors are missing.
+fn read_change(doc: &LoroDoc, text: &LoroText, id: &str, m: &LoroMap) -> Option<ChangeRecord> {
+    let who = str_of(m, "who")?;
+    let author = str_of(m, "author")?;
+    let mut from = 0;
+    let mut to = 0;
+    let mut stale = false;
+    if let Some(start) = bytes_of(m, "start") {
+        let s = cursor_pos(doc, text, &start)?;
+        from = s.offset;
+        to = from;
+        stale = s.stale;
+        if let Some(end) = bytes_of(m, "end") {
+            let e = cursor_pos(doc, text, &end)?;
+            if e.stale {
+                stale = true;
+            }
+            // A live end sits on the last inserted character; a replaced one
+            // is the exclusive end already.
+            to = if e.stale { e.offset } else { e.offset + 1 };
+            to = to.max(from);
+        }
+    }
+    Some(ChangeRecord {
+        id: id.to_string(),
+        who,
+        author,
+        run: str_of(m, "run"),
+        at: num_of(m, "at").map_or(0, |v| v as i64),
+        from,
+        to,
+        emptied: false,
+        stale,
+    })
+}
+
+/// Resolves the records of one file against its text now. Gaps are derived:
+/// the fragments that resolve to one offset, in rank order. A change with no
+/// span takes its place from its first fragment, and one with neither span nor
+/// fragment is left out. Fragments whose change record is gone come back as
+/// orphans. Records without a known `kind` are ignored.
+fn resolve_file(doc: &LoroDoc, file_id: &str) -> Resolved {
     let Some(text) = text_of(doc, file_id) else {
-        return (FileState::default(), stale);
+        return Resolved::default();
     };
     let mut changes: Vec<ChangeRecord> = Vec::new();
-    let mut gaps: Vec<Gap> = Vec::new();
-    for id in record_ids(doc) {
-        let Some(m) = record(doc, &id) else {
-            continue;
-        };
-        if string_field(&m, "file").as_deref() != Some(file_id) {
+    let mut stored: Vec<Stored> = Vec::new();
+    for (id, m) in records(doc) {
+        if str_of(&m, "file").as_deref() != Some(file_id) {
             continue;
         }
-        match string_field(&m, "kind").as_deref() {
-            Some("gap") => {
-                let Some(start) = bytes_field(&m, "start") else {
-                    continue;
-                };
-                let Some(fragments) = fragments_field(&m) else {
-                    continue;
-                };
-                if fragments.is_empty() {
-                    continue;
-                }
-                let Some(pos) = cursor_pos(doc, &text, &start) else {
-                    continue;
-                };
-                if pos.stale {
-                    stale.gaps.insert(id.clone());
-                }
-                gaps.push(Gap {
-                    id,
-                    at: pos.offset,
-                    fragments,
-                });
-            }
-            Some("change") => {
-                let Some(who) = string_field(&m, "who") else {
-                    continue;
-                };
-                let Some(author) = string_field(&m, "author") else {
-                    continue;
-                };
-                let at = match m.get("at") {
-                    Some(LoroValue::I64(v)) => *v,
-                    Some(LoroValue::Double(v)) => *v as i64,
-                    _ => 0,
-                };
-                let (from, to, is_stale) = match bytes_field(&m, "start") {
-                    None => (0, 0, false),
-                    Some(start) => {
-                        let Some(s) = cursor_pos(doc, &text, &start) else {
-                            continue;
-                        };
-                        let mut to = s.offset;
-                        let mut is_stale = s.stale;
-                        if let Some(end) = bytes_field(&m, "end") {
-                            let Some(e) = cursor_pos(doc, &text, &end) else {
-                                continue;
-                            };
-                            if e.stale {
-                                is_stale = true;
-                            }
-                            // A live end cursor sits on the last inserted
-                            // character; a replaced one already is the end.
-                            to = if e.stale { e.offset } else { e.offset + 1 };
-                            to = to.max(s.offset);
-                        }
-                        (s.offset, to, is_stale)
-                    }
-                };
-                if is_stale {
-                    stale.changes.insert(id.clone());
-                }
-                changes.push(ChangeRecord {
-                    id,
-                    who,
-                    author,
-                    run: string_field(&m, "run"),
-                    at,
-                    from,
-                    to,
-                });
-            }
+        match str_of(&m, "kind").as_deref() {
+            Some("fragment") => stored.extend(read_fragment(doc, &text, &id, &m)),
+            Some("change") => changes.extend(read_change(doc, &text, &id, &m)),
             _ => {}
         }
     }
-    gaps.sort_by(|a, b| a.at.cmp(&b.at).then_with(|| a.id.cmp(&b.id)));
-    let mut live: Vec<ChangeRecord> = Vec::new();
+    let known: HashSet<String> = changes.iter().map(|c| c.id.clone()).collect();
+    let mut orphans: Vec<Authorship> = Vec::new();
+    let mut live: Vec<Stored> = Vec::new();
+    for s in stored {
+        if known.contains(&s.fragment.change) {
+            live.push(s);
+        } else {
+            orphans.push(s.authorship);
+        }
+    }
+    live.sort_by(|a, b| {
+        a.point
+            .cmp(&b.point)
+            .then_with(|| rank_of(&a.fragment).total_cmp(&rank_of(&b.fragment)))
+            .then_with(|| a.fragment.id.cmp(&b.fragment.id))
+    });
+    let mut gaps: Vec<Gap> = Vec::new();
+    for Stored {
+        point, fragment, ..
+    } in live
+    {
+        let stale = fragment.stale;
+        match gaps.last_mut() {
+            Some(g) if g.at == point => {
+                g.stale |= stale;
+                g.fragments.push(fragment);
+            }
+            _ => gaps.push(Gap {
+                id: format!("gap@{point}"),
+                at: point,
+                fragments: vec![fragment],
+                stale,
+            }),
+        }
+    }
+    let mut out: Vec<ChangeRecord> = Vec::new();
     for mut c in changes {
         if c.to == c.from {
-            let Some(g) = gaps
+            let Some(at) = gaps
                 .iter()
                 .find(|g| g.fragments.iter().any(|f| f.change == c.id))
+                .map(|g| g.at)
             else {
                 continue;
             };
-            c.from = g.at;
-            c.to = g.at;
+            c.from = at;
+            c.to = at;
         }
-        live.push(c);
+        out.push(c);
     }
-    live.sort_by(|a, b| (a.from, a.to, &a.id).cmp(&(b.from, b.to, &b.id)));
-    (
-        FileState {
-            changes: live,
-            gaps,
-        },
-        stale,
-    )
+    out.sort_by(|a, b| (a.from, a.to, &a.id).cmp(&(b.from, b.to, &b.id)));
+    Resolved {
+        state: FileState { changes: out, gaps },
+        orphans,
+    }
 }
 
 /// The deleted text of change `id`: its fragments in gap order.
@@ -781,7 +917,7 @@ fn deleted_of(gaps: &[Gap], id: &str) -> String {
 /// The pending changes of one file, resolved against its text now and sorted
 /// by `(from, to, id)`. Orphaned and empty changes are left out.
 pub fn resolve_changes(doc: &LoroDoc, file_id: &str) -> Vec<ResolvedChange> {
-    let (state, _) = resolve_file(doc, file_id);
+    let state = resolve_file(doc, file_id).state;
     state
         .changes
         .iter()
@@ -799,93 +935,278 @@ pub fn resolve_changes(doc: &LoroDoc, file_id: &str) -> Vec<ResolvedChange> {
         .collect()
 }
 
-/// The stored form of a gap.
-fn gap_map(file: &str, start: Vec<u8>, fragments: &[Fragment]) -> LoroValue {
-    let mut m: HashMap<String, LoroValue> = HashMap::new();
-    m.insert("kind".into(), LoroValue::from("gap"));
-    m.insert("file".into(), LoroValue::from(file));
-    m.insert("start".into(), LoroValue::from(start));
-    let list: Vec<LoroValue> = fragments
-        .iter()
-        .map(|f| {
-            let mut fm: HashMap<String, LoroValue> = HashMap::new();
-            fm.insert("change".into(), LoroValue::from(f.change.as_str()));
-            fm.insert("text".into(), LoroValue::from(f.text.as_str()));
-            LoroValue::from(fm)
-        })
-        .collect();
-    m.insert("fragments".into(), LoroValue::from(list));
-    LoroValue::from(m)
-}
-
-/// The stored form of a gap at `at`. `None` when the text has no cursor there.
-fn gap_value(text: &LoroText, file: &str, at: usize, fragments: &[Fragment]) -> Option<LoroValue> {
-    let start = text.get_cursor(at, Side::Left)?;
-    Some(gap_map(file, start.encode(), fragments))
-}
-
-/// The stored form of a change. A change with a span gets cursors on its
-/// first and last inserted characters; one without gets none.
-fn change_value(text: &LoroText, file: &str, c: &ChangeRecord) -> Option<LoroValue> {
-    let (start, end) = if c.to > c.from {
-        (
-            Some(text.get_cursor(c.from, Side::Left)?),
-            Some(text.get_cursor(c.to - 1, Side::Right)?),
-        )
+/// Writes a change record: a new container, or only the keys that changed. A
+/// cursor is rewritten only when it would resolve to another offset than the
+/// stored one does, so a span that shrank needs no write, and two peers moving
+/// its two ends at once both keep their write. Nothing is written over a cursor
+/// with null. Returns false when no cursor can be made.
+fn write_change(doc: &LoroDoc, text: &LoroText, file: &str, c: &ChangeRecord) -> bool {
+    let cursors = if c.to > c.from {
+        match (
+            text.get_cursor(c.from, Side::Left),
+            text.get_cursor(c.to - 1, Side::Right),
+        ) {
+            (Some(start), Some(end)) => Some((start.encode(), end.encode())),
+            _ => return false,
+        }
     } else {
-        (None, None)
+        None
     };
-    let mut m: HashMap<String, LoroValue> = HashMap::new();
-    m.insert("kind".into(), LoroValue::from("change"));
-    m.insert("file".into(), LoroValue::from(file));
-    m.insert("author".into(), LoroValue::from(c.author.as_str()));
-    m.insert("who".into(), LoroValue::from(c.who.as_str()));
-    // The browser writes a JS number, which Loro stores as a double.
-    m.insert("at".into(), LoroValue::Double(c.at as f64));
-    m.insert(
-        "run".into(),
-        c.run.as_deref().map_or(LoroValue::Null, LoroValue::from),
-    );
-    m.insert(
-        "start".into(),
-        start.map_or(LoroValue::Null, |s| LoroValue::from(s.encode())),
-    );
-    m.insert(
-        "end".into(),
-        end.map_or(LoroValue::Null, |e| LoroValue::from(e.encode())),
-    );
-    Some(LoroValue::from(m))
+    let root = doc.get_map(CHANGES);
+    let m = match record_map(&root, &c.id) {
+        Some(m) => m,
+        None => {
+            let Ok(m) = root.insert_container(&c.id, LoroMap::new()) else {
+                return false;
+            };
+            m.insert("kind", LoroValue::from("change")).ok();
+            m.insert("file", LoroValue::from(file)).ok();
+            m
+        }
+    };
+    put(&m, "who", LoroValue::from(c.who.as_str()));
+    put(&m, "author", LoroValue::from(c.author.as_str()));
+    put(&m, "run", run_value(c.run.as_deref()));
+    put(&m, "at", LoroValue::Double(c.at as f64));
+    match cursors {
+        Some((start, end)) => {
+            let have = resolved_span(doc, text, &m);
+            if have.map(|h| h.0) != Some(c.from) {
+                m.insert("start", LoroValue::from(start)).ok();
+            }
+            if have.map(|h| h.1) != Some(c.to) {
+                m.insert("end", LoroValue::from(end)).ok();
+            }
+        }
+        None => {
+            if m.get("start").is_none() {
+                m.insert("start", LoroValue::Null).ok();
+                m.insert("end", LoroValue::Null).ok();
+            }
+        }
+    }
+    true
 }
 
-/// Writes the planned records of `file_id` against its current text. Does not
-/// commit. Returns the ids of the change records it set.
+/// Sets the cursor under `key` to `bytes`, unless the stored one is the same
+/// cursor or already resolves to `offset`.
+fn move_cursor(
+    doc: &LoroDoc,
+    text: &LoroText,
+    m: &LoroMap,
+    key: &str,
+    bytes: &[u8],
+    offset: usize,
+) {
+    if let Some(stored) = bytes_of(m, key) {
+        if same_cursor(&stored, bytes) {
+            return;
+        }
+        if cursor_pos(doc, text, &stored).is_some_and(|p| p.offset == offset) {
+            return;
+        }
+    }
+    m.insert(key, LoroValue::from(bytes.to_vec())).ok();
+}
+
+/// Ranks for the fragments of one gap, in document order. The longest run of
+/// existing ranks that rises in that order keeps its values; the others take
+/// values between their neighbours, one past the last, or one before the first,
+/// so that a peer adding a fragment beside one of ours does not move ours.
+fn rank_gap(fragments: &[Fragment]) -> Vec<f64> {
+    let have: Vec<Option<f64>> = fragments.iter().map(|f| f.rank).collect();
+    let n = have.len();
+    let mut best = vec![1usize; n];
+    let mut prev: Vec<Option<usize>> = vec![None; n];
+    for (i, ri) in have.iter().enumerate() {
+        let Some(ri) = *ri else {
+            best[i] = 0;
+            continue;
+        };
+        for (j, rj) in have.iter().enumerate().take(i) {
+            if let Some(rj) = *rj {
+                if rj < ri && best[j] + 1 > best[i] {
+                    best[i] = best[j] + 1;
+                    prev[i] = Some(j);
+                }
+            }
+        }
+    }
+    let mut end: Option<usize> = None;
+    for (i, b) in best.iter().enumerate() {
+        if *b == 0 {
+            continue;
+        }
+        let better = match end {
+            None => true,
+            Some(e) => *b > best[e],
+        };
+        if better {
+            end = Some(i);
+        }
+    }
+    let mut keep = vec![false; n];
+    let mut cur = end;
+    while let Some(i) = cur {
+        keep[i] = true;
+        cur = prev[i];
+    }
+    let mut out: Vec<Option<f64>> = have
+        .iter()
+        .zip(&keep)
+        .map(|(r, k)| if *k { *r } else { None })
+        .collect();
+    for i in 0..n {
+        if keep[i] {
+            continue;
+        }
+        let lo = out[..i]
+            .iter()
+            .rev()
+            .find_map(|v| *v)
+            .unwrap_or(f64::NEG_INFINITY);
+        let hi = (i + 1..n)
+            .find(|&j| keep[j])
+            .and_then(|j| out[j])
+            .unwrap_or(f64::INFINITY);
+        let mut v = if lo == f64::NEG_INFINITY && hi == f64::INFINITY {
+            0.0
+        } else if lo == f64::NEG_INFINITY {
+            hi - 1.0
+        } else if hi == f64::INFINITY {
+            lo + 1.0
+        } else {
+            (lo + hi) / 2.0
+        };
+        // The midpoint collapsed onto a neighbour: take one past the lower
+        // one, and let the kept values after it go.
+        if v <= lo || v >= hi {
+            v = lo + 1.0;
+            for k in keep.iter_mut().skip(i + 1) {
+                *k = false;
+            }
+        }
+        out[i] = Some(v);
+    }
+    out.into_iter().map(|v| v.unwrap_or(0.0)).collect()
+}
+
+/// Writes one fragment record: a new container, with its owner's author fields
+/// when it has an owner, or only the keys that changed. The start cursor moves
+/// only when it would resolve elsewhere.
+#[allow(clippy::too_many_arguments)]
+fn write_fragment(
+    doc: &LoroDoc,
+    text: &LoroText,
+    file: &str,
+    id: &str,
+    f: &Fragment,
+    start: &[u8],
+    at: usize,
+    rank: f64,
+    owner: Option<&ChangeRecord>,
+) {
+    let root = doc.get_map(CHANGES);
+    let m = match record_map(&root, id) {
+        Some(m) => m,
+        None => {
+            let Ok(m) = root.insert_container(id, LoroMap::new()) else {
+                return;
+            };
+            m.insert("kind", LoroValue::from("fragment")).ok();
+            m.insert("file", LoroValue::from(file)).ok();
+            if let Some(o) = owner {
+                m.insert("who", LoroValue::from(o.who.as_str())).ok();
+                m.insert("author", LoroValue::from(o.author.as_str())).ok();
+                m.insert("run", run_value(o.run.as_deref())).ok();
+                m.insert("at", LoroValue::Double(o.at as f64)).ok();
+            }
+            m
+        }
+    };
+    put(&m, "change", LoroValue::from(f.change.as_str()));
+    put(&m, "text", LoroValue::from(f.text.as_str()));
+    move_cursor(doc, text, &m, "start", start, at);
+    put(&m, "rank", LoroValue::Double(rank));
+}
+
+/// Writes the fragments of one gap at `at`, each its own record, with ranks from
+/// `rank_gap`. A fragment without an id gets a fresh one. Writes nothing when no
+/// cursor can be made at `at`.
+fn write_gap(
+    doc: &LoroDoc,
+    text: &LoroText,
+    file: &str,
+    at: usize,
+    fragments: &[Fragment],
+    owners: &HashMap<String, ChangeRecord>,
+) {
+    let Some(start) = text.get_cursor(at, Side::Left) else {
+        return;
+    };
+    let bytes = start.encode();
+    let ranks = rank_gap(fragments);
+    for (f, rank) in fragments.iter().zip(ranks) {
+        let id = f.id.clone().unwrap_or_else(mint_uuid);
+        write_fragment(
+            doc,
+            text,
+            file,
+            &id,
+            f,
+            &bytes,
+            at,
+            rank,
+            owners.get(f.change.as_str()),
+        );
+    }
+}
+
+/// Writes a plan against the file's current text. Does not commit. Returns the
+/// ids of the change records it set.
 pub fn write_planned(doc: &LoroDoc, file_id: &str, plan: &Plan) -> Vec<String> {
     let Some(text) = text_of(doc, file_id) else {
         return Vec::new();
     };
-    let map = doc.get_map(CHANGES);
+    let root = doc.get_map(CHANGES);
+    let live: HashSet<String> = plan
+        .gaps
+        .iter()
+        .filter(|(_, st)| *st != PlanState::Removed)
+        .flat_map(|(g, _)| g.fragments.iter().filter_map(|f| f.id.clone()))
+        .collect();
+    let owners: HashMap<String, ChangeRecord> = plan
+        .changes
+        .iter()
+        .filter(|(_, st)| *st != PlanState::Removed)
+        .map(|(c, _)| (c.id.clone(), c.clone()))
+        .collect();
     for (g, st) in &plan.gaps {
         match st {
             PlanState::Removed => {
-                map.delete(&g.id).ok();
-            }
-            PlanState::Set => {
-                if let Some(v) = gap_value(&text, file_id, g.at, &g.fragments) {
-                    map.insert(&g.id, v).ok();
+                for id in g.fragments.iter().filter_map(|f| f.id.as_ref()) {
+                    if !live.contains(id) {
+                        root.delete(id).ok();
+                    }
                 }
             }
+            PlanState::Set => write_gap(doc, &text, file_id, g.at, &g.fragments, &owners),
             PlanState::Kept => {}
+        }
+    }
+    for id in &plan.dropped {
+        if !live.contains(id) {
+            root.delete(id).ok();
         }
     }
     let mut written = Vec::new();
     for (c, st) in &plan.changes {
         match st {
             PlanState::Removed => {
-                map.delete(&c.id).ok();
+                root.delete(&c.id).ok();
             }
             PlanState::Set => {
-                if let Some(v) = change_value(&text, file_id, c) {
-                    map.insert(&c.id, v).ok();
+                if write_change(doc, &text, file_id, c) {
                     written.push(c.id.clone());
                 }
             }
@@ -893,6 +1214,13 @@ pub fn write_planned(doc: &LoroDoc, file_id: &str, plan: &Plan) -> Vec<String> {
         }
     }
     written
+}
+
+fn text_of(doc: &LoroDoc, file_id: &str) -> Option<LoroText> {
+    match doc.get_map(FILES).get(file_id)? {
+        ValueOrContainer::Container(Container::Text(t)) => Some(t),
+        _ => None,
+    }
 }
 
 /// A random version 4 UUID in its hyphenated form.
@@ -927,7 +1255,7 @@ fn apply_planned(
     let text = text_of(doc, file_id).ok_or_else(|| "the file does not exist".to_string())?;
     let before = text.to_string();
     // Resolved before the text moves: the cursors are read where they stand.
-    let (state, _) = resolve_file(doc, file_id);
+    let state = resolve_file(doc, file_id).state;
 
     let to_cp = |utf16: usize| {
         text.convert_pos(utf16, PosType::Utf16, PosType::Unicode)
@@ -987,102 +1315,111 @@ pub fn untracked_edits(doc: &LoroDoc, file_id: &str, edits: &[Edit]) -> Result<(
     Ok(())
 }
 
-/// Accepts a change: its fragments leave every gap (a gap left empty goes),
-/// and its record is dropped. The text stays. Returns false when `id` is not
-/// a change record. Does not commit.
-pub fn accept(doc: &LoroDoc, id: &str) -> bool {
-    let Some(m) = record(doc, id) else {
-        return false;
-    };
-    if string_field(&m, "kind").as_deref() != Some("change") {
-        return false;
-    }
-    let map = doc.get_map(CHANGES);
-    for gid in record_ids(doc) {
-        let Some(gm) = record(doc, &gid) else {
-            continue;
-        };
-        if string_field(&gm, "kind").as_deref() != Some("gap") {
-            continue;
-        }
-        let Some(fragments) = fragments_field(&gm) else {
-            continue;
-        };
-        let kept: Vec<Fragment> = fragments
-            .iter()
-            .filter(|f| f.change != id)
-            .cloned()
-            .collect();
-        if kept.len() == fragments.len() {
-            continue;
-        }
-        if kept.is_empty() {
-            map.delete(&gid).ok();
-            continue;
-        }
-        let (Some(file), Some(start)) = (string_field(&gm, "file"), bytes_field(&gm, "start"))
-        else {
-            continue;
-        };
-        map.insert(&gid, gap_map(&file, start, &kept)).ok();
-    }
-    map.delete(id).ok();
-    true
-}
-
-/// Writes the pending run of other changes' fragments as a new gap at
-/// `anchor`, and empties the run.
-fn put_run(doc: &LoroDoc, text: &LoroText, file: &str, anchor: usize, pending: &mut Vec<Fragment>) {
+/// Puts the fragments of `pending` back as a run anchored on the character at
+/// `anchor`, and empties the run. Each fragment keeps its rank.
+fn flush(doc: &LoroDoc, text: &LoroText, file: &str, anchor: usize, pending: &mut Vec<Fragment>) {
     if pending.is_empty() {
         return;
     }
-    if let Some(v) = gap_value(text, file, anchor, pending.as_slice()) {
-        doc.get_map(CHANGES).insert(&mint_uuid(), v).ok();
+    if let Some(start) = text.get_cursor(anchor, Side::Left) {
+        let bytes = start.encode();
+        for f in pending.iter() {
+            if let Some(id) = &f.id {
+                write_fragment(doc, text, file, id, f, &bytes, anchor, rank_of(f), None);
+            }
+        }
     }
     pending.clear();
 }
 
-/// Puts the gaps in `list` back at `at`. Walks their fragments in order: the
-/// rejected change's text is inserted where the walk stands, and each run of
-/// other changes' fragments becomes a gap anchored on the character after it.
-fn put_back(doc: &LoroDoc, text: &LoroText, file: &str, id: &str, at: usize, mut list: Vec<Gap>) {
+/// Puts back the gaps of one point `at` for change `id`. Their fragments are
+/// walked in order: the rejected change's text is inserted where the walk
+/// stands, and each run of other changes' fragments is anchored on the
+/// character that follows it. Where gaps collapsed onto one point, later gaps
+/// are raised above earlier ones.
+fn restore_group(
+    doc: &LoroDoc,
+    text: &LoroText,
+    file: &str,
+    id: &str,
+    at: usize,
+    mut list: Vec<Gap>,
+) {
     list.sort_by_key(|g| g.at);
-    let fragments: Vec<Fragment> = list
-        .iter()
-        .flat_map(|g| g.fragments.iter().cloned())
-        .collect();
-    let map = doc.get_map(CHANGES);
+    let mut floor = f64::NEG_INFINITY;
+    let mut fragments: Vec<Fragment> = Vec::new();
     for g in &list {
-        map.delete(&g.id).ok();
+        let low = g
+            .fragments
+            .iter()
+            .map(rank_of)
+            .fold(f64::INFINITY, f64::min);
+        let high = g
+            .fragments
+            .iter()
+            .map(rank_of)
+            .fold(f64::NEG_INFINITY, f64::max);
+        let shift = if low <= floor { floor - low + 1.0 } else { 0.0 };
+        for f in &g.fragments {
+            fragments.push(Fragment {
+                rank: Some(rank_of(f) + shift),
+                ..f.clone()
+            });
+        }
+        floor = high + shift;
     }
     let mut pos = at;
     let mut pending: Vec<Fragment> = Vec::new();
     for f in fragments {
-        if f.change == id {
-            text.insert(pos, &f.text).ok();
-            put_run(doc, text, file, pos, &mut pending);
-            pos += f.text.chars().count();
-        } else {
+        if f.change != id {
             pending.push(f);
+            continue;
+        }
+        let n = f.text.chars().count();
+        // Spans that end or start at the point keep their bounds across the
+        // restored text; a cursor left on a deleted character might not.
+        let edges: Vec<ChangeRecord> = resolve_file(doc, file)
+            .state
+            .changes
+            .into_iter()
+            .filter(|c| c.id != id && c.to > c.from && (c.to == pos || c.from == pos))
+            .collect();
+        text.insert(pos, &f.text).ok();
+        for c in edges {
+            if c.to == pos {
+                write_change(doc, text, file, &c);
+            } else {
+                let shifted = ChangeRecord {
+                    from: c.from + n,
+                    to: c.to + n,
+                    ..c
+                };
+                write_change(doc, text, file, &shifted);
+            }
+        }
+        flush(doc, text, file, pos, &mut pending);
+        pos += n;
+        if let Some(fid) = &f.id {
+            doc.get_map(CHANGES).delete(fid).ok();
         }
     }
-    put_run(doc, text, file, pos, &mut pending);
+    flush(doc, text, file, pos, &mut pending);
 }
 
-/// Puts back the text of change `id` and the gaps it sat in. The gaps beyond
-/// its span come back first, while its text still holds their offsets; then
-/// the span goes, and the gaps at and before it come back.
+/// Puts back the text of change `id` and the gaps it sat in. The gaps beyond its
+/// span come back first, while its text still holds their offsets; then the
+/// span goes, and the gaps at and before it come back.
 fn restore_change(doc: &LoroDoc, text: &LoroText, file: &str, id: &str) {
-    let (state, _) = resolve_file(doc, file);
+    let state = resolve_file(doc, file).state;
     let span = state
         .changes
         .iter()
         .find(|c| c.id == id)
         .filter(|c| c.to > c.from)
         .map(|c| (c.from, c.to));
-    // The gaps to put back: every gap holding this change's fragments and,
-    // with a span, every gap from its start to the character after it. Those
-    // collapse onto the span's start when it goes.
+    // The gaps to put back: every gap holding this change's fragments and, with
+    // a span, every gap from its start to the character after it. Those collapse
+    // onto the span's start when it goes.
     let mut groups: BTreeMap<usize, Vec<Gap>> = BTreeMap::new();
     for g in &state.gaps {
         let attached = span.is_some_and(|(from, to)| g.at >= from && g.at <= to);
@@ -1103,7 +1440,7 @@ fn restore_change(doc: &LoroDoc, text: &LoroText, file: &str, id: &str) {
         };
         if beyond {
             if let Some(list) = groups.remove(at) {
-                put_back(doc, text, file, id, *at, list);
+                restore_group(doc, text, file, id, *at, list);
             }
         }
     }
@@ -1112,26 +1449,57 @@ fn restore_change(doc: &LoroDoc, text: &LoroText, file: &str, id: &str) {
     }
     for at in &positions {
         if let Some(list) = groups.remove(at) {
-            put_back(doc, text, file, id, *at, list);
+            restore_group(doc, text, file, id, *at, list);
         }
     }
 }
 
-/// Rejects a change: puts its text back where it was, then drops its record.
-/// Returns false when `id` is not a change record. Does not commit.
-pub fn reject(doc: &LoroDoc, id: &str) -> bool {
-    let Some(m) = record(doc, id) else {
-        return false;
-    };
-    if string_field(&m, "kind").as_deref() != Some("change") {
+/// Whether `id` is a change record of the `changes` root.
+fn is_change(root: &LoroMap, id: &str) -> bool {
+    record_map(root, id).is_some_and(|m| str_of(&m, "kind").as_deref() == Some("change"))
+}
+
+/// Accepts a change: its fragments leave every gap (a gap left empty goes), and
+/// its record is dropped. The text stays. Returns false when `id` is not a
+/// change record. Does not commit.
+pub fn accept(doc: &LoroDoc, id: &str) -> bool {
+    let root = doc.get_map(CHANGES);
+    if !is_change(&root, id) {
         return false;
     }
-    if let Some(file) = string_field(&m, "file") {
+    for (fid, m) in records(doc) {
+        if str_of(&m, "kind").as_deref() == Some("fragment")
+            && str_of(&m, "change").as_deref() == Some(id)
+        {
+            root.delete(&fid).ok();
+        }
+    }
+    root.delete(id).ok();
+    true
+}
+
+/// Rejects a change: puts its text back where it was, then drops its fragments
+/// and its record. Returns false when `id` is not a change record. Does not
+/// commit.
+pub fn reject(doc: &LoroDoc, id: &str) -> bool {
+    let root = doc.get_map(CHANGES);
+    if !is_change(&root, id) {
+        return false;
+    }
+    let file = record_map(&root, id).and_then(|m| str_of(&m, "file"));
+    if let Some(file) = file {
         if let Some(text) = text_of(doc, &file) {
             restore_change(doc, &text, &file, id);
         }
     }
-    doc.get_map(CHANGES).delete(id).ok();
+    for (fid, m) in records(doc) {
+        if str_of(&m, "kind").as_deref() == Some("fragment")
+            && str_of(&m, "change").as_deref() == Some(id)
+        {
+            root.delete(&fid).ok();
+        }
+    }
+    root.delete(id).ok();
     true
 }
 
@@ -1149,64 +1517,108 @@ pub fn reject_many<S: AsRef<str>>(doc: &LoroDoc, ids: &[S]) -> usize {
     count
 }
 
-/// Removes every change or gap record that does not resolve to a live one, and
-/// returns how many it removed. A record whose cursor came back with a
-/// replacement is rewritten with fresh cursors, which does not count. Records
-/// without a `kind` are left alone. Does not commit.
+/// How long a record rests before `prune` drops it when it is empty, or heals a
+/// stale cursor on it: its author's other session needs time to sync.
+const SETTLE_MS: i64 = 60_000;
+
+fn now_ms() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| d.as_millis() as i64)
+}
+
+/// Whether record `id` has rested long enough to be dropped or healed. A record
+/// with no `at` has.
+fn settled(root: &LoroMap, id: &str, now: i64) -> bool {
+    match record_map(root, id).and_then(|m| num_of(&m, "at")) {
+        None => true,
+        Some(at) => (at as i64) < now - SETTLE_MS,
+    }
+}
+
+/// Drops empty records, re-parents fragments whose change is gone, and heals
+/// stale cursors. Records of a file with no text are dropped. An empty record,
+/// or a stale cursor, is touched only once it has settled. Returns the number of
+/// records deleted. Does not commit.
 pub fn prune(doc: &LoroDoc) -> usize {
-    let map = doc.get_map(CHANGES);
-    let files: BTreeSet<String> = record_ids(doc)
+    let root = doc.get_map(CHANGES);
+    let files: BTreeSet<String> = records(doc)
         .iter()
-        .filter_map(|id| {
-            let m = record(doc, id)?;
-            let kind = string_field(&m, "kind")?;
-            if kind != "change" && kind != "gap" {
-                return None;
-            }
-            string_field(&m, "file")
-        })
+        .filter_map(|(_, m)| str_of(m, "file"))
         .collect();
+    let now = now_ms();
     let mut removed = 0;
     for file in files {
-        let (state, stale) = resolve_file(doc, &file);
-        let live: HashSet<String> = state
+        let Some(text) = text_of(doc, &file) else {
+            for (id, m) in records(doc) {
+                if str_of(&m, "file").as_deref() == Some(file.as_str()) {
+                    root.delete(&id).ok();
+                    removed += 1;
+                }
+            }
+            continue;
+        };
+        let mut resolved = resolve_file(doc, &file);
+        // A fragment whose change was decided while it was written gets a change
+        // of its own, so the deletion it records can still be decided.
+        if !resolved.orphans.is_empty() {
+            for o in std::mem::take(&mut resolved.orphans) {
+                let Some(who) = o.who.clone() else {
+                    continue;
+                };
+                let cid = mint_uuid();
+                let c = ChangeRecord {
+                    id: cid.clone(),
+                    author: o.author.unwrap_or_else(|| who.clone()),
+                    who,
+                    run: o.run,
+                    at: o.at.unwrap_or(now),
+                    from: 0,
+                    to: 0,
+                    emptied: false,
+                    stale: false,
+                };
+                write_change(doc, &text, &file, &c);
+                if let Some(m) = record_map(&root, &o.id) {
+                    m.insert("change", LoroValue::from(cid.as_str())).ok();
+                }
+            }
+            resolved = resolve_file(doc, &file);
+        }
+        let live: HashSet<String> = resolved
+            .state
             .changes
             .iter()
             .map(|c| c.id.clone())
-            .chain(state.gaps.iter().map(|g| g.id.clone()))
+            .chain(
+                resolved
+                    .state
+                    .gaps
+                    .iter()
+                    .flat_map(|g| g.fragments.iter().filter_map(|f| f.id.clone())),
+            )
             .collect();
-        for id in record_ids(doc) {
-            let Some(m) = record(doc, &id) else {
-                continue;
-            };
-            if string_field(&m, "file").as_deref() != Some(file.as_str()) {
+        for (id, m) in records(doc) {
+            if str_of(&m, "file").as_deref() != Some(file.as_str()) {
                 continue;
             }
-            if !matches!(
-                string_field(&m, "kind").as_deref(),
-                Some("change") | Some("gap")
-            ) {
-                continue;
-            }
-            if !live.contains(&id) {
-                map.delete(&id).ok();
+            if !live.contains(&id) && settled(&root, &id, now) {
+                root.delete(&id).ok();
                 removed += 1;
             }
         }
-        if let Some(text) = text_of(doc, &file) {
-            for g in &state.gaps {
-                if stale.gaps.contains(&g.id) {
-                    if let Some(v) = gap_value(&text, &file, g.at, &g.fragments) {
-                        map.insert(&g.id, v).ok();
-                    }
-                }
+        for g in &resolved.state.gaps {
+            let all_settled = g
+                .fragments
+                .iter()
+                .all(|f| f.id.as_deref().is_none_or(|id| settled(&root, id, now)));
+            if g.stale && all_settled {
+                write_gap(doc, &text, &file, g.at, &g.fragments, &HashMap::new());
             }
-            for c in &state.changes {
-                if c.to > c.from && stale.changes.contains(&c.id) {
-                    if let Some(v) = change_value(&text, &file, c) {
-                        map.insert(&c.id, v).ok();
-                    }
-                }
+        }
+        for c in &resolved.state.changes {
+            if c.stale && c.to > c.from && settled(&root, &c.id, now) {
+                write_change(doc, &text, &file, c);
             }
         }
     }
@@ -1287,8 +1699,11 @@ mod tests {
     fn frags(list: &[FxFragment]) -> Vec<Fragment> {
         list.iter()
             .map(|f| Fragment {
+                id: None,
                 change: f.change.clone(),
                 text: f.text.clone(),
+                rank: None,
+                stale: false,
             })
             .collect()
     }
@@ -1327,6 +1742,8 @@ mod tests {
                         at: 1,
                         from: cp(&fx.before, c.from),
                         to: cp(&fx.before, c.to),
+                        emptied: false,
+                        stale: false,
                     })
                     .collect(),
                 gaps: fx
@@ -1338,6 +1755,7 @@ mod tests {
                         id: format!("gap-{i}"),
                         at: cp(&fx.before, g.at),
                         fragments: frags(&g.fragments),
+                        stale: false,
                     })
                     .collect(),
             };
@@ -1375,7 +1793,7 @@ mod tests {
             let mut got_changes: Vec<ChangeRow> = plan
                 .changes
                 .iter()
-                .filter(|(_, st)| *st != PlanState::Removed)
+                .filter(|(c, st)| *st != PlanState::Removed && !c.emptied)
                 .map(|(c, _)| (c.id.clone(), c.who.clone(), c.from, c.to))
                 .collect();
             let mut got_gaps: Vec<GapRow> = plan
@@ -1700,23 +2118,8 @@ mod tests {
         assert_eq!(orphan.len(), 1);
         // The orphan's file is gone, so its record resolves to nothing.
         doc.get_map(FILES).delete(&other_id).unwrap();
-        // An empty record: no span and no fragment.
-        let mut empty: HashMap<String, LoroValue> = HashMap::new();
-        for (k, v) in [
-            ("kind", LoroValue::from("change")),
-            ("file", LoroValue::from(id.as_str())),
-            ("who", LoroValue::from("me")),
-            ("author", LoroValue::from("Me")),
-            ("at", LoroValue::Double(1.0)),
-            ("run", LoroValue::Null),
-            ("start", LoroValue::Null),
-            ("end", LoroValue::Null),
-        ] {
-            empty.insert(k.to_string(), v);
-        }
-        doc.get_map(CHANGES)
-            .insert("empty", LoroValue::from(empty))
-            .unwrap();
+        // An empty record: no span and no fragment, long settled.
+        empty_record(&doc, "empty", &id, 1.0);
         // A record without a kind is not ours to touch.
         doc.get_map(CHANGES).insert("junk", 1).unwrap();
         doc.commit();
@@ -1987,7 +2390,7 @@ mod tests {
                     doc.commit();
                 }
                 assert_eq!(body(&doc, &id), expected, "{label}");
-                assert_eq!(doc.get_map(CHANGES).keys().count(), 0, "{label}");
+                assert!(resolve_changes(&doc, &id).is_empty(), "{label}");
             }
         }
     }
@@ -2108,7 +2511,7 @@ mod tests {
                 final_inserted.sort();
                 assert_eq!(final_original, expected_original, "{label}");
                 assert_eq!(final_inserted, expected_inserted, "{label}");
-                assert_eq!(doc.get_map(CHANGES).keys().count(), 0, "{label}");
+                assert!(resolve_changes(&doc, &id).is_empty(), "{label}");
             }
         }
     }
@@ -2301,7 +2704,7 @@ mod tests {
                 .chars()
                 .filter(|ch| chars[ch].state == Mark::Live)
                 .collect();
-            let left = doc.get_map(CHANGES).keys().count();
+            let left = resolve_changes(&doc, &id).len();
             let label = format!(
                 "iter={iter} start={start} verdict={verdict:?} log={log:?} -> {final_text:?} expected={expected:?}"
             );
@@ -2309,5 +2712,231 @@ mod tests {
             assert_eq!(originals, want_originals, "{label}");
             assert_eq!(left, 0, "{label}");
         }
+    }
+
+    /// An empty change record, as a peer's session leaves one: no span and no
+    /// fragment, stamped `at`.
+    fn empty_record(doc: &LoroDoc, key: &str, file: &str, at: f64) {
+        let m = doc
+            .get_map(CHANGES)
+            .insert_container(key, LoroMap::new())
+            .unwrap();
+        m.insert("kind", LoroValue::from("change")).unwrap();
+        m.insert("file", LoroValue::from(file)).unwrap();
+        m.insert("who", LoroValue::from("me")).unwrap();
+        m.insert("author", LoroValue::from("Me")).unwrap();
+        m.insert("at", LoroValue::Double(at)).unwrap();
+        m.insert("run", LoroValue::Null).unwrap();
+        m.insert("start", LoroValue::Null).unwrap();
+        m.insert("end", LoroValue::Null).unwrap();
+    }
+
+    /// Exchanges the updates each peer is missing. Both sides are committed.
+    fn sync(a: &LoroDoc, b: &LoroDoc) {
+        let to_a = b.export(loro::ExportMode::updates(&a.oplog_vv())).unwrap();
+        let to_b = a.export(loro::ExportMode::updates(&b.oplog_vv())).unwrap();
+        a.import(&to_a).unwrap();
+        b.import(&to_b).unwrap();
+    }
+
+    /// The rows of a file as `who:deleted+width`, sorted, to compare two peers.
+    fn row_summary(doc: &LoroDoc, id: &str) -> Vec<String> {
+        let mut rows: Vec<String> = resolve_changes(doc, id)
+            .iter()
+            .map(|c| format!("{}:{}+{}", c.who, c.deleted, c.to - c.from))
+            .collect();
+        rows.sort();
+        rows
+    }
+
+    /// The next unique inserted character, as the JS fuzzers write them.
+    fn next_char(n: &mut u32) -> String {
+        let ch = char::from_u32(0x391 + *n % 24).unwrap();
+        *n += 1;
+        ch.to_string()
+    }
+
+    #[test]
+    fn two_peers_lose_nothing() {
+        // Two peers edit one text at the same moment, each in its own region,
+        // then exchange updates. They must converge after every round, and
+        // rejecting every change at the end must restore the start text up to
+        // order.
+        let mut rng = Lcg::new(31);
+        let mut ins: u32 = 0;
+        let cases = 120;
+        let mut misordered = 0;
+        for iter in 0..cases {
+            let start: String = ALPHA[..7 + rng.pick(6)].to_string();
+            let (a, id) = setup(&start);
+            let b = new_doc();
+            b.import(&a.export(loro::ExportMode::snapshot()).unwrap())
+                .unwrap();
+            let mut log: Vec<String> = Vec::new();
+            let mut round = 0;
+            while round < 2 + rng.pick(3) {
+                round += 1;
+                let text: Vec<char> = body(&a, &id).chars().collect();
+                if text.len() < 4 {
+                    break;
+                }
+                // Two regions with at least one character between them.
+                let cut = 2 + rng.pick(text.len() - 3);
+                let f1 = rng.pick(cut);
+                let t1 = f1 + rng.pick((cut - f1).min(3) + 1);
+                let f2 = cut + 1 + rng.pick((text.len() - cut - 1).max(1));
+                let t2 = (f2 + rng.pick(3)).min(text.len());
+                let i1 = if t1 == f1 || rng.rnd() < 0.3 {
+                    next_char(&mut ins)
+                } else {
+                    String::new()
+                };
+                let i2 = if t2 == f2 || rng.rnd() < 0.3 {
+                    next_char(&mut ins)
+                } else {
+                    String::new()
+                };
+                if f1 == t1 && i1.is_empty() {
+                    continue;
+                }
+                log.push(format!("A {f2}-{t2} '{i2}' | B {f1}-{t1} '{i1}'"));
+                // A edits the right region and B the left one, both against the
+                // same text.
+                if t2 > f2 || !i2.is_empty() {
+                    apply_tracked_edits(
+                        &a,
+                        &id,
+                        &[edit(f2, t2 - f2, &i2)],
+                        &who_of("alice"),
+                        None,
+                        1,
+                    )
+                    .unwrap();
+                    a.commit();
+                }
+                apply_tracked_edits(&b, &id, &[edit(f1, t1 - f1, &i1)], &who_of("bob"), None, 1)
+                    .unwrap();
+                b.commit();
+                sync(&a, &b);
+                assert_eq!(
+                    body(&a, &id),
+                    body(&b, &id),
+                    "diverged: iter={iter} start={start} log={log:?}"
+                );
+                assert_eq!(
+                    row_summary(&a, &id),
+                    row_summary(&b, &id),
+                    "rows: iter={iter} start={start} log={log:?}"
+                );
+            }
+
+            let ids: Vec<String> = resolve_changes(&a, &id).into_iter().map(|c| c.id).collect();
+            for cid in &ids {
+                assert!(reject(&a, cid));
+                a.commit();
+            }
+            sync(&a, &b);
+            let mut want: Vec<char> = start.chars().collect();
+            want.sort();
+            let mut got: Vec<char> = body(&a, &id).chars().collect();
+            got.sort();
+            let label = format!("iter={iter} start={start} log={log:?}");
+            assert_eq!(got, want, "{label}");
+            assert_eq!(body(&a, &id), body(&b, &id), "{label}");
+            assert!(resolve_changes(&a, &id).is_empty(), "{label}");
+            if body(&a, &id) != start {
+                misordered += 1;
+            }
+        }
+        assert!(
+            misordered * 4 < cases,
+            "order differed in {misordered} of {cases} cases"
+        );
+    }
+
+    #[test]
+    fn a_span_shrunk_by_one_peer_and_grown_by_its_author_keeps_both() {
+        let (a, id) = setup("abcd");
+        apply_tracked_edits(&a, &id, &[edit(2, 0, "XY")], &who_of("alice"), None, 1).unwrap();
+        a.commit();
+        let b = new_doc();
+        b.import(&a.export(loro::ExportMode::snapshot()).unwrap())
+            .unwrap();
+        // Bob deletes the X, which is alice's own inserted text, so the span
+        // only shrinks and nothing is recorded for him.
+        apply_tracked_edits(&a, &id, &[edit(2, 1, "")], &who_of("bob"), None, 2).unwrap();
+        a.commit();
+        // Alice types Z after the Y on the other peer, which extends her span.
+        apply_tracked_edits(&b, &id, &[edit(4, 0, "Z")], &who_of("alice"), None, 3).unwrap();
+        b.commit();
+        sync(&a, &b);
+        assert_eq!(body(&a, &id), "abYZcd");
+        assert_eq!(body(&b, &id), "abYZcd");
+        for doc in [&a, &b] {
+            let rows = resolve_changes(doc, &id);
+            assert_eq!(rows.len(), 1);
+            assert_eq!(rows[0].who, "alice");
+            let text: Vec<char> = body(doc, &id).chars().collect();
+            let span: String = text[rows[0].from..rows[0].to].iter().collect();
+            assert_eq!(span, "YZ");
+        }
+        let alice = resolve_changes(&a, &id)[0].id.clone();
+        assert!(reject(&a, &alice));
+        a.commit();
+        assert_eq!(body(&a, &id), "abcd");
+    }
+
+    #[test]
+    fn settling_keeps_a_fresh_empty_record_and_drops_an_old_one() {
+        let (doc, id) = setup("abc");
+        empty_record(&doc, "fresh", &id, now_ms() as f64);
+        empty_record(&doc, "old", &id, 1.0);
+        doc.commit();
+        assert_eq!(prune(&doc), 1);
+        doc.commit();
+        assert!(doc.get_map(CHANGES).get("fresh").is_some());
+        assert!(doc.get_map(CHANGES).get("old").is_none());
+        assert!(resolve_changes(&doc, &id).is_empty());
+    }
+
+    #[test]
+    fn an_orphan_fragment_is_reparented() {
+        // A fragment whose change was decided while it was written: its change
+        // record is gone, and only its author fields remain.
+        let (doc, id) = setup("abc");
+        let text = text_of(&doc, &id).unwrap();
+        let cursor = text.get_cursor(1, Side::Left).unwrap().encode();
+        let frag = doc
+            .get_map(CHANGES)
+            .insert_container("frag", LoroMap::new())
+            .unwrap();
+        frag.insert("kind", LoroValue::from("fragment")).unwrap();
+        frag.insert("file", LoroValue::from(id.as_str())).unwrap();
+        frag.insert("change", LoroValue::from("gone")).unwrap();
+        frag.insert("text", LoroValue::from("X")).unwrap();
+        frag.insert("start", LoroValue::from(cursor)).unwrap();
+        frag.insert("rank", LoroValue::Double(0.0)).unwrap();
+        frag.insert("who", LoroValue::from("bob")).unwrap();
+        frag.insert("author", LoroValue::from("Bob")).unwrap();
+        frag.insert("run", LoroValue::Null).unwrap();
+        frag.insert("at", LoroValue::Double(1.0)).unwrap();
+        doc.commit();
+        assert!(resolve_changes(&doc, &id).is_empty());
+        assert_eq!(prune(&doc), 0);
+        doc.commit();
+        let rows = resolve_changes(&doc, &id);
+        assert_eq!(rows.len(), 1);
+        assert_eq!(
+            (
+                rows[0].who.as_str(),
+                rows[0].author.as_str(),
+                rows[0].deleted.as_str()
+            ),
+            ("bob", "Bob", "X")
+        );
+        assert_eq!((rows[0].from, rows[0].to), (1, 1));
+        assert!(reject(&doc, &rows[0].id));
+        doc.commit();
+        assert_eq!(body(&doc, &id), "aXbc");
     }
 }
