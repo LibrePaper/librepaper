@@ -116,7 +116,7 @@ const ANNOTATION_COLUMNS: &str =
      color,source_sequence,frontier,render_digest,target_kind,file_id,\
      start_utf16,end_utf16,start_side,end_side,exact,prefix,suffix,\
      rendered_exact,rendered_prefix,rendered_suffix,rendered_position_utf16,\
-     resolved_at,created_at";
+     resolved_at,created_at,edited_at";
 
 #[derive(Clone, Debug)]
 pub struct MutationAuthorization {
@@ -198,6 +198,8 @@ pub struct AnnotationRecord {
     pub rendered_position_utf16: Option<i32>,
     pub resolved_at: Option<OffsetDateTime>,
     pub created_at: OffsetDateTime,
+    /// When the author last changed the body; `None` until the first edit.
+    pub edited_at: Option<OffsetDateTime>,
 }
 
 #[derive(Clone, Debug)]
@@ -220,6 +222,8 @@ pub struct ReplyRecord {
     pub body: String,
     pub created_at: OffsetDateTime,
     pub updated_at: OffsetDateTime,
+    /// When the author last changed the body; `None` until the first edit.
+    pub edited_at: Option<OffsetDateTime>,
 }
 
 /// Inserts an annotation's immutable evidence, or -- on a retry with the
@@ -320,7 +324,7 @@ async fn put_reply(
     .await?;
     let row = sqlx::query_as!(
         ReplyRecord,
-        "SELECT id,annotation_id,author_account_id,author_key,author_label,body,created_at,updated_at \
+        "SELECT id,annotation_id,author_account_id,author_key,author_label,body,created_at,updated_at,edited_at \
          FROM replies WHERE id=$1",
         input.id
     )
@@ -586,6 +590,80 @@ impl PostgresCatalog {
         Ok(true)
     }
 
+    /// Replaces the body of one comment and stamps `edited_at`. The caller
+    /// has already checked authorship; this checks the actor's grant and
+    /// session like its siblings, and the document is in the predicate so
+    /// an id from another document is not found.
+    pub async fn edit_annotation_body_authorized(
+        &self,
+        tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+        document_id: Uuid,
+        id: Uuid,
+        body: &str,
+        actor: &MutationAuthorization,
+    ) -> Result<OffsetDateTime> {
+        Self::authorize_annotation_mutation(tx, document_id, actor, false).await?;
+        sqlx::query_scalar(
+            "UPDATE annotations SET body=$3,edited_at=now(),updated_at=now()
+             WHERE id=$1 AND document_id=$2
+             RETURNING edited_at",
+        )
+        .bind(id)
+        .bind(document_id)
+        .bind(body)
+        .fetch_optional(&mut **tx)
+        .await?
+        .ok_or(Error::NotFound)
+    }
+
+    /// The same for one reply. The reply is reached through its comment, so
+    /// a reply of another document's comment is not found.
+    pub async fn edit_reply_body_authorized(
+        &self,
+        tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+        document_id: Uuid,
+        annotation_id: Uuid,
+        reply_id: Uuid,
+        body: &str,
+        actor: &MutationAuthorization,
+    ) -> Result<OffsetDateTime> {
+        Self::authorize_annotation_mutation(tx, document_id, actor, false).await?;
+        sqlx::query_scalar(
+            "UPDATE replies r SET body=$4,edited_at=now(),updated_at=now()
+             FROM annotations a
+             WHERE r.id=$3 AND r.annotation_id=$2 AND a.id=r.annotation_id AND a.document_id=$1
+             RETURNING r.edited_at",
+        )
+        .bind(document_id)
+        .bind(annotation_id)
+        .bind(reply_id)
+        .bind(body)
+        .fetch_optional(&mut **tx)
+        .await?
+        .ok_or(Error::NotFound)
+    }
+
+    /// Who wrote one reply, read through the command's transaction so the
+    /// author check and the edit see the same row. `None` when the reply is
+    /// not in this comment of this document.
+    pub async fn reply_author_key_in_transaction(
+        &self,
+        tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+        document_id: Uuid,
+        annotation_id: Uuid,
+        reply_id: Uuid,
+    ) -> Result<Option<String>> {
+        Ok(sqlx::query_scalar(
+            "SELECT r.author_key FROM replies r JOIN annotations a ON a.id=r.annotation_id
+             WHERE r.id=$3 AND r.annotation_id=$2 AND a.document_id=$1",
+        )
+        .bind(document_id)
+        .bind(annotation_id)
+        .bind(reply_id)
+        .fetch_optional(&mut **tx)
+        .await?)
+    }
+
     pub async fn create_reply_authorized(
         &self,
         tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
@@ -820,7 +898,7 @@ impl PostgresCatalog {
             return Err(Error::Invalid("too many replies requested".into()));
         }
         sqlx::query_as::<_, ReplyRecord>(
-            r#"SELECT id,annotation_id,author_account_id,author_key,author_label,body,created_at,updated_at
+            r#"SELECT id,annotation_id,author_account_id,author_key,author_label,body,created_at,updated_at,edited_at
                FROM replies WHERE id=ANY($1) ORDER BY created_at,id"#,
         ).bind(ids).fetch_all(tx).await.map_err(Error::from)
     }
@@ -857,7 +935,7 @@ impl PostgresCatalog {
         let after_id = after.map(|value| value.1);
         sqlx::query_as::<_, ReplyRecord>(
             r#"SELECT id,annotation_id,author_account_id,author_key,author_label,body,
-                      created_at,updated_at
+                      created_at,updated_at,edited_at
                FROM replies
                WHERE annotation_id=ANY($1)
                  AND (created_at,id) > (COALESCE($2::timestamptz,'-infinity'),
@@ -1146,6 +1224,7 @@ mod tests {
             rendered_position_utf16: Some(11),
             resolved_at: None,
             created_at: OffsetDateTime::UNIX_EPOCH,
+            edited_at: None,
         }
     }
 

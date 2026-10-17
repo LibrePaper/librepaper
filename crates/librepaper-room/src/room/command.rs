@@ -37,6 +37,13 @@ pub enum Command {
         resolved: bool,
         temp_id: String,
     },
+    Edit {
+        comment_id: Uuid,
+        /// The reply being edited; `None` when the comment itself is.
+        reply_id: Option<Uuid>,
+        body: String,
+        temp_id: String,
+    },
     Delete {
         comment_id: Uuid,
         temp_id: String,
@@ -110,6 +117,7 @@ impl Command {
         match self {
             Self::Reply { comment_id, .. }
             | Self::Resolve { comment_id, .. }
+            | Self::Edit { comment_id, .. }
             | Self::Delete { comment_id, .. } => comment_id.to_string(),
             Self::Comment { .. } => String::new(),
         }
@@ -120,6 +128,7 @@ impl Command {
             Self::Comment { temp_id, .. }
             | Self::Reply { temp_id, .. }
             | Self::Resolve { temp_id, .. }
+            | Self::Edit { temp_id, .. }
             | Self::Delete { temp_id, .. } => temp_id,
         }
     }
@@ -188,6 +197,27 @@ impl Message {
                 Ok(Command::Resolve {
                     comment_id,
                     resolved: self.resolved(),
+                    temp_id,
+                })
+            }
+            "edit" => {
+                let comment_id = named("edit")?;
+                // Absent or empty names the comment itself; anything else
+                // must be a reply id, which is a UUID like the comment's.
+                let reply_id = match self.reply_id().trim() {
+                    "" => None,
+                    raw => Some(Uuid::parse_str(raw).map_err(|_| CommandError::Missing {
+                        operation: "edit",
+                        field: "reply_id",
+                        comment_id: comment_id.to_string(),
+                        temp_id: temp_id.clone(),
+                        request_id: request_id.clone(),
+                    })?),
+                };
+                Ok(Command::Edit {
+                    comment_id,
+                    reply_id,
+                    body: self.body().to_owned(),
                     temp_id,
                 })
             }
@@ -284,6 +314,67 @@ mod tests {
         };
         assert_eq!(creator, "server");
         assert_eq!(comment_id.to_string(), NAMED);
+    }
+
+    fn parsed(frame: &str) -> Result<Command, CommandError> {
+        serde_json::from_str::<Message>(frame)
+            .expect("a frame")
+            .into_command()
+    }
+
+    #[test]
+    fn an_edit_of_a_comment_names_no_reply() {
+        let frame = format!(r#"{{"type":"edit","comment_id":"{NAMED}","body":"new","temp_id":"t"}}"#);
+        let Ok(Command::Edit {
+            comment_id,
+            reply_id,
+            body,
+            temp_id,
+        }) = parsed(&frame)
+        else {
+            panic!("an edit parses");
+        };
+        assert_eq!(comment_id.to_string(), NAMED);
+        assert_eq!(reply_id, None);
+        assert_eq!(body, "new");
+        assert_eq!(temp_id, "t");
+
+        let frame = format!(r#"{{"type":"edit","comment_id":"{NAMED}","reply_id":"","body":"x"}}"#);
+        assert!(matches!(
+            parsed(&frame),
+            Ok(Command::Edit { reply_id: None, .. })
+        ));
+    }
+
+    #[test]
+    fn an_edit_of_a_reply_names_it() {
+        let frame = format!(
+            r#"{{"type":"edit","comment_id":"{NAMED}","reply_id":"{NAMED}","body":"new"}}"#
+        );
+        let Ok(Command::Edit { reply_id, .. }) = parsed(&frame) else {
+            panic!("an edit parses");
+        };
+        assert_eq!(reply_id.map(|id| id.to_string()).as_deref(), Some(NAMED));
+    }
+
+    #[test]
+    fn an_edit_needs_a_comment_and_a_well_formed_reply_id() {
+        let frame = r#"{"type":"edit","body":"new"}"#;
+        assert!(matches!(
+            parsed(frame),
+            Err(CommandError::Missing {
+                field: "comment_id",
+                ..
+            })
+        ));
+        let frame = format!(r#"{{"type":"edit","comment_id":"{NAMED}","reply_id":"nope"}}"#);
+        assert!(matches!(
+            parsed(&frame),
+            Err(CommandError::Missing {
+                field: "reply_id",
+                ..
+            })
+        ));
     }
 
     /// Commands that carry no creator pass through untouched.
