@@ -22,6 +22,7 @@ export const CHANGES = "changes";
  * @typedef {{ from: number, to: number, insert: string }} Edit
  * @typedef {{ change: string, text: string }} Fragment
  * @typedef {{ id: string, who: string, author: string, run: string | null, at: number, from: number, to: number }} Change
+ * @typedef {Change & { stale: boolean, hasCursor: boolean }} ResolvedChange
  * @typedef {{ id: string, at: number, fragments: Fragment[] }} Gap
  * @typedef {{ changes: Change[], gaps: Gap[] }} FileState
  * @typedef {Change & { deleted: string }} Row
@@ -224,7 +225,7 @@ function planOne(cur, changes, gaps, ef, et, insert, me, run, now, mintId) {
 // Reading the records
 
 function fileText(doc, fileId) {
-  const text = doc.getMap("files").get(fileId);
+  const text = /** @type {any} */ (doc.getMap("files").get(fileId));
   return text && typeof text.toString === "function" && typeof text.getCursor === "function" ? text : null;
 }
 
@@ -257,7 +258,7 @@ function lastCharStart(body, to) {
  *
  * @param {import("loro-crdt").LoroDoc} doc
  * @param {string} fileId
- * @returns {FileState & { changes: Array<Change & { stale: boolean, hasCursor: boolean }>, gaps: Array<Gap & { stale: boolean }> }}
+ * @returns {{ changes: ResolvedChange[], gaps: Array<Gap & { stale: boolean }> }}
  */
 export function resolveFile(doc, fileId) {
   const text = fileText(doc, fileId);
@@ -265,7 +266,8 @@ export function resolveFile(doc, fileId) {
   const body = text.toString();
   const changes = [];
   const gaps = [];
-  for (const [id, value] of doc.getMap(CHANGES).entries()) {
+  for (const [id, entry] of doc.getMap(CHANGES).entries()) {
+    const value = /** @type {any} */ (entry);
     if (!value || value.file !== fileId) continue;
     if (value.kind === "gap") {
       if (!(value.start instanceof Uint8Array) || !Array.isArray(value.fragments)) continue;
@@ -340,7 +342,8 @@ export function resolveChanges(doc, fileId) {
 export function listChanges(doc) {
   const out = [];
   const seen = new Set();
-  for (const [, value] of doc.getMap(CHANGES).entries()) {
+  for (const [, entry] of doc.getMap(CHANGES).entries()) {
+    const value = /** @type {any} */ (entry);
     if (!value || typeof value.file !== "string" || seen.has(value.file)) continue;
     seen.add(value.file);
     const text = fileText(doc, value.file);
@@ -460,9 +463,10 @@ export function trackedSplice(doc, fileId, from, to, insert, me, opts) {
  */
 export function accept(doc, id) {
   const map = doc.getMap(CHANGES);
-  const value = map.get(id);
+  const value = /** @type {any} */ (map.get(id));
   if (!value || value.kind !== "change") return false;
-  for (const [gid, gv] of [...map.entries()]) {
+  for (const [gid, entry] of [...map.entries()]) {
+    const gv = /** @type {any} */ (entry);
     if (gv?.kind !== "gap" || !Array.isArray(gv.fragments)) continue;
     const kept = gv.fragments.filter((f) => f?.change !== id);
     if (kept.length === gv.fragments.length) continue;
@@ -477,7 +481,7 @@ export function accept(doc, id) {
 // Rejects one change without committing. See `reject`.
 function rejectOne(doc, id) {
   const map = doc.getMap(CHANGES);
-  const value = map.get(id);
+  const value = /** @type {any} */ (map.get(id));
   if (!value || value.kind !== "change") return false;
   const text = fileText(doc, value.file);
   if (text) {
@@ -587,12 +591,16 @@ export function prune(doc) {
   const map = doc.getMap(CHANGES);
   let count = 0;
   const files = new Set();
-  for (const [, v] of map.entries()) if (v && typeof v.file === "string") files.add(v.file);
+  for (const [, entry] of map.entries()) {
+    const v = /** @type {any} */ (entry);
+    if (v && typeof v.file === "string") files.add(v.file);
+  }
   for (const file of files) {
     const text = fileText(doc, file);
     const { changes, gaps } = text ? resolveFile(doc, file) : { changes: [], gaps: [] };
     const liveIds = new Set([...changes.map((c) => c.id), ...gaps.map((g) => g.id)]);
-    for (const [id, v] of [...map.entries()]) {
+    for (const [id, entry] of [...map.entries()]) {
+      const v = /** @type {any} */ (entry);
       if (v?.file !== file) continue;
       if (!liveIds.has(id)) { map.delete(id); count += 1; }
     }
