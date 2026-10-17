@@ -31,9 +31,9 @@ Word's model.
 A root map in the Loro document, `changes`, next to `files`, `paths`,
 `assets` and `meta`. The projection and the render digest ignore it.
 
-Key: a UUID v4 string. Value: a plain Loro value (not a nested container),
-written whole with `map.set(id, value)` and removed with `map.delete(id)`.
-Two kinds, told apart by `kind`:
+Key: a UUID v4 string. Value: a **map container** (`setContainer`), never a
+plain value, so that two peers writing different keys of one record at the
+same moment both keep their write. Two kinds, told apart by `kind`:
 
 ```
 { kind: "change",
@@ -46,52 +46,90 @@ Two kinds, told apart by `kind`:
   end:    Uint8Array|null  // Cursor on the last inserted character, null when nothing is inserted
 }
 
-{ kind: "gap",
-  file:      string,
-  start:     Uint8Array,   // Cursor on the character right after the gap, or the end of the text
-  fragments: [{ change: string, text: string }]   // deleted texts in document order, each owned by a change
+{ kind: "fragment",
+  file:   string,
+  change: string,          // the change this deleted text belongs to
+  text:   string,          // one piece of deleted text
+  start:  Uint8Array,      // Cursor on the character right after it, or the end of the text
+  rank:   number,          // order among the fragments at one point
+  who, author, run, at     // copied from the change, so an orphan can be re-parented
 }
 ```
 
-A change with no span and no fragment in any gap is empty. A gap with no
-fragment is empty. Both are left out of every list and removed by `prune`.
+**Gaps are derived, not stored.** The fragments of a file that resolve to one
+offset form the gap at that point, in `rank` order (then by id). No record is
+ever moved from one gap to another: a gap merges with its neighbour when the
+text between them goes, because their fragments then resolve to the same
+point, and it splits when text comes back between them. Each peer writes only
+its own new records and the cursor or rank keys it has reason to change.
 
-A replacement's gap sits on the first character of its span. Text another
-author inserts right before the span then lands before the gap, and the
-deleted text comes back where the span was.
+Ranks: the planner hands a gap's fragments in document order. Fragments
+already carrying ranks that rise in that order keep them; the others take a
+value between their neighbours (midpoints, or one past the end), so a peer
+adding a fragment beside another's does not move it.
 
-Cursors:
+Cursors and the write discipline:
 - Span `[from, to)`: `start = text.getCursor(from, -1)`, `end =
   text.getCursor(to - 1, 1)` (in the browser `to - 1` is the start index of
-  the last code point, so `to - 2` for a surrogate pair).
-- Gap at `p`: `start = text.getCursor(p, -1)`. At the end of the text Loro
-  returns a cursor with no id, which stays at the end.
+  the last code point, so `to - 2` for a surrogate pair). Fragment at `p`:
+  `start = text.getCursor(p, -1)`. At the end of the text Loro returns a
+  cursor with no id, which stays at the end.
 - Resolving: a cursor resolves to the index of its character whatever its
-  side, so `from = pos(start)`, `to = pos(end) + width`, `gap.at =
-  pos(start)`. When the character was deleted, Loro answers with the position
-  it had and an `update`; then `to = pos(end)`. If `to < from` the span is
-  gone: `to = from`.
+  side, so `from = pos(start)`, `to = pos(end) + width`, `fragment.at =
+  pos(start)`. When the character was deleted, Loro answers with the
+  position it had and an `update`; then `to = pos(end)`, which is the
+  exclusive end already. If `to < from` the span is gone: `to = from`.
+- A cursor is rewritten only when its side of the span, or the fragment's
+  point, would resolve elsewhere than the stored cursor does. A span that
+  shrank therefore needs no write: its stale cursor resolves to the right
+  place. A span that grew writes the end that moved. So a peer deleting the
+  last character of a span and its author typing after it at the same moment
+  both keep their write, and the span comes out right. Nothing is written
+  over a cursor with null: a span emptied in one view may have grown in
+  another; the record stays and prune drops it later if it is still empty.
+- A cursor left on a deleted character is sound until text is inserted
+  exactly at its point, where it could drift across the new text. Whoever
+  inserts there knows it: the planner marks every span with a boundary at an
+  insertion point `set`, and reject re-pins the spans at the point where it
+  puts text back. The write happens only if the cursor drifted.
 - Units: loro-crdt JS and CodeMirror count UTF-16; Rust counts code points.
   Each planner works in its own unit throughout. Fragment texts are strings
   and need no conversion.
-- Healing: `prune` rewrites a record whose cursor came back with an `update`,
-  so a deleted anchor is looked up the slow way once. The planner marks every
-  record the edit touches as `set`, so its cursors are written fresh.
+
+Settling: `prune` drops an empty record (a change with no span and no
+fragment, or a fragment of a change that no longer exists after re-parenting)
+and heals a stale cursor onto a live character only when the record's `at` is
+older than a minute, so that its author's other session has had time to sync
+what it was doing to it. A fragment whose change was decided while the
+fragment was written (an orphan) is re-parented by `prune` to a fresh change
+record built from the author fields the fragment carries, so the deletion it
+records can still be decided.
 
 Rows: a change's `deleted` text is the concatenation of its fragments in
 document order, across gaps. Its position is its span, or the gap of its first
-fragment. A change whose fragments end up in two gaps (another author's text
-was put back between them) is still one row.
+fragment. A change whose fragments sit in two gaps (another author's text was
+put back between them) is still one row.
 
-Records of the earlier model (no `kind`, a `deleted` string with `start` and
-`end` cursors, and an optional `points` list of swallowed pure deletions with
-their UTF-16 offset `at` in `deleted`) are converted by the browser's `prune`.
-Each becomes a change record. Its `deleted` text goes into the gap at its
-anchor, split at each point's `at`, with the pointed change's text between the
-pieces, and a pointed change's own points expanded inside it the same way; a
-point that another point of the same owner also lists is expanded only inside
-that inner one. A record nobody points at that has `deleted` text gets its own
-gap. The server ignores old records until an editor has converted them.
+Concurrency, stated exactly: two peers editing at the same moment, anywhere,
+lose no tracked text and converge. Fragments at one point keep document order
+unless the two peers edited the very same point at the same moment, when the
+ranks they assigned independently can interleave; both orders are defensible
+and nothing is lost. Two editors deciding the same change at the same moment
+still restore its text twice, as before.
+
+Records of the earlier model (plain values with no `kind`, a `deleted` string
+with `start` and `end` cursors, and an optional `points` list of swallowed
+pure deletions with their UTF-16 offset `at` in `deleted`) are converted by
+the browser's `migrateChanges`, which the editor runs when it opens a
+document, before every snapshot it plans against, and at the start of
+`trackedSplice`, `untrackedSplice` and `recordEdits`. Each old record becomes
+a change container under its own id. Its `deleted` text splits at each
+point's `at`, and the pointed change's text (and, nested, its own points)
+sits between the pieces, in one gap at the owner's anchor; a point that
+another point of the same owner also lists is expanded only inside that inner
+one. The fragments get ids derived from the owner's id and their index, so two
+peers converting the same document write the same records. The server
+ignores old records until an editor has converted them.
 
 ## The planner (pure, shared by JS and Rust)
 
@@ -168,9 +206,11 @@ rows' change ids:
   one point when the span goes. Gaps beyond the span come back first, at
   their positions, then the span's text is deleted, then the gaps at and
   before it. Putting a gap back: walk its fragments in order; each fragment of
-  the rejected change is inserted into the text where the walk stands; each
-  run of other changes' fragments becomes a new gap anchored on the
-  character that now follows it. Then `changes.delete(id)`.
+  the rejected change is inserted into the text where the walk stands and its
+  record deleted; each run of other changes' fragments is re-anchored on the
+  character that now follows it (their ranks unchanged, raised where two gaps
+  collapsed onto the span's point). Spans with a boundary at the point are
+  re-pinned. Then `changes.delete(id)`.
 - `rejectMany(doc, ids)` rejects each in turn in one commit and returns the
   number rejected. Order does not matter.
 
@@ -303,7 +343,5 @@ suggestion wording from `docs/architecture/document.md`,
   old characters do not reattach exactly.
 - After a history trim, a change whose cursor pointed at a character deleted
   before the trim may be orphaned and is pruned.
-- Two editors deciding different changes with fragments in one gap at the
-  same moment race on that gap's record; the later write wins and the other
-  decision's fragments may come back or vanish twice. Rare, and the same
-  class of race as above.
+- Two peers editing the very same point at the same moment can leave the
+  fragments there in either order. Nothing is lost.
