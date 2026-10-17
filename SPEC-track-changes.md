@@ -84,9 +84,14 @@ fragment. A change whose fragments end up in two gaps (another author's text
 was put back between them) is still one row.
 
 Records of the earlier model (no `kind`, a `deleted` string with `start` and
-`end` cursors) are converted by the browser's `prune` into a change and, when
-`deleted` is not empty, a gap of one fragment. The server ignores them until
-then.
+`end` cursors, and an optional `points` list of swallowed pure deletions with
+their UTF-16 offset `at` in `deleted`) are converted by the browser's `prune`.
+Each becomes a change record. Its `deleted` text goes into the gap at its
+anchor, split at each point's `at`, with the pointed change's text between the
+pieces, and a pointed change's own points expanded inside it the same way; a
+point that another point of the same owner also lists is expanded only inside
+that inner one. A record nobody points at that has `deleted` text gets its own
+gap. The server ignores old records until an editor has converted them.
 
 ## The planner (pure, shared by JS and Rust)
 
@@ -109,14 +114,19 @@ Rules, for one edit `[ef, et)` with `insert`:
 2. **Original text** inside `[ef, et)` and outside every span is what `me`
    deleted. Each run of it becomes a fragment owned by `me`'s change.
 3. **Affected own changes** are `me`'s changes with a span touching `[ef, et]`
-   (ends included) or a fragment in a gap at a position in `[ef, et]`. They
-   and the new edit merge into one change, which keeps the lowest id by
-   position; the others are `removed` and their fragments relabelled. If the
-   edit deletes original text or inserts text and no own change is affected, a
-   new change is made.
+   (ends included), and `me`'s changes with no span that have a fragment in a
+   gap at a position in `[ef, et]`. A span of `me`'s elsewhere stays its own
+   change even when a fragment of it sits at the edit: one change holds one
+   span, and a span never widens over text that is not its own. The affected
+   changes and the new edit merge into one change, which keeps the lowest id
+   by position; the others are `removed`, and their fragments in every gap of
+   the file, not only the swallowed ones, take the merged id (those gaps are
+   `set`). If the edit deletes original text or inserts text and no own change
+   is affected, a new change is made.
 4. **Swallowed gaps.** Every gap at a position in `[ef, et]` merges into one
-   gap with the new fragments. Walking `ef..et`, the gap at `p` comes first,
-   then the original character at `p`. Adjacent fragments of one change join.
+   gap with the new fragments. Walking `ef..et`, the gaps at `p` come first
+   (in their order; an untracked edit elsewhere can have left two on one
+   point), then the original character at `p`. Adjacent fragments of one change join.
    With nothing inserted the merged gap sits at `ef`. With text inserted it
    sits at the merged span's start, and the gap that sat exactly at `et`
    stays separate after the span, at `ef + insert.length`, since what it held
@@ -131,9 +141,16 @@ Rules, for one edit `[ef, et)` with `insert`:
 6. A multi-range edit is planned range by range, in order, each range in the
    coordinates left by the ranges before it, exactly as
    `web/vendor/loro-codemirror/sync.ts` writes them.
+7. **Untracked edits are planned too** (`untracked: true`), by the browser
+   for every local edit while tracking is off, when the file has records. An
+   untracked edit records nothing and makes no change: spans still shrink,
+   move and split around it, and the gaps it collapses merge in order at
+   `ef`. Without this, deleting the text between two gaps leaves two gaps on
+   one point with no order between them.
 
 Fixtures: `web/tests/fixtures/track-changes.json`, an array of
-`{name, before, state, me, edits, after, expect}`. `state` and `expect` are
+`{name, before, state, me, edits, after, expect}`, plus `untracked: true` for
+an untracked edit. `state` and `expect` are
 `{changes: [{id, who, from, to}], gaps: [{at, fragments: [{change, text}]}]}`;
 new change ids are written `"new-1"`, `"new-2"`, ... in order of creation and
 gap ids are not compared. Offsets are UTF-16; the Rust runner converts. Both
@@ -165,7 +182,10 @@ random authors, then (a) every change rejected in random order gives the
 original text; (b) every change accepted or rejected in random order leaves
 each original character iff its first deleter was rejected, each surviving
 inserted character iff its author was accepted, and original characters in
-their order. Both planners carry a seeded version of it in their unit tests.
+their order. A third run interleaves tracked edits, untracked edits and per-author
+decisions, authors editing again after being decided, with one state per
+character as the oracle. Both planners carry seeded versions in their unit
+tests.
 
 ## Browser
 

@@ -1360,13 +1360,13 @@
       "changes": [
         {
           "id": "a",
-          "who": "alice",
+          "who": "bob",
           "from": 2,
           "to": 2
         },
         {
           "id": "b",
-          "who": "bob",
+          "who": "alice",
           "from": 2,
           "to": 2
         }
@@ -1376,11 +1376,11 @@
           "at": 2,
           "fragments": [
             {
-              "change": "b",
+              "change": "a",
               "text": "cd"
             },
             {
-              "change": "a",
+              "change": "b",
               "text": "ef"
             }
           ]
@@ -1403,13 +1403,13 @@
       "changes": [
         {
           "id": "a",
-          "who": "alice",
+          "who": "bob",
           "from": 1,
           "to": 1
         },
         {
           "id": "b",
-          "who": "bob",
+          "who": "alice",
           "from": 1,
           "to": 1
         }
@@ -1419,15 +1419,15 @@
           "at": 1,
           "fragments": [
             {
-              "change": "a",
+              "change": "b",
               "text": "b"
             },
             {
-              "change": "b",
+              "change": "a",
               "text": "cd"
             },
             {
-              "change": "a",
+              "change": "b",
               "text": "ef"
             }
           ]
@@ -1769,6 +1769,347 @@
           ]
         }
       ]
+    }
+  },
+  {
+    "name": "an insertion before a restored fragment does not widen the author's distant span",
+    "before": "acZe",
+    "state": {
+      "changes": [
+        {
+          "id": "a",
+          "who": "bob",
+          "from": 2,
+          "to": 3
+        }
+      ],
+      "gaps": [
+        {
+          "at": 1,
+          "fragments": [
+            {
+              "change": "a",
+              "text": "b"
+            }
+          ]
+        },
+        {
+          "at": 2,
+          "fragments": [
+            {
+              "change": "a",
+              "text": "d"
+            }
+          ]
+        }
+      ]
+    },
+    "me": {
+      "who": "bob",
+      "author": "Bob"
+    },
+    "edits": [
+      {
+        "from": 1,
+        "to": 1,
+        "insert": "Q"
+      }
+    ],
+    "after": "aQcZe",
+    "expect": {
+      "changes": [
+        {
+          "id": "new-1",
+          "who": "bob",
+          "from": 1,
+          "to": 2
+        },
+        {
+          "id": "a",
+          "who": "bob",
+          "from": 3,
+          "to": 4
+        }
+      ],
+      "gaps": [
+        {
+          "at": 2,
+          "fragments": [
+            {
+              "change": "a",
+              "text": "b"
+            }
+          ]
+        },
+        {
+          "at": 3,
+          "fragments": [
+            {
+              "change": "a",
+              "text": "d"
+            }
+          ]
+        }
+      ]
+    }
+  },
+  {
+    "name": "merging own changes relabels their fragments in every gap",
+    "before": "bdf",
+    "state": {
+      "changes": [
+        {
+          "id": "a",
+          "who": "m",
+          "from": 0,
+          "to": 0
+        },
+        {
+          "id": "b",
+          "who": "m",
+          "from": 1,
+          "to": 1
+        }
+      ],
+      "gaps": [
+        {
+          "at": 0,
+          "fragments": [
+            {
+              "change": "a",
+              "text": "a"
+            }
+          ]
+        },
+        {
+          "at": 1,
+          "fragments": [
+            {
+              "change": "b",
+              "text": "c"
+            }
+          ]
+        },
+        {
+          "at": 2,
+          "fragments": [
+            {
+              "change": "b",
+              "text": "e"
+            }
+          ]
+        }
+      ]
+    },
+    "me": {
+      "who": "m",
+      "author": "M"
+    },
+    "edits": [
+      {
+        "from": 0,
+        "to": 1,
+        "insert": ""
+      }
+    ],
+    "after": "df",
+    "expect": {
+      "changes": [
+        {
+          "id": "a",
+          "who": "m",
+          "from": 0,
+          "to": 0
+        }
+      ],
+      "gaps": [
+        {
+          "at": 0,
+          "fragments": [
+            {
+              "change": "a",
+              "text": "abc"
+            }
+          ]
+        },
+        {
+          "at": 1,
+          "fragments": [
+            {
+              "change": "a",
+              "text": "e"
+            }
+          ]
+        }
+      ]
+    }
+  },
+  {
+    "name": "an untracked deletion merges the gaps it collapses, in order",
+    "before": "ace",
+    "state": {
+      "changes": [
+        {
+          "id": "a",
+          "who": "p",
+          "from": 1,
+          "to": 1
+        },
+        {
+          "id": "b",
+          "who": "q",
+          "from": 2,
+          "to": 2
+        }
+      ],
+      "gaps": [
+        {
+          "at": 1,
+          "fragments": [
+            {
+              "change": "a",
+              "text": "b"
+            }
+          ]
+        },
+        {
+          "at": 2,
+          "fragments": [
+            {
+              "change": "b",
+              "text": "d"
+            }
+          ]
+        }
+      ]
+    },
+    "me": {
+      "who": "",
+      "author": ""
+    },
+    "untracked": true,
+    "edits": [
+      {
+        "from": 1,
+        "to": 2,
+        "insert": ""
+      }
+    ],
+    "after": "ae",
+    "expect": {
+      "changes": [
+        {
+          "id": "a",
+          "who": "p",
+          "from": 1,
+          "to": 1
+        },
+        {
+          "id": "b",
+          "who": "q",
+          "from": 1,
+          "to": 1
+        }
+      ],
+      "gaps": [
+        {
+          "at": 1,
+          "fragments": [
+            {
+              "change": "a",
+              "text": "b"
+            },
+            {
+              "change": "b",
+              "text": "d"
+            }
+          ]
+        }
+      ]
+    }
+  },
+  {
+    "name": "an untracked deletion shrinks a pending span and records nothing",
+    "before": "abXYZcdef",
+    "state": {
+      "changes": [
+        {
+          "id": "a",
+          "who": "bob",
+          "from": 2,
+          "to": 5
+        }
+      ],
+      "gaps": []
+    },
+    "me": {
+      "who": "",
+      "author": ""
+    },
+    "untracked": true,
+    "edits": [
+      {
+        "from": 1,
+        "to": 4,
+        "insert": ""
+      }
+    ],
+    "after": "aZcdef",
+    "expect": {
+      "changes": [
+        {
+          "id": "a",
+          "who": "bob",
+          "from": 1,
+          "to": 2
+        }
+      ],
+      "gaps": []
+    }
+  },
+  {
+    "name": "an untracked insertion inside a pending span splits it",
+    "before": "abXYZcdef",
+    "state": {
+      "changes": [
+        {
+          "id": "a",
+          "who": "bob",
+          "from": 2,
+          "to": 5
+        }
+      ],
+      "gaps": []
+    },
+    "me": {
+      "who": "",
+      "author": ""
+    },
+    "untracked": true,
+    "edits": [
+      {
+        "from": 3,
+        "to": 3,
+        "insert": "q"
+      }
+    ],
+    "after": "abXqYZcdef",
+    "expect": {
+      "changes": [
+        {
+          "id": "a",
+          "who": "bob",
+          "from": 2,
+          "to": 3
+        },
+        {
+          "id": "new-1",
+          "who": "bob",
+          "from": 4,
+          "to": 6
+        }
+      ],
+      "gaps": []
     }
   }
 ]
