@@ -301,6 +301,8 @@
           // cursor is made at an intermediate offset.
           let state = snapshot;
           const touched = new Set();
+          /** @type {string[]} */
+          const dropped = [];
           const now = Date.now();
           if (tracked || snapshot.changes.length || snapshot.gaps.length) {
             for (const transaction of update.transactions) {
@@ -317,25 +319,31 @@
                 mintId: () => crypto.randomUUID(),
               });
               for (const item of [...plan.changes, ...plan.gaps]) if (item.state !== "kept") touched.add(item.id);
+              dropped.push(...(plan.dropped ?? []));
               state = {
                 changes: plan.changes.filter((change) => change.state !== "removed"),
                 gaps: plan.gaps.filter((gap) => gap.state !== "removed"),
               };
             }
-            if (touched.size) {
+            if (touched.size || dropped.length) {
               // Everything the batch touched is written once, against the final
               // text; what it dropped is deleted; the rest keeps its cursors.
+              // Gaps are named by position, which moves between steps, so every
+              // gap of the final state is handed over as set: a fragment whose
+              // cursor and rank already hold is not written again. Every gap of
+              // the snapshot is handed over as removed: only fragments no final
+              // gap holds are deleted.
               const keptChanges = new Set(state.changes.map((change) => change.id));
-              const keptGaps = new Set(state.gaps.map((gap) => gap.id));
               const planned = {
                 changes: [
                   ...state.changes.map((change) => ({ ...change, state: touched.has(change.id) ? "set" : "kept" })),
                   ...snapshot.changes.filter((change) => !keptChanges.has(change.id)).map((change) => ({ ...change, state: "removed" })),
                 ],
                 gaps: [
-                  ...state.gaps.map((gap) => ({ ...gap, state: touched.has(gap.id) ? "set" : "kept" })),
-                  ...snapshot.gaps.filter((gap) => !keptGaps.has(gap.id)).map((gap) => ({ ...gap, state: "removed" })),
+                  ...state.gaps.map((gap) => ({ ...gap, state: "set" })),
+                  ...snapshot.gaps.map((gap) => ({ ...gap, state: "removed" })),
                 ],
+                dropped,
               };
               writePlanned(doc, fileId, planned);
             }
