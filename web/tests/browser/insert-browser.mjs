@@ -124,6 +124,17 @@ window.trackedMultiFileInsertCheck=async()=>{
   component.stopTracking();await tick();
   return {ok,retry,projectedEdit,refusedUnchanged,changeFiles,expectedFiles,shown,targetId,path};
 };
+window.fileIdentityCheck=async()=>{
+  await setupInsert('markdown','Before AFTER');
+  const notes=session.addText('notes.md','OLD NOTES');
+  view().dispatch({selection:{anchor:7}});
+  const context=component.getInsertContext();
+  // While the dialog is open, the path moves to a new file: the old text is renamed away and a new text takes its name.
+  session.renameFile(notes,'moved.md');
+  const replaced=session.addText('notes.md','NEW NOTES');
+  const ok=component.applyInsertResult({text:'TRACKED ',additionalEdits:[{path:'notes.md',from:0,to:0,insert:'SETUP '}]},context);
+  return {ok,active:session.textOf(file).toString(),old:session.textOf(notes).toString(),replaced:session.textOf(replaced).toString()};
+};
 window.insertReady=true;
 `);
 let server, page;
@@ -211,6 +222,7 @@ try {
   assert.equal(trackedInsert.refusedUnchanged,true,"the refused insertion wrote into another file");
   assert.deepEqual(trackedInsert.changeFiles,trackedInsert.expectedFiles,"the tracked Insert and its cross-file edit are each recorded as a change in their own file");
   assert.match(trackedInsert.shown,/Before TRACKED AFTER/);
+  assert.deepEqual(await evaluate("fileIdentityCheck()"),{ok:false,active:"Before AFTER",old:"OLD NOTES",replaced:"NEW NOTES"},"an edit to a path that now names another file is refused before anything is written");
   await evaluate("setupInsert('quarto')");await evaluate("selectInsert(7)");await choose("toc");await until("Quarto TOC",()=>evaluate(`Boolean(document.querySelector('[role="dialog"][data-state="open"]'))`),5000);await confirm();assert.match((await evaluate("insertState()")).text,/toc: true/);
   console.log("insert-browser: Skeleton table dialogs in all four formats, selection wrapping, remote anchors, undo, file switch and readonly guards passed");
 } catch(error) {console.error(await page?.evaluate("({errors:window.testErrors,dialogs:[...document.querySelectorAll('[role=dialog]')].map(x=>({title:x.textContent,state:x.dataset.state})),documentText:document.querySelector('.cm-content')?.textContent})"));throw error;} finally {await page?.close();server?.close();removeTemporary(temporary);}
