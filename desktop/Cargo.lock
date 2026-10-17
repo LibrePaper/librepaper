@@ -2235,7 +2235,7 @@ dependencies = [
 
 [[package]]
 name = "librepaper-desktop"
-version = "0.0.44"
+version = "0.0.45"
 dependencies = [
  "objc2",
  "objc2-foundation",
