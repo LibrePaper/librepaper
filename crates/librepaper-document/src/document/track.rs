@@ -2150,7 +2150,7 @@ pub fn prune_at(doc: &LoroDoc, now: i64) -> usize {
             let all_settled: Vec<bool> = g
                 .fragments
                 .iter()
-                .map(|f| f.id.as_deref().is_none_or(|id| stale_settled(id)))
+                .map(|f| f.id.as_deref().is_none_or(&stale_settled))
                 .collect();
             if all_settled.iter().all(|settled| *settled)
                 && write_gap(doc, &text, &file, g.at, &g.fragments, &HashMap::new(), true)
