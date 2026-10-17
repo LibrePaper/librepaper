@@ -191,7 +191,7 @@ function runDemo(fixture, commandLineConfig) {
     "MAKE=" + fixture.mockMake, "DEMO_KEYS=" + join(fixture.directory, "keys.yaml"),
   ];
   if (commandLineConfig !== undefined) args.push("CONFIG=" + commandLineConfig);
-  args.push("demo");
+  args.push("demo-checkout");
   return spawnSync(make, args, {
     cwd: fixture.directory,
     encoding: "utf8",
@@ -243,6 +243,29 @@ test("demo chooses OAuth config when a GitHub client ID is inherited", async () 
     const logs = await demoLogs(fixture);
     assert.match(logs.make, /demo-run CONFIG=tools\/dev\/demo\/config-oauth\.toml/);
     assert.equal(logs.sops, "");
+  } finally {
+    await fixture.cleanup();
+  }
+});
+
+test("demo runs the demo worktree with this checkout's paths made absolute", async () => {
+  const fixture = await demoFixture();
+  const tree = join(fixture.directory, "tree");
+  await mkdir(join(fixture.directory, "tools/dev/demo"), { recursive: true });
+  await executable(join(fixture.directory, "tools/dev/demo/worktree"),
+    "#!/bin/sh\nprintf '%s\\n' \"$1\" >> \"$MAKE_LOG\"\nprintf '%s\\n' " + JSON.stringify(tree) + "\n");
+  try {
+    const result = spawnSync(make, [
+      "--file=" + makefile, "--no-print-directory", "SHELL=/bin/sh",
+      "MAKE=" + fixture.mockMake, "DEMO_REF=topic", "CONFIG=custom.toml", "MIRROR=mirror", "demo",
+    ], { cwd: fixture.directory, encoding: "utf8", timeout: 20000, env: fixture.environment });
+    assert.equal(result.status, 0, result.stderr || result.stdout);
+    const args = "MIRROR=" + join(fixture.directory, "mirror") + " CONFIG=" + join(fixture.directory, "custom.toml");
+    assert.deepEqual((await demoLogs(fixture)).make.trim().split("\n"), [
+      "topic",
+      "-C " + tree + " --no-print-directory web " + args,
+      "-C " + tree + " --no-print-directory demo-checkout " + args,
+    ]);
   } finally {
     await fixture.cleanup();
   }

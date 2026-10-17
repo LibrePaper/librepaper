@@ -1,0 +1,50 @@
+#!/usr/bin/env bash
+# Open the desktop app against the demo, starting the demo when none answers.
+#
+# Run from the demo worktree root by make demo-desktop. When a demo already
+# answers on PORT, the app opens against it and the demo is left running. When
+# nothing answers, this script starts the demo, waits for it, and opens the app.
+# Closing the app, or pressing Ctrl-C, kills the demo's process group. That lets
+# tools/dev/demo/compose run its cleanup and take the containers down.
+set -euo pipefail
+
+ROOT=$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)
+PORT="${PORT:-8081}"
+URL="http://localhost:$PORT/"
+APP="$ROOT/desktop/target/release/librepaper-desktop"
+answers() { curl -fsS -o /dev/null "$URL" 2>/dev/null; }
+
+if answers; then
+  echo "demo-desktop: using the demo already running on $URL"
+  LIBREPAPER_SERVER="$URL" exec "$APP"
+fi
+
+LOG="$ROOT/target/demo-desktop.log"
+mkdir -p "$ROOT/target"
+echo "demo-desktop: starting the demo (log: $LOG)"
+# The demo gets its own process group, so Ctrl-C reaches only this script and the app.
+set -m
+env -u CONFIG "${MAKE:-make}" -C "$ROOT" --no-print-directory demo-checkout OPEN=0 >"$LOG" 2>&1 &
+demo=$!
+set +m
+# make exits before compose has taken the containers down, so wait for the
+# whole process group, not only for make.
+stop() {
+  kill -TERM -- "-$demo" 2>/dev/null || true
+  wait "$demo" 2>/dev/null || true
+  while kill -0 -- "-$demo" 2>/dev/null; do sleep 0.5; done
+}
+trap stop EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
+
+until answers; do
+  if ! kill -0 "$demo" 2>/dev/null; then
+    echo "demo-desktop: the demo did not start; the end of $LOG:" >&2
+    tail -n 40 "$LOG" >&2
+    exit 1
+  fi
+  sleep 2
+done
+echo "demo-desktop: the demo is up on $URL; closing the app stops it"
+LIBREPAPER_SERVER="$URL" "$APP"

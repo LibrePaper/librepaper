@@ -1,7 +1,9 @@
 #!/usr/bin/env bash
 # Set the release version everywhere a release names it: the workspace
-# version, the workspace entries in Cargo.lock, and the deployment kit's image
-# pins. tools/release/kit.test.mjs fails when the pins and the version differ.
+# version, the workspace entries in Cargo.lock, the desktop app's version in
+# its Cargo.toml, tauri.conf.json and Cargo.lock, and the deployment kit's
+# image pins. tools/release/kit.test.mjs fails when the pins or the desktop
+# version differ from the workspace version.
 #
 #   tools/release/version 0.0.25
 set -euo pipefail
@@ -16,5 +18,8 @@ fi
 # The first version line is [workspace.package].version.
 sed -i -E '0,/^version = "[^"]*"/s//version = "'"$version"'"/' Cargo.toml
 cargo update --workspace --quiet
+sed -i -E '0,/^version = "[^"]*"/s//version = "'"$version"'"/' desktop/Cargo.toml
+sed -i -E '0,/^  "version": "[^"]*"/s//  "version": "'"$version"'"/' desktop/tauri.conf.json
+cargo update --workspace --quiet --manifest-path desktop/Cargo.toml
 sed -i -E 's#(ghcr\.io/librepaper/librepaper(-backup)?):v[0-9]+\.[0-9]+\.[0-9]+#\1:v'"$version"'#' deploy/compose.yaml
-git diff --stat -- Cargo.toml Cargo.lock deploy/compose.yaml
+git diff --stat -- Cargo.toml Cargo.lock deploy/compose.yaml desktop/Cargo.toml desktop/Cargo.lock desktop/tauri.conf.json
