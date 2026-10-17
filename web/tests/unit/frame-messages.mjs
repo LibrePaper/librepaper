@@ -19,9 +19,10 @@ assert.deepEqual(accepted({ type: "pdf-caret", pdf: { page: 1, x: 10, y: 20 } })
 assert.deepEqual(accepted({ type: "viewer-state", drawn: true, mode: "page-fit", scale: 1.25 }), { type: "viewer-state", drawn: true, mode: "page-fit", scale: 1.25 });
 assert.deepEqual(accepted({ type: "viewer-state", drawn: false, mode: "1.5", scale: null }), { type: "viewer-state", drawn: false, mode: "1.5", scale: null });
 for (const message of [
-  { type: "annotate" }, { type: "disarm" }, { type: "focus", id: "mark-1" },
+  { type: "annotate" }, { type: "disarm" }, { type: "unfocus" }, { type: "focus", id: "mark-1" },
   { type: "reading-position", start: 4 },
 ]) assert.ok(accepted(message), `${message.type} is an emitted frame message`);
+assert.deepEqual(accepted({ type: "unfocus" }), { type: "unfocus" });
 
 // Reject malformed objects, privileged/unknown vocabulary, oversize strings,
 // non-finite coordinates and unsafe integer offsets at the boundary.
