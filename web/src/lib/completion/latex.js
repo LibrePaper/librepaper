@@ -3,7 +3,7 @@
 // nothing here. Commands and environments come from LaTeX-Workshop's lists
 // (see latex-workshop.json) and from latex-packages.js; everything the
 // project defines or loads is read from its own sources.
-import { snippetCompletion } from "@codemirror/autocomplete";
+import { snippet, snippetCompletion } from "@codemirror/autocomplete";
 import workshop from "./latex-workshop.json" with { type: "json" };
 import { PACKAGES } from "./latex-packages.js";
 import { pathOptions } from "./paths.js";
@@ -133,11 +133,20 @@ const PACKAGE_ENVIRONMENTS = Object.fromEntries(Object.entries(PACKAGES).map(([n
 const PACKAGE_OPTIONS = Object.keys(PACKAGES).map((label) => ({ label, type: "namespace", detail: "package" }));
 
 // Completes \begin{name} with its closing brace, the body, and the matching
-// \end unless the next line already has one.
+// \end unless the next line already has one. closeBrackets() may have
+// put a "}" after the cursor, so that brace is replaced too.
 function environmentOption(entry, closed) {
   const tail = closed ? "" : `\n\\end{${entry.name}}`;
   const template = `${entry.name}}${entry.body ?? FALLBACK_BODY}${tail}`;
-  return snippetCompletion(template, { label: entry.name, type: "keyword", detail: entry.detail });
+  const option = snippetCompletion(template, { label: entry.name, type: "keyword", detail: entry.detail });
+  const insert = snippet(template);
+  return {
+    ...option,
+    apply(view, completion, from, to) {
+      const extend = view.state.doc.sliceString(to, to + 1) === "}";
+      insert(view, completion, from, extend ? to + 1 : to);
+    },
+  };
 }
 
 // The text of a comma list after the last comma, without leading spaces.

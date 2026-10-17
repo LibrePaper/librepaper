@@ -1002,21 +1002,27 @@
     const file = projectDirectory(doc, rules ?? null).files.get(path);
     return file?.kind === "text" ? file.id : "";
   }
-  // Project facts for completion sources. The edited file's path and format are
-  // read now; the project walk runs only when a source first asks for texts or files.
+  // Project facts for completion sources. The format comes from the edited
+  // file's raw path, which is cheap to read. The projected path and the project
+  // walk run only when a source first asks for them.
   /** @returns {import("../lib/completion/paths.js").CompletionProject} */
   function completionProject() {
     const doc = session.doc;
-    const path = pathOfDoc(doc, showing);
     if (!doc) return { path: "", format: "", texts: {}, files: [] };
+    const raw = doc.getMap("paths").get(showing);
+    const rawPath = typeof raw === "string" ? raw : "";
     let tree = null;
+    let projected = null;
     const load = () => {
       if (!tree) tree = treeForDoc(doc);
       return tree;
     };
     return {
-      path,
-      format: formatOfPath(path),
+      get path() {
+        if (projected === null) projected = pathOfDoc(doc, showing) || rawPath;
+        return projected;
+      },
+      format: formatOfPath(rawPath),
       get texts() {
         /** @type {Record<string, string>} */
         const texts = {};

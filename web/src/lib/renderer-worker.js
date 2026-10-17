@@ -17,6 +17,11 @@ const rendererScope = /** @type {RendererWorkerScope} */ (/** @type {unknown} */
 function complete(wasm, { tree, path = "", source = "", offset = 0, explicit = false }) {
   if (typeof wasm.complete !== "function") return null;
   handOver(wasm, tree);
+  // A fresh module has none of the packages fetched by earlier renders.
+  for (const [file, bytes] of fetched) {
+    if (file in (tree.texts || {}) || file in (tree.assets || {})) continue;
+    call(wasm, "add_file", file, bytes);
+  }
   const request = JSON.stringify({ path, source, offset, explicit, files: Object.keys(tree.files || tree.texts || {}) });
   const { bytes } = call(wasm, "complete", request);
   const text = new TextDecoder().decode(bytes);

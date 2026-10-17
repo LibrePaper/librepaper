@@ -251,7 +251,7 @@ export const PACKAGES = {
       { name: "subfloat", snippet: "subfloat[${1:caption}]{${2:content}}", detail: "subfigure with caption" },
     ],
     environments: [
-      { name: "subfigure", snippet: "[${1:0.45}]{\\linewidth}\n\t${0}" },
+      { name: "subfigure", snippet: "[t]{${1:0.45}\\linewidth}\n\t${0}" },
     ],
   },
   mathtools: {

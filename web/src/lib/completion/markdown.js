@@ -6,6 +6,8 @@ import { dirname, normalizePath, pathOptions, resolvePath } from "./paths.js";
 const MARKDOWN_PATH = /\.(?:md|markdown|qmd)$/i;
 const IMAGE_EXTENSIONS = ["png", "jpg", "jpeg", "gif", "svg", "webp", "pdf"];
 const PATH_CHARS = /^[^()\s]*$/;
+// A file name with no "#", so typing one asks for anchors again.
+const FILE_PATH = /^[^()\s#]*$/;
 const IMAGE = /!\[[^\]]*\]\(([^()\s]*)$/;
 const LINK = /(?:^|[^!])\[[^\]]*\]\(([^()\s]*)$/;
 const REFERENCE = /\[[^\]]*\]\[([^[\]\s]*)$/;
@@ -49,6 +51,31 @@ function slug(title) {
   return title.toLowerCase().replace(/[^\p{L}\p{M}\p{N} _-]/gu, "").replace(/ /g, "-");
 }
 
+// The text a heading shows. comrak builds the id from this, not from the
+// markdown, so links, code and emphasis are reduced to their text first.
+function headingText(title) {
+  return title
+    .replace(/!\[([^\]]*)\]\([^)]*\)/g, "$1")
+    .replace(/\[([^\]]*)\]\([^)]*\)/g, "$1")
+    .replace(/\[([^\]]*)\]\[[^\]]*\]/g, "$1")
+    .replace(/<((?:https?|mailto|ftp):[^>\s]*)>/g, "$1")
+    .replace(/(`+)([^`]*?)\1/g, "$2")
+    .replace(/<[^>]*>/g, "")
+    .replace(/&(#\d+|amp|lt|gt|quot);/g, (all, name) => {
+      if (name[0] !== "#") return { amp: "&", lt: "<", gt: ">", quot: '"' }[name];
+      const code = Number(name.slice(1));
+      return code <= 0x10ffff ? String.fromCodePoint(code) : all;
+    })
+    .replace(/\*/g, "")
+    // An underscore run is emphasis when it touches a word on one side only.
+    .replace(/_+/g, (run, offset, whole) => {
+      const before = offset > 0 && /[\p{L}\p{N}]/u.test(whole[offset - 1]);
+      const end = offset + run.length;
+      const after = end < whole.length && /[\p{L}\p{N}]/u.test(whole[end]);
+      return before !== after ? "" : run;
+    });
+}
+
 // ATX headings outside code, with ids in document order.
 function headingsOf(text) {
   const used = new Set();
@@ -67,7 +94,7 @@ function headingsOf(text) {
     }
     title = title.replace(/[ \t]*\{[^{}]*\}[ \t]*$/, "").trim();
     if (!explicit) {
-      const base = slug(title);
+      const base = slug(headingText(title));
       if (!base) continue;
       id = base;
       for (let n = 1; used.has(id); n++) id = `${base}-${n}`;
@@ -173,7 +200,7 @@ export function markdownCompletion(project) {
     const hash = partial.indexOf("#");
     if (hash < 0) {
       const files = pathOptions(current.files, directory);
-      return result(from, PATH_CHARS, [...files, ...anchorOptions(text, "#")]);
+      return result(from, FILE_PATH, [...files, ...anchorOptions(text, "#")]);
     }
     const file = partial.slice(0, hash);
     if (!file) return result(from, PATH_CHARS, anchorOptions(text, "#"));
