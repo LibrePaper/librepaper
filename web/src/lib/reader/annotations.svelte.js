@@ -455,11 +455,16 @@ export function createAnnotations({ slug, key = "", anchor, repaint, send, rende
       if (!reply) repaint();
       const result = await send({ type: "edit", comment_id: item.id, ...(reply ? { reply_id: reply.id } : {}), body });
       if (!result || result.ok === false) {
-        // The room never took the words, so put the old body back and say why.
-        target.body = previous;
-        publish();
-        if (!reply) repaint();
-        return { ok: false, message: result?.error?.message || "That edit could not be saved." };
+        // The room never took the words, so put the old body back and say
+        // why. Unless something newer has replaced them meanwhile: a later
+        // edit or a peer's event wins over this stale failure.
+        const stale = target.body !== body;
+        if (!stale) {
+          target.body = previous;
+          publish();
+          if (!reply) repaint();
+        }
+        return { ok: false, stale, message: result?.error?.message || "That edit could not be saved." };
       }
       return { ok: true };
     },

@@ -380,13 +380,36 @@ const page = (comments, { next = null, complete = !next, total, open = total, re
 
   const failedComment = refused.edit(owned, null, "new");
   assert.equal(owned.body, "new", "the new words show until the room answers");
-  assert.deepEqual(await failedComment, { ok: false, message: "offline" });
+  assert.deepEqual(await failedComment, { ok: false, stale: false, message: "offline" });
   assert.equal(owned.body, "First", "a refused comment edit goes back to the original body");
 
   const failedReply = refused.edit(owned, answer, "new reply");
   assert.equal(answer.body, "new reply");
-  assert.deepEqual(await failedReply, { ok: false, message: "offline" });
+  assert.deepEqual(await failedReply, { ok: false, stale: false, message: "offline" });
   assert.equal(answer.body, "Reply", "a refused reply edit goes back to the original body");
+}
+
+// A failure that arrives after a newer edit has landed leaves the newer words.
+{
+  const answers = [];
+  const overlapping = createAnnotations({
+    slug: "edit-overlap",
+    anchor: () => {},
+    repaint: () => {},
+    send: () => new Promise((resolve) => answers.push(resolve)),
+  });
+  overlapping.seed(
+    [{ id: "owned", body: "First", mine: true, replies: [] }],
+    { total: 1, open: 1, replies: 0, revision: "r1", complete: true },
+  );
+  const owned = overlapping.state.comments[0];
+  const first = overlapping.edit(owned, null, "second");
+  const later = overlapping.edit(owned, null, "third");
+  answers[1]({ ok: true });
+  assert.deepEqual(await later, { ok: true });
+  answers[0]({ ok: false, error: new Error("offline") });
+  assert.deepEqual(await first, { ok: false, stale: true, message: "offline" });
+  assert.equal(owned.body, "third", "a stale failure does not overwrite a newer edit");
 }
 
 assert.ok(paints > 0);

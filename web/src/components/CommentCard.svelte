@@ -215,7 +215,9 @@
     stopEdit();
     if (!changed) return;
     const result = await onedit?.(comment, post.reply, next);
-    if (result && result.ok === false) {
+    // A failure that something newer has overtaken, or one that arrives
+    // while another edit is open, does not take the editor back.
+    if (result && result.ok === false && !result.stale && editing === null) {
       editing = post.id;
       editBody = next;
       editError = result.message;
