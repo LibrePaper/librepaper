@@ -161,6 +161,7 @@
   import { sourceHighlighting } from "../lib/source-highlight.js";
   import { analyzeBibliography } from "../lib/bibliography-engine.js";
   import { bibliographyCache, bibliographyCacheKey, bibliographyCompletion, bibliographyNeedsAnalysis, citationContext, planZoteroImport } from "../lib/bibliography.js";
+  import { completionExtension, formatOfPath } from "../lib/completion/index.js";
   import { desktop, searchZotero, zoteroItem } from "../lib/desktop/client.js";
   import { changeMarks, setChangeMarks } from "../lib/change-marks.js";
   import { CHANGES, planEdits, writePlanned, resolveChanges, trackedSplice, prune } from "../lib/track-changes.js";
@@ -875,9 +876,10 @@
         highlightSelectionMatches(),
         sourceHighlighting,
         sourceLanguage(path, format),
-        autocompletion({
-          activateOnTyping: true,
-          override: [bibliographyCompletion({ entries: bibliographyEntries, format: () => formatOf(pathOfDoc(session.doc, showing)), remote: remoteBibliography, onRemote: importZotero })],
+        autocompletion({ activateOnTyping: true }),
+        completionExtension({
+          project: completionProject,
+          sources: [bibliographyCompletion({ entries: bibliographyEntries, format: () => formatOf(pathOfDoc(session.doc, showing)), remote: remoteBibliography, onRemote: importZotero })],
         }),
         // Where a compile's errors are shown: the gutter mark, and with it the
         // underline and the hover the lint extension draws.
@@ -999,6 +1001,30 @@
     if (!doc || !path) return "";
     const file = projectDirectory(doc, rules ?? null).files.get(path);
     return file?.kind === "text" ? file.id : "";
+  }
+  // Project facts for completion sources. The edited file's path and format are
+  // read now; the project walk runs only when a source first asks for texts or files.
+  function completionProject() {
+    const doc = session.doc;
+    const path = pathOfDoc(doc, showing);
+    if (!doc) return { path: "", format: "", texts: {}, files: [] };
+    let tree = null;
+    const load = () => {
+      if (!tree) tree = treeForDoc(doc);
+      return tree;
+    };
+    return {
+      path,
+      format: formatOfPath(path),
+      get texts() {
+        const texts = {};
+        for (const [file, text] of Object.entries(load().texts)) texts[file] = String(text ?? "");
+        return texts;
+      },
+      get files() {
+        return Object.keys(load().files).sort();
+      },
+    };
   }
   function treeForDoc(doc) {
     const projection = projectDirectory(doc, rules ?? null);
