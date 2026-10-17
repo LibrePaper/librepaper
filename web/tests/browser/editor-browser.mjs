@@ -1068,7 +1068,8 @@ try {
   assert.deepEqual(edits.vimDdUndoTwice.records, []);
   assert.equal(edits.vimDdUndoTwice.selectionEmpty, true, "vim u left a range selected");
   assert.equal(edits.vimDdUndoTwice.visual, false, "vim u left the editor in visual mode");
-  assert.equal(edits.untrackedCollapse.restored, edits.untrackedCollapse.original, "two deletions collapsed by an untracked edit did not come back in order");
+  // The untracked deletion of the space is permanent; the two tracked ones come back in order around where it was.
+  assert.equal(edits.untrackedCollapse.restored, "first line\nsecondline\nthird line\n", "two deletions collapsed by an untracked edit did not come back in order");
   assert.deepEqual(edits.untrackedCollapse.records.map((r) => r.deleted).sort(), ["line\n", "second"], "the untracked deletion between two tracked ones was recorded or lost one");
   console.log("editor-browser: tracked edits are planned against the records before the write, and a vim undo takes text and record together");
   const zoom = await evaluate("editorZoomCheck()");
