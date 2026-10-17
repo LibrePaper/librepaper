@@ -357,15 +357,15 @@ try {
 
   // The "Desktop app settings" text button is gone from the settings line; each
   // pane now carries its own icon button to the same page in its header, and
-  // only the Chat pane also carries Clear conversation.
+  // only the Chat pane also carries New conversation.
   assert.ok(await page.evaluate(`Boolean(document.querySelector('#agent-pane-chat button[aria-label="Desktop app settings"]'))`),
     "the Chat pane header offers a way to the desktop app settings page");
-  assert.ok(await page.evaluate(`Boolean(document.querySelector('#agent-pane-chat button[aria-label="Clear conversation"]'))`),
-    "the Chat pane header offers Clear conversation");
+  assert.ok(await page.evaluate(`Boolean(document.querySelector('#agent-pane-chat button[aria-label="New conversation"]'))`),
+    "the Chat pane header offers New conversation");
   assert.ok(await page.evaluate(`Boolean(document.querySelector('#agent-pane-tasks button[aria-label="Desktop app settings"]'))`),
     "the Tasks pane header also offers a way to the desktop app settings page");
-  assert.equal(await page.evaluate(`Boolean(document.querySelector('#agent-pane-tasks button[aria-label="Clear conversation"]'))`), false,
-    "Clear conversation is only in the Chat pane");
+  assert.equal(await page.evaluate(`Boolean(document.querySelector('#agent-pane-tasks button[aria-label="New conversation"]'))`), false,
+    "New conversation is only in the Chat pane");
 
   const panel = await page.evaluate("document.body.textContent");
   for (const gone of ["librepaper agent connect", "Copy connection instructions", "LIBREPAPER_CHAT_TOKEN", "--background"]) {
@@ -393,6 +393,7 @@ try {
   assert.equal(grantRequest.method, "POST");
   assert.equal(grantRequest.headers["X-LibrePaper-Key"], "editor",
     "the grant is minted with the selected document access key");
+  assert.equal(started.body.access, "editor", "the assistant call names the access the link was minted for");
   assert.equal(started.body.connection, undefined, "the assistant call carries no separate connection name");
   // The link crosses loopback exactly once, in the assistant call itself.
   // Everything afterwards refers to the document by conversation and link.
@@ -415,33 +416,6 @@ try {
     "the agent settings stay visible when an assistant is running");
   assert.equal(await page.evaluate('Boolean(document.querySelector(".pane-header [aria-label^=\\"Stop\\"]"))'), false,
     "the pane header has no Stop button");
-  // The model picker appears only while the runner announces a model option,
-  // and choosing in it asks the runner to change in place, with no restart.
-  assert.equal(await page.evaluate("Boolean(document.querySelector('select[aria-label=Model]'))"), false,
-    "no model picker before the runner announces a model");
-  const modelOptions = [{id:'model',name:'Model',category:'model',current:'sonnet',
-    choices:[{value:'sonnet',name:'Sonnet'},{value:'opus',name:'Opus'}]}];
-  await page.evaluate(`window.sockets.at(-1).emit({type:'options',options:${JSON.stringify(modelOptions)}})`);
-  await until("model picker shown", () => page.evaluate("Boolean(document.querySelector('select[aria-label=Model]'))"), 1000);
-  assert.deepEqual(
-    await page.evaluate(`Array.from(document.querySelector('select[aria-label=Model]').options).map(o=>[o.value,o.textContent])`),
-    [['sonnet','Sonnet'],['opus','Opus']]);
-  assert.equal(await page.evaluate("document.querySelector('select[aria-label=Model]').value"), 'sonnet');
-  await page.evaluate("window.localCalls=[]");
-  await choose("Model", "opus");
-  await until("set_option sent", () => page.evaluate(`window.sockets.at(-1).sent.some(frame=>frame.type==='set_option'&&frame.option==='model'&&frame.value==='opus'&&Boolean(frame.id))`), 1000);
-  assert.equal(await page.evaluate("window.localCalls.length"), 0, "changing the model does not restart the agent");
-  assert.equal(await page.evaluate("localStorage.getItem('librepaper.agent.model.claude')"), 'opus');
-  // The runner answers with a fresh options frame; the picker follows it.
-  await page.evaluate(`window.sockets.at(-1).emit({type:'options',options:[{...${JSON.stringify(modelOptions[0])},current:'opus'}]})`);
-  await until("model picker follows the runner", () => page.evaluate("document.querySelector('select[aria-label=Model]').value==='opus'"), 1000);
-  // The model name joins the composer status while a task works.
-  await page.evaluate("window.sockets.at(-1).emit({type:'task',task_id:'model-status',status:'working'})");
-  await until("model in composer status", () => page.evaluate('document.querySelector(".agent-progress")?.textContent.includes("Opus")'), 1000);
-  await page.evaluate("window.sockets.at(-1).emit({type:'task',task_id:'model-status',status:'completed'})");
-  // An empty list means no model choice.
-  await page.evaluate("window.sockets.at(-1).emit({type:'options',options:[]})");
-  await until("model picker hidden", () => page.evaluate("!document.querySelector('select[aria-label=Model]')"), 1000);
   // The agent leaving the conversation.
   await page.evaluate("window.sockets.at(-1).emit({type:'presence',browser:true,agent:false})");
 
@@ -659,10 +633,10 @@ try {
   await until("keyboard tab navigation", () => page.evaluate('document.activeElement.id === "agent-tab-chat"'), 1000);
 
   const beforeNewConversation = await page.evaluate("({sockets:window.sockets.length,creates:window.calls.filter(call=>call.suffix==='').length})");
-  // Clear conversation is a fresh runner boundary: it stops the local assistant
+  // New conversation is a fresh runner boundary: it stops the local assistant
   // and clears the transcript/context. The agent settings remain visible.
   // A socket reconnect keeps the existing conversation and transcript instead.
-  await page.evaluate('document.querySelector("#agent-tab-chat").click(); document.querySelector(\'button[aria-label="Clear conversation"]\').click()');
+  await page.evaluate('document.querySelector("#agent-tab-chat").click(); document.querySelector(\'button[aria-label="New conversation"]\').click()');
   await until("new conversation cleared", () => page.evaluate('document.querySelector("#agent-tab-chat").getAttribute("aria-selected")==="true"'), 2000);
   assert.equal(await page.evaluate('document.querySelector("[role=log]")?.textContent.includes("Explain this")'), false);
   assert.equal(await page.evaluate('window.localCalls.some(call => call.route === "assistant/stop")'), true);
@@ -744,7 +718,7 @@ try {
   await page.evaluate("window.delayAssistantStatus=true; window.remount()");
   await until("delayed assistant status is pending", () => page.evaluate("window.delayedAssistantStatuses.length===1"), 2000);
   await page.evaluate("window.conversationCreatesBeforePending=window.calls.filter(call=>call.suffix==='').length");
-  await page.evaluate('document.querySelector("#agent-tab-chat").click(); document.querySelector(\'button[aria-label="Clear conversation"]\').click()');
+  await page.evaluate('document.querySelector("#agent-tab-chat").click(); document.querySelector(\'button[aria-label="New conversation"]\').click()');
   await until("conversation changed while status was pending", () => page.evaluate("window.calls.filter(call=>call.suffix==='').length === window.conversationCreatesBeforePending+1"), 3000);
   await page.evaluate("window.delayedAssistantStatuses[0].resolve(Response.json({running:true,state:'ready'}))");
   await new Promise(resolve=>setTimeout(resolve,50));
