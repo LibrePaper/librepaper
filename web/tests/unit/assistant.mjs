@@ -2,8 +2,8 @@ import assert from "node:assert/strict";
 import {
   captureAttachment, capabilityAllows, composeTaskMessage, taskDiagnosticContext, diagnosticLabel,
   normalizeCapabilities, resultIds, visibleResults, checkContextSize,
-  TASK_CATALOG, TASK_KINDS, TASK_SCOPES, findTask, inferScope, searchTasks, taskPrompt, taskScopes,
-  browseTasks, recentTasks, rememberTask, CONTEXT_TASKS, STARTER_TASK_IDS, taskForKind, taskBlocker,
+  TASK_CATALOG, TASK_CATEGORIES, TASK_KINDS, TASK_SCOPES, findTask, inferScope, searchTasks, taskPrompt, taskScopes,
+  taskSections, CONTEXT_TASKS, taskForKind, taskBlocker,
 } from "../../src/lib/assistant.js";
 
 const selection = {
@@ -119,30 +119,27 @@ assert.equal(searchTasks("summary")[0].id, "summarize");
 // A typo still finds the entry, and a label prefix outranks a description hit.
 assert.equal(searchTasks("proofraed")[0].id, "proofread");
 assert.equal(searchTasks("review")[0].id, "review-argument");
+assert.equal(searchTasks("contradictions")[0].id, "check-consistency");
+assert.equal(searchTasks("spelling")[0].id, "proofread");
+assert.equal(searchTasks("concise")[0].id, "tighten");
 for (const entry of TASK_CATALOG) {
   assert.ok(Array.isArray(entry.keywords) && entry.keywords.length >= 3, `${entry.id} has too few keywords`);
 }
 
-assert.deepEqual(browseTasks().map((entry) => entry.label), [...TASK_CATALOG.map((entry) => entry.label)].sort((a, b) => a.localeCompare(b)));
-assert.ok(browseTasks("Document").length > 0);
-assert.ok(browseTasks("Document").every((entry) => entry.category === "Document"));
-assert.deepEqual(browseTasks("Document").map((entry) => entry.id), ["outline", "summarize"]);
-
-// Recents fall back to the starters, drop unknown and repeated ids, and
-// survive garbage input.
-assert.deepEqual(recentTasks([]).map((entry) => entry.id), STARTER_TASK_IDS);
-assert.deepEqual(recentTasks(["proofread", "summarize", "review-argument"]).map((entry) => entry.id), STARTER_TASK_IDS);
-assert.deepEqual(recentTasks(["tighten", "nope", "tighten", "outline"]).map((entry) => entry.id), ["tighten", "outline", "proofread"]);
-assert.deepEqual(recentTasks(["summarize"]).map((entry) => entry.id), ["summarize", "proofread", "review-argument"]);
-assert.deepEqual(recentTasks("tighten").map((entry) => entry.id), STARTER_TASK_IDS);
-assert.deepEqual(recentTasks(null).map((entry) => entry.id), STARTER_TASK_IDS);
-assert.equal(recentTasks(["a", "b", "c", "d", "e", "f"].concat(TASK_CATALOG.map((entry) => entry.id))).length, 5);
-assert.deepEqual(rememberTask(["a", "proofread"], "outline"), ["outline", "proofread"]);
-assert.deepEqual(rememberTask(["tighten", "outline"], "tighten"), ["tighten", "outline"]);
-assert.deepEqual(rememberTask(["tighten", "bogus"], "nope"), ["tighten"]);
-const crowdedRecent = TASK_CATALOG.map((entry) => entry.id);
-assert.equal(rememberTask(crowdedRecent.slice(0, 5), crowdedRecent[7]).length, 5);
-assert.equal(rememberTask(crowdedRecent.slice(0, 5), crowdedRecent[7])[0], crowdedRecent[7]);
+// The Tasks browser shows every catalog entry, one section per category.
+assert.deepEqual(taskSections().map((section) => section.category), TASK_CATEGORIES);
+assert.deepEqual(taskSections().flatMap((section) => section.entries.map((entry) => entry.id)), TASK_CATALOG.map((entry) => entry.id));
+assert.equal(taskSections("Document").length, 1);
+assert.deepEqual(taskSections("Document")[0].entries.map((entry) => entry.id), ["outline", "summarize"]);
+assert.deepEqual(taskSections("Nope"), []);
+for (const section of taskSections()) {
+  assert.ok(section.entries.length > 0, `${section.category} has no entries`);
+  assert.ok(section.entries.every((entry) => entry.category === section.category), `${section.category} holds a foreign entry`);
+}
+const browsed = taskSections().flatMap((section) => section.entries.map((entry) => entry.id));
+for (const entry of CONTEXT_TASKS) {
+  assert.equal(browsed.includes(entry.id), false, `${entry.id} must not be browsed`);
+}
 
 // Context tasks sit outside the catalog and use the protocol's kinds.
 for (const entry of CONTEXT_TASKS) {
