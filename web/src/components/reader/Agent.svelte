@@ -652,7 +652,7 @@
   {#snippet paneHeader(withNewConversation)}
     <div class="pane-header">
       {#if withNewConversation && connection.id}
-        <IconButton icon="file-plus" label="New conversation" tone="plain" size="btn-icon-sm"
+        <IconButton icon="eraser" label="New conversation" tone="plain" size="btn-icon-sm"
                     disabled={busy} onclick={() => void newConversation()} />
       {/if}
       <IconButton icon="sliders" label="Desktop app settings" tone="plain" size="btn-icon-sm"
