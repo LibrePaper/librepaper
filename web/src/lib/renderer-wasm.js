@@ -7,7 +7,7 @@ const REQUIRED_EXPORTS = [
 ];
 
 /** @typedef {(...args: number[]) => number} RendererFunction */
-/** @typedef {WebAssembly.Exports & {memory: WebAssembly.Memory, alloc: RendererFunction, dealloc: RendererFunction, compile: RendererFunction, compile_html?: RendererFunction, output_ptr: RendererFunction, ok: RendererFunction, output_kind: RendererFunction, diagnostics: RendererFunction, diagnostics_ptr: RendererFunction, failure_page: RendererFunction, title_of: RendererFunction, add_file: RendererFunction, clear_files: RendererFunction, set_main: RendererFunction, set_asset_url: RendererFunction, set_today: RendererFunction, word_diff: RendererFunction, bibliography?: RendererFunction, needs?: RendererFunction, needs_ptr?: RendererFunction}} RendererWasm */
+/** @typedef {WebAssembly.Exports & {memory: WebAssembly.Memory, alloc: RendererFunction, dealloc: RendererFunction, compile: RendererFunction, compile_html?: RendererFunction, output_ptr: RendererFunction, ok: RendererFunction, output_kind: RendererFunction, diagnostics: RendererFunction, diagnostics_ptr: RendererFunction, failure_page: RendererFunction, title_of: RendererFunction, add_file: RendererFunction, clear_files: RendererFunction, set_main: RendererFunction, set_asset_url: RendererFunction, set_today: RendererFunction, word_diff: RendererFunction, bibliography?: RendererFunction, complete?: RendererFunction, needs?: RendererFunction, needs_ptr?: RendererFunction}} RendererWasm */
 
 /** @param {RendererWasm} wasm @param {string} name @returns {RendererFunction} */
 function functionExport(wasm, name) {
