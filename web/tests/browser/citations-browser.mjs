@@ -101,7 +101,7 @@ writeFileSync(entry, [
         bibliography: projection.texts.get("references.bib") || "",
         metadataUnchanged: JSON.stringify([...value.doc.getMap("meta").entries()]) === JSON.stringify(baseMeta),
         changeCount: entries.length,
-        changeFiles: [...new Set(entries.map((entry) => entry.file))],
+        changeFiles: [...new Set(entries.map((entry) => (typeof entry.get === "function" ? entry.get("file") : entry.file)))],
       };
     } finally {
       globalThis.fetch = fetchBefore;
