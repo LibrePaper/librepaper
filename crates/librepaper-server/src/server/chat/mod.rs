@@ -738,40 +738,6 @@ mod tests {
         assert_eq!(serde_json::from_str::<Value>(&delivered).unwrap(), options);
         // The hub echoes a delivered frame to its sender as well.
         while agent_rx.try_recv().is_ok() {}
-
-        let set = json!({"type":"set_option","id":"s1","option":"model","value":"b"});
-        assert_eq!(
-            hub.relay("paper", &id, &token, 2, "agent", set.clone())
-                .await
-                .unwrap_err()
-                .0,
-            403
-        );
-        for (field, invalid) in [
-            ("option", json!("")),
-            ("option", json!("x".repeat(MAX_CONTEXT))),
-            ("value", json!("")),
-            ("value", json!("x".repeat(MAX_CONTEXT))),
-            ("value", json!(3)),
-        ] {
-            let mut frame = set.clone();
-            frame[field] = invalid;
-            assert_eq!(
-                hub.relay("paper", &id, &token, 1, "user", frame)
-                    .await
-                    .unwrap_err()
-                    .0,
-                400,
-                "{field}"
-            );
-        }
-        hub.relay("paper", &id, &token, 1, "user", set.clone())
-            .await
-            .unwrap();
-        let Outgoing::Text(delivered) = agent_rx.recv().await.unwrap() else {
-            panic!("expected set_option")
-        };
-        assert_eq!(serde_json::from_str::<Value>(&delivered).unwrap(), set);
     }
 
     #[tokio::test]

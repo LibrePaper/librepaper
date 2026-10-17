@@ -31,6 +31,9 @@ pub struct Config {
     /// to the agent's own executable when the adapter needs to know where
     /// to find it.
     pub agent_environment: Vec<(String, String)>,
+    /// The browser's Access choice, "commenter" or "editor". It decides which
+    /// LibrePaper tool permission requests are approved without asking.
+    pub access: String,
 }
 pub fn config(
     conversation: String,
@@ -38,6 +41,7 @@ pub fn config(
     agent: Vec<String>,
     state_home: PathBuf,
     agent_environment: Vec<(String, String)>,
+    access: String,
 ) -> Result<Config, String> {
     if agent.is_empty() || agent[0].trim().is_empty() {
         return Err("no agent command configured for the sidebar assistant".into());
@@ -48,6 +52,7 @@ pub fn config(
         agent,
         state_home,
         agent_environment,
+        access,
     })
 }
 fn event_id() -> String {
@@ -942,16 +947,6 @@ async fn execute(peer: &AutomationPeer, config: &Config, lease: &Lease) -> Resul
                                 } else if state.task(id).is_some_and(|task|task.status==TaskStatus::Queued) { finish(&mut state,id,TaskStatus::Cancelled,"Queued task cancelled"); }
                                 if state.task(id).is_some(){report_task(&transport,&mut state,id,&lease.location.state).await?;}
                             }
-                            "set_option"=> {
-                                if let (Some(id), Some(chosen)) = (value["option"].as_str(), value["value"].as_str()) {
-                                    match agent.set_option(id, chosen).await {
-                                        Ok(updated) => options = updated,
-                                        Err(error) => tracing::warn!("could not set agent option {id}: {error}"),
-                                    }
-                                    publish_agent_label(&session_path, &options)?;
-                                    emit_options(&transport, &options).await?;
-                                }
-                            }
                             "input"=> {
                                 if let Some(current)=active.as_mut().filter(|task|value["task_id"]==task.id) {
                                     let request=value["request_id"].as_str().unwrap_or("");
@@ -1038,7 +1033,13 @@ async fn execute(peer: &AutomationPeer, config: &Config, lease: &Lease) -> Resul
                             acp::Update::Commands(_) | acp::Update::Ignored => {}
                         }
                     }
-                    acp::Event::Permission { handle, message, options, details, option_ids } => {
+                    acp::Event::Permission { handle, message, options, details, option_ids, tool, allow_once } => {
+                        if let (Some(tool), Some(option)) = (tool, allow_once.as_deref()) {
+                            if acp::access_allows(&config.access, tool) {
+                                (*handle).respond(Some(option))?;
+                                continue;
+                            }
+                        }
                         let Some(current)=active.as_mut() else { (*handle).respond(None)?; continue; };
                         let base_size = message.len()+serde_json::to_vec(&options).map_err(|e|e.to_string())?.len();
                         let details = if base_size.saturating_add(serde_json::to_vec(&details).map_err(|e|e.to_string())?.len()) > 12*1024 { Value::Null } else { details };
@@ -1369,7 +1370,8 @@ mod tests {
             Some("t".into()),
             Vec::new(),
             state_home.clone(),
-            Vec::new()
+            Vec::new(),
+            "commenter".into()
         )
         .is_err());
         assert!(config(
@@ -1377,7 +1379,8 @@ mod tests {
             Some("t".into()),
             vec!["  ".into()],
             state_home.clone(),
-            Vec::new()
+            Vec::new(),
+            "commenter".into()
         )
         .is_err());
         let config = config(
@@ -1386,6 +1389,7 @@ mod tests {
             vec!["claude-agent-acp".into()],
             state_home,
             Vec::new(),
+            "commenter".into(),
         )
         .expect("an installed agent");
         assert_eq!(config.agent, vec!["claude-agent-acp".to_string()]);

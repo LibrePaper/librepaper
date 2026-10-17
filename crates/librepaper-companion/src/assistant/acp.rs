@@ -13,11 +13,10 @@ use std::sync::{Arc, Mutex};
 use agent_client_protocol::schema::{
     v1::{
         CancelNotification, ContentBlock, InitializeRequest, McpServer, McpServerStdio,
-        NewSessionRequest, PermissionOption, PermissionOptionId, RequestPermissionOutcome,
+        NewSessionRequest, PermissionOption, PermissionOptionId, PermissionOptionKind, RequestPermissionOutcome,
         RequestPermissionRequest, RequestPermissionResponse, SelectedPermissionOutcome,
         SessionConfigKind, SessionConfigOption, SessionConfigOptionCategory,
-        SessionConfigSelectOptions, SessionConfigValueId, SessionNotification, SessionUpdate,
-        SetSessionConfigOptionRequest, StopReason,
+        SessionConfigSelectOptions, SessionNotification, SessionUpdate, StopReason,
     },
     ProtocolVersion,
 };
@@ -88,6 +87,69 @@ fn bounded_text(value: Option<&str>, max_bytes: usize) -> Option<String> {
         return None;
     }
     Some(super::protocol::truncate_utf8(value, max_bytes))
+}
+
+/// The tools the document bridge exposes, by the name the server gives them.
+const COMMENTER_TOOLS: [&str; 3] = ["document_read", "document_comment", "document_result"];
+const EDITOR_TOOLS: [&str; 2] = ["document_propose", "document_apply"];
+
+/// The prefix Claude's adapter puts on a tool from the MCP server named
+/// `librepaper`.
+const MCP_PREFIX: &str = "mcp__librepaper__";
+
+/// The LibrePaper document tool a permission request is for. The adapter
+/// states the full tool name in `_meta.claudeCode.toolName` and the server
+/// in `_meta.claudeCode.mcpServer.name`; that name wins when present.
+/// Otherwise the call title must be exactly the bare tool name. Only the
+/// bare name and `mcp__librepaper__<tool>` match, and a request that names
+/// any other MCP server never does.
+fn librepaper_tool(
+    tool_call: &agent_client_protocol::schema::v1::ToolCallUpdate,
+) -> Option<&'static str> {
+    let claude = tool_call
+        .meta
+        .as_ref()
+        .and_then(|meta| meta.get("claudeCode"));
+    if let Some(server) = claude
+        .and_then(|claude| claude.get("mcpServer"))
+        .and_then(|server| server.get("name"))
+        .and_then(serde_json::Value::as_str)
+    {
+        if server != "librepaper" {
+            return None;
+        }
+    }
+    let name = claude
+        .and_then(|claude| claude.get("toolName"))
+        .and_then(serde_json::Value::as_str)
+        .or(tool_call.fields.title.as_deref())?;
+    let bare = name.strip_prefix(MCP_PREFIX).unwrap_or(name);
+    COMMENTER_TOOLS
+        .iter()
+        .chain(EDITOR_TOOLS.iter())
+        .find(|tool| **tool == bare)
+        .copied()
+}
+
+/// Whether the access level lets the assistant call this tool unasked.
+pub(super) fn access_allows(access: &str, tool: &str) -> bool {
+    match access {
+        "commenter" => COMMENTER_TOOLS.contains(&tool),
+        "editor" => COMMENTER_TOOLS.contains(&tool) || EDITOR_TOOLS.contains(&tool),
+        _ => false,
+    }
+}
+
+/// The option that allows one call, falling back to allow-always only when
+/// the agent offers no allow-once option.
+fn allow_option(options: &[PermissionOption]) -> Option<String> {
+    [
+        PermissionOptionKind::AllowOnce,
+        PermissionOptionKind::AllowAlways,
+    ]
+    .into_iter()
+    .find_map(|kind| options.iter().find(|option| option.kind == kind))
+    .map(|option| option.option_id.to_string())
 }
 
 fn permission_details(
@@ -225,6 +287,11 @@ pub(super) enum Event {
         options: serde_json::Value,
         details: serde_json::Value,
         option_ids: Vec<String>,
+        /// The LibrePaper document tool this request is for, when the
+        /// request names exactly one.
+        tool: Option<&'static str>,
+        /// The option that allows this one call, when the agent offers one.
+        allow_once: Option<String>,
     },
     Options(serde_json::Value),
     TurnEnded(Result<StopReason, String>),
@@ -234,11 +301,6 @@ pub(super) enum Event {
 enum Command {
     Prompt(String),
     Cancel,
-    SetOption {
-        id: String,
-        value: String,
-        reply: oneshot::Sender<Result<serde_json::Value, String>>,
-    },
 }
 
 pub(super) struct Agent {
@@ -370,6 +432,8 @@ impl Agent {
                             .collect::<Vec<_>>();
                         let options = browser_permission_options(&request.options);
                         let details = permission_details(&request.tool_call);
+                        let tool = librepaper_tool(&request.tool_call);
+                        let allow_once = allow_option(&request.options);
                         permission_events
                             .send(Event::Permission {
                                 handle: Box::new(Permission {
@@ -379,6 +443,8 @@ impl Agent {
                                 options,
                                 details,
                                 option_ids,
+                                tool,
+                                allow_once,
                             })
                             .await
                             .map_err(|error| agent_client_protocol::Error::internal_error().data(error.to_string()))?;
@@ -414,17 +480,6 @@ impl Agent {
                                             session.connection().send_notification(
                                                 CancelNotification::new(session.session_id().clone())
                                             )?;
-                                        }
-                                        Some(Command::SetOption { id, value, reply }) => {
-                                            let request = SetSessionConfigOptionRequest::new(
-                                                session.session_id().clone(),
-                                                id,
-                                                SessionConfigValueId::new(value),
-                                            );
-                                            let result = session.connection().send_request(request).block_task().await
-                                                .map(|response| model_options(&response.config_options))
-                                                .map_err(|error| error.to_string());
-                                            let _ = reply.send(result);
                                         }
                                         None => return Ok(()),
                                     },
@@ -509,28 +564,6 @@ impl Agent {
         &self.options
     }
 
-    /// Set one session config option and return the model options the agent
-    /// reports afterwards.
-    pub(super) async fn set_option(
-        &self,
-        id: &str,
-        value: &str,
-    ) -> Result<serde_json::Value, String> {
-        let (reply, response) = oneshot::channel();
-        self.commands
-            .send(Command::SetOption {
-                id: id.into(),
-                value: value.into(),
-                reply,
-            })
-            .await
-            .map_err(|_| "agent connection stopped".to_string())?;
-        tokio::time::timeout(std::time::Duration::from_secs(15), response)
-            .await
-            .map_err(|_| "the agent did not answer in time".to_string())?
-            .map_err(|_| "agent connection stopped".to_string())?
-    }
-
     pub(super) async fn prompt(&self, text: String) -> Result<(), String> {
         self.commands
             .send(Command::Prompt(text))
@@ -593,7 +626,6 @@ fn translate_update(update: SessionUpdate) -> Update {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use agent_client_protocol::schema::v1::PermissionOptionKind;
 
     /// The grant file is named in the bridge's environment and not in the
     /// agent's process environment, which is `environment` as given, and no
@@ -624,6 +656,94 @@ mod tests {
             .iter()
             .chain(agent.iter())
             .all(|(_, value)| !value.contains(librepaper_base::auth::AGENT_GRANT_PREFIX)));
+    }
+
+    fn tool_call(
+        title: Option<&str>,
+        meta: Option<serde_json::Value>,
+    ) -> agent_client_protocol::schema::v1::ToolCallUpdate {
+        use agent_client_protocol::schema::v1::{ToolCallUpdate, ToolCallUpdateFields};
+        let mut fields = ToolCallUpdateFields::new();
+        if let Some(title) = title {
+            fields = fields.title(title);
+        }
+        let mut call = ToolCallUpdate::new("call-1", fields);
+        if let Some(serde_json::Value::Object(meta)) = meta {
+            call = call.meta(meta);
+        }
+        call
+    }
+
+    #[test]
+    fn claude_mcp_tool_names_and_bare_names_match() {
+        let claude = serde_json::json!({"claudeCode": {
+            "toolName": "mcp__librepaper__document_comment",
+            "mcpServer": {"name": "librepaper", "source": "config"},
+        }});
+        assert_eq!(
+            librepaper_tool(&tool_call(Some("librepaper - document_comment (MCP)"), Some(claude))),
+            Some("document_comment")
+        );
+        assert_eq!(
+            librepaper_tool(&tool_call(Some("document_read"), None)),
+            Some("document_read")
+        );
+        assert_eq!(
+            librepaper_tool(&tool_call(Some("mcp__librepaper__document_apply"), None)),
+            Some("document_apply")
+        );
+    }
+
+    #[test]
+    fn unknown_and_foreign_tools_do_not_match() {
+        assert_eq!(librepaper_tool(&tool_call(Some("Bash"), None)), None);
+        assert_eq!(librepaper_tool(&tool_call(None, None)), None);
+        assert_eq!(
+            librepaper_tool(&tool_call(Some("mcp__other__document_read"), None)),
+            None
+        );
+        assert_eq!(
+            librepaper_tool(&tool_call(Some("document_read please"), None)),
+            None
+        );
+        let foreign = serde_json::json!({"claudeCode": {
+            "toolName": "mcp__librepaper__document_read",
+            "mcpServer": {"name": "other", "source": "config"},
+        }});
+        assert_eq!(
+            librepaper_tool(&tool_call(Some("document_read"), Some(foreign))),
+            None
+        );
+    }
+
+    #[test]
+    fn access_decides_which_tools_are_approved() {
+        for tool in ["document_read", "document_comment", "document_result"] {
+            assert!(access_allows("commenter", tool));
+            assert!(access_allows("editor", tool));
+        }
+        for tool in ["document_propose", "document_apply"] {
+            assert!(!access_allows("commenter", tool));
+            assert!(access_allows("editor", tool));
+        }
+        assert!(!access_allows("editor", "Bash"));
+        assert!(!access_allows("viewer", "document_read"));
+    }
+
+    #[test]
+    fn allow_once_is_preferred_and_a_missing_one_falls_back() {
+        let once = PermissionOption::new("once", "Allow", PermissionOptionKind::AllowOnce);
+        let always = PermissionOption::new("always", "Always", PermissionOptionKind::AllowAlways);
+        let reject = PermissionOption::new("no", "Reject", PermissionOptionKind::RejectOnce);
+        assert_eq!(
+            allow_option(&[always.clone(), reject.clone(), once]),
+            Some("once".into())
+        );
+        assert_eq!(
+            allow_option(&[reject.clone(), always]),
+            Some("always".into())
+        );
+        assert_eq!(allow_option(&[reject]), None);
     }
 
     #[tokio::test]
