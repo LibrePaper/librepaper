@@ -12,7 +12,8 @@ BIN     := dist/librepaper
 PREFIX  ?= $(HOME)/.local
 BINDIR  ?= $(PREFIX)/bin
 DESTDIR ?=
-# The cargo profile for the server and desktop builds. The demo targets set it to demo, which skips LTO.
+# The cargo profile for the server and desktop builds. The demo targets set
+# it to demo, which skips LTO.
 CARGO_PROFILE ?= release
 # The browser renderers, fetched into web/wasm (not embedded in the binary):
 # tests read them, and tools/assets/mirror publish sends them to the asset mirror.

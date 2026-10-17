@@ -8,8 +8,8 @@
 # `librepaper` (or LIBREPAPER_BINARY) from the build context instead. Every
 # build uses the repository root as its context. For `SOURCE=checkout`, run
 # `make web` first so `web/dist` is ready to embed; BuildKit skips unused stages.
-# CARGO_PROFILE picks the cargo profile for SOURCE=checkout (default release);
-# the demo passes demo, which skips LTO.
+# CARGO_PROFILE picks the cargo profile for SOURCE=checkout. It defaults to
+# release, and the demo passes demo, which skips LTO.
 #
 #   docker build -f tools/docker/Dockerfile --build-arg LIBREPAPER_VERSION=<compatible-tag> -t librepaper .
 #   docker build -f tools/docker/Dockerfile --build-arg SOURCE=local -t librepaper .
