@@ -9,7 +9,8 @@
 //
 // This module plans how an edit changes the records (pure, shared with the
 // Rust port through the fixtures), writes the records, resolves them to
-// offsets and decides them.
+// offsets, decides them and keeps them in step with untracked edits
+// (untrackedSplice).
 //
 // Offsets are UTF-16 everywhere, the same as CodeMirror and loro-crdt in JS.
 
@@ -40,16 +41,17 @@ export const CHANGES = "changes";
  * `edits` are in the coordinates of `before`, ascending and non-overlapping,
  * and are planned in order with a running adjustment. Positions in the result
  * are in the coordinates of the text after the batch. Removed items keep their
- * last values.
+ * last values. With `untracked` the edits make no change of mine and record
+ * nothing; the spans and gaps still follow the text.
  *
  * @param {string} before
  * @param {FileState} state
  * @param {Edit[]} edits
  * @param {Me} me
- * @param {{ run?: string | null, now: number, mintId: () => string }} opts
+ * @param {{ run?: string | null, now: number, mintId: () => string, untracked?: boolean }} opts
  * @returns {PlannedState}
  */
-export function planEdits(before, state, edits, me, { run = null, now, mintId }) {
+export function planEdits(before, state, edits, me, { run = null, now, mintId, untracked = false }) {
   let cur = before;
   let changes = state.changes.map((c) => ({ ...c, state: "kept" }));
   let gaps = state.gaps.map((g) => ({ ...g, fragments: g.fragments.map((f) => ({ ...f })), state: "kept" }));
@@ -63,7 +65,7 @@ export function planEdits(before, state, edits, me, { run = null, now, mintId })
     const et = edit.to + adj;
     const insert = edit.insert;
     if (ef === et && insert.length === 0) continue;
-    const step = planOne(cur, changes, gaps, ef, et, insert, me, run, now, mintId);
+    const step = planOne(cur, changes, gaps, ef, et, insert, me, run, now, mintId, untracked);
     for (const c of changes) if (!step.changes.some((x) => x.id === c.id) && originalChanges.has(c.id)) removedChanges.set(c.id, { ...c, state: "removed" });
     for (const g of gaps) if (!step.gaps.some((x) => x.id === g.id) && originalGaps.has(g.id)) removedGaps.set(g.id, { ...g, state: "removed" });
     changes = step.changes;
@@ -83,20 +85,24 @@ function hasSpan(c) {
   return c.to > c.from;
 }
 
-function planOne(cur, changes, gaps, ef, et, insert, me, run, now, mintId) {
+function planOne(cur, changes, gaps, ef, et, insert, me, run, now, mintId, untracked) {
   const len = insert.length;
   const delta = len - (et - ef);
   // Own changes this edit touches: a span overlapping or adjacent, or a
   // fragment in a gap inside the closed range.
   const swallowedGaps = gaps.filter((g) => g.at >= ef && g.at <= et);
   const owned = new Set();
+  // A span of mine joins when it touches the edit. A change of mine with no
+  // span joins when one of its fragments sits in a swallowed gap. A span of
+  // mine elsewhere stays its own change: one change holds one span, and a
+  // span never widens over text that is not its own.
   for (const c of changes) {
     if (c.who !== me.who) continue;
     if (hasSpan(c) && c.from <= et && c.to >= ef) owned.add(c.id);
   }
   for (const g of swallowedGaps) for (const f of g.fragments) {
     const c = changes.find((x) => x.id === f.change);
-    if (c && c.who === me.who) owned.add(c.id);
+    if (c && c.who === me.who && !hasSpan(c)) owned.add(c.id);
   }
   // Pure deletion of text inside inserted spans only, by nobody of mine: the
   // spans shrink and nothing is recorded, unless original text is involved.
@@ -114,7 +120,11 @@ function planOne(cur, changes, gaps, ef, et, insert, me, run, now, mintId) {
     }
   }
   // Is there anything to record? Original text deleted, or text inserted.
-  const records = originalRuns.length > 0 || len > 0;
+  // An untracked edit records nothing and makes no change of mine; it still
+  // moves, shrinks and splits spans and merges the gaps it collapses, so the
+  // records keep describing the text.
+  const records = !untracked && (originalRuns.length > 0 || len > 0);
+  if (untracked) owned.clear();
   let mine = null;
   if (records) {
     const first = [...owned].map((id) => changes.find((c) => c.id === id)).sort((a, b) => a.from - b.from)[0];
@@ -127,9 +137,8 @@ function planOne(cur, changes, gaps, ef, et, insert, me, run, now, mintId) {
   // after the new span; everything else goes before it. When a span or a
   // fragment of mine sits at `et` it joins the new change, and then the whole
   // of what sat there goes before the span: my deleted text belongs with it.
-  const endGap = swallowedGaps.find((g) => g.at === et);
   const ownAtEnd = changes.some((c) => c.who === me.who && hasSpan(c) && c.from === et && owned.has(c.id))
-    || Boolean(endGap && endGap.fragments.some((f) => owned.has(f.change)));
+    || swallowedGaps.some((g) => g.at === et && g.fragments.some((f) => owned.has(f.change)));
   const splitAtEnd = len > 0 && !ownAtEnd;
   const merged = [];
   const after = [];
@@ -139,9 +148,9 @@ function planOne(cur, changes, gaps, ef, et, insert, me, run, now, mintId) {
     else list.push({ change, text });
   };
   for (let p = ef; p <= et; p++) {
-    const g = swallowedGaps.find((x) => x.at === p);
     const target = splitAtEnd && p === et ? after : merged;
-    if (g) for (const f of g.fragments) pushFragment(target, mine && owned.has(f.change) ? mine.id : f.change, f.text);
+    // Untracked edits can leave two gaps on one point; every one of them is taken.
+    for (const g of swallowedGaps) if (g.at === p) for (const f of g.fragments) pushFragment(target, mine && owned.has(f.change) ? mine.id : f.change, f.text);
     if (p < et && !spanAt(p) && records) pushFragment(merged, mine.id, cur[p]);
   }
   // Spans.
@@ -195,18 +204,33 @@ function planOne(cur, changes, gaps, ef, et, insert, me, run, now, mintId) {
   }
   const ids = swallowedGaps.map((g) => g.id);
   if (merged.length > 0) {
-    // One gap per position: a gap already at the span's start, which held
-    // text replaced by its earlier part, takes the new fragments after its own.
+    // One gap per position: gaps already at the span's start, which held text
+    // replaced by its earlier part, take the new fragments after their own.
     const pos = mine ? mine.from : ef;
-    const there = outGaps.find((g) => g.at === pos);
-    if (there) {
-      const list = there.fragments.map((f) => ({ ...f }));
+    const there = outGaps.filter((g) => g.at === pos);
+    if (there.length > 0) {
+      const list = [];
+      for (const g of there) for (const f of g.fragments) pushFragment(list, f.change, f.text);
       for (const f of merged) pushFragment(list, f.change, f.text);
-      outGaps[outGaps.indexOf(there)] = { ...there, fragments: list, state: "set" };
+      const rest = outGaps.filter((g) => g.at !== pos);
+      rest.push({ ...there[0], fragments: list, state: "set" });
+      outGaps.length = 0;
+      outGaps.push(...rest);
     } else outGaps.push({ id: ids.shift() ?? mintId(), at: pos, fragments: merged, state: "set" });
   }
   if (after.length > 0) {
     outGaps.push({ id: ids.shift() ?? mintId(), at: ef + len, fragments: after, state: "set" });
+  }
+  // The changes that merged into mine are gone; their fragments anywhere
+  // else now belong to mine.
+  if (mine) {
+    for (let i = 0; i < outGaps.length; i++) {
+      const g = outGaps[i];
+      if (!g.fragments.some((f) => owned.has(f.change) && f.change !== mine.id)) continue;
+      const list = [];
+      for (const f of g.fragments) pushFragment(list, owned.has(f.change) ? mine.id : f.change, f.text);
+      outGaps[i] = { ...g, fragments: list, state: "set" };
+    }
   }
   // A change with no span and no fragment is gone.
   const referenced = new Set(outGaps.flatMap((g) => g.fragments.map((f) => f.change)));
@@ -297,7 +321,7 @@ export function resolveFile(doc, fileId) {
       changes.push({ id, who: value.who, author: value.author, run: value.run ?? null, at: value.at, from, to, stale, hasCursor: value.start instanceof Uint8Array });
     }
   }
-  gaps.sort((a, b) => a.at - b.at);
+  gaps.sort((a, b) => a.at - b.at || (a.id < b.id ? -1 : 1));
   // A change with no span takes its place from its first fragment; one with
   // neither span nor fragment is empty and left out.
   const live = [];
@@ -451,6 +475,22 @@ export function trackedSplice(doc, fileId, from, to, insert, me, opts) {
   return recordEdits(doc, fileId, before, pre, [{ from, to, insert }], me, opts);
 }
 
+/**
+ * Replaces `[from, to)` with `insert` without tracking, keeping the records in
+ * step: pending spans shrink or split, collapsed gaps merge. Does not commit.
+ */
+export function untrackedSplice(doc, fileId, from, to, insert) {
+  const text = fileText(doc, fileId);
+  if (!text) return;
+  const before = text.toString();
+  const pre = resolveFile(doc, fileId);
+  if (to > from) text.delete(from, to - from);
+  if (insert) text.insert(from, insert);
+  if (pre.changes.length === 0 && pre.gaps.length === 0) return;
+  const plan = planEdits(before, pre, [{ from, to, insert }], { who: "", author: "" }, { now: Date.now(), mintId: () => crypto.randomUUID(), untracked: true });
+  writePlanned(doc, fileId, plan);
+}
+
 // ---------------------------------------------------------------------------
 // Decisions
 
@@ -562,19 +602,56 @@ export function rejectMany(doc, ids) {
   return count;
 }
 
-// Records from before the gap model become a change record and, when text was
-// deleted, a gap of one fragment. Their old fields are dropped. The server
-// ignores them until an editor does this.
+// Records from before the gap model. Each becomes a change record, and the
+// text it deleted goes into gaps. Its `points` give the order of the deletions
+// that met at one anchor: a point is another old record that sat at that
+// offset of `deleted`, and the points of a pointed record nest inside it. A
+// record that no other record points at heads a gap. The server ignores old
+// records until an editor has converted them.
 function convertOld(doc) {
   const map = doc.getMap(CHANGES);
+  const byFile = new Map();
   for (const [id, entry] of [...map.entries()]) {
     const v = /** @type {any} */ (entry);
     if (!v || v.kind !== undefined || typeof v.file !== "string" || typeof v.deleted !== "string") continue;
     const end = v.end ?? null;
     if (!(v.start instanceof Uint8Array) || !(end === null || end instanceof Uint8Array)) continue;
-    map.set(id, { kind: "change", file: v.file, who: v.who, author: v.author, run: v.run ?? null, at: v.at, start: v.start, end });
-    if (v.deleted !== "") {
-      map.set(crypto.randomUUID(), { kind: "gap", file: v.file, start: v.start, fragments: [{ change: id, text: v.deleted }] });
+    if (!byFile.has(v.file)) byFile.set(v.file, new Map());
+    byFile.get(v.file).set(id, v);
+  }
+  for (const [file, records] of byFile) {
+    for (const [id, v] of records) {
+      map.set(id, { kind: "change", file, who: v.who, author: v.author, run: v.run ?? null, at: v.at, start: v.start, end: v.end ?? null });
+    }
+    const visited = new Set();
+    // The fragments of one old record: its deleted text split at each point,
+    // with the pointed record's fragments in each split.
+    const expand = (id) => {
+      const v = records.get(id);
+      if (!v || visited.has(id)) return [];
+      visited.add(id);
+      const points = (v.points ?? []).filter((p) => records.has(p.id));
+      // A point that another point of this record lists sits inside that one.
+      const own = points.filter((p) => !points.some((k) => k.id !== p.id && (records.get(k.id).points ?? []).some((q) => q.id === p.id)));
+      own.sort((a, b) => a.at - b.at);
+      const out = [];
+      let cursor = 0;
+      for (const p of own) {
+        const piece = v.deleted.slice(cursor, p.at);
+        if (piece !== "") out.push({ change: id, text: piece });
+        out.push(...expand(p.id));
+        cursor = p.at;
+      }
+      const rest = v.deleted.slice(cursor);
+      if (rest !== "") out.push({ change: id, text: rest });
+      return out;
+    };
+    const pointedAt = new Set();
+    for (const [id, v] of records) for (const p of v.points ?? []) if (p.id !== id && records.has(p.id)) pointedAt.add(p.id);
+    for (const [id, v] of records) {
+      if (pointedAt.has(id)) continue;
+      const fragments = expand(id);
+      if (fragments.length > 0) map.set(crypto.randomUUID(), { kind: "gap", file, start: v.start, fragments });
     }
   }
 }
