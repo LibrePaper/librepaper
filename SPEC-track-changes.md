@@ -12,8 +12,15 @@ Word's model.
 - **Accept** drops the record. The text stays.
 - **Reject** puts the text back as it was before the change, then drops the
   record.
-- A change is one contiguous region: an original span of text `deleted` was
-  replaced by the text now between `start` and `end`. Either side may be empty.
+- A change is one author's edit of one region: text it inserted (a **span**)
+  and original text it deleted. Either may be empty. Replacing "cat" with
+  "tabby" is one change.
+- Deleted text lives in **gaps**. A gap is one point in the text where text
+  was taken out, and it holds the deleted texts that sat there as an ordered
+  list of **fragments**, each owned by a change. There is one gap per point.
+  Several authors deleting around the same place put their fragments in one
+  gap, in document order, so whatever is accepted or rejected, and in whatever
+  order, the text comes back in the order it had.
 - Each change is decided on its own, in any order. Which session made it does
   not matter.
 - `run` is an optional tag (an agent pass, for example). It serves filters and
@@ -21,166 +28,144 @@ Word's model.
 
 ## Storage: the `changes` root
 
-A new root map in the Loro document, `changes`, next to `files`, `paths`,
+A root map in the Loro document, `changes`, next to `files`, `paths`,
 `assets` and `meta`. The projection and the render digest ignore it.
 
-Key: a change id (UUID v4 string). Value: a plain Loro value (not a nested
-container), written whole with `map.set(id, value)` and removed with
-`map.delete(id)`:
+Key: a UUID v4 string. Value: a plain Loro value (not a nested container),
+written whole with `map.set(id, value)` and removed with `map.delete(id)`.
+Two kinds, told apart by `kind`:
 
 ```
-{
-  file:      string,          // file id, a key of `files`
-  author:    string,          // display name, as comments show it
-  who:       string,          // stable author key: account id when signed in, else the display name; agents use "agent:<name>"
-  at:        number,          // ms since epoch of the last edit to this change
-  run:       string | null,   // optional group tag
-  start:     Uint8Array,      // encoded Loro Cursor (Cursor.encode())
-  end:       Uint8Array|null, // encoded Loro Cursor, null when nothing is inserted
-  deleted:   string,          // the original text this change removed, in order
-  points:    [{ id: string, at: number }]  // optional, omitted when empty
+{ kind: "change",
+  file:   string,          // file id, a key of `files`
+  author: string,          // display name, as comments show it
+  who:    string,          // stable author key: account id when signed in, else the display name; agents use "agent:<name>"
+  at:     number,          // ms since epoch of the last edit to this change
+  run:    string | null,   // optional group tag
+  start:  Uint8Array|null, // Cursor on the first inserted character, null when nothing is inserted
+  end:    Uint8Array|null  // Cursor on the last inserted character, null when nothing is inserted
+}
+
+{ kind: "gap",
+  file:      string,
+  start:     Uint8Array,   // Cursor on the character right after the gap, or the end of the text
+  fragments: [{ change: string, text: string }]   // deleted texts in document order, each owned by a change
 }
 ```
 
-`points` records foreign deletions that this change swallowed. When an edit
-deletes a range that holds another change's deleted text (a pure deletion
-point inside the range, or a foreign insertion that the edit deletes whole and
-that collapses to a point), the change the editor owns after the edit lists it
-as `{ id, at }`. `at` is the number of original characters of `deleted` that
-precede that change's point in document order. The stored `at` is always in
-UTF-16 units of the owner's `deleted` string. The browser uses it as is. Rust
-counts code points internally, so it converts at its read and write
-boundaries. A pure deletion that sits at the end of the deleted range, right
-after it (`p == edit.to`), is recorded too, with `at` equal to the full length
-of the owner's new `deleted` text before it; without it, two deletions
-anchored on the same character would lose their order. An id already carried
-over from a merged change is not listed twice. A merge carries the points of the changes it absorbs and
-shifts each `at` by the deleted text that now lands before it.
+A change with no span and no fragment in any gap is empty. A gap with no
+fragment is empty. Both are left out of every list and removed by `prune`.
+
+A replacement's gap sits on the first character of its span. Text another
+author inserts right before the span then lands before the gap, and the
+deleted text comes back where the span was.
 
 Cursors:
-- Inserted text `I` at `[from, to)`, non-empty: `start = text.getCursor(from, -1)`
-  (attached to the first character of `I`, left side) and
-  `end = text.getCursor(to - 1, 1)` (attached to the last character of `I`,
-  right side). In the browser, `to - 1` is the start index of the last code
-  point, so for a surrogate pair it is `to - 2`.
-- Nothing inserted: `start = text.getCursor(from, -1)`, attached to the
-  character after the deletion point; at the end of the text Loro returns a
-  cursor with no id, which stays at the end. `end = null`.
-- Resolving: a Loro cursor resolves to the index of the character it is
-  attached to, whatever its side. So `from = pos(start)` and
-  `to = end ? pos(end) + w : from`, where `w` is the width of the character at
-  `pos(end)` (2 UTF-16 units for a surrogate pair in the browser, else 1). When the attached character was deleted,
-  Loro answers with the position it had and an `update` cursor (found by
-  walking history, which is slow and fails after a trim); then `to = pos(end)`
-  without the `+ 1`. If `to < from`, the inserted text is gone: treat it as
-  `to = from`.
-- Units: in loro-crdt JS, `getCursor`, `getCursorPos`, `insert` and `delete`
-  all use UTF-16, the same as CodeMirror, so the browser converts nothing. In
-  Rust, `get_cursor`, `get_cursor_pos`, `insert` and `delete` use Unicode code
-  points. The planner works in one unit throughout (UTF-16 in the browser,
-  code points in Rust).
-- Healing: `prune` also rewrites an entry whose cursor came back with an
-  `update`, storing the updated cursor, so a deleted anchor is looked up the
-  slow way once. The planner marks every change the edit overlaps as `set`, so
-  its cursors are written fresh against live characters.
+- Span `[from, to)`: `start = text.getCursor(from, -1)`, `end =
+  text.getCursor(to - 1, 1)` (in the browser `to - 1` is the start index of
+  the last code point, so `to - 2` for a surrogate pair).
+- Gap at `p`: `start = text.getCursor(p, -1)`. At the end of the text Loro
+  returns a cursor with no id, which stays at the end.
+- Resolving: a cursor resolves to the index of its character whatever its
+  side, so `from = pos(start)`, `to = pos(end) + width`, `gap.at =
+  pos(start)`. When the character was deleted, Loro answers with the position
+  it had and an `update`; then `to = pos(end)`. If `to < from` the span is
+  gone: `to = from`.
+- Units: loro-crdt JS and CodeMirror count UTF-16; Rust counts code points.
+  Each planner works in its own unit throughout. Fragment texts are strings
+  and need no conversion.
+- Healing: `prune` rewrites a record whose cursor came back with an `update`,
+  so a deleted anchor is looked up the slow way once. The planner marks every
+  record the edit touches as `set`, so its cursors are written fresh.
 
-A change is **orphaned** when its file is gone or its `start` cursor cannot be
-resolved. A change is **empty** when `from == to` and `deleted == ""`. Both
-are left out of every list. An editor that sees one removes it in its next
-local commit (`prune`).
+Rows: a change's `deleted` text is the concatenation of its fragments in
+document order, across gaps. Its position is its span, or the gap of its first
+fragment. A change whose fragments end up in two gaps (another author's text
+was put back between them) is still one row.
+
+Records of the earlier model (no `kind`, a `deleted` string with `start` and
+`end` cursors) are converted by the browser's `prune` into a change and, when
+`deleted` is not empty, a gap of one fragment. The server ignores them until
+then.
 
 ## The planner (pure, shared by JS and Rust)
 
-Input: the resolved changes of one file (`{id, who, author, run, from, to,
-deleted}`, sorted by `from`), one edit `{from, to, insert}` in the coordinates
-of the text before the edit (the deleted text is `before.slice(from, to)`),
-the editor `me = {who, author}`, `run`, `now` and a fresh id source.
+Input: the resolved state of one file, `{changes: [{id, who, author, run, at,
+from, to}], gaps: [{id, at, fragments: [{change, text}]}]}` in the
+coordinates of the text before the edit, the edits `{from, to, insert}`
+(ascending, non-overlapping, each adjusted by the ones before it), the editor
+`me = {who, author}`, `run`, `now` and a fresh id source.
 
-Output: the full new list of changes for that file in the coordinates of the
-text after the edit, each marked `kept` (unchanged), `set` (new or changed) or
-`removed`.
+Output: the same shape in the coordinates of the text after the batch, each
+change and gap marked `kept`, `set` or `removed`.
 
-Rules:
-1. **Deleting inside any pending insertion only removes characters.** That
-   includes another author's insertion: deleting it shrinks their change.
-   Nothing is recorded as deleted for those characters.
-2. **Deleting original text records it.** Each run of original characters
-   (outside every change's `[from, to)`) inside `[edit.from, edit.to)` is text
-   that `me` deleted.
-3. **Affected own changes** are `me`'s changes whose `[from, to]` touches
-   `[edit.from, edit.to]`, endpoints included. A pure deletion (`from == to`)
-   touches when its point is inside or at an end of the range.
-4. If the edit deletes original text or inserts text, and there is no affected
-   own change, a new change is made for `me`.
-5. All affected own changes, the original text deleted between them, and the
-   new insertion merge into **one** change `M` (the lowest-`from` affected
-   change keeps its id; the others are `removed`). `M.deleted` is the
-   concatenation, in document order, of: each affected change's `deleted`
-   (placed at that change's position) and each deleted original run.
-   `M.from` and `M.to` span everything that remains of the merged changes plus
-   the inserted text.
-6. **Inserting strictly inside another author's insertion** (`other.from <
-   edit.from < other.to`) splits theirs: `other` keeps `[other.from,
-   edit.from)` and its `deleted`; a new change with the same `who`, `author`,
-   `run` and `at` takes `[edit.from, other.to)` with `deleted = ""`. `me`'s
-   insertion goes between them.
-7. Inserting at an end of another author's insertion, with no own change
-   affected, is a new change for `me`; the other change does not grow.
-8. Every change shifted by the edit keeps its id and is `kept` (its cursors
-   still hold); only `M`, split halves and new changes are `set`.
-9. Changes that end up empty are `removed`.
-10. A multi-range edit (one CodeMirror transaction with several ranges, or one
-    agent request with several edits) is planned range by range, in order,
-    each range's coordinates adjusted by the ranges before it, exactly as
-    `web/vendor/loro-codemirror/sync.ts` writes them.
+Rules, for one edit `[ef, et)` with `insert`:
+1. **Spans.** Deleting inside any span only removes characters, another
+   author's included: their span shrinks, nothing is recorded for those
+   characters. A span of another author that the edit cuts in two with inserted
+   text splits: theirs keeps the left part, a new change with the same `who`,
+   `author`, `run` and `at` takes the right part. A span shifted by the edit
+   is `kept`.
+2. **Original text** inside `[ef, et)` and outside every span is what `me`
+   deleted. Each run of it becomes a fragment owned by `me`'s change.
+3. **Affected own changes** are `me`'s changes with a span touching `[ef, et]`
+   (ends included) or a fragment in a gap at a position in `[ef, et]`. They
+   and the new edit merge into one change, which keeps the lowest id by
+   position; the others are `removed` and their fragments relabelled. If the
+   edit deletes original text or inserts text and no own change is affected, a
+   new change is made.
+4. **Swallowed gaps.** Every gap at a position in `[ef, et]` merges into one
+   gap with the new fragments. Walking `ef..et`, the gap at `p` comes first,
+   then the original character at `p`. Adjacent fragments of one change join.
+   With nothing inserted the merged gap sits at `ef`. With text inserted it
+   sits at the merged span's start, and the gap that sat exactly at `et`
+   stays separate after the span, at `ef + insert.length`, since what it held
+   came after the deleted text. That gap merges before the span instead when
+   it holds one of `me`'s fragments, or when a span of `me`'s starts at `et`:
+   then `me`'s deleted text belongs with the new change. A gap placed at a
+   position that already has a gap (the span's start after a merge with an
+   earlier own span) joins that gap after its fragments. There is one gap per
+   position.
+5. A change with no span and no fragment left is `removed`. A gap with no
+   fragment is `removed`.
+6. A multi-range edit is planned range by range, in order, each range in the
+   coordinates left by the ranges before it, exactly as
+   `web/vendor/loro-codemirror/sync.ts` writes them.
 
 Fixtures: `web/tests/fixtures/track-changes.json`, an array of
-`{name, before, changes, me, edits, after, expect}` where `before` and `after`
-are the file text, `changes` and `expect` are resolved lists (`id`, `who`,
-`from`, `to`, `deleted`; new ids are written `"new-1"`, `"new-2"`, ... in order
-of creation). Both the JS and the Rust planner run every fixture. At least:
-typing into empty text; typing that extends one's own change at either end;
-replacing a word (one change, `deleted` = the word); backspacing into original
-text before one's own insertion (`deleted` prepended); forward-deleting after
-it (`deleted` appended); deleting a selection spanning two own changes and the
-text between (one change); deleting all of one's own insertion (removed);
-deleting inside another author's insertion (theirs shrinks, nothing recorded);
-inserting inside another author's insertion (split); inserting at the end of
-another author's insertion (separate change); an edit far from any change
-(other changes `kept`, shifted); a multi-range edit; astral characters
-(UTF-16 vs code points, so the Rust run converts fixture offsets: fixtures are
-in UTF-16).
+`{name, before, state, me, edits, after, expect}`. `state` and `expect` are
+`{changes: [{id, who, from, to}], gaps: [{at, fragments: [{change, text}]}]}`;
+new change ids are written `"new-1"`, `"new-2"`, ... in order of creation and
+gap ids are not compared. Offsets are UTF-16; the Rust runner converts. Both
+planners run every fixture.
 
 ## Decisions
 
-Both are one local Loro commit by the deciding editor:
-- `accept(doc, id)`: `changes.delete(id)`.
-- `reject(doc, id)`: resolve; `text.delete(from, to - from)`;
-  `text.insert(from, deleted)`; for each entry of `points` whose change still
-  exists and is still a pure deletion, rewrite that change's `start` to
-  `text.getCursor(from + at, -1)` with `end = null`; `changes.delete(id)`.
-  If the change being rejected is itself listed in the `points` of another
-  pending change `O` (same file), `O` splits at offset `a`: the part holding
-  `deleted[..a]` becomes a pure deletion anchored on the first character of
-  the restored text, and the part holding `deleted[a..]` keeps `O`'s inserted
-  span, or, with none, anchors on the character after the restored text. `O`
-  keeps its id on the left part, or on the right part when the left is empty;
-  the other part gets a new id with the same `who`, `author`, `run` and `at`.
-  A part with no deleted text and no inserted span is dropped. `O`'s other
-  points go left with their offset when `at < a`, else right with `at - a`.
-  This keeps the order of two deletions that were anchored at the same
-  character, so rejecting them in any order restores the original text.
-- `rejectMany(doc, ids)` (Rust `reject_many`) rejects several changes in one
-  commit. A selected change whose `points` list another selected change is
-  rejected before that one; this repeats until none is left, since owners can
-  nest. When rejecting a change splits an owner that was not selected, the
-  owner's parts stay pending. It returns the number rejected.
-- On `accept`, the `points` go with the record.
+Both are one local Loro commit by the deciding editor, both work on the
+rows' change ids:
+- `accept(doc, id)`: remove the change's fragments from every gap (a gap left
+  empty is deleted), then `changes.delete(id)`. The text stays.
+- `reject(doc, id)`: resolve the file. The gaps to put back are every gap
+  holding one of the change's fragments and, when the change has a span, every
+  gap from the span's start to the character after it, which all collapse onto
+  one point when the span goes. Gaps beyond the span come back first, at
+  their positions, then the span's text is deleted, then the gaps at and
+  before it. Putting a gap back: walk its fragments in order; each fragment of
+  the rejected change is inserted into the text where the walk stands; each
+  run of other changes' fragments becomes a new gap anchored on the
+  character that now follows it. Then `changes.delete(id)`.
+- `rejectMany(doc, ids)` rejects each in turn in one commit and returns the
+  number rejected. Order does not matter.
 
 They are plain document edits: they sync through the normal update path, need
-no server message and no table, and the reviewer's undo takes them back. Two
-editors rejecting the same change at the same moment both apply the inverse;
-the `deleted` text then appears twice. That race is accepted.
+no server message and no table, and the reviewer's undo takes them back.
+
+The fuzz that pins this: random deletions, insertions and replacements by
+random authors, then (a) every change rejected in random order gives the
+original text; (b) every change accepted or rejected in random order leaves
+each original character iff its first deleter was rejected, each surviving
+inserted character iff its author was accepted, and original characters in
+their order. Both planners carry a seeded version of it in their unit tests.
 
 ## Browser
 
@@ -298,6 +283,7 @@ suggestion wording from `docs/architecture/document.md`,
   old characters do not reattach exactly.
 - After a history trim, a change whose cursor pointed at a character deleted
   before the trim may be orphaned and is pruned.
-- Deletions nested three deep (an author deletes text around a deletion that
-  already swallowed another) can restore in the wrong order when the inner
-  ones are rejected first. All the text comes back. Two levels are handled.
+- Two editors deciding different changes with fragments in one gap at the
+  same moment race on that gap's record; the later write wins and the other
+  decision's fragments may come back or vanish twice. Rare, and the same
+  class of race as above.

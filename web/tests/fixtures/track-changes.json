@@ -2,303 +2,1773 @@
   {
     "name": "typing into empty text",
     "before": "",
-    "changes": [],
-    "me": { "who": "me", "author": "Me" },
-    "edits": [{ "from": 0, "to": 0, "insert": "a" }],
+    "state": {
+      "changes": [],
+      "gaps": []
+    },
+    "me": {
+      "who": "me",
+      "author": "Me"
+    },
+    "edits": [
+      {
+        "from": 0,
+        "to": 0,
+        "insert": "a"
+      }
+    ],
     "after": "a",
-    "expect": [{ "id": "new-1", "who": "me", "from": 0, "to": 1, "deleted": "" }]
+    "expect": {
+      "changes": [
+        {
+          "id": "new-1",
+          "who": "me",
+          "from": 0,
+          "to": 1
+        }
+      ],
+      "gaps": []
+    }
   },
   {
     "name": "typing extends own insertion at its end",
     "before": "abXYcd",
-    "changes": [{ "id": "a", "who": "me", "from": 2, "to": 4, "deleted": "" }],
-    "me": { "who": "me", "author": "Me" },
-    "edits": [{ "from": 4, "to": 4, "insert": "Z" }],
+    "state": {
+      "changes": [
+        {
+          "id": "a",
+          "who": "me",
+          "from": 2,
+          "to": 4
+        }
+      ],
+      "gaps": []
+    },
+    "me": {
+      "who": "me",
+      "author": "Me"
+    },
+    "edits": [
+      {
+        "from": 4,
+        "to": 4,
+        "insert": "Z"
+      }
+    ],
     "after": "abXYZcd",
-    "expect": [{ "id": "a", "who": "me", "from": 2, "to": 5, "deleted": "" }]
+    "expect": {
+      "changes": [
+        {
+          "id": "a",
+          "who": "me",
+          "from": 2,
+          "to": 5
+        }
+      ],
+      "gaps": []
+    }
   },
   {
     "name": "typing extends own insertion at its start",
     "before": "abXYcd",
-    "changes": [{ "id": "a", "who": "me", "from": 2, "to": 4, "deleted": "" }],
-    "me": { "who": "me", "author": "Me" },
-    "edits": [{ "from": 2, "to": 2, "insert": "Z" }],
+    "state": {
+      "changes": [
+        {
+          "id": "a",
+          "who": "me",
+          "from": 2,
+          "to": 4
+        }
+      ],
+      "gaps": []
+    },
+    "me": {
+      "who": "me",
+      "author": "Me"
+    },
+    "edits": [
+      {
+        "from": 2,
+        "to": 2,
+        "insert": "Z"
+      }
+    ],
     "after": "abZXYcd",
-    "expect": [{ "id": "a", "who": "me", "from": 2, "to": 5, "deleted": "" }]
+    "expect": {
+      "changes": [
+        {
+          "id": "a",
+          "who": "me",
+          "from": 2,
+          "to": 5
+        }
+      ],
+      "gaps": []
+    }
   },
   {
     "name": "replacing a word is one change",
     "before": "the quick fox",
-    "changes": [],
-    "me": { "who": "me", "author": "Me" },
-    "edits": [{ "from": 4, "to": 9, "insert": "slow" }],
+    "state": {
+      "changes": [],
+      "gaps": []
+    },
+    "me": {
+      "who": "me",
+      "author": "Me"
+    },
+    "edits": [
+      {
+        "from": 4,
+        "to": 9,
+        "insert": "slow"
+      }
+    ],
     "after": "the slow fox",
-    "expect": [{ "id": "new-1", "who": "me", "from": 4, "to": 8, "deleted": "quick" }]
+    "expect": {
+      "changes": [
+        {
+          "id": "new-1",
+          "who": "me",
+          "from": 4,
+          "to": 8
+        }
+      ],
+      "gaps": [
+        {
+          "at": 4,
+          "fragments": [
+            {
+              "change": "new-1",
+              "text": "quick"
+            }
+          ]
+        }
+      ]
+    }
   },
   {
     "name": "backspace into original text before own insertion prepends deleted",
     "before": "abcXYd",
-    "changes": [{ "id": "a", "who": "me", "from": 3, "to": 5, "deleted": "q" }],
-    "me": { "who": "me", "author": "Me" },
-    "edits": [{ "from": 2, "to": 3, "insert": "" }],
+    "state": {
+      "changes": [
+        {
+          "id": "a",
+          "who": "me",
+          "from": 3,
+          "to": 5
+        }
+      ],
+      "gaps": [
+        {
+          "at": 3,
+          "fragments": [
+            {
+              "change": "a",
+              "text": "q"
+            }
+          ]
+        }
+      ]
+    },
+    "me": {
+      "who": "me",
+      "author": "Me"
+    },
+    "edits": [
+      {
+        "from": 2,
+        "to": 3,
+        "insert": ""
+      }
+    ],
     "after": "abXYd",
-    "expect": [{ "id": "a", "who": "me", "from": 2, "to": 4, "deleted": "cq" }]
+    "expect": {
+      "changes": [
+        {
+          "id": "a",
+          "who": "me",
+          "from": 2,
+          "to": 4
+        }
+      ],
+      "gaps": [
+        {
+          "at": 2,
+          "fragments": [
+            {
+              "change": "a",
+              "text": "cq"
+            }
+          ]
+        }
+      ]
+    }
   },
   {
     "name": "forward delete after own insertion appends deleted",
     "before": "abXYcd",
-    "changes": [{ "id": "a", "who": "me", "from": 2, "to": 4, "deleted": "q" }],
-    "me": { "who": "me", "author": "Me" },
-    "edits": [{ "from": 4, "to": 5, "insert": "" }],
+    "state": {
+      "changes": [
+        {
+          "id": "a",
+          "who": "me",
+          "from": 2,
+          "to": 4
+        }
+      ],
+      "gaps": [
+        {
+          "at": 2,
+          "fragments": [
+            {
+              "change": "a",
+              "text": "q"
+            }
+          ]
+        }
+      ]
+    },
+    "me": {
+      "who": "me",
+      "author": "Me"
+    },
+    "edits": [
+      {
+        "from": 4,
+        "to": 5,
+        "insert": ""
+      }
+    ],
     "after": "abXYd",
-    "expect": [{ "id": "a", "who": "me", "from": 2, "to": 4, "deleted": "qc" }]
+    "expect": {
+      "changes": [
+        {
+          "id": "a",
+          "who": "me",
+          "from": 2,
+          "to": 4
+        }
+      ],
+      "gaps": [
+        {
+          "at": 2,
+          "fragments": [
+            {
+              "change": "a",
+              "text": "qc"
+            }
+          ]
+        }
+      ]
+    }
   },
   {
     "name": "deleting across two own changes and the text between is one change",
     "before": "aXbcdYe",
-    "changes": [
-      { "id": "a", "who": "me", "from": 1, "to": 2, "deleted": "w" },
-      { "id": "b", "who": "me", "from": 5, "to": 6, "deleted": "z" }
+    "state": {
+      "changes": [
+        {
+          "id": "a",
+          "who": "me",
+          "from": 1,
+          "to": 2
+        },
+        {
+          "id": "b",
+          "who": "me",
+          "from": 5,
+          "to": 6
+        }
+      ],
+      "gaps": [
+        {
+          "at": 1,
+          "fragments": [
+            {
+              "change": "a",
+              "text": "w"
+            }
+          ]
+        },
+        {
+          "at": 5,
+          "fragments": [
+            {
+              "change": "b",
+              "text": "z"
+            }
+          ]
+        }
+      ]
+    },
+    "me": {
+      "who": "me",
+      "author": "Me"
+    },
+    "edits": [
+      {
+        "from": 1,
+        "to": 6,
+        "insert": ""
+      }
     ],
-    "me": { "who": "me", "author": "Me" },
-    "edits": [{ "from": 1, "to": 6, "insert": "" }],
     "after": "ae",
-    "expect": [{ "id": "a", "who": "me", "from": 1, "to": 1, "deleted": "wbcdz" }]
+    "expect": {
+      "changes": [
+        {
+          "id": "a",
+          "who": "me",
+          "from": 1,
+          "to": 1
+        }
+      ],
+      "gaps": [
+        {
+          "at": 1,
+          "fragments": [
+            {
+              "change": "a",
+              "text": "wbcdz"
+            }
+          ]
+        }
+      ]
+    }
   },
   {
     "name": "deleting all of own insertion removes the change",
     "before": "abXYcd",
-    "changes": [{ "id": "a", "who": "me", "from": 2, "to": 4, "deleted": "" }],
-    "me": { "who": "me", "author": "Me" },
-    "edits": [{ "from": 2, "to": 4, "insert": "" }],
+    "state": {
+      "changes": [
+        {
+          "id": "a",
+          "who": "me",
+          "from": 2,
+          "to": 4
+        }
+      ],
+      "gaps": []
+    },
+    "me": {
+      "who": "me",
+      "author": "Me"
+    },
+    "edits": [
+      {
+        "from": 2,
+        "to": 4,
+        "insert": ""
+      }
+    ],
     "after": "abcd",
-    "expect": []
+    "expect": {
+      "changes": [],
+      "gaps": []
+    }
   },
   {
     "name": "deleting inside own insertion only shrinks it",
     "before": "abXYZcd",
-    "changes": [{ "id": "a", "who": "me", "from": 2, "to": 5, "deleted": "" }],
-    "me": { "who": "me", "author": "Me" },
-    "edits": [{ "from": 3, "to": 4, "insert": "" }],
+    "state": {
+      "changes": [
+        {
+          "id": "a",
+          "who": "me",
+          "from": 2,
+          "to": 5
+        }
+      ],
+      "gaps": []
+    },
+    "me": {
+      "who": "me",
+      "author": "Me"
+    },
+    "edits": [
+      {
+        "from": 3,
+        "to": 4,
+        "insert": ""
+      }
+    ],
     "after": "abXZcd",
-    "expect": [{ "id": "a", "who": "me", "from": 2, "to": 4, "deleted": "" }]
+    "expect": {
+      "changes": [
+        {
+          "id": "a",
+          "who": "me",
+          "from": 2,
+          "to": 4
+        }
+      ],
+      "gaps": []
+    }
   },
   {
     "name": "deleting inside another author's insertion shrinks theirs",
     "before": "abWXYZcd",
-    "changes": [{ "id": "b", "who": "bob", "from": 2, "to": 6, "deleted": "" }],
-    "me": { "who": "me", "author": "Me" },
-    "edits": [{ "from": 3, "to": 5, "insert": "" }],
+    "state": {
+      "changes": [
+        {
+          "id": "b",
+          "who": "bob",
+          "from": 2,
+          "to": 6
+        }
+      ],
+      "gaps": []
+    },
+    "me": {
+      "who": "me",
+      "author": "Me"
+    },
+    "edits": [
+      {
+        "from": 3,
+        "to": 5,
+        "insert": ""
+      }
+    ],
     "after": "abWZcd",
-    "expect": [{ "id": "b", "who": "bob", "from": 2, "to": 4, "deleted": "" }]
+    "expect": {
+      "changes": [
+        {
+          "id": "b",
+          "who": "bob",
+          "from": 2,
+          "to": 4
+        }
+      ],
+      "gaps": []
+    }
   },
   {
     "name": "inserting inside another author's insertion splits it",
     "before": "abWXYZcd",
-    "changes": [{ "id": "b", "who": "bob", "from": 2, "to": 6, "deleted": "" }],
-    "me": { "who": "me", "author": "Me" },
-    "edits": [{ "from": 4, "to": 4, "insert": "Q" }],
+    "state": {
+      "changes": [
+        {
+          "id": "b",
+          "who": "bob",
+          "from": 2,
+          "to": 6
+        }
+      ],
+      "gaps": []
+    },
+    "me": {
+      "who": "me",
+      "author": "Me"
+    },
+    "edits": [
+      {
+        "from": 4,
+        "to": 4,
+        "insert": "Q"
+      }
+    ],
     "after": "abWXQYZcd",
-    "expect": [
-      { "id": "b", "who": "bob", "from": 2, "to": 4, "deleted": "" },
-      { "id": "new-1", "who": "me", "from": 4, "to": 5, "deleted": "" },
-      { "id": "new-2", "who": "bob", "from": 5, "to": 7, "deleted": "" }
-    ]
+    "expect": {
+      "changes": [
+        {
+          "id": "b",
+          "who": "bob",
+          "from": 2,
+          "to": 4
+        },
+        {
+          "id": "new-1",
+          "who": "me",
+          "from": 4,
+          "to": 5
+        },
+        {
+          "id": "new-2",
+          "who": "bob",
+          "from": 5,
+          "to": 7
+        }
+      ],
+      "gaps": []
+    }
   },
   {
     "name": "inserting at the end of another author's insertion is a separate change",
     "before": "abWXYZcd",
-    "changes": [{ "id": "b", "who": "bob", "from": 2, "to": 6, "deleted": "" }],
-    "me": { "who": "me", "author": "Me" },
-    "edits": [{ "from": 6, "to": 6, "insert": "Q" }],
+    "state": {
+      "changes": [
+        {
+          "id": "b",
+          "who": "bob",
+          "from": 2,
+          "to": 6
+        }
+      ],
+      "gaps": []
+    },
+    "me": {
+      "who": "me",
+      "author": "Me"
+    },
+    "edits": [
+      {
+        "from": 6,
+        "to": 6,
+        "insert": "Q"
+      }
+    ],
     "after": "abWXYZQcd",
-    "expect": [
-      { "id": "b", "who": "bob", "from": 2, "to": 6, "deleted": "" },
-      { "id": "new-1", "who": "me", "from": 6, "to": 7, "deleted": "" }
-    ]
+    "expect": {
+      "changes": [
+        {
+          "id": "b",
+          "who": "bob",
+          "from": 2,
+          "to": 6
+        },
+        {
+          "id": "new-1",
+          "who": "me",
+          "from": 6,
+          "to": 7
+        }
+      ],
+      "gaps": []
+    }
   },
   {
     "name": "inserting at the start of another author's insertion is a separate change",
     "before": "abWXYZcd",
-    "changes": [{ "id": "b", "who": "bob", "from": 2, "to": 6, "deleted": "" }],
-    "me": { "who": "me", "author": "Me" },
-    "edits": [{ "from": 2, "to": 2, "insert": "Q" }],
+    "state": {
+      "changes": [
+        {
+          "id": "b",
+          "who": "bob",
+          "from": 2,
+          "to": 6
+        }
+      ],
+      "gaps": []
+    },
+    "me": {
+      "who": "me",
+      "author": "Me"
+    },
+    "edits": [
+      {
+        "from": 2,
+        "to": 2,
+        "insert": "Q"
+      }
+    ],
     "after": "abQWXYZcd",
-    "expect": [
-      { "id": "new-1", "who": "me", "from": 2, "to": 3, "deleted": "" },
-      { "id": "b", "who": "bob", "from": 3, "to": 7, "deleted": "" }
-    ]
+    "expect": {
+      "changes": [
+        {
+          "id": "new-1",
+          "who": "me",
+          "from": 2,
+          "to": 3
+        },
+        {
+          "id": "b",
+          "who": "bob",
+          "from": 3,
+          "to": 7
+        }
+      ],
+      "gaps": []
+    }
   },
   {
     "name": "replacing text that runs out of another author's insertion",
     "before": "abWXYZcd",
-    "changes": [{ "id": "b", "who": "bob", "from": 2, "to": 6, "deleted": "" }],
-    "me": { "who": "me", "author": "Me" },
-    "edits": [{ "from": 4, "to": 8, "insert": "Q" }],
+    "state": {
+      "changes": [
+        {
+          "id": "b",
+          "who": "bob",
+          "from": 2,
+          "to": 6
+        }
+      ],
+      "gaps": []
+    },
+    "me": {
+      "who": "me",
+      "author": "Me"
+    },
+    "edits": [
+      {
+        "from": 4,
+        "to": 8,
+        "insert": "Q"
+      }
+    ],
     "after": "abWXQ",
-    "expect": [
-      { "id": "b", "who": "bob", "from": 2, "to": 4, "deleted": "" },
-      { "id": "new-1", "who": "me", "from": 4, "to": 5, "deleted": "cd" }
-    ]
+    "expect": {
+      "changes": [
+        {
+          "id": "b",
+          "who": "bob",
+          "from": 2,
+          "to": 4
+        },
+        {
+          "id": "new-1",
+          "who": "me",
+          "from": 4,
+          "to": 5
+        }
+      ],
+      "gaps": [
+        {
+          "at": 4,
+          "fragments": [
+            {
+              "change": "new-1",
+              "text": "cd"
+            }
+          ]
+        }
+      ]
+    }
   },
   {
     "name": "an edit far from other changes keeps and shifts them",
     "before": "one two three four",
-    "changes": [
-      { "id": "a", "who": "me", "from": 4, "to": 7, "deleted": "" },
-      { "id": "b", "who": "bob", "from": 14, "to": 18, "deleted": "x" }
+    "state": {
+      "changes": [
+        {
+          "id": "a",
+          "who": "me",
+          "from": 4,
+          "to": 7
+        },
+        {
+          "id": "b",
+          "who": "bob",
+          "from": 14,
+          "to": 18
+        }
+      ],
+      "gaps": [
+        {
+          "at": 14,
+          "fragments": [
+            {
+              "change": "b",
+              "text": "x"
+            }
+          ]
+        }
+      ]
+    },
+    "me": {
+      "who": "me",
+      "author": "Me"
+    },
+    "edits": [
+      {
+        "from": 0,
+        "to": 3,
+        "insert": "1"
+      }
     ],
-    "me": { "who": "me", "author": "Me" },
-    "edits": [{ "from": 0, "to": 3, "insert": "1" }],
     "after": "1 two three four",
-    "expect": [
-      { "id": "new-1", "who": "me", "from": 0, "to": 1, "deleted": "one" },
-      { "id": "a", "who": "me", "from": 2, "to": 5, "deleted": "" },
-      { "id": "b", "who": "bob", "from": 12, "to": 16, "deleted": "x" }
-    ]
+    "expect": {
+      "changes": [
+        {
+          "id": "new-1",
+          "who": "me",
+          "from": 0,
+          "to": 1
+        },
+        {
+          "id": "a",
+          "who": "me",
+          "from": 2,
+          "to": 5
+        },
+        {
+          "id": "b",
+          "who": "bob",
+          "from": 12,
+          "to": 16
+        }
+      ],
+      "gaps": [
+        {
+          "at": 0,
+          "fragments": [
+            {
+              "change": "new-1",
+              "text": "one"
+            }
+          ]
+        },
+        {
+          "at": 12,
+          "fragments": [
+            {
+              "change": "b",
+              "text": "x"
+            }
+          ]
+        }
+      ]
+    }
   },
   {
     "name": "a multi-range edit is planned range by range",
     "before": "alpha beta gamma",
-    "changes": [],
-    "me": { "who": "me", "author": "Me" },
+    "state": {
+      "changes": [],
+      "gaps": []
+    },
+    "me": {
+      "who": "me",
+      "author": "Me"
+    },
     "edits": [
-      { "from": 0, "to": 5, "insert": "A" },
-      { "from": 11, "to": 16, "insert": "G" }
+      {
+        "from": 0,
+        "to": 5,
+        "insert": "A"
+      },
+      {
+        "from": 11,
+        "to": 16,
+        "insert": "G"
+      }
     ],
     "after": "A beta G",
-    "expect": [
-      { "id": "new-1", "who": "me", "from": 0, "to": 1, "deleted": "alpha" },
-      { "id": "new-2", "who": "me", "from": 7, "to": 8, "deleted": "gamma" }
-    ]
+    "expect": {
+      "changes": [
+        {
+          "id": "new-1",
+          "who": "me",
+          "from": 0,
+          "to": 1
+        },
+        {
+          "id": "new-3",
+          "who": "me",
+          "from": 7,
+          "to": 8
+        }
+      ],
+      "gaps": [
+        {
+          "at": 0,
+          "fragments": [
+            {
+              "change": "new-1",
+              "text": "alpha"
+            }
+          ]
+        },
+        {
+          "at": 7,
+          "fragments": [
+            {
+              "change": "new-3",
+              "text": "gamma"
+            }
+          ]
+        }
+      ]
+    }
   },
   {
     "name": "adjacent ranges of one edit merge into one change",
     "before": "ab",
-    "changes": [],
-    "me": { "who": "me", "author": "Me" },
+    "state": {
+      "changes": [],
+      "gaps": []
+    },
+    "me": {
+      "who": "me",
+      "author": "Me"
+    },
     "edits": [
-      { "from": 0, "to": 1, "insert": "X" },
-      { "from": 1, "to": 2, "insert": "Y" }
+      {
+        "from": 0,
+        "to": 1,
+        "insert": "X"
+      },
+      {
+        "from": 1,
+        "to": 2,
+        "insert": "Y"
+      }
     ],
     "after": "XY",
-    "expect": [{ "id": "new-1", "who": "me", "from": 0, "to": 2, "deleted": "ab" }]
+    "expect": {
+      "changes": [
+        {
+          "id": "new-1",
+          "who": "me",
+          "from": 0,
+          "to": 2
+        }
+      ],
+      "gaps": [
+        {
+          "at": 0,
+          "fragments": [
+            {
+              "change": "new-1",
+              "text": "ab"
+            }
+          ]
+        }
+      ]
+    }
   },
   {
     "name": "replacing across own insertion and original text",
     "before": "abXYcd",
-    "changes": [{ "id": "a", "who": "me", "from": 2, "to": 4, "deleted": "q" }],
-    "me": { "who": "me", "author": "Me" },
-    "edits": [{ "from": 3, "to": 5, "insert": "M" }],
+    "state": {
+      "changes": [
+        {
+          "id": "a",
+          "who": "me",
+          "from": 2,
+          "to": 4
+        }
+      ],
+      "gaps": [
+        {
+          "at": 2,
+          "fragments": [
+            {
+              "change": "a",
+              "text": "q"
+            }
+          ]
+        }
+      ]
+    },
+    "me": {
+      "who": "me",
+      "author": "Me"
+    },
+    "edits": [
+      {
+        "from": 3,
+        "to": 5,
+        "insert": "M"
+      }
+    ],
     "after": "abXMd",
-    "expect": [{ "id": "a", "who": "me", "from": 2, "to": 4, "deleted": "qc" }]
+    "expect": {
+      "changes": [
+        {
+          "id": "a",
+          "who": "me",
+          "from": 2,
+          "to": 4
+        }
+      ],
+      "gaps": [
+        {
+          "at": 2,
+          "fragments": [
+            {
+              "change": "a",
+              "text": "qc"
+            }
+          ]
+        }
+      ]
+    }
   },
   {
     "name": "backspace next to an own pure deletion",
     "before": "abcd",
-    "changes": [{ "id": "a", "who": "me", "from": 2, "to": 2, "deleted": "x" }],
-    "me": { "who": "me", "author": "Me" },
-    "edits": [{ "from": 1, "to": 2, "insert": "" }],
+    "state": {
+      "changes": [
+        {
+          "id": "a",
+          "who": "me",
+          "from": 2,
+          "to": 2
+        }
+      ],
+      "gaps": [
+        {
+          "at": 2,
+          "fragments": [
+            {
+              "change": "a",
+              "text": "x"
+            }
+          ]
+        }
+      ]
+    },
+    "me": {
+      "who": "me",
+      "author": "Me"
+    },
+    "edits": [
+      {
+        "from": 1,
+        "to": 2,
+        "insert": ""
+      }
+    ],
     "after": "acd",
-    "expect": [{ "id": "a", "who": "me", "from": 1, "to": 1, "deleted": "bx" }]
+    "expect": {
+      "changes": [
+        {
+          "id": "a",
+          "who": "me",
+          "from": 1,
+          "to": 1
+        }
+      ],
+      "gaps": [
+        {
+          "at": 1,
+          "fragments": [
+            {
+              "change": "a",
+              "text": "bx"
+            }
+          ]
+        }
+      ]
+    }
   },
   {
     "name": "typing at an own pure deletion turns it into a replacement",
     "before": "abcd",
-    "changes": [{ "id": "a", "who": "me", "from": 2, "to": 2, "deleted": "x" }],
-    "me": { "who": "me", "author": "Me" },
-    "edits": [{ "from": 2, "to": 2, "insert": "Z" }],
+    "state": {
+      "changes": [
+        {
+          "id": "a",
+          "who": "me",
+          "from": 2,
+          "to": 2
+        }
+      ],
+      "gaps": [
+        {
+          "at": 2,
+          "fragments": [
+            {
+              "change": "a",
+              "text": "x"
+            }
+          ]
+        }
+      ]
+    },
+    "me": {
+      "who": "me",
+      "author": "Me"
+    },
+    "edits": [
+      {
+        "from": 2,
+        "to": 2,
+        "insert": "Z"
+      }
+    ],
     "after": "abZcd",
-    "expect": [{ "id": "a", "who": "me", "from": 2, "to": 3, "deleted": "x" }]
+    "expect": {
+      "changes": [
+        {
+          "id": "a",
+          "who": "me",
+          "from": 2,
+          "to": 3
+        }
+      ],
+      "gaps": [
+        {
+          "at": 2,
+          "fragments": [
+            {
+              "change": "a",
+              "text": "x"
+            }
+          ]
+        }
+      ]
+    }
   },
   {
     "name": "another author's pure deletion shifts after an insertion before it",
     "before": "abcd",
-    "changes": [{ "id": "b", "who": "bob", "from": 2, "to": 2, "deleted": "x" }],
-    "me": { "who": "me", "author": "Me" },
-    "edits": [{ "from": 0, "to": 0, "insert": "Q" }],
+    "state": {
+      "changes": [
+        {
+          "id": "b",
+          "who": "bob",
+          "from": 2,
+          "to": 2
+        }
+      ],
+      "gaps": [
+        {
+          "at": 2,
+          "fragments": [
+            {
+              "change": "b",
+              "text": "x"
+            }
+          ]
+        }
+      ]
+    },
+    "me": {
+      "who": "me",
+      "author": "Me"
+    },
+    "edits": [
+      {
+        "from": 0,
+        "to": 0,
+        "insert": "Q"
+      }
+    ],
     "after": "Qabcd",
-    "expect": [
-      { "id": "new-1", "who": "me", "from": 0, "to": 1, "deleted": "" },
-      { "id": "b", "who": "bob", "from": 3, "to": 3, "deleted": "x" }
-    ]
+    "expect": {
+      "changes": [
+        {
+          "id": "new-1",
+          "who": "me",
+          "from": 0,
+          "to": 1
+        },
+        {
+          "id": "b",
+          "who": "bob",
+          "from": 3,
+          "to": 3
+        }
+      ],
+      "gaps": [
+        {
+          "at": 3,
+          "fragments": [
+            {
+              "change": "b",
+              "text": "x"
+            }
+          ]
+        }
+      ]
+    }
   },
   {
     "name": "astral characters count as two UTF-16 units: replace after one",
     "before": "a😀b😀c",
-    "changes": [],
-    "me": { "who": "me", "author": "Me" },
-    "edits": [{ "from": 3, "to": 4, "insert": "X" }],
+    "state": {
+      "changes": [],
+      "gaps": []
+    },
+    "me": {
+      "who": "me",
+      "author": "Me"
+    },
+    "edits": [
+      {
+        "from": 3,
+        "to": 4,
+        "insert": "X"
+      }
+    ],
     "after": "a😀X😀c",
-    "expect": [{ "id": "new-1", "who": "me", "from": 3, "to": 4, "deleted": "b" }]
+    "expect": {
+      "changes": [
+        {
+          "id": "new-1",
+          "who": "me",
+          "from": 3,
+          "to": 4
+        }
+      ],
+      "gaps": [
+        {
+          "at": 3,
+          "fragments": [
+            {
+              "change": "new-1",
+              "text": "b"
+            }
+          ]
+        }
+      ]
+    }
   },
   {
     "name": "astral characters: typing extends an own insertion that holds one",
     "before": "a😀b",
-    "changes": [{ "id": "a", "who": "me", "from": 1, "to": 3, "deleted": "" }],
-    "me": { "who": "me", "author": "Me" },
-    "edits": [{ "from": 3, "to": 3, "insert": "Z" }],
+    "state": {
+      "changes": [
+        {
+          "id": "a",
+          "who": "me",
+          "from": 1,
+          "to": 3
+        }
+      ],
+      "gaps": []
+    },
+    "me": {
+      "who": "me",
+      "author": "Me"
+    },
+    "edits": [
+      {
+        "from": 3,
+        "to": 3,
+        "insert": "Z"
+      }
+    ],
     "after": "a😀Zb",
-    "expect": [{ "id": "a", "who": "me", "from": 1, "to": 4, "deleted": "" }]
+    "expect": {
+      "changes": [
+        {
+          "id": "a",
+          "who": "me",
+          "from": 1,
+          "to": 4
+        }
+      ],
+      "gaps": []
+    }
   },
   {
     "name": "astral characters: deleting an original astral character records it whole",
     "before": "a😀b",
-    "changes": [],
-    "me": { "who": "me", "author": "Me" },
-    "edits": [{ "from": 1, "to": 3, "insert": "" }],
-    "after": "ab",
-    "expect": [{ "id": "new-1", "who": "me", "from": 1, "to": 1, "deleted": "😀" }]
-  },
-  {
-    "name": "points: deleting a foreign pure deletion's anchor records where it sat",
-    "before": "acd",
-    "changes": [{ "id": "a", "who": "alice", "from": 1, "to": 1, "deleted": "b" }],
-    "me": { "who": "bob", "author": "Bob" },
-    "edits": [{ "from": 1, "to": 2, "insert": "" }],
-    "after": "ad",
-    "expect": [
-      { "id": "new-1", "who": "bob", "from": 1, "to": 1, "deleted": "c", "points": [{ "id": "a", "at": 0 }] },
-      { "id": "a", "who": "alice", "from": 1, "to": 1, "deleted": "b" }
-    ]
-  },
-  {
-    "name": "points: a swallowed point in the middle of the new deletion",
-    "before": "abde",
-    "changes": [{ "id": "a", "who": "alice", "from": 2, "to": 2, "deleted": "c" }],
-    "me": { "who": "bob", "author": "Bob" },
-    "edits": [{ "from": 1, "to": 3, "insert": "" }],
-    "after": "ae",
-    "expect": [
-      { "id": "new-1", "who": "bob", "from": 1, "to": 1, "deleted": "bd", "points": [{ "id": "a", "at": 1 }] },
-      { "id": "a", "who": "alice", "from": 1, "to": 1, "deleted": "c" }
-    ]
-  },
-  {
-    "name": "points: a merge carries points and shifts them past deleted text that lands before",
-    "before": "ad",
-    "changes": [
-      { "id": "a", "who": "alice", "from": 1, "to": 1, "deleted": "b" },
-      { "id": "m", "who": "bob", "from": 1, "to": 1, "deleted": "c", "points": [{ "id": "a", "at": 0 }] }
+    "state": {
+      "changes": [],
+      "gaps": []
+    },
+    "me": {
+      "who": "me",
+      "author": "Me"
+    },
+    "edits": [
+      {
+        "from": 1,
+        "to": 3,
+        "insert": ""
+      }
     ],
-    "me": { "who": "bob", "author": "Bob" },
-    "edits": [{ "from": 0, "to": 1, "insert": "" }],
-    "after": "d",
-    "expect": [
-      { "id": "m", "who": "bob", "from": 0, "to": 0, "deleted": "ac", "points": [{ "id": "a", "at": 1 }] },
-      { "id": "a", "who": "alice", "from": 0, "to": 0, "deleted": "b" }
-    ]
+    "after": "ab",
+    "expect": {
+      "changes": [
+        {
+          "id": "new-1",
+          "who": "me",
+          "from": 1,
+          "to": 1
+        }
+      ],
+      "gaps": [
+        {
+          "at": 1,
+          "fragments": [
+            {
+              "change": "new-1",
+              "text": "😀"
+            }
+          ]
+        }
+      ]
+    }
   },
   {
-    "name": "points: a deletion right after the range is recorded at the end of the new deletion",
-    "before": "abd",
-    "changes": [{ "id": "a", "who": "alice", "from": 2, "to": 2, "deleted": "c" }],
-    "me": { "who": "bob", "author": "Bob" },
-    "edits": [{ "from": 1, "to": 2, "insert": "" }],
-    "after": "ad",
-    "expect": [
-      { "id": "new-1", "who": "bob", "from": 1, "to": 1, "deleted": "b", "points": [{ "id": "a", "at": 1 }] },
-      { "id": "a", "who": "alice", "from": 1, "to": 1, "deleted": "c" }
-    ]
+    "name": "deleting over another author's deletion keeps its fragment in order",
+    "before": "abde",
+    "state": {
+      "changes": [
+        {
+          "id": "a",
+          "who": "alice",
+          "from": 2,
+          "to": 2
+        }
+      ],
+      "gaps": [
+        {
+          "at": 2,
+          "fragments": [
+            {
+              "change": "a",
+              "text": "c"
+            }
+          ]
+        }
+      ]
+    },
+    "me": {
+      "who": "bob",
+      "author": "Bob"
+    },
+    "edits": [
+      {
+        "from": 1,
+        "to": 3,
+        "insert": ""
+      }
+    ],
+    "after": "ae",
+    "expect": {
+      "changes": [
+        {
+          "id": "a",
+          "who": "alice",
+          "from": 1,
+          "to": 1
+        },
+        {
+          "id": "new-1",
+          "who": "bob",
+          "from": 1,
+          "to": 1
+        }
+      ],
+      "gaps": [
+        {
+          "at": 1,
+          "fragments": [
+            {
+              "change": "new-1",
+              "text": "b"
+            },
+            {
+              "change": "a",
+              "text": "c"
+            },
+            {
+              "change": "new-1",
+              "text": "d"
+            }
+          ]
+        }
+      ]
+    }
+  },
+  {
+    "name": "a third deletion around two nested ones",
+    "before": "ae",
+    "state": {
+      "changes": [
+        {
+          "id": "a",
+          "who": "bob",
+          "from": 1,
+          "to": 1
+        },
+        {
+          "id": "b",
+          "who": "alice",
+          "from": 1,
+          "to": 1
+        }
+      ],
+      "gaps": [
+        {
+          "at": 1,
+          "fragments": [
+            {
+              "change": "a",
+              "text": "b"
+            },
+            {
+              "change": "b",
+              "text": "c"
+            },
+            {
+              "change": "a",
+              "text": "d"
+            }
+          ]
+        }
+      ]
+    },
+    "me": {
+      "who": "cara",
+      "author": "Cara"
+    },
+    "edits": [
+      {
+        "from": 0,
+        "to": 1,
+        "insert": ""
+      }
+    ],
+    "after": "e",
+    "expect": {
+      "changes": [
+        {
+          "id": "a",
+          "who": "bob",
+          "from": 0,
+          "to": 0
+        },
+        {
+          "id": "b",
+          "who": "alice",
+          "from": 0,
+          "to": 0
+        },
+        {
+          "id": "new-1",
+          "who": "cara",
+          "from": 0,
+          "to": 0
+        }
+      ],
+      "gaps": [
+        {
+          "at": 0,
+          "fragments": [
+            {
+              "change": "new-1",
+              "text": "a"
+            },
+            {
+              "change": "a",
+              "text": "b"
+            },
+            {
+              "change": "b",
+              "text": "c"
+            },
+            {
+              "change": "a",
+              "text": "d"
+            }
+          ]
+        }
+      ]
+    }
+  },
+  {
+    "name": "own deletion next to own earlier deletion merges across another author's fragment",
+    "before": "ab",
+    "state": {
+      "changes": [
+        {
+          "id": "a",
+          "who": "alice",
+          "from": 2,
+          "to": 2
+        },
+        {
+          "id": "b",
+          "who": "bob",
+          "from": 2,
+          "to": 2
+        }
+      ],
+      "gaps": [
+        {
+          "at": 2,
+          "fragments": [
+            {
+              "change": "b",
+              "text": "cd"
+            },
+            {
+              "change": "a",
+              "text": "ef"
+            }
+          ]
+        }
+      ]
+    },
+    "me": {
+      "who": "alice",
+      "author": "Alice"
+    },
+    "edits": [
+      {
+        "from": 1,
+        "to": 2,
+        "insert": ""
+      }
+    ],
+    "after": "a",
+    "expect": {
+      "changes": [
+        {
+          "id": "a",
+          "who": "alice",
+          "from": 1,
+          "to": 1
+        },
+        {
+          "id": "b",
+          "who": "bob",
+          "from": 1,
+          "to": 1
+        }
+      ],
+      "gaps": [
+        {
+          "at": 1,
+          "fragments": [
+            {
+              "change": "a",
+              "text": "b"
+            },
+            {
+              "change": "b",
+              "text": "cd"
+            },
+            {
+              "change": "a",
+              "text": "ef"
+            }
+          ]
+        }
+      ]
+    }
+  },
+  {
+    "name": "a replacement keeps the gap after it after its span",
+    "before": "the quick",
+    "state": {
+      "changes": [
+        {
+          "id": "a",
+          "who": "bob",
+          "from": 9,
+          "to": 9
+        }
+      ],
+      "gaps": [
+        {
+          "at": 9,
+          "fragments": [
+            {
+              "change": "a",
+              "text": " fox"
+            }
+          ]
+        }
+      ]
+    },
+    "me": {
+      "who": "alice",
+      "author": "Alice"
+    },
+    "edits": [
+      {
+        "from": 4,
+        "to": 9,
+        "insert": "slow"
+      }
+    ],
+    "after": "the slow",
+    "expect": {
+      "changes": [
+        {
+          "id": "new-1",
+          "who": "alice",
+          "from": 4,
+          "to": 8
+        },
+        {
+          "id": "a",
+          "who": "bob",
+          "from": 8,
+          "to": 8
+        }
+      ],
+      "gaps": [
+        {
+          "at": 4,
+          "fragments": [
+            {
+              "change": "new-1",
+              "text": "quick"
+            }
+          ]
+        },
+        {
+          "at": 8,
+          "fragments": [
+            {
+              "change": "a",
+              "text": " fox"
+            }
+          ]
+        }
+      ]
+    }
+  },
+  {
+    "name": "a replacement merging with an earlier own span keeps its deleted text before the span",
+    "before": "Zdef",
+    "state": {
+      "changes": [
+        {
+          "id": "a",
+          "who": "alice",
+          "from": 0,
+          "to": 1
+        }
+      ],
+      "gaps": [
+        {
+          "at": 0,
+          "fragments": [
+            {
+              "change": "a",
+              "text": "abc"
+            }
+          ]
+        }
+      ]
+    },
+    "me": {
+      "who": "alice",
+      "author": "Alice"
+    },
+    "edits": [
+      {
+        "from": 1,
+        "to": 2,
+        "insert": "X"
+      }
+    ],
+    "after": "ZXef",
+    "expect": {
+      "changes": [
+        {
+          "id": "a",
+          "who": "alice",
+          "from": 0,
+          "to": 2
+        }
+      ],
+      "gaps": [
+        {
+          "at": 0,
+          "fragments": [
+            {
+              "change": "a",
+              "text": "abcd"
+            }
+          ]
+        }
+      ]
+    }
+  },
+  {
+    "name": "deleting another author's whole insertion erases it and records the original text around it",
+    "before": "abXYcdef",
+    "state": {
+      "changes": [
+        {
+          "id": "a",
+          "who": "bob",
+          "from": 2,
+          "to": 4
+        }
+      ],
+      "gaps": []
+    },
+    "me": {
+      "who": "alice",
+      "author": "Alice"
+    },
+    "edits": [
+      {
+        "from": 1,
+        "to": 5,
+        "insert": ""
+      }
+    ],
+    "after": "adef",
+    "expect": {
+      "changes": [
+        {
+          "id": "new-1",
+          "who": "alice",
+          "from": 1,
+          "to": 1
+        }
+      ],
+      "gaps": [
+        {
+          "at": 1,
+          "fragments": [
+            {
+              "change": "new-1",
+              "text": "bc"
+            }
+          ]
+        }
+      ]
+    }
+  },
+  {
+    "name": "typing at an own deletion point makes a replacement",
+    "before": "abef",
+    "state": {
+      "changes": [
+        {
+          "id": "a",
+          "who": "alice",
+          "from": 2,
+          "to": 2
+        }
+      ],
+      "gaps": [
+        {
+          "at": 2,
+          "fragments": [
+            {
+              "change": "a",
+              "text": "cd"
+            }
+          ]
+        }
+      ]
+    },
+    "me": {
+      "who": "alice",
+      "author": "Alice"
+    },
+    "edits": [
+      {
+        "from": 2,
+        "to": 2,
+        "insert": "Z"
+      }
+    ],
+    "after": "abZef",
+    "expect": {
+      "changes": [
+        {
+          "id": "a",
+          "who": "alice",
+          "from": 2,
+          "to": 3
+        }
+      ],
+      "gaps": [
+        {
+          "at": 2,
+          "fragments": [
+            {
+              "change": "a",
+              "text": "cd"
+            }
+          ]
+        }
+      ]
+    }
+  },
+  {
+    "name": "backspacing over own typing records nothing",
+    "before": "abZcdef",
+    "state": {
+      "changes": [
+        {
+          "id": "a",
+          "who": "alice",
+          "from": 2,
+          "to": 3
+        }
+      ],
+      "gaps": []
+    },
+    "me": {
+      "who": "alice",
+      "author": "Alice"
+    },
+    "edits": [
+      {
+        "from": 2,
+        "to": 3,
+        "insert": ""
+      }
+    ],
+    "after": "abcdef",
+    "expect": {
+      "changes": [],
+      "gaps": []
+    }
+  },
+  {
+    "name": "deleting into another author's replacement swallows its gap",
+    "before": "abcXYfgh",
+    "state": {
+      "changes": [
+        {
+          "id": "a",
+          "who": "bob",
+          "from": 3,
+          "to": 5
+        }
+      ],
+      "gaps": [
+        {
+          "at": 3,
+          "fragments": [
+            {
+              "change": "a",
+              "text": "de"
+            }
+          ]
+        }
+      ]
+    },
+    "me": {
+      "who": "alice",
+      "author": "Alice"
+    },
+    "edits": [
+      {
+        "from": 1,
+        "to": 4,
+        "insert": ""
+      }
+    ],
+    "after": "aYfgh",
+    "expect": {
+      "changes": [
+        {
+          "id": "new-1",
+          "who": "alice",
+          "from": 1,
+          "to": 1
+        },
+        {
+          "id": "a",
+          "who": "bob",
+          "from": 1,
+          "to": 2
+        }
+      ],
+      "gaps": [
+        {
+          "at": 1,
+          "fragments": [
+            {
+              "change": "new-1",
+              "text": "bc"
+            },
+            {
+              "change": "a",
+              "text": "de"
+            }
+          ]
+        }
+      ]
+    }
   }
 ]
