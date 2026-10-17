@@ -603,7 +603,7 @@ window.trackingEditsCheck = async () => {
         await tick();
       }
     };
-    await run({ view, press, type, session: value, id });
+    await run({ view, press, type, session: value, id, component });
     await tick();
     await new Promise((resolve) => setTimeout(resolve, 30));
     const records = resolveChanges(value.doc, id).map((change) => ({ from: change.from, to: change.to, deleted: change.deleted }));
@@ -693,6 +693,18 @@ window.trackingEditsCheck = async () => {
         await tick();
         await new Promise((resolve) => setTimeout(resolve, 50));
       }
+    }),
+    untrackedCollapse: await scenario("untrackedCollapse", "default", async ({ view, session, id, component }) => {
+      // Two tracked deletions, then an untracked deletion of the text between them,
+      // then rejecting both: the text comes back in order.
+      view.dispatch({ changes: { from: 11, to: 17 }, userEvent: "delete.selection" });
+      await tick();
+      view.dispatch({ changes: { from: 12, to: 17 }, userEvent: "delete.selection" });
+      await tick();
+      component.stopTracking();
+      view.dispatch({ changes: { from: 11, to: 12 }, userEvent: "delete.selection" });
+      await tick();
+      component.startTracking();
     }),
   };
 };
@@ -1056,6 +1068,8 @@ try {
   assert.deepEqual(edits.vimDdUndoTwice.records, []);
   assert.equal(edits.vimDdUndoTwice.selectionEmpty, true, "vim u left a range selected");
   assert.equal(edits.vimDdUndoTwice.visual, false, "vim u left the editor in visual mode");
+  assert.equal(edits.untrackedCollapse.restored, edits.untrackedCollapse.original, "two deletions collapsed by an untracked edit did not come back in order");
+  assert.deepEqual(edits.untrackedCollapse.records.map((r) => r.deleted).sort(), ["line\n", "second"], "the untracked deletion between two tracked ones was recorded or lost one");
   console.log("editor-browser: tracked edits are planned against the records before the write, and a vim undo takes text and record together");
   const zoom = await evaluate("editorZoomCheck()");
   assert.deepEqual(zoom, { before: "14px", prevented: true, grown: "28px", storedGrown: "28", shrunk: "10px", storedShrunk: "10" }, "ctrl+wheel over the source sizes its text and remembers it");
