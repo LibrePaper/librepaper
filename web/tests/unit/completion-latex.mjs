@@ -105,7 +105,8 @@ function applyTo(option, doc, from, to) {
 // closeBrackets() leaves a "}" after the cursor. Accepting replaces it, so
 // the brace is not doubled, for a partial name and for a whole one.
 {
-  const expected = "\\begin{itemize}\n\t\\item \n\\end{itemize}";
+  // snippet() indents the body with the state's indent unit, two spaces here.
+  const expected = "\\begin{itemize}\n  \\item \n\\end{itemize}";
   const partial = complete("\\begin{ite}", { pos: 10 }).options.find((option) => option.label === "itemize");
   assert.equal(applyTo(partial, "\\begin{ite}", 7, 10), expected);
 
