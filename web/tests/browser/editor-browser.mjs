@@ -608,10 +608,12 @@ window.trackingEditsCheck = async () => {
     rejectMany(value.doc, resolveChanges(value.doc, id).map((change) => change.id));
     await tick();
     const restored = value.textOf(id).toString();
+    const selectionEmpty = view.state.selection.main.empty;
+    const visual = Boolean(view.cm?.state?.vim?.visualMode);
     component.$destroy();
     host.remove();
     value.leave();
-    return { original: startText, records, text, restored };
+    return { original: startText, records, text, restored, selectionEmpty, visual };
   };
   return {
     backspace: await scenario("backspace", "default", async ({ view, type }) => {
@@ -674,6 +676,20 @@ window.trackingEditsCheck = async () => {
       }
       press("Escape", "Escape");
       await tick();
+    }),
+    vimDdUndoTwice: await scenario("vimDdUndoTwice", "vim", async ({ view, press }) => {
+      view.dispatch({ selection: { anchor: 11 } });
+      await tick();
+      for (let round = 0; round < 2; round++) {
+        press("d", "KeyD");
+        await tick();
+        press("d", "KeyD");
+        await tick();
+        await new Promise((resolve) => setTimeout(resolve, 50));
+        press("u", "KeyU");
+        await tick();
+        await new Promise((resolve) => setTimeout(resolve, 50));
+      }
     }),
   };
 };
@@ -1033,6 +1049,10 @@ try {
   assert.deepEqual(edits.vimDdUndo.records, [], "vim u after a tracked dd left or lost its record out of step with the text");
   assert.deepEqual(edits.vimBackspaceAcross.records, [{ from: 9, to: 9, deleted: "e\n" }], "backspacing across own typing into original text recorded the wrong deletion");
   assert.equal(edits.vimBackspaceAcross.restored, edits.vimBackspaceAcross.original);
+  assert.equal(edits.vimDdUndoTwice.text, edits.vimDdUndoTwice.original, "the second vim u after a dd did not restore the line");
+  assert.deepEqual(edits.vimDdUndoTwice.records, []);
+  assert.equal(edits.vimDdUndoTwice.selectionEmpty, true, "vim u left a range selected");
+  assert.equal(edits.vimDdUndoTwice.visual, false, "vim u left the editor in visual mode");
   console.log("editor-browser: tracked edits are planned against the records before the write, and a vim undo takes text and record together");
   const zoom = await evaluate("editorZoomCheck()");
   assert.deepEqual(zoom, { before: "14px", prevented: true, grown: "28px", storedGrown: "28", shrunk: "10px", storedShrunk: "10" }, "ctrl+wheel over the source sizes its text and remembers it");

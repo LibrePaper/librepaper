@@ -108,6 +108,19 @@
   // whatever `cm.cm6` names, looked up here to find which editor asked.
   const viewCallbacks = new WeakMap();
 
+  // Vim's `u` leaves one cursor at the start of what came back, in normal
+  // mode. The undo plugin puts back the selection the change was made with,
+  // in a timeout of its own, and Vim's `dd` made that selection a line; a
+  // range put back from outside reads to Vim as visual mode, and the next
+  // keys go wrong. So once that selection has landed it is collapsed, which
+  // also takes Vim out of visual mode.
+  function settleAfterHistory(view) {
+    setTimeout(() => {
+      const range = view.state.selection.main;
+      if (!range.empty) view.dispatch({ selection: { anchor: range.from } });
+    }, 0);
+  }
+
   function defineExCommands(Vim) {
     if (exCommandsDefined) return;
     exCommandsDefined = true;
@@ -127,8 +140,16 @@
       quit(cm);
     });
     // Vim's built-in `u` and Ctrl-R route through their respective handlers.
-    Vim.defineAction("loroUndo", (cm) => undoFn(cm.cm6));
-    Vim.defineAction("loroRedo", (cm) => redoFn(cm.cm6));
+    Vim.defineAction("loroUndo", (cm) => {
+      const done = undoFn(cm.cm6);
+      if (done) settleAfterHistory(cm.cm6);
+      return done;
+    });
+    Vim.defineAction("loroRedo", (cm) => {
+      const done = redoFn(cm.cm6);
+      if (done) settleAfterHistory(cm.cm6);
+      return done;
+    });
     Vim.mapCommand("u", "action", "loroUndo", {}, {});
     Vim.mapCommand("<C-r>", "action", "loroRedo", {}, {});
   }
