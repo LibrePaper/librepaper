@@ -10,6 +10,11 @@ const PATH_CHARS = /^[^()\s]*$/;
 const FILE_PATH = /^[^()\s#]*$/;
 const IMAGE = /!\[[^\]]*\]\(([^()\s]*)$/;
 const LINK = /(?:^|[^!])\[[^\]]*\]\(([^()\s]*)$/;
+// A destination opened with "<", so spaces and parentheses may be typed.
+const IMAGE_ANGLE = /!\[[^\]]*\]\(<([^<>]*)$/;
+const LINK_ANGLE = /(?:^|[^!])\[[^\]]*\]\(<([^<>]*)$/;
+const ANGLE_CHARS = /^[^<>\n]*$/;
+const ANGLE_FILE = /^[^<>#\n]*$/;
 const REFERENCE = /\[[^\]]*\]\[([^[\]\s]*)$/;
 const FOOTNOTE = /\[\^([^[\]\s]*)$/;
 const FOOTNOTE_START = /^ {0,3}\[\^/;
@@ -54,12 +59,17 @@ function slug(title) {
 // The text a heading shows. comrak builds the id from this, not from the
 // markdown, so links, code and emphasis are reduced to their text first.
 function headingText(title) {
-  return title
+  // Code spans are set aside first, so their content is kept as written.
+  const spans = [];
+  const reduced = title
+    .replace(/(`+)([^`]*?)\1/g, (all, ticks, code) => {
+      spans.push(code);
+      return `\uE000${spans.length - 1}\uE001`;
+    })
     .replace(/!\[([^\]]*)\]\([^)]*\)/g, "$1")
     .replace(/\[([^\]]*)\]\([^)]*\)/g, "$1")
     .replace(/\[([^\]]*)\]\[[^\]]*\]/g, "$1")
     .replace(/<((?:https?|mailto|ftp):[^>\s]*)>/g, "$1")
-    .replace(/(`+)([^`]*?)\1/g, "$2")
     .replace(/<[^>]*>/g, "")
     .replace(/&(#\d+|amp|lt|gt|quot);/g, (all, name) => {
       if (name[0] !== "#") return { amp: "&", lt: "<", gt: ">", quot: '"' }[name];
@@ -74,6 +84,7 @@ function headingText(title) {
       const after = end < whole.length && /[\p{L}\p{N}]/u.test(whole[end]);
       return before !== after ? "" : run;
     });
+  return reduced.replace(/\uE000(\d+)\uE001/g, (all, index) => spans[Number(index)]);
 }
 
 // ATX headings outside code, with ids in document order.
@@ -148,6 +159,44 @@ function result(from, validFor, options) {
   return options.length ? { from, validFor, options } : null;
 }
 
+function decodeTarget(text) {
+  try {
+    return decodeURIComponent(text);
+  } catch {
+    return text;
+  }
+}
+
+function unwrapTarget(text) {
+  return text.replace(/^<|>$/g, "");
+}
+
+// Escapes a path for a link destination. A "%" is escaped unless it starts an escape.
+function escapeDestination(path) {
+  return path
+    .replace(/%(?![0-9A-Fa-f]{2})/g, "%25")
+    .replace(/#/g, "%23")
+    .replace(/</g, "%3C")
+    .replace(/>/g, "%3E");
+}
+
+// Text for a file chosen after "(". A space or parenthesis needs angle brackets.
+function destinationText(path) {
+  const text = escapeDestination(path);
+  return /[\s()]/.test(text) ? `<${text}>` : text;
+}
+
+// Applies the destination form to file options. Inside an open "<", the
+// closing ">" is added to every target.
+function destinationOptions(options, angle) {
+  return options.map((option) => {
+    if (option.type === "file") {
+      return { ...option, apply: angle ? `${escapeDestination(option.label)}>` : destinationText(option.label) };
+    }
+    return angle ? { ...option, apply: `${option.label}>` } : option;
+  });
+}
+
 /** Labels for cross references: one per ATX heading in every Markdown text. */
 export function markdownLabels(texts = {}) {
   const labels = [];
@@ -167,8 +216,10 @@ export function markdownCompletion(project) {
     if (current.format !== "markdown" && current.format !== "quarto") return null;
     const line = context.state.doc.lineAt(context.pos);
     const before = line.text.slice(0, context.pos - line.from);
-    let kind = null, match = null;
-    if ((match = before.match(IMAGE))) kind = "image";
+    let kind = null, match = null, angle = false;
+    if ((match = before.match(IMAGE_ANGLE))) { kind = "image"; angle = true; }
+    else if ((match = before.match(IMAGE))) kind = "image";
+    else if ((match = before.match(LINK_ANGLE))) { kind = "link"; angle = true; }
     else if ((match = before.match(LINK))) kind = "link";
     else if ((match = before.match(REFERENCE))) kind = "reference";
     else if ((match = before.match(FOOTNOTE))) kind = "footnote";
@@ -183,9 +234,8 @@ export function markdownCompletion(project) {
     const directory = dirname(current.path);
 
     if (kind === "image") {
-      return result(from, PATH_CHARS, pathOptions(current.files, directory, {
-        extensions: IMAGE_EXTENSIONS, exclude: current.path,
-      }));
+      const files = pathOptions(current.files, directory, { extensions: IMAGE_EXTENSIONS, exclude: current.path });
+      return result(from, angle ? ANGLE_CHARS : PATH_CHARS, destinationOptions(files, angle));
     }
 
     if (kind === "reference") {
@@ -200,11 +250,12 @@ export function markdownCompletion(project) {
     const hash = partial.indexOf("#");
     if (hash < 0) {
       const files = pathOptions(current.files, directory);
-      return result(from, FILE_PATH, [...files, ...anchorOptions(text, "#")]);
+      const options = [...files, ...anchorOptions(text, "#")];
+      return result(from, angle ? ANGLE_FILE : FILE_PATH, destinationOptions(options, angle));
     }
-    const file = partial.slice(0, hash);
-    if (!file) return result(from, PATH_CHARS, anchorOptions(text, "#"));
-    const target = resolvePath(directory, file);
+    const file = unwrapTarget(partial.slice(0, hash));
+    if (!file) return result(from, angle ? ANGLE_CHARS : PATH_CHARS, destinationOptions(anchorOptions(text, "#"), angle));
+    const target = resolvePath(directory, decodeTarget(file));
     if (!MARKDOWN_PATH.test(target)) return null;
     let source = text;
     if (target !== normalizePath(current.path)) {
@@ -212,6 +263,6 @@ export function markdownCompletion(project) {
       if (!Object.hasOwn(texts, target)) return null;
       source = texts[target];
     }
-    return result(from, PATH_CHARS, anchorOptions(source, `${file}#`));
+    return result(from, angle ? ANGLE_CHARS : PATH_CHARS, destinationOptions(anchorOptions(source, `${file}#`), angle));
   };
 }
