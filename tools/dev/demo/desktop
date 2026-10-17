@@ -12,6 +12,12 @@ ROOT=$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)
 PORT="${PORT:-8081}"
 URL="http://localhost:$PORT/"
 APP="$ROOT/desktop/target/${CARGO_PROFILE:-release}/librepaper-desktop"
+# NixOS keeps GTK 3's settings schemas out of the session, and without them a
+# file picker aborts the app. The packaged app is wrapped; this build is not.
+if [ -e /etc/NIXOS ]; then
+  gtk=$(nix-build '<nixpkgs>' -A gtk3 --no-out-link)
+  export XDG_DATA_DIRS="$(echo "$gtk"/share/gsettings-schemas/*)${XDG_DATA_DIRS:+:$XDG_DATA_DIRS}"
+fi
 answers() { curl -fsS -o /dev/null "$URL" 2>/dev/null; }
 
 if answers; then

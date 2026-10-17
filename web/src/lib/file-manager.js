@@ -53,6 +53,8 @@ export function copyPath(path, files, folders) {
 
 // Capture entries before yielding: browsers release the drag data after drop.
 export async function droppedFiles(transfer) {
+  // The Linux desktop shell reads the dropped files itself and hands over the result.
+  if (transfer.librepaperDropped) return transfer.librepaperDropped;
   const entries = [...(transfer.items || [])].filter((item) => item.kind === "file").map((item) => item.webkitGetAsEntry?.());
   const fallback = [...(transfer.files || [])];
   const result = { files: [], folders: [] };
