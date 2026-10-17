@@ -19,25 +19,37 @@ use librepaper_companion::local::connections::GRANT_FILE_VARIABLE;
 /// Serve the document MCP tools over stdio for the sidebar assistant's own
 /// agent.
 ///
-/// `--connection NAME` names a runner record this computer holds, so the
-/// agent's command line carries a name rather than a document key. The
-/// local service's session (`assistant::acp::Agent::start`) is the only thing
-/// that ever constructs this command; there is no other accepted form.
+/// The connection names a runner record this computer holds, so the agent's
+/// command carries a name rather than a document key. It comes from
+/// `--connection NAME` or, when that is absent, from
+/// `LIBREPAPER_MCP_CONNECTION`, which the local service's session
+/// (`assistant::acp::Agent::start`) sets for the agent and its bridge.
 #[derive(Args, Clone, Debug)]
 pub(crate) struct McpArgs {
     /// A runner record on this computer.
     #[arg(long, value_name = "NAME")]
-    connection: String,
+    connection: Option<String>,
     #[command(flatten)]
     deployment: Deployment,
 }
 
 pub(crate) async fn run_mcp(args: McpArgs) -> Result<(), String> {
     let Deployment { server, token } = args.deployment;
-    let resolved = librepaper_companion::local::connections::ConnectionStore::new(
-        &librepaper_companion::local::paths::state_home()?,
-    )
-    .resolve(&args.connection)?;
+    use librepaper_companion::local::connections::{
+        ConnectionStore, CONNECTION_VARIABLE, STATE_HOME_VARIABLE,
+    };
+    let connection = args
+        .connection
+        .or_else(|| std::env::var(CONNECTION_VARIABLE).ok())
+        .filter(|name| !name.is_empty())
+        .ok_or_else(|| {
+            format!("librepaper mcp needs a connection: pass --connection NAME or set {CONNECTION_VARIABLE}")
+        })?;
+    let state_home = match std::env::var_os(STATE_HOME_VARIABLE).filter(|path| !path.is_empty()) {
+        Some(path) => PathBuf::from(path),
+        None => librepaper_companion::local::paths::state_home()?,
+    };
+    let resolved = ConnectionStore::new(&state_home).resolve(&connection)?;
     if let (Some(conversation), Some(chat_token)) = (&resolved.conversation, &resolved.chat_token) {
         std::env::set_var("LIBREPAPER_CONVERSATION", conversation);
         std::env::set_var("LIBREPAPER_CHAT_TOKEN", chat_token);
