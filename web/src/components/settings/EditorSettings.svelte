@@ -6,7 +6,7 @@
   let { keys = "default", onkeys, commands = {} } = $props();
 </script>
 
-<SettingRow id="editor-keys" title="Keys" description="Choose standard, Vim or Emacs keys for the source pane.">
+<SettingRow id="editor-keys" title="Key bindings">
   <select class="select setting-select" aria-label="Editor keys" value={keys}
           onchange={(event) => onkeys?.(event.currentTarget.value)}>
     <option value="default">Standard</option>

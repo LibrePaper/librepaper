@@ -25,7 +25,7 @@ export const CATEGORIES = [
     id: "editor", says: "Editor", offered: always,
     note: "This browser",
     entries: [
-      { id: "editor-keys", says: "Keys", terms: "vim emacs keymap keyboard bindings modal source standard" },
+      { id: "editor-keys", says: "Key bindings", terms: "vim emacs keymap keyboard bindings modal source standard" },
       { id: "editor-shortcuts", says: "Keyboard shortcuts", terms: "shortcut shortcuts keys keyboard chord binding hotkey accelerator palette command undo redo find" },
     ],
   },
