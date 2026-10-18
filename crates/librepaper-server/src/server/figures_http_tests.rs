@@ -18,12 +18,10 @@ use uuid::Uuid;
 
 use super::http_test_support::{deployment as http_deployment, owner_bearer, Deployment};
 use super::Server;
-use crate::server::origins::Origins;
-use librepaper_engine::storage::postgres::{AccessRole, WriterLease};
+use librepaper_base::auth::{sign_device, Identity, PROVIDER_GITHUB};
+use librepaper_engine::storage::postgres::{AccessRole, NewAccount, WriterLease};
 use librepaper_engine::storage::store::{digest_of_bytes, DocumentInput, MutationActor};
 
-const READER: &str = "https://paper.example";
-const DOCS: &str = "https://docs.paper.example";
 const PAPER: &str = "# Figure reads\n\nA document with figures.\n";
 
 /// A valid PNG whose IHDR width is `width`, so each figure has its own digest.
@@ -101,25 +99,35 @@ async fn document_id(deployment: &Deployment, slug: &str) -> Uuid {
     Uuid::parse_str(&entry.storage_id).unwrap()
 }
 
-/// A reader share link on `document_id`, returned as the key the request sends.
-async fn reader_key(deployment: &Deployment, document_id: Uuid) -> String {
-    let key = format!("reader-{}", Uuid::new_v4().simple());
-    deployment
+/// A signed-in reader: a new account granted `Reader` on `document_id`, with
+/// the device token that a signed-in request presents.
+async fn reader_bearer(deployment: &Deployment, document_id: Uuid) -> String {
+    let account = deployment
         .catalog
-        .create_share_link(
-            document_id,
-            AccessRole::Reader,
-            hex::decode(crate::server::sharing::hash_link_key(&key))
-                .unwrap()
-                .try_into()
-                .unwrap(),
-            "figure HTTP reader".into(),
-            None,
-            None,
-        )
+        .create_account(NewAccount {
+            kind: "registered".into(),
+            provider: Some("test".into()),
+            provider_subject: Some(format!("figure-reader-{}", Uuid::new_v4().simple())),
+            handle: "reader".into(),
+            display_name: "Reader".into(),
+            email: None,
+        })
         .await
         .unwrap();
-    key
+    deployment
+        .catalog
+        .set_grant(document_id, account.id, AccessRole::Reader)
+        .await
+        .unwrap();
+    let identity = Identity {
+        provider: PROVIDER_GITHUB.into(),
+        id: account.id.to_string(),
+        handle: "reader".into(),
+        name: "Reader".into(),
+        picture: String::new(),
+        session_generation: account.session_generation.to_string(),
+    };
+    sign_device(&[0; 32], &identity, librepaper_base::util::now_unix() + 3600)
 }
 
 fn owner_authorization(deployment: &Deployment) -> String {
@@ -135,13 +143,8 @@ fn editor_headers(authorization: &str) -> Vec<(&str, &str)> {
     vec![("authorization", authorization)]
 }
 
-fn reader_headers(key: &str) -> Vec<(&str, &str)> {
-    vec![
-        ("origin", READER),
-        ("sec-fetch-site", "same-origin"),
-        ("x-librepaper-client", "web"),
-        ("x-librepaper-key", key),
-    ]
+fn reader_headers(authorization: &str) -> Vec<(&str, &str)> {
+    vec![("authorization", authorization)]
 }
 
 fn asset_path(slug: &str, sha: &str) -> String {
@@ -170,12 +173,11 @@ struct Served {
 
 async fn serve(deployment: Deployment) -> Served {
     let Deployment {
-        mut server,
+        server,
         _writer,
         _objects,
         ..
     } = deployment;
-    server.origins = Origins::configure(READER, Some(DOCS)).unwrap();
     let server = Arc::new(server);
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let address: SocketAddr = listener.local_addr().unwrap();
@@ -275,7 +277,7 @@ async fn a_reader_reads_a_current_figure_and_warms_the_document() {
     let slug = deployment.slug.clone();
     let sha = digest_of_bytes(&figure(1));
     let document = document_id(&deployment, &slug).await;
-    let key = reader_key(&deployment, document).await;
+    let authorization = reader_bearer(&deployment, document).await;
     let served = serve(deployment).await;
     let room = served
         .server
@@ -289,7 +291,7 @@ async fn a_reader_reads_a_current_figure_and_warms_the_document() {
     let status = fetch(
         &served.base,
         &asset_path(&slug, &sha),
-        &reader_headers(&key),
+        &reader_headers(&authorization),
     )
     .await;
     assert_eq!(status, 200, "a reader reads a figure in the tree");
@@ -310,7 +312,7 @@ async fn a_reader_cannot_read_a_removed_figure_when_warm() {
     let current = digest_of_bytes(&figure(2));
     put_directory(&deployment, &slug, vec![("figure-b.png".into(), figure(2))]).await;
     let document = document_id(&deployment, &slug).await;
-    let key = reader_key(&deployment, document).await;
+    let authorization = reader_bearer(&deployment, document).await;
     let served = serve(deployment).await;
     let room = served
         .server
@@ -324,7 +326,7 @@ async fn a_reader_cannot_read_a_removed_figure_when_warm() {
     let status = fetch(
         &served.base,
         &asset_path(&slug, &current),
-        &reader_headers(&key),
+        &reader_headers(&authorization),
     )
     .await;
     assert_eq!(status, 200, "the current figure warms the document");
@@ -333,7 +335,7 @@ async fn a_reader_cannot_read_a_removed_figure_when_warm() {
     let status = fetch(
         &served.base,
         &asset_path(&slug, &removed),
-        &reader_headers(&key),
+        &reader_headers(&authorization),
     )
     .await;
     assert_eq!(status, 404, "a figure removed from the tree is not read");
@@ -349,7 +351,7 @@ async fn a_reader_cannot_read_a_removed_figure_when_cold() {
     let removed = digest_of_bytes(&figure(1));
     put_directory(&deployment, &slug, vec![("figure-b.png".into(), figure(2))]).await;
     let document = document_id(&deployment, &slug).await;
-    let key = reader_key(&deployment, document).await;
+    let authorization = reader_bearer(&deployment, document).await;
     let served = serve(deployment).await;
     let room = served
         .server
@@ -363,7 +365,7 @@ async fn a_reader_cannot_read_a_removed_figure_when_cold() {
     let status = fetch(
         &served.base,
         &asset_path(&slug, &removed),
-        &reader_headers(&key),
+        &reader_headers(&authorization),
     )
     .await;
     assert_eq!(status, 404, "a figure removed from the tree is not read");
