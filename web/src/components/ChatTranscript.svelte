@@ -15,6 +15,12 @@
     authors = true,
     quiet = false,
     after = undefined,
+    // Older messages the server still holds, for a transcript that is a
+    // window onto a longer history.
+    more = false,
+    loadingOlder = false,
+    loadError = "",
+    onloadolder = undefined,
   } = $props();
   let transcript = $state();
   let following = true;
@@ -34,8 +40,19 @@
     if (following && transcript?.clientHeight) transcript.scrollTop = transcript.scrollHeight;
     if (following) unread = false;
   }
+  // Prepending moves everything down by the height it adds, so the scroll
+  // position is moved down by the same amount and the reader stays put.
+  async function older() {
+    if (!transcript || !more || loadingOlder || !onloadolder) return;
+    const before = transcript.scrollHeight;
+    const top = transcript.scrollTop;
+    await onloadolder();
+    await tick();
+    if (transcript) transcript.scrollTop = top + (transcript.scrollHeight - before);
+  }
   function scrolled() {
     if (!transcript?.clientHeight) return;
+    if (transcript.scrollTop <= 8) void older();
     following = transcript.scrollHeight - transcript.scrollTop - transcript.clientHeight <= 24;
     if (following) unread = false;
   }
@@ -58,6 +75,12 @@
 
 <div class="chat-transcript-wrap" class:quiet>
   <div class="chat-transcript" bind:this={transcript} onscroll={scrolled} role="log" aria-label={label} aria-live="polite" aria-relevant="additions text">
+    {#if more && onloadolder}
+      <button type="button" class="btn btn-sm lp-control-tonal-brand older" disabled={loadingOlder} onclick={older}>
+        {loadingOlder ? "Loading..." : "Load older messages"}
+      </button>
+      {#if loadError}<p class="panel-muted" role="alert">{loadError}</p>{/if}
+    {/if}
     {#each rows as { message, key, starts, name } (`${message.role || "chat"}:${message.id}`)}
       {@const results = message.context?.results}
       {@const refusedCount = results?.refused || 0}
@@ -112,6 +135,7 @@
   .chat-bubble p { white-space: pre-wrap; overflow-wrap: anywhere; margin: 0; }
   .chat-bubble .effect-warning { margin-top: var(--spacing); color: var(--color-warning-text); font-weight: 600; }
   .chat-bubble .btn { margin-top: var(--spacing); }
+  .older { align-self: center; flex-shrink: 0; }
   .new-messages { position: absolute; right: var(--spacing); bottom: var(--spacing); }
 
   /* Quiet variant: a tighter gutter, less padding, and no card behind agent

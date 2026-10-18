@@ -6,6 +6,7 @@
 
   let {
     messages = [], connected = false, canPost = false, onsend = undefined,
+    more = false, loadingOlder = false, loadError = "", canClear = false, onloadolder = undefined, onclear = undefined,
     comments = [], identity = "", commentingAs = "Anonymous",
     canModerate = false, canComment = true,
     went = {}, replacements = {}, onreveal = undefined, onresolve = undefined, ondelete = undefined,
@@ -20,11 +21,13 @@
     // will become.
     composing = null, needsLogin = false, signInHref = "", oncommentsend = undefined, oncommentcancel = undefined,
   } = $props();
-  const VIEWS = [
-    { id: "chat", label: "Chat" },
+  // View-only links never see the chat, so there is no tab for it.
+  const VIEWS = $derived([
+    ...(canComment ? [{ id: "chat", label: "Chat" }] : []),
     { id: "comments", label: "Comments" },
     { id: "highlights", label: "Highlights" },
-  ];
+  ]);
+  $effect(() => { if (!canComment && tab === "chat") tab = "comments"; });
   const common = () => ({ identity, commentingAs, canModerate, canComment,
     went, replacements, onreveal, onresolve, ondelete, ondeletemany,
     onreply, onedit, onagent, pending, selected,
@@ -38,7 +41,7 @@
              tabs={VIEWS.map((view) => ({ ...view,
                dot: view.id === "chat" && unreadChat ? "Unread messages" : "" }))}
              value={tab} onchange={(value) => (tab = value)}>
-    <Tabs.Content value="chat"><Chat {messages} {connected} {canPost} {onsend} /></Tabs.Content>
+    <Tabs.Content value="chat"><Chat {messages} {more} {loadingOlder} {loadError} {canClear} {onloadolder} {onclear} {connected} {canPost} {onsend} /></Tabs.Content>
     <Tabs.Content value="comments">
       <Comments {...common()} {comments} filter="comments" cardIdPrefix="collaboration-comment"
         {composing} {needsLogin} {signInHref} onsend={oncommentsend} oncancel={oncommentcancel} />
