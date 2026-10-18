@@ -274,13 +274,17 @@ impl Room {
     /// Deletes every message, stored and waiting, gives the owner the bytes
     /// back and tells every listener, all under the chat lock. A waiting
     /// message that is also stored (a flush whose reply was lost) is credited
-    /// once, through the stored bytes. Returns what the database held.
-    pub async fn clear_chat(&self) -> Result<ChatCleared, WriteError> {
+    /// once, through the stored bytes. Returns what the database held, or `None`
+    /// and changes nothing when `owner` no longer owns the document.
+    pub async fn clear_chat(&self, owner: Uuid) -> Result<Option<ChatCleared>, WriteError> {
         let mut buffer = self.chat.lock().await;
-        let cleared = self
+        let Some(cleared) = self
             .catalog
-            .clear_chat(self.document_id, &buffer.ids())
-            .await?;
+            .clear_chat(self.document_id, &buffer.ids(), owner)
+            .await?
+        else {
+            return Ok(None);
+        };
         let waiting = buffer.discard_unstored(&cleared.stored_buffered);
         self.chat_waiting
             .store(0, std::sync::atomic::Ordering::Relaxed);
@@ -288,7 +292,7 @@ impl Room {
         self.log.charge_storage(-waiting);
         self.broadcast_chat(None, &json!({"type": "chat-cleared"}))
             .await;
-        Ok(cleared)
+        Ok(Some(cleared))
     }
 
     /// The chat lock, for a caller that deletes chat inside its own
@@ -500,7 +504,11 @@ mod tests {
             .insert_chat_messages(room.document_id, &rows)
             .await
             .unwrap();
-        let cleared = room.clear_chat().await.unwrap();
+        let cleared = room
+            .clear_chat(deployment.account_id)
+            .await
+            .unwrap()
+            .unwrap();
         assert_eq!(cleared.bytes, charge);
         assert_eq!(room.log().owner_storage_bytes(), before);
         assert_eq!(room.chat_waiting(), 0);

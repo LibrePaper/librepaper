@@ -153,14 +153,30 @@ impl PostgresCatalog {
     }
 
     /// Deletes every message and zeroes chat_bytes. `buffered` is the ids of
-    /// the messages the room still holds in memory.
-    pub async fn clear_chat(&self, document_id: Uuid, buffered: &[Uuid]) -> Result<ChatCleared> {
+    /// the messages the room still holds in memory. The document row is locked
+    /// first and nothing is deleted unless `owner` still owns the document, in
+    /// which case this returns `None`.
+    pub async fn clear_chat(
+        &self,
+        document_id: Uuid,
+        buffered: &[Uuid],
+        owner: Uuid,
+    ) -> Result<Option<ChatCleared>> {
         let mut tx = self.begin_writer_transaction().await?;
+        let current: Option<Uuid> =
+            sqlx::query_scalar("SELECT owner_id FROM documents WHERE id=$1 FOR UPDATE")
+                .bind(document_id)
+                .fetch_optional(&mut *tx)
+                .await?;
+        if current != Some(owner) {
+            tx.rollback().await?;
+            return Ok(None);
+        }
         let cleared = self
             .clear_chat_in_transaction(&mut tx, document_id, buffered)
             .await?;
         tx.commit().await?;
-        Ok(cleared)
+        Ok(Some(cleared))
     }
 
     /// Same as `clear_chat`, inside the caller's transaction. `bytes` is what
@@ -336,7 +352,11 @@ mod tests {
         let document = project(&catalog, &owner).await;
         let rows = vec![message(None, "one"), message(None, "two")];
         let charged = catalog.insert_chat_messages(document, &rows).await.unwrap();
-        let cleared = catalog.clear_chat(document, &[]).await.unwrap();
+        let cleared = catalog
+            .clear_chat(document, &[], owner.id)
+            .await
+            .unwrap()
+            .unwrap();
         assert_eq!((cleared.rows, cleared.bytes), (2, charged));
         assert!(cleared.stored_buffered.is_empty());
         assert_eq!(chat_bytes(&catalog, document).await, 0);
@@ -344,8 +364,11 @@ mod tests {
         assert!(left.is_empty());
         assert!(!more);
         assert_eq!(
-            catalog.clear_chat(document, &[]).await.unwrap(),
-            super::ChatCleared::default()
+            catalog
+                .clear_chat(document, &[], owner.id)
+                .await
+                .unwrap(),
+            Some(super::ChatCleared::default())
         );
     }
 
@@ -496,10 +519,31 @@ mod tests {
             .await
             .unwrap();
         let cleared = catalog
-            .clear_chat(document, &[stored.id, unstored.id])
+            .clear_chat(document, &[stored.id, unstored.id], owner.id)
             .await
+            .unwrap()
             .unwrap();
         assert_eq!(cleared.rows, 1);
         assert_eq!(cleared.stored_buffered, vec![stored.id]);
+    }
+
+    #[tokio::test]
+    #[ignore = "requires LIBREPAPER_TEST_POSTGRES_URL"]
+    async fn clear_by_a_non_owner_deletes_nothing() {
+        let catalog = catalog().await;
+        let _writer = catalog.claim_writer().await.unwrap();
+        let owner = account(&catalog).await;
+        let other = account(&catalog).await;
+        let document = project(&catalog, &owner).await;
+        let rows = vec![message(None, "one"), message(None, "two")];
+        let charged = catalog.insert_chat_messages(document, &rows).await.unwrap();
+        let refused = catalog
+            .clear_chat(document, &[], other.id)
+            .await
+            .unwrap();
+        assert_eq!(refused, None);
+        assert_eq!(chat_bytes(&catalog, document).await, charged);
+        let (left, _) = catalog.chat_page(document, None, 10).await.unwrap();
+        assert_eq!(left.len(), 2);
     }
 }
