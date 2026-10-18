@@ -132,6 +132,91 @@
 	--text-scaling: 1;
 }
 
+/* Dark mode. The Radix dark files are scoped to `.dark`, which this app does
+   not set, so the twelve steps of each scale are copied here as literal values
+   from @radix-ui/colors 3.0.0. Reassigning the scales also flips every rule
+   that names a step directly, and the role tokens above follow because they
+   resolve on this same element. Only tokens that hold a hard-coded value, or
+   whose step needs a different role in the dark, are set again below. */
+[data-theme="librepaper"][data-mode="dark"] {
+	color-scheme: dark;
+
+	--sage-1: #101211; --sage-2: #171918; --sage-3: #202221; --sage-4: #272a29;
+	--sage-5: #2e3130; --sage-6: #373b39; --sage-7: #444947; --sage-8: #5b625f;
+	--sage-9: #63706b; --sage-10: #717d79; --sage-11: #adb5b2; --sage-12: #eceeed;
+
+	--green-1: #0e1512; --green-2: #121b17; --green-3: #132d21; --green-4: #113b29;
+	--green-5: #174933; --green-6: #20573e; --green-7: #28684a; --green-8: #2f7c57;
+	--green-9: #30a46c; --green-10: #33b074; --green-11: #3dd68c; --green-12: #b1f1cb;
+
+	--amber-1: #16120c; --amber-2: #1d180f; --amber-3: #302008; --amber-4: #3f2700;
+	--amber-5: #4d3000; --amber-6: #5c3d05; --amber-7: #714f19; --amber-8: #8f6424;
+	--amber-9: #ffc53d; --amber-10: #ffd60a; --amber-11: #ffca16; --amber-12: #ffe7b3;
+
+	--red-1: #191111; --red-2: #201314; --red-3: #3b1219; --red-4: #500f1c;
+	--red-5: #611623; --red-6: #72232d; --red-7: #8c333a; --red-8: #b54548;
+	--red-9: #e5484d; --red-10: #ec5d5e; --red-11: #ff9592; --red-12: #ffd1d9;
+
+	/* Brand: lighter on hover and darker on press, with white text still
+	   readable on the fill. As text the brand is too dim on a dark ground,
+	   so links and focus rings use a green step instead. */
+	--color-brand: #3f7a63;
+	--color-brand-hover: #4a8a71;
+	--color-brand-pressed: #356a56;
+	--color-on-brand: #ffffff;
+
+	/* The document is one step above the shell and raised surfaces one more. */
+	--color-document: var(--sage-2);
+	--color-raised: var(--sage-3);
+
+	--color-link: var(--green-11);
+	--color-focus: var(--green-10);
+	--color-text-inverse: #ffffff;
+
+	/* Source syntax colors follow GitHub Dark (Primer prettylights). */
+	--source-highlight-keyword: #ff7b72;
+	--source-highlight-string: #a5d6ff;
+	--source-highlight-constant: #79c0ff;
+	--source-highlight-comment: #8b949e;
+	--source-highlight-tag: #7ee787;
+	--source-highlight-property: #79c0ff;
+	--source-highlight-function: #d2a8ff;
+	--source-highlight-variable: #ffa657;
+	--source-highlight-heading: #79c0ff;
+	--source-highlight-link: #a5d6ff;
+	--source-highlight-monospace: #a5d6ff;
+	--source-highlight-punctuation: #e6edf3;
+	--source-highlight-meta: #8b949e;
+	--source-highlight-invalid: #ffa198;
+
+	/* Avatar fills use mid steps so white initials stay readable. */
+	--color-avatar-2: var(--sage-8);
+	--color-avatar-3: var(--green-7);
+	--color-avatar-4: var(--green-8);
+	--color-avatar-5: var(--amber-8);
+	--color-avatar-6: var(--red-8);
+
+	/* Status colors: text uses step 11 and solids a bright step. The bright
+	   green and amber solids carry the darkest neutral as their text. */
+	--color-success-bg: var(--green-3);
+	--color-success-border: var(--green-7);
+	--color-success-text: var(--green-11);
+	--color-success-solid: var(--green-9);
+	--color-success-on-solid: var(--sage-1);
+
+	--color-warning-bg: var(--amber-3);
+	--color-warning-border: var(--amber-7);
+	--color-warning-text: var(--amber-11);
+	--color-warning-solid: var(--amber-9);
+	--color-warning-on-solid: var(--sage-1);
+
+	--color-error-bg: var(--red-3);
+	--color-error-border: var(--red-7);
+	--color-error-text: var(--red-11);
+	--color-error-solid: var(--red-8);
+	--color-error-on-solid: #ffffff;
+}
+
 /* Skeleton declares its edge widths as `var(--default-ring-width, 1px)` on
    the same property, which forms a cycle. Declare the widths directly so
    text fields render their inset ring. */

@@ -617,6 +617,19 @@ main.reader.source-right .editorpane {
 .cm-editor .cm-searchMatch {
   background: color-mix(in srgb, var(--color-brand) 14%, transparent);
 }
+/* The brand is dim on a dark document, so the tints use a brighter green. */
+[data-mode="dark"] .cm-editor .cm-activeLineGutter,
+[data-mode="dark"] .cm-editor .cm-activeLine {
+  background: color-mix(in srgb, var(--green-9) 8%, transparent);
+}
+[data-mode="dark"] .cm-editor .cm-selectionBackground,
+[data-mode="dark"] .cm-editor.cm-focused .cm-selectionBackground,
+[data-mode="dark"] .cm-editor .cm-content ::selection {
+  background: color-mix(in srgb, var(--green-9) 35%, transparent);
+}
+[data-mode="dark"] .cm-editor .cm-searchMatch {
+  background: color-mix(in srgb, var(--green-9) 28%, transparent);
+}
 .cm-editor .cm-panels {
   background: var(--color-subtle);
   color: var(--color-text);
@@ -665,6 +678,14 @@ main.reader.source-right .editorpane {
 .user-color-7c3aed { --presence: #7c3aed; }
 .user-color-be123c { --presence: #be123c; }
 .user-color-0e7490 { --presence: #0e7490; }
+/* On a dark document the same hues are lightened a step so cursors and name
+ * labels stand out, with the white label text still readable. */
+[data-mode="dark"] .user-color-2f5bd0 { --presence: #4f78e0; }
+[data-mode="dark"] .user-color-c2410c { --presence: #dd5a1c; }
+[data-mode="dark"] .user-color-15803d { --presence: #1f9446; }
+[data-mode="dark"] .user-color-7c3aed { --presence: #8f5cf0; }
+[data-mode="dark"] .user-color-be123c { --presence: #d02a50; }
+[data-mode="dark"] .user-color-0e7490 { --presence: #1488a8; }
 
 .loro-cursor {
   background: var(--presence, var(--color-brand));
@@ -1226,6 +1247,7 @@ main.reader .cm-scroller, main.reader .panel { overscroll-behavior: contain; }
 .lp-control-tonal:hover:not(:disabled):not([aria-disabled="true"]):not([data-disabled]) { background: var(--color-row-hover); }
 /* The secondary button darkens on hover and press like the primary one. */
 .lp-control-tonal-brand { background: var(--color-row-selected); color: var(--color-brand); border-color: transparent; }
+[data-mode="dark"] .lp-control-tonal-brand { color: var(--color-link); }
 .lp-control-tonal-brand:hover:not(:disabled):not([aria-disabled="true"]):not([data-disabled]) { background: var(--sage-6); }
 .lp-control-tonal-brand:active:not(:disabled):not([aria-disabled="true"]):not([data-disabled]) { background: var(--sage-7); }
 :where(.lp-control-brand, .lp-control-danger, .lp-control-success, .lp-control-neutral, .lp-control-tonal, .lp-control-tonal-brand):focus-visible {
@@ -1250,6 +1272,7 @@ main.reader .cm-scroller, main.reader .panel { overscroll-behavior: contain; }
 .lp-text-error { color: var(--color-error-text); }
 .lp-text-warning { color: var(--color-warning-text); }
 .lp-hover-brand:hover { color: var(--color-brand); }
+[data-mode="dark"] .lp-hover-brand:hover { color: var(--color-link); }
 .lp-hover-error:hover { color: var(--color-error-text); }
 button.lp-tone-error:hover:not(:disabled):not([aria-disabled="true"]):not([data-disabled]) {
   background: color-mix(in srgb, var(--color-error-bg), var(--color-error-border) 30%);
