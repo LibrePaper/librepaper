@@ -29,13 +29,13 @@ async function freePort() {
 
 writeFileSync(harness, `
 <script>
-  import DesktopSettings from ${JSON.stringify(join(root, "web/src/components/settings/DesktopSettings.svelte"))};
+  import ToolsSettings from ${JSON.stringify(join(root, "web/src/components/settings/ToolsSettings.svelte"))};
   import ToolCommand from ${JSON.stringify(join(root, "web/src/components/settings/ToolCommand.svelte"))};
   import { createMachineView } from ${JSON.stringify(join(root, "web/src/lib/desktop/machine.svelte.js"))};
   const view = createMachineView();
   $effect(() => view.start());
 </script>
-<DesktopSettings {view} />
+<ToolsSettings {view} />
 <section id="quarto-section"><ToolCommand name="quarto" /></section>
 `);
 
@@ -127,16 +127,16 @@ try {
   assert.doesNotMatch(browserView.text, /curl|librepaper-installer|[Cc]ompanion/, "the page carries no install command and no old name");
   assert.equal(browserView.details, 0, "initial view has no collapsed details");
   assert.equal(browserView.fields, true, "Quarto fields stay unavailable in a browser");
-  assert.equal(await b.evaluate("Boolean(document.querySelector('#desktop-activity'))"), false, "a browser shows no running work");
+  assert.equal(await b.evaluate("Boolean(document.querySelector('#tools-activity'))"), false, "a browser shows no running work");
 
   // Inside the desktop app the machine controls show and the Quarto section
   // offers its own command.
   await b.navigate(`http://127.0.0.1:${port}/`);
-  await until("desktop settings shown", () => b.evaluate("Boolean(document.querySelector('#desktop-environment')) && document.querySelector('#quarto-executable input')?.disabled === false"), 10000);
+  await until("desktop settings shown", () => b.evaluate("Boolean(document.querySelector('#tools-programs')) && document.querySelector('#quarto-executable input')?.disabled === false"), 10000);
   const connectedText = await b.evaluate("document.body.innerText");
   assert.equal(await b.evaluate("document.querySelector('.desktop-only')"), null, "the desktop app needs no install link");
   assert.doesNotMatch(connectedText, /Build presets|Available tools|Quit|Start at login|Waiting for your answer|[Cc]ompanion/);
-  assert.equal(await b.evaluate("Boolean(document.querySelector('#desktop-activity'))"), false, "an idle desktop app shows no Activity section");
+  assert.equal(await b.evaluate("Boolean(document.querySelector('#tools-activity'))"), false, "an idle desktop app shows no Activity section");
 
   // A custom command is split into arguments, quotes kept together.
   const type = (label, value) => `(() => { const input = document.querySelector('#quarto-section [aria-label="${label}"]'); input.value = ${JSON.stringify(value)}; input.dispatchEvent(new Event('input', { bubbles: true })); })()`;

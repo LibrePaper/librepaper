@@ -680,7 +680,7 @@
         <IconButton icon="eraser" label="New conversation" tone="plain" size="btn-icon-sm"
                     disabled={busy} onclick={() => void newConversation()} />
       {/if}
-      <IconButton icon="sliders" label="Desktop app settings" tone="plain" size="btn-icon-sm"
+      <IconButton icon="sliders" label="Agent settings" tone="plain" size="btn-icon-sm"
                   onclick={() => onsettings?.()} />
       </span>
     </div>

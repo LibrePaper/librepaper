@@ -4,7 +4,6 @@
   // category at a time at the right. It opens from the workspace navbar or
   // sidebar, and any entry point can open it on a given category.
   import { onMount, tick } from "svelte";
-  import { desktop } from "../../lib/desktop/client.js";
   import { createMachineView } from "../../lib/desktop/machine.svelte.js";
   import Modal from "../Modal.svelte";
   import { offered, search, has } from "./registry.js";
@@ -14,19 +13,16 @@
   import QuotaSettings from "./QuotaSettings.svelte";
   import BuildSettings from "./BuildSettings.svelte";
   import RenderingSettings from "./RenderingSettings.svelte";
-  import ToolsSettings from "./ToolsSettings.svelte";
   import AccountSettings from "./AccountSettings.svelte";
   import RemoteSettings from "./RemoteSettings.svelte";
   import BackupsSettings from "./BackupsSettings.svelte";
   import AgentSettings from "./AgentSettings.svelte";
-  import DesktopSettings from "./DesktopSettings.svelte";
+  import ToolsSettings from "./ToolsSettings.svelte";
   import DiagnosticsPanel from "./DiagnosticsPanel.svelte";
 
   let {
     open = $bindable(false),
     category = $bindable("editor"),
-    sourceFormat = "",
-    mayEdit = false,
     // The editor.
     keys = "default",
     onkeys = undefined,
@@ -47,10 +43,9 @@
   const view = createMachineView();
   onMount(() => view.start());
 
-  const context = $derived({ format: sourceFormat, mayEdit, signedIn: Boolean(account.provider), desktop: Boolean(desktop()) });
+  const context = $derived({ signedIn: Boolean(account.provider) });
   const available = $derived(offered(context));
-  // The category shown: the one asked for, or the first offered when that is
-  // not (the document changed format, or this browser lost the right to edit).
+  // The category shown: the one asked for, or the first when that id is unknown.
   const shown = $derived(available.find((each) => each.id === category) || available[0]);
   const row = (id) => Boolean(shown) && has(shown, id, context);
 
@@ -90,7 +85,7 @@
       {#if shown}
         <header class="settings-head">
           <h3 class="settings-category">{shown.says}</h3>
-          {#if shown.id === "desktop" && view.state?.version}
+          {#if shown.id === "tools" && view.state?.version}
             <span class="settings-scope">Version {view.state.version} · This computer</span>
           {:else if shown.note}<span class="settings-scope">{shown.note}</span>{/if}
         </header>
@@ -110,8 +105,6 @@
             <BuildSettings format="markdown" {userId} onpreferences={onbuildpreferences} ontools={() => go("tools")} />
             <RenderingSettings {userId} {onquartooptions} />
           </section>
-        {:else if shown.id === "tools"}
-          <ToolsSettings {view} />
         {:else if shown.id === "agents"}
           <AgentSettings {view} />
         {:else if shown.id === "backups"}
@@ -120,8 +113,8 @@
           <RemoteSettings {remoteConnected} {remoteNote} />
           {#if row("storage-account")}<QuotaSettings />{/if}
           {#if row("account-erase")}<AccountSettings {account} />{/if}
-        {:else if shown.id === "desktop"}
-          <DesktopSettings {view} />
+        {:else if shown.id === "tools"}
+          <ToolsSettings {view} />
         {:else if shown.id === "diagnostics"}
           <section id="diagnostics-report" class="settings-subsection"><DiagnosticsPanel /></section>
         {/if}

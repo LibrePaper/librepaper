@@ -29,6 +29,6 @@ blockPageZoom(document);
 // the reader asks which formats it can render as it mounts.
 globalThis.LIBREPAPER_MODULES = JSON.parse(document.getElementById("librepaper-modules").textContent);
 
-const initialSettings = intake() ? "desktop" : "";
+const initialSettings = intake() ? "tools" : "";
 mount(Boundary, { target: document.body, props: { component: Reader, props: { initialSettings }, name: "the reader" } });
 void registerOfflineShell();

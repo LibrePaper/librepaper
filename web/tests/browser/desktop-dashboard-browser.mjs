@@ -56,10 +56,10 @@ writeFileSync(harness, `
 <script>
   import SettingsDialog from ${JSON.stringify(join(root, "web/src/components/settings/SettingsDialog.svelte"))};
   let open = $state(true);
-  let category = $state("desktop");
+  let category = $state("tools");
   window.showSettingsCategory = (next) => category = next;
 </script>
-<SettingsDialog bind:open bind:category sourceFormat="quarto" mayEdit={true} userId="browser-check"
+<SettingsDialog bind:open bind:category userId="browser-check"
                 remoteConnected={true} />
 `);
 
@@ -165,7 +165,7 @@ try {
 
   b = await browser("chromium", join(temporary, "chrome"), await freePort());
   await b.navigate(`${appOrigin}/`);
-  await until("computer management available", () => b.evaluate(`Boolean(document.querySelector("#desktop-environment"))`), 12000);
+  await until("computer management available", () => b.evaluate(`Boolean(document.querySelector("#tools-programs"))`), 12000);
 
   assert.equal(await b.evaluate("location.hash"), "", "management does not add a fragment");
   assert.equal(await b.evaluate("location.href"), `${appOrigin}/`, "management opens in place without changing the document URL");
@@ -175,7 +175,7 @@ try {
   assert.equal(await b.evaluate('document.querySelector("#tray-enabled") === null'), true, "there is no tray preference");
   assert.equal(await b.evaluate(`document.querySelector("#agents-list-heading") === null`), true, "agents have their own category");
   assert.equal(await b.evaluate('document.body.innerText.includes("Tool search folders")'), false, "tool search folders are not configurable");
-  assert.equal(await b.evaluate('document.querySelector("#desktop-folders-heading") === null'), true, "empty project-folder grants have no heading");
+  assert.equal(await b.evaluate('document.querySelector("#tools-folders") === null'), true, "with no project-folder grants there is no Project folders section");
 
   for (const path of ["/companion", "/companion/", "/companion/index.html", "/companion/app.js", "/companion/style.css"]) {
     const response = await fetch(`${companionAddress.replace(/\/$/, "")}${path}`);

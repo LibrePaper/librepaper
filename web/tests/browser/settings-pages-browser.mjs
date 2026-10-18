@@ -1,7 +1,7 @@
 // Where a setting lives, in the dialog itself. A tool that builds the
 // document is configured on the Rendering page; the Tools page holds the
-// programs on this computer; the Desktop app page holds running work and folders;
-// and the Account page carries the server.
+// programs on this computer, the project folders the app is bound to and, only
+// while something runs, its activity; and the Account page carries the server.
 import assert from "node:assert/strict";
 import { build } from "vite";
 import { svelte } from "@sveltejs/vite-plugin-svelte";
@@ -35,11 +35,10 @@ writeFileSync(harness, `
   import SettingsDialog from ${JSON.stringify(join(root, "web/src/components/settings/SettingsDialog.svelte"))};
   let open = $state(false);
   let category = $state("rendering");
-  let sourceFormat = $state("quarto");
-  window.show = (page, format) => { category = page; sourceFormat = format; open = true; };
+  window.show = (page) => { category = page; open = true; };
   window.applied = [];
 </script>
-<SettingsDialog bind:open bind:category {sourceFormat} mayEdit={true} userId="user"
+<SettingsDialog bind:open bind:category userId="user"
                 onbuildpreferences={(format, next) => { window.applied.push(next); }}
                 onquartooptions={(next) => { window.applied.push(next); }}
                 remoteConnected={true} />
@@ -123,7 +122,7 @@ try {
   const heading = () => b.evaluate(`document.querySelector(".settings-category")?.textContent.trim() || ""`);
   const present = (ids) => b.evaluate(`JSON.stringify(${JSON.stringify(ids)}.filter((id) => document.querySelector(".settings-body #" + id)))`).then(JSON.parse);
   const show = async (pageId, format, says) => {
-    await b.evaluate(`window.show(${JSON.stringify(pageId)}, ${JSON.stringify(format)})`);
+    await b.evaluate(`window.show(${JSON.stringify(pageId)})`);
     await until(`${says} page for ${format}`, () => heading().then((text) => text === says), 5000);
   };
   const subheads = () => b.evaluate(`JSON.stringify([...document.querySelectorAll(".settings-body .settings-subhead")].map((node) => node.textContent.trim()))`).then(JSON.parse);
@@ -139,8 +138,8 @@ try {
     await b.resize(1280, 900);
   };
   const everything = ["render-latex-engine", "render-latex-files", "render-markdown-tool", "rendering-profile", "rendering-parameters",
-    "tools-list", "tools-quarto", "tools-calepin", "tools-zotero", "quarto-executable", "quarto-arguments",
-    "desktop-environment", "desktop-diagnostics", "desktop-activity", "diagnostics-report",
+    "tools-programs", "tools-quarto", "tools-calepin", "tools-zotero", "quarto-executable", "quarto-arguments",
+    "tools-folders", "tools-activity", "diagnostics-report",
     "remote-status", "remote-address", "storage-account", "account-erase"];
   const renderingRows = ["render-latex-engine", "render-latex-files", "render-markdown-tool", "rendering-profile", "rendering-parameters"];
   const renderingSections = ["LaTeX", "Markdown and Quarto"];
@@ -149,7 +148,7 @@ try {
   await until("harness mounted", () => b.evaluate("typeof window.show === \"function\""), 10000);
   await show("rendering", "quarto", "Rendering");
   assert.deepEqual(JSON.parse(await b.evaluate(`JSON.stringify([...document.querySelectorAll(".settings-nav-item")].map((node) => node.textContent.trim()))`)),
-    ["Appearance", "Editor", "Rendering", "Tools", "Desktop app", "AI agents", "Backups", "Account"]);
+    ["Appearance", "Editor", "Rendering", "Tools", "AI agents", "Backups", "Account", "Diagnostics"]);
 
   // Settings is a page, not a card: it covers the window, Back closes it and
   // so does Escape.
@@ -199,34 +198,26 @@ try {
   assert.deepEqual(await subheads(), renderingSections);
   assert.ok((await present(everything)).includes("render-latex-files"));
 
-  // The Tools page is the programs on this computer. Zotero
-  // feeds a document without building it, and has no command of its own.
+  // The Tools page is the programs on this computer. Zotero feeds a document
+  // without building it, and has no command of its own. Quarto lists its
+  // executable and arguments behind Details. The version sits beside the title.
   await show("tools", "quarto", "Tools");
   await until("the program rows", () => present(["tools-zotero"]).then((found) => found.length === 1), 5000);
   await capture("tools");
-  assert.deepEqual(await present(everything), ["tools-list", "tools-quarto", "tools-calepin", "tools-zotero"]);
-  assert.deepEqual(await subheads(), ["Programs"], "the Tools page carries no connection controls");
+  assert.deepEqual(await present(everything), ["tools-programs", "tools-quarto", "tools-calepin", "tools-zotero"], "no bindings, so no folders; nothing runs, so no Activity section");
+  assert.deepEqual(await subheads(), ["Programs"], "no bindings and nothing running, so only Programs");
+  assert.equal(await b.evaluate(`document.querySelector(".settings-scope")?.textContent.trim()`), "Version 1.0.0 · This computer");
   assert.match(await b.evaluate(`document.querySelector("#tools-zotero .setting-status-pill")?.textContent`), /Available · 7\.0/);
   assert.equal(await b.evaluate(`document.querySelector("#tools-zotero .tool-row-toggle")`), null, "Zotero has no command to edit");
-  // Quarto lists its executable and arguments behind Details.
   assert.equal(await b.evaluate(`document.querySelector("#quarto-executable") === null`), true, "the executable row starts hidden");
   await b.evaluate(`document.querySelector("#tools-quarto .tool-row-toggle").click()`);
   await until("the Quarto command rows", () => present(["quarto-executable", "quarto-arguments"]).then((found) => found.length === 2), 5000);
-  assert.deepEqual(await present(everything), ["tools-list", "tools-quarto", "tools-calepin", "tools-zotero", "quarto-executable", "quarto-arguments"]);
+  assert.deepEqual(await present(everything), ["tools-programs", "tools-quarto", "tools-calepin", "tools-zotero", "quarto-executable", "quarto-arguments"]);
 
-  // The Desktop app page is the local environment, the diagnostics and, only while
-  // something runs, the activity. The version sits beside the title.
-  await show("desktop", "quarto", "Desktop app");
-  await until("the environment section", () => present(["desktop-environment"]).then((found) => found.length === 1), 5000);
-  await capture("desktop");
-  assert.deepEqual(await present(everything), ["desktop-environment", "desktop-diagnostics"], "nothing runs, so there is no Activity section");
-  assert.equal(await b.evaluate(`document.querySelector(".settings-scope")?.textContent.trim()`), "Version 1.0.0 · This computer");
-  assert.equal(await b.evaluate(`document.querySelector("#desktop-environment table")?.textContent.includes("Quarto")`), true, "the environment table lists the tools");
-  assert.equal(await b.evaluate(`document.querySelector("#desktop-environment details:not([open]) pre")?.textContent.includes("1.6.0")`), true, "the technical report is collapsed");
-  assert.equal(await b.evaluate(`document.querySelector("#desktop-diagnostics .diagnostics-buttons")?.textContent.includes("Open logs")`), true, "the desktop app offers Open logs");
+  // The desktop app offers its Diagnostics page with Open logs among the buttons.
+  await show("diagnostics", "quarto", "Diagnostics");
+  assert.equal(await b.evaluate(`document.querySelector("#diagnostics-report .diagnostics-buttons")?.textContent.includes("Open logs")`), true, "the desktop app offers Open logs");
 
-  // A browser is offered a Diagnostics category of its own, and its report is
-  // shown in full before anything is copied.
   // A visitor's Account page is the server; storage and erasure need an account.
   await show("account", "quarto", "Account");
   await capture("account");
@@ -245,7 +236,7 @@ try {
   assert.equal(await b.evaluate(`document.querySelector('[aria-label="LaTeX engine"]').disabled`), false);
   assert.equal(await b.evaluate(`document.querySelector('[aria-label="Quarto profile"]').disabled`), false);
   assert.equal(await b.evaluate(`document.querySelector('[aria-label="Quarto parameters"]').disabled`), false);
-  for (const [pageId, says] of [["tools", "Tools"], ["desktop", "Desktop app"], ["agents", "AI agents"], ["backups", "Backups"]]) {
+  for (const [pageId, says] of [["tools", "Tools"], ["agents", "AI agents"], ["backups", "Backups"]]) {
     await show(pageId, "quarto", says);
     await until(`the browser notice on ${says}`, () => b.evaluate(`Boolean(document.querySelector(".settings-body .desktop-only a"))`), 5000);
     assert.equal(await b.evaluate(`document.querySelector(".settings-body .desktop-only-message").textContent.trim()`), "This needs the LibrePaper desktop app.");
@@ -261,7 +252,7 @@ try {
   await b.evaluate(`document.querySelector("#diagnostics-report details summary").click()`);
   await until("the report fills", () => b.evaluate(`/## App/.test(document.querySelector("#diagnostics-report textarea").value) && /## Environment/.test(document.querySelector("#diagnostics-report textarea").value)`), 5000);
 
-  console.log("settings-pages-browser: Rendering shows two sections with global format options, Tools lists the programs with Quarto commands behind Details, Desktop app is a compact status page, a browser has a Diagnostics page, and a browser gets one notice on every desktop page");
+  console.log("settings-pages-browser: Rendering shows two sections with global format options, Tools lists the programs with Quarto commands behind Details, a browser gets one notice on each desktop page, and a browser has a Diagnostics page");
 } finally {
   if (b) await b.close();
   server.close();
