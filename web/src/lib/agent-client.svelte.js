@@ -533,7 +533,9 @@ export function createAgentClient({ origin = globalThis.location?.origin || "", 
         clearTimeout(reconnectTimer); reconnectTimer = undefined;
         removeSession(storage, sessionStorageKey);
         id = ""; token = "";
-        publish({ id: "", token: "", connected: false, runnerConnected: false, status: "idle", error: message });
+        publish({ id: "", token: "", connected: false, runnerConnected: false, status: "idle", error: "" });
+        // An expired or forgotten channel is replaced, since nothing on the server can be resumed.
+        if (!disposed) void create().catch((error) => publish({ status: "idle", error: error?.message || String(error) }));
       } else publish({ error: message });
     }
   }
@@ -592,7 +594,8 @@ export function createAgentClient({ origin = globalThis.location?.origin || "", 
     previewResponses.clear();
     previewInFlight.clear();
     manuallyClosed = false;
-    const result = await request("POST", "/chat", {}, false);
+    publish({ status: "connecting", error: "" });
+    const result = await request("POST", "/chat", {}, false).catch((error) => { publish({ status: "idle" }); throw error; });
     if (!result.id || !result.token) throw new Error("The server returned an invalid assistant channel.");
     id = result.id; token = result.token;
     runtimeSessionId = "";
