@@ -7,9 +7,9 @@ mod scrub;
 mod servers;
 mod service;
 mod shell_log;
+mod theme;
 #[cfg(any(target_os = "macos", windows))]
 mod updater;
-mod theme;
 mod zoom;
 
 use std::sync::atomic::{AtomicUsize, Ordering};

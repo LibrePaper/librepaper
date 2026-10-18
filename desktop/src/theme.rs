@@ -5,8 +5,10 @@
 use std::str::FromStr;
 use std::sync::Mutex;
 
-use tauri::Manager;
+#[cfg(target_os = "linux")]
+use gtk::prelude::GtkSettingsExt;
 use tauri::webview::Color;
+use tauri::Manager;
 
 use crate::shell_log;
 

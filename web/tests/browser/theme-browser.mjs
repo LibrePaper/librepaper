@@ -7,7 +7,7 @@ import tailwindcss from "@tailwindcss/vite";
 import { createServer } from "node:http";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { browser, until, removeTemporary } from "../helpers/browser-driver.mjs";
 import { contentType, loroAlias } from "../helpers/loro.mjs";
@@ -52,6 +52,7 @@ writeFileSync(entry, `
     return { ok: false, json: async () => ({}) };
   };
   window.theme = await import(${JSON.stringify(join(root, "web/src/lib/theme.js"))});
+  window.theme.start();
   const { default: Reader } = await import(${JSON.stringify(join(root, "web/src/components/Reader.svelte"))});
   const { mount } = await import(${JSON.stringify(join(root, "web/node_modules/svelte/src/index-client.js"))});
   mount(Reader, { target: document.body });
@@ -65,7 +66,10 @@ await build({
 
 const shell = readFileSync(join(root, "web/pages/reader.html"), "utf8")
   .replace("../src/entries/reader.js", "/check.js")
-  .replace("__MODULES__", "{}");
+  .replace("__MODULES__", "{}")
+  // A library build writes its stylesheet beside the script instead of
+  // importing it, so the page links to whatever it wrote.
+  .replace("</head>", readdirSync(out).filter((name) => name.endsWith(".css")).map((name) => `<link rel="stylesheet" href="/${name}">`).join("") + "</head>");
 const firstPaint = readFileSync(join(root, "web/public/theme.js"), "utf8");
 const hits = [];
 const server = createServer((request, response) => {
@@ -92,6 +96,10 @@ const luminance = (rgb) => {
 let tab;
 try {
   tab = await browser("chromium", join(temp, "profile"), 27000 + Math.floor(Math.random() * 1000));
+  // Chromium's emulated scheme stands in for the operating system. The machine
+  // running the test may prefer dark itself, so light is pinned before the first load.
+  const emulate = (scheme) => tab.command("Emulation.setEmulatedMedia", { features: [{ name: "prefers-color-scheme", value: scheme }] });
+  await emulate("light");
   const open = async () => {
     await tab.navigate(url);
     await tab.resize(1280, 900);
@@ -127,8 +135,6 @@ try {
   assert.ok(hits.includes("/theme.js"), "the page requests /theme.js");
   console.log("theme-browser: a reload keeps dark and loads the first-paint script");
 
-  // Chromium's own emulated scheme stands in for the operating system.
-  const emulate = (scheme) => tab.command("Emulation.setEmulatedMedia", { features: [{ name: "prefers-color-scheme", value: scheme }] });
   await until("editor ready", () => tab.evaluate("Boolean(document.querySelector('.cm-editor')) && Boolean(window.theme)"), 20000);
   await tab.evaluate("window.theme.setChoice('light')");
   assert.equal(await mode(), "light");
@@ -142,9 +148,12 @@ try {
   await emulate("light");
   console.log("theme-browser: System follows the emulated scheme without a reload");
 
-  // Settings opens on Appearance, the first category.
+  // Settings opens on the editor category; Appearance is the first entry in
+  // the navigation.
   await tab.evaluate("window.theme.setChoice('light')");
   await tab.evaluate('window.dispatchEvent(new CustomEvent("librepaper:open-settings"))');
+  await until("settings shown", () => tab.evaluate("Boolean(document.querySelector('.settings-nav')?.checkVisibility())"), 5000);
+  await tab.evaluate(`[...document.querySelectorAll(".settings-nav-item")].find((node) => node.textContent.trim() === "Appearance").click()`);
   const select = "#appearance-theme select[aria-label=Theme]";
   await until("theme select visible", () => tab.evaluate(`document.querySelector(${JSON.stringify(select)})?.checkVisibility() === true`), 5000);
   await tab.evaluate(`(() => {
