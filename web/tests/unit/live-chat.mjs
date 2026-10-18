@@ -49,6 +49,16 @@ const range = (a, b) => Array.from({ length: b - a + 1 }, (_, i) => msg(a + i));
   assert.equal(whole.state.messages.length, 6);
 }
 
+// A reconnect hello replaces held copies, so an erased author's name goes.
+{
+  const chat = createLiveChat({ slug: "s" });
+  chat.seed({ chat: range(1, 5), chat_more: true });
+  const erased = range(4, 8).map((m) => (m.id === id(5) ? { ...m, creator: "Deleted user" } : m));
+  chat.seed({ chat: erased, chat_more: true });
+  assert.deepEqual(ids(chat), range(1, 8).map((m) => m.id));
+  assert.equal(chat.state.messages.find((m) => m.id === id(5)).creator, "Deleted user");
+}
+
 // A hello that starts after everything held is a gap: it replaces the list.
 {
   const chat = createLiveChat({ slug: "s" });

@@ -31,6 +31,7 @@ export function createLiveChat({ slug, key = "" }) {
 
   const byId = (a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0);
 
+  // The first list wins for an id both hold, so pass the fresher one first.
   function union(first, second) {
     const seen = new Map();
     for (const message of first) seen.set(message.id, message);
@@ -65,7 +66,9 @@ export function createLiveChat({ slug, key = "" }) {
       state.more = more;
       return;
     }
-    const merged = union(held, incoming);
+    // The hello wins for the messages it carries: an erased author comes
+    // back as "Deleted user" and must replace the name held from before.
+    const merged = union(incoming, held);
     // The hello's answer about older messages holds when it reaches back at
     // least as far as what was already held.
     if (!held.length || merged[0].id < held[0].id || incoming[0].id === held[0].id) state.more = more;
