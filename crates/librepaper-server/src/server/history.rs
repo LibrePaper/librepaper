@@ -1071,7 +1071,7 @@ impl Server {
             Ok(outcome) => outcome,
             Err(error) => return command_reply("trim history", error),
         };
-        // Only the owner's trim deletes chat; an editor's trim leaves it alone.
+        // Only the owner's trim deletes chat. An editor's trim leaves it alone.
         if outcome.chat_cleared {
             let waiting = chat.discard_unstored(&outcome.chat_stored_buffered);
             room.chat_discarded();
