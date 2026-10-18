@@ -455,7 +455,7 @@
         tree ??= treeNow();
         const text = tree.texts[comment.sourcePath];
         if (typeof text !== "string") continue;
-        const format = renderers.formatOf(comment.sourcePath) || sourceFormat;
+        const format = renderers.formatOf(comment.sourcePath) || "";
         const range = sync.documentRangeFor(text, comment.sourceStart, comment.sourceEnd, docText, format);
         if (range) {
           comment.start = range.start;
@@ -2211,7 +2211,8 @@
       // The format of the file being edited, which is not always the
       // document's: a .bib beside a .tex has comments of its own kind, and
       // stripping .tex comments out of it would blank the wrong runs.
-      const format = renderers.formatOf(session?.paths?.get(openFile) || "") || sourceFormat;
+      const openPath = session?.paths?.get(openFile) || "";
+      const format = openPath ? renderers.formatOf(openPath) : sourceFormat;
       if (format === "latex" && typeof activeSynctex !== "undefined" && activeSynctex) {
         const path = session?.paths?.get(openFile) || "";
         const precise = activeSynctex.forward(path, synctexLineAt(editor.text(), editor.caret()));
@@ -2758,7 +2759,7 @@
     void files;
     return unrenderableMain({ mainPath: previewMain || session?.mainPath?.() || "", formatOf: renderers.formatOf });
   });
-  const editorFormat = $derived(renderers.formatOf(toolbarPath) || sourceFormat);
+  const editorFormat = $derived(toolbarPath ? renderers.formatOf(toolbarPath) : sourceFormat);
   const canPreviewFile = $derived(files.some((file) =>
     file.id === openFile && file.kind === "text" && Boolean(renderers.formatOf(file.path))));
   loadConfig()

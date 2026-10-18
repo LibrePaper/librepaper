@@ -33,6 +33,8 @@ const quarto = project({ "main.qmd": "# Source", "main.html": "Generated", "main
 assert.equal(quarto.main, "main.qmd");
 assert.deepEqual(select(quarto).files.map((file) => file.path), ["main.qmd", "refs.bib", "figure.png"]);
 assert.ok(select(quarto, "main.html").files.some((file) => file.path === "main.html"), "changing main recomputes exclusions");
+const siblings = project({ "paper.qmd": "# Source", "paper.html": "Generated", "notes.typ": "Typst", "appendix.tex": "LaTeX", "page.html": "Page", "_freeze/x.json": "cache", "data.docx": "binary" });
+assert.deepEqual(select(siblings, "paper.qmd").files.map((file) => file.path), ["paper.qmd", "notes.typ", "appendix.tex", "page.html"]);
 const explicit = project({ "main.qmd": "# Source", "data.csv": "shared", ".librepaper-share.json": '{"include":["data.csv"]}' });
 assert.ok(select(explicit).files.some((file) => file.path === "data.csv"));
 assert.throws(() => select(project({ "main.qmd": "# Source", ".librepaper-share.json": '{"include":["missing.csv"]}' })), /missing/);

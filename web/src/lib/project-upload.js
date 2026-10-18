@@ -61,7 +61,7 @@ export function archiveSelection(project, main, config) {
     const ext = extension(file.path);
     const generated = ([".md", ".html", ".htm", ".ipynb", ".pdf", ".docx", ".tex"].includes(ext) && quartoStems.has(stem(file.path))) || file.path.split("/").some((part) => generatedFolders.has(part) || part.endsWith("_files") || part.endsWith("_cache"));
     const excluded = quarto
-      ? !project.include.includes(file.path) && (generated || !editorial.has(ext))
+      ? !project.include.includes(file.path) && (generated || !(editorial.has(ext) || renderable(config, file.path)))
       : file.path === `${stem(main)}.pdf`;
     const derived = (config.derived_extensions || []).some((suffix) => file.path.toLowerCase().endsWith(suffix));
     if (file.path !== main && (excluded || derived)) {

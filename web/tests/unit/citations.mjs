@@ -60,17 +60,21 @@ assert.equal(zoteroCitationKey(zoteroBib, "OLD123", "Smi2023"), "Smi2023", "an i
 assert.equal(zoteroCitationKey(zoteroBib, "NEW123", "Smi2023"), "Smi2023a", "a new collision is suffixed");
 assert.deepEqual(bibliographyRegistration("---\ntitle: Paper\n---\nBody"), { from: 17, to: 17, insert: "bibliography: references.bib\n" });
 const planned = planZoteroImport({
-  source: "# Paper\n", mainPath: "main.qmd", texts: { "main.qmd": "# Paper\n", "references.bib": zoteroBib },
+  source: "# Paper\n", targetPath: "main.qmd", texts: { "main.qmd": "# Paper\n", "references.bib": zoteroBib },
   item: { zotero_item: "NEW123", citation_key: "Smi2023", bibtex: "@article{Smi2023,\n  title = {New},\n  x-librepaper-zotero-item = {NEW123}\n}\n" },
 });
 assert.equal(planned.key, "Smi2023a");
 assert.match(planned.bibtex, /@article\{Smi2023a,/);
 assert.equal(planned.registration.insert, "---\nbibliography: references.bib\n---\n\n");
-const repeated = planZoteroImport({ source: "bibliography: references.bib\n", mainPath: "main.qmd", texts: { "references.bib": planned.bibtex }, item: { zotero_item: "NEW123", citation_key: "Smi2023", bibtex: "ignored" } });
+const repeated = planZoteroImport({ source: "bibliography: references.bib\n", targetPath: "main.qmd", texts: { "references.bib": planned.bibtex }, item: { zotero_item: "NEW123", citation_key: "Smi2023", bibtex: "ignored" } });
 assert.equal(repeated.already, true);
 assert.equal(repeated.key, "Smi2023a");
 assert.equal(repeated.bibtex, planned.bibtex);
-const nested = planZoteroImport({ source: "---\nbibliography: ../sources.bib\n---\n", mainPath: "chapters/paper.qmd", texts: { "chapters/paper.qmd": "" }, item: { zotero_item: "NESTED", citation_key: "Jon2024", bibtex: "@article{Jon2024,\n  x-librepaper-zotero-item = {NESTED}\n}\n" } });
+const nested = planZoteroImport({ source: "---\nbibliography: ../sources.bib\n---\n", targetPath: "chapters/paper.qmd", texts: { "chapters/paper.qmd": "" }, item: { zotero_item: "NESTED", citation_key: "Jon2024", bibtex: "@article{Jon2024,\n  x-librepaper-zotero-item = {NESTED}\n}\n" } });
 assert.equal(nested.path, "sources.bib");
 assert.equal(nested.create, true);
 assert.equal(nested.registration, null);
+const markdownTarget = planZoteroImport({ source: "# Notes\n", targetPath: "notes.md", texts: { "references.bib": "" }, item: { zotero_item: "MD1", citation_key: "Doe2025", bibtex: "@article{Doe2025,\n  x-librepaper-zotero-item = {MD1}\n}\n" } });
+assert.deepEqual(markdownTarget.registration, { from: 0, to: 0, insert: "---\nbibliography: references.bib\n---\n\n" });
+const subfolderTarget = planZoteroImport({ source: "# Chapter\n", targetPath: "chapters/one.md", texts: { "references.bib": "" }, item: { zotero_item: "MD2", citation_key: "Doe2025", bibtex: "@article{Doe2025,\n  x-librepaper-zotero-item = {MD2}\n}\n" } });
+assert.equal(subfolderTarget.registration.insert, "---\nbibliography: ../references.bib\n---\n\n");
