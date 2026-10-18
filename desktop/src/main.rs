@@ -9,6 +9,7 @@ mod service;
 mod shell_log;
 #[cfg(any(target_os = "macos", windows))]
 mod updater;
+mod theme;
 mod zoom;
 
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -98,6 +99,7 @@ fn setup(app: &mut App) -> Result<(), Box<dyn std::error::Error>> {
     });
     app.manage(Service::new(&first));
     app.manage(zoom::Zoom::load(app.handle()));
+    app.manage(theme::Theme::load(app.handle()));
     #[cfg(target_os = "linux")]
     app.manage(drop::Dropped::default());
 
@@ -255,8 +257,12 @@ fn open_window(app: &AppHandle, url: Url) -> tauri::Result<tauri::WebviewWindow>
     };
     let opener = app.clone();
     let checked = url.clone();
+    let theme = app.state::<theme::Theme>();
+    let choice = theme.choice();
     let builder = WebviewWindowBuilder::new(app, label, WebviewUrl::External(url))
         .title("LibrePaper")
+        .theme(theme.tauri_theme(choice))
+        .background_color(theme::background(choice, theme.system_dark(app)))
         .inner_size(1280.0, 860.0)
         .initialization_script(desktop_script())
         .on_new_window(move |url, _features| {
@@ -637,6 +643,27 @@ fn serve(app: &AppHandle, label: String, request: Request<Vec<u8>>, responder: U
         return;
     }
 
+    // The page's theme choice, sent at start and on every change. Every window
+    // takes it so the title bar matches the page.
+    if request.method() == Method::POST && request.uri().path() == "/shell/theme" {
+        let choice = serde_json::from_slice::<serde_json::Value>(request.body())
+            .ok()
+            .and_then(|body| body["theme"].as_str()?.parse::<theme::Choice>().ok());
+        let Some(choice) = choice else {
+            let res = json_error(
+                StatusCode::BAD_REQUEST,
+                "The theme must be system, light or dark.",
+            );
+            return responder.respond(with_origin(res, &origin));
+        };
+        let main = app.clone();
+        if let Err(err) =
+            app.run_on_main_thread(move || main.state::<theme::Theme>().set(&main, choice))
+        {
+            shell_log::write(&format!("could not set the theme: {err}"));
+        }
+        return responder.respond(with_origin(no_content(), &origin));
+    }
     // Opens the service's log folder in the file manager.
     if request.method() == Method::POST && request.uri().path() == "/shell/open-logs" {
         let app = app.clone();
