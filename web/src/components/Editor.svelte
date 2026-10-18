@@ -165,7 +165,7 @@
   import { EditorState, Prec, Transaction } from "@codemirror/state";
   import { EditorView, lineNumbers, highlightActiveLine, highlightActiveLineGutter, highlightSpecialChars, dropCursor, rectangularSelection, drawSelection } from "@codemirror/view";
   import { defaultKeymap, indentWithTab, selectAll } from "@codemirror/commands";
-  import { autocompletion, closeBrackets, closeBracketsKeymap, completionKeymap, startCompletion } from "@codemirror/autocomplete";
+  import { autocompletion, closeBrackets, closeBracketsKeymap, completionKeymap, snippet, startCompletion } from "@codemirror/autocomplete";
   import { searchKeymap, highlightSelectionMatches, openSearchPanel } from "@codemirror/search";
   import { bracketMatching, foldGutter, foldKeymap, indentOnInput } from "@codemirror/language";
   import {
@@ -861,15 +861,24 @@
     }
     const changes = plans.get(showingKey).edits;
     const shift = changes.filter(edit => edit.to <= from).reduce((sum, edit) => sum + edit.insert.length - (edit.to - edit.from), 0);
-    changes.push({ from, to, insert: result.text });
+    // A snippet is inserted by CodeMirror's own command once the other edits
+    // are in place, because only the command knows how to select its first
+    // field and let Tab move to the rest. It is still one commit below.
+    if (!result.snippet) changes.push({ from, to, insert: result.text });
     for (const plan of plans.values()) {
       plan.edits.sort((a, b) => a.from - b.from || a.to - b.to);
       for (let i = 1; i < plan.edits.length; i++) if (plan.edits[i - 1].to > plan.edits[i].from) return false;
     }
-    const selection = result.selection;
-    const offset = value => from + shift + Math.max(0, Math.min(result.text.length, Number.isInteger(value) ? value : result.text.length));
-    const anchor = offset(selection?.anchor), head = offset(selection?.head);
-    view.dispatch({ changes, selection: { anchor, head }, effects: EditorView.scrollIntoView(head) });
+    if (result.snippet) {
+      if (changes.length) view.dispatch({ changes });
+      snippet(result.text)(view, null, from + shift, to + shift);
+      view.dispatch({ effects: EditorView.scrollIntoView(view.state.selection.main.head) });
+    } else {
+      const selection = result.selection;
+      const offset = value => from + shift + Math.max(0, Math.min(result.text.length, Number.isInteger(value) ? value : result.text.length));
+      const anchor = offset(selection?.anchor), head = offset(selection?.head);
+      view.dispatch({ changes, selection: { anchor, head }, effects: EditorView.scrollIntoView(head) });
+    }
     // Every other file the insertion touches. The one on screen went through
     // the transaction above; writing it here as well would apply it twice.
     for (const [key, plan] of plans) if (key !== showingKey) {

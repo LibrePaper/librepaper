@@ -89,6 +89,8 @@
   import { recenteredLeft, placeBar as placeSelectionBar } from "../lib/annotation-bar.js";
   import { VERBS, motivationFor } from "../lib/annotating.js";
   import InsertMenu from "./InsertMenu.svelte";
+  import SymbolPalette from "./SymbolPalette.svelte";
+  import MathPalette from "./MathPalette.svelte";
   import Sidebar from "./layout/Sidebar.svelte";
   import CompactPanelMenu from "./layout/CompactPanelMenu.svelte";
   import Files from "./reader/Files.svelte";
@@ -1175,6 +1177,10 @@
   // reader joins it too, because that is where the text comes from.
   let Editor = $state(null);
   let editor = $state(null);
+  // The palettes' own components, so a command can ask the Math panel to open
+  // a template or the Symbols panel to take the focus.
+  let symbolPalette = $state(null);
+  let mathPalette = $state(null);
   // Raw on purpose: the session is a bag of Loro types and functions, and the
   // collaboration module hands the same object back in its callbacks, which
   // are compared to this by identity. A deep proxy would never be equal to it.
@@ -3403,6 +3409,16 @@
     if (id === "shortcuts") return openSettings("editor");
     if (id === "focus-files") return focusPanel("files");
     if (id === "focus-outline") return focusPanel("outline");
+    if (id === "focus-symbols") return focusPanel("symbols");
+    if (id === "focus-math") return focusPanel("math");
+    // A template command opens the Math panel on its template. The panel is
+    // mounted by the open, so the template is asked for after the tick.
+    if (id.startsWith("math-")) {
+      await openPanel("math");
+      await tick();
+      mathPalette?.openTemplate?.(id.slice("math-".length));
+      return;
+    }
     if (id === "focus-comments") return focusPanel("collaboration");
     if (id === "focus-preview") return focusPreview();
     if (id === "layout-cycle") return cycleLayout();
@@ -3645,7 +3661,7 @@
           {/each}
         {/each}
       </MenubarMenu>
-      <InsertMenu getContext={insertContext} oninsert={applyInsertion} onupload={uploadInsertAsset} onpreview={previewInsertAsset} oncancel={(context) => editor?.releaseInsertContext?.(context)} onfocus={() => editor?.focus?.()} disabled={!mayEdit || !editor} />
+      <InsertMenu getContext={insertContext} oninsert={applyInsertion} onupload={uploadInsertAsset} onpreview={previewInsertAsset} onpanel={(id) => void focusPanel(id)} oncancel={(context) => editor?.releaseInsertContext?.(context)} onfocus={() => editor?.focus?.()} disabled={!mayEdit || !editor} />
     {/if}
     {#if editing}
       <MenubarMenu id="view" label="View" onselect={chooseViewCommand}>
@@ -3684,6 +3700,14 @@
 
   {#snippet outlinePanel()}
     <Outline headings={outlineHeadings} activeFrom={outlineActiveFrom} onselect={openOutlineHeading} />
+  {/snippet}
+
+  {#snippet symbolsPanel()}
+    <SymbolPalette bind:this={symbolPalette} getContext={insertContext} oninsert={applyInsertion} onfocus={() => editor?.focus?.()} />
+  {/snippet}
+
+  {#snippet mathPanel()}
+    <MathPalette bind:this={mathPalette} getContext={insertContext} oninsert={applyInsertion} onfocus={() => editor?.focus?.()} />
   {/snippet}
 
   {#snippet agentPanel()}
@@ -3756,7 +3780,7 @@
   <Sidebar
     {shown} {tabs} {panel} {settled} {compact} mounted={mountedPanels} {badges}
     label="Document"
-    panels={{ files: filesPanel, outline: outlinePanel, agent: agentPanel,
+    panels={{ files: filesPanel, outline: outlinePanel, symbols: symbolsPanel, math: mathPanel, agent: agentPanel,
               collaboration: collaborationPanel, changes: changesPanel,
               share: sharePanel, diagnostics: diagnosticsPanel, history: historyPanel }}
     panes={panes} sidebarPane={PANES.sidebar}

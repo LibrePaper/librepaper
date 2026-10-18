@@ -11,6 +11,7 @@ import {
   COMMANDS, RESERVED, availability, bindings, caps, commandFor, filter, fromEvent, helpTable,
   label, menuKeys, normalize, offered, reserved, typeable,
 } from "../../src/lib/commands.js";
+import { MATH_TEMPLATES } from "../../src/lib/symbols/templates.js";
 
 /* ------------------------------------------------------------- the notation */
 
@@ -243,5 +244,32 @@ assert.equal(filter(list, "zzzz").length, 0);
 // What starts with the query comes before what merely contains it.
 const upload = filter(list, "up");
 assert.equal(upload[0].id, "upload");
+
+/* ------------------------------------------------------- the palette panels */
+
+// The two palette panels get a chord each, and the chords are the ones the
+// browser does not keep. The commands are offered only where their panel is.
+assert.deepEqual(bindings(COMMANDS.find((command) => command.id === "focus-symbols"), false), ["mod+alt+s"]);
+assert.deepEqual(bindings(COMMANDS.find((command) => command.id === "focus-math"), false), ["mod+alt+t"]);
+assert.ok(!reserved("Mod+Alt+S") && !reserved("Mod+Alt+T"), "neither chord is the browser's");
+
+const withPalettes = { ...workspace, panels: [...workspace.panels, "symbols", "math"] };
+const offeredIds = (context) => offered(context, { apple: false }).map((entry) => entry.id);
+assert.ok(offeredIds(withPalettes).includes("focus-symbols"), "Focus Symbols is offered with the Symbols panel");
+assert.ok(offeredIds(withPalettes).includes("focus-math"), "Focus Math is offered with the Math panel");
+assert.ok(!offeredIds(workspace).includes("focus-symbols"), "and not without it");
+assert.ok(!offeredIds(workspace).includes("focus-math"), "and not without it");
+
+// One palette command per math template, named from the template, with no key.
+const mathCommands = COMMANDS.filter((command) => command.category === "Math");
+assert.equal(mathCommands.length, MATH_TEMPLATES.length, "one command per math template");
+for (const template of MATH_TEMPLATES) {
+  const command = COMMANDS.find((entry) => entry.id === "math-" + template.id);
+  assert.ok(command, `math-${template.id} exists`);
+  assert.equal(command.label, "Insert " + template.label.toLowerCase());
+  assert.deepEqual(bindings(command, false), [], "a template has no key");
+}
+assert.ok(offeredIds(withPalettes).includes("math-" + MATH_TEMPLATES[0].id), "a template is offered with the Math panel");
+assert.ok(!offeredIds(workspace).some((id) => id.startsWith("math-")), "and not without it");
 
 console.log("commands: one notation, no browser collisions, typing beats a chord, and a help table that cannot drift from the keys");
