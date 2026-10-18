@@ -201,11 +201,15 @@ try {
   const active = () => b.evaluate('document.activeElement?.matches("input[type=search]") ? "search" : document.activeElement?.closest(".cm-editor") ? "editor" : document.activeElement?.matches("[data-template]") ? "tile" : document.activeElement?.tagName || ""');
   await focusSource();
   await key("s", { code: "KeyS", modifiers: ["ctrl", "alt"], virtual: 83 });
-  await until("the Symbols overlay", async () => (await dialog()) === "Symbols" && (await active()) === "search", 4000);
+  await until("the Symbols overlay", async () => (await dialog()) === "Insert symbol" && (await active()) === "search", 4000);
   const typed = await source();
   await b.evaluate('document.querySelector(".symbol-grid .symbol-tile").click()');
-  await until("the symbol inserted", async () => (await source()) !== typed && (await active()) === "editor", 4000);
-  assert.equal(await dialog(), "", "a picked symbol closes the overlay");
+  await until("the symbol inserted", async () => (await source()) !== typed, 4000);
+  // The picker stays open for the next symbol, and the focus stays out of the editor.
+  assert.equal(await dialog(), "Insert symbol", "a picked symbol keeps the picker open");
+  assert.notEqual(await active(), "editor", "and the focus is not handed to the editor");
+  await key("Escape", { code: "Escape", virtual: 27 });
+  await until("the Symbols overlay closed", async () => (await dialog()) === "" && (await active()) === "editor", 4000);
 
   await key("t", { code: "KeyT", modifiers: ["ctrl", "alt"], virtual: 84 });
   await until("the Math overlay", async () => (await dialog()) === "Math" && (await active()) === "tile", 4000);
