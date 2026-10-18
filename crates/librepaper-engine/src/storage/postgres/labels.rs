@@ -78,6 +78,8 @@ pub struct TrimOutcome {
     pub version_bytes: i64,
     pub figures: i64,
     pub figure_bytes: i64,
+    pub chat_messages: i64,
+    pub chat_bytes: i64,
 }
 
 const SELECT: &str = "SELECT l.id,l.document_id,l.sequence,l.source_sequence,l.vector,l.frontier,l.tree_digest,\
@@ -277,7 +279,7 @@ impl PostgresCatalog {
         let owner_usage = super::repository::owner_usage_bytes(&mut *tx, owner).await?;
         let log_usage: i64 = sqlx::query_scalar(
             "SELECT COALESCE((SELECT sum(snapshot_bytes)::bigint FROM document_snapshots WHERE delete_after IS NULL),0) \
-             + COALESCE((SELECT sum(uncompacted_update_bytes)::bigint FROM documents),0) \
+             + COALESCE((SELECT sum(uncompacted_update_bytes + chat_bytes)::bigint FROM documents),0) \
              + COALESCE((SELECT sum(bytes)::bigint FROM pending_log_reservations),0)",
         )
         .fetch_one(&mut *tx)
@@ -399,7 +401,7 @@ impl PostgresCatalog {
         let owner_usage = super::repository::owner_usage_bytes(&mut *tx, owner_id).await?;
         let log_usage: i64 = sqlx::query_scalar(
             "SELECT COALESCE((SELECT sum(snapshot_bytes)::bigint FROM document_snapshots WHERE delete_after IS NULL),0) \
-             + COALESCE((SELECT sum(uncompacted_update_bytes)::bigint FROM documents),0) \
+             + COALESCE((SELECT sum(uncompacted_update_bytes + chat_bytes)::bigint FROM documents),0) \
              + COALESCE((SELECT sum(bytes)::bigint FROM pending_log_reservations),0)",
         )
         .fetch_one(&mut *tx)
@@ -526,7 +528,7 @@ impl PostgresCatalog {
             .map_err(Error::from)
     }
 
-    /// Deletes every label and archive of the document, and every asset row
+    /// Deletes every label, archive and chat message of the document, and every asset row
     /// whose digest is not in `referenced` and that is older than the one-hour
     /// upload grace. The grace exists because an upload records its row before
     /// the edit that names it in the document arrives, so a fresh unnamed figure
@@ -564,11 +566,14 @@ impl PostgresCatalog {
         .bind(referenced.to_vec())
         .fetch_all(&mut **tx)
         .await?;
+        let (chat_messages, chat_bytes) = self.clear_chat_in_transaction(tx, document_id).await?;
         Ok(TrimOutcome {
             versions,
             version_bytes: archive_bytes.iter().sum(),
             figures: figure_bytes.len() as i64,
             figure_bytes: figure_bytes.iter().sum(),
+            chat_messages,
+            chat_bytes,
         })
     }
 

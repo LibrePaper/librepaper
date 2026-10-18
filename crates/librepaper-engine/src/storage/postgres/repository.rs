@@ -277,6 +277,13 @@ impl PostgresCatalog {
         )
         .execute(&mut *tx)
         .await?;
+        sqlx::query(
+            "UPDATE chat_messages SET author_account_id=NULL,author_label='Deleted user'
+             WHERE author_account_id=$1",
+        )
+        .bind(account_id)
+        .execute(&mut *tx)
+        .await?;
         sqlx::query!(
             "UPDATE document_labels SET author_account_id=NULL,author_label='Deleted user'
              WHERE author_account_id=$1",
@@ -1297,7 +1304,7 @@ impl PostgresCatalog {
         // every document's uncompacted rows.
         let log_usage: i64 = sqlx::query_scalar(
             "SELECT COALESCE((SELECT sum(snapshot_bytes)::bigint FROM document_snapshots WHERE delete_after IS NULL),0) \
-             + COALESCE((SELECT sum(uncompacted_update_bytes)::bigint FROM documents),0) \
+             + COALESCE((SELECT sum(uncompacted_update_bytes + chat_bytes)::bigint FROM documents),0) \
              + COALESCE((SELECT sum(bytes)::bigint FROM pending_log_reservations),0)",
         )
         .fetch_one(&mut **tx)
@@ -1622,7 +1629,7 @@ impl PostgresCatalog {
                 r#"SELECT (
                      (SELECT bytes FROM storage_usage WHERE singleton) +
                      COALESCE((SELECT sum(snapshot_bytes)::bigint FROM document_snapshots WHERE delete_after IS NULL), 0) +
-                     COALESCE((SELECT sum(uncompacted_update_bytes)::bigint FROM documents), 0)
+                     COALESCE((SELECT sum(uncompacted_update_bytes + chat_bytes)::bigint FROM documents), 0)
                    )::bigint"#,
             )
             .fetch_one(&self.pool)
@@ -1638,7 +1645,7 @@ impl PostgresCatalog {
                  UNION ALL SELECT s.snapshot_bytes FROM document_snapshots s
                    JOIN documents d ON d.id=s.document_id
                    WHERE d.owner_id=$1 AND s.delete_after IS NULL
-                 UNION ALL SELECT d.uncompacted_update_bytes FROM documents d
+                 UNION ALL SELECT d.uncompacted_update_bytes + d.chat_bytes FROM documents d
                    WHERE d.owner_id=$1
                ) usage"#,
         )
@@ -1654,7 +1661,7 @@ impl PostgresCatalog {
                 r#"SELECT (
                      (SELECT bytes FROM storage_usage WHERE singleton) +
                      COALESCE((SELECT sum(snapshot_bytes)::bigint FROM document_snapshots WHERE delete_after IS NULL), 0) +
-                     COALESCE((SELECT sum(uncompacted_update_bytes)::bigint FROM documents), 0) +
+                     COALESCE((SELECT sum(uncompacted_update_bytes + chat_bytes)::bigint FROM documents), 0) +
                      COALESCE((SELECT sum(bytes)::bigint FROM pending_log_reservations), 0)
                    )::bigint"#
             )
@@ -1718,7 +1725,7 @@ where
              UNION ALL SELECT s.snapshot_bytes FROM document_snapshots s
                JOIN documents d ON d.id=s.document_id
                WHERE d.owner_id=$1 AND s.delete_after IS NULL
-             UNION ALL SELECT d.uncompacted_update_bytes FROM documents d
+             UNION ALL SELECT d.uncompacted_update_bytes + d.chat_bytes FROM documents d
                WHERE d.owner_id=$1
              UNION ALL SELECT r.bytes FROM pending_log_reservations r
                JOIN documents d ON d.id=r.document_id WHERE d.owner_id=$1
@@ -1782,11 +1789,11 @@ impl PostgresCatalog {
                  (COALESCE(
                    (SELECT snapshot_bytes FROM document_snapshots WHERE document_id = d.id AND delete_after IS NULL),
                    0
-                 ) + d.uncompacted_update_bytes)::bigint AS "history_bytes!"
+                 ) + d.uncompacted_update_bytes + d.chat_bytes)::bigint AS "history_bytes!"
                FROM documents d
                LEFT JOIN document_assets a ON a.document_id = d.id
                WHERE d.owner_id = $1 AND d.status = 'active'
-               GROUP BY d.id, d.slug, d.title, d.uncompacted_update_bytes
+               GROUP BY d.id, d.slug, d.title, d.uncompacted_update_bytes, d.chat_bytes
                ORDER BY (
                  COALESCE(SUM(a.byte_length), 0) +
                  COALESCE((
@@ -1794,7 +1801,7 @@ impl PostgresCatalog {
                    FROM document_archives WHERE document_id = d.id
                  ), 0) +
                  COALESCE((SELECT snapshot_bytes FROM document_snapshots WHERE document_id = d.id AND delete_after IS NULL), 0) +
-                 d.uncompacted_update_bytes
+                 d.uncompacted_update_bytes + d.chat_bytes
                ) DESC, d.title ASC"#,
             owner_id,
         )

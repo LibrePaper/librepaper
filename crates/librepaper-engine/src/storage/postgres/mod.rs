@@ -13,6 +13,7 @@ use sqlx::{ConnectOptions, PgPool, Postgres, Row};
 mod access;
 pub mod annotations;
 
+mod chat;
 mod commit;
 mod document_log;
 mod labels;
@@ -34,6 +35,7 @@ mod schema_regression_tests;
 #[path = "deployment_setup_tests.rs"]
 mod deployment_setup_tests;
 
+pub use chat::{ChatRecord, CHAT_ROW_OVERHEAD_BYTES};
 pub use commit::Authority;
 pub use document_log::{FlushRow, LogRow, NewSnapshot, PendingWorkCursor, RowCoverage};
 pub use labels::{ArchiveAttach, ArchiveObject, LabelRecord, NewLabel, TrimOutcome};

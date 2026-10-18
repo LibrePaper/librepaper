@@ -415,7 +415,7 @@ impl PostgresCatalog {
         let deployment_usage: i64 = sqlx::query_scalar(
             "SELECT (SELECT bytes FROM storage_usage WHERE singleton) \
              + COALESCE((SELECT sum(snapshot_bytes)::bigint FROM document_snapshots WHERE delete_after IS NULL),0) \
-             + COALESCE((SELECT sum(uncompacted_update_bytes)::bigint FROM documents),0) \
+             + COALESCE((SELECT sum(uncompacted_update_bytes + chat_bytes)::bigint FROM documents),0) \
              + COALESCE((SELECT sum(bytes)::bigint FROM pending_log_reservations),0)",
         )
         .fetch_one(&mut **tx)
@@ -508,7 +508,7 @@ impl PostgresCatalog {
         }
         let log_usage: i64 = sqlx::query_scalar(
             "SELECT COALESCE((SELECT sum(snapshot_bytes)::bigint FROM document_snapshots WHERE delete_after IS NULL),0) \
-             + COALESCE((SELECT sum(uncompacted_update_bytes)::bigint FROM documents),0)",
+             + COALESCE((SELECT sum(uncompacted_update_bytes + chat_bytes)::bigint FROM documents),0)",
         )
         .fetch_one(&mut *tx)
         .await?;
@@ -672,7 +672,7 @@ impl PostgresCatalog {
         let deployment_before: i64 = sqlx::query_scalar(
             "SELECT (SELECT bytes FROM storage_usage WHERE singleton) \
              + COALESCE((SELECT sum(snapshot_bytes)::bigint FROM document_snapshots WHERE delete_after IS NULL),0) \
-             + COALESCE((SELECT sum(uncompacted_update_bytes)::bigint FROM documents),0) \
+             + COALESCE((SELECT sum(uncompacted_update_bytes + chat_bytes)::bigint FROM documents),0) \
              + COALESCE((SELECT sum(bytes)::bigint FROM pending_log_reservations),0)",
         )
         .fetch_one(&mut *tx)
@@ -733,7 +733,7 @@ impl PostgresCatalog {
         let deployment_usage: i64 = sqlx::query_scalar(
             "SELECT (SELECT bytes FROM storage_usage WHERE singleton) \
              + COALESCE((SELECT sum(snapshot_bytes)::bigint FROM document_snapshots WHERE delete_after IS NULL),0) \
-             + COALESCE((SELECT sum(uncompacted_update_bytes)::bigint FROM documents),0) \
+             + COALESCE((SELECT sum(uncompacted_update_bytes + chat_bytes)::bigint FROM documents),0) \
              + COALESCE((SELECT sum(bytes)::bigint FROM pending_log_reservations),0)",
         )
         .fetch_one(&mut *tx)
