@@ -13,7 +13,7 @@
   // focus. Oninsert returns normally or throws an Error whose message is shown
   // here. Shift-click copies the bare spelling instead, for pasting into prose
   // or a different file.
-  let { getContext, oninsert, format = "" } = $props();
+  let { getContext, oninsert, oncancel, format = "" } = $props();
 
   const RESULT_LIMIT = 300;
   const LONG_PRESS_MS = 500;
@@ -164,22 +164,26 @@
     }
     if (!entryAvailable(entry, context.format)) {
       note = "Not available in HTML.";
+      oncancel?.(context);
       return;
     }
     if (event?.shiftKey) {
       const code = entrySpellings(entry, context.format)[0]?.code ?? "";
       if (code) navigator.clipboard?.writeText(code).catch(() => {});
+      oncancel?.(context);
       return;
     }
     const result = entryInsertion(entry, context);
     if (!result.text) {
       note = (result.notes ?? []).join(" ");
+      oncancel?.(context);
       return;
     }
     try {
       oninsert?.(result, context);
     } catch (error) {
       note = error instanceof Error ? error.message : String(error);
+      oncancel?.(context);
       return;
     }
     recent = withRecent(recent, entry.id);

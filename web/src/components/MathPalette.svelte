@@ -176,6 +176,7 @@
     if (!template || format === "html") { activeId = null; return; }
     const context = getContext?.() ?? null;
     if (!context) return;
+    if (captured) oncancel?.(captured);
     captured = context;
     values = freshValues(template, context);
     error = "";
@@ -189,6 +190,7 @@
   async function back() {
     const id = activeId;
     activeId = null;
+    if (captured) oncancel?.(captured);
     captured = null;
     error = "";
     lastField = null;

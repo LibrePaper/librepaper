@@ -1,5 +1,6 @@
 <script>
   import { Menu } from "@skeletonlabs/skeleton-svelte";
+  import { onDestroy } from "svelte";
   import MenubarMenu from "./MenubarMenu.svelte";
   import ExplorerMenu from "./ExplorerMenu.svelte";
   import Icon from "./Icon.svelte";
@@ -36,6 +37,11 @@
   let captured = $state(null);
   /** @type {InsertMenuContext | null} */
   let menuContext = $state(null);
+
+  onDestroy(() => {
+    if (menuContext) oncancel?.(menuContext);
+    if (dialogOpen && captured && captured !== menuContext) oncancel?.(captured);
+  });
   /** @type {InsertionDraft} */
   let draft = $state({});
   let query = $state("");
@@ -224,7 +230,11 @@
 {/snippet}
 
 <MenubarMenu id="insert" label="Insert" {disabled}
-             onopen={() => { menuContext = getContext?.() || null; }}
+             onopen={() => {
+               // The context from the last opening is released, unless a dialog took it.
+               if (menuContext && !(dialogOpen && captured === menuContext)) oncancel?.(menuContext);
+               menuContext = getContext?.() || null;
+             }}
              onselect={choose}>
   <div class="insert-scroll">
   {#each menuTree as entry}
