@@ -39,6 +39,9 @@ export const KEYMAP = "librepaper-keymap";
 // The source text size in pixels. Like the keymap, a habit of the person
 // looking at the source rather than of the document.
 export const EDITOR_SIZE = "librepaper-editor-size";
+// Whether the pages are light, dark, or follow the computer: "system", "light"
+// or "dark". Like the keymap, a habit of the person looking at the screen.
+export const THEME = "librepaper-theme";
 
 // A page can keep using a link key even when persistent storage is denied. The
 // value lasts only for this page, which is the same lifetime as the fragment

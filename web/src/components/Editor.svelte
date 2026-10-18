@@ -8,10 +8,15 @@
   import { undo as undoFn, redo as redoFn, undoManagerField as vimUndoManagerField } from "../lib/loro-undo.js";
   import { loroSyncAnnotation } from "../../vendor/loro-codemirror/sync.ts";
   import { keymap } from "@codemirror/view";
+  import { mode, onMode } from "../lib/theme.js";
 
   // The keys the editor answers to: Vim's, Emacs's, or nothing extra. One
   // compartment, whichever is chosen, so switching swaps one for the other.
   const vimCompartment = new Compartment();
+  // CodeMirror's own light or dark base styles; the colours come from the
+  // page's variables.
+  const themeCompartment = new Compartment();
+  const themeFor = (dark) => EditorView.theme({}, { dark });
 
   // Loro merges nearby commits by default. A handled Vim key starts a new
   // command boundary; the first local edit after it consumes that boundary
@@ -926,6 +931,7 @@
         // extension has precedence, and Vim has to see a key before the
         // default keymap does, or `j` inserts a letter instead of moving.
         vimCompartment.of(resolvedKeys(untrack(() => keys)) || []),
+        themeCompartment.of(themeFor(mode() === "dark")),
         lineNumbers(),
         drawSelection(),
         highlightActiveLine(),
@@ -1237,6 +1243,9 @@
       });
       untrack(() => viewCallbacks.set(view, { onsave, onquit }));
       syncKeys(view);
+      const unsubscribeMode = onMode((now) => {
+        view?.dispatch({ effects: themeCompartment.reconfigure(themeFor(now === "dark")) });
+      });
       drawChanges();
       if (initial.first) session.inFile?.(initial.first);
       const bibliographyWatcher = scheduleBibliography;
@@ -1255,6 +1264,7 @@
         clearTimeout(bibliographyTimer);
         if (typeof unsubscribeBibliography === "function") unsubscribeBibliography();
         unsubscribeChanges();
+        unsubscribeMode();
         if (view) viewCallbacks.delete(view);
         view?.destroy();
         insertTargets.clear();
