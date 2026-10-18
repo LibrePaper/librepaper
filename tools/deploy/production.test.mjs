@@ -469,6 +469,12 @@ test('the site and redirect blocks go to caddy/local.d/librepaper-org.caddy, onc
     assert.equal(read(file), [
       'librepaper.org {',
       '\tencode zstd gzip',
+      '\theader {',
+      '\t\tStrict-Transport-Security "max-age=31536000; includeSubDomains"',
+      '\t\tX-Content-Type-Options nosniff',
+      '\t\tReferrer-Policy strict-origin-when-cross-origin',
+      '\t\tContent-Security-Policy "frame-ancestors \'none\'; base-uri \'none\'; object-src \'none\'; form-action \'self\'"',
+      '\t}',
       '\tredir /install.html /desktop-app.html permanent',
       '\tredir /local-app.html /desktop-app.html permanent',
       '\troot * /srv/site',
@@ -476,6 +482,7 @@ test('the site and redirect blocks go to caddy/local.d/librepaper-org.caddy, onc
       '}',
       '',
       'www.librepaper.org, librepaper.com, www.librepaper.com {',
+      '\theader Strict-Transport-Security "max-age=31536000; includeSubDomains"',
       '\tredir https://librepaper.org{uri} permanent',
       '}',
       '',
@@ -497,6 +504,12 @@ test('site installs the Caddy site block and reloads Caddy without touching the 
     assert.equal(read(file), [
       'librepaper.org {',
       '\tencode zstd gzip',
+      '\theader {',
+      '\t\tStrict-Transport-Security "max-age=31536000; includeSubDomains"',
+      '\t\tX-Content-Type-Options nosniff',
+      '\t\tReferrer-Policy strict-origin-when-cross-origin',
+      '\t\tContent-Security-Policy "frame-ancestors \'none\'; base-uri \'none\'; object-src \'none\'; form-action \'self\'"',
+      '\t}',
       '\tredir /install.html /desktop-app.html permanent',
       '\tredir /local-app.html /desktop-app.html permanent',
       '\troot * /srv/site',
@@ -504,10 +517,20 @@ test('site installs the Caddy site block and reloads Caddy without touching the 
       '}',
       '',
       'www.librepaper.org, librepaper.com, www.librepaper.com {',
+      '\theader Strict-Transport-Security "max-age=31536000; includeSubDomains"',
       '\tredir https://librepaper.org{uri} permanent',
       '}',
       '',
     ].join('\n'));
+    const text = read(file);
+    for (const header of [
+      'Strict-Transport-Security "max-age=31536000; includeSubDomains"',
+      'X-Content-Type-Options nosniff',
+      'Referrer-Policy strict-origin-when-cross-origin',
+      "Content-Security-Policy \"frame-ancestors 'none'; base-uri 'none'; object-src 'none'; form-action 'self'\"",
+    ]) {
+      assert.ok(text.includes(header), header);
+    }
     assertInOrder(events(f), [
       ['ssh', /librepaper-org\.caddy\.tmp/],
       ['ssh', /caddy reload --config \/etc\/caddy\/Caddyfile/],
