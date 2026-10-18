@@ -35,7 +35,7 @@ Everything is on one machine, so losing the VPS loses it all until [backups](adv
 
 ## Install
 
-Each LibrePaper release comes with one download that contains everything the VPS needs: the Compose file that starts the four services, `librepaper.toml` for your settings, and the backup and Caddy configuration. It also includes `./manage`, the helper used below. The download pins each image by its digest, so it always runs the same images. Run this on the VPS, over SSH. It unpacks into a `librepaper/` directory that is private to you (mode 700).
+Each LibrePaper release comes with one download that contains everything the VPS needs: the Compose file that starts the four services, `librepaper.toml` for your settings, and the backup and Caddy configuration. It also includes `./manage`, the helper used below. The download pins the two LibrePaper images by digest, so an upgrade runs the images the release was built from. PostgreSQL and Caddy are pinned by version tag. Run this on the VPS, over SSH. It unpacks into a `librepaper/` directory that is private to you (mode 700).
 
 ```sh
 curl -fsSL https://github.com/LibrePaper/librepaper/releases/latest/download/librepaper-deploy.tar.gz | tar xz
@@ -269,6 +269,13 @@ Caddy obtains a certificate the first time a name is visited, so the first reque
 - It keeps your `.toml` files and `caddy/local.d/`.
 - It refuses to move to an older release.
 - It leaves the previous release's images on disk, about 250 MB per upgrade. `docker image prune` keeps them, because they are still referenced by digest.
+
+Helpers from v0.0.45 and earlier read a digest-pinned kit wrong. With those, `./manage upgrade vX.Y.Z` stops with `the kit pins <digest>, not vX.Y.Z` and changes nothing. Replace the helper once, then upgrade as usual. Later helpers hand the upgrade to the kit's own helper by themselves.
+
+```sh
+curl -fsSL https://github.com/LibrePaper/librepaper/releases/latest/download/librepaper-deploy.tar.gz | tar xzO librepaper/manage > manage.new &&
+  chmod 755 manage.new && mv -f manage.new manage
+```
 
 The server migrates the schema at startup. `compose.yaml` is replaced on every upgrade. Put your own changes in `compose.override.yaml`.
 

@@ -136,8 +136,8 @@ mkdir -p "$kit_source/deploy/caddy" "$kit_output"
 for file in compose.yaml compose.managed-db.yaml librepaper.toml README.md manage; do
   printf 'committed fixture %s\n' "$file" > "$kit_source/deploy/$file"
 done
-printf 'ghcr.io/librepaper/librepaper:v0.0.21\n' >> "$kit_source/deploy/compose.yaml"
-printf 'ghcr.io/librepaper/librepaper-backup:v0.0.21\n' >> "$kit_source/deploy/compose.yaml"
+cp "$root/deploy/manage" "$kit_source/deploy/manage"
+printf 'services:\n  librepaper:\n    image: ghcr.io/librepaper/librepaper:v0.0.21\n  backup:\n    image: ghcr.io/librepaper/librepaper-backup:v0.0.21\n' > "$kit_source/deploy/compose.yaml"
 printf 'committed caddy\n' > "$kit_source/deploy/caddy/Caddyfile"
 printf '# Backups are disabled until an operator configures them.\n' > "$kit_source/deploy/resticprofile.toml"
 printf 'committed init\n' > "$kit_source/deploy/postgres-init.sql"
@@ -199,6 +199,25 @@ cp "$root/deploy/manage" "$manage_dir/manage"
 printf 'services:\n  librepaper:\n    image: ghcr.io/librepaper/librepaper:v1.2.3@%s\n' "$app_digest" > "$manage_dir/compose.yaml"
 [[ "$(bash "$manage_dir/manage" version)" == v1.2.3 ]] || fail 'manage version did not strip the image digest'
 
+# The installed helper hands the upgrade to the kit's helper, run from the
+# install directory, when the two differ. An identical helper carries on.
+boot_dir="$tmp/manage-bootstrap"
+mkdir -p "$boot_dir/install" "$boot_dir/kit/librepaper"
+cp "$root/deploy/manage" "$boot_dir/install/manage"
+printf 'services:\n  librepaper:\n    image: ghcr.io/librepaper/librepaper:v1.2.2\n' > "$boot_dir/install/compose.yaml"
+printf 'services:\n  librepaper:\n    image: ghcr.io/librepaper/librepaper:v1.2.3@%s\n' "$app_digest" > "$boot_dir/kit/librepaper/compose.yaml"
+printf '#!/usr/bin/env bash\necho "kit helper in $(pwd -P): $*"\n' > "$boot_dir/kit/librepaper/manage"
+tar -C "$boot_dir/kit" -czf "$boot_dir/kit.tar.gz" librepaper
+install_real="$(cd "$boot_dir/install" && pwd -P)"
+boot_out="$(cd "$boot_dir/install" && LIBREPAPER_KIT="$boot_dir/kit.tar.gz" bash ./manage upgrade v1.2.3 2>&1)" || fail "manage upgrade did not hand over to the kit's helper: $boot_out"
+[[ "$boot_out" == *"kit helper in $install_real: upgrade v1.2.3"* ]] || fail "the kit's helper did not run from the install directory: $boot_out"
+[[ -z "$(ls "$boot_dir/install"/.manage.kit.* 2>/dev/null)" ]] || fail 'the temporary kit helper was left behind'
+cp "$root/deploy/manage" "$boot_dir/kit/librepaper/manage"
+tar -C "$boot_dir/kit" -czf "$boot_dir/kit.tar.gz" librepaper
+boot_out="$(cd "$boot_dir/install" && LIBREPAPER_KIT="$boot_dir/kit.tar.gz" bash ./manage upgrade v9.9.9 2>&1)" && fail 'manage upgrade accepted a kit that pins another version'
+[[ "$boot_out" == *"the kit pins v1.2.3, not v9.9.9"* ]] || fail "an identical helper did not carry on with the upgrade itself: $boot_out"
+[[ "$boot_out" != *"Running the release kit's helper"* ]] || fail 'an identical helper was handed over to'
+
 # Verify untracked files are not included
 [[ ! -e "$kit_extract/librepaper/leaked-backup.txt" ]] || fail 'archive included untracked file'
 
@@ -227,6 +246,18 @@ fi
 if PATH="${real_git%/*}:$PATH" bash "$root/tools/release/package-deploy-kit.sh" v1.2.3 "$kit_source" "$kit_output" "$kit_commit" "$app_digest" "sha256:abc" >/dev/null 2>&1; then
   fail 'deploy kit accepted a short backup digest'
 fi
+
+# A release commit whose helper cannot read a digest pin is refused.
+printf '#!/usr/bin/env bash\necho sha256hex\n' > "$kit_source/deploy/manage"
+"$real_git" -C "$kit_source" add deploy/manage
+"$real_git" -C "$kit_source" commit -qm 'helper that reads the digest as the version'
+bad_helper_commit=$("$real_git" -C "$kit_source" rev-parse HEAD)
+if PATH="${real_git%/*}:$PATH" bash "$root/tools/release/package-deploy-kit.sh" v1.2.3 "$kit_source" "$kit_output" "$bad_helper_commit" "$app_digest" "$backup_digest" >/dev/null 2>&1; then
+  fail 'deploy kit accepted a release commit whose helper cannot read a digest pin'
+fi
+cp "$root/deploy/manage" "$kit_source/deploy/manage"
+"$real_git" -C "$kit_source" add deploy/manage
+"$real_git" -C "$kit_source" commit -qm 'restore the real helper'
 
 # Reject enabled resticprofile.toml
 printf '[resticprofile]\nrepository = "s3://private-bucket"\n' > "$kit_source/deploy/resticprofile.toml"
