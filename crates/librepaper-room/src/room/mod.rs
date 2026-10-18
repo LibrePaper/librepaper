@@ -447,6 +447,10 @@ impl Room {
     /// projection) leaves those comments with no attachment rather than
     /// failing the read: a caller already reads a missing attachment as
     /// "not yet known".
+    ///
+    /// Only an editor's page is resolved: `for_viewer` strips anchors and
+    /// attachments below editor, so resolving them for anyone else would
+    /// decode the document for nothing.
     pub async fn comment_page(
         &self,
         after: Option<comments::Position>,
@@ -455,7 +459,9 @@ impl Room {
         editor: bool,
     ) -> Result<(Vec<CommentView>, comments::CommentPage), WriteError> {
         let mut page = comments::page(&self.catalog, self.document_id, after, limit).await?;
-        self.attach(&mut page.comments).await;
+        if editor {
+            self.attach(&mut page.comments).await;
+        }
         let views = page
             .comments
             .iter()

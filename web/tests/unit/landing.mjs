@@ -16,6 +16,7 @@ const body = (start, end) => {
 
 const showList = body("  async function showList()", "  async function deleteSelected");
 const reallyDelete = body("  async function reallyDelete()", "  /* --------------------------------------------------------- a new project */");
+const requestPaths = body("  const pathRequests = new Map();", "  async function learnPaths()");
 
 const context = (values) => vm.createContext({
   Promise,
@@ -143,6 +144,25 @@ const context = (values) => vm.createContext({
   // And the one that worked says where it went, because "deleted" and "in the
   // trash for a week" are different promises and only one of them is true.
   assert.match(said[0], /1 project moved to the trash/);
+}
+
+// The file search asks each project for its paths with `files=1`. Only an
+// editor's detail response carries that list, so the request has to ask for it.
+{
+  const urls = [];
+  const ctx = context({
+    documents: [], counts: new Map(), paths: new Map(),
+    SHELL_HEADERS: {},
+    get: async (url) => {
+      urls.push(url);
+      return { comment_count: 0, files: ["paper.md"] };
+    },
+    say: () => {},
+  });
+  vm.runInContext(requestPaths, ctx);
+  assert.deepEqual(await vm.runInContext('requestPaths({ slug: "alpha" })', ctx), ["paper.md"]);
+  assert.equal(urls.length, 1);
+  assert.ok(urls.every((url) => url.endsWith("?files=1")), urls.join(", "));
 }
 
 console.log("landing: pagination, refresh preservation, silent offline refresh, deletion failure checks passed");

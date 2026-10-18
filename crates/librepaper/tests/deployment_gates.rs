@@ -2003,9 +2003,22 @@ mod moved_routes {
         assert_eq!(detail["slug"], slug);
         assert_eq!(detail["role"], "owner");
         assert!(detail["can_edit"].as_bool().unwrap_or(false));
+        // The path list is built on request only, because building it
+        // decodes the document: a plain open carries none, and the landing
+        // page's search asks for it with `files=1`.
         assert!(
-            detail["files"].is_array(),
-            "an owner sees the project's paths: {detail}"
+            detail.get("files").is_none(),
+            "a plain open lists no paths: {detail}"
+        );
+        let listed = bearer(http.get(format!("{base}/api/documents/{slug}?files=1")))
+            .send()
+            .await
+            .expect("GET the document with its paths");
+        assert_eq!(listed.status(), 200);
+        let listed: Value = listed.json().await.expect("the detail answers JSON");
+        assert!(
+            listed["files"].is_array(),
+            "an owner who asks sees the project's paths: {listed}"
         );
 
         // A document nobody may read is one that does not exist, and a

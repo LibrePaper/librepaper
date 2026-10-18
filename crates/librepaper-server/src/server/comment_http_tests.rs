@@ -279,10 +279,13 @@ async fn a_commenter_who_cannot_edit_still_lands_a_comment_that_survives_and_rea
         "a comment on source text has an anchor"
     );
 
-    // A cold read reconstructs the attachment from its stored anchor.
+    // A cold read reconstructs the attachment from its stored anchor. An
+    // editor's page: a page below editor is stripped of anchors and
+    // attachments, so it no longer resolves them and leaves the anchor
+    // cache alone, and the guard below needs the cache filled.
     room.forget_comments().await;
     let (reloaded, _) = room
-        .comment_page(None, 50, "account:not-the-author", false)
+        .comment_page(None, 50, "account:not-the-author", true)
         .await
         .unwrap();
     let found = reloaded
