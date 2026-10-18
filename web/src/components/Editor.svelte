@@ -803,8 +803,8 @@
       targetId: (() => {
         const id = `insert-${Date.now()}-${Math.random().toString(36).slice(2)}`;
         target.snapshotText = view.state.doc.toString();
-        // Targets are independent: each UI releases its own when it inserts or
-        // gives up. The cap only bounds a UI that forgets to.
+        // Targets are independent. Each UI releases its own when it inserts or
+        // gives up, and the cap only bounds a UI that forgets to.
         insertTargets.set(id, target);
         while (insertTargets.size > 32) insertTargets.delete(insertTargets.keys().next().value);
         return id;
