@@ -54,6 +54,8 @@ mod chat;
 #[cfg(test)]
 mod comment_http_tests;
 pub mod cost;
+#[cfg(test)]
+mod detail_http_tests;
 mod documents;
 mod figures;
 mod graphs;
