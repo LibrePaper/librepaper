@@ -1,11 +1,13 @@
 import assert from 'node:assert/strict';
 import katex from 'katex';
-import { CATEGORIES, SYMBOLS, searchSymbols, separated, symbolInsertion, symbolText } from '../../src/lib/symbols/index.js';
+import { CATEGORIES, SYMBOLS, searchSymbols, separated, symbolInsertion, symbolSpellings, symbolText } from '../../src/lib/symbols/index.js';
 import { MATH_TEMPLATES, templateInsertion } from '../../src/lib/symbols/templates.js';
+import { PICKER_SYMBOLS, entryAvailable, entryInsertion } from '../../src/lib/symbols/catalog.js';
+import { RECENT_LIMIT, withFavorite, withRecent } from '../../src/lib/symbols/memory.js';
 
 const MATH = new Set(['greek', 'operators', 'relations', 'arrows', 'logic', 'accents', 'delimiters']);
 const PACKAGES = new Set(['amssymb', 'amsmath', 'emoji']);
-const KINDS = new Set(['symbol', 'accent', 'delimiter', 'text']);
+const KINDS = new Set(['symbol', 'accent', 'delimiter', 'text', 'pair']);
 const CATEGORY_IDS = new Set(CATEGORIES.map(category => category.id));
 
 const ids = SYMBOLS.map(symbol => symbol.id);
@@ -168,5 +170,55 @@ assert.equal(templateInsertion(template('fraction'), { num: 'a', den: 'b', numbe
 assert.equal(templateInsertion(template('fraction'), { num: 'a', den: 'b', numbered: true }, quartoEmpty).text, '$$\\frac{a}{b}$$ {#eq-equation}', 'quarto numbers an unlabelled equation with a generated label');
 assert.equal(templateInsertion(template('fraction'), { num: 'a', den: 'b', numbered: true, label: 'frac' }, quartoEmpty).text, '$$\\frac{a}{b}$$ {#eq-frac}', 'quarto prefixes the label once');
 assert.equal(templateInsertion(template('fraction'), numberedFraction, markdownProse).text, '\n$$\\frac{a}{b}$$', 'markdown ignores the number');
+
+// Search matches spellings, words and substrings, and keeps the best rank first.
+assert.equal(searchSymbols('\\alpha', SYMBOLS)[0].id, 'alpha');
+assert.equal(searchSymbols('alpha', SYMBOLS)[0].id, 'alpha');
+assert.ok(searchSymbols('\\al', SYMBOLS).some(symbol => symbol.id === 'alpha'));
+assert.ok(searchSymbols('infinity', SYMBOLS).some(symbol => symbol.id === 'infty'));
+assert.ok(searchSymbols('less equal', SYMBOLS).some(symbol => symbol.id === 'leq'));
+assert.ok(searchSymbols('right arrow', SYMBOLS).some(symbol => symbol.id === 'rightarrow'));
+assert.ok(searchSymbols('arrow', SYMBOLS).filter(symbol => symbol.category === 'arrows').length >= 5);
+
+// Spellings for the details panel: LaTeX and Typst, then the code point.
+assert.deepEqual(symbolSpellings(byId('sum'), 'latex'), [
+  { label: 'LaTeX', code: '\\sum' }, { label: 'Typst', code: 'sum' }, { label: 'Unicode', code: 'U+2211' },
+]);
+assert.equal(symbolSpellings(byId('sum'), 'html')[0].label, 'HTML');
+
+// Recent and favorite lists: dedupe, move to the front, cap, and star or unstar.
+assert.deepEqual(withRecent(['a', 'b', 'c'], 'b'), ['b', 'a', 'c']);
+const manyRecent = Array.from({ length: RECENT_LIMIT + 5 }, (_, index) => `s${index}`);
+const recentAfter = withRecent(manyRecent, 'new');
+assert.equal(recentAfter.length, RECENT_LIMIT);
+assert.equal(recentAfter[0], 'new');
+assert.deepEqual(withFavorite(['a'], 'b', true), ['a', 'b']);
+assert.deepEqual(withFavorite(['a', 'b'], 'a', false), ['b']);
+assert.deepEqual(withFavorite(['a'], 'a', true), ['a']);
+
+// Picker entries: pairs and templates go through the math templates.
+const pickerEntry = id => {
+  const entry = PICKER_SYMBOLS.find(item => item.id === id);
+  assert.ok(entry, `picker entry ${id} exists`);
+  return entry;
+};
+const latexAb = latexDocument.replace('Hello', 'ab');
+const abStart = latexAb.indexOf('ab');
+const selectedAb = { format: 'latex', path: 'main.tex', text: latexAb, selection: { from: abStart, to: abStart + 2, text: 'ab' }, files: [] };
+const parentheses = pickerEntry('pair-parentheses');
+assert.deepEqual(entryInsertion(parentheses, prose).text, '$\\left( #{1:x} \\right)$');
+assert.equal(entryInsertion(parentheses, prose).snippet, true);
+assert.equal(entryInsertion(parentheses, selectedAb).text, '$\\left( ab \\right)$');
+assert.equal(entryInsertion(parentheses, selectedAb).snippet, false);
+const htmlAb = { format: 'html', text: 'ab', selection: { from: 0, to: 2, text: 'ab' }, files: [] };
+assert.deepEqual(entryInsertion(parentheses, htmlAb), { text: '(ab)', additionalEdits: [], notes: [], snippet: false, selection: { anchor: 1, head: 3 } });
+const fractionTile = pickerEntry('template-fraction');
+assert.equal(entryInsertion(fractionTile, prose).text, '$\\frac{#{1:a}}{#{2:b}}$');
+assert.equal(entryInsertion(fractionTile, prose).snippet, true);
+const htmlFraction = entryInsertion(fractionTile, { format: 'html', text: '', selection: { from: 0, to: 0, text: '' }, files: [] });
+assert.equal(htmlFraction.text, '');
+assert.equal(htmlFraction.notes.length, 1);
+assert.equal(entryAvailable(fractionTile, 'html'), false);
+assert.equal(entryAvailable(fractionTile, 'latex'), true);
 
 console.log('symbols: data, search, insertion and template checks passed');
