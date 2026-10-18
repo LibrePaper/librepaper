@@ -670,9 +670,8 @@
     {/if}
   </div>
   {/snippet}
-  <!-- The header carries the agent and access line on the left and the icons
-       on the right. The gear at the top of each pane is the one way to the
-       desktop app settings now; the Chat pane also gets New conversation beside it. -->
+  <!-- The gear at the top of each pane is the one way to the desktop app
+       settings now; the Chat pane also gets New conversation beside it. -->
   {#snippet paneHeader(withNewConversation)}
     <div class="pane-header">
       {#if paired}{@render agentSettings()}{/if}
@@ -834,7 +833,7 @@
                 value={extra} oninput={(event) => extra = event.currentTarget.value}
                 onkeydown={(event) => { if (event.key === "Enter" && (event.ctrlKey || event.metaKey)) { event.preventDefault(); void sendTask(); } }}></textarea>
       {#if staleReason || accessGap || blocker || !agentReady}
-        <p class="panel-meta" role="status">{staleReason || (accessGap ? (canGrantEdit ? "This task makes tracked changes. Set the agent's access to Edit above." :"This task makes tracked changes. You need edit access to run it.") : blocker || "Start an agent in the Chat tab before sending a task.")}</p>
+        <p class="panel-meta" role="status">{staleReason || (accessGap ? (canGrantEdit ? "This task makes tracked changes. Set the agent's access to Edit above." : "This task makes tracked changes. You need edit access to run it.") : blocker || "Start an agent in the Chat tab before sending a task.")}</p>
       {/if}
       <div class="prepare-actions"><button class="btn btn-sm lp-control-brand" disabled={busy || Boolean(staleReason) || Boolean(blocker) || accessGap || !agentReady} onclick={() => void sendTask()}>Send to agent</button></div>
     </div>
@@ -901,8 +900,8 @@
   .agent-panel :global([role="tabpanel"]) { overflow-y:auto; gap:calc(var(--spacing) * 2); }
   .agent-panel :global(#agent-pane-chat) { overflow:hidden; }
   .agent-panel > :global(p[role="alert"]) { padding-inline:var(--panel-padding); }
-  /* The gear (and, in Chat, New conversation) sits above everything else in
-     its pane, aligned right: it is upkeep, not the point of the pane. */
+  /* The agent and access line sits at the top left of both panes, and the
+     gear (and, in Chat, New conversation) at the top right. */
   .pane-header { display:flex; align-items:center; justify-content:space-between; gap:calc(var(--spacing) * .5); }
   .pane-actions { display:flex; gap:calc(var(--spacing) * .5); margin-left:auto; }
   .chat-history { display:flex; flex:1 1 0; min-height:0; flex-direction:column; gap:calc(var(--spacing) * 2); overflow-y:auto; }

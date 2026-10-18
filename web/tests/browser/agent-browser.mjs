@@ -198,7 +198,9 @@ try {
   // The Chat tab is the default: the agent/access/start controls live there
   // now, so there is no separate Connection tab to land on first.
   assert.equal(await page.evaluate('document.querySelector("#agent-pane-chat").hidden'), false);
-  assert.deepEqual(await page.evaluate(`Array.from(document.querySelectorAll("select[aria-label=Access] option")).map(o=>o.textContent.split(":")[0])`), ["Comment", "Edit"]);
+  assert.deepEqual(await page.evaluate(`Array.from(document.querySelectorAll("#agent-pane-chat select[aria-label=Access] option")).map(o=>o.textContent.split(":")[0])`), ["Comment", "Edit"]);
+  // The agent and access line heads both tabs, in the same place.
+  assert.equal(await page.evaluate("['chat','tasks'].every(id=>document.querySelector(`#agent-pane-${id} .pane-header > .agent-settings select[aria-label=Access]`))"), true);
   // The agent settings are always visible when paired.
   assert.equal(await page.evaluate("Boolean(document.querySelector('.agent-settings'))"), true);
   if (process.env.AGENT_SCREENSHOT) {
