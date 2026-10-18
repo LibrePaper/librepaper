@@ -2579,7 +2579,6 @@
     if (value === "preview-latex-pdf") return void setLatexOutput("pdf");
     if (value === "preview-latex-html") return void setLatexOutput("html");
     if (value === "preview-file") return previewTheFile(openFile);
-    if (value === "local-execution") return toggleLocalExecution();
     if (value === "preview-typst-pdf") return void setTypstOutput("pdf");
     if (value === "preview-typst-html") return void setTypstOutput("html");
     return chose(value);
@@ -3578,6 +3577,7 @@
       <span class="menuitem-check">{sourceSide === side ? "✓" : ""}</span>{label}
     </Menu.Item>
   {/each}
+  <hr class="hr my-1" />
   {#each RATIOS as ratio}
     <Menu.Item value="ratio-{ratio.share}" class="menuitem" disabled={compact}>
       <span class="menuitem-check">{sizes[PANES.editor.key] === ratio.share ? "✓" : ""}</span>{ratio.says}
@@ -3592,7 +3592,6 @@
 {#snippet previewItems()}
   {@const selectedFormat = displayedFormat === "latex" ? latexOutput : displayedFormat === "typst" ? typstOutput : ["markdown", "quarto"].includes(displayedFormat) ? markdownOutput : "html"}
   {@const selectableFormat = ["latex", "typst", "markdown", "quarto"].includes(displayedFormat)}
-  <div class="menu-section-label">Format</div>
   <Menu.Item value="format-html" class="menuitem" disabled={!selectableFormat}>
     <span class="menuitem-check">{selectedFormat === "html" ? "✓" : ""}</span>HTML
   </Menu.Item>
@@ -3605,14 +3604,7 @@
   <Menu.Item value="preview-file" class="menuitem" disabled={!can["preview-file"]}>Preview this file</Menu.Item>
   <hr class="hr my-1" />
   {@render previewItems()}
-  {#if runCodeOffered}
-    <!-- The same switch as the top bar, for widths where the bar has no room for it. Off whenever a document opens, never remembered. -->
-    <div class="menu-section-label">Code</div>
-    <Menu.Item value="local-execution" class="menuitem">
-      <span class="menuitem-check">{localExecution ? "✓" : ""}</span>Run code
-    </Menu.Item>
-    <hr class="hr my-1" />
-  {/if}
+  <hr class="hr my-1" />
   {@render layoutItems()}
 {/snippet}
 
@@ -4181,7 +4173,6 @@
   .presence-more { display: inline-grid; place-items: center; min-width: 1.5rem; height: 1.5rem; margin-left: calc(var(--spacing) * -1.5); border-radius: 50%; background: var(--color-divider); color: var(--color-text-secondary); font-size: .65rem; }
   /* A heading over a run of items. Aligned with the names rather than with
      the panel edge, so the column the items make starts once. */
-  .menu-section-label { padding: calc(var(--spacing) * 2) calc(var(--spacing) * 2.5) calc(var(--spacing) * 0.5) calc(var(--spacing) * 7); color: var(--color-text-secondary); font-size: var(--text-xs); font-weight: 600; text-transform: uppercase; letter-spacing: .05em; }
   @media (max-width: 760px) {
     :global(main.reader.adapted .sidebar-activity) { display: none; }
   }
