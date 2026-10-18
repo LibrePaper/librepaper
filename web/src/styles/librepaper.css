@@ -141,7 +141,7 @@ main.workspace .rail-item:last-child { margin-top: calc(var(--spacing) * 3); }
   outline-offset: -2px;
 }
 .explorer .drop-target { background: var(--color-row-selected); outline: 2px dashed var(--color-brand); outline-offset: -2px; }
-.explorer-drop { box-shadow: inset 0 0 0 2px var(--color-brand); }
+.explorer-drop { box-shadow: inset 0 0 0 2px var(--color-focus); }
 .explorer-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .explorer-row svg { width: --spacing(4); height: --spacing(4); flex-shrink: 0; }
 /* One chevron, turned, rather than two icons swapped: what it points at is
@@ -242,7 +242,7 @@ body:has(.explorer-menu[data-state="open"]) .viewport iframe {
   margin-inline-end: --spacing(1);
   padding-inline-end: --spacing(1);
   border-inline-end: 1px solid var(--color-divider);
-  color: var(--color-brand);
+  color: var(--color-link);
 }
 .preview-busy .spinner {
   margin-right: 0;
@@ -367,8 +367,8 @@ body:has(.explorer-menu[data-state="open"]) .viewport iframe {
   border-bottom: 2px solid transparent;
 }
 .panel-tabs > :where([role="tab"][data-selected]) {
-  color: var(--color-brand);
-  border-color: var(--color-brand);
+  color: var(--color-link);
+  border-color: var(--color-link);
 }
 /* The unread mark a tab wears when its pane has something in it nobody has
    read yet. */
@@ -593,7 +593,7 @@ main.reader.source-right .editorpane {
 }
 .cm-editor .cm-content {
   padding: --spacing(4) --spacing(4) --spacing(4) --spacing(2);
-  caret-color: var(--color-brand);
+  caret-color: var(--color-focus);
 }
 /* Line numbers are furniture: present, and quieter than the text. */
 .cm-editor .cm-gutters {
@@ -654,7 +654,7 @@ main.reader.source-right .editorpane {
 }
 .cm-editor:not(.cm-focused) .cm-fat-cursor {
   background: none;
-  outline: solid 1px var(--color-brand);
+  outline: solid 1px var(--color-focus);
 }
 
 /* Somebody else's caret, and their name beside it.
@@ -1228,7 +1228,7 @@ main.reader .cm-scroller, main.reader .panel { overscroll-behavior: contain; }
 /* The change being looked at, so that a decision taken in the margin is
  * visibly about this passage and not the one below it. */
 .change-selected {
-  outline: 2px solid var(--presence, var(--color-brand));
+  outline: 2px solid var(--presence, var(--color-focus));
   outline-offset: 1px;
   border-radius: var(--radius-base);
 }
@@ -1246,10 +1246,12 @@ main.reader .cm-scroller, main.reader .panel { overscroll-behavior: contain; }
 .lp-control-tonal { background: var(--color-subtle); color: var(--color-text); border-color: transparent; }
 .lp-control-tonal:hover:not(:disabled):not([aria-disabled="true"]):not([data-disabled]) { background: var(--color-row-hover); }
 /* The secondary button darkens on hover and press like the primary one. */
-.lp-control-tonal-brand { background: var(--color-row-selected); color: var(--color-brand); border-color: transparent; }
-[data-mode="dark"] .lp-control-tonal-brand { color: var(--color-link); }
+.lp-control-tonal-brand { background: var(--color-row-selected); color: var(--color-link); border-color: transparent; }
 .lp-control-tonal-brand:hover:not(:disabled):not([aria-disabled="true"]):not([data-disabled]) { background: var(--sage-6); }
 .lp-control-tonal-brand:active:not(:disabled):not([aria-disabled="true"]):not([data-disabled]) { background: var(--sage-7); }
+/* The dark selected fill is one step higher, so hover and press follow it. */
+[data-mode="dark"] .lp-control-tonal-brand:hover:not(:disabled):not([aria-disabled="true"]):not([data-disabled]) { background: var(--sage-7); }
+[data-mode="dark"] .lp-control-tonal-brand:active:not(:disabled):not([aria-disabled="true"]):not([data-disabled]) { background: var(--sage-8); }
 :where(.lp-control-brand, .lp-control-danger, .lp-control-success, .lp-control-neutral, .lp-control-tonal, .lp-control-tonal-brand):focus-visible {
   outline: 2px solid var(--color-focus);
   outline-offset: 2px;
@@ -1271,8 +1273,7 @@ main.reader .cm-scroller, main.reader .panel { overscroll-behavior: contain; }
 .lp-text-muted { color: var(--color-text-muted); }
 .lp-text-error { color: var(--color-error-text); }
 .lp-text-warning { color: var(--color-warning-text); }
-.lp-hover-brand:hover { color: var(--color-brand); }
-[data-mode="dark"] .lp-hover-brand:hover { color: var(--color-link); }
+.lp-hover-brand:hover { color: var(--color-link); }
 .lp-hover-error:hover { color: var(--color-error-text); }
 button.lp-tone-error:hover:not(:disabled):not([aria-disabled="true"]):not([data-disabled]) {
   background: color-mix(in srgb, var(--color-error-bg), var(--color-error-border) 30%);

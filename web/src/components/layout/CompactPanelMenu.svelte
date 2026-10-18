@@ -203,7 +203,7 @@
 
   :global(.compact-panels-trigger[aria-expanded="true"]) {
     background: var(--color-row-selected);
-    color: var(--color-brand);
+    color: var(--color-link);
   }
 
   .compact-panels-items {

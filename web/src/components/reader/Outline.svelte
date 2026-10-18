@@ -62,7 +62,7 @@
     white-space: nowrap;
   }
   .outline-heading:hover, .outline-heading:focus-visible { background: var(--color-divider); }
-  .outline-heading:focus-visible { outline: 2px solid var(--color-brand); outline-offset: -2px; }
+  .outline-heading:focus-visible { outline: 2px solid var(--color-focus); outline-offset: -2px; }
   .outline-heading.active { background: var(--color-row-selected); color: var(--color-link); font-weight: 600; }
   .outline-empty { margin: auto; padding: calc(var(--spacing) * 4); color: var(--color-text-secondary); font-size: var(--text-sm); text-align: center; }
 </style>

@@ -282,7 +282,7 @@
     white-space: nowrap;
   }
   .th-sort { cursor: pointer; }
-  .th-sorted { color: var(--color-brand); font-weight: 600; }
+  .th-sorted { color: var(--color-link); font-weight: 600; }
 
   /* A hair of ground either side of the edge, so that the handle can be hit
      without aiming at a 1px line. It shows itself under the pointer and

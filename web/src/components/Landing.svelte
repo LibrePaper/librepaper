@@ -1373,7 +1373,7 @@
      all 28px of it. */
   .tickbox { appearance: auto; width: 1em; height: 1em; margin: 0; cursor: pointer; }
 
-  .title-line { display: block; font-weight: 500; color: var(--color-link); text-decoration: none; }
+  .title-line { display: block; font-weight: 500; color: var(--color-text); text-decoration: none; }
   .title-line:hover { text-decoration: underline; }
   /* The second line of a row: who it is shared with, the file a search found,
      when the trash will take it. Empty on most rows, and collapsed when it

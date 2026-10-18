@@ -159,18 +159,28 @@
 
 	/* Brand: lighter on hover and darker on press, with white text still
 	   readable on the fill. As text the brand is too dim on a dark ground,
-	   so links and focus rings use a green step instead. */
+	   so links and focus rings use a lighter pine instead. */
 	--color-brand: #3f7a63;
 	--color-brand-hover: #4a8a71;
 	--color-brand-pressed: #356a56;
 	--color-on-brand: #ffffff;
 
-	/* The document is one step above the shell and raised surfaces one more. */
-	--color-document: var(--sage-2);
-	--color-raised: var(--sage-3);
+	/* Surfaces start one step above the darkest sage so the page is charcoal
+	   rather than black. Every surface role sits one step higher than in light
+	   mode, and hover and selection move up with them. */
+	--color-shell: var(--sage-2);
+	--color-sidebar: var(--sage-3);
+	--color-preview: var(--sage-4);
+	--color-document: var(--sage-3);
+	--color-raised: var(--sage-4);
+	--color-row-hover: var(--sage-5);
+	--color-row-selected: var(--sage-6);
+	--color-subtle: var(--sage-4);
+	--color-disabled-bg: var(--sage-4);
 
-	--color-link: var(--green-11);
-	--color-focus: var(--green-10);
+	/* A muted pine, the light brand's hue lightened for a dark ground. */
+	--color-link: #83b5a1;
+	--color-focus: #83b5a1;
 	--color-text-inverse: #ffffff;
 
 	/* Source syntax colors follow GitHub Dark (Primer prettylights). */

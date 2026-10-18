@@ -651,7 +651,7 @@
     color: var(--color-on-brand);
     font-weight: 500;
   }
-  .cal-cell:focus-visible { outline: 2px solid var(--color-brand); outline-offset: -2px; }
+  .cal-cell:focus-visible { outline: 2px solid var(--color-focus); outline-offset: -2px; }
   /* How many versions landed on the day -- the only thing the month has to
      say beyond the date itself. */
   .cal-count {
@@ -703,7 +703,7 @@
   .mark-still {
     width: var(--spacing);
     padding-inline: calc(var(--spacing) * 1.5);
-    color: var(--color-brand);
+    color: var(--color-link);
     box-sizing: content-box;
   }
 
@@ -796,7 +796,7 @@
   .day-row:has(.timeline-here) .day-tools { opacity: 1; }
   /* The mark itself is coloured; an empty bookmark waiting to be set is not,
      or every row would read as half-marked. */
-  .day-tools.on { color: var(--color-brand); }
+  .day-tools.on { color: var(--color-link); }
 
   /* The live document. A label and what it points at, at the two ends of a
      row that is plainly not one of the events below it. */

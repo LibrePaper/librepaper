@@ -649,8 +649,8 @@
   /* An underline in the brand colour and nothing else, as in the panels. */
   :global(.np-tabs) { display: flex; gap: calc(var(--spacing) * 6); border-bottom: 1px solid var(--color-pane-edge); margin-bottom: calc(var(--spacing) * 5); }
   :global(.np-tabs > [role="tab"]) { padding: calc(var(--spacing) * 2) calc(var(--spacing)); cursor: pointer; color: var(--color-text-secondary); border-bottom: 2px solid transparent; margin-bottom: -1px; }
-  :global(.np-tabs > [role="tab"][data-selected]) { color: var(--color-brand); border-color: var(--color-brand); }
-  :global(.np-tabs > [role="tab"]:focus-visible) { outline: 2px solid var(--color-brand); outline-offset: 2px; }
+  :global(.np-tabs > [role="tab"][data-selected]) { color: var(--color-link); border-color: var(--color-link); }
+  :global(.np-tabs > [role="tab"]:focus-visible) { outline: 2px solid var(--color-focus); outline-offset: 2px; }
 
   .np-form { display: flex; flex-wrap: wrap; align-items: flex-end; gap: calc(var(--spacing) * 4); max-width: 48rem; }
   .np-field { display: flex; flex-direction: column; gap: calc(var(--spacing)); min-width: 0; }
@@ -676,11 +676,11 @@
   .col-name { width: 24%; font-weight: 500; }
   .col-say { width: 50%; color: var(--color-text-secondary); }
   .col-formats { font-size: var(--text-sm); color: var(--color-text-secondary); }
-  .col-pick input { margin: 0; cursor: pointer; accent-color: var(--color-brand); }
-  .col-pick input:focus-visible { outline: 2px solid var(--color-brand); outline-offset: 2px; }
+  .col-pick input { margin: 0; cursor: pointer; accent-color: var(--color-focus); }
+  .col-pick input:focus-visible { outline: 2px solid var(--color-focus); outline-offset: 2px; }
   .template-info { display: inline-grid; place-items: center; width: 1.5rem; height: 1.5rem; border: 1px solid var(--color-border); border-radius: 50%; background: transparent; color: var(--color-text-secondary); font-size: var(--text-xs); font-style: italic; font-weight: 600; cursor: pointer; }
   .template-info:hover { background: var(--color-row-hover); }
-  .template-info:focus-visible { outline: 2px solid var(--color-brand); outline-offset: 2px; }
+  .template-info:focus-visible { outline: 2px solid var(--color-focus); outline-offset: 2px; }
 
   .np-empty { display: flex; flex-direction: column; align-items: flex-start; gap: calc(var(--spacing) * 3); padding-block: calc(var(--spacing) * 6); }
   .template-empty { margin: 0; color: var(--color-text-secondary); }
@@ -711,7 +711,7 @@
   .upload-tree summary { padding-block: calc(var(--spacing)); cursor: pointer; font-weight: 500; }
   .upload-file { display: flex; align-items: center; gap: calc(var(--spacing) * 3); min-height: 2rem; border-top: 1px solid var(--color-pane-edge); }
   .upload-file-name { flex: 1 1 auto; min-width: 0; overflow-wrap: anywhere; }
-  .upload-progress { width: 100%; accent-color: var(--color-brand); }
+  .upload-progress { width: 100%; accent-color: var(--color-focus); }
   .np-progress { display: flex; flex-direction: column; gap: calc(var(--spacing)); }
 
   .drop-overlay { position: fixed; inset: 0; z-index: 60; display: grid; place-items: center; background: color-mix(in srgb, var(--color-shell) 85%, transparent); border: 3px dashed var(--color-brand); pointer-events: none; }
