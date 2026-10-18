@@ -1,6 +1,7 @@
 import { mount } from "svelte";
 import Boundary from "../components/Boundary.svelte";
 import { watchForUnhandled } from "../lib/crash.js";
+import { watchNetwork } from "../lib/support/network.js";
 import "../styles/app.css";
 import Device from "../components/Device.svelte";
 
@@ -9,4 +10,5 @@ import Device from "../components/Device.svelte";
 // Started inside a boundary, so a throw anywhere below is a notice rather
 // than an empty page. See src/components/Boundary.svelte.
 watchForUnhandled();
+watchNetwork();
 mount(Boundary, { target: document.body, props: { component: Device, name: "device sign-in" } });

@@ -8,7 +8,8 @@ import { defineConfig } from "vite";
 import { svelte } from "@sveltejs/vite-plugin-svelte";
 import tailwindcss from "@tailwindcss/vite";
 import { resolve } from "node:path";
-import { rmSync } from "node:fs";
+import { readFileSync, rmSync } from "node:fs";
+import { execFileSync } from "node:child_process";
 
 // What this build owns in the output directory, and clears before it writes.
 // The directory is shared -- the renderers and the README are put there by
@@ -40,7 +41,17 @@ const vendorWatchAssets = {
   },
 };
 
+// The workspace version and the short commit, shown in the diagnostics report.
+const appVersion = /\[workspace\.package\][^[]*?\bversion\s*=\s*"([^"]+)"/.exec(
+  readFileSync(resolve(import.meta.dirname, "../Cargo.toml"), "utf8"),
+)?.[1] ?? "";
+let appCommit = "";
+try {
+  appCommit = execFileSync("git", ["rev-parse", "--short", "HEAD"], { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] }).trim();
+} catch { /* a build outside a checkout has no commit */ }
+
 export default defineConfig({
+  define: { __APP_VERSION__: JSON.stringify(appVersion), __APP_COMMIT__: JSON.stringify(appCommit) },
   root: resolve(import.meta.dirname, "pages"),
   publicDir: resolve(import.meta.dirname, "public"),
   // `configFile: false` because there is no `svelte.config.js` and none is
