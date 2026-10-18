@@ -4165,7 +4165,7 @@
   .ink { position:absolute; right:4px; bottom:0; left:4px; height:14px; border-radius:2px; background:linear-gradient(transparent 0 8px, var(--ink) 8px); }
   .ink::before { content:""; position:absolute; right:0; bottom:0; left:0; height:6px; border-radius:2px; box-shadow:inset 0 0 0 1px var(--color-text-muted); pointer-events:none; }
   .ink::after { content:""; position:absolute; right:0; bottom:0; width:0; height:0; border-right:7px solid var(--color-text-secondary); border-top:7px solid transparent; pointer-events:none; }
-  .ink:hover::before, .ink[aria-expanded="true"]::before { box-shadow:inset 0 0 0 1px var(--color-brand); }
+  .ink:hover::before, .ink[aria-expanded="true"]::before { box-shadow:inset 0 0 0 1px var(--color-focus); }
   .highlight-colors { position:absolute; z-index:1; top:calc(100% + 6px); left:50%; transform:translateX(-50%); display:flex; align-items:center; gap:3px; padding:2px; border:1px solid var(--color-border); border-radius:var(--radius-base); background:var(--color-raised); box-shadow:var(--shadow-lg); }
   .color-swatch { width:1.5rem; height:1.5rem; border:2px solid transparent; border-radius:50%; }
   .color-swatch.selected { border-color:var(--color-text); box-shadow:0 0 0 1px var(--color-brand); }

@@ -88,6 +88,6 @@
 <style>
   /* The one card in the column that is not yet an annotation, ringed like the
      selected one because the passage it is about is ringed in the document. */
-  .composer { box-shadow: 0 0 0 1px var(--color-brand); }
+  .composer { box-shadow: 0 0 0 1px var(--color-focus); }
   .quote { overflow-wrap: anywhere; }
 </style>
