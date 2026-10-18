@@ -407,7 +407,7 @@
         {#if isRowTemplate(active)}
           {@render stepper("Rows", rowCount, "row", changeRows)}
           {#each values.rows as row, index}
-            <div class="math-pair">
+            <div class="math-pair" style:grid-template-columns={`repeat(${rowFields[active.id].length}, minmax(0, 1fr))`}>
               {#each rowFields[active.id] as [key, label]}
                 <label class="label">{label}
                   <input class="input" data-math-field bind:value={values.rows[index][key]} onfocus={rememberField} />
@@ -451,7 +451,7 @@
           </fieldset>
           {#if numberable && values.style === "display" && values.numbered}
             <label class="label">Label
-              <input class="input" name="math-label" placeholder="eq-name" bind:value={values.label} />
+              <input class="input" name="math-label" placeholder="name" bind:value={values.label} />
             </label>
           {/if}
         {/if}
@@ -479,7 +479,7 @@
   .math-form-title { margin: 0; font: inherit; font-weight: var(--panel-title-weight); }
   .math-preview { min-height: 3.5rem; padding: .6rem; overflow-x: auto; border: 1px solid var(--color-divider); border-radius: var(--radius-base); background: var(--color-subtle); }
   .math-fields { display: flex; flex-direction: column; gap: .6rem; }
-  .math-pair { display: grid; grid-template-columns: 1fr 1fr; gap: .5rem; }
+  .math-pair { display: grid; gap: .5rem; }
   .math-steppers { display: flex; flex-wrap: wrap; gap: .75rem; }
   .math-stepper { display: flex; align-items: center; gap: .5rem; }
   .math-count { min-width: 5.5rem; color: var(--panel-muted); font-size: var(--panel-meta-size); text-align: center; }
