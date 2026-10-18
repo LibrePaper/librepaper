@@ -9,6 +9,7 @@ BACKUP_DIR=/var/backups/librepaper/current
 ARCHIVE=/librepaper-backup.tar
 RELEASES=https://github.com/LibrePaper/librepaper/releases
 TMP=
+KIT_HELPER=
 
 usage() {
 	cat <<'USAGE'
@@ -36,7 +37,10 @@ USAGE
 die() { echo "manage: $*" >&2; exit 1; }
 step() { printf '\n==> %s\n' "$*"; }
 
-cleanup() { [ -z "$TMP" ] || rm -rf -- "$TMP"; }
+cleanup() {
+	[ -z "$TMP" ] || rm -rf -- "$TMP"
+	[ -z "$KIT_HELPER" ] || rm -f -- "$KIT_HELPER"
+}
 trap cleanup EXIT
 
 # service_image <service> [compose file]: the image a service runs.
@@ -258,6 +262,18 @@ cmd_upgrade() {
 	tar -C "$TMP/x" -xzf "$TMP/kit.tar.gz" || die "cannot extract the release kit"
 	kit=$TMP/x/librepaper
 	[ -f "$kit/compose.yaml" ] && [ -f "$kit/manage" ] || die "the release kit is missing compose.yaml or manage"
+
+	# The kit's helper knows the kit's layout and this one may not, so the
+	# kit's helper runs the upgrade. It runs from this directory under a
+	# temporary name and installs itself as manage at the end.
+	if [ -z "${LIBREPAPER_MANAGE_FROM_KIT:-}" ] && ! cmp -s "$kit/manage" "./${BASH_SOURCE[0]##*/}"; then
+		step "Running the release kit's helper"
+		KIT_HELPER=.manage.kit.$$
+		cp "$kit/manage" "$KIT_HELPER"
+		chmod 755 "$KIT_HELPER"
+		LIBREPAPER_MANAGE_FROM_KIT=1 LIBREPAPER_KIT=$TMP/kit.tar.gz bash "./$KIT_HELPER" upgrade "$@" || exit 1
+		exit 0
+	fi
 
 	old=$(pinned_version)
 	new=$(pinned_version "$kit/compose.yaml")
