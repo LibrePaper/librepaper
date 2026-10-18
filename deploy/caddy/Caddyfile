@@ -14,6 +14,8 @@ https:// {
 		on_demand
 	}
 	encode zstd gzip
+	# Every served origin is HTTPS only, so browsers may refuse plain HTTP for a year.
+	header Strict-Transport-Security "max-age=31536000; includeSubDomains"
 	handle {
 		reverse_proxy librepaper:8080
 	}

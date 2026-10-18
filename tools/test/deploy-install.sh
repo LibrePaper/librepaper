@@ -146,7 +146,9 @@ random_edge_subnet() {
 package_kit() {
 	local out="$work/kit" unpacked="$work/kit-unpacked"
 	mkdir -p "$out" "$unpacked"
-	"$root/tools/release/package-deploy-kit.sh" "v$version" "$root" "$out" "$(git -C "$root" rev-parse HEAD)"
+	# The digests are placeholders; the pins below replace the whole image reference.
+	"$root/tools/release/package-deploy-kit.sh" "v$version" "$root" "$out" "$(git -C "$root" rev-parse HEAD)" \
+		"sha256:$(printf 'a%.0s' $(seq 1 64))" "sha256:$(printf 'b%.0s' $(seq 1 64))"
 	tar -C "$unpacked" -xzf "$kit_archive"
 	sed -i -e "s|ghcr.io/librepaper/librepaper:[^ \"]*|$app_image|" \
 		-e "s|ghcr.io/librepaper/librepaper-backup:[^ \"]*|$backup_image|" \

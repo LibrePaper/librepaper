@@ -83,6 +83,7 @@ function fixture({
   googleLocation = 'https://accounts.google.com/o/oauth2/v2/auth?client_id=test',
   sopsFailureKey = '',
   manageFailure = false,
+  attestationFailure = false,
 } = {}) {
   const root = mkdtempSync(path.join(os.tmpdir(), 'librepaper-deploy-test-'));
   const bin = path.join(root, 'bin');
@@ -198,6 +199,22 @@ case "$*" in
   'compose exec -T caddy caddy reload --config /etc/caddy/Caddyfile --adapter caddyfile') ;;
   *) echo "unexpected docker command: $*" >&2; exit 99 ;;
 esac`);
+  // gh downloads the kit into --dir and records each call. Verification fails
+  // when the fixture says so.
+  mockCommand(bin, 'gh', `
+set -eu
+printf 'gh\\t%s\\n' "$*" >> "$EVENTS_FILE"
+case "$1 $2" in
+  'release download')
+    dir=
+    while [ "$#" -gt 0 ]; do
+      case "$1" in --dir) dir="$2"; shift 2 ;; *) shift ;; esac
+    done
+    printf 'kit' > "$dir/librepaper-deploy.tar.gz"
+    ;;
+  'attestation verify') [ "$ATTESTATION_FAILURE" = 0 ] ;;
+  *) echo "unexpected gh command: $*" >&2; exit 99 ;;
+esac`);
   mockCommand(bin, 'curl', `
 set -eu
 out= format= url= followed=no connect_timeout= max_time=
@@ -214,9 +231,6 @@ while [ "$#" -gt 0 ]; do
   esac
 done
 printf '%s\t%s\t%s\n' "$url" "$connect_timeout" "$max_time" >> "$CURL_CALLS_FILE"
-case "$url" in
-  */librepaper-deploy.tar.gz) printf 'curl\\t%s\\n' "$url" >> "$EVENTS_FILE"; printf 'tarball'; exit 0 ;;
-esac
 code=200 body='' location= provider=
 case "$url" in
   https://admin.librepaper.org/) code="$ADMIN_ROOT_STATUS"; location="$ADMIN_ROOT_LOCATION" ;;
@@ -260,6 +274,7 @@ fi`);
       REMOTE_ROOT: remote,
       EVENTS_FILE: eventsFile,
       MANAGE_FAILURE: manageFailure ? '1' : '0',
+      ATTESTATION_FAILURE: attestationFailure ? '1' : '0',
       DNS_ZONE: dnsFile,
       ADDRESSES: productionAddress,
       TMPDIR: temp,
@@ -405,33 +420,31 @@ test('deploy writes compose.override.yaml with the site mount and journald logs'
   }
 });
 
-test('deploy fetches manage, uploads the candidates, then runs the upgrade, then prunes and verifies', () => {
+test('deploy verifies the kit on the laptop, installs manage from it, upgrades from it, then prunes and verifies', () => {
   const f = fixture();
   try {
     const result = run(f, 'deploy', 'v0.0.24');
     assert.equal(result.status, 0, result.stderr || result.stdout);
     assert.match(result.stdout, /Done: v0\.0\.24 is live/);
-    // curl and tar run as one pipe, so either may log first; both precede the uploads.
-    const list = events(f);
-    const tarAt = list.findIndex(([kind, args]) => kind === 'tar' && /^xzO librepaper\/manage$/.test(args));
-    const uploadAt = list.findIndex(([kind, args]) => kind === 'ssh' && /librepaper\.toml\.candidate\.tmp/.test(args));
-    assert.ok(tarAt >= 0 && tarAt < uploadAt, 'manage is unpacked before the candidates are uploaded');
     assertInOrder(events(f), [
       ['make', /^/],
-      ['ssh', /\.manage\.tmp/],
-      ['curl', /releases\/download\/v0\.0\.24\/librepaper-deploy\.tar\.gz$/],
+      ['gh', /^release download v0\.0\.24 --repo LibrePaper\/librepaper --pattern librepaper-deploy\.tar\.gz --dir /],
+      ['gh', /^attestation verify \S+ --repo LibrePaper\/librepaper --signer-workflow LibrePaper\/librepaper\/\.github\/workflows\/publish-docker\.yml$/],
+      ['ssh', /^umask 077; cd librepaper && cat > \.kit\.tar\.gz\.tmp && mv -f \.kit\.tar\.gz\.tmp \.kit\.tar\.gz$/],
+      ['tar', /^xzOf \.kit\.tar\.gz librepaper\/manage$/],
       ['ssh', /librepaper\.toml\.candidate\.tmp/],
       ['ssh', /resticprofile\.toml\.candidate\.tmp/],
       ['rsync', /librepaper\/site\/$/],
       ['ssh', /compose\.override\.yaml\.tmp/],
       ['ssh', /librepaper-org\.caddy\.tmp/],
-      ['ssh', /^cd librepaper && \.\/manage upgrade v0\.0\.24$/],
+      ['ssh', /^cd librepaper && LIBREPAPER_KIT=\.kit\.tar\.gz \.\/manage upgrade v0\.0\.24$/],
       ['manage', /^upgrade v0\.0\.24$/],
-      ['docker', /^image prune -f$/],
+      ['ssh', /^rm -f librepaper\/\.kit\.tar\.gz && docker image prune -f$/],
       ['docker', /^compose logs --tail 50$/],
     ]);
     assert.equal(statSync(path.join(f.remote, 'manage')).mode & 0o777, 0o755);
     assert.equal(existsSync(path.join(f.remote, '.manage.tmp')), false);
+    assert.equal(existsSync(path.join(f.remote, '.kit.tar.gz')), false, 'the kit is removed from the host after the upgrade');
     // The deploy no longer touches the kit, the installed configs or the stack.
     for (const name of ['compose.yaml', 'librepaper.toml', 'resticprofile.toml', 'caddy/Caddyfile']) {
       assert.equal(existsSync(path.join(f.remote, name)), false, name);
@@ -469,6 +482,12 @@ test('the site and redirect blocks go to caddy/local.d/librepaper-org.caddy, onc
     assert.equal(read(file), [
       'librepaper.org {',
       '\tencode zstd gzip',
+      '\theader {',
+      '\t\tStrict-Transport-Security "max-age=31536000; includeSubDomains"',
+      '\t\tX-Content-Type-Options nosniff',
+      '\t\tReferrer-Policy strict-origin-when-cross-origin',
+      '\t\tContent-Security-Policy "frame-ancestors \'none\'; base-uri \'none\'; object-src \'none\'; form-action \'self\'"',
+      '\t}',
       '\tredir /install.html /desktop-app.html permanent',
       '\tredir /local-app.html /desktop-app.html permanent',
       '\troot * /srv/site',
@@ -476,6 +495,7 @@ test('the site and redirect blocks go to caddy/local.d/librepaper-org.caddy, onc
       '}',
       '',
       'www.librepaper.org, librepaper.com, www.librepaper.com {',
+      '\theader Strict-Transport-Security "max-age=31536000; includeSubDomains"',
       '\tredir https://librepaper.org{uri} permanent',
       '}',
       '',
@@ -497,6 +517,12 @@ test('site installs the Caddy site block and reloads Caddy without touching the 
     assert.equal(read(file), [
       'librepaper.org {',
       '\tencode zstd gzip',
+      '\theader {',
+      '\t\tStrict-Transport-Security "max-age=31536000; includeSubDomains"',
+      '\t\tX-Content-Type-Options nosniff',
+      '\t\tReferrer-Policy strict-origin-when-cross-origin',
+      '\t\tContent-Security-Policy "frame-ancestors \'none\'; base-uri \'none\'; object-src \'none\'; form-action \'self\'"',
+      '\t}',
       '\tredir /install.html /desktop-app.html permanent',
       '\tredir /local-app.html /desktop-app.html permanent',
       '\troot * /srv/site',
@@ -504,6 +530,7 @@ test('site installs the Caddy site block and reloads Caddy without touching the 
       '}',
       '',
       'www.librepaper.org, librepaper.com, www.librepaper.com {',
+      '\theader Strict-Transport-Security "max-age=31536000; includeSubDomains"',
       '\tredir https://librepaper.org{uri} permanent',
       '}',
       '',
@@ -527,6 +554,22 @@ test('a failing manage upgrade stops the deploy before verify and says what to d
     assert.ok(indexOfEvent(events(f), ['manage', /^upgrade v0\.0\.24$/]) !== -1);
     assert.deepEqual(dockerCalls(f), [], 'pruned or verified after the failure');
     assert.doesNotMatch(`${result.stdout}${result.stderr}`, /Done:|App readiness/);
+  } finally {
+    f.cleanup();
+  }
+});
+
+test('a kit without a valid release-workflow attestation stops the deploy before any host call', () => {
+  const f = fixture({ attestationFailure: true });
+  try {
+    const result = run(f, 'deploy', 'v0.0.24');
+    assert.notEqual(result.status, 0);
+    assert.match(result.stderr, /the kit for v0\.0\.24 has no valid attestation from the release workflow and nothing was changed/);
+    assert.ok(indexOfEvent(events(f), ['gh', /^attestation verify /]) !== -1, 'the kit was not verified');
+    assert.deepEqual(events(f).filter(([kind]) => ['ssh', 'rsync', 'docker'].includes(kind)), [], 'called the host');
+    assert.deepEqual(readdirSync(f.remote), [], 'mutated the remote');
+    assert.deepEqual(readdirSync(path.join(f.root, 'tmp')), [], 'left the downloaded kit behind');
+    assert.doesNotMatch(`${result.stdout}${result.stderr}`, /Done:|Upgrade:/);
   } finally {
     f.cleanup();
   }
