@@ -1257,3 +1257,67 @@ async fn event_reply_cursors_continue_for_both_audiences() {
     assert_eq!(room.event_comment_read_count(), 1);
     deployment.catalog.close().await;
 }
+
+/// A source-anchored comment on `room`, written through the real command so
+/// it carries a quotation the document can resolve.
+async fn add_anchored_comment(deployment: &Deployment, room: &Room) {
+    let config = Configuration::default();
+    let mut cmd = AddComment::new(
+        deployment.catalog.clone(),
+        room.document_id,
+        Uuid::new_v4(),
+        &config,
+        "commenting",
+        "A remark.",
+        &deployment.writer(),
+        "interval covers the mean",
+        "",
+        "",
+        Some(0),
+        false,
+        None,
+        None,
+    )
+    .unwrap();
+    room.command(&deployment.authority(), &mut cmd)
+        .await
+        .unwrap();
+}
+
+/// A reader's copy has its anchors and attachments stripped, so resolving
+/// them for a reader would build the document and throw the result away.
+#[tokio::test]
+#[ignore = "requires LIBREPAPER_TEST_POSTGRES_URL"]
+async fn a_reader_page_never_decodes_the_document() {
+    let Some(deployment) = deployment("paging-reader-cold").await else {
+        return;
+    };
+    let room = deployment.room().await;
+    add_anchored_comment(&deployment, &room).await;
+    room.log().drop_cache().await;
+    let (views, _) = room.comment_page(None, 50, "someone", false).await.unwrap();
+    assert_eq!(views.len(), 1);
+    assert!(views
+        .iter()
+        .all(|view| view.attachment.is_none() && view.original_anchor.is_none()));
+    assert!(!room.log().is_warm().await, "a reader's page decoded the document");
+    deployment.catalog.close().await;
+}
+
+/// Pins today's behaviour: an editor's page resolves anchors, which builds
+/// the document, so that cannot be lost silently.
+#[tokio::test]
+#[ignore = "requires LIBREPAPER_TEST_POSTGRES_URL"]
+async fn an_editor_page_with_an_anchored_comment_decodes() {
+    let Some(deployment) = deployment("paging-editor-warm").await else {
+        return;
+    };
+    let room = deployment.room().await;
+    add_anchored_comment(&deployment, &room).await;
+    room.log().drop_cache().await;
+    let (views, _) = room.comment_page(None, 50, "someone", true).await.unwrap();
+    assert_eq!(views.len(), 1);
+    assert!(views[0].attachment.is_some());
+    assert!(room.log().is_warm().await);
+    deployment.catalog.close().await;
+}

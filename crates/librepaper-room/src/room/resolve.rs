@@ -444,6 +444,8 @@ impl Room {
     /// Failure is not an error here: a sequencer that cannot build a
     /// projection leaves these comments with no attachment, which every
     /// caller already reads as "not yet known".
+    ///
+    /// A page of document-level comments only never reads the document.
     pub(crate) async fn attach(&self, comments: &mut [Comment]) {
         if comments.is_empty() {
             return;
@@ -472,6 +474,12 @@ impl Room {
                 };
                 needing.push((comment.id.clone(), frontier, source.clone()));
             }
+        }
+        if comments
+            .iter()
+            .all(|comment| comment.original_anchor.is_none())
+        {
+            return;
         }
         let mut captured: HashMap<String, LiveSourceRange> = HashMap::new();
         for (id, frontier, source) in needing {
@@ -606,7 +614,9 @@ impl Room {
     /// nothing is watching: a room whose attachment cache is empty is left
     /// alone, and a document cache that is not already warm is not built
     /// for this, the same restraint `Sequencer::projection_if_warm` gives a
-    /// reader's `source-changed`.
+    /// reader's `source-changed`. The attachment cache is filled by editors'
+    /// pages only, which is fine because the frames this sends go to editors
+    /// only.
     pub(crate) async fn reattach_comments_if_moved(&self) {
         if self.attachments.lock().await.ids().is_empty() {
             return;
