@@ -193,6 +193,7 @@
   import { LoroText, UndoManager } from "loro-crdt";
 
   import { sourceLanguage } from "../lib/source-language.js";
+  import { emphasisCommand } from "../lib/emphasis.js";
   import { sourceHighlighting } from "../lib/source-highlight.js";
   import { analyzeBibliography } from "../lib/bibliography-engine.js";
   import { bibliographyCache, bibliographyCacheKey, bibliographyCompletion, bibliographyNeedsAnalysis, citationContext, planZoteroImport } from "../lib/bibliography.js";
@@ -711,6 +712,7 @@
       redo: editable && (manager?.canRedo?.() ?? false),
       cut: editable && selected, copy: selected,
       paste: editable, "select-all": true, find: true, replace: editable,
+      bold: editable, italic: editable,
     };
   }
 
@@ -722,6 +724,8 @@
     if (command === "undo") undoCommand(target);
     else if (command === "redo") redoCommand(target);
     else if (command === "select-all") selectAll(target);
+    else if (command === "bold") boldCommand(target);
+    else if (command === "italic") italicCommand(target);
     else if (command === "find" || command === "replace") {
       openSearchPanel(target);
       if (command === "replace") target.dom.querySelector('[name="replace"]')?.focus();
@@ -761,6 +765,14 @@
       capturedText: view.state.sliceDoc(from, to),
     };
   }
+
+  // The format of the file being edited, for the emphasis commands.
+  function emphasisFormat() {
+    const path = pathOfDoc(session.doc, showing);
+    return documentFormat(path) || (!path ? format : "");
+  }
+  const boldCommand = emphasisCommand("bold", emphasisFormat);
+  const italicCommand = emphasisCommand("italic", emphasisFormat);
 
   // Context consumed by InsertMenu's format-aware generators. `target` is an
   // implementation detail used by applyInsertResult and intentionally lives
@@ -989,6 +1001,10 @@
           // lib/commands.js names the binding so the menu and the shortcut
           // table can print it, and this is the one place it is run.
           { key: "Mod-Alt-f", preventDefault: true, run: () => (void editCommand("replace"), true) },
+          // Bold and italic; lib/commands.js names these bindings. Not in a
+          // highest-precedence keymap, so Vim and Emacs keep Ctrl+B and Ctrl+I.
+          { key: "Mod-b", preventDefault: true, run: boldCommand },
+          { key: "Mod-i", preventDefault: true, run: italicCommand },
           ...closeBracketsKeymap,
           ...foldKeymap,
           indentWithTab,

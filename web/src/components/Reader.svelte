@@ -2511,6 +2511,7 @@
     [["cut", "Cut"], ["copy", "Copy"], ["paste", "Paste"]],
     [["select-all", "Select All"]],
     [["find", "Find…"], ["replace", "Replace…"]],
+    [["bold", "Bold"], ["italic", "Italic"]],
   ];
 
   // What the keyboard already does, named beside the item the way a desktop
@@ -3428,7 +3429,7 @@
     return chooseFileCommand(id);
   }
 
-  const EDIT_COMMANDS = ["undo", "redo", "cut", "copy", "paste", "select-all", "find", "replace"];
+  const EDIT_COMMANDS = ["undo", "redo", "cut", "copy", "paste", "select-all", "find", "replace", "bold", "italic"];
   const LAYOUT_COMMANDS = ["linked", "layout-source", "layout-document", "layout-split", "side-left", "side-right"];
 
   // Open the panel, then put the keyboard in it. The first of those was all a
