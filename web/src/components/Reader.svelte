@@ -3325,11 +3325,13 @@
   // again without a connection. A new project reports local before anything is
   // stored, so a failed attempt is retried on the next report instead of being
   // given up for the rest of the page load. The inputs are read before any
-  // early return, so the effect stays subscribed to them.
+  // early return, so the effect stays subscribed to them. It waits for the
+  // editor module too: on a first visit that import may not have gone through
+  // the service worker yet, and the shell cached without it cannot edit.
   let localCopyRunning = false;
   let localCopyRemembered = false;
   $effect(() => {
-    const ready = mayEdit && !openedLocally && persistence.local;
+    const ready = mayEdit && !openedLocally && persistence.local && Editor;
     if (!ready || localCopyRunning || localCopyRemembered) return;
     localCopyRunning = true;
     const server = location.origin;
