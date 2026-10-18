@@ -21,7 +21,7 @@ use tokio_tungstenite::tungstenite::Message as WsMessage;
 use uuid::Uuid;
 
 use crate::server::origins::Origins;
-use librepaper_base::auth::{sign_device, sign_session, Identity, PROVIDER_GITHUB};
+use librepaper_base::auth::{sign_device, Identity, PROVIDER_GITHUB};
 use librepaper_engine::storage::postgres::{AccessRole, NewAccount};
 use librepaper_engine::storage::store::DocumentInput;
 
@@ -206,11 +206,6 @@ async fn finish(fixture: Fixture) {
     } = deployment_parts;
     drop(_writer);
     catalog.close().await;
-}
-
-fn cookie(identity: &Identity) -> String {
-    let token = sign_session(&[0; 32], identity, librepaper_base::util::now_unix() + 3600);
-    format!("__Host-librepaper_session={token}")
 }
 
 fn bearer(identity: &Identity) -> String {

@@ -164,7 +164,6 @@ impl PostgresCatalog {
 
 #[cfg(test)]
 mod tests {
-    use time::OffsetDateTime;
     use uuid::Uuid;
 
     use super::super::{NewAccount, NewDocument, PostgresCatalog, PostgresOptions};
