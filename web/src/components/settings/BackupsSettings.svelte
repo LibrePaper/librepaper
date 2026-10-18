@@ -36,7 +36,7 @@
   });
 
   async function authorize() {
-    if (!signedIn || !paired || !needsLogin || busy) return;
+    if (!signedIn || !paired || !needsLogin || busy) return false;
     busy = "authorization";
     saved = false;
     error = "";
@@ -55,13 +55,35 @@
         }
         await post("/api/auth/device/approve", { user_code: userCode });
       }, isCurrent);
-      if (isCurrent()) await backups.refresh();
+      if (!isCurrent()) return false;
+      await backups.refresh();
+      return isCurrent();
     } catch (cause) {
       if (isCurrent()) error = cause?.message || "Backup authorization could not be completed.";
+      return false;
     } finally {
       if (isCurrent()) busy = "";
     }
   }
+
+  // Turning the switch on is the authorization: sign the desktop app in first
+  // when needed, then enable. Stop if the scope changed while authorizing.
+  async function enable() {
+    const enableScope = requestScope;
+    if (needsLogin && !(await authorize())) return;
+    if (enableScope !== requestScope) return;
+    await changeSettings(true);
+  }
+
+  // Backups already on when the authorization expires: the switch being on is
+  // the user's consent, so try once per scope and let any error stay visible.
+  let reauthorizedScope = -1;
+  $effect(() => {
+    if (hasStatus && data.enabled && needsLogin && !busy && !error && reauthorizedScope !== requestScope) {
+      reauthorizedScope = requestScope;
+      void authorize();
+    }
+  });
 
   async function changeSettings(enabled, frequency = Number(data.frequency_minutes) || 5) {
     if (!canUseDesktop || busy || (needsLogin && enabled)) return;
@@ -139,20 +161,11 @@
   </div>
 {:else if backupStatus.loading && !backupStatus.data}
   <p class="setting-description" role="status">Loading backup status…</p>
-{:else if needsLogin}
-  <div class="setting-status" data-tone="warn" role="status">
-    <span class="setting-status-dot" aria-hidden="true"></span>
-    <div class="setting-status-words">
-      <div class="setting-title">Authorize backups</div>
-      <div class="setting-description">Let the desktop app back up this account's projects.</div>
-    </div>
-    <div class="setting-control"><button type="button" class="btn btn-sm lp-control-brand" disabled={busy !== "" || backupStatus.loading} onclick={() => void authorize()}>{busy === "authorization" ? "Authorizing…" : "Authorize backups"}</button></div>
-  </div>
 {/if}
 
-  <SettingRow id="backup-enable" title="Automatic backups" description={needsLogin ? "Authorize to enable backups." : !destinationSet ? "Choose a folder first." : ""}>
+  <SettingRow id="backup-enable" title="Automatic backups" description={!destinationSet ? "Choose a folder first." : ""}>
     {#if !hasStatus}<StatusPill label="Unknown" />{/if}
-    <button type="button" role="switch" class="switch backup-enable-switch" aria-label="Automatic backups" aria-checked={Boolean(data.enabled)} aria-describedby={!hasStatus ? "backup-enable-state" : undefined} data-state={!hasStatus ? "unknown" : data.enabled ? "checked" : "unchecked"} disabled={busy !== "" || !canUseDesktop || (needsLogin ? !data.enabled : !destinationSet)} onclick={() => void changeSettings(!data.enabled)}>
+    <button type="button" role="switch" class="switch backup-enable-switch" aria-label="Automatic backups" aria-checked={Boolean(data.enabled)} aria-describedby={!hasStatus ? "backup-enable-state" : undefined} data-state={!hasStatus ? "unknown" : data.enabled ? "checked" : "unchecked"} disabled={busy !== "" || !canUseDesktop || (!data.enabled && !destinationSet)} onclick={() => void (data.enabled ? changeSettings(false) : enable())}>
       <span class="switch-thumb" data-state={!hasStatus ? "unknown" : data.enabled ? "checked" : "unchecked"}></span>
     </button>
     {#if !hasStatus}<span id="backup-enable-state" class="sr-only">Unknown</span>{/if}

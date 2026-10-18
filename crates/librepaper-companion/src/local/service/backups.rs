@@ -80,7 +80,7 @@ impl BackupErrorKind {
 /// `Display` is the message the settings page shows.
 #[derive(Debug, thiserror::Error)]
 enum BackupError {
-    #[error("Sign in to this account from Settings to authorize backups.")]
+    #[error("Turn on backups in Settings to reconnect this account.")]
     NotSignedIn,
     #[error("cached login is no longer valid; sign in again")]
     LoginInvalid,

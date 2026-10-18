@@ -1936,7 +1936,7 @@
   const backupDiagnostics = $derived.by(() => {
     const data = backupStatus.active ? backupStatus.data : null;
     if (!data?.enabled) return [];
-    const message = data.needs_login ? "Backups are on but this account is not authorized in the desktop app. Open Settings, then Backups."
+    const message = data.needs_login ? "Backups are on but the desktop app lost access to this account. Open Settings, then Backups, to reconnect."
       : data.error ? `Backups are on but failing: ${data.error}. Open Settings, then Backups.`
       : !data.destination_set ? "Backups are on but have no destination. Open Settings, then Backups."
       : "";
