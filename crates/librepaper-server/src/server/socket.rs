@@ -545,8 +545,16 @@ impl Server {
                             let _ = send_outgoing(&tx, Outgoing::Text(json!({"type":"error","message":"only the owner can clear chat"}).to_string())).await;
                             continue 'reader;
                         }
-                        match room.clear_chat().await {
-                            Ok(_) => {}
+                        let refusal = json!({"type":"error","message":"only the owner can clear chat"}).to_string();
+                        let Some(owner_id) = who.account_id() else {
+                            let _ = send_outgoing(&tx, Outgoing::Text(refusal)).await;
+                            continue 'reader;
+                        };
+                        match room.clear_chat(owner_id).await {
+                            Ok(Some(_)) => {}
+                            Ok(None) => {
+                                let _ = send_outgoing(&tx, Outgoing::Text(refusal)).await;
+                            }
                             Err(error) => {
                                 let _ = send_outgoing(&tx, Outgoing::Text(json!({"type":"error","message":error.to_string()}).to_string())).await;
                             }
