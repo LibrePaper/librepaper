@@ -189,3 +189,45 @@ const range = (a, b) => Array.from({ length: b - a + 1 }, (_, i) => msg(a + i));
   chat.seed({ chat: range(1, 2), chat_more: false });
   assert.equal(chat.state.loadError, "");
 }
+
+// Live messages during recovery do not defeat the gap rule.
+{
+  let release;
+  globalThis.fetch = () =>
+    new Promise((resolve) => {
+      release = () => resolve({ ok: true, status: 200, json: async () => ({ messages: range(52, 101), more: true }) });
+    });
+  const chat = createLiveChat({ slug: "proj" });
+  chat.seed({ chat: range(1, 5), chat_more: false });
+  chat.seed({ chat_unavailable: true });
+  chat.receive(msg(101));
+  release();
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  assert.deepEqual(ids(chat), range(52, 101).map((m) => m.id));
+  assert.equal(chat.state.more, true);
+}
+
+// An empty recovery page keeps a live message received meanwhile.
+{
+  let release;
+  globalThis.fetch = () =>
+    new Promise((resolve) => {
+      release = () => resolve({ ok: true, status: 200, json: async () => ({ messages: [], more: false }) });
+    });
+  const chat = createLiveChat({ slug: "proj" });
+  chat.seed({ chat_unavailable: true });
+  chat.receive(msg(7));
+  release();
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  assert.deepEqual(ids(chat), [id(7)]);
+}
+
+// A successful recovery keeps the owner's clear action.
+{
+  globalThis.fetch = async () => ({ ok: true, status: 200, json: async () => ({ messages: range(1, 3), more: false }) });
+  const chat = createLiveChat({ slug: "proj" });
+  chat.seed({ chat_unavailable: true, chat_can_clear: true });
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  assert.deepEqual(ids(chat), range(1, 3).map((m) => m.id));
+  assert.equal(chat.state.canClear, true);
+}
