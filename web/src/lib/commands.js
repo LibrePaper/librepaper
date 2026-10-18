@@ -1,5 +1,7 @@
 import { MATH_TEMPLATES } from "./symbols/templates.js";
 
+/** @typedef {{ id: string, label: string, category: string, scope: string, keys: Array<string | {apple?: string, other?: string}>, available: (context: any) => boolean, owner?: string, menu?: string, note?: string, palette?: boolean, help?: boolean }} Command */
+
 // What the workspace can be asked to do, written once.
 //
 // A shortcut used to be a literal in whichever component happened to hear the
@@ -189,6 +191,7 @@ export const typeable = (descriptor) => {
 const ALWAYS = () => true;
 const panel = (id) => (context) => (context.panels || []).includes(id);
 
+/** @type {Command[]} */
 export const COMMANDS = [
   // Editing. CodeMirror's, every one of them, including the search panel.
   { id: "undo", label: "Undo", category: "Editing", scope: "editor", owner: "editor", menu: "edit", keys: ["Mod+Z"], available: (c) => Boolean(c.edit?.undo) },
