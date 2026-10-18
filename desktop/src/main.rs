@@ -3,6 +3,7 @@
 #[cfg(target_os = "linux")]
 mod drop;
 mod notice;
+mod scrub;
 mod servers;
 mod service;
 mod shell_log;
@@ -614,6 +615,28 @@ fn serve(app: &AppHandle, label: String, request: Request<Vec<u8>>, responder: U
         return;
     }
 
+    // Builds the report the page shows, with the desktop part scrubbed.
+    if request.method() == Method::POST && request.uri().path() == "/shell/diagnostics-report" {
+        tauri::async_runtime::spawn(async move {
+            let res = match diagnostics_text().await {
+                Ok(text) => {
+                    let body = serde_json::json!({ "text": text }).to_string().into_bytes();
+                    Response::builder()
+                        .status(StatusCode::OK)
+                        .header(header::CONTENT_TYPE, "application/json")
+                        .body(body)
+                        .expect("the report response is valid")
+                }
+                Err(err) => {
+                    let error = format!("Could not build the diagnostics: {err}");
+                    json_error(StatusCode::INTERNAL_SERVER_ERROR, &error)
+                }
+            };
+            responder.respond(with_origin(res, &origin));
+        });
+        return;
+    }
+
     // Opens the service's log folder in the file manager.
     if request.method() == Method::POST && request.uri().path() == "/shell/open-logs" {
         let app = app.clone();
@@ -937,8 +960,8 @@ fn unavailable(detail: &str) -> Response<Vec<u8>> {
         .expect("the error response is valid")
 }
 
-// Copies the diagnostics report to the clipboard. The page only learns whether it worked.
-async fn copy_diagnostics(app: &AppHandle) -> Result<(), String> {
+// The diagnostics report, with the home folder and the user name removed.
+async fn diagnostics_text() -> Result<String, String> {
     let report = service::diagnostics(&[]).await?;
     let text = format!(
         "LibrePaper desktop app {}\n\n{report}\nDesktop log ({}), last 100 lines:\n{}\n",
@@ -946,6 +969,12 @@ async fn copy_diagnostics(app: &AppHandle) -> Result<(), String> {
         shell_log::location(),
         shell_log::tail(100)
     );
+    Ok(scrub::scrub_here(&text))
+}
+
+// Copies the diagnostics report to the clipboard. The page only learns whether it worked.
+async fn copy_diagnostics(app: &AppHandle) -> Result<(), String> {
+    let text = diagnostics_text().await?;
     app.clipboard()
         .write_text(text)
         .map_err(|err| err.to_string())
