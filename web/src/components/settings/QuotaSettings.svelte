@@ -173,7 +173,7 @@
 
 {#if documents.length > 0}
   <SettingRow id="storage-documents" stacked title="Storage by document"
-              description="Trimming keeps a document as it is now and deletes everything before it: its editing history, its named versions, and figures it no longer uses. Comments stay.">
+              description="Trimming keeps a document as it is now and deletes everything before it: its editing history, its named versions, its chat history, and figures it no longer uses. Comments stay.">
     <div class="storage-toolbar">
       <div class="legend" aria-hidden="true">
         <span><i class="swatch figure"></i>Figures</span>
@@ -233,6 +233,7 @@
     <ul class="trim-list">
       <li>Its editing history ({storageBytes(trimTarget.historyBytes)})</li>
       <li>All its named versions ({storageBytes(trimTarget.archiveBytes)})</li>
+      <li>Its chat history</li>
       <li>Figures its current files no longer use, except ones uploaded in the last hour</li>
     </ul>
     <p class="lp-text-secondary text-sm">Comments stay. This cannot be undone.</p>

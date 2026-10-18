@@ -23,6 +23,7 @@
   import { createAnnotations } from "../lib/reader/annotations.svelte.js";
   import { createReaderBoot } from "../lib/reader/boot.js";
   import { createPendingChat } from "../lib/reader/chat.js";
+  import { createLiveChat } from "../lib/reader/live-chat.svelte.js";
   import { createReaderCollaboration } from "../lib/reader/collaboration.js";
   import { createWorkspace } from "../lib/reader/workspace.svelte.js";
   import { createBuildSettings } from "../lib/reader/build-settings.svelte.js";
@@ -155,7 +156,8 @@
   // Whether this tab is the one in front of the reader. Only background work
   // consults it; nothing about the document depends on being looked at.
   let hidden = $state(typeof document !== "undefined" && document.visibilityState === "hidden");
-  let liveChat = $state([]);
+  const liveChat = createLiveChat({ slug: SLUG, key: KEY });
+  const chatState = liveChat.state;
   let unreadChat = $state(false);
   let pendingChat;
   let mayChat = $derived(["commenter", "editor", "owner"].includes(doc.role));
@@ -870,6 +872,14 @@
   /* -------------------------------------------------------------------- room */
 
   let collaboration = $state(null);
+  let clearingChat = $state(false);
+  function askClearChat() {
+    if (chatState.canClear) clearingChat = true;
+  }
+  function confirmClearChat() {
+    clearingChat = false;
+    collaboration?.send({ type: "chat-clear" });
+  }
   function sendLiveChat(text) {
     if (!collaboration || !connected || !mayChat) return Promise.resolve(false);
     return pendingChat?.send(text) || Promise.resolve(false);
@@ -994,18 +1004,19 @@
   function receive(event) {
     if (annotations.receive(event)) return;
     if (event.type === "chat") {
-      if (!liveChat.some((message) => message.id === event.id)) {
-        liveChat = [...liveChat, event].slice(-200);
-        if (!chatVisible && !pendingChat?.has(event.temp_id)) unreadChat = true;
-      }
+      const fresh = !liveChat.has(event.id);
+      liveChat.receive(event);
+      if (fresh && !chatVisible && !pendingChat?.has(event.temp_id)) unreadChat = true;
       if (event.temp_id) pendingChat?.acknowledge(event.temp_id, true);
       return;
     }
+    if (liveChat.receive(event)) return;
     if (event.type === "chat-ack") {
       pendingChat?.acknowledge(event.temp_id, true);
       return;
     }
     if (event.type === "hello") {
+      liveChat.seed(event);
       // The first page of the comments, and what the server says is behind
       // it. Never the collection: "Load more" walks the rest, and the
       // counts in the panel come from `state` rather than from this list.
@@ -3386,6 +3397,7 @@
       docx: Boolean(docxDownload),
     },
     edit: editAvailability,
+    canClearChat: chatState.canClear,
   });
 
   // What each command can do about it, asked once. The menus grey a line by
@@ -3422,6 +3434,7 @@
       return;
     }
     if (id === "focus-comments") return focusPanel("collaboration");
+    if (id === "chat-clear") return askClearChat();
     if (id === "focus-preview") return focusPreview();
     if (id === "layout-cycle") return cycleLayout();
     if (LAYOUT_COMMANDS.includes(id)) return chose(id);
@@ -3721,7 +3734,9 @@
   {/snippet}
 
   {#snippet collaborationPanel()}
-    <Collaboration messages={liveChat} {connected} canPost={mayChat} onsend={sendLiveChat}
+    <Collaboration messages={chatState.messages} more={chatState.more} loadingOlder={chatState.loadingOlder}
+      loadError={chatState.loadError} canClear={chatState.canClear} onloadolder={liveChat.loadOlder}
+      onclear={askClearChat} {connected} canPost={mayChat} onsend={sendLiveChat}
       {unreadChat} bind:tab={collaborationTab} {comments} {identity}
       commentingAs={doc.commenting_as || "Anonymous"} {canModerate} {went} {replacements}
       canComment={mayChat}
@@ -4105,6 +4120,14 @@
     ? "This removes these comments and their replies for everyone. It cannot be undone."
     : "This removes the comment and its replies for everyone. It cannot be undone."}
   confirm={{ label: "Delete", tone: "error", onclick: confirmDelete }}
+></Modal>
+
+<!-- Clearing the chat deletes it for everyone, so it is confirmed. -->
+<Modal
+  bind:open={clearingChat}
+  title="Clear chat history?"
+  description="This deletes every chat message in this project for everyone. It cannot be undone."
+  confirm={{ label: "Clear", tone: "error", onclick: confirmClearChat }}
 ></Modal>
 
 <!-- Signed out, a commenter chooses how to be named before they write. -->
