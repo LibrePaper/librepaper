@@ -48,7 +48,7 @@ export function createLiveChat({ slug, key = "" }) {
   }
 
   // Asks for the newest page after the server could not read it for the
-  // hello. Each attempt runs at once; a failure schedules the next after
+  // hello. Each attempt runs at once, and a failure schedules the next after
   // 2 s, 4 s, 8 s and so on, up to 30 s.
   function retryHistory(attempt) {
     cancelRetry();
@@ -80,7 +80,7 @@ export function createLiveChat({ slug, key = "" }) {
     state.loadError = "";
     if (hello?.chat_unavailable === true) {
       // The server could not read the history. Keep what this tab holds and
-      // try again; live messages still arrive meanwhile.
+      // try again. Live messages still arrive meanwhile.
       state.canClear = Boolean(hello.chat_can_clear);
       state.loadError = "Chat history could not be read. Trying again.";
       retryHistory(0);

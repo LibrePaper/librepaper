@@ -239,7 +239,7 @@ impl Room {
     /// one follows the hello and none can be lost or undone by it. A failed
     /// read is logged and the hello goes out with `chat_unavailable` set and
     /// no `chat` or `chat_more`, so the client keeps what it holds and asks
-    /// again; the socket still receives live messages. A hello that is not a
+    /// again. The socket still receives live messages. A hello that is not a
     /// `hello` (an error reply) gets no chat keys. Returns false when the
     /// hello cannot be queued within `timeout`.
     pub async fn send_hello_with_chat(

@@ -166,7 +166,7 @@ has none of them.
 - `chat`: the newest 50 messages, oldest first.
 - `chat_more`: `true` when older messages exist.
 - `chat_can_clear`: `true` only for the project owner.
-- `chat_unavailable`: `true` instead of `chat` and `chat_more` when the server could not read the history; the client keeps its list and fetches the newest page again.
+- `chat_unavailable`: `true` instead of `chat` and `chat_more` when the server could not read the history. The client keeps its list and fetches the newest page again.
 
 Every reconnect gets a fresh `hello`, so the `hello` fills in missed
 messages. Clients merge messages by `id`.
