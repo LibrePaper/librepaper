@@ -53,7 +53,7 @@ import Editor from ${JSON.stringify(join(root, "web/src/components/Editor.svelte
 import Diagnostics from ${JSON.stringify(join(root, "web/src/components/reader/Diagnostics.svelte"))};
 import { join as joinSession } from ${JSON.stringify(join(root, "web/src/lib/collab.js"))};
 import { rejectMany, resolveChanges, trackedSplice } from ${JSON.stringify(join(root, "web/src/lib/track-changes.js"))};
-import { durableProjectPersistence, prepareOfflineProject, preparedProject } from ${JSON.stringify(join(root, "web/src/lib/offline-projects.js"))};
+import { durableProjectPersistence, rememberProject, localProject } from ${JSON.stringify(join(root, "web/src/lib/offline-projects.js"))};
 import { createClassComponent } from ${JSON.stringify(join(root, "web/node_modules/svelte/src/legacy/legacy-client.js"))};
 
 const session = joinSession({ send: () => {}, mayEdit: true });
@@ -485,12 +485,12 @@ window.collabCacheCheck = async () => {
     await opened.start(snapshot(server));
     opened.text.insert(0, "new offline ");
     await opened.persist();
-    await prepareOfflineProject({
+    await rememberProject({
       server: location.origin, slug, created_at: "first-creation",
       document_id: "11111111-1111-4111-8111-111111111111",
       title: "Cached paper", source_format: "markdown", role: "owner",
     });
-    const manifest = await preparedProject({ server: location.origin, slug });
+    const manifest = await localProject({ server: location.origin, slug });
     opened.leave();
     const reopened = await cached("first-creation", "11111111-1111-4111-8111-111111111111");
     await reopened.start(snapshot(server));

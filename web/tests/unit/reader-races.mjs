@@ -111,7 +111,7 @@ const deferred = () => {
   assert.equal(callbacks, 0);
 }
 
-// A failed metadata request can open an explicitly prepared local project;
+// A failed metadata request can open this browser's local copy of a project;
 // an ordinary cache miss still follows the normal error path.
 {
   const documents = [];
@@ -126,7 +126,7 @@ const deferred = () => {
   });
   await boot.start();
   assert.equal(documents[0].title, "Local paper");
-  assert.equal(documents[0].offline_prepared, true);
+  assert.equal(documents[0].local_copy, true);
   assert.deepEqual(errors, []);
 }
 

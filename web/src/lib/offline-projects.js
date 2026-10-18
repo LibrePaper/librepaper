@@ -73,20 +73,20 @@ async function readStore(store, key, indexedDB_) {
     requestResult(database.transaction(store, "readonly").objectStore(store).get(key)));
 }
 
-export async function preparedProjects(indexedDB_ = globalThis.indexedDB) {
+export async function localProjects(indexedDB_ = globalThis.indexedDB) {
   return withDatabase(indexedDB_, async (database) => {
     const records = await requestResult(database.transaction(PROJECTS, "readonly").objectStore(PROJECTS).getAll());
     return records.filter((record) => record?.prepared).sort((a, b) => String(b.preparedAt).localeCompare(String(a.preparedAt)));
   });
 }
 
-export async function preparedProject({ server, slug }, indexedDB_ = globalThis.indexedDB) {
+export async function localProject({ server, slug }, indexedDB_ = globalThis.indexedDB) {
   const origin = new URL(server || globalThis.location?.origin).origin;
-  return (await preparedProjects(indexedDB_)).find((record) => record.identity.origin === origin
+  return (await localProjects(indexedDB_)).find((record) => record.identity.origin === origin
     && (record.identity.slug === slug || record.document?.slug === slug)) || null;
 }
 
-export async function prepareOfflineProject(metadata, indexedDB_ = globalThis.indexedDB) {
+export async function rememberProject(metadata, indexedDB_ = globalThis.indexedDB) {
   const identity = projectIdentity({
     server: metadata.server || globalThis.location?.origin,
     documentId: metadata.document_id || metadata.documentId,
@@ -110,7 +110,7 @@ export async function prepareOfflineProject(metadata, indexedDB_ = globalThis.in
       source_format: metadata.source_format || "",
       role: metadata.role || "editor",
       can_edit: true,
-      offline_prepared: true,
+      local_copy: true,
     },
   };
   await withDatabase(indexedDB_, async (database) => {
@@ -119,6 +119,29 @@ export async function prepareOfflineProject(metadata, indexedDB_ = globalThis.in
     await transactionDone(transaction);
   });
   return record;
+}
+
+// Removes this browser's copy of one project: its record, its saved state and
+// every update kept for it. The updates are found through the project index,
+// so other projects' rows are never read or deleted.
+export async function forgetProject({ server, documentId, slug, createdAt }, indexedDB_ = globalThis.indexedDB) {
+  const identity = projectIdentity({
+    server: server || globalThis.location?.origin,
+    documentId,
+    slug,
+    createdAt,
+  });
+  const key = projectIdentityKey(identity);
+  await withDatabase(indexedDB_, async (database) => {
+    const transaction = database.transaction([PROJECTS, STATES, UPDATES], "readwrite");
+    const done = transactionDone(transaction);
+    transaction.objectStore(PROJECTS).delete(key);
+    transaction.objectStore(STATES).delete(key);
+    const updates = transaction.objectStore(UPDATES);
+    const pending = await requestResult(updates.index("project").getAll(key));
+    for (const item of pending) updates.delete([key, item.id]);
+    await done;
+  });
 }
 
 export function durableProjectPersistence(identity, indexedDB_ = globalThis.indexedDB, legacyIdentity = null) {
