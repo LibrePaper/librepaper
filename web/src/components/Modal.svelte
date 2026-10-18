@@ -34,13 +34,17 @@
     cancelLabel = "Cancel",
     onclose = undefined,
     wide = false,
+    wider = false,
     page = false,
+    initialFocus = undefined,
+    onEscapeKeyDown = undefined,
   } = $props();
 
-  // Two sizes for a card: a question or a result to read. `page` is the
-  // other shape: the whole viewport, with a bar at the top holding a Back
-  // link. It has no footer and no backdrop. Escape and Back both close it.
-  const width = $derived(wide ? "max-w-xl" : "max-w-lg");
+  // Two sizes for a card: a question or a result to read. `wider` is a
+  // third, for a palette whose row of tabs does not fit the second. `page`
+  // is the other shape: the whole viewport, with a bar at the top holding a
+  // Back link. It has no footer and no backdrop. Escape and Back both close it.
+  const width = $derived(wider ? "max-w-3xl" : wide ? "max-w-xl" : "max-w-lg");
 
   // The cross closes the same way Escape does: the dialog's own change
   // handler runs `onclose`, so closing from here says so too.
@@ -51,8 +55,10 @@
 
   let confirmButton = $state(null);
   // A form dialog has a field to type in; Zag's default lands on it. Only the
-  // question-shaped dialogs move focus to the action.
-  const initialFocusEl = $derived(confirm && !confirm.form ? () => confirmButton : undefined);
+  // question-shaped dialogs move focus to the action. A dialog whose first
+  // control is not what it is for, such as a palette behind its Close button,
+  // names its own with `initialFocus`.
+  const initialFocusEl = $derived(initialFocus ?? (confirm && !confirm.form ? () => confirmButton : undefined));
 
   // Closing hands focus back to the opener. Mark that element so it draws no
   // ring until the next key press or until it loses focus.
@@ -87,7 +93,9 @@
      filter; the navbar has one, so a dialog opened from a navbar menu was
      confined to the navbar and drawn behind the page. Rendering at the body
      removes the question of where the dialog happens to be mounted. -->
-<Dialog {open} {initialFocusEl} onOpenChange={(event) => { open = event.open; if (!open) onclose?.(); }}>
+<!-- Zag hears Escape on the document before anything inside the dialog does.
+     `onEscapeKeyDown` lets the content keep a press by cancelling it. -->
+<Dialog {open} {initialFocusEl} {onEscapeKeyDown} onOpenChange={(event) => { open = event.open; if (!open) onclose?.(); }}>
   <Portal>
     {#if !page}
       <Dialog.Backdrop class="fixed inset-0 z-50 bg-black/50 backdrop-blur-xs" />

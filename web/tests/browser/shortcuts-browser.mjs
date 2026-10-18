@@ -180,6 +180,30 @@ try {
   await until("the outline", () => b.evaluate('document.activeElement?.closest("#sidebar-panel-outline") !== null'), 4000);
   assert.equal(await dialog(), "", "and the palette closes behind it");
 
+  /* ----------------------------------------------------- the insert palettes */
+
+  // Each opens over the editor with the keyboard where the palette starts, and
+  // hands the keyboard back to the editor however it closes.
+  const active = () => b.evaluate('document.activeElement?.matches("input[type=search]") ? "search" : document.activeElement?.closest(".cm-editor") ? "editor" : document.activeElement?.matches("[data-template]") ? "tile" : document.activeElement?.tagName || ""');
+  await focusSource();
+  await key("s", { code: "KeyS", modifiers: ["ctrl", "alt"], virtual: 83 });
+  await until("the Symbols overlay", async () => (await dialog()) === "Symbols" && (await active()) === "search", 4000);
+  const typed = await source();
+  await b.evaluate('document.querySelector(".symbol-grid .symbol-tile").click()');
+  await until("the symbol inserted", async () => (await source()) !== typed && (await active()) === "editor", 4000);
+  assert.equal(await dialog(), "", "a picked symbol closes the overlay");
+
+  await key("t", { code: "KeyT", modifiers: ["ctrl", "alt"], virtual: 84 });
+  await until("the Math overlay", async () => (await dialog()) === "Math" && (await active()) === "tile", 4000);
+  await b.evaluate('document.querySelector("[data-template]").click()');
+  await until("a template form", () => b.evaluate('Boolean(document.querySelector(".math-form"))'), 4000);
+  // The dialog hears Escape first. In a form, the press is the form's.
+  await key("Escape", { code: "Escape", virtual: 27 });
+  await until("back at the tiles", () => b.evaluate('!document.querySelector(".math-form")'), 4000);
+  assert.equal(await dialog(), "Math", "Escape in a template form goes back to the tiles");
+  await key("Escape", { code: "Escape", virtual: 27 });
+  await until("the editor again", async () => (await dialog()) === "" && (await active()) === "editor", 4000);
+
   /* ------------------------------------------------------------ the settings */
 
   // The same table, in the other place it is offered: beside the choice of
@@ -234,7 +258,7 @@ try {
   assert.equal(await b.evaluate("window.__claimed()"), true, "a chord we answer is cancelled");
 
   assert.deepEqual(await b.evaluate("window.testErrors"), []);
-  console.log("shortcuts-browser: ? opens the shortcut table in the settings from the page, and is a letter in the source, ⌃\\ cycles from the editor, panels take the focus, the palette runs what it offers, and the settings list the same table");
+  console.log("shortcuts-browser: ? opens the shortcut table in the settings from the page, and is a letter in the source, ⌃\\ cycles from the editor, panels take the focus, the palette runs what it offers, the insert palettes open over the editor and give it back, and the settings list the same table");
 } finally {
   await b?.close();
   serverHttp?.close();

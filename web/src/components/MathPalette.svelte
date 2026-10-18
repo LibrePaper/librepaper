@@ -309,14 +309,35 @@
     field.focus();
   }
 
-  /** Puts the focus where a keyboard user expects it: a tile, or the first field. */
   // The overlay unmounts the palette when it closes, and a form left open
   // holds an insertion target that the editor must release.
   onDestroy(() => { if (captured) oncancel?.(captured); });
 
+  /** Puts the focus where a keyboard user expects it: a tile, or the first field. */
   export function focus() {
-    if (activeId) firstField();
-    else /** @type {HTMLElement | null} */ (root?.querySelector("[data-template]"))?.focus();
+    /** @type {HTMLElement | null} */ (focusTarget())?.focus();
+  }
+
+  /** The open form's first field, or the first tile. */
+  export function focusTarget() {
+    if (activeId) return formEl?.querySelector("[data-math-field]") ?? formEl?.querySelector("input") ?? null;
+    return root?.querySelector("[data-template]") ?? null;
+  }
+
+  /**
+   * Whether an Escape belongs to the palette rather than to the overlay
+   * around it. The overlay hears the press first, so the palette acts on it
+   * here: a search with text keeps it to clear itself, and an open form goes
+   * back to the picker. The overlay then cancels the press, which also keeps
+   * onFormKey from going back a second time.
+   * @param {KeyboardEvent} event
+   */
+  export function claimsEscape(event) {
+    const target = event.target;
+    if (target instanceof HTMLInputElement && target.type === "search" && target.value) return true;
+    if (!activeId) return false;
+    void back();
+    return true;
   }
 </script>
 

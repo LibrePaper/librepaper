@@ -65,7 +65,7 @@ assert.deepEqual(offered({ mayEdit: false, editing: false }), [], "an unanswered
 assert.deepEqual(offered({ role: "", mayEdit: false, editing: false }), [], "and neither does an empty role");
 assert.deepEqual(offered(undefined), [], "nor no reader at all");
 
-// The Symbols and Math palettes are overlays now, so no panel offers them.
+// The Symbols and Math palettes are overlays, so no panel offers them.
 assert.deepEqual(
   offered({ role: "editor", mayEdit: true, editing: true, canSeeSharing: false, canPublish: false }).slice(0, 2),
   ["files", "outline"],

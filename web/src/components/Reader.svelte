@@ -3434,16 +3434,24 @@
     symbolsOpen = name === "symbols";
     mathOpen = name === "math";
     await tick();
-    if (name === "symbols") symbolPalette?.focus?.();
     if (template) mathPalette?.openTemplate?.(template);
   }
 
-  // After an insertion: close the overlay and give the editor the keyboard
-  // back once the dialog has finished returning the focus to its opener.
+  // However an overlay closes, the editor gets the keyboard back, once the
+  // dialog has finished returning the focus to whatever opened it. The opener
+  // can be a menu that no longer exists.
+  const returnToEditor = () => requestAnimationFrame(() => editor?.focus?.());
+
   function closePalette() {
     symbolsOpen = false;
     mathOpen = false;
-    requestAnimationFrame(() => editor?.focus?.());
+    returnToEditor();
+  }
+
+  // An Escape the palette keeps, to clear its search or leave a form, is
+  // cancelled so the overlay stays open.
+  function paletteEscape(palette, event) {
+    if (palette?.claimsEscape?.(event)) event.preventDefault();
   }
 
   // Open the panel, then put the keyboard in it. The first of those was all a
@@ -4065,18 +4073,18 @@
 
 <!-- The palettes open over the editor rather than in the sidebar. Each is
      mounted only while open, so a form left half filled does not come back. -->
-<Modal bind:open={symbolsOpen} title="Symbols" wide>
+<Modal bind:open={symbolsOpen} title="Symbols" wider onclose={returnToEditor}
+       initialFocus={() => symbolPalette?.focusTarget?.()} onEscapeKeyDown={(event) => paletteEscape(symbolPalette, event)}>
   {#if symbolsOpen}
     <div class="palette-overlay">
       <SymbolPalette bind:this={symbolPalette} format={editorFormat} getContext={insertContext} oninsert={applyInsertion} onfocus={closePalette} />
     </div>
   {/if}
 </Modal>
-<Modal bind:open={mathOpen} title="Math" wide>
+<Modal bind:open={mathOpen} title="Math" wider onclose={returnToEditor}
+       initialFocus={() => mathPalette?.focusTarget?.()} onEscapeKeyDown={(event) => paletteEscape(mathPalette, event)}>
   {#if mathOpen}
-    <div class="palette-overlay">
-      <MathPalette bind:this={mathPalette} format={editorFormat} getContext={insertContext} oninsert={applyInsertion} onfocus={closePalette} oncancel={(context) => editor?.releaseInsertContext?.(context)} />
-    </div>
+    <MathPalette bind:this={mathPalette} format={editorFormat} getContext={insertContext} oninsert={applyInsertion} onfocus={closePalette} oncancel={(context) => editor?.releaseInsertContext?.(context)} />
   {/if}
 </Modal>
 
@@ -4191,7 +4199,7 @@
   .ink::after { content:""; position:absolute; right:0; bottom:0; width:0; height:0; border-right:7px solid var(--color-text-secondary); border-top:7px solid transparent; pointer-events:none; }
   .ink:hover::before, .ink[aria-expanded="true"]::before { box-shadow:inset 0 0 0 1px var(--color-focus); }
   .highlight-colors { position:absolute; z-index:1; top:calc(100% + 6px); left:50%; transform:translateX(-50%); display:flex; align-items:center; gap:3px; padding:2px; border:1px solid var(--color-border); border-radius:var(--radius-base); background:var(--color-raised); box-shadow:var(--shadow-lg); }
-  /* The overlay gives the palette a fixed height, so the grid scrolls inside it rather than the dialog growing past the window. */
+  /* The Symbols overlay has a fixed height, so the grid scrolls inside it and the dialog does not jump as the tabs change. The Math overlay fits its content. */
   .palette-overlay { height: min(70vh, 36rem); min-height: 0; }
   .color-swatch { width:1.5rem; height:1.5rem; border:2px solid transparent; border-radius:50%; }
   .color-swatch.selected { border-color:var(--color-text); box-shadow:0 0 0 1px var(--color-brand); }

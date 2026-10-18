@@ -89,6 +89,11 @@
     search?.focus();
   }
 
+  // What the overlay focuses on opening, and whether an Escape is the
+  // search's to clear rather than the overlay's to close on.
+  export const focusTarget = () => root?.querySelector('input[type="search"]') ?? null;
+  export const claimsEscape = () => query !== "";
+
   /** @param {string} id */
   function chooseTab(id) {
     tab = id;
@@ -203,6 +208,8 @@
   .search-wrap { flex: 0 0 auto; display: flex; flex-direction: column; min-height: 0; }
   .search-wrap.searching { flex: 1 1 auto; }
   .symbol-note { flex: 0 0 auto; font-size: .8rem; }
+  /* The shared tab root grows to fill a sidebar column. Here the grid below it does the growing. */
+  .symbol-palette > :global(.panel-tabs-root) { flex: 0 0 auto; }
   .recent { flex: 0 0 auto; display: flex; flex-wrap: wrap; gap: 2px; }
   .symbol-body { flex: 1 1 auto; min-height: 0; display: flex; flex-direction: column; gap: calc(var(--spacing) * 2); }
   .format-notice { flex: 0 0 auto; font-size: .8rem; }

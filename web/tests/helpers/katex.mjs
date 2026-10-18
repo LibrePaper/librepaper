@@ -1,5 +1,5 @@
 // The vendored KaTeX, for a test whose in-test Vite build mounts the Symbols
-// or Math panel. The build names the path with the define the real build
+// or Math palette. The build names the path with the define the real build
 // uses, and the test's server answers that path from the package.
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
