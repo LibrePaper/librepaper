@@ -30,6 +30,7 @@
     assistantAgent: "", assistantAccess: "" };
   const connection = $derived(client?.current ?? EMPTY_CONNECTION);
   const connectionId = $derived(connection.id);
+  const connecting = $derived(starting || connection.status === "connecting");
   const savedAssistantAgent = $derived(connection.assistantAgent || "");
   const savedAssistantAccess = $derived(connection.assistantAccess || "");
   let busy = $state(false);
@@ -165,6 +166,9 @@
   const blocker = $derived(chosen ? taskBlocker(caps, { kind: chosen.kind, scope }, {
     attached: attachment || null, path: contextPath,
   }) : "");
+  // Tracked-change tasks need the agent to hold Edit, whatever the reader holds.
+  const accessGap = $derived(Boolean(chosen) && ["tighten", "rewrite", "proofread", "fix"].includes(chosen.kind) && offeredAccess() !== "editor");
+  const canGrantEdit = $derived(roleOffered({ id: "editor" }));
   const agentReady = $derived(runnerReady || canStart);
   const commentTarget = $derived(COMMENT_TASKS.includes(chosenTaskId) && commentContext
     ? `Comment: "${clip(commentContext.body || commentContext.exact || "", 80)}"` : "");
@@ -525,7 +529,7 @@
   /// Picking a task and confirming it is the one decision. A send that fails
   /// leaves the preparation view as it was so the user can retry.
   async function sendTask() {
-    if (busy || !chosen || staleReason || blocker || !agentReady) return;
+    if (busy || !chosen || staleReason || blocker || accessGap || !agentReady) return;
     const entry = chosen;
     const fromContext = contextTask;
     task = { kind: entry.kind, scope };
@@ -709,7 +713,7 @@
     {@render connectPrompt()}
   {:else}
     <div class="chat-history">
-    {#if !connection.id}<button class="btn lp-control-brand" disabled={busy || starting} onclick={() => void act(() => client.create())}>{starting ? "Connecting…" : "Retry connection"}</button>{/if}
+    {#if !connection.id}<button class="btn lp-control-brand" disabled={busy || connecting} onclick={() => void act(() => client.create())}>{connecting ? "Connecting…" : "Retry connection"}</button>{/if}
     {#if connection.id && !connection.connected}
       <div role="status"><span class="panel-muted">Reconnecting…</span> <button class="btn btn-sm lp-control-tonal-brand" disabled={busy} onclick={() => void reconnect()}>Reconnect now</button></div>
     {/if}
@@ -822,10 +826,10 @@
       <textarea class="input task-extra" rows="1" placeholder="Additional instructions (optional)" aria-label="Additional instructions"
                 value={extra} oninput={(event) => extra = event.currentTarget.value}
                 onkeydown={(event) => { if (event.key === "Enter" && (event.ctrlKey || event.metaKey)) { event.preventDefault(); void sendTask(); } }}></textarea>
-      {#if staleReason || blocker || !agentReady}
-        <p class="panel-meta" role="status">{staleReason || blocker || "Start an agent in the Chat tab before sending a task."}</p>
+      {#if staleReason || accessGap || blocker || !agentReady}
+        <p class="panel-meta" role="status">{staleReason || (accessGap ? (canGrantEdit ? "This task makes tracked changes, so the agent needs Edit access." : "This task makes tracked changes. You need edit access to run it.") : blocker || "Start an agent in the Chat tab before sending a task.")}</p>
       {/if}
-      <div class="prepare-actions"><button class="btn btn-sm lp-control-brand" disabled={busy || Boolean(staleReason) || Boolean(blocker) || !agentReady} onclick={() => void sendTask()}>Send to agent</button></div>
+      <div class="prepare-actions">{#if accessGap && canGrantEdit}<button class="btn btn-sm lp-control-tonal-brand" disabled={busy} onclick={() => void choose(() => access = "editor")}>Give the agent Edit access</button>{/if}<button class="btn btn-sm lp-control-brand" disabled={busy || Boolean(staleReason) || Boolean(blocker) || accessGap || !agentReady} onclick={() => void sendTask()}>Send to agent</button></div>
     </div>
   {:else}
     {#snippet taskRow(entry)}
