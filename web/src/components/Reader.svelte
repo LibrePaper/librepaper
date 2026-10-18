@@ -4084,7 +4084,7 @@
 <Modal bind:open={symbolsOpen} title="Insert symbol" compact sheet onclose={returnToEditorUnlessTouch}
        initialFocus={() => symbolPalette?.focusTarget?.()} onEscapeKeyDown={(event) => paletteEscape(symbolPalette, event)}>
   {#if symbolsOpen}
-    <SymbolPalette bind:this={symbolPalette} format={editorFormat} getContext={insertContext} oninsert={(result, context) => applyInsertion(result, context, { focus: false })} />
+    <SymbolPalette bind:this={symbolPalette} format={editorFormat} getContext={insertContext} oninsert={(result, context) => applyInsertion(result, context, { focus: false })} oncancel={(context) => editor?.releaseInsertContext?.(context)} />
   {/if}
 </Modal>
 <Modal bind:open={mathOpen} title="Math" wider onclose={returnToEditor}
