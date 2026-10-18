@@ -649,16 +649,41 @@
       <DesktopOnly feature="The agent" description="Chat with Claude, Codex or another coding agent that reads and edits this project." />
     </div>
   {/snippet}
-  <!-- The gear at the top of each pane is the one way to the desktop app
-       settings now; the Chat pane also gets New conversation beside it. -->
+  <!-- Which agent, with what access: one quiet line, since both nearly always
+       stay as they were last time. Sending starts the agent; changing either
+       while it runs restarts it. It sits in the header of both tabs, since the
+       session belongs to the whole pane. -->
+  {#snippet agentSettings()}
+  <div class="agent-settings">
+    {#if installed.length}
+      <select class="agent-setting" aria-label="Agent" disabled={busy} value={chosenAgent}
+              onchange={(event) => void choose(() => chosenAgent = event.currentTarget.value)}>
+        {#each installed as entry (entry.id)}<option value={entry.id}>{entry.label}</option>{/each}
+      </select>
+      <span aria-hidden="true">·</span>
+      <select class="agent-setting" aria-label="Access" disabled={busy || !connection.id} value={access}
+              onchange={(event) => void choose(() => access = event.currentTarget.value)}>
+        {#each roles as entry}<option value={entry.id} disabled={!roleOffered(entry)} title={entry.help}>{entry.label}</option>{/each}
+      </select>
+    {:else}
+      <span>No supported coding agent was found on this computer.</span>
+    {/if}
+  </div>
+  {/snippet}
+  <!-- The header carries the agent and access line on the left and the icons
+       on the right. The gear at the top of each pane is the one way to the
+       desktop app settings now; the Chat pane also gets New conversation beside it. -->
   {#snippet paneHeader(withNewConversation)}
     <div class="pane-header">
+      {#if paired}{@render agentSettings()}{/if}
+      <span class="pane-actions">
       {#if withNewConversation && connection.id}
         <IconButton icon="eraser" label="New conversation" tone="plain" size="btn-icon-sm"
                     disabled={busy} onclick={() => void newConversation()} />
       {/if}
       <IconButton icon="sliders" label="Desktop app settings" tone="plain" size="btn-icon-sm"
                   onclick={() => onsettings?.()} />
+      </span>
     </div>
   {/snippet}
 
@@ -750,24 +775,6 @@
   {/each}
   </div>
   {/if}
-  <!-- Which agent, with what access: one quiet line, since both nearly always
-       stay as they were last time. Sending starts the agent; changing either
-       while it runs restarts it. -->
-  <div class="agent-settings">
-    {#if installed.length}
-      <select class="agent-setting" aria-label="Agent" disabled={busy} value={chosenAgent}
-              onchange={(event) => void choose(() => chosenAgent = event.currentTarget.value)}>
-        {#each installed as entry (entry.id)}<option value={entry.id}>{entry.label}</option>{/each}
-      </select>
-      <span aria-hidden="true">·</span>
-      <select class="agent-setting" aria-label="Access" disabled={busy || !connection.id} value={access}
-              onchange={(event) => void choose(() => access = event.currentTarget.value)}>
-        {#each roles as entry}<option value={entry.id} disabled={!roleOffered(entry)} title={entry.help}>{entry.label}</option>{/each}
-      </select>
-    {:else}
-      <span>No supported coding agent was found on this computer.</span>
-    {/if}
-  </div>
   <!-- Why sending cannot start this agent, or what its route cannot do. -->
   {#if chosenInstalled?.assistant_blocked || chosenInstalled?.assistant_note}
     <!-- An older desktop app sends no assistant_docs, so the link falls back to the agents page. -->
@@ -827,9 +834,9 @@
                 value={extra} oninput={(event) => extra = event.currentTarget.value}
                 onkeydown={(event) => { if (event.key === "Enter" && (event.ctrlKey || event.metaKey)) { event.preventDefault(); void sendTask(); } }}></textarea>
       {#if staleReason || accessGap || blocker || !agentReady}
-        <p class="panel-meta" role="status">{staleReason || (accessGap ? (canGrantEdit ? "This task makes tracked changes, so the agent needs Edit access." : "This task makes tracked changes. You need edit access to run it.") : blocker || "Start an agent in the Chat tab before sending a task.")}</p>
+        <p class="panel-meta" role="status">{staleReason || (accessGap ? (canGrantEdit ? "This task makes tracked changes. Set the agent's access to Edit above." :"This task makes tracked changes. You need edit access to run it.") : blocker || "Start an agent in the Chat tab before sending a task.")}</p>
       {/if}
-      <div class="prepare-actions">{#if accessGap && canGrantEdit}<button class="btn btn-sm lp-control-tonal-brand" disabled={busy} onclick={() => void choose(() => access = "editor")}>Give the agent Edit access</button>{/if}<button class="btn btn-sm lp-control-brand" disabled={busy || Boolean(staleReason) || Boolean(blocker) || accessGap || !agentReady} onclick={() => void sendTask()}>Send to agent</button></div>
+      <div class="prepare-actions"><button class="btn btn-sm lp-control-brand" disabled={busy || Boolean(staleReason) || Boolean(blocker) || accessGap || !agentReady} onclick={() => void sendTask()}>Send to agent</button></div>
     </div>
   {:else}
     {#snippet taskRow(entry)}
@@ -896,12 +903,13 @@
   .agent-panel > :global(p[role="alert"]) { padding-inline:var(--panel-padding); }
   /* The gear (and, in Chat, New conversation) sits above everything else in
      its pane, aligned right: it is upkeep, not the point of the pane. */
-  .pane-header { display:flex; justify-content:flex-end; gap:calc(var(--spacing) * .5); }
+  .pane-header { display:flex; align-items:center; justify-content:space-between; gap:calc(var(--spacing) * .5); }
+  .pane-actions { display:flex; gap:calc(var(--spacing) * .5); margin-left:auto; }
   .chat-history { display:flex; flex:1 1 0; min-height:0; flex-direction:column; gap:calc(var(--spacing) * 2); overflow-y:auto; }
   .chat-history > :global(*) { flex-shrink:0; }
   .agent-panel :global(.agent-tab-content .chat-form) { flex-shrink:0; }
   .agent-context { display:flex; flex-direction:column; gap:calc(var(--spacing) * 2); }
-  .agent-settings { display:flex; align-items:center; gap:calc(var(--spacing) * .5); font-size:.8em; color:var(--color-text-secondary); }
+  .agent-settings { display:flex; align-items:center; gap:calc(var(--spacing) * .5); min-width:0; font-size:.8em; color:var(--color-text-secondary); }
   .agent-setting { border:0; background:transparent; color:inherit; font:inherit; padding:0; cursor:pointer; max-width:12rem; }
   /* The whole not-ready warning: one line, the desktop app notice, and the
      refusal message if there is one. */
