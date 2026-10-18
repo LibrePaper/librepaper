@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { loadRunes } from "../helpers/runes.mjs";
 
-const { createLiveChat, MAX_RESIDENT } = await loadRunes(
+const { createLiveChat } = await loadRunes(
   new URL("../../src/lib/reader/live-chat.svelte.js", import.meta.url),
 );
 
@@ -68,15 +68,15 @@ const range = (a, b) => Array.from({ length: b - a + 1 }, (_, i) => msg(a + i));
   assert.equal(chat.state.canClear, true);
 }
 
-// At most MAX_RESIDENT messages stay, the oldest dropped.
+// Live messages are never dropped, however many are held.
 {
   const chat = createLiveChat({ slug: "s" });
-  chat.seed({ chat: range(1, MAX_RESIDENT), chat_more: false });
+  chat.seed({ chat: range(1, 1200), chat_more: false });
   assert.equal(chat.state.more, false);
-  chat.receive(msg(MAX_RESIDENT + 1));
-  assert.equal(chat.state.messages.length, MAX_RESIDENT);
-  assert.equal(chat.state.messages[0].id, id(2));
-  assert.equal(chat.state.more, true);
+  chat.receive(msg(1201));
+  assert.equal(chat.state.messages.length, 1201);
+  assert.equal(chat.state.messages[0].id, id(1));
+  assert.equal(chat.state.more, false);
 }
 
 // Older pages are fetched before the oldest id and prepended.
@@ -104,4 +104,23 @@ const range = (a, b) => Array.from({ length: b - a + 1 }, (_, i) => msg(a + i));
   assert.equal(failing.state.loadError, "nope");
   assert.equal(failing.state.messages.length, 3);
   assert.equal(failing.state.more, true);
+}
+
+// Older pages still load when many messages are already held.
+{
+  const calls = [];
+  globalThis.fetch = async (url) => {
+    calls.push(url);
+    return { ok: true, status: 200, json: async () => ({ messages: range(151, 200), more: true }) };
+  };
+  const chat = createLiveChat({ slug: "proj" });
+  chat.seed({ chat: range(201, 1400), chat_more: true });
+  assert.equal(chat.state.messages.length, 1200);
+  await chat.loadOlder();
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0], `/api/documents/proj/chat-history?before=${encodeURIComponent(id(201))}&limit=50`);
+  assert.equal(chat.state.messages.length, 1250);
+  assert.equal(chat.state.messages[0].id, id(151));
+  assert.equal(chat.state.more, true);
+  assert.equal(chat.state.loadingOlder, false);
 }

@@ -1,8 +1,8 @@
 import { authHeaders } from "../api.js";
 
-// How many messages stay in memory. The server keeps all of them; this is
-// what one open tab holds, oldest dropped first.
-export const MAX_RESIDENT = 1000;
+// This tab holds every message it has been sent, and no more. The server
+// bounds the chat by the owner's storage quota, and older pages are fetched
+// on request.
 const PAGE = 50;
 
 // The project chat as this tab holds it: the newest messages the hello
@@ -38,13 +38,6 @@ export function createLiveChat({ slug, key = "" }) {
     return [...seen.values()].sort(byId);
   }
 
-  /// Keeps the newest MAX_RESIDENT, and says so when it drops any.
-  function cap(list) {
-    if (list.length <= MAX_RESIDENT) return list;
-    state.more = true;
-    return list.slice(list.length - MAX_RESIDENT);
-  }
-
   function seed(hello) {
     generation++;
     state.loadingOlder = false;
@@ -68,7 +61,7 @@ export function createLiveChat({ slug, key = "" }) {
     // the two cannot be joined without the messages between them. The hello
     // wins, and the reader can page back from there.
     if (held.length && held.at(-1).id < incoming[0].id) {
-      state.messages = cap(union([], incoming));
+      state.messages = union([], incoming);
       state.more = more;
       return;
     }
@@ -76,7 +69,7 @@ export function createLiveChat({ slug, key = "" }) {
     // The hello's answer about older messages holds when it reaches back at
     // least as far as what was already held.
     if (!held.length || merged[0].id < held[0].id || incoming[0].id === held[0].id) state.more = more;
-    state.messages = cap(merged);
+    state.messages = merged;
   }
 
   function receive(event) {
@@ -91,17 +84,15 @@ export function createLiveChat({ slug, key = "" }) {
     if (event.type !== "chat") return false;
     if (state.messages.some((message) => message.id === event.id)) return true;
     const last = state.messages.at(-1);
-    state.messages = cap(!last || last.id < event.id
+    state.messages = !last || last.id < event.id
       ? [...state.messages, event]
-      : union(state.messages, [event]));
+      : union(state.messages, [event]);
     return true;
   }
 
   async function loadOlder() {
     const oldest = state.messages[0];
     if (state.loadingOlder || !state.more || !oldest) return;
-    const room = MAX_RESIDENT - state.messages.length;
-    if (room <= 0) return;
     const issued = generation;
     state.loadingOlder = true;
     state.loadError = "";
@@ -114,11 +105,8 @@ export function createLiveChat({ slug, key = "" }) {
       if (!response.ok) throw new Error(body.error || `Older messages could not be read (${response.status}).`);
       if (issued !== generation) return;
       const page = Array.isArray(body.messages) ? body.messages : [];
-      // A page that would pass the cap keeps its newest messages, and the
-      // rest stay on the server.
-      const kept = page.length > room ? page.slice(page.length - room) : page;
-      state.messages = union(kept, state.messages);
-      state.more = Boolean(body.more) || kept.length < page.length;
+      state.messages = union(page, state.messages);
+      state.more = Boolean(body.more);
     } catch (cause) {
       if (issued === generation) state.loadError = cause?.message || "Older messages could not be read.";
     } finally {
