@@ -235,8 +235,9 @@ try {
   resumedSocket.emit({ type: "error", id: "expired", status: 404, message: "channel not found" });
   assert.equal(fresh.current.id, "", "an expired channel is discarded locally");
   assert.equal(storage.getItem("librepaper.agent.session.https://docs.example:paper"), null);
-  await fresh.create();
-  assert.equal(fresh.current.id, "conversation-2", "the browser can create a replacement channel after expiry");
+  for (let i = 0; i < 20 && fresh.current.id !== "conversation-2"; i++) await new Promise((resolve) => setTimeout(resolve, 0));
+  assert.equal(fresh.current.id, "conversation-2", "an expired channel is replaced without asking");
+  assert.equal(fresh.current.error, "");
 } finally { fresh.dispose(); }
 
 console.log("agent-client: live socket, private capability, presence, acknowledgement and no replay passed");
