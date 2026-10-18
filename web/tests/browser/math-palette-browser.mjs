@@ -176,6 +176,15 @@ try {
   await until("escape returns to picker", () => evaluate(`document.querySelectorAll("button[data-template]").length > 0`), 5000);
   assert.equal(await evaluate("insertions().length"), before, "escape inserts nothing");
 
+  // An html document has no math forms, and a command cannot open one.
+  await evaluate('mountPalette("html")');
+  assert.equal(await count("button[data-template]"), 0, "html shows no tiles");
+  assert.ok((await evaluate(`document.querySelector(".math-palette").textContent`)).includes("Math templates need"), "html explains why");
+  await evaluate('openTemplate("fraction")');
+  assert.equal(await count("[data-math-field]"), 0, "openTemplate opens no form for html");
+  await evaluate('mountPalette("latex")');
+  await until("picker after remount", () => evaluate(`document.querySelectorAll("button[data-template]").length > 0`), 5000);
+
   // openTemplate jumps straight to a form, here the root template.
   await evaluate('openTemplate("root")');
   await until("root form", () => evaluate(`document.querySelectorAll("[data-math-field]").length >= 1 && document.querySelectorAll("button[data-template]").length === 0`), 5000);

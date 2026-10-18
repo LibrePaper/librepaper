@@ -23,6 +23,16 @@ const MATRIX_ENV = { parentheses: "pmatrix", square: "bmatrix", braces: "Bmatrix
 // double bar is the single character U+2016. "none" is the Typst none value.
 const MATRIX_DELIM = { parentheses: '"("', square: '"["', braces: '"{"', bars: '"|"', "double-bars": '"‖"', none: "#none" };
 
+// A base of more than one token is grouped before a script is attached, so
+// the script applies to all of it and a base that already carries a script
+// does not get a second one on the same side.
+const grouped = (base, typst) => {
+  const text = String(base);
+  const single = /^(?:.|\\[A-Za-z]+|\{[^{}]*\}|\([^()]*\)|#\{\d+:[^{}]*\})$/u.test(text);
+  if (single) return text;
+  return typst ? `(${text})` : `{${text}}`;
+};
+
 export const MATH_TEMPLATES = [
   {
     id: "fraction", label: "Fraction", preview: "\\frac{a}{b}",
@@ -39,20 +49,20 @@ export const MATH_TEMPLATES = [
   {
     id: "subscript", label: "Subscript", preview: "x_{i}",
     slots: [slot("base", "Base", "x"), slot("sub", "Subscript", "i")],
-    latex: v => `${v.base}_{${v.sub}}`,
-    typst: v => `${v.base}_(${v.sub})`,
+    latex: v => `${grouped(v.base, false)}_{${v.sub}}`,
+    typst: v => `${grouped(v.base, true)}_(${v.sub})`,
   },
   {
     id: "superscript", label: "Superscript", preview: "x^{2}",
     slots: [slot("base", "Base", "x"), slot("sup", "Superscript", "2")],
-    latex: v => `${v.base}^{${v.sup}}`,
-    typst: v => `${v.base}^(${v.sup})`,
+    latex: v => `${grouped(v.base, false)}^{${v.sup}}`,
+    typst: v => `${grouped(v.base, true)}^(${v.sup})`,
   },
   {
     id: "subsup", label: "Subscript and superscript", preview: "x_{i}^{2}",
     slots: [slot("base", "Base", "x"), slot("sub", "Subscript", "i"), slot("sup", "Superscript", "2")],
-    latex: v => `${v.base}_{${v.sub}}^{${v.sup}}`,
-    typst: v => `${v.base}_(${v.sub})^(${v.sup})`,
+    latex: v => `${grouped(v.base, false)}_{${v.sub}}^{${v.sup}}`,
+    typst: v => `${grouped(v.base, true)}_(${v.sub})^(${v.sup})`,
   },
   {
     id: "sum", label: "Sum", preview: "\\sum_{i=1}^{n} x_i",
@@ -101,6 +111,8 @@ export const MATH_TEMPLATES = [
   },
   {
     id: "brackets", label: "Brackets", preview: "\\left( x \\right)",
+    // The bar and norm delimiters are amsmath commands.
+    package: v => (v.kind === "bars" || v.kind === "norm" ? "amsmath" : null),
     slots: [slot("body", "Body", "x")],
     latex: v => {
       const [open, close] = BRACKETS_LATEX[v.kind ?? "parentheses"] ?? BRACKETS_LATEX.parentheses;
@@ -212,7 +224,12 @@ export function templateInsertion(template, values = {}, context = {}) {
   const from = context.selection?.from, to = context.selection?.to;
   const before = typeof context.text === "string" ? context.text[from - 1] ?? "" : "";
   const after = typeof context.text === "string" ? context.text[to] ?? "" : "";
-  text = separated(text, format, before, after);
-  if (format === "latex" && template.package) additionalEdits.push(...latexPackageEdits(template.package, context, notes));
+  // The boundary is judged on the text as it will read once the fields are
+  // filled with their placeholders, and the marked text is padded to match.
+  const expanded = text.replace(/#\{\d+:([^{}]*)\}/g, "$1");
+  const padded = separated(expanded, format, before, after);
+  text = (padded.startsWith(" ") && !expanded.startsWith(" ") ? " " : "") + text + (padded.endsWith(" ") && !expanded.endsWith(" ") ? " " : "");
+  const pkg = typeof template.package === "function" ? template.package(v) : template.package;
+  if (format === "latex" && pkg) additionalEdits.push(...latexPackageEdits(pkg, context, notes));
   return { text, additionalEdits, notes, snippet: fields > 0 };
 }

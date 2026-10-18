@@ -9,7 +9,7 @@
   import { loadKatex } from "../lib/katex.js";
 
   /** @typedef {import("../lib/insert.js").InsertContext} InsertContext */
-  /** @typedef {{ id: string, label: string, preview: string, slots: Array<{ id: string, label: string, placeholder: string, optional?: boolean }>, latex: (values: any) => string, typst: (values: any) => string, package?: string, grid?: boolean }} MathTemplate */
+  /** @typedef {{ id: string, label: string, preview: string, slots: Array<{ id: string, label: string, placeholder: string, optional?: boolean }>, latex: (values: any) => string, typst: (values: any) => string, package?: string | ((values: any) => string | null), grid?: boolean }} MathTemplate */
 
   // The prop is still called onfocus for callers. It is renamed here so the
   // element attribute onfocus on the fields cannot be confused with it.
@@ -167,8 +167,11 @@
    */
   export async function openTemplate(id) {
     const template = MATH_TEMPLATES.find((item) => item.id === id);
+    // The picker says why html has no math forms, and a command must not get
+    // past it, nor capture a target on the way.
+    if (!template || format === "html") { activeId = null; return; }
     const context = getContext?.() ?? null;
-    if (!template || !context) return;
+    if (!context) return;
     captured = context;
     values = freshValues(template, context);
     error = "";
@@ -217,6 +220,7 @@
       else if (value && typeof value === "object") Object.values(value).forEach(collect);
     };
     collect(snapshot);
+    const own = typeof active?.package === "function" ? active.package({ ...snapshot }) : active?.package;
     const names = new Set();
     for (const symbol of SYMBOLS) {
       if (!symbol.package || !symbol.latex) continue;
@@ -225,7 +229,7 @@
       if (strings.some((text) => pattern.test(text))) names.add(symbol.package);
     }
     for (const name of names) {
-      if (name !== active?.package) result.additionalEdits.push(...latexPackageEdits(name, context, result.notes));
+      if (name !== own) result.additionalEdits.push(...latexPackageEdits(name, context, result.notes));
     }
   }
 
@@ -235,6 +239,8 @@
     const snapshot = $state.snapshot(values);
     try { result = templateInsertion(active, snapshot, captured); }
     catch (cause) { error = messageOf(cause, "This math is not valid yet."); return; }
+    // Nothing reaches the document when the template wrote no text.
+    if (!result.text) { error = result.notes[0] ?? "This math is not valid yet."; return; }
     if (captured.format === "latex") addPickedPackages(result, snapshot, captured);
     try { oninsert?.(result, captured); }
     // The target can move while the form is open. The author keeps their

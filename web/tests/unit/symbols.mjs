@@ -118,6 +118,22 @@ assert.equal(templateInsertion(template('fraction'), fraction, { format: 'typst'
 assert.equal(templateInsertion(template('fraction'), fraction, { format: 'typst', text: '$x$', selection: { from: 1, to: 1, text: '' }, files: [] }).text, 'frac(a, b)', 'a closing parenthesis needs no space before a letter');
 assert.equal(templateInsertion(template('fraction'), fraction, { format: 'latex', text: '$x$', selection: { from: 1, to: 1, text: '' }, files: [] }).text, '\\frac{a}{b}');
 
+// Scripts group a base of more than one token.
+assert.equal(templateInsertion(template('superscript'), { base: 'x^2', sup: '2' }, inMath('latex')).text, '{x^2}^{2}');
+assert.equal(templateInsertion(template('superscript'), { base: 'x', sup: '2' }, inMath('latex')).text, 'x^{2}');
+assert.equal(templateInsertion(template('subscript'), { base: 'ab', sub: 'i' }, inMath('typst')).text, '(ab)_(i)');
+assert.equal(templateInsertion(template('subsup'), { base: '\\alpha', sub: 'i', sup: '2' }, inMath('latex')).text, '\\alpha_{i}^{2}');
+assert.equal(templateInsertion(template('superscript'), { sup: '2' }, inMath('latex')).text, '#{1:x}^{2}', 'a blank base is one field');
+
+// Bar brackets bring amsmath, round ones need nothing.
+assert.ok(templateInsertion(template('brackets'), { body: 'x', kind: 'bars' }, prose).additionalEdits.some(edit => edit.insert.includes('\\usepackage{amsmath}')), 'bars need amsmath');
+assert.equal(templateInsertion(template('brackets'), { body: 'x', kind: 'parentheses' }, prose).additionalEdits.length, 0);
+
+// The boundary is judged on the expanded text, not on the field marker.
+const beforeA = { format: 'typst', text: '$a$', selection: { from: 1, to: 1, text: '' }, files: [] };
+assert.equal(templateInsertion(template('integral'), { from: 'a', to: 'b', body: 'f' }, beforeA).text, 'integral_(a)^(b) f dif x ', 'the default variable runs into the a after the caret');
+assert.equal(templateInsertion(template('sum'), { from: 'i=1', to: 'n' }, beforeA).text, 'sum_(i=1)^(n) #{1:x_i} ', 'a blank body is judged by its placeholder');
+
 // Aligned equations use the align environment only in LaTeX prose, in display style.
 const alignedRows = [{ left: 'x', right: 'y' }];
 const markdownProse = { format: 'markdown', text: 'Hello', selection: { from: 5, to: 5, text: '' }, files: [] };
