@@ -1,5 +1,6 @@
 <script>
   import { onMount } from "svelte";
+  import { mode, onMode } from "../lib/theme.js";
   import { createFrameMessageReceiver } from "../lib/frame-messages.js";
   // The document, on its own origin, in a frame.
   //
@@ -43,7 +44,9 @@
       heldHeight = viewport.clientHeight;
     });
     observer.observe(viewport);
+    const stopMode = onMode((next) => tell({ type: "theme", mode: next }));
     return () => {
+      stopMode();
       window.removeEventListener("message", receiver.receive);
       receiver.dispose();
       observer.disconnect();
@@ -100,6 +103,7 @@
         receiver?.frameLoaded();
         onload?.();
         tell({ type: "reader-ready" });
+        tell({ type: "theme", mode: mode() });
       }}
       style:pointer-events={grabbing ? "none" : null}
       sandbox="allow-same-origin allow-scripts allow-popups allow-forms"
