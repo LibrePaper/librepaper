@@ -1,6 +1,9 @@
 <script>
   import { Menu } from "@skeletonlabs/skeleton-svelte";
   import MenubarMenu from "./MenubarMenu.svelte";
+  import ExplorerMenu from "./ExplorerMenu.svelte";
+  import Icon from "./Icon.svelte";
+  import { menubar } from "../lib/menubar.svelte.js";
   import Modal from "./Modal.svelte";
   import { rankEntries, entryLabel } from "../lib/bibliography.js";
   import { INSERT_ACTIONS, insertionAvailability, buildInsertion, gatherInsertEnvironments, gatherInsertTargets, insertEnvironmentFields } from "../lib/insert.js";
@@ -39,17 +42,18 @@
   let preview = $state(null);
   let dialogGeneration = 0;
 
-  /** @type {Array<[string, string[]]>} */
-  const groups = [
-    ["Structure", ["heading", "abstract", "appendix", "toc"]],
-    ["Figures and tables", ["figure", "table"]],
-    ["References", ["citation", "bibliography", "cross-reference", "label"]],
-    ["Math", ["inline-math", "display-math", "aligned-math", "gather-math", "cases", "matrix"]],
-    ["Lists", ["bulleted-list", "numbered-list", "description-list"]],
-    ["Text blocks", ["quote", "quotation", "code-block", "footnote", "link"]],
-    ["Scholarly", ["theorem", "lemma", "proposition", "definition", "proof", "example", "remark"]],
-    ["Layout", ["page-break", "horizontal-rule", "columns"]],
-    ["Advanced", ["custom-environment"]]
+  /** @typedef {string | {label: string; ids: string[]}} InsertMenuEntry */
+  // The common actions stay at the top. Everything else sits in a sub-menu
+  // named after the section it used to head.
+  /** @type {InsertMenuEntry[]} */
+  const menuTree = [
+    "figure", "table", "citation", "cross-reference", "footnote", "link", "heading",
+    { label: "Math", ids: ["inline-math", "display-math", "aligned-math", "gather-math", "cases", "matrix"] },
+    { label: "Lists", ids: ["bulleted-list", "numbered-list", "description-list"] },
+    { label: "Theorems", ids: ["theorem", "lemma", "proposition", "definition", "proof", "example", "remark"] },
+    { label: "Blocks", ids: ["quote", "quotation", "code-block"] },
+    { label: "Document", ids: ["abstract", "appendix", "toc", "bibliography", "label"] },
+    { label: "Layout", ids: ["page-break", "horizontal-rule", "columns", "custom-environment"] }
   ];
 
   /** @type {Record<string, InsertionDraft>} */
@@ -177,22 +181,46 @@
   $effect(() => {
     if (dialog && captured && dialogOpen) preview = safeBuild(dialog, insertionOptions(), captured);
   });
+  // Zag closes a sub-menu only through its own trigger, so a sub-menu left
+  // open when the bar moves on would stay on screen. Clearing the open group
+  // whenever the bar stops showing Insert closes it with its parent.
+  /** @type {string | null} */
+  let openGroup = $state(null);
+  $effect(() => { if (menubar.opened !== "insert") openGroup = null; });
 </script>
+
+{#snippet insertItem(id)}
+  {@const state = availability(id, menuContext || {})}
+  <Menu.Item value={id} class="menuitem" disabled={!state.enabled}>
+    <span class="menuitem-label">{actionLabel(id)}{#if actionById(id)?.dialog}…{/if}</span>
+    {#if state.reason}<span class="insert-reason">{state.reason}</span>{/if}
+  </Menu.Item>
+{/snippet}
+
+{#snippet subMenu(entry)}
+  {@const allDisabled = entry.ids.every((id) => !availability(id, menuContext || {}).enabled)}
+  <!-- The child menu reports its own selections, so it gets the same handler
+       as the bar's menu; Zag does not pass a sub-menu's select up to its parent. -->
+  <Menu open={openGroup === entry.label}
+        onOpenChange={(event) => { if (event.open) openGroup = entry.label; else if (openGroup === entry.label) openGroup = null; }}
+        onSelect={(chosen) => choose(chosen.value)}>
+    <Menu.TriggerItem class="menuitem" disabled={allDisabled}>
+      <span class="menuitem-label">{entry.label}</span>
+      <span class="menuitem-chevron" aria-hidden="true"><Icon name="chevron-right" size="1rem" /></span>
+    </Menu.TriggerItem>
+    <ExplorerMenu>
+      {#each entry.ids as id}{@render insertItem(id)}{/each}
+    </ExplorerMenu>
+  </Menu>
+{/snippet}
 
 <MenubarMenu id="insert" label="Insert" {disabled}
              onopen={() => { menuContext = getContext?.() || null; }}
              onselect={choose}>
   <div class="insert-scroll">
-  {#each groups as [group, ids], groupIndex}
-    {#if groupIndex}<div class="menu-separator" role="separator"></div>{/if}
-    <div class="insert-group" role="group" aria-label={group}>{group}</div>
-    {#each ids as id}
-      {@const state = availability(id, menuContext || {})}
-      <Menu.Item value={id} class="menuitem" disabled={!state.enabled}>
-        <span class="menuitem-label">{actionLabel(id)}{#if actionById(id)?.dialog}…{/if}</span>
-        {#if state.reason}<span class="insert-reason">{state.reason}</span>{/if}
-      </Menu.Item>
-    {/each}
+  {#each menuTree as entry, index}
+    {#if typeof entry !== "string" && typeof menuTree[index - 1] === "string"}<div class="menu-separator" role="separator"></div>{/if}
+    {#if typeof entry === "string"}{@render insertItem(entry)}{:else}{@render subMenu(entry)}{/if}
   {/each}
   </div>
 </MenubarMenu>
@@ -268,8 +296,7 @@
 </Modal>
 
 <style>
-  /* Aligned with the item names, not with the panel edge. */
-  .insert-group { padding: .45rem .65rem .2rem calc(var(--spacing) * 7); color: var(--color-text-secondary); font-size: .7rem; font-weight: 700; text-transform: uppercase; letter-spacing: .05em; }
+  .menuitem-chevron { display: inline-flex; margin-left: auto; padding-left: calc(var(--spacing) * 2); }
   .menu-separator { height: 1px; margin: .2rem .4rem; background: var(--color-divider); }
   .insert-reason { flex: 0 0 auto; margin-left: auto; max-width: 9rem; overflow: hidden; color: var(--color-text-secondary); font-size: .7rem; text-overflow: ellipsis; white-space: nowrap; }
   .insert-results { max-height: 16rem; overflow-y: auto; border: 1px solid var(--color-divider); border-radius: var(--radius-base); }
