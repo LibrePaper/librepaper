@@ -74,6 +74,15 @@ fi
 sed -i "s|ghcr.io/librepaper/librepaper:[^ \"]*|ghcr.io/librepaper/librepaper:$tag@$app_digest|g" "$stage/deploy/compose.yaml"
 sed -i "s|ghcr.io/librepaper/librepaper-backup:[^ \"]*|ghcr.io/librepaper/librepaper-backup:$tag@$backup_digest|g" "$stage/deploy/compose.yaml"
 
+# The helper in the release commit must read its own kit. Older helpers took
+# the digest for the version, and a kit built from such a commit strands
+# every host that runs it.
+helper_version=$(bash "$stage/deploy/manage" version 2>/dev/null || true)
+if [[ "$helper_version" != "$tag" ]]; then
+	echo "the manage helper at $commit reads the pinned version as '$helper_version', not $tag; it cannot read a digest-pinned kit" >&2
+	exit 2
+fi
+
 # Move deploy to librepaper and set permissions.
 mv "$stage/deploy" "$stage/librepaper"
 chmod 0700 "$stage/librepaper"
