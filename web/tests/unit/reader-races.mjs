@@ -1141,22 +1141,20 @@ assert.doesNotMatch(reader, /createRenderingStore|holdRendering|\/renderings\//)
   const commands = [];
   const ctx = context({
     previewTheFile: id => commands.push(`file:${id}`), openFile: 'paper.tex',
-    toggleLocalExecution: () => commands.push('local-execution'),
     setLatexOutput: mode => commands.push(`latex-${mode}`),
     chose: value => commands.push(value),
   });
   vm.runInContext(body('  function chooseViewCommand(value)', '  // The File menu.'), ctx);
-  vm.runInContext('chooseViewCommand("preview-file"); chooseViewCommand("local-execution"); chooseViewCommand("layout-split")', ctx);
-  assert.deepEqual(commands, ['file:paper.tex','local-execution','layout-split']);
+  vm.runInContext('chooseViewCommand("preview-file"); chooseViewCommand("layout-split")', ctx);
+  assert.deepEqual(commands, ['file:paper.tex','layout-split']);
   vm.runInContext('chooseViewCommand("preview-latex-html"); chooseViewCommand("preview-latex-pdf")', ctx);
   assert.deepEqual(commands.slice(-2), ['latex-html', 'latex-pdf']);
   const view = body('{#snippet viewItems()}', '{/snippet}');
   const file = body('{#snippet fileItems()}', '{/snippet}');
   assert.match(view, /Preview this file/);
   assert.match(view, /@render previewItems\(\)/);
-  // Running code is its own section of the View menu, not another engine.
-  assert.match(view, /menu-section-label">Code<\/div>/);
-  assert.match(view, /value="local-execution"/);
+  // Running code is the top bar's switch, not a View menu item.
+  assert.doesNotMatch(view, /local-execution/);
   assert.doesNotMatch(reader, /preview-quarto|preview-calepin|preview-markdown|preview-typst"/);
   assert.doesNotMatch(file, /preview-/);
   // Settings and Compile now live under File; there is no Tools menu left.
