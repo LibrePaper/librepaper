@@ -100,6 +100,7 @@ fn setup(app: &mut App) -> Result<(), Box<dyn std::error::Error>> {
     app.manage(Service::new(&first));
     app.manage(zoom::Zoom::load(app.handle()));
     app.manage(theme::Theme::load(app.handle()));
+    theme::watch_system(app.handle());
     #[cfg(target_os = "linux")]
     app.manage(drop::Dropped::default());
 
