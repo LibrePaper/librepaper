@@ -3807,8 +3807,6 @@
           label={`Layout: ${ARRANGEMENTS[layout].says}. Switch to ${ARRANGEMENTS[ARRANGEMENTS[layout].next].says}`}
           onclick={cycleLayout} />
       {/if}
-      <IconButton icon="keyboard" label="Keyboard shortcuts" tone="plain"
-                  onclick={() => void runCommand("shortcuts")} />
       <IconButton icon="settings" label="Settings" tone="plain"
                   onclick={() => openSettings()} />
     {/snippet}
