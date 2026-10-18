@@ -18,7 +18,7 @@ try {
   await writeFile(join(dir,'plot.svg'),'<svg xmlns="http://www.w3.org/2000/svg" width="10" height="10"><rect width="10" height="10"/></svg>');
   await writeFile(join(dir,'refs.bib'),'@article{smith2020,author={Smith, Jane},title={Rivers},year={2020},journal={Journal}}');
   let text='---\ntitle: Insert check\nbibliography: refs.bib\n---\n\n# Intro {#sec-intro}\n\n';
-  const options={title:'Example',src:'plot.svg',caption:'Results',label:'sample',rows:2,columns:2,header:true,alignment:'center',keys:['smith2020'],locator:'p. 3',file:'refs.bib',target:'sec-intro',brackets:'brackets',language:'python',url:'https://example.com',environment:'custom',numbered:true};
+  const options={title:'Example',src:'plot.svg',caption:'Results',label:'sample',rows:2,columns:2,header:true,alignment:'center',keys:['smith2020'],locator:'p. 3',file:'refs.bib',target:'sec-intro',language:'python',url:'https://example.com',environment:'custom',numbered:true};
   for(const {id} of INSERT_ACTIONS){
     const c={format:'quarto',path:'main.qmd',text,mainText:text,selection:{from:text.length,to:text.length,text:''},files:[{path:'refs.bib',text:'bib'}]};
     const result=buildInsertion(id,options,c);
@@ -33,5 +33,5 @@ try {
   assert.doesNotMatch(result.stderr,/ERROR|Unable to resolve|undefined cross-reference/i);
   const html=await readFile(join(dir,'main.html'),'utf8');
   for(const pattern of [/id="TOC"/,/class="citation"/,/class="csl-entry"/,/id="tbl-sample/,/id="thm-sample/,/class="math display"/,/<table/,/Headerless/,/plot.svg/])assert.match(html,pattern);
-  console.log('insert-quarto-render: all 35 shared actions rendered; TOC, bibliography, citations, tables, theorems and math verified');
+  console.log('insert-quarto-render: all 31 shared actions rendered; TOC, bibliography, citations, tables, theorems and math verified');
 } catch(error) { console.error(error.stdout, error.stderr); throw error; } finally {await rm(dir,{recursive:true,force:true});}

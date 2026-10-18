@@ -50,7 +50,7 @@
   /** @type {InsertMenuEntry[]} */
   const menuTree = [
     "figure", "table", "citation", "cross-reference", "footnote", "link", "heading",
-    { label: "Math", ids: ["inline-math", "display-math", "aligned-math", "gather-math", "cases", "matrix"] },
+    "inline-math", "display-math",
     { label: "Lists", ids: ["bulleted-list", "numbered-list", "description-list"] },
     { label: "Theorems", ids: ["theorem", "lemma", "proposition", "definition", "proof", "example", "remark"] },
     { label: "Blocks", ids: ["quote", "quotation", "code-block"] },
@@ -65,8 +65,7 @@
     table: { rows: 3, columns: 3, header: true, caption: "", label: "", alignment: "default" },
     citation: { keys: [], locator: "", style: "default" }, bibliography: { file: "" },
     "cross-reference": { target: "" }, label: { label: "" },
-    "display-math": { numbered: true, label: "" }, "aligned-math": { numbered: true, label: "" }, "gather-math": { numbered: true, label: "" },
-    cases: { rows: 2, numbered: true, label: "" }, matrix: { rows: 3, columns: 3, brackets: "parentheses" },
+    "display-math": { numbered: true, label: "" },
     "code-block": { language: "" }, footnote: { text: "" }, link: { text: "", url: "" },
     theorem: { title: "", label: "" }, lemma: { title: "", label: "" }, proposition: { title: "", label: "" },
     definition: { title: "", label: "" }, proof: { title: "", label: "" }, example: { title: "", label: "" }, remark: { title: "", label: "" },
@@ -279,14 +278,7 @@
     <label class="label">Bibliography file <select class="select" bind:value={draft.file}><option value="">Choose a file…</option>{#each files as file}<option value={file}>{file}</option>{/each}</select></label>
   {:else if dialog === "cross-reference"}
     <label class="label">Reference <select class="select" bind:value={draft.target}><option value="">Choose a heading, figure, table, or equation…</option>{#each references as ref}{@const value = ref.id || ref.label}<option value={value}>{value}</option>{/each}</select></label>
-  {:else if dialog === "matrix"}
-    <div class="grid grid-cols-2 gap-3"><label class="label">Rows <input class="input" type="number" min="1" max="20" bind:value={draft.rows} /></label><label class="label">Columns <input class="input" type="number" min="1" max="20" bind:value={draft.columns} /></label></div>
-    <label class="label">Brackets <select class="select" bind:value={draft.brackets}><option value="parentheses">( )</option><option value="brackets">Square brackets</option><option value="braces">Curly braces</option><option value="bars">Vertical bars</option><option value="doublebars">Double bars</option><option value="none">None</option></select></label>
-  {:else if dialog === "cases"}
-    <label class="label">Rows <input class="input" type="number" min="1" max="20" bind:value={draft.rows} /></label>
-    <label class="label">Label <input class="input" bind:value={draft.label} /></label>
-    <label class="flex items-center gap-2"><input type="checkbox" bind:checked={draft.numbered} disabled={captured?.format === "markdown"} /> Numbered</label>
-  {:else if ["display-math", "aligned-math", "gather-math"].includes(dialog)}
+  {:else if dialog === "display-math"}
     <label class="flex items-center gap-2"><input type="checkbox" bind:checked={draft.numbered} disabled={captured?.format === "markdown"} /> Numbered</label>
     <label class="label">Label <input class="input" bind:value={draft.label} /></label>
   {:else if dialog === "code-block"}

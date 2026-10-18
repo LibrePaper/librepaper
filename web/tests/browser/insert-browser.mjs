@@ -254,7 +254,7 @@ try {
   // The top level is the seven common actions, the two palettes, then six sub-menus, in order.
   await evaluate("setupInsert('markdown','Before AFTER')");await evaluate("selectInsert(7)");await openMenu();
   const topLevel=await evaluate(`(()=>{const trigger=document.querySelector('[data-scope="menu"][data-part="trigger"]');const content=document.getElementById(trigger.getAttribute('aria-controls'));const contentPart='[data-scope="menu"][data-part="content"]';return [...content.querySelectorAll('[data-scope="menu"][data-part="item"],[data-scope="menu"][data-part="trigger-item"]')].filter(node=>node.closest(contentPart)===content).map(node=>node.dataset.part==='item'?node.dataset.value:'submenu:'+node.textContent.trim());})()`);
-  assert.deepEqual(topLevel,["figure","table","citation","cross-reference","footnote","link","heading","palette:symbols","palette:math","submenu:Math","submenu:Lists","submenu:Theorems","submenu:Blocks","submenu:Document","submenu:Layout"],"Insert has seven direct items, two palettes and six sub-menus");
+  assert.deepEqual(topLevel,["figure","table","citation","cross-reference","footnote","link","heading","inline-math","display-math","palette:symbols","palette:math","submenu:Lists","submenu:Theorems","submenu:Blocks","submenu:Document","submenu:Layout"],"Insert has nine direct items, two palettes and five sub-menus");
   // An item in a sub-menu inserts like one at the top level.
   await chooseIn("Layout","horizontal-rule");
   await until("horizontal rule from a sub-menu inserted",()=>evaluate("/\\*\\*\\*/.test(insertState().text)"),5000);

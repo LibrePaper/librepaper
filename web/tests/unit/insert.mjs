@@ -5,7 +5,7 @@ const contexts=Object.fromEntries(['latex','typst','markdown','quarto'].map(form
   const text=format==='latex'?latex:format==='typst'?'#bibliography("refs.bib")\n= Intro <intro>\n':'# Intro\n';
   return [format,{format,path:'main.'+({latex:'tex',typst:'typ',markdown:'md',quarto:'qmd'})[format],text,mainText:text,selection:{from:format==='latex'?latex.indexOf('Content'):text.length,to:format==='latex'?latex.indexOf('Content'):text.length,text:''},files:[{path:'refs.bib',text:'@article{smith2020,title={Rivers}}'}],bibliography:[{key:'smith2020'}]}];
 }));
-assert.equal(new Set(INSERT_ACTIONS.map(a=>a.id)).size,35);
+assert.equal(new Set(INSERT_ACTIONS.map(a=>a.id)).size,31);
 for(const [format,c] of Object.entries(contexts)) {
   const table=buildInsertion('table',{rows:2,columns:2,alignment:'right',caption:'Results',label:'results'},c);
   assert.match(table.text,format==='latex'?/tabular\}\{rr/:format==='typst'?/columns: 2, align: right/:/Results/);
@@ -20,7 +20,6 @@ for(const [format,c] of Object.entries(contexts)) {
 }
 assert.equal(insertionAvailability('heading',{format:'html'}).enabled,false);
 const md=contexts.markdown;
-assert.match(buildInsertion('matrix',{rows:2,columns:3,brackets:'brackets'},md).text.replaceAll('&amp;','&'),/\\begin\{bmatrix\}\n0 & 0 & 0 \\\\\n0 & 0 & 0/);
 assert.match(buildInsertion('footnote',{},md).text,/\[\^note-1\]/);
 assert.match(buildInsertion('footnote',{},md).text,/\[\^note-1\]: Note/);
 assert.match(buildInsertion('bibliography',{file:'refs.bib'},md).additionalEdits[0].insert,/bibliography: "refs.bib"/);
@@ -37,7 +36,6 @@ assert.ok(buildInsertion('theorem',{},tex).additionalEdits.some(e=>e.insert.incl
 assert.match(buildInsertion('figure',{src:'plot.png',width:'80%',caption:'Caption'},tex).text,/width=0.8\\linewidth/);
 assert.match(buildInsertion('display-math',{numbered:false},tex).text,/equation\*/);
 assert.match(buildInsertion('heading',{title:'A & B',label:'sec-results'},tex).text,/A \\& B.*\\label\{sec-results\}/);
-assert.match(buildInsertion('matrix',{brackets:'braces'},tex).text,/Bmatrix/);
 const typ=contexts.typst;
 assert.match(buildInsertion('heading',{numbered:true,label:'h'},typ).text,/numbering: "1.1".*<h>/);
 assert.match(buildInsertion('citation',{keys:['smith2020'],style:'narrative'},typ).text,/form: "prose"/);
@@ -49,7 +47,7 @@ for(const format of ['markdown','quarto','typst']) {
 }
 const math={...md,text:'$ x + ',selection:{from:6,to:6,text:''}};
 assert.equal(insertSyntaxContext(math),'math');assert.equal(insertionAvailability('heading',math).enabled,false);
-assert.ok(!buildInsertion('matrix',{},math).text.includes('$$'));
+assert.equal(insertionAvailability('display-math',math).enabled,false);
 assert.deepEqual(gatherInsertTargets({format:'latex',text:'\\section{No label}\n\\label{real}'}).map(t=>t.id),['real']);
 assert.deepEqual(gatherInsertTargets({format:'markdown',text:'# Intro\n# Intro'}).map(t=>t.id),['intro','intro-1']);
 assert.deepEqual(gatherInsertEnvironments({format:'typst',text:'#let boxed(body) = block(body)'}),['boxed']);

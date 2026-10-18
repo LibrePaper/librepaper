@@ -38,18 +38,12 @@ function table(options) {
 }
 
 function math(id, options, context) {
-  let body = selected(context) || (id === "aligned-math" ? "x &= y \\\nz &= w" : id === "gather-math" ? "x = y \\\nz = w" : "x = y");
+  const body = selected(context) || "x = y";
   if (id === "inline-math") return finish('$' + body + '$', body);
-  if (id === "matrix") {
-    const rows = numberOf(options.rows, 3), columns = numberOf(options.columns, 3);
-    const delim = ({ brackets: '"["', braces: '"{"', bars: '"|"', doublebars: '"‖"', none: 'none' })[options.brackets] || '"("';
-    body = 'mat(delim: ' + delim + ', ' + Array.from({length: rows}, () => Array(columns).fill('0').join(', ')).join('; ') + ')';
-  }
-  if (id === "cases") body = 'cases(' + Array.from({length: numberOf(options.rows, 2)}, (_,i) => (i+1) + ' & "if" x ' + (i ? '>' : '<=') + ' 0').join(', ') + ')';
   const formula = options.inMath ? body : options.numbered === true
     ? '#math.equation(block: true, numbering: "(1)")[$ ' + body + ' $]'
     : '$ ' + body + ' $';
-  return finish(formula + (options.label ? ' <' + identifier(options.label) + '>' : ''), id === 'matrix' ? '0' : body);
+  return finish(formula + (options.label ? ' <' + identifier(options.label) + '>' : ''), body);
 }
 
 export function buildTypst(id, options = {}, context = {}) {
@@ -96,11 +90,7 @@ export function buildTypst(id, options = {}, context = {}) {
     }
     case "label": return finish(`<${label}>`, label);
     case "inline-math":
-    case "display-math":
-    case "aligned-math":
-    case "gather-math":
-    case "cases":
-    case "matrix": return math(id, options, context);
+    case "display-math": return math(id, options, context);
     case "bulleted-list": return finish((choice ? choice.split(/\r?\n/).filter(Boolean) : ["First item", "Second item"]).map((item) => `- ${item}`).join("\n"), choice || "First item");
     case "numbered-list": return finish((choice ? choice.split(/\r?\n/).filter(Boolean) : ["First item", "Second item"]).map((item) => `+ ${item}`).join("\n"), choice || "First item");
     case "description-list": return finish((choice ? choice.split(/\r?\n/).filter(Boolean) : ["Term: Description"]).map((item) => { const [term, ...rest] = item.split(/:\s*/); return `/ ${markup(term, "Term")}: ${rest.join(": ") || "Description"}`; }).join("\n"), choice || "Term");

@@ -25,7 +25,7 @@ try {
     ["heading", { title: "Methods", level: 2, numbered: false, label: "methods" }], ["abstract", {}], ["appendix", { title: "Supplement" }], ["toc", {}],
     ["figure", { src: "pixel.png", caption: "A figure", label: "fig-pixel", width: "80%" }], ["table", { rows: 2, columns: 3, caption: "Data", label: "tbl-data", alignment: "left" }],
     ["bibliography", { file: "refs" }], ["citation", { keys: ["smith2020"], style: "narrative" }], ["cross-reference", { target: "fig-pixel" }], ["label", { label: "anchor" }],
-    ["inline-math", {}], ["display-math", { numbered: false, label: "eq-one" }], ["aligned-math", {}], ["gather-math", {}], ["cases", { rows: 2 }], ["matrix", { rows: 2, columns: 3, brackets: "bmatrix" }],
+    ["inline-math", {}], ["display-math", { numbered: false, label: "eq-one" }], 
     ["bulleted-list", {}], ["numbered-list", {}], ["description-list", { terms: ["One", "Two"] }], ["quote", {}], ["quotation", {}], ["code-block", { language: "python" }], ["footnote", {}], ["link", { url: "https://example.com" }],
     ["theorem", {}], ["lemma", {}], ["proposition", {}], ["definition", {}], ["proof", {}], ["example", {}], ["remark", {}], ["page-break", {}], ["horizontal-rule", {}], ["columns", { columns: 2, gap: "12pt" }], ["custom-environment", { environment: "customenv", arguments:["Title"] }],
   ];
