@@ -47,10 +47,12 @@ service_image() {
 	' "${2:-compose.yaml}"
 }
 
-# The pinned app version in a compose file, such as v0.0.24.
+# The pinned app version in a compose file, such as v0.0.24. A digest
+# (name:tag@sha256:...) is dropped first.
 pinned_version() {
 	local image
 	image=$(service_image librepaper "${1:-compose.yaml}")
+	image=${image%%@*}
 	case "$image" in
 	*:v[0-9]*) echo "${image##*:}" ;;
 	esac
@@ -277,7 +279,7 @@ cmd_upgrade() {
 	fi
 
 	step "Pulling images"
-	# Pinned tags do not change, so an image already here is the right one.
+	# Digests never change, so an image already here is the right one.
 	for f in $(sed -n 's|^[[:space:]]*image:[[:space:]]*\([^[:space:]"]*\).*|\1|p' "$kit/compose.yaml"); do
 		docker image inspect "$f" >/dev/null 2>&1 || docker pull "$f" || die "cannot pull $f; nothing was changed"
 	done

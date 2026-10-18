@@ -20,6 +20,8 @@ on:
 permissions:
   contents: write
   packages: write
+  id-token: write
+  attestations: write
 
 jobs:
   publish:
@@ -66,7 +68,8 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - uses: docker/build-push-action@v6
+      - id: app_image
+        uses: docker/build-push-action@v6
         if: steps.resolve.outputs.proceed == 'true'
         with:
           context: release-source
@@ -79,7 +82,8 @@ jobs:
             ghcr.io/librepaper/librepaper:${{ steps.resolve.outputs.tag }}
           provenance: false
 
-      - uses: docker/build-push-action@v6
+      - id: backup_image
+        uses: docker/build-push-action@v6
         if: steps.resolve.outputs.proceed == 'true'
         with:
           context: release-source
@@ -99,11 +103,26 @@ jobs:
         env:
           TAG: ${{ steps.resolve.outputs.tag }}
           RELEASE_SHA: ${{ steps.resolve.outputs.sha }}
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          APP_DIGEST: ${{ steps.app_image.outputs.digest }}
+          BACKUP_DIGEST: ${{ steps.backup_image.outputs.digest }}
         run: |
           mkdir -p "$RUNNER_TEMP/deploy-kit"
           bash tools/release/package-deploy-kit.sh \
-            "$TAG" release-source "$RUNNER_TEMP/deploy-kit" "$RELEASE_SHA"
+            "$TAG" release-source "$RUNNER_TEMP/deploy-kit" "$RELEASE_SHA" \
+            "$APP_DIGEST" "$BACKUP_DIGEST"
+
+      - name: Attest deployment kit
+        if: steps.resolve.outputs.proceed == 'true'
+        uses: actions/attest@v4
+        with:
+          subject-path: ${{ runner.temp }}/deploy-kit/librepaper-deploy.tar.gz
+
+      - name: Upload deployment kit
+        if: steps.resolve.outputs.proceed == 'true'
+        env:
+          TAG: ${{ steps.resolve.outputs.tag }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
           gh release upload "$TAG" \
             "$RUNNER_TEMP/deploy-kit/librepaper-deploy.tar.gz" \
             --clobber

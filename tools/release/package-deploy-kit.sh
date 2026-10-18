@@ -2,10 +2,10 @@
 set -euo pipefail
 
 usage() {
-	echo "usage: package-deploy-kit.sh vMAJOR.MINOR.PATCH REPOSITORY OUTPUT_DIR COMMIT_SHA" >&2
+	echo "usage: package-deploy-kit.sh vMAJOR.MINOR.PATCH REPOSITORY OUTPUT_DIR COMMIT_SHA APP_DIGEST BACKUP_DIGEST" >&2
 }
 
-if [[ $# != 4 ]]; then
+if [[ $# != 6 ]]; then
 	usage
 	exit 2
 fi
@@ -14,6 +14,8 @@ tag=$1
 repository=$2
 output_dir=$3
 commit=$4
+app_digest=$5
+backup_digest=$6
 if [[ ! "$tag" =~ ^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]]; then
 	echo "expected a stable v-prefixed release tag, got: $tag" >&2
 	exit 2
@@ -22,6 +24,12 @@ if [[ ! "$commit" =~ ^[[:xdigit:]]{40}$ ]]; then
 	echo "expected a 40-character release commit SHA" >&2
 	exit 2
 fi
+for digest in "$app_digest" "$backup_digest"; do
+	if [[ ! "$digest" =~ ^sha256:[0-9a-f]{64}$ ]]; then
+		echo "expected an image manifest digest (sha256:...), got: $digest" >&2
+		exit 2
+	fi
+done
 
 # The kit is the whole deploy/ directory; check the files this script depends
 # on exist in the release commit.
@@ -62,9 +70,9 @@ if [[ "$backup_tag_count" != 1 ]]; then
 	exit 2
 fi
 
-# Replace image tags with the release tag.
-sed -i "s|ghcr.io/librepaper/librepaper:[^ \"]*|ghcr.io/librepaper/librepaper:$tag|g" "$stage/deploy/compose.yaml"
-sed -i "s|ghcr.io/librepaper/librepaper-backup:[^ \"]*|ghcr.io/librepaper/librepaper-backup:$tag|g" "$stage/deploy/compose.yaml"
+# Replace image tags with the release tag and pin each image by its digest.
+sed -i "s|ghcr.io/librepaper/librepaper:[^ \"]*|ghcr.io/librepaper/librepaper:$tag@$app_digest|g" "$stage/deploy/compose.yaml"
+sed -i "s|ghcr.io/librepaper/librepaper-backup:[^ \"]*|ghcr.io/librepaper/librepaper-backup:$tag@$backup_digest|g" "$stage/deploy/compose.yaml"
 
 # Move deploy to librepaper and set permissions.
 mv "$stage/deploy" "$stage/librepaper"

@@ -147,6 +147,8 @@ printf 'committed init\n' > "$kit_source/deploy/postgres-init.sql"
 "$real_git" -C "$kit_source" add deploy
 "$real_git" -C "$kit_source" commit -qm 'release deployment files'
 kit_commit=$("$real_git" -C "$kit_source" rev-parse HEAD)
+app_digest="sha256:$(printf 'a%.0s' $(seq 1 64))"
+backup_digest="sha256:$(printf 'b%.0s' $(seq 1 64))"
 
 # deploy/ is the download: any committed file under it ships.
 printf 'shipped\n' > "$kit_source/deploy/extra"
@@ -160,7 +162,7 @@ printf 'operator secret\n' > "$kit_source/deploy/.env"
 printf 'untracked secret\n' > "$kit_source/deploy/leaked-backup.txt"
 
 # Test with the first commit (clean files, no extra file yet)
-PATH="${real_git%/*}:$PATH" bash "$root/tools/release/package-deploy-kit.sh" v1.2.3 "$kit_source" "$kit_output" "$kit_commit"
+PATH="${real_git%/*}:$PATH" bash "$root/tools/release/package-deploy-kit.sh" v1.2.3 "$kit_source" "$kit_output" "$kit_commit" "$app_digest" "$backup_digest"
 kit_archive="$kit_output/librepaper-deploy.tar.gz"
 kit_extract="$tmp/deploy-extracted"
 mkdir "$kit_extract"
@@ -183,8 +185,19 @@ compose_content=$(cat "$kit_extract/librepaper/compose.yaml")
 [[ "$compose_content" == *'ghcr.io/librepaper/librepaper-backup:v1.2.3'* ]] || fail 'deploy kit did not rewrite backup image tag'
 [[ "$compose_content" != *'v0.0.21'* ]] || fail 'deploy kit did not replace original version tag'
 
+# Verify both images are pinned by the digests passed to the packager
+[[ "$compose_content" == *"ghcr.io/librepaper/librepaper:v1.2.3@$app_digest"* ]] || fail 'deploy kit did not pin the app image digest'
+[[ "$compose_content" == *"ghcr.io/librepaper/librepaper-backup:v1.2.3@$backup_digest"* ]] || fail 'deploy kit did not pin the backup image digest'
+
 # The manage helper ships and stays executable
 [[ -x "$kit_extract/librepaper/manage" ]] || fail 'archive lost the manage helper or its executable bit'
+
+# The real helper reads the version past the digest. The fixture's manage is a stub.
+manage_dir="$tmp/manage-version"
+mkdir -p "$manage_dir"
+cp "$root/deploy/manage" "$manage_dir/manage"
+printf 'services:\n  librepaper:\n    image: ghcr.io/librepaper/librepaper:v1.2.3@%s\n' "$app_digest" > "$manage_dir/compose.yaml"
+[[ "$(bash "$manage_dir/manage" version)" == v1.2.3 ]] || fail 'manage version did not strip the image digest'
 
 # Verify untracked files are not included
 [[ ! -e "$kit_extract/librepaper/leaked-backup.txt" ]] || fail 'archive included untracked file'
@@ -198,13 +211,21 @@ compose_content=$(cat "$kit_extract/librepaper/compose.yaml")
 extra_output="$tmp/deploy-output-extra"
 extra_extract="$tmp/deploy-extracted-extra"
 mkdir "$extra_output" "$extra_extract"
-PATH="${real_git%/*}:$PATH" bash "$root/tools/release/package-deploy-kit.sh" v1.2.3 "$kit_source" "$extra_output" "$extra_commit"
+PATH="${real_git%/*}:$PATH" bash "$root/tools/release/package-deploy-kit.sh" v1.2.3 "$kit_source" "$extra_output" "$extra_commit" "$app_digest" "$backup_digest"
 tar -C "$extra_extract" -xzf "$extra_output/librepaper-deploy.tar.gz"
 [[ "$(cat "$extra_extract/librepaper/extra")" == shipped ]] || fail 'a file committed under deploy/ did not ship'
 
 # Reject prerelease tags
-if PATH="${real_git%/*}:$PATH" bash "$root/tools/release/package-deploy-kit.sh" v1.2.3-rc.1 "$kit_source" "$kit_output" "$kit_commit" >/dev/null 2>&1; then
+if PATH="${real_git%/*}:$PATH" bash "$root/tools/release/package-deploy-kit.sh" v1.2.3-rc.1 "$kit_source" "$kit_output" "$kit_commit" "$app_digest" "$backup_digest" >/dev/null 2>&1; then
   fail 'deploy kit accepted a prerelease tag'
+fi
+
+# Reject image references that are not sha256 manifest digests
+if PATH="${real_git%/*}:$PATH" bash "$root/tools/release/package-deploy-kit.sh" v1.2.3 "$kit_source" "$kit_output" "$kit_commit" "${app_digest#sha256:}" "$backup_digest" >/dev/null 2>&1; then
+  fail 'deploy kit accepted an app digest without the sha256: prefix'
+fi
+if PATH="${real_git%/*}:$PATH" bash "$root/tools/release/package-deploy-kit.sh" v1.2.3 "$kit_source" "$kit_output" "$kit_commit" "$app_digest" "sha256:abc" >/dev/null 2>&1; then
+  fail 'deploy kit accepted a short backup digest'
 fi
 
 # Reject enabled resticprofile.toml
@@ -212,7 +233,7 @@ printf '[resticprofile]\nrepository = "s3://private-bucket"\n' > "$kit_source/de
 "$real_git" -C "$kit_source" add deploy/resticprofile.toml
 "$real_git" -C "$kit_source" commit -qm 'enable restic credentials in committed profile'
 enabled_restic_commit=$("$real_git" -C "$kit_source" rev-parse HEAD)
-if PATH="${real_git%/*}:$PATH" bash "$root/tools/release/package-deploy-kit.sh" v1.2.3 "$kit_source" "$kit_output" "$enabled_restic_commit" >/dev/null 2>&1; then
+if PATH="${real_git%/*}:$PATH" bash "$root/tools/release/package-deploy-kit.sh" v1.2.3 "$kit_source" "$kit_output" "$enabled_restic_commit" "$app_digest" "$backup_digest" >/dev/null 2>&1; then
   fail 'deploy kit accepted an enabled restic profile'
 fi
 

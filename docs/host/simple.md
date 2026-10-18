@@ -35,7 +35,7 @@ Everything is on one machine, so losing the VPS loses it all until [backups](adv
 
 ## Install
 
-Each LibrePaper release comes with one download that contains everything the VPS needs: the Compose file that starts the four services, `librepaper.toml` for your settings, and the backup and Caddy configuration. It also includes `./manage`, the helper used below. Run this on the VPS, over SSH. It unpacks into a `librepaper/` directory that is private to you (mode 700).
+Each LibrePaper release comes with one download that contains everything the VPS needs: the Compose file that starts the four services, `librepaper.toml` for your settings, and the backup and Caddy configuration. It also includes `./manage`, the helper used below. The download pins each image by its digest, so it always runs the same images. Run this on the VPS, over SSH. It unpacks into a `librepaper/` directory that is private to you (mode 700).
 
 ```sh
 curl -fsSL https://github.com/LibrePaper/librepaper/releases/latest/download/librepaper-deploy.tar.gz | tar xz
@@ -268,15 +268,14 @@ Caddy obtains a certificate the first time a name is visited, so the first reque
 - It checks your configuration with the new release before switching. If a check fails, nothing switches.
 - It keeps your `.toml` files and `caddy/local.d/`.
 - It refuses to move to an older release.
-- It leaves the previous release's images on disk, about 250 MB per upgrade. `docker image prune` keeps them, because they still carry their version tags.
+- It leaves the previous release's images on disk, about 250 MB per upgrade. `docker image prune` keeps them, because they are still referenced by digest.
 
 The server migrates the schema at startup. `compose.yaml` is replaced on every upgrade. Put your own changes in `compose.override.yaml`.
 
 To free the space old releases take, remove every LibrePaper image except the running one:
 
 ```sh
-v=$(./manage version)
-docker images --format '{{.Repository}}:{{.Tag}}' | grep '^ghcr.io/librepaper/' | grep -v -e ":$v\$" -e ':<none>$' | xargs -r docker rmi
+docker images --digests --format '{{.Repository}}@{{.Digest}}' | grep '^ghcr.io/librepaper/' | xargs -r docker rmi
 ```
 
-`docker rmi` refuses an image that a container still uses, so this never removes the running release. Older releases are not needed afterwards, because `./manage upgrade` refuses to move back to one.
+`docker rmi` refuses an image that a container still uses, so this never removes the running release. It prints an error for each image it keeps. Older releases are not needed afterwards, because `./manage upgrade` refuses to move back to one.
