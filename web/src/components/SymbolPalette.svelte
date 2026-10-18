@@ -170,7 +170,11 @@
       <PanelTabs id="symbols" label="Symbol categories" tabs={CATEGORIES} value={tab} onchange={chooseTab} />
     {/if}
 
-    <div class="symbol-body">
+    <!-- The pane the selected tab controls. The strip names it
+         `symbols-pane-<tab>`, and a selected tab whose pane nothing answers
+         to is an invalid aria-controls. The select at narrow widths names
+         no pane, so the body carries none there. -->
+    <div class="symbol-body" id={narrow ? undefined : `symbols-pane-${tab}`} role={narrow ? undefined : "tabpanel"} aria-labelledby={narrow ? undefined : `symbols-tab-${tab}`}>
       {#if tab === "emoji"}
         {#if noticeShown()}
           <p class="panel-muted format-notice">Emoji in LaTeX need LuaLaTeX and the emoji package, which is added on insert.</p>

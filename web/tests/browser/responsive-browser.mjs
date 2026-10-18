@@ -526,8 +526,14 @@ try {
       if (!rect || !trigger || Math.abs(rect.right - trigger.right) > 1 || Math.abs(rect.top - trigger.bottom - 8) > 1) return null;
       return { left: rect.left, right: rect.right, top: rect.top, bottom: rect.bottom, width: rect.width, triggerRight: trigger.right, itemsClient: items?.clientHeight, itemsScroll: items?.scrollHeight, pointerEvents: frame ? getComputedStyle(frame).pointerEvents : 'missing', innerHeight: window.innerHeight };
     })()`), 3000);
-    assert.ok(Math.abs(panels.itemsClient - panels.itemsScroll) <= 1, 'the Panels panel is as tall as its items');
-    assert.ok(panels.bottom < panels.innerHeight - 8, 'the Panels panel stops at its last item');
+    // The list is as tall as its rows when the room between the top bar and
+    // the bottom of the window holds them. An editor's rows, with the two
+    // palettes, outgrow an 844px phone, so the list then takes the whole
+    // room and scrolls. Either way the panel ends above the bottom of the
+    // window, and a press below it is a press outside.
+    const fits = Math.abs(panels.itemsClient - panels.itemsScroll) <= 1;
+    if (fits) assert.ok(panels.bottom < panels.innerHeight - 8, 'the Panels panel stops at its last item: ' + JSON.stringify(panels));
+    else assert.ok(panels.bottom <= panels.innerHeight - 8 && panels.bottom >= panels.innerHeight - 16, 'a scrolling Panels panel takes the room down to the bottom margin: ' + JSON.stringify(panels));
     assert.equal(panels.pointerEvents, 'none', 'the frame is deaf while the Panels menu is open');
     await click(`${panelMenu} [data-menu-id="${id}"]`);
     const opened = await until(`${id} menu from Panels`, () => b.evaluate(`(() => {
@@ -562,7 +568,8 @@ try {
   assert.ok(menuItems.some(item => item.id === 'file' && item.text.includes('File')), 'File menu item has correct id and text');
   const menuPanels = await b.evaluate(`(() => [...document.querySelectorAll(${JSON.stringify(`${panelMenu} [data-panel-id]`)})].map(node => ({id:node.dataset.panelId,label:node.getAttribute('aria-label'),text:node.textContent.trim()})))()`);
   assert.deepEqual(menuPanels.map(item => [item.id,item.label,item.text]), [
-    ['files','Files','Files'],['outline','Outline','Outline'],['collaboration','Collaboration','Collaboration'],
+    ['files','Files','Files'],['outline','Outline','Outline'],['symbols','Symbols','Symbols'],['math','Math','Math'],
+    ['collaboration','Collaboration','Collaboration'],
     ['changes','Changes','Changes'],['agent','Agent','Agent'],['history','History','History'],
     ['share','Share','Share'],['diagnostics','Diagnostics','Diagnostics']
   ], 'the Panels menu names every allowed workspace panel');
