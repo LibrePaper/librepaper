@@ -1112,7 +1112,7 @@ async fn compaction_cost_release_benchmark() {
                 KEYSTROKE.as_millis(),
             );
         };
-        let (through, snapshot, log_vector, changes) = snapshot;
+        let (through, snapshot, log_vector, changes, entry_is_shallow) = snapshot;
 
         // Step 4.
         let at = Instant::now();
@@ -1121,6 +1121,7 @@ async fn compaction_cost_release_benchmark() {
             &log_vector,
             changes,
             librepaper::log::sequencer::SnapshotMode::Full,
+        entry_is_shallow,
         )
         .expect("the snapshot covers the log");
         let verification_us = micros(at);
@@ -1461,7 +1462,7 @@ async fn compact_seeded_document(
         }
         tokio::time::sleep(keystroke / 4).await;
     };
-    let (through, snapshot, log_vector, changes) = snapshot;
+    let (through, snapshot, log_vector, changes, entry_is_shallow) = snapshot;
 
     // Step 4.
     let at = Instant::now();
@@ -1470,6 +1471,7 @@ async fn compact_seeded_document(
         &log_vector,
         changes,
         librepaper::log::sequencer::SnapshotMode::Full,
+    entry_is_shallow,
     )
     .expect("the snapshot covers the log");
     let verification_us = micros(at);

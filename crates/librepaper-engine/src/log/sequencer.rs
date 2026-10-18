@@ -2432,10 +2432,14 @@ impl Sequencer {
     /// warm entry at head with an empty buffer -- and the snapshot exported
     /// from it. An entry that is ahead is not used; the caller waits for the
     /// next opportunity.
+    ///
+    /// The last element says whether the decoded entry is itself shallow,
+    /// which is the case after a trim; a full export of such an entry is
+    /// shallow again.
     pub async fn snapshot_at_log_vector(
         &self,
         mode: SnapshotMode,
-    ) -> Result<Option<(i64, Vec<u8>, Vec<u8>, usize)>> {
+    ) -> Result<Option<(i64, Vec<u8>, Vec<u8>, usize, bool)>> {
         let mut inner = self.inner.lock().await;
         inner.writable()?;
         if !inner.buffer.is_empty() {
@@ -2462,6 +2466,7 @@ impl Sequencer {
         // which is what keeps the cloned handle at the vector just read:
         // nothing can import into this entry until this returns.
         let doc = cache.doc.clone();
+        let entry_is_shallow = doc.is_shallow();
         let _turn = super::admission::heavy().await;
         let snapshot = tokio::task::spawn_blocking(move || match mode {
             SnapshotMode::Full => doc.export(ExportMode::Snapshot),
@@ -2472,7 +2477,13 @@ impl Sequencer {
         .await
         .map_err(|error| SequencerError::Loro(error.to_string()))?
         .map_err(|error| SequencerError::Loro(error.to_string()))?;
-        Ok(Some((through, snapshot, log_vector.encode(), changes)))
+        Ok(Some((
+            through,
+            snapshot,
+            log_vector.encode(),
+            changes,
+            entry_is_shallow,
+        )))
     }
 
     /// §8.4 step 5's lock. Everything that reads the base and the rows
