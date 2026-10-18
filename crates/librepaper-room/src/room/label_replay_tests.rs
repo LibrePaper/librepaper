@@ -20,15 +20,15 @@ use librepaper_engine::storage::store::{DocumentInput, MutationActor, Store};
 
 const PAPER: &str = "# Interval estimates\n\nThe *interval* covers the mean of the posterior.\n";
 
-struct Deployment {
-    rooms: Rooms,
-    slug: String,
-    account_id: Uuid,
+pub(super) struct Deployment {
+    pub(super) rooms: Rooms,
+    pub(super) slug: String,
+    pub(super) account_id: Uuid,
     _writer: librepaper_engine::storage::postgres::WriterLease,
     _objects: tempfile::TempDir,
 }
 
-async fn deployment(slug: &str) -> Option<Deployment> {
+pub(super) async fn deployment(slug: &str) -> Option<Deployment> {
     let catalog = librepaper_engine::testing::catalog().await?;
     let writer = catalog.claim_writer().await.unwrap();
     let account = catalog

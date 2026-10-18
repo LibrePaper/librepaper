@@ -1097,6 +1097,11 @@ impl Sequencer {
         )
     }
 
+    /// The bytes the ledger currently holds for this document's owner.
+    pub fn owner_storage_bytes(&self) -> i64 {
+        self.ledger.owner_bytes(self.owner_id)
+    }
+
     /// Moves the owner's and the deployment's in-memory storage figures.
     pub fn charge_storage(&self, delta: i64) {
         self.ledger.charge(self.owner_id, delta);

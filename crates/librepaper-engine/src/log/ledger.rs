@@ -55,6 +55,12 @@ impl StorageLedger {
         }
     }
 
+    /// The bytes currently charged to one owner. An owner with no figure
+    /// counts as zero.
+    pub fn owner_bytes(&self, owner: Uuid) -> i64 {
+        self.owners.lock().unwrap().get(&owner).copied().unwrap_or(0)
+    }
+
     /// Returns the reason a quota would be exceeded, or None if it would not.
     /// An owner with no figure counts as zero.
     pub fn would_exceed(

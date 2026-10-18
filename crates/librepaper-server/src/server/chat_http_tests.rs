@@ -440,13 +440,13 @@ async fn only_the_owner_clears_chat() {
     let (_, body) = history(&fixture, "", Some(&bearer(&fixture.owner)), None).await;
     assert!(body["messages"].as_array().unwrap().is_empty());
     assert_eq!(body["more"], false);
-    let (rows, bytes) = fixture
+    let cleared = fixture
         .deployment_parts
         .catalog
-        .clear_chat(fixture.document_id)
+        .clear_chat(fixture.document_id, &[])
         .await
         .unwrap();
-    assert_eq!((rows, bytes), (0, 0));
+    assert_eq!((cleared.rows, cleared.bytes), (0, 0));
     finish(fixture).await;
 }
 
