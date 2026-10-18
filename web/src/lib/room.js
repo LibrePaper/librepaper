@@ -26,6 +26,8 @@ export function openRoom(slug, { onMessage, onConnected, onSourceChanged, key = 
   let closed = false;
   let heartbeat = null;
   let awaitingPong = null;
+  let reconnects = 0;
+  let lastCloseCode = null;
 
   // How often the socket is asked whether it is alive, and how long the
   // answer may take. Twenty-five seconds sits under the sixty a typical NAT
@@ -111,8 +113,10 @@ export function openRoom(slug, { onMessage, onConnected, onSourceChanged, key = 
       if (message?.type === "source-changed") onSourceChanged?.(message.digest);
       onMessage(message);
     };
-    next.onclose = () => {
+    next.onclose = (event) => {
       if (closed || current !== generation || socket !== next) return;
+      lastCloseCode = event.code;
+      reconnects++;
       stopHeartbeat();
       connected(false);
       // Jittered, because every client of a server that restarted is holding
@@ -154,6 +158,12 @@ export function openRoom(slug, { onMessage, onConnected, onSourceChanged, key = 
   }
 
   return {
+    /// What a diagnostics report may say about the socket: its state, how
+    /// many times it has dropped, and why it last closed.
+    status() {
+      const states = ["connecting", "open", "closing", "closed"];
+      return { socket: socket ? states[socket.readyState] : "none", reconnects, lastCloseCode };
+    },
     // Ephemeral events have no HTTP fallback: if nobody has a live room
     // socket, there is deliberately nowhere to leave them.
     sendLive(message) {
