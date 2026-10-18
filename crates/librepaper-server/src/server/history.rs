@@ -373,6 +373,8 @@ struct TrimRetained {
     referenced: Vec<Vec<u8>>,
     /// The ids in the room's chat buffer, read under the chat lock.
     buffered_chat: Vec<uuid::Uuid>,
+    /// The trimming account. Chat is deleted only if it owns the document.
+    chat_owner: Option<uuid::Uuid>,
 }
 
 impl librepaper_engine::log::Command for TrimRetained {
@@ -415,6 +417,7 @@ impl librepaper_engine::log::Command for TrimRetained {
                     self.document_id,
                     &self.referenced,
                     &self.buffered_chat,
+                    self.chat_owner,
                 )
                 .await
                 .map_err(librepaper_engine::log::CommandError::from)
@@ -1062,17 +1065,21 @@ impl Server {
             catalog: self.store.catalog.clone(),
             referenced: Vec::new(),
             buffered_chat: chat.ids(),
+            chat_owner: current_who.account_id(),
         };
         let outcome = match room.command(&authority, &mut command).await {
             Ok(outcome) => outcome,
             Err(error) => return command_reply("trim history", error),
         };
-        let waiting = chat.discard_unstored(&outcome.chat_stored_buffered);
-        room.chat_discarded();
-        room.log().charge_storage(-outcome.chat_bytes);
-        room.log().charge_storage(-waiting);
-        room.broadcast_chat(None, &json!({"type": "chat-cleared"}))
-            .await;
+        // Only the owner's trim deletes chat; an editor's trim leaves it alone.
+        if outcome.chat_cleared {
+            let waiting = chat.discard_unstored(&outcome.chat_stored_buffered);
+            room.chat_discarded();
+            room.log().charge_storage(-outcome.chat_bytes);
+            room.log().charge_storage(-waiting);
+            room.broadcast_chat(None, &json!({"type": "chat-cleared"}))
+                .await;
+        }
         drop(chat);
         // The ledger is a coarse running total, so move it by what was freed.
         // A failed lookup leaves it alone: admission reloads the owner's total from the catalogue.

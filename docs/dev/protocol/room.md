@@ -182,7 +182,7 @@ Clearing chat is owner-only. The client sends `{"type":"chat-clear"}`.
   including the sender.
 - Otherwise the server replies with `{"type":"error","message":"only the owner can clear chat"}`.
 
-A successful trim also broadcasts `{"type":"chat-cleared"}`.
+Only a history trim by the owner deletes chat and broadcasts `{"type":"chat-cleared"}`. An editor's trim leaves chat alone.
 
 When the owner's storage is full, a send gets
 `{"type":"error","message":"the project owner's storage is full","temp_id":...}`.

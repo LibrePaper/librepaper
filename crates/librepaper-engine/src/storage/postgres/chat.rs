@@ -360,15 +360,43 @@ mod tests {
         let charged = catalog.insert_chat_messages(document, &rows).await.unwrap();
         let mut tx = catalog.begin_writer_transaction().await.unwrap();
         let outcome = catalog
-            .trim_retained_in_transaction(&mut tx, document, &[], &[])
+            .trim_retained_in_transaction(&mut tx, document, &[], &[], Some(owner.id))
             .await
             .unwrap();
         tx.commit().await.unwrap();
+        assert!(outcome.chat_cleared);
         assert_eq!(outcome.chat_messages, 1);
         assert_eq!(outcome.chat_bytes, charged);
         assert_eq!(chat_bytes(&catalog, document).await, 0);
         let (left, _) = catalog.chat_page(document, None, 10).await.unwrap();
         assert!(left.is_empty());
+    }
+
+    #[tokio::test]
+    #[ignore = "requires LIBREPAPER_TEST_POSTGRES_URL"]
+    async fn trim_by_a_non_owner_keeps_the_chat() {
+        let catalog = catalog().await;
+        let _writer = catalog.claim_writer().await.unwrap();
+        let owner = account(&catalog).await;
+        let editor = account(&catalog).await;
+        let document = project(&catalog, &owner).await;
+        let rows = vec![message(Some(owner.id), "survives an editor's trim")];
+        let charged = catalog.insert_chat_messages(document, &rows).await.unwrap();
+        for trimmer in [None, Some(editor.id)] {
+            let mut tx = catalog.begin_writer_transaction().await.unwrap();
+            let outcome = catalog
+                .trim_retained_in_transaction(&mut tx, document, &[], &[], trimmer)
+                .await
+                .unwrap();
+            tx.commit().await.unwrap();
+            assert!(!outcome.chat_cleared);
+            assert_eq!(outcome.chat_messages, 0);
+            assert_eq!(outcome.chat_bytes, 0);
+            assert!(outcome.chat_stored_buffered.is_empty());
+            assert_eq!(chat_bytes(&catalog, document).await, charged);
+            let (left, _) = catalog.chat_page(document, None, 10).await.unwrap();
+            assert_eq!(left.len(), 1);
+        }
     }
 
     #[tokio::test]

@@ -12,6 +12,7 @@
 use time::OffsetDateTime;
 use uuid::Uuid;
 
+use super::chat::ChatCleared;
 use super::{Error, PostgresCatalog, Result};
 
 /// A row to write. `sequence` is assigned here, under the document lock, so
@@ -83,6 +84,9 @@ pub struct TrimOutcome {
     /// The buffered chat ids that were already stored, which the caller must
     /// not credit again from its buffer.
     pub chat_stored_buffered: Vec<Uuid>,
+    /// Whether the chat was deleted. It is false when the trimming account
+    /// did not own the document, in which case the chat fields stay empty.
+    pub chat_cleared: bool,
 }
 
 const SELECT: &str = "SELECT l.id,l.document_id,l.sequence,l.source_sequence,l.vector,l.frontier,l.tree_digest,\
@@ -531,20 +535,22 @@ impl PostgresCatalog {
             .map_err(Error::from)
     }
 
-    /// Deletes every label, archive and chat message of the document, and every asset row
+    /// Deletes every label and archive of the document, and every asset row
     /// whose digest is not in `referenced` and that is older than the one-hour
     /// upload grace. The grace exists because an upload records its row before
     /// the edit that names it in the document arrives, so a fresh unnamed figure
     /// may be about to be named. Note that 0001_catalog.sql's "nothing deletes
     /// from this table" on document_assets now has this one exception besides
     /// the document's own cascade. Runs inside the caller's fenced command
-    /// transaction.
+    /// transaction. The chat is deleted too, but only when `chat_owner` is the
+    /// account that owns the document, checked here under a row lock.
     pub async fn trim_retained_in_transaction(
         &self,
         tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
         document_id: Uuid,
         referenced: &[Vec<u8>],
         buffered_chat: &[Uuid],
+        chat_owner: Option<Uuid>,
     ) -> Result<TrimOutcome> {
         // Labels first: document_labels has an FK (document_id, archive_key) ->
         // document_archives ON DELETE CASCADE, so deleting labels first lets
@@ -570,9 +576,21 @@ impl PostgresCatalog {
         .bind(referenced.to_vec())
         .fetch_all(&mut **tx)
         .await?;
-        let chat = self
-            .clear_chat_in_transaction(tx, document_id, buffered_chat)
-            .await?;
+        let mut chat_cleared = false;
+        let mut chat = ChatCleared::default();
+        if let Some(trimmer) = chat_owner {
+            let owner: Option<Uuid> =
+                sqlx::query_scalar("SELECT owner_id FROM documents WHERE id=$1 FOR UPDATE")
+                    .bind(document_id)
+                    .fetch_optional(&mut **tx)
+                    .await?;
+            if owner == Some(trimmer) {
+                chat = self
+                    .clear_chat_in_transaction(tx, document_id, buffered_chat)
+                    .await?;
+                chat_cleared = true;
+            }
+        }
         Ok(TrimOutcome {
             versions,
             version_bytes: archive_bytes.iter().sum(),
@@ -581,6 +599,7 @@ impl PostgresCatalog {
             chat_messages: chat.rows,
             chat_bytes: chat.bytes,
             chat_stored_buffered: chat.stored_buffered,
+            chat_cleared,
         })
     }
 

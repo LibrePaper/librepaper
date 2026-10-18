@@ -61,8 +61,8 @@ The browser also keeps data of its own on your device.
 - **Accounts** that have not signed in for 365 days are erased. Every sign-in resets the clock. See [erasing an account](#erasing-an-account).
 - **Documents** stay until their owner deletes them or the owner's account is erased.
 - **Deleted projects** stay in the trash for seven days. Then the project is purged with its files, comments, replies, chat, history and share links. Emptying the trash purges it at once.
-- **Edit history and named versions** stay as long as the document exists. An owner can trim history, which permanently removes older history, named versions and project chat. See [storage and history](./architecture/document.html#storage-and-history).
-- **Project chat** stays until the owner clears it, trims the project's history, or deletes the project. Chat counts toward the owner's storage. Clearing chat deletes it at once.
+- **Edit history and named versions** stay as long as the document exists. An owner can trim history, which permanently removes older history and named versions. When the owner trims, it also removes project chat. An editor's trim leaves chat. See [storage and history](./architecture/document.html#storage-and-history).
+- **Project chat** stays until the owner clears it, the owner trims the project's history, or the owner deletes the project. Chat counts toward the owner's storage. Clearing chat deletes it at once.
 - **Share links** expire after seven days unless the owner picks a longer time or no expiry.
 - **Sessions** end after 30 days. Signing out clears this browser's cookie but does not cancel a copied one. Erasing the account ends every session.
 - **Operational numbers** are kept for 400 days and are not backed up.
