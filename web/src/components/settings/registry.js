@@ -2,15 +2,13 @@
 // The dialog draws its navigation from this and searches it; what a category
 // shows is a component beside this file.
 //
-// Browser-scoped pages: Appearance, Editor, Rendering, Diagnostics (the desktop app has its own). Computer-scoped pages: Tools, Desktop app,
-// Agents. Account-scoped pages: Backups, Account.
+// The categories are the same on every page: the landing page and a project.
+// Browser-scoped pages: Appearance, Editor, Rendering, Diagnostics. Computer-scoped
+// pages: Tools, AI agents. Account-scoped pages: Backups, Account.
 
-// `offered` answers with the document's format, whether this browser may edit
-// it, whether somebody is signed in, and whether this is the desktop app. `terms` are the words somebody might
-// type when looking for a row and not finding its title.
+// `offered` answers only with whether somebody is signed in. `terms` are the
+// words somebody might type when looking for a row and not finding its title.
 const always = (_context) => true;
-const editor = ({ mayEdit }) => mayEdit;
-const build = always;
 // The account is the deployment's, not the document's: whoever is signed in
 // is offered it whatever they happen to have open.
 const account = ({ signedIn }) => Boolean(signedIn);
@@ -24,7 +22,7 @@ export const CATEGORIES = [
     ],
   },
   {
-    id: "editor", says: "Editor", offered: editor,
+    id: "editor", says: "Editor", offered: always,
     note: "This browser",
     entries: [
       { id: "editor-keys", says: "Keys", terms: "vim emacs keymap keyboard bindings modal source standard" },
@@ -46,19 +44,12 @@ export const CATEGORIES = [
     id: "tools", says: "Tools", offered: always,
     note: "This computer",
     entries: [
-      { id: "tools-list", says: "Programs", terms: "tools tool status version available missing rescan scan local quarto pandoc calepin typst zotero" },
+      { id: "tools-programs", says: "Programs", terms: "tools tool status version available missing rescan scan local quarto pandoc calepin typst zotero" },
       { id: "tools-quarto", says: "Quarto", terms: "quarto executable path arguments version" },
       { id: "tools-calepin", says: "Calepin", terms: "calepin typst executable path arguments version" },
       { id: "tools-zotero", says: "Zotero", terms: "zotero citations bibliography library references local api" },
-    ],
-  },
-  {
-    id: "desktop", says: "Desktop app", offered: always,
-    note: "This computer",
-    entries: [
-      { id: "desktop-environment", says: "Local environment", terms: "tools version quarto sandbox rescan report setup doctor troubleshoot windows folders bindings project" },
-      { id: "desktop-diagnostics", says: "Diagnostics", terms: "diagnostics logs report bug issue support copy troubleshoot" },
-      { id: "desktop-activity", says: "Activity", terms: "jobs previews sessions cancel stop running" },
+      { id: "tools-folders", says: "Project folders", terms: "folders bindings project authorization revoke" },
+      { id: "tools-activity", says: "Activity", terms: "jobs previews sessions cancel stop running" },
     ],
   },
   {
@@ -87,8 +78,8 @@ export const CATEGORIES = [
     ],
   },
   {
-    id: "diagnostics", says: "Diagnostics", offered: ({ desktop }) => !desktop,
-    note: "This browser",
+    id: "diagnostics", says: "Diagnostics", offered: always,
+    note: "This app",
     entries: [
       { id: "diagnostics-report", says: "Diagnostics", terms: "diagnostics report bug issue support copy logs troubleshoot errors" },
     ],

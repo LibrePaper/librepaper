@@ -17,6 +17,6 @@ startTheme();
 // than an empty page. See src/components/Boundary.svelte.
 watchForUnhandled();
 watchNetwork();
-const initialSettings = intake() ? "desktop" : "";
+const initialSettings = intake() ? "tools" : "";
 mount(Boundary, { target: document.body, props: { component: Landing, props: { initialSettings }, name: "the project list" } });
 void registerOfflineShell();

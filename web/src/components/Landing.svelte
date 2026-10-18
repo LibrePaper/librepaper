@@ -41,9 +41,11 @@
   import { preparedProjects } from "../lib/offline-projects.js";
   import { provide } from "../lib/support/providers.js";
   import * as localBridge from "../lib/desktop/client.js";
+  import { createPreferences } from "../lib/reader/preferences.svelte.js";
 
   let { initialSettings = "" } = $props();
-  let settingsOpen = $state(untrack(() => initialSettings === "desktop"));
+  const preferences = createPreferences();
+  let settingsOpen = $state(untrack(() => initialSettings === "tools"));
   let settingsCategory = $state(untrack(() => initialSettings || "editor"));
   function openSettings(category = "editor") {
     settingsCategory = category;
@@ -1254,7 +1256,8 @@
   </Page>
 {/if}
 
-<SettingsDialog bind:open={settingsOpen} bind:category={settingsCategory} account={me} />
+<SettingsDialog bind:open={settingsOpen} bind:category={settingsCategory} account={me}
+                keys={preferences.state.keys} onkeys={preferences.setKeys} />
 
 <Modal open={Boolean(renaming)} title="Rename project"
        description="The name changes; the link does not, so anything already shared still works."

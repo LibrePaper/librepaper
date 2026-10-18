@@ -96,8 +96,8 @@ try {
     'Remote settings exposes its disconnected state');
   await click('[aria-label="Close"]');
 
-  await openSettingsAt('Desktop app');
-  await until('Desktop app settings',()=>b.evaluate('document.querySelector(".settings-category")?.textContent.trim() === "Desktop app"'),3000);
+  await openSettingsAt('Tools');
+  await until('Tools settings',()=>b.evaluate('document.querySelector(".settings-category")?.textContent.trim() === "Tools"'),3000);
   const desktopActions = await b.evaluate(`(() => {
     const root=document.querySelector('.desktop-only');
     const visible=element => Boolean(element?.getClientRects().length && getComputedStyle(element).visibility !== 'hidden');
@@ -108,8 +108,8 @@ try {
   assert.equal(desktopActions.message,'This needs the LibrePaper desktop app.','a browser is told the page needs the desktop app');
   assert.equal(desktopActions.install,'Get the desktop app');
   assert.equal(desktopActions.open,'Open in the desktop app');
-  assert.equal(desktopActions.installVisible,true,'Desktop app settings shows a visible install link');
-  assert.equal(desktopActions.openVisible,true,'Desktop app settings shows a visible open link');
+  assert.equal(desktopActions.installVisible,true,'Tools settings shows a visible install link');
+  assert.equal(desktopActions.openVisible,true,'Tools settings shows a visible open link');
   await click('[aria-label="Close"]');
 
   await openSettingsAt('Backups');

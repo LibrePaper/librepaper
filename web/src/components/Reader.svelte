@@ -2301,7 +2301,7 @@
 
   // Settings open as a dialog from the navbar menu or the sidebar. Every entry
   // point opens the same dialog on the category it is about.
-  let settingsOpen = $state(untrack(() => initialSettings === "desktop"));
+  let settingsOpen = $state(untrack(() => initialSettings === "tools"));
   let settingsCategory = $state(untrack(() => initialSettings || "editor"));
   let projectFolderOpen = $state(false);
   let savingTemplate = $state(false);
@@ -4057,7 +4057,6 @@
 
 <!-- The preferences dialog is shared by the navbar menu and sidebar button. -->
 <SettingsDialog bind:open={settingsOpen} bind:category={settingsCategory}
-                {sourceFormat} {mayEdit}
                 remoteConnected={connected} remoteNote={connectionNote}
                 {keys} onkeys={setKeys} commands={commandContext}
                 userId={buildUserId}

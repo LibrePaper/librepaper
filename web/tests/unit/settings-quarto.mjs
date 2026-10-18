@@ -8,35 +8,34 @@ const build = await read("BuildSettings.svelte");
 const dialog = await read("SettingsDialog.svelte");
 const latexFiles = await read("LatexFilesSettings.svelte");
 const command = await read("ToolCommand.svelte");
-const tools = await read("ToolsSettings.svelte");
+const toolsSettings = await read("ToolsSettings.svelte");
 const toolList = await readFile(new URL("../../src/lib/desktop/tools.js", import.meta.url), "utf8");
 const renderingComponent = await read("RenderingSettings.svelte");
 const remote = await read("RemoteSettings.svelte");
 const statusPill = await read("StatusPill.svelte");
 
-// Rendering, Tools, Desktop app, Agents, Backups and Account remain navigable
-// for every document format and editing state.
-for (const format of ["latex", "typst", "markdown", "quarto", "html", ""]) {
-  for (const mayEdit of [true, false]) {
-    const ids = offered({ format, mayEdit, signedIn: false }).map((item) => item.id);
-    for (const id of ["rendering", "tools", "desktop", "agents", "backups", "account"]) {
-      assert.ok(ids.includes(id), `${format} (mayEdit=${mayEdit}) offers ${id}`);
-    }
+// Rendering, Tools, Agents, Backups, Account and Diagnostics are offered the
+// same way on the landing page and the project page, to a visitor and to a
+// signed-in browser alike.
+for (const signedIn of [true, false]) {
+  const ids = offered({ signedIn }).map((item) => item.id);
+  for (const id of ["rendering", "tools", "agents", "backups", "account", "diagnostics"]) {
+    assert.ok(ids.includes(id), `signedIn=${signedIn} offers ${id}`);
   }
 }
-for (const query of ["windows setup", "zotero", "server address", "remote connection", "disconnected sync"]) {
-  assert.ok(search(query, { format: "html", mayEdit: false, signedIn: false })?.length, `settings search finds ${query}`);
+assert.doesNotMatch(registryText, /id: "desktop"/);
+for (const query of ["rescan", "project folders", "zotero", "server address", "remote connection", "disconnected sync"]) {
+  assert.ok(search(query, { signedIn: false })?.length, `settings search finds ${query}`);
 }
 
 const rendering = CATEGORIES.find((category) => category.id === "rendering");
 const renderingRows = (context) => rendering.entries.filter((entry) => !entry.offered || entry.offered(context)).map((entry) => entry.id);
-for (const format of ["latex", "typst", "markdown", "quarto", "html"]) {
-  const rows = renderingRows({ format, mayEdit: false });
-  assert.ok(rows.includes("render-latex-engine"), `${format} keeps LaTeX engine selection visible`);
-  assert.ok(rows.includes("render-latex-files"), `${format} keeps browser-wide LaTeX cache controls visible`);
-  assert.ok(rows.includes("render-markdown-tool"), `${format} keeps Markdown renderer selection visible`);
-  assert.ok(rows.includes("rendering-profile") && rows.includes("rendering-parameters"), `${format} keeps Quarto profile and parameters visible`);
-}
+// The rows do not depend on the document's format, so one check covers every format.
+const rows = renderingRows({ signedIn: false });
+assert.ok(rows.includes("render-latex-engine"), "Rendering keeps LaTeX engine selection visible");
+assert.ok(rows.includes("render-latex-files"), "Rendering keeps browser-wide LaTeX cache controls visible");
+assert.ok(rows.includes("render-markdown-tool"), "Rendering keeps Markdown renderer selection visible");
+assert.ok(rows.includes("rendering-profile") && rows.includes("rendering-parameters"), "Rendering keeps Quarto profile and parameters visible");
 
 // The rendering page shows sections for LaTeX and Markdown/Quarto.
 for (const name of ["LaTeX", "Markdown and Quarto"]) {
@@ -69,7 +68,7 @@ for (const format of ["typst", "quarto"]) assert.doesNotMatch(dialog, new RegExp
 // have commands; Zotero is listed with the other programs.
 assert.match(command, /const canEdit = \$derived\(isConnected && settingsLoaded && !pendingDialogAction\);/);
 assert.match(command, /requestId !== loadId[\s\S]{0,260}requestedName !== name/);
-assert.match(tools, /const CONFIGURABLE = \["quarto", "calepin"\];/);
+assert.match(toolsSettings, /const CONFIGURABLE = \["quarto", "calepin"\];/);
 assert.match(toolList, /"Zotero"/);
 // Rendering says nothing about the desktop app; the programs live under Tools.
 assert.doesNotMatch(dialog, /ConnectionRow|ToolCommand/);

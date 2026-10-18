@@ -357,15 +357,15 @@ try {
   await until("desktop app ready", () => page.evaluate(`!document.querySelector('.connect-required') && Boolean(document.querySelector('.agent-settings'))`), 3000);
   await until("agents listed", () => page.evaluate(`Boolean(document.querySelector('select[aria-label=Agent] option[value=claude]'))`), 2000);
 
-  // The "Desktop app settings" text button is gone from the settings line; each
+  // The "Agent settings" text button is gone from the settings line; each
   // pane now carries its own icon button to the same page in its header, and
   // only the Chat pane also carries New conversation.
-  assert.ok(await page.evaluate(`Boolean(document.querySelector('#agent-pane-chat button[aria-label="Desktop app settings"]'))`),
-    "the Chat pane header offers a way to the desktop app settings page");
+  assert.ok(await page.evaluate(`Boolean(document.querySelector('#agent-pane-chat button[aria-label="Agent settings"]'))`),
+    "the Chat pane header offers a way to the agent settings page");
   assert.ok(await page.evaluate(`Boolean(document.querySelector('#agent-pane-chat button[aria-label="New conversation"]'))`),
     "the Chat pane header offers New conversation");
-  assert.ok(await page.evaluate(`Boolean(document.querySelector('#agent-pane-tasks button[aria-label="Desktop app settings"]'))`),
-    "the Tasks pane header also offers a way to the desktop app settings page");
+  assert.ok(await page.evaluate(`Boolean(document.querySelector('#agent-pane-tasks button[aria-label="Agent settings"]'))`),
+    "the Tasks pane header also offers a way to the agent settings page");
   assert.equal(await page.evaluate(`Boolean(document.querySelector('#agent-pane-tasks button[aria-label="New conversation"]'))`), false,
     "New conversation is only in the Chat pane");
 
@@ -672,10 +672,10 @@ try {
   assert.equal(await page.evaluate(`document.querySelector('.connect-required a[href*="desktop-app"]')?.textContent.trim()`), "Get the desktop app");
   assert.equal(await page.evaluate(`document.querySelector('.connect-required a[href^="librepaper://open?url="]')?.textContent.trim()`), "Open in the desktop app");
   assert.deepEqual(await page.evaluate(`Array.from(document.querySelectorAll('.connect-required button')).map(b=>b.textContent.trim())`), [], "there is no Connect button");
-  assert.ok(await page.evaluate(`Boolean(document.querySelector('#agent-pane-chat button[aria-label="Desktop app settings"]'))`),
-    "the pane header still offers a way to the desktop app settings page outside the desktop app");
-  await page.evaluate(`document.querySelector('#agent-pane-chat button[aria-label="Desktop app settings"]').click()`);
-  assert.equal(await page.evaluate("window.settingsCalls"), 1, "the notice pane offers a way to the desktop app settings page");
+  assert.ok(await page.evaluate(`Boolean(document.querySelector('#agent-pane-chat button[aria-label="Agent settings"]'))`),
+    "the pane header still offers a way to the agent settings page outside the desktop app");
+  await page.evaluate(`document.querySelector('#agent-pane-chat button[aria-label="Agent settings"]').click()`);
+  assert.equal(await page.evaluate("window.settingsCalls"), 1, "the notice pane offers a way to the agent settings page");
 
   await page.navigate(appUrl);
   await until("desktop app ready again", () => page.evaluate(

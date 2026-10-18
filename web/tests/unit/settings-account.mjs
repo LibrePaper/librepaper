@@ -32,10 +32,10 @@ assert.doesNotMatch(account, /fetch\(/);
 // server on it and nothing else, and signing in is all it takes for the rest.
 const accountCategory = CATEGORIES.find((category) => category.id === "account");
 const accountRows = (context) => accountCategory.entries.filter((entry) => !entry.offered || entry.offered(context)).map((entry) => entry.id);
-const visitor = { signedIn: false, format: "", mayEdit: false };
+const visitor = { signedIn: false };
 assert.ok(offered(visitor).some((category) => category.id === "account"), "the Account page is offered to a visitor");
 assert.deepEqual(accountRows(visitor), ["remote-status"], "a visitor sees only the server");
-const signed = accountRows({ signedIn: true, format: "", mayEdit: false });
+const signed = accountRows({ signedIn: true });
 assert.ok(signed.includes("account-erase"), "Signed-in browser includes account-erase");
 assert.ok(signed.includes("storage-account"), "Signed-in browser includes storage-account");
 
