@@ -79,11 +79,18 @@ services:
 OVERRIDE
 }
 
-fetch_manage() {
-	# The release's helper, so a host whose kit predates it can upgrade and the
-	# helper always matches the release.
-	local version="$1"
-	ssh "$HOST" "cd librepaper && curl -fsSL https://github.com/LibrePaper/librepaper/releases/download/$version/librepaper-deploy.tar.gz | tar xzO librepaper/manage > .manage.tmp && chmod 755 .manage.tmp && mv -f .manage.tmp manage"
+fetch_kit() {
+	# The release's kit, so a host whose kit predates it can upgrade and the
+	# helper always matches the release. The kit is verified on the laptop
+	# before the host sees it. The host installs manage from that same file.
+	local version="$1" dir file
+	dir=$(mktemp -d)
+	trap "rm -rf -- '$dir'" EXIT
+	file="$dir/librepaper-deploy.tar.gz"
+	gh release download "$version" --repo LibrePaper/librepaper --pattern librepaper-deploy.tar.gz --dir "$dir" || die "could not download the kit for $version from release $version"
+	gh attestation verify "$file" --repo LibrePaper/librepaper --signer-workflow LibrePaper/librepaper/.github/workflows/publish-docker.yml || die "the kit for $version has no valid attestation from the release workflow and nothing was changed"
+	ssh "$HOST" 'umask 077; cd librepaper && cat > .kit.tar.gz.tmp && mv -f .kit.tar.gz.tmp .kit.tar.gz' < "$file"
+	ssh "$HOST" 'cd librepaper && tar xzOf .kit.tar.gz librepaper/manage > .manage.tmp && chmod 755 .manage.tmp && mv -f .manage.tmp manage'
 }
 
 write_candidates() {
@@ -202,9 +209,9 @@ prepare_local() {
 
 stage_host() {
 	local version="$1"
-	step "Helper: manage $version -> $HOST:librepaper/"
-	fetch_manage "$version" || die "could not fetch manage from release $version"
-	ok "fetched"
+	step "Kit: release $version -> $HOST:librepaper/"
+	fetch_kit "$version"
+	ok "verified the attestation, uploaded the kit and installed manage"
 
 	step "Candidates: librepaper.toml and resticprofile.toml"
 	write_candidates
@@ -374,6 +381,7 @@ verify_oauth_redirect() {
 deploy() {
 	local version="${1:-v$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -n 1)}"
 	validate_release_version "$version"
+	command -v gh >/dev/null 2>&1 || die "gh is needed to verify the release kit: install the GitHub CLI from https://cli.github.com"
 
 	printf '%sDeploying %s to %s%s\n' "$bold" "$version" "$HOST" "$reset"
 
@@ -386,13 +394,13 @@ deploy() {
 
 	step "Upgrade: ./manage upgrade $version"
 	note "backs up, checks the candidates with the new images, then switches"
-	ssh "$HOST" "cd librepaper && ./manage upgrade $version" ||
+	ssh "$HOST" "cd librepaper && LIBREPAPER_KIT=.kit.tar.gz ./manage upgrade $version" ||
 		die "upgrade to $version failed; if validation failed nothing was switched; run ./manage status on $HOST"
 	ok "running"
 
 	step "Cleanup"
-	ssh "$HOST" 'docker image prune -f'
-	ok "removed replaced images"
+	ssh "$HOST" 'rm -f librepaper/.kit.tar.gz && docker image prune -f'
+	ok "removed the kit and replaced images"
 
 	verify
 
