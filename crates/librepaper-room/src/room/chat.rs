@@ -212,7 +212,7 @@ impl Room {
     /// the chat lock. Every chat event is sent under the same lock, so each
     /// one follows the hello and none can be lost or undone by it. A failed
     /// read is logged and the hello goes out with an empty history. A hello
-    /// that is not a `hello` (an error reply) gets no chat keys. Errors when
+    /// that is not a `hello` (an error reply) gets no chat keys. Returns false when
     /// the hello cannot be queued within `timeout`.
     pub async fn send_hello_with_chat(
         &self,
@@ -222,7 +222,7 @@ impl Room {
         can_clear: bool,
         limit: i64,
         timeout: std::time::Duration,
-    ) -> Result<(), ()> {
+    ) -> bool {
         let buffer = self.chat.lock().await;
         self.listen_chat(socket, tx.clone()).await;
         if hello["type"] == "hello" {
@@ -239,8 +239,7 @@ impl Room {
         }
         tokio::time::timeout(timeout, tx.send(super::Outgoing::Text(hello.to_string())))
             .await
-            .map_err(|_| ())?
-            .map_err(|_| ())
+            .is_ok_and(|sent| sent.is_ok())
     }
 
     /// Deletes every message, stored and waiting, gives the owner the bytes

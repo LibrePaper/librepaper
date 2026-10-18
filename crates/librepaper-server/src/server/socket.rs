@@ -430,6 +430,8 @@ impl Server {
                 SOCKET_WRITE_TIMEOUT,
             )
             .await
+            .then_some(())
+            .ok_or(())
         } else {
             send_outgoing(&tx, Outgoing::Text(hello.to_string())).await
         };
