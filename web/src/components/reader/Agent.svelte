@@ -30,11 +30,11 @@
     assistantAgent: "", assistantAccess: "" };
   const connection = $derived(client?.current ?? EMPTY_CONNECTION);
   const connectionId = $derived(connection.id);
-  const connecting = $derived(starting || connection.status === "connecting");
   const savedAssistantAgent = $derived(connection.assistantAgent || "");
   const savedAssistantAccess = $derived(connection.assistantAccess || "");
   let busy = $state(false);
   let starting = $state(true);
+  const connecting = $derived(starting || connection.status === "connecting");
   let problem = $state("");
   let restoreProblem = $state("");
   let attachment = $state(null);
