@@ -29,8 +29,11 @@ const { collectReport, formatReport } = await import("../../src/lib/support/repo
 assert.equal(routePattern(`/api/documents/my-thesis-x7k2/comments?key=abc`), "/api/documents/:slug/comments");
 assert.equal(routePattern("/docs/my-thesis/"), "/docs/:slug/");
 assert.equal(routePattern("/assets/index-AbC123.js"), "/assets/index-AbC123.js");
-assert.equal(routePattern("https://other.example.com/api/files/a.tex?k=1#x"), "other.example.com/api/files/:file");
-assert.equal(routePattern("/api/items/12345"), "/api/items/:id");
+assert.equal(routePattern("https://other.example.com/api/files/a.tex?k=1#x"), "other.example.com/api/:id/:file");
+assert.equal(routePattern("/api/items/12345"), "/api/:id/:id");
+// A folder name chosen by somebody never survives, with or without digits.
+assert.equal(routePattern("/docs/my-thesis/chapters-on-grief/intro.tex"), "/docs/:slug/:id/:file");
+assert.equal(routePattern("/ws/my-thesis"), "/ws/:slug");
 
 assert.equal(scrubMessage('Unexpected token in "secret words"'), 'Unexpected token in "..."');
 assert.ok(!scrubMessage("bad lp_abcdef123456 token").includes("abcdef"));

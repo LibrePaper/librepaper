@@ -115,7 +115,7 @@ export function openRoom(slug, { onMessage, onConnected, onSourceChanged, key = 
     };
     next.onclose = (event) => {
       if (closed || current !== generation || socket !== next) return;
-      lastCloseCode = event.code;
+      lastCloseCode = event?.code ?? null;
       reconnects++;
       stopHeartbeat();
       connected(false);

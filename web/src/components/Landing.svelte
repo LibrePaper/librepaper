@@ -72,7 +72,7 @@
     node.focus();
   }
 
-  /** @type {{can_publish?: boolean; name?: string; handle?: string; publishers?: string}} */
+  /** @type {{id?: string; provider?: string; can_publish?: boolean; name?: string; handle?: string; publishers?: string}} */
   let me = $state({});
   // Whether /api/me answered at all. Without it the signed-out page is also
   // the page shown while the request is in flight and the page shown when the
@@ -860,7 +860,7 @@
     return () => window.removeEventListener("popstate", reread);
   });
 
-  $effect(() => provide("account", () => ({ id: me.id, signedIn: Boolean(me.name) })));
+  $effect(() => provide("account", () => ({ id: me.id, signedIn: Boolean(me.provider) })));
 
   $effect(() => {
     void showOfflineProjects();

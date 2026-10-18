@@ -29,13 +29,23 @@
 
   function say(message, bad = false) { status = message; failed = bad; }
 
+  // The clipboard is written in the same task as the click. Safari and
+  // WebKitGTK refuse a write that waits for the report first, but they accept
+  // a ClipboardItem whose content is still a promise.
   async function copy() {
-    const report = await build();
+    const building = build();
     try {
-      await navigator.clipboard.writeText(report);
-    } catch (error) {
-      area?.select();
-      if (!document.execCommand("copy")) throw error;
+      if (typeof ClipboardItem === "undefined" || !navigator.clipboard?.write) throw new Error("no ClipboardItem");
+      const blob = building.then((report) => new Blob([report], { type: "text/plain" }));
+      await navigator.clipboard.write([new ClipboardItem({ "text/plain": blob })]);
+    } catch {
+      const report = await building;
+      try {
+        await navigator.clipboard.writeText(report);
+      } catch (error) {
+        area?.select();
+        if (!document.execCommand("copy")) throw error;
+      }
     }
   }
 
@@ -61,10 +71,11 @@
     }
   }
 
+  // The tab opens before anything is awaited, or a popup blocker stops it.
   async function reportIssue() {
+    window.open(ISSUES_URL, "_blank", "noopener");
     try {
       await copy();
-      window.open(ISSUES_URL, "_blank", "noopener");
       say("The report is copied. Paste it into the issue, or email it to admin@librepaper.org.");
     } catch (error) {
       say(error?.message || "The report could not be copied.", true);

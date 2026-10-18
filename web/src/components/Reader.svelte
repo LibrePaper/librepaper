@@ -1766,7 +1766,7 @@
   $effect(() => {
     const undo = [
       provide("document", () => ({ id: doc.document_id, format: sourceFormat, role: doc.role, mayEdit })),
-      provide("account", () => ({ id: me.id, signedIn: Boolean(me.id) })),
+      provide("account", () => ({ id: me.id, signedIn: Boolean(me.provider) })),
       provide("sync", () => ({
         connected,
         joined: persistence.joined,

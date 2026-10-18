@@ -13,14 +13,17 @@ const BASE64_RUN = /[A-Za-z0-9_-]{24,}/g;
 const UNIX_PATH = /\/(?:home|Users)\/[^\s"'`)]*/g;
 const WINDOWS_PATH = /\b[A-Za-z]:\\[^\s"'`)]*/g;
 
-const SLUG_AFTER = new Set(["docs", "documents", "d", "projects", "share"]);
-const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
-
-const isId = (segment) =>
-  UUID.test(segment)
-  || /^\d+$/.test(segment)
-  || /^[0-9a-f]{16,}$/i.test(segment)
-  || (segment.length >= 6 && /[A-Za-z]/.test(segment) && /\d/.test(segment));
+const SLUG_AFTER = new Set(["docs", "documents", "ws"]);
+// The words the server's own routes are made of. Any other segment is a slug,
+// an id, a folder or a file name chosen by somebody, and is replaced.
+const ROUTE_WORDS = new Set([
+  "api", "docs", "ws", "assets", "documents", "account", "auth", "backup", "config", "device",
+  "erase", "list", "me", "projects", "storage", "templates", "trash", "agent", "agent-token",
+  "archive", "assistant", "candidates", "capabilities", "chat", "checkpoint", "comments", "delete",
+  "favorite", "fork", "history", "opened", "project", "purge", "quarto", "rename", "replies",
+  "restore", "share", "shared", "snapshot", "source", "state", "template", "tools", "transfer",
+  "trim", "untrash", "shell", "signin",
+]);
 
 const mapPath = (pathname) => {
   const segments = pathname.split("/");
@@ -28,10 +31,10 @@ const mapPath = (pathname) => {
   return segments.map((segment, index) => {
     if (!segment) return segment;
     if (SLUG_AFTER.has(segments[index - 1])) return ":slug";
+    // Bundle files are named by their content hash, which says nothing private.
     if (underAssets && index === segments.length - 1) return segment;
-    if (segment.includes(".")) return ":file";
-    if (isId(segment)) return ":id";
-    return segment;
+    if (ROUTE_WORDS.has(segment)) return segment;
+    return segment.includes(".") ? ":file" : ":id";
   }).join("/");
 };
 

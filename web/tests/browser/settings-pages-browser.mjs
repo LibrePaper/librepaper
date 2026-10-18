@@ -53,7 +53,7 @@ export function chooseFolderBinding() { return Promise.resolve({ id: "folder", e
 export async function capabilities() { return {}; }
 export function forgetCapabilities() {}
 export async function shellAction() {}
-export async function desktopReport() { return "## Desktop app\nversion test"; }
+export async function desktopReport() { return "Desktop app test report"; }
 export async function manage(path) {
   if (path !== "/state") throw new Error("unexpected management call " + path);
   return {

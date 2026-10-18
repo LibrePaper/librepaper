@@ -97,6 +97,7 @@ async function environmentSection() {
   try {
     estimate = await globalThis.navigator?.storage?.estimate?.();
   } catch { /* storage is not available */ }
+  /** @type {Partial<Navigator>} */
   const nav = globalThis.navigator || {};
   const lines = [["User agent", nav.userAgent || ""]];
   if (nav.platform) lines.push(["Platform", nav.platform]);
@@ -104,7 +105,7 @@ async function environmentSection() {
     ["Language", nav.language || ""],
     ["Screen", globalThis.screen ? `${screen.width}x${screen.height}` : "unknown"],
     ["Window", `${globalThis.innerWidth ?? "?"}x${globalThis.innerHeight ?? "?"}`],
-    ["Pixel ratio", globalThis.devicePixelRatio ?? "unknown"],
+    ["Pixel ratio", String(globalThis.devicePixelRatio ?? "unknown")],
     ["Cross-origin isolated", yesNo(globalThis.crossOriginIsolated)],
     ["SharedArrayBuffer", yesNo(typeof SharedArrayBuffer !== "undefined")],
     ["Wasm threads", yesNo(wasmThreads())],

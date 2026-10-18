@@ -52,6 +52,7 @@ export async function manage(path, { method = "GET", body } = {}) {
 export async function capabilities() { return { tools: {}, builders: [] }; }
 export function forgetCapabilities() {}
 export async function shellAction() {}
+export async function desktopReport() { return ""; }
 export async function setIntegration(name, { path, args }) {
   window.integrationCalls = [...(window.integrationCalls || []), { name, path, args }];
   return { path, args };
@@ -131,11 +132,11 @@ try {
   // Inside the desktop app the machine controls show and the Quarto section
   // offers its own command.
   await b.navigate(`http://127.0.0.1:${port}/`);
-  await until("desktop settings shown", () => b.evaluate("Boolean(document.querySelector('#desktop-activity')) && document.querySelector('#quarto-executable input')?.disabled === false"), 10000);
+  await until("desktop settings shown", () => b.evaluate("Boolean(document.querySelector('#desktop-environment')) && document.querySelector('#quarto-executable input')?.disabled === false"), 10000);
   const connectedText = await b.evaluate("document.body.innerText");
   assert.equal(await b.evaluate("document.querySelector('.desktop-only')"), null, "the desktop app needs no install link");
   assert.doesNotMatch(connectedText, /Build presets|Available tools|Quit|Start at login|Waiting for your answer|[Cc]ompanion/);
-  assert.match(connectedText, /Nothing running\./);
+  assert.equal(await b.evaluate("Boolean(document.querySelector('#desktop-activity'))"), false, "an idle desktop app shows no Activity section");
 
   // A custom command is split into arguments, quotes kept together.
   const type = (label, value) => `(() => { const input = document.querySelector('#quarto-section [aria-label="${label}"]'); input.value = ${JSON.stringify(value)}; input.dispatchEvent(new Event('input', { bubbles: true })); })()`;

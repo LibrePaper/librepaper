@@ -49,7 +49,7 @@ export const CATEGORIES = [
     id: "desktop", says: "Desktop app", offered: always,
     note: "This computer",
     entries: [
-      { id: "desktop-environment", says: "Local environment", terms: "tools version quarto sandbox rescan report setup doctor folders bindings project" },
+      { id: "desktop-environment", says: "Local environment", terms: "tools version quarto sandbox rescan report setup doctor troubleshoot windows folders bindings project" },
       { id: "desktop-diagnostics", says: "Diagnostics", terms: "diagnostics logs report bug issue support copy troubleshoot" },
       { id: "desktop-activity", says: "Activity", terms: "jobs previews sessions cancel stop running" },
     ],
