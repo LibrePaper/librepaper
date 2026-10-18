@@ -10,6 +10,7 @@ import { registerOfflineShell } from "../lib/offline-shell.js";
 import { intake } from "../lib/desktop/client.js";
 import { blockPageZoom } from "../lib/pinch.js";
 import { listenForSignOut } from "../lib/local-data.js";
+import { signedOutHref } from "../lib/api.js";
 
 startTheme();
 
@@ -34,4 +35,4 @@ const initialSettings = intake() ? "tools" : "";
 mount(Boundary, { target: document.body, props: { component: Reader, props: { initialSettings }, name: "the reader" } });
 void registerOfflineShell();
 // A signed-out browser must not keep writing the previous account's work.
-listenForSignOut(() => location.replace("/"));
+listenForSignOut(() => location.replace(signedOutHref()));

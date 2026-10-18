@@ -86,10 +86,19 @@ export const config = () => get("/api/config");
 /// sign-in at all.
 export const me = () => get("/api/me").catch(() => ({}));
 
-/// Signs out and leaves. `site` is what `/api/me` answered with: the
-/// marketing site in front of this deployment, when there is one. A
+/// Where a signed-out reader lands. `site` is what `/api/me` answered with:
+/// the marketing site in front of this deployment, when there is one. A
 /// deployment that is its own front page answers with nothing, and the
 /// signed-out reader lands there instead.
+export function signedOutHref(site = "") {
+  // The desktop app stays on its server and lands on its sign-in page, marked
+  // as signed out so a single provider is not followed straight back in. Any
+  // other page that sends a desktop window to "/" must use this too, or the
+  // window is signed straight back in.
+  return globalThis.window?.__LIBREPAPER_DESKTOP__ ? "/auth/login?signed_out=1" : site || "/";
+}
+
+/// Signs out and leaves.
 export async function signOut(site = "") {
   // A GET can be forced onto a signed-in reader cross-site, so signing out is
   // a POST carrying the same header every other state change does.
@@ -101,12 +110,8 @@ export async function signOut(site = "") {
   // to be signing out from -- a project you can no longer open, a panel with
   // nothing in it -- and somebody who has just signed out is a stranger
   // again, so they get what a stranger gets. `replace`, so Back does not
-  // return to a page that is now somebody else's. The desktop app stays on its
-  // server and lands on its sign-in page, marked as signed out so a single
-  // provider is not followed straight back in.
-  location.replace(
-    globalThis.window?.__LIBREPAPER_DESKTOP__ ? "/auth/login?signed_out=1" : site || "/",
-  );
+  // return to a page that is now somebody else's.
+  location.replace(signedOutHref(site));
 }
 
 /// Asks the server to erase the signed-in account: what it owns is queued for

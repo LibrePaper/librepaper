@@ -464,6 +464,8 @@
       // -- because neither number was in the catalogue. Both are now.
     } catch (error) {
       if (navigator.onLine !== false) say(error?.message || "The project list could not be refreshed, so what is shown here may be out of date.", { kind: "problem", id: "landing:refresh" });
+      // A failed listing still offers the copies kept in this browser.
+      await showLocalProjects();
       return false;
     }
     return true;
@@ -1240,9 +1242,23 @@
       </header>
       {#if !reachedServer}
         <aside class="card lp-tone-warning p-4">
-          This page could not reach the server, so it cannot tell whether you
-          are signed in. Your projects will appear once the server answers.
+          {#if documents.length}
+            This page could not reach the server. These projects are kept in this browser and open without a connection.
+          {:else}
+            This page could not reach the server, so it cannot tell whether you
+            are signed in. Your projects will appear once the server answers.
+          {/if}
         </aside>
+        {#if documents.length}
+          <section class="card p-4">
+            <h2 class="h4">Projects kept in this browser</h2>
+            <ul class="list-disc pl-5">
+              {#each documents as doc (doc.slug)}
+                <li><a href="/docs/{doc.slug}">{doc.title}</a></li>
+              {/each}
+            </ul>
+          </section>
+        {/if}
       {/if}
       <!-- The handle, not the name: this is about the allowlist, which is
            written in handles, and it is shown only to the person it refuses. -->
