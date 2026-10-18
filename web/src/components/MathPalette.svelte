@@ -20,6 +20,7 @@
   let activeId = $state(null);
   /** @type {InsertContext | null} */
   let captured = $state.raw(null);
+  /** @type {Record<string, any>} */
   let values = $state({});
   let error = $state("");
   /** @type {HTMLElement | undefined} */
@@ -33,7 +34,10 @@
 
   const active = $derived(MATH_TEMPLATES.find((template) => template.id === activeId) ?? null);
   const inMath = $derived(captured ? insertSyntaxContext(captured) === "math" : false);
-  const rowCount = $derived(Array.isArray(values.rows) ? values.rows.length : values.rows);
+  /** @type {number} */
+  const rowCount = $derived(Array.isArray(values.rows) ? values.rows.length : Number(values.rows));
+  /** The format name, typed as any where the symbol helpers take a string. */
+  const format = $derived(/** @type {any} */ (captured?.format));
   const isRowTemplate = (/** @type {MathTemplate | null} */ template) => template?.id === "aligned" || template?.id === "cases";
 
   /** Keys and labels of each row in the grid templates, in display order. */
@@ -154,7 +158,8 @@
   function rememberField(event) { lastField = event.currentTarget; }
 
   function firstField() {
-    (formEl?.querySelector("[data-math-field]") ?? formEl?.querySelector("input"))?.focus();
+    const field = /** @type {HTMLInputElement | null} */ (formEl?.querySelector("[data-math-field]") ?? formEl?.querySelector("input"));
+    field?.focus();
   }
 
   /**
@@ -183,7 +188,8 @@
     error = "";
     lastField = null;
     await tick();
-    root?.querySelector(`[data-template="${id}"]`)?.focus();
+    const tile = /** @type {HTMLElement | null} */ (root?.querySelector(`[data-template="${id}"]`));
+    tile?.focus();
   }
 
   /** @param {KeyboardEvent} event */
@@ -244,9 +250,9 @@
 
   /** Inserts a picked symbol at the caret of the last field the author used. */
   function pickSymbol(symbol) {
-    const field = lastField?.isConnected ? lastField : formEl?.querySelector("[data-math-field]");
+    const field = lastField?.isConnected ? lastField : /** @type {HTMLInputElement | null} */ (formEl?.querySelector("[data-math-field]"));
     if (!field || !captured) return;
-    const text = symbolText(symbol, captured.format, { inMath: true });
+    const text = symbolText(symbol, format, { inMath: true });
     const start = field.selectionStart ?? field.value.length;
     const end = field.selectionEnd ?? start;
     // Setting the range by hand, then dispatching input, is what lets the
@@ -260,7 +266,7 @@
   /** Puts the focus where a keyboard user expects it: a tile, or the first field. */
   export function focus() {
     if (activeId) firstField();
-    else root?.querySelector("[data-template]")?.focus();
+    else /** @type {HTMLElement | null} */ (root?.querySelector("[data-template]"))?.focus();
   }
 </script>
 
@@ -291,6 +297,7 @@
       </div>
     {/if}
   {:else}
+    <!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
     <div class="math-form" role="group" aria-label={active.label} onkeydown={onFormKey}>
       <div class="math-form-head">
         <button type="button" class="btn btn-sm" onclick={back}>Back</button>
@@ -313,7 +320,7 @@
       <!-- Outside the form: Enter in the search field must not submit it. -->
       <details class="math-symbols">
         <summary>Symbols</summary>
-        <SymbolSearch symbols={SYMBOLS} format={captured?.format} onpick={pickSymbol} placeholder="Search symbols" autofocus={false} />
+        <SymbolSearch symbols={SYMBOLS} format={format} onpick={pickSymbol} placeholder="Search symbols" autofocus={false} />
       </details>
 
       <form class="math-fields" bind:this={formEl} onsubmit={(event) => { event.preventDefault(); insert(); }}>
@@ -355,7 +362,7 @@
           </div>
         {:else}
           {#each active.slots as slot (slot.id)}
-            <label class="label">{slot.label}{slot.optional ? " (optional)" : ""}
+            <label class="label">{slot.label}{/** @type {{ optional?: boolean }} */ (slot).optional ? " (optional)" : ""}
               <input class="input" data-math-field placeholder={slot.placeholder} bind:value={values[slot.id]} onfocus={rememberField} />
             </label>
           {/each}
