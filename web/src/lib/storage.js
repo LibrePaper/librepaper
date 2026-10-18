@@ -42,6 +42,10 @@ export const EDITOR_SIZE = "librepaper-editor-size";
 // Whether the pages are light, dark, or follow the computer: "system", "light"
 // or "dark". Like the keymap, a habit of the person looking at the screen.
 export const THEME = "librepaper-theme";
+// The symbol ids the picker used last, most recent first.
+export const SYMBOLS_RECENT = "librepaper-symbols-recent";
+// The symbol ids starred in the picker, in the order they were starred.
+export const SYMBOLS_FAVORITES = "librepaper-symbols-favorites";
 
 // A page can keep using a link key even when persistent storage is denied. The
 // value lasts only for this page, which is the same lifetime as the fragment

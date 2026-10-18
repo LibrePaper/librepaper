@@ -1,5 +1,6 @@
-// The symbols palette mounted over a LaTeX context: tabs, search, the Recent
-// row, and the spelling a format gives each tile.
+// The symbols picker mounted over a LaTeX context: category nav, search, the
+// details row, favorites, keyboard movement and the spelling a format gives
+// each tile.
 import assert from "node:assert/strict";
 import { build } from "vite";
 import { svelte } from "@sveltejs/vite-plugin-svelte";
@@ -21,15 +22,18 @@ writeFileSync(entry, `
 import { tick } from ${imp("node_modules/svelte/src/index-client.js")};
 import { createClassComponent } from ${imp("node_modules/svelte/src/legacy/legacy-client.js")};
 import SymbolPalette from ${imp("src/components/SymbolPalette.svelte")};
-import { SYMBOLS } from ${imp("src/lib/symbols/index.js")};
+import { PICKER_SYMBOLS } from ${imp("src/lib/symbols/catalog.js")};
 window.testErrors=[];addEventListener("error",e=>window.testErrors.push(e.message));addEventListener("unhandledrejection",e=>window.testErrors.push(String(e.reason)));
+const find = (latex) => PICKER_SYMBOLS.find((symbol) => symbol.latex === latex).id;
 window.ids={
-  alpha: SYMBOLS.find((symbol) => symbol.latex === "\\\\alpha").id,
-  implies: SYMBOLS.find((symbol) => symbol.latex === "\\\\Rightarrow").id,
+  alpha: find("\\\\alpha"),
+  beta: find("\\\\beta"),
+  arrow: PICKER_SYMBOLS.find((symbol) => symbol.category === "arrows").id,
+  template: PICKER_SYMBOLS.find((symbol) => symbol.kind === "template").id,
 };
 let component, currentContext, inserted = [];
 // The caret sits in plain prose, outside any math span.
-const contextFor = (format) => ({ format, path: "paper." + ({latex:"tex",typst:"typ"}[format]), text: "Before AFTER", selection: { from: 7, to: 7, text: "" }, files: [] });
+const contextFor = (format) => ({ format, path: "paper." + ({latex:"tex",typst:"typ",html:"html"}[format]), text: "Before AFTER", selection: { from: 7, to: 7, text: "" }, files: [] });
 window.setupPalette = async (format) => {
   component?.$destroy();
   inserted = [];
@@ -39,7 +43,6 @@ window.setupPalette = async (format) => {
     format,
     getContext: () => currentContext,
     oninsert: (result) => { inserted.push(result); },
-    onfocus: () => {},
   }});
   await tick();
 };
@@ -50,23 +53,35 @@ window.switchFormat = async (format) => {
   component.$set({ format, getContext: () => currentContext });
   await tick();
 };
+const search = () => document.querySelector(".symbol-palette input[type=search]");
 window.typeQuery = async (text) => {
-  const input = document.querySelector(".symbol-palette input[type=search]");
+  const input = search();
   input.value = text;
   input.dispatchEvent(new Event("input", { bubbles: true }));
   await tick();
 };
-window.clickGridTile = (id) => document.querySelector(".symbol-grid [data-symbol=" + JSON.stringify(id) + "]")?.click();
+const navButton = (label) => [...document.querySelectorAll('nav[aria-label="Symbol categories"] button')].find((button) => button.querySelector(".category-label").textContent.trim() === label);
+window.navLabels = () => [...document.querySelectorAll('nav[aria-label="Symbol categories"] .category-label')].map((span) => span.textContent.trim());
+window.navTruncated = () => [...document.querySelectorAll('nav[aria-label="Symbol categories"] .category-label')].some((span) => span.scrollWidth > span.clientWidth + 1);
+window.openCategory = (label) => navButton(label)?.click();
+window.currentCategory = () => navButton(window.navLabels().find((label) => navButton(label).getAttribute("aria-current") === "true"))?.querySelector(".category-label").textContent.trim() ?? null;
+const tile = (id) => document.querySelector(".grid-scroll [data-symbol=" + JSON.stringify(id) + "]");
+window.clickGridTile = (id) => tile(id)?.click();
+window.hasGridTile = (id) => Boolean(tile(id));
+window.firstTileId = () => document.querySelector(".grid-scroll [data-symbol]")?.dataset.symbol ?? null;
+window.gridTileCount = () => document.querySelectorAll(".grid-scroll [data-symbol]").length;
+window.gridTileTitle = (id) => tile(id)?.title ?? null;
 window.insertedCount = () => inserted.length;
 window.insertedText = () => inserted.at(-1)?.text ?? null;
-window.gridTileCount = () => document.querySelectorAll(".symbol-grid [data-symbol]").length;
-window.gridTileTitle = (id) => document.querySelector(".symbol-grid [data-symbol=" + JSON.stringify(id) + "]")?.title ?? null;
-window.resultTile = (id) => Boolean(document.querySelector(".symbol-search .results [data-symbol=" + JSON.stringify(id) + "]"));
-window.recentHas = (id) => Boolean(document.querySelector('[role="group"][aria-label="Recent symbols"] [data-symbol=' + JSON.stringify(id) + "]"));
-window.hasGridTile = (id) => Boolean(document.querySelector(".symbol-grid [data-symbol=" + JSON.stringify(id) + "]"));
-window.setPaletteWidth = (px) => { document.getElementById("palette").style.width = px + "px"; };
-window.categorySelectShown = () => Boolean(document.querySelector('select[aria-label="Symbol category"]'));
-window.tabStripShown = () => Boolean(document.querySelector('[aria-label="Symbol categories"]'));
+window.noteText = () => document.querySelector(".symbol-palette [role=status]")?.textContent.trim() ?? null;
+window.clickStar = () => document.querySelector('.details button[aria-label="Favorite"]')?.click();
+window.starPressed = () => document.querySelector('.details button[aria-label="Favorite"]')?.getAttribute("aria-pressed") ?? null;
+window.favoriteIds = () => JSON.parse(localStorage.getItem("librepaper-symbols-favorites") || "[]");
+window.tabStops = () => document.querySelectorAll('.grid-scroll [data-symbol][tabindex="0"]').length;
+window.focusFirstTile = () => document.querySelector(".grid-scroll [data-symbol]").focus();
+window.pressKey = (key, options = {}) => (document.activeElement ?? document.body).dispatchEvent(new KeyboardEvent("keydown", { key, bubbles: true, cancelable: true, ...options }));
+window.focusedTileIndex = () => [...document.querySelectorAll(".grid-scroll [data-symbol]")].indexOf(document.activeElement);
+window.searchFocused = () => document.activeElement === search();
 window.insertReady = true;
 `);
 let server, page;
@@ -86,44 +101,85 @@ try {
   await page.navigate(`http://127.0.0.1:${server.address().port}/`);
   await until("Symbols test loaded", () => page.evaluate("window.insertReady"), 10000);
   const evaluate = (code) => page.evaluate(code);
-  const alpha = await evaluate("window.ids.alpha");
-  const implies = await evaluate("window.ids.implies");
+  const ids = await evaluate("window.ids");
+  const has = (id) => evaluate(`hasGridTile(${JSON.stringify(id)})`);
 
-  // The Greek tab is the first tab, so its tiles show straight away.
+  // The nav lists all twelve categories and none is cut off.
   await evaluate('setupPalette("latex")');
-  await until("Greek tiles", () => evaluate("gridTileCount() > 0"), 5000);
-  await until("alpha tile", () => evaluate(`hasGridTile(${JSON.stringify(alpha)})`), 5000);
+  const labels = await evaluate("navLabels()");
+  assert.deepEqual(labels, ["Recent", "Favorites", "Greek", "Operators", "Relations", "Arrows", "Logic and sets", "Accents", "Delimiters", "Templates", "Text", "Emoji"]);
+  assert.equal(await evaluate("navTruncated()"), false, "no category label is truncated");
 
-  // A plain click inserts the spelling for a caret outside math.
-  await evaluate(`clickGridTile(${JSON.stringify(alpha)})`);
-  assert.equal(await evaluate("insertedCount()"), 1, "clicking a tile records one insertion");
+  // With nothing remembered the picker opens on Greek.
+  assert.equal(await evaluate("currentCategory()"), "Greek", "an empty Recent opens on Greek");
+  await until("alpha tile", () => has(ids.alpha), 5000);
+  assert.equal(await evaluate("tabStops()"), 1, "exactly one tile is a tab stop");
+
+  // Another category shows its own tiles.
+  await evaluate('openCategory("Arrows")');
+  await until("arrow tile", () => has(ids.arrow), 5000);
+  assert.equal(await has(ids.alpha), false, "Greek tiles are gone from Arrows");
+  await evaluate('openCategory("Greek")');
+  await until("alpha tile again", () => has(ids.alpha), 5000);
+
+  // Two clicks in a row record two insertions and the picker stays mounted.
+  await evaluate(`clickGridTile(${JSON.stringify(ids.alpha)})`);
   assert.equal(await evaluate("insertedText()"), "$\\alpha$", "alpha inserts as inline math outside math");
+  await evaluate(`clickGridTile(${JSON.stringify(ids.beta)})`);
+  assert.equal(await evaluate("insertedCount()"), 2, "two clicks record two insertions");
+  assert.equal(await has(ids.beta), true, "the picker is still mounted after insertions");
 
-  // A typed query hides the tabs and the Recent row, and finds the arrow by an alias.
-  await evaluate('typeQuery("implies")');
-  await until("implies result", () => evaluate(`resultTile(${JSON.stringify(implies)})`), 5000);
-  assert.equal(await evaluate("tabStripShown()"), false, "the tab strip is hidden while a query is typed");
+  // The details row follows the last insertion, and its star writes a favorite.
+  assert.equal(await evaluate("starPressed()"), "false", "the star starts off");
+  await evaluate("clickStar()");
+  await until("favorite stored", async () => (await evaluate("favoriteIds()")).includes(ids.beta), 5000);
+  assert.equal(await evaluate("starPressed()"), "true", "the star shows the favorite");
+  await evaluate('openCategory("Favorites")');
+  await until("favorite listed", () => has(ids.beta), 5000);
 
-  // Clearing the query returns to the tab that was open, and Recent now lists alpha.
+  // Recent lists what was inserted, newest first.
+  await evaluate('openCategory("Recent")');
+  await until("recent listed", () => has(ids.alpha), 5000);
+  assert.equal(await evaluate("firstTileId()"), ids.beta, "the newest insertion leads Recent");
+
+  // A typed query ignores the category and ranks the command first.
+  await evaluate(`typeQuery(${JSON.stringify("\\alpha")})`);
+  await until("alpha result", () => evaluate(`firstTileId() === ${JSON.stringify(ids.alpha)}`), 5000);
   await evaluate('typeQuery("")');
-  await until("Greek tiles again", () => evaluate("gridTileCount() > 0"), 5000);
-  assert.equal(await evaluate("tabStripShown()"), true, "the tab strip returns once the query is cleared");
-  await until("Recent row shows alpha", () => evaluate(`recentHas(${JSON.stringify(alpha)})`), 5000);
+  await until("category returns", () => evaluate("currentCategory() === 'Recent'"), 5000);
+
+  // The arrow keys move focus between tiles, and Ctrl+F reaches the search.
+  await evaluate('openCategory("Greek")');
+  await until("greek tiles", () => has(ids.alpha), 5000);
+  await evaluate("focusFirstTile()");
+  await evaluate('pressKey("ArrowRight")');
+  assert.equal(await evaluate("focusedTileIndex()"), 1, "ArrowRight moves to the second tile");
+  await evaluate('pressKey("f", { ctrlKey: true })');
+  assert.equal(await evaluate("searchFocused()"), true, "Ctrl+F focuses the search");
+
+  // A pair inserts a snippet in LaTeX.
+  await evaluate('openCategory("Delimiters")');
+  await until("pair tile", () => has("pair-parentheses"), 5000);
+  await evaluate('clickGridTile("pair-parentheses")');
+  assert.ok((await evaluate("insertedText()")).includes("\\left("), "the parentheses pair inserts \\left(");
 
   // The title follows the format of the open document.
+  await evaluate('openCategory("Greek")');
+  await until("greek again", () => has(ids.alpha), 5000);
   await evaluate('switchFormat("typst")');
-  await until("typst title", () => evaluate(`gridTileTitle(${JSON.stringify(alpha)}) === "alpha"`), 5000);
-  assert.equal(await evaluate(`gridTileTitle(${JSON.stringify(alpha)})`), "alpha", "the typst spelling of alpha is alpha");
+  await until("typst title", () => evaluate(`gridTileTitle(${JSON.stringify(ids.alpha)}) === "Alpha: alpha"`), 5000);
 
-  // Below 480px the tab strip folds into a select. The panel measures its own
-  // width, so the check waits for the ResizeObserver to report the change.
-  await evaluate("setPaletteWidth(320)");
-  await until("category select at narrow width", () => evaluate("categorySelectShown()"), 5000);
-  assert.equal(await evaluate("tabStripShown()"), false, "the tab strip folds away below 480px");
+  // A template has no HTML form, so it inserts nothing and says so.
+  await evaluate('setupPalette("html")');
+  await evaluate('openCategory("Templates")');
+  await until("template tile", () => has(ids.template), 5000);
+  await evaluate(`clickGridTile(${JSON.stringify(ids.template)})`);
+  assert.equal(await evaluate("insertedCount()"), 0, "a template does not insert in HTML");
+  await until("html note", () => evaluate("noteText() === 'Not available in HTML.'"), 5000);
 
-  console.log("symbols-browser: palette tabs, search, Recent row, insertion and format-aware titles passed");
+  console.log("symbols-browser: picker categories, search, insertion, favorites, keyboard and format-aware titles passed");
 } catch (error) {
-  console.error(await page?.evaluate("({errors:window.testErrors,tabs:document.querySelectorAll('.symbol-palette [role=tab]').length,tiles:document.querySelectorAll('[data-symbol]').length})"));
+  console.error(await page?.evaluate("({errors:window.testErrors,tiles:document.querySelectorAll('[data-symbol]').length})"));
   throw error;
 } finally {
   await page?.close();

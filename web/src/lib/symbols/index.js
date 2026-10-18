@@ -22,6 +22,9 @@ const sym = (category, id, glyph, latex, typst, extra = {}) => ({
   ...(extra.html ? { html: extra.html } : {}),
   ...(extra.package ? { package: extra.package } : {}),
   ...(extra.pair ? { pair: extra.pair } : {}),
+  ...(extra.bracket ? { bracket: extra.bracket } : {}),
+  ...(extra.glyphs ? { glyphs: extra.glyphs } : {}),
+  ...(extra.preview ? { preview: extra.preview } : {}),
 });
 const operator = (id, glyph, latex, typst, extra) => sym("operators", id, glyph, latex, typst, extra);
 const relation = (id, glyph, latex, typst, extra) => sym("relations", id, glyph, latex, typst, extra);
@@ -209,8 +212,8 @@ const relations = [
 ];
 
 const arrows = [
-  arrow("rightarrow", "→", "\\rightarrow", "arrow.r", { aliases: ["to", "maps to", "->"], html: "&rarr;" }),
-  arrow("leftarrow", "←", "\\leftarrow", "arrow.l", { aliases: ["gets", "<-"], html: "&larr;" }),
+  arrow("rightarrow", "→", "\\rightarrow", "arrow.r", { aliases: ["to", "maps to", "->", "right arrow"], html: "&rarr;" }),
+  arrow("leftarrow", "←", "\\leftarrow", "arrow.l", { aliases: ["gets", "<-", "left arrow"], html: "&larr;" }),
   arrow("leftrightarrow", "↔", "\\leftrightarrow", "arrow.l.r", { aliases: ["<->"], html: "&harr;" }),
   arrow("uparrow", "↑", "\\uparrow", "arrow.t", { aliases: ["up"], html: "&uarr;" }),
   arrow("downarrow", "↓", "\\downarrow", "arrow.b", { aliases: ["down"], html: "&darr;" }),
@@ -301,7 +304,18 @@ const accents = [
 ];
 
 const PAIR = (latex, typst) => ({ latex, typst });
+// A paired delimiter tile. Its spellings are the brackets template with the
+// body "x", so the picker and the template agree on the syntax.
+const bracketPair = (bracket, name, aliases, glyphs, latex, typst, extra = {}) => sym("delimiters", `pair-${bracket}`, glyphs.join(""), latex, typst, { ...extra, name, aliases, kind: "pair", bracket, glyphs, preview: latex });
 const delimiters = [
+  bracketPair("parentheses", "Parentheses", ["paren", "parens", "round brackets"], ["(", ")"], "\\left( x \\right)", "(x)"),
+  bracketPair("square", "Square brackets", ["bracket", "brackets", "square"], ["[", "]"], "\\left[ x \\right]", "[x]"),
+  bracketPair("braces", "Braces", ["curly brackets", "curly", "set"], ["{", "}"], "\\left\\{ x \\right\\}", "{x}"),
+  bracketPair("angle", "Angle brackets", ["angle", "chevron", "inner product"], ["⟨", "⟩"], "\\left\\langle x \\right\\rangle", "chevron.l x chevron.r"),
+  bracketPair("bars", "Absolute value", ["abs", "modulus", "absolute"], ["|", "|"], "\\left\\lvert x \\right\\rvert", "abs(x)", { package: "amsmath" }),
+  bracketPair("norm", "Norm", ["double bars", "double bar", "norm"], ["‖", "‖"], "\\left\\lVert x \\right\\rVert", "norm(x)", { package: "amsmath" }),
+  bracketPair("floor", "Floor", ["round down"], ["⌊", "⌋"], "\\left\\lfloor x \\right\\rfloor", "floor(x)"),
+  bracketPair("ceil", "Ceiling", ["ceil", "round up"], ["⌈", "⌉"], "\\left\\lceil x \\right\\rceil", "ceil(x)"),
   delimiter("lparen", "(", "(", "(", { name: "left parenthesis", aliases: ["paren", "parentheses"], pair: PAIR(["(", ")"], ["(", ")"]) }),
   delimiter("rparen", ")", ")", ")", { name: "right parenthesis", aliases: ["paren", "parentheses"] }),
   delimiter("lbrack", "[", "[", "[", { name: "left bracket", aliases: ["square bracket"], pair: PAIR(["[", "]"], ["[", "]"]) }),
@@ -373,25 +387,38 @@ export async function loadEmoji() {
   return emojiPromise;
 }
 
+// Words in names and aliases are split on spaces and these marks.
+const WORD_BREAK = /[\s\-_,.&/]+/;
+const wordsOf = text => text.split(WORD_BREAK).filter(Boolean);
+
 /**
- * Ranks by how closely an entry matches the query: an exact glyph or name
- * first, then a name prefix, an alias prefix, and a substring anywhere.
- * Entries of the same rank keep their order.
+ * Ranks by how closely an entry matches the query, lowest first: an exact
+ * spelling, then a name prefix, an alias or spelling prefix, every query word
+ * starting a word of the name or aliases, and a substring anywhere. Entries
+ * of the same rank keep their order.
  * @param {string} query
  * @param {object[]} symbols
  * @returns {object[]}
  */
 export function searchSymbols(query, symbols) {
   const raw = String(query ?? "").trim();
-  const q = raw.toLowerCase();
+  const q = raw.toLowerCase().replace(/\s+/g, " ");
   if (!q) return symbols;
+  const queryWords = wordsOf(q);
   const rank = symbol => {
-    const name = symbol.name.toLowerCase();
-    const aliases = symbol.aliases.map(alias => alias.toLowerCase());
-    if (symbol.glyph === raw || name === q) return 0;
+    const name = String(symbol.name ?? "").toLowerCase();
+    const aliases = (symbol.aliases ?? []).map(alias => alias.toLowerCase());
+    const latex = symbol.latex ?? "";
+    const typst = symbol.typst ?? "";
+    if (symbol.glyph === raw || name === q || aliases.includes(q) || latex === raw || latex === `\\${raw}` || typst === raw) return 0;
     if (name.startsWith(q)) return 1;
     if (aliases.some(alias => alias.startsWith(q))) return 2;
-    if (name.includes(q) || aliases.some(alias => alias.includes(q))) return 3;
+    if ((raw.startsWith("\\") && latex.startsWith(raw)) || (raw.length >= 2 && typst.startsWith(raw))) return 2;
+    if (queryWords.length > 0) {
+      const words = [...wordsOf(name), ...aliases.flatMap(wordsOf)];
+      if (queryWords.every(word => words.some(entry => entry.startsWith(word)))) return 3;
+    }
+    if (name.includes(q) || aliases.some(alias => alias.includes(q))) return 4;
     return -1;
   };
   return symbols
@@ -442,7 +469,31 @@ export function separated(text, format, before, after) {
 }
 
 /**
- * Turns a click on a tile into the text to insert at the caret.
+ * The spellings to show in a details panel. One line per format comes first,
+ * in the order the format reads best, then the code point when the glyph is a
+ * single character.
+ * @param {object} symbol
+ * @param {string} format
+ * @returns {{label: string, code: string}[]}
+ */
+export function symbolSpellings(symbol, format) {
+  const glyph = symbol.glyph ?? "";
+  const single = [...glyph].length === 1;
+  const fill = code => (typeof code === "string" ? code.replaceAll("#1", "x") : code);
+  const latex = { label: "LaTeX", code: fill(symbol.latex) };
+  const typst = { label: "Typst", code: symbol.kind === "text" ? glyph : fill(symbol.typst) };
+  const html = { label: "HTML", code: symbol.html ?? glyph };
+  const order = format === "typst" ? [typst, latex] : format === "html" ? [html] : [latex, typst];
+  // A Typst line that only repeats a single character is left out, since the Unicode line shows it.
+  const lines = order.filter(line => line.code && !(line.label === "Typst" && line.code === glyph && single));
+  if (single) lines.push({ label: "Unicode", code: `U+${glyph.codePointAt(0).toString(16).toUpperCase().padStart(4, "0")}` });
+  return lines;
+}
+
+/**
+ * Turns a click on a tile into the text to insert at the caret. Pair and
+ * template entries are routed through entryInsertion in catalog.js, which
+ * reuses the math templates, so they never reach this function.
  * @param {object} symbol
  * @param {object} context the editor's insert context (see insert.js)
  * @returns {{text: string, additionalEdits: object[], notes: string[], snippet: boolean}}

@@ -816,7 +816,7 @@
 
   // Validate every change before touching shared text. Main-file setup and the
   // snippet share the active editor's Loro transaction and undo entry.
-  export function applyInsertResult(result, capturedContext = null) {
+  export function applyInsertResult(result, capturedContext = null, { focus = true } = {}) {
     if (!result || typeof result.text !== "string" || !view || !session || !editable) return false;
     const target = insertTargets.get(capturedContext?.targetId);
     if (!target || target.session !== session || target.doc !== session.doc || target.file !== showing || pathOfDoc(target.doc, showing) !== capturedContext.path) return false;
@@ -918,7 +918,8 @@
     if (tracked) prune(doc);
     doc.commit();
     releaseInsertContext(capturedContext);
-    view.focus();
+    // A picker that stays open keeps the keyboard. On a phone, focusing the editor would raise the virtual keyboard.
+    if (focus) view.focus();
     return true;
   }
 
