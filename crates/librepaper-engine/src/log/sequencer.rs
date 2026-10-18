@@ -1086,6 +1086,22 @@ impl Sequencer {
             .store(enforced, std::sync::atomic::Ordering::Relaxed);
     }
 
+    /// Whether charging `bytes` more to this document's owner would pass a
+    /// storage quota, and which one.
+    pub fn storage_would_exceed(&self, bytes: i64) -> Option<&'static str> {
+        self.ledger.would_exceed(
+            self.owner_id,
+            bytes,
+            self.config.storage.per_owner,
+            self.config.storage.total,
+        )
+    }
+
+    /// Moves the owner's and the deployment's in-memory storage figures.
+    pub fn charge_storage(&self, delta: i64) {
+        self.ledger.charge(self.owner_id, delta);
+    }
+
     /// Moves the rate limiter's clock forward, so a test can spend an
     /// allowance and then let a chosen amount of time refill it.
     #[cfg(test)]

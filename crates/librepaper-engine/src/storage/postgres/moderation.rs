@@ -92,7 +92,7 @@ const OWNER_USAGE: &str = "SELECT owner_id, COALESCE(sum(bytes),0)::bigint AS by
                    JOIN documents d ON d.id=x.document_id
                  UNION ALL SELECT d.owner_id, s.snapshot_bytes FROM document_snapshots s
                    JOIN documents d ON d.id=s.document_id WHERE s.delete_after IS NULL
-                 UNION ALL SELECT d.owner_id, d.uncompacted_update_bytes FROM documents d
+                 UNION ALL SELECT d.owner_id, d.uncompacted_update_bytes + d.chat_bytes FROM documents d
                  UNION ALL SELECT d.owner_id, r.bytes FROM pending_log_reservations r
                    JOIN documents d ON d.id=r.document_id
                ) usage GROUP BY owner_id";
