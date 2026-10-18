@@ -184,6 +184,16 @@ impl Room {
         limit: i64,
     ) -> Result<(Vec<ChatRecord>, bool), WriteError> {
         let buffer = self.chat.lock().await;
+        self.page_locked(&buffer, before, limit).await
+    }
+
+    /// [`Self::chat_page`] for a caller that already holds the chat lock.
+    async fn page_locked(
+        &self,
+        buffer: &ChatBuffer,
+        before: Option<Uuid>,
+        limit: i64,
+    ) -> Result<(Vec<ChatRecord>, bool), WriteError> {
         let (stored, more) = self
             .catalog
             .chat_page(self.document_id, before, limit)
@@ -195,6 +205,42 @@ impl Room {
             before,
             limit.max(0) as usize,
         ))
+    }
+
+    /// Registers the socket as a chat listener, reads the newest `limit`
+    /// messages, adds them to `hello` and queues it on the socket, all under
+    /// the chat lock. Every chat event is sent under the same lock, so each
+    /// one follows the hello and none can be lost or undone by it. A failed
+    /// read is logged and the hello goes out with an empty history. A hello
+    /// that is not a `hello` (an error reply) gets no chat keys. Errors when
+    /// the hello cannot be queued within `timeout`.
+    pub async fn send_hello_with_chat(
+        &self,
+        socket: u64,
+        tx: &super::Sender,
+        mut hello: Value,
+        can_clear: bool,
+        limit: i64,
+        timeout: std::time::Duration,
+    ) -> Result<(), ()> {
+        let buffer = self.chat.lock().await;
+        self.listen_chat(socket, tx.clone()).await;
+        if hello["type"] == "hello" {
+            let (messages, more) = match self.page_locked(&buffer, None, limit).await {
+                Ok(page) => page,
+                Err(error) => {
+                    tracing::warn!("could not read the chat of {}: {error}", self.slug);
+                    (Vec::new(), false)
+                }
+            };
+            hello["chat"] = Value::Array(messages.iter().map(chat_json).collect());
+            hello["chat_more"] = json!(more);
+            hello["chat_can_clear"] = json!(can_clear);
+        }
+        tokio::time::timeout(timeout, tx.send(super::Outgoing::Text(hello.to_string())))
+            .await
+            .map_err(|_| ())?
+            .map_err(|_| ())
     }
 
     /// Deletes every message, stored and waiting, gives the owner the bytes

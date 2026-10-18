@@ -62,7 +62,9 @@ impl From<ChatRow> for ChatRecord {
 impl PostgresCatalog {
     /// Inserts a batch in one transaction and adds its charge to
     /// documents.chat_bytes. An author account that no longer exists is stored
-    /// as NULL instead of failing the batch. Returns the bytes charged.
+    /// as NULL, with the label "Deleted user", instead of failing the batch.
+    /// A row whose id is already stored is skipped and not charged again, so
+    /// a retry after a lost reply is harmless. Returns the bytes charged.
     pub async fn insert_chat_messages(
         &self,
         document_id: Uuid,
@@ -71,18 +73,20 @@ impl PostgresCatalog {
         if rows.is_empty() {
             return Ok(0);
         }
-        let charge: i64 = rows.iter().map(ChatRecord::charged_bytes).sum();
         let ids: Vec<Uuid> = rows.iter().map(|row| row.id).collect();
         let authors: Vec<Option<Uuid>> = rows.iter().map(|row| row.author_account_id).collect();
         let labels: Vec<String> = rows.iter().map(|row| row.author_label.clone()).collect();
         let bodies: Vec<String> = rows.iter().map(|row| row.body.clone()).collect();
         let created: Vec<OffsetDateTime> = rows.iter().map(|row| row.created_at).collect();
         let mut tx = self.begin_writer_transaction().await?;
-        sqlx::query(
+        let inserted: Vec<i64> = sqlx::query_scalar(
             "INSERT INTO chat_messages (id,document_id,author_account_id,author_label,body,created_at) \
-             SELECT m.id,$1,(SELECT a.id FROM accounts a WHERE a.id=m.author),m.label,m.body,m.created_at \
+             SELECT m.id,$1,(SELECT a.id FROM accounts a WHERE a.id=m.author),\
+             CASE WHEN m.author IS NOT NULL AND NOT EXISTS (SELECT 1 FROM accounts a WHERE a.id=m.author) \
+             THEN 'Deleted user' ELSE m.label END,m.body,m.created_at \
              FROM UNNEST($2::uuid[],$3::uuid[],$4::text[],$5::text[],$6::timestamptz[]) \
-             AS m(id,author,label,body,created_at)",
+             AS m(id,author,label,body,created_at) \
+             ON CONFLICT (id) DO NOTHING RETURNING octet_length(body)::bigint",
         )
         .bind(document_id)
         .bind(ids)
@@ -90,8 +94,12 @@ impl PostgresCatalog {
         .bind(labels)
         .bind(bodies)
         .bind(created)
-        .execute(&mut *tx)
+        .fetch_all(&mut *tx)
         .await?;
+        let charge: i64 = inserted
+            .iter()
+            .map(|body| body + CHAT_ROW_OVERHEAD_BYTES)
+            .sum();
         let updated = sqlx::query("UPDATE documents SET chat_bytes=chat_bytes+$2 WHERE id=$1")
             .bind(document_id)
             .bind(charge)
@@ -354,6 +362,24 @@ mod tests {
         let (page, _) = catalog.chat_page(document, None, 10).await.unwrap();
         assert_eq!(page.len(), 1);
         assert_eq!(page[0].author_account_id, None);
+        assert_eq!(page[0].author_label, "Deleted user");
         assert_eq!(chat_bytes(&catalog, document).await, charged);
+    }
+
+    #[tokio::test]
+    #[ignore = "requires LIBREPAPER_TEST_POSTGRES_URL"]
+    async fn inserting_the_same_batch_twice_stores_and_charges_once() {
+        let catalog = catalog().await;
+        let _writer = catalog.claim_writer().await.unwrap();
+        let owner = account(&catalog).await;
+        let document = project(&catalog, &owner).await;
+        let rows = vec![message(None, "one"), message(None, "two")];
+        let first = catalog.insert_chat_messages(document, &rows).await.unwrap();
+        let second = catalog.insert_chat_messages(document, &rows).await.unwrap();
+        assert_eq!(first, 3 + 3 + 2 * super::CHAT_ROW_OVERHEAD_BYTES);
+        assert_eq!(second, 0);
+        let (page, _) = catalog.chat_page(document, None, 10).await.unwrap();
+        assert_eq!(page.len(), 2);
+        assert_eq!(chat_bytes(&catalog, document).await, first);
     }
 }

@@ -5,7 +5,6 @@ use super::*;
 use librepaper_engine::log::sequencer::Ingested;
 use librepaper_engine::storage::outgoing::OutgoingSink;
 use librepaper_engine::storage::postgres::ChatRecord;
-use librepaper_room::room::chat::chat_json;
 use librepaper_room::room::Room;
 
 /// How many messages a hello carries; older ones are paged in over HTTP.
@@ -381,13 +380,11 @@ impl Server {
                 .map(|_| ())
         };
 
-        // Chat frames reach commenters and above only. The socket listens
-        // before the history is read, so a message cannot fall between the
-        // two; the client merges by id.
+        // Chat frames reach commenters and above only. Such a socket starts
+        // listening in the same step that reads the history and queues the
+        // hello, so every chat event follows the hello; the client merges by
+        // id.
         let can_chat = who.at_least(Role::Commenter);
-        if can_chat {
-            room.listen_chat(socket_id, tx.clone()).await;
-        }
 
         // The first page, and how much more there is: never the collection.
         // This is sent after the socket is already a subscriber, which is
@@ -411,22 +408,7 @@ impl Server {
                     state["next_cursor"] = json!(page.next.map(|at| {
                         librepaper_room::room::comments::encode_cursor(room.document_id, None, at)
                     }));
-                    let mut hello = json!({"type": "hello", "comments": comments, "state": state});
-                    if can_chat {
-                        // A failed chat read must not cost the socket its
-                        // hello: the history is just empty this time.
-                        let (messages, more) = match room.chat_page(None, CHAT_HELLO_LIMIT).await {
-                            Ok(page) => page,
-                            Err(error) => {
-                                tracing::warn!("could not read the chat of {}: {error}", room.slug);
-                                (Vec::new(), false)
-                            }
-                        };
-                        hello["chat"] = Value::Array(messages.iter().map(chat_json).collect());
-                        hello["chat_more"] = json!(more);
-                        hello["chat_can_clear"] = json!(who.at_least(Role::Owner));
-                    }
-                    hello
+                    json!({"type": "hello", "comments": comments, "state": state})
                 }
                 Err(error) => {
                     json!({"type": "error", "message": error.to_string(), "retryable": error.is_temporary()})
@@ -436,11 +418,22 @@ impl Server {
                 json!({"type": "error", "message": error.to_string(), "retryable": error.is_temporary()})
             }
         };
-        if joined.is_err()
-            || send_outgoing(&tx, Outgoing::Text(hello.to_string()))
-                .await
-                .is_err()
-        {
+        let sent = if joined.is_err() {
+            Err(())
+        } else if can_chat {
+            room.send_hello_with_chat(
+                socket_id,
+                &tx,
+                hello,
+                who.at_least(Role::Owner),
+                CHAT_HELLO_LIMIT,
+                SOCKET_WRITE_TIMEOUT,
+            )
+            .await
+        } else {
+            send_outgoing(&tx, Outgoing::Text(hello.to_string())).await
+        };
+        if sent.is_err() {
             writer.abort();
             let _ = writer.await;
             self.connections.lock().await.remove(&socket_id);
