@@ -116,6 +116,11 @@ function fakeStore(store, perform) {
 function openFake(indexedDB_) {
   return new Promise((resolve, reject) => {
     const request = indexedDB_.open("librepaper-offline-v2", 2);
+    request.onupgradeneeded = () => {
+      request.result.createObjectStore("projects", { keyPath: "key" });
+      request.result.createObjectStore("states");
+      request.result.createObjectStore("updates", { keyPath: ["project", "id"] }).createIndex("project", "project");
+    };
     request.onsuccess = () => resolve(request.result);
     request.onerror = () => reject(request.error);
   });

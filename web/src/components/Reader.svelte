@@ -3321,6 +3321,25 @@
   $effect(() => backupStatusStore.setScope(me?.id, hasDesktop));
   $effect(() => () => backupStatusStore.reset());
 
+  // Every project an editor opens is kept in this browser, so it can be opened
+  // again without a connection. A new project reports local before anything is
+  // stored, so a failed attempt is retried on the next report instead of being
+  // given up for the rest of the page load.
+  let localCopyRemembered = false;
+  $effect(() => {
+    if (localCopyRemembered || !mayEdit || openedLocally || !persistence.local) return;
+    localCopyRemembered = true;
+    const server = location.origin;
+    localProject({ server, slug: SLUG })
+      .then(async (existing) => {
+        await rememberProject({ ...doc, slug: SLUG, server });
+        // The page shell is cached with the first copy, so the landing page can
+        // list local projects when the server cannot be reached.
+        if (!existing) await cacheCurrentShell().catch(() => {});
+      })
+      .catch(() => { localCopyRemembered = false; });
+  });
+
   // Ctrl-S reports the durability the server has confirmed for local work.
   // Typing is saved automatically, but a buffered edit is not durable yet.
   //
@@ -3346,25 +3365,6 @@
     if (!persistence.joined || persistence.pending) return;
     say("Saved on the server.", { id: "reader:persistence" });
   }
-
-  // Every project an editor opens is kept in this browser, so it can be opened
-  // again without a connection. A new project reports local before anything is
-  // stored, so a failed attempt is retried on the next report instead of being
-  // given up for the rest of the page load.
-  let localCopyRemembered = false;
-  $effect(() => {
-    if (localCopyRemembered || !mayEdit || openedLocally || !persistence.local) return;
-    localCopyRemembered = true;
-    const server = location.origin;
-    localProject({ server, slug: SLUG })
-      .then(async (existing) => {
-        await rememberProject({ ...doc, slug: SLUG, server });
-        // The page shell is cached with the first copy, so the landing page can
-        // list local projects when the server cannot be reached.
-        if (!existing) await cacheCurrentShell().catch(() => {});
-      })
-      .catch(() => { localCopyRemembered = false; });
-  });
 
   // There is no save, so a close is almost never worth interrupting: the
   // document is durable, and what is not yet on the server is in this
