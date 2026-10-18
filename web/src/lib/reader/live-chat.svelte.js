@@ -185,6 +185,8 @@ export function createLiveChat({ slug, key = "" }) {
       if (issued !== generation) return;
       const page = Array.isArray(body.messages) ? body.messages : [];
       state.messages = union(page, state.messages);
+      // A recovery restores its snapshot, which must keep this page too.
+      if (recovering !== null) recovering = union(page, recovering);
       state.more = Boolean(body.more);
     } catch (cause) {
       if (issued === generation) state.loadError = cause?.message || "Older messages could not be read.";
