@@ -2,7 +2,7 @@
 /**
  * @typedef {(id: string, options: InsertOptions, context: NormalizedInsertContext) => string | InsertionResult} BuildFormatter
  */
-import { buildLatex } from './insert-latex.js';
+import { buildLatex, latexRoot } from './insert-latex.js';
 import { buildTypst } from './insert-typst.js';
 
 /**
@@ -470,7 +470,7 @@ export function buildInsertion(id, options = {}, input = {}) {
     const exists=c.format==='typst'?/#bibliography\s*\(/.test(whole):c.format==='latex'?/\\(?:printbibliography|bibliography\s*\{)/.test(whole):c.format==='quarto'?/\{#refs\}/.test(c.text):/^#{1,6}\s+References\s*$/im.test(c.text);
     if(exists)throw Error('This document already contains a bibliography. Edit or move the existing one.');
   }
-  const basePath=c.format==='latex' ? c.mainPath || c.path : c.path;
+  const basePath=c.format==='latex' ? latexRoot(c) || c.path : c.path;
   if(o.src){
     if(c.format==='latex'&&!/\.(png|jpe?g|pdf)$/i.test(o.src))throw Error('Choose a PNG, JPEG, or PDF figure for LaTeX.');
     if(c.format==='typst'&&!/\.(png|jpe?g|svg|gif|webp)$/i.test(o.src))throw Error('Choose a PNG, JPEG, SVG, GIF, or WebP image for Typst.');
