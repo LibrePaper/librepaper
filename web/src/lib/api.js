@@ -5,6 +5,8 @@
 // the server, that a state-changing request came from this page and not from a
 // hostile document on the sibling documents host. It goes on every write and
 // on the listing, never on plain navigation.
+import { forgetLocalData } from "./local-data.js";
+
 export const SHELL_HEADERS = { "X-LibrePaper-Client": "shell" };
 
 async function json(response) {
@@ -91,7 +93,10 @@ export const me = () => get("/api/me").catch(() => ({}));
 export async function signOut(site = "") {
   // A GET can be forced onto a signed-in reader cross-site, so signing out is
   // a POST carrying the same header every other state change does.
-  await fetch("/auth/logout", { method: "POST", headers: SHELL_HEADERS }).catch(() => {});
+  const response = await fetch("/auth/logout", { method: "POST", headers: SHELL_HEADERS }).catch(() => null);
+  // Only a confirmed sign-out clears what this browser kept. If the request
+  // failed, the session cookie survives and so must the local copies.
+  if (response?.ok) await forgetLocalData();
   // The landing page, not this one. Reloading left you wherever you happened
   // to be signing out from -- a project you can no longer open, a panel with
   // nothing in it -- and somebody who has just signed out is a stranger
