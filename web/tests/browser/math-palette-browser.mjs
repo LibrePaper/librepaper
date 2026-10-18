@@ -105,6 +105,8 @@ try {
   assert.equal(await count("[data-math-field]"), 6, "three columns by two rows shows six cells");
   await evaluate(`document.querySelector('[role="group"][aria-label="Columns"] [aria-label="Fewer columns"]').click()`);
   assert.equal(await count("[data-math-field]"), 4, "removing a column drops the cells that no longer exist");
+  await click('.math-actions button[type="button"]');
+  await until("picker after cancel", () => evaluate(`document.querySelectorAll("button[data-template]").length > 0`), 5000);
 
   // Cancel with Escape returns to the picker and inserts nothing.
   await until("picker before escape", () => evaluate(`document.querySelectorAll("button[data-template]").length > 0`), 5000);
