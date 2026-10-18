@@ -55,6 +55,8 @@ pub enum KnownMessage {
         #[serde(default)]
         temp_id: String,
     },
+    #[serde(rename = "chat-clear")]
+    ChatClear,
     // `librepaper.room.v3` requires `protocol` before any update is
     // accepted and has no `after` fallback;
     // `version`/`schema_version` are gone because the protocol string alone
@@ -209,6 +211,7 @@ impl KnownMessage {
             kind,
             "ping"
                 | "chat"
+                | "chat-clear"
                 | "doc-open"
                 | "doc-presence"
                 | "doc-update"
@@ -228,6 +231,7 @@ impl KnownMessage {
         match self {
             Self::Ping => "ping",
             Self::Chat { .. } => "chat",
+            Self::ChatClear => "chat-clear",
             Self::DocOpen { .. } => "doc-open",
             Self::DocPresence { .. } => "doc-presence",
             Self::DocUpdate { .. } => "doc-update",

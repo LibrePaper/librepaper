@@ -4,7 +4,12 @@
 use super::*;
 use librepaper_engine::log::sequencer::Ingested;
 use librepaper_engine::storage::outgoing::OutgoingSink;
+use librepaper_engine::storage::postgres::ChatRecord;
+use librepaper_room::room::chat::chat_json;
 use librepaper_room::room::Room;
+
+/// How many messages a hello carries; older ones are paged in over HTTP.
+const CHAT_HELLO_LIMIT: i64 = 50;
 
 /// Bound both queue and transport writes so a slow peer cannot pin the reader
 /// or the writer task down indefinitely.
@@ -376,6 +381,14 @@ impl Server {
                 .map(|_| ())
         };
 
+        // Chat frames reach commenters and above only. The socket listens
+        // before the history is read, so a message cannot fall between the
+        // two; the client merges by id.
+        let can_chat = who.at_least(Role::Commenter);
+        if can_chat {
+            room.listen_chat(socket_id, tx.clone()).await;
+        }
+
         // The first page, and how much more there is: never the collection.
         // This is sent after the socket is already a subscriber, which is
         // what makes the handover from paging to live events lossless --
@@ -398,7 +411,22 @@ impl Server {
                     state["next_cursor"] = json!(page.next.map(|at| {
                         librepaper_room::room::comments::encode_cursor(room.document_id, None, at)
                     }));
-                    json!({"type": "hello", "comments": comments, "state": state})
+                    let mut hello = json!({"type": "hello", "comments": comments, "state": state});
+                    if can_chat {
+                        // A failed chat read must not cost the socket its
+                        // hello: the history is just empty this time.
+                        let (messages, more) = match room.chat_page(None, CHAT_HELLO_LIMIT).await {
+                            Ok(page) => page,
+                            Err(error) => {
+                                tracing::warn!("could not read the chat of {}: {error}", room.slug);
+                                (Vec::new(), false)
+                            }
+                        };
+                        hello["chat"] = Value::Array(messages.iter().map(chat_json).collect());
+                        hello["chat_more"] = json!(more);
+                        hello["chat_can_clear"] = json!(who.at_least(Role::Owner));
+                    }
+                    hello
                 }
                 Err(error) => {
                     json!({"type": "error", "message": error.to_string(), "retryable": error.is_temporary()})
@@ -513,8 +541,23 @@ impl Server {
                         continue 'reader;
                     }
 
-                    // Chat is live room traffic, never document state. It is
-                    // deliberately absent from hello/reconnect and storage.
+                    // Chat is stored by the room, never in the document log.
+                    // Only commenters and above send it or receive it.
+                    if incoming.kind() == "chat-clear" {
+                        if !who.at_least(Role::Owner) {
+                            let _ = send_outgoing(&tx, Outgoing::Text(json!({"type":"error","message":"only the owner can clear chat"}).to_string())).await;
+                            continue 'reader;
+                        }
+                        match room.clear_chat().await {
+                            Ok(_) => {
+                                room.broadcast_chat(None, &json!({"type":"chat-cleared"})).await;
+                            }
+                            Err(error) => {
+                                let _ = send_outgoing(&tx, Outgoing::Text(json!({"type":"error","message":error.to_string()}).to_string())).await;
+                            }
+                        }
+                        continue 'reader;
+                    }
                     if incoming.kind() == "chat" {
                         if !who.at_least(Role::Commenter) {
                             let _ = send_outgoing(&tx, Outgoing::Text(json!({"type":"error","message":"comment access is required to chat","temp_id":incoming.temp_id()}).to_string())).await;
@@ -546,12 +589,19 @@ impl Server {
                         } else {
                             pseudonym_for(&author, &room.slug)
                         };
-                        let mut message = json!({
-                            "type":"chat", "id":random_token(),
-                            "text":text, "creator":creator,
-                            "created":librepaper_base::util::timestamp(),
-                        });
-                        room.broadcast_except(Some(socket_id),&message).await;
+                        let record = ChatRecord {
+                            id: uuid::Uuid::now_v7(),
+                            author_account_id: who.account_id(),
+                            author_label: creator,
+                            body: text.to_owned(),
+                            created_at: time::OffsetDateTime::now_utc(),
+                        };
+                        let mut message = chat_json(&record);
+                        if let Err(reason) = room.enqueue_chat(record).await {
+                            let _ = send_outgoing(&tx, Outgoing::Text(json!({"type":"error","message":reason,"temp_id":incoming.temp_id()}).to_string())).await;
+                            continue 'reader;
+                        }
+                        room.broadcast_chat(Some(socket_id), &message).await;
                         message["temp_id"] = Value::String(incoming.temp_id().to_owned());
                         if send_outgoing(&tx, Outgoing::Text(message.to_string())).await.is_err() { break 'reader; }
                         chat_requests.push_back((incoming.temp_id().to_owned(),digest));

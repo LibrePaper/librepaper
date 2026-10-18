@@ -40,6 +40,7 @@ pub mod agent_query;
 mod agent_view;
 pub use librepaper_engine::storage::annotation;
 mod catalog;
+pub mod chat;
 mod command;
 #[cfg(test)]
 mod comment_anchor_tests;
@@ -78,10 +79,15 @@ pub use outgoing::{Outgoing, Sender};
 /// not own is the rate limit that is about a person rather than about the
 /// log. Chat is counted here because it is not an update, and an editor's
 /// allowance for typing must not be consumable by a conversation.
+#[derive(Default)]
 pub(super) struct Peer {
     /// Which minute `chat_messages` is counting.
     pub minute: i64,
     pub chat_messages: i64,
+    /// Where chat frames for this socket go. Set only for commenters and
+    /// above: the sequencer's roles cannot tell a viewer from a commenter,
+    /// so chat is fanned out from here instead.
+    pub chat_tx: Option<Sender>,
 }
 
 /// How many comments' anchors one room remembers where to draw.
@@ -222,6 +228,10 @@ pub struct Room {
     reattached_digest: tokio::sync::Mutex<Option<String>>,
     /// Per-socket accounting for the frames that are not updates.
     peers: Mutex<HashMap<u64, Peer>>,
+    /// Chat accepted but not yet written, and how many rows that is, so the
+    /// housekeeping pass can ask without taking the lock.
+    chat: Mutex<chat::ChatBuffer>,
+    chat_waiting: std::sync::atomic::AtomicUsize,
     /// Bytes reserved by uploads whose blob write has not registered its
     /// metadata yet. The count lets same-digest uploads share one quota claim
     /// while each cancelled future releases its own claim.
@@ -322,13 +332,7 @@ impl Room {
         tx: Sender,
         vector: Option<&[u8]>,
     ) -> Result<Joined, SequencerError> {
-        self.peers.lock().await.insert(
-            socket,
-            Peer {
-                minute: 0,
-                chat_messages: 0,
-            },
-        );
+        self.peers.lock().await.entry(socket).or_default();
         let role = if may_edit { Role::Editor } else { Role::Reader };
         self.log.join(socket, role, peer_key, tx, vector).await
     }
@@ -339,6 +343,9 @@ impl Room {
     pub async fn leave(&self, socket: u64) {
         self.peers.lock().await.remove(&socket);
         if self.log.unsubscribe(socket).await {
+            // Nobody is left to see the housekeeping pass through, and the
+            // registry may retire the sequencer before the next one.
+            self.flush_chat(true).await;
             if let Err(error) = self.log.flush(FlushReason::LastSubscriberLeft).await {
                 tracing::warn!(
                     "could not flush {} as its last socket left: {error}",
@@ -631,6 +638,8 @@ impl Rooms {
             attachments: tokio::sync::Mutex::new(AttachmentCache::default()),
             reattached_digest: tokio::sync::Mutex::new(None),
             peers: Mutex::new(HashMap::new()),
+            chat: Mutex::new(chat::ChatBuffer::default()),
+            chat_waiting: std::sync::atomic::AtomicUsize::new(0),
             asset_uploads: std::sync::Mutex::new(HashMap::new()),
             #[cfg(test)]
             event_comment_reads: std::sync::atomic::AtomicUsize::new(0),
@@ -644,7 +653,10 @@ impl Rooms {
     /// Drops the room for a slug. The sequencer under it is retired on its
     /// own schedule by the registry, which flushes first.
     pub async fn close(&self, slug: &str) {
-        self.open.lock().await.remove(slug);
+        let room = self.open.lock().await.remove(slug);
+        if let Some(room) = room {
+            room.flush_chat(true).await;
+        }
     }
 
     /// Flushes what is due and retires what nobody is holding. The whole of
@@ -665,15 +677,22 @@ impl Rooms {
             let rooms: Vec<Arc<Room>> = self.open.lock().await.values().cloned().collect();
             for room in rooms {
                 room.reattach_comments_if_moved().await;
+                room.flush_chat(false).await;
             }
         }
+        // A room with chat still waiting stays open so the next pass can
+        // write it.
         self.open
             .lock()
             .await
-            .retain(|_, room| Arc::strong_count(room) > 1);
+            .retain(|_, room| Arc::strong_count(room) > 1 || room.chat_waiting() > 0);
     }
 
     pub async fn shutdown(&self) {
+        let rooms: Vec<Arc<Room>> = self.open.lock().await.values().cloned().collect();
+        for room in rooms {
+            room.flush_chat(true).await;
+        }
         self.registry.shutdown().await;
         self.open.lock().await.clear();
     }
@@ -681,10 +700,11 @@ impl Rooms {
     /// Forget every resident copy of an erased account's authored rows at
     /// once. The catalogue worker performs the durable deletion; this only
     /// makes sure no room keeps showing what it already read.
-    pub async fn erase_author_from_caches(&self, _account_id: &str) {
+    pub async fn erase_author_from_caches(&self, account_id: &str) {
         let rooms: Vec<Arc<Room>> = self.open.lock().await.values().cloned().collect();
         for room in rooms {
             room.forget_comments().await;
+            room.scrub_chat_author(account_id).await;
         }
     }
 

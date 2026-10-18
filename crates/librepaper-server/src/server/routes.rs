@@ -67,6 +67,7 @@ pub(super) fn api_router(server: Arc<Server>) -> Router {
         .route("/api/documents/{slug}/source", get(source))
         .route("/api/documents/{slug}/snapshot", get(snapshot))
         .route("/api/documents/{slug}/comments", any(comments))
+        .route("/api/documents/{slug}/chat-history", get(chat_history))
         .route(
             "/api/documents/{slug}/comments/{comment}/replies",
             get(replies),
@@ -516,6 +517,16 @@ async fn comments(
     request: Request<Body>,
 ) -> Reply {
     server.handle_comments(request, ctx.peer, &ctx, &slug).await
+}
+
+/// Older chat messages, for a client paging back past what its hello carried.
+async fn chat_history(
+    State(server): State<Arc<Server>>,
+    Extension(ctx): Extension<RequestContext>,
+    Path(slug): Path<String>,
+    request: Request<Body>,
+) -> Reply {
+    server.handle_chat_history(request, &ctx, &slug).await
 }
 
 /// One thread's replies, paged on their own so a comment with very many
