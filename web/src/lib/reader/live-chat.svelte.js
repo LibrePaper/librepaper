@@ -47,6 +47,27 @@ export function createLiveChat({ slug, key = "" }) {
     retryTimer = null;
   }
 
+  // A seed or a clear abandons the recovery. A retry keeps it.
+  function cancelRecovery() {
+    cancelRetry();
+    recovering = null;
+    recoveredLive = [];
+  }
+
+  // While a recovery is pending, `recovering` holds the messages this tab
+  // had before it began and `recoveredLive` the live messages added since.
+  // The recovered page is merged against the first so the gap rule sees only
+  // pre-recovery messages, and the second is put back afterwards.
+  let recovering = null;
+  let recoveredLive = [];
+
+  function insert(event) {
+    const last = state.messages.at(-1);
+    state.messages = !last || last.id < event.id
+      ? [...state.messages, event]
+      : union(state.messages, [event]);
+  }
+
   // Asks for the newest page after the server could not read it for the
   // hello. Each attempt runs at once, and a failure schedules the next after
   // 2 s, 4 s, 8 s and so on, up to 30 s.
@@ -62,10 +83,17 @@ export function createLiveChat({ slug, key = "" }) {
         if (!response.ok) throw new Error("history unavailable");
         if (issued !== generation) return;
         state.loadError = "";
+        const live = recoveredLive;
+        if (recovering !== null) state.messages = recovering;
+        recovering = null;
+        recoveredLive = [];
         merge({
           chat: Array.isArray(body.messages) ? body.messages : [],
           chat_more: body.more,
         });
+        for (const event of live) {
+          if (!state.messages.some((message) => message.id === event.id)) insert(event);
+        }
       } catch {
         if (issued !== generation) return;
         retryTimer = setTimeout(() => retryHistory(attempt + 1), Math.min(2000 * 2 ** attempt, 30000));
@@ -75,7 +103,7 @@ export function createLiveChat({ slug, key = "" }) {
 
   function seed(hello) {
     generation++;
-    cancelRetry();
+    cancelRecovery();
     state.loadingOlder = false;
     state.loadError = "";
     if (hello?.chat_unavailable === true) {
@@ -83,6 +111,8 @@ export function createLiveChat({ slug, key = "" }) {
       // try again. Live messages still arrive meanwhile.
       state.canClear = Boolean(hello.chat_can_clear);
       state.loadError = "Chat history could not be read. Trying again.";
+      recovering = state.messages;
+      recoveredLive = [];
       retryHistory(0);
       return;
     }
@@ -98,7 +128,7 @@ export function createLiveChat({ slug, key = "" }) {
     }
     const incoming = hello.chat;
     const more = Boolean(hello.chat_more);
-    state.canClear = Boolean(hello.chat_can_clear);
+    if ("chat_can_clear" in hello) state.canClear = Boolean(hello.chat_can_clear);
     const held = state.messages;
     if (!incoming.length) {
       state.messages = [];
@@ -125,7 +155,7 @@ export function createLiveChat({ slug, key = "" }) {
   function receive(event) {
     if (event.type === "chat-cleared") {
       generation++;
-      cancelRetry();
+      cancelRecovery();
       state.loadingOlder = false;
       state.messages = [];
       state.more = false;
@@ -134,10 +164,8 @@ export function createLiveChat({ slug, key = "" }) {
     }
     if (event.type !== "chat") return false;
     if (state.messages.some((message) => message.id === event.id)) return true;
-    const last = state.messages.at(-1);
-    state.messages = !last || last.id < event.id
-      ? [...state.messages, event]
-      : union(state.messages, [event]);
+    insert(event);
+    if (recovering !== null) recoveredLive.push(event);
     return true;
   }
 
@@ -157,6 +185,8 @@ export function createLiveChat({ slug, key = "" }) {
       if (issued !== generation) return;
       const page = Array.isArray(body.messages) ? body.messages : [];
       state.messages = union(page, state.messages);
+      // A recovery restores its snapshot, which must keep this page too.
+      if (recovering !== null) recovering = union(page, recovering);
       state.more = Boolean(body.more);
     } catch (cause) {
       if (issued === generation) state.loadError = cause?.message || "Older messages could not be read.";
