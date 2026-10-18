@@ -6,6 +6,8 @@
   // palette uses it for the whole sidebar search, and the math forms use it
   // to find one symbol at a time. `grouped` labels each run of matches with
   // its category, which only the palette wants.
+  /** @typedef {"html" | "quarto" | "markdown" | "latex" | "typst"} SymbolFormat */
+  /** @type {{ symbols?: any[], format?: SymbolFormat, onpick?: (symbol: any, event?: Event) => void, placeholder?: string, autofocus?: boolean, grouped?: boolean, query?: string }} */
   let {
     symbols = [],
     format = "latex",
