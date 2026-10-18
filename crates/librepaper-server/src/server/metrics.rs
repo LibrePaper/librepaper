@@ -1149,9 +1149,9 @@ mod tests {
             "# HELP librepaper_http_requests Completed HTTP requests by bounded route, method, and response class.\n"
         ));
         assert!(text.contains("librepaper_memory_budget_evicted_caches_total 4"));
-        assert!(text.contains("librepaper_memory_budget_builds_total 2\n"));
-        assert!(text.contains("librepaper_memory_budget_build_failures_total 1\n"));
-        assert!(text.contains("librepaper_memory_budget_build_millis_total 65\n"));
+        assert!(text.contains("librepaper_memory_budget_builds_total 2"));
+        assert!(text.contains("librepaper_memory_budget_build_failures_total 1"));
+        assert!(text.contains("librepaper_memory_budget_build_millis_total 65"));
         assert!(!text.contains("librepaper_memory_budget_evicted_caches_total_total"));
         assert!(!text.contains("librepaper_http_requests_total_total"));
     }

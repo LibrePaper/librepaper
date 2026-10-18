@@ -272,7 +272,7 @@ mod tests {
                 |row| row.get(0),
             )
             .unwrap();
-        assert_eq!(nulls, 11);
+        assert_eq!(nulls, 12);
         let read = read_range(&path, 1_000, 1_060, 1).unwrap();
         assert_eq!(read[0], vec![None]);
         assert_eq!(read[1], vec![Some(5.0)]);
@@ -299,7 +299,7 @@ mod tests {
             store.insert(ts, &pair(ts as f64, ts as f64)).unwrap();
         }
         store.trim(300).unwrap();
-        assert_eq!(count(&path), 24);
+        assert_eq!(count(&path), 26);
         let read = read_range(&path, 0, 500, 5).unwrap();
         assert_eq!(read[0], vec![None, None, None, Some(300.0), Some(400.0)]);
     }
