@@ -229,7 +229,10 @@ mod tests {
         let owner = account(&catalog).await;
         let document = project(&catalog, &owner).await;
         let before = catalog.usage_bytes(Some(owner.id)).await.unwrap();
-        let rows = vec![message(Some(owner.id), "hello"), message(Some(owner.id), "world!")];
+        let rows = vec![
+            message(Some(owner.id), "hello"),
+            message(Some(owner.id), "world!"),
+        ];
         let charged = catalog.insert_chat_messages(document, &rows).await.unwrap();
         assert_eq!(charged, 5 + 6 + 2 * CHAT_ROW_OVERHEAD_BYTES);
         assert_eq!(chat_bytes(&catalog, document).await, charged);

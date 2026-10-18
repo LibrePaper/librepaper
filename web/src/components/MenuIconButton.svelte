@@ -2,7 +2,7 @@
   import { Menu } from "@skeletonlabs/skeleton-svelte";
   import Icon from "./Icon.svelte";
 
-  let { icon, label, projectSlug, size = "1.25rem", class: className = "" } = $props();
+  let { icon, label, projectSlug = undefined, size = "1.25rem", class: className = "" } = $props();
 </script>
 
 <!-- The menu primitive owns the trigger's ARIA, keyboard, and open-state

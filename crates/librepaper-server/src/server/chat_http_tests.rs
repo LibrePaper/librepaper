@@ -31,9 +31,8 @@ use super::Server;
 const READER: &str = "https://paper.example";
 const PAPER: &str = "# Chat\n\nA document with a conversation.\n";
 
-type Socket = tokio_tungstenite::WebSocketStream<
-    tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>,
->;
+type Socket =
+    tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>>;
 
 struct Fixture {
     base: String,
@@ -253,7 +252,12 @@ async fn flush(fixture: &Fixture) {
         .await;
 }
 
-async fn history(fixture: &Fixture, query: &str, authorization: Option<&str>, link: Option<&str>) -> (u16, Value) {
+async fn history(
+    fixture: &Fixture,
+    query: &str,
+    authorization: Option<&str>,
+    link: Option<&str>,
+) -> (u16, Value) {
     let mut request = reqwest::Client::new()
         .get(format!(
             "{}/api/documents/{}/chat-history{query}",
