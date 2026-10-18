@@ -19,12 +19,19 @@
         the operating system's -- the controls this page used to draw were
         painted in ButtonFace and SelectedItem, which meant the frame went
         dark on a dark desktop while the application around it stayed light.
-        The scheme is pinned here for the same reason: the shell declares
-        `color-scheme: light`, and when that becomes `light dark` this is the
-        other half of the change.
+        The scheme is pinned in each block for the same reason. The shell's
+        default is System, so the page follows the operating system until the
+        reader speaks. The mode then arrives by message, because the origins
+        differ and this frame cannot read the reader's storage or CSS, and
+        viewer.js sets `data-mode` on this element to pin it.
       */
-      html { background: #f6f6f4; color-scheme: light;
-             /* A pinch zooms the PDF in viewer.js, not the whole frame. */
+      html { background: #f6f6f4; color-scheme: light; --note: #5d666a; --note-title: #1a2225; }
+      @media (prefers-color-scheme: dark) {
+        html { background: #202221; color-scheme: dark; --note: #a2a8a3; --note-title: #eceeed; }
+      }
+      html[data-mode="light"] { background: #f6f6f4; color-scheme: light; --note: #5d666a; --note-title: #1a2225; }
+      html[data-mode="dark"] { background: #202221; color-scheme: dark; --note: #a2a8a3; --note-title: #eceeed; }
+      html { /* A pinch zooms the PDF in viewer.js, not the whole frame. */
              touch-action: pan-x pan-y; }
       body { margin: 0; }
       .grab-to-pan-grab, .grab-to-pan-grab .textLayer span { cursor: grab !important; }
@@ -35,10 +42,10 @@
         card, so which side of the frame boundary wrote it is not a thing
         anybody has to work out.
       */
-      .note { max-width: 40rem; padding: 2rem; color: #5d666a;
+      .note { max-width: 40rem; padding: 2rem; color: var(--note);
               font: 0.875rem/1.5 system-ui, -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; }
       .note p { margin: 0 0 0.5rem; }
-      .note .note-title { color: #1a2225; font-size: 1rem; font-weight: 600; }
+      .note .note-title { color: var(--note-title); font-size: 1rem; font-weight: 600; }
       main { display: flex; flex-direction: column; align-items: center; gap: 24px; padding: 24px 16px 48px; }
       main > .pages { align-self: safe center; display: flex; flex-direction: column; gap: 24px; }
       .page { position: relative; background: #fff; box-shadow: 0 1px 5px rgb(24 31 28 / 0.14); overflow: hidden; }

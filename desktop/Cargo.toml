@@ -48,3 +48,7 @@ incremental = true
 [target.'cfg(target_os = "macos")'.dependencies]
 objc2 = "0.6"
 objc2-foundation = "0.3"
+
+# tao draws the Linux title bar through GTK, so the shell reads the same settings.
+[target.'cfg(target_os = "linux")'.dependencies]
+gtk = "0.18"

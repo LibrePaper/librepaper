@@ -21,3 +21,9 @@ title: "FAQ"
 - `.woff` and `.woff2` files are for HTML. Typst and LaTeX cannot read them.
 - HTML previews use the browser's default fonts. Use the PDF view to see your fonts.
 - Everyone who can open the project, read links included, downloads the font files. Check that the font licence allows that.
+
+## Is there a dark mode?
+
+- Yes. The app follows your computer's setting by default.
+- Settings > Appearance > Theme offers Light, Dark and System. The choice is remembered per browser.
+- The rendered document keeps its own colours. Only the interface changes.

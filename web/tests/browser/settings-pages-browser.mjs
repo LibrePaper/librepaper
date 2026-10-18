@@ -149,7 +149,7 @@ try {
   await until("harness mounted", () => b.evaluate("typeof window.show === \"function\""), 10000);
   await show("rendering", "quarto", "Rendering");
   assert.deepEqual(JSON.parse(await b.evaluate(`JSON.stringify([...document.querySelectorAll(".settings-nav-item")].map((node) => node.textContent.trim()))`)),
-    ["Editor", "Rendering", "Tools", "Desktop app", "AI agents", "Backups", "Account"]);
+    ["Appearance", "Editor", "Rendering", "Tools", "Desktop app", "AI agents", "Backups", "Account"]);
 
   // Settings is a page, not a card: it covers the window, Back closes it and
   // so does Escape.
