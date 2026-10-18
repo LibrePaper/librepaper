@@ -79,8 +79,8 @@
       <button type="button" class="btn btn-sm lp-control-tonal-brand older" disabled={loadingOlder} onclick={older}>
         {loadingOlder ? "Loading..." : "Load older messages"}
       </button>
-      {#if loadError}<p class="panel-muted" role="alert">{loadError}</p>{/if}
     {/if}
+    {#if loadError}<p class="panel-muted" role="alert">{loadError}</p>{/if}
     {#each rows as { message, key, starts, name } (`${message.role || "chat"}:${message.id}`)}
       {@const results = message.context?.results}
       {@const refusedCount = results?.refused || 0}
@@ -115,7 +115,7 @@
         </div>
       </article>
     {/each}
-    {#if !messages.length}<p class="panel-muted">{empty}</p>{/if}
+    {#if !messages.length && !loadError}<p class="panel-muted">{empty}</p>{/if}
     {@render after?.()}
   </div>
   {#if unread}<button class="btn btn-sm lp-control-tonal-brand new-messages" onclick={() => { following = true; void follow(); }}>New messages ↓</button>{/if}
