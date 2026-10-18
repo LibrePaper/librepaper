@@ -1059,12 +1059,13 @@ impl Server {
             Ok(outcome) => outcome,
             Err(error) => return command_reply("trim history", error),
         };
-        chat.discard();
+        let waiting = chat.discard();
         room.chat_discarded();
         room.log().charge_storage(-outcome.chat_bytes);
-        drop(chat);
+        room.log().charge_storage(-waiting);
         room.broadcast_chat(None, &json!({"type": "chat-cleared"}))
             .await;
+        drop(chat);
         // The ledger is a coarse running total, so move it by what was freed.
         // A failed lookup leaves it alone: admission reloads the owner's total from the catalogue.
         if let Ok(Some(document)) = self.store.catalog.document(room.document_id).await {

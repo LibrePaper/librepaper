@@ -544,14 +544,14 @@ impl Server {
                     // Chat is stored by the room, never in the document log.
                     // Only commenters and above send it or receive it.
                     if incoming.kind() == "chat-clear" {
-                        if !who.at_least(Role::Owner) {
+                        // Ownership can move while this socket stays open, so
+                        // the role is read again now rather than at connect.
+                        if !self.is_current_owner(&room.slug, socket_id).await {
                             let _ = send_outgoing(&tx, Outgoing::Text(json!({"type":"error","message":"only the owner can clear chat"}).to_string())).await;
                             continue 'reader;
                         }
                         match room.clear_chat().await {
-                            Ok(_) => {
-                                room.broadcast_chat(None, &json!({"type":"chat-cleared"})).await;
-                            }
+                            Ok(_) => {}
                             Err(error) => {
                                 let _ = send_outgoing(&tx, Outgoing::Text(json!({"type":"error","message":error.to_string()}).to_string())).await;
                             }
@@ -596,14 +596,10 @@ impl Server {
                             body: text.to_owned(),
                             created_at: librepaper_engine::storage::postgres::chat_now(),
                         };
-                        let mut message = chat_json(&record);
-                        if let Err(reason) = room.enqueue_chat(record).await {
+                        if let Err(reason) = room.enqueue_chat(record, socket_id, incoming.temp_id()).await {
                             let _ = send_outgoing(&tx, Outgoing::Text(json!({"type":"error","message":reason,"temp_id":incoming.temp_id()}).to_string())).await;
                             continue 'reader;
                         }
-                        room.broadcast_chat(Some(socket_id), &message).await;
-                        message["temp_id"] = Value::String(incoming.temp_id().to_owned());
-                        if send_outgoing(&tx, Outgoing::Text(message.to_string())).await.is_err() { break 'reader; }
                         chat_requests.push_back((incoming.temp_id().to_owned(),digest));
                         if chat_requests.len() > 256 { chat_requests.pop_front(); }
                         continue 'reader;
@@ -1171,6 +1167,29 @@ impl Server {
             connection.authorized_at = tokio::time::Instant::now();
         }
         allowed
+    }
+
+    /// Whether this socket's principal is the document's owner right now.
+    async fn is_current_owner(&self, slug: &str, socket_id: u64) -> bool {
+        let connection = {
+            let connections = self.connections.lock().await;
+            connections.get(&socket_id).cloned()
+        };
+        let Some(connection) = connection else {
+            return false;
+        };
+        let Ok(Some(entry)) = self.store.get_result(slug).await else {
+            return false;
+        };
+        let who = self
+            .viewer(
+                &entry,
+                &connection.headers,
+                &connection.arrival,
+                connection.query.as_deref(),
+            )
+            .await;
+        !who.auth_failed && who.at_least(Role::Owner)
     }
 
     async fn disconnect_connection(&self, slug: &str, socket_id: u64) {
