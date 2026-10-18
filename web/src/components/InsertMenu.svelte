@@ -204,7 +204,7 @@
   <Menu open={openGroup === entry.label}
         onOpenChange={(event) => { if (event.open) openGroup = entry.label; else if (openGroup === entry.label) openGroup = null; }}
         onSelect={(chosen) => choose(chosen.value)}>
-    <Menu.TriggerItem class="menuitem" disabled={allDisabled}>
+    <Menu.TriggerItem value={"submenu:" + entry.label} class="menuitem" disabled={allDisabled}>
       <span class="menuitem-label">{entry.label}</span>
       <span class="menuitem-chevron" aria-hidden="true"><Icon name="chevron-right" size="1rem" /></span>
     </Menu.TriggerItem>
