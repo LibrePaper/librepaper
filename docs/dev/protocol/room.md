@@ -143,6 +143,50 @@ explicit error.
 
 Tracked changes are ordinary document updates. They have no messages of their own. Accepting or rejecting one is a normal document edit that syncs through the same update path. See [track changes](../../architecture/review.html#track-changes).
 
+## Project chat
+
+Project chat is stored per project. Only commenters and above receive it.
+View-only links never see chat, in `hello`, in broadcasts or over HTTP.
+Chat never enters the document log. The server buffers messages per room
+and writes them in batches, one transaction every 2 seconds or every 64
+messages. Chat counts toward the owner's storage, with no message cap.
+
+A message object has this shape:
+
+```json
+{"type":"chat","id":"<uuid>","text":"...","creator":"<label>","created":"<timestamp>"}
+```
+
+`id` is a UUIDv7 that the server makes at send time. It orders messages. The
+sender's own echo also carries `temp_id`.
+
+For commenters and above, `hello` gains three fields. A viewer's `hello`
+has none of them.
+
+- `chat`: the newest 50 messages, oldest first.
+- `chat_more`: `true` when older messages exist.
+- `chat_can_clear`: `true` only for the project owner.
+
+Every reconnect gets a fresh `hello`, so the `hello` fills in missed
+messages. Clients merge messages by `id`.
+
+Older messages load over HTTP. `GET /api/documents/{slug}/chat-history?before=<uuid>&limit=<n>`
+requires commenter access or above. `limit` defaults to 50 and is capped at 100.
+It returns `{"messages":[...],"more":bool}`, with the messages oldest first.
+
+Clearing chat is owner-only. The client sends `{"type":"chat-clear"}`.
+
+- If the sender is the owner, the server deletes every message. It then
+  broadcasts `{"type":"chat-cleared"}` to every commenter-or-above socket,
+  including the sender.
+- Otherwise the server replies with `{"type":"error","message":"only the owner can clear chat"}`.
+
+A successful trim also broadcasts `{"type":"chat-cleared"}`.
+
+When the owner's storage is full, a send gets
+`{"type":"error","message":"the project owner's storage is full","temp_id":...}`.
+The message is not stored.
+
 ## Recovery and compatibility
 
 The server's unsaved buffer is in memory. If the process stops before flush,
