@@ -267,6 +267,7 @@ export function createProjectSession({
   // Sequence numbers the server has not yet retired with a doc-ack. Update
   // bytes live in the CRDT itself and reconnect exports them from there.
   const unacknowledged = new Set();
+  let lastAckAt = null;
   // The newest local state this browser needs the server to durably cover.
   // Remote imports never move this target. Keep an owned copy of each vector:
   // Loro's WASM wrappers are mutable resources, and a later import must not
@@ -729,6 +730,15 @@ export function createProjectSession({
     },
     get joined() {
       return joined;
+    },
+
+    /// When the server last acknowledged this browser's work, in epoch
+    /// milliseconds, or null when it never has; and how much is still waiting.
+    lastAcknowledgedAt() {
+      return lastAckAt;
+    },
+    unacknowledgedCount() {
+      return unacknowledged.size;
     },
 
     /// The path the main file is known by, which is what its format is read
@@ -1218,7 +1228,10 @@ export function createProjectSession({
       // other work that this acknowledgement does not cover.
       pressureEased();
       for (const mine of unacknowledged) {
-        if (mine <= upTo) unacknowledged.delete(mine);
+        if (mine <= upTo) {
+          unacknowledged.delete(mine);
+          lastAckAt = Date.now();
+        }
       }
       report();
     },
@@ -1229,6 +1242,7 @@ export function createProjectSession({
     durable(vector) {
       if (left || !vector) return;
       mergeDurableCoverage(vector);
+      lastAckAt = Date.now();
       if (coveredByDurable()) {
         clearPressureTimer();
         pressureVector = null;

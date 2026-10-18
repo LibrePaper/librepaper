@@ -261,6 +261,11 @@ export function createReaderCollaboration({
     start,
     close,
     send,
+    /// Socket and acknowledgement facts for the diagnostics report.
+    syncStatus() {
+      const at = session?.lastAcknowledgedAt?.() ?? null;
+      return { ...room?.status?.(), lastAckAgoMs: at === null ? null : Date.now() - at };
+    },
     sendLive(message) {
       return room?.sendLive?.(message) || { ok: false, error: new Error("room is closed") };
     },
