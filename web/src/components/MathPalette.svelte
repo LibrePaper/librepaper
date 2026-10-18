@@ -457,8 +457,8 @@
 <style>
   .math-palette { display: flex; flex-direction: column; gap: var(--panel-section-gap); height: 100%; min-height: 0; overflow-y: auto; overscroll-behavior: contain; }
   /* Equal columns and one aspect ratio, so every tile is the same box whatever the math inside it. */
-  .math-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(5rem, 1fr)); gap: .5rem; }
-  .math-tile { display: flex; align-items: center; justify-content: center; width: 100%; aspect-ratio: 5 / 4; padding: .35rem .25rem; overflow: hidden; border: 1px solid var(--color-divider); border-radius: var(--radius-base); background: transparent; color: inherit; cursor: pointer; }
+  .math-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(6rem, 1fr)); gap: .5rem; }
+  .math-tile { display: flex; align-items: center; justify-content: center; width: 100%; aspect-ratio: 3 / 2; padding: .5rem .75rem; overflow: hidden; border: 1px solid var(--color-divider); border-radius: var(--radius-base); background: transparent; color: inherit; cursor: pointer; }
   .math-tile:hover, .math-tile:focus-visible { background: var(--color-row-hover); }
   .math-tile-preview { display: flex; align-items: center; justify-content: center; max-width: 100%; font-size: .8rem; }
   .math-form { display: flex; flex-direction: column; gap: .75rem; }
