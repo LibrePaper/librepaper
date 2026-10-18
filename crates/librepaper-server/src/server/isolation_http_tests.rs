@@ -677,6 +677,18 @@ async fn every_response_refuses_type_sniffing() {
         Some("nosniff"),
         "every response must carry x-content-type-options: nosniff"
     );
+    let request_id = response
+        .headers()
+        .get("x-request-id")
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or_default()
+        .to_owned();
+    assert!(
+        Uuid::parse_str(&request_id).is_ok_and(|id| id.get_version_num() == 7),
+        "every response must carry a uuid v7 x-request-id, got {request_id:?}"
+    );
+    let body: serde_json::Value = response.json().await.unwrap();
+    assert_eq!(body["version"], env!("CARGO_PKG_VERSION"));
 
     let _ = stop.send(());
     deployment.catalog.close().await;
