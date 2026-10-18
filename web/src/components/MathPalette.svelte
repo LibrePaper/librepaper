@@ -3,7 +3,8 @@
   import PanelHeader from "./PanelHeader.svelte";
   import SymbolSearch from "./SymbolSearch.svelte";
   import { MATH_TEMPLATES, templateInsertion } from "../lib/symbols/templates.js";
-  import { SYMBOLS, symbolText } from "../lib/symbols/index.js";
+  import { SYMBOLS, symbolText, separated } from "../lib/symbols/index.js";
+  import { latexPackageEdits } from "../lib/insert-latex.js";
   import { insertSyntaxContext } from "../lib/insert.js";
   import { loadKatex } from "../lib/katex.js";
 
@@ -193,19 +194,50 @@
 
   /** @param {KeyboardEvent} event */
   function onFormKey(event) {
-    if (event.key !== "Escape") return;
+    if (event.key !== "Escape" || event.defaultPrevented) return;
     // The panel sits in a sidebar that also listens for Escape; this press
-    // belongs to the form.
+    // belongs to the form. A press the search already answered is not the
+    // form's, so it stays on the form.
     event.preventDefault();
     event.stopPropagation();
     void back();
   }
 
+  /**
+   * A symbol picked into a field can need a package the template does not.
+   * Any packaged symbol written as a whole command in a value adds its edits.
+   * @param {{ additionalEdits: object[], notes: string[] }} result
+   * @param {any} snapshot
+   * @param {InsertContext} context
+   */
+  function addPickedPackages(result, snapshot, context) {
+    /** @type {string[]} */
+    const strings = [];
+    const collect = (/** @type {any} */ value) => {
+      if (typeof value === "string") strings.push(value);
+      else if (Array.isArray(value)) value.forEach(collect);
+      else if (value && typeof value === "object") Object.values(value).forEach(collect);
+    };
+    collect(snapshot);
+    const names = new Set();
+    for (const symbol of SYMBOLS) {
+      if (!symbol.package || !symbol.latex) continue;
+      const escaped = symbol.latex.replace(/[.*+?^$|()[\]{}\\]/g, "\\$&");
+      const pattern = new RegExp(`${escaped}(?![A-Za-z])`);
+      if (strings.some((text) => pattern.test(text))) names.add(symbol.package);
+    }
+    for (const name of names) {
+      if (name !== active?.package) result.additionalEdits.push(...latexPackageEdits(name, context, result.notes));
+    }
+  }
+
   function insert() {
     if (!active || !captured) return;
     let result;
-    try { result = templateInsertion(active, $state.snapshot(values), captured); }
+    const snapshot = $state.snapshot(values);
+    try { result = templateInsertion(active, snapshot, captured); }
     catch (cause) { error = messageOf(cause, "This math is not valid yet."); return; }
+    if (captured.format === "latex") addPickedPackages(result, snapshot, captured);
     try { oninsert?.(result, captured); }
     // The target can move while the form is open. The author keeps their
     // entries and sees why nothing landed.
@@ -251,12 +283,24 @@
   function pickSymbol(symbol) {
     const field = lastField?.isConnected ? lastField : /** @type {HTMLInputElement | null} */ (formEl?.querySelector("[data-math-field]"));
     if (!field || !captured) return;
-    const text = symbolText(symbol, format, { inMath: true });
     const start = field.selectionStart ?? field.value.length;
     const end = field.selectionEnd ?? start;
+    // Separated first, so a space put before the spelling moves the marker
+    // with it and the caret still lands inside the accent.
+    let text = separated(symbolText(symbol, format, { inMath: true }), format, field.value[start - 1] ?? "", field.value[end] ?? "");
+    // An accent wraps the selection. With none, the caret goes inside it.
+    let inside = -1;
+    if (symbol.kind === "accent") {
+      if (start < end) text = text.replace("#1", field.value.slice(start, end));
+      else {
+        inside = text.indexOf("#1");
+        text = text.replace("#1", "");
+      }
+    }
     // Setting the range by hand, then dispatching input, is what lets the
     // bound value see the change and the caret land after the symbol.
     field.setRangeText(text, start, end, "end");
+    if (inside >= 0) field.setSelectionRange(start + inside, start + inside);
     field.dispatchEvent(new Event("input", { bubbles: true }));
     lastField = field;
     field.focus();
@@ -387,7 +431,7 @@
 </div>
 
 <style>
-  .math-palette { display: flex; flex-direction: column; gap: var(--panel-section-gap); }
+  .math-palette { display: flex; flex-direction: column; gap: var(--panel-section-gap); height: 100%; min-height: 0; overflow-y: auto; overscroll-behavior: contain; }
   .math-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(4.5rem, 1fr)); gap: .5rem; }
   .math-tile-cell { display: flex; flex-direction: column; align-items: center; gap: .25rem; min-width: 0; }
   .math-tile { display: flex; align-items: center; justify-content: center; width: 4.5rem; min-height: 3.25rem; padding: .35rem .25rem; overflow: hidden; border: 1px solid var(--color-divider); border-radius: var(--radius-base); background: transparent; color: inherit; cursor: pointer; }

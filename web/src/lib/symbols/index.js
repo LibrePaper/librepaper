@@ -144,8 +144,8 @@ const operators = [
   operator("bigotimes", "⨂", "\\bigotimes", "times.o.big", { aliases: ["big tensor"] }),
   operator("bigodot", "⨀", "\\bigodot", "dot.o.big", { aliases: ["big dot"] }),
   operator("int", "∫", "\\int", "integral", { aliases: ["integral"], html: "&int;" }),
-  operator("iint", "∬", "\\iint", "integral.double", { aliases: ["double integral"], html: "&Int;" }),
-  operator("iiint", "∭", "\\iiint", "integral.triple", { aliases: ["triple integral"], html: "&tint;" }),
+  operator("iint", "∬", "\\iint", "integral.double", { package: "amsmath", aliases: ["double integral"], html: "&Int;" }),
+  operator("iiint", "∭", "\\iiint", "integral.triple", { package: "amsmath", aliases: ["triple integral"], html: "&tint;" }),
   operator("oint", "∮", "\\oint", "integral.cont", { aliases: ["contour integral"], html: "&conint;" }),
   ...["lim", "limsup", "liminf", "sup", "inf", "max", "min", "arg", "det", "gcd", "deg", "dim", "ker", "hom",
     "sin", "cos", "tan", "cot", "sec", "csc", "arcsin", "arccos", "arctan", "sinh", "cosh", "tanh", "coth",
@@ -263,11 +263,11 @@ const logicAndSets = [
   logic("partial", "∂", "\\partial", "partial", { aliases: ["partial derivative", "d"], html: "&part;" }),
   logic("top", "⊤", "\\top", "top", { aliases: ["transpose", "true"], html: "&top;" }),
   logic("bot", "⊥", "\\bot", "bot", { aliases: ["false", "bottom"], html: "&bot;" }),
-  logic("bb-n", "ℕ", "\\mathbb{N}", "NN", { name: "N", aliases: ["naturals", "natural numbers", "blackboard n"], html: "&Nopf;" }),
-  logic("bb-z", "ℤ", "\\mathbb{Z}", "ZZ", { name: "Z", aliases: ["integers", "blackboard z"], html: "&Zopf;" }),
-  logic("bb-q", "ℚ", "\\mathbb{Q}", "QQ", { name: "Q", aliases: ["rationals", "blackboard q"], html: "&Qopf;" }),
-  logic("bb-r", "ℝ", "\\mathbb{R}", "RR", { name: "R", aliases: ["reals", "blackboard r"], html: "&Ropf;" }),
-  logic("bb-c", "ℂ", "\\mathbb{C}", "CC", { name: "C", aliases: ["complex", "blackboard c"], html: "&Copf;" }),
+  logic("bb-n", "ℕ", "\\mathbb{N}", "NN", { name: "N", package: "amssymb", aliases: ["naturals", "natural numbers", "blackboard n"], html: "&Nopf;" }),
+  logic("bb-z", "ℤ", "\\mathbb{Z}", "ZZ", { name: "Z", package: "amssymb", aliases: ["integers", "blackboard z"], html: "&Zopf;" }),
+  logic("bb-q", "ℚ", "\\mathbb{Q}", "QQ", { name: "Q", package: "amssymb", aliases: ["rationals", "blackboard q"], html: "&Qopf;" }),
+  logic("bb-r", "ℝ", "\\mathbb{R}", "RR", { name: "R", package: "amssymb", aliases: ["reals", "blackboard r"], html: "&Ropf;" }),
+  logic("bb-c", "ℂ", "\\mathbb{C}", "CC", { name: "C", package: "amssymb", aliases: ["complex", "blackboard c"], html: "&Copf;" }),
   logic("angle", "∠", "\\angle", "angle", { aliases: ["angle sign"], html: "&ang;" }),
   logic("therefore", "∴", "\\therefore", "therefore", { package: "amssymb", aliases: ["hence"], html: "&there4;" }),
   logic("because", "∵", "\\because", "because", { package: "amssymb", aliases: ["since"], html: "&becaus;" }),
@@ -309,10 +309,10 @@ const delimiters = [
   delimiter("rfloor", "⌋", "\\rfloor", "floor.r", { name: "right floor", aliases: ["floor"], html: "&rfloor;" }),
   delimiter("lceil", "⌈", "\\lceil", "ceil.l", { name: "left ceiling", aliases: ["ceiling", "ceil"], html: "&lceil;", pair: PAIR(["\\lceil", "\\rceil"], ["ceil.l", "ceil.r"]) }),
   delimiter("rceil", "⌉", "\\rceil", "ceil.r", { name: "right ceiling", aliases: ["ceiling", "ceil"], html: "&rceil;" }),
-  delimiter("lvert", "|", "\\lvert", "bar.v", { name: "left absolute value", aliases: ["abs", "norm bars", "absolute value"], pair: PAIR(["\\lvert", "\\rvert"], ["bar.v", "bar.v"]) }),
-  delimiter("rvert", "|", "\\rvert", "bar.v", { name: "right absolute value", aliases: ["abs", "absolute value"] }),
-  delimiter("lvert-double", "‖", "\\lVert", "bar.v.double", { name: "left norm", aliases: ["norm", "double bars"], pair: PAIR(["\\lVert", "\\rVert"], ["bar.v.double", "bar.v.double"]) }),
-  delimiter("rvert-double", "‖", "\\rVert", "bar.v.double", { name: "right norm", aliases: ["norm", "double bars"] }),
+  delimiter("lvert", "|", "\\lvert", "bar.v", { name: "left absolute value", package: "amsmath", aliases: ["abs", "norm bars", "absolute value"], pair: PAIR(["\\lvert", "\\rvert"], ["bar.v", "bar.v"]) }),
+  delimiter("rvert", "|", "\\rvert", "bar.v", { name: "right absolute value", package: "amsmath", aliases: ["abs", "absolute value"] }),
+  delimiter("lvert-double", "‖", "\\lVert", "bar.v.double", { name: "left norm", package: "amsmath", aliases: ["norm", "double bars"], pair: PAIR(["\\lVert", "\\rVert"], ["bar.v.double", "bar.v.double"]) }),
+  delimiter("rvert-double", "‖", "\\rVert", "bar.v.double", { name: "right norm", package: "amsmath", aliases: ["norm", "double bars"] }),
   delimiter("vert", "|", "\\vert", "bar.v", { name: "vertical bar", aliases: ["bar", "pipe", "such that"] }),
   delimiter("vert-double", "‖", "\\Vert", "bar.v.double", { name: "double vertical bar", aliases: ["norm", "double bar"] }),
   delimiter("slash", "/", "/", "slash", { name: "slash", aliases: ["divide"] }),
@@ -360,6 +360,10 @@ export async function loadEmoji() {
       html: entry.glyph,
     }));
     return { groups: data.groups, symbols };
+  }).catch(error => {
+    // Forget the failed import so the next call tries it again.
+    emojiPromise = null;
+    throw error;
   });
   return emojiPromise;
 }
@@ -409,6 +413,30 @@ export function symbolText(symbol, format, { inMath = true } = {}) {
 const WRAPPED = new Set(["latex", "markdown", "quarto", "typst"]);
 
 /**
+ * Adds a space where a spelling would run into the text beside it. In LaTeX,
+ * a control word before a letter runs into it: "\alpha" then "x" reads as
+ * "\alphax", an undefined control word. In Typst, "alpha" then "x" reads as
+ * one name, "alphax", so a space is needed on either side of a word there too.
+ * @param {string} text the spelling about to be inserted
+ * @param {string} format
+ * @param {string} before the character before the caret, or "" at the start
+ * @param {string} after the character after the caret, or "" at the end
+ * @returns {string}
+ */
+export function separated(text, format, before, after) {
+  if (format === "latex" || format === "markdown" || format === "quarto") {
+    return /\\[A-Za-z]+$/.test(text) && /^[A-Za-z]$/.test(after) ? `${text} ` : text;
+  }
+  if (format === "typst") {
+    let result = text;
+    if (/[A-Za-z0-9]$/.test(result) && /^[A-Za-z0-9]$/.test(after)) result += " ";
+    if (/^[A-Za-z]/.test(result) && /^[A-Za-z0-9]$/.test(before)) result = ` ${result}`;
+    return result;
+  }
+  return text;
+}
+
+/**
  * Turns a click on a tile into the text to insert at the caret.
  * @param {object} symbol
  * @param {object} context the editor's insert context (see insert.js)
@@ -421,33 +449,41 @@ export function symbolInsertion(symbol, context = {}) {
   const inMath = insertSyntaxContext(context) === "math";
   const wrap = body => (!inMath && WRAPPED.has(format) ? `$${body}$` : body);
   const packages = name => (format === "latex" && name ? latexPackageEdits(name, context, notes) : []);
+  // The characters beside the caret decide whether the spelling needs a space.
+  const source = typeof context.text === "string" ? context.text : "";
+  const before = source[context.selection?.from - 1] ?? "";
+  const after = source[context.selection?.to] ?? "";
+  let text;
+  let additionalEdits = [];
+  let snippet = false;
 
   if (symbol.category === "emoji") {
     if (format === "latex") {
-      const additionalEdits = packages("emoji");
+      additionalEdits = packages("emoji");
       notes.push("The emoji package needs LuaLaTeX.");
-      return { text: symbol.latex, additionalEdits, notes, snippet: false };
+      text = symbol.latex;
+    } else {
+      text = symbol.glyph;
     }
-    return { text: symbol.glyph, additionalEdits: [], notes, snippet: false };
-  }
-
-  if (symbol.kind === "text") {
-    return { text: format === "latex" ? symbol.latex : symbol.glyph, additionalEdits: [], notes, snippet: false };
-  }
-
-  if (symbol.kind === "accent") {
+  } else if (symbol.kind === "text") {
+    text = format === "latex" ? symbol.latex : symbol.glyph;
+  } else if (symbol.kind === "accent") {
     const spelling = format === "html" ? symbol.glyph : format === "typst" ? symbol.typst : symbol.latex;
     const filled = selected ? spelling.replace("#1", () => selected) : spelling.replace("#1", () => "#{1:x}");
-    return { text: wrap(filled), additionalEdits: packages(symbol.package), notes, snippet: !selected };
-  }
-
-  if (symbol.kind === "delimiter" && selected && symbol.pair && format !== "html") {
+    text = wrap(filled);
+    additionalEdits = packages(symbol.package);
+    snippet = !selected;
+  } else if (symbol.kind === "delimiter" && selected && symbol.pair && format !== "html") {
     const typst = format === "typst";
     const [open, close] = typst ? symbol.pair.typst : symbol.pair.latex;
     const body = typst ? `${open} ${selected} ${close}` : `\\left${open} ${selected} \\right${close}`;
-    return { text: wrap(body), additionalEdits: packages(symbol.package), notes, snippet: false };
+    text = wrap(body);
+    additionalEdits = packages(symbol.package);
+  } else {
+    const spelling = format === "typst" ? symbol.typst : format === "html" ? (symbol.html ?? symbol.glyph) : symbol.latex;
+    text = wrap(spelling);
+    additionalEdits = packages(symbol.package);
   }
 
-  const spelling = format === "typst" ? symbol.typst : format === "html" ? (symbol.html ?? symbol.glyph) : symbol.latex;
-  return { text: wrap(spelling), additionalEdits: packages(symbol.package), notes, snippet: false };
+  return { text: separated(text, format, before, after), additionalEdits, notes, snippet };
 }

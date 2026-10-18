@@ -110,6 +110,62 @@ try {
   await click('.math-actions button[type="button"]');
   await until("picker after cancel", () => evaluate(`document.querySelectorAll("button[data-template]").length > 0`), 5000);
 
+  // The embedded symbol search, its results, and a typed query.
+  const search = 'details.math-symbols input[type="search"]';
+  const openSymbols = () => evaluate(`document.querySelector("details.math-symbols").open = true`);
+  const typeQuery = (query) => evaluate(`(() => {
+    const input = document.querySelector(${JSON.stringify(search)});
+    input.value = ${JSON.stringify(query)};
+    input.dispatchEvent(new Event("input", { bubbles: true }));
+  })()`);
+  const pressEscape = () => evaluate(`document.querySelector(${JSON.stringify(search)}).dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true }))`);
+  const field = (index) => `document.querySelectorAll("[data-math-field]")[${index}]`;
+  const pickSymbol = async (query, id) => {
+    await typeQuery(query);
+    const tile = `details.math-symbols .symbol-tile[data-symbol="${id}"]`;
+    await until(`${id} tile`, () => evaluate(`document.querySelectorAll(${JSON.stringify(tile)}).length > 0`), 5000);
+    await click(tile);
+  };
+  const openFraction = async () => {
+    await until("picker for fraction", () => evaluate(`document.querySelectorAll("button[data-template]").length > 0`), 5000);
+    await click('button[data-template="fraction"]');
+    await until("fraction form", () => evaluate(`document.querySelectorAll("[data-math-field]").length === 2`), 5000);
+    await openSymbols();
+  };
+
+  // Escape in a populated search clears it and keeps the form; a second one leaves.
+  await openFraction();
+  await typeQuery("hat");
+  await pressEscape();
+  assert.equal(await count("[data-math-field]"), 2, "escape in a populated search keeps the form");
+  assert.equal(await evaluate(`document.querySelector(${JSON.stringify(search)}).value`), "", "escape clears the search query");
+  await pressEscape();
+  await until("empty-query escape returns to picker", () => evaluate(`document.querySelectorAll("button[data-template]").length > 0`), 5000);
+
+  // An accent picked with nothing selected puts the caret inside the braces.
+  await openFraction();
+  await evaluate(`${field(0)}.focus()`);
+  await pickSymbol("hat", "hat");
+  assert.equal(await evaluate(`${field(0)}.value`), "\\hat{}", "an accent with no selection leaves empty braces");
+  assert.equal(await evaluate(`${field(0)}.selectionStart`), 5, "the caret sits inside the braces");
+
+  // A picked symbol keeps its package.
+  await fill(0, "\\nexists");
+  await fill(1, "2");
+  await submit();
+  const packaged = await lastInsertion();
+  const mentioned = packaged.result.notes.some((note) => note.includes("amssymb")) || JSON.stringify(packaged.result.additionalEdits).includes("amssymb");
+  assert.ok(mentioned, "a symbol that needs amssymb brings the package along");
+
+  // A symbol picked at the edge of a word does not run into it.
+  await openFraction();
+  await fill(0, "x");
+  await evaluate(`(() => { const input = ${field(0)}; input.focus(); input.setSelectionRange(0, 0); })()`);
+  await pickSymbol("alpha", "alpha");
+  assert.equal(await evaluate(`${field(0)}.value`), "\\alpha x", "a control word is separated from the letter after it");
+  await evaluate(`${field(0)}.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true }))`);
+  await until("picker after boundary check", () => evaluate(`document.querySelectorAll("button[data-template]").length > 0`), 5000);
+
   // Cancel with Escape returns to the picker and inserts nothing.
   await until("picker before escape", () => evaluate(`document.querySelectorAll("button[data-template]").length > 0`), 5000);
   const before = (await evaluate("insertions().length"));
@@ -124,7 +180,7 @@ try {
   await until("root form", () => evaluate(`document.querySelectorAll("[data-math-field]").length >= 1 && document.querySelectorAll("button[data-template]").length === 0`), 5000);
   assert.equal(await count("button[data-template]"), 0, "openTemplate replaces the picker with the form");
 
-  console.log("math-palette-browser: picker tiles, fraction and inline insertions, matrix steppers, escape and openTemplate passed");
+  console.log("math-palette-browser: picker tiles, fraction and inline insertions, matrix steppers, search escape, accent and package picks, escape and openTemplate passed");
 } catch (error) {
   console.error(await page?.evaluate("({ errors: window.testErrors })"));
   throw error;

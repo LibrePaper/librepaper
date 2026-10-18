@@ -18,8 +18,9 @@ const BRACKETS_LATEX = {
 };
 
 const MATRIX_ENV = { parentheses: "pmatrix", square: "bmatrix", braces: "Bmatrix", bars: "vmatrix", "double-bars": "Vmatrix", none: "matrix" };
-// Typst takes the delimiter as a string; "none" is the Typst none value.
-const MATRIX_DELIM = { parentheses: '"("', square: '"["', braces: '"{"', bars: '"|"', "double-bars": '"||"', none: "#none" };
+// Typst takes the delimiter as a string of exactly one character, so the
+// double bar is the single character U+2016. "none" is the Typst none value.
+const MATRIX_DELIM = { parentheses: '"("', square: '"["', braces: '"{"', bars: '"|"', "double-bars": '"‖"', none: "#none" };
 
 export const MATH_TEMPLATES = [
   {
@@ -108,7 +109,7 @@ export const MATH_TEMPLATES = [
       switch (v.kind) {
         case "square": return `[${v.body}]`;
         case "braces": return `{${v.body}}`;
-        case "angle": return `angle.l ${v.body} angle.r`;
+        case "angle": return `chevron.l ${v.body} chevron.r`;
         case "bars": return `abs(${v.body})`;
         case "norm": return `norm(${v.body})`;
         case "floor": return `floor(${v.body})`;

@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import katex from 'katex';
-import { CATEGORIES, SYMBOLS, searchSymbols, symbolInsertion, symbolText } from '../../src/lib/symbols/index.js';
+import { CATEGORIES, SYMBOLS, searchSymbols, separated, symbolInsertion, symbolText } from '../../src/lib/symbols/index.js';
 import { MATH_TEMPLATES, templateInsertion } from '../../src/lib/symbols/templates.js';
 
 const MATH = new Set(['greek', 'operators', 'relations', 'arrows', 'logic', 'accents', 'delimiters']);
@@ -48,8 +48,8 @@ const prose = at(latexDocument, latexDocument.indexOf('Hello'));
 
 // Symbol insertion.
 assert.equal(symbolInsertion(byId('alpha'), prose).text, '$\\alpha$');
-assert.equal(symbolInsertion(byId('alpha'), { format: 'latex', text: '$x$', selection: { from: 1, to: 1, text: '' } }).text, '\\alpha');
-assert.equal(symbolInsertion(byId('alpha'), { format: 'typst', text: '$x$', selection: { from: 1, to: 1, text: '' } }).text, 'alpha');
+assert.equal(symbolInsertion(byId('alpha'), { format: 'latex', text: '$x$', selection: { from: 1, to: 1, text: '' } }).text, '\\alpha ');
+assert.equal(symbolInsertion(byId('alpha'), { format: 'typst', text: '$x$', selection: { from: 1, to: 1, text: '' } }).text, 'alpha ');
 assert.equal(symbolInsertion(byId('alpha'), { format: 'typst', text: 'Hello', selection: { from: 5, to: 5, text: '' } }).text, '$alpha$');
 assert.equal(symbolInsertion(byId('leq'), { format: 'html', text: 'Hello', selection: { from: 0, to: 0, text: '' } }).text, '&le;');
 assert.equal(symbolInsertion(byId('alpha'), { format: 'markdown', text: 'Hello', selection: { from: 0, to: 0, text: '' } }).additionalEdits.length, 0);
@@ -71,6 +71,20 @@ assert.equal(symbolInsertion(byId('text-endash'), { format: 'typst', text: 'Hi',
 assert.equal(symbolText(byId('alpha'), 'typst'), 'alpha');
 assert.equal(symbolText(byId('leq'), 'html'), '&le;');
 assert.equal(symbolText(byId('text-endash'), 'latex', { inMath: false }), '\u2013');
+
+// Separation from neighbouring text.
+assert.equal(separated('\\alpha', 'latex', '', 'x'), '\\alpha ');
+assert.equal(separated('\\alpha', 'latex', '', '$'), '\\alpha');
+assert.equal(separated('alpha', 'typst', 'x', ''), ' alpha');
+assert.equal(separated('alpha', 'typst', '', 'x'), 'alpha ');
+assert.equal(separated('alpha', 'typst', 'x', 'y'), ' alpha ');
+assert.equal(separated('&alpha;', 'html', 'a', 'b'), '&alpha;');
+assert.equal(symbolInsertion(byId('alpha'), { format: 'latex', text: '$x$', selection: { from: 2, to: 2, text: '' } }).text, '\\alpha');
+assert.equal(symbolInsertion(byId('alpha'), { format: 'typst', text: '$x$', selection: { from: 2, to: 2, text: '' } }).text, ' alpha');
+
+// Packages for blackboard letters and amsmath operators.
+assert.ok(symbolInsertion(byId('bb-r'), prose).additionalEdits.some(edit => edit.insert.includes('\\usepackage{amssymb}')), 'bb-r needs amssymb');
+assert.ok(symbolInsertion(byId('iint'), prose).additionalEdits.some(edit => edit.insert.includes('\\usepackage{amsmath}')), 'iint needs amsmath');
 
 // Templates.
 const template = id => MATH_TEMPLATES.find(entry => entry.id === id);

@@ -5,12 +5,33 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { call, handOver } from '../../src/lib/renderer-wasm.js';
 import { SYMBOLS } from '../../src/lib/symbols/index.js';
+import { MATH_TEMPLATES, templateInsertion } from '../../src/lib/symbols/templates.js';
 
 const MATH = new Set(['greek', 'operators', 'relations', 'arrows', 'logic', 'accents', 'delimiters']);
 const spellings = SYMBOLS
   .filter(symbol => MATH.has(symbol.category))
   .map(symbol => symbol.typst.replaceAll('#1', 'x'));
-const source = ['#set page(width: 300pt, height: auto)', ...spellings.map(spelling => `$${spelling}$`)].join('\n\n');
+// Every template, filled so no snippet field remains, in each of its options.
+const filled = template => {
+  if (template.id === 'aligned') return { rows: [{ left: 'x', right: 'y' }] };
+  if (template.id === 'cases') return { rows: [{ value: '1', condition: 'x > 0' }] };
+  if (template.id === 'matrix') return { cells: [['a', 'b'], ['c', 'd']], rows: 2, columns: 2 };
+  return Object.fromEntries(template.slots.map(slot => [slot.id, 'x']));
+};
+const OPTIONS = {
+  brackets: ['kind', ['parentheses', 'square', 'braces', 'angle', 'bars', 'norm', 'floor', 'ceil']],
+  matrix: ['brackets', ['parentheses', 'square', 'braces', 'bars', 'double-bars', 'none']],
+};
+const typstContext = { format: 'typst', text: '$x$', selection: { from: 1, to: 1, text: '' }, files: [] };
+const templateSpellings = [];
+for (const template of MATH_TEMPLATES) {
+  const [key, choices] = OPTIONS[template.id] ?? [null, [null]];
+  for (const choice of choices) {
+    const values = key ? { ...filled(template), [key]: choice } : filled(template);
+    templateSpellings.push(templateInsertion(template, values, typstContext).text);
+  }
+}
+const source = ['#set page(width: 300pt, height: auto)', ...spellings.map(spelling => `$${spelling}$`), ...templateSpellings.map(spelling => `$ ${spelling} $`)].join('\n\n');
 
 const { instance } = await WebAssembly.instantiate(readFileSync(new URL('../../wasm/typst.wasm', import.meta.url)), {});
 const wasm = instance.exports;
@@ -25,4 +46,4 @@ const emoji = JSON.parse(readFileSync(new URL('../../src/lib/symbols/emoji.json'
 assert.ok(emoji.emoji.length > 1000, `emoji count ${emoji.emoji.length}`);
 assert.ok(emoji.groups.length >= 8, `group count ${emoji.groups.length}`);
 
-console.log(`symbols-typst: ${spellings.length} Typst spellings compiled; ${emoji.emoji.length} emoji in ${emoji.groups.length} groups`);
+console.log(`symbols-typst: ${spellings.length} Typst spellings and ${templateSpellings.length} template forms compiled; ${emoji.emoji.length} emoji in ${emoji.groups.length} groups`);

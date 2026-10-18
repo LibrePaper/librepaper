@@ -189,6 +189,7 @@
   import { DIRECTORY_ORIGIN } from "../lib/project-session.js";
   import { projectDirectory } from "../lib/projection.js";
   import { attachEditorZoom } from "../lib/editor-zoom.js";
+  import { snippetTemplate } from "../lib/snippet-template.js";
   import { untrack } from "svelte";
 
   // Whether what is typed here is recorded as a tracked change is not a prop
@@ -871,7 +872,7 @@
     }
     if (result.snippet) {
       if (changes.length) view.dispatch({ changes });
-      snippet(result.text)(view, null, from + shift, to + shift);
+      snippet(snippetTemplate(result.text))(view, null, from + shift, to + shift);
       view.dispatch({ effects: EditorView.scrollIntoView(view.state.selection.main.head) });
     } else {
       const selection = result.selection;
