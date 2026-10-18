@@ -245,22 +245,26 @@ assert.equal(filter(list, "zzzz").length, 0);
 const upload = filter(list, "up");
 assert.equal(upload[0].id, "upload");
 
-/* ------------------------------------------------------- the palette panels */
+/* ------------------------------------------------------- the palette overlays */
 
-// The two palette panels get a chord each, and the chords are the ones the
-// browser does not keep. The commands are offered only where their panel is.
-assert.deepEqual(bindings(COMMANDS.find((command) => command.id === "focus-symbols"), false), ["mod+alt+s"]);
-assert.deepEqual(bindings(COMMANDS.find((command) => command.id === "focus-math"), false), ["mod+alt+t"]);
+// The two palettes get a chord each, and the chords are the ones the browser
+// does not keep. They are offered only where there is source to insert into.
+assert.deepEqual(bindings(COMMANDS.find((command) => command.id === "symbols"), false), ["mod+alt+s"]);
+assert.deepEqual(bindings(COMMANDS.find((command) => command.id === "math"), false), ["mod+alt+t"]);
+assert.ok(["symbols", "math"].every((id) => COMMANDS.find((command) => command.id === id).category === "Insert"), "both are in the Insert category");
 assert.ok(!reserved("Mod+Alt+S") && !reserved("Mod+Alt+T"), "neither chord is the browser's");
 
-const withPalettes = { ...workspace, panels: [...workspace.panels, "symbols", "math"] };
+const withSource = { ...workspace, mayEdit: true, editing: true };
+const withoutSource = { ...workspace, editing: false };
 const offeredIds = (context) => offered(context, { apple: false }).map((entry) => entry.id);
-assert.ok(offeredIds(withPalettes).includes("focus-symbols"), "Focus Symbols is offered with the Symbols panel");
-assert.ok(offeredIds(withPalettes).includes("focus-math"), "Focus Math is offered with the Math panel");
-assert.ok(!offeredIds(workspace).includes("focus-symbols"), "and not without it");
-assert.ok(!offeredIds(workspace).includes("focus-math"), "and not without it");
+assert.ok(offeredIds(withSource).includes("symbols"), "Insert symbol is offered with the source open");
+assert.ok(offeredIds(withSource).includes("math"), "Insert math is offered with the source open");
+assert.ok(offeredIds(withSource).includes("math-" + MATH_TEMPLATES[0].id), "a math template is offered with the source open");
+assert.ok(!offeredIds(withoutSource).includes("symbols"), "Insert symbol is not offered without the source");
+assert.ok(!offeredIds(withoutSource).includes("math"), "Insert math is not offered without the source");
+assert.ok(!offeredIds(withoutSource).some((id) => id.startsWith("math-")), "and no math template is either");
 
-// One palette command per math template, named from the template, with no key.
+// One math template command per template, named from the template, with no key.
 const mathCommands = COMMANDS.filter((command) => command.category === "Math");
 assert.equal(mathCommands.length, MATH_TEMPLATES.length, "one command per math template");
 for (const template of MATH_TEMPLATES) {
@@ -269,7 +273,5 @@ for (const template of MATH_TEMPLATES) {
   assert.equal(command.label, "Insert " + template.label.toLowerCase());
   assert.deepEqual(bindings(command, false), [], "a template has no key");
 }
-assert.ok(offeredIds(withPalettes).includes("math-" + MATH_TEMPLATES[0].id), "a template is offered with the Math panel");
-assert.ok(!offeredIds(workspace).some((id) => id.startsWith("math-")), "and not without it");
 
 console.log("commands: one notation, no browser collisions, typing beats a chord, and a help table that cannot drift from the keys");

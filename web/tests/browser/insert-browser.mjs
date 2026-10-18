@@ -37,7 +37,7 @@ const fromAPeer = (target, edit) => {
   peer.commit();
   target.import(peer.export({ mode: "update", from: target.oplogVersion() }));
 };
-window.panelRequests=[];window.testErrors=[];addEventListener("error",e=>window.testErrors.push(e.message));addEventListener("unhandledrejection",e=>window.testErrors.push(String(e.reason)));
+window.paletteRequests=[];window.testErrors=[];addEventListener("error",e=>window.testErrors.push(e.message));addEventListener("unhandledrejection",e=>window.testErrors.push(String(e.reason)));
 const session = joinSession({send: () => {}, mayEdit: true});
 const entries = [{key:'smith2020',authors:['Jane Smith'],title:'A Study of Rivers',year:'2020'}, {key:'jones2021',authors:['Alice Jones'],title:'Mountains',year:'2021'}];
 let component, menu, file;
@@ -52,7 +52,7 @@ window.setupInsert = async (format, source = null) => {
   menu = createClassComponent({component:InsertMenu,target:document.getElementById('menu'),props:{
     getContext:()=>({...component.getInsertContext(),bibliography:entries,files:[{path:'refs.bib',text:'@article{smith2020,title={Rivers},author={Smith, Jane},year={2020}}'},{path:'images/river.png',url:'data:image/png;base64,preview'}]}),
     oninsert:(result,context)=>{ const ok=component.applyInsertResult(result,context); if(!ok) throw Error('Insertion target changed'); return ok; },
-    onupload:async()=> 'images/upload.png',onpanel:id=>window.panelRequests.push(id),onfocus:()=>component.focus(),oncancel:context=>component.releaseInsertContext(context)
+    onupload:async()=> 'images/upload.png',onpalette:id=>window.paletteRequests.push(id),onfocus:()=>component.focus(),oncancel:context=>component.releaseInsertContext(context)
   }});
   await tick();
 };
@@ -243,19 +243,18 @@ try {
   await evaluate("undoInsert()");
   assert.equal((await evaluate("insertState()")).text,"Before AFTER","the whole snippet is one undo step");
 
-  // The Math sub-menu ends with two panel openers. They open the sidebar, insert nothing, and are never disabled.
+  // The top level offers the two palettes. They open overlays, insert nothing, and are never disabled.
   await evaluate("setupInsert('markdown','Before AFTER')");await evaluate("selectInsert(7)");await openMenu();
-  await evaluate(`(()=>{const t=${groupTrigger("Math")};t.dispatchEvent(new PointerEvent("pointermove",{bubbles:true,pointerType:"mouse"}));t.dispatchEvent(new PointerEvent("pointerdown",{bubbles:true,pointerType:"mouse"}));t.click();})()`);
-  await until("panel openers listed",()=>evaluate(`Boolean(document.querySelector('[data-scope="menu"][data-part="item"][data-value="panel:symbols"]'))&&Boolean(document.querySelector('[data-scope="menu"][data-part="item"][data-value="panel:math"]'))`),5000);
-  await until("Symbols opener on screen",()=>onScreen("panel:symbols"),5000);
-  await click('[data-scope="menu"][data-part="item"][data-value="panel:symbols"]');
-  await until("symbols panel requested",()=>evaluate("window.panelRequests.includes('symbols')"),5000);
-  assert.equal((await evaluate("insertState()")).text,"Before AFTER","a panel opener inserts nothing");
+  await until("palette openers listed",()=>evaluate(`Boolean(document.querySelector('[data-scope="menu"][data-part="item"][data-value="palette:symbols"]'))&&Boolean(document.querySelector('[data-scope="menu"][data-part="item"][data-value="palette:math"]'))`),5000);
+  await until("Symbols palette opener on screen",()=>onScreen("palette:symbols"),5000);
+  await click('[data-scope="menu"][data-part="item"][data-value="palette:symbols"]');
+  await until("symbols palette requested",()=>evaluate("window.paletteRequests.includes('symbols')"),5000);
+  assert.equal((await evaluate("insertState()")).text,"Before AFTER","a palette opener inserts nothing");
 
-  // The top level is the seven common actions and then six sub-menus, in order.
+  // The top level is the seven common actions, the two palettes, then six sub-menus, in order.
   await evaluate("setupInsert('markdown','Before AFTER')");await evaluate("selectInsert(7)");await openMenu();
   const topLevel=await evaluate(`(()=>{const trigger=document.querySelector('[data-scope="menu"][data-part="trigger"]');const content=document.getElementById(trigger.getAttribute('aria-controls'));const contentPart='[data-scope="menu"][data-part="content"]';return [...content.querySelectorAll('[data-scope="menu"][data-part="item"],[data-scope="menu"][data-part="trigger-item"]')].filter(node=>node.closest(contentPart)===content).map(node=>node.dataset.part==='item'?node.dataset.value:'submenu:'+node.textContent.trim());})()`);
-  assert.deepEqual(topLevel,["figure","table","citation","cross-reference","footnote","link","heading","submenu:Math","submenu:Lists","submenu:Theorems","submenu:Blocks","submenu:Document","submenu:Layout"],"Insert has seven direct items and six sub-menus");
+  assert.deepEqual(topLevel,["figure","table","citation","cross-reference","footnote","link","heading","palette:symbols","palette:math","submenu:Math","submenu:Lists","submenu:Theorems","submenu:Blocks","submenu:Document","submenu:Layout"],"Insert has seven direct items, two palettes and six sub-menus");
   // An item in a sub-menu inserts like one at the top level.
   await chooseIn("Layout","horizontal-rule");
   await until("horizontal rule from a sub-menu inserted",()=>evaluate("/\\*\\*\\*/.test(insertState().text)"),5000);

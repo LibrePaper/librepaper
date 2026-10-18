@@ -570,7 +570,7 @@ try {
   assert.ok(menuItems.some(item => item.id === 'file' && item.text.includes('File')), 'File menu item has correct id and text');
   const menuPanels = await b.evaluate(`(() => [...document.querySelectorAll(${JSON.stringify(`${panelMenu} [data-panel-id]`)})].map(node => ({id:node.dataset.panelId,label:node.getAttribute('aria-label'),text:node.textContent.trim()})))()`);
   assert.deepEqual(menuPanels.map(item => [item.id,item.label,item.text]), [
-    ['files','Files','Files'],['outline','Outline','Outline'],['symbols','Symbols','Symbols'],['math','Math','Math'],
+    ['files','Files','Files'],['outline','Outline','Outline'],
     ['collaboration','Collaboration','Collaboration'],
     ['changes','Changes','Changes'],['agent','Agent','Agent'],['history','History','History'],
     ['share','Share','Share'],['diagnostics','Diagnostics','Diagnostics']
