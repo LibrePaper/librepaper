@@ -6,7 +6,7 @@ import { LoroDoc, VersionVector } from "loro-crdt";
 // invalid magic bytes, and the project then reads as unsaved on this device.
 // The cutover left nothing worth translating, so the old database is
 // abandoned rather than migrated.
-const DATABASE = "librepaper-offline-v2";
+export const DATABASE = "librepaper-offline-v2";
 const VERSION = 2;
 const PROJECTS = "projects";
 const STATES = "states";
