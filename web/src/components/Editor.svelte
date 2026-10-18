@@ -14,9 +14,18 @@
   // compartment, whichever is chosen, so switching swaps one for the other.
   const vimCompartment = new Compartment();
   // CodeMirror's own light or dark base styles; the colours come from the
-  // page's variables.
+  // page's variables. One theme of each, made once: every EditorView.theme()
+  // call mints a new class and style sheet, and a state is told which of the
+  // two it holds by that class.
   const themeCompartment = new Compartment();
-  const themeFor = (dark) => EditorView.theme({}, { dark });
+  const darkTheme = EditorView.theme({}, { dark: true });
+  const lightTheme = EditorView.theme({}, { dark: false });
+  const themeFor = (dark) => (dark ? darkTheme : lightTheme);
+  // The compartment lives in each state, so a cached state keeps the theme it
+  // was last shown with. It is set again whenever a state is activated.
+  function syncTheme(target) {
+    target?.dispatch({ effects: themeCompartment.reconfigure(themeFor(mode() === "dark")) });
+  }
 
   // Loro merges nearby commits by default. A handled Vim key starts a new
   // command boundary; the first local edit after it consumes that boundary
@@ -1198,6 +1207,7 @@
     view.setState(documentStates.get(id));
     activeDocument = document_;
     syncKeys(view);
+    syncTheme(view);
     showing = id;
     // A file this browser has open is where its caret is, which is what the
     // file list shows beside each name.
@@ -1243,9 +1253,7 @@
       });
       untrack(() => viewCallbacks.set(view, { onsave, onquit }));
       syncKeys(view);
-      const unsubscribeMode = onMode((now) => {
-        view?.dispatch({ effects: themeCompartment.reconfigure(themeFor(now === "dark")) });
-      });
+      const unsubscribeMode = onMode(() => syncTheme(view));
       drawChanges();
       if (initial.first) session.inFile?.(initial.first);
       const bibliographyWatcher = scheduleBibliography;

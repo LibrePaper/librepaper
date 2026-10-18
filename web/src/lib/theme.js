@@ -10,9 +10,13 @@ import { desktop, shellAction } from "./desktop/client.js";
 export const CHOICES = ["system", "light", "dark"];
 
 const QUERY = "(prefers-color-scheme: dark)";
-const listeners = new Set();
+const modeListeners = new Set();
+const choiceListeners = new Set();
 let started = false;
 let applied = null;
+// The choice made on this page. Storage is best effort: a browser that refuses
+// the write still gets the theme it asked for, until another tab writes one.
+let chosen = null;
 // The one media query list, made on first use and held for the module's
 // lifetime. The change listener in start() hangs off it, and a list that
 // nothing holds was seen to stop reporting changes in headless Chromium: the
@@ -25,13 +29,13 @@ function query() {
 }
 
 export function choice() {
-  const stored = read(THEME, "system");
+  const stored = chosen ?? read(THEME, "system");
   return CHOICES.includes(stored) ? stored : "system";
 }
 
 function resolve() {
-  const chosen = choice();
-  if (chosen !== "system") return chosen;
+  const current = choice();
+  if (current !== "system") return current;
   return query()?.matches ? "dark" : "light";
 }
 
@@ -47,7 +51,12 @@ function apply() {
   if (root) root.dataset.mode = now;
   if (now === applied) return;
   applied = now;
-  for (const listener of [...listeners]) listener(now);
+  for (const listener of [...modeListeners]) listener(now);
+}
+
+function announce() {
+  const now = choice();
+  for (const listener of [...choiceListeners]) listener(now);
 }
 
 // The desktop app colours its own title bar from this. It is a courtesy, so a
@@ -58,15 +67,26 @@ function tellShell() {
 
 export function setChoice(next) {
   if (!CHOICES.includes(next)) return;
+  chosen = next;
   write(THEME, next);
   apply();
+  announce();
   tellShell();
 }
 
+// Hears the mode now and whenever it moves.
 export function onMode(listener) {
-  listeners.add(listener);
+  modeListeners.add(listener);
   listener(mode());
-  return () => listeners.delete(listener);
+  return () => modeListeners.delete(listener);
+}
+
+// Hears the choice now and whenever one is made, on this page or in another
+// tab of this browser.
+export function onChoice(listener) {
+  choiceListeners.add(listener);
+  listener(choice());
+  return () => choiceListeners.delete(listener);
 }
 
 export function start() {
@@ -75,6 +95,14 @@ export function start() {
   apply();
   query()?.addEventListener?.("change", () => {
     if (choice() === "system") apply();
+  });
+  // Another tab or window of this browser made a choice, and this page
+  // follows it. A null key is the whole store being cleared.
+  globalThis.addEventListener?.("storage", (event) => {
+    if (event.key !== null && event.key !== THEME) return;
+    chosen = null;
+    apply();
+    announce();
   });
   tellShell();
 }

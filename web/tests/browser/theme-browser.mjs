@@ -24,6 +24,8 @@ const server = new LoroDoc();
 const files = server.getMap("files"), paths = server.getMap("paths"), meta = server.getMap("meta");
 const text = files.setContainer("main", new LoroText()); text.insert(0, "A paragraph of source.");
 paths.set("main", "main.html"); meta.set("main", "main");
+const other = files.setContainer("other", new LoroText()); other.insert(0, "Another file.");
+paths.set("other", "other.md");
 server.commit();
 const update = encode(server.export({ mode: "update" }));
 const vector = encode(server.oplogVersion().encode());
@@ -164,6 +166,25 @@ try {
   })()`);
   await until("settings select sets dark", async () => (await mode()) === "dark", 5000);
   console.log("theme-browser: the Settings Theme select switches to dark");
+
+  // The editor keeps a state per file, and each state carries its own theme
+  // classes. A file shown again must take the mode of the moment, not the one
+  // it was last shown with.
+  await tab.evaluate('document.querySelector(".modal-back")?.click()');
+  const editorClasses = () => tab.evaluate("[...document.querySelector('.cm-editor').classList].filter((name) => name !== 'cm-focused').sort().join(' ')");
+  const openRow = async (path, words) => {
+    await tab.evaluate(`document.querySelector('.explorer-row[title=${JSON.stringify(path)}]').click()`);
+    await until(`${path} shown`, () => tab.evaluate(`document.querySelector('.cm-content')?.textContent.includes(${JSON.stringify(words)})`), 5000);
+  };
+  const darkEditor = await editorClasses();
+  await openRow("other.md", "Another file");
+  assert.equal(await editorClasses(), darkEditor, "a state made in dark has the dark classes");
+  await tab.evaluate("window.theme.setChoice('light')");
+  const lightEditor = await editorClasses();
+  assert.notEqual(lightEditor, darkEditor, "light and dark states differ");
+  await openRow("main.html", "A paragraph");
+  assert.equal(await editorClasses(), lightEditor, "a cached dark state shown in light takes the light classes");
+  console.log("theme-browser: a file shown again takes the current theme");
 } finally {
   await tab?.close();
   server.close();
