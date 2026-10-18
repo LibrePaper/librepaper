@@ -294,7 +294,8 @@ fn os_dark() -> bool {
     let dark = objc2_foundation::NSString::from_str("Dark");
     // The key is absent in light mode, so a nil value means light.
     unsafe {
-        let defaults: *mut AnyObject = msg_send![objc2::class!(NSUserDefaults), standardUserDefaults];
+        let defaults: *mut AnyObject =
+            msg_send![objc2::class!(NSUserDefaults), standardUserDefaults];
         let value: *mut AnyObject = msg_send![defaults, stringForKey: &*key];
         if value.is_null() {
             return false;
