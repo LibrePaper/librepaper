@@ -19,14 +19,15 @@ const TEMPLATE_TILES = [
   { template: "root", name: "Square root", aliases: ["sqrt", "radical"], preview: "\\sqrt{x}", typst: "sqrt(x)" },
   { template: "superscript", name: "Superscript", aliases: ["power", "exponent"], preview: "x^{2}", typst: "x^(2)" },
   { template: "subscript", name: "Subscript", aliases: ["sub", "index"], preview: "x_{i}", typst: "x_(i)" },
-  { template: "sum", name: "Sum with limits", aliases: ["summation", "sigma"], preview: "\\sum_{i=1}^{n} x_i", typst: "sum_(i=1)^(n) x_i" },
-  { template: "integral", name: "Integral with limits", aliases: ["int", "integration"], preview: "\\int_a^b f \\, dx", typst: "integral_(a)^(b) f dif x" },
-  { template: "matrix", name: "Matrix", aliases: ["pmatrix", "array"], preview: "\\begin{pmatrix} a & b \\end{pmatrix}", typst: "mat(a, b; c, d)" },
+  { template: "sum", name: "Sum with limits", aliases: ["summation", "sigma"], into: "body", preview: "\\sum_{i=1}^{n} x_i", typst: "sum_(i=1)^(n) x_i" },
+  { template: "integral", name: "Integral with limits", aliases: ["int", "integration"], into: "body", preview: "\\int_a^b f \\, dx", typst: "integral_(a)^(b) f dif x" },
+  { template: "matrix", name: "Matrix", aliases: ["pmatrix", "array"], preview: "\\begin{pmatrix} a & b \\\\ c & d \\end{pmatrix}", typst: "mat(delim: \"(\", a, b; c, d)" },
 ];
 
 export const TEMPLATE_ENTRIES = TEMPLATE_TILES.map(tile => ({
   id: `template-${tile.template}`,
   template: tile.template,
+  ...(tile.into ? { into: tile.into } : {}),
   glyph: "",
   name: tile.name,
   aliases: tile.aliases,
@@ -64,7 +65,9 @@ export function entryInsertion(entry, context = {}) {
     }
     const template = MATH_TEMPLATES.find(item => item.id === entry.template);
     const values = { style: "inline" };
-    if (selected && entry.template !== "matrix") values[template.slots[0].id] = selected;
+    // A selection fills the slot it reads as: the body of a sum or an integral,
+    // otherwise the first slot. A matrix has no single slot to fill.
+    if (selected && entry.template !== "matrix") values[entry.into ?? template.slots[0].id] = selected;
     return templateInsertion(template, values, context);
   }
 

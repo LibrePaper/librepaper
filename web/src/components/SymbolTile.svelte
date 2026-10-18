@@ -50,9 +50,9 @@
     catch { return ""; }
   }
   const markup = $derived(math && katex ? renderMath(katex, symbol) : "");
-  // Templates and pairs are wider than a single symbol, so they are drawn
-  // smaller to fit the tile.
-  const wide = $derived(symbol.kind === "template" || symbol.kind === "pair");
+  // Templates are wider than a single symbol, so they are drawn smaller to
+  // fit the tile.
+  const wide = $derived(symbol.kind === "template");
 </script>
 
 {#snippet face()}
@@ -62,7 +62,7 @@
 {#if large}
   <span class="symbol-tile large" aria-hidden="true">{@render face()}</span>
 {:else}
-  <button type="button" class="symbol-tile" aria-label={capitalize(symbol.name)} {title} data-symbol={symbol.id} {onclick} {...rest}>
+  <button type="button" class="symbol-tile" aria-label={capitalize(symbol.name)} {title} data-symbol={symbol.id} data-kind={symbol.kind} {onclick} {...rest}>
     {@render face()}
   </button>
 {/if}
@@ -79,7 +79,7 @@
   .symbol-math { display: inline-flex; max-width: 100%; align-items: center; justify-content: center; overflow: hidden; }
   .symbol-math :global(.katex) { font-size: 1.05em; }
   .large .symbol-math :global(.katex) { font-size: 1.5em; }
-  .symbol-math.wide :global(.katex) { font-size: 0.75em; }
+  .symbol-math.wide :global(.katex) { font-size: 0.85em; }
   .large .symbol-math.wide :global(.katex) { font-size: 1em; }
   @media (pointer: coarse) {
     .symbol-tile:not(.large) { width: 2.75rem; height: 2.75rem; }

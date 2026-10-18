@@ -50,9 +50,10 @@
   // so the picker decides what scrolls. `sheet` turns the card into a bottom
   // sheet below 480px wide, with a handle that expands it. A drag down on the
   // handle or the header closes it, or shrinks it when it is expanded.
-  const width = $derived(compact ? "max-w-[44rem]" : wider ? "max-w-3xl" : wide ? "max-w-xl" : "max-w-lg");
+  let expanded = $state(false);
+  const width = $derived(compact ? "max-w-2xl" : wider ? "max-w-3xl" : wide ? "max-w-xl" : "max-w-lg");
   const cardClass = $derived(compact
-    ? `card bg-[var(--color-raised)] flex max-h-full max-h-[75vh] w-full flex-col gap-3 p-4 shadow-xl ${width}`
+    ? `card bg-[var(--color-raised)] modal-compact flex max-h-full w-full flex-col gap-3 p-4 shadow-xl ${width}`
     : `card bg-[var(--color-raised)] flex max-h-full w-full flex-col gap-4 p-6 shadow-xl ${width}`);
   const contentClass = $derived(`${cardClass}${sheet ? " modal-sheet" : ""}${sheet && expanded ? " modal-sheet-expanded" : ""}`);
 
@@ -67,7 +68,6 @@
   // visual viewport. A drag down on the handle or the header moves the card
   // with the finger. Only the handle and the header start a drag, so scrolling
   // the body never moves the sheet. Drags are ignored at 480px and wider.
-  let expanded = $state(false);
   const DRAG_START = 4;
   const DRAG_CLOSE = 80;
   const DRAG_EXPAND = -60;
@@ -202,10 +202,11 @@
             {@render children?.()}
           </div>
         {:else}
+          <!-- svelte-ignore a11y_no_static_element_interactions -->
           <div class="flex shrink-0 flex-col gap-3" class:sheet-grab={sheet}
                onpointerdown={startDrag} onpointermove={moveDrag} onpointerup={endDrag} onpointercancel={cancelDrag}>
             {#if sheet}
-              <button type="button" class="sheet-handle" aria-label={expanded ? "Shrink" : "Expand"}
+              <button type="button" class="sheet-handle" tabindex="-1" aria-label={expanded ? "Shrink" : "Expand"}
                       onclick={() => (expanded = !expanded)}></button>
             {/if}
             <header class="flex shrink-0 items-start gap-3">
@@ -251,6 +252,8 @@
      components, so the sheet is styled by global class names. */
   .sheet-grab { touch-action: none; }
   .sheet-handle { display: none; }
+  /* A picker card stops at three quarters of the screen. */
+  :global(.modal-compact) { max-height: min(75vh, 100%); }
 
   @media (max-width: 479px) {
     .sheet-handle {
@@ -291,10 +294,10 @@
     }
     @media (prefers-reduced-motion: no-preference) {
       :global(.modal-sheet) {
-        animation: modal-sheet-up 200ms ease-out;
+        animation: lp-modal-sheet-up 200ms ease-out;
       }
     }
-    @keyframes modal-sheet-up {
+    @keyframes -global-lp-modal-sheet-up {
       from { transform: translateY(100%); }
     }
   }

@@ -100,7 +100,7 @@ try {
   };
   const dialog = () => b.evaluate(`(() => {
     const open = document.querySelector('[role="dialog"][data-state="open"]');
-    return open ? (open.querySelector("h2, .h4, .modal-page-title")?.textContent || "").trim() : "";
+    return open ? (open.querySelector("[data-part=title], .modal-page-title")?.textContent || "").trim() : "";
   })()`);
   const focusIn = () => b.evaluate('document.activeElement?.closest("[id^=sidebar-panel-]")?.id || document.activeElement?.tagName || ""');
   const focusBody = () => b.evaluate('document.getElementById("main").focus()');
@@ -203,7 +203,7 @@ try {
   await key("s", { code: "KeyS", modifiers: ["ctrl", "alt"], virtual: 83 });
   await until("the Symbols overlay", async () => (await dialog()) === "Insert symbol" && (await active()) === "search", 4000);
   const typed = await source();
-  await b.evaluate('document.querySelector(".symbol-grid .symbol-tile").click()');
+  await b.evaluate('document.querySelector(".symbol-palette [data-symbol]").click()');
   await until("the symbol inserted", async () => (await source()) !== typed, 4000);
   // The picker stays open for the next symbol, and the focus stays out of the editor.
   assert.equal(await dialog(), "Insert symbol", "a picked symbol keeps the picker open");

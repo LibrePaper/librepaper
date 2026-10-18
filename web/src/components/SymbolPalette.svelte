@@ -18,7 +18,7 @@
   const RESULT_LIMIT = 300;
   const LONG_PRESS_MS = 500;
   const LONG_PRESS_SLOP = 10;
-  // The fine pointer and width test keep the virtual keyboard from opening on
+  // The coarse pointer and width test keep the virtual keyboard from opening on
   // its own on a phone or tablet.
   const FOCUS_WIDTH = 480;
 
@@ -123,7 +123,7 @@
   // What the overlay focuses on opening, and whether an Escape is the
   // search's to clear rather than the overlay's to close on.
   export const focusTarget = () =>
-    matchMedia("(pointer: fine)").matches && innerWidth >= FOCUS_WIDTH ? input : null;
+    !matchMedia("(pointer: coarse)").matches && innerWidth >= FOCUS_WIDTH ? input : null;
   export const claimsEscape = () => query !== "";
 
   /** @param {string} id */
@@ -416,11 +416,14 @@
   .separator { flex: 0 0 1px; align-self: stretch; width: 1px; margin: .2rem .25rem; background: var(--color-divider); }
   .content { flex: 1 1 auto; min-width: 0; min-height: 0; display: flex; flex-direction: column; gap: calc(var(--spacing) * 2); }
   .notice { flex: 0 0 auto; margin: 0; font-size: .8rem; }
-  .group-strip { flex: 0 0 auto; display: flex; flex-wrap: nowrap; gap: .25rem; overflow-x: auto; scrollbar-width: thin; padding-bottom: .15rem; }
+  .group-strip { flex: 0 0 auto; display: flex; flex-wrap: nowrap; gap: .25rem; overflow-x: auto; scrollbar-width: none; }
+  .group-strip::-webkit-scrollbar { display: none; }
   .group-strip > :global(.btn) { flex: 0 0 auto; white-space: nowrap; }
   .grid-scroll { flex: 1 1 auto; min-height: 0; overflow-y: auto; overscroll-behavior: contain; }
   .sub-label { margin: .25rem 0 .3rem; color: var(--color-text-secondary); font-size: .7rem; font-weight: 700; text-transform: uppercase; letter-spacing: .05em; }
   .grid { display: grid; grid-template-columns: repeat(auto-fill, 2.625rem); grid-auto-rows: 2.625rem; gap: 4px; }
+  /* A template is wider than one symbol, so its tile takes two cells. */
+  .grid > :global([data-kind="template"]) { grid-column: span 2; width: auto; }
   @media (pointer: coarse) {
     .grid { grid-template-columns: repeat(auto-fill, 2.75rem); grid-auto-rows: 2.75rem; }
   }
