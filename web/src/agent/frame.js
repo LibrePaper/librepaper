@@ -625,6 +625,30 @@ import { watchPinch } from "../lib/pinch.js";
     selectionTimer = setTimeout(captureSelection, delay);
   }
 
+  // A link in the document never navigates the preview. It opens in a new
+  // tab, or from the desktop app in the system browser or a new window.
+  // Followed in place it would replace the preview with the page it points
+  // to, and the frame has no way back. A link to a place in the same
+  // document still scrolls.
+  document.addEventListener("click", (event) => {
+    if (event.defaultPrevented || event.button !== 0) return;
+    const link = event.target instanceof Element ? event.target.closest("a[href], area[href]") : null;
+    if (!link) return;
+    let url;
+    try {
+      url = new URL(link.getAttribute("href"), document.baseURI);
+    } catch {
+      return;
+    }
+    if (url.protocol === "javascript:") {
+      event.preventDefault();
+      return;
+    }
+    if (url.hash && url.origin + url.pathname + url.search === location.origin + location.pathname + location.search) return;
+    event.preventDefault();
+    window.open(url.href, "_blank", "noopener");
+  }, { capture: true });
+
   // A click in the document, reported as an offset into the published text, so
   // the editor can put its caret in the same place. Only the position is sent;
   // a click that lands on nothing textual says nothing.
