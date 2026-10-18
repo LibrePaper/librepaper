@@ -39,6 +39,7 @@ const packageEdit = (name, c, notes, options = "") => {
   if (!anchor) { notes.push(`Add \\usepackage${bracket}{${name}} to the preamble.`); return []; }
   return [{ path: anchor.path, from: anchor.at, to: anchor.at, insert: `\\usepackage${bracket}{${name}}\n` }];
 };
+export const latexPackageEdits = (name, c, notes, options = "") => packageEdit(name, c, notes, options);
 const preambleEdit = (insert, c, notes) => {
   const anchor = preambleAnchor(c);
   if (!anchor) { notes.push(`Add ${insert} to the preamble.`); return []; }

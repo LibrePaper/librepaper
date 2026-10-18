@@ -10,6 +10,7 @@ import tailwindcss from "@tailwindcss/vite";
 import { resolve } from "node:path";
 import { readFileSync, rmSync } from "node:fs";
 import { execFileSync } from "node:child_process";
+import { KATEX_PATH } from "./tools/katex-path.mjs";
 
 // What this build owns in the output directory, and clears before it writes.
 // The directory is shared -- the renderers and the README are put there by
@@ -51,7 +52,7 @@ try {
 } catch { /* a build outside a checkout has no commit */ }
 
 export default defineConfig({
-  define: { __APP_VERSION__: JSON.stringify(appVersion), __APP_COMMIT__: JSON.stringify(appCommit) },
+  define: { __APP_VERSION__: JSON.stringify(appVersion), __APP_COMMIT__: JSON.stringify(appCommit), __KATEX__: JSON.stringify(KATEX_PATH) },
   root: resolve(import.meta.dirname, "pages"),
   publicDir: resolve(import.meta.dirname, "public"),
   // `configFile: false` because there is no `svelte.config.js` and none is

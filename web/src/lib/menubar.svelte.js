@@ -57,8 +57,9 @@ export const menubar = {
     if (opened !== null && opened !== id) opened = id;
   },
   // Left and right walk the row and wrap, from the trigger or from inside an
-  // open panel. These menus have no submenus, so the two keys are free.
-  // Walking the row from a menu opened out of the Panels trigger keeps that box.
+  // open panel. A sub-menu keeps the two keys it needs; Menubar.svelte checks
+  // for one before the row walks. Walking the row from a menu opened out of
+  // the Panels trigger keeps that box.
   step(delta) {
     const items = triggers();
     const here = items.findIndex((item) => item.dataset.menubar === opened);

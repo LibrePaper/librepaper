@@ -1,3 +1,7 @@
+import { MATH_TEMPLATES } from "./symbols/templates.js";
+
+/** @typedef {{ id: string, label: string, category: string, scope: string, keys: Array<string | {apple?: string, other?: string}>, available: (context: any) => boolean, owner?: string, menu?: string, note?: string, palette?: boolean, help?: boolean }} Command */
+
 // What the workspace can be asked to do, written once.
 //
 // A shortcut used to be a literal in whichever component happened to hear the
@@ -187,6 +191,7 @@ export const typeable = (descriptor) => {
 const ALWAYS = () => true;
 const panel = (id) => (context) => (context.panels || []).includes(id);
 
+/** @type {Command[]} */
 export const COMMANDS = [
   // Editing. CodeMirror's, every one of them, including the search panel.
   { id: "undo", label: "Undo", category: "Editing", scope: "editor", owner: "editor", menu: "edit", keys: ["Mod+Z"], available: (c) => Boolean(c.edit?.undo) },
@@ -203,8 +208,16 @@ export const COMMANDS = [
   { id: "palette", label: "Command palette", category: "Navigation", scope: "workspace", keys: ["Mod+Alt+P"], palette: false, available: ALWAYS },
   { id: "focus-files", label: "Focus Files", category: "Navigation", scope: "workspace", keys: ["Mod+Alt+E"], available: panel("files"), note: "Files panel" },
   { id: "focus-outline", label: "Focus Outline", category: "Navigation", scope: "workspace", keys: ["Mod+Alt+O"], available: panel("outline"), note: "Outline panel" },
+  { id: "focus-symbols", label: "Focus Symbols", category: "Navigation", scope: "workspace", keys: ["Mod+Alt+S"], available: panel("symbols"), note: "Symbols panel" },
+  { id: "focus-math", label: "Focus Math", category: "Navigation", scope: "workspace", keys: ["Mod+Alt+T"], available: panel("math"), note: "Math panel" },
   { id: "focus-comments", label: "Focus Comments", category: "Navigation", scope: "workspace", keys: ["Mod+Alt+M"], available: panel("collaboration"), note: "Comments panel" },
   { id: "focus-preview", label: "Focus Preview", category: "Navigation", scope: "workspace", keys: ["Mod+Alt+V"], available: (c) => Boolean(c.preview), note: "Preview visible" },
+
+  // One palette entry per math template. They have no key: they are found by
+  // name, and each opens the Math panel on its template.
+  ...MATH_TEMPLATES.map((template) => ({
+    id: "math-" + template.id, label: "Insert " + template.label.toLowerCase(), category: "Math", scope: "workspace", keys: [], available: panel("math"),
+  })),
 
   // Changes panel navigation and review. These keys are answered by the
   // panel itself when it has focus, listed here for the help table.

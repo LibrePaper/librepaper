@@ -24,6 +24,7 @@ import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { browser, until, removeTemporary } from "../helpers/browser-driver.mjs";
 import { contentType, loroAlias } from "../helpers/loro.mjs";
+import { KATEX_DEFINE, serveKatex } from "../helpers/katex.mjs";
 
 const root = dirname(dirname(dirname(dirname(fileURLToPath(import.meta.url)))));
 const temp = mkdtempSync(join(tmpdir(), "librepaper-accessibility-"));
@@ -152,7 +153,7 @@ try {
     const entry = join(temp, `${name}.js`);
     writeFileSync(entry, screen.entry);
     await build({
-      configFile: false, root: join(root, "web"), resolve: { alias: loroAlias },
+      configFile: false, define: KATEX_DEFINE, root: join(root, "web"), resolve: { alias: loroAlias },
       plugins: [tailwindcss(), svelte(), { name: "mock-room", enforce: "pre", resolveId(id) { if (/(^|\/)room\.js$/.test(id)) return room; } }],
       build: { outDir: out, emptyOutDir: true, lib: { entry, formats: ["es"], fileName: () => "check.js" } },
       logLevel: "error",
@@ -165,6 +166,7 @@ try {
       .replace("__MODULES__", "{}");
     server?.close();
     server = createServer((request, response) => {
+    if (serveKatex(request, response)) return;
       const path = new URL(request.url, "http://127.0.0.1").pathname;
       if (path === "/" || path === "/docs/paper") {
         response.setHeader("content-type", "text/html");

@@ -37,7 +37,7 @@ const fromAPeer = (target, edit) => {
   peer.commit();
   target.import(peer.export({ mode: "update", from: target.oplogVersion() }));
 };
-window.testErrors=[];addEventListener("error",e=>window.testErrors.push(e.message));addEventListener("unhandledrejection",e=>window.testErrors.push(String(e.reason)));
+window.panelRequests=[];window.testErrors=[];addEventListener("error",e=>window.testErrors.push(e.message));addEventListener("unhandledrejection",e=>window.testErrors.push(String(e.reason)));
 const session = joinSession({send: () => {}, mayEdit: true});
 const entries = [{key:'smith2020',authors:['Jane Smith'],title:'A Study of Rivers',year:'2020'}, {key:'jones2021',authors:['Alice Jones'],title:'Mountains',year:'2021'}];
 let component, menu, file;
@@ -52,7 +52,7 @@ window.setupInsert = async (format, source = null) => {
   menu = createClassComponent({component:InsertMenu,target:document.getElementById('menu'),props:{
     getContext:()=>({...component.getInsertContext(),bibliography:entries,files:[{path:'refs.bib',text:'@article{smith2020,title={Rivers},author={Smith, Jane},year={2020}}'},{path:'images/river.png',url:'data:image/png;base64,preview'}]}),
     oninsert:(result,context)=>{ const ok=component.applyInsertResult(result,context); if(!ok) throw Error('Insertion target changed'); return ok; },
-    onupload:async()=> 'images/upload.png',onfocus:()=>component.focus(),oncancel:context=>component.releaseInsertContext(context)
+    onupload:async()=> 'images/upload.png',onpanel:id=>window.panelRequests.push(id),onfocus:()=>component.focus(),oncancel:context=>component.releaseInsertContext(context)
   }});
   await tick();
 };
@@ -61,6 +61,8 @@ window.insertState=()=>({text:view().state.doc.toString(),selection:view().state
 window.selectInsert=(from,to=from)=>{view().dispatch({selection:{anchor:from,head:to}});view().focus();};
 window.remoteInsert=async()=>{ fromAPeer(session.doc, (peer)=>peer.getMap("files").get(file).insert(0,'REMOTE ')); await tick(); };
 window.undoInsert=()=>loroUndo(view());
+window.snippetInsert=()=>component.applyInsertResult({text:"\\\\frac{#{1:a}}{#{2:b}}",snippet:true,additionalEdits:[]},component.getInsertContext());
+window.dispatchTab=()=>view().contentDOM.dispatchEvent(new KeyboardEvent("keydown",{key:"Tab",bubbles:true}));
 window.targetChecks=async()=>{
   const context=component.getInsertContext();
   const another=session.addText('other.md','Other document');
@@ -153,7 +155,14 @@ try {
   await until("Insert test loaded",()=>page.evaluate("window.insertReady"),10000);
   const evaluate=(code)=>page.evaluate(code);
   const click=async(selector)=>{ await until(selector,()=>evaluate(`Boolean(document.querySelector(${JSON.stringify(selector)}))`),5000); await evaluate(`document.querySelector(${JSON.stringify(selector)}).dispatchEvent(new PointerEvent("pointermove",{bubbles:true,pointerType:"mouse"}));document.querySelector(${JSON.stringify(selector)}).dispatchEvent(new PointerEvent("pointerdown",{bubbles:true,pointerType:"mouse"}));document.querySelector(${JSON.stringify(selector)}).click()`); };
-  const choose=async(id)=>{ await click('[data-scope="menu"][data-part="trigger"]'); await until("menu ready",()=>evaluate(`document.querySelector('[data-scope="menu"][data-part="trigger"]')?.getAttribute('data-state')==='open'`),5000); const state=await evaluate(`(()=>{const x=document.querySelector('[data-scope="menu"][data-part="item"][data-value=${JSON.stringify(id)}]');return {disabled:x?.getAttribute('data-disabled'),text:x?.textContent}})()`);assert.equal(state.disabled,null,`${id} insertion is enabled: ${state.text}`); await click(`[data-scope="menu"][data-part="item"][data-value="${id}"]`); };
+  const menuOpen=()=>evaluate(`document.querySelector('[data-scope="menu"][data-part="trigger"]')?.getAttribute('data-state')==='open'`);
+  const openMenu=async()=>{ if(!(await menuOpen())) await click('[data-scope="menu"][data-part="trigger"]'); await until("menu ready",menuOpen,5000); };
+  const groupTrigger=(label)=>`[...document.querySelectorAll('[data-scope="menu"][data-part="trigger-item"]')].find(x=>x.textContent.trim()===${JSON.stringify(label)})`;
+  const onScreen=(id)=>evaluate(`(()=>{const x=document.querySelector('[data-scope="menu"][data-part="item"][data-value="${id}"]');if(!x)return false;const r=x.getBoundingClientRect();return r.width>0&&r.left>=0&&r.top>=0;})()`);
+  // A sub-menu opens from its trigger item. Zag parks an unplaced menu off
+  // screen, so an item is clicked only once its box is on screen.
+  const chooseIn=async(group,id)=>{ await openMenu(); await until(`${group} trigger`,()=>evaluate(`Boolean(${groupTrigger(group)})`),5000); await evaluate(`(()=>{const t=${groupTrigger(group)};t.dispatchEvent(new PointerEvent("pointermove",{bubbles:true,pointerType:"mouse"}));t.dispatchEvent(new PointerEvent("pointerdown",{bubbles:true,pointerType:"mouse"}));t.click();})()`); await until(`${id} on screen`,()=>onScreen(id),5000); await click(`[data-scope="menu"][data-part="item"][data-value="${id}"]`); };
+  const choose=async(id)=>{ await openMenu(); const state=await evaluate(`(()=>{const x=document.querySelector('[data-scope="menu"][data-part="item"][data-value=${JSON.stringify(id)}]');return {disabled:x?.getAttribute('data-disabled'),text:x?.textContent}})()`);assert.equal(state.disabled,null,`${id} insertion is enabled: ${state.text}`); await click(`[data-scope="menu"][data-part="item"][data-value="${id}"]`); };
   const dialogTitle=async()=>evaluate(`document.querySelector('[role="dialog"][data-state="open"] [data-part="title"]')?.textContent.trim() || ''`);
   const confirm=async()=>{ await evaluate(`[...document.querySelectorAll('[role="dialog"][data-state="open"] button')].find(x=>x.textContent.trim()==='Insert').click()`); await until("dialog closed",()=>evaluate(`!document.querySelector('[role="dialog"][data-state="open"]')`),5000); };
   const cancel=async()=>{ await evaluate(`[...document.querySelectorAll('[role="dialog"][data-state="open"] button')].find(x=>x.textContent.trim()==='Cancel').click()`); await until("dialog cancelled",()=>evaluate(`!document.querySelector('[role="dialog"][data-state="open"]')`),5000); };
@@ -196,7 +205,7 @@ try {
   await choose("cross-reference");await until("cross-reference dialog",()=>evaluate(`document.querySelector('[role="dialog"][data-state="open"] [data-part="title"]')?.textContent.trim()==='Cross-reference'`),5000);
   const target=await evaluate(`document.querySelector('[role="dialog"][data-state="open"] select')?.options[1]?.value`);assert.ok(target,"cross-reference target is available");await field("Reference",target);await confirm();
   assert.match((await evaluate("insertState()" )).text,/\[[^\]]+\]\(#.+\)/,"cross-reference inserts a link");
-  await evaluate("setupInsert('markdown','Before AFTER')");await evaluate("selectInsert(7)");await choose("label");await until("label dialog",()=>evaluate(`document.querySelector('[role="dialog"][data-state="open"] [data-part="title"]')?.textContent.trim()==='Label / anchor'`),5000);await field("Label","sec-intro");await confirm();assert.match((await evaluate("insertState()" )).text,/sec-intro/);
+  await evaluate("setupInsert('markdown','Before AFTER')");await evaluate("selectInsert(7)");await chooseIn("Document","label");await until("label dialog",()=>evaluate(`document.querySelector('[role="dialog"][data-state="open"] [data-part="title"]')?.textContent.trim()==='Label / anchor'`),5000);await field("Label","sec-intro");await confirm();assert.match((await evaluate("insertState()" )).text,/sec-intro/);
 
   // Invalid dimensions are reported in the dialog and do not close it.
   await evaluate("setupInsert('markdown','Before AFTER')");await evaluate("selectInsert(7)");await choose("table");await until("invalid table dialog",()=>evaluate(`document.querySelector('[role="dialog"][data-state="open"] [data-part="title"]')?.textContent.trim()==='Table'`),5000);await field("Rows",0);await evaluate(`[...document.querySelectorAll('[role="dialog"][data-state="open"] button')].find(x=>x.textContent.trim()==='Insert').click()`);await until("dimension error",()=>evaluate(`document.querySelector('[role="dialog"][data-state="open"] [role="alert"], .insert-error')?.textContent.includes('Rows')`),5000);assert.equal(await dialogTitle(),"Table");await cancel();
@@ -209,7 +218,7 @@ try {
   await until('upload path',()=>evaluate('document.querySelector(\'[role="dialog"][data-state="open"] select\')?.value === "images/upload.png"'),5000);
   await confirm();assert.match((await evaluate('insertState()')).text,/images\/upload\.png/);
   await evaluate("setupInsert('markdown','alpha\\nbeta')");await evaluate("selectInsert(0,10)");
-  await choose("bulleted-list");
+  await chooseIn("Lists","bulleted-list");
   await until("selection converted to list",async()=>/^\s*- alpha\n- beta/.test((await evaluate("insertState()")).text),5000);
   assert.deepEqual(await evaluate("targetChecks()"),{switched:false,readonly:false});
   await evaluate("setupInsert('markdown','Before')");await evaluate("selectInsert(6)");await choose("footnote");await until("footnote inserted",()=>evaluate("insertState().text.includes('[^note-1]')"),5000);assert.match((await evaluate("insertState()")).text,/^Before\[\^note-1\]\n\n\[\^note-1\]: Note\./);
@@ -223,6 +232,32 @@ try {
   assert.deepEqual(trackedInsert.changeFiles,trackedInsert.expectedFiles,"the tracked Insert and its cross-file edit are each recorded as a change in their own file");
   assert.match(trackedInsert.shown,/Before TRACKED AFTER/);
   assert.deepEqual(await evaluate("fileIdentityCheck()"),{ok:false,active:"Before AFTER",old:"NOTES",replaced:"NOTES"},"an edit to a path that now names another file is refused before anything is written");
-  await evaluate("setupInsert('quarto')");await evaluate("selectInsert(7)");await choose("toc");await until("Quarto TOC",()=>evaluate(`Boolean(document.querySelector('[role="dialog"][data-state="open"]'))`),5000);await confirm();assert.match((await evaluate("insertState()")).text,/toc: true/);
+  await evaluate("setupInsert('quarto')");await evaluate("selectInsert(7)");await chooseIn("Document","toc");await until("Quarto TOC",()=>evaluate(`Boolean(document.querySelector('[role="dialog"][data-state="open"]'))`),5000);await confirm();assert.match((await evaluate("insertState()")).text,/toc: true/);
+  // A snippet inserts its placeholders as CodeMirror fields: the first is selected, and Tab moves to the next.
+  await evaluate("setupInsert('markdown','Before AFTER')");await evaluate("selectInsert(7)");
+  await evaluate("snippetInsert()");
+  assert.equal((await evaluate("insertState()")).text,"Before \\frac{a}{b}AFTER","a snippet inserts its text at the caret");
+  assert.equal((await evaluate("insertState()")).selection,"a","the first placeholder is selected");
+  await evaluate("dispatchTab()");
+  assert.equal((await evaluate("insertState()")).selection,"b","Tab moves to the next placeholder");
+  await evaluate("undoInsert()");
+  assert.equal((await evaluate("insertState()")).text,"Before AFTER","the whole snippet is one undo step");
+
+  // The Math sub-menu ends with two panel openers. They open the sidebar, insert nothing, and are never disabled.
+  await evaluate("setupInsert('markdown','Before AFTER')");await evaluate("selectInsert(7)");await openMenu();
+  await evaluate(`(()=>{const t=${groupTrigger("Math")};t.dispatchEvent(new PointerEvent("pointermove",{bubbles:true,pointerType:"mouse"}));t.dispatchEvent(new PointerEvent("pointerdown",{bubbles:true,pointerType:"mouse"}));t.click();})()`);
+  await until("panel openers listed",()=>evaluate(`Boolean(document.querySelector('[data-scope="menu"][data-part="item"][data-value="panel:symbols"]'))&&Boolean(document.querySelector('[data-scope="menu"][data-part="item"][data-value="panel:math"]'))`),5000);
+  await until("Symbols opener on screen",()=>onScreen("panel:symbols"),5000);
+  await click('[data-scope="menu"][data-part="item"][data-value="panel:symbols"]');
+  await until("symbols panel requested",()=>evaluate("window.panelRequests.includes('symbols')"),5000);
+  assert.equal((await evaluate("insertState()")).text,"Before AFTER","a panel opener inserts nothing");
+
+  // The top level is the seven common actions and then six sub-menus, in order.
+  await evaluate("setupInsert('markdown','Before AFTER')");await evaluate("selectInsert(7)");await openMenu();
+  const topLevel=await evaluate(`(()=>{const trigger=document.querySelector('[data-scope="menu"][data-part="trigger"]');const content=document.getElementById(trigger.getAttribute('aria-controls'));const contentPart='[data-scope="menu"][data-part="content"]';return [...content.querySelectorAll('[data-scope="menu"][data-part="item"],[data-scope="menu"][data-part="trigger-item"]')].filter(node=>node.closest(contentPart)===content).map(node=>node.dataset.part==='item'?node.dataset.value:'submenu:'+node.textContent.trim());})()`);
+  assert.deepEqual(topLevel,["figure","table","citation","cross-reference","footnote","link","heading","submenu:Math","submenu:Lists","submenu:Theorems","submenu:Blocks","submenu:Document","submenu:Layout"],"Insert has seven direct items and six sub-menus");
+  // An item in a sub-menu inserts like one at the top level.
+  await chooseIn("Layout","horizontal-rule");
+  await until("horizontal rule from a sub-menu inserted",()=>evaluate("/\\*\\*\\*/.test(insertState().text)"),5000);
   console.log("insert-browser: Skeleton table dialogs in all four formats, selection wrapping, remote anchors, undo, file switch and readonly guards passed");
 } catch(error) {console.error(await page?.evaluate("({errors:window.testErrors,dialogs:[...document.querySelectorAll('[role=dialog]')].map(x=>({title:x.textContent,state:x.dataset.state})),documentText:document.querySelector('.cm-content')?.textContent})"));throw error;} finally {await page?.close();server?.close();removeTemporary(temporary);}

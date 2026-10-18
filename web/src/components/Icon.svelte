@@ -111,6 +111,10 @@
       ["path", "M21.174 6.812a1 1 0 0 0-3.986-3.987L3.842 16.174a2 2 0 0 0-.5.83l-1.321 4.352a.5.5 0 0 0 .623.622l4.353-1.32a2 2 0 0 0 .83-.497z"],
       ["path", "m15 5 4 4"],
     ],
+    // The Greek capital sigma, for the Symbols panel.
+    sigma: [["path", "M18 7V5H6l6 7-6 7h12v-2"]],
+    // A square-root sign, for the Math panel.
+    radical: [["path", "M3 13l3 6 5-16h10"]],
     // Original outline of a hand holding a diagonal pencil for the editor.
     "writing-hand": [
       ["path", "m11 10 4-7a1.5 1.5 0 0 1 2.6 1.5L14 11"],

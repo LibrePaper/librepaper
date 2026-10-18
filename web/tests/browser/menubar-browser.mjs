@@ -13,6 +13,7 @@ import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { browser, until, removeTemporary } from "../helpers/browser-driver.mjs";
 import { contentType, loroAlias } from "../helpers/loro.mjs";
+import { KATEX_DEFINE, serveKatex } from "../helpers/katex.mjs";
 
 const root = dirname(dirname(dirname(dirname(fileURLToPath(import.meta.url)))));
 const temp = mkdtempSync(join(tmpdir(), "librepaper-menubar-"));
@@ -60,11 +61,12 @@ mount(Reader, {target:document.body});
 let serverHttp, b;
 try {
   await build({
-    configFile: false, root: join(root, "web"), resolve: { alias: loroAlias },
+    configFile: false, define: KATEX_DEFINE, root: join(root, "web"), resolve: { alias: loroAlias },
     plugins: [tailwindcss(), svelte(), { name: "mock-room", enforce: "pre", resolveId(id) { if (id === "../lib/room.js" || id === "../room.js" || id.endsWith("/src/lib/room.js")) return room; } }],
     build: { outDir: out, emptyOutDir: true, lib: { entry, formats: ["es"], fileName: () => "check.js" } }, logLevel: "error",
   });
   serverHttp = createServer((req, res) => {
+    if (serveKatex(req, res)) return;
     if (req.url === "/docs/paper") {
       res.setHeader("content-type", "text/html");
       res.end('<!doctype html><html data-theme="librepaper"><head><meta name="viewport" content="width=device-width,initial-scale=1"><link rel="stylesheet" href="/librepaper-web.css"></head><body><script type="module" src="/check.js"></script></body></html>');
