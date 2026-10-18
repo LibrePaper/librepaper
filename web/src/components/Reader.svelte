@@ -81,6 +81,7 @@
   import { createRenderCoordinator } from "../lib/reader/render-coordinator.js";
   import { createGeneration } from "../lib/reader/generation.js";
   import { createRenderStatus } from "../lib/reader/render-status.svelte.js";
+  import { provide } from "../lib/support/providers.js";
   import { createSteadyBusy } from "../lib/reader/steady-busy.js";
   import { createLocalPreview } from "../lib/reader/local-preview.svelte.js";
   import { previewNotes, unrenderableMain } from "../lib/reader/preview-notes.js";
@@ -1759,6 +1760,43 @@
   // formats expose the same short-lived loading state; the elapsed time is
   // especially useful for LaTeX, whose compiler can take seconds.
   const renderStatus = createRenderStatus();
+
+  // These feed the diagnostics report in settings. They carry no document text
+  // except the build log, which the user opts into.
+  $effect(() => {
+    const undo = [
+      provide("document", () => ({ id: doc.document_id, format: sourceFormat, role: doc.role, mayEdit })),
+      provide("account", () => ({ id: me.id, signedIn: Boolean(me.provider) })),
+      provide("sync", () => ({
+        connected,
+        joined: persistence.joined,
+        pending: persistence.pending,
+        localPending: persistence.localPending,
+        ...collaboration?.syncStatus(),
+      })),
+      provide("engines", () => {
+        const built = latex.status();
+        const result = built.lastResult;
+        return {
+          format: sourceFormat,
+          compiling: renderStatus.state.compiling,
+          failure: Boolean(renderStatus.state.failure),
+          latex: {
+            phase: built.phase,
+            backend: built.backend,
+            engine: built.engine,
+            release: built.release,
+            ok: result?.ok,
+            seconds: result?.seconds,
+            diagnostics: result?.diagnostics?.length,
+            errors: result?.diagnostics?.filter((item) => item.severity === "error").length,
+          },
+        };
+      }),
+      provide("buildLog", () => renderStatus.state.lastLog || renderStatus.state.lastLatexResult?.log || ""),
+    ];
+    return () => undo.forEach((unregister) => unregister());
+  });
   const renderState = renderStatus.state;
 
   // Which tool builds this document is the build settings' to own; what the

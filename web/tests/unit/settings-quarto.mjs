@@ -9,6 +9,7 @@ const dialog = await read("SettingsDialog.svelte");
 const latexFiles = await read("LatexFilesSettings.svelte");
 const command = await read("ToolCommand.svelte");
 const tools = await read("ToolsSettings.svelte");
+const toolList = await readFile(new URL("../../src/lib/desktop/tools.js", import.meta.url), "utf8");
 const renderingComponent = await read("RenderingSettings.svelte");
 const remote = await read("RemoteSettings.svelte");
 const statusPill = await read("StatusPill.svelte");
@@ -69,7 +70,7 @@ for (const format of ["typst", "quarto"]) assert.doesNotMatch(dialog, new RegExp
 assert.match(command, /const canEdit = \$derived\(isConnected && settingsLoaded && !pendingDialogAction\);/);
 assert.match(command, /requestId !== loadId[\s\S]{0,260}requestedName !== name/);
 assert.match(tools, /const CONFIGURABLE = \["quarto", "calepin"\];/);
-assert.match(tools, /"Zotero"/);
+assert.match(toolList, /"Zotero"/);
 // Rendering says nothing about the desktop app; the programs live under Tools.
 assert.doesNotMatch(dialog, /ConnectionRow|ToolCommand/);
 

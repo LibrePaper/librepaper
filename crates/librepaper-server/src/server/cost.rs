@@ -190,6 +190,7 @@ pub(super) async fn middleware(
     next: axum::middleware::Next,
 ) -> Reply {
     let started = std::time::Instant::now();
+    let request_id = uuid::Uuid::now_v7();
     // The operator's page is labelled by the host it arrived on, whatever its
     // path, so the request series and the graphs can both leave it out.
     let host = origins::header(request.headers(), "host").unwrap_or_default();
@@ -199,7 +200,7 @@ pub(super) async fn middleware(
         super::metrics::route_class(request.uri().path())
     };
     let method = request.method().as_str().to_owned();
-    let response = middleware_inner(
+    let mut response = middleware_inner(
         axum::extract::State(server.clone()),
         ConnectInfo(peer),
         request,
@@ -209,6 +210,23 @@ pub(super) async fn middleware(
     server
         .metrics
         .record_middleware_result(route, &method, response.status().as_u16(), started);
+    // The id lets a user's diagnostics report point at this log line. The
+    // line holds the route class only, so no slug or key reaches the log.
+    // Only a failed request is logged, because a report cites only those.
+    if let Ok(value) = axum::http::HeaderValue::from_str(&request_id.to_string()) {
+        response.headers_mut().insert("x-request-id", value);
+    }
+    let status = response.status().as_u16();
+    if status >= 400 {
+        tracing::info!(
+            request_id = %request_id,
+            method = %method,
+            route = route,
+            status,
+            ms = started.elapsed().as_millis() as u64,
+            "request failed"
+        );
+    }
     response
 }
 

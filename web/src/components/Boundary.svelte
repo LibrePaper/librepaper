@@ -11,6 +11,9 @@
   // `body > nav`, and a wrapper would quietly stop every one of those rules
   // from matching.
   import { report } from "../lib/crash.js";
+  import DiagnosticsPanel from "./settings/DiagnosticsPanel.svelte";
+
+  let showDiagnostics = $state(false);
 
   // `component` rather than a snippet, so an entry can keep saying
   // `mount(Boundary, { props: { component: Reader } })` and nothing else
@@ -38,7 +41,9 @@
              from scratch. Reloading is the way out when it does not. -->
         <button type="button" onclick={reset}>Try again</button>
         <button type="button" onclick={() => location.reload()}>Reload the page</button>
+        <button type="button" aria-expanded={showDiagnostics} onclick={() => (showDiagnostics = !showDiagnostics)}>Diagnostics</button>
       </div>
+      {#if showDiagnostics}<DiagnosticsPanel compact />{/if}
     </div>
   {/snippet}
 </svelte:boundary>

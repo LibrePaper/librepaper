@@ -4,6 +4,7 @@
   // category at a time at the right. It opens from the workspace navbar or
   // sidebar, and any entry point can open it on a given category.
   import { onMount, tick } from "svelte";
+  import { desktop } from "../../lib/desktop/client.js";
   import { createMachineView } from "../../lib/desktop/machine.svelte.js";
   import Modal from "../Modal.svelte";
   import { offered, search, has } from "./registry.js";
@@ -18,6 +19,7 @@
   import BackupsSettings from "./BackupsSettings.svelte";
   import AgentSettings from "./AgentSettings.svelte";
   import DesktopSettings from "./DesktopSettings.svelte";
+  import DiagnosticsPanel from "./DiagnosticsPanel.svelte";
 
   let {
     open = $bindable(false),
@@ -44,7 +46,7 @@
   const view = createMachineView();
   onMount(() => view.start());
 
-  const context = $derived({ format: sourceFormat, mayEdit, signedIn: Boolean(account.provider) });
+  const context = $derived({ format: sourceFormat, mayEdit, signedIn: Boolean(account.provider), desktop: Boolean(desktop()) });
   const available = $derived(offered(context));
   // The category shown: the one asked for, or the first offered when that is
   // not (the document changed format, or this browser lost the right to edit).
@@ -87,7 +89,9 @@
       {#if shown}
         <header class="settings-head">
           <h3 class="settings-category">{shown.says}</h3>
-          {#if shown.note}<span class="settings-scope">{shown.note}</span>{/if}
+          {#if shown.id === "desktop" && view.state?.version}
+            <span class="settings-scope">Version {view.state.version} · This computer</span>
+          {:else if shown.note}<span class="settings-scope">{shown.note}</span>{/if}
         </header>
         {#if shown.id === "editor"}
           <EditorSettings {keys} {onkeys} {commands} />
@@ -115,6 +119,8 @@
           {#if row("account-erase")}<AccountSettings {account} />{/if}
         {:else if shown.id === "desktop"}
           <DesktopSettings {view} />
+        {:else if shown.id === "diagnostics"}
+          <section id="diagnostics-report" class="settings-subsection"><DiagnosticsPanel /></section>
         {/if}
       {/if}
     </div>

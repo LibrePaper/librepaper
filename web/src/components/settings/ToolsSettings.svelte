@@ -3,6 +3,7 @@
   import ToolCommand from "./ToolCommand.svelte";
   import DesktopOnly from "../DesktopOnly.svelte";
   import { forgetCapabilities } from "../../lib/desktop/client.js";
+  import { toolItems } from "../../lib/desktop/tools.js";
 
   // The page does not own the machine view; the dialog creates and starts it.
   let { view } = $props();
@@ -13,7 +14,6 @@
   }
 
   const CONFIGURABLE = ["quarto", "calepin"];
-  const COMMON = ["Quarto", "Calepin", "Zotero"];
   const DESCRIPTIONS = {
     quarto: "Renders Quarto and Markdown documents.",
     pandoc: "Renders Markdown documents.",
@@ -21,30 +21,10 @@
     zotero: "Citations from your Zotero library.",
   };
 
-  function items(capabilities) {
-    const tools = capabilities && capabilities.tools && typeof capabilities.tools === "object" ? capabilities.tools : {};
-    const entries = Object.entries(tools);
-    if (capabilities?.calepin) entries.push(["Calepin", capabilities.calepin]);
-    if (capabilities?.zotero) entries.push(["Zotero", capabilities.zotero]);
-    if (capabilities?.quarto?.tool) entries.push(["Quarto", capabilities.quarto.tool]);
-    for (const builder of Array.isArray(capabilities?.builders) ? capabilities.builders : []) if (builder?.id) entries.push([builder.id, builder]);
-    const unique = new Map();
-    for (const [name, tool] of entries) {
-      const key = name.toLowerCase();
-      const old = unique.get(key);
-      if (!old || (!old.tool?.available && tool?.available) || (!old.tool?.version && tool?.version)) unique.set(key, { name, tool });
-    }
-    return [...unique.values()];
-  }
-
   const connected = $derived(view.available);
   const capabilities = $derived(view.state?.tools);
   // The programs worth showing are listed even when the desktop app did not report them.
-  const tools = $derived.by(() => {
-    const found = items(capabilities);
-    for (const name of COMMON) if (!found.some((entry) => entry.name.toLowerCase() === name.toLowerCase())) found.push({ name, tool: null });
-    return found.map(({ name, tool }) => ({ key: name.toLowerCase(), title: name.charAt(0).toUpperCase() + name.slice(1), tool }));
-  });
+  const tools = $derived(toolItems(capabilities));
 
   function status(tool) {
     if (!connected) return { label: "Not checked", tone: "neutral" };

@@ -39,6 +39,7 @@
   import { PROJECT_TABS, PROJECT_TAB_IDS } from "../lib/panels.js";
   import { FORMATS } from "../lib/starter.js";
   import { preparedProjects } from "../lib/offline-projects.js";
+  import { provide } from "../lib/support/providers.js";
   import * as localBridge from "../lib/desktop/client.js";
 
   let { initialSettings = "" } = $props();
@@ -71,7 +72,7 @@
     node.focus();
   }
 
-  /** @type {{can_publish?: boolean; name?: string; handle?: string; publishers?: string}} */
+  /** @type {{id?: string; provider?: string; can_publish?: boolean; name?: string; handle?: string; publishers?: string}} */
   let me = $state({});
   // Whether /api/me answered at all. Without it the signed-out page is also
   // the page shown while the request is in flight and the page shown when the
@@ -858,6 +859,8 @@
     window.addEventListener("popstate", reread);
     return () => window.removeEventListener("popstate", reread);
   });
+
+  $effect(() => provide("account", () => ({ id: me.id, signedIn: Boolean(me.provider) })));
 
   $effect(() => {
     void showOfflineProjects();

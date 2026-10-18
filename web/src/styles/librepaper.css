@@ -1055,6 +1055,7 @@ main.reader .cm-scroller, main.reader .panel { overscroll-behavior: contain; }
 .settings-nav-item.current { background-color: var(--color-row-hover); font-weight: var(--panel-title-weight); }
 .settings-nav-entry { padding-left: --spacing(5); font-size: var(--panel-meta-size); color: var(--panel-muted); }
 .settings-nav-empty { padding: --spacing(2); color: var(--panel-muted); }
+.settings-body > * { max-width: 900px; }
 .settings-body { min-height: 0; overflow-y: auto; padding-right: --spacing(2); overscroll-behavior: contain; }
 .settings :is(button.switch, input, select, textarea):disabled {
   background: var(--color-disabled-bg);

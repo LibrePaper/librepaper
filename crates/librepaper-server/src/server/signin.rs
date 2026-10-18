@@ -820,6 +820,8 @@ fn config_body(
         fields.insert("latex".to_string(), json!(latex.is_some()));
         // The pinned release directory URL, not the mirror root.
         fields.insert("latexMirror".to_string(), json!(latex));
+        // The server version, so a diagnostics report can name the build.
+        fields.insert("version".to_string(), json!(env!("CARGO_PKG_VERSION")));
     }
     body
 }
