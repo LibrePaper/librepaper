@@ -253,15 +253,22 @@ export function templateInsertion(template, values = {}, context = {}) {
       else text = `$$${body}$$`;
     } else if (!latexEnvironment) text = inline ? `$${body}$` : `\\[\n${body}\n\\]`;
   }
-  // Add a space where the text would run into the characters beside it.
   const from = context.selection?.from, to = context.selection?.to;
   const before = typeof context.text === "string" ? context.text[from - 1] ?? "" : "";
   const after = typeof context.text === "string" ? context.text[to] ?? "" : "";
-  // The boundary is judged on the text as it will read once the fields are
-  // filled with their placeholders, and the marked text is padded to match.
-  const expanded = text.replace(/#\{\d+:([^{}]*)\}/g, "$1");
-  const padded = separated(expanded, format, before, after);
-  text = (padded.startsWith(" ") && !expanded.startsWith(" ") ? " " : "") + text + (padded.endsWith(" ") && !expanded.endsWith(" ") ? " " : "");
+  if (!inMath && !inline) {
+    // A display goes on its own line, so the source reads like the output.
+    // One newline and not a blank line: a blank line before display math
+    // starts a new paragraph in LaTeX.
+    text = (before && before !== "\n" ? "\n" : "") + text + (after && after !== "\n" ? "\n" : "");
+  } else {
+    // Add a space where the text would run into the characters beside it.
+    // The boundary is judged on the text as it will read once the fields are
+    // filled with their placeholders, and the marked text is padded to match.
+    const expanded = text.replace(/#\{\d+:([^{}]*)\}/g, "$1");
+    const padded = separated(expanded, format, before, after);
+    text = (padded.startsWith(" ") && !expanded.startsWith(" ") ? " " : "") + text + (padded.endsWith(" ") && !expanded.endsWith(" ") ? " " : "");
+  }
   const pkg = typeof template.package === "function" ? template.package(v) : template.package;
   if (format === "latex" && pkg) additionalEdits.push(...latexPackageEdits(pkg, context, notes));
   return { text, additionalEdits, notes, snippet: fields > 0 };
