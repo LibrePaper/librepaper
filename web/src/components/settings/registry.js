@@ -2,7 +2,7 @@
 // The dialog draws its navigation from this and searches it; what a category
 // shows is a component beside this file.
 //
-// Browser-scoped pages: Editor, Rendering, Diagnostics (the desktop app has its own). Computer-scoped pages: Tools, Desktop app,
+// Browser-scoped pages: Appearance, Editor, Rendering, Diagnostics (the desktop app has its own). Computer-scoped pages: Tools, Desktop app,
 // Agents. Account-scoped pages: Backups, Account.
 
 // `offered` answers with the document's format, whether this browser may edit
@@ -16,6 +16,13 @@ const build = always;
 const account = ({ signedIn }) => Boolean(signedIn);
 
 export const CATEGORIES = [
+  {
+    id: "appearance", says: "Appearance", offered: always,
+    note: "This browser",
+    entries: [
+      { id: "appearance-theme", says: "Theme", terms: "dark light theme mode night colour color scheme system appearance" },
+    ],
+  },
   {
     id: "editor", says: "Editor", offered: editor,
     note: "This browser",

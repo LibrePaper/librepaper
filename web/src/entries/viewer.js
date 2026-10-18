@@ -248,6 +248,14 @@ addEventListener("message", async (event) => {
     else report();
     return;
   }
+  // The reader's colour mode. Nothing is redrawn: the pages are the document
+  // and stay as rendered, only the ground and the notes around them change.
+  if (message.type === "theme") {
+    if (message.mode === "light" || message.mode === "dark") {
+      document.documentElement.dataset.mode = message.mode;
+    }
+    return;
+  }
   // The cursor tool, likewise. pdf.js's grab-to-pan is the only piece of the
   // old in-frame toolbar that has to live here.
   if (message.type === "viewer-tool") {

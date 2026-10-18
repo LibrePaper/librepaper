@@ -65,16 +65,17 @@ const fn entry(
     }
 }
 
-/// The twelve series, in the order the page draws them and `sample` fills
+/// The thirteen series, in the order the page draws them and `sample` fills
 /// them. Adding one is a line here and one in `sample`; its rows start that
 /// day.
 #[rustfmt::skip]
-pub const SERIES: [Series; 12] = [
+pub const SERIES: [Series; 13] = [
     entry("requests_per_minute", "Requests per minute", "count", Bucket::Mean),
     entry("client_errors_per_minute", "Client errors per minute", "count", Bucket::Max),
     entry("server_errors_per_minute", "Server errors per minute", "count", Bucket::Max),
     entry("latency_p95_seconds", "Latency p95", "seconds", Bucket::Max),
     entry("documents_resident", "Documents resident", "count", Bucket::Mean),
+    entry("documents_decoded", "Documents decoded", "count", Bucket::Mean),
     entry("sockets_active", "Sockets active", "count", Bucket::Mean),
     entry("storage_bytes", "Storage", "bytes", Bucket::Mean),
     entry("process_rss_bytes", "Process memory", "bytes", Bucket::Mean),
@@ -472,14 +473,15 @@ fn cpu_percent(previous: Option<(f64, f64)>, current: Option<(f64, f64)>) -> Opt
     Some((100.0 * (busy - busy_before) / total_delta).clamp(0.0, 100.0))
 }
 
-/// The twelve values for one record, in `SERIES` order.
-fn sample(snapshot: &Value, per_minute: [Option<f64>; 4], cpu: Option<f64>) -> [Option<f64>; 12] {
+/// The thirteen values for one record, in `SERIES` order.
+fn sample(snapshot: &Value, per_minute: [Option<f64>; 4], cpu: Option<f64>) -> [Option<f64>; 13] {
     [
         per_minute[0],
         per_minute[1],
         per_minute[2],
         per_minute[3],
         gauge(snapshot, "/rooms/documents"),
+        gauge(snapshot, "/rooms/warm_caches"),
         gauge(snapshot, "/sockets/active"),
         gauge(snapshot, "/storage/retained_bytes"),
         gauge(snapshot, "/host/rss_bytes"),
@@ -502,7 +504,7 @@ mod tests {
 
     fn snapshot(busy: u64, total: u64) -> Value {
         json!({
-            "rooms": {"documents": 17},
+            "rooms": {"documents": 17, "warm_caches": 3},
             "sockets": {"active": 1},
             "storage": {"retained_bytes": 840_000},
             "host": {
@@ -527,7 +529,7 @@ mod tests {
     }
 
     #[test]
-    fn the_catalog_is_twelve_names_in_the_documented_order() {
+    fn the_catalog_is_thirteen_names_in_the_documented_order() {
         let names: Vec<_> = SERIES.iter().map(|series| series.name).collect();
         assert_eq!(
             names,
@@ -537,6 +539,7 @@ mod tests {
                 "server_errors_per_minute",
                 "latency_p95_seconds",
                 "documents_resident",
+                "documents_decoded",
                 "sockets_active",
                 "storage_bytes",
                 "process_rss_bytes",
@@ -554,8 +557,8 @@ mod tests {
         assert_eq!(
             units,
             [
-                "count", "count", "count", "seconds", "count", "count", "bytes", "bytes", "bytes",
-                "bytes", "percent", "count",
+                "count", "count", "count", "seconds", "count", "count", "count", "bytes", "bytes",
+                "bytes", "bytes", "percent", "count",
             ]
         );
     }
@@ -673,7 +676,7 @@ mod tests {
             [None; 4],
             None,
         );
-        assert_eq!(values, [None; 12]);
+        assert_eq!(values, [None; 13]);
     }
 
     #[test]
@@ -682,7 +685,7 @@ mod tests {
         let graphs = Graphs::open(dir.path()).unwrap();
         assert!(dir.path().join("metrics.sqlite").exists());
         let read = graphs.read(0, 600, 10).unwrap();
-        assert_eq!(read.len(), 12);
+        assert_eq!(read.len(), 13);
         assert!(read.iter().all(|series| series.values == vec![None; 10]));
         assert!(graphs.read(5, 5, 10).is_err());
         assert!(graphs.read(0, 5, 0).is_err());
@@ -719,6 +722,7 @@ mod tests {
         near(at("requests_per_minute"), 60.0);
         near(at("server_errors_per_minute"), 0.0);
         assert_eq!(at("documents_resident"), Some(17.0));
+        assert_eq!(at("documents_decoded"), Some(3.0));
         assert_eq!(at("sockets_active"), Some(1.0));
         assert_eq!(at("storage_bytes"), Some(840_000.0));
         assert_eq!(at("process_rss_bytes"), Some(23_000_000.0));
@@ -830,7 +834,7 @@ mod tests {
         std::fs::write(dir.path().join("metrics.sqlite-wal"), b"stale").unwrap();
 
         let graphs = Graphs::open(dir.path()).unwrap();
-        assert_eq!(graphs.read(0, 600, 10).unwrap().len(), 12);
+        assert_eq!(graphs.read(0, 600, 10).unwrap().len(), 13);
 
         let names: Vec<String> = std::fs::read_dir(dir.path())
             .unwrap()

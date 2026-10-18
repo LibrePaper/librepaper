@@ -8,10 +8,24 @@
   import { undo as undoFn, redo as redoFn, undoManagerField as vimUndoManagerField } from "../lib/loro-undo.js";
   import { loroSyncAnnotation } from "../../vendor/loro-codemirror/sync.ts";
   import { keymap } from "@codemirror/view";
+  import { mode, onMode } from "../lib/theme.js";
 
   // The keys the editor answers to: Vim's, Emacs's, or nothing extra. One
   // compartment, whichever is chosen, so switching swaps one for the other.
   const vimCompartment = new Compartment();
+  // CodeMirror's own light or dark base styles; the colours come from the
+  // page's variables. One theme of each, made once: every EditorView.theme()
+  // call mints a new class and style sheet, and a state is told which of the
+  // two it holds by that class.
+  const themeCompartment = new Compartment();
+  const darkTheme = EditorView.theme({}, { dark: true });
+  const lightTheme = EditorView.theme({}, { dark: false });
+  const themeFor = (dark) => (dark ? darkTheme : lightTheme);
+  // The compartment lives in each state, so a cached state keeps the theme it
+  // was last shown with. It is set again whenever a state is activated.
+  function syncTheme(target) {
+    target?.dispatch({ effects: themeCompartment.reconfigure(themeFor(mode() === "dark")) });
+  }
 
   // Loro merges nearby commits by default. A handled Vim key starts a new
   // command boundary; the first local edit after it consumes that boundary
@@ -938,6 +952,7 @@
         // extension has precedence, and Vim has to see a key before the
         // default keymap does, or `j` inserts a letter instead of moving.
         vimCompartment.of(resolvedKeys(untrack(() => keys)) || []),
+        themeCompartment.of(themeFor(mode() === "dark")),
         lineNumbers(),
         drawSelection(),
         highlightActiveLine(),
@@ -1204,6 +1219,7 @@
     view.setState(documentStates.get(id));
     activeDocument = document_;
     syncKeys(view);
+    syncTheme(view);
     showing = id;
     // A file this browser has open is where its caret is, which is what the
     // file list shows beside each name.
@@ -1249,6 +1265,7 @@
       });
       untrack(() => viewCallbacks.set(view, { onsave, onquit }));
       syncKeys(view);
+      const unsubscribeMode = onMode(() => syncTheme(view));
       drawChanges();
       if (initial.first) session.inFile?.(initial.first);
       const bibliographyWatcher = scheduleBibliography;
@@ -1267,6 +1284,7 @@
         clearTimeout(bibliographyTimer);
         if (typeof unsubscribeBibliography === "function") unsubscribeBibliography();
         unsubscribeChanges();
+        unsubscribeMode();
         if (view) viewCallbacks.delete(view);
         view?.destroy();
         insertTargets.clear();

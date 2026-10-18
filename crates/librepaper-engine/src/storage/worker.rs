@@ -317,7 +317,7 @@ pub async fn compact_document(
 
     // 2 and 3. An entry whose `oplog_vv()` equals the log vector, and the
     //    snapshot exported from it. An entry that is ahead is not used.
-    let Some((through, snapshot, log_vector, changes)) = sequencer
+    let Some((through, snapshot, log_vector, changes, entry_is_shallow)) = sequencer
         .snapshot_at_log_vector(mode)
         .await
         .map_err(|error| error.to_string())?
@@ -333,7 +333,7 @@ pub async fn compact_document(
     //    ingest the entry has no pending operations, so this is a check
     //    and not a hope -- and a mismatch aborts rather than deleting
     //    rows the base does not hold.
-    prove_coverage(&snapshot, &log_vector, changes, mode)?;
+    prove_coverage(&snapshot, &log_vector, changes, mode, entry_is_shallow)?;
 
     // 5a. Write the blob. No lock is held for this: it is compression
     //     and an object-store round trip, and nothing references the
@@ -1234,11 +1234,14 @@ async fn put_or_adopt_archive(
 /// Two independent checks, because they fail differently. The header says
 /// what the encoder claimed; the scratch document says what a decoder
 /// actually finds. A fabricated or truncated snapshot passes at most one.
+/// `entry_is_shallow` says the decoded entry the snapshot came from was
+/// already shallow, as it is after a trim.
 pub fn prove_coverage(
     snapshot: &[u8],
     log_vector: &[u8],
     changes: usize,
     mode: crate::log::sequencer::SnapshotMode,
+    entry_is_shallow: bool,
 ) -> Result<(), String> {
     let expected = loro::VersionVector::decode(log_vector)
         .map_err(|error| format!("the log vector will not decode: {error}"))?;
@@ -1256,9 +1259,13 @@ pub fn prove_coverage(
     }
     match mode {
         crate::log::sequencer::SnapshotMode::Full => {
-            // A full compaction that accepted a shallow base would delete
-            // rows whose history the base does not hold.
-            if scratch.is_shallow() {
+            // A full compaction of a document that has never been trimmed
+            // must not accept a shallow snapshot, because the rows it
+            // deletes hold history the base would not. A document whose
+            // base is already shallow exports a shallow snapshot again,
+            // which holds exactly what the entry held; the two checks
+            // above are what prove it covers the log.
+            if scratch.is_shallow() && !entry_is_shallow {
                 return Err("the snapshot is shallow and this compaction is not".into());
             }
             if scratch.len_changes() != changes {
@@ -1779,7 +1786,8 @@ mod tests {
                 &snapshot,
                 &doc.oplog_vv().encode(),
                 doc.len_changes(),
-                crate::log::sequencer::SnapshotMode::Full
+                crate::log::sequencer::SnapshotMode::Full,
+                false
             ),
             Ok(())
         );
@@ -1797,6 +1805,7 @@ mod tests {
             &doc.oplog_vv().encode(),
             doc.len_changes(),
             crate::log::sequencer::SnapshotMode::Full,
+            false,
         )
         .expect_err("a short snapshot must not pass");
         assert!(
@@ -1813,7 +1822,8 @@ mod tests {
             b"not a snapshot at all",
             &vector,
             1,
-            crate::log::sequencer::SnapshotMode::Full
+            crate::log::sequencer::SnapshotMode::Full,
+            false
         )
         .is_err());
         let mut truncated = doc.export(loro::ExportMode::Snapshot).unwrap();
@@ -1822,7 +1832,8 @@ mod tests {
             &truncated,
             &vector,
             doc.len_changes(),
-            crate::log::sequencer::SnapshotMode::Full
+            crate::log::sequencer::SnapshotMode::Full,
+            false
         )
         .is_err());
     }
@@ -1836,6 +1847,7 @@ mod tests {
             &doc.oplog_vv().encode(),
             doc.len_changes() + 1,
             crate::log::sequencer::SnapshotMode::Full,
+            false,
         )
         .expect_err("a change count that disagrees must not pass");
         assert!(error.contains("changes"), "unexpected refusal: {error}");
@@ -1855,7 +1867,8 @@ mod tests {
                 &snapshot,
                 &doc.oplog_vv().encode(),
                 doc.len_changes(),
-                crate::log::sequencer::SnapshotMode::Shallow
+                crate::log::sequencer::SnapshotMode::Shallow,
+                false
             ),
             Ok(())
         );
@@ -1864,7 +1877,40 @@ mod tests {
             &snapshot,
             &doc.oplog_vv().encode(),
             doc.len_changes(),
-            crate::log::sequencer::SnapshotMode::Full
+            crate::log::sequencer::SnapshotMode::Full,
+            false
+        )
+        .is_err());
+    }
+
+    #[test]
+    fn coverage_accepts_a_shallow_snapshot_when_the_entry_was_shallow() {
+        let doc = document_with("hello world");
+        let shallow = doc
+            .export(loro::ExportMode::ShallowSnapshot(std::borrow::Cow::Owned(
+                doc.oplog_frontiers(),
+            )))
+            .unwrap();
+        let entry = LoroDoc::new();
+        entry.import(&shallow).unwrap();
+        assert!(entry.is_shallow());
+        let snapshot = entry.export(loro::ExportMode::Snapshot).unwrap();
+        assert_eq!(
+            prove_coverage(
+                &snapshot,
+                &entry.oplog_vv().encode(),
+                entry.len_changes(),
+                crate::log::sequencer::SnapshotMode::Full,
+                true
+            ),
+            Ok(())
+        );
+        assert!(prove_coverage(
+            &snapshot,
+            &entry.oplog_vv().encode(),
+            entry.len_changes(),
+            crate::log::sequencer::SnapshotMode::Full,
+            false
         )
         .is_err());
     }

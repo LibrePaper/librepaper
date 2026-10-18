@@ -273,7 +273,7 @@
 
   function requestPaths(doc) {
     if (pathRequests.has(doc.slug)) return pathRequests.get(doc.slug);
-    const pending = get("/api/documents/" + doc.slug)
+    const pending = get("/api/documents/" + doc.slug + "?files=1")
       .then((full) => Array.isArray(full.files) ? full.files : [])
       .catch(() => [])
       .then((files) => {
