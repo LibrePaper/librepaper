@@ -444,7 +444,7 @@ test('deploy verifies the kit on the laptop, installs manage from it, upgrades f
     ]);
     assert.equal(statSync(path.join(f.remote, 'manage')).mode & 0o777, 0o755);
     assert.equal(existsSync(path.join(f.remote, '.manage.tmp')), false);
-    assert.equal(existsSync(path.join(f.remote, '.kit.tar.gz')), false, 'the kit stays on the host after the upgrade');
+    assert.equal(existsSync(path.join(f.remote, '.kit.tar.gz')), false, 'the kit is removed from the host after the upgrade');
     // The deploy no longer touches the kit, the installed configs or the stack.
     for (const name of ['compose.yaml', 'librepaper.toml', 'resticprofile.toml', 'caddy/Caddyfile']) {
       assert.equal(existsSync(path.join(f.remote, name)), false, name);
@@ -535,15 +535,6 @@ test('site installs the Caddy site block and reloads Caddy without touching the 
       '}',
       '',
     ].join('\n'));
-    const text = read(file);
-    for (const header of [
-      'Strict-Transport-Security "max-age=31536000; includeSubDomains"',
-      'X-Content-Type-Options nosniff',
-      'Referrer-Policy strict-origin-when-cross-origin',
-      "Content-Security-Policy \"frame-ancestors 'none'; base-uri 'none'; object-src 'none'; form-action 'self'\"",
-    ]) {
-      assert.ok(text.includes(header), header);
-    }
     assertInOrder(events(f), [
       ['ssh', /librepaper-org\.caddy\.tmp/],
       ['ssh', /caddy reload --config \/etc\/caddy\/Caddyfile/],

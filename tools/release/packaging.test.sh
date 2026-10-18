@@ -191,7 +191,13 @@ compose_content=$(cat "$kit_extract/librepaper/compose.yaml")
 
 # The manage helper ships and stays executable
 [[ -x "$kit_extract/librepaper/manage" ]] || fail 'archive lost the manage helper or its executable bit'
-[[ "$("$kit_extract/librepaper/manage" version)" == v1.2.3 ]] || fail 'manage version did not strip the image digest'
+
+# The real helper reads the version past the digest. The fixture's manage is a stub.
+manage_dir="$tmp/manage-version"
+mkdir -p "$manage_dir"
+cp "$root/deploy/manage" "$manage_dir/manage"
+printf 'services:\n  librepaper:\n    image: ghcr.io/librepaper/librepaper:v1.2.3@%s\n' "$app_digest" > "$manage_dir/compose.yaml"
+[[ "$(bash "$manage_dir/manage" version)" == v1.2.3 ]] || fail 'manage version did not strip the image digest'
 
 # Verify untracked files are not included
 [[ ! -e "$kit_extract/librepaper/leaked-backup.txt" ]] || fail 'archive included untracked file'
