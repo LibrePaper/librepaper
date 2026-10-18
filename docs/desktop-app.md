@@ -28,6 +28,7 @@ Web browsers run every page in a sandbox, so a website cannot run code or use fi
 - Nothing runs unasked. Folders are granted one at a time through your system's own chooser. Running a document's code is off whenever a document opens, and you turn it on with the Run code switch.
 - On a shared project, editors can change the code that runs, so it is their code too.
 - The desktop app uses the tools installed on your computer, such as R, Python, Quarto and your coding agent.
+- The window's title bar follows the same Theme setting (Settings > Appearance), and System follows the operating system.
 
 ## Install the desktop app
 
