@@ -159,28 +159,35 @@ impl Server {
         if cross_site_refused(headers, arrival) {
             return write_json(403, &cross_site_refusal());
         }
-        let (entry, _who) = match self.readable_entry_in(slug, context, headers, None).await {
+        let (entry, who) = match self.readable_entry_in(slug, context, headers, None).await {
             Ok(result) => result,
             Err(response) => return response,
         };
-        // Assets retained for history are not part of the reader contract.
-        // Resolve the resident room and prove the digest is in its current
-        // tree before looking up the document-scoped physical object.
-        let room = match self.rooms.get(slug).await {
-            Ok(room) => room,
-            Err(_) => return plain(503, "room state temporarily unavailable"),
-        };
+        // Assets retained for history are not part of the reader contract, so
+        // a reader needs the digest to be in the current tree. An editor
+        // already sees every retained figure through the version routes, so
+        // for an editor this check proves nothing the role does not grant, and
+        // it would only cost a decode of a cold document. The catalogue lookup
+        // below is scoped by document id, so an editor still cannot reach
+        // another document's figure.
+        //
         // Whether this digest is in the current projection is a question
         // about what the document says, so it can fail for a reason that is
         // not "no": a projection that breached a resource bound answers 503
         // with its reason rather than 404, because saying the figure is not
         // there would be a lie (§9.3).
-        match room.references_asset(sha).await {
-            Ok(true) => {}
-            Ok(false) => return plain(404, "not found"),
-            Err(error) => {
-                let refusal = librepaper_room::room::WriteError::from(error);
-                return plain(refusal.status(), &refusal.client_message());
+        if !who.at_least(Role::Editor) {
+            let room = match self.rooms.get(slug).await {
+                Ok(room) => room,
+                Err(_) => return plain(503, "room state temporarily unavailable"),
+            };
+            match room.references_asset(sha).await {
+                Ok(true) => {}
+                Ok(false) => return plain(404, "not found"),
+                Err(error) => {
+                    let refusal = librepaper_room::room::WriteError::from(error);
+                    return plain(refusal.status(), &refusal.client_message());
+                }
             }
         }
         let catalog = self.store.catalog.clone();
