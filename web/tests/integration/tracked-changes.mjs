@@ -4,8 +4,9 @@
 //
 // A tracked change is part of the document. Client A writes the new text and
 // the change record with `trackedSplice` and commits, the way the editor's
-// tracking plugin does (the layout is in SPEC-track-changes.md). Client B reads it
-// with `listChanges`, and accepts or rejects it with `accept` and `reject`.
+// tracking plugin does (the layout is in docs/dev/protocol/track-changes.md).
+// Client B reads it with `listChanges`, and accepts or rejects it with
+// `accept` and `reject`.
 // Both are ordinary document edits, so the decision travels through the same
 // `doc-update` path as typing and needs no message of its own.
 //

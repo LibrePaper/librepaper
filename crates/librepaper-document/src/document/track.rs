@@ -7,7 +7,7 @@
 //! it holds the deleted texts that sat there as fragments, in document order,
 //! each owned by a change. Accepting drops a change's fragments and its record.
 //! Rejecting puts its text back where it was, then drops the record. See
-//! `SPEC-track-changes.md`.
+//! `docs/dev/protocol/track-changes.md`.
 //!
 //! [`plan_edits`] is pure and has a twin in `web/src/lib/track-changes.js`;
 //! both run `web/tests/fixtures/track-changes.json`. Everything here counts in
