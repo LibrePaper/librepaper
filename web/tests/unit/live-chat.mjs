@@ -231,3 +231,31 @@ const range = (a, b) => Array.from({ length: b - a + 1 }, (_, i) => msg(a + i));
   assert.deepEqual(ids(chat), range(1, 3).map((m) => m.id));
   assert.equal(chat.state.canClear, true);
 }
+
+// An older page still in flight when a recovery replaces the list is dropped,
+// in either order the two replies arrive.
+for (const olderFirst of [false, true]) {
+  const pending = {};
+  globalThis.fetch = (url) =>
+    new Promise((resolve) => {
+      const page = url.includes("before=")
+        ? { messages: range(1, 50), more: false }
+        : { messages: range(102, 151), more: true };
+      pending[url.includes("before=") ? "older" : "recovery"] = () =>
+        resolve({ ok: true, status: 200, json: async () => page });
+    });
+  const chat = createLiveChat({ slug: "proj" });
+  chat.seed({ chat: range(51, 55), chat_more: true });
+  chat.seed({ chat_unavailable: true });
+  const older = chat.loadOlder();
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  const order = olderFirst ? ["older", "recovery"] : ["recovery", "older"];
+  for (const name of order) {
+    pending[name]();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+  }
+  await older;
+  assert.deepEqual(ids(chat), range(102, 151).map((m) => m.id), `older first: ${olderFirst}`);
+  assert.equal(chat.state.more, true);
+  assert.equal(chat.state.loadingOlder, false);
+}

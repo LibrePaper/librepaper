@@ -82,6 +82,10 @@ export function createLiveChat({ slug, key = "" }) {
         const body = await response.json().catch(() => ({}));
         if (!response.ok) throw new Error("history unavailable");
         if (issued !== generation) return;
+        // The page may replace the list, so an older page still in flight
+        // would join a list it no longer fits. Drop it.
+        generation++;
+        state.loadingOlder = false;
         state.loadError = "";
         const live = recoveredLive;
         if (recovering !== null) state.messages = recovering;
