@@ -8,7 +8,7 @@ const numberOf = (value, fallback, minimum = 1, maximum = 100) =>
 const selected = (context) => textOf(context?.selection?.text || "");
 const markup = (value, fallback = "") => textOf(value, fallback).replace(/[\\#\[\]{}$*_<>@]/g, "\\$&");
 const string = (value, fallback = "") => JSON.stringify(textOf(value, fallback)).slice(1, -1);
-const identifier = (value, fallback = "label") => textOf(value, fallback).trim()
+export const identifier = (value, fallback = "label") => textOf(value, fallback).trim()
   .replace(/[^\p{L}\p{N}:._-]+/gu, "-").replace(/^-+|-+$/g, "") || fallback;
 
 function finish(text, placeholder = "", notes = [], additionalEdits = []) {

@@ -14,6 +14,7 @@ const spellings = SYMBOLS
 // Every template, filled so no snippet field remains, in each of its options.
 const filled = template => {
   if (template.id === 'aligned') return { rows: [{ left: 'x', right: 'y' }] };
+  if (template.id === 'gathered') return { rows: [{ value: 'x = y' }, { value: 'z = w' }] };
   if (template.id === 'cases') return { rows: [{ value: '1', condition: 'x > 0' }] };
   if (template.id === 'matrix') return { cells: [['a', 'b'], ['c', 'd']], rows: 2, columns: 2 };
   return Object.fromEntries(template.slots.map(slot => [slot.id, 'x']));
@@ -31,7 +32,12 @@ for (const template of MATH_TEMPLATES) {
     templateSpellings.push(templateInsertion(template, values, typstContext).text);
   }
 }
-const source = ['#set page(width: 300pt, height: auto)', ...spellings.map(spelling => `$${spelling}$`), ...templateSpellings.map(spelling => `$ ${spelling} $`)].join('\n\n');
+// A numbered display is already a block with its own math, so it is not wrapped
+// in dollars. The context is markup, outside math, so the display is written.
+const typstMarkup = { format: 'typst', text: '', selection: { from: 0, to: 0, text: '' }, files: [] };
+const numbered = templateInsertion(MATH_TEMPLATES.find(template => template.id === 'fraction'), { num: 'a', den: 'b', numbered: true, label: 'eq:x' }, typstMarkup).text;
+assert.equal(numbered, '#math.equation(block: true, numbering: "(1)")[$ frac(a, b) $] <eq:x>');
+const source = ['#set page(width: 300pt, height: auto)', ...spellings.map(spelling => `$${spelling}$`), ...templateSpellings.map(spelling => `$ ${spelling} $`), numbered].join('\n\n');
 
 const { instance } = await WebAssembly.instantiate(readFileSync(new URL('../../wasm/typst.wasm', import.meta.url)), {});
 const wasm = instance.exports;

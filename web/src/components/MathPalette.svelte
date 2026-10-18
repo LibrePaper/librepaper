@@ -35,15 +35,18 @@
 
   const active = $derived(MATH_TEMPLATES.find((template) => template.id === activeId) ?? null);
   const inMath = $derived(captured ? insertSyntaxContext(captured) === "math" : false);
+  /** Numbers and labels exist only in LaTeX, Typst and Quarto. */
+  const numberable = $derived(["latex", "typst", "quarto"].includes(captured?.format ?? ""));
   /** @type {number} */
   const rowCount = $derived(Array.isArray(values.rows) ? values.rows.length : Number(values.rows));
   /** The format name, typed as any where the symbol helpers take a string. */
   const capturedFormat = $derived(/** @type {any} */ (captured?.format));
-  const isRowTemplate = (/** @type {MathTemplate | null} */ template) => template?.id === "aligned" || template?.id === "cases";
+  const isRowTemplate = (/** @type {MathTemplate | null} */ template) => ["aligned", "gathered", "cases"].includes(template?.id ?? "");
 
   /** Keys and labels of each row in the grid templates, in display order. */
   const rowFields = {
     aligned: [["left", "Left"], ["right", "Right"]],
+    gathered: [["value", "Equation"]],
     cases: [["value", "Value"], ["condition", "Condition"]]
   };
   const matrixBrackets = [
@@ -80,6 +83,8 @@
     for (const slot of template.slots) next[slot.id] = "";
     Object.assign(next, {
       style: "display",
+      numbered: false,
+      label: "",
       rows: 2,
       columns: 2,
       brackets: "parentheses",
@@ -440,7 +445,15 @@
             <legend>Style</legend>
             <label><input type="radio" name="math-style" value="display" bind:group={values.style} /> Display</label>
             <label><input type="radio" name="math-style" value="inline" bind:group={values.style} /> Inline</label>
+            {#if numberable && values.style === "display"}
+              <label><input type="checkbox" name="math-numbered" bind:checked={values.numbered} /> Numbered</label>
+            {/if}
           </fieldset>
+          {#if numberable && values.style === "display" && values.numbered}
+            <label class="label">Label
+              <input class="input" name="math-label" placeholder="eq-name" bind:value={values.label} />
+            </label>
+          {/if}
         {/if}
 
         {#if error}<p class="math-error" role="alert">{error}</p>{/if}

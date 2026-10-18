@@ -272,7 +272,7 @@ export function gatherInsertTargets(input = {}) {
  * @param {string} [prefix='']
  * @returns {string}
  */
-function uniqueLabel(value,c,prefix='') {
+export function uniqueLabel(value,c,prefix='') {
   let base=slug(value), used=new Set(gatherInsertTargets(c).map(x=>x.id));
   if(prefix && !base.startsWith(prefix+'-'))base=prefix+'-'+base;
   let result=base,n=2;while(used.has(result))result=base+'-'+n++;

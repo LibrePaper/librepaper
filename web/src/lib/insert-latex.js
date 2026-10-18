@@ -3,7 +3,7 @@
 const s = (x, d = "") => x == null ? d : String(x);
 const n = (x, d, min = 1, max = 100) => Math.min(max, Math.max(min, Number.isFinite(+x) ? Math.floor(+x) : d));
 const tex = value => s(value).replace(/[\\{}%#$&_~^]/g, c => ({'\\':'\\textbackslash{}','~':'\\textasciitilde{}','^':'\\textasciicircum{}'}[c] || '\\'+c));
-const key = (x) => s(x, "label").trim().replace(/[^\p{L}\p{N}:._-]+/gu, "-").replace(/^-+|-+$/g, "") || "label";
+export const key = (x) => s(x, "label").trim().replace(/[^\p{L}\p{N}:._-]+/gu, "-").replace(/^-+|-+$/g, "") || "label";
 const source = (c = {}) => s(c.mainText || c.text);
 const includeTarget = (value) => s(value).trim().replace(/^\.\//, "").replace(/^\/+/, "").replace(/\.tex$/, "");
 const includesPath = (text, path) => {

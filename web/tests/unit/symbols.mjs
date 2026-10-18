@@ -110,7 +110,7 @@ assert.equal(templateInsertion(template('matrix'), { brackets: 'square', cells: 
 const cases = templateInsertion(template('cases'), { rows: [{ value: '1', condition: 'x > 0' }, { value: '0', condition: 'x \\le 0' }] }, inMath('latex'));
 assert.equal(cases.text, '\\begin{cases}\n1 & x > 0 \\\\\n0 & x \\le 0\n\\end{cases}');
 const aligned = templateInsertion(template('aligned'), { rows: [{ left: 'x', right: 'y' }] }, at('Hello', 0));
-assert.equal(aligned.text, '\\begin{align}\nx &= y\n\\end{align}');
+assert.equal(aligned.text, '\\begin{align*}\nx &= y\n\\end{align*}');
 assert.equal(templateInsertion(template('fraction'), {}, { format: 'html', text: '', selection: { from: 0, to: 0, text: '' } }).notes[0], 'Math templates need a math-capable format.');
 // Template insertions are separated from their neighbours like symbols.
 const fraction = { num: 'a', den: 'b' };
@@ -139,7 +139,30 @@ const alignedRows = [{ left: 'x', right: 'y' }];
 const markdownProse = { format: 'markdown', text: 'Hello', selection: { from: 5, to: 5, text: '' }, files: [] };
 assert.equal(templateInsertion(template('aligned'), { rows: alignedRows, style: 'inline' }, markdownProse).text, '$\\begin{aligned}\nx &= y\n\\end{aligned}$');
 assert.equal(templateInsertion(template('aligned'), { rows: alignedRows, style: 'display' }, markdownProse).text, '$$\\begin{aligned}\nx &= y\n\\end{aligned}$$');
-assert.equal(templateInsertion(template('aligned'), { rows: alignedRows, style: 'display' }, prose).text, '\\begin{align}\nx &= y\n\\end{align}');
+assert.equal(templateInsertion(template('aligned'), { rows: alignedRows, style: 'display' }, prose).text, '\\begin{align*}\nx &= y\n\\end{align*}');
 assert.equal(templateInsertion(template('aligned'), { rows: alignedRows, style: 'inline' }, prose).text, '$\\begin{aligned}\nx &= y\n\\end{aligned}$');
+
+// Gathered equations follow the same rules with a gather environment.
+const gatheredRows = [{ value: 'x = y' }, { value: 'z = w' }];
+assert.equal(templateInsertion(template('gathered'), { rows: gatheredRows }, prose).text, '\\begin{gather*}\nx = y \\\\\nz = w\n\\end{gather*}');
+assert.equal(templateInsertion(template('gathered'), { rows: [{ value: 'x' }], style: 'inline' }, prose).text, '$\\begin{gathered}\nx\n\\end{gathered}$');
+assert.equal(templateInsertion(template('gathered'), { rows: gatheredRows, numbered: true, label: 'eq:g' }, prose).text, '\\begin{gather}\n\\label{eq:g}\nx = y \\\\\nz = w\n\\end{gather}');
+assert.equal(templateInsertion(template('gathered'), { rows: [{ value: 'x' }] }, markdownProse).text, '$$\\begin{gathered}\nx\n\\end{gathered}$$');
+
+// Numbering applies to display insertions outside math, and only the label is literal.
+const numberedFraction = { num: 'a', den: 'b', numbered: true, label: 'eq:x' };
+// Empty documents put nothing around the insertion, so the text is exact.
+const typstEmpty = { format: 'typst', text: '', selection: { from: 0, to: 0, text: '' }, files: [] };
+const quartoEmpty = { format: 'quarto', path: 'paper.qmd', text: '', selection: { from: 0, to: 0, text: '' }, files: [] };
+assert.equal(templateInsertion(template('fraction'), numberedFraction, prose).text, '\\begin{equation}\n\\label{eq:x}\n\\frac{a}{b}\n\\end{equation}');
+assert.equal(templateInsertion(template('fraction'), { num: 'a', den: 'b', numbered: true }, prose).text, '\\begin{equation}\n\\frac{a}{b}\n\\end{equation}', 'a number without a label has no \\label');
+assert.equal(templateInsertion(template('fraction'), { ...numberedFraction, style: 'inline' }, prose).text, '$\\frac{a}{b}$', 'inline style ignores the number');
+assert.equal(templateInsertion(template('aligned'), { rows: alignedRows, numbered: true, label: 'eq:x' }, prose).text, '\\begin{align}\n\\label{eq:x}\nx &= y\n\\end{align}');
+assert.equal(templateInsertion(template('aligned'), { rows: alignedRows, numbered: true, label: 'eq x' }, prose).text, '\\begin{align}\n\\label{eq-x}\nx &= y\n\\end{align}', 'the LaTeX label is sanitized');
+assert.equal(templateInsertion(template('fraction'), numberedFraction, typstEmpty).text, '#math.equation(block: true, numbering: "(1)")[$ frac(a, b) $] <eq:x>');
+assert.equal(templateInsertion(template('fraction'), { num: 'a', den: 'b', numbered: true }, typstEmpty).text, '#math.equation(block: true, numbering: "(1)")[$ frac(a, b) $]');
+assert.equal(templateInsertion(template('fraction'), { num: 'a', den: 'b', numbered: true }, quartoEmpty).text, '$$\\frac{a}{b}$$ {#eq-equation}', 'quarto numbers an unlabelled equation with a generated label');
+assert.equal(templateInsertion(template('fraction'), { num: 'a', den: 'b', numbered: true, label: 'frac' }, quartoEmpty).text, '$$\\frac{a}{b}$$ {#eq-frac}', 'quarto prefixes the label once');
+assert.equal(templateInsertion(template('fraction'), numberedFraction, markdownProse).text, '$$\\frac{a}{b}$$', 'markdown ignores the number');
 
 console.log('symbols: data, search, insertion and template checks passed');

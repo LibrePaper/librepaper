@@ -100,6 +100,24 @@ try {
   const inline = await lastInsertion();
   assert.match(inline.result.text, /^\$\\frac\{a\+b\}\{2c\}\$$/, "inline style wraps the fraction in dollars");
 
+  // Numbered display: ticking Numbered and typing a label adds the equation environment and the label.
+  await until("picker before numbered", () => evaluate(`document.querySelectorAll("button[data-template]").length > 0`), 5000);
+  await click('button[data-template="fraction"]');
+  await until("fraction form for numbering", () => evaluate(`document.querySelectorAll("[data-math-field]").length === 2`), 5000);
+  await click('input[name="math-numbered"]');
+  await until("label field after numbered", () => evaluate(`document.querySelectorAll('input[name="math-label"]').length === 1`), 5000);
+  await evaluate(`(() => {
+    const input = document.querySelector('input[name="math-label"]');
+    input.value = "eq:frac";
+    input.dispatchEvent(new Event("input", { bubbles: true }));
+  })()`);
+  await fill(0, "a+b");
+  await fill(1, "2c");
+  await submit();
+  const numbered = await lastInsertion();
+  assert.match(numbered.result.text, /\\begin\{equation\}/, "a numbered display uses the equation environment");
+  assert.match(numbered.result.text, /\\label\{eq:frac\}/, "the typed label reaches the inserted LaTeX");
+
   // Matrix: default 2 by 2, then one more column gives six fields.
   await until("picker before matrix", () => evaluate(`document.querySelectorAll("button[data-template]").length > 0`), 5000);
   await click('button[data-template="matrix"]');
