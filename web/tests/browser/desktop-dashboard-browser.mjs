@@ -165,7 +165,7 @@ try {
 
   b = await browser("chromium", join(temporary, "chrome"), await freePort());
   await b.navigate(`${appOrigin}/`);
-  await until("computer management available", () => b.evaluate(`Boolean(document.querySelector("#desktop-activity-heading"))`), 12000);
+  await until("computer management available", () => b.evaluate(`Boolean(document.querySelector("#desktop-environment"))`), 12000);
 
   assert.equal(await b.evaluate("location.hash"), "", "management does not add a fragment");
   assert.equal(await b.evaluate("location.href"), `${appOrigin}/`, "management opens in place without changing the document URL");

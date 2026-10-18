@@ -39,6 +39,7 @@
   import { PROJECT_TABS, PROJECT_TAB_IDS } from "../lib/panels.js";
   import { FORMATS } from "../lib/starter.js";
   import { preparedProjects } from "../lib/offline-projects.js";
+  import { provide } from "../lib/support/providers.js";
   import * as localBridge from "../lib/desktop/client.js";
 
   let { initialSettings = "" } = $props();
@@ -858,6 +859,8 @@
     window.addEventListener("popstate", reread);
     return () => window.removeEventListener("popstate", reread);
   });
+
+  $effect(() => provide("account", () => ({ id: me.id, signedIn: Boolean(me.name) })));
 
   $effect(() => {
     void showOfflineProjects();

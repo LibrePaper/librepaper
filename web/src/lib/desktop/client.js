@@ -112,6 +112,17 @@ export async function shellAction(name, body) {
   throw new Error(message || `The desktop app could not do that (${response.status}).`);
 }
 
+// The desktop app's own part of the diagnostics report, as text.
+export async function desktopReport() {
+  const shell = desktop();
+  if (!shell) throw named("DesktopOnly", DESKTOP_ONLY_MESSAGE);
+  const response = await fetch(`${shell.base}shell/diagnostics-report`, { method: "POST" });
+  if (response.ok) return String((await response.json())?.text ?? "");
+  let message = "";
+  try { message = (await response.json())?.error || ""; } catch { /* no body */ }
+  throw new Error(message || `The desktop app could not do that (${response.status}).`);
+}
+
 // -------------------------------------------------------------- storage
 
 function store() {
