@@ -69,16 +69,19 @@
    * @param {InsertContext} context
    */
   function freshValues(template, context) {
-    const next = {
+    // Slots first: the grid templates name their own slots rows and cells,
+    // and those must be the grid defaults below, not empty strings.
+    const next = {};
+    for (const slot of template.slots) next[slot.id] = "";
+    Object.assign(next, {
       style: "display",
       rows: 2,
       columns: 2,
       brackets: "parentheses",
       kind: "parentheses",
       cells: template.id === "matrix" ? gridOf(2, 2, []) : []
-    };
+    });
     if (isRowTemplate(template)) next.rows = emptyRows(template, 2);
-    for (const slot of template.slots) next[slot.id] = "";
     const selected = context.selection?.text || "";
     if (!template.grid && template.slots.length && selected) next[template.slots[0].id] = selected;
     return next;
