@@ -97,7 +97,8 @@
   function previewValues(template, state) {
     const filled = { ...state };
     for (const slot of template.slots) {
-      if (slot.optional) continue;
+      // Grid templates keep their rows and cells in the arrays handled below.
+      if (slot.optional || template.grid) continue;
       filled[slot.id] = String(state[slot.id] ?? "").trim() ? state[slot.id] : slot.placeholder;
     }
     if (Array.isArray(state.rows)) {
