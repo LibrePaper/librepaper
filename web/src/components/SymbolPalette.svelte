@@ -11,7 +11,7 @@
   // The symbols panel in the sidebar. A click inserts the symbol into the open
   // file, and the editor takes the keyboard back afterwards. Shift-click copies
   // the bare spelling instead, for pasting into prose or a different file.
-  let { getContext, oninsert, onfocus } = $props();
+  let { getContext, oninsert, onfocus, format = "" } = $props();
 
   const RECENT_KEY = "lp:symbols:recent";
   const RECENT_LIMIT = 20;
@@ -47,13 +47,13 @@
   /** @type {any} */
   let search = $state(null);
 
-  // The format is read from the context each time it is needed, never kept in
-  // state: the user can open a different file while the panel stays up.
+  // The format is a prop, so reading it never captures an insertion target.
+  // The context is read only when a tile is picked.
   // With no document open the bare spelling falls back to LaTeX, so the tiles
   // still have titles.
   /** @returns {SymbolFormat} */
-  const formatNow = () => /** @type {SymbolFormat} */ (getContext?.()?.format ?? "latex");
-  const noticeShown = () => getContext?.()?.format === "latex" && tab === "emoji";
+  const formatNow = () => /** @type {SymbolFormat} */ (format || "latex");
+  const noticeShown = () => format === "latex" && tab === "emoji";
 
   const everything = $derived(emoji ? [...SYMBOLS, ...emoji.symbols] : SYMBOLS);
   const byId = $derived(new Map(everything.map((symbol) => [symbol.id, symbol])));

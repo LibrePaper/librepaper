@@ -72,6 +72,17 @@ assert.equal(symbolText(byId('alpha'), 'typst'), 'alpha');
 assert.equal(symbolText(byId('leq'), 'html'), '&le;');
 assert.equal(symbolText(byId('text-endash'), 'latex', { inMath: false }), '\u2013');
 
+// Epsilon and phi mean the same letter in every format as their LaTeX command.
+for (const [id, latex] of [['epsilon', '\\epsilon'], ['varepsilon', '\\varepsilon'], ['phi', '\\phi'], ['varphi', '\\varphi']]) {
+  const drawn = katex.renderToString(latex, { output: 'html' }).match(/<span class="mord mathnormal">(.)<\/span>/);
+  assert.ok(drawn, `KaTeX draws ${latex}`);
+  assert.equal(byId(id).glyph, drawn[1], `${id} shows the glyph KaTeX draws for ${latex}`);
+}
+assert.equal(byId('epsilon').typst, 'epsilon.alt');
+assert.equal(byId('varepsilon').typst, 'epsilon');
+assert.equal(byId('epsilon').html, '&epsiv;');
+assert.equal(byId('varphi').html, '&phi;');
+
 // Separation from neighbouring text.
 assert.equal(separated('\\alpha', 'latex', '', 'x'), '\\alpha ');
 assert.equal(separated('\\alpha', 'latex', '', '$'), '\\alpha');
@@ -101,5 +112,18 @@ assert.equal(cases.text, '\\begin{cases}\n1 & x > 0 \\\\\n0 & x \\le 0\n\\end{ca
 const aligned = templateInsertion(template('aligned'), { rows: [{ left: 'x', right: 'y' }] }, at('Hello', 0));
 assert.equal(aligned.text, '\\begin{align}\nx &= y\n\\end{align}');
 assert.equal(templateInsertion(template('fraction'), {}, { format: 'html', text: '', selection: { from: 0, to: 0, text: '' } }).notes[0], 'Math templates need a math-capable format.');
+// Template insertions are separated from their neighbours like symbols.
+const fraction = { num: 'a', den: 'b' };
+assert.equal(templateInsertion(template('fraction'), fraction, { format: 'typst', text: '$x$', selection: { from: 2, to: 2, text: '' }, files: [] }).text, ' frac(a, b)');
+assert.equal(templateInsertion(template('fraction'), fraction, { format: 'typst', text: '$x$', selection: { from: 1, to: 1, text: '' }, files: [] }).text, 'frac(a, b)', 'a closing parenthesis needs no space before a letter');
+assert.equal(templateInsertion(template('fraction'), fraction, { format: 'latex', text: '$x$', selection: { from: 1, to: 1, text: '' }, files: [] }).text, '\\frac{a}{b}');
+
+// Aligned equations use the align environment only in LaTeX prose, in display style.
+const alignedRows = [{ left: 'x', right: 'y' }];
+const markdownProse = { format: 'markdown', text: 'Hello', selection: { from: 5, to: 5, text: '' }, files: [] };
+assert.equal(templateInsertion(template('aligned'), { rows: alignedRows, style: 'inline' }, markdownProse).text, '$\\begin{aligned}\nx &= y\n\\end{aligned}$');
+assert.equal(templateInsertion(template('aligned'), { rows: alignedRows, style: 'display' }, markdownProse).text, '$$\\begin{aligned}\nx &= y\n\\end{aligned}$$');
+assert.equal(templateInsertion(template('aligned'), { rows: alignedRows, style: 'display' }, prose).text, '\\begin{align}\nx &= y\n\\end{align}');
+assert.equal(templateInsertion(template('aligned'), { rows: alignedRows, style: 'inline' }, prose).text, '$\\begin{aligned}\nx &= y\n\\end{aligned}$');
 
 console.log('symbols: data, search, insertion and template checks passed');

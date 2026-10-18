@@ -34,6 +34,7 @@ window.templateCount = MATH_TEMPLATES.length;
 window.mountPalette = async (format = "latex", selected = "") => {
   palette?.$destroy();
   palette = createClassComponent({ component: MathPalette, target: document.getElementById("palette"), props: {
+    format,
     getContext: () => context(format, selected),
     oninsert: (result, ctx) => { insertions.push({ result, format: ctx.format }); },
     onfocus: () => {}

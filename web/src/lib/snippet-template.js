@@ -2,12 +2,16 @@ const FIELD = /#\{\d+:[^{}]*\}/g;
 
 // CodeMirror's snippet parser reads the field markers, then removes one
 // backslash before each brace on the line. A LaTeX brace, written \{ or \},
-// would lose its backslash, so it gets a second one here. Bare braces are
-// left alone: they survive the parser as they are, and escaping them too
-// would put a field after a run of escapes one character off, because the
-// parser compares positions it has already moved with offsets it has not.
+// would lose its backslash, so it gets a second one here. A literal ${ or #{
+// would be read as a field once the markers around it are replaced, so it
+// gets a backslash that the parser removes. Other bare braces are left alone:
+// escaping them would put a field after a run of escapes one character off,
+// because the parser compares positions it has already moved with offsets it
+// has not.
 function escapeBraces(text) {
-  return text.replace(/\\([{}])/g, (_, brace) => `\\\\${brace}`);
+  return text
+    .replace(/\\([{}])/g, (_, brace) => `\\\\${brace}`)
+    .replace(/([$#])\{/g, "$1\\{");
 }
 
 // Turn generated text with #{n:name} fields into a template for snippet().

@@ -3,6 +3,7 @@
 // caret lands in the first blank and Tab moves through the rest.
 import { insertSyntaxContext } from "../insert.js";
 import { latexPackageEdits } from "../insert-latex.js";
+import { separated } from "./index.js";
 
 const slot = (id, label, placeholder, extra = {}) => ({ id, label, placeholder, ...extra });
 
@@ -119,16 +120,18 @@ export const MATH_TEMPLATES = [
     },
   },
   {
-    // Outside math this is an align environment, and the display wrapper is
-    // skipped because align is already display math.
+    // In LaTeX prose display this is an align environment, and the display
+    // wrapper is skipped because align is already display math. Everywhere
+    // else it is aligned, which KaTeX and LaTeX accept inline and in display.
     id: "aligned", label: "Aligned equations", preview: "\\begin{aligned} x &= y \\end{aligned}", package: "amsmath",
     grid: true, selfDisplay: true,
     slots: [slot("rows", "Equations", "x")],
     latex: v => {
       const rows = v.rows.map(row => `${row.left} &= ${row.right}`).join(" \\\\\n");
-      return v.inMath
-        ? `\\begin{aligned}\n${rows}\n\\end{aligned}`
-        : `\\begin{align}\n${rows}\n\\end{align}`;
+      const bare = v.format === "latex" && !v.inMath && !v.inline;
+      return bare
+        ? `\\begin{align}\n${rows}\n\\end{align}`
+        : `\\begin{aligned}\n${rows}\n\\end{aligned}`;
     },
     typst: v => v.rows.map(row => `${row.left} &= ${row.right}`).join(" \\ "),
   },
@@ -187,7 +190,8 @@ export function templateInsertion(template, values = {}, context = {}) {
     return `#{${fields}:${placeholder}}`;
   };
 
-  const v = { ...values, inMath };
+  const inline = values.style === "inline";
+  const v = { ...values, inMath, format, inline };
   for (const item of template.slots) {
     const raw = values[item.id];
     if (raw === undefined && item.default !== undefined) { v[item.id] = item.default; continue; }
@@ -198,12 +202,17 @@ export function templateInsertion(template, values = {}, context = {}) {
 
   const body = format === "typst" ? template.typst(v) : template.latex(v);
   let text = body;
+  const bareAligned = template.selfDisplay && format === "latex" && !inline;
   if (!inMath) {
-    const inline = values.style === "inline";
     if (format === "typst") text = inline ? `$${body}$` : `$ ${body} $`;
     else if (format === "markdown" || format === "quarto") text = inline ? `$${body}$` : `$$${body}$$`;
-    else if (!template.selfDisplay) text = inline ? `$${body}$` : `\\[\n${body}\n\\]`;
+    else if (!bareAligned) text = inline ? `$${body}$` : `\\[\n${body}\n\\]`;
   }
+  // Add a space where the text would run into the characters beside it.
+  const from = context.selection?.from, to = context.selection?.to;
+  const before = typeof context.text === "string" ? context.text[from - 1] ?? "" : "";
+  const after = typeof context.text === "string" ? context.text[to] ?? "" : "";
+  text = separated(text, format, before, after);
   if (format === "latex" && template.package) additionalEdits.push(...latexPackageEdits(template.package, context, notes));
   return { text, additionalEdits, notes, snippet: fields > 0 };
 }

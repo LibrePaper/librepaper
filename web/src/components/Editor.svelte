@@ -190,6 +190,7 @@
   import { projectDirectory } from "../lib/projection.js";
   import { attachEditorZoom } from "../lib/editor-zoom.js";
   import { snippetTemplate } from "../lib/snippet-template.js";
+  import { formatOf as documentFormat } from "../lib/formats.js";
   import { untrack } from "svelte";
 
   // Whether what is typed here is recorded as a tracked change is not a prop
@@ -753,8 +754,7 @@
     if (!target || !view) return null;
     const doc = target.doc;
     const path = pathOfDoc(doc, showing);
-    const lower = path.toLowerCase();
-    const insertFormat = lower.endsWith(".qmd") ? "quarto" : formatOf(path) || (!path ? format : "");
+    const insertFormat = documentFormat(path) || (!path ? format : "");
     const tree = treeForDoc(doc);
     const mainPath = tree.main || path;
     const mainText = tree.texts?.[mainPath] || "";
@@ -871,7 +871,9 @@
       for (let i = 1; i < plan.edits.length; i++) if (plan.edits[i - 1].to > plan.edits[i].from) return false;
     }
     if (result.snippet) {
-      if (changes.length) view.dispatch({ changes });
+      // The snippet command stretches its range to the live selection when the
+      // two start together, so the selection is put on the captured range first.
+      view.dispatch({ changes, selection: { anchor: from + shift, head: to + shift } });
       snippet(snippetTemplate(result.text))(view, null, from + shift, to + shift);
       view.dispatch({ effects: EditorView.scrollIntoView(view.state.selection.main.head) });
     } else {

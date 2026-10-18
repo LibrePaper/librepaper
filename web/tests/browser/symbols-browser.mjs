@@ -36,17 +36,18 @@ window.setupPalette = async (format) => {
   window.inserted = inserted;
   currentContext = contextFor(format);
   component = createClassComponent({ component: SymbolPalette, target: document.getElementById("palette"), props: {
+    format,
     getContext: () => currentContext,
     oninsert: (result) => { inserted.push(result); },
     onfocus: () => {},
   }});
   await tick();
 };
-// The palette reads the format through getContext, so a new format is a new
-// getContext prop, which re-renders the tiles.
+// The format is a prop and the context a getter, so a new format sets both,
+// which re-renders the tiles.
 window.switchFormat = async (format) => {
   currentContext = contextFor(format);
-  component.$set({ getContext: () => currentContext });
+  component.$set({ format, getContext: () => currentContext });
   await tick();
 };
 window.typeQuery = async (text) => {

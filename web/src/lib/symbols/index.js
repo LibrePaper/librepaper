@@ -37,19 +37,24 @@ const text = (name, glyph, latex, extra = {}) => {
   return sym("text", `text-${id}`, glyph, latex, glyph, { ...extra, name, kind: "text" });
 };
 
+// Epsilon and phi carry their own spellings: their plain commands draw
+// the glyphs the variant rows use, so a tile means one letter in every format.
+/** @type {Array<[string, string] | [string, string, { typst?: string, html?: string, aliases?: string[] }]>} */
 const GREEK_LOWER = [
-  ["alpha", "α"], ["beta", "β"], ["gamma", "γ"], ["delta", "δ"], ["epsilon", "ε"], ["zeta", "ζ"],
+  ["alpha", "α"], ["beta", "β"], ["gamma", "γ"], ["delta", "δ"],
+  ["epsilon", "ϵ", { typst: "epsilon.alt", html: "&epsiv;", aliases: ["eps", "lunate epsilon"] }], ["zeta", "ζ"],
   ["eta", "η"], ["theta", "θ"], ["iota", "ι"], ["kappa", "κ"], ["lambda", "λ"], ["mu", "μ"],
   ["nu", "ν"], ["xi", "ξ"], ["omicron", "ο"], ["pi", "π"], ["rho", "ρ"], ["sigma", "σ"],
-  ["tau", "τ"], ["upsilon", "υ"], ["phi", "φ"], ["chi", "χ"], ["psi", "ψ"], ["omega", "ω"],
+  ["tau", "τ"], ["upsilon", "υ"], ["phi", "ϕ", { typst: "phi.alt", html: "&phiv;", aliases: ["straight phi"] }],
+  ["chi", "χ"], ["psi", "ψ"], ["omega", "ω"],
 ];
 const GREEK_VARIANTS = [
-  ["varepsilon", "ϵ", "epsilon.alt", "&epsiv;", ["epsilon", "eps"]],
+  ["varepsilon", "ε", "epsilon", "&epsilon;", ["epsilon", "eps", "curly epsilon"]],
   ["vartheta", "ϑ", "theta.alt", "&thetasym;", ["theta"]],
   ["varpi", "ϖ", "pi.alt", "&piv;", ["pi"]],
   ["varrho", "ϱ", "rho.alt", "&rhov;", ["rho"]],
   ["varsigma", "ς", "sigma.alt", "&sigmaf;", ["sigma"]],
-  ["varphi", "ϕ", "phi.alt", "&phiv;", ["phi"]],
+  ["varphi", "φ", "phi", "&phi;", ["phi", "curly phi"]],
 ];
 const GREEK_UPPER = [
   ["Gamma", "Γ"], ["Delta", "Δ"], ["Theta", "Θ"], ["Lambda", "Λ"], ["Xi", "Ξ"], ["Pi", "Π"],
@@ -102,7 +107,7 @@ const MARKS = [
 ];
 
 const greek = [
-  ...GREEK_LOWER.map(([name, glyph]) => sym("greek", name, glyph, `\\${name}`, name, { html: `&${name};`, aliases: name === "epsilon" ? ["eps"] : [] })),
+  ...GREEK_LOWER.map(([name, glyph, overrides = {}]) => sym("greek", name, glyph, `\\${name}`, overrides.typst ?? name, { html: overrides.html ?? `&${name};`, aliases: overrides.aliases ?? [] })),
   ...GREEK_VARIANTS.map(([name, glyph, typst, html, aliases]) => sym("greek", name, glyph, `\\${name}`, typst, { html, aliases })),
   ...GREEK_UPPER.map(([name, glyph]) => sym("greek", `upper-${name.toLowerCase()}`, glyph, `\\${name}`, name, { name, html: `&${name};`, aliases: [`capital ${name.toLowerCase()}`] })),
 ];

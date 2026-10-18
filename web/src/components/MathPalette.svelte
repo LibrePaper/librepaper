@@ -13,7 +13,7 @@
 
   // The prop is still called onfocus for callers. It is renamed here so the
   // element attribute onfocus on the fields cannot be confused with it.
-  let { getContext, oninsert, onfocus: onfocusPanel } = $props();
+  let { getContext, oninsert, onfocus: onfocusPanel, format = "" } = $props();
 
   // KaTeX arrives after the picker is on screen. Until then every tile shows
   // its label, so the panel is usable at once and the math fills in later.
@@ -39,7 +39,7 @@
   /** @type {number} */
   const rowCount = $derived(Array.isArray(values.rows) ? values.rows.length : Number(values.rows));
   /** The format name, typed as any where the symbol helpers take a string. */
-  const format = $derived(/** @type {any} */ (captured?.format));
+  const capturedFormat = $derived(/** @type {any} */ (captured?.format));
   const isRowTemplate = (/** @type {MathTemplate | null} */ template) => template?.id === "aligned" || template?.id === "cases";
 
   /** Keys and labels of each row in the grid templates, in display order. */
@@ -146,8 +146,6 @@
       // break the rest of the panel.
     }
   });
-
-  function currentFormat() { return getContext?.()?.format ?? null; }
 
   /** @param {unknown} cause @param {string} fallback */
   function messageOf(cause, fallback) {
@@ -287,7 +285,7 @@
     const end = field.selectionEnd ?? start;
     // Separated first, so a space put before the spelling moves the marker
     // with it and the caret still lands inside the accent.
-    let text = separated(symbolText(symbol, format, { inMath: true }), format, field.value[start - 1] ?? "", field.value[end] ?? "");
+    let text = separated(symbolText(symbol, capturedFormat, { inMath: true }), capturedFormat, field.value[start - 1] ?? "", field.value[end] ?? "");
     // An accent wraps the selection. With none, the caret goes inside it.
     let inside = -1;
     if (symbol.kind === "accent") {
@@ -325,7 +323,7 @@
   <PanelHeader title="Math" />
 
   {#if !active}
-    {#if currentFormat() === "html"}
+    {#if format === "html"}
       <p class="panel-muted">Math templates need LaTeX, Typst, Markdown or Quarto.</p>
     {:else}
       <div class="math-grid">
@@ -363,7 +361,7 @@
       <!-- Outside the form: Enter in the search field must not submit it. -->
       <details class="math-symbols">
         <summary>Symbols</summary>
-        <SymbolSearch symbols={SYMBOLS} format={format} onpick={pickSymbol} placeholder="Search symbols" autofocus={false} />
+        <SymbolSearch symbols={SYMBOLS} format={capturedFormat} onpick={pickSymbol} placeholder="Search symbols" autofocus={false} />
       </details>
 
       <form class="math-fields" bind:this={formEl} onsubmit={(event) => { event.preventDefault(); insert(); }}>

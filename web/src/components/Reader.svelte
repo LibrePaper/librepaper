@@ -3703,11 +3703,11 @@
   {/snippet}
 
   {#snippet symbolsPanel()}
-    <SymbolPalette bind:this={symbolPalette} getContext={insertContext} oninsert={applyInsertion} onfocus={() => editor?.focus?.()} />
+    <SymbolPalette bind:this={symbolPalette} format={editorFormat} getContext={insertContext} oninsert={applyInsertion} onfocus={() => editor?.focus?.()} />
   {/snippet}
 
   {#snippet mathPanel()}
-    <MathPalette bind:this={mathPalette} getContext={insertContext} oninsert={applyInsertion} onfocus={() => editor?.focus?.()} />
+    <MathPalette bind:this={mathPalette} format={editorFormat} getContext={insertContext} oninsert={applyInsertion} onfocus={() => editor?.focus?.()} />
   {/snippet}
 
   {#snippet agentPanel()}
