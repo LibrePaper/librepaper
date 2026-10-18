@@ -61,6 +61,9 @@ window.gridTileCount = () => document.querySelectorAll(".symbol-grid [data-symbo
 window.gridTileTitle = (id) => document.querySelector(".symbol-grid [data-symbol=" + JSON.stringify(id) + "]")?.title ?? null;
 window.resultTile = (id) => Boolean(document.querySelector(".symbol-search .results [data-symbol=" + JSON.stringify(id) + "]"));
 window.recentHas = (id) => Boolean(document.querySelector('[role="group"][aria-label="Recent symbols"] [data-symbol=' + JSON.stringify(id) + "]"));
+window.hasGridTile = (id) => Boolean(document.querySelector(".symbol-grid [data-symbol=" + JSON.stringify(id) + "]"));
+window.setPaletteWidth = (px) => { document.getElementById("palette").style.width = px + "px"; };
+window.categorySelectShown = () => Boolean(document.querySelector('select[aria-label="Symbol category"]'));
 window.tabStripShown = () => Boolean(document.querySelector('[aria-label="Symbol categories"]'));
 window.insertReady = true;
 `);
@@ -73,7 +76,7 @@ try {
     if (pathname !== "/" && existsSync(file)) {
       response.setHeader("Content-Type", contentType(file));
       response.end(readFileSync(file));
-    } else response.end('<!doctype html><html><head><meta charset="utf-8"></head><body><div id="palette" style="height:600px;width:320px"></div><script type="module" src="/symbols-check.js"></script></body></html>');
+    } else response.end('<!doctype html><html><head><meta charset="utf-8"></head><body><div id="palette" style="height:600px;width:560px"></div><script type="module" src="/symbols-check.js"></script></body></html>');
   });
   await new Promise((resolve, reject) => { server.once("error", reject); server.listen(0, "127.0.0.1", resolve); });
   page = await browser("chromium", join(temporary, "profile"), 24000 + Math.floor(Math.random() * 10000));
@@ -86,7 +89,7 @@ try {
   // The Greek tab is the first tab, so its tiles show straight away.
   await evaluate('setupPalette("latex")');
   await until("Greek tiles", () => evaluate("gridTileCount() > 0"), 5000);
-  await until("alpha tile", () => evaluate(`Boolean(document.querySelector(".symbol-grid [data-symbol=${JSON.stringify(alpha)}]"))`), 5000);
+  await until("alpha tile", () => evaluate(`hasGridTile(${JSON.stringify(alpha)})`), 5000);
 
   // A plain click inserts the spelling for a caret outside math.
   await evaluate(`clickGridTile(${JSON.stringify(alpha)})`);
@@ -108,6 +111,12 @@ try {
   await evaluate('switchFormat("typst")');
   await until("typst title", () => evaluate(`gridTileTitle(${JSON.stringify(alpha)}) === "alpha"`), 5000);
   assert.equal(await evaluate(`gridTileTitle(${JSON.stringify(alpha)})`), "alpha", "the typst spelling of alpha is alpha");
+
+  // Below 480px the tab strip folds into a select. The panel measures its own
+  // width, so the check waits for the ResizeObserver to report the change.
+  await evaluate("setPaletteWidth(320)");
+  await until("category select at narrow width", () => evaluate("categorySelectShown()"), 5000);
+  assert.equal(await evaluate("tabStripShown()"), false, "the tab strip folds away below 480px");
 
   console.log("symbols-browser: palette tabs, search, Recent row, insertion and format-aware titles passed");
 } catch (error) {
