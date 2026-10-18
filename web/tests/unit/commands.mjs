@@ -77,6 +77,7 @@ for (const command of COMMANDS) {
   }
 }
 assert.ok(reserved("Mod+P"), "print is the browser's");
+assert.ok(!reserved("Mod+B") && !reserved("Mod+I"), "bold and italic are not the browser's");
 assert.ok(reserved("Mod+S"), "save is the browser's, except inside the editor where CodeMirror answers it");
 assert.ok(RESERVED.length > 10, "the conflict list is a list, not a gesture");
 
@@ -119,7 +120,7 @@ const workspace = {
   panels: ["files", "outline", "collaboration", "history", "share"],
   preview: true, compilable: true, canPreviewFile: true,
   downloads: { pdf: true, html: false, docx: false },
-  edit: { undo: true, redo: true, cut: true, copy: true, paste: true, "select-all": true, find: true, replace: true },
+  edit: { undo: true, redo: true, cut: true, copy: true, paste: true, "select-all": true, find: true, replace: true, bold: true, italic: true },
 };
 
 const asked = (event, context = workspace) => commandFor(event, context, { apple: false })?.id ?? null;
@@ -170,6 +171,9 @@ const named = menuKeys({ modalEditor: false, apple: false });
 assert.equal(named.undo, "Ctrl+Z");
 assert.equal(named.redo, "Ctrl+Shift+Z", "the menu names the binding the help table calls primary");
 assert.equal(named.linked, "Ctrl+Alt+L");
+assert.equal(named.bold, "Ctrl+B");
+assert.equal(named.italic, "Ctrl+I");
+assert.equal(menuKeys({ modalEditor: false, apple: true }).italic, "⌘I", "a Mac menu prints the caps run together");
 assert.equal(named["new-file"], undefined, "a command with no binding claims no keys");
 
 // In Vim or Emacs mode the editing keys belong to the mode. The workspace's
@@ -177,6 +181,7 @@ assert.equal(named["new-file"], undefined, "a command with no binding claims no 
 const modal = menuKeys({ modalEditor: true, apple: false });
 assert.equal(modal.undo, undefined, "a menu naming ⌘Z in Vim mode would be lying");
 assert.equal(modal.linked, "Ctrl+Alt+L");
+assert.equal(modal.bold, undefined, "Vim and Emacs keep Ctrl+B");
 
 // A greyed menu line and a dead key are the same answer to the same question,
 // which is only true while both ask this.

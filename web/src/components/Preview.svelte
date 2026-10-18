@@ -106,7 +106,7 @@
         tell({ type: "theme", mode: mode() });
       }}
       style:pointer-events={grabbing ? "none" : null}
-      sandbox="allow-same-origin allow-scripts allow-popups allow-forms"
+      sandbox="allow-same-origin allow-scripts allow-popups allow-popups-to-escape-sandbox allow-forms"
     ></iframe>
   {/key}
 </section>
