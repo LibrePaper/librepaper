@@ -18,7 +18,7 @@ pub(super) struct Deployment {
     pub(super) owner_id: uuid::Uuid,
     pub(super) owner_session_generation: String,
     pub(super) _writer: WriterLease,
-    _objects: tempfile::TempDir,
+    pub(super) _objects: tempfile::TempDir,
 }
 
 /// Build a small real server around a single owner and document. Each test

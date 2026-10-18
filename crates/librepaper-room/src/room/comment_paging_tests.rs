@@ -1299,7 +1299,7 @@ async fn a_reader_page_never_decodes_the_document() {
     assert_eq!(views.len(), 1);
     assert!(views
         .iter()
-        .all(|view| view.attachment.is_none() && view.original_anchor.is_none()));
+        .all(|view| view.comment.attachment.is_none() && view.comment.original_anchor.is_none()));
     assert!(!room.log().is_warm().await, "a reader's page decoded the document");
     deployment.catalog.close().await;
 }
@@ -1317,7 +1317,7 @@ async fn an_editor_page_with_an_anchored_comment_decodes() {
     room.log().drop_cache().await;
     let (views, _) = room.comment_page(None, 50, "someone", true).await.unwrap();
     assert_eq!(views.len(), 1);
-    assert!(views[0].attachment.is_some());
+    assert!(views[0].comment.attachment.is_some());
     assert!(room.log().is_warm().await);
     deployment.catalog.close().await;
 }
@@ -1335,7 +1335,7 @@ async fn an_editor_page_of_document_level_comments_never_decodes() {
     room.log().drop_cache().await;
     let (views, _) = room.comment_page(None, 50, "someone", true).await.unwrap();
     assert_eq!(views.len(), 3);
-    assert!(views.iter().all(|view| view.attachment.is_none()));
+    assert!(views.iter().all(|view| view.comment.attachment.is_none()));
     assert!(!room.log().is_warm().await, "a document-level page decoded the document");
     deployment.catalog.close().await;
 }
