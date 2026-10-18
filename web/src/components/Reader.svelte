@@ -30,7 +30,7 @@
   import { createPassageTrace } from "../lib/reader/passage-trace.svelte.js";
   import { createPreviewRenderer } from "../lib/reader/preview-render.js";
   import { createPreferences } from "../lib/reader/preferences.svelte.js";
-  import { forgetProject, localProject, rememberProject } from "../lib/offline-projects.js";
+  import { forgetProject, markShellReady, rememberProject } from "../lib/offline-projects.js";
   import { cacheCurrentShell } from "../lib/offline-shell.js";
   import { needsSourceRefresh } from "../lib/reader/source-events.js";
   import {
@@ -3324,20 +3324,27 @@
   // Every project an editor opens is kept in this browser, so it can be opened
   // again without a connection. A new project reports local before anything is
   // stored, so a failed attempt is retried on the next report instead of being
-  // given up for the rest of the page load.
+  // given up for the rest of the page load. The inputs are read before any
+  // early return, so the effect stays subscribed to them.
+  let localCopyRunning = false;
   let localCopyRemembered = false;
   $effect(() => {
-    if (localCopyRemembered || !mayEdit || openedLocally || !persistence.local) return;
-    localCopyRemembered = true;
+    const ready = mayEdit && !openedLocally && persistence.local;
+    if (!ready || localCopyRunning || localCopyRemembered) return;
+    localCopyRunning = true;
     const server = location.origin;
-    localProject({ server, slug: SLUG })
-      .then(async (existing) => {
-        await rememberProject({ ...doc, slug: SLUG, server });
-        // The page shell is cached with the first copy, so the landing page can
-        // list local projects when the server cannot be reached.
-        if (!existing) await cacheCurrentShell().catch(() => {});
-      })
-      .catch(() => { localCopyRemembered = false; });
+    const identity = { server, documentId: doc.document_id, slug: SLUG, createdAt: doc.created_at };
+    (async () => {
+      const record = await rememberProject({ ...doc, slug: SLUG, server });
+      // The page shell is cached with the local copy, so the landing page can
+      // list local projects when the server cannot be reached. Until it is
+      // cached the record has no shellReady, and the next attempt tries again.
+      if (!record.shellReady && await cacheCurrentShell()) await markShellReady(identity);
+      localCopyRemembered = true;
+      localCopyRunning = false;
+    })().catch(() => {
+      localCopyRunning = false;
+    });
   });
 
   // Ctrl-S reports the durability the server has confirmed for local work.

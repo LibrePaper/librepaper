@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { durableProjectPersistence, forgetProject } from "../../src/lib/offline-projects.js";
+import { durableProjectPersistence, forgetProject, markShellReady, rememberProject } from "../../src/lib/offline-projects.js";
 import { projectIdentity, projectIdentityKey } from "../../src/lib/project-identity.js";
 
 const blockedIndexedDB = {
@@ -167,4 +167,25 @@ function readStore(database, store, method, ...args) {
   );
   assert.ok(await readStore(database, "projects", "get", theirsKey));
   assert.ok(await readStore(database, "states", "get", theirsKey));
+}
+
+// Remembering a project again keeps its shell marked as cached, and
+// markShellReady sets that mark on the record that exists.
+{
+  const indexedDB_ = fakeIndexedDB();
+  const server = "https://example.test";
+  const metadata = { server, document_id: "33333333-3333-4333-8333-333333333333", slug: "paper", created_at: "" };
+  const identity = { server, documentId: metadata.document_id, slug: "paper", createdAt: "" };
+  const key = projectIdentityKey(projectIdentity(identity));
+
+  const database = await openFake(indexedDB_);
+  const seeding = database.transaction(["states"], "readwrite");
+  const seeded = new Promise((resolve) => { seeding.oncomplete = resolve; });
+  seeding.objectStore("states").put({ version: 3 }, key);
+  await seeded;
+
+  assert.equal((await rememberProject(metadata, indexedDB_)).shellReady, undefined);
+  await markShellReady(identity, indexedDB_);
+  assert.equal((await rememberProject(metadata, indexedDB_)).shellReady, true);
+  assert.equal((await readStore(database, "projects", "get", key)).shellReady, true);
 }

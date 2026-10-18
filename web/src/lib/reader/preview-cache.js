@@ -18,7 +18,7 @@
 // window, simply draws nothing until its first compile, which is what every
 // browser did before this existed.
 
-import { PREVIEW_DATABASE as DATABASE } from "../local-data.js";
+import { PREVIEW_DATABASE as DATABASE, localDataForgotten } from "../local-data.js";
 
 const VERSION = 1;
 const PAGES = "pages";
@@ -47,6 +47,9 @@ function result(request) {
 }
 
 function open() {
+  // A signed-out tab must not recreate the database its sign-out deleted. This
+  // is checked before the cached handle, and nothing is cached for it.
+  if (localDataForgotten()) return Promise.resolve(null);
   if (opened) return opened;
   opened = new Promise((resolve, reject) => {
     if (!globalThis.indexedDB) {

@@ -9,6 +9,7 @@ import Reader from "../components/Reader.svelte";
 import { registerOfflineShell } from "../lib/offline-shell.js";
 import { intake } from "../lib/desktop/client.js";
 import { blockPageZoom } from "../lib/pinch.js";
+import { listenForSignOut } from "../lib/local-data.js";
 
 startTheme();
 
@@ -32,3 +33,5 @@ globalThis.LIBREPAPER_MODULES = JSON.parse(document.getElementById("librepaper-m
 const initialSettings = intake() ? "tools" : "";
 mount(Boundary, { target: document.body, props: { component: Reader, props: { initialSettings }, name: "the reader" } });
 void registerOfflineShell();
+// A signed-out browser must not keep writing the previous account's work.
+listenForSignOut(() => location.replace("/"));
