@@ -1,9 +1,12 @@
 #!/usr/bin/env bash
 # Open the desktop app against the demo, starting the demo when none answers.
 #
-# Run from the demo worktree root by make demo-desktop. When a demo already
-# answers on PORT, the app opens against it and the demo is left running. When
-# nothing answers, this script starts the demo, waits for it, and opens the app.
+# Run from the demo worktree root by make demo-desktop. When a demo built from
+# this commit already answers on PORT, the app opens against it and the demo is
+# left running. When a demo built from another commit answers, it is stopped and
+# rebuilt. When a server on PORT that is not the demo answers, the app uses it as
+# is. When nothing answers, this script starts the demo, waits for it, and opens
+# the app.
 # Closing the app, or pressing Ctrl-C, kills the demo's process group. That lets
 # tools/dev/demo/compose run its cleanup and take the containers down.
 set -euo pipefail
@@ -19,10 +22,36 @@ if [ -e /etc/NIXOS ]; then
   export XDG_DATA_DIRS="$(echo "$gtk"/share/gsettings-schemas/*)${XDG_DATA_DIRS:+:$XDG_DATA_DIRS}"
 fi
 answers() { curl -fsS -o /dev/null "$URL" 2>/dev/null; }
+revision=$(git -C "$ROOT" rev-parse HEAD)
+# Demo containers carry the compose project and service labels, and the commit
+# they were built from in the org.librepaper.demo.revision label.
+running_revision() {
+  command -v docker >/dev/null 2>&1 || return 0
+  docker ps --filter label=com.docker.compose.project=librepaper-demo --filter label=com.docker.compose.service=librepaper --format '{{.Label "org.librepaper.demo.revision"}}' 2>/dev/null | head -n 1 || true
+}
+demo_running() {
+  command -v docker >/dev/null 2>&1 || return 1
+  [ -n "$(docker ps -q --filter label=com.docker.compose.project=librepaper-demo --filter label=com.docker.compose.service=librepaper 2>/dev/null)" ]
+}
 
 if answers; then
-  echo "demo-desktop: using the demo already running on $URL"
-  LIBREPAPER_SERVER="$URL" exec "$APP"
+  if ! demo_running; then
+    echo "demo-desktop: using the server already running on $URL"
+    LIBREPAPER_SERVER="$URL" exec "$APP"
+  fi
+  have=$(running_revision)
+  if [ "$have" = "$revision" ]; then
+    echo "demo-desktop: using the demo of ${revision:0:8} already running on $URL"
+    LIBREPAPER_SERVER="$URL" exec "$APP"
+  fi
+  if [ -n "$have" ]; then
+    from="${have:0:8}"
+  else
+    from="an unknown commit"
+  fi
+  echo "demo-desktop: the running demo is from $from, not ${revision:0:8}; stopping it"
+  "$ROOT/tools/dev/demo/compose" stop
+  while answers; do sleep 1; done
 fi
 
 LOG="$ROOT/target/demo-desktop.log"

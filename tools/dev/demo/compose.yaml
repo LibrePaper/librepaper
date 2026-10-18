@@ -8,6 +8,8 @@ services:
       args:
         SOURCE: checkout
         CARGO_PROFILE: ${LIBREPAPER_DEMO_CARGO_PROFILE:-demo}
+    labels:
+      org.librepaper.demo.revision: ${LIBREPAPER_DEMO_REVISION:-}
     environment:
       LIBREPAPER_DEMO_APP_ORIGIN: ${LIBREPAPER_DEMO_APP_ORIGIN:-http://localhost:8081}
       LIBREPAPER_DEMO_SITE_ORIGIN: ${LIBREPAPER_DEMO_SITE_ORIGIN:-http://localhost:8082}

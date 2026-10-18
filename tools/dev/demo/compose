@@ -47,6 +47,7 @@ compose() (
   export LIBREPAPER_DEMO_APP_ORIGIN="$APP_ORIGIN"
   export LIBREPAPER_DEMO_SITE_ORIGIN="http://localhost:$SITE_PORT"
   export LIBREPAPER_DEMO_ADMIN_ORIGIN="http://admin.localhost:$PORT"
+  export LIBREPAPER_DEMO_REVISION="$(git -C "$ROOT" rev-parse HEAD 2>/dev/null || true)"
   export PORT SITE_PORT
   exec docker compose --project-name "$PROJECT" --project-directory "$ROOT/deploy" "${COMPOSE_FILES[@]}" "$@"
 )
