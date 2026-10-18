@@ -15,9 +15,9 @@ use serde_json::{json, Value};
 use time::OffsetDateTime;
 use uuid::Uuid;
 
-use librepaper_engine::storage::postgres::{ChatCleared, ChatRecord};
 #[cfg(test)]
 use librepaper_engine::storage::postgres::CHAT_ROW_OVERHEAD_BYTES;
+use librepaper_engine::storage::postgres::{ChatCleared, ChatRecord};
 
 use super::{Room, WriteError};
 
