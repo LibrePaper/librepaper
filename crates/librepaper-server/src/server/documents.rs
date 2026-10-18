@@ -298,6 +298,68 @@ impl Server {
         }
     }
 
+    /// One page of chat older than `before`, oldest first. Commenters and
+    /// above only: a view-only link never sees chat.
+    pub(super) async fn handle_chat_history(
+        &self,
+        request: Request<Body>,
+        context: &RequestContext,
+        slug: &str,
+    ) -> Reply {
+        let arrival = &context.arrival;
+        if !self.valid_slug(slug) {
+            return write_json(400, &json!({"error": "bad slug"}));
+        }
+        let headers = request.headers().clone();
+        if cross_site_refused(&headers, arrival) {
+            return write_json(403, &cross_site_refusal());
+        }
+        let values: HashMap<String, String> = request
+            .uri()
+            .query()
+            .map(|raw| {
+                url::form_urlencoded::parse(raw.as_bytes())
+                    .map(|(key, value)| (key.into_owned(), value.into_owned()))
+                    .collect()
+            })
+            .unwrap_or_default();
+        let before = match values.get("before") {
+            Some(raw) => match uuid::Uuid::parse_str(raw) {
+                Ok(id) => Some(id),
+                Err(_) => return write_json(400, &json!({"error": "bad before id"})),
+            },
+            None => None,
+        };
+        let limit = values
+            .get("limit")
+            .and_then(|raw| raw.parse::<i64>().ok())
+            .unwrap_or(50)
+            .clamp(1, 100);
+        if let Err(response) = self
+            .entry_at_least(slug, &headers, arrival, None, Role::Commenter)
+            .await
+        {
+            return response;
+        }
+        let room = match self.rooms.get(slug).await {
+            Ok(room) => room,
+            Err(error) => return refused("open the room", &error),
+        };
+        match room.chat_page(before, limit).await {
+            Ok((messages, more)) => write_json(
+                200,
+                &json!({
+                    "messages": messages
+                        .iter()
+                        .map(librepaper_room::room::chat::chat_json)
+                        .collect::<Vec<_>>(),
+                    "more": more,
+                }),
+            ),
+            Err(error) => refused("read chat", &error),
+        }
+    }
+
     pub(super) async fn handle_comments(
         &self,
         request: Request<Body>,

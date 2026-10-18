@@ -52,6 +52,8 @@ mod agent_auth;
 mod assistant;
 mod chat;
 #[cfg(test)]
+mod chat_http_tests;
+#[cfg(test)]
 mod comment_http_tests;
 pub mod cost;
 #[cfg(test)]
