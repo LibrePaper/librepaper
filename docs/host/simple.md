@@ -35,7 +35,7 @@ Everything is on one machine, so losing the VPS loses it all until [backups](adv
 
 ## Install
 
-Each LibrePaper release comes with one download that contains everything the VPS needs: the Compose file that starts the four services, `librepaper.toml` for your settings, and the backup and Caddy configuration. It also includes `./manage`, the helper used below. Run this on the VPS, over SSH. It unpacks into a `librepaper/` directory that is private to you (mode 700).
+Each LibrePaper release comes with one download that contains everything the VPS needs: the Compose file that starts the four services, `librepaper.toml` for your settings, and the backup and Caddy configuration. It also includes `./manage`, the helper used below. The download pins each image by its digest, so it always runs the same images. Run this on the VPS, over SSH. It unpacks into a `librepaper/` directory that is private to you (mode 700).
 
 ```sh
 curl -fsSL https://github.com/LibrePaper/librepaper/releases/latest/download/librepaper-deploy.tar.gz | tar xz
