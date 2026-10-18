@@ -35,7 +35,7 @@ mod schema_regression_tests;
 #[path = "deployment_setup_tests.rs"]
 mod deployment_setup_tests;
 
-pub use chat::{chat_now, ChatRecord, CHAT_ROW_OVERHEAD_BYTES};
+pub use chat::{chat_now, ChatCleared, ChatRecord, CHAT_ROW_OVERHEAD_BYTES};
 pub use commit::Authority;
 pub use document_log::{FlushRow, LogRow, NewSnapshot, PendingWorkCursor, RowCoverage};
 pub use labels::{ArchiveAttach, ArchiveObject, LabelRecord, NewLabel, TrimOutcome};

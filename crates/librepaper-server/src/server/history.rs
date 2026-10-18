@@ -371,6 +371,8 @@ struct TrimRetained {
     document_id: uuid::Uuid,
     catalog: std::sync::Arc<librepaper_engine::storage::postgres::PostgresCatalog>,
     referenced: Vec<Vec<u8>>,
+    /// The ids in the room's chat buffer, read under the chat lock.
+    buffered_chat: Vec<uuid::Uuid>,
 }
 
 impl librepaper_engine::log::Command for TrimRetained {
@@ -408,7 +410,12 @@ impl librepaper_engine::log::Command for TrimRetained {
     > {
         Box::pin(async move {
             self.catalog
-                .trim_retained_in_transaction(tx, self.document_id, &self.referenced)
+                .trim_retained_in_transaction(
+                    tx,
+                    self.document_id,
+                    &self.referenced,
+                    &self.buffered_chat,
+                )
                 .await
                 .map_err(librepaper_engine::log::CommandError::from)
         })
@@ -1046,20 +1053,21 @@ impl Server {
         // Drop the attachment cache so comments re-resolve against the shallow document.
         room.forget_comments().await;
         let authority = current_who.document_authority(self.ceiling_for(&current_who.id));
-        let mut command = TrimRetained {
-            document_id: room.document_id,
-            catalog: self.store.catalog.clone(),
-            referenced: Vec::new(),
-        };
         // The chat lock is held across the trim so a flush cannot write a
         // message between the delete and the buffer being dropped. The trim
         // never calls into the chat path.
         let mut chat = room.chat_lock().await;
+        let mut command = TrimRetained {
+            document_id: room.document_id,
+            catalog: self.store.catalog.clone(),
+            referenced: Vec::new(),
+            buffered_chat: chat.ids(),
+        };
         let outcome = match room.command(&authority, &mut command).await {
             Ok(outcome) => outcome,
             Err(error) => return command_reply("trim history", error),
         };
-        let waiting = chat.discard();
+        let waiting = chat.discard_unstored(&outcome.chat_stored_buffered);
         room.chat_discarded();
         room.log().charge_storage(-outcome.chat_bytes);
         room.log().charge_storage(-waiting);

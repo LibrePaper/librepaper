@@ -72,7 +72,7 @@ pub enum ArchiveAttach {
 }
 
 /// What a history trim deleted besides the history itself.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct TrimOutcome {
     pub versions: i64,
     pub version_bytes: i64,
@@ -80,6 +80,9 @@ pub struct TrimOutcome {
     pub figure_bytes: i64,
     pub chat_messages: i64,
     pub chat_bytes: i64,
+    /// The buffered chat ids that were already stored, which the caller must
+    /// not credit again from its buffer.
+    pub chat_stored_buffered: Vec<Uuid>,
 }
 
 const SELECT: &str = "SELECT l.id,l.document_id,l.sequence,l.source_sequence,l.vector,l.frontier,l.tree_digest,\
@@ -541,6 +544,7 @@ impl PostgresCatalog {
         tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
         document_id: Uuid,
         referenced: &[Vec<u8>],
+        buffered_chat: &[Uuid],
     ) -> Result<TrimOutcome> {
         // Labels first: document_labels has an FK (document_id, archive_key) ->
         // document_archives ON DELETE CASCADE, so deleting labels first lets
@@ -566,14 +570,17 @@ impl PostgresCatalog {
         .bind(referenced.to_vec())
         .fetch_all(&mut **tx)
         .await?;
-        let (chat_messages, chat_bytes) = self.clear_chat_in_transaction(tx, document_id).await?;
+        let chat = self
+            .clear_chat_in_transaction(tx, document_id, buffered_chat)
+            .await?;
         Ok(TrimOutcome {
             versions,
             version_bytes: archive_bytes.iter().sum(),
             figures: figure_bytes.len() as i64,
             figure_bytes: figure_bytes.iter().sum(),
-            chat_messages,
-            chat_bytes,
+            chat_messages: chat.rows,
+            chat_bytes: chat.bytes,
+            chat_stored_buffered: chat.stored_buffered,
         })
     }
 

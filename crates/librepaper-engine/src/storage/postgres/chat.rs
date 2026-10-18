@@ -61,8 +61,12 @@ impl From<ChatRow> for ChatRecord {
 
 impl PostgresCatalog {
     /// Inserts a batch in one transaction and adds its charge to
-    /// documents.chat_bytes. An author account that no longer exists is stored
-    /// as NULL, with the label "Deleted user", instead of failing the batch.
+    /// documents.chat_bytes. The active author accounts are locked FOR SHARE
+    /// first, in id order, so an erasure cannot start (it needs a conflicting
+    /// row lock to mark the account 'erasing') until this batch commits, and
+    /// its anonymizing update then sees every row. An author that is missing
+    /// or already erasing is stored as NULL, with the label "Deleted user",
+    /// instead of failing the batch.
     /// A row whose id is already stored is skipped and not charged again, so
     /// a retry after a lost reply is harmless. Returns the bytes charged.
     pub async fn insert_chat_messages(
@@ -78,11 +82,20 @@ impl PostgresCatalog {
         let labels: Vec<String> = rows.iter().map(|row| row.author_label.clone()).collect();
         let bodies: Vec<String> = rows.iter().map(|row| row.body.clone()).collect();
         let created: Vec<OffsetDateTime> = rows.iter().map(|row| row.created_at).collect();
+        let mut wanted: Vec<Uuid> = authors.iter().flatten().copied().collect();
+        wanted.sort();
+        wanted.dedup();
         let mut tx = self.begin_writer_transaction().await?;
+        let active: Vec<Uuid> = sqlx::query_scalar(
+            "SELECT id FROM accounts WHERE id = ANY($1) AND status='active' ORDER BY id FOR SHARE",
+        )
+        .bind(wanted)
+        .fetch_all(&mut *tx)
+        .await?;
         let inserted: Vec<i64> = sqlx::query_scalar(
             "INSERT INTO chat_messages (id,document_id,author_account_id,author_label,body,created_at) \
-             SELECT m.id,$1,(SELECT a.id FROM accounts a WHERE a.id=m.author),\
-             CASE WHEN m.author IS NOT NULL AND NOT EXISTS (SELECT 1 FROM accounts a WHERE a.id=m.author) \
+             SELECT m.id,$1,CASE WHEN m.author = ANY($7) THEN m.author ELSE NULL END,\
+             CASE WHEN m.author IS NOT NULL AND NOT (m.author = ANY($7)) \
              THEN 'Deleted user' ELSE m.label END,m.body,m.created_at \
              FROM UNNEST($2::uuid[],$3::uuid[],$4::text[],$5::text[],$6::timestamptz[]) \
              AS m(id,author,label,body,created_at) \
@@ -94,6 +107,7 @@ impl PostgresCatalog {
         .bind(labels)
         .bind(bodies)
         .bind(created)
+        .bind(active)
         .fetch_all(&mut *tx)
         .await?;
         let charge: i64 = inserted
@@ -138,21 +152,34 @@ impl PostgresCatalog {
         Ok((rows.into_iter().map(ChatRecord::from).collect(), more))
     }
 
-    /// Deletes every message and zeroes chat_bytes. Returns (rows, bytes).
-    pub async fn clear_chat(&self, document_id: Uuid) -> Result<(i64, i64)> {
+    /// Deletes every message and zeroes chat_bytes. `buffered` is the ids of
+    /// the messages the room still holds in memory.
+    pub async fn clear_chat(&self, document_id: Uuid, buffered: &[Uuid]) -> Result<ChatCleared> {
         let mut tx = self.begin_writer_transaction().await?;
-        let cleared = self.clear_chat_in_transaction(&mut tx, document_id).await?;
+        let cleared = self
+            .clear_chat_in_transaction(&mut tx, document_id, buffered)
+            .await?;
         tx.commit().await?;
         Ok(cleared)
     }
 
-    /// Same as `clear_chat`, inside the caller's transaction. The second
-    /// figure is what `chat_bytes` held, which is what the owner is credited.
+    /// Same as `clear_chat`, inside the caller's transaction. `bytes` is what
+    /// `chat_bytes` held, which is what the owner is credited. `stored_buffered`
+    /// names the buffered ids that were already stored, so the caller does not
+    /// credit those a second time from the buffer.
     pub async fn clear_chat_in_transaction(
         &self,
         tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
         document_id: Uuid,
-    ) -> Result<(i64, i64)> {
+        buffered: &[Uuid],
+    ) -> Result<ChatCleared> {
+        let stored_buffered: Vec<Uuid> = sqlx::query_scalar(
+            "SELECT id FROM chat_messages WHERE document_id=$1 AND id = ANY($2)",
+        )
+        .bind(document_id)
+        .bind(buffered.to_vec())
+        .fetch_all(&mut **tx)
+        .await?;
         let rows = sqlx::query("DELETE FROM chat_messages WHERE document_id=$1")
             .bind(document_id)
             .execute(&mut **tx)
@@ -166,8 +193,22 @@ impl PostgresCatalog {
         .bind(document_id)
         .fetch_optional(&mut **tx)
         .await?;
-        Ok((rows, bytes.unwrap_or(0)))
+        Ok(ChatCleared {
+            rows,
+            bytes: bytes.unwrap_or(0),
+            stored_buffered,
+        })
     }
+}
+
+/// What a clear removed from PostgreSQL.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct ChatCleared {
+    pub rows: i64,
+    pub bytes: i64,
+    /// The buffered ids that were also stored, as after a flush whose reply
+    /// was lost.
+    pub stored_buffered: Vec<Uuid>,
 }
 
 #[cfg(test)]
@@ -295,13 +336,17 @@ mod tests {
         let document = project(&catalog, &owner).await;
         let rows = vec![message(None, "one"), message(None, "two")];
         let charged = catalog.insert_chat_messages(document, &rows).await.unwrap();
-        let cleared = catalog.clear_chat(document).await.unwrap();
-        assert_eq!(cleared, (2, charged));
+        let cleared = catalog.clear_chat(document, &[]).await.unwrap();
+        assert_eq!((cleared.rows, cleared.bytes), (2, charged));
+        assert!(cleared.stored_buffered.is_empty());
         assert_eq!(chat_bytes(&catalog, document).await, 0);
         let (left, more) = catalog.chat_page(document, None, 10).await.unwrap();
         assert!(left.is_empty());
         assert!(!more);
-        assert_eq!(catalog.clear_chat(document).await.unwrap(), (0, 0));
+        assert_eq!(
+            catalog.clear_chat(document, &[]).await.unwrap(),
+            super::ChatCleared::default()
+        );
     }
 
     #[tokio::test]
@@ -315,7 +360,7 @@ mod tests {
         let charged = catalog.insert_chat_messages(document, &rows).await.unwrap();
         let mut tx = catalog.begin_writer_transaction().await.unwrap();
         let outcome = catalog
-            .trim_retained_in_transaction(&mut tx, document, &[])
+            .trim_retained_in_transaction(&mut tx, document, &[], &[])
             .await
             .unwrap();
         tx.commit().await.unwrap();
@@ -381,5 +426,52 @@ mod tests {
         let (page, _) = catalog.chat_page(document, None, 10).await.unwrap();
         assert_eq!(page.len(), 2);
         assert_eq!(chat_bytes(&catalog, document).await, first);
+    }
+
+    #[tokio::test]
+    #[ignore = "requires LIBREPAPER_TEST_POSTGRES_URL"]
+    async fn an_erasing_author_is_stored_anonymously_and_an_active_one_is_kept() {
+        let catalog = catalog().await;
+        let _writer = catalog.claim_writer().await.unwrap();
+        let owner = account(&catalog).await;
+        let erasing = account(&catalog).await;
+        let document = project(&catalog, &owner).await;
+        sqlx::query("UPDATE accounts SET status='erasing' WHERE id=$1")
+            .bind(erasing.id)
+            .execute(catalog.pool())
+            .await
+            .unwrap();
+        let rows = vec![
+            message(Some(erasing.id), "from the erased"),
+            message(Some(owner.id), "from the owner"),
+        ];
+        catalog.insert_chat_messages(document, &rows).await.unwrap();
+        let (page, _) = catalog.chat_page(document, None, 10).await.unwrap();
+        assert_eq!(page.len(), 2);
+        assert_eq!(page[0].author_account_id, None);
+        assert_eq!(page[0].author_label, "Deleted user");
+        assert_eq!(page[1].author_account_id, Some(owner.id));
+        assert_eq!(page[1].author_label, "Tester");
+    }
+
+    #[tokio::test]
+    #[ignore = "requires LIBREPAPER_TEST_POSTGRES_URL"]
+    async fn clear_reports_which_buffered_ids_were_already_stored() {
+        let catalog = catalog().await;
+        let _writer = catalog.claim_writer().await.unwrap();
+        let owner = account(&catalog).await;
+        let document = project(&catalog, &owner).await;
+        let stored = message(None, "stored");
+        let unstored = message(None, "waiting");
+        catalog
+            .insert_chat_messages(document, std::slice::from_ref(&stored))
+            .await
+            .unwrap();
+        let cleared = catalog
+            .clear_chat(document, &[stored.id, unstored.id])
+            .await
+            .unwrap();
+        assert_eq!(cleared.rows, 1);
+        assert_eq!(cleared.stored_buffered, vec![stored.id]);
     }
 }
