@@ -31,6 +31,11 @@ jobs:
         github.event.workflow_run.event == 'push' &&
         github.event.workflow_run.head_repository.full_name == 'LibrePaper/librepaper'))
     runs-on: ubuntu-22.04
+    # Its own protected environment: a required reviewer approves each publish,
+    # so one pushed tag cannot ship an attested kit alone. Not `release`, which
+    # holds the desktop signing secrets and only accepts v* tags, while this job
+    # runs from main.
+    environment: publish
     steps:
       - uses: actions/checkout@v6
         with:
