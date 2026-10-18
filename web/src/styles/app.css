@@ -19,5 +19,6 @@
    components rather than files Tailwind scans by default. */
 @source "../**/*.{svelte,js,html}";
 
-/* The light theme must not follow the operating system's dark preference. */
-@custom-variant dark (&:where([data-theme="dark"], [data-theme="dark"] *));
+/* The mode attribute decides, not the operating system's setting: lib/theme.js
+   resolves "system" into light or dark and writes the result there. */
+@custom-variant dark (&:where([data-mode="dark"], [data-mode="dark"] *));

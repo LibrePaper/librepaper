@@ -8,6 +8,7 @@
   import { createMachineView } from "../../lib/desktop/machine.svelte.js";
   import Modal from "../Modal.svelte";
   import { offered, search, has } from "./registry.js";
+  import AppearanceSettings from "./AppearanceSettings.svelte";
   import EditorSettings from "./EditorSettings.svelte";
   import LatexFilesSettings from "./LatexFilesSettings.svelte";
   import QuotaSettings from "./QuotaSettings.svelte";
@@ -93,7 +94,9 @@
             <span class="settings-scope">Version {view.state.version} · This computer</span>
           {:else if shown.note}<span class="settings-scope">{shown.note}</span>{/if}
         </header>
-        {#if shown.id === "editor"}
+        {#if shown.id === "appearance"}
+          <AppearanceSettings />
+        {:else if shown.id === "editor"}
           <EditorSettings {keys} {onkeys} {commands} />
         {:else if shown.id === "rendering"}
           <section class="settings-subsection">
