@@ -1,48 +1,61 @@
-# SPEC: LibrePaper as a git remote, through the companion
+# SPEC: LibrePaper as a git remote
 
-Status: proposed 2026-10-14, not started. This replaces the earlier
-project-folder sync design in full.
+Status: proposed 2026-10-14, revised 2026-10-18, not started. This replaces
+the earlier project-folder sync design in full. The 2026-10-18 revision
+moves the helper from the retired companion to the `librepaper` command
+that every desktop app package installs, signs in with `librepaper login`
+instead of a new git grant, and replaces the three-way push check with a
+strict per-file hash check.
 
 ## Summary
 
-The companion ships a git remote helper, `git-remote-librepaper`. A user adds
-a LibrePaper project as a remote and uses plain `git pull` and `git push`.
-Fetch turns the project's current files into a commit. Push turns the
-pushed commits into minimal text edits and applies them on the server. A
-push is refused only when it overlaps edits that others made since the
-user's last pull. Overlapping work is then merged by git on the user's
-machine, with ordinary conflict markers.
+Every desktop app package ships a git remote helper,
+`git-remote-librepaper`. A user adds a LibrePaper project as a remote and
+uses plain `git pull` and `git push`. Fetch turns the project's current
+files into a commit. Push turns the pushed commits into minimal text edits
+and applies them on the server.
+
+A push applies only when every file it touches is still exactly what the
+user last pulled. Otherwise the server refuses it, the user runs
+`git pull`, git merges on the user's machine with ordinary conflict
+markers, and the user pushes again. This is the rule GitHub applies to a
+non-fast-forward push, narrowed to the touched files.
 
 The design is conservative on purpose:
 
-- The companion never acts as a Loro peer. It sends plain text patches, and
+- The helper never acts as a Loro peer. It sends plain text patches, and
   the server turns them into document edits.
-- Concurrent edits to the same lines are never merged by Loro. Git handles
-  them.
-- No browser tab is needed after the remote is set up.
+- The helper never merges. Git merges, during `git pull`.
+- Concurrent edits to the same file are never merged by Loro. The server
+  checks and applies in one step under its transaction lock, so there is
+  no race to retry.
+- No browser tab and no running desktop app are needed. The helper reads
+  the token that `librepaper login` stored.
 - The server holds no third-party git credential and builds no git objects.
 
 ## Goals
 
 1. `git clone`, `git pull` and `git push` against a LibrePaper project, from
-   any desktop where the companion is installed.
+   any desktop where the desktop app is installed.
 2. A push lands in open editors live, like a coauthor's typing.
 3. Comments and pending tracked changes stay attached to text that a push
    does not touch.
-4. A push is refused only for real overlap, never because someone typed
-   elsewhere in the same file.
+4. A push is refused only when a file it touches changed in LibrePaper
+   since the last pull, never because someone typed in another file.
 5. Every refusal names the file and the reason, and says what to run next.
 6. An existing git repository can be connected to an existing project with
    one command.
 
 ## Non-goals for v1
 
-- Use without the companion, for example from CI or a lab server. See
-  "Later".
+- Use without the desktop app installed, for example from CI or a lab
+  server. See "Later".
 - Commit ids that match across machines. See "Known limits".
 - Named versions as commits or tags.
 - More than one branch. The remote has exactly one branch, `main`.
-- Git LFS and submodules.
+- Git LFS, submodules and symlinks.
+- Accepting a push when someone else edited the same file elsewhere. See
+  "Range-level checks" under "Later".
 - `git push -o review` in the helper. The server route supports
   `"publish": "suggestions"` from step 3, so adding the flag later is
   helper work only.
@@ -60,15 +73,23 @@ git remote add librepaper librepaper::<slug>
 git pull librepaper main
 ```
 
-- **Consent on first use.** When the helper has no grant for the project
-  on this computer, it opens the browser to a consent page and waits. The
-  page names the project and the computer and asks "Allow git access to
-  this project from this computer?" Accepting mints the grant, and the git
-  command continues. See "Credentials".
+- **Remote names.** `librepaper` in `git pull librepaper main` is the name
+  given to the remote by `git remote add`, in the same way GitHub is
+  usually `origin`. A repository that also pushes to GitHub keeps `origin`
+  for GitHub and `librepaper` for the project. A repository cloned from
+  LibrePaper calls the remote `origin`, and plain `git pull` works.
+- **Why the URL looks unusual.** Git runs a program named
+  `git-remote-<x>` for any URL of the form `<x>::<address>`. Other tools
+  use the same mechanism, for example `git-remote-hg` and
+  `git-remote-gcrypt`.
+- **Sign-in on first use.** When the helper finds no stored token for the
+  site, it runs the `librepaper login` device flow in the terminal: it
+  prints a URL and a code, waits for approval in the browser, stores the
+  token and continues the git command. See "Credentials".
 - **Short URLs.** `librepaper::<slug>` means the project `<slug>` on the
-  site this companion is paired with. The full form
-  `librepaper::https://librepaper.org/p/<slug>` names the site explicitly.
-  Both forms work everywhere a remote URL is accepted.
+  site named in `.librepaper`, or else the only site the user is signed in
+  to. The full form `librepaper::https://librepaper.org/p/<slug>` names the
+  site explicitly. Both forms work everywhere a remote URL is accepted.
 - **The `.librepaper` file.** Connecting writes a `.librepaper` file at the
   repository root that names the project. It is committed like any other
   file. A coauthor who clones the repository from GitHub runs one command
@@ -86,8 +107,7 @@ git pull librepaper main
   write `.librepaper`. `link` also joins an existing history, see
   "`librepaper git link` in detail".
 - **The "Use with git" panel.** The project menu shows the commands above
-  with the slug filled in. It lists the computers that hold a grant for the
-  project, each with a Revoke button.
+  with the slug filled in.
 
 ### Daily use
 
@@ -111,7 +131,7 @@ problem and a final line saying what to do:
 
 ```text
 ! [remote rejected] main -> main (LibrePaper changed since your last pull)
-  paper.qmd lines 40-52 were edited in LibrePaper since your last pull.
+  paper.qmd was edited in LibrePaper since your last pull.
   Run: git pull librepaper main, then push again.
 ```
 
@@ -119,118 +139,73 @@ The full list is in "Push: refusal rules".
 
 ## Architecture
 
-There are three parts.
+There are two parts.
 
 1. **The helper.** `git-remote-librepaper` is the `librepaper` binary under
-   a second name, installed next to it by every install method (installer
-   script, Homebrew, Scoop). Git starts it whenever a remote URL begins with
-   `librepaper::`. It runs as a short-lived process for one fetch or push.
-   It reads the companion's credential store directly, so the companion's
-   background service does not have to be running.
-2. **The companion service.** It is needed only while a new grant is being
-   approved. It confirms to the consent page that this computer started the
-   request. See "Consent on first use". The helper starts the service if it
-   is not running, the same way `librepaper` does.
-3. **The server.** It gets a git grant, thin routes under `/api/git/v1/`,
-   and one source-change core shared with the agent tools. See "Server
-   apply".
+   a second name. Every desktop app package that puts `librepaper` on PATH
+   puts the helper next to it: the Homebrew cask, Scoop, the Windows
+   setup.exe, the deb and rpm packages and the Nix flake. The plain macOS
+   .dmg puts nothing on PATH, so Mac users who want git use the cask. Git
+   starts the helper whenever a remote URL begins with `librepaper::`. It
+   runs as a short-lived process for one fetch or push. It reads the token
+   store directly, so neither the desktop app nor its local service has to
+   be running.
+2. **The server.** Fetch uses the routes that `librepaper export` already
+   uses with the login token. Push gets one thin route,
+   `POST /api/git/v1/{slug}/push`, on one source-change core shared with
+   the agent tools. See "Server apply".
 
 The helper speaks git's remote-helper protocol with the `import` and
 `export` capabilities. Git produces and consumes fast-import and fast-export
 streams, so the helper never writes pack files or computes object ids by
-hand.
+hand. It reads blobs from the user's repository with `git cat-file`. It
+needs no merge code, because a push either matches the server exactly in
+every touched file or is refused.
 
 ## Credentials
 
-Today the companion has no standing credential. An agent grant
-(`POST /api/documents/{slug}/agent-token`,
-`crates/librepaper-server/src/server/agent_auth.rs`) lasts five minutes. It
-can only be minted by the signed-in document page and must name a link
-capability. That cannot serve a `git push` made hours later with no tab
-open. Git therefore needs its own grant.
+The helper uses the token that `librepaper login` stores. It adds no new
+credential type.
 
-### The git grant
-
-- **Minting.** Grants are minted only through the consent flow below. The
-  approval route follows the same rules as the agent-token route: cookie
-  only, same origin, signed in.
-- **Scope.** One account, one document, one computer. The grant records the
-  computer's name for display. It does not name a link, because the grant
-  belongs to the account, not to a share link.
+- **What it is.** The device-flow token (`lp_` prefix) that the CLI already
+  sends as a bearer to `/api/me`, `/api/documents/{slug}/snapshot` and the
+  asset routes (`crates/librepaper/src/cli/tokens.rs`).
+- **Storage.** The token cache under the state home, keyed by the server's
+  origin, with the file lock in
+  `crates/librepaper-companion/src/local/credentials.rs`. A token for one
+  deployment is never sent to another.
 - **Role.** Every request rechecks the account's current role on the
   document. Viewers and commenters can fetch. Only editors can push.
-  Removing a person from the project ends their git access immediately.
-- **Lifetime.** 180 days, extended by use. The project's "Use with git"
-  panel and the account settings list grants, and both can revoke them.
-  Signing out everywhere revokes every git grant.
-- **Storage.** The server stores only a hash of the token. The companion
-  stores the token in its credential store
-  (`crates/librepaper-companion/src/local/credentials.rs`), keyed by site
-  and document.
-- **Token prefix.** `lpg_`, so secret scanners can tell it apart from other
-  LibrePaper tokens.
-
-### Consent on first use
-
-Any helper request that finds no usable grant starts this flow. A revoked
-or expired grant starts it too.
-
-1. **Request.** The helper calls `POST /api/git/v1/requests` with the slug,
-   the computer's name and a random 32-byte secret it keeps in memory. The
-   server stores a hash of the secret and returns a request id. The request
-   expires after ten minutes.
-2. **Register.** The helper tells the local companion service the request
-   id over loopback, using the companion's existing local protocol.
-3. **Open.** The helper opens
-   `https://<site>/git/approve?request=<id>` in the default browser and
-   prints `Waiting for approval in your browser…` plus the URL, in case the
-   browser did not open.
-4. **Confirm the computer.** The consent page asks the paired companion on
-   this machine, over the existing site pairing, whether it registered this
-   request id. The page shows the Allow button only when the companion says
-   yes. This blocks a phishing link: a request started on someone else's
-   computer is not registered with the victim's companion, so the page
-   refuses it with "This request did not come from this computer."
-5. **Approve.** The person clicks Allow. The page calls
-   `POST /api/git/v1/requests/{id}/approve`, which checks the cookie, the
-   person's access to the project and the request's expiry, then marks it
-   approved.
-6. **Collect.** The helper polls `POST /api/git/v1/requests/{id}/token`
-   with the secret every two seconds. Once the request is approved, the
-   first call that presents the right secret receives the grant token. The
-   request is then deleted, so the token is handed out once.
-7. **Continue.** The helper stores the token in the credential store and
-   finishes the original fetch or push.
-
-Pressing Ctrl-C in the terminal abandons the request. An abandoned request
-expires on its own.
-
-When no paired companion answers in step 4, for example on a computer
-reached over SSH, the page falls back to a typed code. The helper prints
-an eight-character code, and the page asks the person to type it. A typed
-code proves the person can see the terminal that started the request.
+  Removing a person from the project ends their git access at once.
+- **Lifetime and revocation.** A device token ends with the session that
+  approved it, and signing out everywhere revokes it. When the token is
+  refused, the helper says to run `librepaper login` and stops. It does not
+  start a sign-in in the middle of a push.
+- **Scope.** The token covers the whole account, not one project. This is
+  wider than the per-project grant in the 2026-10-14 draft. The `agent`
+  command already accepts the same token, and a per-project grant needed a
+  new table, routes, a consent page and a phishing guard. See "Rejected
+  designs".
 
 ### Version handshake
 
-Every helper request sends `LibrePaper-Git: 1`. The server answers
-`426 Upgrade Required` when it no longer accepts that version, with a body
-naming the minimum version and the update command for each install method.
-The helper prints the message as the git error. The same header lets the
-server log which helper versions are still in use.
+Every helper request sends `LibrePaper-Git: 1`. The git routes answer
+`426 Upgrade Required` when the server no longer accepts that version, with
+a body naming the minimum version and the update command for each install
+method. The helper prints the message as the git error. The same header
+lets the server log which helper versions are still in use.
 
-The helper never updates itself. The update command depends on how the
-companion was installed:
+The helper never updates itself. It updates with the desktop app:
 
 | Install method | Update command |
 |---|---|
-| Installer script | `librepaper-update` |
-| Homebrew | `brew upgrade librepaper` |
+| Homebrew cask | `brew upgrade librepaper` |
 | Scoop | `scoop update librepaper` |
+| Windows setup.exe, macOS app | the app's own updater |
+| deb, rpm | the system package manager |
+| Nix | update the flake input |
 
-The helper detects the method from its own install path. The companion
-settings page shows "Update available" with the same command when the
-server's minimum version, or the latest release, is newer than the
-installed one.
+The helper detects the method from its own install path.
 
 ## The `.librepaper` file
 
@@ -242,8 +217,8 @@ project = "<slug>"
 
 - It holds no secret, so committing it is safe.
 - It is local-only: it is never uploaded into the project.
-- `site` lets `librepaper::<slug>` resolve correctly for a coauthor whose
-  companion is paired with more than one site.
+- `site` lets `librepaper::<slug>` resolve correctly for a coauthor who is
+  signed in to more than one site.
 - A repository with two LibrePaper remotes keeps the first one in the file.
   The second remote works, but `link` with no argument uses the file.
 
@@ -251,38 +226,70 @@ project = "<slug>"
 
 | Form | Meaning |
 |---|---|
-| `librepaper::<slug>` | Project `<slug>` on the site named in `.librepaper`, or else the only site the companion is paired with |
+| `librepaper::<slug>` | Project `<slug>` on the site named in `.librepaper`, or else the only site with a stored token |
 | `librepaper::https://<site>/p/<slug>` | Project `<slug>` on `<site>` |
 
-When the short form is ambiguous because the companion is paired with
-several sites and no `.librepaper` names one, the helper refuses and lists
-the full URLs to choose from.
+When the short form is ambiguous because the user is signed in to several
+sites and no `.librepaper` names one, the helper refuses and lists the full
+URLs to choose from. When the user is signed in nowhere, the helper uses
+the default server, as `librepaper login` does.
 
-## Remote state kept by the helper
+## Base: the state kept by the helper
 
-The helper keeps per-remote state in the user's repository:
+**Base** is the last commit exchanged with LibrePaper. It is the parent of
+every fetch commit and the reference point of every push. It is an
+ordinary commit in the user's repository, and git never sends it anywhere.
 
-- `refs/librepaper/<remote>/main`: the last commit exchanged with
-  LibrePaper, which is the last commit fetched or pushed.
-- `.git/librepaper/<remote>/state.json`, which holds:
+### Where it is stored
+
+- `refs/librepaper/<remote>/main` points at base. Being a ref keeps the
+  commit safe from garbage collection, and the user can inspect it with
+  `git log`.
+- `.git/librepaper/<remote>/state.json` holds:
   - `commit`, the same commit id as the ref;
   - `project_digest`, the server's projection digest at that commit, or
     `null` when unknown;
   - `marks`, the path of the fast-import and fast-export marks file.
 
-This state is the base for every push and the parent for every fetch. Git
-never sends it anywhere.
+Losing `state.json` loses nothing that matters. The helper rebuilds it from
+the ref and learns the digest on the next fetch.
+
+### When it moves
+
+Base moves in exactly two cases:
+
+1. **Fetch.** The new LibrePaper commit becomes base, and `project_digest`
+   is set to the digest the server reported.
+2. **A push that applies.** The pushed commit becomes base. `project_digest`
+   is set to the server's new digest only when the server's whole project
+   equaled base before the push. Otherwise it is set to `null`, so the next
+   fetch makes a commit carrying the edits others made in untouched files.
+
+A refused push leaves base where it was.
+
+### Per-file hashes are computed, not stored
+
+A push names, for each touched file, the hash the server must still hold.
+The helper computes it from base on the spot: it reads the file's blob
+from base's tree, normalizes CRLF to LF, and takes SHA-256 of the UTF-8
+bytes. That is what the server's `digest_of`
+(`crates/librepaper-engine/src/storage/store.rs`) computes. Git's own
+object ids hash a header plus the content and never equal these hashes, so
+the helper never reuses them.
 
 ## Fetch
 
 ### Server read
 
-`GET /api/git/v1/{slug}/project` returns what
-`GET /api/documents/{slug}/project` returns today (`schema`,
-`project_digest`, `tree`, `texts`). It accepts the git grant instead of a
-cookie, and supports `If-None-Match` on the digest. Binary files are read
-from `GET /api/documents/{slug}/assets/{sha}`, which accepts the git grant
-in the same way.
+`GET /api/documents/{slug}/project` returns `schema`, `project_digest`,
+`tree` and `texts`. It accepts the login token as a bearer, in the same way
+`/snapshot` does for `librepaper export`, and supports `If-None-Match`.
+Binary files are read from `GET /api/documents/{slug}/assets/{sha}`, which
+`librepaper export` already reads with the token.
+
+`project_digest` covers file text only. Comments and pending tracked-change
+records do not change it, so adding a comment never makes a fetch write a
+commit or a push refuse.
 
 ### Steps
 
@@ -291,16 +298,15 @@ in the same way.
 2. Download the project. Download each binary whose content hash is not
    already a blob in the repository.
 3. Build the new tree:
-   - every project file, at its project path;
-   - every path in the recorded commit's tree that is local-only (see
-     below), unchanged.
+   - every project file, at its project path, with mode `100644`;
+   - every path in base's tree that is local-only (see below), unchanged.
 4. Write one commit through fast-import:
-   - parent: the recorded commit, or none on the first clone;
+   - parent: base, or none on the first clone;
    - author and committer: `LibrePaper <git@librepaper.org>`, dated at the
      fetch time;
    - message: `LibrePaper edits` plus a blank line and a trailer
      `LibrePaper-Digest: <project_digest>`.
-5. Update the state ref and `state.json`.
+5. Move base: update the ref and `state.json`.
 
 ### Local-only paths
 
@@ -312,7 +318,7 @@ must not upload them.
 - These paths are always local-only: `.git/`, `.gitignore`,
   `.gitattributes`, `.librepaper`, `.librepaperignore`, `.github/`, and
   `*.local`.
-- Fetch carries local-only paths over from the parent commit unchanged.
+- Fetch carries local-only paths over from base unchanged.
 - Push skips them.
 
 ### Line endings
@@ -320,75 +326,79 @@ must not upload them.
 Project text uses LF. Fetch writes LF. With `core.autocrlf` set, git
 converts files in the working copy and converts them back on commit, so
 committed blobs stay LF. Push converts any CRLF in a text blob to LF before
-diffing, so a Windows checkout never shows up as rewriting every line.
+hashing and diffing, so a Windows checkout never shows up as rewriting
+every line or as a changed file.
+
+### File modes
+
+The project has no file modes. Fetch writes every file as `100644`. Push
+ignores the executable bit. A symlink or a submodule in a pushed tree
+refuses, naming the path.
 
 ## Push
 
 ### Inputs
 
-Git sends a fast-export stream for `refs/heads/main`. The helper reads
-three versions of every file:
+Git sends a fast-export stream for `refs/heads/main`. The helper reads two
+versions of every file:
 
-- **base**: the tree of the recorded commit, which is what the user last
-  received from LibrePaper;
-- **ours**: the tree of the pushed commit;
-- **theirs**: the server's current project, read fresh.
+- **base**: the file in base's tree, which is what the user last received
+  from LibrePaper;
+- **ours**: the file in the pushed commit's tree.
+
+The helper does not read the server's current project. The server checks
+it.
 
 ### Steps
 
 1. **Branch check.** Refuse any ref other than `refs/heads/main`. Refuse
    ref deletion.
-2. **Ancestry check.** The pushed commit must descend from the recorded
-   commit. Otherwise refuse with "fetch first", even for `--force`.
-   LibrePaper never rewinds.
+2. **Ancestry check.** The pushed commit must descend from base.
+   Otherwise refuse with "fetch first", even for `--force`. LibrePaper
+   never rewinds.
 3. **Collect changes.** Diff base against ours, skipping local-only paths.
    Intermediate commits are collapsed. Only the net change is applied.
-4. **Validate.** Apply every rule in "Push: refusal rules". Any failure
-   refuses the whole push.
-5. **Read theirs.** Fetch the current project and its `project_digest`.
-6. **Three-way check, per text file.**
-   - Compute line hunks for base to ours and for base to theirs, with the
-     same algorithm and adjacency rule as `git merge-file`. Two hunks
-     conflict when they overlap or touch.
-   - If any hunk in ours conflicts with a hunk in theirs, refuse, listing
-     every conflicting file and line range.
-   - Otherwise map each ours hunk onto theirs: its base line range,
-     shifted by theirs' earlier hunks.
-   - Inside each mapped hunk, compute a character diff between the theirs
-     text and the ours text. Emit one patch per changed run, with byte
-     offsets in theirs and the `exact` text currently there. Minimal
-     patches are what keep comment anchors attached.
-7. **Non-text changes.** Collect file additions, deletions and binary
-   replacements. A binary file changed on both sides since base is a
-   conflict and refuses. A file deleted in ours but edited in theirs is a
-   conflict and refuses.
-8. **Submit.** Send one change set (see "Server apply") naming the
-   theirs digest of every touched file.
-9. **Race retry.** If the server refuses because a touched file changed
-   between step 5 and step 8, go back to step 5. After five attempts, with
-   backoff of 0.2, 0.5, 1, 2 and 4 seconds, refuse with "the project is busy
-   in that file, try again".
-10. **Record.** Set the state ref to the pushed commit. Set
-    `project_digest` to the digest the server returns, but only when theirs
-    equaled base for every file. Otherwise set it to `null`, so the next
-    fetch makes a commit carrying the merged result. Report `ok
-    refs/heads/main`.
+4. **Validate.** Apply every rule in "Push: refusal rules" that the helper
+   can check locally. Any failure refuses the whole push.
+5. **Build patches.** For each changed text file, compute line hunks from
+   base to ours. Inside each hunk, compute a character diff and emit one
+   patch per changed run, with byte offsets in base and the `exact` text
+   there. Minimal patches are what keep comment anchors attached. Because
+   the server applies only when the file still equals base, offsets in base
+   are offsets in the server's file.
+6. **Dependencies.** For every touched file, add a dependency with the
+   base hash (see "Per-file hashes are computed, not stored"). A created
+   file has no dependency. The server refuses a creation over an existing
+   path.
+7. **Submit.** Send one change set (see "Server apply") with `base_tree`
+   set to base's `project_digest`.
+8. **Record.** On success, move base to the pushed commit and set
+   `project_digest` as described in "When it moves", using the server's
+   `base_matched` answer. Report `ok refs/heads/main`. On a refusal, leave
+   base alone and report `error refs/heads/main <reason>`.
+
+There is no retry loop. The server checks and applies in one step, so a
+refusal always means a touched file really changed, and the answer is
+always `git pull`.
 
 ### Push: refusal rules
 
-| Rule | Message names |
-|---|---|
-| Ref is not `main`, or is a deletion | the ref |
-| Pushed commit does not descend from the last fetch | "fetch first" |
-| A text file contains a line starting with `<<<<<<< `, `=======` or `>>>>>>> ` | file and line |
-| A text file is not valid UTF-8 | file |
-| A path fails the server's path rules (`validate_path` in `agent.rs`) | path |
-| A file is larger than the project's per-file limit | file and limit |
-| The push would exceed the account's storage quota | quota |
-| Hunks overlap edits made in LibrePaper since the last pull | file and lines |
-| The user is not an editor | role |
-| The grant is revoked or expired | the reconnect command |
-| The helper is too old | the update command |
+| Rule | Checked by | Message names |
+|---|---|---|
+| Ref is not `main`, or is a deletion | helper | the ref |
+| Pushed commit does not descend from base | helper | "fetch first" |
+| A text file contains a line starting with `<<<<<<< `, `=======` or `>>>>>>> ` | helper | file and line |
+| A text file is not valid UTF-8 | helper | file |
+| A path is a symlink or a submodule | helper | path |
+| A touched file changed in LibrePaper since base | server | every such file |
+| A created path already exists in LibrePaper | server | path |
+| A path fails the server's path rules (`validate_path` in `agent.rs`) | server | path |
+| A file is larger than the project's per-file limit | server | file and limit |
+| The push exceeds the account's storage quota | server | quota |
+| The push exceeds the git patch limits | server | the limit |
+| The user is not an editor | server | role |
+| The token is refused | server | `librepaper login` |
+| The helper is too old | server | the update command |
 
 The `=======` rule refuses only when a `<<<<<<< ` line also appears in the
 same file, because a line of `=` is valid Markdown.
@@ -414,16 +424,17 @@ that both call, and both gain from every improvement to it.
 - **`PatchRequest`.** Byte-range patches with the `exact` text currently
   there, an operation key and a base tree digest.
 - **`Consistency::UnchangedDependencies`.** A dependency with a
-  `file_hash` refuses when that whole file changed. One dependency per
-  touched file is exactly the per-file check a push needs. No new
-  consistency mode is required.
+  `file_hash` refuses when that file's SHA-256 differs. One dependency per
+  touched file is exactly the strict check a push needs. No new consistency
+  mode is required.
 - **Sequencing and replay.** `AgentPatchCommand` runs inside
-  `Sequencer::command` under the transaction lock, and its replay check
-  returns the first outcome for a retried operation id.
+  `Sequencer::command` under the transaction lock, so the dependency check
+  and the apply are one step. Its replay check returns the first outcome
+  for a retried operation id.
 - **Authorization.** `authorize_document_mutation` and the recheck
   callback.
-- **Tracked changes.** `document_propose` with `publish: "suggestions"` applies
-  patches as tracked changes through `AgentTrackedCommand`.
+- **Tracked changes.** `document_propose` with `publish: "suggestions"`
+  applies patches as tracked changes through `AgentTrackedCommand`.
 
 ### What changes in the room
 
@@ -438,8 +449,9 @@ that both call, and both gain from every improvement to it.
    `patches`:
    - `create`: a new text file with its path and text;
    - `delete`: a path, guarded by a whole-file dependency like a patch;
-   - `put_binary`: a path and an asset hash already uploaded through the
-     existing asset route.
+   - `put_binary`: a path, the asset hash already uploaded through the
+     existing asset route, and the asset hash the path must hold now, or
+     none for a new path.
    Validation covers them: valid paths, no creation over an existing
    path, no patch and deletion on the same file, and the storage quota.
    They apply in the same mutation as the patches, all or nothing.
@@ -458,7 +470,10 @@ that both call, and both gain from every improvement to it.
    source drives the editor notice ("pushed from git") and the activity
    record. Like the operation scope, `Origin` is kept out of the request
    digest, so it cannot alter a retry's identity.
-4. **Tracked changes take a `SourceChange`.** `AgentTrackedCommand` accepts
+4. **Whether base matched.** The outcome reports `base_matched`, true when
+   `base_tree` equaled the project digest just before the apply. The
+   helper needs it to know whether the server now equals the pushed commit.
+5. **Tracked changes take a `SourceChange`.** `AgentTrackedCommand` accepts
    the same type, so any caller that can apply a change can also publish it
    for review. File operations cannot be tracked changes yet. A change that
    has them and asks for review is refused with that reason.
@@ -470,21 +485,21 @@ that both call, and both gain from every improvement to it.
   `apply_source_change`. Views, signed range ids and candidates stay,
   because they protect a model from inventing offsets. They are the agent's
   front end, not part of the core.
-- **Git push.** `POST /api/git/v1/{slug}/push`, authenticated by the git
-  grant, editor role required. The helper is deterministic code, so it
+- **Git push.** `POST /api/git/v1/{slug}/push`, authenticated by the login
+  token, editor role required. The helper is deterministic code, so it
   sends a `SourceChange` directly:
 
   ```json
   {
     "operation": {"epoch": "...", "id": "v2...."},
-    "base_tree": "<project_digest the helper read>",
+    "base_tree": "<base's project_digest, or empty when unknown>",
     "consistency": "unchanged_dependencies",
-    "dependencies": [{"path": "paper.qmd", "file_hash": "<sha256>", "start": 0, "end": 0, "exact": ""}],
+    "dependencies": [{"path": "paper.qmd", "file_hash": "<sha256 of base text>", "start": 0, "end": 0, "exact": ""}],
     "patches": [{"path": "paper.qmd", "start": 120, "end": 131,
                  "exact": "old words", "replacement": "new words"}],
     "create": [{"path": "notes.md", "text": "..."}],
     "delete": ["old.tex"],
-    "put_binary": [{"path": "fig/plot.png", "sha": "<asset sha>"}],
+    "put_binary": [{"path": "fig/plot.png", "sha": "<new asset sha>", "expect": "<base asset sha>"}],
     "message": "Chapter 2 draft",
     "publish": "apply"
   }
@@ -492,79 +507,72 @@ that both call, and both gain from every improvement to it.
 
   The route parses the body, sets `Origin::Git`, and calls
   `apply_source_change`. With `"publish": "suggestions"` it calls the
-  tracked-change command instead, which is how `git push -o review` works. The
-  route holds no logic of its own beyond authentication and parsing.
-  `message` is the last pushed commit's subject, used for the notice.
+  tracked-change command instead, which is how `git push -o review` will
+  work. The route holds no logic of its own beyond authentication and
+  parsing. `message` is the last pushed commit's subject, used for the
+  notice.
 
-The response is the new `project_digest`, the applied paths and the
-operation receipt.
+The response is the new `project_digest`, `base_matched`, the applied
+paths and the operation receipt. A dependency refusal lists every touched
+file that changed, not only the first.
 
-### On the companion side
+### On the helper side
 
-The agent bridge (`crates/librepaper-companion/src/automation/peer.rs`
-and `automation/mcp.rs`) already mints operation ids, retries with the
+The agent bridge client code already mints operation ids, retries with the
 same id after a dropped connection, and maps refusals to messages. The
-helper reuses that client code. Only the credential differs: the git
-grant instead of the five-minute agent grant.
-
-### Improvements that serve both callers
-
-These live in the shared core, so agents and git both benefit.
-
-- **Range-level checks instead of whole-file checks.** A whole-file
-  dependency refuses when anyone typed anywhere in that file. Agents hit
-  this today: `document_apply` defaults to `exact_tree`, which refuses
-  when anything in the project changed. The core can instead check each
-  patch's range at the current head, by mapping its offsets from the base
-  through the edits made since. It would then refuse only when the patched
-  text itself changed. The base frontier is already recorded with every
-  label (`frontier` in the label table). Mapping can use Loro cursors taken
-  at the base and resolved at the head. Text is still never merged by
-  Loro: an edit inside a patched range is still a refusal. This removes
-  the busy-file limit for git and most "source tree changed" refusals for
-  agents. It is a later step with its own tests, not part of v1.
-- **One test suite.** Validation, replay, file operations and limits are
-  tested once at the core. Each caller tests only its own parsing and
-  authentication.
+helper reuses it. A retry after a dropped connection resends the same
+operation id, so it can never apply twice.
 
 ## Known limits
 
+- **Any edit to a touched file refuses the push.** A coauthor who changed
+  one line of `paper.qmd` in LibrePaper blocks a push to another part of
+  `paper.qmd` until the user pulls. A coauthor typing continuously in that
+  file can make a push fail several times in a row. Edits to other files
+  never block. Range-level checks lift this. See "Later".
 - **Commit ids differ across machines.** Each helper writes its own
   LibrePaper commits. Two people who both pull from LibrePaper and also
   share a GitHub repository get two commits for the same LibrePaper state.
   Git merges them cleanly, because both sides have the same content, but
   the history shows extra merge commits. Solo authors and people who share
-  only through LibrePaper never see this. Matching ids would need the
-  server to store commit metadata for every fetch and push. That is
-  deferred until someone asks for it.
-- **A very busy file can exhaust the retries.** A coauthor typing
-  continuously in the same file can change it between the read and the
-  apply on all five attempts. The push then refuses with "busy" and
-  succeeds when typing pauses. Range-level checks in the shared core
-  remove this limit. See "Improvements that serve both callers".
-- **Desktop only.** The helper needs the companion's install and grant.
+  only through LibrePaper never see this.
+- **Desktop only.** The helper ships with the desktop app packages.
 - **History is coarse.** One LibrePaper commit per fetch that saw a
   change. The detailed history stays in LibrePaper.
+- **The token is account-wide.** A stolen token reads and edits every
+  project the account can edit, as it already can through `librepaper
+  agent`.
+
+## Open questions
+
+These need answers before the step that depends on them.
+
+- **Pending tracked changes in fetched text (before step 2).** Since
+  tracked changes live in the document (`changes` root records), a file
+  with pending suggestions has more than one plausible text: without the
+  suggestions, with all of them accepted, or the raw document text. Fetch
+  must pick one, and push must say what happens to a patch that edits
+  inside a suggested insertion or deletion. The likely answer is: fetch
+  writes the text without pending suggestions, and push refuses a patch
+  that overlaps a pending suggestion, naming it.
+- **Large first pushes (before step 4).** `librepaper git link` on an
+  existing repository can push a whole thesis at once. Measure an 8 MiB,
+  5,000-patch push against the per-document log quota and the compaction
+  cost on a real `admin serve` before fixing the git limits.
 
 ## Build order
 
 Each step can be merged and shipped on its own.
 
-1. **Server: grant and read.**
-   - git grant table, the request, approve and token routes, revoke,
-     listing;
-   - grant authentication on `/api/git/v1/{slug}/project` and on asset
-     reads;
-   - version handshake;
-   - revoke on sign-out everywhere and on role removal.
-2. **Companion: fetch.**
-   - `git-remote-librepaper` name and install for all three install
-     methods;
+1. **Server: read.**
+   - `/api/documents/{slug}/project` accepts the login token as a bearer;
+   - check that the asset route does too, as `librepaper export` relies on.
+2. **Helper: fetch.**
+   - `git-remote-librepaper` installed by every package that installs
+     `librepaper`;
    - remote-helper protocol with `import`;
-   - per-remote state, local-only paths, line endings;
-   - both remote URL forms;
-   - consent on first use, including request registration with the
-     companion service and the typed-code fallback;
+   - base state, local-only paths, line endings, file modes;
+   - both remote URL forms, and sign-in on first use;
    - `librepaper git clone` and `librepaper git link`, the `.librepaper`
      file, and the hint when a repository has the file but no remote.
    At this point clone, pull and backup to GitHub work.
@@ -572,17 +580,14 @@ Each step can be merged and shipped on its own.
    - rename the agent apply path to `SourceChange` and move it to
      `room/source_change.rs`, with no behavior change for agents;
    - file operations, `Origin` with per-origin limits and the recorded
-     source;
+     source, `base_matched`;
    - tracked changes accept a `SourceChange`;
-   - the thin push route.
-4. **Companion: push.**
-   - `export` capability, ancestry check, refusal rules, three-way hunk
-     check, patch generation, race retry, state update.
+   - the thin push route and the version handshake.
+4. **Helper: push.**
+   - `export` capability, ancestry check, local refusal rules, patch
+     generation, per-file dependencies, state update.
 5. **Web.**
-   - "Use with git" panel with commands and the grant list;
-   - consent page at `/git/approve`, with the companion check and the
-     typed-code fallback;
-   - grants in account settings;
+   - "Use with git" panel with the commands;
    - the "pushed from git" notice in the editor.
 6. **Docs.** A `docs/git.md` page with the commands and every refusal
    message.
@@ -596,8 +601,8 @@ Linking joins an existing repository's history to the project without an
 2. Find the project. Use the argument when one is given. Otherwise read
    `.librepaper`. Refuse with "Name the project:
    `librepaper git link <slug>`" when neither exists.
-3. Add the `librepaper` remote. Get a grant through "Consent on first use"
-   if this computer has none for the project.
+3. Add the `librepaper` remote. Sign in first if there is no token for the
+   site.
 4. Write `.librepaper` if it is missing, and commit it alone with the
    message `Connect to LibrePaper project <slug>`.
 5. Download the project. List the paths that exist in `HEAD` but not in the
@@ -606,7 +611,7 @@ Linking joins an existing repository's history to the project without an
    upload it (pushed on the next push).
 6. Write the first LibrePaper commit with `HEAD` as its parent, so the two
    histories are related from the start. Its tree is the project's files
-   plus the local-only paths from `HEAD`.
+   plus the local-only paths from `HEAD`. It becomes base.
 7. Print a diffstat of `HEAD` against that commit and say: "Run `git merge
    librepaper/main` to take LibrePaper's version. To keep your local
    version instead, merge, then `git revert` the LibrePaper commit and
@@ -616,70 +621,114 @@ Linking joins an existing repository's history to the project without an
 
 Server, in the gated Postgres suite:
 
-- a grant works for fetch at viewer role and for push only at editor role;
-- a token is handed out once, only after approval, only with the right
-  secret, and never after the request expires;
-- approval refuses a person without access to the project;
-- revoking, signing out everywhere and removing the person each end access;
+- the login token works for fetch at viewer role and for push only at
+  editor role;
+- signing out everywhere and removing the person each end access;
 - the push route applies all or nothing;
-- a touched file changed since `base` refuses, while an untouched file
-  changed since `base` does not;
+- a touched file changed since base refuses and names the file, while an
+  untouched file changed since base does not refuse;
+- a refusal lists every changed touched file;
+- `base_matched` is true only when the whole project equaled base;
+- a creation over an existing path refuses, and a binary replacement
+  refuses when the current asset is not the expected one;
 - the git route's limits are enforced, and the agent limits are unchanged;
 - a replayed operation key returns the first receipt;
-- the stored mutation has `automation: false` and `source: "git"`.
+- the stored mutation has `automation: false` and `source: "git"`;
+- adding a comment does not change `project_digest`.
 
-Companion, unit tests with a temporary repository:
+Helper, unit tests with a temporary repository:
 
 - clone, then pull with no change, makes no new commit;
 - local-only paths survive fetch and are never pushed;
-- CRLF blobs push as LF without changing every line;
-- each refusal rule produces its message;
-- hunk conflicts follow `git merge-file` on a shared fixture corpus;
+- CRLF blobs push as LF without changing every line, and hash equal to
+  the LF text;
+- the per-file hash the helper computes equals the server's `digest_of`
+  on a shared fixture;
+- each helper-side refusal rule produces its message;
+- base moves on fetch and on an applied push, and not on a refusal;
+- losing `state.json` is recovered from the ref;
 - link joins histories, so the first `git merge` is not "unrelated";
 - link with no argument reads `.librepaper`, and the hint appears when
   the file exists without a remote;
-- the short URL resolves from `.librepaper`, from a single paired site, and
-  refuses when ambiguous.
-
-Browser, against the mock server:
-
-- the consent page shows Allow only when the paired companion confirms the
-  request id, and refuses a request it does not know;
-- with no companion answering, the page asks for the typed code.
+- the short URL resolves from `.librepaper`, from a single signed-in site,
+  and refuses when ambiguous.
 
 End to end, against a real `admin serve` (see the Node full-deployment
 tests):
 
-- two browsers typing in `paper.qmd` while a push edits other lines of the
-  same file: the push applies, and both browsers converge;
+- a browser typing in `intro.tex` while a push edits `paper.qmd`: the push
+  applies, and the browser converges;
+- a browser edit in `paper.qmd` after the last pull refuses a push to
+  `paper.qmd`, then `git pull` merges (with conflict markers when the
+  lines overlap), and the next push applies;
 - a comment anchored on untouched text keeps its anchor through a push;
-- a push overlapping a browser edit is refused, then `git pull` shows
-  conflict markers, and the resolved push applies;
 - a binary figure push replaces the figure in the editor.
+
+## Rejected designs
+
+- **Project-folder sync** (the design before 2026-10-14). Inbound folder
+  sync with frontiers in the written record. Dropped for the remote helper.
+- **A three-way check in the helper** (the 2026-10-14 draft). The helper
+  read the server's current text, refused only overlapping line hunks, and
+  mapped its patches onto the server's text, with a five-try retry when
+  the file changed in between. It accepted more pushes than the strict
+  check, but it reimplemented `git merge-file`, and its rule that touching
+  hunks conflict would have refused identical changes on both sides, which
+  git treats as clean. That case is common when coauthors share both
+  GitHub and LibrePaper.
+- **`git merge-tree` in the helper.** Letting the user's own git do the
+  three-way merge (`git merge-tree --write-tree`, git 2.40 or later), then
+  pushing the difference between the server's text and the merged result.
+  It fixes the identical-change case and reuses git's rules, but it still
+  needs a read of the server, a retry when the file changes before the
+  apply, and Loro merging nothing only by luck of timing. The strict check
+  needs none of that. It is the natural basis for accepting pushes over
+  other edits later, if range-level checks are not enough.
+- **A local bare mirror kept by the desktop app.** The user pushes to a
+  plain file-path remote, and a `pre-receive` hook forwards the push to the
+  server. It needs no remote-helper protocol, but git has no hook that runs
+  before a fetch, so `git pull` returns whatever the mirror last synced.
+  Stale pulls are the worst failure for this feature.
+- **Pushing through the desktop app's open editor.** The helper hands the
+  push to the app, and the project's editor page applies it as the user's
+  own edits over the normal socket. It needs no server changes, but the
+  app must be running with the project loaded, the hash check runs on a
+  copy that can lag the server, so simultaneous edits get merged by Loro,
+  and the service has no channel into a window today.
+- **A per-project git grant with a consent page** (the 2026-10-14 draft).
+  An `lpg_` token for one account, one project and one computer, minted by
+  a browser consent page that asked the local companion to confirm the
+  request, with a typed-code fallback over SSH. It was narrower than the
+  login token, but it was the largest and riskiest new code in the design,
+  and the companion it relied on is retired.
 
 ## Later
 
-- **Connect from the browser.** "Clone to this computer" and "Connect a
-  local repository" in the project menu. The companion opens a native
-  folder dialog and runs `clone` or `link`. The question about files that
-  exist only in the repository becomes a checklist in the page.
+- **Range-level checks in the shared core.** Instead of refusing when a
+  touched file changed at all, check each patch's range at the current
+  head, by mapping its offsets from the base through the edits made since,
+  with Loro cursors taken at the base and resolved at the head. It refuses
+  only when the patched text itself changed. Text is still never merged by
+  Loro: an edit inside a patched range is still a refusal. This lifts the
+  busy-file limit for git and most "source tree changed" refusals for
+  agents. It needs the server to know base's frontier, which a fetch would
+  then record.
+- **Connect from the desktop app.** "Clone to this computer" and "Connect
+  a local repository" in the project menu. The app opens a native folder
+  dialog and runs `clone` or `link`. The question about files that exist
+  only in the repository becomes a checklist in the page.
 - **New project from a local repository.** Pick a folder, and a project is
   created from its files with the remote already set.
 - **New project from GitHub.** The server fetches public repositories. For
-  private ones, the companion clones with the user's own keys.
-- **One grant per account per computer.** An opt-in choice on the consent
-  page: "all projects I can edit, on this computer". It ends repeat
-  consent, at the cost of a wider grant.
+  private ones, the desktop app clones with the user's own keys.
 - **Push as tracked changes.** `git push -o review` sends
   `"publish": "suggestions"`, so coauthors review the change as tracked
   changes. The server already supports it through the shared core.
 - **Named versions as tags.** Fetch writes a tag for each named version
   created since the last fetch.
-- **Hosted access without the companion.** The same `/api/git/v1/` routes,
-  behind a smart-HTTP front end on the server, would let CI and lab servers
-  use plain `git` with the grant as a password. The push logic would move
+- **Hosted access without the desktop app.** The same routes, behind a
+  smart-HTTP front end on the server, would let CI and lab servers use
+  plain `git` with a token as the password. The push logic would move
   from the helper to the server unchanged.
 - **Shared commit ids.** The server stores commit metadata per fetch and
   push so every machine writes the same commits.
-- **Range-level checks in the shared core.** See "Improvements that serve
-  both callers".

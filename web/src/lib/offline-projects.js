@@ -1,12 +1,12 @@
 import { projectIdentity, projectIdentityKey } from "./project-identity.js";
 import { LoroDoc, VersionVector } from "loro-crdt";
+import { OFFLINE_DATABASE as DATABASE, localDataForgotten } from "./local-data.js";
 
 // Named for the substrate, not only the schema: the v1 database holds Yjs
 // updates, and a Loro document cannot import those -- it rejects them as
 // invalid magic bytes, and the project then reads as unsaved on this device.
 // The cutover left nothing worth translating, so the old database is
-// abandoned rather than migrated.
-const DATABASE = "librepaper-offline-v2";
+// abandoned rather than migrated. The name itself lives in local-data.js.
 const VERSION = 2;
 const PROJECTS = "projects";
 const STATES = "states";
@@ -30,6 +30,8 @@ function transactionDone(transaction) {
 }
 
 function openOfflineDatabase(indexedDB_ = globalThis.indexedDB) {
+  // After a sign-out this tab must not recreate the database it just deleted.
+  if (localDataForgotten()) return Promise.reject(new Error("This browser's copies were cleared at sign-out."));
   if (!indexedDB_) return Promise.reject(new Error("This browser does not provide offline storage."));
   return new Promise((resolve, reject) => {
     const request = indexedDB_.open(DATABASE, VERSION);
@@ -73,20 +75,20 @@ async function readStore(store, key, indexedDB_) {
     requestResult(database.transaction(store, "readonly").objectStore(store).get(key)));
 }
 
-export async function preparedProjects(indexedDB_ = globalThis.indexedDB) {
+export async function localProjects(indexedDB_ = globalThis.indexedDB) {
   return withDatabase(indexedDB_, async (database) => {
     const records = await requestResult(database.transaction(PROJECTS, "readonly").objectStore(PROJECTS).getAll());
     return records.filter((record) => record?.prepared).sort((a, b) => String(b.preparedAt).localeCompare(String(a.preparedAt)));
   });
 }
 
-export async function preparedProject({ server, slug }, indexedDB_ = globalThis.indexedDB) {
+export async function localProject({ server, slug }, indexedDB_ = globalThis.indexedDB) {
   const origin = new URL(server || globalThis.location?.origin).origin;
-  return (await preparedProjects(indexedDB_)).find((record) => record.identity.origin === origin
+  return (await localProjects(indexedDB_)).find((record) => record.identity.origin === origin
     && (record.identity.slug === slug || record.document?.slug === slug)) || null;
 }
 
-export async function prepareOfflineProject(metadata, indexedDB_ = globalThis.indexedDB) {
+export async function rememberProject(metadata, indexedDB_ = globalThis.indexedDB) {
   const identity = projectIdentity({
     server: metadata.server || globalThis.location?.origin,
     documentId: metadata.document_id || metadata.documentId,
@@ -110,15 +112,61 @@ export async function prepareOfflineProject(metadata, indexedDB_ = globalThis.in
       source_format: metadata.source_format || "",
       role: metadata.role || "editor",
       can_edit: true,
-      offline_prepared: true,
+      local_copy: true,
     },
   };
   await withDatabase(indexedDB_, async (database) => {
     const transaction = database.transaction(PROJECTS, "readwrite");
-    transaction.objectStore(PROJECTS).put(record);
-    await transactionDone(transaction);
+    const done = transactionDone(transaction);
+    const store = transaction.objectStore(PROJECTS);
+    // Remembering a project again must not forget that its shell is cached.
+    const existing = await requestResult(store.get(key));
+    if (existing?.shellReady) record.shellReady = true;
+    store.put(record);
+    await done;
   });
   return record;
+}
+
+// Records that the app shell is cached for this project, so the next
+// rememberProject does not cache it again. A missing record is left alone:
+// the project was forgotten while the shell was caching.
+export async function markShellReady({ server, documentId, slug, createdAt }, indexedDB_ = globalThis.indexedDB) {
+  const identity = projectIdentity({
+    server: server || globalThis.location?.origin,
+    documentId,
+    slug,
+    createdAt,
+  });
+  const key = projectIdentityKey(identity);
+  await withDatabase(indexedDB_, async (database) => {
+    const transaction = database.transaction(PROJECTS, "readwrite");
+    const done = transactionDone(transaction);
+    const store = transaction.objectStore(PROJECTS);
+    const record = await requestResult(store.get(key));
+    if (record) store.put({ ...record, shellReady: true });
+    await done;
+  });
+}
+
+// Removes this browser's offer of one project: its record only. Without the
+// record the project no longer opens offline or appears in the offline list.
+// The saved state and updates stay, because they may hold edits not yet sent
+// to the server, and signing out clears them.
+export async function forgetProject({ server, documentId, slug, createdAt }, indexedDB_ = globalThis.indexedDB) {
+  const identity = projectIdentity({
+    server: server || globalThis.location?.origin,
+    documentId,
+    slug,
+    createdAt,
+  });
+  const key = projectIdentityKey(identity);
+  await withDatabase(indexedDB_, async (database) => {
+    const transaction = database.transaction(PROJECTS, "readwrite");
+    const done = transactionDone(transaction);
+    transaction.objectStore(PROJECTS).delete(key);
+    await done;
+  });
 }
 
 export function durableProjectPersistence(identity, indexedDB_ = globalThis.indexedDB, legacyIdentity = null) {

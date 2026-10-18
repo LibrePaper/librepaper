@@ -38,7 +38,7 @@
   import { day as isoDay, since } from "../lib/dates.js";
   import { PROJECT_TABS, PROJECT_TAB_IDS } from "../lib/panels.js";
   import { FORMATS } from "../lib/starter.js";
-  import { preparedProjects } from "../lib/offline-projects.js";
+  import { localProjects } from "../lib/offline-projects.js";
   import { provide } from "../lib/support/providers.js";
   import * as localBridge from "../lib/desktop/client.js";
   import { createPreferences } from "../lib/reader/preferences.svelte.js";
@@ -290,7 +290,7 @@
   }
 
   async function learnPaths() {
-    const wanted = documents.filter((doc) => !paths.has(doc.slug) && !doc.offline_prepared);
+    const wanted = documents.filter((doc) => !paths.has(doc.slug) && !doc.local_copy);
     if (!wanted.length) return;
     let next = 0;
     const worker = async () => {
@@ -464,6 +464,8 @@
       // -- because neither number was in the catalogue. Both are now.
     } catch (error) {
       if (navigator.onLine !== false) say(error?.message || "The project list could not be refreshed, so what is shown here may be out of date.", { kind: "problem", id: "landing:refresh" });
+      // A failed listing still offers the copies kept in this browser.
+      await showLocalProjects();
       return false;
     }
     return true;
@@ -482,16 +484,16 @@
     }
   }
 
-  async function showOfflineProjects() {
+  async function showLocalProjects() {
     try {
-      const local = await preparedProjects();
+      const local = await localProjects();
       const bySlug = new Map(documents.map((document_) => [document_.slug, document_]));
       for (const record of local) {
         if (bySlug.has(record.identity.slug)) continue;
         bySlug.set(record.identity.slug, {
           ...record.document,
           updated_at: record.preparedAt,
-          offline_prepared: true,
+          local_copy: true,
         });
       }
       documents = [...bySlug.values()];
@@ -865,7 +867,6 @@
   $effect(() => provide("account", () => ({ id: me.id, signedIn: Boolean(me.provider) })));
 
   $effect(() => {
-    void showOfflineProjects();
     localBridge.configure({ project: null, origin: location.origin });
     get("/api/config").then((answer) => { rules = answer ?? {}; }).catch(() => {});
     // Not the shared me(), which folds a failed request into an empty account:
@@ -873,6 +874,7 @@
     get("/api/me")
       .catch(() => {
         reachedServer = false;
+        void showLocalProjects();
         return {};
       })
       .then(async (who) => {
@@ -885,7 +887,6 @@
         if (who.can_publish) {
           if (newTab) void loadTemplates();
           await showList();
-          await showOfflineProjects();
           if (place === "trash") await showTrash();
           if (place === "templates") await loadTemplates();
         }
@@ -1083,7 +1084,7 @@
               <a class="title-line" href="/docs/{doc.slug}">{doc.title}</a>
             {/if}
             <span class="title-note">
-              {#if doc.offline_prepared}<span>Offline</span>{/if}
+              {#if doc.local_copy}<span>Offline</span>{/if}
               <!-- The file the search found, when it was not the title.
                    Opening it opens the project on that file. -->
               {#if found(doc, needle).path}
@@ -1241,9 +1242,23 @@
       </header>
       {#if !reachedServer}
         <aside class="card lp-tone-warning p-4">
-          This page could not reach the server, so it cannot tell whether you
-          are signed in. Your projects will appear once the server answers.
+          {#if documents.length}
+            This page could not reach the server. These projects are kept in this browser and open without a connection.
+          {:else}
+            This page could not reach the server, so it cannot tell whether you
+            are signed in. Your projects will appear once the server answers.
+          {/if}
         </aside>
+        {#if documents.length}
+          <section class="card p-4">
+            <h2 class="h4">Projects kept in this browser</h2>
+            <ul class="list-disc pl-5">
+              {#each documents as doc (doc.slug)}
+                <li><a href="/docs/{doc.slug}">{doc.title}</a></li>
+              {/each}
+            </ul>
+          </section>
+        {/if}
       {/if}
       <!-- The handle, not the name: this is about the allowlist, which is
            written in handles, and it is shown only to the person it refuses. -->

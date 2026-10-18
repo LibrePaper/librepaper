@@ -30,7 +30,7 @@
   import { createPassageTrace } from "../lib/reader/passage-trace.svelte.js";
   import { createPreviewRenderer } from "../lib/reader/preview-render.js";
   import { createPreferences } from "../lib/reader/preferences.svelte.js";
-  import { prepareOfflineProject, preparedProject } from "../lib/offline-projects.js";
+  import { forgetProject, markShellReady, rememberProject } from "../lib/offline-projects.js";
   import { cacheCurrentShell } from "../lib/offline-shell.js";
   import { needsSourceRefresh } from "../lib/reader/source-events.js";
   import {
@@ -141,8 +141,9 @@
   // `settled` silently ends the loading state (§2.2).
   let projectUnreadable = $state("");
   const previewCacheKey = () => `${SLUG}:${doc?.created_at || "unknown"}`;
-  let offlinePrepared = $state(false);
-  let preparingOffline = $state(false);
+  // Set when the page was opened from this browser's copy because the server
+  // could not be reached, so the page says it may be missing newer changes.
+  let openedLocally = $state(false);
   /** @type {ReaderUser} */
   let me = $state({ id: "" });
   const backupStatus = $derived(backupStatusStore.status);
@@ -1217,6 +1218,7 @@
   // and the warning has to say what is happening to the typing meanwhile.
   const connectionNote = $derived.by(() => {
     if (connected) return "";
+    if (openedLocally) return "Offline. This is the copy saved in this browser, and it may be missing changes made elsewhere.";
     if (!mayEdit || !session) return "Reconnecting…";
     return persistence.local
       ? "Offline; changes are kept in this browser while reconnecting…"
@@ -2597,7 +2599,6 @@
     if (value === "quit") return void localQuarto.shellAction("quit").catch((error) => say(error.message || "The desktop app could not quit.", { kind: "problem", id: "reader:quit" }));
     if (value === "project-folder") return void (projectFolderOpen = true);
     if (value === "compile") return compileNow();
-    if (value === "offline") return makeAvailableOffline();
     if (value === "download") return downloadTree();
     if (value === "download-docx") return downloadDocx();
     if (value === "download-pdf" || value === "download-html") return downloadRendering(value.slice(9));
@@ -3169,10 +3170,12 @@
     // the permission is settled.
     ws.canEdit = mayEdit;
     timeline.state.canEdit = mayEdit;
-    offlinePrepared = Boolean(document_.offline_prepared);
-    if (mayEdit && !offlinePrepared) {
-      void preparedProject({ server: location.origin, slug: SLUG })
-        .then((record) => { offlinePrepared = Boolean(record); })
+    openedLocally = Boolean(document_.local_copy);
+    // Access was reduced, so this browser should stop offering an editable copy
+    // of a project it may no longer edit. A copy opened from this browser has no
+    // server answer behind its role, so it is kept as it is.
+    if (!mayEdit && !openedLocally) {
+      forgetProject({ server: location.origin, documentId: document_.document_id, slug: SLUG, createdAt: document_.created_at })
         .catch(() => {});
     }
     // Reader and commenter links receive an allowlisted projection of the
@@ -3318,6 +3321,34 @@
   $effect(() => backupStatusStore.setScope(me?.id, hasDesktop));
   $effect(() => () => backupStatusStore.reset());
 
+  // Every project an editor opens is kept in this browser, so it can be opened
+  // again without a connection. A new project reports local before anything is
+  // stored, so a failed attempt is retried on the next report instead of being
+  // given up for the rest of the page load. The inputs are read before any
+  // early return, so the effect stays subscribed to them. It waits for the
+  // editor module too: on a first visit that import may not have gone through
+  // the service worker yet, and the shell cached without it cannot edit.
+  let localCopyRunning = false;
+  let localCopyRemembered = false;
+  $effect(() => {
+    const ready = mayEdit && !openedLocally && persistence.local && Editor;
+    if (!ready || localCopyRunning || localCopyRemembered) return;
+    localCopyRunning = true;
+    const server = location.origin;
+    const identity = { server, documentId: doc.document_id, slug: SLUG, createdAt: doc.created_at };
+    (async () => {
+      const record = await rememberProject({ ...doc, slug: SLUG, server });
+      // The page shell is cached with the local copy, so the landing page can
+      // list local projects when the server cannot be reached. Until it is
+      // cached the record has no shellReady, and the next attempt tries again.
+      if (!record.shellReady && await cacheCurrentShell()) await markShellReady(identity);
+      localCopyRemembered = true;
+      localCopyRunning = false;
+    })().catch(() => {
+      localCopyRunning = false;
+    });
+  });
+
   // Ctrl-S reports the durability the server has confirmed for local work.
   // Typing is saved automatically, but a buffered edit is not durable yet.
   //
@@ -3342,21 +3373,6 @@
     }
     if (!persistence.joined || persistence.pending) return;
     say("Saved on the server.", { id: "reader:persistence" });
-  }
-
-  async function makeAvailableOffline() {
-    if (!mayEdit || !session || preparingOffline) return;
-    preparingOffline = true;
-    try {
-      await session.persist();
-      await cacheCurrentShell();
-      await prepareOfflineProject({ ...doc, slug: SLUG, server: location.origin });
-      offlinePrepared = true;
-    } catch (error) {
-      say(error?.message || "This project could not be stored for offline use.", { kind: "problem", id: "reader:offline-prepare" });
-    } finally {
-      preparingOffline = false;
-    }
   }
 
   // There is no save, so a close is almost never worth interrupting: the
@@ -3542,9 +3558,6 @@
   {/if}
   <Menu.Item value="download-docx" class="menuitem" disabled={!can["download-docx"]}>Download DOCX</Menu.Item>
   {#if mayEdit}
-    <Menu.Item value="offline" class="menuitem" disabled={offlinePrepared || preparingOffline || Boolean(persistence.localError)}>
-      {offlinePrepared ? "Available offline" : preparingOffline ? "Preparing offline copy…" : "Make available offline"}
-    </Menu.Item>
     <Menu.Item value="download" class="menuitem">Download project</Menu.Item>
   {/if}
   {#if me?.id}<Menu.Item value="save-template" class="menuitem">Save as template…</Menu.Item>{/if}
@@ -3642,6 +3655,7 @@
       <CompactPanelMenu tabs={tabs} {panel} {me} {badges} open={shown.comments} onselect={openPanel} onsettings={() => openSettings()}
                         menus={compactMenus} onmenu={(id, anchor) => menubar.show(id, anchor)} />
       {@render faceSwitch()}
+      {#if !connected}<span class="presence-offline" title={connectionNote} aria-label={connectionNote}><span class="presence-offline-dot" aria-hidden="true"></span>Offline</span>{/if}
     {:else}
       <!-- Between 761px and the split's narrow point, the face choice stays in
            the top bar. Compact widths render it beside the hamburger above. -->

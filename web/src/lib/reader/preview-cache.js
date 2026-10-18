@@ -18,7 +18,8 @@
 // window, simply draws nothing until its first compile, which is what every
 // browser did before this existed.
 
-const DATABASE = "librepaper-preview-v1";
+import { PREVIEW_DATABASE as DATABASE, localDataForgotten } from "../local-data.js";
+
 const VERSION = 1;
 const PAGES = "pages";
 /// How many documents keep a page. A reader moves between a handful of
@@ -46,6 +47,9 @@ function result(request) {
 }
 
 function open() {
+  // A signed-out tab must not recreate the database its sign-out deleted. This
+  // is checked before the cached handle, and nothing is cached for it.
+  if (localDataForgotten()) return Promise.resolve(null);
   if (opened) return opened;
   opened = new Promise((resolve, reject) => {
     if (!globalThis.indexedDB) {
@@ -59,7 +63,16 @@ function open() {
         database.createObjectStore(PAGES, { keyPath: "slug" });
       }
     };
-    request.onsuccess = () => resolve(request.result);
+    request.onsuccess = () => {
+      const database = request.result;
+      // A sign-out in another tab deletes this database. Closing here lets
+      // that delete finish, and the next call reopens a fresh connection.
+      database.onversionchange = () => {
+        database.close();
+        opened = null;
+      };
+      resolve(database);
+    };
     request.onerror = () => reject(request.error || new Error("preview cache is unavailable"));
   }).catch(() => null);
   return opened;
