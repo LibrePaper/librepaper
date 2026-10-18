@@ -505,19 +505,21 @@
       const end_utf16 = active.convertPos(toResult.offset, "unicode", "utf16") ?? 0;
 
       const tree = treeForDoc(doc);
-      const mainPath = tree.main;
-      const mainId = textIdForPath(doc, mainPath);
-      const main = getTextFromDoc(mainId);
+      // The bibliography is registered in the main file when it is Markdown, else in the citing file.
+      const mainIsMarkdown = formatOf(tree.main) === "markdown";
+      const regPath = mainIsMarkdown ? tree.main : activePath;
+      const regId = mainIsMarkdown ? textIdForPath(doc, tree.main) : activeFile;
+      const reg = getTextFromDoc(regId);
       const plan = planZoteroImport({
-        source: main?.toString() || "", mainPath, texts: tree.texts,
+        source: reg?.toString() || "", targetPath: regPath, texts: tree.texts,
         item: { ...fetched, zotero_item: entry.zotero_item },
       });
       const bibId = textIdForPath(doc, plan.path);
       const bib = bibId ? getTextFromDoc(bibId) : null;
       const changes = [{ from: Math.min(start_utf16, end_utf16), to: Math.max(start_utf16, end_utf16), insert: plan.key }];
-      if (plan.registration && mainId === activeFile) changes.push(plan.registration);
+      if (plan.registration && regId === activeFile) changes.push(plan.registration);
       changes.sort((a, b) => a.from - b.from || a.to - b.to);
-      const setupShift = plan.registration && mainId === activeFile && plan.registration.from <= Math.min(start_utf16, end_utf16)
+      const setupShift = plan.registration && regId === activeFile && plan.registration.from <= Math.min(start_utf16, end_utf16)
         ? plan.registration.insert.length - (plan.registration.to - plan.registration.from) : 0;
       if (bib) {
         if (plan.addition) {
@@ -525,8 +527,8 @@
           writeText(bibId, bib, end, end, plan.addition);
         }
       } else addTextToDoc(doc, plan.path, plan.bibtex);
-      if (plan.registration && main && mainId !== activeFile) {
-        writeText(mainId, main, plan.registration.from, plan.registration.to, plan.registration.insert);
+      if (plan.registration && reg && regId !== activeFile) {
+        writeText(regId, reg, plan.registration.from, plan.registration.to, plan.registration.insert);
       }
       target.view.dispatch({ changes, selection: { anchor: Math.min(start_utf16, end_utf16) + setupShift + plan.key.length }, annotations: Transaction.userEvent.of("input.complete") });
       if (tracked) prune(doc);

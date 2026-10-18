@@ -198,9 +198,9 @@ export function bibliographyRegistration(source, path = "references.bib") {
   return { from: 0, to: 0, insert: `---\n${line}---\n\n` };
 }
 
-function projectBibliographyPath(mainPath, reference) {
+function projectBibliographyPath(filePath, reference) {
   if (!reference || /^[a-z]+:/i.test(reference) || reference.startsWith("/")) return null;
-  const parts = String(mainPath || "").split("/").slice(0, -1);
+  const parts = String(filePath || "").split("/").slice(0, -1);
   for (const part of reference.split("/")) {
     if (!part || part === ".") continue;
     if (part === "..") { if (!parts.length) return null; parts.pop(); }
@@ -209,9 +209,9 @@ function projectBibliographyPath(mainPath, reference) {
   return parts.join("/");
 }
 
-export function planZoteroImport({ source, mainPath, texts, item }) {
+export function planZoteroImport({ source, targetPath, texts, item }) {
   const configured = selectedBibliographyFiles(source, "markdown");
-  const configuredPaths = configured.map((path) => projectBibliographyPath(mainPath, path)).filter(Boolean);
+  const configuredPaths = configured.map((path) => projectBibliographyPath(targetPath, path)).filter(Boolean);
   const existing = bibliographyFiles({ texts });
   const path = configuredPaths.find((name) => Object.hasOwn(texts, name)) || configuredPaths[0] || existing[0] || "references.bib";
   const previous = string(texts[path]);
@@ -221,7 +221,7 @@ export function planZoteroImport({ source, mainPath, texts, item }) {
   const bibtex = already ? previous : previous.replace(/\s*$/, "") + addition;
   let registration = null;
   if (!configured.length) {
-    const depth = String(mainPath || "").split("/").slice(0, -1).length;
+    const depth = String(targetPath || "").split("/").slice(0, -1).length;
     registration = bibliographyRegistration(source, "../".repeat(depth) + path);
   }
   return { key, path, bibtex, addition, create: !Object.hasOwn(texts, path), registration, already };
