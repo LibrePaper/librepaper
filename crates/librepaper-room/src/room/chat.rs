@@ -237,9 +237,11 @@ impl Room {
     /// messages, adds them to `hello` and queues it on the socket, all under
     /// the chat lock. Every chat event is sent under the same lock, so each
     /// one follows the hello and none can be lost or undone by it. A failed
-    /// read is logged and the hello goes out with an empty history. A hello
-    /// that is not a `hello` (an error reply) gets no chat keys. Returns false when
-    /// the hello cannot be queued within `timeout`.
+    /// read is logged and the hello goes out with `chat_unavailable` set and
+    /// no `chat` or `chat_more`, so the client keeps what it holds and asks
+    /// again; the socket still receives live messages. A hello that is not a
+    /// `hello` (an error reply) gets no chat keys. Returns false when the
+    /// hello cannot be queued within `timeout`.
     pub async fn send_hello_with_chat(
         &self,
         socket: u64,
@@ -252,15 +254,16 @@ impl Room {
         let buffer = self.chat.lock().await;
         self.listen_chat(socket, tx.clone()).await;
         if hello["type"] == "hello" {
-            let (messages, more) = match self.page_locked(&buffer, None, limit).await {
-                Ok(page) => page,
+            match self.page_locked(&buffer, None, limit).await {
+                Ok((messages, more)) => {
+                    hello["chat"] = Value::Array(messages.iter().map(chat_json).collect());
+                    hello["chat_more"] = json!(more);
+                }
                 Err(error) => {
                     tracing::warn!("could not read the chat of {}: {error}", self.slug);
-                    (Vec::new(), false)
+                    hello["chat_unavailable"] = json!(true);
                 }
-            };
-            hello["chat"] = Value::Array(messages.iter().map(chat_json).collect());
-            hello["chat_more"] = json!(more);
+            }
             hello["chat_can_clear"] = json!(can_clear);
         }
         tokio::time::timeout(timeout, tx.send(super::Outgoing::Text(hello.to_string())))

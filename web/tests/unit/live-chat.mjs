@@ -134,3 +134,58 @@ const range = (a, b) => Array.from({ length: b - a + 1 }, (_, i) => msg(a + i));
   assert.equal(chat.state.more, true);
   assert.equal(chat.state.loadingOlder, false);
 }
+
+// A hello whose history could not be read keeps the held list and retries.
+{
+  const calls = [];
+  globalThis.fetch = async (url) => {
+    calls.push(url);
+    return { ok: true, status: 200, json: async () => ({ messages: range(1, 6), more: true }) };
+  };
+  const chat = createLiveChat({ slug: "proj" });
+  chat.seed({ chat: range(4, 6), chat_more: false });
+  chat.seed({ type: "hello", chat_unavailable: true, chat_can_clear: true });
+  assert.deepEqual(ids(chat), range(4, 6).map((m) => m.id), "the held list survives");
+  assert.equal(chat.state.more, false, "more stays as it was");
+  assert.equal(chat.state.canClear, true);
+  assert.equal(chat.state.loadError, "Chat history could not be read. Trying again.");
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0], "/api/documents/proj/chat-history?limit=50");
+  assert.deepEqual(ids(chat), range(1, 6).map((m) => m.id));
+  assert.equal(chat.state.more, true);
+  assert.equal(chat.state.loadError, "");
+}
+
+// A seed that arrives while a retry is in flight cancels it.
+{
+  let release;
+  globalThis.fetch = () =>
+    new Promise((resolve) => {
+      release = () => resolve({ ok: true, status: 200, json: async () => ({ messages: range(1, 3), more: true }) });
+    });
+  const chat = createLiveChat({ slug: "proj" });
+  chat.seed({ chat_unavailable: true });
+  chat.seed({ chat: range(7, 8), chat_more: false });
+  release();
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  assert.deepEqual(ids(chat), range(7, 8).map((m) => m.id), "the stale retry is ignored");
+  assert.equal(chat.state.more, false);
+  assert.equal(chat.state.loadError, "");
+}
+
+// A failed retry schedules another, and a seed cancels that timer.
+{
+  let count = 0;
+  globalThis.fetch = async () => {
+    count++;
+    return { ok: false, status: 500, json: async () => ({}) };
+  };
+  const chat = createLiveChat({ slug: "proj" });
+  chat.seed({ chat_unavailable: true });
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  assert.equal(count, 1);
+  assert.equal(chat.state.loadError, "Chat history could not be read. Trying again.");
+  chat.seed({ chat: range(1, 2), chat_more: false });
+  assert.equal(chat.state.loadError, "");
+}
