@@ -154,8 +154,8 @@ impl PostgresCatalog {
 
     /// Deletes every message and zeroes chat_bytes. `buffered` is the ids of
     /// the messages the room still holds in memory. The document row is locked
-    /// first and nothing is deleted unless `owner` still owns the document, in
-    /// which case this returns `None`.
+    /// first. When `owner` no longer owns the document, nothing is deleted and
+    /// this returns `None`.
     pub async fn clear_chat(
         &self,
         document_id: Uuid,

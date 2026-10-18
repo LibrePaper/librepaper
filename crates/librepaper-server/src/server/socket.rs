@@ -546,7 +546,7 @@ impl Server {
                             continue 'reader;
                         }
                         let refusal = json!({"type":"error","message":"only the owner can clear chat"}).to_string();
-                        let Ok(owner_id) = uuid::Uuid::parse_str(&who.id.id) else {
+                        let Some(owner_id) = who.account_id() else {
                             let _ = send_outgoing(&tx, Outgoing::Text(refusal)).await;
                             continue 'reader;
                         };
