@@ -28,7 +28,7 @@
     value,
     onchange,
     listClass = "",
-    children,
+    children = undefined,
   } = $props();
 </script>
 

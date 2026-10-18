@@ -19,6 +19,8 @@
 
   // One symbol as a button. The palette and the search field both draw their
   // tiles here, so a tile looks the same wherever it is shown.
+  /** @typedef {"html" | "quarto" | "markdown" | "latex" | "typst"} SymbolFormat */
+  /** @type {{ symbol: any, format?: SymbolFormat, onclick?: (event: MouseEvent) => void }} */
   let { symbol, format = "latex", onclick = undefined } = $props();
 
   // Math is drawn with KaTeX so a tile looks like the output. Text and emoji

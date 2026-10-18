@@ -6,6 +6,7 @@
   import { CATEGORIES, SYMBOLS, loadEmoji, symbolInsertion, symbolText } from "../lib/symbols/index.js";
 
   /** @typedef {import("../lib/insert.js").InsertContext} InsertContext */
+  /** @typedef {"html" | "quarto" | "markdown" | "latex" | "typst"} SymbolFormat */
 
   // The symbols panel in the sidebar. A click inserts the symbol into the open
   // file, and the editor takes the keyboard back afterwards. Shift-click copies
@@ -50,7 +51,8 @@
   // state: the user can open a different file while the panel stays up.
   // With no document open the bare spelling falls back to LaTeX, so the tiles
   // still have titles.
-  const formatNow = () => getContext?.()?.format ?? "latex";
+  /** @returns {SymbolFormat} */
+  const formatNow = () => /** @type {SymbolFormat} */ (getContext?.()?.format ?? "latex");
   const noticeShown = () => getContext?.()?.format === "latex" && tab === "emoji";
 
   const everything = $derived(emoji ? [...SYMBOLS, ...emoji.symbols] : SYMBOLS);
@@ -122,7 +124,7 @@
     const context = getContext?.();
     if (!context) return;
     if (event?.shiftKey) {
-      navigator.clipboard?.writeText(symbolText(symbol, context.format)).catch(() => {});
+      navigator.clipboard?.writeText(symbolText(symbol, /** @type {SymbolFormat} */ (context.format))).catch(() => {});
       return;
     }
     const result = symbolInsertion(symbol, context);
