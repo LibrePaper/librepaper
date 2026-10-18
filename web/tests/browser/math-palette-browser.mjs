@@ -11,6 +11,7 @@ import { mkdtempSync, readFileSync, writeFileSync, existsSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { browser, until, removeTemporary } from "../helpers/browser-driver.mjs";
 import { contentType } from "../helpers/loro.mjs";
+import { KATEX_DEFINE, serveKatex } from "../helpers/katex.mjs";
 
 const root = fileURLToPath(new URL("../../", import.meta.url));
 const temporary = mkdtempSync(join(tmpdir(), "librepaper-math-palette-browser-"));
@@ -46,8 +47,9 @@ window.paletteReady = true;
 
 let server, page;
 try {
-  await build({ configFile: false, root, plugins: [svelte()], logLevel: "error", build: { outDir: output, emptyOutDir: true, lib: { entry, formats: ["es"], fileName: () => "math-palette-check.js" } } });
+  await build({ configFile: false, define: KATEX_DEFINE, root, plugins: [svelte()], logLevel: "error", build: { outDir: output, emptyOutDir: true, lib: { entry, formats: ["es"], fileName: () => "math-palette-check.js" } } });
   server = createServer((request, response) => {
+    if (serveKatex(request, response)) return;
     const pathname = new URL(request.url, "http://localhost").pathname;
     const file = join(output, pathname);
     if (pathname !== "/" && existsSync(file)) {

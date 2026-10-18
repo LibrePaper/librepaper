@@ -57,17 +57,16 @@ export function typeset(katex, spans) {
 }
 
 /**
- * The typesetter the agent calls after every repaint. `base` is where KaTeX
- * is served, ending in a slash. Returns whether the document was typeset
- * before returning: it is when KaTeX is already here, and otherwise the
- * rendering lands once the script has loaded, which is a mutation the
- * agent's observer republishes like any other.
+ * Loads KaTeX from `base`, ending in a slash, once. Returns a function that
+ * resolves to `window.katex`, adding the stylesheet and the script the first
+ * time they are needed. A failed script load is forgotten, so the next call
+ * tries again.
  */
-export function createMathTypesetter({ base, document, window }) {
+export function createKatexLoader({ base, document, window }) {
   let loading = null;
   let styled = false;
 
-  function load() {
+  return function load() {
     if (window.katex) return Promise.resolve(window.katex);
     if (loading) return loading;
     if (!styled) {
@@ -90,7 +89,18 @@ export function createMathTypesetter({ base, document, window }) {
       document.head.appendChild(script);
     });
     return loading;
-  }
+  };
+}
+
+/**
+ * The typesetter the agent calls after every repaint. `base` is where KaTeX
+ * is served, ending in a slash. Returns whether the document was typeset
+ * before returning: it is when KaTeX is already here, and otherwise the
+ * rendering lands once the script has loaded, which is a mutation the
+ * agent's observer republishes like any other.
+ */
+export function createMathTypesetter({ base, document, window }) {
+  const load = createKatexLoader({ base, document, window });
 
   return function typesetMath() {
     prepareQuartoMath(document.body);

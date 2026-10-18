@@ -15,6 +15,7 @@ import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { browser, until, removeTemporary } from "../helpers/browser-driver.mjs";
 import { contentType, loroAlias } from "../helpers/loro.mjs";
+import { KATEX_DEFINE, serveKatex } from "../helpers/katex.mjs";
 
 const root = dirname(dirname(dirname(dirname(fileURLToPath(import.meta.url)))));
 const temp = mkdtempSync(join(tmpdir(), "librepaper-outline-browser-"));
@@ -155,7 +156,7 @@ let httpServer;
 let tab;
 try {
   await build({
-    configFile: false,
+    configFile: false, define: KATEX_DEFINE,
     root: join(root, "web"),
     resolve: { alias: loroAlias },
     plugins: [
@@ -169,6 +170,7 @@ try {
     logLevel: "error",
   });
   httpServer = createServer((request, response) => {
+    if (serveKatex(request, response)) return;
     if (request.url?.startsWith("/docs/")) {
       response.setHeader("content-type", "text/html");
       response.end('<!doctype html><html data-theme="librepaper"><head><meta name="viewport" content="width=device-width,initial-scale=1"><link rel="stylesheet" href="/librepaper-web.css"></head><body><script type="module" src="/check.js"></script></body></html>');

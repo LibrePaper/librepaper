@@ -17,10 +17,10 @@
 import { copyFileSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { KATEX_VERSION as version } from "./katex-path.mjs";
 
 const root = fileURLToPath(new URL("..", import.meta.url));
 const source = join(root, "node_modules/katex/dist");
-const version = JSON.parse(readFileSync(join(root, "node_modules/katex/package.json"), "utf8")).version;
 const target = join(root, "dist/assets", `katex-${version}`);
 
 mkdirSync(join(target, "fonts"), { recursive: true });

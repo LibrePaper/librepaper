@@ -5,6 +5,7 @@
   import { MATH_TEMPLATES, templateInsertion } from "../lib/symbols/templates.js";
   import { SYMBOLS, symbolText } from "../lib/symbols/index.js";
   import { insertSyntaxContext } from "../lib/insert.js";
+  import { loadKatex } from "../lib/katex.js";
 
   /** @typedef {import("../lib/insert.js").InsertContext} InsertContext */
   /** @typedef {{ id: string, label: string, preview: string, slots: Array<{ id: string, label: string, placeholder: string, optional?: boolean }>, latex: (values: any) => string, typst: (values: any) => string, package?: string, grid?: boolean }} MathTemplate */
@@ -138,9 +139,7 @@
 
   onMount(async () => {
     try {
-      const { default: module } = await import("katex");
-      await import("katex/dist/katex.min.css");
-      katex = module;
+      katex = await loadKatex();
     } catch {
       // The tiles keep their labels. Math that cannot load is no reason to
       // break the rest of the panel.

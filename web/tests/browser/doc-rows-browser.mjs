@@ -21,6 +21,7 @@ import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { browser, until, removeTemporary } from "../helpers/browser-driver.mjs";
 import { contentType, loroAlias } from "../helpers/loro.mjs";
+import { KATEX_DEFINE, serveKatex } from "../helpers/katex.mjs";
 
 const root = dirname(dirname(dirname(dirname(fileURLToPath(import.meta.url)))));
 const temp = mkdtempSync(join(tmpdir(), "librepaper-doc-rows-"));
@@ -141,13 +142,14 @@ const json = (response, value, status = 200) => {
   response.statusCode = status; response.setHeader("content-type", "application/json"); response.end(JSON.stringify(value));
 };
 try {
-  await build({ configFile: false, root: join(root, "web"), resolve: { alias: loroAlias }, plugins: [tailwindcss(), svelte(), {
+  await build({ configFile: false, define: KATEX_DEFINE, root: join(root, "web"), resolve: { alias: loroAlias }, plugins: [tailwindcss(), svelte(), {
     name: "doc-rows-test-room", enforce: "pre", resolveId(id) {
       if (id === "../lib/room.js" || id === "../room.js" || id.endsWith("/src/lib/room.js")) return room;
       if (id === "../lib/collab.js") return collab;
     },
   }], build: { outDir: out, emptyOutDir: true, minify: false, lib: { entry, formats: ["es"], fileName: () => "check.js", cssFileName: "check" } }, logLevel: "error" });
   http = createServer((request, response) => {
+    if (serveKatex(request, response)) return;
     const url = new URL(request.url, "http://127.0.0.1");
     if (url.pathname === "/api/me") return json(response, { name: "Editor", providers: [] });
     if (url.pathname === "/api/documents/paper") return json(response, {

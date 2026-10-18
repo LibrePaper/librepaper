@@ -1,21 +1,6 @@
-<script module>
-  // KaTeX is large, so it is fetched the first time a math tile is drawn.
-  // Every tile after that shares the same load.
-  /** @type {Promise<any> | null} */
-  let katexLoad = null;
-  /** @returns {Promise<any>} */
-  function loadKatex() {
-    katexLoad ??= (async () => {
-      const { default: katex } = await import("katex");
-      await import("katex/dist/katex.min.css");
-      return katex;
-    })();
-    return katexLoad;
-  }
-</script>
-
 <script>
   import { symbolText } from "../lib/symbols/index.js";
+  import { loadKatex } from "../lib/katex.js";
 
   // One symbol as a button. The palette and the search field both draw their
   // tiles here, so a tile looks the same wherever it is shown.
@@ -29,6 +14,8 @@
   const math = $derived(symbol.category !== "text" && symbol.category !== "emoji");
   /** @type {any} */
   let katex = $state(null);
+  // KaTeX is large, so it is fetched the first time a math tile is drawn.
+  // Every tile after that shares the same load.
   $effect(() => {
     if (!math || katex) return;
     let live = true;

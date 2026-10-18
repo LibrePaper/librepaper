@@ -10,6 +10,7 @@ import { mkdtempSync, readFileSync, writeFileSync, existsSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { browser, until, removeTemporary } from "../helpers/browser-driver.mjs";
 import { contentType, loroAlias } from "../helpers/loro.mjs";
+import { KATEX_DEFINE, serveKatex } from "../helpers/katex.mjs";
 
 const root = fileURLToPath(new URL("../../", import.meta.url));
 const temporary = mkdtempSync(join(tmpdir(), "librepaper-symbols-browser-"));
@@ -69,8 +70,9 @@ window.insertReady = true;
 `);
 let server, page;
 try {
-  await build({configFile:false,root,plugins:[svelte()],logLevel:"error",resolve:{alias:loroAlias},build:{outDir:output,emptyOutDir:true,lib:{entry,formats:["es"],fileName:()=>"symbols-check.js"}}});
+  await build({configFile:false, define: KATEX_DEFINE,root,plugins:[svelte()],logLevel:"error",resolve:{alias:loroAlias},build:{outDir:output,emptyOutDir:true,lib:{entry,formats:["es"],fileName:()=>"symbols-check.js"}}});
   server = createServer((request, response) => {
+    if (serveKatex(request, response)) return;
     const pathname = new URL(request.url, "http://localhost").pathname;
     const file = join(output, pathname);
     if (pathname !== "/" && existsSync(file)) {
