@@ -54,6 +54,8 @@ mod chat;
 #[cfg(test)]
 mod comment_http_tests;
 pub mod cost;
+#[cfg(test)]
+mod detail_http_tests;
 mod documents;
 mod figures;
 mod graphs;
@@ -63,6 +65,8 @@ mod history_frontier_tests;
 mod host_metrics;
 #[cfg(test)]
 mod http_test_support;
+#[cfg(test)]
+mod figures_http_tests;
 #[cfg(test)]
 mod isolation_http_tests;
 pub(crate) mod mcp;

@@ -178,7 +178,7 @@ async fn document_detail(
         return server.not_found(request.headers());
     }
     server
-        .handle_document_detail(request.headers(), &ctx, &slug)
+        .handle_document_detail(request.headers(), &ctx, &slug, request.uri().query())
         .await
 }
 
@@ -1440,7 +1440,12 @@ impl Server {
         headers: &HeaderMap,
         context: &RequestContext,
         slug: &str,
+        query: Option<&str>,
     ) -> Reply {
+        let wants_files = query.is_some_and(|q| {
+            url::form_urlencoded::parse(q.as_bytes())
+                .any(|(key, value)| key == "files" && value == "1")
+        });
         let arrival = &context.arrival;
         let entry = match self.checked_entry(slug).await {
             Ok(Some(entry)) => entry,
@@ -1472,18 +1477,28 @@ impl Server {
                 )
             }
         };
+        let role = who.role;
+        let owned = role.at_least(Role::Editor);
         // Every path in the directory, for the landing page's search: a
         // project is found by the files in it as well as by its title.
         // Paths only -- the digests are the timeline's business. An
         // unreadable document still lists by title; it just has no
-        // paths to search on until it is recovered (§9.3).
-        let files: Vec<String> = room
-            .projection()
-            .await
-            .map(|projected| projected.projection.files.keys().cloned().collect())
-            .unwrap_or_default();
-        let role = who.role;
-        let owned = role.at_least(Role::Editor);
+        // paths to search on until it is recovered (§9.3). The list is
+        // built only on request, because building it decodes the whole
+        // document, and every editor open used to pay that for a list
+        // the editor never reads. The editor's own tree comes from the
+        // CRDT session; only the landing page's search asks with
+        // `files=1`.
+        let files: Option<Vec<String>> = if owned && wants_files {
+            Some(
+                room.projection()
+                    .await
+                    .map(|projected| projected.projection.files.keys().cloned().collect())
+                    .unwrap_or_default(),
+            )
+        } else {
+            None
+        };
         let metadata = librepaper_document::results::document_metadata(&entry.source_format);
         // What the comment form would sign this caller's name as, if they
         // said something right now: the account name when there is one,
@@ -1576,7 +1591,9 @@ impl Server {
             body["execution_engine"] = json!(metadata.execution_engine);
             body["draft_format"] = json!(metadata.draft_format);
             body["renderers"] = json!(self.renderers());
-            body["files"] = json!(files);
+            if let Some(files) = &files {
+                body["files"] = json!(files);
+            }
             body["source_format"] = json!(entry.source_format);
             body["main"] = json!(entry.main);
         }
