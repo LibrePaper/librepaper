@@ -18,10 +18,15 @@ use uuid::Uuid;
 
 use super::http_test_support::{deployment as http_deployment, owner_bearer, Deployment};
 use super::Server;
+use crate::server::origins::Origins;
 use librepaper_base::auth::{sign_device, Identity, PROVIDER_GITHUB};
 use librepaper_engine::storage::postgres::{AccessRole, NewAccount, WriterLease};
 use librepaper_engine::storage::store::{digest_of_bytes, DocumentInput, MutationActor};
 
+/// The app origin the requests name in their `host` header; the fixture's
+/// default origins would answer 421 to it.
+const READER: &str = "https://paper.example";
+const DOCS: &str = "https://docs.paper.example";
 const PAPER: &str = "# Figure reads\n\nA document with figures.\n";
 
 /// A valid PNG whose IHDR width is `width`, so each figure has its own digest.
@@ -127,11 +132,12 @@ async fn reader_bearer(deployment: &Deployment, document_id: Uuid) -> String {
         picture: String::new(),
         session_generation: account.session_generation.to_string(),
     };
-    sign_device(
+    let token = sign_device(
         &[0; 32],
         &identity,
         librepaper_base::util::now_unix() + 3600,
-    )
+    );
+    format!("Bearer {token}")
 }
 
 fn owner_authorization(deployment: &Deployment) -> String {
@@ -177,11 +183,12 @@ struct Served {
 
 async fn serve(deployment: Deployment) -> Served {
     let Deployment {
-        server,
+        mut server,
         _writer,
         _objects,
         ..
     } = deployment;
+    server.origins = Origins::configure(READER, Some(DOCS)).unwrap();
     let server = Arc::new(server);
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let address: SocketAddr = listener.local_addr().unwrap();
