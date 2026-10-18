@@ -48,8 +48,10 @@ export function forgetLocalData(indexedDB_ = globalThis.indexedDB, timeoutMs = 2
 export function listenForSignOut(onSignedOut) {
   if (!globalThis.BroadcastChannel) return () => {};
   const channel = new BroadcastChannel(CHANNEL);
+  // The tab that signed out hears its own message too. It is already
+  // forgotten and navigates on its own terms, so only other tabs react.
   channel.onmessage = (event) => {
-    if (event.data?.type !== "signed-out") return;
+    if (event.data?.type !== "signed-out" || forgotten) return;
     forgotten = true;
     onSignedOut();
   };
