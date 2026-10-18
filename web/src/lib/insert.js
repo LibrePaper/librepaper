@@ -31,8 +31,6 @@ export const INSERT_ACTIONS = [
   item('citation', 'Citation', 'References', 'citation'), item('bibliography', 'Bibliography', 'References', 'bibliography'),
   item('cross-reference', 'Cross-reference', 'References', 'cross-reference'), item('label', 'Label / anchor', 'References', 'label'),
   item('inline-math', 'Inline math', 'Math'), item('display-math', 'Displayed equation', 'Math', 'math', 'equation'),
-  item('aligned-math', 'Aligned equations', 'Math', 'math', 'align aligned'), item('gather-math', 'Gathered equations', 'Math', 'math', 'gather gathered'),
-  item('cases', 'Cases', 'Math', 'matrix'), item('matrix', 'Matrix', 'Math', 'matrix', 'pmatrix bmatrix Bmatrix vmatrix Vmatrix'),
   item('bulleted-list', 'Bulleted list', 'Lists', null, 'itemize'), item('numbered-list', 'Numbered list', 'Lists', null, 'enumerate'), item('description-list', 'Description list', 'Lists', null, 'description terms'),
   item('quote', 'Block quotation', 'Text blocks', null, 'quote'), item('quotation', 'Indented quotation', 'Text blocks', null, 'quotation'),
   item('code-block', 'Code block', 'Text blocks', 'code', 'verbatim listings'), item('footnote', 'Footnote', 'Text blocks'), item('link', 'Link', 'Text blocks', 'link'),
@@ -85,7 +83,6 @@ const scholarly = new Set(['theorem','lemma','proposition','definition','proof',
  * @property {string} [target]
  * @property {string} [url]
  * @property {string} [environment]
- * @property {string} [brackets]
  * @property {boolean} [inMath]
  * @property {string} [argumentsText]
  * @property {string[]} [arguments]
@@ -190,7 +187,7 @@ export function insertionAvailability(id, input = {}) {
   if(!formats.has(c.format))return {enabled:false,reason:'Open a LaTeX, Typst, Markdown, or Quarto source file.'};
   const mode=insertSyntaxContext(c);
   if(['code','comment','metadata'].includes(mode))return {enabled:false,reason:`Move the caret out of the ${mode==='metadata'?'document metadata':mode+' block'} to insert document content.`};
-  if(mode==='math' && !['matrix','cases','label'].includes(id))return {enabled:false,reason:'Move outside the current equation to insert this item.'};
+  if(mode==='math' && id!=='label')return {enabled:false,reason:'Move outside the current equation to insert this item.'};
   if(id==='custom-environment' && !['latex','typst','quarto'].includes(c.format))return {enabled:false,reason:'Custom environments need LaTeX, Typst, or Quarto.'};
   if(id==='custom-environment' && c.format==='typst' && !gatherInsertEnvironments(c).length)return {enabled:false,reason:'Define a content function in this Typst project first.'};
   if(id==='cross-reference' && !gatherInsertTargets(c).length)return {enabled:false,reason:'Add a heading or a labelled element first.'};
@@ -275,7 +272,7 @@ export function gatherInsertTargets(input = {}) {
  * @param {string} [prefix='']
  * @returns {string}
  */
-function uniqueLabel(value,c,prefix='') {
+export function uniqueLabel(value,c,prefix='') {
   let base=slug(value), used=new Set(gatherInsertTargets(c).map(x=>x.id));
   if(prefix && !base.startsWith(prefix+'-'))base=prefix+'-'+base;
   let result=base,n=2;while(used.has(result))result=base+'-'+n++;
@@ -317,18 +314,10 @@ function metadata(c, additions) {
  * @returns {{text: string; placeholder: string}}
  */
 function markdownMath(id,o,c) {
-  const body=c.selection.text||'x = y', rowCount=o.rows||2, columns=o.columns||2;
-  let formula=body;
-  if(id==='aligned-math')formula=`\\begin{aligned}\n${c.selection.text||'x &= y \\\\\nz &= w'}\n\\end{aligned}`;
-  if(id==='gather-math')formula=`\\begin{gathered}\n${c.selection.text||'x = y \\\\\nz = w'}\n\\end{gathered}`;
-  if(id==='cases')formula=`\\begin{cases}\n${Array.from({length:rowCount},(_,i)=>`${i+1} & x ${i?' >':' \\le'} 0`).join(' \\\\\n')}\n\\end{cases}`;
-  if(id==='matrix'){
-    const env=({parentheses:'pmatrix',brackets:'bmatrix',braces:'Bmatrix',bars:'vmatrix',doublebars:'Vmatrix',none:'matrix'})[o.brackets]||'pmatrix';
-    formula=`\\begin{${env}}\n${Array.from({length:rowCount},()=>Array(columns).fill('0').join(' & ')).join(' \\\\\n')}\n\\end{${env}}`;
-  }
-  if(c.format==='markdown' && insertSyntaxContext(c)!=='math') return {text:`<span data-math-style="${id==='inline-math'?'inline':'display'}">${html(formula)}</span>`,placeholder:html(id==='matrix'?'0':id==='cases'?'1':body)};
-  const text=insertSyntaxContext(c)==='math'?(c.format==='markdown'&&c.text.slice(0,c.selection.from).lastIndexOf('<span')>c.text.slice(0,c.selection.from).lastIndexOf('</span>')?html(formula):formula):id==='inline-math'?`$${formula}$`:`$$\n${formula}\n$$${c.format==='quarto' && o.numbered!==false && o.label?` {#${o.label}}`:''}`;
-  return {text,placeholder:id==='matrix'?'0':id==='cases'?'1':body};
+  const body=c.selection.text||'x = y';
+  if(c.format==='markdown' && insertSyntaxContext(c)!=='math') return {text:`<span data-math-style="${id==='inline-math'?'inline':'display'}">${html(body)}</span>`,placeholder:html(body)};
+  const text=insertSyntaxContext(c)==='math'?(c.format==='markdown'&&c.text.slice(0,c.selection.from).lastIndexOf('<span')>c.text.slice(0,c.selection.from).lastIndexOf('</span>')?html(body):body):id==='inline-math'?`$${body}$`:`$$\n${body}\n$$${c.format==='quarto' && o.numbered!==false && o.label?` {#${o.label}}`:''}`;
+  return {text,placeholder:body};
 }
 /**
  * @typedef InsertionResult
@@ -398,7 +387,7 @@ function buildMarkdown(id,o,c) {
     const target=gatherInsertTargets(c).find(t=>t.id===o.target);
     text=q && /^(sec|fig|tbl|eq|thm|lem|prp|def|exm)-/.test(o.target)?'@'+o.target:`[${markdown(target?.label||o.target)}](${target?.path&&target.path!==c.path?url(relativePath(target.path,c.path)):''}#${url(o.target)})`;
   }else if(id==='label')text=q?`[]{#${o.label}}`:`<a id="${html(o.label)}"></a>`;
-  else if(['inline-math','display-math','aligned-math','gather-math','cases','matrix'].includes(id))return markdownMath(id,o,c);
+  else if(['inline-math','display-math'].includes(id))return markdownMath(id,o,c);
   else if(['bulleted-list','numbered-list','description-list'].includes(id)){
     const lines=(selected||'First item\nSecond item').split(/\r?\n/).filter(s=>s.trim());
     if(id==='description-list')text=q?lines.map(line=>`${line}\n:   Description.`).join('\n\n'):`<dl>\n${lines.map(line=>`<dt>${html(line)}</dt>\n<dd>Description.</dd>`).join('\n')}\n</dl>`;
@@ -462,8 +451,8 @@ export function buildInsertion(id, options = {}, input = {}) {
   if(c.format==='latex'&&o.level>5)throw Error('LaTeX section levels range from 1 to 5.');
   if(o.language && !/^[\w.+-]+$/.test(o.language))throw Error('Use a language name such as python, r, or javascript.');
   if(o.alignment && !['default','left','center','right'].includes(o.alignment))throw Error('Choose left, center, or right alignment.');
-  const prefixes={heading:'sec',figure:'fig',table:'tbl','display-math':'eq','aligned-math':'eq','gather-math':'eq',theorem:'thm',lemma:'lem',proposition:'prp',definition:'def',example:'exm',proof:'prf',remark:'rem',cases:'eq',matrix:'eq'};
-  if(c.format==='quarto'&&['display-math','aligned-math','gather-math','cases','matrix'].includes(id)&&o.numbered===true&&!o.label)o.label=id;
+  const prefixes={heading:'sec',figure:'fig',table:'tbl','display-math':'eq',theorem:'thm',lemma:'lem',proposition:'prp',definition:'def',example:'exm',proof:'prf',remark:'rem'};
+  if(c.format==='quarto'&&id==='display-math'&&o.numbered===true&&!o.label)o.label=id;
   if(o.label || id==='label' || (c.format==='quarto'&&scholarly.has(id)&&!['proof','remark'].includes(id)))o.label=uniqueLabel(o.label||id,c,c.format==='quarto'?prefixes[id]:'');
   if(id==='bibliography'){
     const whole=[c.text,c.mainText].filter(Boolean).join('\n');

@@ -1,6 +1,5 @@
 <script>
-  import { onMount, tick } from "svelte";
-  import PanelHeader from "./PanelHeader.svelte";
+  import { onDestroy, onMount, tick } from "svelte";
   import SymbolSearch from "./SymbolSearch.svelte";
   import { MATH_TEMPLATES, templateInsertion } from "../lib/symbols/templates.js";
   import { SYMBOLS, symbolText, separated } from "../lib/symbols/index.js";
@@ -13,7 +12,7 @@
 
   // The prop is still called onfocus for callers. It is renamed here so the
   // element attribute onfocus on the fields cannot be confused with it.
-  let { getContext, oninsert, onfocus: onfocusPanel, format = "" } = $props();
+  let { getContext, oninsert, onfocus: onfocusPanel, oncancel, format = "" } = $props();
 
   // KaTeX arrives after the picker is on screen. Until then every tile shows
   // its label, so the panel is usable at once and the math fills in later.
@@ -36,15 +35,18 @@
 
   const active = $derived(MATH_TEMPLATES.find((template) => template.id === activeId) ?? null);
   const inMath = $derived(captured ? insertSyntaxContext(captured) === "math" : false);
+  /** Numbers and labels exist only in LaTeX, Typst and Quarto. */
+  const numberable = $derived(["latex", "typst", "quarto"].includes(captured?.format ?? ""));
   /** @type {number} */
   const rowCount = $derived(Array.isArray(values.rows) ? values.rows.length : Number(values.rows));
   /** The format name, typed as any where the symbol helpers take a string. */
   const capturedFormat = $derived(/** @type {any} */ (captured?.format));
-  const isRowTemplate = (/** @type {MathTemplate | null} */ template) => template?.id === "aligned" || template?.id === "cases";
+  const isRowTemplate = (/** @type {MathTemplate | null} */ template) => ["aligned", "gathered", "cases"].includes(template?.id ?? "");
 
   /** Keys and labels of each row in the grid templates, in display order. */
   const rowFields = {
     aligned: [["left", "Left"], ["right", "Right"]],
+    gathered: [["value", "Equation"]],
     cases: [["value", "Value"], ["condition", "Condition"]]
   };
   const matrixBrackets = [
@@ -81,6 +83,8 @@
     for (const slot of template.slots) next[slot.id] = "";
     Object.assign(next, {
       style: "display",
+      numbered: false,
+      label: "",
       rows: 2,
       columns: 2,
       brackets: "parentheses",
@@ -172,6 +176,7 @@
     if (!template || format === "html") { activeId = null; return; }
     const context = getContext?.() ?? null;
     if (!context) return;
+    if (captured) oncancel?.(captured);
     captured = context;
     values = freshValues(template, context);
     error = "";
@@ -185,6 +190,7 @@
   async function back() {
     const id = activeId;
     activeId = null;
+    if (captured) oncancel?.(captured);
     captured = null;
     error = "";
     lastField = null;
@@ -196,8 +202,8 @@
   /** @param {KeyboardEvent} event */
   function onFormKey(event) {
     if (event.key !== "Escape" || event.defaultPrevented) return;
-    // The panel sits in a sidebar that also listens for Escape; this press
-    // belongs to the form. A press the search already answered is not the
+    // The dialog also closes on Escape; this press belongs to the form and
+    // goes back to the picker. A press the search already answered is not the
     // form's, so it stays on the form.
     event.preventDefault();
     event.stopPropagation();
@@ -310,10 +316,35 @@
     field.focus();
   }
 
+  // The overlay unmounts the palette when it closes, and a form left open
+  // holds an insertion target that the editor must release.
+  onDestroy(() => { if (captured) oncancel?.(captured); });
+
   /** Puts the focus where a keyboard user expects it: a tile, or the first field. */
   export function focus() {
-    if (activeId) firstField();
-    else /** @type {HTMLElement | null} */ (root?.querySelector("[data-template]"))?.focus();
+    /** @type {HTMLElement | null} */ (focusTarget())?.focus();
+  }
+
+  /** The open form's first field, or the first tile. */
+  export function focusTarget() {
+    if (activeId) return formEl?.querySelector("[data-math-field]") ?? formEl?.querySelector("input") ?? null;
+    return root?.querySelector("[data-template]") ?? null;
+  }
+
+  /**
+   * Whether an Escape belongs to the palette rather than to the overlay
+   * around it. The overlay hears the press first, so the palette acts on it
+   * here: a search with text keeps it to clear itself, and an open form goes
+   * back to the picker. The overlay then cancels the press, which also keeps
+   * onFormKey from going back a second time.
+   * @param {KeyboardEvent} event
+   */
+  export function claimsEscape(event) {
+    const target = event.target;
+    if (target instanceof HTMLInputElement && target.type === "search" && target.value) return true;
+    if (!activeId) return false;
+    void back();
+    return true;
   }
 </script>
 
@@ -326,20 +357,16 @@
 {/snippet}
 
 <div class="math-palette" bind:this={root}>
-  <PanelHeader title="Math" />
-
   {#if !active}
     {#if format === "html"}
       <p class="panel-muted">Math templates need LaTeX, Typst, Markdown or Quarto.</p>
     {:else}
       <div class="math-grid">
         {#each tiles as { template, html } (template.id)}
-          <div class="math-tile-cell">
-            <button type="button" class="math-tile" data-template={template.id} aria-label={template.label} onclick={() => openTemplate(template.id)}>
-              <span class="math-tile-preview" aria-hidden="true">{#if html}{@html html}{:else}{template.label}{/if}</span>
-            </button>
-            <span class="math-tile-label">{template.label}</span>
-          </div>
+          <!-- The rendered math is the label. The name is a tooltip and what a screen reader says. -->
+          <button type="button" class="math-tile" data-template={template.id} aria-label={template.label} title={template.label} onclick={() => openTemplate(template.id)}>
+            <span class="math-tile-preview" aria-hidden="true">{#if html}{@html html}{:else}{template.label}{/if}</span>
+          </button>
         {/each}
       </div>
     {/if}
@@ -382,7 +409,7 @@
         {#if isRowTemplate(active)}
           {@render stepper("Rows", rowCount, "row", changeRows)}
           {#each values.rows as row, index}
-            <div class="math-pair">
+            <div class="math-pair" style:grid-template-columns={`repeat(${rowFields[active.id].length}, minmax(0, 1fr))`}>
               {#each rowFields[active.id] as [key, label]}
                 <label class="label">{label}
                   <input class="input" data-math-field bind:value={values.rows[index][key]} onfocus={rememberField} />
@@ -420,7 +447,15 @@
             <legend>Style</legend>
             <label><input type="radio" name="math-style" value="display" bind:group={values.style} /> Display</label>
             <label><input type="radio" name="math-style" value="inline" bind:group={values.style} /> Inline</label>
+            {#if numberable && values.style === "display"}
+              <label><input type="checkbox" name="math-numbered" bind:checked={values.numbered} /> Numbered</label>
+            {/if}
           </fieldset>
+          {#if numberable && values.style === "display" && values.numbered}
+            <label class="label">Label
+              <input class="input" name="math-label" placeholder="name" bind:value={values.label} />
+            </label>
+          {/if}
         {/if}
 
         {#if error}<p class="math-error" role="alert">{error}</p>{/if}
@@ -436,18 +471,17 @@
 
 <style>
   .math-palette { display: flex; flex-direction: column; gap: var(--panel-section-gap); height: 100%; min-height: 0; overflow-y: auto; overscroll-behavior: contain; }
-  .math-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(4.5rem, 1fr)); gap: .5rem; }
-  .math-tile-cell { display: flex; flex-direction: column; align-items: center; gap: .25rem; min-width: 0; }
-  .math-tile { display: flex; align-items: center; justify-content: center; width: 4.5rem; min-height: 3.25rem; padding: .35rem .25rem; overflow: hidden; border: 1px solid var(--color-divider); border-radius: var(--radius-base); background: transparent; color: inherit; cursor: pointer; }
+  /* Equal columns and one aspect ratio, so every tile is the same box whatever the math inside it. */
+  .math-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(6rem, 1fr)); gap: .5rem; }
+  .math-tile { display: flex; align-items: center; justify-content: center; width: 100%; aspect-ratio: 3 / 2; padding: .5rem .75rem; overflow: hidden; border: 1px solid var(--color-divider); border-radius: var(--radius-base); background: transparent; color: inherit; cursor: pointer; }
   .math-tile:hover, .math-tile:focus-visible { background: var(--color-row-hover); }
   .math-tile-preview { display: flex; align-items: center; justify-content: center; max-width: 100%; font-size: .8rem; }
-  .math-tile-label { color: var(--panel-muted); font-size: var(--panel-meta-size); line-height: 1.2; text-align: center; }
   .math-form { display: flex; flex-direction: column; gap: .75rem; }
   .math-form-head { display: flex; align-items: center; gap: .5rem; }
   .math-form-title { margin: 0; font: inherit; font-weight: var(--panel-title-weight); }
   .math-preview { min-height: 3.5rem; padding: .6rem; overflow-x: auto; border: 1px solid var(--color-divider); border-radius: var(--radius-base); background: var(--color-subtle); }
   .math-fields { display: flex; flex-direction: column; gap: .6rem; }
-  .math-pair { display: grid; grid-template-columns: 1fr 1fr; gap: .5rem; }
+  .math-pair { display: grid; gap: .5rem; }
   .math-steppers { display: flex; flex-wrap: wrap; gap: .75rem; }
   .math-stepper { display: flex; align-items: center; gap: .5rem; }
   .math-count { min-width: 5.5rem; color: var(--panel-muted); font-size: var(--panel-meta-size); text-align: center; }

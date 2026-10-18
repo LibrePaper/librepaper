@@ -31,7 +31,7 @@
   import { createPassageTrace } from "../lib/reader/passage-trace.svelte.js";
   import { createPreviewRenderer } from "../lib/reader/preview-render.js";
   import { createPreferences } from "../lib/reader/preferences.svelte.js";
-  import { prepareOfflineProject, preparedProject } from "../lib/offline-projects.js";
+  import { forgetProject, markShellReady, rememberProject } from "../lib/offline-projects.js";
   import { cacheCurrentShell } from "../lib/offline-shell.js";
   import { needsSourceRefresh } from "../lib/reader/source-events.js";
   import {
@@ -142,8 +142,9 @@
   // `settled` silently ends the loading state (§2.2).
   let projectUnreadable = $state("");
   const previewCacheKey = () => `${SLUG}:${doc?.created_at || "unknown"}`;
-  let offlinePrepared = $state(false);
-  let preparingOffline = $state(false);
+  // Set when the page was opened from this browser's copy because the server
+  // could not be reached, so the page says it may be missing newer changes.
+  let openedLocally = $state(false);
   /** @type {ReaderUser} */
   let me = $state({ id: "" });
   const backupStatus = $derived(backupStatusStore.status);
@@ -1188,10 +1189,13 @@
   // reader joins it too, because that is where the text comes from.
   let Editor = $state(null);
   let editor = $state(null);
-  // The palettes' own components, so a command can ask the Math panel to open
-  // a template or the Symbols panel to take the focus.
+  // The palettes are overlays over the editor. Their components are kept so a
+  // command can ask the Math overlay to open a template, or the Symbols overlay
+  // to take the focus.
   let symbolPalette = $state(null);
   let mathPalette = $state(null);
+  let symbolsOpen = $state(false);
+  let mathOpen = $state(false);
   // Raw on purpose: the session is a bag of Loro types and functions, and the
   // collaboration module hands the same object back in its callbacks, which
   // are compared to this by identity. A deep proxy would never be equal to it.
@@ -1225,6 +1229,7 @@
   // and the warning has to say what is happening to the typing meanwhile.
   const connectionNote = $derived.by(() => {
     if (connected) return "";
+    if (openedLocally) return "Offline. This is the copy saved in this browser, and it may be missing changes made elsewhere.";
     if (!mayEdit || !session) return "Reconnecting…";
     return persistence.local
       ? "Offline; changes are kept in this browser while reconnecting…"
@@ -2587,7 +2592,6 @@
     if (value === "preview-latex-pdf") return void setLatexOutput("pdf");
     if (value === "preview-latex-html") return void setLatexOutput("html");
     if (value === "preview-file") return previewTheFile(openFile);
-    if (value === "local-execution") return toggleLocalExecution();
     if (value === "preview-typst-pdf") return void setTypstOutput("pdf");
     if (value === "preview-typst-html") return void setTypstOutput("html");
     return chose(value);
@@ -2606,7 +2610,6 @@
     if (value === "quit") return void localQuarto.shellAction("quit").catch((error) => say(error.message || "The desktop app could not quit.", { kind: "problem", id: "reader:quit" }));
     if (value === "project-folder") return void (projectFolderOpen = true);
     if (value === "compile") return compileNow();
-    if (value === "offline") return makeAvailableOffline();
     if (value === "download") return downloadTree();
     if (value === "download-docx") return downloadDocx();
     if (value === "download-pdf" || value === "download-html") return downloadRendering(value.slice(9));
@@ -2948,8 +2951,8 @@
     if (!context) return null;
     return { ...context, files: [...context.files, ...workspace.assets()] };
   }
-  function applyInsertion(result, context) {
-    if (!mayEdit || !editor?.applyInsertResult?.(result, context)) {
+  function applyInsertion(result, context, options) {
+    if (!mayEdit || !editor?.applyInsertResult?.(result, context, options)) {
       throw new Error("The document or selected text changed. Close this dialog and choose the insertion point again.");
     }
     return true;
@@ -3178,10 +3181,12 @@
     // the permission is settled.
     ws.canEdit = mayEdit;
     timeline.state.canEdit = mayEdit;
-    offlinePrepared = Boolean(document_.offline_prepared);
-    if (mayEdit && !offlinePrepared) {
-      void preparedProject({ server: location.origin, slug: SLUG })
-        .then((record) => { offlinePrepared = Boolean(record); })
+    openedLocally = Boolean(document_.local_copy);
+    // Access was reduced, so this browser should stop offering an editable copy
+    // of a project it may no longer edit. A copy opened from this browser has no
+    // server answer behind its role, so it is kept as it is.
+    if (!mayEdit && !openedLocally) {
+      forgetProject({ server: location.origin, documentId: document_.document_id, slug: SLUG, createdAt: document_.created_at })
         .catch(() => {});
     }
     // Reader and commenter links receive an allowlisted projection of the
@@ -3327,6 +3332,34 @@
   $effect(() => backupStatusStore.setScope(me?.id, hasDesktop));
   $effect(() => () => backupStatusStore.reset());
 
+  // Every project an editor opens is kept in this browser, so it can be opened
+  // again without a connection. A new project reports local before anything is
+  // stored, so a failed attempt is retried on the next report instead of being
+  // given up for the rest of the page load. The inputs are read before any
+  // early return, so the effect stays subscribed to them. It waits for the
+  // editor module too: on a first visit that import may not have gone through
+  // the service worker yet, and the shell cached without it cannot edit.
+  let localCopyRunning = false;
+  let localCopyRemembered = false;
+  $effect(() => {
+    const ready = mayEdit && !openedLocally && persistence.local && Editor;
+    if (!ready || localCopyRunning || localCopyRemembered) return;
+    localCopyRunning = true;
+    const server = location.origin;
+    const identity = { server, documentId: doc.document_id, slug: SLUG, createdAt: doc.created_at };
+    (async () => {
+      const record = await rememberProject({ ...doc, slug: SLUG, server });
+      // The page shell is cached with the local copy, so the landing page can
+      // list local projects when the server cannot be reached. Until it is
+      // cached the record has no shellReady, and the next attempt tries again.
+      if (!record.shellReady && await cacheCurrentShell()) await markShellReady(identity);
+      localCopyRemembered = true;
+      localCopyRunning = false;
+    })().catch(() => {
+      localCopyRunning = false;
+    });
+  });
+
   // Ctrl-S reports the durability the server has confirmed for local work.
   // Typing is saved automatically, but a buffered edit is not durable yet.
   //
@@ -3351,21 +3384,6 @@
     }
     if (!persistence.joined || persistence.pending) return;
     say("Saved on the server.", { id: "reader:persistence" });
-  }
-
-  async function makeAvailableOffline() {
-    if (!mayEdit || !session || preparingOffline) return;
-    preparingOffline = true;
-    try {
-      await session.persist();
-      await cacheCurrentShell();
-      await prepareOfflineProject({ ...doc, slug: SLUG, server: location.origin });
-      offlinePrepared = true;
-    } catch (error) {
-      say(error?.message || "This project could not be stored for offline use.", { kind: "problem", id: "reader:offline-prepare" });
-    } finally {
-      preparingOffline = false;
-    }
   }
 
   // There is no save, so a close is almost never worth interrupting: the
@@ -3423,16 +3441,9 @@
     if (id === "shortcuts") return openSettings("editor");
     if (id === "focus-files") return focusPanel("files");
     if (id === "focus-outline") return focusPanel("outline");
-    if (id === "focus-symbols") return focusPanel("symbols");
-    if (id === "focus-math") return focusPanel("math");
-    // A template command opens the Math panel on its template. The panel is
-    // mounted by the open, so the template is asked for after the tick.
-    if (id.startsWith("math-")) {
-      await openPanel("math");
-      await tick();
-      mathPalette?.openTemplate?.(id.slice("math-".length));
-      return;
-    }
+    if (id === "symbols" || id === "math") return openPalette(id);
+    // A template command opens the Math overlay on its template.
+    if (id.startsWith("math-")) return openPalette("math", id.slice("math-".length));
     if (id === "focus-comments") return focusPanel("collaboration");
     if (id === "chat-clear") return askClearChat();
     if (id === "focus-preview") return focusPreview();
@@ -3444,6 +3455,36 @@
 
   const EDIT_COMMANDS = ["undo", "redo", "cut", "copy", "paste", "select-all", "find", "replace", "bold", "italic"];
   const LAYOUT_COMMANDS = ["linked", "layout-source", "layout-document", "layout-split", "side-left", "side-right"];
+
+  // The palettes open over the editor. Each one inserts at the caret the
+  // editor had when it opened, so there is nothing to open without a source.
+  async function openPalette(name, template = "") {
+    if (!can[name]) return;
+    symbolsOpen = name === "symbols";
+    mathOpen = name === "math";
+    await tick();
+    if (template) mathPalette?.openTemplate?.(template);
+  }
+
+  // However an overlay closes, the editor gets the keyboard back, once the
+  // dialog has finished returning the focus to whatever opened it. The opener
+  // can be a menu that no longer exists. The Symbols picker skips this on touch
+  // devices (see returnToEditorUnlessTouch).
+  const returnToEditor = () => requestAnimationFrame(() => editor?.focus?.());
+  // On a touch device the editor is not refocused, since that raises the virtual keyboard.
+  const returnToEditorUnlessTouch = () => { if (!matchMedia("(pointer: coarse)").matches) returnToEditor(); };
+
+  function closePalette() {
+    symbolsOpen = false;
+    mathOpen = false;
+    returnToEditor();
+  }
+
+  // An Escape the palette keeps, to clear its search or leave a form, is
+  // cancelled so the overlay stays open.
+  function paletteEscape(palette, event) {
+    if (palette?.claimsEscape?.(event)) event.preventDefault();
+  }
 
   // Open the panel, then put the keyboard in it. The first of those was all a
   // panel command used to do, and a panel that appears while the focus stays
@@ -3530,9 +3571,6 @@
   {/if}
   <Menu.Item value="download-docx" class="menuitem" disabled={!can["download-docx"]}>Download DOCX</Menu.Item>
   {#if mayEdit}
-    <Menu.Item value="offline" class="menuitem" disabled={offlinePrepared || preparingOffline || Boolean(persistence.localError)}>
-      {offlinePrepared ? "Available offline" : preparingOffline ? "Preparing offline copy…" : "Make available offline"}
-    </Menu.Item>
     <Menu.Item value="download" class="menuitem">Download project</Menu.Item>
   {/if}
   {#if me?.id}<Menu.Item value="save-template" class="menuitem">Save as template…</Menu.Item>{/if}
@@ -3568,6 +3606,7 @@
       <span class="menuitem-check">{sourceSide === side ? "✓" : ""}</span>{label}
     </Menu.Item>
   {/each}
+  <hr class="hr my-1" />
   {#each RATIOS as ratio}
     <Menu.Item value="ratio-{ratio.share}" class="menuitem" disabled={compact}>
       <span class="menuitem-check">{sizes[PANES.editor.key] === ratio.share ? "✓" : ""}</span>{ratio.says}
@@ -3582,7 +3621,6 @@
 {#snippet previewItems()}
   {@const selectedFormat = displayedFormat === "latex" ? latexOutput : displayedFormat === "typst" ? typstOutput : ["markdown", "quarto"].includes(displayedFormat) ? markdownOutput : "html"}
   {@const selectableFormat = ["latex", "typst", "markdown", "quarto"].includes(displayedFormat)}
-  <div class="menu-section-label">Format</div>
   <Menu.Item value="format-html" class="menuitem" disabled={!selectableFormat}>
     <span class="menuitem-check">{selectedFormat === "html" ? "✓" : ""}</span>HTML
   </Menu.Item>
@@ -3595,14 +3633,7 @@
   <Menu.Item value="preview-file" class="menuitem" disabled={!can["preview-file"]}>Preview this file</Menu.Item>
   <hr class="hr my-1" />
   {@render previewItems()}
-  {#if runCodeOffered}
-    <!-- The same switch as the top bar, for widths where the bar has no room for it. Off whenever a document opens, never remembered. -->
-    <div class="menu-section-label">Code</div>
-    <Menu.Item value="local-execution" class="menuitem">
-      <span class="menuitem-check">{localExecution ? "✓" : ""}</span>Run code
-    </Menu.Item>
-    <hr class="hr my-1" />
-  {/if}
+  <hr class="hr my-1" />
   {@render layoutItems()}
 {/snippet}
 
@@ -3637,6 +3668,7 @@
       <CompactPanelMenu tabs={tabs} {panel} {me} {badges} open={shown.comments} onselect={openPanel} onsettings={() => openSettings()}
                         menus={compactMenus} onmenu={(id, anchor) => menubar.show(id, anchor)} />
       {@render faceSwitch()}
+      {#if !connected}<span class="presence-offline" title={connectionNote} aria-label={connectionNote}><span class="presence-offline-dot" aria-hidden="true"></span>Offline</span>{/if}
     {:else}
       <!-- Between 761px and the split's narrow point, the face choice stays in
            the top bar. Compact widths render it beside the hamburger above. -->
@@ -3676,7 +3708,7 @@
           {/each}
         {/each}
       </MenubarMenu>
-      <InsertMenu getContext={insertContext} oninsert={applyInsertion} onupload={uploadInsertAsset} onpreview={previewInsertAsset} onpanel={(id) => void focusPanel(id)} oncancel={(context) => editor?.releaseInsertContext?.(context)} onfocus={() => editor?.focus?.()} disabled={!mayEdit || !editor} />
+      <InsertMenu getContext={insertContext} oninsert={applyInsertion} onupload={uploadInsertAsset} onpreview={previewInsertAsset} onpalette={(id) => void openPalette(id)} keys={{ symbols: MENU_KEYS.symbols, math: MENU_KEYS.math }} oncancel={(context) => editor?.releaseInsertContext?.(context)} onfocus={() => editor?.focus?.()} disabled={!mayEdit || !editor} />
     {/if}
     {#if editing}
       <MenubarMenu id="view" label="View" onselect={chooseViewCommand}>
@@ -3715,14 +3747,6 @@
 
   {#snippet outlinePanel()}
     <Outline headings={outlineHeadings} activeFrom={outlineActiveFrom} onselect={openOutlineHeading} />
-  {/snippet}
-
-  {#snippet symbolsPanel()}
-    <SymbolPalette bind:this={symbolPalette} format={editorFormat} getContext={insertContext} oninsert={applyInsertion} onfocus={() => editor?.focus?.()} />
-  {/snippet}
-
-  {#snippet mathPanel()}
-    <MathPalette bind:this={mathPalette} format={editorFormat} getContext={insertContext} oninsert={applyInsertion} onfocus={() => editor?.focus?.()} />
   {/snippet}
 
   {#snippet agentPanel()}
@@ -3797,7 +3821,7 @@
   <Sidebar
     {shown} {tabs} {panel} {settled} {compact} mounted={mountedPanels} {badges}
     label="Document"
-    panels={{ files: filesPanel, outline: outlinePanel, symbols: symbolsPanel, math: mathPanel, agent: agentPanel,
+    panels={{ files: filesPanel, outline: outlinePanel, agent: agentPanel,
               collaboration: collaborationPanel, changes: changesPanel,
               share: sharePanel, diagnostics: diagnosticsPanel, history: historyPanel }}
     panes={panes} sidebarPane={PANES.sidebar}
@@ -3815,8 +3839,6 @@
           label={`Layout: ${ARRANGEMENTS[layout].says}. Switch to ${ARRANGEMENTS[ARRANGEMENTS[layout].next].says}`}
           onclick={cycleLayout} />
       {/if}
-      <IconButton icon="keyboard" label="Keyboard shortcuts" tone="plain"
-                  onclick={() => void runCommand("shortcuts")} />
       <IconButton icon="settings" label="Settings" tone="plain"
                   onclick={() => openSettings()} />
     {/snippet}
@@ -4072,6 +4094,21 @@
 <CommandPalette bind:open={commandPalette} context={commandContext} apple={APPLE}
                 onrun={(id) => void runCommand(id)} />
 
+<!-- The palettes open over the editor rather than in the sidebar. Each is
+     mounted only while open, so a form left half filled does not come back. -->
+<Modal bind:open={symbolsOpen} title="Insert symbol" compact sheet onclose={returnToEditorUnlessTouch}
+       initialFocus={() => symbolPalette?.focusTarget?.()} onEscapeKeyDown={(event) => paletteEscape(symbolPalette, event)}>
+  {#if symbolsOpen}
+    <SymbolPalette bind:this={symbolPalette} format={editorFormat} getContext={insertContext} oninsert={(result, context) => applyInsertion(result, context, { focus: false })} oncancel={(context) => editor?.releaseInsertContext?.(context)} />
+  {/if}
+</Modal>
+<Modal bind:open={mathOpen} title="Math" wider onclose={returnToEditor}
+       initialFocus={() => mathPalette?.focusTarget?.()} onEscapeKeyDown={(event) => paletteEscape(mathPalette, event)}>
+  {#if mathOpen}
+    <MathPalette bind:this={mathPalette} format={editorFormat} getContext={insertContext} oninsert={applyInsertion} onfocus={closePalette} oncancel={(context) => editor?.releaseInsertContext?.(context)} />
+  {/if}
+</Modal>
+
 <!-- The preferences dialog is shared by the navbar menu and sidebar button. -->
 <SettingsDialog bind:open={settingsOpen} bind:category={settingsCategory}
                 remoteConnected={connected} remoteNote={connectionNote}
@@ -4172,7 +4209,6 @@
   .presence-more { display: inline-grid; place-items: center; min-width: 1.5rem; height: 1.5rem; margin-left: calc(var(--spacing) * -1.5); border-radius: 50%; background: var(--color-divider); color: var(--color-text-secondary); font-size: .65rem; }
   /* A heading over a run of items. Aligned with the names rather than with
      the panel edge, so the column the items make starts once. */
-  .menu-section-label { padding: calc(var(--spacing) * 2) calc(var(--spacing) * 2.5) calc(var(--spacing) * 0.5) calc(var(--spacing) * 7); color: var(--color-text-secondary); font-size: var(--text-xs); font-weight: 600; text-transform: uppercase; letter-spacing: .05em; }
   @media (max-width: 760px) {
     :global(main.reader.adapted .sidebar-activity) { display: none; }
   }

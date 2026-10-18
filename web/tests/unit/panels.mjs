@@ -65,21 +65,15 @@ assert.deepEqual(offered({ mayEdit: false, editing: false }), [], "an unanswered
 assert.deepEqual(offered({ role: "", mayEdit: false, editing: false }), [], "and neither does an empty role");
 assert.deepEqual(offered(undefined), [], "nor no reader at all");
 
-// The palettes sit beside the outline for an editor with the source open, and
-// nowhere else: they insert into the source, so a reader or commenter is not
-// offered them, and an editor without the source has nothing to insert into.
+// The Symbols and Math palettes are overlays, so no panel offers them.
 assert.deepEqual(
-  offered({ role: "editor", mayEdit: true, editing: true, canSeeSharing: false, canPublish: false }).slice(0, 4),
-  ["files", "outline", "symbols", "math"],
-  "an editor's palettes come right after the outline",
+  offered({ role: "editor", mayEdit: true, editing: true, canSeeSharing: false, canPublish: false }).slice(0, 2),
+  ["files", "outline"],
+  "an editor with the source open is offered files and outline first",
 );
 assert.ok(
-  !offered({ role: "editor", mayEdit: true, editing: false, canSeeSharing: false, canPublish: false }).some((id) => id === "symbols" || id === "math"),
-  "with the source closed, neither palette is offered",
-);
-assert.ok(
-  !offered({ role: "commenter", mayEdit: false, editing: true, canSeeSharing: false, canPublish: false }).some((id) => id === "symbols" || id === "math"),
-  "a commenter is not offered either palette",
+  !offered({ role: "editor", mayEdit: true, editing: true, canSeeSharing: false, canPublish: false }).some((id) => id === "symbols" || id === "math"),
+  "no palette is a panel",
 );
 
 console.log("panels: a read link gets the changes, a comment link gets the comments and changes, an editor gets the workspace");

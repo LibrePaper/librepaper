@@ -30,7 +30,7 @@ try {
   const options = {
     level: 2, numbered: true, src: "x.svg", caption: "A figure", label: "fig:test", width: "80%",
     rows: 2, columns: 2, header: true, alignment: "center", keys: ["smith2020"], locator: "p. 3",
-    file: "references.bib", target: "existing", brackets: "brackets", language: "text", url: "https://example.com",
+    file: "references.bib", target: "existing", language: "text", url: "https://example.com",
     count: 2, gap: "1em", title: "Example", environment: "boxed", arguments: ["80%"],
   };
   let source='#let boxed(width, body) = block(width: width, body)\n#set page(width: 20cm)\n= Existing <existing>\n';

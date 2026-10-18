@@ -1,11 +1,13 @@
 import assert from 'node:assert/strict';
 import katex from 'katex';
-import { CATEGORIES, SYMBOLS, searchSymbols, separated, symbolInsertion, symbolText } from '../../src/lib/symbols/index.js';
+import { CATEGORIES, SYMBOLS, searchSymbols, separated, symbolInsertion, symbolSpellings, symbolText } from '../../src/lib/symbols/index.js';
 import { MATH_TEMPLATES, templateInsertion } from '../../src/lib/symbols/templates.js';
+import { PICKER_SYMBOLS, entryAvailable, entryInsertion } from '../../src/lib/symbols/catalog.js';
+import { RECENT_LIMIT, withFavorite, withRecent } from '../../src/lib/symbols/memory.js';
 
 const MATH = new Set(['greek', 'operators', 'relations', 'arrows', 'logic', 'accents', 'delimiters']);
 const PACKAGES = new Set(['amssymb', 'amsmath', 'emoji']);
-const KINDS = new Set(['symbol', 'accent', 'delimiter', 'text']);
+const KINDS = new Set(['symbol', 'accent', 'delimiter', 'text', 'pair']);
 const CATEGORY_IDS = new Set(CATEGORIES.map(category => category.id));
 
 const ids = SYMBOLS.map(symbol => symbol.id);
@@ -110,7 +112,7 @@ assert.equal(templateInsertion(template('matrix'), { brackets: 'square', cells: 
 const cases = templateInsertion(template('cases'), { rows: [{ value: '1', condition: 'x > 0' }, { value: '0', condition: 'x \\le 0' }] }, inMath('latex'));
 assert.equal(cases.text, '\\begin{cases}\n1 & x > 0 \\\\\n0 & x \\le 0\n\\end{cases}');
 const aligned = templateInsertion(template('aligned'), { rows: [{ left: 'x', right: 'y' }] }, at('Hello', 0));
-assert.equal(aligned.text, '\\begin{align}\nx &= y\n\\end{align}');
+assert.equal(aligned.text, '\\begin{align*}\nx &= y\n\\end{align*}\n');
 assert.equal(templateInsertion(template('fraction'), {}, { format: 'html', text: '', selection: { from: 0, to: 0, text: '' } }).notes[0], 'Math templates need a math-capable format.');
 // Template insertions are separated from their neighbours like symbols.
 const fraction = { num: 'a', den: 'b' };
@@ -138,8 +140,85 @@ assert.equal(templateInsertion(template('sum'), { from: 'i=1', to: 'n' }, before
 const alignedRows = [{ left: 'x', right: 'y' }];
 const markdownProse = { format: 'markdown', text: 'Hello', selection: { from: 5, to: 5, text: '' }, files: [] };
 assert.equal(templateInsertion(template('aligned'), { rows: alignedRows, style: 'inline' }, markdownProse).text, '$\\begin{aligned}\nx &= y\n\\end{aligned}$');
-assert.equal(templateInsertion(template('aligned'), { rows: alignedRows, style: 'display' }, markdownProse).text, '$$\\begin{aligned}\nx &= y\n\\end{aligned}$$');
-assert.equal(templateInsertion(template('aligned'), { rows: alignedRows, style: 'display' }, prose).text, '\\begin{align}\nx &= y\n\\end{align}');
+assert.equal(templateInsertion(template('aligned'), { rows: alignedRows, style: 'display' }, markdownProse).text, '\n$$\\begin{aligned}\nx &= y\n\\end{aligned}$$');
+assert.equal(templateInsertion(template('aligned'), { rows: alignedRows, style: 'display' }, prose).text, '\\begin{align*}\nx &= y\n\\end{align*}\n');
 assert.equal(templateInsertion(template('aligned'), { rows: alignedRows, style: 'inline' }, prose).text, '$\\begin{aligned}\nx &= y\n\\end{aligned}$');
+
+// A display goes on its own line, with one newline and not a blank line.
+assert.equal(templateInsertion(template('fraction'), fraction, at('Some text', 4)).text, '\n\\[\n\\frac{a}{b}\n\\]\n', 'mid-line, the display gets a line of its own');
+assert.equal(templateInsertion(template('fraction'), { ...fraction, style: 'inline' }, at('Some text', 4)).text, '$\\frac{a}{b}$', 'inline math stays in the line');
+
+// Gathered equations follow the same rules with a gather environment.
+const gatheredRows = [{ value: 'x = y' }, { value: 'z = w' }];
+assert.equal(templateInsertion(template('gathered'), { rows: gatheredRows }, prose).text, '\\begin{gather*}\nx = y \\\\\nz = w\n\\end{gather*}\n');
+assert.equal(templateInsertion(template('gathered'), { rows: [{ value: 'x' }], style: 'inline' }, prose).text, '$\\begin{gathered}\nx\n\\end{gathered}$');
+assert.equal(templateInsertion(template('gathered'), { rows: gatheredRows, numbered: true, label: 'eq:g' }, prose).text, '\\begin{gather}\n\\label{eq:g}\nx = y \\\\\nz = w\n\\end{gather}\n');
+assert.equal(templateInsertion(template('gathered'), { rows: [{ value: 'x' }] }, markdownProse).text, '\n$$\\begin{gathered}\nx\n\\end{gathered}$$');
+
+// Numbering applies to display insertions outside math, and only the label is literal.
+const numberedFraction = { num: 'a', den: 'b', numbered: true, label: 'eq:x' };
+// Empty documents put nothing around the insertion, so the text is exact.
+const typstEmpty = { format: 'typst', text: '', selection: { from: 0, to: 0, text: '' }, files: [] };
+const quartoEmpty = { format: 'quarto', path: 'paper.qmd', text: '', selection: { from: 0, to: 0, text: '' }, files: [] };
+assert.equal(templateInsertion(template('fraction'), numberedFraction, prose).text, '\\begin{equation}\n\\label{eq:x}\n\\frac{a}{b}\n\\end{equation}\n');
+assert.equal(templateInsertion(template('fraction'), { num: 'a', den: 'b', numbered: true }, prose).text, '\\begin{equation}\n\\frac{a}{b}\n\\end{equation}\n', 'a number without a label has no \\label');
+assert.equal(templateInsertion(template('fraction'), { ...numberedFraction, style: 'inline' }, prose).text, '$\\frac{a}{b}$', 'inline style ignores the number');
+assert.equal(templateInsertion(template('aligned'), { rows: alignedRows, numbered: true, label: 'eq:x' }, prose).text, '\\begin{align}\n\\label{eq:x}\nx &= y\n\\end{align}\n');
+assert.equal(templateInsertion(template('aligned'), { rows: alignedRows, numbered: true, label: 'eq x' }, prose).text, '\\begin{align}\n\\label{eq-x}\nx &= y\n\\end{align}\n', 'the LaTeX label is sanitized');
+assert.equal(templateInsertion(template('fraction'), numberedFraction, typstEmpty).text, '#math.equation(block: true, numbering: "(1)")[$ frac(a, b) $] <eq:x>');
+assert.equal(templateInsertion(template('fraction'), { num: 'a', den: 'b', numbered: true }, typstEmpty).text, '#math.equation(block: true, numbering: "(1)")[$ frac(a, b) $]');
+assert.equal(templateInsertion(template('fraction'), { num: 'a', den: 'b', numbered: true }, quartoEmpty).text, '$$\\frac{a}{b}$$ {#eq-equation}', 'quarto numbers an unlabelled equation with a generated label');
+assert.equal(templateInsertion(template('fraction'), { num: 'a', den: 'b', numbered: true, label: 'frac' }, quartoEmpty).text, '$$\\frac{a}{b}$$ {#eq-frac}', 'quarto prefixes the label once');
+assert.equal(templateInsertion(template('fraction'), numberedFraction, markdownProse).text, '\n$$\\frac{a}{b}$$', 'markdown ignores the number');
+
+// Search matches spellings, words and substrings, and keeps the best rank first.
+assert.equal(searchSymbols('\\alpha', SYMBOLS)[0].id, 'alpha');
+assert.equal(searchSymbols('alpha', SYMBOLS)[0].id, 'alpha');
+assert.ok(searchSymbols('\\al', SYMBOLS).some(symbol => symbol.id === 'alpha'));
+assert.ok(searchSymbols('infinity', SYMBOLS).some(symbol => symbol.id === 'infty'));
+assert.ok(searchSymbols('less equal', SYMBOLS).some(symbol => symbol.id === 'leq'));
+assert.ok(searchSymbols('right arrow', SYMBOLS).some(symbol => symbol.id === 'rightarrow'));
+assert.ok(searchSymbols('arrow', SYMBOLS).filter(symbol => symbol.category === 'arrows').length >= 5);
+
+// Spellings for the details panel: LaTeX and Typst, then the code point.
+assert.deepEqual(symbolSpellings(byId('sum'), 'latex'), [
+  { label: 'LaTeX', code: '\\sum' }, { label: 'Typst', code: 'sum' }, { label: 'Unicode', code: 'U+2211' },
+]);
+assert.equal(symbolSpellings(byId('sum'), 'html')[0].label, 'HTML');
+
+// Recent and favorite lists: dedupe, move to the front, cap, and star or unstar.
+assert.deepEqual(withRecent(['a', 'b', 'c'], 'b'), ['b', 'a', 'c']);
+const manyRecent = Array.from({ length: RECENT_LIMIT + 5 }, (_, index) => `s${index}`);
+const recentAfter = withRecent(manyRecent, 'new');
+assert.equal(recentAfter.length, RECENT_LIMIT);
+assert.equal(recentAfter[0], 'new');
+assert.deepEqual(withFavorite(['a'], 'b', true), ['a', 'b']);
+assert.deepEqual(withFavorite(['a', 'b'], 'a', false), ['b']);
+assert.deepEqual(withFavorite(['a'], 'a', true), ['a']);
+
+// Picker entries: pairs and templates go through the math templates.
+const pickerEntry = id => {
+  const entry = PICKER_SYMBOLS.find(item => item.id === id);
+  assert.ok(entry, `picker entry ${id} exists`);
+  return entry;
+};
+const latexAb = latexDocument.replace('Hello', 'ab');
+const abStart = latexAb.indexOf('ab');
+const selectedAb = { format: 'latex', path: 'main.tex', text: latexAb, selection: { from: abStart, to: abStart + 2, text: 'ab' }, files: [] };
+const parentheses = pickerEntry('pair-parentheses');
+assert.deepEqual(entryInsertion(parentheses, prose).text, '$\\left( #{1:x} \\right)$');
+assert.equal(entryInsertion(parentheses, prose).snippet, true);
+assert.equal(entryInsertion(parentheses, selectedAb).text, '$\\left( ab \\right)$');
+assert.equal(entryInsertion(parentheses, selectedAb).snippet, false);
+const htmlAb = { format: 'html', text: 'ab', selection: { from: 0, to: 2, text: 'ab' }, files: [] };
+assert.deepEqual(entryInsertion(parentheses, htmlAb), { text: '(ab)', additionalEdits: [], notes: [], snippet: false, selection: { anchor: 1, head: 3 } });
+const fractionTile = pickerEntry('template-fraction');
+assert.equal(entryInsertion(fractionTile, prose).text, '$\\frac{#{1:a}}{#{2:b}}$');
+assert.equal(entryInsertion(fractionTile, prose).snippet, true);
+const htmlFraction = entryInsertion(fractionTile, { format: 'html', text: '', selection: { from: 0, to: 0, text: '' }, files: [] });
+assert.equal(htmlFraction.text, '');
+assert.equal(htmlFraction.notes.length, 1);
+assert.equal(entryAvailable(fractionTile, 'html'), false);
+assert.equal(entryAvailable(fractionTile, 'latex'), true);
 
 console.log('symbols: data, search, insertion and template checks passed');

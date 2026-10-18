@@ -190,6 +190,7 @@ export const typeable = (descriptor) => {
 
 const ALWAYS = () => true;
 const panel = (id) => (context) => (context.panels || []).includes(id);
+const editable = (c) => Boolean(c.mayEdit && c.editing);
 
 /** @type {Command[]} */
 export const COMMANDS = [
@@ -210,15 +211,17 @@ export const COMMANDS = [
   { id: "palette", label: "Command palette", category: "Navigation", scope: "workspace", keys: ["Mod+Alt+P"], palette: false, available: ALWAYS },
   { id: "focus-files", label: "Focus Files", category: "Navigation", scope: "workspace", keys: ["Mod+Alt+E"], available: panel("files"), note: "Files panel" },
   { id: "focus-outline", label: "Focus Outline", category: "Navigation", scope: "workspace", keys: ["Mod+Alt+O"], available: panel("outline"), note: "Outline panel" },
-  { id: "focus-symbols", label: "Focus Symbols", category: "Navigation", scope: "workspace", keys: ["Mod+Alt+S"], available: panel("symbols"), note: "Symbols panel" },
-  { id: "focus-math", label: "Focus Math", category: "Navigation", scope: "workspace", keys: ["Mod+Alt+T"], available: panel("math"), note: "Math panel" },
   { id: "focus-comments", label: "Focus Comments", category: "Navigation", scope: "workspace", keys: ["Mod+Alt+M"], available: panel("collaboration"), note: "Comments panel" },
   { id: "focus-preview", label: "Focus Preview", category: "Navigation", scope: "workspace", keys: ["Mod+Alt+V"], available: (c) => Boolean(c.preview), note: "Preview visible" },
 
+  // The two insertion palettes, which open over the editor.
+  { id: "symbols", label: "Insert symbol", category: "Insert", scope: "workspace", keys: ["Mod+Alt+S"], available: editable, note: "Source open" },
+  { id: "math", label: "Insert math", category: "Insert", scope: "workspace", keys: ["Mod+Alt+T"], available: editable, note: "Source open" },
+
   // One palette entry per math template. They have no key: they are found by
-  // name, and each opens the Math panel on its template.
+  // name, and each opens the Math overlay on its template.
   ...MATH_TEMPLATES.map((template) => ({
-    id: "math-" + template.id, label: "Insert " + template.label.toLowerCase(), category: "Math", scope: "workspace", keys: [], available: panel("math"),
+    id: "math-" + template.id, label: "Insert " + template.label.toLowerCase(), category: "Math", scope: "workspace", keys: [], available: editable,
   })),
 
   // Changes panel navigation and review. These keys are answered by the

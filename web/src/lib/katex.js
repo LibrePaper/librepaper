@@ -1,4 +1,4 @@
-// KaTeX for the application's own pages: the Symbols and Math panels draw
+// KaTeX for the application's own pages: the Symbols and Math palettes draw
 // their tiles and previews with it. It is the copy tools/vendor-katex.mjs
 // puts under /assets/katex-<version>/ for the document frame, fetched the
 // way the frame fetches it, so the shell carries one KaTeX and one set of

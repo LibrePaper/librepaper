@@ -1,11 +1,16 @@
 // Math structures for the math palette. Each template writes a LaTeX and a
 // Typst form from named slots. An empty slot becomes a snippet field, so the
 // caret lands in the first blank and Tab moves through the rest.
-import { insertSyntaxContext } from "../insert.js";
-import { latexPackageEdits } from "../insert-latex.js";
+import { insertSyntaxContext, uniqueLabel } from "../insert.js";
+import { key as latexKey, latexPackageEdits } from "../insert-latex.js";
+import { identifier as typstIdentifier } from "../insert-typst.js";
 import { separated } from "./index.js";
 
 const slot = (id, label, placeholder, extra = {}) => ({ id, label, placeholder, ...extra });
+
+// The rows of a grid inside one LaTeX environment. A label line, when there is
+// one, goes first inside it.
+const rowsIn = (environment, rows, labelLine = "") => `\\begin{${environment}}\n${labelLine}${rows}\n\\end{${environment}}`;
 
 const BRACKETS_LATEX = {
   parentheses: ["(", ")"],
@@ -99,15 +104,15 @@ export const MATH_TEMPLATES = [
   },
   {
     id: "overbrace", label: "Overbrace", preview: "\\overbrace{x}^{n}",
-    slots: [slot("body", "Body", "x"), slot("label", "Label", "label")],
-    latex: v => `\\overbrace{${v.body}}^{${v.label}}`,
-    typst: v => `overbrace(${v.body}, ${v.label})`,
+    slots: [slot("body", "Body", "x"), slot("note", "Label", "label")],
+    latex: v => `\\overbrace{${v.body}}^{${v.note}}`,
+    typst: v => `overbrace(${v.body}, ${v.note})`,
   },
   {
     id: "underbrace", label: "Underbrace", preview: "\\underbrace{x}_{n}",
-    slots: [slot("body", "Body", "x"), slot("label", "Label", "label")],
-    latex: v => `\\underbrace{${v.body}}_{${v.label}}`,
-    typst: v => `underbrace(${v.body}, ${v.label})`,
+    slots: [slot("body", "Body", "x"), slot("note", "Label", "label")],
+    latex: v => `\\underbrace{${v.body}}_{${v.note}}`,
+    typst: v => `underbrace(${v.body}, ${v.note})`,
   },
   {
     id: "brackets", label: "Brackets", preview: "\\left( x \\right)",
@@ -132,20 +137,22 @@ export const MATH_TEMPLATES = [
     },
   },
   {
-    // In LaTeX prose display this is an align environment, and the display
-    // wrapper is skipped because align is already display math. Everywhere
-    // else it is aligned, which KaTeX and LaTeX accept inline and in display.
+    // In LaTeX display, templateInsertion sets the environment, so the star
+    // and the number live there. Everywhere else, and in the preview, it is
+    // aligned, which KaTeX and LaTeX accept inline and in display.
     id: "aligned", label: "Aligned equations", preview: "\\begin{aligned} x &= y \\end{aligned}", package: "amsmath",
-    grid: true, selfDisplay: true,
+    grid: true, selfDisplay: true, displayEnvironment: "align",
     slots: [slot("rows", "Equations", "x")],
-    latex: v => {
-      const rows = v.rows.map(row => `${row.left} &= ${row.right}`).join(" \\\\\n");
-      const bare = v.format === "latex" && !v.inMath && !v.inline;
-      return bare
-        ? `\\begin{align}\n${rows}\n\\end{align}`
-        : `\\begin{aligned}\n${rows}\n\\end{aligned}`;
-    },
+    latex: v => rowsIn(v.environment ?? "aligned", v.rows.map(row => `${row.left} &= ${row.right}`).join(" \\\\\n"), v.labelLine),
     typst: v => v.rows.map(row => `${row.left} &= ${row.right}`).join(" \\ "),
+  },
+  {
+    // Same rules as aligned, with one value per row and gather for display.
+    id: "gathered", label: "Gathered equations", preview: "\\begin{gathered} x = y \\\\ z = w \\end{gathered}", package: "amsmath",
+    grid: true, selfDisplay: true, displayEnvironment: "gather",
+    slots: [slot("rows", "Equations", "x")],
+    latex: v => rowsIn(v.environment ?? "gathered", v.rows.map(row => row.value).join(" \\\\\n"), v.labelLine),
+    typst: v => v.rows.map(row => row.value).join(" \\ "),
   },
   {
     id: "cases", label: "Cases", preview: "\\begin{cases} 1 & x > 0 \\end{cases}", package: "amsmath",
@@ -174,6 +181,7 @@ export const MATH_TEMPLATES = [
 // caller gives none.
 const GRID_DEFAULTS = {
   aligned: () => [{ left: "", right: "" }, { left: "", right: "" }],
+  gathered: () => [{ value: "" }, { value: "" }],
   cases: () => [{ value: "", condition: "" }, { value: "", condition: "" }],
   matrix: values => Array.from({ length: Number(values.rows) || 2 }, () => Array.from({ length: Number(values.columns) || 2 }, () => "")),
 };
@@ -189,6 +197,12 @@ export function templateInsertion(template, values = {}, context = {}) {
   if (format === "html") return { text: "", notes: ["Math templates need a math-capable format."], additionalEdits: [], snippet: false };
 
   const inMath = insertSyntaxContext(context) === "math";
+  const inline = values.style === "inline";
+  // Numbers apply to a display outside math. Markdown has no numbering, so it
+  // ignores them.
+  const numbered = !inMath && !inline && values.numbered === true;
+  const label = String(values.label ?? "").trim();
+  const latexDisplay = format === "latex" && !inMath && !inline;
   const notes = [], additionalEdits = [];
   let fields = 0;
   // Fields number from left to right across the whole template, including
@@ -202,7 +216,6 @@ export function templateInsertion(template, values = {}, context = {}) {
     return `#{${fields}:${placeholder}}`;
   };
 
-  const inline = values.style === "inline";
   const v = { ...values, inMath, format, inline };
   for (const item of template.slots) {
     const raw = values[item.id];
@@ -212,23 +225,50 @@ export function templateInsertion(template, values = {}, context = {}) {
     v[item.id] = fill(value, item.placeholder ?? item.label);
   }
 
-  const body = format === "typst" ? template.typst(v) : template.latex(v);
+  // The label is literal text, so it is never a snippet field. A LaTeX label
+  // is only written with a number, because an unnumbered one has nothing to
+  // refer to.
+  const labelLine = format === "latex" && numbered && label ? `\\label{${latexKey(label)}}\n` : "";
+  const typstLabel = numbered && label ? ` <${typstIdentifier(label)}>` : "";
+  v.labelLine = labelLine;
+  // A self-displaying template in LaTeX display brings its own environment,
+  // starred when unnumbered. The label sits inside it.
+  if (latexDisplay && template.selfDisplay) v.environment = `${template.displayEnvironment}${numbered ? "" : "*"}`;
+
+  let body = format === "typst" ? template.typst(v) : template.latex(v);
+  // A numbered LaTeX display that is not self-displaying gets an equation environment.
+  if (latexDisplay && numbered && !template.selfDisplay) body = rowsIn("equation", body, labelLine);
   let text = body;
-  const bareAligned = template.selfDisplay && format === "latex" && !inline;
+  // The LaTeX display environment is already display math, so it is not wrapped again.
+  const latexEnvironment = latexDisplay && (template.selfDisplay || numbered);
   if (!inMath) {
-    if (format === "typst") text = inline ? `$${body}$` : `$ ${body} $`;
-    else if (format === "markdown" || format === "quarto") text = inline ? `$${body}$` : `$$${body}$$`;
-    else if (!bareAligned) text = inline ? `$${body}$` : `\\[\n${body}\n\\]`;
+    if (format === "typst") {
+      if (inline) text = `$${body}$`;
+      else if (numbered) text = `#math.equation(block: true, numbering: "(1)")[$ ${body} $]${typstLabel}`;
+      else text = `$ ${body} $`;
+    } else if (format === "markdown" || format === "quarto") {
+      if (inline) text = `$${body}$`;
+      // Quarto numbers only a labelled equation, so an unnamed one gets a generated label.
+      else if (numbered && format === "quarto") text = `$$${body}$$ {#${uniqueLabel(label || "equation", context, "eq")}}`;
+      else text = `$$${body}$$`;
+    } else if (!latexEnvironment) text = inline ? `$${body}$` : `\\[\n${body}\n\\]`;
   }
-  // Add a space where the text would run into the characters beside it.
   const from = context.selection?.from, to = context.selection?.to;
   const before = typeof context.text === "string" ? context.text[from - 1] ?? "" : "";
   const after = typeof context.text === "string" ? context.text[to] ?? "" : "";
-  // The boundary is judged on the text as it will read once the fields are
-  // filled with their placeholders, and the marked text is padded to match.
-  const expanded = text.replace(/#\{\d+:([^{}]*)\}/g, "$1");
-  const padded = separated(expanded, format, before, after);
-  text = (padded.startsWith(" ") && !expanded.startsWith(" ") ? " " : "") + text + (padded.endsWith(" ") && !expanded.endsWith(" ") ? " " : "");
+  if (!inMath && !inline) {
+    // A display goes on its own line, so the source reads like the output.
+    // One newline and not a blank line: a blank line before display math
+    // starts a new paragraph in LaTeX.
+    text = (before && before !== "\n" ? "\n" : "") + text + (after && after !== "\n" ? "\n" : "");
+  } else {
+    // Add a space where the text would run into the characters beside it.
+    // The boundary is judged on the text as it will read once the fields are
+    // filled with their placeholders, and the marked text is padded to match.
+    const expanded = text.replace(/#\{\d+:([^{}]*)\}/g, "$1");
+    const padded = separated(expanded, format, before, after);
+    text = (padded.startsWith(" ") && !expanded.startsWith(" ") ? " " : "") + text + (padded.endsWith(" ") && !expanded.endsWith(" ") ? " " : "");
+  }
   const pkg = typeof template.package === "function" ? template.package(v) : template.package;
   if (format === "latex" && pkg) additionalEdits.push(...latexPackageEdits(pkg, context, notes));
   return { text, additionalEdits, notes, snippet: fields > 0 };

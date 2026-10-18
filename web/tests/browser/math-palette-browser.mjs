@@ -27,9 +27,11 @@ window.testErrors = [];
 addEventListener("error", (e) => window.testErrors.push(e.message));
 addEventListener("unhandledrejection", (e) => window.testErrors.push(String(e.reason)));
 const insertions = [];
+const cancels = [];
+let captures = 0;
 let palette;
 // A LaTeX document with the caret outside math, so the style choice is shown.
-const context = (format, selected) => ({ format, path: "paper.tex", text: "Before AFTER", files: [], selection: { from: 7, to: 7 + selected.length, text: selected } });
+const context = (format, selected) => ({ format, path: "paper.tex", text: "Before AFTER", files: [], selection: { from: 7, to: 7 + selected.length, text: selected }, targetId: "t" + (++captures) });
 window.templateCount = MATH_TEMPLATES.length;
 window.mountPalette = async (format = "latex", selected = "") => {
   palette?.$destroy();
@@ -37,11 +39,14 @@ window.mountPalette = async (format = "latex", selected = "") => {
     format,
     getContext: () => context(format, selected),
     oninsert: (result, ctx) => { insertions.push({ result, format: ctx.format }); },
+    oncancel: (ctx) => { cancels.push(ctx.targetId); },
     onfocus: () => {}
   } });
   await tick();
 };
 window.insertions = () => insertions;
+window.cancels = () => cancels;
+window.captures = () => captures;
 window.openTemplate = (id) => palette.openTemplate(id);
 window.paletteReady = true;
 `);
@@ -99,6 +104,24 @@ try {
   await submit();
   const inline = await lastInsertion();
   assert.match(inline.result.text, /^\$\\frac\{a\+b\}\{2c\}\$$/, "inline style wraps the fraction in dollars");
+
+  // Numbered display: ticking Numbered and typing a label adds the equation environment and the label.
+  await until("picker before numbered", () => evaluate(`document.querySelectorAll("button[data-template]").length > 0`), 5000);
+  await click('button[data-template="fraction"]');
+  await until("fraction form for numbering", () => evaluate(`document.querySelectorAll("[data-math-field]").length === 2`), 5000);
+  await click('input[name="math-numbered"]');
+  await until("label field after numbered", () => evaluate(`document.querySelectorAll('input[name="math-label"]').length === 1`), 5000);
+  await evaluate(`(() => {
+    const input = document.querySelector('input[name="math-label"]');
+    input.value = "eq:frac";
+    input.dispatchEvent(new Event("input", { bubbles: true }));
+  })()`);
+  await fill(0, "a+b");
+  await fill(1, "2c");
+  await submit();
+  const numbered = await lastInsertion();
+  assert.match(numbered.result.text, /\\begin\{equation\}/, "a numbered display uses the equation environment");
+  assert.match(numbered.result.text, /\\label\{eq:frac\}/, "the typed label reaches the inserted LaTeX");
 
   // Matrix: default 2 by 2, then one more column gives six fields.
   await until("picker before matrix", () => evaluate(`document.querySelectorAll("button[data-template]").length > 0`), 5000);
@@ -190,7 +213,34 @@ try {
   await until("root form", () => evaluate(`document.querySelectorAll("[data-math-field]").length >= 1 && document.querySelectorAll("button[data-template]").length === 0`), 5000);
   assert.equal(await count("button[data-template]"), 0, "openTemplate replaces the picker with the form");
 
-  console.log("math-palette-browser: picker tiles, fraction and inline insertions, matrix steppers, search escape, accent and package picks, escape and openTemplate passed");
+  // Forms release their insertion targets. A form opened over another releases the first;
+  // going back to the picker releases the form's own; a successful insert does not.
+  // The remount releases the root form left open above, so only later releases are compared.
+  await evaluate('mountPalette("latex")');
+  await until("picker for release checks", () => evaluate(`document.querySelectorAll("button[data-template]").length > 0`), 5000);
+  const baseline = (await evaluate("cancels()")).length;
+  await click('button[data-template="fraction"]');
+  await until("fraction form for release", () => evaluate(`document.querySelectorAll("[data-math-field]").length === 2`), 5000);
+  const first = await evaluate("captures()");
+  await evaluate('openTemplate("root")');
+  // The root form also has two fields, so its first placeholder tells the forms apart.
+  await until("root form over fraction", () => evaluate(`document.querySelector("[data-math-field]")?.placeholder === "x" && document.querySelectorAll("button[data-template]").length === 0`), 5000);
+  assert.deepEqual((await evaluate("cancels()")).slice(baseline), ["t" + first], "a form opened over another releases the first target");
+  await evaluate(`document.querySelector("[data-math-field]").dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }))`);
+  await until("picker after release escape", () => evaluate(`document.querySelectorAll("button[data-template]").length > 0`), 5000);
+  const released = await evaluate("cancels()");
+  assert.equal(released[released.length - 1], "t" + (first + 1), "going back to the picker releases the form's target");
+  await click('button[data-template="fraction"]');
+  await until("fraction form for insert", () => evaluate(`document.querySelectorAll("[data-math-field]").length === 2`), 5000);
+  const cancelsBeforeInsert = (await evaluate("cancels()")).length;
+  const insertsBeforeSubmit = (await evaluate("insertions().length"));
+  await fill(0, "a");
+  await fill(1, "b");
+  await submit();
+  await until("insertion recorded", () => evaluate(`insertions().length > ${insertsBeforeSubmit}`), 5000);
+  assert.equal((await evaluate("cancels()")).length, cancelsBeforeInsert, "a successful insert leaves the release to the editor");
+
+  console.log("math-palette-browser: picker tiles, fraction and inline insertions, matrix steppers, search escape, accent and package picks, escape and openTemplate, insertion targets released on back and reopen passed");
 } catch (error) {
   console.error(await page?.evaluate("({ errors: window.testErrors })"));
   throw error;

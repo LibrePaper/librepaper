@@ -88,7 +88,7 @@ const context = (values) => vm.createContext({
   assert.match(problems[0], /refresh failed/);
 }
 
-// Offline, the same failure is silent: `showOfflineProjects` is what the page
+// Offline, the same failure is silent: `showLocalProjects` is what the page
 // shows instead, and a network error there is expected rather than reportable.
 {
   const problems = [];

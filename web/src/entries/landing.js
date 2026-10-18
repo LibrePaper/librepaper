@@ -7,6 +7,8 @@ import { start as startTheme } from "../lib/theme.js";
 import Landing from "../components/Landing.svelte";
 import { registerOfflineShell } from "../lib/offline-shell.js";
 import { intake } from "../lib/desktop/client.js";
+import { listenForSignOut } from "../lib/local-data.js";
+import { signedOutHref } from "../lib/api.js";
 
 startTheme();
 
@@ -20,3 +22,5 @@ watchNetwork();
 const initialSettings = intake() ? "tools" : "";
 mount(Boundary, { target: document.body, props: { component: Landing, props: { initialSettings }, name: "the project list" } });
 void registerOfflineShell();
+// A signed-out browser must not keep writing the previous account's work.
+listenForSignOut(() => location.replace(signedOutHref()));
