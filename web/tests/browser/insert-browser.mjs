@@ -37,7 +37,7 @@ const fromAPeer = (target, edit) => {
   peer.commit();
   target.import(peer.export({ mode: "update", from: target.oplogVersion() }));
 };
-window.testErrors=[];addEventListener("error",e=>window.testErrors.push(e.message));addEventListener("unhandledrejection",e=>window.testErrors.push(String(e.reason)));
+window.panelRequests=[];window.testErrors=[];addEventListener("error",e=>window.testErrors.push(e.message));addEventListener("unhandledrejection",e=>window.testErrors.push(String(e.reason)));
 const session = joinSession({send: () => {}, mayEdit: true});
 const entries = [{key:'smith2020',authors:['Jane Smith'],title:'A Study of Rivers',year:'2020'}, {key:'jones2021',authors:['Alice Jones'],title:'Mountains',year:'2021'}];
 let component, menu, file;
@@ -52,7 +52,7 @@ window.setupInsert = async (format, source = null) => {
   menu = createClassComponent({component:InsertMenu,target:document.getElementById('menu'),props:{
     getContext:()=>({...component.getInsertContext(),bibliography:entries,files:[{path:'refs.bib',text:'@article{smith2020,title={Rivers},author={Smith, Jane},year={2020}}'},{path:'images/river.png',url:'data:image/png;base64,preview'}]}),
     oninsert:(result,context)=>{ const ok=component.applyInsertResult(result,context); if(!ok) throw Error('Insertion target changed'); return ok; },
-    onupload:async()=> 'images/upload.png',onfocus:()=>component.focus(),oncancel:context=>component.releaseInsertContext(context)
+    onupload:async()=> 'images/upload.png',onpanel:id=>window.panelRequests.push(id),onfocus:()=>component.focus(),oncancel:context=>component.releaseInsertContext(context)
   }});
   await tick();
 };
@@ -61,6 +61,8 @@ window.insertState=()=>({text:view().state.doc.toString(),selection:view().state
 window.selectInsert=(from,to=from)=>{view().dispatch({selection:{anchor:from,head:to}});view().focus();};
 window.remoteInsert=async()=>{ fromAPeer(session.doc, (peer)=>peer.getMap("files").get(file).insert(0,'REMOTE ')); await tick(); };
 window.undoInsert=()=>loroUndo(view());
+window.snippetInsert=()=>component.applyInsertResult({text:"\\\\frac{#{1:a}}{#{2:b}}",snippet:true,additionalEdits:[]},component.getInsertContext());
+window.dispatchTab=()=>view().contentDOM.dispatchEvent(new KeyboardEvent("keydown",{key:"Tab",bubbles:true}));
 window.targetChecks=async()=>{
   const context=component.getInsertContext();
   const another=session.addText('other.md','Other document');
@@ -231,6 +233,25 @@ try {
   assert.match(trackedInsert.shown,/Before TRACKED AFTER/);
   assert.deepEqual(await evaluate("fileIdentityCheck()"),{ok:false,active:"Before AFTER",old:"NOTES",replaced:"NOTES"},"an edit to a path that now names another file is refused before anything is written");
   await evaluate("setupInsert('quarto')");await evaluate("selectInsert(7)");await chooseIn("Document","toc");await until("Quarto TOC",()=>evaluate(`Boolean(document.querySelector('[role="dialog"][data-state="open"]'))`),5000);await confirm();assert.match((await evaluate("insertState()")).text,/toc: true/);
+  // A snippet inserts its placeholders as CodeMirror fields: the first is selected, and Tab moves to the next.
+  await evaluate("setupInsert('markdown','Before AFTER')");await evaluate("selectInsert(7)");
+  await evaluate("snippetInsert()");
+  assert.equal((await evaluate("insertState()")).text,"Before \\frac{a}{b}AFTER","a snippet inserts its text at the caret");
+  assert.equal((await evaluate("insertState()")).selection,"a","the first placeholder is selected");
+  await evaluate("dispatchTab()");
+  assert.equal((await evaluate("insertState()")).selection,"b","Tab moves to the next placeholder");
+  await evaluate("undoInsert()");
+  assert.equal((await evaluate("insertState()")).text,"Before AFTER","the whole snippet is one undo step");
+
+  // The Math sub-menu ends with two panel openers. They open the sidebar, insert nothing, and are never disabled.
+  await evaluate("setupInsert('markdown','Before AFTER')");await evaluate("selectInsert(7)");await openMenu();
+  await evaluate(`(()=>{const t=${groupTrigger("Math")};t.dispatchEvent(new PointerEvent("pointermove",{bubbles:true,pointerType:"mouse"}));t.dispatchEvent(new PointerEvent("pointerdown",{bubbles:true,pointerType:"mouse"}));t.click();})()`);
+  await until("panel openers listed",()=>evaluate(`Boolean(document.querySelector('[data-scope="menu"][data-part="item"][data-value="panel:symbols"]'))&&Boolean(document.querySelector('[data-scope="menu"][data-part="item"][data-value="panel:math"]'))`),5000);
+  await until("Symbols opener on screen",()=>onScreen("panel:symbols"),5000);
+  await click('[data-scope="menu"][data-part="item"][data-value="panel:symbols"]');
+  await until("symbols panel requested",()=>evaluate("window.panelRequests.includes('symbols')"),5000);
+  assert.equal((await evaluate("insertState()")).text,"Before AFTER","a panel opener inserts nothing");
+
   // The top level is the seven common actions and then six sub-menus, in order.
   await evaluate("setupInsert('markdown','Before AFTER')");await evaluate("selectInsert(7)");await openMenu();
   const topLevel=await evaluate(`(()=>{const trigger=document.querySelector('[data-scope="menu"][data-part="trigger"]');const content=document.getElementById(trigger.getAttribute('aria-controls'));const contentPart='[data-scope="menu"][data-part="content"]';return [...content.querySelectorAll('[data-scope="menu"][data-part="item"],[data-scope="menu"][data-part="trigger-item"]')].filter(node=>node.closest(contentPart)===content).map(node=>node.dataset.part==='item'?node.dataset.value:'submenu:'+node.textContent.trim());})()`);
