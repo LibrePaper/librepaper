@@ -364,10 +364,7 @@ mod tests {
         assert!(left.is_empty());
         assert!(!more);
         assert_eq!(
-            catalog
-                .clear_chat(document, &[], owner.id)
-                .await
-                .unwrap(),
+            catalog.clear_chat(document, &[], owner.id).await.unwrap(),
             Some(super::ChatCleared::default())
         );
     }
@@ -537,10 +534,7 @@ mod tests {
         let document = project(&catalog, &owner).await;
         let rows = vec![message(None, "one"), message(None, "two")];
         let charged = catalog.insert_chat_messages(document, &rows).await.unwrap();
-        let refused = catalog
-            .clear_chat(document, &[], other.id)
-            .await
-            .unwrap();
+        let refused = catalog.clear_chat(document, &[], other.id).await.unwrap();
         assert_eq!(refused, None);
         assert_eq!(chat_bytes(&catalog, document).await, charged);
         let (left, _) = catalog.chat_page(document, None, 10).await.unwrap();

@@ -443,7 +443,11 @@ async fn only_the_owner_clears_chat() {
     let cleared = fixture
         .deployment_parts
         .catalog
-        .clear_chat(fixture.document_id, &[], Uuid::parse_str(&fixture.owner.id).unwrap())
+        .clear_chat(
+            fixture.document_id,
+            &[],
+            Uuid::parse_str(&fixture.owner.id).unwrap(),
+        )
         .await
         .unwrap()
         .unwrap();
