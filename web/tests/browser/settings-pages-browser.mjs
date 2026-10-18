@@ -53,6 +53,7 @@ export function chooseFolderBinding() { return Promise.resolve({ id: "folder", e
 export async function capabilities() { return {}; }
 export function forgetCapabilities() {}
 export async function shellAction() {}
+export async function desktopReport() { return "## Desktop app\nversion test"; }
 export async function manage(path) {
   if (path !== "/state") throw new Error("unexpected management call " + path);
   return {
@@ -139,7 +140,7 @@ try {
   };
   const everything = ["render-latex-engine", "render-latex-files", "render-markdown-tool", "rendering-profile", "rendering-parameters",
     "tools-list", "tools-quarto", "tools-calepin", "tools-zotero", "quarto-executable", "quarto-arguments",
-    "desktop-version", "desktop-report", "desktop-activity",
+    "desktop-environment", "desktop-diagnostics", "desktop-activity", "diagnostics-report",
     "remote-status", "remote-address", "storage-account", "account-erase"];
   const renderingRows = ["render-latex-engine", "render-latex-files", "render-markdown-tool", "rendering-profile", "rendering-parameters"];
   const renderingSections = ["LaTeX", "Markdown and Quarto"];
@@ -213,13 +214,19 @@ try {
   await until("the Quarto command rows", () => present(["quarto-executable", "quarto-arguments"]).then((found) => found.length === 2), 5000);
   assert.deepEqual(await present(everything), ["tools-list", "tools-quarto", "tools-calepin", "tools-zotero", "quarto-executable", "quarto-arguments"]);
 
-  // The Desktop app page is the version, the local setup report and the running work.
+  // The Desktop app page is the local environment, the diagnostics and, only while
+  // something runs, the activity. The version sits beside the title.
   await show("desktop", "quarto", "Desktop app");
-  await until("the activity row", () => present(["desktop-activity"]).then((found) => found.length === 1), 5000);
+  await until("the environment section", () => present(["desktop-environment"]).then((found) => found.length === 1), 5000);
   await capture("desktop");
-  assert.deepEqual(await present(everything), ["desktop-version", "desktop-report", "desktop-activity"]);
-  assert.deepEqual(await subheads(), ["Desktop app", "Check local setup", "Diagnostics", "Activity"]);
+  assert.deepEqual(await present(everything), ["desktop-environment", "desktop-diagnostics"], "nothing runs, so there is no Activity section");
+  assert.equal(await b.evaluate(`document.querySelector(".settings-scope")?.textContent.trim()`), "Version 1.0.0 · This computer");
+  assert.equal(await b.evaluate(`document.querySelector("#desktop-environment table")?.textContent.includes("Quarto")`), true, "the environment table lists the tools");
+  assert.equal(await b.evaluate(`document.querySelector("#desktop-environment details:not([open]) pre")?.textContent.includes("1.6.0")`), true, "the technical report is collapsed");
+  assert.equal(await b.evaluate(`document.querySelector("#desktop-diagnostics .diagnostics-buttons")?.textContent.includes("Open logs")`), true, "the desktop app offers Open logs");
 
+  // A browser is offered a Diagnostics category of its own, and its report is
+  // shown in full before anything is copied.
   // A visitor's Account page is the server; storage and erasure need an account.
   await show("account", "quarto", "Account");
   await capture("account");
@@ -248,7 +255,13 @@ try {
   }
   await capture("tools-browser");
 
-  console.log("settings-pages-browser: Rendering shows two sections with global format options, Tools lists the programs with Quarto commands behind Details, Desktop app lists running work, and a browser gets one notice on every desktop page");
+  await show("diagnostics", "quarto", "Diagnostics");
+  assert.equal(await b.evaluate(`[...document.querySelectorAll(".settings-nav-item")].some((node) => node.textContent.trim() === "Diagnostics")`), true, "a browser is offered Diagnostics");
+  assert.equal(await b.evaluate(`[...document.querySelectorAll("#diagnostics-report button")].some((node) => node.textContent.trim() === "Copy diagnostics")`), true, "the panel has Copy diagnostics");
+  await b.evaluate(`document.querySelector("#diagnostics-report details summary").click()`);
+  await until("the report fills", () => b.evaluate(`/## App/.test(document.querySelector("#diagnostics-report textarea").value) && /## Environment/.test(document.querySelector("#diagnostics-report textarea").value)`), 5000);
+
+  console.log("settings-pages-browser: Rendering shows two sections with global format options, Tools lists the programs with Quarto commands behind Details, Desktop app is a compact status page, a browser has a Diagnostics page, and a browser gets one notice on every desktop page");
 } finally {
   if (b) await b.close();
   server.close();

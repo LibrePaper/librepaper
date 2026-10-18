@@ -2,11 +2,11 @@
 // The dialog draws its navigation from this and searches it; what a category
 // shows is a component beside this file.
 //
-// Browser-scoped pages: Editor, Rendering. Computer-scoped pages: Tools, Desktop app,
+// Browser-scoped pages: Editor, Rendering, Diagnostics (the desktop app has its own). Computer-scoped pages: Tools, Desktop app,
 // Agents. Account-scoped pages: Backups, Account.
 
 // `offered` answers with the document's format, whether this browser may edit
-// it, and whether somebody is signed in. `terms` are the words somebody might
+// it, whether somebody is signed in, and whether this is the desktop app. `terms` are the words somebody might
 // type when looking for a row and not finding its title.
 const always = (_context) => true;
 const editor = ({ mayEdit }) => mayEdit;
@@ -49,10 +49,9 @@ export const CATEGORIES = [
     id: "desktop", says: "Desktop app", offered: always,
     note: "This computer",
     entries: [
-      { id: "desktop-folders", says: "Project folders", terms: "bindings folder grant revoke directory project access" },
-      { id: "desktop-version", says: "Version", terms: "desktop app version install update" },
-      { id: "desktop-report", says: "Check local setup", terms: "doctor troubleshoot diagnostics report rescan windows setup tools" },
-      { id: "desktop-activity", says: "Activity", terms: "jobs previews sessions cancel stop output logs running" },
+      { id: "desktop-environment", says: "Local environment", terms: "tools version quarto sandbox rescan report setup doctor folders bindings project" },
+      { id: "desktop-diagnostics", says: "Diagnostics", terms: "diagnostics logs report bug issue support copy troubleshoot" },
+      { id: "desktop-activity", says: "Activity", terms: "jobs previews sessions cancel stop running" },
     ],
   },
   {
@@ -78,6 +77,13 @@ export const CATEGORIES = [
       { id: "remote-status", says: "Remote connection", terms: "connected disconnected offline online server address url sync status collaboration" },
       { id: "storage-account", says: "Account storage", terms: "quota usage space used limit bytes", offered: account },
       { id: "account-erase", says: "Erase this account", terms: "erase delete account remove close gdpr right erasure forget", offered: account },
+    ],
+  },
+  {
+    id: "diagnostics", says: "Diagnostics", offered: ({ desktop }) => !desktop,
+    note: "This browser",
+    entries: [
+      { id: "diagnostics-report", says: "Diagnostics", terms: "diagnostics report bug issue support copy logs troubleshoot errors" },
     ],
   },
 ];
