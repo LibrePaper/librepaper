@@ -12,6 +12,8 @@ use time::OffsetDateTime;
 use uuid::Uuid;
 
 use librepaper_engine::storage::postgres::ChatRecord;
+#[cfg(test)]
+use librepaper_engine::storage::postgres::CHAT_ROW_OVERHEAD_BYTES;
 
 use super::{Room, WriteError};
 
@@ -31,11 +33,16 @@ pub struct ChatBuffer {
 }
 
 impl ChatBuffer {
-    /// Drops everything waiting. The caller holds the lock across whatever
-    /// deleted the stored rows, so nothing can be written in between.
-    pub fn discard(&mut self) {
+    /// Drops everything waiting and returns the bytes it had reserved, which
+    /// the caller must give back to the ledger. The caller holds the lock
+    /// across whatever deleted the stored rows, so nothing can be written in
+    /// between.
+    #[must_use]
+    pub fn discard(&mut self) -> i64 {
+        let dropped = self.charged();
         self.rows.clear();
         self.oldest = None;
+        dropped
     }
 
     fn charged(&self) -> i64 {
@@ -93,25 +100,42 @@ pub fn merge_page(
 }
 
 impl Room {
-    /// Queues one message, or says why it cannot be kept.
-    pub async fn enqueue_chat(&self, record: ChatRecord) -> Result<(), &'static str> {
+    /// Queues one message, or says why it cannot be kept. Accepting it
+    /// reserves its bytes on the owner's ledger at once, so another room of
+    /// the same owner cannot spend the same allowance before the flush. The
+    /// message goes to every other listener and, with `temp_id` added, back
+    /// to the sender, before the lock is released, so a clear can never
+    /// deliver `chat-cleared` ahead of a message it did not delete or after
+    /// one it did.
+    pub async fn enqueue_chat(
+        &self,
+        record: ChatRecord,
+        sender: u64,
+        temp_id: &str,
+    ) -> Result<(), &'static str> {
         let mut buffer = self.chat.lock().await;
         if buffer.rows.len() >= CHAT_BUFFER_MAX_ROWS {
             return Err("chat is not being saved right now; try again shortly");
         }
         if self
             .log
-            .storage_would_exceed(record.charged_bytes() + buffer.charged())
+            .storage_would_exceed(record.charged_bytes())
             .is_some()
         {
             return Err("the project owner's storage is full");
         }
+        self.log.charge_storage(record.charged_bytes());
+        let message = chat_json(&record);
+        let mut echo = message.clone();
+        echo["temp_id"] = Value::String(temp_id.to_owned());
         if buffer.rows.is_empty() {
             buffer.oldest = Some(tokio::time::Instant::now());
         }
         buffer.rows.push(record);
         self.chat_waiting
             .store(buffer.rows.len(), std::sync::atomic::Ordering::Relaxed);
+        self.broadcast_chat(Some(sender), &message).await;
+        self.echo_chat(sender, &echo).await;
         if buffer.rows.len() >= CHAT_FLUSH_ROWS {
             self.write_chat(&mut buffer).await;
         }
@@ -119,7 +143,8 @@ impl Room {
     }
 
     /// Writes the waiting messages when they are due, or whatever is waiting
-    /// when forced. A failed write keeps the rows for the next pass.
+    /// when forced. A failed write keeps the rows, and their reservation, for
+    /// the next pass.
     pub async fn flush_chat(&self, force: bool) {
         let mut buffer = self.chat.lock().await;
         if buffer.rows.is_empty() || !(force || buffer.due()) {
@@ -134,9 +159,9 @@ impl Room {
             .insert_chat_messages(self.document_id, &buffer.rows)
             .await
         {
-            Ok(charge) => {
-                buffer.discard();
-                self.log.charge_storage(charge);
+            Ok(_) => {
+                // The bytes were reserved when each message was accepted.
+                let _ = buffer.discard();
             }
             Err(error) => {
                 tracing::warn!("could not write the chat of {}: {error}", self.slug);
@@ -172,20 +197,26 @@ impl Room {
         ))
     }
 
-    /// Deletes every message, stored and waiting, and gives the owner the
-    /// bytes back. Returns the rows and bytes the database held.
+    /// Deletes every message, stored and waiting, gives the owner the bytes
+    /// back and tells every listener, all under the chat lock. Returns the
+    /// rows and bytes the database held.
     pub async fn clear_chat(&self) -> Result<(i64, i64), WriteError> {
         let mut buffer = self.chat.lock().await;
         let cleared = self.catalog.clear_chat(self.document_id).await?;
-        buffer.discard();
+        let waiting = buffer.discard();
         self.chat_waiting
             .store(0, std::sync::atomic::Ordering::Relaxed);
         self.log.charge_storage(-cleared.1);
+        self.log.charge_storage(-waiting);
+        self.broadcast_chat(None, &json!({"type": "chat-cleared"}))
+            .await;
         Ok(cleared)
     }
 
     /// The chat lock, for a caller that deletes chat inside its own
-    /// transaction (trim). It calls [`ChatBuffer::discard`] once that commits.
+    /// transaction (trim). It calls [`ChatBuffer::discard`] once that commits,
+    /// credits the bytes it returns and broadcasts `chat-cleared` before
+    /// dropping the guard.
     pub async fn chat_lock(&self) -> tokio::sync::MutexGuard<'_, ChatBuffer> {
         self.chat.lock().await
     }
@@ -213,7 +244,9 @@ impl Room {
         }
     }
 
-    /// Sends a frame to every socket that may see chat, except one.
+    /// Sends a frame to every socket that may see chat, except one. A socket
+    /// whose queue refuses the frame is closed, so it reconnects and reads
+    /// the history again instead of going on with a hole in it.
     pub async fn broadcast_chat(&self, skip: Option<u64>, payload: &Value) {
         let text = payload.to_string();
         let peers = self.peers.lock().await;
@@ -222,7 +255,25 @@ impl Room {
                 continue;
             }
             if let Some(tx) = &peer.chat_tx {
-                let _ = tx.try_send(super::Outgoing::shared_text(text.clone()));
+                if tx
+                    .try_send(super::Outgoing::shared_text(text.clone()))
+                    .is_err()
+                {
+                    let _ = tx.force_close("chat fell behind; reconnect");
+                }
+            }
+        }
+    }
+
+    /// Sends a frame to one chat listener, closing it if it cannot take it.
+    async fn echo_chat(&self, socket: u64, payload: &Value) {
+        let peers = self.peers.lock().await;
+        if let Some(tx) = peers.get(&socket).and_then(|peer| peer.chat_tx.as_ref()) {
+            if tx
+                .try_send(super::Outgoing::shared_text(payload.to_string()))
+                .is_err()
+            {
+                let _ = tx.force_close("chat fell behind; reconnect");
             }
         }
     }
@@ -254,6 +305,20 @@ mod tests {
 
     fn ids(rows: &[ChatRecord]) -> Vec<u128> {
         rows.iter().map(|row| row.id.as_u128()).collect()
+    }
+
+    #[test]
+    fn discard_returns_the_bytes_it_dropped() {
+        let mut buffer = ChatBuffer::default();
+        buffer.rows.push(record(1, "abc"));
+        buffer.rows.push(record(2, "de"));
+        buffer.oldest = Some(tokio::time::Instant::now());
+        let expected = buffer.charged();
+        assert_eq!(expected, 3 + 2 + 2 * CHAT_ROW_OVERHEAD_BYTES);
+        assert_eq!(buffer.discard(), expected);
+        assert!(buffer.rows.is_empty());
+        assert!(buffer.oldest.is_none());
+        assert_eq!(buffer.discard(), 0);
     }
 
     #[test]
