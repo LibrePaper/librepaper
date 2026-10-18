@@ -377,3 +377,121 @@ async fn a_trim_deletes_every_version_and_every_unused_figure() {
     drop(deployment);
     catalog.close().await;
 }
+
+/// A trimmed document's base is a shallow snapshot, and the periodic
+/// compaction the background worker runs asks for a full one. It must still
+/// succeed on that document and delete the rows it covers; otherwise a trimmed
+/// document's log only ever grows.
+#[tokio::test]
+#[ignore = "requires LIBREPAPER_TEST_POSTGRES_URL"]
+async fn periodic_compaction_of_a_trimmed_document_keeps_working() {
+    use librepaper_engine::log::sequencer::SnapshotMode;
+    use librepaper_engine::log::{FlushReason, Ingested};
+
+    let Some(deployment) = deployment("trim-then-periodic-compaction").await else {
+        return;
+    };
+    let documents = &deployment.server.documents;
+    let catalog = &deployment.catalog;
+
+    // Each edit is one update from a fresh socket, the way typing reaches the
+    // log, followed by a barrier flush so the row is durable.
+    let edit = |socket: u64, text: String| {
+        let documents = &deployment.server.documents;
+        let slug = deployment.slug.clone();
+        async move {
+            let room = documents.rooms.get(&slug).await.unwrap();
+            let (vector, edited) = room
+                .log()
+                .with_head(|doc| {
+                    (
+                        librepaper_document::document::session::encode_vector(doc),
+                        doc.fork(),
+                    )
+                })
+                .await
+                .unwrap();
+            librepaper_document::document::session::put_text(&edited, "paper.md", &text);
+            let update =
+                librepaper_document::document::session::encode_diff(&edited, &vector).unwrap();
+            let peer = format!("editor-{socket}");
+            let ingested = room.ingest(socket, &peer, &peer, 1, update).await;
+            assert!(matches!(ingested, Ingested::Accepted), "{ingested:?}");
+            room.log().flush(FlushReason::Barrier).await.unwrap();
+        }
+    };
+
+    // Step 1: a few edits so the log has rows to trim.
+    for n in 0..3u64 {
+        edit(900 + n, format!("# Trimmed\n\nEdit number {n} before the trim.\n")).await;
+    }
+    let document_id = documents.rooms.get(&deployment.slug).await.unwrap().document_id;
+
+    // Step 2: trim through the route, then read the base back and confirm it
+    // is shallow. The catalogue does not record that, so decode the base.
+    let headers = owner_bearer(&deployment);
+    let arrival = Origins::loopback_only().resolve("localhost").unwrap();
+    let request = Request::builder()
+        .method("POST")
+        .uri(format!("/api/documents/{}/history/trim", deployment.slug))
+        .header("content-type", "application/json")
+        .header(
+            "authorization",
+            headers.get("authorization").unwrap().clone(),
+        )
+        .body(Body::from(json!({}).to_string()))
+        .unwrap();
+    let response = deployment
+        .server
+        .handle_history_trim(request, &arrival, &deployment.slug)
+        .await;
+    assert_eq!(response.status(), 200, "trim must succeed");
+
+    let base_is_shallow = || async {
+        let storage = librepaper_engine::storage::collaboration::CollaborationStorage::new(
+            catalog.clone(),
+            documents.store.blobs.clone(),
+        );
+        let bytes = storage
+            .read_document_base(document_id, 256 * 1024 * 1024)
+            .await
+            .unwrap();
+        assert!(!bytes.is_empty(), "the document has a base");
+        let doc = loro::LoroDoc::new();
+        doc.import(&bytes).unwrap();
+        doc.is_shallow()
+    };
+    assert!(base_is_shallow().await, "a trim leaves a shallow base");
+
+    // Step 3: one more edit after the trim, so there is a row to compact.
+    edit(950, "# Trimmed\n\nAn edit after the trim.\n".into()).await;
+    let head = catalog.log_head(document_id).await.unwrap();
+    assert!(
+        head.uncompacted_count >= 1,
+        "the edit after the trim is an uncompacted row"
+    );
+
+    // Step 4: the compaction the worker runs, which asks for a full snapshot.
+    let result = librepaper_engine::storage::worker::compact_document(
+        &documents.store.catalog,
+        &documents.store.blobs,
+        documents.rooms.registry(),
+        &documents.background,
+        &deployment.server.config,
+        document_id,
+        SnapshotMode::Full,
+    )
+    .await;
+
+    // Step 5: it succeeds, deletes the covered rows and leaves a shallow base.
+    assert!(
+        matches!(result, Ok(Some(_))),
+        "periodic compaction of a trimmed document: {result:?}"
+    );
+    let head = catalog.log_head(document_id).await.unwrap();
+    assert_eq!(head.uncompacted_count, 0, "the covered rows are deleted");
+    assert!(
+        base_is_shallow().await,
+        "the base stays shallow after a full compaction"
+    );
+}
