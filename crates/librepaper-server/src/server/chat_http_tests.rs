@@ -15,7 +15,7 @@ use futures_util::{SinkExt, StreamExt};
 use serde_json::{json, Value};
 use tokio::net::TcpListener;
 use tokio_tungstenite::tungstenite::client::IntoClientRequest;
-use tokio_tungstenite::tungstenite::http::header::{COOKIE, HOST, ORIGIN};
+use tokio_tungstenite::tungstenite::http::header::{AUTHORIZATION, HOST, ORIGIN};
 use tokio_tungstenite::tungstenite::http::HeaderValue;
 use tokio_tungstenite::tungstenite::Message as WsMessage;
 use uuid::Uuid;
@@ -43,7 +43,9 @@ struct Fixture {
     slug: String,
     owner: Identity,
     commenter: Identity,
+    viewer: Identity,
     reader_key: String,
+    commenter_key: String,
     document_id: Uuid,
 }
 
@@ -88,6 +90,17 @@ async fn fixture(slug: &str) -> Option<Fixture> {
         })
         .await
         .unwrap();
+    let viewer = catalog
+        .create_account(NewAccount {
+            kind: "registered".into(),
+            provider: Some(PROVIDER_GITHUB.into()),
+            provider_subject: Some("chat-viewer".into()),
+            handle: "chat-viewer".into(),
+            display_name: "Chat viewer".into(),
+            email: None,
+        })
+        .await
+        .unwrap();
     let room = server.documents.rooms.get(&slug).await.unwrap();
     let document_id = room.document_id;
     drop(room);
@@ -101,6 +114,22 @@ async fn fixture(slug: &str) -> Option<Fixture> {
                 .try_into()
                 .unwrap(),
             "chat reader".into(),
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+    // Comment access on a private document comes from a link, as in use.
+    let commenter_key = format!("commenter-{}", Uuid::new_v4().simple());
+    catalog
+        .create_share_link(
+            document_id,
+            AccessRole::Commenter,
+            hex::decode(crate::server::sharing::hash_link_key(&commenter_key))
+                .unwrap()
+                .try_into()
+                .unwrap(),
+            "chat commenter".into(),
             None,
             None,
         )
@@ -149,7 +178,16 @@ async fn fixture(slug: &str) -> Option<Fixture> {
             picture: String::new(),
             session_generation: commenter.session_generation.to_string(),
         },
+        viewer: Identity {
+            provider: PROVIDER_GITHUB.into(),
+            id: viewer.id.to_string(),
+            handle: viewer.handle,
+            name: "Chat viewer".into(),
+            picture: String::new(),
+            session_generation: viewer.session_generation.to_string(),
+        },
         reader_key,
+        commenter_key,
         document_id,
     })
 }
@@ -192,7 +230,7 @@ async fn open(fixture: &Fixture, who: Option<&Identity>, link: Option<&str>) -> 
     headers.insert(HOST, HeaderValue::from_static("paper.example"));
     headers.insert(ORIGIN, HeaderValue::from_static(READER));
     if let Some(who) = who {
-        headers.insert(COOKIE, HeaderValue::from_str(&cookie(who)).unwrap());
+        headers.insert(AUTHORIZATION, HeaderValue::from_str(&bearer(who)).unwrap());
     }
     if let Some(link) = link {
         headers.insert("x-librepaper-key", HeaderValue::from_str(link).unwrap());
@@ -285,7 +323,12 @@ async fn a_message_appears_in_a_later_hello() {
     let Some(fixture) = fixture("chat-later-hello").await else {
         return;
     };
-    let mut first = open(&fixture, Some(&fixture.commenter), None).await;
+    let mut first = open(
+        &fixture,
+        Some(&fixture.commenter),
+        Some(&fixture.commenter_key),
+    )
+    .await;
     assert_eq!(next_json(&mut first).await["type"], "hello");
     let echoed = say(&mut first, "  hello there  ", "t1").await;
     assert_eq!(echoed["type"], "chat");
@@ -308,7 +351,12 @@ async fn a_message_appears_in_a_later_hello() {
     assert_eq!(hello["chat_more"], false);
     assert_eq!(hello["chat_can_clear"], true);
 
-    let mut other = open(&fixture, Some(&fixture.commenter), None).await;
+    let mut other = open(
+        &fixture,
+        Some(&fixture.commenter),
+        Some(&fixture.commenter_key),
+    )
+    .await;
     assert_eq!(next_json(&mut other).await["chat_can_clear"], false);
     finish(fixture).await;
 }
@@ -319,12 +367,17 @@ async fn a_viewer_sees_no_chat() {
     let Some(fixture) = fixture("chat-viewer").await else {
         return;
     };
-    let mut writer = open(&fixture, Some(&fixture.commenter), None).await;
+    let mut writer = open(
+        &fixture,
+        Some(&fixture.commenter),
+        Some(&fixture.commenter_key),
+    )
+    .await;
     next_json(&mut writer).await;
     say(&mut writer, "private talk", "t1").await;
     flush(&fixture).await;
 
-    let mut viewer = open(&fixture, None, Some(&fixture.reader_key)).await;
+    let mut viewer = open(&fixture, Some(&fixture.viewer), Some(&fixture.reader_key)).await;
     let hello = next_json(&mut viewer).await;
     assert_eq!(hello["type"], "hello");
     for key in ["chat", "chat_more", "chat_can_clear"] {
@@ -340,7 +393,13 @@ async fn a_viewer_sees_no_chat() {
 
     let (status, _) = history(&fixture, "", None, Some(&fixture.reader_key)).await;
     assert!(status == 401 || status == 403, "status {status}");
-    let (status, body) = history(&fixture, "", Some(&bearer(&fixture.commenter)), None).await;
+    let (status, body) = history(
+        &fixture,
+        "",
+        Some(&bearer(&fixture.commenter)),
+        Some(&fixture.commenter_key),
+    )
+    .await;
     assert_eq!(status, 200);
     assert!(!body["messages"].as_array().unwrap().is_empty());
     finish(fixture).await;
@@ -352,7 +411,12 @@ async fn only_the_owner_clears_chat() {
     let Some(fixture) = fixture("chat-clear").await else {
         return;
     };
-    let mut commenter = open(&fixture, Some(&fixture.commenter), None).await;
+    let mut commenter = open(
+        &fixture,
+        Some(&fixture.commenter),
+        Some(&fixture.commenter_key),
+    )
+    .await;
     next_json(&mut commenter).await;
     let mut owner = open(&fixture, Some(&fixture.owner), None).await;
     next_json(&mut owner).await;
@@ -397,7 +461,12 @@ async fn a_trim_empties_chat_and_reports_it() {
     let Some(fixture) = fixture("chat-trim").await else {
         return;
     };
-    let mut commenter = open(&fixture, Some(&fixture.commenter), None).await;
+    let mut commenter = open(
+        &fixture,
+        Some(&fixture.commenter),
+        Some(&fixture.commenter_key),
+    )
+    .await;
     next_json(&mut commenter).await;
     say(&mut commenter, "before the trim", "t1").await;
     say(&mut commenter, "also before", "t2").await;
@@ -419,9 +488,19 @@ async fn a_trim_empties_chat_and_reports_it() {
         .unwrap();
     assert_eq!(response.status().as_u16(), 200);
     let body: Value = response.json().await.unwrap();
-    assert_eq!(body["chat_messages"], 2);
-    assert!(body["chat_bytes"].as_i64().unwrap() > 0);
-    next_of(&mut commenter, "chat-cleared").await;
+    assert_eq!(body["chatMessages"], 2);
+    assert!(body["chatBytes"].as_i64().unwrap() > 0);
+    // A trim may also close the room's sockets; either way the client ends
+    // with an empty chat, from the broadcast or from its next hello.
+    while let Ok(Some(Ok(frame))) =
+        tokio::time::timeout(Duration::from_secs(5), commenter.next()).await
+    {
+        if let WsMessage::Text(text) = frame {
+            if serde_json::from_str::<Value>(text.as_str()).unwrap()["type"] == "chat-cleared" {
+                break;
+            }
+        }
+    }
 
     let (_, page) = history(&fixture, "", Some(&bearer(&fixture.owner)), None).await;
     assert!(page["messages"].as_array().unwrap().is_empty());
@@ -434,7 +513,12 @@ async fn the_history_route_pages_with_before() {
     let Some(fixture) = fixture("chat-paging").await else {
         return;
     };
-    let mut commenter = open(&fixture, Some(&fixture.commenter), None).await;
+    let mut commenter = open(
+        &fixture,
+        Some(&fixture.commenter),
+        Some(&fixture.commenter_key),
+    )
+    .await;
     next_json(&mut commenter).await;
     let mut ids = Vec::new();
     for n in 0..5 {
@@ -444,7 +528,13 @@ async fn the_history_route_pages_with_before() {
     flush(&fixture).await;
     let auth = bearer(&fixture.commenter);
 
-    let (status, newest) = history(&fixture, "?limit=2", Some(&auth), None).await;
+    let (status, newest) = history(
+        &fixture,
+        "?limit=2",
+        Some(&auth),
+        Some(&fixture.commenter_key),
+    )
+    .await;
     assert_eq!(status, 200);
     let got: Vec<&str> = newest["messages"]
         .as_array()
@@ -459,7 +549,7 @@ async fn the_history_route_pages_with_before() {
         &fixture,
         &format!("?before={}&limit=10", ids[3]),
         Some(&auth),
-        None,
+        Some(&fixture.commenter_key),
     )
     .await;
     let got: Vec<&str> = older["messages"]
@@ -471,7 +561,13 @@ async fn the_history_route_pages_with_before() {
     assert_eq!(got, vec![ids[0].as_str(), ids[1].as_str(), ids[2].as_str()]);
     assert_eq!(older["more"], false);
 
-    let (status, _) = history(&fixture, "?before=not-a-uuid", Some(&auth), None).await;
+    let (status, _) = history(
+        &fixture,
+        "?before=not-a-uuid",
+        Some(&auth),
+        Some(&fixture.commenter_key),
+    )
+    .await;
     assert_eq!(status, 400);
     finish(fixture).await;
 }

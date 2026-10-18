@@ -24,6 +24,13 @@ pub struct ChatRecord {
     pub created_at: OffsetDateTime,
 }
 
+/// The current time at the microsecond precision PostgreSQL stores, so a
+/// buffered message and its stored row compare equal.
+pub fn chat_now() -> OffsetDateTime {
+    let now = OffsetDateTime::now_utc();
+    now.replace_microsecond(now.microsecond()).unwrap_or(now)
+}
+
 impl ChatRecord {
     /// What this row charges the owner: body bytes plus the fixed overhead.
     pub fn charged_bytes(&self) -> i64 {
@@ -209,7 +216,7 @@ mod tests {
             author_account_id: author,
             author_label: "Tester".into(),
             body: body.into(),
-            created_at: OffsetDateTime::now_utc(),
+            created_at: super::chat_now(),
         }
     }
 

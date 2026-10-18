@@ -594,7 +594,7 @@ impl Server {
                             author_account_id: who.account_id(),
                             author_label: creator,
                             body: text.to_owned(),
-                            created_at: time::OffsetDateTime::now_utc(),
+                            created_at: librepaper_engine::storage::postgres::chat_now(),
                         };
                         let mut message = chat_json(&record);
                         if let Err(reason) = room.enqueue_chat(record).await {

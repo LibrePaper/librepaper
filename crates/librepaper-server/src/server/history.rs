@@ -1081,8 +1081,8 @@ impl Server {
                 "versionBytes": outcome.version_bytes,
                 "figures": outcome.figures,
                 "figureBytes": outcome.figure_bytes,
-                "chat_messages": outcome.chat_messages,
-                "chat_bytes": outcome.chat_bytes
+                "chatMessages": outcome.chat_messages,
+                "chatBytes": outcome.chat_bytes
             }),
         )
     }
