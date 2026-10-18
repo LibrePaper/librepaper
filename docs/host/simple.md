@@ -273,7 +273,8 @@ Caddy obtains a certificate the first time a name is visited, so the first reque
 Helpers from v0.0.45 and earlier read a digest-pinned kit wrong. With those, `./manage upgrade vX.Y.Z` stops with `the kit pins <digest>, not vX.Y.Z` and changes nothing. Replace the helper once, then upgrade as usual. Later helpers hand the upgrade to the kit's own helper by themselves.
 
 ```sh
-curl -fsSL https://github.com/LibrePaper/librepaper/releases/latest/download/librepaper-deploy.tar.gz | tar xzO librepaper/manage > manage
+curl -fsSL https://github.com/LibrePaper/librepaper/releases/latest/download/librepaper-deploy.tar.gz | tar xzO librepaper/manage > manage.new &&
+  chmod 755 manage.new && mv -f manage.new manage
 ```
 
 The server migrates the schema at startup. `compose.yaml` is replaced on every upgrade. Put your own changes in `compose.override.yaml`.
