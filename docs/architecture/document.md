@@ -23,7 +23,9 @@ Each document's log is capped by `log_quota_mib`. That advanced config defaults 
 
 PostgreSQL holds metadata, update logs and review state. The object store holds immutable blobs keyed by digest or never-reused names.
 
-Document state is persisted as a compressed base plus an ordered log in Postgres, compacted periodically. History is retained by default, but an owner can explicitly trim older edit history and named versions. Trimmed history cannot be recovered from the live document.
+Document state is persisted as a compressed base plus an ordered log in Postgres, compacted periodically. History is retained by default, but an owner can explicitly trim older edit history and named versions. Trimmed history cannot be recovered from the live document. Trimming also deletes all project chat.
+
+Project chat is stored with the document, apart from the edit log. It counts toward the owner's storage, and it has no message cap.
 
 A checkpoint records the whole directory as a canonical tree. Checkpoints are written when somebody labels a moment or restores an earlier version.
 

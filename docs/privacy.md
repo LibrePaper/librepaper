@@ -17,6 +17,7 @@ librepaper.org and your files are hosted in Canada.
 - **Accounts** keep the sign-in provider and account ID, a handle, a display name, an email address (Google only), and when the account was created and last used.
 - **Documents** keep the title, format, owner, dates, every file and the edit history.
 - **Comments, highlights and replies** keep their author and the passage they refer to.
+- **Project chat** keeps each message with its text, the author's name and the time it was sent.
 - **Sharing** records who each document is shared with. A share link is stored as a hash and as an encrypted copy that lets the owner copy it again.
 - **Operational numbers** count requests, response times, memory, disk and CPU once a minute. They carry no user, document or network identifiers. Only the administrators can see them.
 
@@ -30,6 +31,7 @@ librepaper.org keeps no access log and does not store IP addresses.
 - Your handle is your GitHub login or your Google email. Only you see it. Other people see your display name.
 - While you have a document open, other people viewing it see that you are there and where your cursor is.
 - Edit and comment links require sign-in. Read links work for anyone who has them.
+- Project chat is visible to people with a comment or edit link, and to the owner. Read links never show it.
 
 ## What leaves librepaper.org
 
@@ -58,8 +60,9 @@ The browser also keeps data of its own on your device.
 
 - **Accounts** that have not signed in for 365 days are erased. Every sign-in resets the clock. See [erasing an account](#erasing-an-account).
 - **Documents** stay until their owner deletes them or the owner's account is erased.
-- **Deleted projects** stay in the trash for seven days. Then the project is purged with its files, comments, replies, history and share links. Emptying the trash purges it at once.
-- **Edit history and named versions** stay as long as the document exists. An owner can trim history, which permanently removes older history and named versions. See [storage and history](./architecture/document.html#storage-and-history).
+- **Deleted projects** stay in the trash for seven days. Then the project is purged with its files, comments, replies, chat, history and share links. Emptying the trash purges it at once.
+- **Edit history and named versions** stay as long as the document exists. An owner can trim history, which permanently removes older history, named versions and project chat. See [storage and history](./architecture/document.html#storage-and-history).
+- **Project chat** stays until the owner clears it, trims the project's history, or deletes the project. Chat counts toward the owner's storage. Clearing chat deletes it at once.
 - **Share links** expire after seven days unless the owner picks a longer time or no expiry.
 - **Sessions** end after 30 days. Signing out clears this browser's cookie but does not cancel a copied one. Erasing the account ends every session.
 - **Operational numbers** are kept for 400 days and are not backed up.
@@ -70,6 +73,7 @@ The browser also keeps data of its own on your device.
 - Backups are encrypted and stored in Canada, away from the server.
 - Every backup from the last 48 hours is kept, plus the last backup of each of the last 14 days and of each of the last 11 weeks. The oldest backup is therefore about ten weeks old.
 - A deleted project is purged seven days after you delete it, so it can stay in backups for about eleven weeks. An erased account stays about as long.
+- Cleared or trimmed chat can stay in backups until those backups expire, about ten weeks after the change.
 - If backups stop running for a while, the oldest ones are kept longer.
 
 ## Erasing an account
@@ -78,7 +82,7 @@ Choose **Settings > Account > Erase this account** and confirm with your handle.
 
 1. The account's sessions end, and the account can never sign in again. You cannot undo this from the browser.
 2. Owned documents are marked for deletion and purged after seven days.
-3. Comments, replies and labels on other people's documents stay, shown as "Deleted user".
+3. Comments, replies, labels and chat messages on other people's documents stay, shown as "Deleted user".
 4. The account record is deleted once its documents are purged.
 
 librepaper.org also erases an account that has not signed in for 365 days, in the same four steps. Signing in again later creates a new, empty account.

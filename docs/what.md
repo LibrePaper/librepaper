@@ -26,7 +26,8 @@ Working with people:
 - Highlights and threaded comments, live for everyone
 - Share with readers, commenters or editors, signed in with GitHub or Google
 - Chat with collaborators and AI agents
-- Named versions and track changes; owners can permanently trim older history
+- Project chat is kept with the project. The owner can clear it from the chat menu or the command palette.
+- Named versions and track changes. Owners can permanently trim older history and chat.
 
 LLM agents:
 
