@@ -13,9 +13,15 @@ const QUERY = "(prefers-color-scheme: dark)";
 const listeners = new Set();
 let started = false;
 let applied = null;
+// The one media query list, made on first use and held for the module's
+// lifetime. The change listener in start() hangs off it, and a list that
+// nothing holds was seen to stop reporting changes in headless Chromium: the
+// browser test flipped the emulated scheme and the mode never followed.
+let media = null;
 
 function query() {
-  return typeof globalThis.matchMedia === "function" ? globalThis.matchMedia(QUERY) : null;
+  if (!media && typeof globalThis.matchMedia === "function") media = globalThis.matchMedia(QUERY);
+  return media;
 }
 
 export function choice() {
