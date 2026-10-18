@@ -5,6 +5,9 @@
 
 [resticprofile]
 repository = "s3:@LIBREPAPER_BACKUPS_S3_ENDPOINT@/@LIBREPAPER_BACKUPS_S3_BUCKET@/restic"
+# The repository exists. Never create a fresh one, so a mistyped bucket or path
+# fails the run and the Healthchecks ping instead of starting an empty repository.
+initialize = false
 
 [resticprofile.env]
 AWS_DEFAULT_REGION = "@LIBREPAPER_BACKUPS_S3_REGION@"
