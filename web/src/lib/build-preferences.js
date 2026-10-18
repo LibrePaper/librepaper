@@ -1,7 +1,7 @@
 // Per-browser build preferences: one per format for each person in this
 // browser, shared by every document of that format. These values never enter
 // collaborative state.
-const PREFIX = "librepaper-build-v3";
+export const PREFIX = "librepaper-build-v3";
 const ANONYMOUS_KEY = `${PREFIX}:anonymous-id`;
 let anonymousId;
 

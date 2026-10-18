@@ -1,6 +1,7 @@
 import { mount } from "svelte";
 import Boundary from "../components/Boundary.svelte";
 import { watchForUnhandled } from "../lib/crash.js";
+import { watchNetwork } from "../lib/support/network.js";
 import "../styles/app.css";
 import Landing from "../components/Landing.svelte";
 import { registerOfflineShell } from "../lib/offline-shell.js";
@@ -12,6 +13,7 @@ import { intake } from "../lib/desktop/client.js";
 // Started inside a boundary, so a throw anywhere below is a notice rather
 // than an empty page. See src/components/Boundary.svelte.
 watchForUnhandled();
+watchNetwork();
 const initialSettings = intake() ? "desktop" : "";
 mount(Boundary, { target: document.body, props: { component: Landing, props: { initialSettings }, name: "the project list" } });
 void registerOfflineShell();
