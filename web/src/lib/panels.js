@@ -14,10 +14,6 @@
 export const TABS = [
   { id: "files", says: "Files", icon: "folder", when: (who) => who.mayEdit },
   { id: "outline", says: "Outline", icon: "list", when: (who) => who.mayEdit },
-  // The two palettes sit beside the outline: they insert into the source, so
-  // they are offered where the source is open and somebody may edit it.
-  { id: "symbols", says: "Symbols", icon: "sigma", when: (who) => who.mayEdit && who.editing },
-  { id: "math", says: "Math", icon: "radical", when: (who) => who.mayEdit && who.editing },
   { id: "collaboration", says: "Collaboration", icon: "comment" },
   { id: "changes", says: "Changes", icon: "pencil" },
   { id: "agent", says: "Agent", icon: "bot" },

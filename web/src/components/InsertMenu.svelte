@@ -20,13 +20,14 @@
    * oninsert?: (result: FinalInsertion, context: InsertMenuContext) => unknown;
    * onupload?: (file: File) => Promise<string>;
    * onpreview?: (path: string) => Promise<string | null | undefined>;
-   * onpanel?: (id: "symbols" | "math") => void;
+   * onpalette?: (id: "symbols" | "math") => void;
    * onfocus?: () => void;
    * oncancel?: (context: InsertMenuContext | null) => void;
+   * keys?: Record<string, string>;
    * disabled?: boolean;
    * }} InsertMenuProps */
   /** @type {InsertMenuProps} */
-  let { getContext, oninsert, onupload, onpreview, onpanel, onfocus, oncancel, disabled = false } = $props();
+  let { getContext, oninsert, onupload, onpreview, onpalette, onfocus, oncancel, keys = {}, disabled = false } = $props();
 
   /** @type {string | null} */
   let dialog = $state(null);
@@ -43,16 +44,13 @@
   let preview = $state(null);
   let dialogGeneration = 0;
 
-  /** @typedef {string | {label: string; ids: string[]; panels?: [string, string][]}} InsertMenuEntry */
+  /** @typedef {string | {label: string; ids: string[]}} InsertMenuEntry */
   // The common actions stay at the top. Everything else sits in a sub-menu
   // named after the section it used to head.
   /** @type {InsertMenuEntry[]} */
   const menuTree = [
     "figure", "table", "citation", "cross-reference", "footnote", "link", "heading",
-    { label: "Math", ids: ["inline-math", "display-math", "aligned-math", "gather-math", "cases", "matrix"],
-      // These open the sidebar panels rather than inserting anything, so they
-      // come after the insertions and are never checked for availability.
-      panels: [["symbols", "Symbols…"], ["math", "Math templates…"]] },
+    { label: "Math", ids: ["inline-math", "display-math", "aligned-math", "gather-math", "cases", "matrix"] },
     { label: "Lists", ids: ["bulleted-list", "numbered-list", "description-list"] },
     { label: "Theorems", ids: ["theorem", "lemma", "proposition", "definition", "proof", "example", "remark"] },
     { label: "Blocks", ids: ["quote", "quotation", "code-block"] },
@@ -119,12 +117,12 @@
   }
   /** @param {string} id */
   function choose(id) {
-    // A panel opener is answered by the reader, which owns the sidebar. It
-    // is handed on after the menu has closed, so the menu's own focus restore
-    // does not take the focus back from the panel.
-    if (id.startsWith("panel:")) {
-      const panelId = /** @type {"symbols" | "math"} */ (id.slice("panel:".length));
-      setTimeout(() => onpanel?.(panelId), 0);
+    // A palette opener is answered by the reader, which owns the overlays. It
+    // is handed on after the menu has closed, so the menu's focus restore does
+    // not take the focus back from the dialog.
+    if (id.startsWith("palette:")) {
+      const paletteId = /** @type {"symbols" | "math"} */ (id.slice("palette:".length));
+      setTimeout(() => onpalette?.(paletteId), 0);
       return;
     }
     const context = contextNow();
@@ -210,7 +208,7 @@
 {/snippet}
 
 {#snippet subMenu(entry)}
-  {@const allDisabled = !entry.panels && entry.ids.every((id) => !availability(id, menuContext || {}).enabled)}
+  {@const allDisabled = entry.ids.every((id) => !availability(id, menuContext || {}).enabled)}
   <!-- The child menu reports its own selections, so it gets the same handler
        as the bar's menu; Zag does not pass a sub-menu's select up to its parent. -->
   <Menu open={openGroup === entry.label}
@@ -222,14 +220,6 @@
     </Menu.TriggerItem>
     <ExplorerMenu>
       {#each entry.ids as id}{@render insertItem(id)}{/each}
-      {#if entry.panels}
-        <div class="menu-separator" role="separator"></div>
-        {#each entry.panels as [panelId, text]}
-          <Menu.Item value={"panel:" + panelId} class="menuitem">
-            <span class="menuitem-label">{text}</span>
-          </Menu.Item>
-        {/each}
-      {/if}
     </ExplorerMenu>
   </Menu>
 {/snippet}
@@ -238,9 +228,15 @@
              onopen={() => { menuContext = getContext?.() || null; }}
              onselect={choose}>
   <div class="insert-scroll">
-  {#each menuTree as entry, index}
-    {#if typeof entry !== "string" && typeof menuTree[index - 1] === "string"}<div class="menu-separator" role="separator"></div>{/if}
-    {#if typeof entry === "string"}{@render insertItem(entry)}{:else}{@render subMenu(entry)}{/if}
+  {#each menuTree as entry}
+    {#if typeof entry === "string"}{@render insertItem(entry)}{/if}
+  {/each}
+  <div class="menu-separator" role="separator"></div>
+  <Menu.Item value="palette:symbols" class="menuitem"><span class="menuitem-label">Symbols…</span>{#if keys.symbols}<span class="menuitem-keys">{keys.symbols}</span>{/if}</Menu.Item>
+  <Menu.Item value="palette:math" class="menuitem"><span class="menuitem-label">Math…</span>{#if keys.math}<span class="menuitem-keys">{keys.math}</span>{/if}</Menu.Item>
+  <div class="menu-separator" role="separator"></div>
+  {#each menuTree as entry}
+    {#if typeof entry !== "string"}{@render subMenu(entry)}{/if}
   {/each}
   </div>
 </MenubarMenu>

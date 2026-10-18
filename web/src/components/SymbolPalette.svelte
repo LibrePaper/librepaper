@@ -1,5 +1,4 @@
 <script>
-  import PanelHeader from "./PanelHeader.svelte";
   import PanelTabs from "./PanelTabs.svelte";
   import SymbolSearch from "./SymbolSearch.svelte";
   import SymbolTile from "./SymbolTile.svelte";
@@ -8,9 +7,10 @@
   /** @typedef {import("../lib/insert.js").InsertContext} InsertContext */
   /** @typedef {"html" | "quarto" | "markdown" | "latex" | "typst"} SymbolFormat */
 
-  // The symbols panel in the sidebar. A click inserts the symbol into the open
-  // file, and the editor takes the keyboard back afterwards. Shift-click copies
-  // the bare spelling instead, for pasting into prose or a different file.
+  // The symbols overlay. A click inserts the symbol into the open file and
+  // then calls onfocus, which the reader answers by closing the dialog and
+  // handing the keyboard back to the editor. Shift-click copies the bare
+  // spelling instead, for pasting into prose or a different file.
   let { getContext, oninsert, onfocus, format = "" } = $props();
 
   const RECENT_KEY = "lp:symbols:recent";
@@ -136,8 +136,6 @@
 </script>
 
 <div class="symbol-palette" bind:this={root}>
-  <PanelHeader title="Symbols" />
-
   <div class="search-wrap" class:searching>
     <SymbolSearch
       bind:this={search}

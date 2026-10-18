@@ -1,6 +1,5 @@
 <script>
-  import { onMount, tick } from "svelte";
-  import PanelHeader from "./PanelHeader.svelte";
+  import { onDestroy, onMount, tick } from "svelte";
   import SymbolSearch from "./SymbolSearch.svelte";
   import { MATH_TEMPLATES, templateInsertion } from "../lib/symbols/templates.js";
   import { SYMBOLS, symbolText, separated } from "../lib/symbols/index.js";
@@ -13,7 +12,7 @@
 
   // The prop is still called onfocus for callers. It is renamed here so the
   // element attribute onfocus on the fields cannot be confused with it.
-  let { getContext, oninsert, onfocus: onfocusPanel, format = "" } = $props();
+  let { getContext, oninsert, onfocus: onfocusPanel, oncancel, format = "" } = $props();
 
   // KaTeX arrives after the picker is on screen. Until then every tile shows
   // its label, so the panel is usable at once and the math fills in later.
@@ -196,8 +195,8 @@
   /** @param {KeyboardEvent} event */
   function onFormKey(event) {
     if (event.key !== "Escape" || event.defaultPrevented) return;
-    // The panel sits in a sidebar that also listens for Escape; this press
-    // belongs to the form. A press the search already answered is not the
+    // The dialog also closes on Escape; this press belongs to the form and
+    // goes back to the picker. A press the search already answered is not the
     // form's, so it stays on the form.
     event.preventDefault();
     event.stopPropagation();
@@ -311,6 +310,10 @@
   }
 
   /** Puts the focus where a keyboard user expects it: a tile, or the first field. */
+  // The overlay unmounts the palette when it closes, and a form left open
+  // holds an insertion target that the editor must release.
+  onDestroy(() => { if (captured) oncancel?.(captured); });
+
   export function focus() {
     if (activeId) firstField();
     else /** @type {HTMLElement | null} */ (root?.querySelector("[data-template]"))?.focus();
@@ -326,8 +329,6 @@
 {/snippet}
 
 <div class="math-palette" bind:this={root}>
-  <PanelHeader title="Math" />
-
   {#if !active}
     {#if format === "html"}
       <p class="panel-muted">Math templates need LaTeX, Typst, Markdown or Quarto.</p>

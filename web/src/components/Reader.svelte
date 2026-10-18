@@ -1177,10 +1177,13 @@
   // reader joins it too, because that is where the text comes from.
   let Editor = $state(null);
   let editor = $state(null);
-  // The palettes' own components, so a command can ask the Math panel to open
-  // a template or the Symbols panel to take the focus.
+  // The palettes are overlays over the editor. Their components are kept so a
+  // command can ask the Math overlay to open a template, or the Symbols overlay
+  // to take the focus.
   let symbolPalette = $state(null);
   let mathPalette = $state(null);
+  let symbolsOpen = $state(false);
+  let mathOpen = $state(false);
   // Raw on purpose: the session is a bag of Loro types and functions, and the
   // collaboration module hands the same object back in its callbacks, which
   // are compared to this by identity. A deep proxy would never be equal to it.
@@ -3410,16 +3413,9 @@
     if (id === "shortcuts") return openSettings("editor");
     if (id === "focus-files") return focusPanel("files");
     if (id === "focus-outline") return focusPanel("outline");
-    if (id === "focus-symbols") return focusPanel("symbols");
-    if (id === "focus-math") return focusPanel("math");
-    // A template command opens the Math panel on its template. The panel is
-    // mounted by the open, so the template is asked for after the tick.
-    if (id.startsWith("math-")) {
-      await openPanel("math");
-      await tick();
-      mathPalette?.openTemplate?.(id.slice("math-".length));
-      return;
-    }
+    if (id === "symbols" || id === "math") return openPalette(id);
+    // A template command opens the Math overlay on its template.
+    if (id.startsWith("math-")) return openPalette("math", id.slice("math-".length));
     if (id === "focus-comments") return focusPanel("collaboration");
     if (id === "focus-preview") return focusPreview();
     if (id === "layout-cycle") return cycleLayout();
@@ -3430,6 +3426,25 @@
 
   const EDIT_COMMANDS = ["undo", "redo", "cut", "copy", "paste", "select-all", "find", "replace"];
   const LAYOUT_COMMANDS = ["linked", "layout-source", "layout-document", "layout-split", "side-left", "side-right"];
+
+  // The palettes open over the editor. Each one inserts at the caret the
+  // editor had when it opened, so there is nothing to open without a source.
+  async function openPalette(name, template = "") {
+    if (!can[name]) return;
+    symbolsOpen = name === "symbols";
+    mathOpen = name === "math";
+    await tick();
+    if (name === "symbols") symbolPalette?.focus?.();
+    if (template) mathPalette?.openTemplate?.(template);
+  }
+
+  // After an insertion: close the overlay and give the editor the keyboard
+  // back once the dialog has finished returning the focus to its opener.
+  function closePalette() {
+    symbolsOpen = false;
+    mathOpen = false;
+    requestAnimationFrame(() => editor?.focus?.());
+  }
 
   // Open the panel, then put the keyboard in it. The first of those was all a
   // panel command used to do, and a panel that appears while the focus stays
@@ -3662,7 +3677,7 @@
           {/each}
         {/each}
       </MenubarMenu>
-      <InsertMenu getContext={insertContext} oninsert={applyInsertion} onupload={uploadInsertAsset} onpreview={previewInsertAsset} onpanel={(id) => void focusPanel(id)} oncancel={(context) => editor?.releaseInsertContext?.(context)} onfocus={() => editor?.focus?.()} disabled={!mayEdit || !editor} />
+      <InsertMenu getContext={insertContext} oninsert={applyInsertion} onupload={uploadInsertAsset} onpreview={previewInsertAsset} onpalette={(id) => void openPalette(id)} keys={{ symbols: MENU_KEYS.symbols, math: MENU_KEYS.math }} oncancel={(context) => editor?.releaseInsertContext?.(context)} onfocus={() => editor?.focus?.()} disabled={!mayEdit || !editor} />
     {/if}
     {#if editing}
       <MenubarMenu id="view" label="View" onselect={chooseViewCommand}>
@@ -3701,14 +3716,6 @@
 
   {#snippet outlinePanel()}
     <Outline headings={outlineHeadings} activeFrom={outlineActiveFrom} onselect={openOutlineHeading} />
-  {/snippet}
-
-  {#snippet symbolsPanel()}
-    <SymbolPalette bind:this={symbolPalette} format={editorFormat} getContext={insertContext} oninsert={applyInsertion} onfocus={() => editor?.focus?.()} />
-  {/snippet}
-
-  {#snippet mathPanel()}
-    <MathPalette bind:this={mathPalette} format={editorFormat} getContext={insertContext} oninsert={applyInsertion} onfocus={() => editor?.focus?.()} />
   {/snippet}
 
   {#snippet agentPanel()}
@@ -3781,7 +3788,7 @@
   <Sidebar
     {shown} {tabs} {panel} {settled} {compact} mounted={mountedPanels} {badges}
     label="Document"
-    panels={{ files: filesPanel, outline: outlinePanel, symbols: symbolsPanel, math: mathPanel, agent: agentPanel,
+    panels={{ files: filesPanel, outline: outlinePanel, agent: agentPanel,
               collaboration: collaborationPanel, changes: changesPanel,
               share: sharePanel, diagnostics: diagnosticsPanel, history: historyPanel }}
     panes={panes} sidebarPane={PANES.sidebar}
@@ -4056,6 +4063,23 @@
 <CommandPalette bind:open={commandPalette} context={commandContext} apple={APPLE}
                 onrun={(id) => void runCommand(id)} />
 
+<!-- The palettes open over the editor rather than in the sidebar. Each is
+     mounted only while open, so a form left half filled does not come back. -->
+<Modal bind:open={symbolsOpen} title="Symbols" wide>
+  {#if symbolsOpen}
+    <div class="palette-overlay">
+      <SymbolPalette bind:this={symbolPalette} format={editorFormat} getContext={insertContext} oninsert={applyInsertion} onfocus={closePalette} />
+    </div>
+  {/if}
+</Modal>
+<Modal bind:open={mathOpen} title="Math" wide>
+  {#if mathOpen}
+    <div class="palette-overlay">
+      <MathPalette bind:this={mathPalette} format={editorFormat} getContext={insertContext} oninsert={applyInsertion} onfocus={closePalette} oncancel={(context) => editor?.releaseInsertContext?.(context)} />
+    </div>
+  {/if}
+</Modal>
+
 <!-- The preferences dialog is shared by the navbar menu and sidebar button. -->
 <SettingsDialog bind:open={settingsOpen} bind:category={settingsCategory}
                 remoteConnected={connected} remoteNote={connectionNote}
@@ -4167,6 +4191,8 @@
   .ink::after { content:""; position:absolute; right:0; bottom:0; width:0; height:0; border-right:7px solid var(--color-text-secondary); border-top:7px solid transparent; pointer-events:none; }
   .ink:hover::before, .ink[aria-expanded="true"]::before { box-shadow:inset 0 0 0 1px var(--color-focus); }
   .highlight-colors { position:absolute; z-index:1; top:calc(100% + 6px); left:50%; transform:translateX(-50%); display:flex; align-items:center; gap:3px; padding:2px; border:1px solid var(--color-border); border-radius:var(--radius-base); background:var(--color-raised); box-shadow:var(--shadow-lg); }
+  /* The overlay gives the palette a fixed height, so the grid scrolls inside it rather than the dialog growing past the window. */
+  .palette-overlay { height: min(70vh, 36rem); min-height: 0; }
   .color-swatch { width:1.5rem; height:1.5rem; border:2px solid transparent; border-radius:50%; }
   .color-swatch.selected { border-color:var(--color-text); box-shadow:0 0 0 1px var(--color-brand); }
   .custom-color { display:grid; place-items:center; width:1.5rem; height:1.5rem; }
