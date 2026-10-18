@@ -445,7 +445,9 @@ impl Room {
     /// projection leaves these comments with no attachment, which every
     /// caller already reads as "not yet known".
     ///
-    /// A page of document-level comments only never reads the document.
+    /// A page with no source-anchored comment never reads the document; a
+    /// document-level comment on such a page carries no attachment, and
+    /// nothing reads the one it would have had.
     pub(crate) async fn attach(&self, comments: &mut [Comment]) {
         if comments.is_empty() {
             return;
@@ -475,10 +477,7 @@ impl Room {
                 needing.push((comment.id.clone(), frontier, source.clone()));
             }
         }
-        if comments
-            .iter()
-            .all(|comment| comment.original_anchor.is_none())
-        {
+        if comments.iter().all(|comment| comment.source().is_none()) {
             return;
         }
         let mut captured: HashMap<String, LiveSourceRange> = HashMap::new();

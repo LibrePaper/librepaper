@@ -1321,3 +1321,21 @@ async fn an_editor_page_with_an_anchored_comment_decodes() {
     assert!(room.log().is_warm().await);
     deployment.catalog.close().await;
 }
+
+/// Document-level comments have nothing to place, so an editor's page of
+/// them leaves the document undecoded and carries no attachment.
+#[tokio::test]
+#[ignore = "requires LIBREPAPER_TEST_POSTGRES_URL"]
+async fn an_editor_page_of_document_level_comments_never_decodes() {
+    let Some(deployment) = deployment("paging-editor-cold").await else {
+        return;
+    };
+    let room = deployment.room().await;
+    deployment.seed_comments(room.document_id, 3).await;
+    room.log().drop_cache().await;
+    let (views, _) = room.comment_page(None, 50, "someone", true).await.unwrap();
+    assert_eq!(views.len(), 3);
+    assert!(views.iter().all(|view| view.attachment.is_none()));
+    assert!(!room.log().is_warm().await, "a document-level page decoded the document");
+    deployment.catalog.close().await;
+}
