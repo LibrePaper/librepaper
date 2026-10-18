@@ -18,11 +18,12 @@ const files = {
   "/app.js": ["app.js", "text/javascript"], "/uplot.js": ["uplot.iife.min.js", "text/javascript"],
   "/app.css": ["app.css", "text/css"], "/uplot.css": ["uplot.min.css", "text/css"],
 };
-// The twelve series in the order the server returns them.
+// The thirteen series in the order the server returns them.
 const specs = [
   ["requests_per_minute", "count", "mean"], ["client_errors_per_minute", "count", "max"],
   ["server_errors_per_minute", "count", "max"], ["latency_p95_seconds", "seconds", "max"],
-  ["documents_resident", "count", "mean"], ["sockets_active", "count", "mean"],
+  ["documents_resident", "count", "mean"], ["documents_decoded", "count", "mean"],
+  ["sockets_active", "count", "mean"],
   ["storage_bytes", "bytes", "mean"], ["process_rss_bytes", "bytes", "mean"],
   ["memory_available_bytes", "bytes", "mean"], ["disk_available_bytes", "bytes", "mean"],
   ["host_cpu_percent", "percent", "mean"], ["db_connections_in_use", "count", "mean"],
@@ -56,8 +57,8 @@ try {
   await tab.resize(1200, 900);
   await tab.navigate(`http://127.0.0.1:${server.address().port}/`);
 
-  // uPlot draws one canvas per plot, so twelve panels need twelve canvases.
-  await until("twelve panels with one canvas each", () => tab.evaluate("document.querySelectorAll('#grid .panel').length === 12 && document.querySelectorAll('#grid canvas').length === 12"));
+  // uPlot draws one canvas per plot, so thirteen panels need thirteen canvases.
+  await until("thirteen panels with one canvas each", () => tab.evaluate("document.querySelectorAll('#grid .panel').length === 13 && document.querySelectorAll('#grid canvas').length === 13"));
   await until("first /data request", () => requests.length > 0);
   assert.equal(requests[0].points, 600, "the page asks for 600 points");
   assert.equal(requests[0].to - requests[0].from, 86400, "the default range is 24 hours");

@@ -36,13 +36,14 @@ const ADMIN_HOST: &str = "admin.paper.example";
 /// The one GitHub account listed for the admin console.
 const OPERATOR_ID: i64 = 4242;
 
-/// The twelve series, in the order the page draws them.
-const SERIES: [&str; 12] = [
+/// The thirteen series, in the order the page draws them.
+const SERIES: [&str; 13] = [
     "requests_per_minute",
     "client_errors_per_minute",
     "server_errors_per_minute",
     "latency_p95_seconds",
     "documents_resident",
+    "documents_decoded",
     "sockets_active",
     "storage_bytes",
     "process_rss_bytes",

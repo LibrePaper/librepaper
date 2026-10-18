@@ -62,6 +62,20 @@ pub struct Budget {
     /// that sees one of two refusal paths is worse than no counter, because
     /// a zero then means nothing.
     refused: AtomicU64,
+    /// Decoded copies built to completion, for any reason: a cold read, a
+    /// compaction of a cold document, a rebuild after an eviction. Activity,
+    /// not a diagnosis: a build per read is normal for a document read once.
+    builds: AtomicU64,
+    /// Builds that did not complete: an import error or `BUILD_DEADLINE`.
+    /// Each marks its document unreadable. Not in `builds`.
+    build_failures: AtomicU64,
+    /// Wall time of completed builds, summed, in milliseconds, from the first
+    /// reservation to the installed entry: the whole time `build` holds the
+    /// sequencer lock, which is the whole time typing on that document waits.
+    /// Reservation waits, the base read, the row query, the permit wait and
+    /// the import are all inside it. A sum, so `build_millis / builds` is a
+    /// mean and says nothing about the tail.
+    build_millis: AtomicU64,
 }
 
 impl Budget {
@@ -74,6 +88,9 @@ impl Budget {
             evictor: OnceLock::new(),
             evicted: AtomicU64::new(0),
             refused: AtomicU64::new(0),
+            builds: AtomicU64::new(0),
+            build_failures: AtomicU64::new(0),
+            build_millis: AtomicU64::new(0),
         })
     }
 
@@ -103,10 +120,35 @@ impl Budget {
         self.refused.load(Ordering::Relaxed)
     }
 
+    pub fn builds(&self) -> u64 {
+        self.builds.load(Ordering::Relaxed)
+    }
+
+    pub fn build_failures(&self) -> u64 {
+        self.build_failures.load(Ordering::Relaxed)
+    }
+
+    pub fn build_millis(&self) -> u64 {
+        self.build_millis.load(Ordering::Relaxed)
+    }
+
     /// Counts entries the registry dropped to make room. Called by the
     /// evictor, because only it knows how many it actually let go of.
     pub fn note_evicted(&self, entries: u64) {
         self.evicted.fetch_add(entries, Ordering::Relaxed);
+    }
+
+    /// Counts a build that completed and how long it took from the first
+    /// reservation to the installed entry.
+    pub fn note_built(&self, elapsed: std::time::Duration) {
+        self.builds.fetch_add(1, Ordering::Relaxed);
+        self.build_millis
+            .fetch_add(elapsed.as_millis() as u64, Ordering::Relaxed);
+    }
+
+    /// Counts a build that did not complete.
+    pub fn note_build_failed(&self) {
+        self.build_failures.fetch_add(1, Ordering::Relaxed);
     }
 
     /// The whole snapshot an operator reads (`GET /api/status`). Read on
@@ -118,6 +160,9 @@ impl Budget {
             "expansion": self.expansion,
             "evicted_caches": self.evicted(),
             "refused_busy": self.refused(),
+            "builds": self.builds(),
+            "build_failures": self.build_failures(),
+            "build_millis": self.build_millis(),
         })
     }
 
@@ -304,6 +349,21 @@ mod tests {
             "larger than the whole budget, refused without waiting",
         );
         assert_eq!(budget.refused(), 3);
+    }
+
+    #[test]
+    fn builds_and_their_failures_are_counted_in_the_snapshot() {
+        let budget = Budget::new(100, 1);
+        budget.note_built(std::time::Duration::from_millis(40));
+        budget.note_built(std::time::Duration::from_millis(25));
+        budget.note_build_failed();
+        assert_eq!(budget.builds(), 2);
+        assert_eq!(budget.build_failures(), 1);
+        assert_eq!(budget.build_millis(), 65);
+        let snapshot = budget.snapshot();
+        assert_eq!(snapshot["builds"], 2);
+        assert_eq!(snapshot["build_failures"], 1);
+        assert_eq!(snapshot["build_millis"], 65);
     }
 
     #[test]

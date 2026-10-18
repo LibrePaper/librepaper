@@ -2234,6 +2234,7 @@ impl Sequencer {
     /// signal to stop scheduling rather than a way to reclaim a thread
     /// (§9.2, §9.3).
     async fn build(&self, inner: &mut Inner) -> Result<Cache> {
+        let build_started = Instant::now();
         let estimate = inner.resident_estimate(self.budget.expansion());
         let reservation = self
             .budget
@@ -2313,6 +2314,7 @@ impl Sequencer {
             Ok(doc) => doc,
             Err(error) => {
                 inner.unreadable = Some(error.clone());
+                self.budget.note_build_failed();
                 return Err(SequencerError::Unreadable(error));
             }
         };
@@ -2323,8 +2325,10 @@ impl Sequencer {
                 BUILD_DEADLINE.as_secs()
             );
             inner.unreadable = Some(why.clone());
+            self.budget.note_build_failed();
             return Err(SequencerError::Unreadable(why));
         }
+        self.budget.note_built(build_started.elapsed());
         Ok(Cache { doc, reservation })
     }
 

@@ -229,7 +229,7 @@ mod tests {
         let first = Store::open(&path).unwrap().ids;
         let second = Store::open(&path).unwrap().ids;
         assert_eq!(first, second);
-        assert_eq!(first.len(), 12);
+        assert_eq!(first.len(), 13);
     }
 
     #[test]
@@ -252,7 +252,7 @@ mod tests {
         let mut store = Store::open(&path).unwrap();
         store.insert(1_000, &pair(3.0, 5.0)).unwrap();
         store.insert(1_000, &pair(99.0, 99.0)).unwrap();
-        assert_eq!(count(&path), 12);
+        assert_eq!(count(&path), 13);
         let read = read_range(&path, 1_000, 1_060, 1).unwrap();
         assert_eq!(read[0], vec![Some(3.0)]);
     }

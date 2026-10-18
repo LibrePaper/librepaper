@@ -657,6 +657,21 @@ const GAUGE_FIELDS: &[(&str, &str, &str)] = &[
         "refused_busy",
     ),
     (
+        "librepaper_memory_budget_builds_total",
+        "memory_budget",
+        "builds",
+    ),
+    (
+        "librepaper_memory_budget_build_failures_total",
+        "memory_budget",
+        "build_failures",
+    ),
+    (
+        "librepaper_memory_budget_build_millis_total",
+        "memory_budget",
+        "build_millis",
+    ),
+    (
         "librepaper_pending_retained_limit_bytes",
         "pending_budget",
         "retained_limit_bytes",
@@ -1096,7 +1111,12 @@ mod tests {
         metrics.update_gauges(
             &serde_json::json!({
                 "rooms": {"documents": 3},
-                "memory_budget": {"evicted_caches": 4},
+                "memory_budget": {
+                    "evicted_caches": 4,
+                    "builds": 2,
+                    "build_failures": 1,
+                    "build_millis": 65,
+                },
             }),
             &librepaper_base::config::Configuration::default(),
         );
@@ -1112,6 +1132,9 @@ mod tests {
             ("librepaper_resource_refusals", "counter"),
             ("librepaper_rooms_documents", "gauge"),
             ("librepaper_memory_budget_evicted_caches", "counter"),
+            ("librepaper_memory_budget_builds", "counter"),
+            ("librepaper_memory_budget_build_failures", "counter"),
+            ("librepaper_memory_budget_build_millis", "counter"),
         ] {
             assert!(
                 text.contains(&format!("# TYPE {name} {kind}\n")),
@@ -1126,6 +1149,9 @@ mod tests {
             "# HELP librepaper_http_requests Completed HTTP requests by bounded route, method, and response class.\n"
         ));
         assert!(text.contains("librepaper_memory_budget_evicted_caches_total 4"));
+        assert!(text.contains("librepaper_memory_budget_builds_total 2\n"));
+        assert!(text.contains("librepaper_memory_budget_build_failures_total 1\n"));
+        assert!(text.contains("librepaper_memory_budget_build_millis_total 65\n"));
         assert!(!text.contains("librepaper_memory_budget_evicted_caches_total_total"));
         assert!(!text.contains("librepaper_http_requests_total_total"));
     }
