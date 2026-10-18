@@ -65,7 +65,7 @@ assert.deepEqual(toggle("__", [[1, 1]], "italic", "typst"), { doc: "", ranges: [
 
 // The markers are selected with the text.
 assert.deepEqual(toggle("**word**", [[0, 8]], "bold", "markdown"), { doc: "word", ranges: [[0, 4]] });
-assert.deepEqual(toggle("*word*", [[0, 6]], "italic", "typst"), { doc: "word", ranges: [[0, 4]] });
+assert.deepEqual(toggle("_word_", [[0, 6]], "italic", "typst"), { doc: "word", ranges: [[0, 4]] });
 assert.deepEqual(toggle("\\textbf{word}", [[0, 13]], "bold", "latex"), { doc: "word", ranges: [[0, 4]] });
 
 // Only the inner text is selected, and the markers sit just outside it.
