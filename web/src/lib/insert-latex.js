@@ -5,15 +5,45 @@ const n = (x, d, min = 1, max = 100) => Math.min(max, Math.max(min, Number.isFin
 const tex = value => s(value).replace(/[\\{}%#$&_~^]/g, c => ({'\\':'\\textbackslash{}','~':'\\textasciitilde{}','^':'\\textasciicircum{}'}[c] || '\\'+c));
 const key = (x) => s(x, "label").trim().replace(/[^\p{L}\p{N}:._-]+/gu, "-").replace(/^-+|-+$/g, "") || "label";
 const source = (c = {}) => s(c.mainText || c.text);
-const packageEdit = (name, c, notes, options = "") => {
-  const text = source(c), path = c.mainPath || c.path;
-  if (new RegExp(`\\\\usepackage(?:\\[[^\\]]*\\])?\\{[^}]*\\b${name}\\b[^}]*\\}`).test(text)) return [];
-  const classEnd = text.match(/\\documentclass(?:\[[^\]]*\])?\{[^}]+\}[^\S\n]*(?:\n|$)/);
-  const at = name === "amsthm" && classEnd ? classEnd.index + classEnd[0].length : text.indexOf("\\begin{document}");
-  if (at < 0 || !path) throw new Error(`Cannot add LaTeX dependency \\usepackage${options ? `[${options}]` : ""}{${name}}: main preamble source is unavailable.`);
-  return [{ path, from: at, to: at, insert: `\\usepackage${options ? `[${options}]` : ""}{${name}}\n` }];
+const includeTarget = (value) => s(value).trim().replace(/^\.\//, "").replace(/^\/+/, "").replace(/\.tex$/, "");
+const includesPath = (text, path) => {
+  const want = includeTarget(path), base = want.split("/").pop();
+  for (const m of text.matchAll(/\\(?:input|include|subfile)\{([^}]+)\}|\\import\{([^}]*)\}\{([^}]+)\}/g)) {
+    const target = m[1] != null ? includeTarget(m[1]) : includeTarget(`${m[2]}/${m[3]}`.replace(/\/+/g, "/"));
+    if (target === want || target.split("/").pop() === base) return true;
+  }
+  return false;
 };
-const preambleEdit = (insert, c, notes) => { const text = source(c), path = c.mainPath || c.path, at = text.indexOf("\\begin{document}"); if (at < 0 || !path) throw new Error("Cannot add LaTeX environment setup: main preamble source is unavailable."); return [{ path, from: at, to: at, insert: insert + "\n" }]; };
+const preambleAnchor = (c = {}, { afterClass = false } = {}) => {
+  const current = c.path ? { path: c.path, text: s(c.text) } : null;
+  const includer = c.path ? [...(Array.isArray(c.files) ? c.files : []).map(file => ({ path: file?.path, text: s(file?.text) })), { path: c.mainPath, text: s(c.mainText) }].find(file => file.path && file.text && file.path !== c.path && includesPath(file.text, c.path)) : null;
+  const main = c.mainPath && c.mainPath !== c.path ? { path: c.mainPath, text: s(c.mainText) } : null;
+  for (const { path, text } of [current, includer, main].filter(Boolean)) {
+    if (!path || !text) continue;
+    const classLine = text.match(/\\documentclass(?:\[[^\]]*\])?\{[^}]+\}[^\S\n]*(?:\n|$)/);
+    const classEnd = classLine ? classLine.index + classLine[0].length : -1;
+    if (afterClass && classEnd >= 0) return { path, at: classEnd, text };
+    const begin = text.indexOf("\\begin{document}");
+    if (begin >= 0) return { path, at: begin, text };
+    if (classEnd >= 0) return { path, at: classEnd, text };
+  }
+  return null;
+};
+// The root is the file whose preamble an edit lands in: the current file when
+// it has one, else the file that \input{}s it, else the project's main.
+export const latexRoot = (c) => preambleAnchor(c)?.path || "";
+const packageEdit = (name, c, notes, options = "") => {
+  const anchor = preambleAnchor(c, { afterClass: name === "amsthm" }), bracket = options ? `[${options}]` : "";
+  const text = [anchor?.text, c.text, c.mainText].map(value => s(value)).join("\n");
+  if (new RegExp(`\\\\usepackage(?:\\[[^\\]]*\\])?\\{[^}]*\\b${name}\\b[^}]*\\}`).test(text)) return [];
+  if (!anchor) { notes.push(`Add \\usepackage${bracket}{${name}} to the preamble.`); return []; }
+  return [{ path: anchor.path, from: anchor.at, to: anchor.at, insert: `\\usepackage${bracket}{${name}}\n` }];
+};
+const preambleEdit = (insert, c, notes) => {
+  const anchor = preambleAnchor(c);
+  if (!anchor) { notes.push(`Add ${insert} to the preamble.`); return []; }
+  return [{ path: anchor.path, from: anchor.at, to: anchor.at, insert: insert + "\n" }];
+};
 const result = (text, additionalEdits = [], notes = [], placeholder) => ({ text, additionalEdits, notes, ...(placeholder ? { placeholder } : {}) });
 const selected = (c) => s(c.selection?.text, "");
 const labelValue = (o, fallback) => o.label ? key(o.label) : fallback;
