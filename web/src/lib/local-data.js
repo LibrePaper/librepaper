@@ -1,8 +1,8 @@
 // On a shared computer the next person must not be able to open what the
 // last one edited. Projects and rendered pages are kept in this browser, so
 // signing out deletes both databases.
-import { DATABASE as OFFLINE_DATABASE } from "./offline-projects.js";
-import { DATABASE as PREVIEW_DATABASE } from "./reader/preview-cache.js";
+export const OFFLINE_DATABASE = "librepaper-offline-v2";
+export const PREVIEW_DATABASE = "librepaper-preview-v1";
 
 const DATABASES = [OFFLINE_DATABASE, PREVIEW_DATABASE];
 

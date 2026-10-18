@@ -18,7 +18,8 @@
 // window, simply draws nothing until its first compile, which is what every
 // browser did before this existed.
 
-export const DATABASE = "librepaper-preview-v1";
+import { PREVIEW_DATABASE as DATABASE } from "../local-data.js";
+
 const VERSION = 1;
 const PAGES = "pages";
 /// How many documents keep a page. A reader moves between a handful of

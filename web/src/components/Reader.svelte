@@ -3171,8 +3171,8 @@
     ws.canEdit = mayEdit;
     timeline.state.canEdit = mayEdit;
     openedLocally = Boolean(document_.local_copy);
-    // Access was reduced, so this browser should not keep an editable copy of
-    // a project it may no longer edit. A copy opened from this browser has no
+    // Access was reduced, so this browser should stop offering an editable copy
+    // of a project it may no longer edit. A copy opened from this browser has no
     // server answer behind its role, so it is kept as it is.
     if (!mayEdit && !openedLocally) {
       forgetProject({ server: location.origin, documentId: document_.document_id, slug: SLUG, createdAt: document_.created_at })

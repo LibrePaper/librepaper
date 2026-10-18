@@ -129,8 +129,9 @@ function readStore(database, store, method, ...args) {
   });
 }
 
-// forgetProject removes one project's record, saved state and updates. Another
-// project's rows in the same stores are left as they were.
+// forgetProject removes only one project's record, so it no longer opens offline.
+// Its saved state and updates stay, since they may hold edits not yet sent, and
+// another project's rows are left as they were.
 {
   const indexedDB_ = fakeIndexedDB();
   const server = "https://example.test";
@@ -154,8 +155,11 @@ function readStore(database, store, method, ...args) {
   await forgetProject(mine, indexedDB_);
 
   assert.equal(await readStore(database, "projects", "get", mineKey), undefined);
-  assert.equal(await readStore(database, "states", "get", mineKey), undefined);
-  assert.deepEqual((await readStore(database, "updates", "getAll")).map((row) => row.project), [theirsKey]);
+  assert.ok(await readStore(database, "states", "get", mineKey));
+  assert.deepEqual(
+    (await readStore(database, "updates", "getAll")).filter((row) => row.project === mineKey).map((row) => row.id),
+    ["tab:1", "tab:2"],
+  );
   assert.ok(await readStore(database, "projects", "get", theirsKey));
   assert.ok(await readStore(database, "states", "get", theirsKey));
 }

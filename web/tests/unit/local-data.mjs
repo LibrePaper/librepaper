@@ -2,9 +2,7 @@
 // databases are fakes here: what matters is which names are deleted, and
 // that a delete which never finishes cannot hold the sign-out up.
 import assert from "node:assert/strict";
-import { DATABASE as OFFLINE } from "../../src/lib/offline-projects.js";
-import { DATABASE as PREVIEW } from "../../src/lib/reader/preview-cache.js";
-import { forgetLocalData } from "../../src/lib/local-data.js";
+import { OFFLINE_DATABASE as OFFLINE, PREVIEW_DATABASE as PREVIEW, forgetLocalData } from "../../src/lib/local-data.js";
 
 // A store that answers deletes on the next turn, as a browser does when no
 // other tab has the database open.

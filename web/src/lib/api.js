@@ -1,3 +1,5 @@
+import { forgetLocalData } from "./local-data.js";
+
 // Talking to the server.
 //
 // A browser cannot set a custom header on a cross-origin request without a
@@ -5,8 +7,6 @@
 // the server, that a state-changing request came from this page and not from a
 // hostile document on the sibling documents host. It goes on every write and
 // on the listing, never on plain navigation.
-import { forgetLocalData } from "./local-data.js";
-
 export const SHELL_HEADERS = { "X-LibrePaper-Client": "shell" };
 
 async function json(response) {

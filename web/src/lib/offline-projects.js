@@ -1,12 +1,12 @@
 import { projectIdentity, projectIdentityKey } from "./project-identity.js";
 import { LoroDoc, VersionVector } from "loro-crdt";
+import { OFFLINE_DATABASE as DATABASE } from "./local-data.js";
 
 // Named for the substrate, not only the schema: the v1 database holds Yjs
 // updates, and a Loro document cannot import those -- it rejects them as
 // invalid magic bytes, and the project then reads as unsaved on this device.
 // The cutover left nothing worth translating, so the old database is
-// abandoned rather than migrated.
-export const DATABASE = "librepaper-offline-v2";
+// abandoned rather than migrated. The name itself lives in local-data.js.
 const VERSION = 2;
 const PROJECTS = "projects";
 const STATES = "states";
@@ -121,9 +121,10 @@ export async function rememberProject(metadata, indexedDB_ = globalThis.indexedD
   return record;
 }
 
-// Removes this browser's copy of one project: its record, its saved state and
-// every update kept for it. The updates are found through the project index,
-// so other projects' rows are never read or deleted.
+// Removes this browser's offer of one project: its record only. Without the
+// record the project no longer opens offline or appears in the offline list.
+// The saved state and updates stay, because they may hold edits not yet sent
+// to the server, and signing out clears them.
 export async function forgetProject({ server, documentId, slug, createdAt }, indexedDB_ = globalThis.indexedDB) {
   const identity = projectIdentity({
     server: server || globalThis.location?.origin,
@@ -133,13 +134,9 @@ export async function forgetProject({ server, documentId, slug, createdAt }, ind
   });
   const key = projectIdentityKey(identity);
   await withDatabase(indexedDB_, async (database) => {
-    const transaction = database.transaction([PROJECTS, STATES, UPDATES], "readwrite");
+    const transaction = database.transaction(PROJECTS, "readwrite");
     const done = transactionDone(transaction);
     transaction.objectStore(PROJECTS).delete(key);
-    transaction.objectStore(STATES).delete(key);
-    const updates = transaction.objectStore(UPDATES);
-    const pending = await requestResult(updates.index("project").getAll(key));
-    for (const item of pending) updates.delete([key, item.id]);
     await done;
   });
 }
