@@ -4,8 +4,6 @@
   import ShortcutTable from "../ShortcutTable.svelte";
 
   let { keys = "default", onkeys, commands = {} } = $props();
-
-  const modalEditor = $derived(keys === "vim" || keys === "emacs");
 </script>
 
 <SettingRow id="editor-keys" title="Keys" description="Choose standard, Vim or Emacs keys for the source pane.">
@@ -24,5 +22,5 @@
      not a control that fits beside a sentence. -->
 <SettingRow id="editor-shortcuts" stacked title="Keyboard shortcuts"
             description="Press ? anywhere outside the source to come back here.">
-  <ShortcutTable context={commands} {modalEditor} />
+  <ShortcutTable context={commands} />
 </SettingRow>

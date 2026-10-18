@@ -13,7 +13,7 @@
   //
   // It is shown in the editor settings, beside the choice of editor keys,
   // which is where `?` and the keyboard button both lead.
-  let { context = {}, modalEditor = false, apple = APPLE } = $props();
+  let { context = {}, apple = APPLE } = $props();
 
   const groups = $derived(helpTable(context, { apple }));
 
@@ -53,21 +53,6 @@
       </table>
     </section>
   {/each}
-  <!-- The two honest disclaimers. The first is why ⌘T is not in the table
-       above and never will be; the second is why the Editing rows are a
-       description of CodeMirror rather than a promise this application
-       keeps. -->
-  <p class="footnote">
-    Browser shortcuts stay with the browser. Editing keys belong to the source
-    editor, so they work where the text does.
-  </p>
-  {#if modalEditor}
-    <p class="footnote">
-      Vim and Emacs mode shortcuts are provided by the selected editor mode. The
-      workspace shortcuts above remain available where they do not conflict with
-      that mode.
-    </p>
-  {/if}
 </div>
 
 <style>
@@ -100,7 +85,6 @@
     line-height: 1.5;
     text-align: center;
   }
-  .footnote { font-size: var(--text-xs); color: var(--color-text-secondary); }
   /* Narrow: the three columns become one, and each row a small card. The
      command, its keys and where it works still read as one thing, which is
      the only part of the layout that matters. */
