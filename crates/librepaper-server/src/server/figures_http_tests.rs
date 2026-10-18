@@ -127,7 +127,11 @@ async fn reader_bearer(deployment: &Deployment, document_id: Uuid) -> String {
         picture: String::new(),
         session_generation: account.session_generation.to_string(),
     };
-    sign_device(&[0; 32], &identity, librepaper_base::util::now_unix() + 3600)
+    sign_device(
+        &[0; 32],
+        &identity,
+        librepaper_base::util::now_unix() + 3600,
+    )
 }
 
 fn owner_authorization(deployment: &Deployment) -> String {
@@ -213,13 +217,7 @@ async fn an_editor_reads_a_current_figure_without_a_decode() {
     let sha = digest_of_bytes(&figure(1));
     let authorization = owner_authorization(&deployment);
     let served = serve(deployment).await;
-    let room = served
-        .server
-        .documents
-        .rooms
-        .get(&slug)
-        .await
-        .unwrap();
+    let room = served.server.documents.rooms.get(&slug).await.unwrap();
     room.log().drop_cache().await;
 
     let status = fetch(
@@ -246,13 +244,7 @@ async fn an_editor_can_read_a_retained_figure() {
     put_directory(&deployment, &slug, vec![("figure-b.png".into(), figure(2))]).await;
     let authorization = owner_authorization(&deployment);
     let served = serve(deployment).await;
-    let room = served
-        .server
-        .documents
-        .rooms
-        .get(&slug)
-        .await
-        .unwrap();
+    let room = served.server.documents.rooms.get(&slug).await.unwrap();
     room.log().drop_cache().await;
 
     let status = fetch(
@@ -279,13 +271,7 @@ async fn a_reader_reads_a_current_figure_and_warms_the_document() {
     let document = document_id(&deployment, &slug).await;
     let authorization = reader_bearer(&deployment, document).await;
     let served = serve(deployment).await;
-    let room = served
-        .server
-        .documents
-        .rooms
-        .get(&slug)
-        .await
-        .unwrap();
+    let room = served.server.documents.rooms.get(&slug).await.unwrap();
     room.log().drop_cache().await;
 
     let status = fetch(
@@ -314,13 +300,7 @@ async fn a_reader_cannot_read_a_removed_figure_when_warm() {
     let document = document_id(&deployment, &slug).await;
     let authorization = reader_bearer(&deployment, document).await;
     let served = serve(deployment).await;
-    let room = served
-        .server
-        .documents
-        .rooms
-        .get(&slug)
-        .await
-        .unwrap();
+    let room = served.server.documents.rooms.get(&slug).await.unwrap();
 
     // A reader's read of the current figure builds the projection.
     let status = fetch(
@@ -353,13 +333,7 @@ async fn a_reader_cannot_read_a_removed_figure_when_cold() {
     let document = document_id(&deployment, &slug).await;
     let authorization = reader_bearer(&deployment, document).await;
     let served = serve(deployment).await;
-    let room = served
-        .server
-        .documents
-        .rooms
-        .get(&slug)
-        .await
-        .unwrap();
+    let room = served.server.documents.rooms.get(&slug).await.unwrap();
     room.log().drop_cache().await;
 
     let status = fetch(
@@ -394,7 +368,10 @@ async fn nobody_reads_another_documents_figure() {
         &editor_headers(&authorization),
     )
     .await;
-    assert_eq!(own, 200, "the owner reads the figure under its own document");
+    assert_eq!(
+        own, 200,
+        "the owner reads the figure under its own document"
+    );
 
     let status = fetch(
         &served.base,
