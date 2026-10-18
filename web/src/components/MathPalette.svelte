@@ -356,12 +356,10 @@
     {:else}
       <div class="math-grid">
         {#each tiles as { template, html } (template.id)}
-          <div class="math-tile-cell">
-            <button type="button" class="math-tile" data-template={template.id} aria-label={template.label} onclick={() => openTemplate(template.id)}>
-              <span class="math-tile-preview" aria-hidden="true">{#if html}{@html html}{:else}{template.label}{/if}</span>
-            </button>
-            <span class="math-tile-label">{template.label}</span>
-          </div>
+          <!-- The rendered math is the label. The name is a tooltip and what a screen reader says. -->
+          <button type="button" class="math-tile" data-template={template.id} aria-label={template.label} title={template.label} onclick={() => openTemplate(template.id)}>
+            <span class="math-tile-preview" aria-hidden="true">{#if html}{@html html}{:else}{template.label}{/if}</span>
+          </button>
         {/each}
       </div>
     {/if}
@@ -458,12 +456,11 @@
 
 <style>
   .math-palette { display: flex; flex-direction: column; gap: var(--panel-section-gap); height: 100%; min-height: 0; overflow-y: auto; overscroll-behavior: contain; }
-  .math-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(4.5rem, 1fr)); gap: .5rem; }
-  .math-tile-cell { display: flex; flex-direction: column; align-items: center; gap: .25rem; min-width: 0; }
-  .math-tile { display: flex; align-items: center; justify-content: center; width: 4.5rem; min-height: 3.25rem; padding: .35rem .25rem; overflow: hidden; border: 1px solid var(--color-divider); border-radius: var(--radius-base); background: transparent; color: inherit; cursor: pointer; }
+  /* Equal columns and one aspect ratio, so every tile is the same box whatever the math inside it. */
+  .math-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(5rem, 1fr)); gap: .5rem; }
+  .math-tile { display: flex; align-items: center; justify-content: center; width: 100%; aspect-ratio: 5 / 4; padding: .35rem .25rem; overflow: hidden; border: 1px solid var(--color-divider); border-radius: var(--radius-base); background: transparent; color: inherit; cursor: pointer; }
   .math-tile:hover, .math-tile:focus-visible { background: var(--color-row-hover); }
   .math-tile-preview { display: flex; align-items: center; justify-content: center; max-width: 100%; font-size: .8rem; }
-  .math-tile-label { color: var(--panel-muted); font-size: var(--panel-meta-size); line-height: 1.2; text-align: center; }
   .math-form { display: flex; flex-direction: column; gap: .75rem; }
   .math-form-head { display: flex; align-items: center; gap: .5rem; }
   .math-form-title { margin: 0; font: inherit; font-weight: var(--panel-title-weight); }
