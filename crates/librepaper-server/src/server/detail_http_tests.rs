@@ -122,10 +122,7 @@ async fn detail(deployment: &Deployment, identity: Identity, query: Option<&str>
         authentication: Ok(identity),
     };
     let mut headers = HeaderMap::new();
-    headers.insert(
-        "x-librepaper-client",
-        HeaderValue::from_static("test"),
-    );
+    headers.insert("x-librepaper-client", HeaderValue::from_static("test"));
     let response = deployment
         .server
         .handle_document_detail(&headers, &context, &deployment.slug, query)

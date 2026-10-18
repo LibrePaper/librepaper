@@ -423,9 +423,18 @@ async fn periodic_compaction_of_a_trimmed_document_keeps_working() {
 
     // Step 1: a few edits so the log has rows to trim.
     for n in 0..3u64 {
-        edit(900 + n, format!("# Trimmed\n\nEdit number {n} before the trim.\n")).await;
+        edit(
+            900 + n,
+            format!("# Trimmed\n\nEdit number {n} before the trim.\n"),
+        )
+        .await;
     }
-    let document_id = documents.rooms.get(&deployment.slug).await.unwrap().document_id;
+    let document_id = documents
+        .rooms
+        .get(&deployment.slug)
+        .await
+        .unwrap()
+        .document_id;
 
     // Step 2: trim through the route, then read the base back and confirm it
     // is shallow. The catalogue does not record that, so decode the base.

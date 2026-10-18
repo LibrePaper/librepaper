@@ -1300,7 +1300,10 @@ async fn a_reader_page_never_decodes_the_document() {
     assert!(views
         .iter()
         .all(|view| view.comment.attachment.is_none() && view.comment.original_anchor.is_none()));
-    assert!(!room.log().is_warm().await, "a reader's page decoded the document");
+    assert!(
+        !room.log().is_warm().await,
+        "a reader's page decoded the document"
+    );
     deployment.catalog.close().await;
 }
 
@@ -1336,6 +1339,9 @@ async fn an_editor_page_of_document_level_comments_never_decodes() {
     let (views, _) = room.comment_page(None, 50, "someone", true).await.unwrap();
     assert_eq!(views.len(), 3);
     assert!(views.iter().all(|view| view.comment.attachment.is_none()));
-    assert!(!room.log().is_warm().await, "a document-level page decoded the document");
+    assert!(
+        !room.log().is_warm().await,
+        "a document-level page decoded the document"
+    );
     deployment.catalog.close().await;
 }

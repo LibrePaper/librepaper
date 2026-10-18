@@ -1787,7 +1787,7 @@ mod tests {
                 &doc.oplog_vv().encode(),
                 doc.len_changes(),
                 crate::log::sequencer::SnapshotMode::Full,
-            false
+                false
             ),
             Ok(())
         );
@@ -1805,7 +1805,7 @@ mod tests {
             &doc.oplog_vv().encode(),
             doc.len_changes(),
             crate::log::sequencer::SnapshotMode::Full,
-            false
+            false,
         )
         .expect_err("a short snapshot must not pass");
         assert!(
@@ -1847,7 +1847,7 @@ mod tests {
             &doc.oplog_vv().encode(),
             doc.len_changes() + 1,
             crate::log::sequencer::SnapshotMode::Full,
-            false
+            false,
         )
         .expect_err("a change count that disagrees must not pass");
         assert!(error.contains("changes"), "unexpected refusal: {error}");
@@ -1868,7 +1868,7 @@ mod tests {
                 &doc.oplog_vv().encode(),
                 doc.len_changes(),
                 crate::log::sequencer::SnapshotMode::Shallow,
-            false
+                false
             ),
             Ok(())
         );

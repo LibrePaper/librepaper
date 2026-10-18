@@ -1121,7 +1121,7 @@ async fn compaction_cost_release_benchmark() {
             &log_vector,
             changes,
             librepaper::log::sequencer::SnapshotMode::Full,
-        entry_is_shallow,
+            entry_is_shallow,
         )
         .expect("the snapshot covers the log");
         let verification_us = micros(at);
@@ -1471,7 +1471,7 @@ async fn compact_seeded_document(
         &log_vector,
         changes,
         librepaper::log::sequencer::SnapshotMode::Full,
-    entry_is_shallow,
+        entry_is_shallow,
     )
     .expect("the snapshot covers the log");
     let verification_us = micros(at);
