@@ -579,7 +579,19 @@
     placeBar(rect);
   }
 
+  // The agent runs only in the desktop app. A browser says so, with a way to get it.
+  function agentNeedsDesktop() {
+    if (hasDesktop) return false;
+    say("The agent needs the LibrePaper desktop app.", {
+      kind: "note",
+      id: "reader:agent-desktop-only",
+      action: { label: "Get the desktop app", onClick: () => window.open(localQuarto.INSTALL_URL, "_blank", "noopener") },
+    });
+    return true;
+  }
+
   function askDiagnostic(item) {
+    if (agentNeedsDesktop()) return;
     assistantRequest = { id: crypto.randomUUID(), diagnostic: { ...item }, revision: item.revision || "",
       task: { kind: "fix", scope: item.file || item.path ? "file" : "document" } };
     showPanel("agent");
@@ -587,6 +599,7 @@
   }
 
   function askCommentAssistant(comment) {
+    if (agentNeedsDesktop()) return;
     if (!comment?.id) return;
     const target = comment.original_anchor?.kind === "source_text"
       ? comment.original_anchor.target : null;
@@ -2309,8 +2322,9 @@
   // The tabs this browser is offered. Which reader may see which panel is
   // written with the panels, in lib/panels.js; this only says who is asking.
   const tabs = $derived(tabsFor({ role: doc.role, mayEdit, editing, canSeeSharing, canPublish }));
-  // The robot buttons hand work to the agent, which runs only in the desktop app.
-  const agentOffered = $derived(tabs.some((tab) => tab.id === "agent") && Boolean(localQuarto.desktop()));
+  // The robot buttons hand work to the agent. The agent runs only in the
+  // desktop app, so in a browser they say so rather than disappear.
+  const agentOffered = $derived(tabs.some((tab) => tab.id === "agent"));
   // Where the column goes back to when what it showed is taken away: the
   // files for an editor, the comments for a commenter, and for a reader no
   // column at all -- there is nothing they are offered to go back to.
