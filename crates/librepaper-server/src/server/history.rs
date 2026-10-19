@@ -1053,8 +1053,6 @@ impl Server {
                 )
             }
         };
-        // Drop the attachment cache so comments re-resolve against the shallow document.
-        room.forget_comments().await;
         let authority = current_who.document_authority(self.ceiling_for(&current_who.id));
         // The chat lock is held across the trim so a flush cannot write a
         // message between the delete and the buffer being dropped. The trim

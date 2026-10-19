@@ -641,6 +641,16 @@ pub fn resolve_anchors(doc: &LoroDoc, file_id: &str) -> Vec<Anchor> {
     out
 }
 
+/// One anchor record, read by its comment id and resolved as
+/// [`resolve_anchors`] resolves it. None when there is no such record.
+pub fn resolve_anchor(doc: &LoroDoc, id: &str) -> Option<Anchor> {
+    let map = doc.get_map(ANCHORS);
+    let record = record_map(&map, id)?;
+    let file_id = str_of(&record, "file")?;
+    let live = live_of(doc, &file_id);
+    Some(record_anchor(doc, id, &record, &file_id, live.as_ref()))
+}
+
 /// Creates an attached anchor record. Does not commit. Returns false when the
 /// file has no text, `to` is not past `from`, or a cursor cannot be made.
 #[allow(clippy::too_many_arguments)]

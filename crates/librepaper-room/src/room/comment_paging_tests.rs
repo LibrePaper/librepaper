@@ -259,7 +259,6 @@ async fn every_comment_past_the_page_size_is_still_read_back() {
         .seed_comments(room.document_id, PAST_THE_PAGE)
         .await;
 
-    room.forget_comments().await;
     let comments = room.all_comments().await.unwrap();
     assert_eq!(
         comments.len(),
@@ -313,7 +312,6 @@ async fn the_page_boundary_is_exact_in_both_directions() {
     deployment
         .seed_comments(room.document_id, ANNOTATION_PAGE_MAX as usize)
         .await;
-    room.forget_comments().await;
     assert_eq!(
         room.all_comments().await.unwrap().len(),
         ANNOTATION_PAGE_MAX as usize,
@@ -323,7 +321,6 @@ async fn the_page_boundary_is_exact_in_both_directions() {
     // A comment appended after the first page -- the row that the old
     // single-page read dropped.
     let late = deployment.seed_comments(room.document_id, 1).await[0];
-    room.forget_comments().await;
     let comments = room.all_comments().await.unwrap();
     assert_eq!(comments.len(), ANNOTATION_PAGE_MAX as usize + 1);
     assert!(
@@ -343,7 +340,6 @@ async fn resolve_reply_and_delete_reach_a_comment_past_the_page_size() {
     let written = deployment
         .seed_comments(room.document_id, PAST_THE_PAGE)
         .await;
-    room.forget_comments().await;
     let comments = room.all_comments().await.unwrap();
     // Whichever row sorts last is past the first page by construction, and
     // it is the one `find_annotation`'s old first-page scan could not see.
@@ -368,7 +364,6 @@ async fn resolve_reply_and_delete_reach_a_comment_past_the_page_size() {
     );
     assert!(outcome.resolved_at.is_some());
 
-    room.forget_comments().await;
     let reloaded = room.all_comments().await.unwrap();
     let stored = reloaded
         .iter()
@@ -400,7 +395,6 @@ async fn resolve_reply_and_delete_reach_a_comment_past_the_page_size() {
     room.command(&deployment.authority(), &mut delete)
         .await
         .expect("a comment past the first page can be deleted");
-    room.forget_comments().await;
     assert_eq!(
         room.all_comments().await.unwrap().len(),
         PAST_THE_PAGE - 1,
@@ -431,7 +425,6 @@ async fn a_document_past_the_aggregate_reply_ceiling_still_loads() {
     let total = per_thread * comments.len();
     assert!(total > 5_000, "the ceiling this test is about");
 
-    room.forget_comments().await;
     let loaded = room.all_comments().await.unwrap();
     assert_eq!(loaded.len(), comments.len());
     assert_eq!(
@@ -467,7 +460,6 @@ async fn one_thread_longer_than_a_reply_page_is_read_whole() {
     deployment
         .seed_replies(room.document_id, comment, count)
         .await;
-    room.forget_comments().await;
     let loaded = room.all_comments().await.unwrap();
     assert_eq!(loaded[0].replies.len(), count);
     let unique: HashSet<&str> = loaded[0]
@@ -510,7 +502,6 @@ async fn a_comment_id_from_another_document_is_not_reachable() {
     );
 
     // And the write really did not happen, on either side.
-    other.forget_comments().await;
     assert!(
         !other.all_comments().await.unwrap()[0].resolved,
         "a refused command leaves no partial change behind",
@@ -573,7 +564,6 @@ async fn a_retried_create_past_the_page_size_stays_one_comment() {
     assert_eq!(written[0].id, written[1].id);
     assert_eq!(written[0].created_at, written[1].created_at);
 
-    room.forget_comments().await;
     let comments = room.all_comments().await.unwrap();
     assert_eq!(
         comments.len(),
@@ -960,31 +950,6 @@ async fn a_cursor_is_refused_outside_what_it_was_issued_for() {
     deployment.catalog.close().await;
 }
 
-/// The room holds no comment list any more, and the anchors it does hold
-/// are bounded. Paging a document far larger than the cache leaves the
-/// cache at its ceiling rather than at the document's size.
-#[tokio::test]
-#[ignore = "requires LIBREPAPER_TEST_POSTGRES_URL"]
-async fn the_room_cache_stays_bounded_while_a_large_document_is_paged() {
-    let Some(deployment) = deployment("paging-cache-bound").await else {
-        return;
-    };
-    let room = deployment.room().await;
-    deployment
-        .seed_comments(room.document_id, crate::room::ATTACHMENT_CACHE_MAX + 200)
-        .await;
-    let held = room.all_comments().await.unwrap();
-    assert_eq!(held.len(), crate::room::ATTACHMENT_CACHE_MAX + 200);
-    assert!(
-        room.attachment_cache_len().await <= crate::room::ATTACHMENT_CACHE_MAX,
-        "the anchor cache does not grow with the document",
-    );
-    // And invalidation still empties it.
-    room.forget_comments().await;
-    assert_eq!(room.attachment_cache_len().await, 0);
-    deployment.catalog.close().await;
-}
-
 /// Mutating a comment past the first page still works, and so does reading
 /// it back -- the regression that the by-id lookup exists for, re-checked
 /// against the paged reads that replaced the whole-collection one.
@@ -1115,12 +1080,6 @@ async fn page_cost_does_not_grow_with_the_collection() {
         "{large_count} comments peaked at {large} bytes per page against \
          {small} at {small_count}: the page grows with the collection",
     );
-
-    // And the room's own residency after walking all of it.
-    let _ = room.all_comments().await.unwrap();
-    let held = room.attachment_cache_len().await;
-    eprintln!("room attachment cache after a 3,200-comment traversal: {held} entries");
-    assert!(held <= crate::room::ATTACHMENT_CACHE_MAX);
     deployment.catalog.close().await;
 }
 

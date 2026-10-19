@@ -1,7 +1,7 @@
 //! A comment, from the words a reader selected to the range it is about.
 //!
-//! The pieces are covered on their own -- `locate` finds a passage, `resolve`
-//! follows one, [`AddComment`] and its siblings write it down -- and what is
+//! The pieces are covered on their own -- `locate` finds a passage, `derive`
+//! reads one back, [`AddComment`] and its siblings write it down -- and what is
 //! left is the join: that a comment arriving as a quotation acquires a source
 //! range it never sent, that the range is the head's own text, that nothing
 //! afterwards edits it, and that editing the document moves where the
@@ -321,15 +321,7 @@ async fn editing_the_document_moves_where_a_comment_points_and_not_what_it_is_ab
         .unwrap();
     let anchor_before = comment.original_anchor.clone().unwrap();
     let started_at = anchor_before.target.source().unwrap().start_utf16;
-
-    // `reattach_comments` only ever moves what is in the room's bounded
-    // attachment cache: under §8.3 there is no `annotation_live_state` to
-    // fall back to, and a comment nobody has read is one nobody is
-    // watching, so it is deliberately left alone rather than resolved for
-    // no reader. Paging a comment in is what fills that cache, and
-    // `Room::comment_page` resolves what it pages in, so a caller of the
-    // direct method below expects that same priming.
-    let _ = room.all_comments().await.unwrap();
+    let file_before = anchor_before.target.source().unwrap().file_id.clone();
 
     // Somebody writes a paragraph above it. Nothing about the comment has
     // changed; everything about where it sits has.
@@ -355,8 +347,6 @@ async fn editing_the_document_moves_where_a_comment_points_and_not_what_it_is_ab
         "{ingested:?}"
     );
 
-    let moved = room.reattach_comments().await.unwrap();
-    assert_eq!(moved.len(), 1, "the one comment on this document moved");
     let comments = room.all_comments().await.unwrap();
     let found = comments.iter().find(|item| item.id == comment.id).unwrap();
     assert_eq!(
@@ -366,6 +356,11 @@ async fn editing_the_document_moves_where_a_comment_points_and_not_what_it_is_ab
     );
     let attachment = found.attachment.as_ref().expect("an attachment");
     assert_eq!(attachment.status, AnchorStatus::Exact);
+    assert_eq!(
+        attachment.resolved_file_id.as_ref(),
+        Some(&file_before),
+        "the passage is still in the file it was made in",
+    );
     let (start, _) = attachment.resolved_range_utf16.expect("a resolved range");
     assert!(
         start > started_at,
@@ -392,6 +387,12 @@ async fn a_passage_that_is_deleted_leaves_a_comment_that_says_so() {
         .command(&deployment.authority(), &mut cmd)
         .await
         .unwrap();
+    let file_id = comment
+        .source()
+        .expect("a source-text anchor")
+        .file_id
+        .0
+        .clone();
 
     let (vector, edited) = room
         .log()
@@ -412,14 +413,17 @@ async fn a_passage_that_is_deleted_leaves_a_comment_that_says_so() {
         "{ingested:?}"
     );
 
-    room.reattach_comments().await.unwrap();
     let comments = room.all_comments().await.unwrap();
     let found = comments.iter().find(|item| item.id == comment.id).unwrap();
     assert!(found.source().is_some());
-    assert_eq!(
-        found.attachment.as_ref().expect("an attachment").status,
-        AnchorStatus::Deleted
-    );
+    let attachment = found.attachment.as_ref().expect("an attachment");
+    assert_eq!(attachment.status, AnchorStatus::Deleted);
+    assert_eq!(attachment.resolved_range_utf16, None);
+    // Reading writes nothing: the record is still attached, with its cursors
+    // collapsed. The next browser that edits the document is what detaches it.
+    let records = records_of(&room, &file_id).await;
+    assert_eq!(records.len(), 1);
+    assert!(records[0].0.collapsed && !records[0].0.detached);
     deployment.catalog.close().await;
 }
 
@@ -557,7 +561,6 @@ async fn a_snapshot_states_the_list_each_peer_may_see() {
     room.command(&deployment.authority(), &mut cmd)
         .await
         .unwrap();
-    room.forget_comments().await;
     room.broadcast_comments_changed().await;
 
     // The frame says the collection moved and how large it is. It carries
