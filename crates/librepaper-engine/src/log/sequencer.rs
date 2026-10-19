@@ -415,7 +415,9 @@ pub trait Command {
     /// The default is "no record, go ahead", which is right for every
     /// command that is idempotent by primary key instead: a create carries
     /// a client UUID and a transition is conditional on a version, and
-    /// neither needs this (§7.2).
+    /// neither needs this (§7.2). A create whose `evaluate` prepares source,
+    /// such as a passage comment, answers here, because its own batch moves
+    /// the evidence a retry would be checked against.
     fn replay(&mut self) -> BoxFuture<'_, std::result::Result<Option<Self::Output>, CommandError>> {
         Box::pin(async { Ok(None) })
     }

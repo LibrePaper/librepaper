@@ -964,3 +964,77 @@ async fn a_whole_document_comment_has_no_record() {
     );
     deployment.catalog.close().await;
 }
+
+#[tokio::test]
+#[ignore = "requires LIBREPAPER_TEST_POSTGRES_URL"]
+async fn a_retried_passage_comment_answers_from_its_row_and_writes_no_second_record() {
+    let Some(deployment) = deployment("anchor-retry").await else {
+        return;
+    };
+    let room = deployment.rooms.get(&deployment.slug).await.unwrap();
+    let config = Configuration::default();
+    // One request, sent twice with the same id, as a client that lost the
+    // first answer would send it.
+    let id = Uuid::new_v4();
+    let request = || {
+        AddComment::new(
+            deployment.catalog.clone(),
+            room.document_id,
+            id,
+            &config,
+            "commenting",
+            "A remark.",
+            &deployment.writer(),
+            "interval covers the mean",
+            "Interval estimates The ",
+            " of the posterior.",
+            Some(0),
+            false,
+            None,
+            None,
+        )
+        .expect("a well-formed comment")
+    };
+
+    let before = room
+        .log()
+        .with_head(|doc| doc.oplog_frontiers().encode())
+        .await
+        .unwrap();
+    let mut first = request();
+    let (comment, replayed) = room
+        .command_reporting_replay(&deployment.authority(), &mut first)
+        .await
+        .unwrap();
+    assert!(!replayed, "the first attempt is a fresh commit");
+    let after_first = room
+        .log()
+        .with_head(|doc| doc.oplog_frontiers().encode())
+        .await
+        .unwrap();
+    assert_ne!(after_first, before, "the passage's anchor record moved the frontier");
+
+    let mut retry = request();
+    let (again, replayed) = room
+        .command_reporting_replay(&deployment.authority(), &mut retry)
+        .await
+        .unwrap();
+    assert!(replayed, "the retry is answered from its row");
+    assert_eq!(again.id, comment.id, "the retry returns the first comment");
+    assert_eq!(
+        again.original_anchor,
+        comment.original_anchor,
+        "the retry answers with the first record's anchor",
+    );
+    let after_retry = room
+        .log()
+        .with_head(|doc| doc.oplog_frontiers().encode())
+        .await
+        .unwrap();
+    assert_eq!(after_retry, after_first, "the retry wrote no second anchor record");
+
+    let comments = room.all_comments().await.unwrap();
+    assert_eq!(comments.len(), 1, "the retry added no second comment");
+    assert_eq!(comments[0].id, comment.id);
+    deployment.catalog.close().await;
+}

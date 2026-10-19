@@ -1138,6 +1138,18 @@ impl AddComment {
     }
 }
 
+/// A passage comment answers a retry from its row, in `replay`.
+///
+/// The passage's anchor record is a source batch, so `evaluate` moves the
+/// frontier and the source sequence. `put_annotation_authorized` makes a
+/// same-id create idempotent by checking the stored evidence, and that
+/// evidence now differs by the first attempt's own batch, so without this
+/// hook the retry would be refused as a conflict. A whole-document comment
+/// prepares nothing and still replays through that check.
+///
+/// The retry is answered here, before a second record is prepared. It
+/// compares the row's content and leaves the evidence out, because a replay
+/// cannot reproduce the evidence once the record is in the document.
 impl SequencerCommand for AddComment {
     type Output = Comment;
 
@@ -1150,6 +1162,34 @@ impl SequencerCommand for AddComment {
     // lands in exactly the same `annotations` row an editor's would (§7.1).
     fn authority(&self) -> Rung {
         Rung::Commenter
+    }
+
+    fn replay(&mut self) -> BoxFuture<'_, Result<Option<Self::Output>, CommandError>> {
+        Box::pin(async move {
+            let Some(row) = self.catalog.annotation(self.document_id, self.id).await? else {
+                return Ok(None);
+            };
+            let same = row.document_id == self.document_id
+                && row.kind == kind_of(&self.motivation)
+                && row.body == self.body
+                && row.author_account_id == self.author_account_id
+                && row.author_key == self.author_key
+                && row.author_label == self.creator
+                && row.color == self.color
+                && row.render_digest == self.expected_render_digest.map(|digest| digest.to_vec())
+                && row.rendered_exact == self.exact
+                && row.rendered_prefix == self.prefix
+                && row.rendered_suffix == self.suffix
+                && row.rendered_position_utf16 == self.position.map(|at| at as i32);
+            if !same {
+                return Err(CommandError::Conflict(
+                    "annotation id was reused with different content".into(),
+                ));
+            }
+            annotation_row_to_comment(&row, Vec::new())
+                .map(Some)
+                .map_err(|error| CommandError::Storage(postgres::Error::Invalid(error.to_string())))
+        })
     }
 
     fn evaluate(&mut self, head: &Head<'_>) -> Result<Option<PreparedSource>, CommandError> {
