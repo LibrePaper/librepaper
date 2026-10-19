@@ -188,8 +188,11 @@ impl MoveMemory {
         }
     }
 
-    /// Takes the newest remembered text that occurs exactly once in `inserted`.
-    pub fn take(&mut self, inserted: &str) -> Option<Taken> {
+    /// Takes the newest remembered text that occurs exactly once in `inserted`,
+    /// when `free` accepts the span that the text would take there. `free` gets
+    /// the span's UTF-16 start and end in `inserted`. An entry that `free`
+    /// refuses stays remembered, and the scan goes on to older entries.
+    pub fn take(&mut self, inserted: &str, free: impl Fn(usize, usize) -> bool) -> Option<Taken> {
         for i in (0..self.entries.len()).rev() {
             let text = self.entries[i].text.as_str();
             let Some(byte) = inserted.find(text) else {
@@ -200,11 +203,15 @@ impl MoveMemory {
             if inserted[next..].contains(text) {
                 continue;
             }
+            let at = utf16_len(&inserted[..byte]);
+            if !free(at, at + utf16_len(text)) {
+                continue;
+            }
             let entry = self.entries.remove(i);
             return Some(Taken {
                 text: entry.text,
                 held: entry.held,
-                at: utf16_len(&inserted[..byte]),
+                at,
             });
         }
         None
@@ -272,11 +279,13 @@ fn width_at(s: &str, units: usize) -> usize {
 ///
 /// Phase 1 runs each file on its own, edits in order, and moves its attached
 /// anchors. Phase 2 runs after every file. Every remembered text that occurs
-/// exactly once in an insertion is taken, newest first. Each taken text
-/// re-pins the detached anchors that were in it, into the file the insertion
-/// landed in, and rejoins the cut pieces of attached anchors at their edges.
-/// Deleted text is remembered, and the texts an insertion takes leave the
-/// memory.
+/// exactly once in an insertion is taken, newest first, unless its span
+/// overlaps a span that an earlier take claimed in the same insertion. One
+/// paste therefore claims one occurrence: a second cut of the same word waits
+/// for a second paste. Each taken text re-pins the detached anchors that were
+/// in it, into the file the insertion landed in, and rejoins the cut pieces of
+/// attached anchors at their edges. Deleted text is remembered, and the texts
+/// an insertion takes leave the memory.
 ///
 /// Phase 1 keeps each insertion at its offset in the text as the later edits
 /// leave it. A later edit before the insertion moves it, and a later edit that
@@ -291,8 +300,14 @@ pub fn plan_operation(files: &[OperationFile], memory: &mut MoveMemory) -> Vec<P
     for wi in 0..work.len() {
         let inserts = work[wi].inserts.clone();
         for (at, text) in inserts {
-            while let Some(hit) = memory.take(&text) {
+            // The spans of this insertion that a take has claimed, in the
+            // insertion's own offsets. A later take may not overlap one of them.
+            let mut claimed: Vec<(usize, usize)> = Vec::new();
+            while let Some(hit) = memory.take(&text, |from, to| {
+                !claimed.iter().any(|c| from < c.1 && to > c.0)
+            }) {
                 let hit_at = hit.at;
+                claimed.push((hit_at, hit_at + utf16_len(&hit.text)));
                 for h in hit.held {
                     if h.text.is_empty() {
                         continue;
@@ -1704,6 +1719,70 @@ mod tests {
         assert!(!rejoined.anchor.detached);
         assert!(rejoined.touched);
         assert!(memory.is_empty());
+    }
+
+    #[test]
+    fn two_cuts_of_the_same_word_and_one_paste_attach_one_comment() {
+        let mut memory = MoveMemory::new(32);
+        let late = OperationFile {
+            file_id: "main.md".to_string(),
+            before: "one two three two four".to_string(),
+            anchors: vec![anchor_at("a", "main.md", 4, 7), anchor_at("b", "main.md", 14, 17)],
+            edits: vec![Edit {
+                at: 14,
+                delete: 3,
+                insert: String::new(),
+            }],
+            fragments: Vec::new(),
+        };
+        let one = plan_operation(&[late], &mut memory);
+        assert_eq!(one[0].after, "one two three  four");
+        assert_eq!(memory.len(), 1);
+
+        let early = OperationFile {
+            file_id: "main.md".to_string(),
+            before: one[0].after.clone(),
+            anchors: one[0].anchors.iter().map(|pa| pa.anchor.clone()).collect(),
+            edits: vec![Edit {
+                at: 4,
+                delete: 3,
+                insert: String::new(),
+            }],
+            fragments: Vec::new(),
+        };
+        let two = plan_operation(&[early], &mut memory);
+        assert_eq!(two[0].after, "one  three  four");
+        assert_eq!(memory.len(), 2);
+
+        // The paste lands at the end of the text, which is 16 units long.
+        let paste = OperationFile {
+            file_id: "main.md".to_string(),
+            before: two[0].after.clone(),
+            anchors: two[0].anchors.iter().map(|pa| pa.anchor.clone()).collect(),
+            edits: vec![Edit {
+                at: 16,
+                delete: 0,
+                insert: "two".to_string(),
+            }],
+            fragments: Vec::new(),
+        };
+        let planned = plan_operation(&[paste], &mut memory);
+        assert_eq!(planned[0].after, "one  three  fourtwo");
+        let attached = planned[0]
+            .anchors
+            .iter()
+            .find(|pa| pa.anchor.id == "a")
+            .unwrap();
+        assert!(!attached.anchor.detached);
+        assert_eq!((attached.anchor.from, attached.anchor.to), (16, 19));
+        assert_eq!(slice16(&planned[0].after, 16, 19), "two");
+        let detached = planned[0]
+            .anchors
+            .iter()
+            .find(|pa| pa.anchor.id == "b")
+            .unwrap();
+        assert!(detached.anchor.detached);
+        assert_eq!(memory.len(), 1);
     }
 
     fn setup(body: &str) -> (LoroDoc, String) {
