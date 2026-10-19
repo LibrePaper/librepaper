@@ -15,6 +15,7 @@ Everything here is optional. Start with the [simple deployment](simple.html).
 - Caddy obtains a certificate for a name on its first visit, after asking the server (`/api/tls/ask`) whether it is a configured origin. No Caddy edits are needed for the three names.
 - Publish an AAAA record only if the VPS has IPv6.
 - Extra names that redirect (for example `www`) go in `caddy/local.d/*.caddy`. Upgrades never overwrite `local.d`. See the comments in `caddy/Caddyfile`.
+- If the VPS already runs Caddy for other sites, see [Behind your own Caddy](#behind-your-own-caddy).
 
 ## Sign-in and access
 
@@ -342,6 +343,68 @@ Every limit and the retention settings are listed, with their defaults, at the e
 - With [object storage](#object-storage), disk is no longer the constraint on `deployment_storage_mib`: set it to what you are willing to store.
 - `[retention]` deletes documents after `expire_after`, counted from the last update by default or from creation.
 - `erase_inactive_after` in `[retention]` erases accounts that have not signed in for that long, with every document they own. It is off by default and must be at least 60 days. The admin console shows how many accounts it will erase in the next 30 days.
+
+## Behind your own Caddy
+
+When the VPS already runs Caddy for other sites, that Caddy owns ports 80 and 443. Keep it and let it proxy to LibrePaper.
+
+- The bundled Caddy keeps running but publishes no host ports. `./manage check` and `./manage apply` still validate and reload it. It costs one idle container.
+- LibrePaper trusts forwarded client addresses only from the kit's edge network, `172.29.0.0/16` (`[proxy] trusted_networks` in `librepaper.toml`). Both setups below put your Caddy inside that network, so `librepaper.toml` needs no change. Do not widen `trusted_networks`.
+- Your Caddy must pass `Host` through unchanged. Caddy's `reverse_proxy` does this by default. LibrePaper answers 421 to names it is not configured for.
+- Make the changes in `compose.override.yaml`, next to `compose.yaml`. Upgrades replace `compose.yaml` and keep the override. There is only one override file. If you already use one (for example for [Database elsewhere](#database-elsewhere)), add these keys to it.
+
+Both setups start with this override for the bundled Caddy:
+
+```yaml
+services:
+  caddy:
+    ports: !reset []
+```
+
+### Caddy in Docker
+
+Attach your Caddy container to the network `librepaper_edge`. In your Caddy's own compose file:
+
+```yaml
+services:
+  caddy:
+    networks: [default, librepaper]
+networks:
+  librepaper:
+    name: librepaper_edge
+    external: true
+```
+
+Run `./manage apply` in the LibrePaper directory before you start your Caddy. LibrePaper's Compose project creates that network. Do not run `docker compose down` in the LibrePaper directory: it tries to remove the network your Caddy is attached to. Use `./manage apply` or `docker compose up -d` instead.
+
+### Caddy on the host
+
+Give LibrePaper a fixed address on the edge network. Your host Caddy reaches it from `172.29.0.1`, which is inside the trusted network. Under `services:` in the same override file, next to `caddy:`, add:
+
+```yaml
+  librepaper:
+    networks:
+      edge:
+        ipv4_address: 172.29.200.10
+```
+
+Then run `./manage apply`.
+
+### Site block
+
+Add a site block to your Caddy. List the names from the [DNS](#dns) table, and leave out `admin.paper.example` unless you configured the admin console.
+
+```
+paper.example, docs.paper.example, admin.paper.example {
+	encode zstd gzip
+	header Strict-Transport-Security "max-age=31536000; includeSubDomains"
+	reverse_proxy librepaper:8080
+}
+```
+
+Use `librepaper:8080` as the upstream with Caddy in Docker. With Caddy on the host, use `172.29.200.10:8080`.
+
+The `encode` and `header` lines copy what the bundled Caddy does. Then reload your Caddy (`caddy reload` or its container equivalent) and open `https://paper.example`.
 
 ## Without Docker
 
