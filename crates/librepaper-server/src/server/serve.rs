@@ -722,8 +722,9 @@ pub async fn serve(options: ServeOptions) {
     // what keeps the last test of §14.2 true -- nothing here polls a job
     // table, sweeps a link deadline, or checkpoints a cost meter on a clock;
     // link expiry is a per-connection deadline, and the background worker
-    // above wakes on the durable state its own tasks write rather than on a
-    // timer (§12).
+    // above wakes on the durable state its own tasks write, and rescans it
+    // once an hour with the orphan sweep for work written by another
+    // process (§12).
     let sweeper = instance.clone();
     tokio::spawn(async move {
         let mut ticker = tokio::time::interval(std::time::Duration::from_secs(1));
