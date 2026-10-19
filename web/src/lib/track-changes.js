@@ -910,8 +910,10 @@ function decidable(map, value) {
 
 // Rejects one change without committing. See `reject`. With `restored`, each
 // fragment whose text goes back into the document is pushed onto it as
-// { file, fragment, at, text }, at being where the text now starts.
-function rejectOne(doc, id, restored = null) {
+// { file, fragment, at, text }, at being where the text now starts. With
+// `edits`, each text edit is pushed onto it as { from, to, insert }, in the
+// order the edits are made and in the coordinates of the text just before each.
+function rejectOne(doc, id, restored = null, edits = null) {
   const map = doc.getMap(CHANGES);
   const plain = /** @type {any} */ (map.get(id));
   if (plain !== undefined && !(plain instanceof LoroMap) && typeof plain.file === "string") convertLegacy(doc, plain.file, id);
@@ -964,6 +966,7 @@ function rejectOne(doc, id, restored = null) {
           const edges = resolveFile(doc, file).changes.filter((c) => c.id !== id && c.to > c.from && (c.to === pos || c.from === pos));
           if (restored) restored.push({ file, fragment: f.id, at: pos, text: f.text });
           text.insert(pos, f.text);
+          if (Array.isArray(edits)) edits.push({ from: pos, to: pos, insert: f.text });
           for (const c of edges) writeChange(doc, text, file, c.to === pos ? c : { ...c, from: c.from + f.text.length, to: c.to + f.text.length });
           flush(pos);
           pos += f.text.length;
@@ -981,7 +984,10 @@ function rejectOne(doc, id, restored = null) {
     // Text put back ahead of the span sits after it, so it moves back by the
     // span's length once the span is gone.
     const early = restored?.length ?? 0;
-    if (span) text.delete(span.from, span.to - span.from);
+    if (span) {
+      text.delete(span.from, span.to - span.from);
+      if (Array.isArray(edits)) edits.push({ from: span.from, to: span.to, insert: "" });
+    }
     if (restored && span) for (const r of restored.slice(0, early)) r.at -= span.to - span.from;
     for (const at of positions) if (span && at <= span.to) restore(at);
   }
@@ -1008,16 +1014,20 @@ export function reject(doc, id) {
  * Rejects a change like `reject`, and lists the text it put back: each
  * fragment inserted, where it now starts and what it says. The comment anchors
  * that were in that text are re-pinned from this list (`restoreByFragments`).
+ * `edits` are the text edits the rejection made, in the order it made them,
+ * each in the coordinates of the text just before it. `composeEdits` in
+ * ./anchors.js turns them into one planner operation.
  *
  * @param {import("loro-crdt").LoroDoc} doc
  * @param {string} id
- * @returns {{ ok: boolean, restored: { file: string, fragment: string, at: number, text: string }[] }}
+ * @returns {{ ok: boolean, restored: { file: string, fragment: string, at: number, text: string }[], edits: { from: number, to: number, insert: string }[] }}
  */
 export function rejectRestoring(doc, id) {
   const restored = [];
-  if (!rejectOne(doc, id, restored)) return { ok: false, restored: [] };
+  const edits = [];
+  if (!rejectOne(doc, id, restored, edits)) return { ok: false, restored: [], edits: [] };
   doc.commit();
-  return { ok: true, restored };
+  return { ok: true, restored, edits };
 }
 
 /**

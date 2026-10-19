@@ -3,7 +3,7 @@
   // One document: the source beside it, the page itself, and everything said
   // about it.
   import { aboutWholeDocument, anchorAll, flatten, placeSources, shownSelector } from "../lib/anchor.js";
-  import { ANCHORS_ORIGIN, attachByHand, deriveAttachment, restoreByFragments } from "../lib/anchors.js";
+  import { ANCHORS_ORIGIN, attachByHand, composeEdits, deriveAttachment, restoreByFragments } from "../lib/anchors.js";
   import { momentOf } from "../lib/moment.js";
   import { barHiddenAfter, revealOnNavFocus, watchScrolls } from "../lib/bar-scroll.js";
   import * as renderers from "../lib/renderers.js";
@@ -1036,21 +1036,26 @@
     return Promise.resolve();
   }
 
-  // A decision can move the text a comment is on. Anchors that were in text a
-  // rejection put back are re-pinned to it, and each file the decision went
-  // through is read again into the session's anchor cache.
-  function settleAnchors(files, restored = []) {
+  // A rejection is planned like an edit. The text it put back goes through the
+  // session's planner with its move memory, so a piece that a tracked deletion
+  // cut from a passage rejoins that passage. Comments that another session
+  // detached are then put back by fragment. Each file the decision went through
+  // is read again into the session's anchor cache.
+  function settleAnchors(files, restored = [], edits = []) {
     const touched = [...new Set([...files, ...restored.map((r) => r.file)].filter(Boolean))];
+    if (edits.length > 0) {
+      session.anchors.record([{ fileId: files[0], edits: composeEdits(edits.map((edit) => [edit])), fragments: [] }], session.anchorMemory);
+    }
     for (const file of touched) restoreByFragments(session.doc, file, restored.filter((r) => r.file === file));
-    if (restored.length > 0) session.doc.commit({ origin: ANCHORS_ORIGIN });
+    if (edits.length > 0 || restored.length > 0) session.doc.commit({ origin: ANCHORS_ORIGIN });
     for (const file of touched) session.anchors.load(file);
   }
 
   // One rejection, with the comments on the text it put back settled before
   // anything else moves that text. Returns whether it was rejected.
   function rejectSettled(row) {
-    const { ok, restored } = rejectRestoring(session.doc, row.id);
-    settleAnchors([row.file_id], restored);
+    const { ok, restored, edits } = rejectRestoring(session.doc, row.id);
+    settleAnchors([row.file_id], restored, edits);
     return ok;
   }
 

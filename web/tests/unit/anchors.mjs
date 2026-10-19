@@ -730,5 +730,45 @@ test("rejectRestoring: the text a rejection puts back is listed, and restoreByFr
   const anchor = resolveAnchors(doc, "f1").find((a) => a.id === "a1");
   assert.equal(statusOf(doc, anchor), "exact");
   assert.deepEqual([anchor.from, anchor.to], [4, 7]);
-  assert.deepEqual(rejectRestoring(doc, "no-such-change"), { ok: false, restored: [] });
+  assert.deepEqual(rejectRestoring(doc, "no-such-change"), { ok: false, restored: [], edits: [] });
+});
+
+test("rejecting a tracked deletion that cut the head of a passage rejoins it", () => {
+  const doc = new LoroDoc();
+  const text = doc.getMap("files").setContainer("f1", new LoroText());
+  const source = "one two three";
+  text.insert(0, source);
+  createAnchor(doc, "f1", "a1", 4, 7, { exact: "two", prefix: "one ", suffix: " three" });
+  doc.commit();
+  const index = new AnchorIndex(doc);
+  index.load("f1");
+  const memory = new MoveMemory();
+
+  // A tracked deletion of "tw", recorded the way the editor records one.
+  const deletion = { from: 4, to: 6, insert: "" };
+  const [changeId] = trackedSplice(doc, "f1", deletion.from, deletion.to, deletion.insert, { who: "me", author: "Me" });
+  doc.commit();
+  const created = resolveFile(doc, "f1").gaps.flatMap((gap) =>
+    gap.fragments.map((f) => ({ id: f.id, text: f.text })),
+  );
+  const fragments = fragmentRangesFor(source, [deletion], created);
+  index.record([{ fileId: "f1", edits: [deletion], fragments }], memory);
+  doc.commit({ origin: ANCHORS_ORIGIN });
+  const cut = resolveAnchors(doc, "f1").find((a) => a.id === "a1");
+  assert.equal(statusOf(doc, cut), "modified");
+  assert.deepEqual([cut.from, cut.to], [4, 5]);
+
+  // The rejection puts "tw" back, and the reader records that as one edit.
+  const { ok, restored, edits } = rejectRestoring(doc, changeId);
+  assert.equal(ok, true);
+  assert.deepEqual(edits, [{ from: 4, to: 4, insert: "tw" }]);
+  assert.equal(restored.length, 1);
+  index.record([{ fileId: "f1", edits: composeEdits(edits.map((edit) => [edit])), fragments: [] }], memory);
+  assert.deepEqual(restoreByFragments(doc, "f1", restored), []);
+  doc.commit({ origin: ANCHORS_ORIGIN });
+  index.load("f1");
+  assert.equal(text.toString(), source);
+  const anchor = resolveAnchors(doc, "f1").find((a) => a.id === "a1");
+  assert.equal(statusOf(doc, anchor), "exact");
+  assert.deepEqual([anchor.from, anchor.to], [4, 7]);
 });
