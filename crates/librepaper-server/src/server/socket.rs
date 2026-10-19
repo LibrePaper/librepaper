@@ -1261,9 +1261,9 @@ impl Server {
     /// Reruns every live socket on `slug`'s authorization against the current
     /// index entry, and closes whichever one may no longer read the document
     /// or whose editor rung no longer matches what it was handed at the
-    /// handshake. This is what makes revoking or rotating a link
-    /// take effect on a connection that is already open: without it, `who`/`author`/`may_edit` are
-    /// resolved once and never again, so the room keeps relaying the text
+    /// handshake. This is what makes revoking or rotating a link take effect
+    /// on a connection that is already open. Without it, `who`, `author` and
+    /// `may_edit` are resolved once and never again, so the room keeps relaying the text
     /// and accepting writes from someone the index no longer names.
     ///
     /// A socket that is still allowed but whose rung changed is closed rather
