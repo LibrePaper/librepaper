@@ -21,7 +21,17 @@ const REFRESH_PAGES_MAX = 8;
 // is about was the one thing it did not have. Anchoring and repainting are
 // still the page's, and genuinely so: both depend on the visible frame, which
 // this module cannot see.
-export function createAnnotations({ slug, key = "", anchor, repaint, send, renderDigest = () => "" }) {
+/** Whether two attachments say the same thing about where a passage is. */
+function sameAttachment(a, b) {
+  if (!a || !b) return (a ?? null) === (b ?? null);
+  return a.status === b.status
+    && a.resolved_file_id === b.resolved_file_id
+    && String(a.resolved_range_utf16) === String(b.resolved_range_utf16);
+}
+
+// `attachmentOf(comment, bodies)` gives an editor's attachment, worked out from
+// the document; it returns undefined where this browser does not derive one.
+export function createAnnotations({ slug, key = "", anchor, repaint, send, renderDigest = () => "", attachmentOf = (_comment, _bodies) => undefined }) {
   const state = $state({
     comments: [],
     // What this browser has said and the server has not yet acknowledged.
@@ -105,6 +115,36 @@ export function createAnnotations({ slug, key = "", anchor, repaint, send, rende
       return { ...item, _uiKey: item._uiKey || item.temp_id || item.id };
     });
   };
+
+  /// Sets each comment's derived attachment. Returns whether any changed.
+  function derive(items) {
+    const bodies = new Map();
+    let changed = false;
+    for (const item of items) {
+      const next = attachmentOf(item, bodies);
+      if (next === undefined) return false;
+      if (sameAttachment(item.attachment, next)) continue;
+      item.attachment = next;
+      changed = true;
+    }
+    return changed;
+  }
+
+  // The document moved, so the attachments may have. One pass per tick, after
+  // the commits that belong to the change: an edit's anchor records are written
+  // after its text. Only a change to an attachment repaints.
+  let deriveQueued = false;
+  function deriveSoon() {
+    if (deriveQueued) return;
+    deriveQueued = true;
+    queueMicrotask(() => {
+      deriveQueued = false;
+      if (!derive(list())) return;
+      anchor(list());
+      publish();
+      repaint();
+    });
+  }
 
   function submit(message) {
     send(outbox.keep(message));
@@ -197,10 +237,12 @@ export function createAnnotations({ slug, key = "", anchor, repaint, send, rende
       const local = event.temp_id && list().find((item) => item.temp_id === event.temp_id);
       if (local) {
         Object.assign(local, event.comment, { temp_id: undefined, pending: false, deletable: true });
+        derive([local]);
         // The optimistic row was never counted -- the counts are the
         // catalogue's -- so this is where it joins them.
         if (!hasState) countBy(1, event.comment.resolved ? 0 : 1);
       } else if (!list().some((item) => item.id === event.comment.id)) {
+        derive([event.comment]);
         anchor([event.comment]);
         update([...list(), { ...event.comment, _uiKey: event.comment.id }]);
         // A create the page traversal has not reached yet is still one
@@ -224,23 +266,6 @@ export function createAnnotations({ slug, key = "", anchor, repaint, send, rende
         if (!hasState) state.page = { ...state.page, replies: state.page.replies + 1 };
       }
       publish();
-    } else if (event.type === "attachments") {
-      // Where every comment's passage got to, after an edit moved it. The
-      // server resolves the whole document at once and sends one frame for
-      // the pass; without this the cards keep saying where the passages were
-      // when the page was opened, and a passage that has since been rewritten
-      // or removed says nothing until a reload.
-      let changed = false;
-      for (const item of event.attachments || []) {
-        const comment = list().find((candidate) => candidate.id === item.comment_id);
-        if (!comment) continue;
-        comment.attachment = item.attachment;
-        changed = true;
-      }
-      if (!changed) return true;
-      anchor(list());
-      publish();
-      repaint();
     } else if (event.type === "delete") {
       const hasState = applyEventState(event);
       const gone = list().find((item) => item.id === event.comment_id);
@@ -318,6 +343,7 @@ export function createAnnotations({ slug, key = "", anchor, repaint, send, rende
     const claimed = new Set(stated.map((item) => String(item.id)));
     const pending = list().filter((item) => item.pending && !claimed.has(String(item.id)));
     update([...stable(stated), ...pending]);
+    derive(list());
     // `hello` folds `complete` and `next_cursor` into its `state` block;
     // an HTTP page carries them beside it. One shape here, either way.
     noteState(
@@ -345,6 +371,7 @@ export function createAnnotations({ slug, key = "", anchor, repaint, send, rende
       // was in flight is one row rather than two.
       const held = list().filter((item) => !claimed.has(String(item.id)));
       update([...held, ...stable(body.comments || [])]);
+      derive(list());
       noteState(body, state.page.pages + 1);
       anchor(list());
       publish();
@@ -390,6 +417,7 @@ export function createAnnotations({ slug, key = "", anchor, repaint, send, rende
     const claimed = new Set(collected.map((item) => String(item.id)));
     const pending = list().filter((item) => item.pending && !claimed.has(String(item.id)));
     update([...stable(collected), ...pending]);
+    derive(list());
     noteState(last, read);
     anchor(list());
     publish();
@@ -437,6 +465,11 @@ export function createAnnotations({ slug, key = "", anchor, repaint, send, rende
   return {
     state, publish, seed, loadMore, refresh, loadReplies,
     outbox, submit, comment, reply, receive, removePending,
+    /// Re-derives the attachments after every commit to the document. Returns
+    /// the unsubscribe.
+    follow(doc) {
+      return doc.subscribe(() => deriveSoon());
+    },
     discard(id) { outbox.discard(id); removePending(id); },
     resolve(item) {
       item.resolved = !item.resolved;

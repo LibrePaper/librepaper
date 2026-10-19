@@ -5,7 +5,7 @@
   import Row from "./layout/Row.svelte";
   import { threadRuns } from "../lib/thread.js";
   import { shownSelector } from "../lib/anchor.js";
-  import { day as isoDay, moment } from "../lib/dates.js";
+  import { moment } from "../lib/dates.js";
 
   // One annotation, and everything said about it.
   let {
@@ -16,13 +16,6 @@
     commentingAs = "Anonymous",
     canModerate = false,
     canComment = true,
-    // The manifest entry at which this comment's passage stopped being found,
-    // when it has been looked up and there was an answer. Null otherwise, and
-    // null for every comment whose passage is still in the document.
-    went = null,
-    // The inserted side of the word diff when the quoted passage was
-    // replaced. It is supplied by the page, which owns historical fetches.
-    replacement = null,
     onreveal,
     onresolve,
     ondelete,
@@ -258,7 +251,7 @@
             {comment.attachment?.diagnostic === "removed_file" ? "Source file removed"
               : comment.attachment?.status === "ambiguous" ? "Source passage ambiguous"
               : comment.attachment?.status === "unresolved" ? "Source passage unresolved"
-              : comment.attachment?.status === "deleted" || went ? "Passage removed"
+              : comment.attachment?.status === "deleted" ? "Passage removed"
               : "Passage not on this page"}
           </span>
         {/if}
@@ -281,17 +274,6 @@
            A highlight is the exception -- it says nothing else. -->
       {#if isHighlight && excerpt}
         <p class="quote border-l-2 pl-3 text-sm" style={annotationColor ? `border-color: ${annotationColor}` : undefined}>{excerpt}</p>
-      {/if}
-      <!-- The quotation above is what the passage said when the comment was
-           made. This is what became of it: the moment it stopped being in the
-           document, and the inserted side of the shared word-level diff. -->
-      {#if went}
-        <p class="panel-muted">
-          Removed in {went.label || went.sha.slice(0, 7)}, {isoDay(went.at)}.
-        </p>
-      {/if}
-      {#if replacement !== null}
-        <p class="panel-muted">Now: {replacement ? `“${replacement}”` : "deleted without replacement."}</p>
       {/if}
 
       <div class="thread">

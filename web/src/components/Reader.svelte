@@ -3,6 +3,7 @@
   // One document: the source beside it, the page itself, and everything said
   // about it.
   import { aboutWholeDocument, anchorAll, flatten, placeSources, shownSelector } from "../lib/anchor.js";
+  import { deriveAttachment } from "../lib/anchors.js";
   import { barHiddenAfter, revealOnNavFocus, watchScrolls } from "../lib/bar-scroll.js";
   import * as renderers from "../lib/renderers.js";
   import * as sync from "../lib/sync.js";
@@ -11,7 +12,6 @@
   import * as history from "../lib/history.js";
   import { createHistorySource } from "../lib/reader/history-source.svelte.js";
   import HistoryWorkspace from "./reader/HistoryWorkspace.svelte";
-  import * as passages from "../lib/passages.js";
   import { diagnosticContext } from "../lib/assistant-review.js";
   import { candidateTree, capturePreviewTree, previewCandidate } from "../lib/assistant-preview.js";
   import { orphanState } from "../lib/orphan.js";
@@ -28,7 +28,6 @@
   import { createWorkspace } from "../lib/reader/workspace.svelte.js";
   import { createBuildSettings } from "../lib/reader/build-settings.svelte.js";
   import { createTimeline } from "../lib/reader/timeline.svelte.js";
-  import { createPassageTrace } from "../lib/reader/passage-trace.svelte.js";
   import { createPreviewRenderer } from "../lib/reader/preview-render.js";
   import { createPreferences } from "../lib/reader/preferences.svelte.js";
   import { forgetProject, markShellReady, rememberProject } from "../lib/offline-projects.js";
@@ -186,7 +185,12 @@
     repaint: applyHighlights,
     send: (message) => collaboration?.send(message),
     renderDigest: () => renderedProjectDigest,
+    // An editor's attachment is read from the document's anchor records, which
+    // move with every edit. A reader's comes from the page and is not derived.
+    attachmentOf: (comment, bodies) => (mayEdit && session ? deriveAttachment(session.doc, session.anchors, comment, bodies) : undefined),
   });
+  // The document subscription that re-derives the attachments; held per session.
+  let followAnnotations = null;
   const comments = $derived(annotations.state.comments);
   const unconfirmed = $derived(annotations.state.unconfirmed);
   const outbox = annotations.outbox;
@@ -440,9 +444,9 @@
   // quotation is what answers it -- display evidence, matched against display
   // text, and nothing follows from it being wrong beyond a mark in the wrong
   // place. Where the passage is in the source is not this browser's question
-  // at all: the server resolved it through the document's own history and
-  // sent the answer, and `placeSources` only translates that answer's file id
-  // into a path.
+  // at all. An editor's answer is read from the document's anchor records
+  // (`deriveAttachment`), and `placeSources` only translates that answer's file
+  // id into a path.
   //
   // When the rendered quotation no longer matches because the passage was
   // edited, the passage's current words at the server's source range are
@@ -474,7 +478,6 @@
     anchorComments(comments);
     annotations.publish();
     applyHighlights();
-    tracePassages();
   }
 
   // Scroll tracking for mobile bar hide/show: called by scroll listeners and
@@ -1540,30 +1543,6 @@
     } finally {
       if (downloadingSha === sha) downloadingSha = "";
     }
-  }
-
-  /* -------------------------------------------- the passage, then and now */
-
-  // Where each orphaned comment's passage went, by comment id: the manifest
-  // entry at which it stopped being found. This is what replaces "Needs
-  // re-anchoring" on the card, which told the person who wrote the comment
-  // nothing they did not already know.
-  const passageTrace = createPassageTrace({
-    slug: SLUG,
-    key: KEY,
-    now: () => ({ source: sourceGeneration, visible: docText }),
-    paths: () => session?.paths,
-    loadLabels: async () => {
-      await loadHistory();
-      return timeline.state.labels;
-    },
-  });
-  const went = $derived(passageTrace.state.went);
-  const replacements = $derived(passageTrace.state.replacements);
-
-  async function tracePassages() {
-    if (docText === null || !session) return;
-    return passageTrace.trace({ comments, tree: session.tree(), labels });
   }
 
   // The document as a renderer takes it: every text in it, the figures by
@@ -3071,6 +3050,10 @@
         // can move them, an accept or reject included, and that is not a text
         // event. Imports from other peers arrive here as well.
         changesUnsubscribe = active?.doc.subscribe(refreshReview) || null;
+        // The attachments of an editor are derived from the document, so they
+        // are followed on every commit.
+        followAnnotations?.();
+        followAnnotations = active ? annotations.follow(active.doc) : null;
         refreshReview();
         workspace.attach(active);
         refreshFiles();
@@ -3088,7 +3071,6 @@
       onFiles: filesChanged,
       onAwareness: () => { if (!readerDisposed) refreshPeers(); },
       onDocumentChanged: () => {
-        passages.clearPassageCache();
         location.reload();
       },
     });
@@ -3315,7 +3297,6 @@
       projectRefreshTimer = null;
       previewTimer = null;
       boot.dispose();
-      passages.clearPassageCache();
       void quartoPreviewController.stop();
       void calepinPreviewController.stop();
       framePreview.dispose();
@@ -3323,6 +3304,8 @@
       pendingChat?.dispose();
       changesUnsubscribe?.();
       changesUnsubscribe = null;
+      followAnnotations?.();
+      followAnnotations = null;
       collaboration?.close();
     };
   });
@@ -3762,7 +3745,7 @@
       loadError={chatState.loadError} canClear={chatState.canClear} onloadolder={liveChat.loadOlder}
       onclear={askClearChat} {connected} canPost={mayChat} onsend={sendLiveChat}
       {unreadChat} bind:tab={collaborationTab} {comments} {identity}
-      commentingAs={doc.commenting_as || "Anonymous"} {canModerate} {went} {replacements}
+      commentingAs={doc.commenting_as || "Anonymous"} {canModerate}
       canComment={mayChat}
       onreveal={revealAnnotation} selected={selectedAnnotation} onresolve={resolve}
       ondelete={askDelete} ondeletemany={askDeleteMany} onreply={reply} onedit={edit}

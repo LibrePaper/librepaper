@@ -11,7 +11,17 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { test } from "node:test";
-import { CONTEXT_UNITS, MoveMemory, planOperation } from "../../src/lib/anchors.js";
+import { LoroDoc, LoroText } from "loro-crdt";
+import {
+  AnchorIndex,
+  CONTEXT_UNITS,
+  MoveMemory,
+  createAnchor,
+  deriveAttachment,
+  fragmentRangesFor,
+  planOperation,
+  throughEdits,
+} from "../../src/lib/anchors.js";
 
 const fixtures = JSON.parse(readFileSync(new URL("../fixtures/anchors.json", import.meta.url), "utf8"));
 
@@ -392,4 +402,63 @@ function runCase(seed) {
 
 test("seeded fuzz: anchors follow typing, cutting, pasting, copying and dragging", () => {
   for (let iter = 0; iter < CASES; iter++) runCase(1000 + iter);
+});
+
+// ---------------------------------------------------------------------------
+// The browser side: the fragments of a deletion, and the attachment of a comment
+
+test("throughEdits: a point moves past earlier edits and stays before an insertion", () => {
+  assert.equal(throughEdits(5, [{ from: 0, to: 0, insert: "ab" }]), 7);
+  assert.equal(throughEdits(5, [{ from: 5, to: 5, insert: "ab" }]), 5);
+  assert.equal(throughEdits(5, [{ from: 4, to: 7, insert: "" }]), 4);
+  assert.equal(throughEdits(5, [{ from: 3, to: 5, insert: "" }]), 3);
+});
+
+test("fragmentRangesFor: a deletion takes the two fragments of its gap in rank order", () => {
+  const before = "one two three";
+  // "two " is deleted at 4..8, so its point is 4.
+  const gaps = [{ at: 4, fragments: [{ id: "f-b", text: "o ", rank: 1 }, { id: "f-a", text: "tw", rank: 0 }] }];
+  assert.deepEqual(fragmentRangesFor(before, [{ from: 4, to: 8, insert: "" }], gaps), [
+    { id: "f-a", edit: 0, start: 0, end: 2 },
+    { id: "f-b", edit: 0, start: 2, end: 4 },
+  ]);
+  // An insertion before the deletion moves its point to 6 in the new text.
+  const later = [{ at: 6, fragments: gaps[0].fragments }];
+  const edits = [{ from: 0, to: 0, insert: "XX" }, { from: 4, to: 8, insert: "" }];
+  assert.deepEqual(fragmentRangesFor(before, edits, later).map((r) => [r.id, r.edit]), [["f-a", 1], ["f-b", 1]]);
+  // A gap that is mapped by the caller is found where the mapping sends it.
+  assert.equal(fragmentRangesFor(before, [{ from: 4, to: 8, insert: "" }], [{ at: 9, fragments: gaps[0].fragments }], () => 9).length, 2);
+});
+
+test("fragmentRangesFor: a gap whose texts do not make the deleted text gets no range", () => {
+  const before = "one two three";
+  const gaps = [{ at: 4, fragments: [{ id: "f-a", text: "tw", rank: 0 }, { id: "f-b", text: "x ", rank: 1 }] }];
+  assert.deepEqual(fragmentRangesFor(before, [{ from: 4, to: 8, insert: "" }], gaps), []);
+  // An untracked deletion has no gap at its point.
+  assert.deepEqual(fragmentRangesFor(before, [{ from: 0, to: 3, insert: "" }], gaps), []);
+});
+
+test("deriveAttachment: an attached, a detached and a missing record, through a real document", () => {
+  const doc = new LoroDoc();
+  const text = doc.getMap("files").setContainer("f1", new LoroText());
+  text.insert(0, "Hello brave world");
+  createAnchor(doc, "f1", "c-attached", 12, 17, { exact: "world", prefix: "brave ", suffix: "" });
+  createAnchor(doc, "f1", "c-detached", 6, 11, { exact: "brave", prefix: "Hello ", suffix: " world" });
+  doc.commit();
+  const index = new AnchorIndex(doc);
+  index.load("f1");
+  // Cutting "brave" detaches its record, and "world" moves left by five.
+  index.apply([{ fileId: "f1", edits: [{ from: 6, to: 11, insert: "" }] }], new MoveMemory());
+
+  const source = { original_anchor: { kind: "source_text" } };
+  assert.deepEqual(deriveAttachment(doc, index, { id: "c-attached", ...source }), {
+    status: "exact", resolved_range_utf16: [7, 12], resolved_file_id: "f1", tree_digest: "",
+  });
+  assert.deepEqual(deriveAttachment(doc, index, { id: "c-detached", ...source }), {
+    status: "deleted", resolved_range_utf16: null, resolved_file_id: "f1", tree_digest: "",
+  });
+  assert.deepEqual(deriveAttachment(doc, index, { id: "c-missing", ...source }), {
+    status: "unresolved", resolved_range_utf16: null, resolved_file_id: null, tree_digest: "",
+  });
+  assert.equal(deriveAttachment(doc, index, { id: "c-attached" }), null);
 });

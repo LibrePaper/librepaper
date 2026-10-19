@@ -9,7 +9,7 @@
     more = false, loadingOlder = false, loadError = "", canClear = false, onloadolder = undefined, onclear = undefined,
     comments = [], identity = "", commentingAs = "Anonymous",
     canModerate = false, canComment = true,
-    went = {}, replacements = {}, onreveal = undefined, onresolve = undefined, ondelete = undefined,
+    onreveal = undefined, onresolve = undefined, ondelete = undefined,
     ondeletemany = undefined, onreply = undefined, onedit = undefined, onagent = undefined, pending = undefined,
     unreadChat = false, selected = "", tab = $bindable("comments"),
     // The traversal, as `lib/reader/annotations.svelte.js` keeps it: the
@@ -29,7 +29,7 @@
   ]);
   $effect(() => { if (!canComment && tab === "chat") tab = "comments"; });
   const common = () => ({ identity, commentingAs, canModerate, canComment,
-    went, replacements, onreveal, onresolve, ondelete, ondeletemany,
+    onreveal, onresolve, ondelete, ondeletemany,
     onreply, onedit, onagent, pending, selected,
     page, onloadmore, onloadreplies });
 </script>

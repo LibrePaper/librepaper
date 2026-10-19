@@ -1,6 +1,7 @@
-// Locate a comment's display mark in the rendered page. Source identity and
-// the current source attachment come from the server; these searches only
-// decide where to paint the mark the reader sees.
+// Locate a comment's display mark in the rendered page. Where a comment's
+// passage is in the source is its attachment, which an editor derives from the
+// document's anchor records; these searches only decide where to paint the mark
+// the reader sees.
 
 export function commonPrefix(a, b) {
   let i = 0;
@@ -201,11 +202,11 @@ export function aboutWholeDocument(comment) {
 /**
  * Where each comment's passage is in the source, according to the server.
  *
- * Nothing is searched for here. The server resolves every comment against the
- * document's own history whenever the document changes, and sends the answer
- * with the comment; this only turns the file id in that answer into the path
- * this browser knows it by. A comment the server could not place gets nulls,
- * and its card says so rather than the editor guessing at it.
+ * Nothing is searched for here. An editor's attachment is read from the
+ * document's anchor records, and a reader has none. This only turns the file
+ * id in the attachment into the path this browser knows it by. A comment that
+ * is not placed gets nulls, and its card says so rather than the editor
+ * guessing at it.
  */
 export function placeSources(session, comments) {
   let anchored = 0;
@@ -215,7 +216,11 @@ export function placeSources(session, comments) {
     const range = comment.attachment?.resolved_range_utf16;
     const status = comment.attachment?.status;
     const placed = status === "exact" || status === "modified";
-    const fileId = anchor?.kind === "source_text" ? anchor.target?.file_id : null;
+    // The file the passage is in now, which a move across files changes; the
+    // file the comment was made on otherwise.
+    const fileId = anchor?.kind === "source_text"
+      ? comment.attachment?.resolved_file_id || anchor.target?.file_id
+      : null;
     const path = fileId ? session?.paths?.get(fileId) : null;
     if (!path || !placed || !Array.isArray(range)) {
       if (fileId) orphaned++;

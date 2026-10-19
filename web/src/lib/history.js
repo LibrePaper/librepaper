@@ -82,7 +82,7 @@ export async function load(slug, headers = {}) {
 /// `undefined` where the live side read a real digest.
 export async function read(slug, sha, headers = {}) {
   // `sha` is a label UUID, but it can also be a comment's own
-  // `frontier:<base64>` moment (`passages.js`'s `wentAt`), whose base64
+  // `frontier:<base64>` moment (a comment's original anchor), whose base64
   // alphabet includes characters a path segment cannot carry unescaped.
   const response = await fetch(`/api/documents/${slug}/history/${encodeURIComponent(sha)}`, {
     headers: asked(headers),

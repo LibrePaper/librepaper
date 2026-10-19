@@ -202,6 +202,7 @@
   import { changeMarks, setChangeMarks } from "../lib/change-marks.js";
   import { CHANGES, planEdits, writePlanned, resolveFile, trackedSplice, untrackedSplice, prune } from "../lib/track-changes.js";
   import { DIRECTORY_ORIGIN } from "../lib/project-session.js";
+  import { ANCHORS_ORIGIN, fragmentRangesFor, throughEdits } from "../lib/anchors.js";
   import { projectDirectory } from "../lib/projection.js";
   import { attachEditorZoom } from "../lib/editor-zoom.js";
   import { snippetTemplate } from "../lib/snippet-template.js";
@@ -361,6 +362,53 @@
       };
     }));
     return { before, after };
+  }
+
+  /// Whether the anchor index records a transaction. A local edit is recorded,
+  /// and so is an undo or redo: the binding marks both as "undo". Imports and
+  /// the binding's own writes carry other marks and are not recorded here.
+  function recordsEdits(transaction) {
+    const mark = transaction.annotation(loroSyncAnnotation);
+    return mark === undefined || mark === "undo" || mark === "redo";
+  }
+
+  /// Moves the comment anchors with the text, as the edits are made. It runs
+  /// behind `trackChanges`, so the change records and fragments of these edits
+  /// are already in the document, and its commit is labelled as anchor work.
+  /// The index is loaded when the plugin is built, while the view and the
+  /// document still agree. Imports are followed by the index itself.
+  function anchorsPlugin(fileId) {
+    return Prec.lowest(ViewPlugin.define(() => {
+      session.anchors.load(fileId);
+      return {
+        update(update) {
+          if (!update.docChanged || !update.transactions.some(recordsEdits)) return;
+          const doc = session.doc;
+          const steps = [];
+          for (const transaction of update.transactions) {
+            if (!transaction.docChanged || !recordsEdits(transaction)) continue;
+            const edits = [];
+            transaction.changes.iterChanges((fromA, toA, fromB, toB, insert) => {
+              edits.push({ from: fromA, to: toA, insert: insert.sliceString(0, insert.length, "\n") });
+            });
+            steps.push({ transaction, edits });
+          }
+          // Read once. The change plugin has written the whole update, so these
+          // are the gaps of the text after its last transaction.
+          const gaps = doc.getMap(CHANGES).size ? resolveFile(doc, fileId).gaps : [];
+          steps.forEach(({ transaction, edits }, index) => {
+            // A deletion's point is mapped through the transactions after it.
+            const later = steps.slice(index + 1).map((step) => step.edits);
+            const toGap = (point) => later.reduce((at, batch) => throughEdits(at, batch), point);
+            const fragments = gaps.length && edits.some((edit) => edit.to > edit.from)
+              ? fragmentRangesFor(transaction.startState.doc.toString(), edits, gaps, toGap)
+              : [];
+            session.anchors.record([{ fileId, edits, fragments }], session.anchorMemory);
+          });
+          doc.commit({ origin: ANCHORS_ORIGIN });
+        },
+      };
+    }));
   }
 
   let parsedBibliography = $state(null);
@@ -941,7 +989,9 @@
     // back deletes the file.
     const bound = session.doc;
     if (undoManagerDoc !== bound) {
-      undoManager = new UndoManager(bound, { excludeOriginPrefixes: [DIRECTORY_ORIGIN] });
+      // The comment anchors are not undone either: their commits are labelled
+      // ANCHORS_ORIGIN and follow the text back as undo and redo move it.
+      undoManager = new UndoManager(bound, { excludeOriginPrefixes: [DIRECTORY_ORIGIN, ANCHORS_ORIGIN] });
       undoManagerDoc = bound;
     }
     const manager = undoManager;
@@ -1036,6 +1086,8 @@
         LoroExtensions(bound, session.ephemeral && { user: { name: userName, colorClassName }, ephemeral: session.ephemeral }, manager, () => text),
         // After the binding, so the text is written when this one looks.
         tracking.after,
+        // After the change plugin, so the anchors follow records already written.
+        anchorsPlugin(id),
         EditorView.updateListener.of((update) => {
           if (update.docChanged) {
             // The marks were mapped through the edit. Drawing them again from

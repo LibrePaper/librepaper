@@ -122,34 +122,22 @@ assert.equal(sent.at(-1).temp_id, highlightId);
 annotations.comment({ exact: "invalid color" },
   { motivation: "commenting", body: "Note", color: "url(https://example.com)" }, "Name");
 assert.equal(sent.at(-1).color, undefined);
-// Where the passages got to after an edit. The server resolves the whole
-// document at once and sends one frame for the pass; a card that never took
-// it would keep showing where a passage was when the page was opened.
+// An editor's attachment is derived from the document, not received. A frame
+// that still carries attachments is not this module's to take.
+assert.equal(annotations.receive({ type: "attachments", attachments: [] }), false);
+// What the derivation says is what the comment carries once it is seeded.
 {
-  const moved = view.comments.at(-1);
-  const before = anchored.length;
-  const repaints = paints;
-  assert.equal(
-    annotations.receive({
-      type: "attachments",
-      attachments: [
-        { comment_id: moved.id, attachment: { status: "modified", resolved_range_utf16: [10, 20] } },
-        { comment_id: "no-such-comment", attachment: { status: "deleted" } },
-      ],
-    }),
-    true,
-  );
-  assert.deepEqual(moved.attachment, { status: "modified", resolved_range_utf16: [10, 20] });
-  assert.ok(anchored.length > before, "a new attachment re-places the passage");
-  assert.ok(paints > repaints);
-  // A pass naming nothing this browser holds changes nothing and repaints
-  // nothing, but is still this module's message to have swallowed.
-  const quiet = paints;
-  assert.equal(
-    annotations.receive({ type: "attachments", attachments: [{ comment_id: "gone", attachment: {} }] }),
-    true,
-  );
-  assert.equal(paints, quiet);
+  const derived = createAnnotations({
+    slug: "annotations-derived",
+    anchor: () => {},
+    repaint: () => {},
+    send: () => {},
+    attachmentOf: () => ({ status: "exact", resolved_range_utf16: [1, 2], resolved_file_id: "f", tree_digest: "" }),
+  });
+  derived.seed([{ id: "c1", original_anchor: { kind: "source_text" } }], { total: 1, open: 1, replies: 0 });
+  assert.deepEqual(derived.state.comments[0].attachment, {
+    status: "exact", resolved_range_utf16: [1, 2], resolved_file_id: "f", tree_digest: "",
+  });
 }
 
 // The comments are paged: what arrives is a prefix, and everything the panel

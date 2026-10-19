@@ -27,6 +27,7 @@ import { checkPlacement, folderPaths, inside, parentPath, relocation, topEntries
 import { projectDirectory } from "./projection.js";
 import { formatOf } from "./formats.js";
 import { createGeneration } from "./reader/generation.js";
+import { AnchorIndex, MoveMemory } from "./anchors.js";
 
 /** @typedef {{ name?: string, color?: string, tab?: string, file?: string }} PresenceState */
 /** @typedef {{ type: string, [key: string]: unknown }} SessionMessage */
@@ -263,6 +264,14 @@ export function createProjectSession({
     if (eventBatch.events.some((event) => directory.has(event.target))) rebind();
   });
   rebind();
+
+  // The comment anchors of this document, resolved and kept current for the
+  // whole session, whether or not an editor is open: imports are followed from
+  // here, and a file that arrives later is loaded when it is first needed.
+  const anchors = new AnchorIndex(doc);
+  for (const [id, value] of files.entries()) if (value instanceof LoroText) anchors.load(id);
+  const detachAnchors = anchors.attach();
+  const anchorMemory = new MoveMemory();
 
   // Sequence numbers the server has not yet retired with a doc-ack. Update
   // bytes live in the CRDT itself and reconnect exports them from there.
@@ -716,6 +725,10 @@ export function createProjectSession({
     paths,
     meta,
     ephemeral: store,
+    /// The comment anchors of the document, and the memory of what the session
+    /// deleted whole. Editors record their edits through both.
+    anchors,
+    anchorMemory,
 
     /// This browser's own presence: the name on its caret and the colour it
     /// is drawn in. The store is shared, so a caller cannot reach for a
@@ -1300,6 +1313,7 @@ export function createProjectSession({
       // the same transport should not find the new one queued behind a fetch
       // the old one abandoned.
       abandonQueuedJoins();
+      detachAnchors();
       persister?.close?.();
     },
   };

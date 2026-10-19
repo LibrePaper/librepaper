@@ -601,18 +601,118 @@ export function editsFromDelta(delta) {
 /**
  * @param {import("loro-crdt").LoroDoc} doc
  * @param {Anchor} anchor
+ * @param {string} [body] the file's text, when the caller already has it
  * @returns {"exact" | "modified" | "pending_deletion" | "deleted" | "unresolved"}
  */
-export function statusOf(doc, anchor) {
+export function statusOf(doc, anchor, body) {
   if (anchor.unresolved) return "unresolved";
   if (anchor.detached) {
     const record = anchor.fragment ? doc.getMap(CHANGES).get(anchor.fragment) : undefined;
     return record instanceof LoroMap ? "pending_deletion" : "deleted";
   }
   if (anchor.collapsed) return "deleted";
-  const text = fileText(doc, anchor.file);
-  const body = text ? text.toString() : "";
+  if (body === undefined) {
+    const text = fileText(doc, anchor.file);
+    body = text ? text.toString() : "";
+  }
   return body.slice(anchor.from, anchor.to) === anchor.exact ? "exact" : "modified";
+}
+
+/**
+ * Where a point goes when a batch of edits is applied to the text it is in.
+ * The edits are in that text's coordinates, ascending. A point inside deleted
+ * text goes to the start of the deletion, where a tracked deletion's gap sits;
+ * a point where text is inserted stays before the insertion.
+ *
+ * @param {number} point
+ * @param {Edit[]} edits
+ * @returns {number}
+ */
+export function throughEdits(point, edits) {
+  let p = point;
+  let adj = 0;
+  for (const edit of edits) {
+    const ef = edit.from + adj;
+    const et = edit.to + adj;
+    const n = edit.insert.length;
+    adj += n - (edit.to - edit.from);
+    if (ef > p) break;
+    if (et < p || (et === p && et > ef)) p += n - (et - ef);
+    else if (ef < p) p = ef;
+  }
+  return p;
+}
+
+/**
+ * The fragment ranges of the deletions in one transaction. A deletion gets
+ * ranges when its text is exactly the texts of the gap at its point, in rank
+ * order; each fragment becomes one range. Anything else, such as an untracked
+ * deletion or fragments that were joined, gets none.
+ *
+ * The edits are in the coordinates of `before`. A deletion's point is its
+ * `from` after the edits before it, so the gaps are read in the coordinates of
+ * the text after these edits, unless `toGap` maps them. A caller whose update
+ * has later transactions maps the point through them with `throughEdits`.
+ *
+ * @param {string} before the text the edits apply to
+ * @param {Edit[]} edits
+ * @param {{ at: number, fragments: { id: string, text: string, rank: number }[] }[]} gaps
+ * @param {(point: number) => number} [toGap]
+ * @returns {FragmentRange[]}
+ */
+export function fragmentRangesFor(before, edits, gaps, toGap = (point) => point) {
+  const out = [];
+  let adj = 0;
+  edits.forEach((edit, index) => {
+    const point = edit.from + adj;
+    adj += edit.insert.length - (edit.to - edit.from);
+    if (!(edit.to > edit.from)) return;
+    const gap = gaps.find((g) => g.at === toGap(point));
+    if (!gap) return;
+    const fragments = [...gap.fragments].sort((a, b) => a.rank - b.rank);
+    if (fragments.map((f) => f.text).join("") !== before.slice(edit.from, edit.to)) return;
+    let start = 0;
+    for (const fragment of fragments) {
+      out.push({ id: fragment.id, edit: index, start, end: start + fragment.text.length });
+      start += fragment.text.length;
+    }
+  });
+  return out;
+}
+
+/**
+ * The source attachment of a comment, read from the document's anchor records:
+ * its status, the range it resolves to and the file that holds it. This is the
+ * shape the server used to send. A comment with no source passage has none.
+ *
+ * `bodies` caches each file's text across one pass over many comments. Pass
+ * the same Map to every call of that pass.
+ *
+ * @param {import("loro-crdt").LoroDoc} doc
+ * @param {AnchorIndex} index
+ * @param {{ id: string, original_anchor?: { kind?: string } }} comment
+ * @param {Map<string, string>} [bodies]
+ * @returns {{ status: string, resolved_range_utf16: [number, number] | null, resolved_file_id: string | null, tree_digest: string } | null}
+ */
+export function deriveAttachment(doc, index, comment, bodies = new Map()) {
+  if (comment?.original_anchor?.kind !== "source_text") return null;
+  const hit = index.find(String(comment.id));
+  if (!hit) return { status: "unresolved", resolved_range_utf16: null, resolved_file_id: null, tree_digest: "" };
+  const { anchor } = hit;
+  let body = bodies.get(anchor.file);
+  if (body === undefined) {
+    const text = fileText(doc, anchor.file);
+    body = text ? text.toString() : "";
+    bodies.set(anchor.file, body);
+  }
+  const status = statusOf(doc, anchor, body);
+  const placed = status === "exact" || status === "modified";
+  return {
+    status,
+    resolved_range_utf16: placed ? [anchor.from, anchor.to] : null,
+    resolved_file_id: anchor.file,
+    tree_digest: "",
+  };
 }
 
 /**
@@ -745,6 +845,22 @@ export class AnchorIndex {
   }
 
   /**
+   * The anchor of one comment and the file it sits in. A record that is in the
+   * document but not yet cached is loaded from its file first.
+   * @param {string} id
+   * @returns {{ fileId: string, anchor: Anchor } | null} null when there is no record
+   */
+  find(id) {
+    const hit = this.#locate(id);
+    if (hit) return hit;
+    const record = this.#doc.getMap(ANCHORS).get(id);
+    const fileId = record instanceof LoroMap ? record.get("file") : undefined;
+    if (typeof fileId !== "string") return null;
+    this.load(fileId);
+    return this.#locate(id);
+  }
+
+  /**
    * Records an operation whose text is already in the document. The cached
    * text and anchors are the before state, so no cursor is resolved. The cache
    * takes the planned text and anchors of every file in the plan. Files must be
@@ -851,7 +967,7 @@ export class AnchorIndex {
       // events on their containers can be placed.
       const changed = new Set();
       for (const event of maps) {
-        if (event.target !== root) continue;
+        if (event.target !== root || event.diff.type !== "map") continue;
         for (const [id, value] of Object.entries(event.diff.updated)) {
           if (value instanceof LoroMap) this.#remember(id, value);
           changed.add(id);
@@ -914,6 +1030,14 @@ export class AnchorIndex {
     const entry = this.#files.get(fileId);
     if (!entry) throw new Error(`anchors: ${fileId} must be loaded before its edit is recorded`);
     return entry;
+  }
+
+  #locate(id) {
+    for (const [fileId, entry] of this.#files) {
+      const anchor = entry.anchors.find((a) => a.id === id);
+      if (anchor) return { fileId, anchor };
+    }
+    return null;
   }
 
   #learn() {
