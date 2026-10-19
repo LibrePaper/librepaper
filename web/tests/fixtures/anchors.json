@@ -540,5 +540,34 @@
       ],
       "memorySize": 0
     }
+  },
+  {
+    "name": "a composed paste followed by an insertion before it still re-pins",
+    "files": [
+      {
+        "fileId": "f1",
+        "before": "Hi there!  bye.",
+        "anchors": [
+          { "id": "a", "file": "f1", "from": 0, "to": 0, "detached": true, "fragment": null, "offset": null, "length": 5, "exact": "brave", "prefix": "Hi there! ", "suffix": " bye.", "collapsed": false, "unresolved": false }
+        ],
+        "edits": [
+          { "from": 10, "to": 10, "insert": "brave" },
+          { "from": 4, "to": 4, "insert": "XX" }
+        ]
+      }
+    ],
+    "memory": [
+      { "text": "brave", "held": [{ "id": "a", "offset": 0, "text": "brave" }] }
+    ],
+    "expect": {
+      "files": [
+        {
+          "fileId": "f1",
+          "after": "Hi there!XX brave bye.",
+          "anchors": [{ "id": "a", "from": 12, "to": 17, "detached": false, "exact": "brave", "state": "set" }]
+        }
+      ],
+      "memorySize": 0
+    }
   }
 ]

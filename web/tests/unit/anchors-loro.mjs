@@ -6,8 +6,9 @@
 // directions; two peers that each delete one half of a passage collapse it, and
 // marking it leaves one detached record on both; a tracked deletion rejected or
 // accepted in another session restores or drops it; and undo through the real
-// UndoManager walks a cut and a paste back. The AnchorIndex tests follow remote
-// edits into a second peer's cache, which must agree with resolveAnchors.
+// UndoManager walks a cut and a paste back, and an undo of a cut head or tail
+// puts the passage back exact. The AnchorIndex tests follow remote edits into a
+// second peer's cache, which must agree with resolveAnchors.
 //
 // The seeded fuzzers check random histories against a tagged oracle. Each
 // character carries the ids of the anchors it belongs to, so the expected place
@@ -633,6 +634,44 @@ test("undo through the UndoManager brings a passage back to a file that is not b
   assert.equal(statusOf(doc, back.anchor), "exact");
   assertIndexMatches(index, doc, "f1");
   assertIndexMatches(index, doc, "f2");
+});
+
+// Cuts one end of the anchor on "two" in "one two three", checks the anchor on
+// what is left, then undoes the cut. The undo puts the piece back at the edge
+// it was cut from, so the anchor reads "two" again.
+function cutEndThenUndo(edit, leftFrom, leftTo) {
+  const text = "one two three";
+  const doc = makeDoc(1, { f1: text });
+  createAnchor(doc, "f1", "a1", 4, 7, ctx(text, 4, 7));
+  doc.commit();
+  const manager = new UndoManager(doc, { mergeInterval: 0, excludeOriginPrefixes: [ANCHORS_ORIGIN] });
+  const memory = new MoveMemory();
+  const index = new AnchorIndex(doc);
+  index.load("f1");
+  index.attach(memory);
+  index.apply([{ fileId: "f1", edits: [edit] }], memory, {});
+  const cut = index.find("a1").anchor;
+  assert.deepEqual([cut.from, cut.to, cut.detached], [leftFrom, leftTo, false]);
+  assert.equal(statusOf(doc, cut), "modified");
+  assertIndexMatches(index, doc, "f1");
+
+  assert.equal(manager.undo(), true, "the cut is undone");
+  assert.equal(textOf(doc), text);
+  assertAttached(doc, "a1", 4, 7, "two");
+  const back = index.find("a1").anchor;
+  assert.deepEqual([back.from, back.to, back.detached], [4, 7, false]);
+  assert.equal(statusOf(doc, back), "exact");
+  assertIndexMatches(index, doc, "f1");
+}
+
+test("undo after a boundary deletion brings the passage back exact", () => {
+  // "tw" goes from the head, so the anchor is left on the "o" at 4..5.
+  cutEndThenUndo({ from: 4, to: 6, insert: "" }, 4, 5);
+});
+
+test("undo after a tail deletion brings the passage back exact", () => {
+  // "wo" goes from the tail, so the anchor is left on the "t" at 4..5.
+  cutEndThenUndo({ from: 5, to: 7, insert: "" }, 4, 5);
 });
 
 // A peer B that starts as a snapshot of A, with an index on each.

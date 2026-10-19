@@ -9,8 +9,9 @@
 // one batch of edits made in this session, and re-pins detached anchors when an
 // insertion brings their text back exactly once. The move memory is per
 // session: text deleted whole is remembered, so that cut and paste, drag and
-// drop, undo and agent patches keep comments exact. Nothing searches the
-// document for words.
+// drop, undo and agent patches keep comments exact. A cut that takes only one
+// end of an anchor is remembered too, so putting that end back rejoins the
+// anchor. Nothing searches the document for words.
 //
 // Resolving a stale cursor commits pending operations with no origin, so a
 // writer sets the commit origin first and does all its reads before its first
@@ -44,9 +45,13 @@ export const CONTEXT_UNITS = 32;
  * @typedef {{ id: string, edit: number, start: number, end: number }} FragmentRange
  *   edit is the index of the deleting edit in the file's edits. start and end
  *   are offsets within that edit's deleted text.
- * @typedef {{ id: string, offset: number, text: string }} Held
- *   offset is where the anchor starts within the deleted text; text is what
- *   the anchor covered.
+ * @typedef {{ id: string, offset: number, text: string, side?: "head" | "tail" }} Held
+ *   offset is where the held text starts within the deleted text, and text is
+ *   that text. A deletion that took the whole anchor holds the whole anchor and
+ *   has no side. A deletion that took only the head or only the tail of an
+ *   attached anchor holds just the piece it took, with side "head" or "tail".
+ *   Such an entry rejoins the anchor when the piece comes back at the edge it
+ *   was cut from, and the anchor must still be attached in the same file.
  */
 
 // What the session deleted whole, oldest first. Each entry keeps the anchors
@@ -62,7 +67,7 @@ export class MoveMemory {
 
   /**
    * @param {string} text deleted text
-   * @param {Held[]} held anchors that were wholly inside it, with offsets relative to text
+   * @param {Held[]} held anchors the deletion took whole or cut at one end, with offsets relative to text
    */
   remember(text, held) {
     if (!text || !held || held.length === 0) return;
@@ -96,10 +101,14 @@ export class MoveMemory {
  * Pure, operation-level planner. No Loro here.
  *
  * Phase 1 runs each file on its own, edits in order, and moves its attached
- * anchors. Phase 2 runs after every file: an insertion that takes a remembered
- * text re-pins the detached anchors that were in it, into the file the
- * insertion landed in. Deletions are remembered and taken texts are removed
- * from the memory as a side effect.
+ * anchors. The edits may be composed (see composeEdits), so a later edit can
+ * land before an earlier insertion. That insertion moves when the later edit
+ * lands before it, and is dropped when the later edit reaches into it.
+ * Phase 2 runs after every file: an insertion that takes a remembered text
+ * re-pins the detached anchors that were in it, into the file the insertion
+ * landed in. A piece cut from one end of an attached anchor rejoins that
+ * anchor when the piece comes back at the same end. Deletions are remembered
+ * and taken texts are removed from the memory as a side effect.
  *
  * @param {{ fileId: string, before: string, anchors: Anchor[], edits: Edit[], fragments?: FragmentRange[] }[]} files
  * @param {MoveMemory} memory
@@ -161,6 +170,15 @@ export function planOperation(files, memory, { context = CONTEXT_UNITS, foreign 
             if (from < et && to > ef) {
               partial.add(a);
               a.touched = true;
+              // A cut at one end is remembered with the piece it took, so that
+              // putting the piece back at that end rejoins the anchor. A cut
+              // strictly inside the anchor remembers nothing. A remote change
+              // remembers nothing either.
+              if (!foreign && ef <= from) {
+                held.push({ id: a.id, offset: from - ef, text: cur.slice(from, et), side: "head" });
+              } else if (!foreign && et >= to) {
+                held.push({ id: a.id, offset: 0, text: cur.slice(ef, to), side: "tail" });
+              }
             }
             a.from = afterDelete(from, ef, et);
             a.to = afterDelete(to, ef, et);
@@ -169,6 +187,8 @@ export function planOperation(files, memory, { context = CONTEXT_UNITS, foreign 
         }
         if (held.length > 0) memory.remember(deleted, held);
       }
+      // Earlier insertions of this batch follow this edit, in running coordinates.
+      followInserts(w.inserts, ef, et, n);
       if (n > 0) {
         for (const a of w.anchors) {
           if (!attached(a)) continue;
@@ -199,7 +219,9 @@ export function planOperation(files, memory, { context = CONTEXT_UNITS, foreign 
   }
 
   // Phase 2: an insertion that brings remembered text back re-pins the anchors
-  // that were in it.
+  // that were in it. A whole anchor comes back from detached. A cut head or
+  // tail rejoins an anchor that is still attached, in the same file, at the
+  // edge the piece was cut from.
   for (const w of foreign ? [] : work) {
     for (const ins of w.inserts) {
       const hit = memory.take(ins.text);
@@ -210,10 +232,19 @@ export function planOperation(files, memory, { context = CONTEXT_UNITS, foreign 
         if (!owner) continue;
         const index = owner.anchors.findIndex((a) => a.id === h.id);
         const anchor = owner.anchors[index];
-        // A record with no length has no span to bring back.
-        if (attached(anchor) || typeof anchor.length !== "number") continue;
         const from = ins.at + hit.at + h.offset;
         const to = from + h.text.length;
+        if (h.side) {
+          const edge = h.side === "head" ? to === anchor.from : from === anchor.to;
+          if (!attached(anchor) || owner !== w || !edge || w.after.slice(from, to) !== h.text) continue;
+          if (h.side === "head") anchor.from = from;
+          else anchor.to = to;
+          anchor.state = "set";
+          anchor.touched = true;
+          continue;
+        }
+        // A record with no length has no span to bring back.
+        if (attached(anchor) || typeof anchor.length !== "number") continue;
         if (w.after.slice(from, to) !== h.text) continue;
         owner.anchors.splice(index, 1);
         /** @type {PlannedAnchor} */
@@ -245,6 +276,23 @@ function afterDelete(p, ef, et) {
   if (p < ef) return p;
   if (p >= et) return p - (et - ef);
   return ef;
+}
+
+// Moves the insertions of one batch past an edit, in running coordinates. An
+// insertion at or after the edit's end shifts by the edit's net length change.
+// One that the edit overlaps is removed, since it no longer holds the text it
+// was made with. One before the edit stays where it is.
+function followInserts(inserts, ef, et, n) {
+  for (let i = inserts.length - 1; i >= 0; i--) {
+    const ins = inserts[i];
+    if (et <= ins.at) {
+      ins.at += n - (et - ef);
+    } else if (ef >= ins.at + ins.text.length) {
+      continue;
+    } else {
+      inserts.splice(i, 1);
+    }
+  }
 }
 
 // The planner moves only anchors that resolve to a span.

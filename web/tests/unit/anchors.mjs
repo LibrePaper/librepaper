@@ -539,6 +539,75 @@ test("composeEdits: a later list may edit inside the text an earlier list insert
   assert.equal(file.after, runInSequence(before, [], lists).after);
 });
 
+test("composeEdits: an insertion before a composed paste moves the paste's re-pin with it", () => {
+  const memory = new MoveMemory();
+  // "brave" was cut from "Hi there! brave bye.", so its anchor is detached and remembered.
+  memory.remember("brave", [{ id: "a1", offset: 0, text: "brave" }]);
+  const detached = { ...anchorOn("a1", 0, 0, "brave"), detached: true, length: 5 };
+  const lists = [
+    // Pastes "brave" at 10, between the two spaces.
+    [{ from: 10, to: 10, insert: "brave" }],
+    // In the text after the paste, inserts "XX" at 0.
+    [{ from: 0, to: 0, insert: "XX" }],
+  ];
+  const [file] = planOperation(
+    [{ fileId: "f1", before: "Hi there!  bye.", anchors: [detached], edits: composeEdits(lists) }],
+    memory,
+  ).files;
+  assert.equal(file.after, "XXHi there! brave bye.");
+  const anchor = file.anchors.find((a) => a.id === "a1");
+  assert.deepEqual([anchor.from, anchor.to, anchor.detached, anchor.state], [12, 17, false, "set"]);
+  assert.equal(file.after.slice(anchor.from, anchor.to), "brave");
+  assert.equal(memory.size, 0);
+});
+
+// One planOperation over the single file f1, with the memory the caller keeps.
+function planOne(before, anchors, edits, memory) {
+  const [file] = planOperation([{ fileId: "f1", before, anchors, edits }], memory).files;
+  return file;
+}
+
+test("the head of a passage cut and put back rejoins it", () => {
+  const memory = new MoveMemory();
+  const cut = planOne("one two three", [anchorOn("a1", 4, 7, "two")], [{ from: 4, to: 6, insert: "" }], memory);
+  // "tw" goes, and the anchor is left on the "o" at 4..5.
+  assert.equal(cut.after, "one o three");
+  assert.deepEqual([cut.anchors[0].from, cut.anchors[0].to, cut.anchors[0].detached], [4, 5, false]);
+  assert.equal(memory.size, 1);
+
+  const back = planOne(cut.after, cut.anchors, [{ from: 4, to: 4, insert: "tw" }], memory);
+  assert.equal(back.after, "one two three");
+  const anchor = back.anchors[0];
+  assert.deepEqual([anchor.from, anchor.to, anchor.detached, anchor.state], [4, 7, false, "set"]);
+  assert.equal(back.after.slice(anchor.from, anchor.to), "two");
+  assert.equal(memory.size, 0);
+});
+
+test("the tail of a passage cut and put back rejoins it", () => {
+  const memory = new MoveMemory();
+  const cut = planOne("one two three", [anchorOn("a1", 4, 7, "two")], [{ from: 5, to: 7, insert: "" }], memory);
+  // "wo" goes, and the anchor is left on the "t" at 4..5.
+  assert.equal(cut.after, "one t three");
+  assert.deepEqual([cut.anchors[0].from, cut.anchors[0].to, cut.anchors[0].detached], [4, 5, false]);
+
+  const back = planOne(cut.after, cut.anchors, [{ from: 5, to: 5, insert: "wo" }], memory);
+  assert.equal(back.after, "one two three");
+  const anchor = back.anchors[0];
+  assert.deepEqual([anchor.from, anchor.to, anchor.detached, anchor.state], [4, 7, false, "set"]);
+  assert.equal(memory.size, 0);
+});
+
+test("a cut head pasted elsewhere does not extend the passage", () => {
+  const memory = new MoveMemory();
+  const cut = planOne("one two three", [anchorOn("a1", 4, 7, "two")], [{ from: 4, to: 6, insert: "" }], memory);
+  // "tw" goes back in at the start, away from the edge the anchor was cut at.
+  const pasted = planOne(cut.after, cut.anchors, [{ from: 0, to: 0, insert: "tw" }], memory);
+  assert.equal(pasted.after, "twone o three");
+  const anchor = pasted.anchors[0];
+  assert.deepEqual([anchor.from, anchor.to, anchor.detached], [6, 7, false]);
+  assert.equal(pasted.after.slice(anchor.from, anchor.to), "o");
+});
+
 test("deriveAttachment: an attached, a detached and a missing record, through a real document", () => {
   const doc = new LoroDoc();
   const text = doc.getMap("files").setContainer("f1", new LoroText());
