@@ -1727,7 +1727,10 @@ mod tests {
         let late = OperationFile {
             file_id: "main.md".to_string(),
             before: "one two three two four".to_string(),
-            anchors: vec![anchor_at("a", "main.md", 4, 7), anchor_at("b", "main.md", 14, 17)],
+            anchors: vec![
+                anchor_at("a", "main.md", 4, 7),
+                anchor_at("b", "main.md", 14, 17),
+            ],
             edits: vec![Edit {
                 at: 14,
                 delete: 3,
