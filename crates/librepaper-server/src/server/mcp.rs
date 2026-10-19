@@ -986,9 +986,12 @@ fn locate_comment_selection(
     view: &View,
     comment: &librepaper_room::room::Comment,
 ) -> Result<(String, usize, usize), Failure> {
-    let source = comment
-        .source()
-        .ok_or_else(|| Failure::new("invalid_range", "comment has no source passage"))?;
+    if comment.source().is_none() {
+        return Err(Failure::new(
+            "invalid_range",
+            "comment has no source passage",
+        ));
+    }
     let attachment = comment
         .attachment
         .as_ref()
@@ -1004,12 +1007,17 @@ fn locate_comment_selection(
     let (start, end) = attachment
         .resolved_range_utf16
         .ok_or_else(|| Failure::new("invalid_range", "comment has no resolved source range"))?;
+    // The file the passage is in now, which is not always the one it was made in.
+    let file_id = attachment
+        .resolved_file_id
+        .as_ref()
+        .ok_or_else(|| Failure::new("invalid_range", "comment has no resolved source file"))?;
     let (path, _) = view
         .snapshot
         .projection()
         .files
         .iter()
-        .find(|(_, file)| file.id == source.file_id.0)
+        .find(|(_, file)| file.id == file_id.0)
         .ok_or_else(|| Failure::new("not_found", "comment source file is absent"))?;
     let text = view
         .snapshot
@@ -1163,7 +1171,10 @@ mod selection_tests {
                 "exact":"same words","prefix":"","suffix":""
             }},
             "render_digest":"historical-render",
-            "attachment":{"tree_digest":"rev","status":"modified","resolved_range_utf16":[15,25]}
+            "attachment":{
+                "tree_digest":"rev","status":"modified",
+                "resolved_file_id":"f1","resolved_range_utf16":[15,25]
+            }
         })).unwrap();
         let (path, start, end) = locate_comment_selection(&view, &comment).unwrap();
         assert_eq!(path, "renamed.typ");

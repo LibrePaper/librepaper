@@ -495,6 +495,10 @@ pub enum SequencerError {
     /// The fence was lost; this sequencer must stop and be re-admitted.
     #[error("writer ownership lost: {0}")]
     Fenced(String),
+    /// The moment is before the trim point. A shallow document keeps no history
+    /// before its root, so the moment cannot be rebuilt.
+    #[error("that moment is before the trim point")]
+    Trimmed,
 }
 
 pub type Result<T> = std::result::Result<T, SequencerError>;
@@ -2196,8 +2200,15 @@ impl Sequencer {
             .await
             .map_err(|Busy| SequencerError::Busy)?;
         let cache = inner.cache.as_ref().expect("a cache was just built");
-        let fork = historical_fork_at(&cache.doc, frontier)
-            .map_err(|error| SequencerError::Loro(error.to_string()))?;
+        let fork = historical_fork_at(&cache.doc, frontier).map_err(|error| {
+            // A shallow document has no history before its root, so a frontier
+            // before the root is one the trim removed.
+            if cache.doc.is_shallow() {
+                SequencerError::Trimmed
+            } else {
+                SequencerError::Loro(error.to_string())
+            }
+        })?;
         Ok(read(&fork))
     }
 

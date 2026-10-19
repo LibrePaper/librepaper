@@ -96,10 +96,10 @@ pub struct Comment {
     /// a reader has it taken out.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub original_anchor: Option<OriginalAnchor>,
-    /// Where that passage is in the projection this comment was last served
-    /// against. A cache, keyed by the projection digest, held only in this
-    /// room's memory and rebuilt whenever a cold process needs it (§8.3):
-    /// never a second opinion about what the comment is about.
+    /// Where that passage is in the projection this comment was served
+    /// against. Derived from the comment's anchor record each time it is
+    /// read, keyed by the projection digest, and never stored: never a second
+    /// opinion about what the comment is about.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub attachment: Option<DerivedAttachment>,
     /// The page the comment was made on: the words as the render had them.
@@ -1683,11 +1683,6 @@ impl Room {
             Some("comment" | "reply" | "delete" | "resolve" | "edit")
         ) {
             return CommentEvent::bare(payload.clone());
-        }
-        if kind == Some("delete") {
-            if let Some(id) = payload.get("comment_id").and_then(Value::as_str) {
-                self.attachments.lock().await.remove(id);
-            }
         }
         // Only the three kinds that carry a comment row need it at all.
         let id = match kind {
