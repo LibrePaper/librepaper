@@ -465,6 +465,9 @@ try {
   // preparation view, and only sending it writes anything.
   await page.evaluate(`(()=>{const search=document.querySelector('.task-search');search.value='tight';search.dispatchEvent(new Event('input',{bubbles:true}));})()`);
   await until("search narrows", () => page.evaluate('document.querySelectorAll(".task-results .task-row").length===1'), 1000);
+  // A search result names its summary and its categories, with no sections.
+  assert.ok((await page.evaluate('document.querySelector(".task-results .task-row .task-summary").textContent')).length > 0);
+  assert.ok((await page.evaluate('document.querySelector(".task-results .task-row .task-meta").textContent')).includes("Writing"));
   await page.evaluate('document.querySelector(".task-results .task-row").click()');
   await until("preparation view", () => page.evaluate('!!document.querySelector(".task-prepare") && document.querySelector(".task-prepare .attachment").textContent.includes("a.md")'), 1000);
   assert.equal(await page.evaluate('document.querySelector(".chat-form textarea").value'), "First\n\n", "opening a task leaves the chat draft alone");
@@ -573,7 +576,7 @@ try {
   await page.evaluate('document.querySelector("#agent-tab-tasks").click()');
   assert.equal(await page.evaluate('document.querySelector("#agent-pane-chat").hidden'), true);
   await page.evaluate(`(()=>{const search=document.querySelector('.task-search');search.value='';search.dispatchEvent(new Event('input',{bubbles:true}));})()`);
-  await until("catalog listed", () => page.evaluate('document.querySelectorAll(".task-results .task-row").length===10 && document.querySelectorAll(".task-section").length===3'), 1000);
+  await until("catalog listed", () => page.evaluate('document.querySelectorAll(".task-results ul[data-category] .task-row").length===4 && document.querySelectorAll(".task-section").length===3'), 1000);
   // The runner went away earlier in this file, and a task cannot be sent to
   // an assistant that is not there. Bring it back first: the panel refusing
   // is the correct behaviour, not something to click through.
@@ -596,26 +599,33 @@ try {
   await page.evaluate('document.querySelector(".task-back").click()');
   await until("back restores the query", () => page.evaluate('document.querySelector(".task-search")?.value==="summ" && document.activeElement===document.querySelector(".task-search")'), 1000);
   await search("zzzqqq");
-  await until("no match", () => page.evaluate('document.body.innerText.includes("No matching tasks")'), 1000);
+  await until("no match", () => page.evaluate('document.body.innerText.includes("No tasks match")'), 1000);
   await search("");
-  const click = (selector, text) => page.evaluate(`Array.from(document.querySelectorAll(${JSON.stringify(selector)})).find(b=>b.textContent.trim().startsWith(${JSON.stringify(text)})).click()`);
-  const rowCount = () => page.evaluate('document.querySelectorAll(".task-results .task-row").length');
-  await click(".task-category", "Document");
-  await until("category filters", () => page.evaluate('document.querySelectorAll(".task-results .task-row").length===2 && !document.querySelector(".task-section")'), 1000);
-  await search("tight");
-  await until("query resets the category", () => page.evaluate('Array.from(document.querySelectorAll(".task-category")).find(b=>b.textContent==="All").getAttribute("aria-pressed")==="true"'), 1000);
-  await search("");
-  await click(".task-category", "All");
-  await until("full catalog again", () => page.evaluate('document.querySelectorAll(".task-section").length===3'), 1000);
-  const full = await rowCount();
-  await click(".task-section", "Writing");
-  await until("section collapsed", async () => (await page.evaluate('Array.from(document.querySelectorAll(".task-section")).find(b=>b.textContent.startsWith("Writing")).getAttribute("aria-expanded")'))==="false" && await rowCount()===full-4, 1000);
-  await page.evaluate('document.querySelector(".task-results .task-row").click()');
-  await until("collapsed task opens", () => page.evaluate('!!document.querySelector(".task-prepare")'), 1000);
+  // Frequently used tasks sit above the sections. Tighten was sent twice in
+  // this file and Explain once, so only Tighten is listed.
+  await until("frequent tasks listed", () => page.evaluate('Array.from(document.querySelectorAll(".task-group-label")).some(h=>h.textContent==="Frequently used")'), 1000);
+  const frequentNames = await page.evaluate('Array.from(document.querySelectorAll(\'ul[aria-labelledby="task-frequent-label"] .task-name\')).map(name=>name.textContent)');
+  assert.ok(frequentNames.includes("Tighten"), "a task sent twice is listed as frequently used");
+  assert.ok(!frequentNames.includes("Explain"), "a task sent once is not listed as frequently used");
+  // With nothing saved, only the first section is open.
+  const sectionButton = (name) => `Array.from(document.querySelectorAll(".task-section")).find(b=>b.querySelector(".task-section-name").textContent===${JSON.stringify(name)})`;
+  const sectionState = (name) => page.evaluate(`${sectionButton(name)}.getAttribute("aria-expanded")`);
+  const toggleSection = (name) => page.evaluate(`${sectionButton(name)}.click()`);
+  const sectionRows = () => page.evaluate('document.querySelectorAll(".task-results ul[data-category] .task-row").length');
+  await until("only the first section open", async () => await sectionState("Writing") === "true" && await sectionState("Review") === "false" && await sectionRows() === 4, 1000);
+  await toggleSection("Writing");
+  await until("section collapsed", async () => await sectionState("Writing") === "false" && await sectionRows() === 0, 1000);
+  await toggleSection("Review");
+  await until("section expanded", async () => await sectionState("Review") === "true" && await sectionRows() === 6, 1000);
+  await page.evaluate('document.querySelector(".task-results ul[data-category] .task-row").click()');
+  await until("expanded task opens", () => page.evaluate('!!document.querySelector(".task-prepare")'), 1000);
   await page.evaluate('document.querySelector(".task-back").click()');
-  await until("collapse survives back", () => page.evaluate('Array.from(document.querySelectorAll(".task-section")).find(b=>b.textContent.startsWith("Writing"))?.getAttribute("aria-expanded")==="false"'), 1000);
-  await click(".task-section", "Writing");
-  await until("section expanded", async () => await rowCount()===full, 1000);
+  await until("expansion survives back", async () => await sectionState("Review") === "true" && await sectionState("Writing") === "false", 1000);
+  assert.equal(await page.evaluate("localStorage.getItem('librepaper.agent.expandedTasks')"), '["Review"]');
+  // Put the default back for the steps that follow.
+  await toggleSection("Review");
+  await toggleSection("Writing");
+  await until("default restored", async () => await sectionState("Writing") === "true" && await sectionRows() === 4, 1000);
 
   // A comment or diagnostic opens its own preparation view in the Tasks pane.
   await page.evaluate("window.setProps({comments:[{id:'task-comment',body:'Clarify this',replies:[]}],diagnostics:[{message:'Compile error',file:'error.typ',line:3,revision:'old-sha',source:'old source'}]})");

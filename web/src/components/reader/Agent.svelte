@@ -13,8 +13,8 @@
   import {
     captureAttachment, capabilityAllows, diagnosticLabel,
     normalizeCapabilities, scopeLabel, visibleResults,
-    TASK_CATEGORIES, findTask, inferScope, searchTasks, taskBlocker, taskForKind,
-    taskPrompt, taskScopes, taskSections,
+    TASK_CATEGORIES, findTask, frequentTasks, inferScope, recordTaskUse, searchTasks, taskBlocker, taskForKind,
+    taskHint, taskPrompt, taskScopes, taskSections,
   } from "../../lib/assistant.js";
   import { humanizeTool, permissionAction, permissionButtons } from "../../lib/agent-permission.js";
 
@@ -43,13 +43,12 @@
   let diagnostic = $state(null);
   let diagnosticRevision = $state("");
   let draft = $state("");
-  // The Tasks pane is one compact browser of the whole catalog, in sections
-  // that collapse, with search above it. A task opens a preparation view. The
-  // query, category, collapsed sections and scroll position survive a visit
-  // to that view.
+  // The Tasks pane is one compact browser of the whole catalog: frequently used
+  // tasks first, then sections that expand and collapse, with search above them.
+  // A task opens a preparation view. The query, expanded sections and scroll
+  // position survive a visit to that view.
   let taskView = $state("launcher");
   let taskQuery = $state("");
-  let category = $state("");
   let chosenTaskId = $state("");
   let extra = $state("");
   let listEl = $state(null);
@@ -90,16 +89,26 @@
   // How long a just-started agent may take to join before the send gives up.
   const RUNNER_JOIN_MS = 60_000;
   const AGENT_GRANT_RENEW_MS = 2 * 60_000;
-  const COLLAPSED_TASKS = "librepaper.agent.collapsedTasks";
+  const EXPANDED_TASKS = "librepaper.agent.expandedTasks";
+  const TASK_USAGE = "librepaper.agent.taskUsage";
   function lastUsed(key) { try { return localStorage.getItem(key) || ""; } catch { return ""; } }
   function rememberLastUsed(key, value) { try { localStorage.setItem(key, value); } catch { /* private window */ } }
-  function storedCollapsed() {
+  /// The sections open in the last browser session. With nothing valid saved,
+  /// the first section is open. An empty saved list means every section is closed.
+  function storedExpanded() {
     try {
-      const names = JSON.parse(lastUsed(COLLAPSED_TASKS) || "[]");
-      return Array.isArray(names) ? names.filter((name) => TASK_CATEGORIES.includes(name)) : [];
-    } catch { return []; }
+      const names = JSON.parse(lastUsed(EXPANDED_TASKS) || "null");
+      return Array.isArray(names) ? names.filter((name) => TASK_CATEGORIES.includes(name)) : [TASK_CATEGORIES[0]];
+    } catch { return [TASK_CATEGORIES[0]]; }
   }
-  let collapsed = $state(storedCollapsed());
+  let expanded = $state(storedExpanded());
+  function storedUsage() {
+    try {
+      const saved = JSON.parse(lastUsed(TASK_USAGE) || "{}");
+      return saved && typeof saved === "object" ? saved : {};
+    } catch { return {}; }
+  }
+  let usage = $state(storedUsage());
 
   async function mintAgentGrant(documentLink) {
     const response = await fetch(`/api/documents/${encodeURIComponent(slug)}/agent-token`, {
@@ -143,12 +152,13 @@
   const startable = $derived(canStart && preparedTaskValid && !uncertainDelivery);
   const searching = $derived(taskQuery.trim() !== "");
   const results = $derived(searching ? searchTasks(taskQuery.trim()) : []);
-  const sections = $derived(searching ? [] : taskSections(category));
+  const sections = $derived(searching ? [] : taskSections());
+  const frequent = $derived(searching ? [] : frequentTasks(usage));
   const chosen = $derived(findTask(chosenTaskId));
   const COMMENT_TASKS = ["address-comment"];
   const contextTask = $derived(COMMENT_TASKS.includes(chosenTaskId) || chosenTaskId === "fix-diagnostic");
   const scopeAvailable = (id) => id === "selection" ? Boolean(attachment) : id === "file" ? Boolean(contextPath) : true;
-  // Rows are never disabled; what stops a task is said in the preparation view.
+  // Rows are never disabled. A row names what it is missing, and the preparation view gives the full reason.
   const staleReason = $derived.by(() => {
     if (!chosen) return "";
     if (COMMENT_TASKS.includes(chosenTaskId) && commentContext) {
@@ -462,62 +472,83 @@
 
   function leavePrepare({ focus = true } = {}) {
     taskView = "launcher";
-    const id = returnFocus;
+    const row = returnFocus;
     returnFocus = "";
     void tick().then(() => {
       const pane = listEl?.closest('[role="tabpanel"]');
       if (pane) pane.scrollTop = savedScroll;
-      if (focus) (id && listEl?.querySelector(`[data-task-id="${CSS.escape(id)}"]`) || searchEl)?.focus({ preventScroll: true });
+      if (focus) (row && listEl?.querySelector(`[data-row="${CSS.escape(row)}"]`) || searchEl)?.focus({ preventScroll: true });
     });
   }
 
-  function openTask(entry, { fromSearch = false } = {}) {
+  function openTask(entry, { row = "" } = {}) {
     if (!entry) return;
     chosenTaskId = entry.id;
-    returnFocus = fromSearch ? "" : entry.id;
+    returnFocus = row;
     extra = "";
     scope = inferScope(entry, { attached: attachment, path: contextPath });
     enterPrepare();
   }
 
-  function pickCategory(name) {
-    taskQuery = "";
-    category = name;
-  }
-
   function toggleSection(name) {
-    collapsed = collapsed.includes(name) ? collapsed.filter((item) => item !== name) : [...collapsed, name];
-    rememberLastUsed(COLLAPSED_TASKS, JSON.stringify(collapsed));
+    expanded = expanded.includes(name) ? expanded.filter((item) => item !== name) : [...expanded, name];
+    rememberLastUsed(EXPANDED_TASKS, JSON.stringify(expanded));
   }
 
-  const taskRows = () => [...(listEl?.querySelectorAll(".task-row") || [])];
+  const taskItems = () => [...(listEl?.querySelectorAll(".task-section, .task-row") || [])];
 
   function searchKeydown(event) {
     if (event.isComposing) return;
     if (event.key === "ArrowDown") {
-      const row = taskRows()[0];
-      if (row) { event.preventDefault(); row.focus(); }
+      const item = taskItems()[0];
+      if (item) { event.preventDefault(); item.focus(); }
     } else if (event.key === "Enter") {
       if (!searching || !results[0]) return;
       event.preventDefault();
-      openTask(results[0], { fromSearch: true });
+      openTask(results[0]);
     } else if (event.key === "Escape" && taskQuery) {
       taskQuery = "";
       event.preventDefault();
     }
   }
 
+  /// A slash anywhere in the launcher, outside a text field, starts a search.
+  function launcherKeydown(event) {
+    if (event.key !== "/" || event.target.matches?.("input, textarea, select, [contenteditable]")) return;
+    event.preventDefault();
+    searchEl?.focus();
+  }
+
   function resultsKeydown(event) {
     if (event.isComposing) return;
     if (event.key === "Escape") { event.preventDefault(); searchEl?.focus(); return; }
-    const rows = taskRows();
-    const at = rows.indexOf(event.target);
+    const items = taskItems();
+    const at = items.indexOf(event.target);
     if (at < 0) return;
+    const onSection = event.target.classList.contains("task-section");
+    const category = event.target.dataset.category || event.target.closest("ul")?.dataset.category;
+    if (event.key === "ArrowRight" && onSection && event.target.getAttribute("aria-expanded") === "false") {
+      event.preventDefault();
+      toggleSection(category);
+      return;
+    }
+    if (event.key === "ArrowLeft") {
+      if (onSection) {
+        if (event.target.getAttribute("aria-expanded") !== "true") return;
+        event.preventDefault();
+        toggleSection(category);
+        return;
+      }
+      if (!category) return;
+      event.preventDefault();
+      listEl.querySelector(`.task-section[data-category="${CSS.escape(category)}"]`)?.focus();
+      return;
+    }
     const to = event.key === "ArrowDown" ? at + 1 : event.key === "ArrowUp" ? at - 1
-      : event.key === "Home" ? 0 : event.key === "End" ? rows.length - 1 : null;
+      : event.key === "Home" ? 0 : event.key === "End" ? items.length - 1 : null;
     if (to === null) return;
     event.preventDefault();
-    if (to < 0) searchEl?.focus(); else rows[Math.min(to, rows.length - 1)].focus();
+    if (to < 0) searchEl?.focus(); else items[Math.min(to, items.length - 1)].focus();
   }
 
   function prepareKeydown(event) {
@@ -537,6 +568,10 @@
     const prompt = taskPrompt(entry, scope);
     if (!fromContext && entry.kind !== "explain") { diagnostic = null; diagnosticRevision = ""; }
     if (!await send(note ? `${prompt}\n\n${note}` : prompt)) return;
+    if (!fromContext) {
+      usage = recordTaskUse(usage, entry.id);
+      rememberLastUsed(TASK_USAGE, JSON.stringify(usage));
+    }
     extra = "";
     tab = "chat";
     leavePrepare({ focus: false });
@@ -841,46 +876,58 @@
       <div class="prepare-actions"><button class="btn btn-sm lp-control-brand" disabled={busy || Boolean(staleReason) || Boolean(blocker) || accessGap || !agentReady} onclick={() => void sendTask()}>Send to agent</button></div>
     </div>
   {:else}
-    {#snippet taskRow(entry)}
-      <li><button class="task-row" class:active={searching && entry.id === results[0]?.id} data-task-id={entry.id} title={entry.description} onclick={() => openTask(entry)}>
-        <span class="task-line"><span class="task-name">{entry.label}</span>{#if searching}<span class="task-meta">{entry.category}</span>{/if}</span>
-        <span class="task-summary">{entry.description}</span>
-      </button></li>
+    {#snippet taskRow(entry, group)}
+      {@const hint = taskHint(entry, { attached: attachment, path: contextPath })}
+      {@const describedBy = `task-desc-${group.replace(/\W+/g, "-")}-${entry.id}`}
+      <li>
+        <button class="task-row" class:active={searching && entry.id === results[0]?.id} class:unavailable={Boolean(hint)}
+                data-task-id={entry.id} data-row={`${group}:${entry.id}`}
+                title={hint ? `${entry.description} ${hint.reason}` : entry.description}
+                aria-describedby={describedBy}
+                onclick={(event) => openTask(entry, { row: event.currentTarget.dataset.row })}>
+          <span class="task-line">
+            <span class="task-name">{entry.label}</span>
+            {#if hint}<span class="task-hint">{hint.short}</span>{/if}
+          </span>
+          {#if searching}
+            <span class="task-summary">{entry.description}</span>
+            <span class="task-meta">{entry.categories.join(" / ")}</span>
+          {:else}
+            <span class="task-summary task-summary-focus">{entry.description}</span>
+          {/if}
+        </button>
+        <span class="visually-hidden" id={describedBy}>{hint ? `${entry.description} ${hint.reason}` : entry.description}</span>
+      </li>
     {/snippet}
-    <div class="agent-context task-launcher">
+    <!-- svelte-ignore a11y_no_static_element_interactions -->
+    <div class="agent-context task-launcher" onkeydown={launcherKeydown}>
       <div class="task-browser-head">
         <input bind:this={searchEl} class="input task-search" type="search" placeholder="Search tasks..." aria-label="Search tasks" aria-controls="agent-task-results"
-               value={taskQuery} oninput={(event) => { taskQuery = event.currentTarget.value; if (searching) category = ""; }}
+               value={taskQuery} oninput={(event) => taskQuery = event.currentTarget.value}
                onkeydown={searchKeydown} />
-        {#if TASK_CATEGORIES.length <= 4}
-          <div class="task-categories" role="group" aria-label="Category">
-            {#each ["", ...TASK_CATEGORIES] as name (name)}
-              <button class="task-category" aria-pressed={category === name} onclick={() => pickCategory(name)}>{name || "All"}</button>
-            {/each}
-          </div>
-        {/if}
-        <select class="select task-category-select" class:only={TASK_CATEGORIES.length > 4} aria-label="Category" value={searching ? "" : category}
-                onchange={(event) => pickCategory(event.currentTarget.value)}>
-          <option value="">All</option>
-          {#each TASK_CATEGORIES as name}<option value={name}>{name}</option>{/each}
-        </select>
       </div>
       <!-- The search box and the rows own the keyboard; this only routes it. -->
       <!-- svelte-ignore a11y_no_static_element_interactions -->
       <div id="agent-task-results" class="task-results" bind:this={listEl} onkeydown={resultsKeydown}>
         {#if searching}
-          {#if results.length}<ul class="task-list">{#each results as entry (entry.id)}{@render taskRow(entry)}{/each}</ul>
-          {:else}<p class="panel-muted">No matching tasks</p>{/if}
+          {#if results.length}<ul class="task-list" aria-label="Matching tasks">{#each results as entry (entry.id)}{@render taskRow(entry, "search")}{/each}</ul>
+          {:else}<p class="panel-muted" role="status">No tasks match "{taskQuery.trim()}". Try another word, such as grammar or citations.</p>{/if}
         {:else}
-          {#each sections as section (section.category)}
-            {#if !category}
-              <button class="task-section" aria-expanded={!collapsed.includes(section.category)} onclick={() => toggleSection(section.category)}>
-                <span>{section.category}</span><span>{section.entries.length}</span>
-              </button>
-            {/if}
-            {#if category || !collapsed.includes(section.category)}
-              <ul class="task-list">{#each section.entries as entry (entry.id)}{@render taskRow(entry)}{/each}</ul>
-            {/if}
+          {#if frequent.length}
+            <h4 class="task-group-label" id="task-frequent-label">Frequently used</h4>
+            <ul class="task-list" aria-labelledby="task-frequent-label">
+              {#each frequent as entry (entry.id)}{@render taskRow(entry, "frequent")}{/each}
+            </ul>
+          {/if}
+          {#each sections as section, index (section.category)}
+            {@const open = expanded.includes(section.category)}
+            <button class="task-section" data-category={section.category} aria-expanded={open}
+                    aria-controls={`task-section-${index}`} onclick={() => toggleSection(section.category)}>
+              <span class="task-chevron" aria-hidden="true">▸</span><span class="task-section-name">{section.category}</span><span class="task-count">{section.entries.length}</span>
+            </button>
+            <ul class="task-list" id={`task-section-${index}`} data-category={section.category}>
+              {#if open}{#each section.entries as entry (entry.id)}{@render taskRow(entry, section.category)}{/each}{/if}
+            </ul>
           {/each}
         {/if}
       </div>
@@ -935,37 +982,40 @@
   /* The task browser is typography, spacing and a hover background, not a
      stack of controls. The head stays put while the pane scrolls under it. */
   .task-launcher, .task-prepare { gap:var(--spacing); }
-  .task-browser-head { container-type:inline-size; position:sticky; z-index:1; display:flex; flex-direction:column; gap:var(--spacing);
+  .task-browser-head { position:sticky; z-index:1; display:flex; flex-direction:column; gap:var(--spacing);
                        top:calc(var(--panel-padding) * -1); margin-top:calc(var(--spacing) * -2); padding-top:var(--panel-padding);
                        padding-bottom:var(--spacing); background:var(--color-sidebar); }
   .task-search { width:100%; min-width:0; }
-  .task-categories { display:flex; flex-wrap:nowrap; overflow:hidden; gap:calc(var(--spacing) * 2); }
-  .task-category { flex:none; border:0; border-bottom:2px solid transparent; background:transparent; padding:0 0 1px; cursor:pointer;
-                   font-size:.8em; color:var(--color-text-secondary); }
-  .task-category:hover { color:inherit; }
-  .task-category[aria-pressed="true"] { color:inherit; font-weight:600; border-bottom-color:var(--color-link); }
-  .task-category-select { display:none; width:100%; min-width:0; }
-  .task-category-select.only { display:block; }
-  @container (max-width: 15rem) {
-    .task-categories { display:none; }
-    .task-category-select { display:block; }
-  }
   .task-results { display:flex; flex-direction:column; }
   .task-list { list-style:none; margin:0; padding:0; display:flex; flex-direction:column; }
-  .task-section { display:flex; justify-content:space-between; gap:var(--spacing); width:100%; margin-top:var(--spacing); padding:.25rem .5rem;
-                  border:0; background:transparent; cursor:pointer; text-align:left; font-size:.7rem; font-weight:600;
-                  letter-spacing:.08em; text-transform:uppercase; color:var(--color-text-secondary); }
+  .task-group-label { margin:0; padding:.25rem .5rem; font-size:.8em; font-weight:600; color:var(--color-text-secondary); }
+  .task-section { display:flex; align-items:center; gap:var(--spacing); width:100%; margin-top:var(--spacing); padding:.25rem .5rem;
+                  border:0; background:transparent; cursor:pointer; text-align:left; font-size:.8em; font-weight:600;
+                  color:var(--color-text-secondary); }
   .task-section:first-child { margin-top:0; }
   .task-section:hover { color:inherit; }
-  .task-row { display:flex; flex-direction:column; gap:.125rem; width:100%; padding:.375rem .5rem; border:0; background:transparent;
-              border-radius:var(--radius-base, .25rem); cursor:pointer; text-align:left; font:inherit; color:inherit; }
+  /* The chevron turns with the state and does not animate. */
+  .task-chevron { flex:none; display:inline-block; width:.75em; }
+  .task-section[aria-expanded="true"] .task-chevron { transform:rotate(90deg); }
+  .task-count { margin-left:auto; font-weight:400; }
+  .task-row { display:flex; flex-direction:column; justify-content:center; gap:.125rem; width:100%; min-height:2.25rem;
+              padding:.25rem .5rem; border:0; background:transparent; border-radius:var(--radius-base, .25rem);
+              cursor:pointer; text-align:left; font:inherit; color:inherit; }
   .task-row:hover, .task-row.active { background:var(--color-subtle); }
-  .task-section:focus-visible, .task-category:focus-visible, .task-row:focus-visible { outline:2px solid var(--color-focus); outline-offset:-2px; }
-  .task-line { display:flex; justify-content:space-between; gap:var(--spacing); min-width:0; }
-  .task-name { min-width:0; overflow:hidden; white-space:nowrap; text-overflow:ellipsis; font-weight:500; }
-  .task-meta { flex:none; font-size:.75em; color:var(--color-text-secondary); }
+  @media (pointer: coarse) { .task-row, .task-section { min-height:2.75rem; } }
+  .task-section:focus-visible, .task-row:focus-visible { outline:2px solid var(--color-focus); outline-offset:-2px; }
+  .task-line { display:flex; gap:var(--spacing); min-width:0; }
+  .task-name { min-width:0; overflow:hidden; white-space:nowrap; text-overflow:ellipsis; font-weight:400; }
+  .task-row.unavailable .task-name { color:var(--color-text-secondary); }
+  .task-hint { flex:none; margin-left:auto; min-width:0; overflow:hidden; white-space:nowrap; text-overflow:ellipsis;
+               font-size:.75em; color:var(--color-text-secondary); }
+  .task-meta { font-size:.75em; color:var(--color-text-secondary); }
   .task-summary { display:-webkit-box; -webkit-box-orient:vertical; -webkit-line-clamp:2; line-clamp:2; overflow:hidden;
                   font-size:.8em; color:var(--color-text-secondary); }
+  /* Keyboard users see the description of the focused row; pointer users get it as a tooltip. */
+  .task-summary-focus { display:none; }
+  .task-row:focus-visible .task-summary-focus { display:-webkit-box; }
+  .visually-hidden { position:absolute; width:1px; height:1px; overflow:hidden; clip:rect(0 0 0 0); white-space:nowrap; }
   .task-head { display:flex; align-items:center; gap:var(--spacing); }
   .task-back { border:0; background:transparent; padding:0; cursor:pointer; color:var(--color-text-secondary); }
   .task-back:hover { color:inherit; }
