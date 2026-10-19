@@ -1947,8 +1947,14 @@ async fn a_snapshot_is_refused_once_the_head_moves_past_the_frontier() {
         "a snapshot was taken against a frontier the head has moved past"
     );
     let after = sequencer.log_state().await;
-    assert_eq!(after.log_vector, before.log_vector, "the refusal moved the log");
-    assert_eq!(after.next_sequence, before.next_sequence, "the refusal wrote a row");
+    assert_eq!(
+        after.log_vector, before.log_vector,
+        "the refusal moved the log"
+    );
+    assert_eq!(
+        after.next_sequence, before.next_sequence,
+        "the refusal wrote a row"
+    );
 
     let current = sequencer
         .with_head(|doc| doc.oplog_frontiers().encode())

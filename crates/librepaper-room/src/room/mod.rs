@@ -321,8 +321,12 @@ impl Room {
     }
 
     /// Heals the comment anchors of this document before a history trim takes
-    /// its shallow snapshot. Returns how many records changed.
-    pub async fn heal_comment_anchors(&self, authority: &Authority) -> Result<usize, CommandError> {
+    /// its shallow snapshot. Returns how many records changed and the encoded
+    /// frontier the healing left, read under the sequencer's lock.
+    pub async fn heal_comment_anchors(
+        &self,
+        authority: &Authority,
+    ) -> Result<(usize, Vec<u8>), CommandError> {
         backfill::heal_anchors(self, authority).await
     }
 

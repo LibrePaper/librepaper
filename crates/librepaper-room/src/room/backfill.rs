@@ -120,12 +120,14 @@ impl SequencerCommand for BackfillAnchors {
 /// Heals the anchor records of every text in the document. A history trim runs
 /// it before the shallow snapshot, which keeps no history that a stale cursor
 /// could resolve through. Evaluated against head under the sequencer's lock.
+/// Its answer carries the frontier the healing left, read under that same
+/// lock, so the trim can refuse a snapshot of anything that landed after it.
 struct HealAnchors {
     healed: usize,
 }
 
 impl SequencerCommand for HealAnchors {
-    type Output = usize;
+    type Output = (usize, Vec<u8>);
 
     fn name(&self) -> &'static str {
         "anchors-heal"
@@ -155,18 +157,25 @@ impl SequencerCommand for HealAnchors {
     fn transact<'a>(
         &'a mut self,
         _tx: &'a mut sqlx::Transaction<'_, sqlx::Postgres>,
-        _evidence: &'a Evidence,
+        evidence: &'a Evidence,
     ) -> BoxFuture<'a, Result<Self::Output, CommandError>> {
-        Box::pin(async move { Ok(self.healed) })
+        // The frontier after the healing's own batch, or the head's when there
+        // was nothing to heal.
+        let frontier = evidence
+            .after_frontier
+            .clone()
+            .unwrap_or_else(|| evidence.before_frontier.clone());
+        Box::pin(async move { Ok((self.healed, frontier)) })
     }
 }
 
 /// Heals the anchor records of `room`'s document under the caller's authority.
-/// Returns how many records were changed.
+/// Returns how many records were changed and the encoded frontier the healing
+/// left.
 pub(crate) async fn heal_anchors(
     room: &Room,
     authority: &Authority,
-) -> Result<usize, CommandError> {
+) -> Result<(usize, Vec<u8>), CommandError> {
     let mut command = HealAnchors { healed: 0 };
     room.command(authority, &mut command).await
 }

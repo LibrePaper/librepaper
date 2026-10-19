@@ -1027,20 +1027,16 @@ impl Server {
         let authority = current_who.document_authority(self.ceiling_for(&current_who.id));
         // A shallow snapshot keeps no history before the trim point, so a comment
         // on a passage deleted there could not be resolved again. Each attempt
-        // heals the comment anchors to the text as it stands, then reads the
-        // head's frontier. The snapshot is taken only against the frontier the
-        // healing left, so an edit that lands in between makes the attempt start
-        // over with a fresh healing. Ok(None) means the document moved, not that
-        // compaction succeeded.
+        // heals the comment anchors to the text as it stands, and the healing
+        // answers with the frontier it left, read under the sequencer's lock.
+        // The snapshot is taken only against that frontier, so an edit that
+        // lands in between makes the attempt start over with a fresh healing.
+        // Ok(None) means the document moved, not that compaction succeeded.
         let mut after = None;
         for attempt in 0..3 {
-            if let Err(error) = room.heal_comment_anchors(&authority).await {
-                return command_reply("heal comment anchors", error);
-            }
-            let head = room.log().with_head(|doc| doc.oplog_frontiers().encode());
-            let frontier = match head.await {
-                Ok(frontier) => frontier,
-                Err(error) => return sequencer_reply(&error),
+            let frontier = match room.heal_comment_anchors(&authority).await {
+                Ok((_, frontier)) => frontier,
+                Err(error) => return command_reply("heal comment anchors", error),
             };
             let result = librepaper_engine::storage::worker::compact_document(
                 &self.store.catalog,

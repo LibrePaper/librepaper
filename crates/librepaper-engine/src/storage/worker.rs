@@ -283,6 +283,7 @@ fn enqueue_due_rescan(
 /// the head has moved since, nothing is captured or written and the result is
 /// `Ok(None)`, the same answer an edit waiting in the buffer gets. `None` skips
 /// the check.
+#[allow(clippy::too_many_arguments)]
 pub async fn compact_document(
     catalog: &Arc<PostgresCatalog>,
     blobs: &Arc<dyn BlobStore>,
