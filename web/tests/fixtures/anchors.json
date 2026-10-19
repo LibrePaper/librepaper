@@ -569,5 +569,57 @@
       ],
       "memorySize": 0
     }
+  },
+  {
+    "name": "a linewise cut pasted below in Vim mode re-pins the passage",
+    "files": [
+      {
+        "fileId": "f1",
+        "before": "Intro.\nOutro.\n",
+        "anchors": [
+          { "id": "a", "file": "f1", "from": 0, "to": 0, "detached": true, "fragment": null, "offset": null, "length": 10, "exact": "beta gamma", "prefix": "Alpha ", "suffix": " delta.", "collapsed": false, "unresolved": false }
+        ],
+        "edits": [{ "from": 13, "to": 13, "insert": "\nAlpha beta gamma delta." }]
+      }
+    ],
+    "memory": [
+      { "text": "Alpha beta gamma delta.\n", "held": [{ "id": "a", "offset": 6, "text": "beta gamma" }] }
+    ],
+    "expect": {
+      "files": [
+        {
+          "fileId": "f1",
+          "after": "Intro.\nOutro.\nAlpha beta gamma delta.\n",
+          "anchors": [{ "id": "a", "from": 20, "to": 30, "detached": false, "exact": "beta gamma", "state": "set" }]
+        }
+      ],
+      "memorySize": 0
+    }
+  },
+  {
+    "name": "a linewise cut of the last line pasted above in Vim mode re-pins the passage",
+    "files": [
+      {
+        "fileId": "f1",
+        "before": "Intro.\nOutro.",
+        "anchors": [
+          { "id": "a", "file": "f1", "from": 0, "to": 0, "detached": true, "fragment": null, "offset": null, "length": 10, "exact": "beta gamma", "prefix": "Alpha ", "suffix": " delta.", "collapsed": false, "unresolved": false }
+        ],
+        "edits": [{ "from": 7, "to": 7, "insert": "Alpha beta gamma delta.\n" }]
+      }
+    ],
+    "memory": [
+      { "text": "\nAlpha beta gamma delta.", "held": [{ "id": "a", "offset": 7, "text": "beta gamma" }] }
+    ],
+    "expect": {
+      "files": [
+        {
+          "fileId": "f1",
+          "after": "Intro.\nAlpha beta gamma delta.\nOutro.",
+          "anchors": [{ "id": "a", "from": 13, "to": 23, "detached": false, "exact": "beta gamma", "state": "set" }]
+        }
+      ],
+      "memorySize": 0
+    }
   }
 ]

@@ -156,6 +156,36 @@ struct Entry {
     held: Vec<Held>,
 }
 
+/// Where `needle` occurs exactly once in `hay`, as a UTF-16 offset, with the
+/// shift its pieces gain there. Overlapping occurrences count as two: "aa" in
+/// "aaa" is ambiguous.
+fn once(hay: &str, needle: &str, shift: isize) -> Option<(usize, isize)> {
+    let byte = hay.find(needle)?;
+    let next = byte + needle.chars().next().map_or(0, char::len_utf8);
+    if hay[next..].contains(needle) {
+        return None;
+    }
+    Some((utf16_len(&hay[..byte]), shift))
+}
+
+/// A linewise cut and paste in Vim mode moves the newline from one end of the
+/// text to the other: `dd` takes "line\n" and `p` puts back "\nline", and on
+/// the last line `dd` takes "\nline" and `P` puts back "line\n". A remembered
+/// text that the insertion does not hold as it was is looked for with its
+/// newline at the other end, where a piece's offset in it shifts by one.
+fn moved_newline(hay: &str, text: &str) -> Option<(usize, isize)> {
+    if text.chars().count() < 2 {
+        return None;
+    }
+    if let Some(body) = text.strip_suffix('\n') {
+        return once(hay, &format!("\n{body}"), 1);
+    }
+    if let Some(body) = text.strip_prefix('\n') {
+        return once(hay, &format!("{body}\n"), -1);
+    }
+    None
+}
+
 impl MoveMemory {
     /// `limit` is how many deletions are remembered.
     pub fn new(limit: usize) -> Self {
@@ -181,7 +211,10 @@ impl MoveMemory {
 
     /// Finds the newest remembered text that occurs exactly once in `inserted`,
     /// when `free` accepts the span that the text would take there. Returns the
-    /// index of its entry and the UTF-16 offset `at` of its text in `inserted`.
+    /// index of its entry, the UTF-16 offset `at` where its text starts in
+    /// `inserted`, as it was or with its newline moved (see `moved_newline`),
+    /// and the shift a held offset gains there: a held piece lands at
+    /// `at + shift + offset`.
     /// `free` gets the span's UTF-16 start and end. An entry that `free` refuses
     /// stays remembered, and the scan goes on to older entries. Only entries
     /// below index `below` are scanned, so a caller passes the last hit to pass
@@ -192,22 +225,18 @@ impl MoveMemory {
         inserted: &str,
         free: impl Fn(usize, usize) -> bool,
         below: usize,
-    ) -> Option<(usize, usize)> {
+    ) -> Option<(usize, usize, isize)> {
         for i in (0..below.min(self.entries.len())).rev() {
             let text = self.entries[i].text.as_str();
-            let Some(byte) = inserted.find(text) else {
+            let Some((at, shift)) =
+                once(inserted, text, 0).or_else(|| moved_newline(inserted, text))
+            else {
                 continue;
             };
-            // Overlapping occurrences count as two: "aa" in "aaa" is ambiguous.
-            let next = byte + text.chars().next().map_or(0, char::len_utf8);
-            if inserted[next..].contains(text) {
-                continue;
-            }
-            let at = utf16_len(&inserted[..byte]);
             if !free(at, at + utf16_len(text)) {
                 continue;
             }
-            return Some((i, at));
+            return Some((i, at, shift));
         }
         None
     }
@@ -309,7 +338,7 @@ pub fn plan_operation(files: &[OperationFile], memory: &mut MoveMemory) -> Vec<P
             // apply is passed over, and does not shadow an older entry with the
             // same text.
             let mut below = memory.len();
-            while let Some((entry, hit_at)) = memory.find(
+            while let Some((entry, hit_at, shift)) = memory.find(
                 &text,
                 |from, to| !claimed.iter().any(|c| from < c.1 && to > c.0),
                 below,
@@ -336,7 +365,10 @@ pub fn plan_operation(files: &[OperationFile], memory: &mut MoveMemory) -> Vec<P
                     // from, and only when that anchor is in this same file.
                     if let Some(side) = h.side {
                         if oi == wi {
-                            let from = at + hit_at + h.offset;
+                            let Some(from) = (at + hit_at + h.offset).checked_add_signed(shift)
+                            else {
+                                continue;
+                            };
                             applied |= rejoin_piece(&mut work[wi], index, side, from, &h.text);
                         }
                         continue;
@@ -346,7 +378,9 @@ pub fn plan_operation(files: &[OperationFile], memory: &mut MoveMemory) -> Vec<P
                     if source.anchor.attached() || source.anchor.length.is_none() {
                         continue;
                     }
-                    let from = at + hit_at + h.offset;
+                    let Some(from) = (at + hit_at + h.offset).checked_add_signed(shift) else {
+                        continue;
+                    };
                     let to = from + utf16_len(&h.text);
                     if slice16(&work[wi].after, from, to) != h.text {
                         continue;
