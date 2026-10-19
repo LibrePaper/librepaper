@@ -8,9 +8,11 @@
 //!
 //! [`plan_operation`] is pure. It moves the attached anchors through one batch
 //! of edits, and re-pins a detached anchor when an insertion brings its text
-//! back exactly once. The [`MoveMemory`] is per session: text deleted whole is
-//! remembered, so that cut and paste, drag and drop, undo and agent patches keep
-//! comments exact. Nothing searches the document for words.
+//! back exactly once. A deletion that cuts one end off an attached anchor
+//! remembers the cut piece, so an insertion that brings that piece back at the
+//! same edge rejoins the anchor. The [`MoveMemory`] is per session: deleted text
+//! is remembered, so that cut and paste, drag and drop, undo and agent patches
+//! keep comments exact. Nothing searches the document for words.
 //!
 //! This is a port of `web/src/lib/anchors.js`. Both share the record keys and
 //! `web/tests/fixtures/anchors.json`. The browser's AnchorIndex cache and the
@@ -31,7 +33,7 @@
 use std::collections::{HashMap, HashSet};
 
 use loro::{
-    cursor::{Cursor, PosType, Side},
+    cursor::{Cursor, PosType, Side as CursorSide},
     Container, ContainerTrait, LoroDoc, LoroMap, LoroText, LoroValue, ValueOrContainer,
 };
 
@@ -117,13 +119,27 @@ pub struct PlannedFile {
     pub anchors: Vec<PlannedAnchor>,
 }
 
-/// An anchor that was wholly inside deleted text. `offset` is where it starts
-/// in that text, and `text` is what it covered.
+/// The end of an attached anchor that a deletion cut away.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Side {
+    Head,
+    Tail,
+}
+
+/// Text that a deletion took from an anchor. `offset` is where the text starts
+/// in the deleted text, and `text` is what it covered.
+///
+/// With `side` of None, the anchor was wholly inside the deleted text and is
+/// now detached. With a side, the deletion cut one end off an attached anchor,
+/// and the anchor stays attached and shorter. `Head` is the start that was cut,
+/// and `Tail` is the end. An insertion that brings the piece back at that edge
+/// puts the end back, so the anchor covers its passage again.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Held {
     pub id: String,
     pub offset: usize,
     pub text: String,
+    pub side: Option<Side>,
 }
 
 /// A remembered deletion that an insertion brought back. `at` is the UTF-16
@@ -257,8 +273,14 @@ fn width_at(s: &str, units: usize) -> usize {
 /// Phase 1 runs each file on its own, edits in order, and moves its attached
 /// anchors. Phase 2 runs after every file: an insertion that takes a remembered
 /// text re-pins the detached anchors that were in it, into the file the
-/// insertion landed in. Deleted text is remembered, and the texts an insertion
-/// takes leave the memory.
+/// insertion landed in, and rejoins the cut pieces of attached anchors at their
+/// edges. Deleted text is remembered, and the texts an insertion takes leave the
+/// memory.
+///
+/// Phase 1 keeps each insertion at its offset in the text as the later edits
+/// leave it. A later edit before the insertion moves it, and a later edit that
+/// reaches into it drops it, since its text no longer reads as one piece. Phase
+/// 2 therefore reads every insertion against the final text.
 pub fn plan_operation(files: &[OperationFile], memory: &mut MoveMemory) -> Vec<PlannedFile> {
     let mut work: Vec<Work> = files.iter().map(Work::new).collect();
     for w in &mut work {
@@ -285,6 +307,15 @@ pub fn plan_operation(files: &[OperationFile], memory: &mut MoveMemory) -> Vec<P
                 let Some(index) = work[oi].anchors.iter().position(|a| a.anchor.id == h.id) else {
                     continue;
                 };
+                // A cut piece goes back only onto the attached anchor it was cut
+                // from, and only when that anchor is in this same file.
+                if let Some(side) = h.side {
+                    if oi == wi {
+                        let from = at + hit_at + h.offset;
+                        rejoin_piece(&mut work[wi], index, side, from, &h.text);
+                    }
+                    continue;
+                }
                 let source = work[oi].anchors[index].clone();
                 // A record with no length has no span to bring back.
                 if source.anchor.attached() || source.anchor.length.is_none() {
@@ -325,6 +356,33 @@ pub fn plan_operation(files: &[OperationFile], memory: &mut MoveMemory) -> Vec<P
         .collect()
 }
 
+/// Puts a cut piece back onto the attached anchor it was cut from. The text must
+/// be in the file at `from`, and the piece must sit at the edge of the anchor
+/// that it was cut from.
+fn rejoin_piece(w: &mut Work, index: usize, side: Side, from: usize, text: &str) {
+    let to = from + utf16_len(text);
+    if slice16(&w.after, from, to) != text {
+        return;
+    }
+    let planned = &mut w.anchors[index];
+    if !planned.anchor.attached() {
+        return;
+    }
+    let at_edge = match side {
+        Side::Head => to == planned.anchor.from,
+        Side::Tail => from == planned.anchor.to,
+    };
+    if !at_edge {
+        return;
+    }
+    match side {
+        Side::Head => planned.anchor.from = from,
+        Side::Tail => planned.anchor.to = to,
+    }
+    planned.state = PlanState::Set;
+    planned.touched = true;
+}
+
 /// One file's state while the operation is planned.
 struct Work {
     file_id: String,
@@ -359,8 +417,9 @@ impl Work {
     }
 }
 
-/// Phase 1 for one file: its edits in order, with its attached anchors moved
-/// and its deleted text remembered.
+/// Phase 1 for one file: its edits in order, with its attached anchors moved,
+/// its deleted text and the pieces cut from its anchors remembered, and its
+/// insertions kept at their offsets in the text as it stands.
 fn plan_file(w: &mut Work, memory: &mut MoveMemory) {
     let mut moved: HashSet<usize> = HashSet::new();
     let mut cur = w.after.clone();
@@ -393,6 +452,7 @@ fn plan_file(w: &mut Work, memory: &mut MoveMemory) {
                         id: pa.anchor.id.clone(),
                         offset: from - ef,
                         text: slice16(&cur, from, to).to_string(),
+                        side: None,
                     });
                     // The quote keys stay as they are. The length tells a later
                     // re-pin how much text to bring back.
@@ -407,6 +467,24 @@ fn plan_file(w: &mut Work, memory: &mut MoveMemory) {
                     if from < et && to > ef {
                         partial.insert(i);
                         pa.touched = true;
+                        // A cut at one end remembers the piece it took, so that an
+                        // insertion bringing it back at that edge rejoins the anchor.
+                        // A cut strictly inside the anchor remembers nothing.
+                        if ef <= from && et < to {
+                            held.push(Held {
+                                id: pa.anchor.id.clone(),
+                                offset: from - ef,
+                                text: slice16(&cur, from, et).to_string(),
+                                side: Some(Side::Head),
+                            });
+                        } else if ef > from && et >= to {
+                            held.push(Held {
+                                id: pa.anchor.id.clone(),
+                                offset: 0,
+                                text: slice16(&cur, ef, to).to_string(),
+                                side: Some(Side::Tail),
+                            });
+                        }
                     }
                     pa.anchor.from = after_delete(from, ef, et);
                     pa.anchor.to = after_delete(to, ef, et);
@@ -417,6 +495,9 @@ fn plan_file(w: &mut Work, memory: &mut MoveMemory) {
             }
             memory.remember(&deleted, held);
         }
+        // Insertions that earlier edits made move past this edit. One that this
+        // edit reaches into is dropped, since its text no longer reads as one piece.
+        follow_edit(&mut w.inserts, ef, et, n);
         if n > 0 {
             for (i, pa) in w.anchors.iter_mut().enumerate() {
                 if !pa.anchor.attached() {
@@ -455,6 +536,20 @@ fn plan_file(w: &mut Work, memory: &mut MoveMemory) {
     }
 }
 
+/// Moves the insertions that earlier edits made past an edit that deletes
+/// `[ef, et)` and inserts `n` units. An insertion that this edit reaches into is
+/// dropped, since its text no longer reads as one piece.
+fn follow_edit(inserts: &mut Vec<(usize, String)>, ef: usize, et: usize, n: usize) {
+    inserts.retain_mut(|(at, text)| {
+        if et <= *at {
+            *at = (*at as isize + n as isize - (et - ef) as isize) as usize;
+            true
+        } else {
+            ef >= *at + utf16_len(text.as_str())
+        }
+    });
+}
+
 /// Where a UTF-16 position goes when [ef, et) is deleted.
 fn after_delete(p: usize, ef: usize, et: usize) -> usize {
     if p < ef {
@@ -491,7 +586,7 @@ fn live_of(doc: &LoroDoc, file_id: &str) -> Option<Live> {
 
 /// A cursor on the character at the UTF-16 offset `units`, or None when the
 /// offset is outside the text.
-fn cursor_at(text: &LoroText, units: usize, side: Side) -> Option<Cursor> {
+fn cursor_at(text: &LoroText, units: usize, side: CursorSide) -> Option<Cursor> {
     let pos = text.convert_pos(units, PosType::Utf16, PosType::Unicode)?;
     text.get_cursor(pos, side)
 }
@@ -684,8 +779,8 @@ pub fn capture_cursors(
     if to <= from {
         return None;
     }
-    let start = cursor_at(&live.text, from, Side::Left)?;
-    let end = cursor_at(&live.text, last_char_start(&live.body, to), Side::Right)?;
+    let start = cursor_at(&live.text, from, CursorSide::Left)?;
+    let end = cursor_at(&live.text, last_char_start(&live.body, to), CursorSide::Right)?;
     Some((start.encode(), end.encode()))
 }
 
@@ -825,8 +920,8 @@ pub fn write_anchors(doc: &LoroDoc, planned: &[PlannedFile]) -> Vec<String> {
                     continue;
                 }
                 let (Some(start), Some(end)) = (
-                    cursor_at(&live.text, a.from, Side::Left),
-                    cursor_at(&live.text, last_char_start(&live.body, a.to), Side::Right),
+                    cursor_at(&live.text, a.from, CursorSide::Left),
+                    cursor_at(&live.text, last_char_start(&live.body, a.to), CursorSide::Right),
                 ) else {
                     continue;
                 };
@@ -946,8 +1041,8 @@ pub fn heal_stale(doc: &LoroDoc, file_id: &str) -> Vec<String> {
             continue;
         }
         let (Some(start), Some(end)) = (
-            cursor_at(&live.text, a.from, Side::Left),
-            cursor_at(&live.text, last_char_start(&live.body, a.to), Side::Right),
+            cursor_at(&live.text, a.from, CursorSide::Left),
+            cursor_at(&live.text, last_char_start(&live.body, a.to), CursorSide::Right),
         ) else {
             continue;
         };
@@ -1154,8 +1249,8 @@ pub fn restore_by_fragments(doc: &LoroDoc, file_id: &str, restored: &[Restored])
             continue;
         }
         let (Some(start), Some(end)) = (
-            cursor_at(&live.text, from, Side::Left),
-            cursor_at(&live.text, last_char_start(&live.body, to), Side::Right),
+            cursor_at(&live.text, from, CursorSide::Left),
+            cursor_at(&live.text, last_char_start(&live.body, to), CursorSide::Right),
         ) else {
             continue;
         };
@@ -1248,6 +1343,9 @@ mod tests {
         id: String,
         offset: usize,
         text: String,
+        /// "head" or "tail" for a cut piece; absent for a whole anchor.
+        #[serde(default)]
+        side: Option<String>,
     }
 
     #[derive(Deserialize)]
@@ -1279,6 +1377,15 @@ mod tests {
         #[serde(default)]
         memory: Vec<FxMemory>,
         expect: FxExpect,
+    }
+
+    /// The side of a cut piece, spelled as the fixtures spell it.
+    fn fixture_side(side: &str) -> Side {
+        match side {
+            "head" => Side::Head,
+            "tail" => Side::Tail,
+            other => panic!("no held side {other}"),
+        }
     }
 
     /// One field of a planned anchor, spelled as the fixtures spell it.
@@ -1372,6 +1479,7 @@ mod tests {
                         id: h.id.clone(),
                         offset: h.offset,
                         text: h.text.clone(),
+                        side: h.side.as_deref().map(fixture_side),
                     })
                     .collect();
                 memory.remember(&entry.text, held);
@@ -1414,6 +1522,116 @@ mod tests {
                 assert_eq!(memory.len(), size, "{name}: memory size");
             }
         }
+    }
+
+    /// An attached anchor with no quote, for the planner tests.
+    fn anchor_at(id: &str, file: &str, from: usize, to: usize) -> Anchor {
+        Anchor {
+            id: id.to_string(),
+            file: file.to_string(),
+            from,
+            to,
+            detached: false,
+            fragment: None,
+            offset: None,
+            length: None,
+            exact: String::new(),
+            prefix: String::new(),
+            suffix: String::new(),
+            collapsed: false,
+            unresolved: false,
+        }
+    }
+
+    #[test]
+    fn the_head_of_a_passage_cut_and_put_back_rejoins_it() {
+        let mut memory = MoveMemory::new(32);
+        let cut = OperationFile {
+            file_id: "main.md".to_string(),
+            before: "one two three".to_string(),
+            anchors: vec![anchor_at("c1", "main.md", 4, 7)],
+            edits: vec![Edit {
+                at: 4,
+                delete: 2,
+                insert: String::new(),
+            }],
+            fragments: Vec::new(),
+        };
+        let first = plan_operation(&[cut], &mut memory);
+        assert_eq!(first[0].after, "one o three");
+        let head = &first[0].anchors[0];
+        assert_eq!((head.anchor.from, head.anchor.to), (4, 5));
+        assert!(!head.anchor.detached);
+        assert_eq!(memory.len(), 1);
+
+        let put_back = OperationFile {
+            file_id: "main.md".to_string(),
+            before: first[0].after.clone(),
+            anchors: vec![head.anchor.clone()],
+            edits: vec![Edit {
+                at: 4,
+                delete: 0,
+                insert: "tw".to_string(),
+            }],
+            fragments: Vec::new(),
+        };
+        let planned = plan_operation(&[put_back], &mut memory);
+        let rejoined = &planned[0].anchors[0];
+        assert_eq!(planned[0].after, "one two three");
+        assert_eq!((rejoined.anchor.from, rejoined.anchor.to), (4, 7));
+        assert_eq!(slice16(&planned[0].after, 4, 7), "two");
+        assert!(!rejoined.anchor.detached);
+        assert_eq!(rejoined.state, PlanState::Set);
+        assert!(rejoined.touched);
+        assert!(memory.is_empty());
+    }
+
+    #[test]
+    fn a_composed_paste_followed_by_an_insertion_before_it_still_repins() {
+        let mut memory = MoveMemory::new(32);
+        let cut = OperationFile {
+            file_id: "main.md".to_string(),
+            before: "one two three".to_string(),
+            anchors: vec![anchor_at("c1", "main.md", 4, 7)],
+            edits: vec![Edit {
+                at: 4,
+                delete: 4,
+                insert: String::new(),
+            }],
+            fragments: Vec::new(),
+        };
+        let first = plan_operation(&[cut], &mut memory);
+        assert!(first[0].anchors[0].anchor.detached);
+        assert_eq!(memory.len(), 1);
+
+        // The insertion comes second in the list and lands before the paste, so
+        // the paste's entry has to follow it.
+        let paste = OperationFile {
+            file_id: "main.md".to_string(),
+            before: first[0].after.clone(),
+            anchors: vec![first[0].anchors[0].anchor.clone()],
+            edits: vec![
+                Edit {
+                    at: 9,
+                    delete: 0,
+                    insert: "two ".to_string(),
+                },
+                Edit {
+                    at: 0,
+                    delete: 0,
+                    insert: "XX".to_string(),
+                },
+            ],
+            fragments: Vec::new(),
+        };
+        let planned = plan_operation(&[paste], &mut memory);
+        let repinned = &planned[0].anchors[0];
+        assert!(!repinned.anchor.detached);
+        assert_eq!((repinned.anchor.from, repinned.anchor.to), (11, 14));
+        assert_eq!(slice16(&planned[0].after, 11, 14), "two");
+        assert_eq!(repinned.state, PlanState::Set);
+        assert!(repinned.touched);
+        assert!(memory.is_empty());
     }
 
     fn setup(body: &str) -> (LoroDoc, String) {
