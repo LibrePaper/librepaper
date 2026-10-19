@@ -7,7 +7,7 @@ use uuid::Uuid;
 use crate::storage::blob::{BlobStore, FsStore};
 
 use super::super::{
-    AccessRole, FlushRow, MutationAuthorization, NewAccount, NewAsset, NewDocument, NewSnapshot,
+    FlushRow, MutationAuthorization, NewAccount, NewAsset, NewDocument, NewSnapshot,
     PostgresCatalog, PostgresOptions,
 };
 

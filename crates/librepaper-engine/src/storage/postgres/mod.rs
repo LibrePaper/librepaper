@@ -1280,15 +1280,6 @@ mod tests {
             .unwrap();
 
         let collaborator = seed_account(&catalog, "v3-collaborator").await;
-        let owner_authority = MutationAuthorization {
-            principal_key: account.handle.clone(),
-            account_id: Some(account.id),
-            session_generation: Some(account.session_generation),
-            token_hash: None,
-            policy_edit: true,
-            policy_comment: true,
-            automation: false,
-        };
         assert_eq!(
             catalog
                 .set_grant(first.id, collaborator.id, AccessRole::Editor)
