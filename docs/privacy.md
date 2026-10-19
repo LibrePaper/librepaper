@@ -85,7 +85,7 @@ Choose **Settings > Account > Erase this account** and confirm with your handle.
 3. Comments, replies, labels and chat messages on other people's documents stay, shown as "Deleted user".
 4. The account record is deleted once its documents are purged.
 
-librepaper.org also erases an account that has not signed in for 365 days, in the same four steps. Signing in again later creates a new account with only the starter projects.
+librepaper.org also erases an account that has not signed in for 365 days, in the same four steps. Signing in again later creates a new account with only the starter project.
 
 The account stays in [backups](#backups) until they expire.
 
