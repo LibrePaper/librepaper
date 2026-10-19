@@ -10,6 +10,8 @@
 // Two checks follow the rejection. The anchor index must match the record once
 // the editor reconciles. Two transactions sent as one update must both land,
 // and the index must match the record after them.
+// Last, a write to a second file through the insert API must move that file's
+// comment, and that file's index must match its text afterwards.
 import assert from "node:assert/strict";
 import { build } from "vite";
 import { svelte } from "@sveltejs/vite-plugin-svelte";
@@ -51,18 +53,29 @@ import { listChanges, rejectRestoring } from ${JSON.stringify(join(root, "web/sr
 const TEXT = "First paragraph stays put.\\n\\nThe second paragraph holds the anchored word here.\\n\\nThird paragraph ends the note.\\n";
 const WORD = "anchored";
 const COMMENT = "comment-anchored";
+const NOTES = "Notes start here. The remark sits on this word in the notes.\\n";
+const REMARK = "remark";
+const COMMENT_NOTES = "comment-remark";
 const wait = (milliseconds) => new Promise((resolve) => setTimeout(resolve, milliseconds));
 
 window.anchorsBrowserCheck = async () => {
   const value = joinSession({ send: () => {}, mayEdit: true });
   const fileId = value.addText("paper.md", TEXT);
   value.setMain(fileId);
+  const notesId = value.addText("notes.md", NOTES);
   const from = TEXT.indexOf(WORD);
   const to = from + WORD.length;
   createAnchor(value.doc, fileId, COMMENT, from, to, {
     exact: WORD,
     prefix: TEXT.slice(Math.max(0, from - 32), from),
     suffix: TEXT.slice(to, to + 32),
+  });
+  const notesFrom = NOTES.indexOf(REMARK);
+  const notesTo = notesFrom + REMARK.length;
+  createAnchor(value.doc, notesId, COMMENT_NOTES, notesFrom, notesTo, {
+    exact: REMARK,
+    prefix: NOTES.slice(Math.max(0, notesFrom - 32), notesFrom),
+    suffix: NOTES.slice(notesTo, notesTo + 32),
   });
   value.doc.commit();
 
@@ -147,10 +160,31 @@ window.anchorsBrowserCheck = async () => {
   const indexTo = found ? found.to : null;
   const multi = { ...after, quote: after.text.slice(after.from, after.to), indexText: later.text, indexFrom, indexTo };
 
+  // An insertion into notes.md through the insert API, while paper.md is on
+  // screen. The index loads notes.md first, so a stale cache would show here.
+  value.anchors.get(notesId);
+  view.dispatch({ selection: { anchor: 0 } });
+  component.captureInsertTarget();
+  const context = component.getInsertContext();
+  const applied = component.applyInsertResult({ text: "", additionalEdits: [{ path: "notes.md", from: 0, to: 0, insert: "Lead-in. " }] }, context);
+  await tick();
+  const notesRecord = resolveAnchors(value.doc, notesId).find((item) => item.id === COMMENT_NOTES);
+  const notesEntry = value.anchors.get(notesId);
+  const notesIndexed = notesEntry.anchors.find((item) => item.id === COMMENT_NOTES);
+  const programmatic = {
+    applied,
+    text: value.textOf(notesId).toString(),
+    from: notesRecord.from,
+    to: notesRecord.to,
+    indexText: notesEntry.text,
+    indexFrom: notesIndexed ? notesIndexed.from : null,
+    indexTo: notesIndexed ? notesIndexed.to : null,
+  };
+
   component.$destroy();
   value.leave();
   host.remove();
-  return { original: TEXT, moved, cutFrom, cut, pasted, pasteUndone, undone, deleted, rejected, multi };
+  return { original: TEXT, notes: NOTES, moved, cutFrom, cut, pasted, pasteUndone, undone, deleted, rejected, multi, programmatic };
 };
 window.anchorsCheckReady = true;
 `;
@@ -281,7 +315,14 @@ try {
   assert.equal(result.multi.indexText, result.multi.text, "the index drifted from the record after a two-transaction update");
   assert.equal(result.multi.indexFrom, result.multi.from, "the index drifted from the record after a two-transaction update");
   assert.equal(result.multi.indexTo, result.multi.to, "the index drifted from the record after a two-transaction update");
-  console.log("anchors-browser: a comment follows a cut and a paste, returns on undo, and comes back exact when its tracked deletion is rejected, with the index in step; two transactions in one update both land");
+  const lead = "Lead-in. ";
+  assert.equal(result.programmatic.applied, true, "the insertion into the other file was refused");
+  assert.equal(result.programmatic.text, lead + result.notes, "the other file did not take the insertion");
+  assert.equal(result.programmatic.from, (lead + result.notes).indexOf("remark"), "the comment in the other file did not move with the insertion");
+  assert.equal(result.programmatic.indexText, result.programmatic.text, "the index of the other file drifted after a programmatic write");
+  assert.equal(result.programmatic.indexFrom, result.programmatic.from, "the index of the other file drifted after a programmatic write");
+  assert.equal(result.programmatic.indexTo, result.programmatic.to, "the index of the other file drifted after a programmatic write");
+  console.log("anchors-browser: a comment follows a cut and a paste, returns on undo, and comes back exact when its tracked deletion is rejected, with the index in step; two transactions in one update both land, and an insertion into a second file moves its comment with that file's index in step");
 } finally {
   socket?.close();
   await stopBrowserProcess(browser);

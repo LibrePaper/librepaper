@@ -426,15 +426,26 @@
   let undoManager = null;
   let undoManagerDoc = null;
 
-  /// Writes one edit into a file's text. Either way the library's splice keeps
-  /// pending spans and gaps in step with the text. Tracked, the edit is also
-  /// recorded as a pending change. The caller commits.
+  /// Writes a file that is not on screen, and records the edit in the anchor
+  /// index, which only sees the file on screen through its plugin. The text is
+  /// committed before the records are written, so the commit that carries the
+  /// text keeps its origin and stays in the undo history.
   function writeText(fileId, text, from, to, insert) {
-    if (tracked) {
-      trackedSplice(session.doc, fileId, from, to, insert, me);
-      return;
+    const doc = session.doc;
+    const before = text.toString();
+    session.anchors.get(fileId);
+    const known = new Set(doc.getMap(CHANGES).size ? resolveFile(doc, fileId).gaps.flatMap((gap) => gap.fragments.map((f) => f.id)) : []);
+    if (tracked) trackedSplice(doc, fileId, from, to, insert, me);
+    else untrackedSplice(doc, fileId, from, to, insert);
+    doc.commit();
+    const edits = [{ from, to, insert }];
+    let fragments = [];
+    if (to > from && doc.getMap(CHANGES).size) {
+      const created = resolveFile(doc, fileId).gaps.flatMap((gap) => gap.fragments.filter((f) => !known.has(f.id)).map((f) => ({ id: f.id, text: f.text })));
+      fragments = fragmentRangesFor(before, edits, created);
     }
-    untrackedSplice(session.doc, fileId, from, to, insert);
+    session.anchors.record([{ fileId, edits, fragments }], session.anchorMemory);
+    doc.commit({ origin: ANCHORS_ORIGIN });
   }
 
   /// Start recording what is typed as tracked changes.
@@ -958,7 +969,10 @@
     const shift = changes.filter(edit => edit.to <= from).reduce((sum, edit) => sum + edit.insert.length - (edit.to - edit.from), 0);
     // A snippet is inserted by CodeMirror's own command once the other edits
     // are in place, because only the command knows how to select its first
-    // field and let Tab move to the rest. It is still one commit below.
+    // field and let Tab move to the rest. The file on screen goes through the
+    // view. The other files are written and committed one edit at a time by
+    // writeText, and the undo manager merges commits made within its merge
+    // interval into one undo step.
     if (!result.snippet) changes.push({ from, to, insert: result.text });
     for (const plan of plans.values()) {
       plan.edits.sort((a, b) => a.from - b.from || a.to - b.to);
