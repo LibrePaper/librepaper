@@ -736,6 +736,14 @@
     return view ? view.state.selection.main.head : 0;
   }
 
+  /// The source selection, when it is not a caret: the file it is in and its
+  /// UTF-16 range there. Null otherwise.
+  export function selection() {
+    if (!view || !showing) return null;
+    const { from, to } = view.state.selection.main;
+    return from < to ? { file: showing, from, to } : null;
+  }
+
   /// Puts the caret at an offset and scrolls it into the middle of the view:
   /// what a click in the document does when the two are kept in step.
   export function goTo(at) {

@@ -49,6 +49,10 @@
     page = null,
     onloadmore = undefined,
     onloadreplies = undefined,
+    // Editors only: see CommentCard.
+    onattach = undefined,
+    attachable = false,
+    onmoment = undefined,
   } = $props();
 
   function place(comment) {
@@ -203,6 +207,9 @@
         {onedit}
         {onagent}
         {onloadreplies}
+        {onattach}
+        {attachable}
+        {onmoment}
       />
     {/each}
     {#if composerKey === ""}{@render composer()}{/if}

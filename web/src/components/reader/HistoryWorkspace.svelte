@@ -1,5 +1,6 @@
 <script>
   import { loadMergeEditor } from "../../lib/merge-editor.js";
+  import { isMoment } from "../../lib/moment.js";
 
   // The comparison editor is fetched when there is something to compare, not
   // when the reader is built. A static import here would undo the dynamic one
@@ -67,7 +68,9 @@
       </span>
       <span class="history-source-actions">
         <button type="button" class="btn btn-sm" onclick={() => source.select()}>Refresh comparison</button>
-        {#if canEdit && source.selected}
+        <!-- A moment is a position in the editing history, not a label: it has
+             no archive to download and nothing to restore to by name. -->
+        {#if canEdit && source.selected && !isMoment(source.selected)}
           <!-- A version's archive is produced on request rather than kept
                ready (§8.5), so the button says what it is waiting on rather
                than sitting quiet or, worse, looking done before the file
@@ -78,7 +81,7 @@
             {downloading === source.selected ? "Preparing download…" : "Download this version"}
           </button>
         {/if}
-        {#if canEdit && source.selected}
+        {#if canEdit && source.selected && !isMoment(source.selected)}
           <button type="button" class="btn btn-sm lp-control-tonal-brand" onclick={() => onrestore?.(source.selected)}>Restore this version</button>
         {/if}
       </span>

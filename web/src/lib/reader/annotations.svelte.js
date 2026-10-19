@@ -130,6 +130,14 @@ export function createAnnotations({ slug, key = "", anchor, repaint, send, rende
     return changed;
   }
 
+  // Derives the attachments now, and repaints only when one changed.
+  function deriveNow() {
+    if (!derive(list())) return;
+    anchor(list());
+    publish();
+    repaint();
+  }
+
   // The document moved, so the attachments may have. One pass per tick, after
   // the commits that belong to the change: an edit's anchor records are written
   // after its text. Only a change to an attachment repaints.
@@ -139,10 +147,7 @@ export function createAnnotations({ slug, key = "", anchor, repaint, send, rende
     deriveQueued = true;
     queueMicrotask(() => {
       deriveQueued = false;
-      if (!derive(list())) return;
-      anchor(list());
-      publish();
-      repaint();
+      deriveNow();
     });
   }
 
@@ -237,7 +242,9 @@ export function createAnnotations({ slug, key = "", anchor, repaint, send, rende
       const local = event.temp_id && list().find((item) => item.temp_id === event.temp_id);
       if (local) {
         Object.assign(local, event.comment, { temp_id: undefined, pending: false, deletable: true });
-        derive([local]);
+        // The record may have been written before this acknowledgement arrived,
+        // so it is derived with the tick's pass, once.
+        deriveSoon();
         // The optimistic row was never counted -- the counts are the
         // catalogue's -- so this is where it joins them.
         if (!hasState) countBy(1, event.comment.resolved ? 0 : 1);
@@ -464,7 +471,7 @@ export function createAnnotations({ slug, key = "", anchor, repaint, send, rende
 
   return {
     state, publish, seed, loadMore, refresh, loadReplies,
-    outbox, submit, comment, reply, receive, removePending,
+    outbox, submit, comment, reply, receive, removePending, deriveNow,
     /// Re-derives the attachments after every commit to the document. Returns
     /// the unsubscribe.
     follow(doc) {

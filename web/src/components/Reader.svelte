@@ -1,9 +1,9 @@
 <script>
-  import { listChanges, accept, reject, rejectMany } from "../lib/track-changes.js";
+  import { listChanges, accept, rejectRestoring } from "../lib/track-changes.js";
   // One document: the source beside it, the page itself, and everything said
   // about it.
   import { aboutWholeDocument, anchorAll, flatten, placeSources, shownSelector } from "../lib/anchor.js";
-  import { deriveAttachment } from "../lib/anchors.js";
+  import { ANCHORS_ORIGIN, attachByHand, deriveAttachment, restoreByFragments } from "../lib/anchors.js";
   import { barHiddenAfter, revealOnNavFocus, watchScrolls } from "../lib/bar-scroll.js";
   import * as renderers from "../lib/renderers.js";
   import * as sync from "../lib/sync.js";
@@ -873,6 +873,36 @@
     if (mayChat) annotations.reply(comment, body, name);
   }
 
+  // "Attach to selection": the passage the source has selected becomes the one
+  // this comment is about. The record moves with the commit, and the card is
+  // derived now rather than on the tick after it.
+  function attachComment(comment) {
+    const selection = editor?.selection?.();
+    if (!mayEdit || !session || !selection) {
+      say("Select the passage in the source first.", { kind: "note", id: "reader:attach-selection" });
+      return;
+    }
+    if (!attachByHand(session.doc, session.anchors, comment.id, selection.file, selection.from, selection.to)) {
+      say("That passage could not be attached to this comment.", { kind: "problem", id: "reader:attach-failed" });
+      return;
+    }
+    annotations.deriveNow();
+  }
+
+  // The History panel at the moment a comment was made on, opened the way a
+  // label's version is. A moment before a trim is gone; the comment's card says
+  // so, from the flag set here.
+  async function openMoment(comment) {
+    const moment = comment?.original_anchor?.frontier;
+    if (!moment) return;
+    await showPanel("history");
+    await viewPoint(moment);
+    if (historySource.gone) {
+      comment.momentTrimmed = true;
+      annotations.publish();
+    }
+  }
+
   /* -------------------------------------------------------------------- room */
 
   let collaboration = $state(null);
@@ -989,19 +1019,39 @@
   /// answer from the server. They return a resolved promise so the panel can
   /// advance the same way it would after a round trip.
   function acceptChange(row) {
-    if (mayEdit && row?.id) accept(session.doc, row.id);
+    if (mayEdit && row?.id && accept(session.doc, row.id)) settleAnchors([row.file_id]);
     return Promise.resolve();
+  }
+
+  // A decision can move the text a comment is on. Anchors that were in text a
+  // rejection put back are re-pinned to it, and each file the decision went
+  // through is read again into the session's anchor cache.
+  function settleAnchors(files, restored = []) {
+    const touched = [...new Set([...files, ...restored.map((r) => r.file)].filter(Boolean))];
+    for (const file of touched) restoreByFragments(session.doc, file, restored.filter((r) => r.file === file));
+    if (restored.length > 0) session.doc.commit({ origin: ANCHORS_ORIGIN });
+    for (const file of touched) session.anchors.load(file);
+  }
+
+  // One rejection, with the comments on the text it put back settled before
+  // anything else moves that text. Returns whether it was rejected.
+  function rejectSettled(row) {
+    const { ok, restored } = rejectRestoring(session.doc, row.id);
+    settleAnchors([row.file_id], restored);
+    return ok;
   }
 
   function rejectChange(row) {
-    if (mayEdit && row?.id) reject(session.doc, row.id);
+    if (mayEdit && row?.id) rejectSettled(row);
     return Promise.resolve();
   }
 
-  /// Rejects several changes in one commit, owners before the changes they
-  /// swallowed. Resolves to the number rejected.
+  /// Rejects several changes in the order given, owners before the changes
+  /// they swallowed. Each is settled before the next, since each moves the text
+  /// the next one looks at. Resolves to the number rejected.
   function rejectChanges(rows) {
-    const count = mayEdit ? rejectMany(session.doc, rows.map((row) => row.id)) : 0;
+    let count = 0;
+    if (mayEdit) for (const row of rows) if (row?.id && rejectSettled(row)) count += 1;
     return Promise.resolve(count);
   }
 
@@ -2193,6 +2243,14 @@
     // CodeMirror has applied the local or remote transaction by this point.
     // The source observer can run before its caret has been mapped.
     outlineActiveFrom = editor?.caret?.() ?? null;
+    noteSourceSelection();
+  }
+  // Whether the source has a selection, which "Attach to selection" waits on.
+  // Read wherever the editor reports a caret, a text change or a file change:
+  // those are the ways a selection moves.
+  let sourceSelected = $state(false);
+  function noteSourceSelection() {
+    sourceSelected = Boolean(editor?.selection?.());
   }
   function outlineCaretChanged() {
     outlineTextChanged();
@@ -3750,6 +3808,8 @@
       onreveal={revealAnnotation} selected={selectedAnnotation} onresolve={resolve}
       ondelete={askDelete} ondeletemany={askDeleteMany} onreply={reply} onedit={edit}
       onagent={agentOffered ? askCommentAssistant : undefined}
+      onattach={mayEdit ? attachComment : undefined} attachable={sourceSelected}
+      onmoment={mayEdit ? openMoment : undefined}
       {composing} {needsLogin} signInHref={signInHref()}
       page={annotations.state.page}
       onloadmore={() => void annotations.loadMore()}
@@ -3859,7 +3919,7 @@
         {#key sourceEpoch}
           <Editor bind:this={editor} {session} format={editorFormat} file={openFile} {keys} {rules} {tracking} me={trackingMe} {selectedChange} editable={mayEdit}
                   onbibliography={bibliographyAnalyzed} onchange={outlineTextChanged} oncaret={outlineCaretChanged} onsave={reportPersistence} onquit={showDocumentAlone}
-                  onfilechange={(id) => { ws.openFile = id; outlineActiveFrom = null; ws.figure = null; }} />
+                  onfilechange={(id) => { ws.openFile = id; outlineActiveFrom = null; ws.figure = null; noteSourceSelection(); }} />
         {/key}
       {/if}
     </section>

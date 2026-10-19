@@ -13,15 +13,21 @@ import { readFileSync } from "node:fs";
 import { test } from "node:test";
 import { LoroDoc, LoroText } from "loro-crdt";
 import {
+  ANCHORS_ORIGIN,
   AnchorIndex,
   CONTEXT_UNITS,
   MoveMemory,
+  attachByHand,
   createAnchor,
   deriveAttachment,
   fragmentRangesFor,
   planOperation,
+  resolveAnchors,
+  restoreByFragments,
+  statusOf,
   throughEdits,
 } from "../../src/lib/anchors.js";
+import { rejectRestoring, resolveFile, trackedSplice } from "../../src/lib/track-changes.js";
 
 const fixtures = JSON.parse(readFileSync(new URL("../fixtures/anchors.json", import.meta.url), "utf8"));
 
@@ -461,4 +467,64 @@ test("deriveAttachment: an attached, a detached and a missing record, through a 
     status: "unresolved", resolved_range_utf16: null, resolved_file_id: null, tree_digest: "",
   });
   assert.equal(deriveAttachment(doc, index, { id: "c-attached" }), null);
+});
+
+test("attachByHand: a deleted comment attaches to the selection and its quote is refreshed", () => {
+  const doc = new LoroDoc();
+  const text = doc.getMap("files").setContainer("f1", new LoroText());
+  text.insert(0, "Hello brave world");
+  createAnchor(doc, "f1", "c1", 6, 11, { exact: "brave", prefix: "Hello ", suffix: " world" });
+  doc.commit();
+  const index = new AnchorIndex(doc);
+  index.load("f1");
+  index.apply([{ fileId: "f1", edits: [{ from: 6, to: 11, insert: "" }] }], new MoveMemory());
+  const source = { id: "c1", original_anchor: { kind: "source_text" } };
+  assert.equal(deriveAttachment(doc, index, source).status, "deleted");
+
+  // "world" is at 7..12 in "Hello  world".
+  assert.equal(attachByHand(doc, index, "c1", "f1", 12, 12), false, "an empty selection attaches nothing");
+  assert.equal(attachByHand(doc, index, "c1", "f1", 7, 12), true);
+  assert.deepEqual(deriveAttachment(doc, index, source), {
+    status: "exact", resolved_range_utf16: [7, 12], resolved_file_id: "f1", tree_digest: "",
+  });
+  const record = doc.getMap("anchors").get("c1");
+  assert.equal(record.get("detached"), undefined);
+  assert.equal(record.get("exact"), "world");
+  assert.equal(record.get("prefix"), "Hello  ");
+  assert.equal(record.get("suffix"), "");
+  assert.equal(statusOf(doc, resolveAnchors(doc, "f1").find((a) => a.id === "c1")), "exact");
+});
+
+test("rejectRestoring: the text a rejection puts back is listed, and restoreByFragments re-pins the anchor", () => {
+  const doc = new LoroDoc();
+  const text = doc.getMap("files").setContainer("f1", new LoroText());
+  const source = "one two three";
+  text.insert(0, source);
+  createAnchor(doc, "f1", "a1", 4, 7, { exact: "two", prefix: "one ", suffix: " three" });
+  doc.commit();
+  const index = new AnchorIndex(doc);
+  index.load("f1");
+
+  // A tracked deletion of "two ", recorded the way the editor records one.
+  const edit = { from: 4, to: 8, insert: "" };
+  const [changeId] = trackedSplice(doc, "f1", edit.from, edit.to, edit.insert, { who: "me", author: "Me" });
+  doc.commit();
+  const fragments = fragmentRangesFor(source, [edit], resolveFile(doc, "f1").gaps);
+  assert.equal(fragments.length, 1);
+  index.record([{ fileId: "f1", edits: [edit], fragments }], new MoveMemory());
+  doc.commit({ origin: ANCHORS_ORIGIN });
+  const pending = resolveAnchors(doc, "f1").find((a) => a.id === "a1");
+  assert.equal(statusOf(doc, pending), "pending_deletion");
+
+  const rejected = rejectRestoring(doc, changeId);
+  assert.equal(rejected.ok, true);
+  assert.deepEqual(rejected.restored, [{ file: "f1", fragment: fragments[0].id, at: 4, text: "two " }]);
+  assert.equal(text.toString(), source);
+  assert.deepEqual(restoreByFragments(doc, "f1", rejected.restored), ["a1"]);
+  doc.commit({ origin: ANCHORS_ORIGIN });
+  index.load("f1");
+  const anchor = resolveAnchors(doc, "f1").find((a) => a.id === "a1");
+  assert.equal(statusOf(doc, anchor), "exact");
+  assert.deepEqual([anchor.from, anchor.to], [4, 7]);
+  assert.deepEqual(rejectRestoring(doc, "no-such-change"), { ok: false, restored: [] });
 });

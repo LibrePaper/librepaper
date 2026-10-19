@@ -372,6 +372,62 @@ export function createAnchor(doc, fileId, id, from, to, { exact, prefix, suffix 
 }
 
 /**
+ * Attaches a comment to a passage the author selected by hand. The record gets
+ * a file, two fresh cursors and a quote taken from the selected text, and loses
+ * whatever held it detached. A record that is not in the document yet is made.
+ * Commits under ANCHORS_ORIGIN, then refreshes the index's entry for it.
+ *
+ * @param {import("loro-crdt").LoroDoc} doc
+ * @param {AnchorIndex} index
+ * @param {string} id
+ * @param {string} fileId
+ * @param {number} from UTF-16 offset in the file
+ * @param {number} to UTF-16 offset in the file, past from
+ * @returns {boolean} false when the file has no text, the span is empty or out of range, or a cursor cannot be made
+ */
+export function attachByHand(doc, index, id, fileId, from, to) {
+  const text = fileText(doc, fileId);
+  if (!text) return false;
+  const body = text.toString();
+  if (!(to > from) || to > body.length) return false;
+  // Reads come first. The commit origin is set before the first write.
+  const start = text.getCursor(from, -1);
+  const end = text.getCursor(lastCharStart(body, to), 1);
+  if (!start || !end) return false;
+  // The context stops short of a split surrogate pair at either edge.
+  let prefixAt = Math.max(0, from - CONTEXT_UNITS);
+  if (isLowSurrogate(body, prefixAt)) prefixAt++;
+  let suffixEnd = Math.min(body.length, to + CONTEXT_UNITS);
+  if (suffixEnd > to && isHighSurrogate(body, suffixEnd - 1)) suffixEnd--;
+  const map = doc.getMap(ANCHORS);
+  const held = map.get(id);
+  doc.setNextCommitOrigin(ANCHORS_ORIGIN);
+  const record = held instanceof LoroMap ? held : map.setContainer(id, new LoroMap());
+  record.set("file", fileId);
+  record.set("start", start.encode());
+  record.set("end", end.encode());
+  record.set("exact", body.slice(from, to));
+  record.set("prefix", body.slice(prefixAt, from));
+  record.set("suffix", body.slice(to, suffixEnd));
+  for (const key of ["detached", "length", "fragment", "offset"]) {
+    if (record.get(key) !== undefined) record.delete(key);
+  }
+  doc.commit({ origin: ANCHORS_ORIGIN });
+  index.refresh([id]);
+  return true;
+}
+
+function isHighSurrogate(body, at) {
+  const code = body.charCodeAt(at);
+  return code >= 0xd800 && code <= 0xdbff;
+}
+
+function isLowSurrogate(body, at) {
+  const code = body.charCodeAt(at);
+  return code >= 0xdc00 && code <= 0xdfff;
+}
+
+/**
  * Writes the anchors marked "set" in a plan. A detached record keeps its
  * cursors. An attached anchor that was touched gets both cursors, fresh. One
  * that only shifted (touched false) is skipped: its cursors follow its text.

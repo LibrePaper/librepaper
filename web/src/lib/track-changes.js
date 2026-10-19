@@ -908,8 +908,10 @@ function decidable(map, value) {
   return !(parent instanceof LoroMap && parent.get("kind") === "change");
 }
 
-// Rejects one change without committing. See `reject`.
-function rejectOne(doc, id) {
+// Rejects one change without committing. See `reject`. With `restored`, each
+// fragment whose text goes back into the document is pushed onto it as
+// { file, fragment, at, text }, at being where the text now starts.
+function rejectOne(doc, id, restored = null) {
   const map = doc.getMap(CHANGES);
   const plain = /** @type {any} */ (map.get(id));
   if (plain !== undefined && !(plain instanceof LoroMap) && typeof plain.file === "string") convertLegacy(doc, plain.file, id);
@@ -958,6 +960,7 @@ function rejectOne(doc, id) {
           // Spans ending or starting here keep their bounds across the
           // restored text; a cursor left on a deleted character might not.
           const edges = resolveFile(doc, file).changes.filter((c) => c.id !== id && c.to > c.from && (c.to === pos || c.from === pos));
+          if (restored) restored.push({ file, fragment: f.id, at: pos, text: f.text });
           text.insert(pos, f.text);
           for (const c of edges) writeChange(doc, text, file, c.to === pos ? c : { ...c, from: c.from + f.text.length, to: c.to + f.text.length });
           flush(pos);
@@ -969,7 +972,11 @@ function rejectOne(doc, id) {
     };
     const positions = [...groups.keys()].sort((a, b) => b - a);
     for (const at of positions) if (!span || at > span.to) restore(at);
+    // Text put back ahead of the span sits after it, so it moves back by the
+    // span's length once the span is gone.
+    const early = restored?.length ?? 0;
     if (span) text.delete(span.from, span.to - span.from);
+    if (restored && span) for (const r of restored.slice(0, early)) r.at -= span.to - span.from;
     for (const at of positions) if (span && at <= span.to) restore(at);
   }
   for (const [fid, fv] of [...map.entries()]) if (fv instanceof LoroMap && fv.get("kind") === "fragment" && fv.get("change") === id) map.delete(fid);
@@ -989,6 +996,22 @@ export function reject(doc, id) {
   if (!rejectOne(doc, id)) return false;
   doc.commit();
   return true;
+}
+
+/**
+ * Rejects a change like `reject`, and lists the text it put back: each
+ * fragment inserted, where it now starts and what it says. The comment anchors
+ * that were in that text are re-pinned from this list (`restoreByFragments`).
+ *
+ * @param {import("loro-crdt").LoroDoc} doc
+ * @param {string} id
+ * @returns {{ ok: boolean, restored: { file: string, fragment: string, at: number, text: string }[] }}
+ */
+export function rejectRestoring(doc, id) {
+  const restored = [];
+  if (!rejectOne(doc, id, restored)) return { ok: false, restored: [] };
+  doc.commit();
+  return { ok: true, restored };
 }
 
 /**

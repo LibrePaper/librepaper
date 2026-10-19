@@ -90,7 +90,12 @@ export async function read(slug, sha, headers = {}) {
     // mutable labels and is access-controlled by the current request.
     cache: "no-store",
   });
-  if (!response.ok) throw new Error("that label is not readable");
+  if (!response.ok) {
+    // 410 is a moment before a trim: gone for good, and the error says so.
+    const gone = response.status === 410;
+    const said = gone ? await response.json().catch(() => ({})) : {};
+    throw Object.assign(new Error(said.error || "that label is not readable"), { gone });
+  }
   const payload = await response.json();
   const files = payload.files && typeof payload.files === "object"
     ? Object.fromEntries(Object.entries(payload.files).map(([path, entry]) => [path, { ...entry, sha: entry.digest }]))
