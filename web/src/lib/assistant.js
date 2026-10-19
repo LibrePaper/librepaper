@@ -22,6 +22,25 @@ export function normalizeAnchor(selection, fallbackPath = "") {
   };
 }
 
+// The passage a source selection names, in the shape the server locates by
+// quote. Context stops short of a split surrogate pair at either edge.
+export function sourcePassage(text, from, to, path = "", context = 32) {
+  if (!(to > from) || !text.slice(from, to).trim()) return null;
+  let prefixAt = Math.max(0, from - context);
+  const prefixCode = text.charCodeAt(prefixAt);
+  if (prefixCode >= 0xdc00 && prefixCode <= 0xdfff) prefixAt++;
+  let suffixEnd = Math.min(text.length, to + context);
+  const suffixCode = text.charCodeAt(suffixEnd - 1);
+  if (suffixEnd > to && suffixCode >= 0xd800 && suffixCode <= 0xdbff) suffixEnd--;
+  return {
+    ...(path ? { path } : {}),
+    exact: text.slice(from, to),
+    prefix: text.slice(prefixAt, from),
+    suffix: text.slice(to, suffixEnd),
+    position: from,
+  };
+}
+
 export function captureAttachment(selection, path = "", revision = "") {
   const hasSource = Boolean(selection && Object.prototype.hasOwnProperty.call(selection, "source"));
   const source = hasSource && selection.source ? selection.source : selection;
@@ -34,12 +53,11 @@ export function captureAttachment(selection, path = "", revision = "") {
     selection: anchor,
     revision: capturedRevision,
     ...(renderDigest ? { render_digest: renderDigest } : {}),
-    // The server resolves rendered quotations against its immutable view. A
-    // browser selection therefore does not need to invent a source handle or
-    // revision before an editing task can be offered. `anchored` remains a
-    // display hint for source backed attachments, rather than an authority
-    // claim about the selection.
-    anchored: Boolean((hasSource ? selection.source : source?.path) && anchor.path && capturedRevision),
+    // A source selection is anchored by its quote and path, because the server
+    // finds the quote in the source it holds. A rendered selection is not
+    // anchored: it has no source path and the server resolves it only by its
+    // render digest. `anchored` is a display hint, not an authority claim.
+    anchored: Boolean((hasSource ? selection.source : source?.path) && anchor.path),
   };
 }
 
@@ -263,7 +281,7 @@ export function taskBlocker(capabilities, task, { attached = null, path = "", de
   if (!deferAccess && !caps.verified) return "Connect an agent to check access for this task.";
   if (checkAccess && !caps.can_read) return "You need read access to run this task.";
   if (["tighten", "rewrite"].includes(task.kind) && task.scope !== "selection") return "This task works on a selected passage.";
-  if (task.scope === "selection" && !attached) return "Select text in the editor to use this task.";
+  if (task.scope === "selection" && !attached) return "Select the passage in the source to use this task.";
   if (taskNeedsAnchor(task) && !text(attached?.selection?.exact).trim()) return "Select the passage in the source to use this task.";
   if (task.scope === "file" && !path) return "Open a file to use this task.";
   if (checkAccess && ["tighten", "rewrite", "proofread", "fix"].includes(task.kind) && !caps.can_suggest) return "You need edit access to run this task.";
@@ -282,7 +300,7 @@ export function taskHint(entry, { attached = null, path = "" } = {}) {
   const scope = inferScope(entry, { attached, path });
   const reason = taskBlocker({}, { kind: entry.kind, scope }, { attached, path, deferAccess: true });
   if (!reason) return null;
-  const short = scope === "selection" ? "Needs a selection"
+  const short = scope === "selection" ? "Needs a source selection"
     : scope === "file" ? "Needs an open file"
       : "Unavailable";
   return { short, reason };

@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import {
-  captureAttachment, capabilityAllows, composeTaskMessage, taskDiagnosticContext, diagnosticLabel,
+  captureAttachment, capabilityAllows, composeTaskMessage, taskDiagnosticContext, diagnosticLabel, sourcePassage,
   normalizeCapabilities, resultIds, visibleResults, checkContextSize,
   TASK_CATALOG, TASK_CATEGORIES, TASK_KINDS, TASK_SCOPES, findTask, inferScope, searchTasks, taskPrompt, taskScopes,
   taskSections, CONTEXT_TASKS, taskForKind, taskBlocker,
@@ -32,6 +32,31 @@ assert.equal(rendered.render_digest, "render-1");
 assert.equal(capabilityAllows(caps, task, { attached: rendered }), true);
 assert.equal(composeTaskMessage({ task, attachment: rendered }).context.render_digest, "render-1");
 assert.equal(composeTaskMessage({ task, attachment: rendered, revision: "unrelated-source-revision" }).context.revision, undefined);
+
+// A source passage is read from the open source text, and it needs no revision to be anchored.
+const plain = sourcePassage("Alpha beta gamma", 6, 10, "main.md");
+assert.deepEqual(plain, { path: "main.md", exact: "beta", prefix: "Alpha ", suffix: " gamma", position: 6 });
+const wide = sourcePassage("x".repeat(40) + "word" + "y".repeat(40), 40, 44, "main.md");
+assert.equal(wide.exact, "word");
+assert.equal(wide.prefix.length, 32);
+assert.equal(wide.suffix.length, 32);
+assert.equal(wide.position, 40);
+assert.equal(sourcePassage("abc", 1, 1, "main.md"), null);
+assert.equal(sourcePassage("a   b", 1, 4, "main.md"), null);
+assert.equal("path" in sourcePassage("Alpha beta", 6, 10), false);
+// The 32 unit context edges fall inside emoji pairs, so each edge is trimmed to a whole character.
+const emoji = "\u{1F600}";
+const paired = "a".repeat(10) + emoji + "b".repeat(31) + "SEL" + "c".repeat(31) + emoji + "d".repeat(10);
+const edged = sourcePassage(paired, 43, 46, "main.md");
+assert.equal(edged.exact, "SEL");
+assert.equal(edged.prefix.length, 31);
+assert.equal(edged.suffix.length, 31);
+assert.equal(edged.prefix.charCodeAt(0) >= 0xdc00 && edged.prefix.charCodeAt(0) <= 0xdfff, false);
+assert.equal(edged.suffix.charCodeAt(edged.suffix.length - 1) >= 0xd800 && edged.suffix.charCodeAt(edged.suffix.length - 1) <= 0xdbff, false);
+// A source selection is anchored without a revision, and its task carries none.
+const sourced = captureAttachment({ source: plain, exact: "beta" }, "main.md", "");
+assert.equal(sourced.anchored, true);
+assert.equal(composeTaskMessage({ task, attachment: sourced }).context.revision, undefined);
 assert.equal(capabilityAllows(caps, task, { attached: { selection: { exact: "" } } }), false);
 assert.equal(capabilityAllows(caps, { kind: "rewrite", scope: "selection" }, { attached: { ...attachment, anchored: false }, path: "main.md" }), true);
 assert.equal(capabilityAllows(caps, { kind: "explain", scope: "file" }, { path: "main.md" }), true);
@@ -200,7 +225,7 @@ assert.equal(diagnosticLabel({ message: "no place given" }, "main.md"), "Error Â
 assert.equal(diagnosticLabel({ severity: "warning" }), "Warning");
 
 // taskHint names what the reader still needs, and never reports access.
-assert.equal(taskHint(findTask("tighten"), {}).short, "Needs a selection");
+assert.equal(taskHint(findTask("tighten"), {}).short, "Needs a source selection");
 assert.equal(taskHint(findTask("tighten"), { attached: attachment, path: "main.md" }), null);
 assert.equal(taskHint(findTask("outline"), {}), null);
 assert.equal(taskHint(findTask("proofread"), {}), null);

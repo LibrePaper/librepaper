@@ -864,7 +864,7 @@
           <strong>{attachment.anchored ? "Selected text" : "Quoted text"}, {selectedWords} {selectedWords === 1 ? "word" : "words"} · {attachment.path || path || "document"}</strong>
           <blockquote title={selectedText}>{selectedText}</blockquote>
           <div class="attachment-actions"><button class="btn btn-sm" onclick={removeSelection}>Remove</button><button class="btn btn-sm" disabled={!selection?.exact} onclick={replaceSelection}>Replace with current selection</button></div>
-          {#if !attachment.anchored}<p class="panel-muted" role="alert">This passage has no source anchor. Explain remains available; Tighten and Rewrite need an anchored source selection.</p>{/if}
+          {#if !attachment.anchored}<p class="panel-muted" role="alert">This passage was selected in the preview. Select it in the source for Tighten and Rewrite.</p>{/if}
         </div>
       {/if}
       <textarea class="input task-extra" rows="1" placeholder="Additional instructions (optional)" aria-label="Additional instructions"
