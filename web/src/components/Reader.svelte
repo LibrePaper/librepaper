@@ -442,20 +442,31 @@
   //
   // The two are different questions with different answers. Where to draw it
   // is a question about the page in front of this browser, and the rendered
-  // quotation is what answers it -- display evidence, matched against display
-  // text, and nothing follows from it being wrong beyond a mark in the wrong
-  // place. Where the passage is in the source is not this browser's question
-  // at all. An editor's answer is read from the document's anchor records
-  // (`deriveAttachment`), and `placeSources` only translates that answer's file
-  // id into a path.
+  // quotation is what answers it. That is display evidence, matched against
+  // display text, and nothing follows from it being wrong beyond a mark in the
+  // wrong place. Where the passage is in the source is not this browser's
+  // question at all. An editor's answer is read from the document's anchor
+  // records (`deriveAttachment`), and `placeSources` only translates that
+  // answer's file id into a path.
   //
   // When the rendered quotation no longer matches because the passage was
   // edited, the passage's current words at the server's source range are
-  // looked for on the page instead, so an edited passage keeps its mark. Only
-  // a comment that the quotation could not place is given this fallback.
+  // looked for on the page instead, so an edited passage keeps its mark. A
+  // comment that the quotation could not place is given this fallback as well.
+  //
+  // A comment attached by hand is painted from its source range and from
+  // nothing else, since its rendered quotation names the passage it used to be
+  // about. Its page match is dropped before the fallback runs.
   function anchorComments(list) {
     anchorAll(docText || "", list, docText === null ? null : docView);
-    if (mayEdit) placeSources(session, list);
+    if (mayEdit) {
+      placeSources(session, list);
+      for (const comment of list) {
+        if (!comment.attachment?.attached_by_hand) continue;
+        comment.start = comment.end = null;
+        comment.orphaned = true;
+      }
+    }
     if (mayEdit && docText !== null) {
       let tree = null;
       for (const comment of list) {
@@ -468,6 +479,7 @@
         if (range) {
           comment.start = range.start;
           comment.end = range.end;
+          comment.orphaned = false;
         }
       }
     }

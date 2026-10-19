@@ -553,13 +553,13 @@ test("deriveAttachment: an attached, a detached and a missing record, through a 
 
   const source = { original_anchor: { kind: "source_text" } };
   assert.deepEqual(deriveAttachment(doc, index, { id: "c-attached", ...source }), {
-    status: "exact", resolved_range_utf16: [7, 12], resolved_file_id: "f1", tree_digest: "",
+    status: "exact", resolved_range_utf16: [7, 12], resolved_file_id: "f1", tree_digest: "", attached_by_hand: false,
   });
   assert.deepEqual(deriveAttachment(doc, index, { id: "c-detached", ...source }), {
-    status: "deleted", resolved_range_utf16: null, resolved_file_id: "f1", tree_digest: "",
+    status: "deleted", resolved_range_utf16: null, resolved_file_id: "f1", tree_digest: "", attached_by_hand: false,
   });
   assert.deepEqual(deriveAttachment(doc, index, { id: "c-missing", ...source }), {
-    status: "unresolved", resolved_range_utf16: null, resolved_file_id: null, tree_digest: "",
+    status: "unresolved", resolved_range_utf16: null, resolved_file_id: null, tree_digest: "", attached_by_hand: false,
   });
   assert.equal(deriveAttachment(doc, index, { id: "c-attached" }), null);
 });
@@ -577,7 +577,7 @@ test("deriveAttachment: a comment whose file was removed is unresolved, and the 
 
   const source = { id: "c1", original_anchor: { kind: "source_text" } };
   assert.deepEqual(deriveAttachment(doc, index, source), {
-    status: "unresolved", resolved_range_utf16: null, resolved_file_id: null, tree_digest: "",
+    status: "unresolved", resolved_range_utf16: null, resolved_file_id: null, tree_digest: "", attached_by_hand: false,
   });
   // The cache is not told of the removal, so the record is still there.
   const hit = index.find("c1");
@@ -601,7 +601,7 @@ test("attachByHand: a deleted comment attaches to the selection and its quote is
   assert.equal(attachByHand(doc, index, "c1", "f1", 12, 12), false, "an empty selection attaches nothing");
   assert.equal(attachByHand(doc, index, "c1", "f1", 7, 12), true);
   assert.deepEqual(deriveAttachment(doc, index, source), {
-    status: "exact", resolved_range_utf16: [7, 12], resolved_file_id: "f1", tree_digest: "",
+    status: "exact", resolved_range_utf16: [7, 12], resolved_file_id: "f1", tree_digest: "", attached_by_hand: false,
   });
   const record = doc.getMap("anchors").get("c1");
   assert.equal(record.get("detached"), undefined);
@@ -609,6 +609,22 @@ test("attachByHand: a deleted comment attaches to the selection and its quote is
   assert.equal(record.get("prefix"), "Hello  ");
   assert.equal(record.get("suffix"), "");
   assert.equal(statusOf(doc, resolveAnchors(doc, "f1").find((a) => a.id === "c1")), "exact");
+});
+
+test("deriveAttachment: a comment attached by hand says so, and one left where it was does not", () => {
+  const doc = new LoroDoc();
+  const text = doc.getMap("files").setContainer("f1", new LoroText());
+  text.insert(0, "Hello brave world");
+  createAnchor(doc, "f1", "c-kept", 6, 11, { exact: "brave", prefix: "Hello ", suffix: " world" });
+  createAnchor(doc, "f1", "c-moved", 6, 11, { exact: "brave", prefix: "Hello ", suffix: " world" });
+  doc.commit();
+  const index = new AnchorIndex(doc);
+  index.load("f1");
+  // Both comments were made on "brave". Only "c-moved" is attached to "world" by hand.
+  assert.equal(attachByHand(doc, index, "c-moved", "f1", 12, 17), true);
+  const original_anchor = { kind: "source_text", target: { exact: "brave" } };
+  assert.equal(deriveAttachment(doc, index, { id: "c-kept", original_anchor }).attached_by_hand, false);
+  assert.equal(deriveAttachment(doc, index, { id: "c-moved", original_anchor }).attached_by_hand, true);
 });
 
 test("rejectRestoring: the text a rejection puts back is listed, and restoreByFragments re-pins the anchor", () => {

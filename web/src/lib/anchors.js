@@ -758,21 +758,29 @@ export function fragmentRangesFor(before, edits, fragments) {
  * its status, the range it resolves to and the file that holds it. This is the
  * shape the server used to send. A comment with no source passage has none.
  *
+ * `attached_by_hand` is true when the record's quote is not the quote the
+ * comment was made with. The record's quote is written when the comment is
+ * made and rewritten only by `attachByHand`, so a difference means an editor
+ * attached the comment to a passage by hand. It is false when the comment has
+ * no record in the document, and when its original quote is not a string.
+ *
  * `bodies` caches each file's text across one pass over many comments. Pass
  * the same Map to every call of that pass. A file that is gone is cached as
  * null.
  *
  * @param {import("loro-crdt").LoroDoc} doc
  * @param {AnchorIndex} index
- * @param {{ id: string, original_anchor?: { kind?: string } }} comment
+ * @param {{ id: string, original_anchor?: { kind?: string, target?: { exact?: string } } }} comment
  * @param {Map<string, string | null>} [bodies]
- * @returns {{ status: string, resolved_range_utf16: [number, number] | null, resolved_file_id: string | null, tree_digest: string } | null}
+ * @returns {{ status: string, resolved_range_utf16: [number, number] | null, resolved_file_id: string | null, tree_digest: string, attached_by_hand: boolean } | null}
  */
 export function deriveAttachment(doc, index, comment, bodies = new Map()) {
   if (comment?.original_anchor?.kind !== "source_text") return null;
   const hit = index.find(String(comment.id));
-  if (!hit) return { status: "unresolved", resolved_range_utf16: null, resolved_file_id: null, tree_digest: "" };
+  if (!hit) return { status: "unresolved", resolved_range_utf16: null, resolved_file_id: null, tree_digest: "", attached_by_hand: false };
   const { anchor } = hit;
+  const original = comment.original_anchor?.target?.exact;
+  const attached_by_hand = typeof original === "string" && anchor.exact !== original;
   // A file that was removed, or is no longer a text, is not a deleted passage.
   // The comment is unresolved, and no status is read.
   if (!bodies.has(anchor.file)) {
@@ -781,7 +789,7 @@ export function deriveAttachment(doc, index, comment, bodies = new Map()) {
   }
   const body = bodies.get(anchor.file) ?? null;
   if (body === null) {
-    return { status: "unresolved", resolved_range_utf16: null, resolved_file_id: null, tree_digest: "" };
+    return { status: "unresolved", resolved_range_utf16: null, resolved_file_id: null, tree_digest: "", attached_by_hand };
   }
   const status = statusOf(doc, anchor, body);
   const placed = status === "exact" || status === "modified";
@@ -790,6 +798,7 @@ export function deriveAttachment(doc, index, comment, bodies = new Map()) {
     resolved_range_utf16: placed ? [anchor.from, anchor.to] : null,
     resolved_file_id: anchor.file,
     tree_digest: "",
+    attached_by_hand,
   };
 }
 
