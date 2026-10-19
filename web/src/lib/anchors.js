@@ -142,6 +142,7 @@ export function planOperation(files, memory, { context = CONTEXT_UNITS, foreign 
       const partial = new Set();
       if (et > ef) {
         const deleted = cur.slice(ef, et);
+        /** @type {Held[]} */
         const held = [];
         for (const a of w.anchors) {
           if (!attached(a)) continue;
