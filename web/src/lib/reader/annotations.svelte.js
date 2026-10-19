@@ -21,12 +21,17 @@ const REFRESH_PAGES_MAX = 8;
 // is about was the one thing it did not have. Anchoring and repainting are
 // still the page's, and genuinely so: both depend on the visible frame, which
 // this module cannot see.
-/** Whether two attachments say the same thing about where a passage is. */
+/**
+ * Whether two attachments agree on where a passage is and on whether it was
+ * attached by hand. Server attachments never carry the flag, so an editor's
+ * derived copy replaces a server copy that differs only by it.
+ */
 function sameAttachment(a, b) {
   if (!a || !b) return (a ?? null) === (b ?? null);
   return a.status === b.status
     && a.resolved_file_id === b.resolved_file_id
-    && String(a.resolved_range_utf16) === String(b.resolved_range_utf16);
+    && String(a.resolved_range_utf16) === String(b.resolved_range_utf16)
+    && Boolean(a.attached_by_hand) === Boolean(b.attached_by_hand);
 }
 
 // `attachmentOf(comment, bodies)` gives an editor's attachment, worked out from

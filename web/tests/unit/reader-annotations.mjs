@@ -140,6 +140,42 @@ assert.equal(annotations.receive({ type: "attachments", attachments: [] }), fals
   });
 }
 
+// The editor's derived attachment carries `attached_by_hand`, which server rows
+// never do. A server row that repeats the same status, file and range must not
+// keep its own unflagged copy over the browser's.
+{
+  const plain = { status: "exact", resolved_file_id: "f1", resolved_range_utf16: [4, 7], tree_digest: "" };
+  let deriving = false;
+  let repaints = 0;
+  const byHand = createAnnotations({
+    slug: "attachment-by-hand",
+    anchor: () => {},
+    repaint: () => repaints++,
+    send: () => {},
+    attachmentOf: () => (deriving ? { ...plain, attached_by_hand: true } : undefined),
+  });
+  // The server's row arrives while nothing is derived, so it keeps its own attachment.
+  byHand.seed(
+    [{ id: "hand", body: "Passage", replies: [], attachment: { ...plain } }],
+    { total: 1, open: 1, replies: 0, revision: "h1", complete: true },
+  );
+  const commented = byHand.state.comments[0];
+  assert.equal(commented.attachment.attached_by_hand, undefined);
+  deriving = true;
+  byHand.deriveNow();
+  assert.equal(commented.attachment.attached_by_hand, true, "the derived attachment replaces the server's unflagged one");
+  assert.equal(repaints, 1, "a changed attachment repaints");
+  byHand.deriveNow();
+  assert.equal(repaints, 1, "an unchanged attachment does not repaint");
+  // The same row arrives again, as a refresh or a reconnect would bring it.
+  byHand.seed(
+    [{ id: "hand", body: "Passage", replies: [], attachment: { ...plain } }],
+    { total: 1, open: 1, replies: 0, revision: "h2", complete: true },
+  );
+  assert.equal(byHand.state.comments[0], commented, "the row keeps its identity");
+  assert.equal(commented.attachment.attached_by_hand, true, "a server row that repeats the range does not drop the flag");
+}
+
 // The comments are paged: what arrives is a prefix, and everything the panel
 // says about the collection as a whole comes from the server's own counts.
 //
