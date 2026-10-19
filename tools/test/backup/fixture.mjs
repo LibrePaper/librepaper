@@ -106,8 +106,8 @@ const configPath = join(dataDirectory, "config.toml");
 writeFileSync(configPath, [
   "[server]", `address = "127.0.0.1:${port}"`, "",
   "[storage]", `directory = ${JSON.stringify(resolve(dataDirectory))}`, 'database_url = { env = "LIBREPAPER_SOURCE_URL" }', "fsync = false", 'object_store = "filesystem"', "",
-  "[auth.github]", 'client_id = { env = "DEV_GITHUB_CLIENT_ID" }', 'client_secret = { env = "DEV_GITHUB_CLIENT_SECRET" }', "",
-  "[access]", 'publishers = ["any"]', 'commenters = ["anyone"]', "",
+  "[auth.github]", 'client_id = { env = "DEV_GITHUB_CLIENT_ID" }', 'client_secret = { env = "DEV_GITHUB_CLIENT_SECRET" }', 'publishers = ["*"]', "",
+  "[access]", "anonymous_comments = true", "",
 ].join("\n"));
 let log = "";
 const server = spawn(binary, [

@@ -99,8 +99,8 @@ export async function startDeployment({
   const config = [
     "[server]", `address = "127.0.0.1:${port}"`, "",
     "[storage]", `directory = ${JSON.stringify(data)}`, 'database_url = { env = "LIBREPAPER_DATABASE_URL" }', "fsync = false", "object_store = \"filesystem\"", "",
-    "[auth.github]", 'client_id = { env = "DEV_GITHUB_CLIENT_ID" }', 'client_secret = { env = "DEV_GITHUB_CLIENT_SECRET" }', "",
-    "[access]", 'publishers = ["any"]', 'commenters = ["anyone"]', "",
+    "[auth.github]", 'client_id = { env = "DEV_GITHUB_CLIENT_ID" }', 'client_secret = { env = "DEV_GITHUB_CLIENT_SECRET" }', 'publishers = ["*"]', "",
+    "[access]", "anonymous_comments = true", "",
     advanced || "",
   ].join("\n");
   try {

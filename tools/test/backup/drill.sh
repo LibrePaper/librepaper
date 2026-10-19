@@ -181,8 +181,7 @@ database_url = { env = "LIBREPAPER_RESTORE_URL" }
 fsync = false
 
 [access]
-publishers = ["any"]
-commenters = ["anyone"]
+anonymous_comments = true
 TOML
 node "$(dirname "$0")/restore-access.mjs" "$LIBREPAPER_BIN" \
   "$work/restored-app.toml" "$fixture_account_id" "$work/source-session-cookie"

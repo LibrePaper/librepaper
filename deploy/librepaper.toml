@@ -17,26 +17,46 @@ docs = "https://docs.paper.example"
 # GitHub  https://paper.example/auth/callback
 # Google  https://paper.example/auth/callback/google
 # Microsoft  https://paper.example/auth/callback/entra
+# ORCID  https://paper.example/auth/callback/orcid
 # Other OIDC https://paper.example/auth/callback/oidc-<name>
+#
+# publishers: "*" admits any account of that provider. Otherwise list GitHub
+# logins, verified addresses or @domains (Google, Entra, OIDC), or ORCID iDs.
+# A provider without publishers lets nobody from it publish. commenters
+# default to "*".
 [auth.github]
 client_id = "replace"
 client_secret = "replace"
+publishers = ["*"]
+commenters = ["*"]
 
 # [auth.google]
 # client_id = "replace"
 # client_secret = "replace"
+# publishers = ["*"]
+# commenters = ["*"]
 
 # [auth.entra]
 # tenant = "00000000-0000-0000-0000-000000000000"   # Directory (tenant) ID, a GUID
 # client_id = "replace"                             # Application (client) ID
 # client_secret = "replace"
 # label = "Microsoft"                               # the button text
+# publishers = ["*"]
+# commenters = ["*"]
 
 # [auth.oidc.example]
 # issuer = "https://sso.example.org/realms/staff"   # the provider's issuer URL
 # client_id = "replace"
 # client_secret = "replace"
 # label = "Example SSO"                             # the button text
+# publishers = ["*"]
+# commenters = ["*"]
+
+# [auth.orcid]
+# client_id = "APP-XXXXXXXXXXXXXXXX"                # the ORCID API client ID
+# client_secret = "replace"
+# publishers = ["0000-0002-1825-0097"]              # ORCID iDs, or "*"
+# commenters = ["*"]
 
 # [auth]
 # session_lifetime = "24h"   # 1h to 30d. Absent, a browser session lasts 30 days.
@@ -49,12 +69,9 @@ directory = "/var/lib/librepaper"
 database_url = "postgresql:///librepaper?host=/var/run/postgresql&user=librepaper"
 # database_connections = 20         # PostgreSQL connection pool size
 
-# Who may publish and comment: "any" signed-in account, a GitHub login, a
-# verified address from Google, Entra or another OpenID Connect provider, or
-# "@example.org". "anyone" also allows anonymous comments.
-[access]
-publishers = ["any"]
-commenters = ["any"]
+# Optional. Set true to let people comment without signing in.
+# [access]
+# anonymous_comments = false
 
 # Matches the edge network in compose.yaml; do not widen.
 [proxy]
