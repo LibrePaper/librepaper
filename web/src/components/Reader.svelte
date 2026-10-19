@@ -14,6 +14,7 @@
   import { createHistorySource } from "../lib/reader/history-source.svelte.js";
   import HistoryWorkspace from "./reader/HistoryWorkspace.svelte";
   import { diagnosticContext } from "../lib/assistant-review.js";
+  import { sourcePassage } from "../lib/assistant.js";
   import { candidateTree, capturePreviewTree, previewCandidate } from "../lib/assistant-preview.js";
   import { orphanState } from "../lib/orphan.js";
   import * as latex from "../lib/latex.js";
@@ -2279,9 +2280,19 @@
   // Read wherever the editor reports a caret, a text change or a file change:
   // those are the ways a selection moves.
   let sourceSelected = $state(false);
+  let sourcePassageNow = $state(null);
   function noteSourceSelection() {
-    sourceSelected = Boolean(editor?.selection?.());
+    const range = editor?.selection?.();
+    sourceSelected = Boolean(range);
+    sourcePassageNow = range ? sourcePassage(editor.text(), range.from, range.to, session?.paths?.get(range.file) || "") : null;
   }
+  // Tasks on a passage take it from the source, where selecting is precise and
+  // the text is what the server finds. The rendered selection serves only
+  // readers without the source.
+  const agentSelection = $derived.by(() => {
+    if (sourcePassageNow) return { source: sourcePassageNow, exact: sourcePassageNow.exact };
+    return !mayEdit && pending ? pending : null;
+  });
   function outlineCaretChanged() {
     outlineTextChanged();
     followCaret();
@@ -3822,8 +3833,8 @@
 
   {#snippet agentPanel()}
     <Agent slug={SLUG} link={linkFor(SLUG)} canShare={doc.role === "owner"}
-      path={session?.paths?.get(openFile) || ""} selection={pending}
-      revision={pending?.revision || ""} request={assistantRequest}
+      path={session?.paths?.get(openFile) || ""} selection={agentSelection}
+      revision={agentSelection?.revision || ""} request={assistantRequest}
       {comments} changes={changeRows} {diagnostics} onreview={reviewAssistantResults} onpreview={previewAssistant}
       onsettings={() => openSettings("agents")} userName={identity || doc.commenting_as || "You"} />
   {/snippet}
