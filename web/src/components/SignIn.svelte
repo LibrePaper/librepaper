@@ -59,6 +59,8 @@
                 <Icon name="github" size={20} />
               {:else if provider.kind === "google"}
                 <img src="/assets/google-g.svg" width="20" height="20" alt="" />
+              {:else if provider.kind === "orcid"}
+                <img src="/assets/orcid-id.svg" width="20" height="20" alt="" />
               {:else}
                 <Icon name="key" size={20} />
               {/if}

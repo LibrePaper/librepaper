@@ -36,6 +36,7 @@ mod core_tests;
 pub const PROVIDER_GITHUB: &str = "github";
 pub const PROVIDER_GOOGLE: &str = "google";
 pub const PROVIDER_ENTRA: &str = "entra";
+pub const PROVIDER_ORCID: &str = "orcid";
 pub const OIDC_ID_PREFIX: &str = "oidc-";
 
 pub const SESSION_COOKIE: &str = "librepaper_session";
