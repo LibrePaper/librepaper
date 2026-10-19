@@ -539,8 +539,8 @@ impl Server {
                     // Chat is stored by the room, never in the document log.
                     // Only commenters and above send it or receive it.
                     if incoming.kind() == "chat-clear" {
-                        // Ownership can move while this socket stays open, so
-                        // the role is read again now rather than at connect.
+                        // The role can change while this socket stays open, so it
+                        // is read again now rather than at connect.
                         if !self.is_current_owner(&room.slug, socket_id).await {
                             let _ = send_outgoing(&tx, Outgoing::Text(json!({"type":"error","message":"only the owner can clear chat"}).to_string())).await;
                             continue 'reader;
@@ -1261,9 +1261,8 @@ impl Server {
     /// Reruns every live socket on `slug`'s authorization against the current
     /// index entry, and closes whichever one may no longer read the document
     /// or whose editor rung no longer matches what it was handed at the
-    /// handshake. This is what makes revoking or rotating a link actually
-    /// takes effect on a connection that is
-    /// already open: without it, `who`/`author`/`may_edit` are
+    /// handshake. This is what makes revoking or rotating a link
+    /// take effect on a connection that is already open: without it, `who`/`author`/`may_edit` are
     /// resolved once and never again, so the room keeps relaying the text
     /// and accepting writes from someone the index no longer names.
     ///
