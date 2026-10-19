@@ -105,6 +105,7 @@ pub enum ModerationAction {
     UnhideProject,
     BanHandle,
     UnbanHandle,
+    EraseAccount,
 }
 
 impl ModerationAction {
@@ -116,6 +117,7 @@ impl ModerationAction {
             Self::UnhideProject => "unhide_project",
             Self::BanHandle => "ban_handle",
             Self::UnbanHandle => "unban_handle",
+            Self::EraseAccount => "erase_account",
         }
     }
 }
@@ -134,51 +136,27 @@ impl PostgresCatalog {
     ) -> Result<(Uuid, String)> {
         validate_operator_fields(actor, reason)?;
         let mut tx = self.begin_metered().await?;
-        let matches = if let Ok(id) = Uuid::parse_str(selector) {
-            sqlx::query("SELECT id,provider,handle,status FROM accounts WHERE id=$1 FOR UPDATE")
-                .bind(id)
-                .fetch_all(&mut *tx)
-                .await?
-        } else {
-            sqlx::query(
-                "SELECT id,provider,handle,status FROM accounts
-                 WHERE lower(handle)=lower($1) ORDER BY id LIMIT 2 FOR UPDATE",
-            )
-            .bind(selector.trim())
-            .fetch_all(&mut *tx)
-            .await?
-        };
-        let row = match matches.as_slice() {
-            [] => return Err(Error::NotFound),
-            [row] => row,
-            _ => {
-                return Err(Error::Invalid(
-                    "account handle is ambiguous; use its UUID".into(),
-                ))
-            }
-        };
-        let id: Uuid = row.try_get("id")?;
-        let provider: Option<String> = row.try_get("provider")?;
-        let handle: String = row.try_get("handle")?;
-        let status: String = row.try_get("status")?;
+        let account = lock_account(&mut tx, selector).await?;
         let next = if blocked { "blocked" } else { "active" };
         let expected = if blocked { "active" } else { "blocked" };
-        if status != expected && status != next {
+        if account.status != expected && account.status != next {
             return Err(Error::Conflict(format!(
-                "account is {status}; moderation cannot change that lifecycle state"
+                "account is {}; moderation cannot change that lifecycle state",
+                account.status
             )));
         }
-        if status == expected {
+        if account.status == expected {
             let query = if blocked {
                 "UPDATE accounts SET status='blocked',session_generation=session_generation+1 WHERE id=$1"
             } else {
                 "UPDATE accounts SET status='active' WHERE id=$1"
             };
-            sqlx::query(query).bind(id).execute(&mut *tx).await?;
+            sqlx::query(query)
+                .bind(account.id)
+                .execute(&mut *tx)
+                .await?;
         }
-        let label = provider
-            .map(|provider| format!("{provider}:{handle}"))
-            .unwrap_or(handle);
+        let label = account.label();
         insert_audit(
             &mut tx,
             actor,
@@ -188,13 +166,64 @@ impl PostgresCatalog {
                 ModerationAction::UnblockAccount
             },
             "account",
-            id,
+            account.id,
             &label,
             reason,
         )
         .await?;
         tx.commit().await?;
-        Ok((id, label))
+        Ok((account.id, label))
+    }
+
+    /// Starts the same erasure the owner's Settings button starts: the account
+    /// becomes `erasing`, its sessions end, and its active documents are marked
+    /// `deleting`. The background worker then purges those documents after the
+    /// deletion grace and deletes the account row. The running service picks
+    /// this durable state up on its hourly rescan or at startup.
+    pub async fn erase_account_by_operator(
+        &self,
+        selector: &str,
+        actor: &str,
+        reason: &str,
+    ) -> Result<(Uuid, String)> {
+        validate_operator_fields(actor, reason)?;
+        let mut tx = self.begin_metered().await?;
+        let account = lock_account(&mut tx, selector).await?;
+        if account.kind != "registered" {
+            return Err(Error::Conflict(
+                "only registered accounts can be erased".into(),
+            ));
+        }
+        if account.status == "erasing" {
+            return Err(Error::Conflict("account is already being erased".into()));
+        }
+        // A blocked account is accepted on purpose. The owner path refuses
+        // blocked accounts so a blocked person cannot erase the record
+        // themselves, but the operator may.
+        sqlx::query("UPDATE accounts SET status='erasing',session_generation=session_generation+1 WHERE id=$1")
+            .bind(account.id)
+            .execute(&mut *tx)
+            .await?;
+        sqlx::query(
+            "UPDATE documents SET status='deleting',deleted_at=COALESCE(deleted_at,now()),updated_at=now()
+             WHERE owner_id=$1 AND status='active'",
+        )
+        .bind(account.id)
+        .execute(&mut *tx)
+        .await?;
+        let label = account.label();
+        insert_audit(
+            &mut tx,
+            actor,
+            ModerationAction::EraseAccount,
+            "account",
+            account.id,
+            &label,
+            reason,
+        )
+        .await?;
+        tx.commit().await?;
+        Ok((account.id, label))
     }
 
     /// Hide or restore an active project by slug. Hidden rows are separate
@@ -481,6 +510,64 @@ fn validate_operator_fields(actor: &str, reason: &str) -> Result<()> {
     Ok(())
 }
 
+/// One account row, locked for the rest of the transaction.
+struct LockedAccount {
+    id: Uuid,
+    kind: String,
+    provider: Option<String>,
+    handle: String,
+    status: String,
+}
+
+impl LockedAccount {
+    /// The name the audit trail records: `provider:handle`, or the handle alone.
+    fn label(&self) -> String {
+        match &self.provider {
+            Some(provider) => format!("{provider}:{}", self.handle),
+            None => self.handle.clone(),
+        }
+    }
+}
+
+/// Resolve an operator's selector, a UUID or a unique handle, to one account
+/// row and lock it. Two accounts with the same handle are refused rather than
+/// guessed between.
+async fn lock_account(
+    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    selector: &str,
+) -> Result<LockedAccount> {
+    let matches = if let Ok(id) = Uuid::parse_str(selector) {
+        sqlx::query("SELECT id,kind,provider,handle,status FROM accounts WHERE id=$1 FOR UPDATE")
+            .bind(id)
+            .fetch_all(&mut **tx)
+            .await?
+    } else {
+        sqlx::query(
+            "SELECT id,kind,provider,handle,status FROM accounts
+             WHERE lower(handle)=lower($1) ORDER BY id LIMIT 2 FOR UPDATE",
+        )
+        .bind(selector.trim())
+        .fetch_all(&mut **tx)
+        .await?
+    };
+    let row = match matches.as_slice() {
+        [] => return Err(Error::NotFound),
+        [row] => row,
+        _ => {
+            return Err(Error::Invalid(
+                "account handle is ambiguous; use its UUID".into(),
+            ))
+        }
+    };
+    Ok(LockedAccount {
+        id: row.try_get("id")?,
+        kind: row.try_get("kind")?,
+        provider: row.try_get("provider")?,
+        handle: row.try_get("handle")?,
+        status: row.try_get("status")?,
+    })
+}
+
 pub(super) async fn insert_audit(
     tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
     actor: &str,
@@ -576,6 +663,87 @@ mod tests {
         .await
         .unwrap();
         assert_eq!(audits, 2);
+        catalog.close().await;
+    }
+
+    #[tokio::test]
+    #[ignore = "requires LIBREPAPER_TEST_POSTGRES_URL"]
+    async fn operator_erasure_marks_the_account_and_its_documents_and_audits_it() {
+        let catalog = test_catalog().await;
+        crate::testing::reset(&catalog).await;
+        let id = insert_account(&catalog, "registered", "active", 0).await;
+        insert_document_with_bytes(&catalog, id, 100).await;
+        let before: i64 = sqlx::query_scalar("SELECT session_generation FROM accounts WHERE id=$1")
+            .bind(id)
+            .fetch_one(catalog.pool())
+            .await
+            .unwrap();
+        let handle = format!("inactive-{id}");
+
+        let (erased, label) = catalog
+            .erase_account_by_operator(&handle, "operator", "erase request")
+            .await
+            .unwrap();
+        assert_eq!(erased, id);
+        assert_eq!(label, format!("github:{handle}"));
+        let status: String = sqlx::query_scalar("SELECT status FROM accounts WHERE id=$1")
+            .bind(id)
+            .fetch_one(catalog.pool())
+            .await
+            .unwrap();
+        let generation: i64 =
+            sqlx::query_scalar("SELECT session_generation FROM accounts WHERE id=$1")
+                .bind(id)
+                .fetch_one(catalog.pool())
+                .await
+                .unwrap();
+        assert_eq!(status, "erasing");
+        assert_eq!(generation, before + 1);
+        let documents: Vec<(String, bool)> = sqlx::query_as(
+            "SELECT status, deleted_at IS NOT NULL FROM documents WHERE owner_id=$1",
+        )
+        .bind(id)
+        .fetch_all(catalog.pool())
+        .await
+        .unwrap();
+        assert_eq!(documents.len(), 1);
+        assert!(documents
+            .iter()
+            .all(|(status, deleted)| status == "deleting" && *deleted));
+        let audits: i64 = sqlx::query_scalar(
+            "SELECT count(*) FROM moderation_audit WHERE target_id=$1 AND action='erase_account'",
+        )
+        .bind(id)
+        .fetch_one(catalog.pool())
+        .await
+        .unwrap();
+        assert_eq!(audits, 1);
+        assert!(matches!(
+            catalog
+                .erase_account_by_operator(&handle, "operator", "erase request")
+                .await,
+            Err(Error::Conflict(_))
+        ));
+
+        let blocked = insert_account(&catalog, "registered", "blocked", 0).await;
+        catalog
+            .erase_account_by_operator(&blocked.to_string(), "operator", "erase request")
+            .await
+            .unwrap();
+        let blocked_status: String = sqlx::query_scalar("SELECT status FROM accounts WHERE id=$1")
+            .bind(blocked)
+            .fetch_one(catalog.pool())
+            .await
+            .unwrap();
+        assert_eq!(blocked_status, "erasing");
+
+        let anonymous = insert_account(&catalog, "anonymous", "active", 0).await;
+        assert!(matches!(
+            catalog
+                .erase_account_by_operator(&anonymous.to_string(), "operator", "erase request")
+                .await,
+            Err(Error::Conflict(_))
+        ));
         catalog.close().await;
     }
 

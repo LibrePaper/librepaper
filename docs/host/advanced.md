@@ -220,6 +220,7 @@ gh api users/<login> --jq .id            # your numeric GitHub ID
 - Moderation records your GitHub login as the person who acted.
 - The console needs GitHub sign-in. A deployment with only Google, Entra or custom OpenID Connect sign-in has no console.
 - A blocked account is signed out at once. Its block follows the account, so changing the name does not lift it.
+- Erasing an account signs it out at once and refuses its sign-in until the erasure is done. The same person can then sign in again and gets a fresh account with the starter project, and nothing else carries over.
 - A refused name covers only that name. Someone who renames their GitHub account before signing in is not caught.
 - Zoom by dragging on any graph. Double-click to return to the chosen range.
 - For your own Prometheus, add `[metrics]` with `address = "0.0.0.0:9091"` to `librepaper.toml`: the server then serves `/metrics` on that port inside the Docker network. The kit publishes no host port for it, and the graphs above do not need it.
@@ -227,6 +228,8 @@ gh api users/<login> --jq .id            # your numeric GitHub ID
 ```sh
 # Block an account found on the console. The ID column is the UUID.
 docker compose exec librepaper librepaper admin moderate block-account <uuid> --actor <you> --reason "<why>"
+# Erase an account and every project it owns. Projects purge after seven days. The service starts within the hour. This cannot be undone.
+docker compose exec librepaper librepaper admin moderate erase-account <uuid> --actor <you> --reason "<why>"
 ```
 
 ### Uptime
