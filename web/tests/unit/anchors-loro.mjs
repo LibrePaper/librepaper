@@ -753,6 +753,34 @@ test("two backspaces undone one after the other bring the passage back exact", (
   assert.equal(manager.canUndo(), false, "nothing is left to undo");
 });
 
+// The cut takes "tw" from the head of the anchor on "two", and the piece is
+// remembered. The paste puts "tw" back at 0, where it does not rejoin, so the
+// piece must stay remembered. Undoing the paste and then the cut rejoins it.
+test("undoing a paste and then the cut of a boundary piece brings the passage back exact", () => {
+  const text = "one two three";
+  const doc = makeDoc(1, { f1: text });
+  createAnchor(doc, "f1", "a1", 4, 7, ctx(text, 4, 7));
+  doc.commit();
+  const manager = new UndoManager(doc, { mergeInterval: 0, excludeOriginPrefixes: [ANCHORS_ORIGIN] });
+  const memory = new MoveMemory();
+  const index = new AnchorIndex(doc);
+  index.load("f1");
+  index.attach(memory);
+  index.apply([{ fileId: "f1", edits: [{ from: 4, to: 6, insert: "" }] }], memory, {});
+  index.apply([{ fileId: "f1", edits: [{ from: 0, to: 0, insert: "tw" }] }], memory, {});
+  assert.equal(textOf(doc), "twone o three");
+  assertIndexMatches(index, doc, "f1");
+
+  assert.equal(manager.undo(), true, "the paste is undone");
+  assert.equal(textOf(doc), "one o three");
+  assertIndexMatches(index, doc, "f1");
+
+  assert.equal(manager.undo(), true, "the cut is undone");
+  assert.equal(textOf(doc), text);
+  assertAttached(doc, "a1", 4, 7, "two");
+  assertIndexMatches(index, doc, "f1");
+});
+
 // A peer B that starts as a snapshot of A, with an index on each.
 function twoIndexedPeers(A) {
   const B = new LoroDoc();
@@ -895,7 +923,7 @@ test("an index follows a file whose text container was replaced by an import", (
   assert.equal(indexA.get("f1").text, textOf(A));
 
   // B attaches a1 to "two" in the new container, and A shows it attached.
-  assert.equal(attachByHand(B, indexB, "a1", "f1", 5, 8), true);
+  assert.equal(attachByHand(B, indexB, new MoveMemory(), "a1", "f1", 5, 8), true);
   sync(A, B);
   assertAttached(A, "a1", 5, 8, "two");
   assertIndexMatches(indexA, A, "f1");

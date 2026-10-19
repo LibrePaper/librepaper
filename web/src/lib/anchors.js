@@ -57,8 +57,11 @@ export const CONTEXT_UNITS = 32;
  *   in, as an offset into the text after every edit of the list.
  */
 
-// What the session deleted whole, oldest first. Each entry keeps the anchors
-// that were wholly inside the deleted text, with their offsets in it.
+// What the session deleted, oldest first. Each entry keeps the pieces that the
+// deletion took: anchors taken whole, and the head or tail of an anchor cut at
+// one end, with their offsets in the deleted text. An entry leaves the memory
+// when an insertion applies it (see planOperation), or when forget removes its
+// last piece. An entry whose pieces applied nothing stays for a later insertion.
 export class MoveMemory {
   #limit;
   #entries = [];
@@ -79,26 +82,52 @@ export class MoveMemory {
   }
 
   /**
-   * Takes the newest remembered text that occurs exactly once in `inserted`
-   * and whose occurrence `free` accepts. An entry that `free` refuses stays
-   * remembered, and the scan goes on to the older entries.
+   * Finds the newest remembered text that occurs exactly once in `inserted`
+   * and whose occurrence `free` accepts. An entry that `free` refuses is
+   * skipped, and the scan goes on to the older entries. The entry stays
+   * remembered: the caller removes it with drop once one of its pieces applied.
    * @param {string} inserted
    * @param {(from: number, to: number) => boolean} [free] tells whether the span
    *   of `inserted` from `from` to `to` is still unclaimed. By default every
    *   span is free.
-   * @returns {{ text: string, held: Held[], at: number } | null}
+   * @returns {{ entry: { text: string, held: Held[] }, at: number } | null}
    */
-  take(inserted, free = () => true) {
+  find(inserted, free = () => true) {
     for (let i = this.#entries.length - 1; i >= 0; i--) {
       const entry = this.#entries[i];
       const at = inserted.indexOf(entry.text);
       // Overlapping occurrences count as two: "aa" in "aaa" is ambiguous.
       if (at < 0 || inserted.indexOf(entry.text, at + 1) >= 0) continue;
       if (!free(at, at + entry.text.length)) continue;
-      this.#entries.splice(i, 1);
-      return { text: entry.text, held: entry.held, at };
+      return { entry, at };
     }
     return null;
+  }
+
+  /**
+   * Removes an entry that find returned. Entries match by identity, so an
+   * entry that is already gone is left alone.
+   * @param {{ text: string, held: Held[] }} entry
+   */
+  drop(entry) {
+    const i = this.#entries.indexOf(entry);
+    if (i >= 0) this.#entries.splice(i, 1);
+  }
+
+  /**
+   * Forgets every held piece of one comment, in every entry, and drops the
+   * entries left with no pieces. attachByHand calls this when it moves a
+   * comment. Without it, a head or tail piece from the old passage could
+   * rejoin the comment at the edge of the new passage, and a whole piece could
+   * re-pin the comment over pasted text after the comment is cut again.
+   * @param {string} id
+   */
+  forget(id) {
+    for (let i = this.#entries.length - 1; i >= 0; i--) {
+      const entry = this.#entries[i];
+      entry.held = entry.held.filter((h) => h.id !== id);
+      if (entry.held.length === 0) this.#entries.splice(i, 1);
+    }
   }
 
   get size() {
@@ -114,13 +143,14 @@ export class MoveMemory {
  * land before an earlier insertion. That insertion moves when the later edit
  * lands before it, and is dropped when the later edit reaches into it.
  * Phase 2 runs after every file: each remembered text that occurs exactly once
- * in an insertion is taken, newest first, and re-pins the detached anchors
- * that were in it, into the file the insertion landed in. A take claims the
- * span it covers in that insertion, so a later take cannot claim the same
- * occurrence, and an entry whose span is claimed stays remembered. A piece cut
- * from one end of an attached anchor rejoins that anchor when the piece comes
- * back at the same end. Deletions are remembered and taken texts are removed
- * from the memory as a side effect.
+ * in an insertion is found, newest first, and its pieces re-pin the detached
+ * anchors that were in it, into the file the insertion landed in. Every hit
+ * claims the span it covers in that insertion, so a later hit cannot claim the
+ * same occurrence. A piece cut from one end of an attached anchor rejoins that
+ * anchor when the piece comes back at the same end. An entry whose pieces
+ * applied is removed from the memory. A remembered text whose pieces could not
+ * be applied (the piece was pasted somewhere else, say) stays remembered for a
+ * later insertion. Deletions are remembered.
  *
  * @param {{ fileId: string, before: string, anchors: Anchor[], edits: Edit[], fragments?: FragmentRange[] }[]} files
  * @param {MoveMemory} memory
@@ -233,20 +263,24 @@ export function planOperation(files, memory, { context = CONTEXT_UNITS, foreign 
 
   // Phase 2: an insertion re-pins the anchors that were in the text it brings
   // back. Each remembered text that occurs exactly once in the insertion is
-  // taken, newest first, and every taken entry is processed. The spans that
-  // earlier takes of this insertion claimed are not free, so two entries for
-  // one pasted occurrence cannot both take it. Two disjoint pieces each still
-  // take their own span. A whole anchor comes back from detached. A cut head
-  // or tail rejoins an anchor that is still attached, in the same file, at the
-  // edge the piece was cut from.
+  // found, newest first, and each hit is processed. A hit claims its span in
+  // the insertion, so the spans that earlier hits claimed are not free, and two
+  // entries for one pasted occurrence cannot both take it. Two disjoint pieces
+  // each still take their own span. A whole anchor comes back from detached. A
+  // cut head or tail rejoins an anchor that is still attached, in the same
+  // file, at the edge the piece was cut from. A hit whose pieces applied
+  // nothing stays remembered for a later insertion. The loop then looks for
+  // the next hit. This entry is skipped, since its span is claimed.
   for (const w of foreign ? [] : work) {
     for (const ins of w.inserts) {
       /** @type {{ from: number, to: number }[]} */
       const claimed = [];
       const free = (from, to) => !claimed.some((c) => from < c.to && to > c.from);
-      for (let hit = memory.take(ins.text, free); hit; hit = memory.take(ins.text, free)) {
-        claimed.push({ from: hit.at, to: hit.at + hit.text.length });
-        for (const h of hit.held) {
+      for (let hit = memory.find(ins.text, free); hit; hit = memory.find(ins.text, free)) {
+        const { entry } = hit;
+        claimed.push({ from: hit.at, to: hit.at + entry.text.length });
+        let applied = false;
+        for (const h of entry.held) {
           if (!h.text) continue;
           const owner = work.find((o) => o.anchors.some((a) => a.id === h.id));
           if (!owner) continue;
@@ -261,6 +295,7 @@ export function planOperation(files, memory, { context = CONTEXT_UNITS, foreign 
             else anchor.to = to;
             anchor.state = "set";
             anchor.touched = true;
+            applied = true;
             continue;
           }
           // A record with no length has no span to bring back.
@@ -284,7 +319,9 @@ export function planOperation(files, memory, { context = CONTEXT_UNITS, foreign 
           };
           if (owner !== w) pinned.movedFrom = owner.fileId;
           w.anchors.push(pinned);
+          applied = true;
         }
+        if (applied) memory.drop(entry);
       }
     }
   }
@@ -450,17 +487,20 @@ export function createAnchor(doc, fileId, id, from, to, { exact, prefix, suffix 
  * Attaches a comment to a passage the author selected by hand. The record gets
  * a file, two fresh cursors and a quote taken from the selected text, and loses
  * whatever held it detached. A record that is not in the document yet is made.
- * Commits under ANCHORS_ORIGIN, then refreshes the index's entry for it.
+ * The comment's remembered pieces are forgotten too (see MoveMemory.forget),
+ * since they belong to its old passage. Commits under ANCHORS_ORIGIN, then
+ * refreshes the index's entry for it.
  *
  * @param {import("loro-crdt").LoroDoc} doc
  * @param {AnchorIndex} index
+ * @param {MoveMemory} memory the session's move memory
  * @param {string} id
  * @param {string} fileId
  * @param {number} from UTF-16 offset in the file
  * @param {number} to UTF-16 offset in the file, past from
  * @returns {boolean} false when the file has no text, the span is empty or out of range, or a cursor cannot be made
  */
-export function attachByHand(doc, index, id, fileId, from, to) {
+export function attachByHand(doc, index, memory, id, fileId, from, to) {
   const text = fileText(doc, fileId);
   if (!text) return false;
   const body = text.toString();
@@ -488,6 +528,7 @@ export function attachByHand(doc, index, id, fileId, from, to) {
     if (record.get(key) !== undefined) record.delete(key);
   }
   doc.commit({ origin: ANCHORS_ORIGIN });
+  memory.forget(id);
   index.refresh([id]);
   return true;
 }

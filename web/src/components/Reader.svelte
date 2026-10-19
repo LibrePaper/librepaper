@@ -895,7 +895,17 @@
       say("Select the passage in the source first.", { kind: "note", id: "reader:attach-selection" });
       return;
     }
-    if (!attachByHand(session.doc, session.anchors, comment.id, selection.file, selection.from, selection.to)) {
+    if (
+      !attachByHand(
+        session.doc,
+        session.anchors,
+        session.anchorMemory,
+        comment.id,
+        selection.file,
+        selection.from,
+        selection.to,
+      )
+    ) {
       say("That passage could not be attached to this comment.", { kind: "problem", id: "reader:attach-failed" });
       return;
     }

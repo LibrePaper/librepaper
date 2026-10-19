@@ -176,8 +176,9 @@ function occurrences(hay, needle) {
   return at;
 }
 
-// The planner's take: the newest entry whose text occurs exactly once in the
-// inserted text and whose occurrence `free` accepts. The entry leaves the memory.
+// The planner's find, then drop. Every model paste re-pins whole anchors, so
+// each hit applies and leaves the memory. The planner also keeps an entry whose
+// pieces apply nothing. The model has no partial pieces, so it never does.
 function takeMemory(model, inserted, free) {
   for (let i = model.memory.length - 1; i >= 0; i--) {
     const at = occurrences(inserted, model.memory[i].text);
@@ -675,6 +676,25 @@ test("a cut head pasted elsewhere does not extend the passage", () => {
   assert.equal(pasted.after.slice(anchor.from, anchor.to), "o");
 });
 
+test("a remembered piece pasted elsewhere stays remembered and rejoins later", () => {
+  const memory = new MoveMemory();
+  const cut = planOne("one two three", [anchorOn("a1", 4, 7, "two")], [{ from: 4, to: 6, insert: "" }], memory);
+  assert.equal(cut.after, "one o three");
+  // "tw" goes back in at the start. It does not rejoin, so it stays remembered.
+  const pasted = planOne(cut.after, cut.anchors, [{ from: 0, to: 0, insert: "tw" }], memory);
+  assert.equal(pasted.after, "twone o three");
+  assert.deepEqual([pasted.anchors[0].from, pasted.anchors[0].to, pasted.anchors[0].detached], [6, 7, false]);
+  assert.equal(memory.size, 1);
+
+  // "tw" comes back at the edge it was cut from, and the anchor rejoins.
+  const back = planOne(pasted.after, pasted.anchors, [{ from: 6, to: 6, insert: "tw" }], memory);
+  assert.equal(back.after, "twone two three");
+  const anchor = back.anchors[0];
+  assert.deepEqual([anchor.from, anchor.to, anchor.detached, anchor.state], [6, 9, false, "set"]);
+  assert.equal(back.after.slice(anchor.from, anchor.to), "two");
+  assert.equal(memory.size, 0);
+});
+
 test("a merged undo of two backspaces rejoins both pieces", () => {
   const memory = new MoveMemory();
   const first = planOne("one two three", [anchorOn("a1", 4, 7, "two")], [{ from: 4, to: 5, insert: "" }], memory);
@@ -789,8 +809,12 @@ test("attachByHand: a deleted comment attaches to the selection and its quote is
   assert.equal(deriveAttachment(doc, index, source).status, "deleted");
 
   // "world" is at 7..12 in "Hello  world".
-  assert.equal(attachByHand(doc, index, "c1", "f1", 12, 12), false, "an empty selection attaches nothing");
-  assert.equal(attachByHand(doc, index, "c1", "f1", 7, 12), true);
+  assert.equal(
+    attachByHand(doc, index, new MoveMemory(), "c1", "f1", 12, 12),
+    false,
+    "an empty selection attaches nothing",
+  );
+  assert.equal(attachByHand(doc, index, new MoveMemory(), "c1", "f1", 7, 12), true);
   assert.deepEqual(deriveAttachment(doc, index, source), {
     status: "exact", resolved_range_utf16: [7, 12], resolved_file_id: "f1", tree_digest: "", attached_by_hand: false, diagnostic: null,
   });
@@ -800,6 +824,31 @@ test("attachByHand: a deleted comment attaches to the selection and its quote is
   assert.equal(record.get("prefix"), "Hello  ");
   assert.equal(record.get("suffix"), "");
   assert.equal(statusOf(doc, resolveAnchors(doc, "f1").find((a) => a.id === "c1")), "exact");
+});
+
+test("attaching by hand forgets the comment's remembered pieces", () => {
+  const doc = new LoroDoc();
+  const text = doc.getMap("files").setContainer("f1", new LoroText());
+  text.insert(0, "Hello brave world");
+  createAnchor(doc, "f1", "c1", 6, 11, { exact: "brave", prefix: "Hello ", suffix: " world" });
+  doc.commit();
+  const index = new AnchorIndex(doc);
+  index.load("f1");
+  const memory = new MoveMemory();
+  // Cutting "brave" detaches the comment, and the cut is remembered.
+  index.apply([{ fileId: "f1", edits: [{ from: 6, to: 11, insert: "" }] }], memory);
+  assert.equal(memory.size, 1);
+
+  // "world" is at 7..12 in "Hello  world".
+  assert.equal(attachByHand(doc, index, memory, "c1", "f1", 7, 12), true);
+  assert.equal(memory.size, 0, "the comment's remembered pieces are forgotten");
+
+  // A paste of "brave" at the end leaves the comment on "world".
+  index.apply([{ fileId: "f1", edits: [{ from: 12, to: 12, insert: "brave" }] }], memory);
+  const hit = index.find("c1");
+  assert.equal(hit.fileId, "f1");
+  assert.deepEqual([hit.anchor.from, hit.anchor.to, hit.anchor.detached], [7, 12, false]);
+  assert.equal(statusOf(doc, hit.anchor), "exact");
 });
 
 test("deriveAttachment: a comment attached by hand says so, and one left where it was does not", () => {
@@ -812,7 +861,7 @@ test("deriveAttachment: a comment attached by hand says so, and one left where i
   const index = new AnchorIndex(doc);
   index.load("f1");
   // Both comments were made on "brave". Only "c-moved" is attached to "world" by hand.
-  assert.equal(attachByHand(doc, index, "c-moved", "f1", 12, 17), true);
+  assert.equal(attachByHand(doc, index, new MoveMemory(), "c-moved", "f1", 12, 17), true);
   const original_anchor = { kind: "source_text", target: { exact: "brave" } };
   assert.equal(deriveAttachment(doc, index, { id: "c-kept", original_anchor }).attached_by_hand, false);
   assert.equal(deriveAttachment(doc, index, { id: "c-moved", original_anchor }).attached_by_hand, true);
