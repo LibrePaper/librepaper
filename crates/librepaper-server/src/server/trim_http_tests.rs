@@ -495,6 +495,7 @@ async fn periodic_compaction_of_a_trimmed_document_keeps_working() {
         &deployment.server.config,
         document_id,
         SnapshotMode::Full,
+        None,
     )
     .await;
 

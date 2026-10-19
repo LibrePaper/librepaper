@@ -2474,6 +2474,22 @@ impl Sequencer {
         &self,
         mode: SnapshotMode,
     ) -> Result<Option<(i64, Vec<u8>, Vec<u8>, usize, bool)>> {
+        self.snapshot_at_log_vector_expecting(mode, None).await
+    }
+
+    /// The same, but refusing to snapshot a head whose oplog frontier is not
+    /// `expected_frontier`. A caller that healed the document and then read its
+    /// frontier passes that frontier here. An edit that entered the head after
+    /// that read would otherwise be exported in a snapshot the healing never
+    /// checked. `None` skips the check.
+    ///
+    /// A refusal is `Ok(None)`, the same answer a head that is ahead of its log
+    /// gets. It captures and writes nothing.
+    pub async fn snapshot_at_log_vector_expecting(
+        &self,
+        mode: SnapshotMode,
+        expected_frontier: Option<&[u8]>,
+    ) -> Result<Option<(i64, Vec<u8>, Vec<u8>, usize, bool)>> {
         let mut inner = self.inner.lock().await;
         inner.writable()?;
         if !inner.buffer.is_empty() {
@@ -2491,6 +2507,14 @@ impl Sequencer {
         let cache = inner.cache.as_ref().expect("a cache was just built");
         if cache.doc.oplog_vv() != log_vector {
             return Ok(None);
+        }
+        // Checked under the same lock as the export. Anything that entered the
+        // head after the caller's read is already in this document, so a
+        // snapshot of it would hold an edit the caller never checked.
+        if let Some(expected) = expected_frontier {
+            if cache.doc.oplog_frontiers().encode().as_slice() != expected {
+                return Ok(None);
+            }
         }
         let changes = cache.doc.len_changes();
         // §9.3 counts a compaction export against the same bound as a

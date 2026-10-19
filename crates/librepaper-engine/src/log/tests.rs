@@ -1893,6 +1893,74 @@ async fn every_sequencer_read_refuses_after_compaction_fence() {
     ));
 }
 
+/// A trim heals comment anchors, reads the head's frontier, and then takes its
+/// snapshot against that frontier. An edit that lands in between is in the head
+/// but was never healed, so its snapshot must not be taken. The refusal writes
+/// nothing, and the same call against the current frontier takes the snapshot.
+#[tokio::test]
+async fn a_snapshot_is_refused_once_the_head_moves_past_the_frontier() {
+    use crate::log::sequencer::SnapshotMode;
+
+    let sequencer = bare_sequencer(Arc::new(FakeCatalog::empty()));
+    // Warm the entry, so each edit is imported into the head as it arrives.
+    sequencer
+        .with_head(|_| ())
+        .await
+        .expect("an empty document builds");
+    let mut outbox = Outbox::new();
+    let first = outbox.edit();
+    assert!(matches!(
+        sequencer
+            .ingest(1, "account:writer", "account:writer", 1, first)
+            .await,
+        Ingested::Accepted
+    ));
+    sequencer
+        .flush(FlushReason::Barrier)
+        .await
+        .expect("the first edit flushes");
+    let healed = sequencer
+        .with_head(|doc| doc.oplog_frontiers().encode())
+        .await
+        .expect("the head reads");
+
+    // An edit lands after the healing, and is flushed before the snapshot.
+    let second = outbox.edit();
+    assert!(matches!(
+        sequencer
+            .ingest(1, "account:writer", "account:writer", 2, second)
+            .await,
+        Ingested::Accepted
+    ));
+    sequencer
+        .flush(FlushReason::Barrier)
+        .await
+        .expect("the second edit flushes");
+    let before = sequencer.log_state().await;
+
+    let refused = sequencer
+        .snapshot_at_log_vector_expecting(SnapshotMode::Shallow, Some(healed.as_slice()))
+        .await
+        .expect("a moved head is refused, not an error");
+    assert!(
+        refused.is_none(),
+        "a snapshot was taken against a frontier the head has moved past"
+    );
+    let after = sequencer.log_state().await;
+    assert_eq!(after.log_vector, before.log_vector, "the refusal moved the log");
+    assert_eq!(after.next_sequence, before.next_sequence, "the refusal wrote a row");
+
+    let current = sequencer
+        .with_head(|doc| doc.oplog_frontiers().encode())
+        .await
+        .expect("the head reads");
+    let taken = sequencer
+        .snapshot_at_log_vector_expecting(SnapshotMode::Shallow, Some(current.as_slice()))
+        .await
+        .expect("the current frontier snapshots");
+    assert!(taken.is_some(), "the current frontier was refused");
+}
+
 /// §10, "subscriber too slow: closed; reconnects and reconciles", and §4.5,
 /// "a subscriber whose queue overflows is closed and reconnects".
 ///

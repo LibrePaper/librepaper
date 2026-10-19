@@ -1026,16 +1026,22 @@ impl Server {
         }
         let authority = current_who.document_authority(self.ceiling_for(&current_who.id));
         // A shallow snapshot keeps no history before the trim point, so a comment
-        // on a passage deleted there could not be resolved again. Its record is
-        // healed to the text as it stands, before the snapshot is taken.
-        if let Err(error) = room.heal_comment_anchors(&authority).await {
-            return command_reply("heal comment anchors", error);
-        }
-        // Compact to a shallow snapshot and delete the log. Retry if a concurrent
-        // edit entered the buffer after the flush; Ok(None) means the document is
-        // ahead of the log, not that compaction succeeded.
+        // on a passage deleted there could not be resolved again. Each attempt
+        // heals the comment anchors to the text as it stands, then reads the
+        // head's frontier. The snapshot is taken only against the frontier the
+        // healing left, so an edit that lands in between makes the attempt start
+        // over with a fresh healing. Ok(None) means the document moved, not that
+        // compaction succeeded.
         let mut after = None;
         for attempt in 0..3 {
+            if let Err(error) = room.heal_comment_anchors(&authority).await {
+                return command_reply("heal comment anchors", error);
+            }
+            let head = room.log().with_head(|doc| doc.oplog_frontiers().encode());
+            let frontier = match head.await {
+                Ok(frontier) => frontier,
+                Err(error) => return sequencer_reply(&error),
+            };
             let result = librepaper_engine::storage::worker::compact_document(
                 &self.store.catalog,
                 &self.store.blobs,
@@ -1044,6 +1050,7 @@ impl Server {
                 &self.config,
                 room.document_id,
                 librepaper_engine::log::sequencer::SnapshotMode::Shallow,
+                Some(frontier.as_slice()),
             )
             .await;
             match result {
