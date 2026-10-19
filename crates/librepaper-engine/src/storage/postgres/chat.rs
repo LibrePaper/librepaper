@@ -224,7 +224,6 @@ impl PostgresCatalog {
             sqlx::query_scalar("SELECT bytes FROM storage_usage WHERE singleton FOR UPDATE")
                 .fetch_one(&mut *tx)
                 .await?;
-        let owner_usage = super::repository::owner_usage_bytes(&mut *tx, owner_id).await?;
         let epoch = self.writer_epoch()?;
         let existing = sqlx::query_as::<_, (Uuid, i64)>(
             "SELECT document_id,writer_epoch FROM pending_log_reservations \
@@ -250,6 +249,9 @@ impl PostgresCatalog {
             }
             other => other,
         };
+        // Measured after a stale row is gone, so it does not count against
+        // the row that replaces it.
+        let owner_usage = super::repository::owner_usage_bytes(&mut *tx, owner_id).await?;
         let log_usage: i64 = sqlx::query_scalar(
             "SELECT COALESCE((SELECT sum(snapshot_bytes)::bigint FROM document_snapshots WHERE delete_after IS NULL),0) \
              + COALESCE((SELECT sum(uncompacted_update_bytes + chat_bytes)::bigint FROM documents),0)",
@@ -306,6 +308,7 @@ impl PostgresCatalog {
     /// Deletes the chat reservation row `key`. A missing row is not an error.
     pub async fn release_chat_reservation(&self, document_id: Uuid, key: Uuid) -> Result<()> {
         let mut tx = self.begin_writer_transaction().await?;
+        lock_chat_reservations(&mut tx, document_id).await?;
         sqlx::query(
             "DELETE FROM pending_log_reservations WHERE reservation_id=$1 AND document_id=$2",
         )
@@ -318,14 +321,19 @@ impl PostgresCatalog {
     }
 
     /// The bytes the reservation row `key` holds, or 0 when it is missing.
+    /// It reads under the document row lock that every change to the row
+    /// takes, so a change whose reply was lost has finished before the read.
     pub async fn chat_reservation_bytes(&self, document_id: Uuid, key: Uuid) -> Result<i64> {
+        let mut tx = self.begin_writer_transaction().await?;
+        lock_chat_reservations(&mut tx, document_id).await?;
         let bytes: Option<i64> = sqlx::query_scalar(
             "SELECT bytes FROM pending_log_reservations WHERE reservation_id=$1 AND document_id=$2",
         )
         .bind(key)
         .bind(document_id)
-        .fetch_optional(self.pool())
+        .fetch_optional(&mut *tx)
         .await?;
+        tx.commit().await?;
         Ok(bytes.unwrap_or(0))
     }
 
@@ -427,6 +435,19 @@ pub struct ChatCleared {
     /// The buffered ids that were also stored, as after a flush whose reply
     /// was lost.
     pub stored_buffered: Vec<Uuid>,
+}
+
+/// Locks the document row. Reserving, consuming, releasing and reading a chat
+/// reservation all take this lock first, so they run one at a time.
+async fn lock_chat_reservations(
+    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    document_id: Uuid,
+) -> Result<()> {
+    sqlx::query("SELECT id FROM documents WHERE id=$1 FOR UPDATE")
+        .bind(document_id)
+        .execute(&mut **tx)
+        .await?;
+    Ok(())
 }
 
 #[cfg(test)]
@@ -835,6 +856,35 @@ mod tests {
             .reserve_chat_bytes(document, key, CHAT_RESERVATION_CHUNK, 1)
             .await;
         assert!(matches!(refused, Err(super::Error::Conflict(_))));
+        assert_eq!(reservation_bytes(&catalog, key).await, Some(100));
+    }
+
+    #[tokio::test]
+    #[ignore = "requires LIBREPAPER_TEST_POSTGRES_URL"]
+    async fn a_row_from_an_earlier_epoch_is_replaced_even_when_it_filled_the_quota() {
+        let mut catalog = catalog().await;
+        let _writer = catalog.claim_writer().await.unwrap();
+        let owner = account(&catalog).await;
+        let document = project(&catalog, &owner).await;
+        let before = catalog.usage_bytes(Some(owner.id)).await.unwrap();
+        catalog.policy.owner_bytes = before + 100;
+        let key = Uuid::now_v7();
+        sqlx::query(
+            "INSERT INTO pending_log_reservations \
+             (reservation_id,document_id,writer_epoch,bytes,batch_digest) VALUES($1,$2,$3,100,$4)",
+        )
+        .bind(key)
+        .bind(document)
+        .bind(catalog.writer_epoch().unwrap() - 1)
+        .bind([0u8; 32].as_slice())
+        .execute(catalog.pool())
+        .await
+        .unwrap();
+        let granted = catalog
+            .reserve_chat_bytes(document, key, 100, 100)
+            .await
+            .unwrap();
+        assert_eq!(granted, 100);
         assert_eq!(reservation_bytes(&catalog, key).await, Some(100));
     }
 
