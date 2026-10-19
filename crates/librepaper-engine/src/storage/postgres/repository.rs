@@ -330,46 +330,6 @@ impl PostgresCatalog {
         Ok(changed)
     }
 
-    /// Transfers ownership only while the document still belongs to the
-    /// expected owner. Lock the target account first, matching account
-    /// erasure's account-before-document lock order.
-    pub async fn transfer_document_owner(
-        &self,
-        id: Uuid,
-        expected_owner_id: Uuid,
-        new_owner_id: Uuid,
-        actor: &super::MutationAuthorization,
-    ) -> Result<bool> {
-        let mut tx = self.begin_writer_transaction().await?;
-        let target = sqlx::query_scalar::<_, Uuid>(
-            "SELECT id FROM accounts WHERE id=$1 AND status='active' FOR SHARE",
-        )
-        .bind(new_owner_id)
-        .fetch_optional(&mut *tx)
-        .await?;
-        if target.is_none() {
-            return Err(Error::Conflict("target account is unavailable".into()));
-        }
-        super::annotations::authorize_mutation(&mut tx, id, actor, true).await?;
-        Self::require_document_owner(&mut tx, id, actor).await?;
-        if actor.account_id != Some(expected_owner_id) {
-            return Err(Error::Conflict("ownership changed".into()));
-        }
-        let changed = sqlx::query(
-            "UPDATE documents SET owner_id=$3,ownership_mode='owned',updated_at=now()
-             WHERE id=$1 AND owner_id=$2 AND status='active'",
-        )
-        .bind(id)
-        .bind(expected_owner_id)
-        .bind(new_owner_id)
-        .execute(&mut *tx)
-        .await?
-        .rows_affected()
-            == 1;
-        tx.commit().await?;
-        Ok(changed)
-    }
-
     /// Save a document's link set and prune grants sourced from removed links
     /// in one transaction. Authorization and replacement share the same
     /// transaction so ownership and session changes cannot race the save.

@@ -212,53 +212,6 @@ async fn erasure_holding_the_account_lock_rejects_a_waiting_document_insert() {
 
 #[tokio::test]
 #[ignore = "requires LIBREPAPER_TEST_POSTGRES_URL"]
-async fn stale_owner_cannot_rename_share_or_transfer_after_ownership_moves() {
-    let catalog = catalog().await;
-    let writer = catalog.claim_writer().await.unwrap();
-    let owner = account(&catalog).await;
-    let next_owner = account(&catalog).await;
-    let owner_auth = mutation_authorization(&owner);
-    let document = catalog
-        .create_document(document(
-            owner.id,
-            format!("lifecycle-transfer-{}", Uuid::now_v7()),
-            Some(owner.session_generation),
-        ))
-        .await
-        .unwrap();
-    assert!(catalog
-        .transfer_document_owner(document.id, owner.id, next_owner.id, &owner_auth)
-        .await
-        .unwrap());
-    catalog
-        .set_grant(document.id, owner.id, AccessRole::Editor)
-        .await
-        .unwrap();
-
-    // The former owner still has an editor grant, but document administration
-    // remains restricted to the current owner.
-    assert!(catalog
-        .update_document_title(document.id, &owner_auth, "stale title")
-        .await
-        .is_err());
-    assert!(catalog
-        .save_document_sharing(document.id, &owner_auth, &[], &[])
-        .await
-        .is_err());
-    assert!(catalog
-        .transfer_document_owner(document.id, owner.id, owner.id, &owner_auth)
-        .await
-        .is_err());
-    let unchanged = catalog.document(document.id).await.unwrap().unwrap();
-    assert_eq!(unchanged.owner_id, next_owner.id);
-    assert_eq!(unchanged.title, "Lifecycle test");
-
-    drop(writer);
-    catalog.close().await;
-}
-
-#[tokio::test]
-#[ignore = "requires LIBREPAPER_TEST_POSTGRES_URL"]
 async fn uploads_on_different_documents_serialize_the_owner_quota_observation() {
     let url = std::env::var("LIBREPAPER_TEST_POSTGRES_URL")
         .expect("set LIBREPAPER_TEST_POSTGRES_URL to a throwaway PostgreSQL database");

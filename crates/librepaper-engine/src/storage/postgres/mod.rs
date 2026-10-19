@@ -1289,15 +1289,6 @@ mod tests {
             policy_comment: true,
             automation: false,
         };
-        let collaborator_authority = MutationAuthorization {
-            principal_key: collaborator.handle.clone(),
-            account_id: Some(collaborator.id),
-            session_generation: Some(collaborator.session_generation),
-            token_hash: None,
-            policy_edit: true,
-            policy_comment: true,
-            automation: false,
-        };
         assert_eq!(
             catalog
                 .set_grant(first.id, collaborator.id, AccessRole::Editor)
@@ -1456,40 +1447,6 @@ mod tests {
                 .unwrap(),
             None
         );
-
-        assert!(catalog
-            .transfer_document_owner(second.id, account.id, collaborator.id, &owner_authority)
-            .await
-            .unwrap());
-        assert!(catalog
-            .update_document_title(second.id, &collaborator_authority, "Transferred")
-            .await
-            .unwrap());
-        assert_eq!(
-            catalog
-                .access_role(
-                    second.id,
-                    Some(collaborator.id),
-                    None,
-                    OffsetDateTime::now_utc()
-                )
-                .await
-                .unwrap(),
-            Some(AccessRole::Owner)
-        );
-        assert!(catalog
-            .transfer_document_owner(
-                second.id,
-                collaborator.id,
-                account.id,
-                &collaborator_authority,
-            )
-            .await
-            .unwrap());
-        assert!(catalog
-            .update_document_title(second.id, &owner_authority, "Same title")
-            .await
-            .unwrap());
 
         // The log: a flush writes a row, and the row identity moves onto the
         // document.

@@ -9,7 +9,7 @@ Share with links, not people. The owner mints a read, comment or edit link in th
 | reader | open the document and read its comments |
 | commenter | comment, reply, resolve; delete their own comments |
 | editor | edit the source; delete any comment |
-| owner | share, transfer, destroy |
+| owner | share, destroy |
 
 - Every link needs a sign-in. A reader, commenter or editor signs in with GitHub or Google the first time they open the link, and the browser keeps the key after that.
 - The key is in the link's fragment, so it reaches no server log and no `Referer` header. Replacing a link kills the old key.

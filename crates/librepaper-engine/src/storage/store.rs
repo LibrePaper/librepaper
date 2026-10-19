@@ -342,8 +342,7 @@ impl Role {
     /// document hands out. `reader` parses now too, because a link may carry
     /// it -- on a `private` document that is the only thing a reader link is
     /// for, since reading is otherwise what reaching the document already
-    /// gives. Nobody is granted `owner`, since the owner is one account and
-    /// `transfer` is how that moves.
+    /// gives. Nobody is granted `owner`, since the owner is one account.
     pub fn parse(value: &str) -> Option<Role> {
         match value {
             "reader" => Some(Role::Reader),

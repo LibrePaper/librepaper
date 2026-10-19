@@ -63,7 +63,6 @@ pub(super) fn api_router(server: Arc<Server>) -> Router {
             post(quarto_checkpoint),
         )
         .route("/api/documents/{slug}/share", any(share))
-        .route("/api/documents/{slug}/transfer", post(transfer))
         .route("/api/documents/{slug}/source", get(source))
         .route("/api/documents/{slug}/snapshot", get(snapshot))
         .route("/api/documents/{slug}/comments", any(comments))
@@ -481,15 +480,6 @@ async fn share(
     request: Request<Body>,
 ) -> Reply {
     server.handle_share(request, &ctx.arrival, &slug).await
-}
-
-async fn transfer(
-    State(server): State<Arc<Server>>,
-    Extension(ctx): Extension<RequestContext>,
-    Path(slug): Path<String>,
-    request: Request<Body>,
-) -> Reply {
-    server.handle_transfer(request, &ctx.arrival, &slug).await
 }
 
 async fn source(

@@ -405,7 +405,7 @@ impl Server {
                     return write_json(400, &json!({"error": "bad request"}));
                 };
                 // Body reads are an await boundary. Resolve identity and
-                // document rights again afterwards so revocation/transfer
+                // document rights again afterwards so revocation
                 // cannot race a large request into a mutation.
                 let current_entry = match self.checked_entry(slug).await {
                     Ok(Some(entry)) => entry,

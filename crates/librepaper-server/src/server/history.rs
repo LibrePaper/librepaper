@@ -902,8 +902,8 @@ impl Server {
             Ok(room) => room,
             Err(error) => return refused("open the room", &error),
         };
-        // The owner may have transferred the document, or a link may have
-        // been revoked, while the request body was being read.
+        // A link may have been revoked, or the account's rights changed,
+        // while the request body was being read.
         let (_current_entry, current_who) = match self
             .entry_at_least(slug, &headers, arrival, None, Role::Editor)
             .await
@@ -999,8 +999,8 @@ impl Server {
             Ok(room) => room,
             Err(error) => return refused("open the room", &error),
         };
-        // The owner may have transferred the document, or a link may have
-        // been revoked, while the request body was being read.
+        // A link may have been revoked, or the account's rights changed,
+        // while the request body was being read.
         let (_, current_who) = match self
             .entry_at_least(slug, &headers, arrival, None, Role::Editor)
             .await
