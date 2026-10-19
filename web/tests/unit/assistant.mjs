@@ -4,6 +4,7 @@ import {
   normalizeCapabilities, resultIds, visibleResults, checkContextSize,
   TASK_CATALOG, TASK_CATEGORIES, TASK_KINDS, TASK_SCOPES, findTask, inferScope, searchTasks, taskPrompt, taskScopes,
   taskSections, CONTEXT_TASKS, taskForKind, taskBlocker,
+  taskHint, recordTaskUse, frequentTasks, FREQUENT_LIMIT,
 } from "../../src/lib/assistant.js";
 
 const selection = {
@@ -126,17 +127,23 @@ for (const entry of TASK_CATALOG) {
   assert.ok(Array.isArray(entry.keywords) && entry.keywords.length >= 3, `${entry.id} has too few keywords`);
 }
 
-// The Tasks browser shows every catalog entry, one section per category.
+// The Tasks browser shows every catalog entry, one section per category. An
+// entry in several categories appears in each of their sections.
+const sectionIds = (category) => taskSections().find((section) => section.category === category).entries.map((entry) => entry.id);
 assert.deepEqual(taskSections().map((section) => section.category), TASK_CATEGORIES);
-assert.deepEqual(taskSections().flatMap((section) => section.entries.map((entry) => entry.id)), TASK_CATALOG.map((entry) => entry.id));
-assert.equal(taskSections("Document").length, 1);
-assert.deepEqual(taskSections("Document")[0].entries.map((entry) => entry.id), ["outline", "summarize"]);
-assert.deepEqual(taskSections("Nope"), []);
+assert.ok(sectionIds("Writing").includes("explain"));
+assert.ok(sectionIds("Review").includes("explain"));
+assert.ok(sectionIds("Document").includes("summarize"));
+assert.ok(sectionIds("Review").includes("summarize"));
+assert.deepEqual(sectionIds("Document"), ["outline", "summarize"]);
+const browsed = taskSections().flatMap((section) => section.entries.map((entry) => entry.id));
+for (const entry of TASK_CATALOG) {
+  assert.ok(browsed.includes(entry.id), `${entry.id} is not browsed`);
+}
 for (const section of taskSections()) {
   assert.ok(section.entries.length > 0, `${section.category} has no entries`);
-  assert.ok(section.entries.every((entry) => entry.category === section.category), `${section.category} holds a foreign entry`);
+  assert.ok(section.entries.every((entry) => entry.categories.includes(section.category)), `${section.category} holds a foreign entry`);
 }
-const browsed = taskSections().flatMap((section) => section.entries.map((entry) => entry.id));
 for (const entry of CONTEXT_TASKS) {
   assert.equal(browsed.includes(entry.id), false, `${entry.id} must not be browsed`);
 }
@@ -191,5 +198,36 @@ assert.equal(diagnosticLabel({ severity: "error", file: "main.tex", line: 12, me
 assert.equal(diagnosticLabel({ severity: "warning", path: "chapter.typ" }), "Warning · chapter.typ");
 assert.equal(diagnosticLabel({ message: "no place given" }, "main.md"), "Error · main.md");
 assert.equal(diagnosticLabel({ severity: "warning" }), "Warning");
+
+// taskHint names what the reader still needs, and never reports access.
+assert.equal(taskHint(findTask("tighten"), {}).short, "Needs a selection");
+assert.equal(taskHint(findTask("tighten"), { attached: attachment, path: "main.md" }), null);
+assert.equal(taskHint(findTask("outline"), {}), null);
+assert.equal(taskHint(findTask("proofread"), {}), null);
+assert.equal(taskHint(null), null);
+
+// Usage counts uses by stable id, and a recorded use never mutates its input.
+const once = recordTaskUse({}, "proofread", 10);
+assert.deepEqual(once, { proofread: { count: 1, last: 10 } });
+assert.deepEqual(recordTaskUse(once, "proofread", 20), { proofread: { count: 2, last: 20 } });
+assert.deepEqual(once, { proofread: { count: 1, last: 10 } });
+assert.deepEqual(recordTaskUse({}, "not-a-task", 10), {});
+assert.deepEqual(recordTaskUse({ "not-a-task": { count: 1, last: 1 } }, "proofread", 10), { proofread: { count: 1, last: 10 } });
+assert.deepEqual(recordTaskUse({ proofread: { count: "x", last: 1 }, tighten: null }, "outline", 5), { outline: { count: 1, last: 5 } });
+
+assert.deepEqual(frequentTasks(recordTaskUse({}, "proofread", 1)), []);
+const twice = recordTaskUse(recordTaskUse({}, "proofread", 1), "proofread", 2);
+assert.deepEqual(frequentTasks(twice).map((entry) => entry.id), ["proofread"]);
+const ranking = {
+  tighten: { count: 3, last: 5 }, proofread: { count: 3, last: 9 },
+  outline: { count: 2, last: 100 }, summarize: { count: 2, last: 50 },
+};
+assert.deepEqual(frequentTasks(ranking).map((entry) => entry.id), ["proofread", "tighten", "outline", "summarize"]);
+const many = Object.fromEntries(["proofread", "tighten", "rewrite", "explain", "outline", "summarize"]
+  .map((id, index) => [id, { count: 2, last: index }]));
+assert.equal(FREQUENT_LIMIT, 5);
+assert.equal(frequentTasks(many).length, FREQUENT_LIMIT);
+assert.deepEqual(frequentTasks({ nope: { count: 9, last: 9 }, proofread: { count: "3", last: 1 } }), []);
+assert.deepEqual(frequentTasks(null), []);
 
 console.log("assistant: anchored tasks, capability gating, diagnostic context and review result mapping, and the task catalog passed");
