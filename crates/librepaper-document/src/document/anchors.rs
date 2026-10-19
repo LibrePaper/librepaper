@@ -271,10 +271,11 @@ fn width_at(s: &str, units: usize) -> usize {
 /// Pure, operation-level planner. No Loro here.
 ///
 /// Phase 1 runs each file on its own, edits in order, and moves its attached
-/// anchors. Phase 2 runs after every file: an insertion that takes a remembered
-/// text re-pins the detached anchors that were in it, into the file the
-/// insertion landed in, and rejoins the cut pieces of attached anchors at their
-/// edges. Deleted text is remembered, and the texts an insertion takes leave the
+/// anchors. Phase 2 runs after every file. Every remembered text that occurs
+/// exactly once in an insertion is taken, newest first. Each taken text
+/// re-pins the detached anchors that were in it, into the file the insertion
+/// landed in, and rejoins the cut pieces of attached anchors at their edges.
+/// Deleted text is remembered, and the texts an insertion takes leave the
 /// memory.
 ///
 /// Phase 1 keeps each insertion at its offset in the text as the later edits
@@ -290,59 +291,62 @@ pub fn plan_operation(files: &[OperationFile], memory: &mut MoveMemory) -> Vec<P
     for wi in 0..work.len() {
         let inserts = work[wi].inserts.clone();
         for (at, text) in inserts {
-            let Some(hit) = memory.take(&text) else {
-                continue;
-            };
-            let hit_at = hit.at;
-            for h in hit.held {
-                if h.text.is_empty() {
-                    continue;
-                }
-                let Some(oi) = work
-                    .iter()
-                    .position(|o| o.anchors.iter().any(|a| a.anchor.id == h.id))
-                else {
-                    continue;
-                };
-                let Some(index) = work[oi].anchors.iter().position(|a| a.anchor.id == h.id) else {
-                    continue;
-                };
-                // A cut piece goes back only onto the attached anchor it was cut
-                // from, and only when that anchor is in this same file.
-                if let Some(side) = h.side {
-                    if oi == wi {
-                        let from = at + hit_at + h.offset;
-                        rejoin_piece(&mut work[wi], index, side, from, &h.text);
+            while let Some(hit) = memory.take(&text) {
+                let hit_at = hit.at;
+                for h in hit.held {
+                    if h.text.is_empty() {
+                        continue;
                     }
-                    continue;
+                    let Some(oi) = work
+                        .iter()
+                        .position(|o| o.anchors.iter().any(|a| a.anchor.id == h.id))
+                    else {
+                        continue;
+                    };
+                    let Some(index) = work[oi]
+                        .anchors
+                        .iter()
+                        .position(|a| a.anchor.id == h.id)
+                    else {
+                        continue;
+                    };
+                    // A cut piece goes back only onto the attached anchor it was cut
+                    // from, and only when that anchor is in this same file.
+                    if let Some(side) = h.side {
+                        if oi == wi {
+                            let from = at + hit_at + h.offset;
+                            rejoin_piece(&mut work[wi], index, side, from, &h.text);
+                        }
+                        continue;
+                    }
+                    let source = work[oi].anchors[index].clone();
+                    // A record with no length has no span to bring back.
+                    if source.anchor.attached() || source.anchor.length.is_none() {
+                        continue;
+                    }
+                    let from = at + hit_at + h.offset;
+                    let to = from + utf16_len(&h.text);
+                    if slice16(&work[wi].after, from, to) != h.text {
+                        continue;
+                    }
+                    work[oi].anchors.remove(index);
+                    let mut pinned = source;
+                    pinned.anchor.file = work[wi].file_id.clone();
+                    pinned.anchor.from = from;
+                    pinned.anchor.to = to;
+                    pinned.anchor.detached = false;
+                    pinned.anchor.fragment = None;
+                    pinned.anchor.offset = None;
+                    pinned.anchor.length = None;
+                    pinned.anchor.collapsed = false;
+                    pinned.anchor.unresolved = false;
+                    pinned.state = PlanState::Set;
+                    pinned.touched = true;
+                    if oi != wi {
+                        pinned.moved_from = Some(work[oi].file_id.clone());
+                    }
+                    work[wi].anchors.push(pinned);
                 }
-                let source = work[oi].anchors[index].clone();
-                // A record with no length has no span to bring back.
-                if source.anchor.attached() || source.anchor.length.is_none() {
-                    continue;
-                }
-                let from = at + hit_at + h.offset;
-                let to = from + utf16_len(&h.text);
-                if slice16(&work[wi].after, from, to) != h.text {
-                    continue;
-                }
-                work[oi].anchors.remove(index);
-                let mut pinned = source;
-                pinned.anchor.file = work[wi].file_id.clone();
-                pinned.anchor.from = from;
-                pinned.anchor.to = to;
-                pinned.anchor.detached = false;
-                pinned.anchor.fragment = None;
-                pinned.anchor.offset = None;
-                pinned.anchor.length = None;
-                pinned.anchor.collapsed = false;
-                pinned.anchor.unresolved = false;
-                pinned.state = PlanState::Set;
-                pinned.touched = true;
-                if oi != wi {
-                    pinned.moved_from = Some(work[oi].file_id.clone());
-                }
-                work[wi].anchors.push(pinned);
             }
         }
     }
@@ -1647,6 +1651,61 @@ mod tests {
         assert_eq!(slice16(&planned[0].after, 11, 14), "two");
         assert_eq!(repinned.state, PlanState::Set);
         assert!(repinned.touched);
+        assert!(memory.is_empty());
+    }
+
+    #[test]
+    fn a_merged_undo_of_two_backspaces_rejoins_both_pieces() {
+        let mut memory = MoveMemory::new(32);
+        let first = OperationFile {
+            file_id: "main.md".to_string(),
+            before: "one two three".to_string(),
+            anchors: vec![anchor_at("c1", "main.md", 4, 7)],
+            edits: vec![Edit {
+                at: 4,
+                delete: 1,
+                insert: String::new(),
+            }],
+            fragments: Vec::new(),
+        };
+        let one = plan_operation(&[first], &mut memory);
+        assert_eq!(one[0].after, "one wo three");
+        assert_eq!(memory.len(), 1);
+
+        let second = OperationFile {
+            file_id: "main.md".to_string(),
+            before: one[0].after.clone(),
+            anchors: vec![one[0].anchors[0].anchor.clone()],
+            edits: vec![Edit {
+                at: 4,
+                delete: 1,
+                insert: String::new(),
+            }],
+            fragments: Vec::new(),
+        };
+        let two = plan_operation(&[second], &mut memory);
+        assert_eq!(two[0].after, "one o three");
+        assert_eq!(memory.len(), 2);
+
+        // The undo puts back "tw" as one insertion, so both pieces must rejoin.
+        let undo = OperationFile {
+            file_id: "main.md".to_string(),
+            before: two[0].after.clone(),
+            anchors: vec![two[0].anchors[0].anchor.clone()],
+            edits: vec![Edit {
+                at: 4,
+                delete: 0,
+                insert: "tw".to_string(),
+            }],
+            fragments: Vec::new(),
+        };
+        let planned = plan_operation(&[undo], &mut memory);
+        let rejoined = &planned[0].anchors[0];
+        assert_eq!(planned[0].after, "one two three");
+        assert_eq!((rejoined.anchor.from, rejoined.anchor.to), (4, 7));
+        assert_eq!(slice16(&planned[0].after, 4, 7), "two");
+        assert!(!rejoined.anchor.detached);
+        assert!(rejoined.touched);
         assert!(memory.is_empty());
     }
 

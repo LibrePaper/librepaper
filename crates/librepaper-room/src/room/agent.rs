@@ -546,34 +546,29 @@ fn coalesce_adjacent(edits: &[session::Edit]) -> Vec<session::Edit> {
     out
 }
 
-/// Maps a file's new fragments to the deletions that made them. Walking the
-/// deletions in order, each takes the fragments at the front whose texts join
-/// up to exactly its deleted text, which is `before` cut at the edit. A
-/// deletion that does not match takes none, so the anchors inside it detach
-/// without a fragment.
+/// Maps a file's new fragments to the deletions that made them. Each deletion,
+/// in edit order, takes the first run of fragments whose texts join up to
+/// exactly its deleted text, which is `before` cut at the edit. A run is
+/// contiguous in the list, uses only fragments that no earlier deletion took,
+/// and may start at any of them. A deletion with no such run takes none, so
+/// the anchors inside it detach without a fragment.
 fn fragment_ranges(
     before: &str,
     edits: &[session::Edit],
     fragments: &[track::FragmentInfo],
 ) -> Vec<FragmentRange> {
     let mut ranges = Vec::new();
-    let mut next = 0;
+    let mut consumed = vec![false; fragments.len()];
     for (index, edit) in edits.iter().enumerate() {
         if edit.delete == 0 {
             continue;
         }
         let deleted = utf16_slice(before, edit.at, edit.at + edit.delete);
-        let mut taken = next;
-        let mut joined = String::new();
-        while taken < fragments.len() && joined.len() < deleted.len() {
-            joined.push_str(&fragments[taken].text);
-            taken += 1;
-        }
-        if joined != deleted {
+        let Some(run) = first_run(fragments, &consumed, deleted) else {
             continue;
-        }
+        };
         let mut start = 0;
-        for fragment in &fragments[next..taken] {
+        for fragment in &fragments[run.clone()] {
             let end = start + fragment.text.encode_utf16().count();
             ranges.push(FragmentRange {
                 id: fragment.id.clone(),
@@ -583,9 +578,38 @@ fn fragment_ranges(
             });
             start = end;
         }
-        next = taken;
+        consumed[run].fill(true);
     }
     ranges
+}
+
+/// The first run of fragments whose texts join up to `deleted`. The run is
+/// contiguous, every fragment in it is unconsumed, and it may start at any
+/// unconsumed fragment. None when no run matches or `deleted` is empty.
+fn first_run(
+    fragments: &[track::FragmentInfo],
+    consumed: &[bool],
+    deleted: &str,
+) -> Option<std::ops::Range<usize>> {
+    if deleted.is_empty() {
+        return None;
+    }
+    for start in 0..fragments.len() {
+        let mut joined = String::new();
+        for (end, fragment) in fragments.iter().enumerate().skip(start) {
+            if consumed[end] {
+                break;
+            }
+            joined.push_str(&fragment.text);
+            if joined == deleted {
+                return Some(start..end + 1);
+            }
+            if joined.len() > deleted.len() {
+                break;
+            }
+        }
+    }
+    None
 }
 
 /// The text between two UTF-16 offsets. `to` is never taken before `from`.
@@ -1615,5 +1639,46 @@ mod tests {
         assert!(!back[1].detached);
         assert_eq!((back[1].from, back[1].to), (31, 38));
         assert_eq!(anchors::status_of(&doc, &back[1]), anchors::Status::Exact);
+    }
+
+    #[test]
+    fn a_deletion_takes_its_run_when_a_later_one_comes_first_in_the_text() {
+        let edits = [
+            session::Edit {
+                at: 14,
+                delete: 4,
+                insert: String::new(),
+            },
+            session::Edit {
+                at: 4,
+                delete: 4,
+                insert: String::new(),
+            },
+        ];
+        let fragment = |id: &str, text: &str, at: usize| track::FragmentInfo {
+            id: id.to_string(),
+            change: "c1".to_string(),
+            text: text.to_string(),
+            at,
+        };
+        let fragments = [fragment("f1", "two ", 4), fragment("f2", "four", 14)];
+        let ranges = fragment_ranges("one two three four", &edits, &fragments);
+        assert_eq!(
+            ranges,
+            vec![
+                FragmentRange {
+                    id: "f2".to_string(),
+                    edit: 0,
+                    start: 0,
+                    end: 4,
+                },
+                FragmentRange {
+                    id: "f1".to_string(),
+                    edit: 1,
+                    start: 0,
+                    end: 4,
+                },
+            ]
+        );
     }
 }
