@@ -131,15 +131,15 @@
   const selectedText = $derived(attachment?.selection?.exact || "");
   const caps = $derived(normalizeCapabilities(verifiedCapabilities));
   const contextPath = $derived(diagnostic?.file || diagnostic?.path || path);
+  const runnerReady = $derived(connection.connected && connection.runnerConnected);
+  // No agent attached yet, but sending can start the chosen one first.
+  const canStart = $derived(!runnerReady && !assistant.running && Boolean(connection.id) && Boolean(chosenInstalled?.assistant));
   const preparedTaskValid = $derived(!task || capabilityAllows(caps, task, {
-    attached: attachment || null, path: contextPath,
+    attached: attachment || null, path: contextPath, deferAccess: canStart,
   }));
   const uncertainDelivery = $derived(Object.values(connection.tasks || {}).some((item) =>
     item?.delivery === "uncertain" && item.request === draft.trim()));
-  const runnerReady = $derived(connection.connected && connection.runnerConnected);
   const sendable = $derived(runnerReady && preparedTaskValid && !uncertainDelivery);
-  // No agent attached yet, but sending can start the chosen one first.
-  const canStart = $derived(!runnerReady && !assistant.running && Boolean(connection.id) && Boolean(chosenInstalled?.assistant));
   const startable = $derived(canStart && preparedTaskValid && !uncertainDelivery);
   const searching = $derived(taskQuery.trim() !== "");
   const results = $derived(searching ? searchTasks(taskQuery.trim()) : []);
@@ -164,7 +164,7 @@
     return "";
   });
   const blocker = $derived(chosen ? taskBlocker(caps, { kind: chosen.kind, scope }, {
-    attached: attachment || null, path: contextPath,
+    attached: attachment || null, path: contextPath, deferAccess: canStart,
   }) : "");
   // Tracked-change tasks need the agent to hold Edit, whatever the reader holds.
   const accessGap = $derived(Boolean(chosen) && ["tighten", "rewrite", "proofread", "fix"].includes(chosen.kind) && offeredAccess() !== "editor");
@@ -548,6 +548,9 @@
     await act(async () => {
       if (!runnerReady) {
         await startAssistant(offeredAccess());
+        // Starting the agent verified access, so a deferred task is checked again here.
+        const refused = task ? taskBlocker(caps, task, { attached: attachment || null, path: contextPath }) : "";
+        if (refused) throw new Error(refused);
         await client.untilRunner(RUNNER_JOIN_MS);
       }
       await client.send(text, {

@@ -250,18 +250,20 @@ export function taskNeedsAnchor(task) {
 }
 
 // The reason a task cannot run here, or "" when it may run. The checks are
-// the same ones capabilityAllows has always made, in the same order.
-export function taskBlocker(capabilities, task, { attached = null, path = "" } = {}) {
+// the same ones capabilityAllows has always made, in the same order. With
+// deferAccess, unverified access waits for the agent start, which verifies it.
+export function taskBlocker(capabilities, task, { attached = null, path = "", deferAccess = false } = {}) {
   const caps = normalizeCapabilities(capabilities);
+  const checkAccess = caps.verified || !deferAccess;
   if (!task || !TASK_KINDS.includes(task.kind) || !TASK_SCOPES.includes(task.scope)) return "This task cannot run here.";
-  if (!caps.verified) return "Connect an agent to check access for this task.";
-  if (!caps.can_read) return "You need read access to run this task.";
+  if (!deferAccess && !caps.verified) return "Connect an agent to check access for this task.";
+  if (checkAccess && !caps.can_read) return "You need read access to run this task.";
   if (["tighten", "rewrite"].includes(task.kind) && task.scope !== "selection") return "This task works on a selected passage.";
   if (task.scope === "selection" && !attached) return "Select text in the editor to use this task.";
   if (taskNeedsAnchor(task) && !text(attached?.selection?.exact).trim()) return "Select the passage in the source to use this task.";
   if (task.scope === "file" && !path) return "Open a file to use this task.";
-  if (["tighten", "rewrite", "proofread", "fix"].includes(task.kind) && !caps.can_suggest) return "You need edit access to run this task.";
-  if (task.kind === "respond" && !caps.can_reply) return "You need comment access to run this task.";
+  if (checkAccess && ["tighten", "rewrite", "proofread", "fix"].includes(task.kind) && !caps.can_suggest) return "You need edit access to run this task.";
+  if (checkAccess && task.kind === "respond" && !caps.can_reply) return "You need comment access to run this task.";
   return "";
 }
 
