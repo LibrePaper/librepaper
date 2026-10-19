@@ -224,6 +224,21 @@ client_secret = "replace"
 # label = "Contoso"                               # the button text, default Microsoft
 ```
 
+**ORCID.** LibrePaper requests only the `openid` scope and receives the ORCID iD and the name on the ORCID record. ORCID sends no email address, so an account's handle is its iD, such as `0000-0002-1825-0097`.
+
+- Register a free public API client at [ORCID developer tools](https://orcid.org/developer-tools). Sign in to your own ORCID account, then register an application.
+- Redirect URI: `https://paper.example/auth/callback/orcid`. ORCID requires HTTPS redirect URIs.
+- Put the client ID (it starts with `APP-`) and the client secret in `[auth.orcid]`.
+
+```toml
+[auth.orcid]
+client_id = "APP-XXXXXXXXXXXXXXXX"
+client_secret = "replace"
+publishers = ["0000-0002-1825-0097"]   # ORCID iDs, or "*" for any ORCID account
+```
+
+See [ORCID](advanced.html#orcid) for more.
+
 **Other OpenID Connect providers.** Any provider with an OpenID Connect discovery document works. Add one `[auth.oidc.<name>]` table for each provider, up to 8. The name uses lowercase letters, digits and hyphens.
 
 - Register LibrePaper as a client, with the callback URL `https://paper.example/auth/callback/oidc-<name>`.
