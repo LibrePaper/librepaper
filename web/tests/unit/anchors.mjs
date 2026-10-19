@@ -5,9 +5,9 @@
 // random histories of typing, cutting, pasting, copying and dragging against a
 // model that tags every unit with the anchor it belongs to. The model applies
 // the same memory rule as the planner (each remembered text that occurs exactly
-// once in an insertion, newest first, takes its held anchors back), so the
-// fuzzer checks positions, quotes, list membership and the memory size, not the
-// policy itself.
+// once in an insertion, newest first, takes its held anchors back unless an
+// earlier take of that insertion claimed its span), so the fuzzer checks
+// positions, quotes, list membership and the memory size, not the policy itself.
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { test } from "node:test";
@@ -177,11 +177,11 @@ function occurrences(hay, needle) {
 }
 
 // The planner's take: the newest entry whose text occurs exactly once in the
-// inserted text. The entry leaves the memory.
-function takeMemory(model, inserted) {
+// inserted text and whose occurrence `free` accepts. The entry leaves the memory.
+function takeMemory(model, inserted, free) {
   for (let i = model.memory.length - 1; i >= 0; i--) {
     const at = occurrences(inserted, model.memory[i].text);
-    if (at.length === 1) {
+    if (at.length === 1 && free(at[0], at[0] + model.memory[i].text.length)) {
       const [entry] = model.memory.splice(i, 1);
       return { entry, at: at[0] };
     }
@@ -191,8 +191,9 @@ function takeMemory(model, inserted) {
 
 // Applies one operation's edits to the model the way the planner does:
 // deleted text is remembered with the anchors it takes whole, then each
-// insertion takes every remembered text that occurs exactly once in it, newest
-// first, and tags the held anchors back in place.
+// insertion takes the remembered texts that occur exactly once in it, newest
+// first, and whose occurrence no earlier take of that insertion claimed. The
+// held anchors of each take are tagged back in place.
 function applyEdits(model, fileIdx, edits) {
   const file = model.files[fileIdx];
   const src = file.units;
@@ -216,7 +217,11 @@ function applyEdits(model, fileIdx, edits) {
   file.units = out;
   model.memory.push(...pending);
   for (const { pos, text } of inserts) {
-    for (let hit = takeMemory(model, text); hit; hit = takeMemory(model, text)) {
+    // The spans of this insertion that a take has claimed, as the planner keeps them.
+    const claimed = [];
+    const free = (from, to) => !claimed.some((c) => from < c.to && to > c.from);
+    for (let hit = takeMemory(model, text, free); hit; hit = takeMemory(model, text, free)) {
+      claimed.push({ from: hit.at, to: hit.at + hit.entry.text.length });
       for (const h of hit.entry.held) {
         const attached = model.files.some((f) => f.units.some((u) => u.tags.has(h.id)));
         assert.equal(attached, false, `held anchor ${h.id} is still attached`);
@@ -416,9 +421,10 @@ test("seeded fuzz: anchors follow typing, cutting, pasting, copying and dragging
 
 test("fragmentRangesFor: a deletion takes the two created fragments of its text, in order", () => {
   const before = "one two three";
+  // The gap of "two " deleted at 4..8 is at 4.
   const fragments = [
-    { id: "f-a", text: "tw" },
-    { id: "f-b", text: "o " },
+    { id: "f-a", text: "tw", at: 4 },
+    { id: "f-b", text: "o ", at: 4 },
   ];
   assert.deepEqual(fragmentRangesFor(before, [{ from: 4, to: 8, insert: "" }], fragments), [
     { id: "f-a", edit: 0, start: 0, end: 2 },
@@ -429,17 +435,19 @@ test("fragmentRangesFor: a deletion takes the two created fragments of its text,
 test("fragmentRangesFor: a deletion whose fragments do not make its text takes none and leaves them", () => {
   const before = "one two three";
   const fragments = [
-    { id: "f-a", text: "tw" },
-    { id: "f-b", text: "o " },
+    { id: "f-a", text: "tw", at: 4 },
+    { id: "f-b", text: "o ", at: 4 },
   ];
   // "two t" is joined with the "t" after it, so the fragments do not make it.
   assert.deepEqual(fragmentRangesFor(before, [{ from: 4, to: 9, insert: "" }], fragments), []);
   // "one" is not the fragments either. The deletion of "two " after it still takes both.
+  // Once "one" is gone, the gap of "two " in " three" is at 1.
   const edits = [
     { from: 0, to: 3, insert: "" },
     { from: 4, to: 8, insert: "" },
   ];
-  assert.deepEqual(fragmentRangesFor(before, edits, fragments), [
+  const moved = fragments.map((f) => ({ ...f, at: 1 }));
+  assert.deepEqual(fragmentRangesFor(before, edits, moved), [
     { id: "f-a", edit: 1, start: 0, end: 2 },
     { id: "f-b", edit: 1, start: 2, end: 4 },
   ]);
@@ -447,9 +455,10 @@ test("fragmentRangesFor: a deletion whose fragments do not make its text takes n
 
 test("fragmentRangesFor: two deletions in one transaction take their fragments one after the other", () => {
   const before = "one two three four";
+  // After both deletions the gap of "two " is at 4 and the gap of "four" is at 10.
   const fragments = [
-    { id: "f-two", text: "two " },
-    { id: "f-four", text: "four" },
+    { id: "f-two", text: "two ", at: 4 },
+    { id: "f-four", text: "four", at: 10 },
   ];
   // "four" is at 14..18 in the text before the edits.
   const edits = [
@@ -469,7 +478,8 @@ test("fragmentRangesFor: a composed second step matches through the running text
     [{ from: 0, to: 0, insert: "XX" }],
     [{ from: 6, to: 10, insert: "" }],
   ]);
-  assert.deepEqual(fragmentRangesFor(before, edits, [{ id: "f-two", text: "two " }]), [
+  // In "XXone three" the gap of the deleted "two " is at 6.
+  assert.deepEqual(fragmentRangesFor(before, edits, [{ id: "f-two", text: "two ", at: 6 }]), [
     { id: "f-two", edit: 1, start: 0, end: 4 },
   ]);
 });
@@ -481,13 +491,32 @@ test("fragmentRangesFor: a later transaction's deletion takes a fragment that si
     [{ from: 14, to: 18, insert: "" }],
     [{ from: 4, to: 8, insert: "" }],
   ]);
+  // After both deletions the text is "one three ". The gap of "four" is at 10 and the gap of "two " at 4.
   const fragments = [
-    { id: "f-two", text: "two " },
-    { id: "f-four", text: "four" },
+    { id: "f-two", text: "two ", at: 4 },
+    { id: "f-four", text: "four", at: 10 },
   ];
   assert.deepEqual(fragmentRangesFor(before, edits, fragments), [
     { id: "f-four", edit: 0, start: 0, end: 4 },
     { id: "f-two", edit: 1, start: 0, end: 4 },
+  ]);
+});
+
+test("fragmentRangesFor: identical texts deleted in reverse order keep their own fragments", () => {
+  const before = "one two three two four";
+  // The later "two " goes first. The earlier one is then at 4..8 of the running text.
+  const edits = composeEdits([
+    [{ from: 14, to: 18, insert: "" }],
+    [{ from: 4, to: 8, insert: "" }],
+  ]);
+  // After both deletions the text is "one three four". The early gap is at 4 and the late one at 10.
+  const fragments = [
+    { id: "f-early", text: "two ", at: 4 },
+    { id: "f-late", text: "two ", at: 10 },
+  ];
+  assert.deepEqual(fragmentRangesFor(before, edits, fragments), [
+    { id: "f-late", edit: 0, start: 0, end: 4 },
+    { id: "f-early", edit: 1, start: 0, end: 4 },
   ]);
 });
 
@@ -646,6 +675,24 @@ test("a merged undo of two backspaces rejoins both pieces", () => {
   assert.equal(memory.size, 0);
 });
 
+test("two cuts of the same word and one paste attach one comment", () => {
+  const memory = new MoveMemory();
+  const anchors = [anchorOn("a", 4, 7, "two"), anchorOn("b", 14, 17, "two")];
+  // The later "two" is cut first, so the earlier one is the newest entry.
+  const cutLater = planOne("one two three two four", anchors, [{ from: 14, to: 17, insert: "" }], memory);
+  const cutEarlier = planOne(cutLater.after, cutLater.anchors, [{ from: 4, to: 7, insert: "" }], memory);
+  assert.equal(memory.size, 2);
+  // One "two" comes back at the end. The newest entry takes it, and the older one finds it claimed.
+  const end = cutEarlier.after.length;
+  const pasted = planOne(cutEarlier.after, cutEarlier.anchors, [{ from: end, to: end, insert: "two" }], memory);
+  const a = pasted.anchors.find((x) => x.id === "a");
+  const b = pasted.anchors.find((x) => x.id === "b");
+  assert.deepEqual([a.from, a.to, a.detached], [end, end + 3, false]);
+  assert.equal(pasted.after.slice(a.from, a.to), "two");
+  assert.equal(b.detached, true);
+  assert.equal(memory.size, 1);
+});
+
 test("deriveAttachment: an attached, a detached and a missing record, through a real document", () => {
   const doc = new LoroDoc();
   const text = doc.getMap("files").setContainer("f1", new LoroText());
@@ -766,7 +813,7 @@ test("rejectRestoring: the text a rejection puts back is listed, and restoreByFr
   const [changeId] = trackedSplice(doc, "f1", edit.from, edit.to, edit.insert, { who: "me", author: "Me" });
   doc.commit();
   const created = resolveFile(doc, "f1").gaps.flatMap((gap) =>
-    gap.fragments.map((f) => ({ id: f.id, text: f.text })),
+    gap.fragments.map((f) => ({ id: f.id, text: f.text, at: gap.at })),
   );
   const fragments = fragmentRangesFor(source, [edit], created);
   assert.equal(fragments.length, 1);
@@ -804,7 +851,7 @@ test("rejecting a tracked deletion that cut the head of a passage rejoins it", (
   const [changeId] = trackedSplice(doc, "f1", deletion.from, deletion.to, deletion.insert, { who: "me", author: "Me" });
   doc.commit();
   const created = resolveFile(doc, "f1").gaps.flatMap((gap) =>
-    gap.fragments.map((f) => ({ id: f.id, text: f.text })),
+    gap.fragments.map((f) => ({ id: f.id, text: f.text, at: gap.at })),
   );
   const fragments = fragmentRangesFor(source, [deletion], created);
   index.record([{ fileId: "f1", edits: [deletion], fragments }], memory);

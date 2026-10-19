@@ -52,6 +52,9 @@ export const CONTEXT_UNITS = 32;
  *   attached anchor holds just the piece it took, with side "head" or "tail".
  *   Such an entry rejoins the anchor when the piece comes back at the edge it
  *   was cut from, and the anchor must still be attached in the same file.
+ * @typedef {{ id: string, text: string, at: number }} CreatedFragment
+ *   A fragment that the deletions of one list created. at is the gap it sits
+ *   in, as an offset into the text after every edit of the list.
  */
 
 // What the session deleted whole, oldest first. Each entry keeps the anchors
@@ -76,16 +79,22 @@ export class MoveMemory {
   }
 
   /**
-   * Takes the newest remembered text that occurs exactly once in `inserted`.
+   * Takes the newest remembered text that occurs exactly once in `inserted`
+   * and whose occurrence `free` accepts. An entry that `free` refuses stays
+   * remembered, and the scan goes on to the older entries.
    * @param {string} inserted
+   * @param {(from: number, to: number) => boolean} [free] tells whether the span
+   *   of `inserted` from `from` to `to` is still unclaimed. By default every
+   *   span is free.
    * @returns {{ text: string, held: Held[], at: number } | null}
    */
-  take(inserted) {
+  take(inserted, free = () => true) {
     for (let i = this.#entries.length - 1; i >= 0; i--) {
       const entry = this.#entries[i];
       const at = inserted.indexOf(entry.text);
       // Overlapping occurrences count as two: "aa" in "aaa" is ambiguous.
       if (at < 0 || inserted.indexOf(entry.text, at + 1) >= 0) continue;
+      if (!free(at, at + entry.text.length)) continue;
       this.#entries.splice(i, 1);
       return { text: entry.text, held: entry.held, at };
     }
@@ -106,10 +115,12 @@ export class MoveMemory {
  * lands before it, and is dropped when the later edit reaches into it.
  * Phase 2 runs after every file: each remembered text that occurs exactly once
  * in an insertion is taken, newest first, and re-pins the detached anchors
- * that were in it, into the file the insertion landed in. A piece cut from one
- * end of an attached anchor rejoins that anchor when the piece comes back at
- * the same end. Deletions are remembered and taken texts are removed from the
- * memory as a side effect.
+ * that were in it, into the file the insertion landed in. A take claims the
+ * span it covers in that insertion, so a later take cannot claim the same
+ * occurrence, and an entry whose span is claimed stays remembered. A piece cut
+ * from one end of an attached anchor rejoins that anchor when the piece comes
+ * back at the same end. Deletions are remembered and taken texts are removed
+ * from the memory as a side effect.
  *
  * @param {{ fileId: string, before: string, anchors: Anchor[], edits: Edit[], fragments?: FragmentRange[] }[]} files
  * @param {MoveMemory} memory
@@ -222,12 +233,19 @@ export function planOperation(files, memory, { context = CONTEXT_UNITS, foreign 
 
   // Phase 2: an insertion re-pins the anchors that were in the text it brings
   // back. Each remembered text that occurs exactly once in the insertion is
-  // taken, newest first, and every taken entry is processed. A whole anchor
-  // comes back from detached. A cut head or tail rejoins an anchor that is
-  // still attached, in the same file, at the edge the piece was cut from.
+  // taken, newest first, and every taken entry is processed. The spans that
+  // earlier takes of this insertion claimed are not free, so two entries for
+  // one pasted occurrence cannot both take it. Two disjoint pieces each still
+  // take their own span. A whole anchor comes back from detached. A cut head
+  // or tail rejoins an anchor that is still attached, in the same file, at the
+  // edge the piece was cut from.
   for (const w of foreign ? [] : work) {
     for (const ins of w.inserts) {
-      for (let hit = memory.take(ins.text); hit; hit = memory.take(ins.text)) {
+      /** @type {{ from: number, to: number }[]} */
+      const claimed = [];
+      const free = (from, to) => !claimed.some((c) => from < c.to && to > c.from);
+      for (let hit = memory.take(ins.text, free); hit; hit = memory.take(ins.text, free)) {
+        claimed.push({ from: hit.at, to: hit.at + hit.text.length });
         for (const h of hit.held) {
           if (!h.text) continue;
           const owner = work.find((o) => o.anchors.some((a) => a.id === h.id));
@@ -763,41 +781,58 @@ export function composeEdits(lists) {
 /**
  * The fragment ranges of the deletions in one transaction. The walk mirrors the
  * Rust fragment_ranges. Each deletion, in edit order, looks for the first run of
- * created fragments whose texts join up to exactly its deleted text. A run is
- * contiguous in the list, every fragment in it is still unconsumed, and it may
- * start at any unconsumed fragment. Each fragment of the run becomes one range,
- * with start and end inside that text, and is consumed. A deletion with no such
- * run gets no ranges and consumes nothing, so a later deletion can still take
- * those fragments. That covers an untracked deletion and a deletion whose text
- * was joined with something else.
+ * created fragments that sit at its gap and whose texts join up to exactly its
+ * deleted text. The gap is where the deleted text sits in the final text, after
+ * every edit of the list. It starts
+ * at the deletion's own position and each later edit moves it. A later edit
+ * that ends at or before the position shifts it by that edit's net length
+ * change, so an insertion exactly at the position moves it past the inserted
+ * text. A later edit that deletes across the position moves it to the start of
+ * that edit. A run is contiguous in the list, every fragment in it is still
+ * unconsumed and sits at that gap, and it may start at any such fragment. Each
+ * fragment of the run becomes one range, with start and end inside that text,
+ * and is consumed. A deletion with no such run gets no ranges and consumes
+ * nothing, so a later deletion can still take those fragments. That covers an
+ * untracked deletion and a deletion whose text was joined with something else.
  *
- * A single list in document order is walked the same way. A composed list (see
- * composeEdits) is in transaction order, so a later transaction may delete text
- * that sits before an earlier one's deletion. The edits are in planOperation's
- * coordinates, so each one is matched against the running text.
+ * Matching by gap keeps two deletions of the same text apart. A composed list
+ * (see composeEdits) is in transaction order, so a later transaction may delete
+ * text that sits before an earlier one's deletion. The edits are in
+ * planOperation's coordinates, so each one is matched against the running text.
  *
  * @param {string} before the text the edits apply to
  * @param {Edit[]} edits
- * @param {{ id: string, text: string }[]} fragments the created fragments: in document order for one list, in transaction order for a composed list
+ * @param {CreatedFragment[]} fragments the created fragments, each with its gap (at) in the text after every edit
  * @returns {FragmentRange[]}
  */
 export function fragmentRangesFor(before, edits, fragments) {
   const out = [];
   const consumed = fragments.map(() => false);
-  let cur = before;
+  // Each edit's span in the running text, computed the way planOperation does.
+  const spans = [];
   let adj = 0;
+  for (const edit of edits) {
+    spans.push({ ef: edit.from + adj, et: edit.to + adj, n: edit.insert.length });
+    adj += edit.insert.length - (edit.to - edit.from);
+  }
+  let cur = before;
   edits.forEach((edit, index) => {
-    const ef = edit.from + adj;
-    const et = edit.to + adj;
+    const { ef, et } = spans[index];
     if (et > ef) {
       const deleted = cur.slice(ef, et);
-      // The first run of unconsumed fragments, contiguous in the list, that joins up to the deleted text.
+      // Where the deleted text sits in the final text. Each later edit moves it.
+      let point = ef;
+      for (const later of spans.slice(index + 1)) {
+        if (later.et <= point) point += later.n - (later.et - later.ef);
+        else if (later.ef < point) point = later.ef;
+      }
+      // The first run of unconsumed fragments at that gap, contiguous in the list, that joins up to the deleted text.
       let run = null;
       for (let first = 0; first < fragments.length && run === null; first++) {
-        if (consumed[first]) continue;
+        if (consumed[first] || fragments[first].at !== point) continue;
         let last = first;
         let joined = "";
-        while (last < fragments.length && !consumed[last] && joined.length < deleted.length) {
+        while (last < fragments.length && !consumed[last] && fragments[last].at === point && joined.length < deleted.length) {
           joined += fragments[last].text;
           last++;
         }
@@ -814,7 +849,6 @@ export function fragmentRangesFor(before, edits, fragments) {
       }
     }
     cur = cur.slice(0, ef) + edit.insert + cur.slice(et);
-    adj += edit.insert.length - (edit.to - edit.from);
   });
   return out;
 }
@@ -1160,7 +1194,7 @@ export class AnchorIndex {
             const deletes = composed.some((edit) => edit.to > edit.from);
             if (appeared.size === 0 || !deletes) return { fileId, edits: composed, fragments: [] };
             const created = resolveFile(this.#doc, fileId).gaps.flatMap((gap) =>
-              gap.fragments.filter((f) => appeared.has(f.id)).map((f) => ({ id: f.id, text: f.text })),
+              gap.fragments.filter((f) => appeared.has(f.id)).map((f) => ({ id: f.id, text: f.text, at: gap.at })),
             );
             const fragments = fragmentRangesFor(this.get(fileId).text, composed, created);
             return { fileId, edits: composed, fragments };

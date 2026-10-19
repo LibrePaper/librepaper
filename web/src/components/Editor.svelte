@@ -362,7 +362,7 @@
               // position order and fragments in rank order, which is document
               // order.
               const known = new Set(snapshot.gaps.flatMap((gap) => gap.fragments.map((f) => f.id)));
-              created = resolveFile(doc, fileId).gaps.flatMap((gap) => gap.fragments.filter((f) => !known.has(f.id)).map((f) => ({ id: f.id, text: f.text })));
+              created = resolveFile(doc, fileId).gaps.flatMap((gap) => gap.fragments.filter((f) => !known.has(f.id)).map((f) => ({ id: f.id, text: f.text, at: gap.at })));
             }
           }
           if (doc.getMap(CHANGES).size) prune(doc);
@@ -441,7 +441,7 @@
     const edits = [{ from, to, insert }];
     let fragments = [];
     if (to > from && doc.getMap(CHANGES).size) {
-      const created = resolveFile(doc, fileId).gaps.flatMap((gap) => gap.fragments.filter((f) => !known.has(f.id)).map((f) => ({ id: f.id, text: f.text })));
+      const created = resolveFile(doc, fileId).gaps.flatMap((gap) => gap.fragments.filter((f) => !known.has(f.id)).map((f) => ({ id: f.id, text: f.text, at: gap.at })));
       fragments = fragmentRangesFor(before, edits, created);
     }
     session.anchors.record([{ fileId, edits, fragments }], session.anchorMemory);
