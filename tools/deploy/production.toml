@@ -39,9 +39,10 @@ secret_access_key = "@LIBREPAPER_OBJECTS_S3_SECRET_ACCESS_KEY@"
 
 # Sign-in needs at least one provider, each with both values; omit a table to
 # disable it. Callbacks: /auth/callback (GitHub), /auth/callback/google.
-# publishers: "*" admits any account of that provider, a GitHub login, a
-# verified Google address or @example.org (that exact domain, not subdomains).
-# commenters default to "*". Reading by link never needs sign-in.
+# Each table lists who may publish and comment through it: "*" for any account
+# of that provider, a GitHub login under github, a verified address or
+# @example.org (that exact domain, not subdomains) under google. commenters
+# default to "*". Reading by link never needs sign-in.
 [auth.github]
 client_id = "@LIBREPAPER_GITHUB_CLIENT_ID@"
 client_secret = "@LIBREPAPER_GITHUB_CLIENT_SECRET@"
