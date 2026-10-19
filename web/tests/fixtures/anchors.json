@@ -1,0 +1,544 @@
+[
+  {
+    "name": "insertion before the passage moves it",
+    "files": [
+      {
+        "fileId": "f1",
+        "before": "Hello brave world.",
+        "anchors": [
+          { "id": "a", "file": "f1", "from": 6, "to": 11, "detached": false, "fragment": null, "offset": null, "exact": "brave", "prefix": "Hello ", "suffix": " world.", "collapsed": false, "unresolved": false }
+        ],
+        "edits": [{ "from": 0, "to": 0, "insert": "Oh! " }]
+      }
+    ],
+    "expect": {
+      "files": [
+        {
+          "fileId": "f1",
+          "after": "Oh! Hello brave world.",
+          "anchors": [{ "id": "a", "from": 10, "to": 15, "detached": false, "exact": "brave", "state": "set" }]
+        }
+      ]
+    }
+  },
+  {
+    "name": "insertion exactly at the start stays outside",
+    "files": [
+      {
+        "fileId": "f1",
+        "before": "Hello brave world.",
+        "anchors": [
+          { "id": "a", "file": "f1", "from": 6, "to": 11, "detached": false, "fragment": null, "offset": null, "exact": "brave", "prefix": "Hello ", "suffix": " world.", "collapsed": false, "unresolved": false }
+        ],
+        "edits": [{ "from": 6, "to": 6, "insert": "XX" }]
+      }
+    ],
+    "expect": {
+      "files": [
+        {
+          "fileId": "f1",
+          "after": "Hello XXbrave world.",
+          "anchors": [{ "id": "a", "from": 8, "to": 13, "detached": false, "exact": "brave", "state": "set" }]
+        }
+      ]
+    }
+  },
+  {
+    "name": "insertion inside grows it",
+    "files": [
+      {
+        "fileId": "f1",
+        "before": "Hello brave world.",
+        "anchors": [
+          { "id": "a", "file": "f1", "from": 6, "to": 11, "detached": false, "fragment": null, "offset": null, "exact": "brave", "prefix": "Hello ", "suffix": " world.", "collapsed": false, "unresolved": false }
+        ],
+        "edits": [{ "from": 8, "to": 8, "insert": "XX" }]
+      }
+    ],
+    "expect": {
+      "files": [
+        {
+          "fileId": "f1",
+          "after": "Hello brXXave world.",
+          "anchors": [{ "id": "a", "from": 6, "to": 13, "detached": false, "exact": "brave", "state": "set" }]
+        }
+      ]
+    }
+  },
+  {
+    "name": "insertion exactly at the end stays outside",
+    "files": [
+      {
+        "fileId": "f1",
+        "before": "Hello brave world.",
+        "anchors": [
+          { "id": "a", "file": "f1", "from": 6, "to": 11, "detached": false, "fragment": null, "offset": null, "exact": "brave", "prefix": "Hello ", "suffix": " world.", "collapsed": false, "unresolved": false }
+        ],
+        "edits": [{ "from": 11, "to": 11, "insert": "XX" }]
+      }
+    ],
+    "expect": {
+      "files": [
+        {
+          "fileId": "f1",
+          "after": "Hello braveXX world.",
+          "anchors": [{ "id": "a", "from": 6, "to": 11, "detached": false, "exact": "brave", "state": "kept" }]
+        }
+      ]
+    }
+  },
+  {
+    "name": "insertion after leaves it",
+    "files": [
+      {
+        "fileId": "f1",
+        "before": "Hello brave world.",
+        "anchors": [
+          { "id": "a", "file": "f1", "from": 6, "to": 11, "detached": false, "fragment": null, "offset": null, "exact": "brave", "prefix": "Hello ", "suffix": " world.", "collapsed": false, "unresolved": false }
+        ],
+        "edits": [{ "from": 13, "to": 13, "insert": "XX" }]
+      }
+    ],
+    "expect": {
+      "files": [
+        {
+          "fileId": "f1",
+          "after": "Hello brave wXXorld.",
+          "anchors": [{ "id": "a", "from": 6, "to": 11, "detached": false, "exact": "brave", "state": "kept" }]
+        }
+      ]
+    }
+  },
+  {
+    "name": "deletion before shifts it",
+    "files": [
+      {
+        "fileId": "f1",
+        "before": "Hello brave world.",
+        "anchors": [
+          { "id": "a", "file": "f1", "from": 6, "to": 11, "detached": false, "fragment": null, "offset": null, "exact": "brave", "prefix": "Hello ", "suffix": " world.", "collapsed": false, "unresolved": false }
+        ],
+        "edits": [{ "from": 0, "to": 3, "insert": "" }]
+      }
+    ],
+    "expect": {
+      "files": [
+        {
+          "fileId": "f1",
+          "after": "lo brave world.",
+          "anchors": [{ "id": "a", "from": 3, "to": 8, "detached": false, "exact": "brave", "state": "set" }]
+        }
+      ]
+    }
+  },
+  {
+    "name": "deletion overlapping the start shrinks it",
+    "files": [
+      {
+        "fileId": "f1",
+        "before": "Hello brave world.",
+        "anchors": [
+          { "id": "a", "file": "f1", "from": 6, "to": 11, "detached": false, "fragment": null, "offset": null, "exact": "brave", "prefix": "Hello ", "suffix": " world.", "collapsed": false, "unresolved": false }
+        ],
+        "edits": [{ "from": 4, "to": 8, "insert": "" }]
+      }
+    ],
+    "expect": {
+      "files": [
+        {
+          "fileId": "f1",
+          "after": "Hellave world.",
+          "anchors": [{ "id": "a", "from": 4, "to": 7, "detached": false, "exact": "brave", "state": "set" }]
+        }
+      ]
+    }
+  },
+  {
+    "name": "deletion overlapping the end shrinks it",
+    "files": [
+      {
+        "fileId": "f1",
+        "before": "Hello brave world.",
+        "anchors": [
+          { "id": "a", "file": "f1", "from": 6, "to": 11, "detached": false, "fragment": null, "offset": null, "exact": "brave", "prefix": "Hello ", "suffix": " world.", "collapsed": false, "unresolved": false }
+        ],
+        "edits": [{ "from": 9, "to": 14, "insert": "" }]
+      }
+    ],
+    "expect": {
+      "files": [
+        {
+          "fileId": "f1",
+          "after": "Hello brarld.",
+          "anchors": [{ "id": "a", "from": 6, "to": 9, "detached": false, "exact": "brave", "state": "set" }]
+        }
+      ]
+    }
+  },
+  {
+    "name": "deletion covering the whole passage detaches it",
+    "files": [
+      {
+        "fileId": "f1",
+        "before": "Hello brave world.",
+        "anchors": [
+          { "id": "a", "file": "f1", "from": 6, "to": 11, "detached": false, "fragment": null, "offset": null, "exact": "brave", "prefix": "Hello ", "suffix": " world.", "collapsed": false, "unresolved": false }
+        ],
+        "edits": [{ "from": 5, "to": 12, "insert": "" }]
+      }
+    ],
+    "memory": [],
+    "expect": {
+      "files": [
+        {
+          "fileId": "f1",
+          "after": "Helloworld.",
+          "anchors": [
+            { "id": "a", "from": 0, "to": 0, "detached": true, "fragment": null, "offset": null, "length": 5, "exact": "brave", "state": "set" }
+          ]
+        }
+      ],
+      "memorySize": 1
+    }
+  },
+  {
+    "name": "replacement over the whole passage detaches it and the insert does not re-pin it",
+    "files": [
+      {
+        "fileId": "f1",
+        "before": "Hello brave world.",
+        "anchors": [
+          { "id": "a", "file": "f1", "from": 6, "to": 11, "detached": false, "fragment": null, "offset": null, "exact": "brave", "prefix": "Hello ", "suffix": " world.", "collapsed": false, "unresolved": false }
+        ],
+        "edits": [{ "from": 5, "to": 12, "insert": "XYZ" }]
+      }
+    ],
+    "expect": {
+      "files": [
+        {
+          "fileId": "f1",
+          "after": "HelloXYZworld.",
+          "anchors": [{ "id": "a", "from": 0, "to": 0, "detached": true, "exact": "brave", "state": "set" }]
+        }
+      ],
+      "memorySize": 1
+    }
+  },
+  {
+    "name": "paste of a cut passage re-pins it in the same file",
+    "files": [
+      {
+        "fileId": "f1",
+        "before": "Hello  world.",
+        "anchors": [
+          { "id": "a", "file": "f1", "from": 0, "to": 0, "detached": true, "fragment": null, "offset": null, "length": 5, "exact": "brave", "prefix": "Hello ", "suffix": " world.", "collapsed": false, "unresolved": false }
+        ],
+        "edits": [{ "from": 6, "to": 6, "insert": "brave" }]
+      }
+    ],
+    "memory": [
+      { "text": "brave", "held": [{ "id": "a", "offset": 0, "text": "brave" }] }
+    ],
+    "expect": {
+      "files": [
+        {
+          "fileId": "f1",
+          "after": "Hello brave world.",
+          "anchors": [{ "id": "a", "from": 6, "to": 11, "detached": false, "exact": "brave", "state": "set" }]
+        }
+      ],
+      "memorySize": 0
+    }
+  },
+  {
+    "name": "paste of a cut passage into another file moves the anchor there",
+    "files": [
+      {
+        "fileId": "f1",
+        "before": "Hello  world.",
+        "anchors": [
+          { "id": "a", "file": "f1", "from": 0, "to": 0, "detached": true, "fragment": null, "offset": null, "length": 5, "exact": "brave", "prefix": "Hello ", "suffix": " world.", "collapsed": false, "unresolved": false }
+        ],
+        "edits": []
+      },
+      {
+        "fileId": "f2",
+        "before": "Goodbye friend.",
+        "anchors": [],
+        "edits": [{ "from": 8, "to": 8, "insert": "brave " }]
+      }
+    ],
+    "memory": [
+      { "text": "brave", "held": [{ "id": "a", "offset": 0, "text": "brave" }] }
+    ],
+    "expect": {
+      "files": [
+        { "fileId": "f1", "after": "Hello  world.", "anchors": [] },
+        {
+          "fileId": "f2",
+          "after": "Goodbye brave friend.",
+          "anchors": [{ "id": "a", "file": "f2", "from": 8, "to": 13, "detached": false, "exact": "brave", "movedFrom": "f1", "state": "set" }]
+        }
+      ],
+      "memorySize": 0
+    }
+  },
+  {
+    "name": "drag downward in one operation re-pins the passage at the new place",
+    "files": [
+      {
+        "fileId": "f1",
+        "before": "Alpha beta gamma.",
+        "anchors": [
+          { "id": "a", "file": "f1", "from": 6, "to": 10, "detached": false, "fragment": null, "offset": null, "exact": "beta", "prefix": "Alpha ", "suffix": " gamma.", "collapsed": false, "unresolved": false }
+        ],
+        "edits": [
+          { "from": 6, "to": 10, "insert": "" },
+          { "from": 11, "to": 11, "insert": "beta " }
+        ]
+      }
+    ],
+    "expect": {
+      "files": [
+        {
+          "fileId": "f1",
+          "after": "Alpha  beta gamma.",
+          "anchors": [{ "id": "a", "from": 7, "to": 11, "detached": false, "exact": "beta", "state": "set" }]
+        }
+      ],
+      "memorySize": 0
+    }
+  },
+  {
+    "name": "drag upward in one operation re-pins the passage at the new place",
+    "files": [
+      {
+        "fileId": "f1",
+        "before": "Alpha beta gamma.",
+        "anchors": [
+          { "id": "c", "file": "f1", "from": 11, "to": 16, "detached": false, "fragment": null, "offset": null, "exact": "gamma", "prefix": "Alpha beta ", "suffix": ".", "collapsed": false, "unresolved": false }
+        ],
+        "edits": [
+          { "from": 0, "to": 0, "insert": "gamma " },
+          { "from": 11, "to": 16, "insert": "" }
+        ]
+      }
+    ],
+    "expect": {
+      "files": [
+        {
+          "fileId": "f1",
+          "after": "gamma Alpha beta .",
+          "anchors": [{ "id": "c", "from": 0, "to": 5, "detached": false, "exact": "gamma", "state": "set" }]
+        }
+      ],
+      "memorySize": 0
+    }
+  },
+  {
+    "name": "a second paste of a cut passage does not re-pin it",
+    "files": [
+      {
+        "fileId": "f1",
+        "before": "Hello  world.",
+        "anchors": [
+          { "id": "a", "file": "f1", "from": 0, "to": 0, "detached": true, "fragment": null, "offset": null, "length": 5, "exact": "brave", "prefix": "Hello ", "suffix": " world.", "collapsed": false, "unresolved": false }
+        ],
+        "edits": [{ "from": 7, "to": 7, "insert": "brave " }]
+      }
+    ],
+    "memory": [],
+    "expect": {
+      "files": [
+        {
+          "fileId": "f1",
+          "after": "Hello  brave world.",
+          "anchors": [{ "id": "a", "from": 0, "to": 0, "detached": true, "state": "kept" }]
+        }
+      ],
+      "memorySize": 0
+    }
+  },
+  {
+    "name": "an insertion holding the remembered text twice re-pins nothing and keeps the entry",
+    "files": [
+      {
+        "fileId": "f1",
+        "before": "Hello  world.",
+        "anchors": [
+          { "id": "a", "file": "f1", "from": 0, "to": 0, "detached": true, "fragment": null, "offset": null, "length": 5, "exact": "brave", "prefix": "Hello ", "suffix": " world.", "collapsed": false, "unresolved": false }
+        ],
+        "edits": [{ "from": 6, "to": 6, "insert": "brave brave" }]
+      }
+    ],
+    "memory": [
+      { "text": "brave", "held": [{ "id": "a", "offset": 0, "text": "brave" }] }
+    ],
+    "expect": {
+      "files": [
+        {
+          "fileId": "f1",
+          "after": "Hello brave brave world.",
+          "anchors": [{ "id": "a", "from": 0, "to": 0, "detached": true, "state": "kept" }]
+        }
+      ],
+      "memorySize": 1
+    }
+  },
+  {
+    "name": "two anchors inside one cut are both remembered",
+    "files": [
+      {
+        "fileId": "f1",
+        "before": "Hello brave world.",
+        "anchors": [
+          { "id": "a", "file": "f1", "from": 6, "to": 11, "detached": false, "fragment": null, "offset": null, "exact": "brave", "prefix": "Hello ", "suffix": " world.", "collapsed": false, "unresolved": false },
+          { "id": "b", "file": "f1", "from": 12, "to": 17, "detached": false, "fragment": null, "offset": null, "exact": "world", "prefix": "Hello brave ", "suffix": ".", "collapsed": false, "unresolved": false }
+        ],
+        "edits": [{ "from": 6, "to": 17, "insert": "" }]
+      }
+    ],
+    "expect": {
+      "files": [
+        {
+          "fileId": "f1",
+          "after": "Hello .",
+          "anchors": [
+            { "id": "a", "from": 0, "to": 0, "detached": true, "exact": "brave", "state": "set" },
+            { "id": "b", "from": 0, "to": 0, "detached": true, "exact": "world", "state": "set" }
+          ]
+        }
+      ],
+      "memorySize": 1
+    }
+  },
+  {
+    "name": "paste of two remembered anchors re-pins each at its offset",
+    "files": [
+      {
+        "fileId": "f1",
+        "before": "Hello .",
+        "anchors": [
+          { "id": "a", "file": "f1", "from": 0, "to": 0, "detached": true, "fragment": null, "offset": null, "length": 5, "exact": "brave", "prefix": "Hello ", "suffix": " world.", "collapsed": false, "unresolved": false },
+          { "id": "b", "file": "f1", "from": 0, "to": 0, "detached": true, "fragment": null, "offset": null, "length": 5, "exact": "world", "prefix": "Hello brave ", "suffix": ".", "collapsed": false, "unresolved": false }
+        ],
+        "edits": [{ "from": 6, "to": 6, "insert": "brave world" }]
+      }
+    ],
+    "memory": [
+      {
+        "text": "brave world",
+        "held": [
+          { "id": "a", "offset": 0, "text": "brave" },
+          { "id": "b", "offset": 6, "text": "world" }
+        ]
+      }
+    ],
+    "expect": {
+      "files": [
+        {
+          "fileId": "f1",
+          "after": "Hello brave world.",
+          "anchors": [
+            { "id": "a", "from": 6, "to": 11, "detached": false, "exact": "brave", "state": "set" },
+            { "id": "b", "from": 12, "to": 17, "detached": false, "exact": "world", "state": "set" }
+          ]
+        }
+      ],
+      "memorySize": 0
+    }
+  },
+  {
+    "name": "a tracked deletion gives the detached anchor its fragment and offset",
+    "files": [
+      {
+        "fileId": "f1",
+        "before": "Hello brave world.",
+        "anchors": [
+          { "id": "a", "file": "f1", "from": 8, "to": 11, "detached": false, "fragment": null, "offset": null, "exact": "ave", "prefix": "Hello br", "suffix": " world.", "collapsed": false, "unresolved": false }
+        ],
+        "edits": [{ "from": 6, "to": 11, "insert": "" }],
+        "fragments": [{ "id": "frag-1", "edit": 0, "start": 0, "end": 5 }]
+      }
+    ],
+    "expect": {
+      "files": [
+        {
+          "fileId": "f1",
+          "after": "Hello  world.",
+          "anchors": [{ "id": "a", "from": 0, "to": 0, "detached": true, "fragment": "frag-1", "offset": 2, "exact": "ave", "state": "set" }]
+        }
+      ],
+      "memorySize": 1
+    }
+  },
+  {
+    "name": "a detached anchor is not moved by later edits",
+    "files": [
+      {
+        "fileId": "f1",
+        "before": "Hello  world.",
+        "anchors": [
+          { "id": "a", "file": "f1", "from": 0, "to": 0, "detached": true, "fragment": null, "offset": null, "length": 5, "exact": "brave", "prefix": "Hello ", "suffix": " world.", "collapsed": false, "unresolved": false }
+        ],
+        "edits": [{ "from": 3, "to": 3, "insert": "XX" }]
+      }
+    ],
+    "expect": {
+      "files": [
+        {
+          "fileId": "f1",
+          "after": "HelXXlo  world.",
+          "anchors": [{ "id": "a", "from": 0, "to": 0, "detached": true, "state": "kept" }]
+        }
+      ],
+      "memorySize": 0
+    }
+  },
+  {
+    "name": "deleting an emoji before a span shifts the span by two units",
+    "files": [
+      {
+        "fileId": "f1",
+        "before": "Hi 😀 there.",
+        "anchors": [
+          { "id": "a", "file": "f1", "from": 6, "to": 11, "detached": false, "fragment": null, "offset": null, "exact": "there", "prefix": "Hi 😀 ", "suffix": ".", "collapsed": false, "unresolved": false }
+        ],
+        "edits": [{ "from": 3, "to": 5, "insert": "" }]
+      }
+    ],
+    "expect": {
+      "files": [
+        {
+          "fileId": "f1",
+          "after": "Hi  there.",
+          "anchors": [{ "id": "a", "from": 4, "to": 9, "detached": false, "exact": "there", "state": "set" }]
+        }
+      ],
+      "memorySize": 0
+    }
+  },
+  {
+    "name": "an insertion inside a span that holds an emoji counts the emoji as two units",
+    "files": [
+      {
+        "fileId": "f1",
+        "before": "Hi 😀 there.",
+        "anchors": [
+          { "id": "a", "file": "f1", "from": 3, "to": 11, "detached": false, "fragment": null, "offset": null, "exact": "😀 there", "prefix": "Hi ", "suffix": ".", "collapsed": false, "unresolved": false }
+        ],
+        "edits": [{ "from": 5, "to": 5, "insert": "XY" }]
+      }
+    ],
+    "expect": {
+      "files": [
+        {
+          "fileId": "f1",
+          "after": "Hi 😀XY there.",
+          "anchors": [{ "id": "a", "from": 3, "to": 13, "detached": false, "state": "set" }]
+        }
+      ],
+      "memorySize": 0
+    }
+  }
+]
