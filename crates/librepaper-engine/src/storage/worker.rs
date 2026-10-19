@@ -25,7 +25,9 @@
 //! own. The two storage sweeps run on bounded periodic deadlines.
 //! Afterwards document work is woken by events that create its state. The
 //! orphan-object sweep is the exception: it runs periodically so blobs left
-//! by refused uploads are eventually reclaimed. A full bounded queue sets one coalesced overflow bit;
+//! by refused uploads are eventually reclaimed. Each orphan sweep also asks
+//! for one durable rescan, because an operator command in another process
+//! can write durable work with no live ask in this one. A full bounded queue sets one coalesced overflow bit;
 //! when the worker reaches it, the worker walks the durable state again in
 //! bounded pages. Wake-ups therefore remain recoverable without allocating a
 //! waiter per sender or polling an idle database.
@@ -666,6 +668,13 @@ impl Worker {
             if !grace_overridden {
                 return;
             }
+        }
+        if task == Task::SweepOrphans {
+            // The orphan sweep is the one task on a clock. Durable state written by
+            // another process, such as an operator's erase-account command, has no
+            // live ask in this one, so each sweep also walks durable state once.
+            // The run loop turns this bit into a fresh Scan right after this task.
+            self.handle.rescan.store(true, Ordering::Release);
         }
         match self.execute(task).await {
             Ok(()) => {
@@ -1423,6 +1432,31 @@ mod tests {
         assert!(!local.contains(&Task::SweepOrphans));
         assert!(local.contains(&Task::Scan(PendingWorkCursor::default())));
         assert_eq!(deadlines.next(), Some(due));
+    }
+
+    #[test]
+    fn a_set_rescan_bit_enqueues_one_scan_after_the_orphan_sweep() {
+        let (tx, _rx) = tokio::sync::mpsc::channel(1);
+        let handle = Handle {
+            tx,
+            rescan: Arc::new(AtomicBool::new(true)),
+            meter: Arc::new(Meter::default()),
+        };
+        let mut deadlines = Deadlines::new();
+        let now = tokio::time::Instant::now();
+        let mut local = VecDeque::new();
+        deadlines.at(Task::SweepOrphans, now + ORPHAN_SWEEP_INTERVAL);
+
+        enqueue_overflow_scan(
+            &handle,
+            &mut local,
+            &mut deadlines,
+            Some(now + ORPHAN_SWEEP_INTERVAL),
+            now,
+        );
+
+        assert_eq!(local, VecDeque::from([Task::Scan(PendingWorkCursor::default())]));
+        assert!(!handle.rescan.load(Ordering::Acquire));
     }
 
     #[test]
