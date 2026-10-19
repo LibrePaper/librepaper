@@ -27,6 +27,7 @@ import {
   applyOperation,
   createAnchor,
   editsFromDelta,
+  fragmentRangesFor,
   markCollapsed,
   recordOperation,
   resolveAnchors,
@@ -672,6 +673,52 @@ test("undo after a boundary deletion brings the passage back exact", () => {
 test("undo after a tail deletion brings the passage back exact", () => {
   // "wo" goes from the tail, so the anchor is left on the "t" at 4..5.
   cutEndThenUndo({ from: 5, to: 7, insert: "" }, 4, 5);
+});
+
+test("redo of a tracked deletion detaches the comment with its fragment", () => {
+  const text = "one two three";
+  const doc = makeDoc(1, { f1: text });
+  createAnchor(doc, "f1", "a1", 4, 7, ctx(text, 4, 7));
+  doc.commit();
+  const manager = new UndoManager(doc, { mergeInterval: 0, excludeOriginPrefixes: [ANCHORS_ORIGIN] });
+  const memory = new MoveMemory();
+  const index = new AnchorIndex(doc);
+  index.load("f1");
+  index.attach(memory);
+
+  // The tracked deletion as the editor makes it: the text and its fragment
+  // records in one commit, then the anchors under ANCHORS_ORIGIN.
+  const edits = [{ from: 4, to: 8, insert: "" }];
+  trackedSplice(doc, "f1", 4, 8, "", { who: "me", author: "Me" });
+  doc.commit();
+  const created = resolveFile(doc, "f1").gaps.flatMap((gap) =>
+    gap.fragments.map((f) => ({ id: f.id, text: f.text })),
+  );
+  assert.equal(created.length, 1, "one fragment for one deletion");
+  const [fragment] = created;
+  index.record([{ fileId: "f1", edits, fragments: fragmentRangesFor(text, edits, created) }], memory);
+  doc.commit({ origin: ANCHORS_ORIGIN });
+  const pending = anchorsById(doc, "f1").get("a1");
+  assert.equal(pending.detached, true, "the comment is detached");
+  assert.equal(pending.fragment, fragment.id, "the comment holds its fragment");
+  assert.equal(statusOf(doc, pending), "pending_deletion");
+
+  // The undo puts the text back, and the comment follows it back to 4..7.
+  assert.equal(manager.undo(), true, "undo applied");
+  assert.equal(textOf(doc), text);
+  assertAttached(doc, "a1", 4, 7, "two");
+  assertIndexMatches(index, doc, "f1");
+
+  // The redo deletes the text again. The fragment records come back in the same
+  // batch, and the comment takes the fragment it sits in.
+  assert.equal(manager.redo(), true, "redo applied");
+  assert.equal(textOf(doc), "one three");
+  const redone = anchorsById(doc, "f1").get("a1");
+  assert.equal(redone.detached, true, "the comment is detached again");
+  assert.equal(redone.fragment, fragment.id, "it takes back the fragment it had before the undo");
+  assert.equal(redone.offset, 0, "it starts at the front of the fragment");
+  assert.equal(statusOf(doc, redone), "pending_deletion");
+  assertIndexMatches(index, doc, "f1");
 });
 
 // A peer B that starts as a snapshot of A, with an index on each.

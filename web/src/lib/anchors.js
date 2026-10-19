@@ -23,7 +23,7 @@
 // Offsets are UTF-16 everywhere, the same as CodeMirror and loro-crdt in JS.
 
 import { Cursor, LoroMap } from "loro-crdt";
-import { CHANGES } from "./track-changes.js";
+import { CHANGES, resolveFile } from "./track-changes.js";
 
 export const ANCHORS = "anchors";
 export const ANCHORS_ORIGIN = "anchors";
@@ -1103,16 +1103,39 @@ export class AnchorIndex {
       if (batch.by === "local" && batch.origin === "undo") {
         // Loro gives undo and redo commits the same origin. Successive events on
         // one text are composed into one list for that file.
+        // A redo that deletes text as a tracked change brings its fragment
+        // records back in this batch. The comment inside takes the fragment it
+        // sits in, as it would from the editor plugin.
         /** @type {Map<string, Edit[][]>} */
         const lists = new Map();
+        /** @type {Set<string>} */
+        const appeared = new Set();
+        const changesRoot = this.#doc.getMap(CHANGES).id;
         for (const event of batch.events) {
+          if (event.target === changesRoot && event.diff.type === "map") {
+            for (const [id, value] of Object.entries(event.diff.updated)) {
+              if (value instanceof LoroMap && value.get("kind") === "fragment") appeared.add(id);
+            }
+            continue;
+          }
           const fileId = this.#texts.get(event.target);
           if (fileId === undefined || event.diff.type !== "text") continue;
           if (!lists.has(fileId)) lists.set(fileId, []);
           lists.get(fileId).push(editsFromDelta(event.diff.diff));
         }
         if (lists.size > 0) {
-          const files = [...lists].map(([fileId, edits]) => ({ fileId, edits: composeEdits(edits) }));
+          // All reads come before the first write. Resolving a stale cursor can
+          // commit pending work.
+          const files = [...lists].map(([fileId, edits]) => {
+            const composed = composeEdits(edits);
+            const deletes = composed.some((edit) => edit.to > edit.from);
+            if (appeared.size === 0 || !deletes) return { fileId, edits: composed, fragments: [] };
+            const created = resolveFile(this.#doc, fileId).gaps.flatMap((gap) =>
+              gap.fragments.filter((f) => appeared.has(f.id)).map((f) => ({ id: f.id, text: f.text })),
+            );
+            const fragments = fragmentRangesFor(this.get(fileId).text, composed, created);
+            return { fileId, edits: composed, fragments };
+          });
           this.record(files, memory);
           this.#doc.commit({ origin: ANCHORS_ORIGIN });
         }
