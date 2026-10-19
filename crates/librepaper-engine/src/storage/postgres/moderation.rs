@@ -1337,7 +1337,7 @@ mod tests {
         let catalog = test_catalog().await;
         let suffix = Uuid::now_v7().simple().to_string();
         let handle = format!("Banned-{suffix}");
-        for provider in ["entra", "oidc-x"] {
+        for provider in ["entra", "orcid", "oidc-x"] {
             let outcome = catalog
                 .block_or_ban(provider, &handle, "operator", "spam")
                 .await

@@ -37,6 +37,7 @@ mod core_tests;
 pub const PROVIDER_GITHUB: &str = "github";
 pub const PROVIDER_GOOGLE: &str = "google";
 pub const PROVIDER_ENTRA: &str = "entra";
+pub const PROVIDER_ORCID: &str = "orcid";
 pub const OIDC_ID_PREFIX: &str = "oidc-";
 
 pub const SESSION_COOKIE: &str = "librepaper_session";
@@ -60,10 +61,10 @@ pub fn valid_oidc_slug(slug: &str) -> bool {
             .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || *byte == b'-')
 }
 
-/// Whether text is a provider id this code can issue: one of the three named
+/// Whether text is a provider id this code can issue: one of the four named
 /// providers, or `oidc-` and a valid slug.
 pub fn valid_provider_id(id: &str) -> bool {
-    matches!(id, PROVIDER_GITHUB | PROVIDER_GOOGLE | PROVIDER_ENTRA)
+    matches!(id, PROVIDER_GITHUB | PROVIDER_GOOGLE | PROVIDER_ENTRA | PROVIDER_ORCID)
         || id.strip_prefix(OIDC_ID_PREFIX).is_some_and(valid_oidc_slug)
 }
 

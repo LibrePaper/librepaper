@@ -16,11 +16,13 @@ use serde_json::{Map, Value};
 
 use crate::auth::{
     now_unix, try_provider_request, Identity, OIDC_ID_PREFIX, PROVIDER_ENTRA, PROVIDER_GOOGLE,
-    PROVIDER_HTTP_TIMEOUT,
+    PROVIDER_HTTP_TIMEOUT, PROVIDER_ORCID,
 };
 use crate::http::{provider_client, read_capped, truncate, USER_AGENT};
 
 pub const GOOGLE_ISSUER: &str = "https://accounts.google.com";
+
+pub const ORCID_ISSUER: &str = "https://orcid.org";
 
 /// Google documents both spellings of its issuer for an id token.
 const GOOGLE_ISSUER_WITHOUT_SCHEME: &str = "accounts.google.com";
@@ -106,6 +108,7 @@ pub enum Preset {
     Entra {
         tenant: String,
     },
+    Orcid,
     Custom,
 }
 
@@ -257,6 +260,20 @@ impl OidcProvider {
         )
     }
 
+    /// ORCID asks for the `openid` scope alone, because it releases no email
+    /// address and no profile scope exists.
+    pub fn orcid(client_id: &str, client_secret: &str) -> OidcProvider {
+        OidcProvider::new(
+            PROVIDER_ORCID.to_string(),
+            "ORCID",
+            Preset::Orcid,
+            ORCID_ISSUER.to_string(),
+            client_id,
+            client_secret,
+            "openid",
+        )
+    }
+
     pub fn custom(
         slug: &str,
         issuer: &str,
@@ -287,6 +304,7 @@ impl OidcProvider {
         match self.preset {
             Preset::Google => "google",
             Preset::Entra { .. } => "entra",
+            Preset::Orcid => "orcid",
             Preset::Custom => "oidc",
         }
     }
@@ -297,7 +315,7 @@ impl OidcProvider {
     pub fn prompt(&self) -> Option<&'static str> {
         match self.preset {
             Preset::Google | Preset::Entra { .. } => Some("select_account"),
-            Preset::Custom => None,
+            Preset::Orcid | Preset::Custom => None,
         }
     }
 
@@ -575,6 +593,30 @@ impl OidcProvider {
                     "",
                 ))
             }
+            Preset::Orcid => {
+                if !is_orcid_id(subject) {
+                    return Err(SignInError::Provider(
+                        "the id token has no usable ORCID iD".to_string(),
+                    ));
+                }
+                // ORCID does not release an email address through OpenID
+                // Connect, so the iD is the account's handle. It is uppercased
+                // because the canonical iD ends in an uppercase X, and
+                // `from_provider` would lower it.
+                let name = match text(profile, "name").trim() {
+                    "" => format!(
+                        "{} {}",
+                        text(profile, "given_name"),
+                        text(profile, "family_name")
+                    )
+                    .trim()
+                    .to_string(),
+                    named => named.to_string(),
+                };
+                let mut identity = Identity::from_provider(&self.id, subject, subject, &name, "");
+                identity.handle = subject.to_ascii_uppercase();
+                Ok(identity)
+            }
             Preset::Custom => {
                 let email = email.filter(|_| verified).ok_or_else(|| {
                     SignInError::Refused(format!(
@@ -588,6 +630,35 @@ impl OidcProvider {
             }
         }
     }
+}
+
+/// Whether text is an ORCID iD: four groups of four digits joined by hyphens,
+/// the last character a digit or `X`, and the check character agreeing with
+/// the ISO 7064 MOD 11-2 sum of the first fifteen digits.
+pub fn is_orcid_id(value: &str) -> bool {
+    let bytes = value.as_bytes();
+    if bytes.len() != 19 {
+        return false;
+    }
+    let mut total = 0u32;
+    for (index, byte) in bytes[..18].iter().enumerate() {
+        if matches!(index, 4 | 9 | 14) {
+            if *byte != b'-' {
+                return false;
+            }
+        } else if byte.is_ascii_digit() {
+            total = (total + u32::from(byte - b'0')) * 2;
+        } else {
+            return false;
+        }
+    }
+    let result = (12 - total % 11) % 11;
+    let expected = if result == 10 {
+        b'X'
+    } else {
+        b'0' + result as u8
+    };
+    bytes[18].to_ascii_uppercase() == expected
 }
 
 /// What the token endpoint handed over. The access token is kept only for the
@@ -706,10 +777,12 @@ fn id_token_claims(token: &str) -> Result<Map<String, Value>, String> {
 
 /// The only claims read for the profile. `iss`, `aud`, `sub`, `tid`, `oid`
 /// and `hd` always come from the id token itself.
-const PROFILE_CLAIMS: [&str; 5] = [
+const PROFILE_CLAIMS: [&str; 7] = [
     "email",
     "email_verified",
     "name",
+    "given_name",
+    "family_name",
     "preferred_username",
     "picture",
 ];
@@ -1483,6 +1556,44 @@ mod tests {
         assert_eq!(custom.prompt(), None);
         let scoped = OidcProvider::custom("k", "https://i.example", "c", "s", "K", Some("openid"));
         assert_eq!(scoped.scopes, "openid");
+    }
+
+    #[test]
+    fn the_orcid_preset_asks_for_openid_alone() {
+        let orcid = OidcProvider::orcid("c", "s");
+        assert_eq!(
+            (orcid.id.as_str(), orcid.label.as_str(), orcid.kind()),
+            ("orcid", "ORCID", "orcid")
+        );
+        assert_eq!(orcid.issuer, ORCID_ISSUER);
+        assert_eq!(orcid.scopes, "openid");
+        assert_eq!(orcid.preset, Preset::Orcid);
+        assert_eq!(orcid.prompt(), None);
+    }
+
+    #[test]
+    fn orcid_ids_are_checked_by_shape_and_check_digit() {
+        for good in [
+            "0000-0002-1825-0097",
+            "0000-0002-1694-233X",
+            "0000-0002-1694-233x",
+        ] {
+            assert!(is_orcid_id(good), "{good:?}");
+        }
+        for bad in [
+            "0000-0002-1825-0098",
+            "",
+            "0000-0002-1825-009",
+            "0000-0002-1825-00977",
+            "0000-0002-1825-009a",
+            "abcd-0002-1825-0097",
+            "0000000218250097---",
+            "0000-0002-18250-097",
+            "0000_0002_1825_0097",
+            "0000-0002-1694-233Y",
+        ] {
+            assert!(!is_orcid_id(bad), "{bad:?}");
+        }
     }
 
     #[test]
@@ -2318,6 +2429,77 @@ mod tests {
             assert_eq!(identity.handle, "alice@example.org");
         }
         assert!(UNVERIFIED_WORKSPACE_DOMAIN.starts_with("this Google account uses an email domain"));
+    }
+
+    // ORCID.
+
+    fn orcid(stand: &Inner) -> OidcProvider {
+        OidcProvider::orcid(CLIENT, SECRET).with_endpoints(endpoints_at(stand, ORCID_ISSUER))
+    }
+
+    fn orcid_claims() -> Value {
+        merged(
+            claims(ORCID_ISSUER),
+            json!({"sub": "0000-0002-1694-233X", "name": "Josiah Carberry"}),
+        )
+    }
+
+    /// ORCID sends no email, so the sign-in asks userinfo, which here answers
+    /// about the same subject and nothing else.
+    async fn orcid_signed_in(stand: &Inner, token: Value) -> Result<Identity, SignInError> {
+        stand.set_userinfo(200, json!({"sub": token["sub"]}));
+        signed_in(stand, &orcid(stand), token).await
+    }
+
+    #[tokio::test]
+    async fn orcid_signs_in_by_its_id_with_no_email() {
+        let stand = stand_in().await;
+        let mut token = orcid_claims();
+        token.as_object_mut().unwrap().remove("email");
+        token.as_object_mut().unwrap().remove("email_verified");
+        let identity = orcid_signed_in(&stand, token).await.unwrap();
+        assert_eq!(identity.provider, "orcid");
+        assert_eq!(identity.id, "orcid:0000-0002-1694-233X");
+        assert_eq!(identity.handle, "0000-0002-1694-233X");
+        assert_eq!(identity.name, "Josiah Carberry");
+        assert_eq!(identity.picture, "");
+        // A lowercase sub keeps its spelling in the id and is uppercased in
+        // the handle.
+        let lower = with(orcid_claims(), "sub", json!("0000-0002-1694-233x"));
+        let identity = orcid_signed_in(&stand, lower).await.unwrap();
+        assert_eq!(identity.id, "orcid:0000-0002-1694-233x");
+        assert_eq!(identity.handle, "0000-0002-1694-233X");
+    }
+
+    #[tokio::test]
+    async fn orcid_builds_a_name_from_its_parts_when_it_has_no_name() {
+        let stand = stand_in().await;
+        let mut token = merged(
+            orcid_claims(),
+            json!({"given_name": "Josiah", "family_name": "Carberry"}),
+        );
+        token.as_object_mut().unwrap().remove("name");
+        let identity = orcid_signed_in(&stand, token).await.unwrap();
+        assert_eq!(identity.name, "Josiah Carberry");
+        let mut family_only = merged(orcid_claims(), json!({"family_name": "Carberry"}));
+        family_only.as_object_mut().unwrap().remove("name");
+        let identity = orcid_signed_in(&stand, family_only)
+            .await
+            .unwrap();
+        assert_eq!(identity.name, "Carberry");
+    }
+
+    #[tokio::test]
+    async fn orcid_refuses_a_subject_that_is_not_an_orcid_id() {
+        let stand = stand_in().await;
+        for sub in ["subject-1", "0000-0002-1825-0098"] {
+            let token = with(orcid_claims(), "sub", json!(sub));
+            let result = orcid_signed_in(&stand, token).await;
+            assert!(
+                matches!(&result, Err(SignInError::Provider(reason)) if reason == "the id token has no usable ORCID iD"),
+                "{sub:?}"
+            );
+        }
     }
 
     // Entra.

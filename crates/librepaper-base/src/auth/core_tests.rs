@@ -372,6 +372,7 @@ fn provider_ids_are_the_three_names_and_oidc_slugs() {
         "github",
         "google",
         "entra",
+        "orcid",
         "oidc-x",
         "oidc-keycloak",
         "oidc-a1-b2",
