@@ -142,15 +142,6 @@ pub struct Held {
     pub side: Option<Side>,
 }
 
-/// A remembered deletion that an insertion brought back. `at` is the UTF-16
-/// offset of its text in the insertion.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct Taken {
-    pub text: String,
-    pub held: Vec<Held>,
-    pub at: usize,
-}
-
 /// What the session deleted whole, oldest first. Each entry keeps the anchors
 /// that were wholly inside the deleted text, with their offsets in it.
 #[derive(Debug)]
@@ -188,11 +179,17 @@ impl MoveMemory {
         }
     }
 
-    /// Takes the newest remembered text that occurs exactly once in `inserted`,
-    /// when `free` accepts the span that the text would take there. `free` gets
-    /// the span's UTF-16 start and end in `inserted`. An entry that `free`
-    /// refuses stays remembered, and the scan goes on to older entries.
-    pub fn take(&mut self, inserted: &str, free: impl Fn(usize, usize) -> bool) -> Option<Taken> {
+    /// Finds the newest remembered text that occurs exactly once in `inserted`,
+    /// when `free` accepts the span that the text would take there. Returns the
+    /// index of its entry and the UTF-16 offset `at` of its text in `inserted`.
+    /// `free` gets the span's UTF-16 start and end. An entry that `free` refuses
+    /// stays remembered, and the scan goes on to older entries. Nothing is
+    /// removed here. `drop` removes the entry once one of its pieces is applied.
+    pub fn find(
+        &self,
+        inserted: &str,
+        free: impl Fn(usize, usize) -> bool,
+    ) -> Option<(usize, usize)> {
         for i in (0..self.entries.len()).rev() {
             let text = self.entries[i].text.as_str();
             let Some(byte) = inserted.find(text) else {
@@ -207,14 +204,14 @@ impl MoveMemory {
             if !free(at, at + utf16_len(text)) {
                 continue;
             }
-            let entry = self.entries.remove(i);
-            return Some(Taken {
-                text: entry.text,
-                held: entry.held,
-                at,
-            });
+            return Some((i, at));
         }
         None
+    }
+
+    /// Removes the entry at `index`, as `find` returned it.
+    pub fn drop(&mut self, index: usize) {
+        self.entries.remove(index);
     }
 
     pub fn len(&self) -> usize {
@@ -279,13 +276,15 @@ fn width_at(s: &str, units: usize) -> usize {
 ///
 /// Phase 1 runs each file on its own, edits in order, and moves its attached
 /// anchors. Phase 2 runs after every file. Every remembered text that occurs
-/// exactly once in an insertion is taken, newest first, unless its span
-/// overlaps a span that an earlier take claimed in the same insertion. One
+/// exactly once in an insertion is tried, newest first, unless its span
+/// overlaps a span that an earlier try claimed in the same insertion. One
 /// paste therefore claims one occurrence: a second cut of the same word waits
-/// for a second paste. Each taken text re-pins the detached anchors that were
-/// in it, into the file the insertion landed in, and rejoins the cut pieces of
-/// attached anchors at their edges. Deleted text is remembered, and the texts
-/// an insertion takes leave the memory.
+/// for a second paste. A try re-pins the detached anchors that were in the
+/// text, into the file the insertion landed in, and rejoins the cut pieces of
+/// attached anchors at their edges. Deleted text is remembered. A text leaves
+/// the memory only when one of its pieces was applied. A text whose pieces
+/// could not be applied, such as a piece pasted where its rejoin is not
+/// adjacent, stays remembered for a later insertion.
 ///
 /// Phase 1 keeps each insertion at its offset in the text as the later edits
 /// leave it. A later edit before the insertion moves it, and a later edit that
@@ -300,15 +299,17 @@ pub fn plan_operation(files: &[OperationFile], memory: &mut MoveMemory) -> Vec<P
     for wi in 0..work.len() {
         let inserts = work[wi].inserts.clone();
         for (at, text) in inserts {
-            // The spans of this insertion that a take has claimed, in the
-            // insertion's own offsets. A later take may not overlap one of them.
+            // The spans of this insertion that a find has claimed, in the
+            // insertion's own offsets. A later find may not overlap one of them.
             let mut claimed: Vec<(usize, usize)> = Vec::new();
-            while let Some(hit) = memory.take(&text, |from, to| {
+            while let Some((entry, hit_at)) = memory.find(&text, |from, to| {
                 !claimed.iter().any(|c| from < c.1 && to > c.0)
             }) {
-                let hit_at = hit.at;
-                claimed.push((hit_at, hit_at + utf16_len(&hit.text)));
-                for h in hit.held {
+                let hit_text = memory.entries[entry].text.clone();
+                let held = memory.entries[entry].held.clone();
+                claimed.push((hit_at, hit_at + utf16_len(&hit_text)));
+                let mut applied = false;
+                for h in held {
                     if h.text.is_empty() {
                         continue;
                     }
@@ -327,7 +328,7 @@ pub fn plan_operation(files: &[OperationFile], memory: &mut MoveMemory) -> Vec<P
                     if let Some(side) = h.side {
                         if oi == wi {
                             let from = at + hit_at + h.offset;
-                            rejoin_piece(&mut work[wi], index, side, from, &h.text);
+                            applied |= rejoin_piece(&mut work[wi], index, side, from, &h.text);
                         }
                         continue;
                     }
@@ -358,6 +359,11 @@ pub fn plan_operation(files: &[OperationFile], memory: &mut MoveMemory) -> Vec<P
                         pinned.moved_from = Some(work[oi].file_id.clone());
                     }
                     work[wi].anchors.push(pinned);
+                    applied = true;
+                }
+                // A text whose pieces all failed stays remembered for a later insertion.
+                if applied {
+                    memory.drop(entry);
                 }
             }
         }
@@ -374,22 +380,22 @@ pub fn plan_operation(files: &[OperationFile], memory: &mut MoveMemory) -> Vec<P
 
 /// Puts a cut piece back onto the attached anchor it was cut from. The text must
 /// be in the file at `from`, and the piece must sit at the edge of the anchor
-/// that it was cut from.
-fn rejoin_piece(w: &mut Work, index: usize, side: Side, from: usize, text: &str) {
+/// that it was cut from. Returns whether the anchor took the piece back.
+fn rejoin_piece(w: &mut Work, index: usize, side: Side, from: usize, text: &str) -> bool {
     let to = from + utf16_len(text);
     if slice16(&w.after, from, to) != text {
-        return;
+        return false;
     }
     let planned = &mut w.anchors[index];
     if !planned.anchor.attached() {
-        return;
+        return false;
     }
     let at_edge = match side {
         Side::Head => to == planned.anchor.from,
         Side::Tail => from == planned.anchor.to,
     };
     if !at_edge {
-        return;
+        return false;
     }
     match side {
         Side::Head => planned.anchor.from = from,
@@ -397,6 +403,7 @@ fn rejoin_piece(w: &mut Work, index: usize, side: Side, from: usize, text: &str)
     }
     planned.state = PlanState::Set;
     planned.touched = true;
+    true
 }
 
 /// One file's state while the operation is planned.
@@ -1830,6 +1837,63 @@ mod tests {
             .unwrap();
         assert!(detached.anchor.detached);
         assert_eq!(memory.len(), 1);
+    }
+
+    #[test]
+    fn a_remembered_piece_pasted_elsewhere_stays_remembered_and_rejoins_later() {
+        let mut memory = MoveMemory::new(32);
+        let cut = OperationFile {
+            file_id: "main.md".to_string(),
+            before: "one two three".to_string(),
+            anchors: vec![anchor_at("c1", "main.md", 4, 7)],
+            edits: vec![Edit {
+                at: 4,
+                delete: 2,
+                insert: String::new(),
+            }],
+            fragments: Vec::new(),
+        };
+        let first = plan_operation(&[cut], &mut memory);
+        assert_eq!(first[0].after, "one o three");
+        assert_eq!(memory.len(), 1);
+
+        // The head "tw" is pasted at the start of the text, far from the anchor's
+        // head, so its rejoin is not adjacent. The piece stays remembered.
+        let elsewhere = OperationFile {
+            file_id: "main.md".to_string(),
+            before: first[0].after.clone(),
+            anchors: vec![first[0].anchors[0].anchor.clone()],
+            edits: vec![Edit {
+                at: 0,
+                delete: 0,
+                insert: "tw".to_string(),
+            }],
+            fragments: Vec::new(),
+        };
+        let second = plan_operation(&[elsewhere], &mut memory);
+        let shifted = &second[0].anchors[0];
+        assert_eq!(second[0].after, "twone o three");
+        assert_eq!((shifted.anchor.from, shifted.anchor.to), (6, 7));
+        assert_eq!(memory.len(), 1);
+
+        // The same piece comes back at the anchor's head, so the anchor rejoins.
+        let rejoin = OperationFile {
+            file_id: "main.md".to_string(),
+            before: second[0].after.clone(),
+            anchors: vec![shifted.anchor.clone()],
+            edits: vec![Edit {
+                at: 6,
+                delete: 0,
+                insert: "tw".to_string(),
+            }],
+            fragments: Vec::new(),
+        };
+        let third = plan_operation(&[rejoin], &mut memory);
+        let rejoined = &third[0].anchors[0];
+        assert_eq!(third[0].after, "twone two three");
+        assert_eq!((rejoined.anchor.from, rejoined.anchor.to), (6, 9));
+        assert_eq!(slice16(&third[0].after, 6, 9), "two");
+        assert!(memory.is_empty());
     }
 
     fn setup(body: &str) -> (LoroDoc, String) {
