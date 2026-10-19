@@ -22,13 +22,6 @@
     signInHref = "",
     onsend = undefined,
     oncancel = undefined,
-    // Where each orphaned passage went, by comment id. Passed through rather
-    // than looked up here: the card is what says it, and the page is what
-    // knows it.
-    went = {},
-    // Inserted side of a historical word diff, keyed by comment id. The page
-    // owns fetching and anchoring this data; cards only present it.
-    replacements = {},
     onreveal = undefined,
     onresolve = undefined,
     ondelete = undefined,
@@ -56,6 +49,10 @@
     page = null,
     onloadmore = undefined,
     onloadreplies = undefined,
+    // Editors only: see CommentCard.
+    onattach = undefined,
+    attachable = false,
+    onmoment = undefined,
   } = $props();
 
   function place(comment) {
@@ -203,8 +200,6 @@
         {identity}
         {commentingAs}
         {canModerate}
-        went={went[comment.id] || null}
-        replacement={replacements[comment.id] ?? null}
         {onreveal}
         {onresolve}
         {ondelete}
@@ -212,6 +207,9 @@
         {onedit}
         {onagent}
         {onloadreplies}
+        {onattach}
+        {attachable}
+        {onmoment}
       />
     {/each}
     {#if composerKey === ""}{@render composer()}{/if}

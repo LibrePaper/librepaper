@@ -3,10 +3,9 @@
 //! in.
 //!
 //! This module holds the clamped extraction of a unit range ([`slice16`] over
-//! units the caller already has, [`slice16_str`] over a `&str`). Anchoring a
-//! reader's selection ([`super::locate`]) has encoded the file once and cuts
-//! many ranges out of it, so it takes `&[u16]`; relocating a comment
-//! ([`super::resolve`]) holds text and converts offsets with `str_indices`.
+//! units the caller already has). Anchoring a reader's selection
+//! ([`super::locate`]) has encoded the file once and cuts many ranges out of
+//! it, so it takes `&[u16]`.
 //!
 //! Every *other* UTF-16 helper in this codebase looks similar on the surface
 //! but differs in a way that matters, so it stays where it is rather than
@@ -52,32 +51,6 @@ pub(crate) fn slice16(units: &[u16], start: usize, end: usize) -> String {
     String::from_utf16_lossy(&units[start..end.min(units.len())])
 }
 
-/// [`slice16`] over a `&str`, for callers that hold the file as text: the
-/// same clamping, the same U+FFFD for a bound inside a surrogate pair, and no
-/// `Vec<u16>` copy of the file to get there.
-pub(crate) fn slice16_str(text: &str, start: usize, end: usize) -> String {
-    let end = end.min(str_indices::utf16::count(text));
-    if start >= end {
-        return String::new();
-    }
-    let mut from = str_indices::utf16::to_byte_idx(text, start);
-    let to = str_indices::utf16::to_byte_idx(text, end);
-    let mut out = String::new();
-    // `to_byte_idx` floors an offset inside a pair to the start of the
-    // character; the half that is in range comes back as a replacement char.
-    if str_indices::utf16::from_byte_idx(text, from) != start {
-        out.push('\u{FFFD}');
-        from += text[from..].chars().next().map_or(0, char::len_utf8);
-    }
-    if from < to {
-        out.push_str(&text[from..to]);
-    }
-    if str_indices::utf16::from_byte_idx(text, to) != end {
-        out.push('\u{FFFD}');
-    }
-    out
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -116,21 +89,6 @@ mod tests {
         assert_eq!(slice16(&units, 100, 200), "");
         // start past end: an empty range, not a panic.
         assert_eq!(slice16(&units, 5, 1), "");
-    }
-
-    #[test]
-    fn the_str_form_agrees_with_the_unit_form_at_every_bound() {
-        let text = format!("a{EMOJI}b{COMBINING}{EMOJI}{EMOJI}c");
-        let units = units(&text);
-        for start in 0..units.len() + 3 {
-            for end in 0..units.len() + 3 {
-                assert_eq!(
-                    slice16_str(&text, start, end),
-                    slice16(&units, start, end),
-                    "range {start}..{end}",
-                );
-            }
-        }
     }
 
     #[test]

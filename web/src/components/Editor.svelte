@@ -202,6 +202,7 @@
   import { changeMarks, setChangeMarks } from "../lib/change-marks.js";
   import { CHANGES, planEdits, writePlanned, resolveFile, trackedSplice, untrackedSplice, prune } from "../lib/track-changes.js";
   import { DIRECTORY_ORIGIN } from "../lib/project-session.js";
+  import { ANCHORS_ORIGIN, composeEdits, fragmentRangesFor } from "../lib/anchors.js";
   import { projectDirectory } from "../lib/projection.js";
   import { attachEditorZoom } from "../lib/editor-zoom.js";
   import { snippetTemplate } from "../lib/snippet-template.js";
@@ -291,6 +292,9 @@
   function trackChanges(fileId) {
     /** @type {{changes: any[], gaps: any[]}} */
     let snapshot = { changes: [], gaps: [] };
+    // The fragments that the last local update's deletions created, in document
+    // order. Kept for the anchors plugin, which runs behind this one.
+    let created = [];
     // A local edit is a user transaction that changed the text.
     const isLocal = (update) => update.docChanged
       && update.transactions.some((transaction) => transaction.docChanged && transaction.annotation(loroSyncAnnotation) === undefined);
@@ -307,6 +311,7 @@
       return {
         update(update) {
           if (!isLocal(update)) return;
+          created = [];
           // The sync plugin has written every transaction of this update to
           // the LoroText already. Each one is planned against the text it
           // started from, chained, and the result is written once so that no
@@ -352,6 +357,12 @@
                 ],
               };
               writePlanned(doc, fileId, planned);
+              // The anchors plugin runs behind this one and needs the ids that
+              // the deletions of this update were stored under. Gaps resolve in
+              // position order and fragments in rank order, which is document
+              // order.
+              const known = new Set(snapshot.gaps.flatMap((gap) => gap.fragments.map((f) => f.id)));
+              created = resolveFile(doc, fileId).gaps.flatMap((gap) => gap.fragments.filter((f) => !known.has(f.id)).map((f) => ({ id: f.id, text: f.text, at: gap.at })));
             }
           }
           if (doc.getMap(CHANGES).size) prune(doc);
@@ -360,7 +371,52 @@
         },
       };
     }));
-    return { before, after };
+    return { before, after, created: () => created };
+  }
+
+  /// Whether the anchor index records a transaction. Only the user's own
+  /// transactions are recorded here. Undo and redo are recorded by the index
+  /// itself, from the document's events (see `attach` in lib/anchors.js), and
+  /// so is a decision from the Changes panel, which the reader reads back into
+  /// the index. A transaction carrying the binding's mark is already in the
+  /// document and in the index.
+  function recordsEdits(transaction) {
+    return transaction.annotation(loroSyncAnnotation) === undefined;
+  }
+
+  /// Moves the comment anchors with the text, as the edits are made. Every
+  /// transaction of the update is planned as one operation against the text the
+  /// first one started from, and the records are written once against the final
+  /// text. No cursor is made at an intermediate offset, which is the same reason
+  /// `trackChanges` chains its transactions. The fragments come from the change
+  /// plugin, which stored them in this same update. Its commit is labelled as
+  /// anchor work. The index is loaded when the plugin is built, while the view
+  /// and the document still agree. Imports are followed by the index itself.
+  function anchorsPlugin(fileId, createdFragments) {
+    return Prec.lowest(ViewPlugin.define(() => {
+      session.anchors.load(fileId);
+      return {
+        update(update) {
+          if (!update.docChanged || !update.transactions.some(recordsEdits)) return;
+          const doc = session.doc;
+          const steps = [];
+          for (const transaction of update.transactions) {
+            if (!transaction.docChanged || !recordsEdits(transaction)) continue;
+            const edits = [];
+            transaction.changes.iterChanges((fromA, toA, fromB, toB, insert) => {
+              edits.push({ from: fromA, to: toA, insert: insert.sliceString(0, insert.length, "\n") });
+            });
+            steps.push({ transaction, edits });
+          }
+          if (!steps.length) return;
+          const composed = composeEdits(steps.map((step) => step.edits));
+          const before = steps[0].transaction.startState.doc.toString();
+          const fragments = composed.some((edit) => edit.to > edit.from) ? fragmentRangesFor(before, composed, createdFragments()) : [];
+          session.anchors.record([{ fileId, edits: composed, fragments }], session.anchorMemory);
+          doc.commit({ origin: ANCHORS_ORIGIN });
+        },
+      };
+    }));
   }
 
   let parsedBibliography = $state(null);
@@ -370,15 +426,26 @@
   let undoManager = null;
   let undoManagerDoc = null;
 
-  /// Writes one edit into a file's text. Either way the library's splice keeps
-  /// pending spans and gaps in step with the text. Tracked, the edit is also
-  /// recorded as a pending change. The caller commits.
+  /// Writes a file that is not on screen, and records the edit in the anchor
+  /// index, which only sees the file on screen through its plugin. The text is
+  /// committed before the records are written, so the commit that carries the
+  /// text keeps its origin and stays in the undo history.
   function writeText(fileId, text, from, to, insert) {
-    if (tracked) {
-      trackedSplice(session.doc, fileId, from, to, insert, me);
-      return;
+    const doc = session.doc;
+    const before = text.toString();
+    session.anchors.get(fileId);
+    const known = new Set(doc.getMap(CHANGES).size ? resolveFile(doc, fileId).gaps.flatMap((gap) => gap.fragments.map((f) => f.id)) : []);
+    if (tracked) trackedSplice(doc, fileId, from, to, insert, me);
+    else untrackedSplice(doc, fileId, from, to, insert);
+    doc.commit();
+    const edits = [{ from, to, insert }];
+    let fragments = [];
+    if (to > from && doc.getMap(CHANGES).size) {
+      const created = resolveFile(doc, fileId).gaps.flatMap((gap) => gap.fragments.filter((f) => !known.has(f.id)).map((f) => ({ id: f.id, text: f.text, at: gap.at })));
+      fragments = fragmentRangesFor(before, edits, created);
     }
-    untrackedSplice(session.doc, fileId, from, to, insert);
+    session.anchors.record([{ fileId, edits, fragments }], session.anchorMemory);
+    doc.commit({ origin: ANCHORS_ORIGIN });
   }
 
   /// Start recording what is typed as tracked changes.
@@ -688,6 +755,14 @@
     return view ? view.state.selection.main.head : 0;
   }
 
+  /// The source selection, when it is not a caret: the file it is in and its
+  /// UTF-16 range there. Null otherwise.
+  export function selection() {
+    if (!view || !showing) return null;
+    const { from, to } = view.state.selection.main;
+    return from < to ? { file: showing, from, to } : null;
+  }
+
   /// Puts the caret at an offset and scrolls it into the middle of the view:
   /// what a click in the document does when the two are kept in step.
   export function goTo(at) {
@@ -894,7 +969,10 @@
     const shift = changes.filter(edit => edit.to <= from).reduce((sum, edit) => sum + edit.insert.length - (edit.to - edit.from), 0);
     // A snippet is inserted by CodeMirror's own command once the other edits
     // are in place, because only the command knows how to select its first
-    // field and let Tab move to the rest. It is still one commit below.
+    // field and let Tab move to the rest. The file on screen goes through the
+    // view. The other files are written and committed one edit at a time by
+    // writeText, and the undo manager merges commits made within its merge
+    // interval into one undo step.
     if (!result.snippet) changes.push({ from, to, insert: result.text });
     for (const plan of plans.values()) {
       plan.edits.sort((a, b) => a.from - b.from || a.to - b.to);
@@ -941,7 +1019,9 @@
     // back deletes the file.
     const bound = session.doc;
     if (undoManagerDoc !== bound) {
-      undoManager = new UndoManager(bound, { excludeOriginPrefixes: [DIRECTORY_ORIGIN] });
+      // The comment anchors are not undone either: their commits are labelled
+      // ANCHORS_ORIGIN and follow the text back as undo and redo move it.
+      undoManager = new UndoManager(bound, { excludeOriginPrefixes: [DIRECTORY_ORIGIN, ANCHORS_ORIGIN] });
       undoManagerDoc = bound;
     }
     const manager = undoManager;
@@ -1036,6 +1116,8 @@
         LoroExtensions(bound, session.ephemeral && { user: { name: userName, colorClassName }, ephemeral: session.ephemeral }, manager, () => text),
         // After the binding, so the text is written when this one looks.
         tracking.after,
+        // After the change plugin, so the anchors follow records already written.
+        anchorsPlugin(id, tracking.created),
         EditorView.updateListener.of((update) => {
           if (update.docChanged) {
             // The marks were mapped through the edit. Drawing them again from
@@ -1205,8 +1287,10 @@
   /// not come through this view: accepting or rejecting a change from the
   /// Changes panel, for one. The binding copies only imported edits into the
   /// view, so without this the screen would keep the old text. The dispatch is
-  /// marked the way the undo plugin marks its own, as already in the document,
-  /// so the binding does not write it back and tracking does not record it.
+  /// marked the way the undo plugin marks its own, as already in the document.
+  /// The mark keeps the binding from writing the text back, and the anchors
+  /// plugin from recording it. The decision that wrote the document already
+  /// read the anchor index back (`settleAnchors` in Reader.svelte).
   function reconcileShown() {
     if (!view || !showing) return;
     const text = getTextFromDoc(showing);

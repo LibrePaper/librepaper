@@ -34,15 +34,14 @@
 //! Every offset that crosses this module counts UTF-16 code units, because that
 //! is what a browser counts in. The `*_utf16` family is the only text API used
 //! here. Cursors are indexed differently, in Unicode code points (see
-//! [`anchors`]), and are converted at their boundary rather than leaking.
+//! [`crate::document::anchors`]), and are converted at their boundary rather
+//! than leaking.
 
-mod anchors;
 mod edits;
 
 mod shape;
 mod sync;
 
-pub use anchors::*;
 pub use edits::*;
 
 pub use shape::*;

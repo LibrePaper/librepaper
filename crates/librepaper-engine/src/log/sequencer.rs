@@ -415,7 +415,9 @@ pub trait Command {
     /// The default is "no record, go ahead", which is right for every
     /// command that is idempotent by primary key instead: a create carries
     /// a client UUID and a transition is conditional on a version, and
-    /// neither needs this (§7.2).
+    /// neither needs this (§7.2). A create whose `evaluate` prepares source,
+    /// such as a passage comment, answers here, because its own batch moves
+    /// the evidence a retry would be checked against.
     fn replay(&mut self) -> BoxFuture<'_, std::result::Result<Option<Self::Output>, CommandError>> {
         Box::pin(async { Ok(None) })
     }
@@ -495,6 +497,10 @@ pub enum SequencerError {
     /// The fence was lost; this sequencer must stop and be re-admitted.
     #[error("writer ownership lost: {0}")]
     Fenced(String),
+    /// The moment is before the trim point. A shallow document keeps no history
+    /// before its root, so the moment cannot be rebuilt.
+    #[error("that moment is before the trim point")]
+    Trimmed,
 }
 
 pub type Result<T> = std::result::Result<T, SequencerError>;
@@ -2196,8 +2202,15 @@ impl Sequencer {
             .await
             .map_err(|Busy| SequencerError::Busy)?;
         let cache = inner.cache.as_ref().expect("a cache was just built");
-        let fork = historical_fork_at(&cache.doc, frontier)
-            .map_err(|error| SequencerError::Loro(error.to_string()))?;
+        let fork = historical_fork_at(&cache.doc, frontier).map_err(|error| {
+            // A shallow document has no history before its root, so a frontier
+            // before the root is one the trim removed.
+            if cache.doc.is_shallow() {
+                SequencerError::Trimmed
+            } else {
+                SequencerError::Loro(error.to_string())
+            }
+        })?;
         Ok(read(&fork))
     }
 
@@ -2461,6 +2474,22 @@ impl Sequencer {
         &self,
         mode: SnapshotMode,
     ) -> Result<Option<(i64, Vec<u8>, Vec<u8>, usize, bool)>> {
+        self.snapshot_at_log_vector_expecting(mode, None).await
+    }
+
+    /// The same, but refusing to snapshot a head whose oplog frontier is not
+    /// `expected_frontier`. A caller that healed the document and then read its
+    /// frontier passes that frontier here. An edit that entered the head after
+    /// that read would otherwise be exported in a snapshot the healing never
+    /// checked. `None` skips the check.
+    ///
+    /// A refusal is `Ok(None)`, the same answer a head that is ahead of its log
+    /// gets. It captures and writes nothing.
+    pub async fn snapshot_at_log_vector_expecting(
+        &self,
+        mode: SnapshotMode,
+        expected_frontier: Option<&[u8]>,
+    ) -> Result<Option<(i64, Vec<u8>, Vec<u8>, usize, bool)>> {
         let mut inner = self.inner.lock().await;
         inner.writable()?;
         if !inner.buffer.is_empty() {
@@ -2478,6 +2507,14 @@ impl Sequencer {
         let cache = inner.cache.as_ref().expect("a cache was just built");
         if cache.doc.oplog_vv() != log_vector {
             return Ok(None);
+        }
+        // Checked under the same lock as the export. Anything that entered the
+        // head after the caller's read is already in this document, so a
+        // snapshot of it would hold an edit the caller never checked.
+        if let Some(expected) = expected_frontier {
+            if cache.doc.oplog_frontiers().encode().as_slice() != expected {
+                return Ok(None);
+            }
         }
         let changes = cache.doc.len_changes();
         // §9.3 counts a compaction export against the same bound as a

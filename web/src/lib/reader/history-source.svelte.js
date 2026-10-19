@@ -5,18 +5,20 @@
 // stands, captured when the comparison opens and again on request. It
 // deliberately has no dependency on preview rendering or the live editor.
 import { createGeneration } from "./generation.js";
+import { isMoment } from "../moment.js";
 
 /// A selection is a label's id, and nothing else: the timeline lists
 /// versions, and a minute nobody saved is not one.
 
 export function createHistorySource({ read, currentTree, labels = () => [], preferredPath = () => "" }) {
-  const state = $state({ selected: "", path: "", loading: false, problem: "", result: null });
+  const state = $state({ selected: "", path: "", loading: false, problem: "", gone: false, result: null });
   const selections = createGeneration();
   let disposed = false;
 
   const snapshot = tree => ({ ...tree, texts: { ...tree.texts }, files: { ...tree.files } });
   const label = point => point.label
     || (point.at ? new Date(point.at).toLocaleString() : "")
+    || (isMoment(point.sha) ? "An earlier moment" : "")
     || (point.sha ? point.sha.slice(0, 7) : "An earlier moment");
 
   async function readPoint(sha) {
@@ -58,6 +60,7 @@ export function createHistorySource({ read, currentTree, labels = () => [], pref
     state.path = path;
     state.result = null;
     state.problem = "";
+    state.gone = false;
     state.loading = true;
     try {
       // Capture the current source at selection time, before any network
@@ -94,7 +97,10 @@ export function createHistorySource({ read, currentTree, labels = () => [], pref
         diff: Boolean(sha),
       };
     } catch (error) {
-      if (!disposed && !stale()) state.problem = error.message || "Could not load label source.";
+      if (!disposed && !stale()) {
+        state.problem = error.message || "Could not load label source.";
+        state.gone = Boolean(error.gone);
+      }
     } finally {
       if (!disposed && !stale()) state.loading = false;
     }
@@ -109,12 +115,15 @@ export function createHistorySource({ read, currentTree, labels = () => [], pref
     state.result = null;
     state.loading = false;
     state.problem = "";
+    state.gone = false;
   }
   return {
     get selected() { return state.selected; },
     get path() { return state.path; },
     get loading() { return state.loading; },
     get problem() { return state.problem; },
+    /// The last comparison's moment was trimmed away, which the server says with a 410.
+    get gone() { return state.gone; },
     get result() { return state.result; },
     select, selectFile, close,
     dispose() { close(); disposed = true; },

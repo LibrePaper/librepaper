@@ -1,8 +1,10 @@
 <script>
-  import { listChanges, accept, reject, rejectMany } from "../lib/track-changes.js";
+  import { listChanges, accept, rejectRestoring } from "../lib/track-changes.js";
   // One document: the source beside it, the page itself, and everything said
   // about it.
   import { aboutWholeDocument, anchorAll, flatten, placeSources, shownSelector } from "../lib/anchor.js";
+  import { ANCHORS_ORIGIN, attachByHand, composeEdits, deriveAttachment, restoreByFragments } from "../lib/anchors.js";
+  import { momentOf } from "../lib/moment.js";
   import { barHiddenAfter, revealOnNavFocus, watchScrolls } from "../lib/bar-scroll.js";
   import * as renderers from "../lib/renderers.js";
   import * as sync from "../lib/sync.js";
@@ -11,7 +13,6 @@
   import * as history from "../lib/history.js";
   import { createHistorySource } from "../lib/reader/history-source.svelte.js";
   import HistoryWorkspace from "./reader/HistoryWorkspace.svelte";
-  import * as passages from "../lib/passages.js";
   import { diagnosticContext } from "../lib/assistant-review.js";
   import { candidateTree, capturePreviewTree, previewCandidate } from "../lib/assistant-preview.js";
   import { orphanState } from "../lib/orphan.js";
@@ -28,7 +29,6 @@
   import { createWorkspace } from "../lib/reader/workspace.svelte.js";
   import { createBuildSettings } from "../lib/reader/build-settings.svelte.js";
   import { createTimeline } from "../lib/reader/timeline.svelte.js";
-  import { createPassageTrace } from "../lib/reader/passage-trace.svelte.js";
   import { createPreviewRenderer } from "../lib/reader/preview-render.js";
   import { createPreferences } from "../lib/reader/preferences.svelte.js";
   import { forgetProject, markShellReady, rememberProject } from "../lib/offline-projects.js";
@@ -186,7 +186,12 @@
     repaint: applyHighlights,
     send: (message) => collaboration?.send(message),
     renderDigest: () => renderedProjectDigest,
+    // An editor's attachment is read from the document's anchor records, which
+    // move with every edit. A reader's comes from the page and is not derived.
+    attachmentOf: (comment, bodies) => (mayEdit && session ? deriveAttachment(session.doc, session.anchors, comment, bodies) : undefined),
   });
+  // The document subscription that re-derives the attachments; held per session.
+  let followAnnotations = null;
   const comments = $derived(annotations.state.comments);
   const unconfirmed = $derived(annotations.state.unconfirmed);
   const outbox = annotations.outbox;
@@ -437,20 +442,31 @@
   //
   // The two are different questions with different answers. Where to draw it
   // is a question about the page in front of this browser, and the rendered
-  // quotation is what answers it -- display evidence, matched against display
-  // text, and nothing follows from it being wrong beyond a mark in the wrong
-  // place. Where the passage is in the source is not this browser's question
-  // at all: the server resolved it through the document's own history and
-  // sent the answer, and `placeSources` only translates that answer's file id
-  // into a path.
+  // quotation is what answers it. That is display evidence, matched against
+  // display text, and nothing follows from it being wrong beyond a mark in the
+  // wrong place. Where the passage is in the source is not this browser's
+  // question at all. An editor's answer is read from the document's anchor
+  // records (`deriveAttachment`), and `placeSources` only translates that
+  // answer's file id into a path.
   //
   // When the rendered quotation no longer matches because the passage was
   // edited, the passage's current words at the server's source range are
-  // looked for on the page instead, so an edited passage keeps its mark. Only
-  // a comment that the quotation could not place is given this fallback.
+  // looked for on the page instead, so an edited passage keeps its mark. A
+  // comment that the quotation could not place is given this fallback as well.
+  //
+  // A comment attached by hand is painted from its source range and from
+  // nothing else, since its rendered quotation names the passage it used to be
+  // about. Its page match is dropped before the fallback runs.
   function anchorComments(list) {
     anchorAll(docText || "", list, docText === null ? null : docView);
-    if (mayEdit) placeSources(session, list);
+    if (mayEdit) {
+      placeSources(session, list);
+      for (const comment of list) {
+        if (!comment.attachment?.attached_by_hand) continue;
+        comment.start = comment.end = null;
+        comment.orphaned = true;
+      }
+    }
     if (mayEdit && docText !== null) {
       let tree = null;
       for (const comment of list) {
@@ -463,6 +479,7 @@
         if (range) {
           comment.start = range.start;
           comment.end = range.end;
+          comment.orphaned = false;
         }
       }
     }
@@ -474,7 +491,6 @@
     anchorComments(comments);
     annotations.publish();
     applyHighlights();
-    tracePassages();
   }
 
   // Scroll tracking for mobile bar hide/show: called by scroll listeners and
@@ -870,6 +886,46 @@
     if (mayChat) annotations.reply(comment, body, name);
   }
 
+  // "Attach to selection": the passage the source has selected becomes the one
+  // this comment is about. The record moves with the commit, and the card is
+  // derived now rather than on the tick after it.
+  function attachComment(comment) {
+    const selection = editor?.selection?.();
+    if (!mayEdit || !session || !selection) {
+      say("Select the passage in the source first.", { kind: "note", id: "reader:attach-selection" });
+      return;
+    }
+    if (
+      !attachByHand(
+        session.doc,
+        session.anchors,
+        session.anchorMemory,
+        comment.id,
+        selection.file,
+        selection.from,
+        selection.to,
+      )
+    ) {
+      say("That passage could not be attached to this comment.", { kind: "problem", id: "reader:attach-failed" });
+      return;
+    }
+    annotations.deriveNow();
+  }
+
+  // The History panel at the moment a comment was made on, opened the way a
+  // label's version is. A moment before a trim is gone; the comment's card says
+  // so, from the flag set here.
+  async function openMoment(comment) {
+    const moment = momentOf(comment);
+    if (!moment) return;
+    await showPanel("history");
+    await viewPoint(moment);
+    if (historySource.gone) {
+      comment.momentTrimmed = true;
+      annotations.publish();
+    }
+  }
+
   /* -------------------------------------------------------------------- room */
 
   let collaboration = $state(null);
@@ -986,19 +1042,46 @@
   /// answer from the server. They return a resolved promise so the panel can
   /// advance the same way it would after a round trip.
   function acceptChange(row) {
-    if (mayEdit && row?.id) accept(session.doc, row.id);
+    if (mayEdit && row?.id && accept(session.doc, row.id)) settleAnchors([row.file_id]);
     return Promise.resolve();
+  }
+
+  // A rejection is planned like an edit. The text it put back goes through the
+  // session's planner with its move memory, so a piece that a tracked deletion
+  // cut from a passage rejoins that passage. Comments that another session
+  // detached are then put back by fragment. Each file the decision went through
+  // is read again into the session's anchor cache.
+  function settleAnchors(files, restored = [], edits = []) {
+    const touched = [...new Set([...files, ...restored.map((r) => r.file)].filter(Boolean))];
+    // A file the index never loaded has no before state to plan from. Its
+    // detached records are still put back by fragment below.
+    if (edits.length > 0 && session.anchors.has(files[0])) {
+      session.anchors.record([{ fileId: files[0], edits: composeEdits(edits.map((edit) => [edit])), fragments: [] }], session.anchorMemory);
+    }
+    for (const file of touched) restoreByFragments(session.doc, file, restored.filter((r) => r.file === file));
+    if (edits.length > 0 || restored.length > 0) session.doc.commit({ origin: ANCHORS_ORIGIN });
+    for (const file of touched) session.anchors.load(file);
+  }
+
+  // One rejection, with the comments on the text it put back settled before
+  // anything else moves that text. Returns whether it was rejected.
+  function rejectSettled(row) {
+    const { ok, restored, edits } = rejectRestoring(session.doc, row.id);
+    settleAnchors([row.file_id], restored, edits);
+    return ok;
   }
 
   function rejectChange(row) {
-    if (mayEdit && row?.id) reject(session.doc, row.id);
+    if (mayEdit && row?.id) rejectSettled(row);
     return Promise.resolve();
   }
 
-  /// Rejects several changes in one commit, owners before the changes they
-  /// swallowed. Resolves to the number rejected.
+  /// Rejects several changes in the order given, owners before the changes
+  /// they swallowed. Each is settled before the next, since each moves the text
+  /// the next one looks at. Resolves to the number rejected.
   function rejectChanges(rows) {
-    const count = mayEdit ? rejectMany(session.doc, rows.map((row) => row.id)) : 0;
+    let count = 0;
+    if (mayEdit) for (const row of rows) if (row?.id && rejectSettled(row)) count += 1;
     return Promise.resolve(count);
   }
 
@@ -1540,30 +1623,6 @@
     } finally {
       if (downloadingSha === sha) downloadingSha = "";
     }
-  }
-
-  /* -------------------------------------------- the passage, then and now */
-
-  // Where each orphaned comment's passage went, by comment id: the manifest
-  // entry at which it stopped being found. This is what replaces "Needs
-  // re-anchoring" on the card, which told the person who wrote the comment
-  // nothing they did not already know.
-  const passageTrace = createPassageTrace({
-    slug: SLUG,
-    key: KEY,
-    now: () => ({ source: sourceGeneration, visible: docText }),
-    paths: () => session?.paths,
-    loadLabels: async () => {
-      await loadHistory();
-      return timeline.state.labels;
-    },
-  });
-  const went = $derived(passageTrace.state.went);
-  const replacements = $derived(passageTrace.state.replacements);
-
-  async function tracePassages() {
-    if (docText === null || !session) return;
-    return passageTrace.trace({ comments, tree: session.tree(), labels });
   }
 
   // The document as a renderer takes it: every text in it, the figures by
@@ -2214,6 +2273,14 @@
     // CodeMirror has applied the local or remote transaction by this point.
     // The source observer can run before its caret has been mapped.
     outlineActiveFrom = editor?.caret?.() ?? null;
+    noteSourceSelection();
+  }
+  // Whether the source has a selection, which "Attach to selection" waits on.
+  // Read wherever the editor reports a caret, a text change or a file change:
+  // those are the ways a selection moves.
+  let sourceSelected = $state(false);
+  function noteSourceSelection() {
+    sourceSelected = Boolean(editor?.selection?.());
   }
   function outlineCaretChanged() {
     outlineTextChanged();
@@ -3071,6 +3138,10 @@
         // can move them, an accept or reject included, and that is not a text
         // event. Imports from other peers arrive here as well.
         changesUnsubscribe = active?.doc.subscribe(refreshReview) || null;
+        // The attachments of an editor are derived from the document, so they
+        // are followed on every commit.
+        followAnnotations?.();
+        followAnnotations = active ? annotations.follow(active.doc) : null;
         refreshReview();
         workspace.attach(active);
         refreshFiles();
@@ -3088,7 +3159,6 @@
       onFiles: filesChanged,
       onAwareness: () => { if (!readerDisposed) refreshPeers(); },
       onDocumentChanged: () => {
-        passages.clearPassageCache();
         location.reload();
       },
     });
@@ -3315,7 +3385,6 @@
       projectRefreshTimer = null;
       previewTimer = null;
       boot.dispose();
-      passages.clearPassageCache();
       void quartoPreviewController.stop();
       void calepinPreviewController.stop();
       framePreview.dispose();
@@ -3323,6 +3392,8 @@
       pendingChat?.dispose();
       changesUnsubscribe?.();
       changesUnsubscribe = null;
+      followAnnotations?.();
+      followAnnotations = null;
       collaboration?.close();
     };
   });
@@ -3762,11 +3833,13 @@
       loadError={chatState.loadError} canClear={chatState.canClear} onloadolder={liveChat.loadOlder}
       onclear={askClearChat} {connected} canPost={mayChat} onsend={sendLiveChat}
       {unreadChat} bind:tab={collaborationTab} {comments} {identity}
-      commentingAs={doc.commenting_as || "Anonymous"} {canModerate} {went} {replacements}
+      commentingAs={doc.commenting_as || "Anonymous"} {canModerate}
       canComment={mayChat}
       onreveal={revealAnnotation} selected={selectedAnnotation} onresolve={resolve}
       ondelete={askDelete} ondeletemany={askDeleteMany} onreply={reply} onedit={edit}
       onagent={agentOffered ? askCommentAssistant : undefined}
+      onattach={mayEdit ? attachComment : undefined} attachable={sourceSelected}
+      onmoment={mayEdit ? openMoment : undefined}
       {composing} {needsLogin} signInHref={signInHref()}
       page={annotations.state.page}
       onloadmore={() => void annotations.loadMore()}
@@ -3876,7 +3949,7 @@
         {#key sourceEpoch}
           <Editor bind:this={editor} {session} format={editorFormat} file={openFile} {keys} {rules} {tracking} me={trackingMe} {selectedChange} editable={mayEdit}
                   onbibliography={bibliographyAnalyzed} onchange={outlineTextChanged} oncaret={outlineCaretChanged} onsave={reportPersistence} onquit={showDocumentAlone}
-                  onfilechange={(id) => { ws.openFile = id; outlineActiveFrom = null; ws.figure = null; }} />
+                  onfilechange={(id) => { ws.openFile = id; outlineActiveFrom = null; ws.figure = null; noteSourceSelection(); }} />
         {/key}
       {/if}
     </section>

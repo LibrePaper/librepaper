@@ -5,8 +5,9 @@
 //! it stood when they selected it: it is written once and never touched again,
 //! because a record of what someone said something about cannot be edited by
 //! later events. [`DerivedAttachment`] is where that passage is now, which
-//! changes every time anyone types. It is a cache, keyed by the projection
-//! digest it was computed against, and throwing it away costs nothing.
+//! changes every time anyone types. It is derived from the comment's anchor
+//! record in the document on every read, named by the projection digest it
+//! was derived against, and never stored.
 //!
 //! [`PresentationContext`] is the third thing, and the one that used to be
 //! mistaken for the first: the words as the page had them. It is evidence for
@@ -126,8 +127,7 @@ pub struct PresentationContext {
     pub rendered_position_utf16: Option<u32>,
 }
 
-/// How well a comment's passage survived to the checkpoint it was resolved
-/// against.
+/// How well a comment's passage survived to the document as it now stands.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum AnchorStatus {
@@ -135,8 +135,9 @@ pub enum AnchorStatus {
     Exact,
     /// It is here and has been edited.
     Modified,
-    /// It reads the same in more than one place and nothing says which.
-    Ambiguous,
+    /// It was taken out, but the deletion is a tracked change that has not
+    /// been accepted or rejected yet.
+    PendingDeletion,
     /// It was taken out of the document.
     Deleted,
     /// Nothing could be said either way -- a missing file, an unreadable
@@ -144,57 +145,33 @@ pub enum AnchorStatus {
     Unresolved,
 }
 
-/// Why a resolution could not use what it was given. Kept beside the status
+/// Why a status could not be given as it normally is. Kept beside the status
 /// so a reader is told "that file was removed" rather than "not found".
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ResolutionDiagnostic {
     RemovedFile,
-    DeletedContainer,
     ClearedHistory,
-    MalformedCursor,
-    ForeignContainer,
-    InvalidRange,
 }
 
-/// The CRDT anchors that follow a passage through later edits.
+/// Where a comment's passage is now, read from its anchor record.
 ///
-/// Replaceable resolver state. Loro hands back a fresh pair whenever the
-/// stored one has gone stale, and the fresh pair is kept here -- never in the
-/// original anchor, which would make the record of what a comment is about
-/// depend on when it was last looked at.
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
-pub struct LiveSourceRange {
-    pub start_cursor: Vec<u8>,
-    pub end_cursor: Vec<u8>,
-    pub cursor_format: String,
-}
-
-/// Where a comment's passage is in one particular projection.
-///
-/// A cache and nothing more: it is recomputed from the original anchor and the
-/// document's history whenever either moves, and no part of it is historical
-/// truth. It is keyed by `tree_digest`, the projection's own identity (§2.2:
-/// "Projection identity is a tree digest, not a row number"), never
-/// persisted.
+/// Derived on every read from the record and the document as it stands, and
+/// never stored. Nothing in it is written back into the record. It is keyed by
+/// `tree_digest`, the projection's own identity (§2.2: "Projection identity is
+/// a tree digest, not a row number").
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct DerivedAttachment {
     pub tree_digest: String,
     pub status: AnchorStatus,
-    #[serde(default, skip_serializing)]
-    pub live_source_range: Option<LiveSourceRange>,
+    /// The file the passage was found in. It can differ from the file the
+    /// comment was made in, when the passage was moved to another file.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub resolved_file_id: Option<FileId>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub resolved_range_utf16: Option<(u32, u32)>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub diagnostic: Option<ResolutionDiagnostic>,
-}
-
-impl DerivedAttachment {
-    /// The same attachment, re-rooted at the tree digest the resolver found it in.
-    pub fn with_digest(mut self, tree_digest: &str) -> DerivedAttachment {
-        self.tree_digest = tree_digest.to_string();
-        self
-    }
 }
 
 impl AnchorStatus {
@@ -209,7 +186,7 @@ impl AnchorStatus {
         match self {
             AnchorStatus::Exact => "exact",
             AnchorStatus::Modified => "modified",
-            AnchorStatus::Ambiguous => "ambiguous",
+            AnchorStatus::PendingDeletion => "pending_deletion",
             AnchorStatus::Deleted => "deleted",
             AnchorStatus::Unresolved => "unresolved",
         }
@@ -237,11 +214,7 @@ impl ResolutionDiagnostic {
     pub fn name(self) -> &'static str {
         match self {
             ResolutionDiagnostic::RemovedFile => "removed_file",
-            ResolutionDiagnostic::DeletedContainer => "deleted_container",
             ResolutionDiagnostic::ClearedHistory => "cleared_history",
-            ResolutionDiagnostic::MalformedCursor => "malformed_cursor",
-            ResolutionDiagnostic::ForeignContainer => "foreign_container",
-            ResolutionDiagnostic::InvalidRange => "invalid_range",
         }
     }
 }
@@ -327,24 +300,32 @@ mod tests {
         );
     }
 
-    /// The attachment is a cache, and the cursors in it are the resolver's
-    /// business alone: they are never sent to anybody.
+    /// The file the passage was found in travels when there is one, and the
+    /// fields that say nothing travel not at all.
     #[test]
-    fn cursors_do_not_travel_with_an_attachment() {
-        let attachment = DerivedAttachment {
+    fn an_attachment_names_its_file_only_when_it_has_one() {
+        let placed = DerivedAttachment {
             tree_digest: "abc".into(),
             status: AnchorStatus::Modified,
-            live_source_range: Some(LiveSourceRange {
-                start_cursor: vec![1, 2, 3],
-                end_cursor: vec![4, 5, 6],
-                cursor_format: "loro-1.16-postcard".into(),
-            }),
+            resolved_file_id: Some(FileId("file-1".into())),
             resolved_range_utf16: Some((4, 12)),
             diagnostic: None,
         };
-        let json = serde_json::to_value(&attachment).unwrap();
+        let json = serde_json::to_value(&placed).unwrap();
         assert_eq!(json["status"], "modified");
         assert_eq!(json["resolved_range_utf16"][0], 4);
-        assert!(json.get("live_source_range").is_none());
+        assert_eq!(json["resolved_file_id"], "file-1");
+
+        let gone = DerivedAttachment {
+            tree_digest: "abc".into(),
+            status: AnchorStatus::Unresolved,
+            resolved_file_id: None,
+            resolved_range_utf16: None,
+            diagnostic: Some(ResolutionDiagnostic::RemovedFile),
+        };
+        let json = serde_json::to_value(&gone).unwrap();
+        assert!(json.get("resolved_file_id").is_none());
+        assert!(json.get("resolved_range_utf16").is_none());
+        assert_eq!(json["diagnostic"], "removed_file");
     }
 }

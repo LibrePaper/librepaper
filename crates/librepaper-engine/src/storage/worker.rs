@@ -280,6 +280,13 @@ fn enqueue_due_rescan(
 /// and a private copy could not do that. It is retired again by the next
 /// housekeeping pass, which drops any sequencer with no subscribers and an
 /// empty buffer.
+///
+/// `expected_frontier` is the head's oplog frontier as the caller last read it,
+/// after the last change the caller made (healing comment anchors, for one). If
+/// the head has moved since, nothing is captured or written and the result is
+/// `Ok(None)`, the same answer an edit waiting in the buffer gets. `None` skips
+/// the check.
+#[allow(clippy::too_many_arguments)]
 pub async fn compact_document(
     catalog: &Arc<PostgresCatalog>,
     blobs: &Arc<dyn BlobStore>,
@@ -288,6 +295,7 @@ pub async fn compact_document(
     config: &librepaper_base::config::Configuration,
     document_id: Uuid,
     mode: crate::log::sequencer::SnapshotMode,
+    expected_frontier: Option<&[u8]>,
 ) -> Result<Option<u64>, String> {
     let sequencer = match sequencers.resident(document_id).await {
         Some(sequencer) => sequencer,
@@ -321,7 +329,7 @@ pub async fn compact_document(
     // 2 and 3. An entry whose `oplog_vv()` equals the log vector, and the
     //    snapshot exported from it. An entry that is ahead is not used.
     let Some((through, snapshot, log_vector, changes, entry_is_shallow)) = sequencer
-        .snapshot_at_log_vector(mode)
+        .snapshot_at_log_vector_expecting(mode, expected_frontier)
         .await
         .map_err(|error| error.to_string())?
     else {
@@ -848,6 +856,7 @@ impl Worker {
             &self.config,
             document_id,
             crate::log::sequencer::SnapshotMode::Full,
+            None,
         )
         .await
         .map(|_| ())

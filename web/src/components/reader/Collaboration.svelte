@@ -9,7 +9,7 @@
     more = false, loadingOlder = false, loadError = "", canClear = false, onloadolder = undefined, onclear = undefined,
     comments = [], identity = "", commentingAs = "Anonymous",
     canModerate = false, canComment = true,
-    went = {}, replacements = {}, onreveal = undefined, onresolve = undefined, ondelete = undefined,
+    onreveal = undefined, onresolve = undefined, ondelete = undefined,
     ondeletemany = undefined, onreply = undefined, onedit = undefined, onagent = undefined, pending = undefined,
     unreadChat = false, selected = "", tab = $bindable("comments"),
     // The traversal, as `lib/reader/annotations.svelte.js` keeps it: the
@@ -17,6 +17,8 @@
     // the last request for one failed. The panel shows these rather than
     // counting the rows it was handed, which are a prefix.
     page = null, onloadmore, onloadreplies,
+    // Editors only: attaching a selection to a comment, and its moment.
+    onattach = undefined, attachable = false, onmoment = undefined,
     // The draft being written, which belongs to the Comments tab whatever it
     // will become.
     composing = null, needsLogin = false, signInHref = "", oncommentsend = undefined, oncommentcancel = undefined,
@@ -29,9 +31,9 @@
   ]);
   $effect(() => { if (!canComment && tab === "chat") tab = "comments"; });
   const common = () => ({ identity, commentingAs, canModerate, canComment,
-    went, replacements, onreveal, onresolve, ondelete, ondeletemany,
+    onreveal, onresolve, ondelete, ondeletemany,
     onreply, onedit, onagent, pending, selected,
-    page, onloadmore, onloadreplies });
+    page, onloadmore, onloadreplies, onattach, attachable, onmoment });
 </script>
 
 <!-- The strip, its ids and the layout of a pane are PanelTabs', shared with

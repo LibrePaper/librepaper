@@ -123,6 +123,16 @@ pub struct ResolvedChange {
     pub deleted: String,
 }
 
+/// A stored fragment as the resolver reads it. `at` is the gap it sits at, in
+/// code points as the resolver counts them.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct FragmentInfo {
+    pub id: String,
+    pub change: String,
+    pub text: String,
+    pub at: usize,
+}
+
 type Row = (ChangeRecord, PlanState);
 type GapRow = (Gap, PlanState);
 
@@ -1381,6 +1391,33 @@ pub fn resolve_changes(doc: &LoroDoc, file_id: &str) -> Vec<ResolvedChange> {
             deleted: deleted_of(&state.gaps, &c.id),
         })
         .collect()
+}
+
+/// The stored fragments of `change_ids` in one file, in document order: by
+/// gap, then by rank within a gap. A fragment without an id is left out.
+pub fn fragments_of_changes(
+    doc: &LoroDoc,
+    file_id: &str,
+    change_ids: &[String],
+) -> Vec<FragmentInfo> {
+    let state = resolve_file(doc, file_id).state;
+    let mut out = Vec::new();
+    for gap in &state.gaps {
+        for fragment in &gap.fragments {
+            let Some(id) = &fragment.id else {
+                continue;
+            };
+            if change_ids.contains(&fragment.change) {
+                out.push(FragmentInfo {
+                    id: id.clone(),
+                    change: fragment.change.clone(),
+                    text: fragment.text.clone(),
+                    at: gap.at,
+                });
+            }
+        }
+    }
+    out
 }
 
 /// Writes a change record: a new container, or only the keys that changed. A

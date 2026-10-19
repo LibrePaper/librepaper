@@ -583,6 +583,14 @@ impl Server {
             };
             let projected = match room.log().projection_at(&frontier).await {
                 Ok(projected) => projected,
+                // Before the trim point: the trim dropped the history this
+                // moment is rebuilt from, so it cannot come back.
+                Err(librepaper_engine::log::SequencerError::Trimmed) => {
+                    return write_json(
+                        410,
+                        &json!({"error": "history before the trim point is gone"}),
+                    );
+                }
                 Err(error) => return sequencer_reply(&error),
             };
             let mut response = write_json(
@@ -1016,11 +1024,20 @@ impl Server {
                 &json!({"error": "another editor has this document open; ask them to close it first"}),
             );
         }
-        // Compact to a shallow snapshot and delete the log. Retry if a concurrent
-        // edit entered the buffer after the flush; Ok(None) means the document is
-        // ahead of the log, not that compaction succeeded.
+        let authority = current_who.document_authority(self.ceiling_for(&current_who.id));
+        // A shallow snapshot keeps no history before the trim point, so a comment
+        // on a passage deleted there could not be resolved again. Each attempt
+        // heals the comment anchors to the text as it stands, and the healing
+        // answers with the frontier it left, read under the sequencer's lock.
+        // The snapshot is taken only against that frontier, so an edit that
+        // lands in between makes the attempt start over with a fresh healing.
+        // Ok(None) means the document moved, not that compaction succeeded.
         let mut after = None;
         for attempt in 0..3 {
+            let frontier = match room.heal_comment_anchors(&authority).await {
+                Ok((_, frontier)) => frontier,
+                Err(error) => return command_reply("heal comment anchors", error),
+            };
             let result = librepaper_engine::storage::worker::compact_document(
                 &self.store.catalog,
                 &self.store.blobs,
@@ -1029,6 +1046,7 @@ impl Server {
                 &self.config,
                 room.document_id,
                 librepaper_engine::log::sequencer::SnapshotMode::Shallow,
+                Some(frontier.as_slice()),
             )
             .await;
             match result {
@@ -1053,9 +1071,6 @@ impl Server {
                 )
             }
         };
-        // Drop the attachment cache so comments re-resolve against the shallow document.
-        room.forget_comments().await;
-        let authority = current_who.document_authority(self.ceiling_for(&current_who.id));
         // The chat lock is held across the trim so a flush cannot write a
         // message between the delete and the buffer being dropped. The trim
         // never calls into the chat path.

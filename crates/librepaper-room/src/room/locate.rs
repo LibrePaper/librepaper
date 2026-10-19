@@ -9,7 +9,7 @@
 //! afterwards, which is the whole difference between this and re-anchoring.
 //! What it produces is verified against the checkpoint and then frozen; where
 //! that passage has since moved to is a separate question, answered in
-//! [`super::resolve`] from the CRDT's own history.
+//! [`super::derive`] from the comment's anchor record.
 //!
 //! The bridge is the prose. A heading is `# Title` in markdown and `Title` in
 //! the page, and a formula is neither, but the words between the markup are

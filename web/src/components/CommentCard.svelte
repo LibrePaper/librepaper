@@ -5,7 +5,7 @@
   import Row from "./layout/Row.svelte";
   import { threadRuns } from "../lib/thread.js";
   import { shownSelector } from "../lib/anchor.js";
-  import { day as isoDay, moment } from "../lib/dates.js";
+  import { moment } from "../lib/dates.js";
 
   // One annotation, and everything said about it.
   let {
@@ -16,13 +16,6 @@
     commentingAs = "Anonymous",
     canModerate = false,
     canComment = true,
-    // The manifest entry at which this comment's passage stopped being found,
-    // when it has been looked up and there was an answer. Null otherwise, and
-    // null for every comment whose passage is still in the document.
-    went = null,
-    // The inserted side of the word diff when the quoted passage was
-    // replaced. It is supplied by the page, which owns historical fetches.
-    replacement = null,
     onreveal,
     onresolve,
     ondelete,
@@ -41,6 +34,12 @@
     // for the next page of them. Absent for a caller that mounts this over
     // a fixed comment.
     onloadreplies,
+    // Editors only, and only where the passage can be worked on: attach the
+    // source selection to a comment whose passage is gone, and open the moment
+    // the comment was made on. `attachable` says whether a selection is there.
+    onattach = undefined,
+    attachable = false,
+    onmoment = undefined,
   } = $props();
 
   // How many replies this card is not showing. `reply_total` is the
@@ -60,6 +59,22 @@
   // is a coloured label for a place the reader cannot see from here, so it
   // carries a few words of what was highlighted.
   const isHighlight = $derived(Boolean(comment.motivation) && comment.motivation !== "commenting");
+  // The source's own account of where the passage is, as the document's anchor
+  // records give it (`attachment`). A passage the page does not paint has no
+  // mark to point at, so its card names the passage in words.
+  const status = $derived(comment.attachment?.status || "");
+  const UNPAINTED = ["deleted", "pending_deletion", "unresolved"];
+  const unpainted = $derived(Boolean(comment.orphaned) || UNPAINTED.includes(status));
+  const showQuote = $derived(isHighlight || unpainted);
+  const badge = $derived(
+    comment.attachment?.diagnostic === "removed_file" ? "Source file removed"
+      : status === "pending_deletion" ? "On a pending deletion"
+      : status === "unresolved" ? "Source passage unresolved"
+      : status === "deleted" ? "Passage removed"
+      : "Passage not on this page",
+  );
+  const badgeTone = $derived(status === "pending_deletion" ? "lp-tone-neutral" : "lp-tone-warning");
+  const canAttach = $derived(Boolean(onattach) && (status === "deleted" || status === "unresolved"));
   // Enough to recognise the passage by, not enough to reprint it: the words
   // that fit in about sixty characters, cut on a word boundary.
   const excerpt = $derived.by(() => {
@@ -251,16 +266,10 @@
             onclick={open}>{summary}</button>
   {:else}
     <div class="flex flex-col gap-2">
-      {#if comment.orphaned || comment.inSourceOnly || (comment.motivation && comment.motivation !== "commenting")}
+      {#if unpainted || comment.inSourceOnly || (comment.motivation && comment.motivation !== "commenting")}
       <Row gap={1} wrap>
-        {#if comment.orphaned}
-          <span class="badge lp-tone-warning">
-            {comment.attachment?.diagnostic === "removed_file" ? "Source file removed"
-              : comment.attachment?.status === "ambiguous" ? "Source passage ambiguous"
-              : comment.attachment?.status === "unresolved" ? "Source passage unresolved"
-              : comment.attachment?.status === "deleted" || went ? "Passage removed"
-              : "Passage not on this page"}
-          </span>
+        {#if unpainted}
+          <span class="badge {badgeTone}">{badge}</span>
         {/if}
         {#if comment.inSourceOnly}
           <!-- The rendering lost the words, but the source -- the text that
@@ -278,20 +287,10 @@
 
       <!-- The passage itself is not repeated here: it is painted in the
            document, and ringed there while this card is the selected one.
-           A highlight is the exception -- it says nothing else. -->
-      {#if isHighlight && excerpt}
+           A highlight is the exception -- it says nothing else -- and so is a
+           passage the page does not paint, which has no mark to point at. -->
+      {#if showQuote && excerpt}
         <p class="quote border-l-2 pl-3 text-sm" style={annotationColor ? `border-color: ${annotationColor}` : undefined}>{excerpt}</p>
-      {/if}
-      <!-- The quotation above is what the passage said when the comment was
-           made. This is what became of it: the moment it stopped being in the
-           document, and the inserted side of the shared word-level diff. -->
-      {#if went}
-        <p class="panel-muted">
-          Removed in {went.label || went.sha.slice(0, 7)}, {isoDay(went.at)}.
-        </p>
-      {/if}
-      {#if replacement !== null}
-        <p class="panel-muted">Now: {replacement ? `“${replacement}”` : "deleted without replacement."}</p>
       {/if}
 
       <div class="thread">
@@ -360,6 +359,29 @@
           </button>
         {/if}
       </div>
+      {#if canAttach || (onmoment && comment.original_anchor?.frontier) || comment.momentTrimmed}
+        <Row gap={2} wrap>
+          {#if canAttach}
+            <button type="button" class="btn btn-sm lp-control-tonal-brand"
+              disabled={!attachable}
+              title={attachable ? "Make the selected passage this comment's passage" : "Select the passage in the source first"}
+              onclick={(e) => {
+                e.stopPropagation();
+                onattach?.(comment);
+              }}>Attach to selection</button>
+          {/if}
+          {#if onmoment && comment.original_anchor?.frontier}
+            <button type="button" class="moment-link"
+              onclick={(e) => {
+                e.stopPropagation();
+                onmoment?.(comment);
+              }}>See it as it was</button>
+          {/if}
+          {#if comment.momentTrimmed}
+            <p class="panel-muted">History before this comment was trimmed.</p>
+          {/if}
+        </Row>
+      {/if}
     </div>
   {/if}
 
@@ -473,6 +495,8 @@
   /* The highlighted words, in the highlight's own colour when it has one.
      Quiet enough to read as a quotation rather than as something said. */
   .quote { margin: 0; border-color: color-mix(in oklab, currentColor 30%, transparent); color: var(--panel-muted); overflow-wrap: anywhere; }
+
+  .moment-link { padding: 0; border: 0; background: none; color: var(--color-link); font: inherit; font-size: 13px; text-decoration: underline; cursor: pointer; }
 
   .actions { display: flex; align-items: center; justify-content: flex-end; gap: 5px; margin-top: 7px; }
   .actions :global(.icon-control) { box-sizing: border-box; width: 32px; height: 32px; min-width: 32px; min-height: 32px; padding: 0; }

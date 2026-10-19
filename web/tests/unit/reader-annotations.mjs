@@ -122,34 +122,85 @@ assert.equal(sent.at(-1).temp_id, highlightId);
 annotations.comment({ exact: "invalid color" },
   { motivation: "commenting", body: "Note", color: "url(https://example.com)" }, "Name");
 assert.equal(sent.at(-1).color, undefined);
-// Where the passages got to after an edit. The server resolves the whole
-// document at once and sends one frame for the pass; a card that never took
-// it would keep showing where a passage was when the page was opened.
+// An editor's attachment is derived from the document, not received. A frame
+// that still carries attachments is not this module's to take.
+assert.equal(annotations.receive({ type: "attachments", attachments: [] }), false);
+// What the derivation says is what the comment carries once it is seeded.
 {
-  const moved = view.comments.at(-1);
-  const before = anchored.length;
-  const repaints = paints;
-  assert.equal(
-    annotations.receive({
-      type: "attachments",
-      attachments: [
-        { comment_id: moved.id, attachment: { status: "modified", resolved_range_utf16: [10, 20] } },
-        { comment_id: "no-such-comment", attachment: { status: "deleted" } },
-      ],
-    }),
-    true,
+  const derived = createAnnotations({
+    slug: "annotations-derived",
+    anchor: () => {},
+    repaint: () => {},
+    send: () => {},
+    attachmentOf: () => ({ status: "exact", resolved_range_utf16: [1, 2], resolved_file_id: "f", tree_digest: "" }),
+  });
+  derived.seed([{ id: "c1", original_anchor: { kind: "source_text" } }], { total: 1, open: 1, replies: 0 });
+  assert.deepEqual(derived.state.comments[0].attachment, {
+    status: "exact", resolved_range_utf16: [1, 2], resolved_file_id: "f", tree_digest: "",
+  });
+}
+
+// The editor's derived attachment carries `attached_by_hand`, which server rows
+// never do. A server row that repeats the same status, file and range must not
+// keep its own unflagged copy over the browser's.
+{
+  const plain = { status: "exact", resolved_file_id: "f1", resolved_range_utf16: [4, 7], tree_digest: "" };
+  let deriving = false;
+  let repaints = 0;
+  const byHand = createAnnotations({
+    slug: "attachment-by-hand",
+    anchor: () => {},
+    repaint: () => repaints++,
+    send: () => {},
+    attachmentOf: () => (deriving ? { ...plain, attached_by_hand: true } : undefined),
+  });
+  // The server's row arrives while nothing is derived, so it keeps its own attachment.
+  byHand.seed(
+    [{ id: "hand", body: "Passage", replies: [], attachment: { ...plain } }],
+    { total: 1, open: 1, replies: 0, revision: "h1", complete: true },
   );
-  assert.deepEqual(moved.attachment, { status: "modified", resolved_range_utf16: [10, 20] });
-  assert.ok(anchored.length > before, "a new attachment re-places the passage");
-  assert.ok(paints > repaints);
-  // A pass naming nothing this browser holds changes nothing and repaints
-  // nothing, but is still this module's message to have swallowed.
-  const quiet = paints;
-  assert.equal(
-    annotations.receive({ type: "attachments", attachments: [{ comment_id: "gone", attachment: {} }] }),
-    true,
+  const commented = byHand.state.comments[0];
+  assert.equal(commented.attachment.attached_by_hand, undefined);
+  deriving = true;
+  byHand.deriveNow();
+  assert.equal(commented.attachment.attached_by_hand, true, "the derived attachment replaces the server's unflagged one");
+  assert.equal(repaints, 1, "a changed attachment repaints");
+  byHand.deriveNow();
+  assert.equal(repaints, 1, "an unchanged attachment does not repaint");
+  // The same row arrives again, as a refresh or a reconnect would bring it.
+  byHand.seed(
+    [{ id: "hand", body: "Passage", replies: [], attachment: { ...plain } }],
+    { total: 1, open: 1, replies: 0, revision: "h2", complete: true },
   );
-  assert.equal(paints, quiet);
+  assert.equal(byHand.state.comments[0], commented, "the row keeps its identity");
+  assert.equal(commented.attachment.attached_by_hand, true, "a server row that repeats the range does not drop the flag");
+}
+
+// Attachments that differ only by diagnostic are not the same. A derived
+// "removed_file" replaces a server copy that lacks it, though status, file and range all match.
+{
+  const gone = { status: "unresolved", resolved_file_id: null, resolved_range_utf16: null, tree_digest: "" };
+  let deriving = false;
+  let repaints = 0;
+  const removed = createAnnotations({
+    slug: "attachment-removed-file",
+    anchor: () => {},
+    repaint: () => repaints++,
+    send: () => {},
+    attachmentOf: () => (deriving ? { ...gone, diagnostic: "removed_file" } : undefined),
+  });
+  removed.seed(
+    [{ id: "gone", body: "Passage", replies: [], attachment: { ...gone } }],
+    { total: 1, open: 1, replies: 0, revision: "r1", complete: true },
+  );
+  const commented = removed.state.comments[0];
+  assert.equal(commented.attachment.diagnostic, undefined);
+  deriving = true;
+  removed.deriveNow();
+  assert.equal(commented.attachment.diagnostic, "removed_file", "a derived removed_file replaces a server copy without it");
+  assert.equal(repaints, 1, "a changed diagnostic repaints");
+  removed.deriveNow();
+  assert.equal(repaints, 1, "an unchanged diagnostic does not repaint");
 }
 
 // The comments are paged: what arrives is a prefix, and everything the panel

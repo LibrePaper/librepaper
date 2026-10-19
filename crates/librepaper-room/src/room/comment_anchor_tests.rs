@@ -1,7 +1,7 @@
 //! A comment, from the words a reader selected to the range it is about.
 //!
-//! The pieces are covered on their own -- `locate` finds a passage, `resolve`
-//! follows one, [`AddComment`] and its siblings write it down -- and what is
+//! The pieces are covered on their own -- `locate` finds a passage, `derive`
+//! reads one back, [`AddComment`] and its siblings write it down -- and what is
 //! left is the join: that a comment arriving as a quotation acquires a source
 //! range it never sent, that the range is the head's own text, that nothing
 //! afterwards edits it, and that editing the document moves where the
@@ -16,7 +16,11 @@
 //! the rest of the catalogue coverage.
 
 use super::*;
-use librepaper_document::document::session;
+use futures_util::future::BoxFuture;
+use librepaper_document::document::{anchors, session};
+use librepaper_engine::log::sequencer::{
+    Command as SequencerCommand, Evidence, Head, PreparedSource, Rung,
+};
 use librepaper_engine::log::Registry;
 use librepaper_engine::storage::annotation::{AnchorStatus, CommentTarget};
 use librepaper_engine::storage::blob::FsStore;
@@ -198,7 +202,8 @@ async fn a_quotation_becomes_a_range_the_browser_never_sent() {
     );
     assert_eq!(target.exact, "*interval* covers the mean");
     // What it was made against is a row in the log and the frontier that row
-    // made durable, not an archive: a comment writes no source of its own.
+    // made durable, not an archive: a comment writes its anchor record and
+    // nothing else of the source.
     let anchor = comment.original_anchor.as_ref().unwrap();
     assert!(anchor.source_sequence >= 0);
     assert!(!anchor.frontier.is_empty());
@@ -316,15 +321,7 @@ async fn editing_the_document_moves_where_a_comment_points_and_not_what_it_is_ab
         .unwrap();
     let anchor_before = comment.original_anchor.clone().unwrap();
     let started_at = anchor_before.target.source().unwrap().start_utf16;
-
-    // `reattach_comments` only ever moves what is in the room's bounded
-    // attachment cache: under §8.3 there is no `annotation_live_state` to
-    // fall back to, and a comment nobody has read is one nobody is
-    // watching, so it is deliberately left alone rather than resolved for
-    // no reader. Paging a comment in is what fills that cache, and
-    // `Room::comment_page` resolves what it pages in, so a caller of the
-    // direct method below expects that same priming.
-    let _ = room.all_comments().await.unwrap();
+    let file_before = anchor_before.target.source().unwrap().file_id.clone();
 
     // Somebody writes a paragraph above it. Nothing about the comment has
     // changed; everything about where it sits has.
@@ -350,8 +347,6 @@ async fn editing_the_document_moves_where_a_comment_points_and_not_what_it_is_ab
         "{ingested:?}"
     );
 
-    let moved = room.reattach_comments().await.unwrap();
-    assert_eq!(moved.len(), 1, "the one comment on this document moved");
     let comments = room.all_comments().await.unwrap();
     let found = comments.iter().find(|item| item.id == comment.id).unwrap();
     assert_eq!(
@@ -361,6 +356,11 @@ async fn editing_the_document_moves_where_a_comment_points_and_not_what_it_is_ab
     );
     let attachment = found.attachment.as_ref().expect("an attachment");
     assert_eq!(attachment.status, AnchorStatus::Exact);
+    assert_eq!(
+        attachment.resolved_file_id.as_ref(),
+        Some(&file_before),
+        "the passage is still in the file it was made in",
+    );
     let (start, _) = attachment.resolved_range_utf16.expect("a resolved range");
     assert!(
         start > started_at,
@@ -387,6 +387,12 @@ async fn a_passage_that_is_deleted_leaves_a_comment_that_says_so() {
         .command(&deployment.authority(), &mut cmd)
         .await
         .unwrap();
+    let file_id = comment
+        .source()
+        .expect("a source-text anchor")
+        .file_id
+        .0
+        .clone();
 
     let (vector, edited) = room
         .log()
@@ -407,14 +413,17 @@ async fn a_passage_that_is_deleted_leaves_a_comment_that_says_so() {
         "{ingested:?}"
     );
 
-    room.reattach_comments().await.unwrap();
     let comments = room.all_comments().await.unwrap();
     let found = comments.iter().find(|item| item.id == comment.id).unwrap();
     assert!(found.source().is_some());
-    assert_eq!(
-        found.attachment.as_ref().expect("an attachment").status,
-        AnchorStatus::Deleted
-    );
+    let attachment = found.attachment.as_ref().expect("an attachment");
+    assert_eq!(attachment.status, AnchorStatus::Deleted);
+    assert_eq!(attachment.resolved_range_utf16, None);
+    // Reading writes nothing: the record is still attached, with its cursors
+    // collapsed. The next browser that edits the document is what detaches it.
+    let records = records_of(&room, &file_id).await;
+    assert_eq!(records.len(), 1);
+    assert!(records[0].0.collapsed && !records[0].0.detached);
     deployment.catalog.close().await;
 }
 
@@ -476,22 +485,37 @@ async fn a_comment_reaches_the_other_editor_and_the_public_channel_live() {
         "editor and reader views share one enriched row read"
     );
 
-    let relayed = received(&mut editor_rx);
+    // The editor channel also carries the comment's own source batch, which
+    // holds its anchor record, and the durable mark after it. Those are not
+    // comments, so the comment checks select by type.
+    let editor_frames = received(&mut editor_rx);
+    let relayed = frames_of(&editor_frames, "comment");
     assert_eq!(
         relayed.len(),
         1,
-        "the submitting socket is not sent it twice"
+        "the submitting socket is not sent its own comment twice"
     );
     assert_eq!(relayed[0]["comment"]["id"], comment.id);
+    assert!(relayed[0]["comment"]["original_anchor"].is_object());
+    assert!(
+        !frames_of(&editor_frames, "doc-update").is_empty(),
+        "the comment's source batch is relayed to editors"
+    );
 
-    let public = received(&mut reader_rx);
+    // A reader also gets a source-changed frame for the batch. Only the
+    // comment frame is checked here, and no source batch reaches a reader.
+    let public_frames = received(&mut reader_rx);
+    let public = frames_of(&public_frames, "comment");
     assert_eq!(public.len(), 1);
     assert_eq!(public[0]["comment"]["body"], "A remark.");
-    assert!(relayed[0]["comment"]["original_anchor"].is_object());
     assert!(
         public[0]["comment"]["original_anchor"].is_null(),
         "a reader is never sent a range in a source file: {}",
         public[0],
+    );
+    assert!(
+        frames_of(&public_frames, "doc-update").is_empty(),
+        "a reader is never sent a source batch"
     );
     deployment.catalog.close().await;
 }
@@ -537,16 +561,17 @@ async fn a_snapshot_states_the_list_each_peer_may_see() {
     room.command(&deployment.authority(), &mut cmd)
         .await
         .unwrap();
-    room.forget_comments().await;
     room.broadcast_comments_changed().await;
 
     // The frame says the collection moved and how large it is. It carries
     // no rows at all -- that is the whole point of it -- so what both
     // peers get is a count and a revision, and each re-reads the pages it
     // is actually holding.
-    let editors = received(&mut editor_rx);
+    // The comment's own source batch and durable mark reach an editor too, and
+    // a reader gets a source-changed frame. Those are not the list, so only the
+    // list frames are checked.
+    let editors = frames_of(&received(&mut editor_rx), "comments-changed");
     assert_eq!(editors.len(), 1);
-    assert_eq!(editors[0]["type"], "comments-changed");
     assert!(editors[0].get("comments").is_none(), "no rows on the wire");
     assert_eq!(editors[0]["state"]["total"], 1);
     assert_eq!(editors[0]["state"]["open"], 1);
@@ -554,12 +579,20 @@ async fn a_snapshot_states_the_list_each_peer_may_see() {
         .as_str()
         .is_some_and(|r| !r.is_empty()));
 
-    let readers = received(&mut reader_rx);
+    let readers = frames_of(&received(&mut reader_rx), "comments-changed");
     assert_eq!(readers.len(), 1);
-    assert_eq!(readers[0]["type"], "comments-changed");
     assert!(readers[0].get("comments").is_none());
     assert_eq!(readers[0]["state"]["total"], 1);
     deployment.catalog.close().await;
+}
+
+/// The frames of one type, in the order they were queued.
+fn frames_of(frames: &[Value], kind: &str) -> Vec<Value> {
+    frames
+        .iter()
+        .filter(|frame| frame["type"] == kind)
+        .cloned()
+        .collect()
 }
 
 /// Whatever is already queued for a peer, as JSON.
@@ -647,5 +680,380 @@ async fn mcp_validates_a_comment_as_it_is_actually_served() {
         .code,
         "conflict",
     );
+    deployment.catalog.close().await;
+}
+
+/// The anchor records of one file, each with the status a reader would see.
+async fn records_of(room: &Room, file_id: &str) -> Vec<(anchors::Anchor, anchors::Status)> {
+    room.log()
+        .with_head(|doc| {
+            anchors::resolve_anchors(doc, file_id)
+                .into_iter()
+                .map(|record| {
+                    let status = anchors::status_of(doc, &record);
+                    (record, status)
+                })
+                .collect::<Vec<_>>()
+        })
+        .await
+        .unwrap()
+}
+
+/// Deletes a comment's anchor record, as a room from before records existed
+/// would have none.
+struct DropAnchorRecord {
+    id: String,
+}
+
+impl SequencerCommand for DropAnchorRecord {
+    type Output = ();
+
+    fn name(&self) -> &'static str {
+        "test-drop-anchor"
+    }
+
+    fn authority(&self) -> Rung {
+        Rung::Editor
+    }
+
+    fn evaluate(&mut self, head: &Head<'_>) -> Result<Option<PreparedSource>, CommandError> {
+        let id = self.id.clone();
+        head.prepare(1, |draft| {
+            draft
+                .get_map(anchors::ANCHORS)
+                .delete(&id)
+                .map_err(|error| error.to_string())
+        })
+        .map_err(CommandError::Conflict)
+    }
+
+    fn transact<'a>(
+        &'a mut self,
+        _tx: &'a mut sqlx::Transaction<'_, sqlx::Postgres>,
+        _evidence: &'a Evidence,
+    ) -> BoxFuture<'a, Result<(), CommandError>> {
+        Box::pin(async move { Ok(()) })
+    }
+}
+
+#[tokio::test]
+#[ignore = "requires LIBREPAPER_TEST_POSTGRES_URL"]
+async fn a_comment_writes_its_anchor_record() {
+    let Some(deployment) = deployment("anchor-record").await else {
+        return;
+    };
+    let room = deployment.rooms.get(&deployment.slug).await.unwrap();
+    let mut cmd = deployment.add_comment(
+        &room,
+        "interval covers the mean",
+        "Interval estimates The ",
+        " of the posterior.",
+        "commenting",
+    );
+    let comment = room
+        .command(&deployment.authority(), &mut cmd)
+        .await
+        .unwrap();
+    let target = comment.source().expect("a source-text anchor");
+    let found = records_of(&room, &target.file_id.0).await;
+    assert_eq!(found.len(), 1, "the comment's record is the only one");
+    let (record, status) = &found[0];
+    assert_eq!(record.id, comment.id);
+    assert!(!record.detached);
+    assert_eq!(
+        (record.from, record.to),
+        (target.start_utf16 as usize, target.end_utf16 as usize),
+    );
+    assert_eq!(record.exact, target.exact);
+    assert_eq!(*status, anchors::Status::Exact);
+    deployment.catalog.close().await;
+}
+
+#[tokio::test]
+#[ignore = "requires LIBREPAPER_TEST_POSTGRES_URL"]
+async fn deleting_a_comment_deletes_its_record() {
+    let Some(deployment) = deployment("anchor-delete").await else {
+        return;
+    };
+    let room = deployment.rooms.get(&deployment.slug).await.unwrap();
+    let mut cmd = deployment.add_comment(
+        &room,
+        "interval covers the mean",
+        "Interval estimates The ",
+        " of the posterior.",
+        "commenting",
+    );
+    let comment = room
+        .command(&deployment.authority(), &mut cmd)
+        .await
+        .unwrap();
+    let file_id = comment
+        .source()
+        .expect("a source-text anchor")
+        .file_id
+        .0
+        .clone();
+    assert_eq!(records_of(&room, &file_id).await.len(), 1);
+
+    let mut delete = DeleteComment::new(
+        deployment.catalog.clone(),
+        room.document_id,
+        Uuid::parse_str(&comment.id).unwrap(),
+        &deployment.writer(),
+    );
+    room.command(&deployment.authority(), &mut delete)
+        .await
+        .unwrap();
+    assert!(
+        records_of(&room, &file_id).await.is_empty(),
+        "the record went with its comment"
+    );
+    assert!(room.comment_by_id(&comment.id).await.unwrap().is_none());
+    deployment.catalog.close().await;
+}
+
+#[tokio::test]
+#[ignore = "requires LIBREPAPER_TEST_POSTGRES_URL"]
+async fn a_room_opening_backfills_old_comments() {
+    let Some(deployment) = deployment("anchor-backfill").await else {
+        return;
+    };
+    let room = deployment.rooms.get(&deployment.slug).await.unwrap();
+    let mut cmd = deployment.add_comment(
+        &room,
+        "interval covers the mean",
+        "Interval estimates The ",
+        " of the posterior.",
+        "commenting",
+    );
+    let comment = room
+        .command(&deployment.authority(), &mut cmd)
+        .await
+        .unwrap();
+    let file_id = comment
+        .source()
+        .expect("a source-text anchor")
+        .file_id
+        .0
+        .clone();
+
+    // A comment from before records existed: its record is gone.
+    let mut drop_record = DropAnchorRecord {
+        id: comment.id.clone(),
+    };
+    room.command(&deployment.authority(), &mut drop_record)
+        .await
+        .unwrap();
+    assert!(records_of(&room, &file_id).await.is_empty());
+
+    deployment.rooms.close(&deployment.slug).await;
+    let room = deployment.rooms.get(&deployment.slug).await.unwrap();
+    let found = records_of(&room, &file_id).await;
+    assert_eq!(found.len(), 1, "opening the room wrote the record back");
+    let (record, status) = &found[0];
+    assert_eq!(record.id, comment.id);
+    assert!(!record.detached, "its passage is still there");
+    assert_eq!(*status, anchors::Status::Exact);
+    deployment.catalog.close().await;
+}
+
+#[tokio::test]
+#[ignore = "requires LIBREPAPER_TEST_POSTGRES_URL"]
+async fn a_room_opening_detaches_a_backfilled_comment_whose_passage_is_gone() {
+    let Some(deployment) = deployment("anchor-backfill-gone").await else {
+        return;
+    };
+    let room = deployment.rooms.get(&deployment.slug).await.unwrap();
+    let mut cmd = deployment.add_comment(
+        &room,
+        "interval covers the mean",
+        "Interval estimates The ",
+        " of the posterior.",
+        "commenting",
+    );
+    let comment = room
+        .command(&deployment.authority(), &mut cmd)
+        .await
+        .unwrap();
+    let source = comment.source().expect("a source-text anchor");
+    let (file_id, exact) = (source.file_id.0.clone(), source.exact.clone());
+
+    let mut drop_record = DropAnchorRecord {
+        id: comment.id.clone(),
+    };
+    room.command(&deployment.authority(), &mut drop_record)
+        .await
+        .unwrap();
+
+    // Edited while the comment has no record: the passage is deleted.
+    let (vector, edited) = room
+        .log()
+        .with_head(|doc| (session::encode_vector(doc), doc.fork()))
+        .await
+        .unwrap();
+    session::put_text(
+        &edited,
+        "paper.md",
+        "# Interval estimates\n\nA second paragraph, for company.\n",
+    );
+    let update = session::encode_diff(&edited, &vector).unwrap();
+    let ingested = room
+        .ingest(999, "editor-999", "editor-999", 1, update)
+        .await;
+    assert!(
+        matches!(ingested, librepaper_engine::log::Ingested::Accepted),
+        "{ingested:?}"
+    );
+
+    deployment.rooms.close(&deployment.slug).await;
+    let room = deployment.rooms.get(&deployment.slug).await.unwrap();
+    let found = records_of(&room, &file_id).await;
+    assert_eq!(found.len(), 1, "opening the room wrote the record back");
+    let (record, status) = &found[0];
+    assert_eq!(record.id, comment.id);
+    assert!(
+        record.detached,
+        "the passage is gone, so the record is detached"
+    );
+    assert_eq!(record.exact, exact, "the quote is kept");
+    assert_eq!(*status, anchors::Status::Deleted);
+    deployment.catalog.close().await;
+}
+
+#[tokio::test]
+#[ignore = "requires LIBREPAPER_TEST_POSTGRES_URL"]
+async fn a_whole_document_comment_has_no_record() {
+    let Some(deployment) = deployment("anchor-whole-record").await else {
+        return;
+    };
+    let room = deployment.rooms.get(&deployment.slug).await.unwrap();
+    let config = Configuration::default();
+    let mut cmd = AddComment::new(
+        deployment.catalog.clone(),
+        room.document_id,
+        Uuid::new_v4(),
+        &config,
+        "commenting",
+        "A remark.",
+        &deployment.writer(),
+        "",
+        "",
+        "",
+        None,
+        true,
+        None,
+        None,
+    )
+    .unwrap();
+    let comment = room
+        .command(&deployment.authority(), &mut cmd)
+        .await
+        .unwrap();
+    assert!(matches!(
+        comment.original_anchor.as_ref().unwrap().target,
+        CommentTarget::Document
+    ));
+    let has_record = room
+        .log()
+        .with_head(|doc| doc.get_map(anchors::ANCHORS).get(&comment.id).is_some())
+        .await
+        .unwrap();
+    assert!(
+        !has_record,
+        "a remark about the whole document has no passage"
+    );
+    deployment.catalog.close().await;
+}
+
+#[tokio::test]
+#[ignore = "requires LIBREPAPER_TEST_POSTGRES_URL"]
+async fn a_retried_passage_comment_answers_from_its_row_and_writes_no_second_record() {
+    let Some(deployment) = deployment("anchor-retry").await else {
+        return;
+    };
+    let room = deployment.rooms.get(&deployment.slug).await.unwrap();
+    let config = Configuration::default();
+    // One request, sent twice with the same id, as a client that lost the
+    // first answer would send it.
+    let id = Uuid::new_v4();
+    let request = |whole_document: bool| {
+        AddComment::new(
+            deployment.catalog.clone(),
+            room.document_id,
+            id,
+            &config,
+            "commenting",
+            "A remark.",
+            &deployment.writer(),
+            "interval covers the mean",
+            "Interval estimates The ",
+            " of the posterior.",
+            Some(0),
+            whole_document,
+            None,
+            None,
+        )
+        .expect("a well-formed comment")
+    };
+
+    let before = room
+        .log()
+        .with_head(|doc| doc.oplog_frontiers().encode())
+        .await
+        .unwrap();
+    let mut first = request(false);
+    let (comment, replayed) = room
+        .command_reporting_replay(&deployment.authority(), &mut first)
+        .await
+        .unwrap();
+    assert!(!replayed, "the first attempt is a fresh commit");
+    let after_first = room
+        .log()
+        .with_head(|doc| doc.oplog_frontiers().encode())
+        .await
+        .unwrap();
+    assert_ne!(
+        after_first, before,
+        "the passage's anchor record moved the frontier"
+    );
+
+    let mut retry = request(false);
+    let (again, replayed) = room
+        .command_reporting_replay(&deployment.authority(), &mut retry)
+        .await
+        .unwrap();
+    assert!(replayed, "the retry is answered from its row");
+    assert_eq!(again.id, comment.id, "the retry returns the first comment");
+    assert_eq!(
+        again.original_anchor, comment.original_anchor,
+        "the retry answers with the first record's anchor",
+    );
+    let after_retry = room
+        .log()
+        .with_head(|doc| doc.oplog_frontiers().encode())
+        .await
+        .unwrap();
+    assert_eq!(
+        after_retry, after_first,
+        "the retry wrote no second anchor record"
+    );
+
+    // The same id asking for a whole-document comment is a different comment,
+    // so the row must not answer it.
+    let mut other_kind = request(true);
+    let error = room
+        .command_reporting_replay(&deployment.authority(), &mut other_kind)
+        .await
+        .unwrap_err();
+    match error {
+        CommandError::Conflict(message) => {
+            assert!(message.contains("reused"), "{message}");
+        }
+        other => panic!("expected a conflict, got {other:?}"),
+    }
+
+    let comments = room.all_comments().await.unwrap();
+    assert_eq!(comments.len(), 1, "the retry added no second comment");
+    assert_eq!(comments[0].id, comment.id);
     deployment.catalog.close().await;
 }

@@ -908,8 +908,12 @@ function decidable(map, value) {
   return !(parent instanceof LoroMap && parent.get("kind") === "change");
 }
 
-// Rejects one change without committing. See `reject`.
-function rejectOne(doc, id) {
+// Rejects one change without committing. See `reject`. With `restored`, each
+// fragment whose text goes back into the document is pushed onto it as
+// { file, fragment, at, text }, at being where the text now starts. With
+// `edits`, each text edit is pushed onto it as { from, to, insert }, in the
+// order the edits are made and in the coordinates of the text just before each.
+function rejectOne(doc, id, restored = null, edits = null) {
   const map = doc.getMap(CHANGES);
   const plain = /** @type {any} */ (map.get(id));
   if (plain !== undefined && !(plain instanceof LoroMap) && typeof plain.file === "string") convertLegacy(doc, plain.file, id);
@@ -930,6 +934,8 @@ function rejectOne(doc, id) {
       groups.get(at).push(g);
     }
     const restore = (at) => {
+      const first = restored ? restored.length : 0;
+      let inserted = 0;
       const list = groups.get(at).sort((a, b) => a.at - b.at);
       // Gaps collapsing onto one point keep their order: later gaps rank above
       // earlier ones.
@@ -958,18 +964,31 @@ function rejectOne(doc, id) {
           // Spans ending or starting here keep their bounds across the
           // restored text; a cursor left on a deleted character might not.
           const edges = resolveFile(doc, file).changes.filter((c) => c.id !== id && c.to > c.from && (c.to === pos || c.from === pos));
+          if (restored) restored.push({ file, fragment: f.id, at: pos, text: f.text });
           text.insert(pos, f.text);
+          if (Array.isArray(edits)) edits.push({ from: pos, to: pos, insert: f.text });
           for (const c of edges) writeChange(doc, text, file, c.to === pos ? c : { ...c, from: c.from + f.text.length, to: c.to + f.text.length });
           flush(pos);
           pos += f.text.length;
+          inserted += f.text.length;
           map.delete(f.id);
         } else pending.push(f);
       }
       flush(pos);
+      // Later calls insert below everything already put back, so the text put
+      // back here moves those entries up by its length.
+      if (restored) for (const r of restored.slice(0, first)) r.at += inserted;
     };
     const positions = [...groups.keys()].sort((a, b) => b - a);
     for (const at of positions) if (!span || at > span.to) restore(at);
-    if (span) text.delete(span.from, span.to - span.from);
+    // Text put back ahead of the span sits after it, so it moves back by the
+    // span's length once the span is gone.
+    const early = restored?.length ?? 0;
+    if (span) {
+      text.delete(span.from, span.to - span.from);
+      if (Array.isArray(edits)) edits.push({ from: span.from, to: span.to, insert: "" });
+    }
+    if (restored && span) for (const r of restored.slice(0, early)) r.at -= span.to - span.from;
     for (const at of positions) if (span && at <= span.to) restore(at);
   }
   for (const [fid, fv] of [...map.entries()]) if (fv instanceof LoroMap && fv.get("kind") === "fragment" && fv.get("change") === id) map.delete(fid);
@@ -989,6 +1008,26 @@ export function reject(doc, id) {
   if (!rejectOne(doc, id)) return false;
   doc.commit();
   return true;
+}
+
+/**
+ * Rejects a change like `reject`, and lists the text it put back: each
+ * fragment inserted, where it now starts and what it says. The comment anchors
+ * that were in that text are re-pinned from this list (`restoreByFragments`).
+ * `edits` are the text edits the rejection made, in the order it made them,
+ * each in the coordinates of the text just before it. `composeEdits` in
+ * ./anchors.js turns them into one planner operation.
+ *
+ * @param {import("loro-crdt").LoroDoc} doc
+ * @param {string} id
+ * @returns {{ ok: boolean, restored: { file: string, fragment: string, at: number, text: string }[], edits: { from: number, to: number, insert: string }[] }}
+ */
+export function rejectRestoring(doc, id) {
+  const restored = [];
+  const edits = [];
+  if (!rejectOne(doc, id, restored, edits)) return { ok: false, restored: [], edits: [] };
+  doc.commit();
+  return { ok: true, restored, edits };
 }
 
 /**

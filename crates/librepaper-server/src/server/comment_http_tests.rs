@@ -279,11 +279,9 @@ async fn a_commenter_who_cannot_edit_still_lands_a_comment_that_survives_and_rea
         "a comment on source text has an anchor"
     );
 
-    // A cold read reconstructs the attachment from its stored anchor. An
-    // editor's page: a page below editor is stripped of anchors and
-    // attachments, so it no longer resolves them and leaves the anchor
-    // cache alone, and the guard below needs the cache filled.
-    room.forget_comments().await;
+    // A read derives the attachment from the stored anchor. An editor's page
+    // is the one that derives it: a page below editor is stripped of anchors
+    // and attachments, so it does not derive them.
     let (reloaded, _) = room
         .comment_page(None, 50, "account:not-the-author", true)
         .await
@@ -294,8 +292,7 @@ async fn a_commenter_who_cannot_edit_still_lands_a_comment_that_survives_and_rea
         .expect("the comment survived a reload");
     assert_eq!(found.comment.body, "A remark, from the wire.");
 
-    // A mutation after loading must not discard the anchor subscription.
-    // No page read between this command and the source edit can refill it.
+    // A mutation after loading leaves the comment's anchor where it was.
     let resolve = serde_json::from_value(json!({
         "type": "resolve", "comment_id": comment_id, "resolved": true,
     }))
@@ -314,7 +311,6 @@ async fn a_commenter_who_cannot_edit_still_lands_a_comment_that_survives_and_rea
     let event = room.comment_event_for(&resolved, "", false).await;
     assert_eq!(event["state"]["total"], 1);
     assert_eq!(event["state"]["open"], 0);
-    assert_eq!(room.attachment_cache_len().await, 1);
 
     // Still points at its passage after the text around it moves: an editor
     // (the owner, since the grant above never made the commenter one)
@@ -344,12 +340,6 @@ async fn a_commenter_who_cannot_edit_still_lands_a_comment_that_survives_and_rea
     assert!(
         matches!(ingested, librepaper_engine::log::Ingested::Accepted),
         "{ingested:?}"
-    );
-    let moved = room.reattach_comments().await.unwrap();
-    assert_eq!(
-        moved.len(),
-        1,
-        "the comment made through the wire moved with its words"
     );
     let comments = room.all_comments().await.unwrap();
     let after = comments
@@ -501,8 +491,6 @@ async fn the_wire_sees_every_comment_past_the_first_page_and_can_resolve_one() {
         tx.commit().await.unwrap();
     }
 
-    room.forget_comments().await;
-
     // The authoritative count comes from the catalogue, not from a list: a
     // reader of the first page is told how many there are behind it.
     let state = room.comment_state().await.unwrap();
@@ -583,7 +571,6 @@ async fn the_wire_sees_every_comment_past_the_first_page_and_can_resolve_one() {
     );
     assert_eq!(result["resolved"], json!(true));
 
-    room.forget_comments().await;
     assert!(
         room.comment_by_id(&last)
             .await
@@ -602,7 +589,6 @@ async fn the_wire_sees_every_comment_past_the_first_page_and_can_resolve_one() {
         .execute(deployment.catalog.pool())
         .await
         .unwrap();
-    room.forget_comments().await;
     let response = get_comments(&deployment).await;
     assert_eq!(response.status(), 200, "an oversized row is not a refusal");
     let bytes = axum::body::to_bytes(response.into_body(), 8 * 1024 * 1024)

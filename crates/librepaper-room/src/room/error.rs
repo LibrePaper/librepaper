@@ -147,6 +147,7 @@ impl From<librepaper_engine::log::SequencerError> for WriteError {
             SequencerError::Unreadable(why) => Self::Unreadable(why),
             SequencerError::Busy => Self::Busy,
             SequencerError::Fenced(why) => Self::Fenced(why),
+            SequencerError::Trimmed => Self::Unreadable(SequencerError::Trimmed.to_string()),
             SequencerError::Storage(error) => Self::from(error),
             SequencerError::Loro(why) => Self::Storage(why),
         }
