@@ -15,6 +15,7 @@ Everything here is optional. Start with the [simple deployment](simple.html).
 - Caddy obtains a certificate for a name on its first visit, after asking the server (`/api/tls/ask`) whether it is a configured origin. No Caddy edits are needed for the three names.
 - Publish an AAAA record only if the VPS has IPv6.
 - Extra names that redirect (for example `www`) go in `caddy/local.d/*.caddy`. Upgrades never overwrite `local.d`. See the comments in `caddy/Caddyfile`.
+- If the VPS already runs Caddy for other sites, see [Behind your own Caddy](#behind-your-own-caddy).
 
 ## Sign-in and access
 
@@ -25,6 +26,7 @@ At least one sign-in provider is needed.
 | GitHub | `https://paper.example/auth/callback` |
 | Google | `https://paper.example/auth/callback/google` |
 | Microsoft Entra ID | `https://paper.example/auth/callback/entra` |
+| ORCID | `https://paper.example/auth/callback/orcid` |
 | Other OpenID Connect | `https://paper.example/auth/callback/oidc-<name>` |
 
 Each provider has its own table in `librepaper.toml`. The keys are:
@@ -32,23 +34,45 @@ Each provider has its own table in `librepaper.toml`. The keys are:
 - `[auth.github]` and `[auth.google]` take `client_id` and `client_secret`.
 - `[auth.entra]` takes `tenant`, `client_id`, `client_secret` and `label`. The tenant is the Directory (tenant) ID, a GUID. The label is the button text and defaults to `Microsoft`.
 - `[auth.oidc.<name>]` takes `issuer`, `client_id`, `client_secret`, `label` and `scopes`. The label is required. The scopes default to `openid email profile`. You can add up to 8 tables.
+- `[auth.orcid]` takes `client_id` and `client_secret`.
 - `[auth]` takes `session_lifetime`, from `1h` to `30d`. It is optional. Absent, a browser session lasts 30 days. Set, it bounds sessions to that. Sessions do not renew on use, and a CLI token never lasts longer than the browser session that approved it.
 
-`[access]` says who may publish and comment:
+Every provider table also says who may publish and comment:
+
+```toml
+[auth.github]
+client_id = "replace"
+client_secret = "replace"
+publishers = ["alice", "bob"]
+commenters = ["*"]
+```
+
+- `publishers` lists the accounts that may publish. A provider table without it lets nobody from that provider publish. Each entry is one of:
+  - `"*"` for any account of that provider.
+  - A GitHub login.
+  - An email address the provider has verified, or `"@example.org"` for a whole domain. This applies to Google, Entra and custom OpenID Connect providers.
+  - An ORCID iD, such as `"0000-0002-1825-0097"`. This applies to ORCID.
+- `commenters` takes the same values and defaults to `["*"]`, which admits any account of that provider.
+
+Anonymous comments need no sign-in. Turn them on in `[access]`:
 
 ```toml
 [access]
-publishers = ["any"]
-commenters = ["any"]
+anonymous_comments = true
 ```
 
-Each value is a list of:
+### ORCID
 
-- `"any"` means any signed-in account.
-- A GitHub login.
-- An email address a configured provider has verified (Google, Entra, or a custom OpenID Connect provider).
-- `"@example.org"` means a whole domain.
-- `"anyone"` means anonymous comments with no sign-in. It is valid for commenters only.
+ORCID signs in researchers with their ORCID account. Register a public API client at [ORCID developer tools](https://orcid.org/developer-tools) with the redirect URI `https://paper.example/auth/callback/orcid`. Then put the client ID and client secret in `[auth.orcid]`:
+
+```toml
+[auth.orcid]
+client_id = "APP-XXXXXXXXXXXXXXXX"
+client_secret = "replace"
+publishers = ["0000-0002-1825-0097"]
+```
+
+- ORCID accounts have no email address, so their handle is the iD, such as `0000-0002-1825-0097`. Put iDs in `publishers` and `commenters`.
 
 ### Identity providers
 
@@ -220,6 +244,7 @@ gh api users/<login> --jq .id            # your numeric GitHub ID
 - Moderation records your GitHub login as the person who acted.
 - The console needs GitHub sign-in. A deployment with only Google, Entra or custom OpenID Connect sign-in has no console.
 - A blocked account is signed out at once. Its block follows the account, so changing the name does not lift it.
+- Erasing an account signs it out at once and refuses its sign-in until the erasure is done. The same person can then sign in again and gets a fresh account with the starter project, and nothing else carries over.
 - A refused name covers only that name. Someone who renames their GitHub account before signing in is not caught.
 - Zoom by dragging on any graph. Double-click to return to the chosen range.
 - For your own Prometheus, add `[metrics]` with `address = "0.0.0.0:9091"` to `librepaper.toml`: the server then serves `/metrics` on that port inside the Docker network. The kit publishes no host port for it, and the graphs above do not need it.
@@ -227,6 +252,8 @@ gh api users/<login> --jq .id            # your numeric GitHub ID
 ```sh
 # Block an account found on the console. The ID column is the UUID.
 docker compose exec librepaper librepaper admin moderate block-account <uuid> --actor <you> --reason "<why>"
+# Erase an account and every project it owns. Projects purge after seven days. The service starts within the hour. This cannot be undone.
+docker compose exec librepaper librepaper admin moderate erase-account <uuid> --actor <you> --reason "<why>"
 ```
 
 ### Uptime
@@ -339,6 +366,80 @@ Every limit and the retention settings are listed, with their defaults, at the e
 - With [object storage](#object-storage), disk is no longer the constraint on `deployment_storage_mib`: set it to what you are willing to store.
 - `[retention]` deletes documents after `expire_after`, counted from the last update by default or from creation.
 - `erase_inactive_after` in `[retention]` erases accounts that have not signed in for that long, with every document they own. It is off by default and must be at least 60 days. The admin console shows how many accounts it will erase in the next 30 days.
+
+## Behind your own Caddy
+
+The kit ships its own Caddy, which answers on ports 80 and 443. Many VPS already run a Caddy for other sites, and only one program can hold those ports. In that case, keep your Caddy as the single entry point for every site and let it forward LibrePaper's names to the LibrePaper container. The bundled Caddy keeps running without host ports, so it no longer competes with yours.
+
+The setup rests on four facts about the kit:
+
+- The bundled Caddy stays in place because `./manage` validates and reloads it. Without host ports it receives no traffic and costs one idle container.
+- LibrePaper trusts forwarded client addresses only from the kit's edge network, `172.29.0.0/16` (`[proxy] trusted_networks` in `librepaper.toml`). Both setups below put your Caddy inside that network, so `librepaper.toml` needs no change. Do not widen `trusted_networks`.
+- LibrePaper answers 421 to names it is not configured for, so your Caddy must pass `Host` through unchanged. Caddy's `reverse_proxy` does this by default.
+- Upgrades replace `compose.yaml` but keep `compose.override.yaml`, so every change below goes in the override, next to `compose.yaml`. There is only one override file. If you already use one (for example for [Database elsewhere](#database-elsewhere)), add these keys to it.
+
+Both setups start the same way. In `compose.yaml`, the bundled Caddy publishes ports 80 and 443 on the host. Create `compose.override.yaml` in the `librepaper/` directory, next to `compose.yaml`, with the content below. Docker Compose reads both files and merges them, and `!reset []` replaces the bundled Caddy's port list with an empty one. The bundled Caddy then publishes no ports, and your Caddy keeps 80 and 443.
+
+```yaml
+# compose.override.yaml
+services:
+  caddy:
+    ports: !reset []
+```
+
+To check the result, run `docker compose config` and look under `caddy:`. It should show no `ports:` entry.
+
+Add this override before you first start the kit, because the bundled Caddy cannot start while your Caddy holds ports 80 and 443. On an installation that is already running, apply it with `docker compose up -d`. `./manage apply` is not enough, because it recreates only the app and backup containers.
+
+```sh
+# Recreate every service whose configuration changed, including the bundled Caddy.
+docker compose up -d
+```
+
+What comes next depends on where your Caddy runs. If it runs as a Docker container, follow [Caddy in Docker](#caddy-in-docker). If you installed it on the host, for example with `apt`, follow [Caddy on the host](#caddy-on-the-host). Both end with the same [site block](#site-block).
+
+### Caddy in Docker
+
+A Caddy container cannot see LibrePaper until the two share a Docker network. Connect your Caddy to LibrePaper's edge network, and it reaches the app by its service name, `librepaper`. Add this to your Caddy's own compose file:
+
+```yaml
+services:
+  caddy:
+    networks: [default, librepaper]
+networks:
+  librepaper:
+    name: librepaper_edge
+    external: true
+```
+
+LibrePaper's Compose project creates that network, so start LibrePaper (`docker compose up -d` in its directory) before your Caddy. Do not run `docker compose down` in the LibrePaper directory, because it tries to remove the network your Caddy is attached to. Use `docker compose up -d` instead.
+
+### Caddy on the host
+
+A Caddy installed on the host is outside Docker and cannot look up service names like `librepaper`. Instead, give LibrePaper a fixed address on the edge network and point your Caddy at that address. The host reaches that network from `172.29.0.1`, which is inside the trusted range. This setup needs the kit from v0.0.47 or later, whose `./manage check` works with a fixed address. Under `services:` in the same override file, next to `caddy:`, add:
+
+```yaml
+  librepaper:
+    networks:
+      edge:
+        ipv4_address: 172.29.200.10
+```
+
+Then run `docker compose up -d`, which recreates LibrePaper at that address.
+
+### Site block
+
+Your Caddy now reaches LibrePaper, but it does not yet know which names belong to it. One site block tells it to forward those names to LibrePaper and to obtain their certificates. List the names from the [DNS](#dns) table, and leave out `admin.paper.example` unless you configured the admin console.
+
+```
+paper.example, docs.paper.example, admin.paper.example {
+	encode zstd gzip
+	header Strict-Transport-Security "max-age=31536000; includeSubDomains"
+	reverse_proxy librepaper:8080
+}
+```
+
+With Caddy in Docker, the upstream is `librepaper:8080` as shown. With Caddy on the host, use `172.29.200.10:8080`. The `encode` and `header` lines copy what the bundled Caddy does. Reload your Caddy (`caddy reload` or its container equivalent) and open `https://paper.example`.
 
 ## Without Docker
 

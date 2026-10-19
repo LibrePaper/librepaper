@@ -11,6 +11,8 @@ bibliography-style: apa
 
 Welcome to LibrePaper. Edit this sentence in the browser and watch the preview update. Your Markdown source, comments, highlights, and labels travel with the document.
 
+This project holds the same tutorial in every format LibrePaper edits. Open `librepaper.typ`, `librepaper.tex`, `librepaper.html` or `librepaper.qmd` from the file list to see how each one works. They share `librepaper-icon.png` and `references.bib`.
+
 ## Source and preview
 
 This file is Markdown. LibrePaper renders it to HTML in the browser. The server synchronizes and stores the source; it does not compile the document. The command-line project export copies source and assets; it does not render documents or export comments.

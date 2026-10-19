@@ -41,7 +41,7 @@ fn write_config(directory: &std::path::Path, database_url: &str) -> std::path::P
         format!(
             "[server]\naddress = \"127.0.0.1:43123\"\n[origins]\napp = \"https://paper.example\"\n\
              [storage]\ndatabase_url = {database_url}\n\
-             [access]\npublishers = [\"alice\"]\ncommenters = [\"anyone\"]\n"
+             [access]\nanonymous_comments = true\n"
         ),
     )
     .unwrap();
@@ -241,7 +241,7 @@ fn admin_serve_refuses_to_replace_missing_key_for_existing_deployment() {
             "[server]\naddress = \"127.0.0.1:0\"\nmigrate = false\n\
              [storage]\ndatabase_url = {{ file = \"database-url\" }}\n\
              directory = {:?}\n\
-             [access]\npublishers = [\"any\"]\ncommenters = [\"anyone\"]\n",
+             [access]\nanonymous_comments = true\n",
             deployment
         ),
     )

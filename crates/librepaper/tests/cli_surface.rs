@@ -91,6 +91,23 @@ fn admin_help_lists_the_admin_commands() {
     );
 }
 
+#[test]
+fn moderate_help_lists_the_moderation_commands() {
+    let help = help_of(&["admin", "moderate", "--help"]);
+    for command in [
+        "block-account",
+        "unblock-account",
+        "erase-account",
+        "hide-project",
+        "unhide-project",
+    ] {
+        assert!(
+            lists_command(&help, command),
+            "moderation command {command:?} is absent from moderate help:\n{help}"
+        );
+    }
+}
+
 /// `local` is the desktop app's interface to the background service, and the
 /// sidebar assistant's own chosen agent spawns `mcp`. Both parse, neither is
 /// advertised in root help.
@@ -316,17 +333,25 @@ fn server_flags_are_rejected_and_server_environment_overrides_are_ignored() {
             "--reason",
             "review",
         ][..],
+        &[
+            "admin",
+            "moderate",
+            "erase-account",
+            "paper",
+            "--database-url",
+            "postgresql:///other",
+            "--actor",
+            "operator",
+            "--reason",
+            "review",
+        ][..],
     ] {
         assert!(!cli(args).status.success(), "{args:?} should be rejected");
     }
 
     let temp = tempfile::tempdir().unwrap();
     let config = temp.path().join("config.toml");
-    std::fs::write(
-        &config,
-        "[server]\naddress = \"0.0.0.0:8179\"\n[access]\npublishers = [\"any\"]\n",
-    )
-    .unwrap();
+    std::fs::write(&config, "[server]\naddress = \"0.0.0.0:8179\"\n").unwrap();
     let output = Command::new(env!("CARGO_BIN_EXE_librepaper"))
         .args([
             "admin",
@@ -377,6 +402,18 @@ fn config_commands_accept_explicit_paths() {
             "--config",
             config,
         ][..],
+        &[
+            "admin",
+            "moderate",
+            "erase-account",
+            "paper",
+            "--actor",
+            "operator",
+            "--reason",
+            "review",
+            "--config",
+            config,
+        ][..],
     ] {
         let output = cli(args);
         let stderr = String::from_utf8_lossy(&output.stderr);
@@ -397,7 +434,7 @@ fn config_check_is_side_effect_free_and_validates_serve_inputs() {
     let port = occupied.local_addr().unwrap().port();
     std::fs::write(
         &config,
-        format!("[server]\naddress = \"127.0.0.1:{port}\"\n[access]\npublishers = [\"any\"]\n"),
+        format!("[server]\naddress = \"127.0.0.1:{port}\"\n"),
     )
     .unwrap();
     let config_arg = config.to_str().unwrap();
@@ -407,11 +444,7 @@ fn config_check_is_side_effect_free_and_validates_serve_inputs() {
     assert!(String::from_utf8_lossy(&valid.stdout).contains("configuration is valid"));
     assert!(!temp.path().join("librepaper-data").exists());
 
-    std::fs::write(
-        &config,
-        "[origins]\napp = \"javascript:alert(1)\"\n[access]\npublishers = [\"any\"]\n",
-    )
-    .unwrap();
+    std::fs::write(&config, "[origins]\napp = \"javascript:alert(1)\"\n").unwrap();
     let invalid = cli(&["admin", "config", "check", "--config", config_arg]);
     assert!(!invalid.status.success(), "{invalid:?}");
     assert!(String::from_utf8_lossy(&invalid.stderr).contains("origins.app"));
@@ -426,7 +459,7 @@ fn config_check_never_echoes_database_url_secrets() {
 
     std::fs::write(
         &config,
-        "[storage]\ndatabase_url = \"postgres://user:QUERY_SECRET@localhost/paper?future_option=QUERY_SECRET\"\n[access]\npublishers = [\"any\"]\n",
+        "[storage]\ndatabase_url = \"postgres://user:QUERY_SECRET@localhost/paper?future_option=QUERY_SECRET\"\n",
     )
     .unwrap();
     let accepted = cli(&["admin", "config", "check", "--config", config_arg]);
@@ -443,7 +476,7 @@ fn config_check_never_echoes_database_url_secrets() {
 
     std::fs::write(
         &config,
-        "[storage]\ndatabase_url = \"postgres://user:PASSWORD_SECRET@localhost:invalid/paper\"\n[access]\npublishers = [\"any\"]\n",
+        "[storage]\ndatabase_url = \"postgres://user:PASSWORD_SECRET@localhost:invalid/paper\"\n",
     )
     .unwrap();
     let rejected = cli(&["admin", "config", "check", "--config", config_arg]);

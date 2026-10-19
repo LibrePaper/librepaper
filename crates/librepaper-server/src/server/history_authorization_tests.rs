@@ -51,8 +51,8 @@ async fn restore_rechecks_editor_access_after_the_body_is_read() {
             main: "paper.md".into(),
         },
         Vec::new(),
-        "owner",
-        "",
+        librepaper_base::auth::Policy::allowing("github", &["owner"]),
+        librepaper_base::auth::Policy::default(),
     )
     .await
     else {
@@ -101,8 +101,8 @@ async fn trim_rechecks_editor_access_after_the_body_is_read() {
             main: "paper.md".into(),
         },
         Vec::new(),
-        "owner",
-        "",
+        librepaper_base::auth::Policy::allowing("github", &["owner"]),
+        librepaper_base::auth::Policy::default(),
     )
     .await
     else {
@@ -148,8 +148,8 @@ async fn restore_and_trim_reject_a_caller_without_editor_access() {
                 main: "paper.md".into(),
             },
             Vec::new(),
-            "",
-            "",
+            librepaper_base::auth::Policy::default(),
+            librepaper_base::auth::Policy::default(),
         )
         .await
         else {

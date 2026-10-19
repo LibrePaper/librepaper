@@ -6,6 +6,7 @@
 //! bearer. All of them end up as a handle, which the policies below either
 //! allow or not, and an id, which everything else keys on.
 
+use std::collections::BTreeMap;
 use std::time::Duration;
 
 use base64::Engine;
@@ -36,6 +37,7 @@ mod core_tests;
 pub const PROVIDER_GITHUB: &str = "github";
 pub const PROVIDER_GOOGLE: &str = "google";
 pub const PROVIDER_ENTRA: &str = "entra";
+pub const PROVIDER_ORCID: &str = "orcid";
 pub const OIDC_ID_PREFIX: &str = "oidc-";
 
 pub const SESSION_COOKIE: &str = "librepaper_session";
@@ -59,11 +61,13 @@ pub fn valid_oidc_slug(slug: &str) -> bool {
             .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || *byte == b'-')
 }
 
-/// Whether text is a provider id this code can issue: one of the three named
+/// Whether text is a provider id this code can issue: one of the four named
 /// providers, or `oidc-` and a valid slug.
 pub fn valid_provider_id(id: &str) -> bool {
-    matches!(id, PROVIDER_GITHUB | PROVIDER_GOOGLE | PROVIDER_ENTRA)
-        || id.strip_prefix(OIDC_ID_PREFIX).is_some_and(valid_oidc_slug)
+    matches!(
+        id,
+        PROVIDER_GITHUB | PROVIDER_GOOGLE | PROVIDER_ENTRA | PROVIDER_ORCID
+    ) || id.strip_prefix(OIDC_ID_PREFIX).is_some_and(valid_oidc_slug)
 }
 
 /// A short-lived credential delegated by a signed-in browser to its local
@@ -343,154 +347,162 @@ pub fn cookie_name(https: bool, base: &str) -> String {
 }
 
 /// Says who may do something. The default allows nobody, which is the right
-/// default for publishing on a deployment that was never configured.
+/// default for publishing on a deployment that was never configured. A list
+/// belongs to one provider, so an entry can only admit accounts that provider
+/// vouches for: a GitHub login never admits an ORCID iD with the same text.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Policy {
     /// No sign-in at all; only meaningful for commenting.
     pub public: bool,
-    /// Any account on any configured provider, once signed in. An operator who
-    /// wants one provider only leaves the other unconfigured, which is a
-    /// property of the deployment rather than of every policy on it.
-    pub any: bool,
-    /// Legacy `anygithub` retains its provider restriction.
-    pub github_only: bool,
-    /// The allowlist, lowercased and as written, when neither of the above is
-    /// set. Each entry is a GitHub login, an email address, or `@domain`; the
-    /// shape of the entry is what decides which, so the list stays one list.
-    pub entries: Vec<String>,
+    /// Provider id ("github", "google", "entra", "orcid", "oidc-<slug>") to its
+    /// entries, already normalized by `normalize_entry`. "*" admits any account
+    /// of that provider.
+    pub providers: BTreeMap<String, Vec<String>>,
 }
 
 impl Policy {
-    /// Parse the deployment's publishing policy. Publishing always needs a
-    /// signed-in account, so the anonymous spellings `parse` accepts for
-    /// commenters are refused here.
-    pub fn parse_publishers(value: &str) -> Result<Policy, String> {
-        if value.trim().eq_ignore_ascii_case("anyone")
-            || value.trim().eq_ignore_ascii_case("public")
-        {
-            return Err(
-                "access.publishers must name signed-in accounts: 'any' for any authenticated account, or a list"
-                    .into(),
-            );
-        }
-        Ok(Self::parse(value))
-    }
-
-    /// Reads the value of the commenter policy (and legacy generic policy
-    /// values). Publishing configuration uses `parse_publishers`, which
-    /// rejects anonymous spellings:
-    ///
-    /// ```text
-    /// anyone                 no sign-in required at all
-    /// any                    any signed-in account, on any provider
-    /// alice,bob              only these GitHub logins
-    /// alice@example.org      the account with that verified email
-    /// @example.org           any account with an email on that domain
-    /// ```
-    ///
-    /// The forms mix freely in one list.
-    pub fn parse(value: &str) -> Policy {
-        let trimmed = value.trim().to_lowercase();
-        match trimmed.as_str() {
-            "" => return Policy::default(),
-            "anyone" | "public" => {
-                return Policy {
-                    public: true,
-                    ..Policy::default()
-                }
-            }
-            "anygithub" => {
-                return Policy {
-                    github_only: true,
-                    ..Policy::default()
-                };
-            }
-            "any" | "*" => {
-                return Policy {
-                    any: true,
-                    ..Policy::default()
-                }
-            }
-            _ => {}
-        }
-        let entries = trimmed
-            .split(',')
-            .map(str::trim)
-            .filter(|entry| !entry.is_empty())
-            .map(str::to_string)
-            .collect();
+    /// Nobody signs in; anyone may act.
+    pub fn anonymous() -> Policy {
         Policy {
-            entries,
+            public: true,
             ..Policy::default()
         }
     }
 
-    /// Whether this policy admits a handle: a GitHub login, or an email address
-    /// a configured provider vouches for. Matching is case-insensitive throughout,
-    /// since neither a login nor an address is case-sensitive in practice.
-    pub fn allows(&self, handle: &str) -> bool {
+    /// A policy with one provider's list.
+    pub fn allowing(provider: &str, entries: &[&str]) -> Policy {
+        Policy::default().with(provider, entries)
+    }
+
+    /// This policy with one provider's list added, replacing any list that
+    /// provider already had.
+    pub fn with(mut self, provider: &str, entries: &[&str]) -> Policy {
+        self.providers.insert(
+            provider.to_string(),
+            entries.iter().map(|entry| entry.to_string()).collect(),
+        );
+        self
+    }
+
+    /// Whether this policy admits an identity. The provider picks the list and
+    /// the handle is matched against it case-insensitively, since neither a
+    /// login nor an address is case-sensitive in practice.
+    pub fn allows(&self, who: &Identity) -> bool {
         if self.public {
             return true;
         }
-        if handle.is_empty() {
+        if !who.is_signed_in() || who.handle.is_empty() {
             return false;
         }
-        if self.any {
-            return true;
-        }
-        if self.github_only {
-            return !handle.contains('@');
-        }
-        self.entries.iter().any(|entry| entry_admits(entry, handle))
+        self.providers.get(&who.provider).is_some_and(|entries| {
+            entries
+                .iter()
+                .any(|entry| entry == "*" || entry_admits(entry, &who.handle))
+        })
     }
 
-    /// Whether anyone at all is allowed: an unconfigured policy is none of
-    /// public, any, or a list.
+    /// Whether anyone at all is allowed: an unconfigured policy is neither
+    /// public nor a non-empty list.
     pub fn is_configured(&self) -> bool {
-        self.public || self.any || self.github_only || !self.entries.is_empty()
+        self.public || self.providers.values().any(|entries| !entries.is_empty())
     }
 
     /// The operator's startup summary, including configured allowlist entries.
     pub fn describe(&self) -> String {
         if self.public {
-            "anyone".to_string()
-        } else if self.any {
-            "any signed-in account".to_string()
-        } else if self.github_only {
-            "any GitHub account".to_string()
-        } else if self.entries.is_empty() {
-            "nobody (unconfigured)".to_string()
+            return "anyone".to_string();
+        }
+        let lists: Vec<String> = self
+            .providers
+            .iter()
+            .filter(|(_, entries)| !entries.is_empty())
+            .map(|(provider, entries)| format!("{provider}: {}", entries.join(", ")))
+            .collect();
+        if lists.is_empty() {
+            "nobody".to_string()
         } else {
-            self.entries.join(", ")
+            lists.join("; ")
         }
     }
 
     /// Safe to show to ordinary callers, including accounts refused access.
     pub fn public_description(&self) -> String {
-        if self.entries.is_empty() {
-            self.describe()
-        } else {
-            format!(
-                "an allowlist of {} {}",
-                self.entries.len(),
-                if self.entries.len() == 1 {
-                    "entry"
-                } else {
-                    "entries"
-                }
-            )
+        if self.public {
+            return "anyone".to_string();
+        }
+        let lists: Vec<(&String, &Vec<String>)> = self
+            .providers
+            .iter()
+            .filter(|(_, entries)| !entries.is_empty())
+            .collect();
+        match lists.as_slice() {
+            [] => "nobody".to_string(),
+            [(provider, entries)] if entries.as_slice() == ["*"] => {
+                format!("any account of {provider}")
+            }
+            _ => {
+                let count: usize = lists.iter().map(|(_, entries)| entries.len()).sum();
+                format!(
+                    "an allowlist of {count} {}",
+                    if count == 1 { "entry" } else { "entries" }
+                )
+            }
         }
     }
+}
 
-    /// Whether this policy names anybody who could only sign in with GitHub,
-    /// or only with an email provider. Startup uses these to warn about a list
-    /// that names people no configured provider can ever produce.
-    pub fn names_a_login(&self) -> bool {
-        self.github_only || self.entries.iter().any(|entry| !entry.contains('@'))
+/// Checks one allowlist entry for a provider and returns it in the form
+/// `Policy` matches. A GitHub entry is a login, an ORCID entry is an iD, and
+/// every other provider vouches for email addresses, so its entry is an address
+/// or an `@domain`. `*` admits any account of the provider.
+pub fn normalize_entry(provider: &str, entry: &str) -> Result<String, String> {
+    let entry = entry.trim();
+    if entry == "*" {
+        return Ok("*".to_string());
     }
-
-    pub fn names_an_email_or_domain(&self) -> bool {
-        self.entries.iter().any(|entry| entry.contains('@'))
+    match provider {
+        PROVIDER_GITHUB => {
+            if entry.starts_with('@') {
+                return Err("write the login without @".to_string());
+            }
+            let login = entry.to_lowercase();
+            let valid = (1..=39).contains(&login.len())
+                && login
+                    .bytes()
+                    .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-')
+                && !login.starts_with('-')
+                && !login.ends_with('-');
+            if valid {
+                Ok(login)
+            } else {
+                Err("expected a GitHub login or *".to_string())
+            }
+        }
+        PROVIDER_ORCID => {
+            if is_orcid_id(entry) {
+                Ok(entry.to_uppercase())
+            } else {
+                Err("expected an ORCID iD such as 0000-0002-1825-0097, or *".to_string())
+            }
+        }
+        _ => {
+            let address = entry.to_lowercase();
+            let error = || "expected an email address, @domain or *".to_string();
+            if address.chars().any(char::is_whitespace) || address.matches('@').count() != 1 {
+                return Err(error());
+            }
+            let (local, domain) = address.split_once('@').unwrap_or_default();
+            let valid = if local.is_empty() {
+                domain.contains('.')
+            } else {
+                !domain.is_empty()
+            };
+            if valid {
+                Ok(address)
+            } else {
+                Err(error())
+            }
+        }
     }
 }
 

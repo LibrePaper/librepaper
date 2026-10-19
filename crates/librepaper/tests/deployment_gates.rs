@@ -797,7 +797,7 @@ mod revocation {
     /// doc comment in `storage/store.rs` says why an edit link is not by
     /// itself enough -- "publishing always asks for a sign-in first, so a
     /// link never edits" -- an edit link only raises a caller who is already
-    /// signed in and inside `access.publishers` up to Editor. A guest who
+    /// signed in and inside the publishers list up to Editor. A guest who
     /// presents nothing but the link key, signed in to nobody, can never
     /// reach `may_edit` at all, so the second socket here has to be a real
     /// account too, distinct from the owner, holding the link rather than
@@ -993,7 +993,7 @@ mod revocation {
             })
             .await
             .expect("create the owner account");
-        // The second editor: a real, signed-in, `access.publishers`-allowed
+        // The second editor: a real, signed-in, publishers-listed
         // account distinct from the owner. It holds no grant of its own --
         // only the edit link, once minted below -- so revoking that link is
         // what takes its authority away, and `bearer_token`'s doc comment is
@@ -1060,8 +1060,8 @@ mod revocation {
             app,
             key.clone(),
             config.clone(),
-            Policy::parse_publishers("owner,second-editor").expect("parse the publisher policy"),
-            Policy::parse(""),
+            Policy::allowing("github", &["owner", "second-editor"]),
+            Policy::default(),
         );
         server.install_writer(writer);
         let server = Arc::new(server);
@@ -1723,8 +1723,8 @@ mod comment_traversal {
             },
             key.clone(),
             config.clone(),
-            Policy::parse_publishers("handle-traversal-owner").expect("publisher policy"),
-            Policy::parse(""),
+            Policy::allowing("github", &["handle-traversal-owner"]),
+            Policy::default(),
         );
         server.install_writer(writer);
         let server = Arc::new(server);

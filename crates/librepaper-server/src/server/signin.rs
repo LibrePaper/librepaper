@@ -516,7 +516,7 @@ impl Server {
                                 "name": "",
                                 "picture": "",
                                 "can_publish": false,
-                                "can_comment": self.commenters.allows(""),
+                                "can_comment": self.commenters.allows(&Identity::anonymous()),
                                 "comments_need_login": !self.commenters.public,
                                 "providers": self.providers(),
                                 "publishers": self.publishers.public_description(),
@@ -549,8 +549,8 @@ impl Server {
                         "picture": id.picture_url(),
                         "can_publish": id.is_signed_in()
                             && self.provider_configured(&id)
-                            && self.publishers.allows(&id.handle),
-                        "can_comment": self.commenters.allows(&id.handle),
+                            && self.publishers.allows(&id),
+                        "can_comment": self.commenters.allows(&id),
                         "comments_need_login": !self.commenters.public,
                         // A wholly public deployment has no OAuth app at all,
                         // so there is nothing to sign in to and the page hides

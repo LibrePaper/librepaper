@@ -230,6 +230,18 @@ pub(crate) enum ModerationCommand {
         #[arg(long, value_name = "PATH", default_value = DEFAULT_SERVER_CONFIG)]
         config: PathBuf,
     },
+    /// Erase an account and every project it owns, as the owner's Settings
+    /// button does. Projects purge after the deletion grace. This cannot be undone.
+    EraseAccount {
+        /// Account UUID or unique provider handle.
+        account: String,
+        #[arg(long, value_name = "ACTOR", required = true)]
+        actor: String,
+        #[arg(long, value_name = "REASON", required = true)]
+        reason: String,
+        #[arg(long, value_name = "PATH", default_value = DEFAULT_SERVER_CONFIG)]
+        config: PathBuf,
+    },
     /// Hide a project from every document and asset route without deleting it.
     HideProject {
         /// Project slug.
@@ -445,8 +457,8 @@ fn serve_options(
         github_client_secret: resolved.github_client_secret,
         oidc: resolved.oidc,
         session_lifetime: resolved.session_lifetime,
-        publishers: Some(resolved.publishers.join(",")),
-        commenters: Some(resolved.commenters.join(",")),
+        publishers: resolved.publishers,
+        commenters: resolved.commenters,
         simulate_activity: resolved.simulate_activity,
         app_origin: resolved.app_origin,
         docs_origin: resolved.docs_origin,
@@ -492,6 +504,18 @@ async fn moderate(
         } => (
             config,
             ModerationAction::UnblockAccount,
+            account,
+            actor,
+            reason,
+        ),
+        ModerationCommand::EraseAccount {
+            account,
+            actor,
+            reason,
+            config,
+        } => (
+            config,
+            ModerationAction::EraseAccount,
             account,
             actor,
             reason,
@@ -547,6 +571,15 @@ async fn moderate(
                     )
                 })
         }
+        ModerationAction::EraseAccount => catalog
+            .erase_account_by_operator(&target, &actor, &reason)
+            .await
+            .map(|(id, label)| {
+                format!(
+                    "erasing account {label} ({id}); its projects purge after the deletion grace, \
+                     and the service starts within the hour or at its next restart"
+                )
+            }),
         ModerationAction::HideProject | ModerationAction::UnhideProject => {
             let hidden = matches!(action, ModerationAction::HideProject);
             catalog

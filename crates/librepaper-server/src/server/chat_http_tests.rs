@@ -65,8 +65,8 @@ async fn fixture(slug: &str) -> Option<Fixture> {
             main: "paper.md".into(),
         },
         Vec::new(),
-        "owner",
-        "any",
+        librepaper_base::auth::Policy::allowing("github", &["owner"]),
+        librepaper_base::auth::Policy::allowing("github", &["*"]),
     )
     .await?;
     let Deployment {

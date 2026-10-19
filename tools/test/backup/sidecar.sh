@@ -232,8 +232,7 @@ database_url = { file = "$work/restore-owner-url" }
 fsync = false
 
 [access]
-publishers = ["any"]
-commenters = ["anyone"]
+anonymous_comments = true
 TOML
 node tools/test/backup/restore-access.mjs "$LIBREPAPER_BIN" \
 	"$work/restore-app.toml" "$fixture_account_id" "$work/source-session-cookie"

@@ -11,7 +11,8 @@ use tokio::net::TcpListener;
 use crate::server::origins::{Origins, DOCS_PREFIX};
 use crate::server::Server;
 use librepaper_base::auth::{
-    session_key_file, trim_issuer, GithubApp, OidcProvider, Policy, SESSION_MAX_AGE,
+    session_key_file, trim_issuer, GithubApp, OidcProvider, Policy, PROVIDER_GITHUB,
+    SESSION_MAX_AGE,
 };
 use librepaper_base::config::Configuration;
 use librepaper_base::shell::ShellFile;
@@ -45,9 +46,11 @@ pub struct ServeOptions {
     /// lifetime. Already checked to lie between an hour and the thirty days
     /// of `SESSION_MAX_AGE`.
     pub session_lifetime: Option<std::time::Duration>,
-    pub publishers: Option<String>,
-    pub commenters: Option<String>,
-    /// Write each new account's starter documents as though they had been
+    /// Who may publish and who may comment, already normalized per provider
+    /// by the configuration loader.
+    pub publishers: Policy,
+    pub commenters: Policy,
+    /// Write each new account's starter project as though it had been
     /// typed over this many days, so the history panel has something in it on a
     /// demonstration deployment. The operations are real; only the clock is
     /// invented. See `librepaper_engine::storage::seed::activity`.
@@ -213,18 +216,12 @@ pub struct SignInAdvice {
 /// start for reading/commenting when no provider is configured, and reports
 /// that publishing is unavailable.
 ///
-/// The two warnings are not deaths: a deployment may be mid-migration, and a
-/// list naming somebody no configured provider can produce is worth saying out
-/// loud rather than refusing to start over.
-///
-/// `email_provider` is whether any OpenID Connect provider is configured,
-/// since each of them yields email addresses. `callbacks` are the addresses an
-/// operator with no provider yet would register one at.
+/// `oidc` is whether any OpenID Connect provider is configured, ORCID
+/// included. `callbacks` are the addresses an operator with no provider yet
+/// would register one at.
 pub fn sign_in_advice(
     github: bool,
-    email_provider: bool,
-    publishers: &Policy,
-    commenters: &Policy,
+    oidc: bool,
     // The origin a provider must have registered: the deployment's configured
     // reader origin rather than whatever this process is bound to. An operator
     // copying a callback URL out of this warning needs the one their users
@@ -234,27 +231,9 @@ pub fn sign_in_advice(
     callbacks: &[String],
 ) -> SignInAdvice {
     let mut advice = SignInAdvice::default();
-    if !github && (publishers.names_a_login() || commenters.names_a_login()) {
-        advice.warnings.push(
-            "warning: a policy names a GitHub login, but there is no GitHub OAuth app; \
-             nobody can sign in that way. Configure auth.github.client_id and \
-             auth.github.client_secret in the TOML file."
-                .to_string(),
-        );
-    }
-    if !email_provider
-        && (publishers.names_an_email_or_domain() || commenters.names_an_email_or_domain())
-    {
-        advice.warnings.push(
-            "warning: a policy names an email address or a domain, but no provider yields \
-             email addresses; nobody can sign in that way. Configure auth.google, \
-             auth.entra or an auth.oidc table in the TOML file."
-                .to_string(),
-        );
-    }
-    if !github && !email_provider {
+    if !github && !oidc {
         advice.warnings.push(format!(
-            "warning: no sign-in provider is configured; publishing and source writes are unavailable. Configure auth.github, auth.google, auth.entra or an auth.oidc table in the TOML file. The callback URLs to register at the provider, served by {reader_origin} on port {port}, are {}.",
+            "warning: no sign-in provider is configured; publishing and source writes are unavailable. Configure auth.github, auth.google, auth.entra, auth.orcid or an auth.oidc table in the TOML file. The callback URLs to register at the provider, served by {reader_origin} on port {port}, are {}.",
             callbacks.join(", ")
         ));
     }
@@ -268,6 +247,7 @@ fn callback_urls(reader_origin: &str) -> Vec<String> {
         format!("{reader_origin}/auth/callback (GitHub)"),
         format!("{reader_origin}/auth/callback/google"),
         format!("{reader_origin}/auth/callback/entra"),
+        format!("{reader_origin}/auth/callback/orcid"),
         format!("{reader_origin}/auth/callback/oidc-<slug> (one for each auth.oidc table)"),
     ]
 }
@@ -353,9 +333,27 @@ pub fn validate_serve_options(options: &ServeOptions) -> Result<(), String> {
     if let Some(site) = options.site_origin.as_deref() {
         validate_site_origin(site)?;
     }
-    let publishers = Policy::parse_publishers(options.publishers.as_deref().unwrap_or(""))?;
-    if !publishers.is_configured() {
-        return Err("access.publishers must name who may publish".into());
+    let mut configured: Vec<&str> = options
+        .oidc
+        .iter()
+        .map(|provider| provider.id.as_str())
+        .collect();
+    if github_configured {
+        configured.push(PROVIDER_GITHUB);
+    }
+    if !configured.is_empty() && !options.publishers.is_configured() {
+        return Err("no [auth.*] table lists publishers; add publishers = [...] under the provider people sign in with".into());
+    }
+    for policy in [&options.publishers, &options.commenters] {
+        if let Some(provider) = policy
+            .providers
+            .keys()
+            .find(|provider| !configured.contains(&provider.as_str()))
+        {
+            return Err(format!(
+                "access policy names provider {provider}, which is not configured"
+            ));
+        }
     }
     if github_id != github_secret {
         return Err(
@@ -446,12 +444,8 @@ pub async fn serve(options: ServeOptions) {
         client_secret: options.github_client_secret.unwrap_or_default(),
         ..GithubApp::default()
     };
-    let publishers = Policy::parse_publishers(options.publishers.as_deref().unwrap_or(""))
-        .unwrap_or_else(|error| die(error));
-    if !publishers.is_configured() {
-        die("set access.publishers to name who may publish, for example your-github-login, alice,bob, or any");
-    }
-    let commenters = Policy::parse(options.commenters.as_deref().unwrap_or("any"));
+    let publishers = options.publishers.clone();
+    let commenters = options.commenters.clone();
     let loopback_origin = format!("http://localhost{address}");
     let reader_origin = origins
         .reader()
@@ -462,8 +456,6 @@ pub async fn serve(options: ServeOptions) {
     let advice = sign_in_advice(
         app.configured(),
         !options.oidc.is_empty(),
-        &publishers,
-        &commenters,
         &reader_origin,
         port,
         &callback_urls(&reader_origin),
@@ -722,8 +714,9 @@ pub async fn serve(options: ServeOptions) {
     // what keeps the last test of §14.2 true -- nothing here polls a job
     // table, sweeps a link deadline, or checkpoints a cost meter on a clock;
     // link expiry is a per-connection deadline, and the background worker
-    // above wakes on the durable state its own tasks write rather than on a
-    // timer (§12).
+    // above wakes on the durable state its own tasks write, and rescans it
+    // once an hour with the orphan sweep for work written by another
+    // process (§12).
     let sweeper = instance.clone();
     tokio::spawn(async move {
         let mut ticker = tokio::time::interval(std::time::Duration::from_secs(1));

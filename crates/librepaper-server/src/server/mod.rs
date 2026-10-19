@@ -76,6 +76,8 @@ mod metrics;
 #[cfg(test)]
 mod moderation_http_tests;
 mod onboarding;
+#[cfg(test)]
+mod onboarding_tests;
 pub mod origins;
 mod quarto_checkpoint;
 mod quota;
@@ -254,7 +256,7 @@ pub struct Server {
     /// Who a GitHub login is, for a grant by name. GitHub in a running
     /// deployment; a stand-in in the tests, which have no network.
     pub accounts: Arc<dyn Accounts>,
-    /// Days of invented history to write for each starter document a new
+    /// Days of invented history to write for the starter project a new
     /// account is given, or nothing. A demonstration deployment asks for one;
     /// every other deployment keeps the honest history of a document
     /// published once. See `librepaper_engine::storage::seed::activity`.
@@ -1181,9 +1183,9 @@ impl Server {
     }
 
     /// The most this deployment's switches will let a document give one
-    /// caller. `access.publishers` governs editing, because an editor puts content
-    /// on the server; `access.commenters` governs commenting. A link asks the same
-    /// question with an empty handle, since it names nobody, and that is
+    /// caller. The publishers lists govern editing, because an editor puts content
+    /// on the server; the commenters lists govern commenting. A link asks the same
+    /// question with an anonymous identity, since it names nobody, and that is
     /// exactly what makes "a link cannot edit unless the deployment lets
     /// anyone publish" fall out of the same switch a named caller is asked
     /// against, rather than out of a rule of its own.
@@ -1193,10 +1195,9 @@ impl Server {
         // share link into a publisher.  Source and input writes always need a
         // provider-backed identity, and a session from a provider that is no
         // longer configured is not an authorization bypass.
-        let edit =
-            id.is_signed_in() && self.provider_configured(id) && self.publishers.allows(&id.handle);
+        let edit = id.is_signed_in() && self.provider_configured(id) && self.publishers.allows(id);
         Ceiling {
-            comment: self.commenters.allows(&id.handle),
+            comment: self.commenters.allows(id),
             edit,
         }
     }
@@ -1450,8 +1451,7 @@ impl Server {
                 ));
             }
         };
-        if id.is_signed_in() && self.provider_configured(&id) && self.publishers.allows(&id.handle)
-        {
+        if id.is_signed_in() && self.provider_configured(&id) && self.publishers.allows(&id) {
             return Ok(Caller {
                 key: self.owner(headers, arrival, &id),
                 id: id.id,

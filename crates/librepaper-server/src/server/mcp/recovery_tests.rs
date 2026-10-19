@@ -156,8 +156,8 @@ async fn deployment(slug: &str) -> Option<Deployment> {
         },
         vec![0u8; 32],
         config,
-        Policy::parse_publishers("owner").unwrap(),
-        Policy::parse("commenter"),
+        Policy::allowing("github", &["owner"]),
+        Policy::allowing("github", &["commenter"]),
     );
     Some(Deployment {
         server,

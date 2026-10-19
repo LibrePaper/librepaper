@@ -13,6 +13,7 @@ object_store = "filesystem"
 [auth.github]
 client_id = { env = "DEV_GITHUB_CLIENT_ID" }
 client_secret = { env = "DEV_GITHUB_CLIENT_SECRET" }
+publishers = ["*"]
 
 [metrics]
 address = "0.0.0.0:9091"
@@ -21,8 +22,7 @@ address = "0.0.0.0:9091"
 trusted_networks = ["172.30.0.0/16"]
 
 [access]
-publishers = ["any"]
-commenters = ["anyone"]
+anonymous_comments = true
 
 [admin]
 github_ids = [987057] # the demo operator; put your own numeric GitHub ID here

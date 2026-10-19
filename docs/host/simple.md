@@ -84,26 +84,46 @@ docs = "https://docs.paper.example"
 # GitHub  https://paper.example/auth/callback
 # Google  https://paper.example/auth/callback/google
 # Microsoft  https://paper.example/auth/callback/entra
+# ORCID  https://paper.example/auth/callback/orcid
 # Other OIDC https://paper.example/auth/callback/oidc-<name>
+#
+# publishers: "*" admits any account of that provider. Otherwise list GitHub
+# logins, verified addresses or @domains (Google, Entra, OIDC), or ORCID iDs.
+# A provider without publishers lets nobody from it publish. commenters
+# default to "*".
 [auth.github]
 client_id = "replace"
 client_secret = "replace"
+publishers = ["*"]
+commenters = ["*"]
 
 # [auth.google]
 # client_id = "replace"
 # client_secret = "replace"
+# publishers = ["*"]
+# commenters = ["*"]
 
 # [auth.entra]
 # tenant = "00000000-0000-0000-0000-000000000000"   # Directory (tenant) ID, a GUID
 # client_id = "replace"                             # Application (client) ID
 # client_secret = "replace"
 # label = "Microsoft"                               # the button text
+# publishers = ["*"]
+# commenters = ["*"]
 
 # [auth.oidc.example]
 # issuer = "https://sso.example.org/realms/staff"   # the provider's issuer URL
 # client_id = "replace"
 # client_secret = "replace"
 # label = "Example SSO"                             # the button text
+# publishers = ["*"]
+# commenters = ["*"]
+
+# [auth.orcid]
+# client_id = "APP-XXXXXXXXXXXXXXXX"                # the ORCID API client ID
+# client_secret = "replace"
+# publishers = ["0000-0002-1825-0097"]              # ORCID iDs, or "*"
+# commenters = ["*"]
 
 # [auth]
 # session_lifetime = "24h"   # 1h to 30d. Absent, a browser session lasts 30 days.
@@ -116,12 +136,9 @@ directory = "/var/lib/librepaper"
 database_url = "postgresql:///librepaper?host=/var/run/postgresql&user=librepaper"
 # database_connections = 20         # PostgreSQL connection pool size
 
-# Who may publish and comment: "any" signed-in account, a GitHub login, a
-# verified address from Google, Entra or another OpenID Connect provider, or
-# "@example.org". "anyone" also allows anonymous comments.
-[access]
-publishers = ["any"]
-commenters = ["any"]
+# Optional. Set true to let people comment without signing in.
+# [access]
+# anonymous_comments = false
 
 # Matches the edge network in compose.yaml; do not widen.
 [proxy]
@@ -169,9 +186,11 @@ cp librepaper.toml librepaper.toml.candidate
 
 ## Sign-in
 
-LibrePaper has no passwords of its own. People sign in with GitHub, Google, Microsoft Entra ID or any OpenID Connect provider, and the server never sees or stores a password. You register LibrePaper once with each provider. Each gives you a client ID and a client secret for `librepaper.toml`. At least one provider is required. You can enable several.
+LibrePaper has no passwords of its own. People sign in with GitHub, Google, Microsoft Entra ID, ORCID or any OpenID Connect provider, and the server never sees or stores a password. You register LibrePaper once with each provider. Each gives you a client ID and a client secret for `librepaper.toml`. At least one provider is required. You can enable several.
 
-An email or `@domain` entry in `[access]` admits whoever any configured provider says owns that address. Turning on a provider means trusting its administrators with every address in your lists, so prefer `@domain` entries for domains the provider owns.
+Each provider table also lists who may publish, in its `publishers` key. Without that key, nobody from the provider may publish. See [Sign-in and access](advanced.html#sign-in-and-access) for the values.
+
+An email or `@domain` entry in `publishers` admits whoever that provider verifies as owning the address. Turning on a provider means trusting its administrators with every address in its list, so prefer `@domain` entries for domains the provider owns.
 
 **GitHub.** LibrePaper requests no scopes and receives the account's public login name.
 
@@ -204,6 +223,21 @@ client_id = "replace"                             # Application (client) ID
 client_secret = "replace"
 # label = "Contoso"                               # the button text, default Microsoft
 ```
+
+**ORCID.** LibrePaper requests only the `openid` scope and receives the ORCID iD and the name on the ORCID record. ORCID sends no email address, so an account's handle is its iD, such as `0000-0002-1825-0097`.
+
+- Register a free public API client at [ORCID developer tools](https://orcid.org/developer-tools). Sign in to your own ORCID account, then register an application.
+- Redirect URI: `https://paper.example/auth/callback/orcid`. ORCID requires HTTPS redirect URIs.
+- Put the client ID (it starts with `APP-`) and the client secret in `[auth.orcid]`.
+
+```toml
+[auth.orcid]
+client_id = "APP-XXXXXXXXXXXXXXXX"
+client_secret = "replace"
+publishers = ["0000-0002-1825-0097"]   # ORCID iDs, or "*" for any ORCID account
+```
+
+See [ORCID](advanced.html#orcid) for more.
 
 **Other OpenID Connect providers.** Any provider with an OpenID Connect discovery document works. Add one `[auth.oidc.<name>]` table for each provider, up to 8. The name uses lowercase letters, digits and hyphens.
 

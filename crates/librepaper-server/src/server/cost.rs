@@ -645,8 +645,8 @@ mod writer_readiness_tests {
                 main: "paper.md".into(),
             },
             vec![],
-            "owner",
-            "",
+            librepaper_base::auth::Policy::allowing("github", &["owner"]),
+            librepaper_base::auth::Policy::default(),
         )
         .await
         else {

@@ -114,8 +114,8 @@ async fn deployment(slug: &str) -> Option<Deployment> {
         },
         vec![0u8; 32],
         config,
-        Policy::parse_publishers("isolation-owner").unwrap(),
-        Policy::parse("any"),
+        Policy::allowing("github", &["isolation-owner"]),
+        Policy::allowing("github", &["*"]),
     );
     server.origins = Origins::configure(READER, Some(DOCS)).unwrap();
     Some(Deployment {
@@ -493,10 +493,15 @@ async fn shared_visibility_routes_enforce_account_and_access_boundaries() {
         session_generation: outsider.session_generation.to_string(),
     });
     Arc::get_mut(&mut deployment.server).unwrap().publishers =
-        librepaper_base::auth::Policy::parse_publishers(
-            "isolation-owner,shared-viewer,shared-peer,shared-outsider",
-        )
-        .unwrap();
+        librepaper_base::auth::Policy::allowing(
+            "github",
+            &[
+                "isolation-owner",
+                "shared-viewer",
+                "shared-peer",
+                "shared-outsider",
+            ],
+        );
     let (base, _address, stop) = serve(deployment.server.clone()).await;
     let client = reqwest::Client::new();
     let endpoint = format!("{base}/api/documents/{}/shared", deployment.slug);

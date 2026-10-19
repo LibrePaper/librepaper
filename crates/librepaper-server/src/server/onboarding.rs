@@ -1,5 +1,7 @@
-//! Every new account starts with private, normally owned starter documents.
-//! The catalogue records each completed copy independently of its lifetime.
+//! Every new account starts with one private, normally owned starter project:
+//! the tutorial in every format LibrePaper edits, with the Markdown copy as
+//! its main file. The catalogue records the completed copy independently of
+//! its lifetime.
 
 use super::*;
 use librepaper_engine::storage::store::DocumentInput;
@@ -12,168 +14,100 @@ struct Starter {
     files: &'static [(&'static str, &'static [u8])],
 }
 
-const STARTERS: [Starter; 5] = [
-    Starter {
-        main: "librepaper.md",
-        title: "Learn LibrePaper with Markdown",
-        format: "markdown",
-        source: include_str!(concat!(
-            env!("LIBREPAPER_DOCS"),
-            "/examples/tutorial-markdown/librepaper.md"
-        )),
-        files: &[
-            (
-                "sections/rendering.md",
-                include_bytes!(concat!(
-                    env!("LIBREPAPER_DOCS"),
-                    "/examples/tutorial-markdown/sections/rendering.md"
-                )),
-            ),
-            (
-                "librepaper-icon.png",
-                include_bytes!(concat!(
-                    env!("LIBREPAPER_DOCS"),
-                    "/examples/tutorial-markdown/librepaper-icon.png"
-                )),
-            ),
-            (
-                "references.bib",
-                include_bytes!(concat!(
-                    env!("LIBREPAPER_DOCS"),
-                    "/examples/tutorial-markdown/references.bib"
-                )),
-            ),
-        ],
-    },
-    Starter {
-        main: "librepaper.typ",
-        title: "Learn LibrePaper with Typst",
-        format: "typst",
-        source: include_str!(concat!(
-            env!("LIBREPAPER_DOCS"),
-            "/examples/tutorial-typst/librepaper.typ"
-        )),
-        files: &[
-            (
-                "sections/rendering.typ",
-                include_bytes!(concat!(
-                    env!("LIBREPAPER_DOCS"),
-                    "/examples/tutorial-typst/sections/rendering.typ"
-                )),
-            ),
-            (
-                "librepaper-icon.png",
-                include_bytes!(concat!(
-                    env!("LIBREPAPER_DOCS"),
-                    "/examples/tutorial-markdown/librepaper-icon.png"
-                )),
-            ),
-            (
-                "references.bib",
-                include_bytes!(concat!(
-                    env!("LIBREPAPER_DOCS"),
-                    "/examples/tutorial-typst/references.bib"
-                )),
-            ),
-        ],
-    },
-    Starter {
-        main: "librepaper.html",
-        title: "Learn LibrePaper with HTML",
-        format: "html",
-        source: include_str!(concat!(
-            env!("LIBREPAPER_DOCS"),
-            "/examples/tutorial-html/librepaper.html"
-        )),
-        files: &[
-            (
-                "sections/rendering.html",
-                include_bytes!(concat!(
-                    env!("LIBREPAPER_DOCS"),
-                    "/examples/tutorial-html/sections/rendering.html"
-                )),
-            ),
-            (
-                "librepaper-icon.png",
-                include_bytes!(concat!(
-                    env!("LIBREPAPER_DOCS"),
-                    "/examples/tutorial-markdown/librepaper-icon.png"
-                )),
-            ),
-            (
-                "references.bib",
-                include_bytes!(concat!(
-                    env!("LIBREPAPER_DOCS"),
-                    "/examples/tutorial-html/references.bib"
-                )),
-            ),
-        ],
-    },
-    Starter {
-        main: "librepaper.tex",
-        title: "Learn LibrePaper with LaTeX",
-        format: "latex",
-        source: include_str!(concat!(
-            env!("LIBREPAPER_DOCS"),
-            "/examples/tutorial-latex/librepaper.tex"
-        )),
-        files: &[
-            (
-                "sections/rendering.tex",
-                include_bytes!(concat!(
-                    env!("LIBREPAPER_DOCS"),
-                    "/examples/tutorial-latex/sections/rendering.tex"
-                )),
-            ),
-            (
-                "references.bib",
-                include_bytes!(concat!(
-                    env!("LIBREPAPER_DOCS"),
-                    "/examples/tutorial-latex/references.bib"
-                )),
-            ),
-            (
-                "librepaper-icon.png",
-                include_bytes!(concat!(
-                    env!("LIBREPAPER_DOCS"),
-                    "/examples/tutorial-latex/librepaper-icon.png"
-                )),
-            ),
-        ],
-    },
-    Starter {
-        main: "librepaper.qmd",
-        title: "Learn LibrePaper with Quarto",
-        format: "quarto",
-        source: include_str!(concat!(
-            env!("LIBREPAPER_DOCS"),
-            "/examples/tutorial-quarto/librepaper.qmd"
-        )),
-        files: &[
-            (
-                "sections/rendering.qmd",
-                include_bytes!(concat!(
-                    env!("LIBREPAPER_DOCS"),
-                    "/examples/tutorial-quarto/sections/rendering.qmd"
-                )),
-            ),
-            (
-                "librepaper-icon.png",
-                include_bytes!(concat!(
-                    env!("LIBREPAPER_DOCS"),
-                    "/examples/tutorial-markdown/librepaper-icon.png"
-                )),
-            ),
-            (
-                "references.bib",
-                include_bytes!(concat!(
-                    env!("LIBREPAPER_DOCS"),
-                    "/examples/tutorial-quarto/references.bib"
-                )),
-            ),
-        ],
-    },
-];
+const STARTER: Starter = Starter {
+    main: "librepaper.md",
+    title: "Explore LibrePaper",
+    format: "markdown",
+    source: include_str!(concat!(
+        env!("LIBREPAPER_DOCS"),
+        "/examples/tutorial-markdown/librepaper.md"
+    )),
+    files: &[
+        // Markdown
+        (
+            "sections/rendering.md",
+            include_bytes!(concat!(
+                env!("LIBREPAPER_DOCS"),
+                "/examples/tutorial-markdown/sections/rendering.md"
+            )),
+        ),
+        // Typst
+        (
+            "librepaper.typ",
+            include_bytes!(concat!(
+                env!("LIBREPAPER_DOCS"),
+                "/examples/tutorial-typst/librepaper.typ"
+            )),
+        ),
+        (
+            "sections/rendering.typ",
+            include_bytes!(concat!(
+                env!("LIBREPAPER_DOCS"),
+                "/examples/tutorial-typst/sections/rendering.typ"
+            )),
+        ),
+        // LaTeX
+        (
+            "librepaper.tex",
+            include_bytes!(concat!(
+                env!("LIBREPAPER_DOCS"),
+                "/examples/tutorial-latex/librepaper.tex"
+            )),
+        ),
+        (
+            "sections/rendering.tex",
+            include_bytes!(concat!(
+                env!("LIBREPAPER_DOCS"),
+                "/examples/tutorial-latex/sections/rendering.tex"
+            )),
+        ),
+        // HTML
+        (
+            "librepaper.html",
+            include_bytes!(concat!(
+                env!("LIBREPAPER_DOCS"),
+                "/examples/tutorial-html/librepaper.html"
+            )),
+        ),
+        (
+            "sections/rendering.html",
+            include_bytes!(concat!(
+                env!("LIBREPAPER_DOCS"),
+                "/examples/tutorial-html/sections/rendering.html"
+            )),
+        ),
+        // Quarto
+        (
+            "librepaper.qmd",
+            include_bytes!(concat!(
+                env!("LIBREPAPER_DOCS"),
+                "/examples/tutorial-quarto/librepaper.qmd"
+            )),
+        ),
+        (
+            "sections/rendering.qmd",
+            include_bytes!(concat!(
+                env!("LIBREPAPER_DOCS"),
+                "/examples/tutorial-quarto/sections/rendering.qmd"
+            )),
+        ),
+        // Shared by every format. The copies in the other tutorial directories are identical.
+        (
+            "librepaper-icon.png",
+            include_bytes!(concat!(
+                env!("LIBREPAPER_DOCS"),
+                "/examples/tutorial-markdown/librepaper-icon.png"
+            )),
+        ),
+        (
+            "references.bib",
+            include_bytes!(concat!(
+                env!("LIBREPAPER_DOCS"),
+                "/examples/tutorial-markdown/references.bib"
+            )),
+        ),
+    ],
+};
 
 impl Server {
     pub(crate) async fn initialize_account_examples(&self, who: &Identity) -> Result<(), String> {
@@ -212,60 +146,59 @@ impl Server {
             // Provisioning is an authenticated first-party write for the
             // account itself.  It must not depend on the deployment's public
             // publisher policy: a newly signed-in reader still receives the
-            // private starter set, while ordinary document creation remains
+            // private starter project, while ordinary document creation remains
             // governed by that policy at its request boundary.
             policy_editor: true,
             policy_comment: true,
             automation: false,
             unowned_publisher: false,
         };
-        for (position, starter) in STARTERS.iter().enumerate() {
-            let slug = format!("starter-{}-{}", position + 1, account.id.simple());
-            if let Some(entry) = self
-                .store
-                .get_result(&slug)
-                .await
-                .map_err(|e| e.to_string())?
-            {
-                if entry.publisher_id != who.id {
-                    return Err("starter document belongs to another account".into());
-                }
-            } else if let Some(days) = self.simulate_activity {
-                // A demonstration deployment asks for a history it can look
-                // at: the starter is written as though it had been typed
-                // over the requested days rather than published whole.
-                // `seed::activity::simulate` insists its document holds no
-                // log rows yet, so this creates the bare catalogue row
-                // itself instead of going through `put_directory_as_actor`,
-                // which would give it one straight away. A failure here is
-                // cosmetic, so the account keeps its documents and the
-                // operator hears about it.
-                if let Err(error) = self
-                    .simulate_starter(catalog, &slug, starter, &actor, account_id, days)
-                    .await
-                {
-                    tracing::warn!("{slug} activity not simulated: {error}");
-                }
-            } else {
-                self.store
-                    .put_directory_as_actor(
-                        DocumentInput {
-                            slug: slug.clone(),
-                            title: starter.title.into(),
-                            source: starter.source.into(),
-                            source_format: starter.format.into(),
-                            main: starter.main.into(),
-                        },
-                        starter
-                            .files
-                            .iter()
-                            .map(|(path, bytes)| ((*path).into(), bytes.to_vec()))
-                            .collect(),
-                        actor.clone(),
-                    )
-                    .await
-                    .map_err(|e| e.to_string())?;
+        let starter = &STARTER;
+        let slug = format!("starter-{}", account.id.simple());
+        if let Some(entry) = self
+            .store
+            .get_result(&slug)
+            .await
+            .map_err(|e| e.to_string())?
+        {
+            if entry.publisher_id != who.id {
+                return Err("starter document belongs to another account".into());
             }
+        } else if let Some(days) = self.simulate_activity {
+            // A demonstration deployment asks for a history it can look
+            // at: the starter is written as though it had been typed
+            // over the requested days rather than published whole.
+            // `seed::activity::simulate` insists its document holds no
+            // log rows yet, so this creates the bare catalogue row
+            // itself instead of going through `put_directory_as_actor`,
+            // which would give it one straight away. A failure here is
+            // cosmetic, so the account keeps its project and the
+            // operator hears about it.
+            if let Err(error) = self
+                .simulate_starter(catalog, &slug, starter, &actor, account_id, days)
+                .await
+            {
+                tracing::warn!("{slug} activity not simulated: {error}");
+            }
+        } else {
+            self.store
+                .put_directory_as_actor(
+                    DocumentInput {
+                        slug: slug.clone(),
+                        title: starter.title.into(),
+                        source: starter.source.into(),
+                        source_format: starter.format.into(),
+                        main: starter.main.into(),
+                    },
+                    starter
+                        .files
+                        .iter()
+                        .map(|(path, bytes)| ((*path).into(), bytes.to_vec()))
+                        .collect(),
+                    actor.clone(),
+                )
+                .await
+                .map_err(|e| e.to_string())?;
         }
         catalog
             .mark_account_examples(account_id)
@@ -274,7 +207,7 @@ impl Server {
         Ok(())
     }
 
-    /// Creates one starter's catalogue row bare -- no content, no log rows --
+    /// Creates the starter's catalogue row bare -- no content, no log rows --
     /// and hands it to `seed::activity::simulate`, which is the only thing
     /// allowed to write its first row: `simulate` insists on an empty log so
     /// that every label it takes names a state the document's history

@@ -233,8 +233,8 @@ async fn deployment_mode_with_policy(
         },
         vec![0u8; 32],
         config,
-        Policy::parse_publishers(&account.handle).unwrap(),
-        Policy::parse("any"),
+        Policy::allowing("github", &[account.handle.as_str()]),
+        Policy::allowing("github", &["*"]),
     );
     server.origins = Origins::configure(READER, Some(DOCS)).unwrap();
     let room = server.documents.rooms.get(slug).await.unwrap();
@@ -732,7 +732,7 @@ async fn any_commenter_policy_rejects_anonymous_comments_and_accepts_a_signed_in
     let Some(deployment) = open_deployment("moderation-comment-policy-http").await else {
         return;
     };
-    // The fixture deliberately uses `Policy::parse("any")`, the Docker
+    // The fixture deliberately uses a wildcard commenter list, the Docker
     // default: any authenticated provider account may comment, while an
     // anonymous reader still cannot.
     let (base, _address, stop) = serve(deployment.server.clone()).await;

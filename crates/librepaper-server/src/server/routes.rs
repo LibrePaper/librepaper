@@ -1042,8 +1042,8 @@ mod served_policy_tests {
             GithubApp::default(),
             vec![0u8; 32],
             config,
-            Policy::parse_publishers("owner").unwrap(),
-            Policy::parse(""),
+            Policy::allowing("github", &["owner"]),
+            Policy::default(),
         );
         let origins =
             crate::server::origins::Origins::configure("https://paper.example", None).unwrap();
