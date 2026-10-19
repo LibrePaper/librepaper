@@ -118,6 +118,19 @@ impl PostgresCatalog {
         .bind(wanted)
         .fetch_all(&mut *tx)
         .await?;
+        if reservation.is_some() {
+            // Moving bytes from the reservation to chat_bytes keeps the
+            // deployment sum steady only if no reservation or other chat
+            // write reads the sums in between. This takes the locks the
+            // reservation path takes, in its order, after the account locks.
+            sqlx::query("SELECT id FROM documents WHERE id=$1 FOR UPDATE")
+                .bind(document_id)
+                .fetch_optional(&mut *tx)
+                .await?;
+            sqlx::query_scalar::<_, i64>("SELECT bytes FROM storage_usage WHERE singleton FOR UPDATE")
+                .fetch_one(&mut *tx)
+                .await?;
+        }
         let inserted: Vec<i64> = sqlx::query_scalar(
             "INSERT INTO chat_messages (id,document_id,author_account_id,author_label,body,created_at) \
              SELECT m.id,$1,CASE WHEN m.author = ANY($7) THEN m.author ELSE NULL END,\
@@ -300,6 +313,18 @@ impl PostgresCatalog {
         .await?;
         tx.commit().await?;
         Ok(())
+    }
+
+    /// The bytes the reservation row `key` holds, or 0 when it is missing.
+    pub async fn chat_reservation_bytes(&self, document_id: Uuid, key: Uuid) -> Result<i64> {
+        let bytes: Option<i64> = sqlx::query_scalar(
+            "SELECT bytes FROM pending_log_reservations WHERE reservation_id=$1 AND document_id=$2",
+        )
+        .bind(key)
+        .bind(document_id)
+        .fetch_optional(self.pool())
+        .await?;
+        Ok(bytes.unwrap_or(0))
     }
 
     /// Up to `limit` messages older than `before` (or the newest when None),
@@ -879,5 +904,27 @@ mod tests {
             .release_chat_reservation(document, key)
             .await
             .unwrap();
+    }
+
+    #[tokio::test]
+    #[ignore = "requires LIBREPAPER_TEST_POSTGRES_URL"]
+    async fn chat_reservation_bytes_reads_the_row_and_zero_when_missing() {
+        let catalog = catalog().await;
+        let _writer = catalog.claim_writer().await.unwrap();
+        let owner = account(&catalog).await;
+        let document = project(&catalog, &owner).await;
+        let key = Uuid::now_v7();
+        assert_eq!(
+            catalog.chat_reservation_bytes(document, key).await.unwrap(),
+            0
+        );
+        catalog
+            .reserve_chat_bytes(document, key, 100, 10)
+            .await
+            .unwrap();
+        assert_eq!(
+            catalog.chat_reservation_bytes(document, key).await.unwrap(),
+            100
+        );
     }
 }

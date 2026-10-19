@@ -232,6 +232,9 @@ pub struct Room {
     /// housekeeping pass can ask without taking the lock.
     chat: Mutex<chat::ChatBuffer>,
     chat_waiting: std::sync::atomic::AtomicUsize,
+    /// Whether the chat buffer may hold a reservation row, so housekeeping
+    /// keeps the room until it releases it.
+    chat_holds: std::sync::atomic::AtomicBool,
     /// Bytes reserved by uploads whose blob write has not registered its
     /// metadata yet. The count lets same-digest uploads share one quota claim
     /// while each cancelled future releases its own claim.
@@ -640,6 +643,7 @@ impl Rooms {
             peers: Mutex::new(HashMap::new()),
             chat: Mutex::new(chat::ChatBuffer::default()),
             chat_waiting: std::sync::atomic::AtomicUsize::new(0),
+            chat_holds: std::sync::atomic::AtomicBool::new(false),
             asset_uploads: std::sync::Mutex::new(HashMap::new()),
             #[cfg(test)]
             event_comment_reads: std::sync::atomic::AtomicUsize::new(0),
@@ -677,15 +681,18 @@ impl Rooms {
             let rooms: Vec<Arc<Room>> = self.open.lock().await.values().cloned().collect();
             for room in rooms {
                 room.reattach_comments_if_moved().await;
-                room.flush_chat(false).await;
+                // The map and this pass's clone are the only holders of an
+                // idle room, so it writes everything and gives back its
+                // reservation before it can be retired.
+                let idle = Arc::strong_count(&room) == 2;
+                room.flush_chat(idle).await;
             }
         }
-        // A room with chat still waiting stays open so the next pass can
-        // write it.
-        self.open
-            .lock()
-            .await
-            .retain(|_, room| Arc::strong_count(room) > 1 || room.chat_waiting() > 0);
+        // A room with chat waiting, or a reservation to give back, stays open
+        // so the next pass can finish with it.
+        self.open.lock().await.retain(|_, room| {
+            Arc::strong_count(room) > 1 || room.chat_waiting() > 0 || room.chat_holds_reservation()
+        });
     }
 
     pub async fn shutdown(&self) {
