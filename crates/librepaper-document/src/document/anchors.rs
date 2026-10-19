@@ -1940,7 +1940,9 @@ mod tests {
         assert!(create_anchor(
             &doc, &file, "c1", 6, 10, "beta", "alpha ", " gamma"
         ));
-        assert!(create_anchor(&doc, &file, "c2", 11, 16, "gamma", "beta ", ""));
+        assert!(create_anchor(
+            &doc, &file, "c2", 11, 16, "gamma", "beta ", ""
+        ));
         let (start, end) = capture_cursors(&doc, &file, 6, 10).unwrap();
         assert!(create_anchor_with_cursors(
             &doc, "gone.md", "c3", &start, &end, "beta", "", ""
