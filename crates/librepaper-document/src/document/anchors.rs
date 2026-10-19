@@ -780,7 +780,11 @@ pub fn capture_cursors(
         return None;
     }
     let start = cursor_at(&live.text, from, CursorSide::Left)?;
-    let end = cursor_at(&live.text, last_char_start(&live.body, to), CursorSide::Right)?;
+    let end = cursor_at(
+        &live.text,
+        last_char_start(&live.body, to),
+        CursorSide::Right,
+    )?;
     Some((start.encode(), end.encode()))
 }
 
@@ -921,7 +925,11 @@ pub fn write_anchors(doc: &LoroDoc, planned: &[PlannedFile]) -> Vec<String> {
                 }
                 let (Some(start), Some(end)) = (
                     cursor_at(&live.text, a.from, CursorSide::Left),
-                    cursor_at(&live.text, last_char_start(&live.body, a.to), CursorSide::Right),
+                    cursor_at(
+                        &live.text,
+                        last_char_start(&live.body, a.to),
+                        CursorSide::Right,
+                    ),
                 ) else {
                     continue;
                 };
@@ -1042,7 +1050,11 @@ pub fn heal_stale(doc: &LoroDoc, file_id: &str) -> Vec<String> {
         }
         let (Some(start), Some(end)) = (
             cursor_at(&live.text, a.from, CursorSide::Left),
-            cursor_at(&live.text, last_char_start(&live.body, a.to), CursorSide::Right),
+            cursor_at(
+                &live.text,
+                last_char_start(&live.body, a.to),
+                CursorSide::Right,
+            ),
         ) else {
             continue;
         };
@@ -1250,7 +1262,11 @@ pub fn restore_by_fragments(doc: &LoroDoc, file_id: &str, restored: &[Restored])
         }
         let (Some(start), Some(end)) = (
             cursor_at(&live.text, from, CursorSide::Left),
-            cursor_at(&live.text, last_char_start(&live.body, to), CursorSide::Right),
+            cursor_at(
+                &live.text,
+                last_char_start(&live.body, to),
+                CursorSide::Right,
+            ),
         ) else {
             continue;
         };

@@ -1012,7 +1012,10 @@ async fn a_retried_passage_comment_answers_from_its_row_and_writes_no_second_rec
         .with_head(|doc| doc.oplog_frontiers().encode())
         .await
         .unwrap();
-    assert_ne!(after_first, before, "the passage's anchor record moved the frontier");
+    assert_ne!(
+        after_first, before,
+        "the passage's anchor record moved the frontier"
+    );
 
     let mut retry = request();
     let (again, replayed) = room
@@ -1022,8 +1025,7 @@ async fn a_retried_passage_comment_answers_from_its_row_and_writes_no_second_rec
     assert!(replayed, "the retry is answered from its row");
     assert_eq!(again.id, comment.id, "the retry returns the first comment");
     assert_eq!(
-        again.original_anchor,
-        comment.original_anchor,
+        again.original_anchor, comment.original_anchor,
         "the retry answers with the first record's anchor",
     );
     let after_retry = room
@@ -1031,7 +1033,10 @@ async fn a_retried_passage_comment_answers_from_its_row_and_writes_no_second_rec
         .with_head(|doc| doc.oplog_frontiers().encode())
         .await
         .unwrap();
-    assert_eq!(after_retry, after_first, "the retry wrote no second anchor record");
+    assert_eq!(
+        after_retry, after_first,
+        "the retry wrote no second anchor record"
+    );
 
     let comments = room.all_comments().await.unwrap();
     assert_eq!(comments.len(), 1, "the retry added no second comment");
