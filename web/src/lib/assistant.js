@@ -251,10 +251,12 @@ export function taskNeedsAnchor(task) {
 
 // The reason a task cannot run here, or "" when it may run. The checks are
 // the same ones capabilityAllows has always made, in the same order. With
-// deferAccess, unverified access waits for the agent start, which verifies it.
+// deferAccess, every access check waits for the agent start, which verifies
+// the access the agent is given. The capabilities held before that describe
+// another link.
 export function taskBlocker(capabilities, task, { attached = null, path = "", deferAccess = false } = {}) {
   const caps = normalizeCapabilities(capabilities);
-  const checkAccess = caps.verified || !deferAccess;
+  const checkAccess = !deferAccess;
   if (!task || !TASK_KINDS.includes(task.kind) || !TASK_SCOPES.includes(task.scope)) return "This task cannot run here.";
   if (!deferAccess && !caps.verified) return "Connect an agent to check access for this task.";
   if (checkAccess && !caps.can_read) return "You need read access to run this task.";

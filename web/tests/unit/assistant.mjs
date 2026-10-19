@@ -178,6 +178,8 @@ assert.ok(allowedCount > 0 && blockedCount > 0);
 assert.equal(taskBlocker(commentCaps, null), "This task cannot run here.");
 assert.equal(taskBlocker({}, { kind: "explain", scope: "file" }, { path: "main.md" }), "Connect an agent to check access for this task.");
 assert.equal(taskBlocker({}, { kind: "proofread", scope: "file" }, { path: "main.md", deferAccess: true }), "");
+// Held capabilities from a Comment link do not block a start that will grant Edit.
+assert.equal(taskBlocker(commentCaps, { kind: "proofread", scope: "file" }, { path: "main.md", deferAccess: true }), "");
 assert.equal(taskBlocker({}, { kind: "explain", scope: "file" }, { deferAccess: true }), "Open a file to use this task.");
 assert.equal(taskBlocker(commentCaps, { kind: "tighten", scope: "selection" }, { attached: attachment }), "You need edit access to run this task.");
 assert.equal(taskBlocker(commentCaps, { kind: "explain", scope: "file" }, {}), "Open a file to use this task.");
