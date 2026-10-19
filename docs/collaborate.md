@@ -16,3 +16,7 @@ Share with links, not people. The owner mints a read, comment or edit link in th
 - Moving a file does not rewrite the references inside source files.
 - Copying a checkpoint link keeps your share key. Restore records the current version before applying the earlier one.
 - Typst's HTML preview does not reproduce all PDF formatting. Choose PDF from the View menu. The first load fetches the renderer. Typst needs about 13 MB, and LaTeX needs about 6 MB plus the packages a document asks for.
+
+## Comments
+
+A comment follows its passage when the passage is moved by cut and paste or drag and drop, within a file or into another file, and when a rejected tracked deletion brings the passage back. If a passage is gone, its comment shows the passage in words, and an editor can select the passage and choose "Attach to selection". "See it as it was" opens the history at the moment the comment was made.

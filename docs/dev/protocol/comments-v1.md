@@ -68,8 +68,6 @@ that fit are loaded, except for the one-row oversize case.
 - `comments-changed` carries updated state counts but no comment rows. Clients
   re-read pages when an event describes a batch or other change that cannot
   be represented by a single row event.
-- `attachments` events re-anchor comments for editors and are split into
-  batches of at most 200 entries.
 
 The browser initially holds the first page and fetches more only on request.
 It keeps counts from `state`, deduplicates overlapping live events by comment
@@ -77,6 +75,16 @@ ID, and can refresh the pages already loaded after `comments-changed` or a
 new `hello`. Refresh is capped at eight pages; beyond that, the loaded list
 remains partial. A failed page request leaves loaded comments visible and
 offers retry.
+
+## Attachment
+
+A comment's `attachment` says where its passage is now. The server derives it from the comment's anchor record on each read and never stores it. Callers with editor role or above get `attachment` and `original_anchor` on comment pages, in `hello`, in events and through agent reads. Readers and commenters get neither. A comment about the whole document has no record and no attachment. The room sends no `attachments` frame. Editors derive their own attachments after each document change.
+
+- `status` is one of `exact`, `modified`, `pending_deletion`, `deleted` or `unresolved`. `unresolved` also covers a comment with no record yet.
+- `resolved_range_utf16` is `[from, to]` in UTF-16 units. It is present only for `exact` and `modified`.
+- `resolved_file_id` is the file the passage is in now. It differs from `original_anchor.file_id` after a move to another file. It is absent when no file is resolved.
+- `tree_digest` is the projection digest the attachment was derived against. An agent uses the attachment only when this matches the snapshot the agent read.
+- `diagnostic` is `removed_file` when the record names a file that is gone or is no longer a text. `cleared_history` is reserved, and nothing sets it yet.
 
 ## Agent reads
 
@@ -88,6 +96,8 @@ revision, so a changed collection requires a fresh query. `comment_version`
 is based on the annotation row, total reply count, and newest reply timestamp;
 it does not depend on the number of replies in a page.
 
-Implementation: [room/comments.rs](../../../crates/librepaper-room/src/room/comments.rs),
+Implemented in [room/comments.rs](../../../crates/librepaper-room/src/room/comments.rs),
+[room/derive.rs](../../../crates/librepaper-room/src/room/derive.rs),
 [documents.rs](../../../crates/librepaper-server/src/server/documents.rs),
+[anchors.js](../../../web/src/lib/anchors.js),
 [annotations.svelte.js](../../../web/src/lib/reader/annotations.svelte.js).
