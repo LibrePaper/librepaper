@@ -560,31 +560,58 @@ fn fragment_ranges(
     edits: &[session::Edit],
     fragments: &[track::FragmentInfo],
 ) -> Vec<FragmentRange> {
+    /// One deletion of the request: its text, its gap, and the run it took.
+    struct Deletion<'a> {
+        index: usize,
+        deleted: &'a str,
+        gap: usize,
+        run: Option<std::ops::Range<usize>>,
+    }
     let gaps = gaps_of(before, edits);
-    let mut ranges = Vec::new();
     let mut consumed = vec![false; fragments.len()];
-    for (index, edit) in edits.iter().enumerate() {
-        if edit.delete == 0 {
-            continue;
+    let mut deletions: Vec<Deletion<'_>> = edits
+        .iter()
+        .enumerate()
+        .filter(|(_, edit)| edit.delete > 0)
+        .map(|(index, edit)| Deletion {
+            index,
+            deleted: utf16_slice(before, edit.at, edit.at + edit.delete),
+            gap: gaps[index],
+            run: None,
+        })
+        .collect();
+    // The gap search runs for every deletion before any fallback, so identical
+    // texts at different gaps keep their own fragments. The fallback covers a
+    // deletion that joins the author's own pending change, which files its
+    // fragment at that change's start.
+    for keyed in [true, false] {
+        for deletion in deletions.iter_mut() {
+            if deletion.run.is_some() {
+                continue;
+            }
+            let gap = keyed.then_some(deletion.gap);
+            if let Some(run) = first_run(fragments, &consumed, deletion.deleted, gap) {
+                consumed[run.clone()].fill(true);
+                deletion.run = Some(run);
+            }
         }
-        let deleted = utf16_slice(before, edit.at, edit.at + edit.delete);
-        let run = first_run(fragments, &consumed, deleted, Some(gaps[index]))
-            .or_else(|| first_run(fragments, &consumed, deleted, None));
-        let Some(run) = run else {
+    }
+    let mut ranges = Vec::new();
+    for deletion in deletions {
+        let Some(run) = deletion.run else {
             continue;
         };
         let mut start = 0;
-        for fragment in &fragments[run.clone()] {
+        for fragment in &fragments[run] {
             let end = start + fragment.text.encode_utf16().count();
             ranges.push(FragmentRange {
                 id: fragment.id.clone(),
-                edit: index,
+                edit: deletion.index,
                 start,
                 end,
             });
             start = end;
         }
-        consumed[run].fill(true);
     }
     ranges
 }

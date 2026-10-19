@@ -809,10 +809,10 @@ export function composeEdits(lists) {
  * @returns {FragmentRange[]}
  */
 export function fragmentRangesFor(before, edits, fragments) {
-  const out = [];
   const consumed = fragments.map(() => false);
-  // The first run of unconsumed fragments that joins up to `deleted`, contiguous in the list. When `gap` is null
-  // the run may sit at any gap. Otherwise every fragment of the run sits at that gap.
+  // The first run of unconsumed fragments that joins up to `deleted`,
+  // contiguous in the list. With a gap, every fragment of the run sits at that
+  // gap; with null, the run may sit at any gap.
   const firstRun = (deleted, gap) => {
     const fits = (i) => !consumed[i] && (gap === null || fragments[i].at === gap);
     for (let first = 0; first < fragments.length; first++) {
@@ -834,32 +834,44 @@ export function fragmentRangesFor(before, edits, fragments) {
     spans.push({ ef: edit.from + adj, et: edit.to + adj, n: edit.insert.length });
     adj += edit.insert.length - (edit.to - edit.from);
   }
+  // Each deletion's text, and where it sits in the final text: each later
+  // edit moves that point.
+  const deletions = [];
   let cur = before;
   edits.forEach((edit, index) => {
     const { ef, et } = spans[index];
     if (et > ef) {
-      const deleted = cur.slice(ef, et);
-      // Where the deleted text sits in the final text. Each later edit moves it.
       let point = ef;
       for (const later of spans.slice(index + 1)) {
         if (later.et <= point) point += later.n - (later.et - later.ef);
         else if (later.ef < point) point = later.ef;
       }
-      // The gap search comes first, so identical texts at different gaps keep their own fragments. The fallback
-      // covers a deletion that joins the author's own pending change, which files its fragment at that change's start.
-      const run = firstRun(deleted, point) ?? firstRun(deleted, null);
-      if (run) {
-        let start = 0;
-        for (let i = run.first; i < run.last; i++) {
-          const fragment = fragments[i];
-          out.push({ id: fragment.id, edit: index, start, end: start + fragment.text.length });
-          start += fragment.text.length;
-          consumed[i] = true;
-        }
-      }
+      deletions.push({ index, deleted: cur.slice(ef, et), point, run: null });
     }
     cur = cur.slice(0, ef) + edit.insert + cur.slice(et);
   });
+  // The gap search runs for every deletion before any fallback, so identical
+  // texts at different gaps keep their own fragments. The fallback covers a
+  // deletion that joins the author's own pending change, which files its
+  // fragment at that change's start.
+  const take = (deletion, gap) => {
+    const run = firstRun(deletion.deleted, gap);
+    if (!run) return;
+    deletion.run = run;
+    for (let i = run.first; i < run.last; i++) consumed[i] = true;
+  };
+  for (const deletion of deletions) take(deletion, deletion.point);
+  for (const deletion of deletions) if (!deletion.run) take(deletion, null);
+  const out = [];
+  for (const { index, run } of deletions) {
+    if (!run) continue;
+    let start = 0;
+    for (let i = run.first; i < run.last; i++) {
+      const fragment = fragments[i];
+      out.push({ id: fragment.id, edit: index, start, end: start + fragment.text.length });
+      start += fragment.text.length;
+    }
+  }
   return out;
 }
 
