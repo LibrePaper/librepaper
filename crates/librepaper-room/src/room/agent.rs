@@ -549,9 +549,12 @@ fn coalesce_adjacent(edits: &[session::Edit]) -> Vec<session::Edit> {
 /// Maps a file's new fragments to the deletions that made them. Each deletion,
 /// in edit order, takes the first run of fragments whose texts join up to
 /// exactly its deleted text and that sit at the gap the deletion leaves in the
-/// text after the edits. A run is contiguous in the list, uses only fragments
-/// that no earlier deletion took, and may start at any of them. A deletion with
-/// no such run takes none, so the anchors inside it detach without a fragment.
+/// text after the edits. When no run sits at that gap, it takes the first run
+/// at any position, because a deletion that joins the author's own pending
+/// change files its fragment at that change's start. A run is contiguous in the
+/// list, uses only fragments that no earlier deletion took, and may start at any
+/// of them. A deletion with no such run takes none, so the anchors inside it
+/// detach without a fragment.
 fn fragment_ranges(
     before: &str,
     edits: &[session::Edit],
@@ -565,7 +568,9 @@ fn fragment_ranges(
             continue;
         }
         let deleted = utf16_slice(before, edit.at, edit.at + edit.delete);
-        let Some(run) = first_run(fragments, &consumed, deleted, gaps[index]) else {
+        let run = first_run(fragments, &consumed, deleted, Some(gaps[index]))
+            .or_else(|| first_run(fragments, &consumed, deleted, None));
+        let Some(run) = run else {
             continue;
         };
         let mut start = 0;
@@ -615,15 +620,15 @@ fn gaps_of(before: &str, edits: &[session::Edit]) -> Vec<usize> {
         .collect()
 }
 
-/// The first run of fragments whose texts join up to `deleted`, all at `gap`.
-/// The run is contiguous, every fragment in it is unconsumed and sits at `gap`,
-/// and it may start at any such fragment. None when no run matches or `deleted`
-/// is empty.
+/// The first run of unconsumed fragments whose texts join up to `deleted`. The
+/// run is contiguous in the list and may start at any fragment. When `gap` is
+/// Some, every fragment in the run must sit at that gap. None when no run
+/// matches or `deleted` is empty.
 fn first_run(
     fragments: &[track::FragmentInfo],
     consumed: &[bool],
     deleted: &str,
-    gap: usize,
+    gap: Option<usize>,
 ) -> Option<std::ops::Range<usize>> {
     if deleted.is_empty() {
         return None;
@@ -631,7 +636,7 @@ fn first_run(
     for start in 0..fragments.len() {
         let mut joined = String::new();
         for (end, fragment) in fragments.iter().enumerate().skip(start) {
-            if consumed[end] || fragment.at != gap {
+            if consumed[end] || gap.is_some_and(|at| fragment.at != at) {
                 break;
             }
             joined.push_str(&fragment.text);
@@ -1756,6 +1761,33 @@ mod tests {
                     end: 4,
                 },
             ]
+        );
+    }
+
+    #[test]
+    fn a_deletion_that_joins_the_authors_own_pending_insertion_still_finds_its_fragment() {
+        let edits = [session::Edit {
+            at: 5,
+            delete: 3,
+            insert: String::new(),
+        }];
+        // The deletion of "two" joins the pending "X" before it, so the fragment
+        // sits at the change's start, 4, and not at the deletion's gap, 5.
+        let fragments = [track::FragmentInfo {
+            id: "f1".to_string(),
+            change: "c1".to_string(),
+            text: "two".to_string(),
+            at: 4,
+        }];
+        let ranges = fragment_ranges("one Xtwo three", &edits, &fragments);
+        assert_eq!(
+            ranges,
+            vec![FragmentRange {
+                id: "f1".to_string(),
+                edit: 0,
+                start: 0,
+                end: 3,
+            }]
         );
     }
 }
