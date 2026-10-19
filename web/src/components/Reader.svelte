@@ -1043,7 +1043,9 @@
   // is read again into the session's anchor cache.
   function settleAnchors(files, restored = [], edits = []) {
     const touched = [...new Set([...files, ...restored.map((r) => r.file)].filter(Boolean))];
-    if (edits.length > 0) {
+    // A file the index never loaded has no before state to plan from. Its
+    // detached records are still put back by fragment below.
+    if (edits.length > 0 && session.anchors.has(files[0])) {
       session.anchors.record([{ fileId: files[0], edits: composeEdits(edits.map((edit) => [edit])), fragments: [] }], session.anchorMemory);
     }
     for (const file of touched) restoreByFragments(session.doc, file, restored.filter((r) => r.file === file));

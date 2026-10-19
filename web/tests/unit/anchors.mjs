@@ -4,9 +4,9 @@
 // tracked fragments and surrogate pairs. The seeded fuzzer at the end runs
 // random histories of typing, cutting, pasting, copying and dragging against a
 // model that tags every unit with the anchor it belongs to. The model applies
-// the same memory rule as the planner (the newest remembered text that occurs
-// exactly once in an insertion takes its held anchors back), so the fuzzer
-// checks positions, quotes, list membership and the memory size, not the
+// the same memory rule as the planner (each remembered text that occurs exactly
+// once in an insertion, newest first, takes its held anchors back), so the
+// fuzzer checks positions, quotes, list membership and the memory size, not the
 // policy itself.
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
@@ -191,7 +191,8 @@ function takeMemory(model, inserted) {
 
 // Applies one operation's edits to the model the way the planner does:
 // deleted text is remembered with the anchors it takes whole, then each
-// insertion asks the memory for held anchors and tags them back in place.
+// insertion takes every remembered text that occurs exactly once in it, newest
+// first, and tags the held anchors back in place.
 function applyEdits(model, fileIdx, edits) {
   const file = model.files[fileIdx];
   const src = file.units;
@@ -215,15 +216,15 @@ function applyEdits(model, fileIdx, edits) {
   file.units = out;
   model.memory.push(...pending);
   for (const { pos, text } of inserts) {
-    const hit = takeMemory(model, text);
-    if (!hit) continue;
-    for (const h of hit.entry.held) {
-      const attached = model.files.some((f) => f.units.some((u) => u.tags.has(h.id)));
-      assert.equal(attached, false, `held anchor ${h.id} is still attached`);
-      const start = pos + hit.at + h.offset;
-      assert.equal(textOf(out.slice(start, start + h.text.length)), h.text, `re-pin of ${h.id} misplaced`);
-      for (let k = 0; k < h.text.length; k++) out[start + k].tags.add(h.id);
-      model.home.set(h.id, file.fileId);
+    for (let hit = takeMemory(model, text); hit; hit = takeMemory(model, text)) {
+      for (const h of hit.entry.held) {
+        const attached = model.files.some((f) => f.units.some((u) => u.tags.has(h.id)));
+        assert.equal(attached, false, `held anchor ${h.id} is still attached`);
+        const start = pos + hit.at + h.offset;
+        assert.equal(textOf(out.slice(start, start + h.text.length)), h.text, `re-pin of ${h.id} misplaced`);
+        for (let k = 0; k < h.text.length; k++) out[start + k].tags.add(h.id);
+        model.home.set(h.id, file.fileId);
+      }
     }
   }
 }
@@ -473,6 +474,23 @@ test("fragmentRangesFor: a composed second step matches through the running text
   ]);
 });
 
+test("fragmentRangesFor: a later transaction's deletion takes a fragment that sits before an earlier one's", () => {
+  const before = "one two three four";
+  // List 1 deletes "four" at 14..18. List 2 deletes "two " at 4..8 in the text that results.
+  const edits = composeEdits([
+    [{ from: 14, to: 18, insert: "" }],
+    [{ from: 4, to: 8, insert: "" }],
+  ]);
+  const fragments = [
+    { id: "f-two", text: "two " },
+    { id: "f-four", text: "four" },
+  ];
+  assert.deepEqual(fragmentRangesFor(before, edits, fragments), [
+    { id: "f-four", edit: 0, start: 0, end: 4 },
+    { id: "f-two", edit: 1, start: 0, end: 4 },
+  ]);
+});
+
 // An anchor record as planOperation takes it.
 const anchorOn = (id, from, to, exact) => ({
   id,
@@ -608,6 +626,26 @@ test("a cut head pasted elsewhere does not extend the passage", () => {
   assert.equal(pasted.after.slice(anchor.from, anchor.to), "o");
 });
 
+test("a merged undo of two backspaces rejoins both pieces", () => {
+  const memory = new MoveMemory();
+  const first = planOne("one two three", [anchorOn("a1", 4, 7, "two")], [{ from: 4, to: 5, insert: "" }], memory);
+  // "t" goes, and the anchor is left on "wo" at 4..6.
+  assert.equal(first.after, "one wo three");
+  const second = planOne(first.after, first.anchors, [{ from: 4, to: 5, insert: "" }], memory);
+  // "w" goes too, and the anchor is left on the "o" at 4..5.
+  assert.equal(second.after, "one o three");
+  assert.deepEqual([second.anchors[0].from, second.anchors[0].to], [4, 5]);
+  assert.equal(memory.size, 2);
+
+  // One undo step puts both pieces back as one insertion.
+  const back = planOne(second.after, second.anchors, [{ from: 4, to: 4, insert: "tw" }], memory);
+  assert.equal(back.after, "one two three");
+  const anchor = back.anchors[0];
+  assert.deepEqual([anchor.from, anchor.to, anchor.detached, anchor.state], [4, 7, false, "set"]);
+  assert.equal(back.after.slice(anchor.from, anchor.to), "two");
+  assert.equal(memory.size, 0);
+});
+
 test("deriveAttachment: an attached, a detached and a missing record, through a real document", () => {
   const doc = new LoroDoc();
   const text = doc.getMap("files").setContainer("f1", new LoroText());
@@ -652,6 +690,23 @@ test("deriveAttachment: a comment whose file was removed is unresolved, and the 
   const hit = index.find("c1");
   assert.equal(hit.fileId, "f1");
   assert.deepEqual([hit.anchor.from, hit.anchor.to, hit.anchor.exact], [6, 11, "brave"]);
+});
+
+test("resolveAnchors: a record that names another text is unresolved, since its cursors belong to that text", () => {
+  const doc = new LoroDoc();
+  doc.getMap("files").setContainer("f1", new LoroText()).insert(0, "one two three");
+  doc.getMap("files").setContainer("f2", new LoroText()).insert(0, "alpha beta gamma");
+  createAnchor(doc, "f2", "c1", 6, 10, { exact: "beta", prefix: "alpha ", suffix: " gamma" });
+  doc.commit();
+  // The cursors still belong to f2. Only the file key names f1.
+  doc.getMap("anchors").get("c1").set("file", "f1");
+  doc.commit();
+
+  const [anchor] = resolveAnchors(doc, "f1");
+  assert.equal(anchor.id, "c1");
+  assert.equal(anchor.unresolved, true);
+  assert.equal(statusOf(doc, anchor), "unresolved");
+  assert.deepEqual(resolveAnchors(doc, "f2"), []);
 });
 
 test("attachByHand: a deleted comment attaches to the selection and its quote is refreshed", () => {

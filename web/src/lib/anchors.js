@@ -104,11 +104,12 @@ export class MoveMemory {
  * anchors. The edits may be composed (see composeEdits), so a later edit can
  * land before an earlier insertion. That insertion moves when the later edit
  * lands before it, and is dropped when the later edit reaches into it.
- * Phase 2 runs after every file: an insertion that takes a remembered text
- * re-pins the detached anchors that were in it, into the file the insertion
- * landed in. A piece cut from one end of an attached anchor rejoins that
- * anchor when the piece comes back at the same end. Deletions are remembered
- * and taken texts are removed from the memory as a side effect.
+ * Phase 2 runs after every file: each remembered text that occurs exactly once
+ * in an insertion is taken, newest first, and re-pins the detached anchors
+ * that were in it, into the file the insertion landed in. A piece cut from one
+ * end of an attached anchor rejoins that anchor when the piece comes back at
+ * the same end. Deletions are remembered and taken texts are removed from the
+ * memory as a side effect.
  *
  * @param {{ fileId: string, before: string, anchors: Anchor[], edits: Edit[], fragments?: FragmentRange[] }[]} files
  * @param {MoveMemory} memory
@@ -219,52 +220,53 @@ export function planOperation(files, memory, { context = CONTEXT_UNITS, foreign 
     for (const a of moved) if (attached(a)) a.state = "set";
   }
 
-  // Phase 2: an insertion that brings remembered text back re-pins the anchors
-  // that were in it. A whole anchor comes back from detached. A cut head or
-  // tail rejoins an anchor that is still attached, in the same file, at the
-  // edge the piece was cut from.
+  // Phase 2: an insertion re-pins the anchors that were in the text it brings
+  // back. Each remembered text that occurs exactly once in the insertion is
+  // taken, newest first, and every taken entry is processed. A whole anchor
+  // comes back from detached. A cut head or tail rejoins an anchor that is
+  // still attached, in the same file, at the edge the piece was cut from.
   for (const w of foreign ? [] : work) {
     for (const ins of w.inserts) {
-      const hit = memory.take(ins.text);
-      if (!hit) continue;
-      for (const h of hit.held) {
-        if (!h.text) continue;
-        const owner = work.find((o) => o.anchors.some((a) => a.id === h.id));
-        if (!owner) continue;
-        const index = owner.anchors.findIndex((a) => a.id === h.id);
-        const anchor = owner.anchors[index];
-        const from = ins.at + hit.at + h.offset;
-        const to = from + h.text.length;
-        if (h.side) {
-          const edge = h.side === "head" ? to === anchor.from : from === anchor.to;
-          if (!attached(anchor) || owner !== w || !edge || w.after.slice(from, to) !== h.text) continue;
-          if (h.side === "head") anchor.from = from;
-          else anchor.to = to;
-          anchor.state = "set";
-          anchor.touched = true;
-          continue;
+      for (let hit = memory.take(ins.text); hit; hit = memory.take(ins.text)) {
+        for (const h of hit.held) {
+          if (!h.text) continue;
+          const owner = work.find((o) => o.anchors.some((a) => a.id === h.id));
+          if (!owner) continue;
+          const index = owner.anchors.findIndex((a) => a.id === h.id);
+          const anchor = owner.anchors[index];
+          const from = ins.at + hit.at + h.offset;
+          const to = from + h.text.length;
+          if (h.side) {
+            const edge = h.side === "head" ? to === anchor.from : from === anchor.to;
+            if (!attached(anchor) || owner !== w || !edge || w.after.slice(from, to) !== h.text) continue;
+            if (h.side === "head") anchor.from = from;
+            else anchor.to = to;
+            anchor.state = "set";
+            anchor.touched = true;
+            continue;
+          }
+          // A record with no length has no span to bring back.
+          if (attached(anchor) || typeof anchor.length !== "number") continue;
+          if (w.after.slice(from, to) !== h.text) continue;
+          owner.anchors.splice(index, 1);
+          /** @type {PlannedAnchor} */
+          const pinned = {
+            ...anchor,
+            file: w.fileId,
+            from,
+            to,
+            detached: false,
+            fragment: null,
+            offset: null,
+            length: null,
+            collapsed: false,
+            unresolved: false,
+            state: "set",
+            touched: true,
+          };
+          if (owner !== w) pinned.movedFrom = owner.fileId;
+          w.anchors.push(pinned);
         }
-        // A record with no length has no span to bring back.
-        if (attached(anchor) || typeof anchor.length !== "number") continue;
-        if (w.after.slice(from, to) !== h.text) continue;
-        owner.anchors.splice(index, 1);
-        /** @type {PlannedAnchor} */
-        const pinned = {
-          ...anchor,
-          file: w.fileId,
-          from,
-          to,
-          detached: false,
-          fragment: null,
-          offset: null,
-          length: null,
-          collapsed: false,
-          unresolved: false,
-          state: "set",
-          touched: true,
-        };
-        if (owner !== w) pinned.movedFrom = owner.fileId;
-        w.anchors.push(pinned);
       }
     }
   }
@@ -309,9 +311,13 @@ function fileText(doc, fileId) {
   return text && typeof text.toString === "function" && typeof text.getCursor === "function" ? text : null;
 }
 
-function cursorPos(doc, bytes) {
+// The offset, and whether the cursor is stale, that a stored cursor resolves to
+// in text, or null. A cursor made for another text does not resolve here.
+function cursorPos(doc, text, bytes) {
   try {
-    const result = doc.getCursorPos(Cursor.decode(bytes));
+    const cursor = Cursor.decode(bytes);
+    if (!text || String(cursor.containerId()) !== String(text.id)) return null;
+    const result = doc.getCursorPos(cursor);
     if (!result || typeof result.offset !== "number") return null;
     return { offset: result.offset, stale: Boolean(result.update) };
   } catch {
@@ -336,8 +342,8 @@ function resolvedSpan(doc, text, record) {
   const startBytes = record.get("start");
   const endBytes = record.get("end");
   if (!(startBytes instanceof Uint8Array) || !(endBytes instanceof Uint8Array)) return null;
-  const s = cursorPos(doc, startBytes);
-  const e = cursorPos(doc, endBytes);
+  const s = cursorPos(doc, text, startBytes);
+  const e = cursorPos(doc, text, endBytes);
   if (!s || !e) return null;
   const to = e.stale ? e.offset : e.offset + charWidth(text.toString(), e.offset);
   return { from: s.offset, to: Math.max(to, s.offset) };
@@ -371,10 +377,11 @@ function detachedAnchor(value, id, fileId) {
 function recordAnchor(doc, id, value, fileId, body) {
   if (value.get("detached") === true) return detachedAnchor(value, id, fileId);
   const base = recordFields(value, id, fileId);
+  const text = fileText(doc, fileId);
   const start = value.get("start");
   const end = value.get("end");
-  const s = start instanceof Uint8Array ? cursorPos(doc, start) : null;
-  const e = end instanceof Uint8Array ? cursorPos(doc, end) : null;
+  const s = start instanceof Uint8Array ? cursorPos(doc, text, start) : null;
+  const e = end instanceof Uint8Array ? cursorPos(doc, text, end) : null;
   if (!s || !e) return { ...base, detached: false, from: 0, to: 0, collapsed: false, unresolved: true };
   const to = Math.max(s.offset, e.stale ? e.offset : e.offset + charWidth(body, e.offset));
   return { ...base, detached: false, from: s.offset, to, collapsed: to <= s.offset, unresolved: false };
@@ -755,24 +762,28 @@ export function composeEdits(lists) {
 
 /**
  * The fragment ranges of the deletions in one transaction. The walk mirrors the
- * Rust fragment_ranges. Each deletion takes the created fragments at the front,
- * in document order, whose texts join up to exactly its deleted text, and each
- * fragment becomes one range with start and end inside that text. A deletion
- * whose text is not exactly the next fragments gets none and takes none, so a
- * later deletion can still take them. That covers an untracked deletion and a
- * deletion whose text was joined with something else.
+ * Rust fragment_ranges. Each deletion, in edit order, looks for the first run of
+ * created fragments whose texts join up to exactly its deleted text. A run is
+ * contiguous in the list, every fragment in it is still unconsumed, and it may
+ * start at any unconsumed fragment. Each fragment of the run becomes one range,
+ * with start and end inside that text, and is consumed. A deletion with no such
+ * run gets no ranges and consumes nothing, so a later deletion can still take
+ * those fragments. That covers an untracked deletion and a deletion whose text
+ * was joined with something else.
  *
- * The edits are in planOperation's coordinates, so a composed list (see
- * composeEdits) is walked in order against the running text.
+ * A single list in document order is walked the same way. A composed list (see
+ * composeEdits) is in transaction order, so a later transaction may delete text
+ * that sits before an earlier one's deletion. The edits are in planOperation's
+ * coordinates, so each one is matched against the running text.
  *
  * @param {string} before the text the edits apply to
  * @param {Edit[]} edits
- * @param {{ id: string, text: string }[]} fragments the created fragments, in document order
+ * @param {{ id: string, text: string }[]} fragments the created fragments: in document order for one list, in transaction order for a composed list
  * @returns {FragmentRange[]}
  */
 export function fragmentRangesFor(before, edits, fragments) {
   const out = [];
-  let next = 0;
+  const consumed = fragments.map(() => false);
   let cur = before;
   let adj = 0;
   edits.forEach((edit, index) => {
@@ -780,20 +791,26 @@ export function fragmentRangesFor(before, edits, fragments) {
     const et = edit.to + adj;
     if (et > ef) {
       const deleted = cur.slice(ef, et);
-      let taken = next;
-      let joined = "";
-      while (taken < fragments.length && joined.length < deleted.length) {
-        joined += fragments[taken].text;
-        taken++;
+      // The first run of unconsumed fragments, contiguous in the list, that joins up to the deleted text.
+      let run = null;
+      for (let first = 0; first < fragments.length && run === null; first++) {
+        if (consumed[first]) continue;
+        let last = first;
+        let joined = "";
+        while (last < fragments.length && !consumed[last] && joined.length < deleted.length) {
+          joined += fragments[last].text;
+          last++;
+        }
+        if (joined === deleted) run = { first, last };
       }
-      if (joined === deleted) {
+      if (run) {
         let start = 0;
-        for (let i = next; i < taken; i++) {
+        for (let i = run.first; i < run.last; i++) {
           const fragment = fragments[i];
           out.push({ id: fragment.id, edit: index, start, end: start + fragment.text.length });
           start += fragment.text.length;
+          consumed[i] = true;
         }
-        next = taken;
       }
     }
     cur = cur.slice(0, ef) + edit.insert + cur.slice(et);
@@ -973,6 +990,15 @@ export class AnchorIndex {
    */
   get(fileId) {
     return this.#files.get(fileId) ?? this.load(fileId);
+  }
+
+  /**
+   * Whether a file is cached, so that an edit to it can be recorded.
+   * @param {string} fileId
+   * @returns {boolean}
+   */
+  has(fileId) {
+    return this.#files.has(fileId);
   }
 
   /**

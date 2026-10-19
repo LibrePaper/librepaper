@@ -721,6 +721,36 @@ test("redo of a tracked deletion detaches the comment with its fragment", () => 
   assertIndexMatches(index, doc, "f1");
 });
 
+// Two backspaces, each cutting one character from the head of the anchor on
+// "two". The anchor commit after each cut is excluded from undo, and it sits
+// between the two text commits. So each cut is its own undo step, even inside
+// the merge interval, and each undo puts one piece back.
+test("two backspaces undone one after the other bring the passage back exact", () => {
+  const text = "one two three";
+  const doc = makeDoc(1, { f1: text });
+  createAnchor(doc, "f1", "a1", 4, 7, ctx(text, 4, 7));
+  doc.commit();
+  const manager = new UndoManager(doc, { mergeInterval: 1000, excludeOriginPrefixes: [ANCHORS_ORIGIN] });
+  const memory = new MoveMemory();
+  const index = new AnchorIndex(doc);
+  index.load("f1");
+  index.attach(memory);
+  index.apply([{ fileId: "f1", edits: [{ from: 4, to: 5, insert: "" }] }], memory, {});
+  index.apply([{ fileId: "f1", edits: [{ from: 4, to: 5, insert: "" }] }], memory, {});
+  assert.equal(textOf(doc), "one o three");
+  assertIndexMatches(index, doc, "f1");
+
+  assert.equal(manager.undo(), true, "the second cut is undone");
+  assert.equal(textOf(doc), "one wo three");
+  assertIndexMatches(index, doc, "f1");
+
+  assert.equal(manager.undo(), true, "the first cut is undone");
+  assert.equal(textOf(doc), text);
+  assertAttached(doc, "a1", 4, 7, "two");
+  assertIndexMatches(index, doc, "f1");
+  assert.equal(manager.canUndo(), false, "nothing is left to undo");
+});
+
 // A peer B that starts as a snapshot of A, with an index on each.
 function twoIndexedPeers(A) {
   const B = new LoroDoc();
