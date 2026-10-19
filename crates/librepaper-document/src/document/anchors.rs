@@ -303,10 +303,7 @@ pub fn plan_operation(files: &[OperationFile], memory: &mut MoveMemory) -> Vec<P
                     else {
                         continue;
                     };
-                    let Some(index) = work[oi]
-                        .anchors
-                        .iter()
-                        .position(|a| a.anchor.id == h.id)
+                    let Some(index) = work[oi].anchors.iter().position(|a| a.anchor.id == h.id)
                     else {
                         continue;
                     };

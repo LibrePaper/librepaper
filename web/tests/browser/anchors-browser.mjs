@@ -5,8 +5,9 @@
 // pasted to the end of the file, and the anchor follows the paste. Undo takes
 // the paste and then the cut back, and the anchor returns to its word. With
 // tracking on, the word is deleted as a tracked change, which leaves the anchor
-// pending; rejecting that change the way the reader does (rejectRestoring, then
-// restoreByFragments) brings the anchor back exact.
+// pending; rejecting that change the way the reader does (rejectRestoring, the
+// planner's record of its edits, then restoreByFragments) brings the anchor back
+// exact.
 // Two checks follow the rejection. The anchor index must match the record once
 // the editor reconciles. Two transactions sent as one update must both land,
 // and the index must match the record after them.
@@ -43,6 +44,7 @@ import Editor from ${JSON.stringify(join(root, "web/src/components/Editor.svelte
 import { join as joinSession } from ${JSON.stringify(join(root, "web/src/lib/collab.js"))};
 import {
   ANCHORS_ORIGIN,
+  composeEdits,
   createAnchor,
   resolveAnchors,
   restoreByFragments,
@@ -128,7 +130,8 @@ window.anchorsBrowserCheck = async () => {
   // Reject the change the way the reader does: put the text back, re-pin the
   // anchors that were in it, and read the file's anchors again.
   const change = listChanges(value.doc).find((item) => item.file === fileId);
-  const { ok, restored } = rejectRestoring(value.doc, change ? change.id : "");
+  const { ok, restored, edits } = rejectRestoring(value.doc, change ? change.id : "");
+  value.anchors.record([{ fileId, edits: composeEdits(edits.map((edit) => [edit])), fragments: [] }], value.anchorMemory);
   restoreByFragments(value.doc, fileId, restored);
   value.doc.commit({ origin: ANCHORS_ORIGIN });
   value.anchors.load(fileId);
