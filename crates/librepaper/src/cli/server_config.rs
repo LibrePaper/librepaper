@@ -2,8 +2,8 @@
 //! permitted only when a leaf explicitly names an env reference.
 use librepaper_base::{
     auth::{
-        acceptable_provider_url, trim_issuer, valid_oidc_slug, OidcProvider, Policy,
-        SESSION_MAX_AGE,
+        acceptable_provider_url, normalize_entry, trim_issuer, valid_oidc_slug, OidcProvider,
+        Policy, PROVIDER_ENTRA, PROVIDER_GITHUB, PROVIDER_GOOGLE, PROVIDER_ORCID, SESSION_MAX_AGE,
     },
     config::{Configuration, DEFAULT_LOG_QUOTA_BYTES, DEFAULT_PENDING_BYTES},
 };
@@ -70,8 +70,8 @@ pub(crate) struct ResolvedConfig {
     pub(crate) oidc: Vec<OidcProvider>,
     pub(crate) session_lifetime: Option<std::time::Duration>,
     session_lifetime_text: Option<String>,
-    pub(crate) publishers: Vec<String>,
-    pub(crate) commenters: Vec<String>,
+    pub(crate) publishers: Policy,
+    pub(crate) commenters: Policy,
     pub(crate) simulate_activity: Option<u32>,
     pub(crate) expire_after: Option<String>,
     pub(crate) expire_from: Option<String>,
@@ -203,6 +203,7 @@ struct Auth {
     github: OAuth,
     google: OAuth,
     entra: Entra,
+    orcid: Orcid,
     oidc: BTreeMap<String, Custom>,
     session_lifetime: Option<Input<String>>,
 }
@@ -211,6 +212,16 @@ struct Auth {
 struct OAuth {
     client_id: Option<Input<String>>,
     client_secret: Option<Input<String>>,
+    publishers: Option<Input<Vec<String>>>,
+    commenters: Option<Input<Vec<String>>>,
+}
+#[derive(Debug, Default, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+struct Orcid {
+    client_id: Option<Input<String>>,
+    client_secret: Option<Input<String>>,
+    publishers: Option<Input<Vec<String>>>,
+    commenters: Option<Input<Vec<String>>>,
 }
 #[derive(Debug, Default, Deserialize)]
 #[serde(default, deny_unknown_fields)]
@@ -219,6 +230,8 @@ struct Entra {
     client_id: Option<Input<String>>,
     client_secret: Option<Input<String>>,
     label: Option<Input<String>>,
+    publishers: Option<Input<Vec<String>>>,
+    commenters: Option<Input<Vec<String>>>,
 }
 #[derive(Debug, Default, Deserialize)]
 #[serde(default, deny_unknown_fields)]
@@ -228,12 +241,13 @@ struct Custom {
     client_secret: Option<Input<String>>,
     label: Option<Input<String>>,
     scopes: Option<Input<String>>,
+    publishers: Option<Input<Vec<String>>>,
+    commenters: Option<Input<Vec<String>>>,
 }
 #[derive(Debug, Default, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 struct Access {
-    publishers: Option<Input<Vec<String>>>,
-    commenters: Option<Input<Vec<String>>>,
+    anonymous_comments: Option<Input<bool>>,
 }
 #[derive(Debug, Default, Deserialize)]
 #[serde(default, deny_unknown_fields)]
@@ -390,6 +404,20 @@ fn parse_reference<T: DeserializeOwned>(raw: &str) -> Result<T, ()> {
     }
     T::deserialize(v.get("value").cloned().ok_or(())?).map_err(|_| ())
 }
+/// The access lists used to live under `[access]`. A deployment still written
+/// that way gets the new location rather than a bare unknown-key error.
+fn check_moved_keys(v: &toml::Value) -> Result<(), String> {
+    let Some(access) = v.get("access") else {
+        return Ok(());
+    };
+    if access.get("publishers").is_some() {
+        return Err("access.publishers has moved: list publishers under each [auth.<provider>] table, for example [auth.github] publishers = [\"alice\"] or [auth.google] publishers = [\"@example.org\"]".into());
+    }
+    if access.get("commenters").is_some() {
+        return Err("access.commenters has moved: list commenters under each [auth.<provider>] table, for example [auth.github] commenters = [\"*\"] or [auth.google] commenters = [\"@example.org\"]; for comments without sign-in set [access] anonymous_comments = true".into());
+    }
+    Ok(())
+}
 fn check_keys(v: &toml::Value) -> Result<(), String> {
     fn table(v: &toml::Value, prefix: &str, allowed: &[&str]) -> Result<(), String> {
         let t = v
@@ -463,19 +491,37 @@ fn check_keys(v: &toml::Value) -> Result<(), String> {
     section(
         v,
         "auth",
-        &["github", "google", "entra", "oidc", "session_lifetime"],
+        &["github", "google", "entra", "orcid", "oidc", "session_lifetime"],
     )?;
     if let Some(x) = v.get("auth") {
         for p in ["github", "google"] {
             if let Some(y) = x.get(p) {
-                table(y, &format!("auth.{p}."), &["client_id", "client_secret"])?;
+                table(
+                    y,
+                    &format!("auth.{p}."),
+                    &["client_id", "client_secret", "publishers", "commenters"],
+                )?;
             }
+        }
+        if let Some(y) = x.get("orcid") {
+            table(
+                y,
+                "auth.orcid.",
+                &["client_id", "client_secret", "publishers", "commenters"],
+            )?;
         }
         if let Some(y) = x.get("entra") {
             table(
                 y,
                 "auth.entra.",
-                &["tenant", "client_id", "client_secret", "label"],
+                &[
+                    "tenant",
+                    "client_id",
+                    "client_secret",
+                    "label",
+                    "publishers",
+                    "commenters",
+                ],
             )?;
         }
         if let Some(providers) = x.get("oidc").and_then(toml::Value::as_table) {
@@ -483,12 +529,20 @@ fn check_keys(v: &toml::Value) -> Result<(), String> {
                 table(
                     y,
                     &format!("auth.oidc.{slug}."),
-                    &["issuer", "client_id", "client_secret", "label", "scopes"],
+                    &[
+                        "issuer",
+                        "client_id",
+                        "client_secret",
+                        "label",
+                        "scopes",
+                        "publishers",
+                        "commenters",
+                    ],
                 )?;
             }
         }
     }
-    section(v, "access", &["publishers", "commenters"])?;
+    section(v, "access", &["anonymous_comments"])?;
     section(
         v,
         "limits",
@@ -538,6 +592,7 @@ fn read_raw(path: &Path) -> Result<(Raw, PathBuf), String> {
             path.display()
         )
     })?;
+    check_moved_keys(&v)?;
     check_keys(&v)?;
     let raw: Raw = serde_path_to_error::deserialize(v)
         .map_err(|error| format!("invalid configuration value at {}", error.path()))?;
@@ -668,19 +723,11 @@ pub(crate) fn load_with_postgres_env(
     let github_client_id = r.optional("auth.github.client_id", raw.auth.github.client_id)?;
     let github_client_secret =
         r.optional("auth.github.client_secret", raw.auth.github.client_secret)?;
-    let publishers = r.value(
-        "access.publishers",
-        raw.access.publishers,
-        Vec::<String>::new(),
+    let anonymous_comments = r.value(
+        "access.anonymous_comments",
+        raw.access.anonymous_comments,
+        false,
     )?;
-    let commenters = r.value(
-        "access.commenters",
-        raw.access.commenters,
-        vec!["any".into()],
-    )?;
-    Policy::parse_publishers(&publishers.join(","))
-        .map_err(|e| format!("access.publishers: {e}"))?;
-    let _ = Policy::parse(&commenters.join(","));
     let expire_after = r.optional("retention.expire_after", raw.retention.expire_after)?;
     let erase_inactive_after = r.optional(
         "retention.erase_inactive_after",
@@ -782,12 +829,24 @@ pub(crate) fn load_with_postgres_env(
     {
         return Err("auth.github.client_id and client_secret must not be blank".into());
     }
+    let mut lists = Lists::default();
+    resolve_lists(
+        "auth.github",
+        PROVIDER_GITHUB,
+        github_client_id.is_some(),
+        raw.auth.github.publishers,
+        raw.auth.github.commenters,
+        &mut r,
+        &mut lists,
+    )?;
     let (oidc, session_lifetime_text, session_lifetime) = resolve_auth(
         raw.auth.google,
         raw.auth.entra,
+        raw.auth.orcid,
         raw.auth.oidc,
         raw.auth.session_lifetime,
         &mut r,
+        &mut lists,
     )?;
     validate_public_urls(
         app_origin.as_deref(),
@@ -819,8 +878,11 @@ pub(crate) fn load_with_postgres_env(
         oidc,
         session_lifetime,
         session_lifetime_text,
-        publishers,
-        commenters,
+        publishers: lists.publishers,
+        commenters: Policy {
+            public: anonymous_comments,
+            ..lists.commenters
+        },
         simulate_activity,
         expire_after,
         expire_from,
@@ -844,20 +906,33 @@ type ResolvedAuth = (
 );
 
 /// Resolves the OpenID Connect providers and the browser session lifetime.
-/// Providers come out in sign-in page order: Google, Entra, then the custom
-/// entries sorted by slug.
+/// Providers come out in sign-in page order: Google, Entra, ORCID, then the
+/// custom entries sorted by slug. Each configured provider's publishers and
+/// commenters lists are added to `lists` as it is read.
 fn resolve_auth(
     google: OAuth,
     entra: Entra,
+    orcid: Orcid,
     custom: BTreeMap<String, Custom>,
     session_lifetime: Option<Input<String>>,
     r: &mut Resolver<'_>,
+    lists: &mut Lists,
 ) -> Result<ResolvedAuth, String> {
     let mut providers = Vec::new();
 
     let google_id = r.optional("auth.google.client_id", google.client_id)?;
     let google_secret = r.optional("auth.google.client_secret", google.client_secret)?;
-    if let Some((client_id, client_secret)) = credentials("google", google_id, google_secret)? {
+    let google_credentials = credentials("google", google_id, google_secret)?;
+    resolve_lists(
+        "auth.google",
+        PROVIDER_GOOGLE,
+        google_credentials.is_some(),
+        google.publishers,
+        google.commenters,
+        r,
+        lists,
+    )?;
+    if let Some((client_id, client_secret)) = google_credentials {
         providers.push(OidcProvider::google(&client_id, &client_secret));
     }
 
@@ -867,7 +942,17 @@ fn resolve_auth(
     let entra_label = r.optional("auth.entra.label", entra.label)?;
     let entra_set =
         tenant.is_some() || entra_id.is_some() || entra_secret.is_some() || entra_label.is_some();
-    match credentials("entra", entra_id, entra_secret)? {
+    let entra_credentials = credentials("entra", entra_id, entra_secret)?;
+    resolve_lists(
+        "auth.entra",
+        PROVIDER_ENTRA,
+        entra_credentials.is_some(),
+        entra.publishers,
+        entra.commenters,
+        r,
+        lists,
+    )?;
+    match entra_credentials {
         Some((client_id, client_secret)) => {
             let tenant = entra_tenant_id(&tenant.ok_or("auth.entra.tenant is required")?)?;
             if let Some(label) = &entra_label {
@@ -887,6 +972,22 @@ fn resolve_auth(
             );
         }
         None => {}
+    }
+
+    let orcid_id = r.optional("auth.orcid.client_id", orcid.client_id)?;
+    let orcid_secret = r.optional("auth.orcid.client_secret", orcid.client_secret)?;
+    let orcid_credentials = credentials("orcid", orcid_id, orcid_secret)?;
+    resolve_lists(
+        "auth.orcid",
+        PROVIDER_ORCID,
+        orcid_credentials.is_some(),
+        orcid.publishers,
+        orcid.commenters,
+        r,
+        lists,
+    )?;
+    if let Some((client_id, client_secret)) = orcid_credentials {
+        providers.push(OidcProvider::orcid(&client_id, &client_secret));
     }
 
     if custom.len() > MAX_OIDC_PROVIDERS {
@@ -918,14 +1019,24 @@ fn resolve_auth(
         if let Some(scopes) = &scopes {
             check_scopes(&key("scopes"), scopes)?;
         }
-        providers.push(OidcProvider::custom(
+        let provider = OidcProvider::custom(
             &slug,
             &issuer,
             &client_id,
             &client_secret,
             &label,
             scopes.as_deref(),
-        ));
+        );
+        resolve_lists(
+            &format!("auth.oidc.{slug}"),
+            &provider.id,
+            true,
+            entry.publishers,
+            entry.commenters,
+            r,
+            lists,
+        )?;
+        providers.push(provider);
     }
     check_issuers(&providers)?;
 
@@ -946,6 +1057,65 @@ fn resolve_auth(
         }
     };
     Ok((providers, configured, session_lifetime))
+}
+
+/// The publishers and commenters policies gathered from the provider tables.
+#[derive(Default)]
+struct Lists {
+    publishers: Policy,
+    commenters: Policy,
+}
+
+/// Reads one provider table's publishers and commenters lists and adds them to
+/// `lists`. Publishers default to nobody and commenters to any account of the
+/// provider. A table without credentials offers no sign-in, so a list on it is
+/// a mistake and not something to carry silently. `table` is the TOML path and
+/// `provider` the id the sign-in produces, which is what entries are checked
+/// against.
+fn resolve_lists(
+    table: &str,
+    provider: &str,
+    configured: bool,
+    publishers: Option<Input<Vec<String>>>,
+    commenters: Option<Input<Vec<String>>>,
+    r: &mut Resolver<'_>,
+    lists: &mut Lists,
+) -> Result<(), String> {
+    for (field, input) in [("publishers", &publishers), ("commenters", &commenters)] {
+        if input.is_some() && !configured {
+            return Err(format!(
+                "{table}.{field} is set but {table} has no client_id and client_secret"
+            ));
+        }
+    }
+    if !configured {
+        return Ok(());
+    }
+    let publishers = r.value(&format!("{table}.publishers"), publishers, Vec::new())?;
+    let commenters = r.value(
+        &format!("{table}.commenters"),
+        commenters,
+        vec!["*".to_string()],
+    )?;
+    let normalize = |field: &str, entries: Vec<String>| -> Result<Vec<String>, String> {
+        entries
+            .iter()
+            .map(|entry| {
+                normalize_entry(provider, entry).map_err(|reason| format!("{table}.{field}: {reason}"))
+            })
+            .collect()
+    };
+    let publishers = normalize("publishers", publishers)?;
+    let commenters = normalize("commenters", commenters)?;
+    lists.publishers = std::mem::take(&mut lists.publishers).with(
+        provider,
+        &publishers.iter().map(String::as_str).collect::<Vec<_>>(),
+    );
+    lists.commenters = std::mem::take(&mut lists.commenters).with(
+        provider,
+        &commenters.iter().map(String::as_str).collect::<Vec<_>>(),
+    );
+    Ok(())
 }
 
 /// client_id and client_secret come as a pair. Neither set means the table
@@ -1358,6 +1528,7 @@ pub(crate) fn show_resolved(c: &ResolvedConfig) -> String {
         "client_secret",
         c.github_client_secret.is_some(),
     );
+    list_lines(&mut out, c, "auth.github", "github");
     let google = c.oidc.iter().find(|provider| provider.id == "google");
     section(&mut out, "auth.google");
     optional(
@@ -1374,6 +1545,7 @@ pub(crate) fn show_resolved(c: &ResolvedConfig) -> String {
         "client_secret",
         google.is_some(),
     );
+    list_lines(&mut out, c, "auth.google", "google");
     if let Some(entra) = c.oidc.iter().find(|provider| provider.id == "entra") {
         section(&mut out, "auth.entra");
         optional(
@@ -1404,6 +1576,25 @@ pub(crate) fn show_resolved(c: &ResolvedConfig) -> String {
             "label",
             Some(entra.label.as_str()),
         );
+        list_lines(&mut out, c, "auth.entra", "entra");
+    }
+    if let Some(orcid) = c.oidc.iter().find(|provider| provider.id == "orcid") {
+        section(&mut out, "auth.orcid");
+        optional(
+            &mut out,
+            &c.sources,
+            "auth.orcid.client_id",
+            "client_id",
+            Some(orcid.client_id.as_str()),
+        );
+        redacted(
+            &mut out,
+            &c.sources,
+            "auth.orcid.client_secret",
+            "client_secret",
+            true,
+        );
+        list_lines(&mut out, c, "auth.orcid", "orcid");
     }
     for provider in c
         .oidc
@@ -1448,22 +1639,16 @@ pub(crate) fn show_resolved(c: &ResolvedConfig) -> String {
             "scopes",
             Some(provider.scopes.as_str()),
         );
+        list_lines(&mut out, c, &format!("auth.oidc.{slug}"), &provider.id);
     }
 
     section(&mut out, "access");
     value(
         &mut out,
         &c.sources,
-        "access.publishers",
-        "publishers",
-        &array(&c.publishers),
-    );
-    value(
-        &mut out,
-        &c.sources,
-        "access.commenters",
-        "commenters",
-        &array(&c.commenters),
+        "access.anonymous_comments",
+        "anonymous_comments",
+        &c.commenters.public.to_string(),
     );
     section(&mut out, "limits");
     value(
@@ -1601,6 +1786,20 @@ pub(crate) fn show_resolved(c: &ResolvedConfig) -> String {
 
 fn quote(value: &str) -> String {
     toml::Value::String(value.to_owned()).to_string()
+}
+/// The publishers and commenters lines of one provider's table.
+fn list_lines(out: &mut String, c: &ResolvedConfig, table: &str, provider: &str) {
+    for (field, policy) in [("publishers", &c.publishers), ("commenters", &c.commenters)] {
+        if let Some(entries) = policy.providers.get(provider) {
+            value(
+                out,
+                &c.sources,
+                &format!("{table}.{field}"),
+                field,
+                &array(entries),
+            );
+        }
+    }
 }
 fn array(values: &[String]) -> String {
     toml::Value::Array(values.iter().cloned().map(toml::Value::String).collect()).to_string()
@@ -2010,13 +2209,13 @@ mod tests {
         ]);
         let d = tempfile::tempdir().unwrap();
         let p = d.path().join("c.toml");
-        let text=format!("[server]\naddress = {{ env = \"{address}\" }}\n[access]\npublishers = {{ env = \"{publishers}\" }}");
+        let text=format!("[server]\naddress = {{ env = \"{address}\" }}\n[auth.github]\nclient_id = \"id\"\nclient_secret = \"secret\"\npublishers = {{ env = \"{publishers}\" }}");
         std::fs::write(&p, text).unwrap();
         let loaded = load(&p).unwrap();
         assert_eq!(loaded.address.port(), 9091);
         assert_eq!(
             loaded.publishers,
-            vec!["alice".to_owned(), "bob".to_owned()]
+            Policy::allowing("github", &["alice", "bob"])
         );
     }
     #[test]
@@ -2152,6 +2351,92 @@ client_secret = { file = "missing-oauth-secret" }
         assert!(s.contains("<redacted>"));
         assert!(toml::from_str::<toml::Value>(&s).is_ok());
         assert!(s.contains("# source: default"));
+    }
+
+    const GITHUB_TABLE: &str = "[auth.github]\nclient_id = \"id\"\nclient_secret = \"secret\"\n";
+    const ORCID_TABLE: &str = "[auth.orcid]\nclient_id = \"orcid-id\"\nclient_secret = \"orcid-secret\"\n";
+
+    #[test]
+    fn the_old_access_lists_are_refused_with_their_new_home() {
+        let error = load_text("[access]\npublishers = [\"alice\"]\n").unwrap_err();
+        assert!(error.contains("access.publishers has moved"), "{error}");
+        assert!(error.contains("[auth.github] publishers"), "{error}");
+        let error = load_text("[access]\ncommenters = [\"*\"]\n").unwrap_err();
+        assert!(error.contains("access.commenters has moved"), "{error}");
+        assert!(error.contains("anonymous_comments = true"), "{error}");
+    }
+
+    #[test]
+    fn commenters_default_to_any_account_of_each_configured_provider() {
+        let loaded = load_text(&format!("{GITHUB_TABLE}{GOOGLE_TABLE}")).unwrap();
+        assert_eq!(
+            loaded.commenters,
+            Policy::allowing("github", &["*"]).with("google", &["*"])
+        );
+        assert!(!loaded.publishers.is_configured());
+        assert!(!loaded.commenters.public);
+        assert!(show_resolved(&loaded).contains("commenters = [\"*\"]"));
+    }
+
+    #[test]
+    fn lists_are_normalized_for_their_own_provider() {
+        let text = format!(
+            "{GITHUB_TABLE}publishers = [\"Alice\"]\n{GOOGLE_TABLE}publishers = [\"@Example.org\", \"Bob@Example.org\"]\ncommenters = []\n{ORCID_TABLE}publishers = [\"0000-0002-1694-233x\"]\n"
+        );
+        let loaded = load_text(&text).unwrap();
+        assert_eq!(
+            loaded.publishers,
+            Policy::allowing("github", &["alice"])
+                .with("google", &["@example.org", "bob@example.org"])
+                .with("orcid", &["0000-0002-1694-233X"])
+        );
+        assert_eq!(loaded.commenters.providers["google"], Vec::<String>::new());
+        assert_eq!(oidc_ids(&loaded), ["google", "orcid"]);
+        assert!(show_resolved(&loaded).contains("[auth.orcid]"));
+    }
+
+    #[test]
+    fn a_bad_entry_names_its_table_and_reason() {
+        let error = load_text(&format!("{GITHUB_TABLE}publishers = [\"@alice\"]\n")).unwrap_err();
+        assert_eq!(error, "auth.github.publishers: write the login without @");
+        let error = load_text(&format!("{GOOGLE_TABLE}commenters = [\"alice\"]\n")).unwrap_err();
+        assert_eq!(
+            error,
+            "auth.google.commenters: expected an email address, @domain or *"
+        );
+        let error = load_text(&format!("{ORCID_TABLE}publishers = [\"alice\"]\n")).unwrap_err();
+        assert!(error.starts_with("auth.orcid.publishers: expected an ORCID iD"), "{error}");
+        let body = format!("{CUSTOM_BODY}publishers = [\"nobody\"]\n");
+        let error = load_text(&custom_entry("keycloak", &body)).unwrap_err();
+        assert!(error.starts_with("auth.oidc.keycloak.publishers: "), "{error}");
+    }
+
+    #[test]
+    fn a_custom_provider_list_is_keyed_by_its_provider_id() {
+        let body = format!("{CUSTOM_BODY}publishers = [\"@example.org\"]\n");
+        let loaded = load_text(&custom_entry("keycloak", &body)).unwrap();
+        assert_eq!(
+            loaded.publishers,
+            Policy::allowing("oidc-keycloak", &["@example.org"])
+        );
+    }
+
+    #[test]
+    fn lists_on_a_table_without_credentials_are_refused() {
+        let error = load_text("[auth.github]\npublishers = [\"alice\"]\n").unwrap_err();
+        assert_eq!(
+            error,
+            "auth.github.publishers is set but auth.github has no client_id and client_secret"
+        );
+        let error = load_text("[auth.orcid]\ncommenters = [\"*\"]\n").unwrap_err();
+        assert!(error.contains("auth.orcid.commenters is set"), "{error}");
+    }
+
+    #[test]
+    fn anonymous_comments_make_the_commenter_policy_public() {
+        let loaded = load_text("[access]\nanonymous_comments = true\n").unwrap();
+        assert!(loaded.commenters.public);
+        assert!(!load_text("").unwrap().commenters.public);
     }
 
     fn oidc_ids(loaded: &ResolvedConfig) -> Vec<&str> {

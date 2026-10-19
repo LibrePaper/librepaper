@@ -44,8 +44,8 @@ async fn deployment(slug: &str) -> Option<super::http_test_support::Deployment> 
             main: "paper.md".into(),
         },
         vec![("figure-a.png".into(), figure(1))],
-        "owner",
-        "",
+        librepaper_base::auth::Policy::allowing("github", &["owner"]),
+        librepaper_base::auth::Policy::default(),
     )
     .await
 }

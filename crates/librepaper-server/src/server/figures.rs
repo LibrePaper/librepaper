@@ -8,7 +8,7 @@ impl Server {
     /// setting `assets[path]` in the shared document once this has answered.
     ///
     /// It takes an editor, because it puts bytes on the server, which is what
-    /// `access.publishers` governs -- the same gate the socket applies to a text.
+    /// the publishers lists govern -- the same gate the socket applies to a text.
     pub(super) async fn handle_asset_upload(
         &self,
         request: Request<Body>,
@@ -116,8 +116,8 @@ impl Server {
             owner_key: who.key.clone(),
             session_generation: who.id.session_generation.clone(),
             link_hash: who.link.clone(),
-            policy_editor: self.publishers.allows(&who.id.handle),
-            policy_comment: self.commenters.allows(&who.id.handle),
+            policy_editor: self.publishers.allows(&who.id),
+            policy_comment: self.commenters.allows(&who.id),
             automation: who.automation,
             unowned_publisher: false,
         };

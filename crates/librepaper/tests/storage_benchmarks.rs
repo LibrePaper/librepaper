@@ -2829,8 +2829,8 @@ async fn start_http_harness(
         },
         key.clone(),
         config.clone(),
-        librepaper::Policy::parse_publishers(&owner.handle).expect("benchmark publisher policy"),
-        librepaper::Policy::parse(""),
+        librepaper::Policy::allowing("github", &[owner.handle.as_str()]),
+        librepaper::Policy::default(),
     );
     server.install_writer(writer);
     let server = Arc::new(server);

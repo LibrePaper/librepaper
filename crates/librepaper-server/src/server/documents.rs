@@ -570,7 +570,7 @@ impl Server {
             session_generation: who.session_generation.clone(),
             link_hash: String::new(),
             policy_editor: true,
-            policy_comment: self.commenters.allows(&who.handle),
+            policy_comment: self.commenters.allows(&who.identity()),
             automation: false,
             unowned_publisher: false,
         };
@@ -1425,7 +1425,7 @@ impl Server {
             session_generation: who.session_generation.clone(),
             link_hash: String::new(),
             policy_editor: true,
-            policy_comment: self.commenters.allows(&who.handle),
+            policy_comment: self.commenters.allows(&who.identity()),
             automation: false,
             unowned_publisher: false,
         };
@@ -1754,7 +1754,7 @@ impl Server {
             session_generation: who.session_generation.clone(),
             link_hash: String::new(),
             policy_editor: true,
-            policy_comment: self.commenters.allows(&who.handle),
+            policy_comment: self.commenters.allows(&who.identity()),
             automation: false,
             unowned_publisher: false,
         };

@@ -141,8 +141,8 @@ async fn fixture_full(
             main: "paper.md".into(),
         },
         vec![],
-        "owner",
-        "",
+        librepaper_base::auth::Policy::allowing("github", &["owner"]),
+        librepaper_base::auth::Policy::default(),
     )
     .await?;
     let owner = Identity {

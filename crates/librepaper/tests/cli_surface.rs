@@ -353,7 +353,7 @@ fn server_flags_are_rejected_and_server_environment_overrides_are_ignored() {
     let config = temp.path().join("config.toml");
     std::fs::write(
         &config,
-        "[server]\naddress = \"0.0.0.0:8179\"\n[access]\npublishers = [\"any\"]\n",
+        "[server]\naddress = \"0.0.0.0:8179\"\n",
     )
     .unwrap();
     let output = Command::new(env!("CARGO_BIN_EXE_librepaper"))
@@ -438,7 +438,7 @@ fn config_check_is_side_effect_free_and_validates_serve_inputs() {
     let port = occupied.local_addr().unwrap().port();
     std::fs::write(
         &config,
-        format!("[server]\naddress = \"127.0.0.1:{port}\"\n[access]\npublishers = [\"any\"]\n"),
+        format!("[server]\naddress = \"127.0.0.1:{port}\"\n"),
     )
     .unwrap();
     let config_arg = config.to_str().unwrap();
@@ -450,7 +450,7 @@ fn config_check_is_side_effect_free_and_validates_serve_inputs() {
 
     std::fs::write(
         &config,
-        "[origins]\napp = \"javascript:alert(1)\"\n[access]\npublishers = [\"any\"]\n",
+        "[origins]\napp = \"javascript:alert(1)\"\n",
     )
     .unwrap();
     let invalid = cli(&["admin", "config", "check", "--config", config_arg]);
@@ -467,7 +467,7 @@ fn config_check_never_echoes_database_url_secrets() {
 
     std::fs::write(
         &config,
-        "[storage]\ndatabase_url = \"postgres://user:QUERY_SECRET@localhost/paper?future_option=QUERY_SECRET\"\n[access]\npublishers = [\"any\"]\n",
+        "[storage]\ndatabase_url = \"postgres://user:QUERY_SECRET@localhost/paper?future_option=QUERY_SECRET\"\n",
     )
     .unwrap();
     let accepted = cli(&["admin", "config", "check", "--config", config_arg]);
@@ -484,7 +484,7 @@ fn config_check_never_echoes_database_url_secrets() {
 
     std::fs::write(
         &config,
-        "[storage]\ndatabase_url = \"postgres://user:PASSWORD_SECRET@localhost:invalid/paper\"\n[access]\npublishers = [\"any\"]\n",
+        "[storage]\ndatabase_url = \"postgres://user:PASSWORD_SECRET@localhost:invalid/paper\"\n",
     )
     .unwrap();
     let rejected = cli(&["admin", "config", "check", "--config", config_arg]);

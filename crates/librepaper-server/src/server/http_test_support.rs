@@ -27,8 +27,8 @@ pub(super) struct Deployment {
 pub(super) async fn deployment(
     input: DocumentInput,
     figures: Vec<(String, Vec<u8>)>,
-    publishers: &str,
-    commenters: &str,
+    publishers: Policy,
+    commenters: Policy,
 ) -> Option<Deployment> {
     let catalog = librepaper_engine::testing::catalog().await?;
     let writer = catalog.claim_writer().await.unwrap();
@@ -101,8 +101,8 @@ pub(super) async fn deployment(
         app,
         vec![0u8; 32],
         config,
-        Policy::parse_publishers(publishers).unwrap(),
-        Policy::parse(commenters),
+        publishers,
+        commenters,
     );
     Some(Deployment {
         server,

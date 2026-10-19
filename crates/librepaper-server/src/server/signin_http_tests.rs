@@ -174,8 +174,8 @@ async fn fixture(
         app,
         vec![0u8; 32],
         config,
-        Policy::parse_publishers("any").unwrap(),
-        Policy::parse("any"),
+        everyone(),
+        everyone(),
     );
     server.origins = Origins::configure(READER, Some(DOCS)).unwrap();
     server.oidc = providers(&idp);
@@ -382,6 +382,15 @@ async fn callback(fixture: &Fixture, started: &Started, query: &str) -> Answer {
             Some(&started.cookie),
         )
         .await
+}
+
+/// Every provider the fixture signs people in with, each open to any account.
+fn everyone() -> Policy {
+    ["github", "google", "entra", ID, "oidc-gone"]
+        .iter()
+        .fold(Policy::default(), |policy, provider| {
+            policy.with(provider, &["*"])
+        })
 }
 
 /// A session for an account of the given provider, as the app would have set
