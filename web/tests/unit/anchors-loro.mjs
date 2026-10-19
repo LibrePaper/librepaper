@@ -694,7 +694,7 @@ test("redo of a tracked deletion detaches the comment with its fragment", () => 
   trackedSplice(doc, "f1", 4, 8, "", { who: "me", author: "Me" });
   doc.commit();
   const created = resolveFile(doc, "f1").gaps.flatMap((gap) =>
-    gap.fragments.map((f) => ({ id: f.id, text: f.text })),
+    gap.fragments.map((f) => ({ id: f.id, text: f.text, at: gap.at })),
   );
   assert.equal(created.length, 1, "one fragment for one deletion");
   const [fragment] = created;

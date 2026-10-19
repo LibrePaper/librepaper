@@ -1154,8 +1154,10 @@ export class AnchorIndex {
    * text back even in a file that is not on screen. Every other local batch is
    * ignored: the editor plugin records the user's own edits through record().
    *
-   * For each import batch: the cached files' text deltas shift their anchors in
-   * foreign mode, then the records that the batch changed are resolved again by
+   * For each import batch: a cached file whose entry in the files root changed
+   * is loaded again first, since a restored file keeps its id with a new text
+   * container; then the cached files' text deltas shift their anchors in
+   * foreign mode, and the records that the batch changed are resolved again by
    * refresh(). Imports are the only remote change, so no other batch is read.
    *
    * @param {MoveMemory} memory the session's memory, the one its edits are recorded with
@@ -1217,7 +1219,9 @@ export class AnchorIndex {
         }
       }
       const root = this.#doc.getMap(ANCHORS).id;
-      const maps = batch.events.filter((event) => event.diff.type === "map");
+      // The files root is a map too, but no record lives there.
+      const filesRoot = this.#doc.getMap("files").id;
+      const maps = batch.events.filter((event) => event.diff.type === "map" && event.target !== filesRoot);
       // Records that appeared or were replaced are learned first, so that the
       // events on their containers can be placed.
       const changed = new Set();
