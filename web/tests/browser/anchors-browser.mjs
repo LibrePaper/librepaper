@@ -7,6 +7,9 @@
 // tracking on, the word is deleted as a tracked change, which leaves the anchor
 // pending; rejecting that change the way the reader does (rejectRestoring, then
 // restoreByFragments) brings the anchor back exact.
+// Two checks follow the rejection. The anchor index must match the record once
+// the editor reconciles. Two transactions sent as one update must both land,
+// and the index must match the record after them.
 import assert from "node:assert/strict";
 import { build } from "vite";
 import { svelte } from "@sveltejs/vite-plugin-svelte";
@@ -116,12 +119,38 @@ window.anchorsBrowserCheck = async () => {
   restoreByFragments(value.doc, fileId, restored);
   value.doc.commit({ origin: ANCHORS_ORIGIN });
   value.anchors.load(fileId);
-  const rejected = { ...place(), ok, restored: restored.length };
+  await tick();
+  await wait(0);
+  const entry = value.anchors.get(fileId);
+  const indexed = entry.anchors.find((item) => item.id === COMMENT);
+  const rejected = {
+    ...place(),
+    ok,
+    restored: restored.length,
+    indexText: entry.text,
+    indexFrom: indexed ? indexed.from : null,
+    indexTo: indexed ? indexed.to : null,
+  };
+
+  // Two transactions in one update. The second is built on the first's state,
+  // so the editor sees one update with two changes, and both must land.
+  const target = record();
+  const first = view.state.update({ changes: { from: target.from, to: target.from + 3 }, userEvent: "delete.selection" });
+  const second = first.state.update({ changes: { from: 0, insert: "New lead. " }, userEvent: "input.type" });
+  view.dispatch([first, second]);
+  await tick();
+  await wait(0);
+  const after = place();
+  const later = value.anchors.get(fileId);
+  const found = later.anchors.find((item) => item.id === COMMENT);
+  const indexFrom = found ? found.from : null;
+  const indexTo = found ? found.to : null;
+  const multi = { ...after, quote: after.text.slice(after.from, after.to), indexText: later.text, indexFrom, indexTo };
 
   component.$destroy();
   value.leave();
   host.remove();
-  return { original: TEXT, moved, cutFrom, cut, pasted, pasteUndone, undone, deleted, rejected };
+  return { original: TEXT, moved, cutFrom, cut, pasted, pasteUndone, undone, deleted, rejected, multi };
 };
 window.anchorsCheckReady = true;
 `;
@@ -243,7 +272,16 @@ try {
   assert.equal(result.rejected.text, result.original, "rejecting the deletion did not restore the word");
   assert.equal(result.rejected.status, "exact", "rejecting the deletion did not bring the comment back exact");
   assert.equal(result.rejected.from, result.original.indexOf(word), "the comment is not on the restored word");
-  console.log("anchors-browser: a comment follows a cut and a paste, returns on undo, and comes back exact when its tracked deletion is rejected");
+  assert.equal(result.rejected.indexText, result.rejected.text, "the index text drifted from the document after the reject was reconciled");
+  assert.equal(result.rejected.indexFrom, result.rejected.from, "the index anchor drifted from the record after the reject was reconciled");
+  assert.equal(result.rejected.indexTo, result.rejected.to, "the index anchor drifted from the record after the reject was reconciled");
+  assert.equal(result.multi.text, "New lead. " + result.original.replace("anchored", "hored"), "the two transactions did not both land");
+  assert.equal(result.multi.quote, "hored", "the record's cursors were captured at an intermediate offset");
+  assert.equal(result.multi.status, "modified", "the comment is not modified after a partial deletion and an insert");
+  assert.equal(result.multi.indexText, result.multi.text, "the index drifted from the record after a two-transaction update");
+  assert.equal(result.multi.indexFrom, result.multi.from, "the index drifted from the record after a two-transaction update");
+  assert.equal(result.multi.indexTo, result.multi.to, "the index drifted from the record after a two-transaction update");
+  console.log("anchors-browser: a comment follows a cut and a paste, returns on undo, and comes back exact when its tracked deletion is rejected, with the index in step; two transactions in one update both land");
 } finally {
   socket?.close();
   await stopBrowserProcess(browser);
