@@ -932,6 +932,8 @@ function rejectOne(doc, id, restored = null) {
       groups.get(at).push(g);
     }
     const restore = (at) => {
+      const first = restored ? restored.length : 0;
+      let inserted = 0;
       const list = groups.get(at).sort((a, b) => a.at - b.at);
       // Gaps collapsing onto one point keep their order: later gaps rank above
       // earlier ones.
@@ -965,10 +967,14 @@ function rejectOne(doc, id, restored = null) {
           for (const c of edges) writeChange(doc, text, file, c.to === pos ? c : { ...c, from: c.from + f.text.length, to: c.to + f.text.length });
           flush(pos);
           pos += f.text.length;
+          inserted += f.text.length;
           map.delete(f.id);
         } else pending.push(f);
       }
       flush(pos);
+      // Later calls insert below everything already put back, so the text put
+      // back here moves those entries up by its length.
+      if (restored) for (const r of restored.slice(0, first)) r.at += inserted;
     };
     const positions = [...groups.keys()].sort((a, b) => b - a);
     for (const at of positions) if (!span || at > span.to) restore(at);

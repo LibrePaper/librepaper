@@ -23,6 +23,7 @@ import {
   recordEdits,
   reject,
   rejectMany,
+  rejectRestoring,
   resolveChanges,
   resolveFile,
   trackedSplice,
@@ -1118,6 +1119,25 @@ for (const order of permutations(["cara", "bob", "alice"])) {
   track(doc, 1, 1, "X", { who: "r", author: "R" });
   for (const r of resolveChanges(doc, "f1")) reject(doc, r.id);
   assert.equal(textOf(doc), "abde", "two gaps collapsed by an untracked edit");
+}
+
+// A change with fragments at two gaps. Each entry of the restored list says
+// where its text starts once the rejection is done, so the text put back first
+// moves with the text inserted below it.
+{
+  const doc = makeDoc("one three five");
+  const text = doc.getMap("files").get("f1");
+  putRecord(doc, "alice-1", { kind: "change", file: "f1", who: "alice", author: "Alice", run: null, at: 1, start: null, end: null });
+  putRecord(doc, "frag-two", { kind: "fragment", file: "f1", change: "alice-1", text: "two ", start: text.getCursor(4, -1).encode(), rank: 0, who: "alice", author: "Alice", run: null, at: 1 });
+  putRecord(doc, "frag-four", { kind: "fragment", file: "f1", change: "alice-1", text: "four ", start: text.getCursor(10, -1).encode(), rank: 0, who: "alice", author: "Alice", run: null, at: 1 });
+  doc.commit();
+  const { ok, restored } = rejectRestoring(doc, "alice-1");
+  assert.equal(ok, true);
+  assert.equal(textOf(doc), "one two three four five");
+  assert.deepEqual(restored.map((r) => r.text).sort(), ["four ", "two "]);
+  for (const r of restored) {
+    assert.equal(textOf(doc).slice(r.at, r.at + r.text.length), r.text, `restored ${r.fragment} at ${r.at}`);
+  }
 }
 
 // ---------------------------------------------------------------------------
