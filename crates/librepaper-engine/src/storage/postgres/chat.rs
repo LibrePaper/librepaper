@@ -482,7 +482,8 @@ mod tests {
         let charged = catalog
             .insert_chat_messages(document, &rows, None)
             .await
-            .unwrap();
+            .unwrap()
+            .charged;
         assert_eq!(charged, 5 + 6 + 2 * CHAT_ROW_OVERHEAD_BYTES);
         assert_eq!(chat_bytes(&catalog, document).await, charged);
         let after = catalog.usage_bytes(Some(owner.id)).await.unwrap();
@@ -535,7 +536,8 @@ mod tests {
         let charged = catalog
             .insert_chat_messages(document, &rows, None)
             .await
-            .unwrap();
+            .unwrap()
+            .charged;
         let cleared = catalog
             .clear_chat(document, &[], owner.id)
             .await
@@ -564,7 +566,8 @@ mod tests {
         let charged = catalog
             .insert_chat_messages(document, &rows, None)
             .await
-            .unwrap();
+            .unwrap()
+            .charged;
         let mut tx = catalog.begin_writer_transaction().await.unwrap();
         let outcome = catalog
             .trim_retained_in_transaction(&mut tx, document, &[], &[], Some(owner.id))
@@ -591,7 +594,8 @@ mod tests {
         let charged = catalog
             .insert_chat_messages(document, &rows, None)
             .await
-            .unwrap();
+            .unwrap()
+            .charged;
         for trimmer in [None, Some(editor.id)] {
             let mut tx = catalog.begin_writer_transaction().await.unwrap();
             let outcome = catalog
@@ -621,7 +625,8 @@ mod tests {
         let charged = catalog
             .insert_chat_messages(document, &rows, None)
             .await
-            .unwrap();
+            .unwrap()
+            .charged;
         sqlx::query("UPDATE accounts SET status='erasing' WHERE id=$1")
             .bind(author.id)
             .execute(catalog.pool())
@@ -647,7 +652,8 @@ mod tests {
         let charged = catalog
             .insert_chat_messages(document, &rows, None)
             .await
-            .unwrap();
+            .unwrap()
+            .charged;
         let (page, _) = catalog.chat_page(document, None, 10).await.unwrap();
         assert_eq!(page.len(), 1);
         assert_eq!(page[0].author_account_id, None);
@@ -666,11 +672,13 @@ mod tests {
         let first = catalog
             .insert_chat_messages(document, &rows, None)
             .await
-            .unwrap();
+            .unwrap()
+            .charged;
         let second = catalog
             .insert_chat_messages(document, &rows, None)
             .await
-            .unwrap();
+            .unwrap()
+            .charged;
         assert_eq!(first, 3 + 3 + 2 * super::CHAT_ROW_OVERHEAD_BYTES);
         assert_eq!(second, 0);
         let (page, _) = catalog.chat_page(document, None, 10).await.unwrap();
@@ -741,7 +749,8 @@ mod tests {
         let charged = catalog
             .insert_chat_messages(document, &rows, None)
             .await
-            .unwrap();
+            .unwrap()
+            .charged;
         let refused = catalog.clear_chat(document, &[], other.id).await.unwrap();
         assert_eq!(refused, None);
         assert_eq!(chat_bytes(&catalog, document).await, charged);
