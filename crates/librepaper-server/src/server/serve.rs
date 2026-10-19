@@ -47,7 +47,7 @@ pub struct ServeOptions {
     pub session_lifetime: Option<std::time::Duration>,
     pub publishers: Option<String>,
     pub commenters: Option<String>,
-    /// Write each new account's starter documents as though they had been
+    /// Write each new account's starter project as though it had been
     /// typed over this many days, so the history panel has something in it on a
     /// demonstration deployment. The operations are real; only the clock is
     /// invented. See `librepaper_engine::storage::seed::activity`.

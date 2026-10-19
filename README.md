@@ -14,9 +14,9 @@ browser, share a link to it, and collect comments and highlights in real time.
 ## Try it
 
 [Sign in](https://app.librepaper.org) with GitHub or Google and your account
-starts with five tutorials, the same walkthrough in Markdown, Typst, HTML, LaTeX
-and Quarto. Open one and drag across a sentence: a comment box opens where you
-released.
+starts with one tutorial project, the same walkthrough in Markdown, Typst,
+HTML, LaTeX and Quarto side by side. Open a file and drag across a sentence: a
+comment box opens where you released.
 
 ## Install
 

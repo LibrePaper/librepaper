@@ -76,6 +76,8 @@ mod metrics;
 #[cfg(test)]
 mod moderation_http_tests;
 mod onboarding;
+#[cfg(test)]
+mod onboarding_tests;
 pub mod origins;
 mod quarto_checkpoint;
 mod quota;
@@ -254,7 +256,7 @@ pub struct Server {
     /// Who a GitHub login is, for a grant by name. GitHub in a running
     /// deployment; a stand-in in the tests, which have no network.
     pub accounts: Arc<dyn Accounts>,
-    /// Days of invented history to write for each starter document a new
+    /// Days of invented history to write for the starter project a new
     /// account is given, or nothing. A demonstration deployment asks for one;
     /// every other deployment keeps the honest history of a document
     /// published once. See `librepaper_engine::storage::seed::activity`.
