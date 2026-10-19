@@ -12,7 +12,7 @@
 //! bespoke lock-acquire-checkpoint sequence is now one call to
 //! `room.command`.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashSet};
 use std::sync::Arc;
 
 use loro::LoroDoc;
@@ -21,6 +21,7 @@ use sha2::{Digest, Sha256};
 use uuid::Uuid;
 
 use crate::room::Room;
+use librepaper_document::document::anchors::{self, FragmentRange, OperationFile};
 use librepaper_document::document::session;
 use librepaper_document::document::track;
 use librepaper_engine::log::sequencer::{Command, CommandError, Evidence, Head, PreparedSource};
@@ -411,7 +412,8 @@ fn tree_from_head<'a>(head: &'a Head<'_>) -> SourceTree<'a> {
 
 /// Applies the request's patches to `doc`, one Loro commit covering every
 /// file it touches, so a document that changes several
-/// files shares the same conflict rules a main-file-only edit does.
+/// files shares the same conflict rules a main-file-only edit does. The
+/// comment anchors move with their text in the same pass.
 fn apply_patch_edits(
     doc: &LoroDoc,
     tree: &SourceTree<'_>,
@@ -421,6 +423,9 @@ fn apply_patch_edits(
     for patch in &request.patches {
         by_path.entry(&patch.path).or_default().push(patch);
     }
+    // Every file's text and anchors are read before any edit, so the planner
+    // knows where the anchors stood.
+    let mut files: Vec<(&str, OperationFile)> = Vec::with_capacity(by_path.len());
     for (path, mut patches) in by_path {
         // The edits must be ascending and non-overlapping. At a shared boundary,
         // sorting by end places an insertion before the replacement that starts
@@ -438,19 +443,167 @@ fn apply_patch_edits(
                 insert: patch.replacement.clone(),
             })
             .collect();
-        // The edits go through the planner, so pending change records shrink,
-        // move or split around them: an untracked patch cannot land inside
-        // someone's span, and a deletion over one does not leave its cursors
-        // stale. `apply_edits_at` is not used because it writes the text alone.
-        // `apply_path_edits` is not used either: it encodes a per-file diff
-        // against the document's vector before and after, and this caller throws
-        // that away. `Head::prepare` exports the command's whole diff once, which
-        // is the batch that actually gets written.
-        if track::untracked_edits(doc, original.file_id, &edits).is_err() {
+        files.push((
+            path,
+            OperationFile {
+                file_id: original.file_id.to_string(),
+                before: original.text.to_string(),
+                anchors: anchors::resolve_anchors(doc, original.file_id),
+                edits,
+                fragments: Vec::new(),
+            },
+        ));
+    }
+    // The edits go through the planner, so pending change records shrink,
+    // move or split around them: an untracked patch cannot land inside
+    // someone's span, and a deletion over one does not leave its cursors
+    // stale. `apply_edits_at` is not used because it writes the text alone.
+    // `apply_path_edits` is not used either: it encodes a per-file diff
+    // against the document's vector before and after, and this caller throws
+    // that away. `Head::prepare` exports the command's whole diff once, which
+    // is the batch that actually gets written.
+    for (path, file) in &files {
+        if track::untracked_edits(doc, &file.file_id, &file.edits).is_err() {
             return Err(format!("patch edits could not be applied to file: {path}"));
         }
     }
+    // One plan over every file, so a section cut from one file and pasted into
+    // another in this request re-pins its comment. Untracked edits make no
+    // fragments.
+    let files: Vec<OperationFile> = files.into_iter().map(|(_, file)| file).collect();
+    anchors::record_operation(doc, &files, &mut anchors::MoveMemory::new(32), None);
     Ok(())
+}
+
+/// Applies each file's edits as tracked changes by `by`, then records the
+/// anchors they move. The deletions are tracked, so each one leaves fragments,
+/// and an anchor inside a deletion points at its fragment. Returns the ids of
+/// the changes set.
+fn apply_tracked_patch(
+    doc: &LoroDoc,
+    planned: &[(String, Vec<session::Edit>)],
+    by: &track::Author,
+    run: Option<&str>,
+    now_ms: i64,
+) -> Result<Vec<String>, String> {
+    // Every file is read before any edit, as in `apply_patch_edits`. The
+    // fragments that already stood are noted too: a change this pass joins can
+    // come back in its written set with older fragments of its own.
+    let mut files: Vec<OperationFile> = Vec::with_capacity(planned.len());
+    let mut prior: Vec<HashSet<String>> = Vec::with_capacity(planned.len());
+    for (file_id, edits) in planned {
+        let before = super::comments::text_for_file_id(doc, file_id)
+            .ok_or_else(|| "file is absent".to_string())?;
+        let pre: Vec<String> = track::resolve_changes(doc, file_id)
+            .into_iter()
+            .map(|c| c.id)
+            .collect();
+        prior.push(
+            track::fragments_of_changes(doc, file_id, &pre)
+                .into_iter()
+                .map(|f| f.id)
+                .collect(),
+        );
+        files.push(OperationFile {
+            file_id: file_id.clone(),
+            before,
+            anchors: anchors::resolve_anchors(doc, file_id),
+            edits: coalesce_adjacent(edits),
+            fragments: Vec::new(),
+        });
+    }
+    let mut changes: Vec<String> = Vec::new();
+    for (file, known) in files.iter_mut().zip(&prior) {
+        let written = track::apply_tracked_edits(doc, &file.file_id, &file.edits, by, run, now_ms)?;
+        let fresh: Vec<track::FragmentInfo> =
+            track::fragments_of_changes(doc, &file.file_id, &written)
+                .into_iter()
+                .filter(|f| !known.contains(&f.id))
+                .collect();
+        file.fragments = fragment_ranges(&file.before, &file.edits, &fresh);
+        changes.extend(written);
+    }
+    anchors::record_operation(doc, &files, &mut anchors::MoveMemory::new(32), None);
+    Ok(changes)
+}
+
+/// Merges each edit into the one before it when its deletion starts where that
+/// one ends. The track planner joins such pieces into one fragment anyway, and
+/// the fragment mapping needs a deletion's text to equal its fragment's text,
+/// so the merge is made first. Each merged deletion then maps to its fragment
+/// whole, and the anchors inside it keep their fragment and offset.
+fn coalesce_adjacent(edits: &[session::Edit]) -> Vec<session::Edit> {
+    let mut out: Vec<session::Edit> = Vec::with_capacity(edits.len());
+    for edit in edits {
+        match out.last_mut() {
+            Some(prev) if prev.at + prev.delete == edit.at => {
+                prev.delete += edit.delete;
+                prev.insert.push_str(&edit.insert);
+            }
+            _ => out.push(edit.clone()),
+        }
+    }
+    out
+}
+
+/// Maps a file's new fragments to the deletions that made them. Walking the
+/// deletions in order, each takes the fragments at the front whose texts join
+/// up to exactly its deleted text, which is `before` cut at the edit. A
+/// deletion that does not match takes none, so the anchors inside it detach
+/// without a fragment.
+fn fragment_ranges(
+    before: &str,
+    edits: &[session::Edit],
+    fragments: &[track::FragmentInfo],
+) -> Vec<FragmentRange> {
+    let mut ranges = Vec::new();
+    let mut next = 0;
+    for (index, edit) in edits.iter().enumerate() {
+        if edit.delete == 0 {
+            continue;
+        }
+        let deleted = utf16_slice(before, edit.at, edit.at + edit.delete);
+        let mut taken = next;
+        let mut joined = String::new();
+        while taken < fragments.len() && joined.len() < deleted.len() {
+            joined.push_str(&fragments[taken].text);
+            taken += 1;
+        }
+        if joined != deleted {
+            continue;
+        }
+        let mut start = 0;
+        for fragment in &fragments[next..taken] {
+            let end = start + fragment.text.encode_utf16().count();
+            ranges.push(FragmentRange {
+                id: fragment.id.clone(),
+                edit: index,
+                start,
+                end,
+            });
+            start = end;
+        }
+        next = taken;
+    }
+    ranges
+}
+
+/// The text between two UTF-16 offsets. `to` is never taken before `from`.
+fn utf16_slice(s: &str, from: usize, to: usize) -> &str {
+    &s[utf16_byte(s, from)..utf16_byte(s, to.max(from))]
+}
+
+/// The byte offset of the UTF-16 offset `units` in `s`. An offset inside a
+/// surrogate pair means the character after it.
+fn utf16_byte(s: &str, units: usize) -> usize {
+    let mut seen = 0;
+    for (byte, ch) in s.char_indices() {
+        if seen >= units {
+            return byte;
+        }
+        seen += ch.len_utf16();
+    }
+    s.len()
 }
 
 /// A stable, mostly-arbitrary i64 derived from the request id. §7.3 says the
@@ -762,16 +915,13 @@ impl Command for AgentTrackedCommand {
         let mut changes: Vec<String> = Vec::new();
         let prepared = head
             .prepare(client_seq_of(self.request_id), |draft| {
-                for (file_id, edits) in &planned {
-                    changes.extend(track::apply_tracked_edits(
-                        draft,
-                        file_id,
-                        edits,
-                        &by,
-                        Some(run),
-                        now_ms,
-                    )?);
-                }
+                changes.extend(apply_tracked_patch(
+                    draft,
+                    &planned,
+                    &by,
+                    Some(run),
+                    now_ms,
+                )?);
                 Ok(())
             })
             .map_err(CommandError::Conflict)?;
@@ -1257,5 +1407,213 @@ mod tests {
             id: good_id,
         };
         assert!(good.validate().is_ok());
+    }
+
+    /// "beta" sits at 13..17 of `ALPHA`, inside the passage 7..25.
+    const ALPHA: &str = "Intro. Alpha beta gamma. Outro.";
+    const PASSAGE: &str = "Alpha beta gamma. ";
+
+    #[test]
+    fn a_patch_that_moves_a_section_to_another_file_keeps_its_comment() {
+        let tree = tree_with_files([("a.md", ALPHA), ("b.md", "Start. End.")]);
+        let doc = doc_with_files(&tree);
+        assert!(anchors::create_anchor(
+            &doc, "a.md", "c1", 13, 17, "beta", "Alpha ", " gamma"
+        ));
+        doc.commit();
+        let request = request(
+            &tree,
+            vec![
+                patch("a.md", ALPHA, 7, 25, ""),
+                patch("b.md", "Start. End.", 7, 7, PASSAGE),
+            ],
+        );
+
+        apply_patch_edits(&doc, &tree, &request).expect("both patches fit their files");
+        doc.commit();
+
+        assert_eq!(session::texts_of(&doc)["a.md"], "Intro. Outro.");
+        assert_eq!(
+            session::texts_of(&doc)["b.md"],
+            "Start. Alpha beta gamma. End."
+        );
+        assert!(anchors::resolve_anchors(&doc, "a.md").is_empty());
+        let moved = anchors::resolve_anchors(&doc, "b.md");
+        assert_eq!(moved.len(), 1);
+        assert_eq!(moved[0].id, "c1");
+        assert!(!moved[0].detached);
+        assert_eq!((moved[0].from, moved[0].to), (13, 17));
+        assert_eq!(anchors::status_of(&doc, &moved[0]), anchors::Status::Exact);
+    }
+
+    #[test]
+    fn a_patch_that_deletes_a_commented_passage_detaches_it() {
+        let tree = tree_with_files([("a.md", ALPHA)]);
+        let doc = doc_with_files(&tree);
+        assert!(anchors::create_anchor(
+            &doc, "a.md", "c1", 13, 17, "beta", "Alpha ", " gamma"
+        ));
+        doc.commit();
+        let request = request(&tree, vec![patch("a.md", ALPHA, 7, 25, "")]);
+
+        apply_patch_edits(&doc, &tree, &request).expect("the deletion fits");
+        doc.commit();
+
+        let found = anchors::resolve_anchors(&doc, "a.md");
+        assert_eq!(found.len(), 1);
+        assert!(found[0].detached);
+        assert_eq!(found[0].fragment, None);
+        assert_eq!(
+            anchors::status_of(&doc, &found[0]),
+            anchors::Status::Deleted
+        );
+    }
+
+    #[test]
+    fn a_tracked_agent_deletion_leaves_the_comment_pending() {
+        let tree = tree_with_files([("a.md", ALPHA)]);
+        let doc = doc_with_files(&tree);
+        assert!(anchors::create_anchor(
+            &doc, "a.md", "c1", 13, 17, "beta", "Alpha ", " gamma"
+        ));
+        doc.commit();
+        let by = track::Author {
+            who: "agent:a",
+            author: "A",
+        };
+        let planned = vec![(
+            "a.md".to_string(),
+            vec![session::Edit {
+                at: 7,
+                delete: 18,
+                insert: String::new(),
+            }],
+        )];
+
+        let changes = apply_tracked_patch(&doc, &planned, &by, Some("run-1"), 1_000)
+            .expect("the tracked deletion fits");
+        doc.commit();
+
+        assert_eq!(changes.len(), 1);
+        let fragments = track::fragments_of_changes(&doc, "a.md", &changes);
+        assert_eq!(fragments.len(), 1);
+        let fragment = &fragments[0];
+        assert_eq!(fragment.change, changes[0]);
+        assert_eq!(fragment.text, PASSAGE);
+        assert_eq!(fragment.at, 7);
+
+        let pending = anchors::resolve_anchors(&doc, "a.md");
+        assert_eq!(pending.len(), 1);
+        assert!(pending[0].detached);
+        assert_eq!(pending[0].fragment.as_deref(), Some(fragment.id.as_str()));
+        assert_eq!(pending[0].offset, Some(13 - 7));
+        assert_eq!(pending[0].length, Some(4));
+        assert_eq!(
+            anchors::status_of(&doc, &pending[0]),
+            anchors::Status::PendingDeletion
+        );
+
+        assert!(track::reject(&doc, &changes[0]));
+        doc.commit();
+        assert_eq!(session::texts_of(&doc)["a.md"], ALPHA);
+        let restored = anchors::Restored {
+            fragment: fragment.id.clone(),
+            at: 7,
+            text: fragment.text.clone(),
+        };
+        assert_eq!(
+            anchors::restore_by_fragments(&doc, "a.md", &[restored]),
+            vec!["c1".to_string()]
+        );
+        doc.commit();
+
+        let back = anchors::resolve_anchors(&doc, "a.md");
+        assert_eq!(back.len(), 1);
+        assert!(!back[0].detached);
+        assert_eq!((back[0].from, back[0].to), (13, 17));
+        assert_eq!(anchors::status_of(&doc, &back[0]), anchors::Status::Exact);
+    }
+
+    #[test]
+    fn adjacent_tracked_deletions_keep_their_comments_pending() {
+        let text = "Intro. Alpha beta gamma. Delta epsilon zeta. Outro.";
+        let tree = tree_with_files([("a.md", text)]);
+        let doc = doc_with_files(&tree);
+        assert!(anchors::create_anchor(
+            &doc, "a.md", "c1", 13, 17, "beta", "Alpha ", " gamma"
+        ));
+        assert!(anchors::create_anchor(
+            &doc, "a.md", "c2", 31, 38, "epsilon", "Delta ", " zeta"
+        ));
+        doc.commit();
+        let by = track::Author {
+            who: "agent:a",
+            author: "A",
+        };
+        // The second deletion starts exactly where the first one ends, at 25.
+        let planned = vec![(
+            "a.md".to_string(),
+            vec![
+                session::Edit {
+                    at: 7,
+                    delete: 18,
+                    insert: String::new(),
+                },
+                session::Edit {
+                    at: 25,
+                    delete: 20,
+                    insert: String::new(),
+                },
+            ],
+        )];
+
+        let changes = apply_tracked_patch(&doc, &planned, &by, Some("run-1"), 1_000)
+            .expect("the adjacent tracked deletions fit");
+        doc.commit();
+
+        assert_eq!(changes.len(), 1);
+        let fragments = track::fragments_of_changes(&doc, "a.md", &changes);
+        assert_eq!(fragments.len(), 1);
+        let fragment = &fragments[0];
+        assert_eq!(fragment.text, "Alpha beta gamma. Delta epsilon zeta. ");
+
+        let mut pending = anchors::resolve_anchors(&doc, "a.md");
+        pending.sort_by(|a, b| a.id.cmp(&b.id));
+        assert_eq!(pending.len(), 2);
+        for anchor in &pending {
+            assert!(anchor.detached);
+            assert_eq!(anchor.fragment.as_deref(), Some(fragment.id.as_str()));
+            assert_eq!(
+                anchors::status_of(&doc, anchor),
+                anchors::Status::PendingDeletion
+            );
+        }
+        assert_eq!(pending[0].id, "c1");
+        assert_eq!(pending[0].offset, Some(6));
+        assert_eq!(pending[1].id, "c2");
+        assert_eq!(pending[1].offset, Some(24));
+
+        assert!(track::reject(&doc, &changes[0]));
+        doc.commit();
+        assert_eq!(session::texts_of(&doc)["a.md"], text);
+        let restored = anchors::Restored {
+            fragment: fragment.id.clone(),
+            at: 7,
+            text: fragment.text.clone(),
+        };
+        let mut ids = anchors::restore_by_fragments(&doc, "a.md", &[restored]);
+        ids.sort();
+        assert_eq!(ids, vec!["c1".to_string(), "c2".to_string()]);
+        doc.commit();
+
+        let mut back = anchors::resolve_anchors(&doc, "a.md");
+        back.sort_by(|a, b| a.id.cmp(&b.id));
+        assert_eq!(back.len(), 2);
+        assert!(!back[0].detached);
+        assert_eq!((back[0].from, back[0].to), (13, 17));
+        assert_eq!(anchors::status_of(&doc, &back[0]), anchors::Status::Exact);
+        assert!(!back[1].detached);
+        assert_eq!((back[1].from, back[1].to), (31, 38));
+        assert_eq!(anchors::status_of(&doc, &back[1]), anchors::Status::Exact);
     }
 }
