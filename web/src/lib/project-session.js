@@ -266,12 +266,13 @@ export function createProjectSession({
   rebind();
 
   // The comment anchors of this document, resolved and kept current for the
-  // whole session, whether or not an editor is open: imports are followed from
-  // here, and a file that arrives later is loaded when it is first needed.
+  // whole session, whether or not an editor is open: the index follows imports
+  // and undo from the document, and a file that arrives later is loaded when it
+  // is first needed.
   const anchors = new AnchorIndex(doc);
   for (const [id, value] of files.entries()) if (value instanceof LoroText) anchors.load(id);
-  const detachAnchors = anchors.attach();
   const anchorMemory = new MoveMemory();
+  const detachAnchors = anchors.attach(anchorMemory);
 
   // Sequence numbers the server has not yet retired with a doc-ack. Update
   // bytes live in the CRDT itself and reconnect exports them from there.

@@ -8,6 +8,7 @@
 // history, and this only turns the file id in that answer into a path.
 
 import { anchorOne, placeSources, shownSelector } from "../../src/lib/anchor.js";
+import { MOMENT, momentOf } from "../../src/lib/moment.js";
 
 let failures = 0;
 function check(what, condition) {
@@ -113,6 +114,16 @@ const source = (path, exact, extra = {}) => ({ path, exact, prefix: "", suffix: 
     anchorOne("left passage right; other passage end", { ...oldBundle, prefix: "other ", suffix: " end" })?.start === 26);
   check("a missing old-bundle quote remains unmatched",
     anchorOne("a replacement paragraph", oldBundle) === null);
+}
+
+// A comment made on the live draft carries its frontier bare. The history
+// view opens a moment only when it has the prefix, so the prefix is checked.
+{
+  const moment = momentOf({ original_anchor: { frontier: "AQID" } });
+  check("momentOf: a comment's frontier is spelled as a moment the history endpoint accepts",
+    moment === "frontier:AQID" && moment.startsWith(MOMENT));
+  check("momentOf: a comment with no frontier names no moment",
+    momentOf({ original_anchor: {} }) === "" && momentOf(undefined) === "");
 }
 
 if (failures) process.exit(1);

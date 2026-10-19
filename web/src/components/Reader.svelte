@@ -4,6 +4,7 @@
   // about it.
   import { aboutWholeDocument, anchorAll, flatten, placeSources, shownSelector } from "../lib/anchor.js";
   import { ANCHORS_ORIGIN, attachByHand, deriveAttachment, restoreByFragments } from "../lib/anchors.js";
+  import { momentOf } from "../lib/moment.js";
   import { barHiddenAfter, revealOnNavFocus, watchScrolls } from "../lib/bar-scroll.js";
   import * as renderers from "../lib/renderers.js";
   import * as sync from "../lib/sync.js";
@@ -893,7 +894,7 @@
   // label's version is. A moment before a trim is gone; the comment's card says
   // so, from the flag set here.
   async function openMoment(comment) {
-    const moment = comment?.original_anchor?.frontier;
+    const moment = momentOf(comment);
     if (!moment) return;
     await showPanel("history");
     await viewPoint(moment);

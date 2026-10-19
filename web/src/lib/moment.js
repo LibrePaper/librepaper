@@ -13,3 +13,8 @@
 
 export const MOMENT = "frontier:";
 export const isMoment = (selected) => String(selected || "").startsWith(MOMENT);
+
+// A comment's `original_anchor.frontier` is the bare base64 on the wire. The
+// history endpoint recognises a moment only in the prefixed spelling, so the
+// prefix is added here. A comment with no frontier has no moment.
+export const momentOf = (comment) => { const frontier = comment?.original_anchor?.frontier; return frontier ? MOMENT + frontier : ""; };
