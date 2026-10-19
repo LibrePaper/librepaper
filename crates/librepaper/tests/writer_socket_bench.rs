@@ -790,8 +790,8 @@ async fn writer_socket_end_to_end_benchmark() {
         },
         vec![7_u8; 32],
         config,
-        Policy::parse_publishers(&owner.handle).expect("benchmark publisher policy"),
-        Policy::parse(""),
+        Policy::allowing("github", &[owner.handle.as_str()]),
+        Policy::default(),
     );
     let key = vec![7_u8; 32];
     server.install_writer(writer);

@@ -131,29 +131,89 @@ fn pictures_travel_in_current_credentials() {
     .is_signed_in());
 }
 
-#[test]
-fn policy_public_description_hides_entries_and_anygithub_stays_restricted() {
-    let policy = Policy::parse("alice@example.org,bob,@private.example.org");
-    assert_eq!(policy.public_description(), "an allowlist of 3 entries");
-    assert!(policy.describe().contains("alice@example.org"));
-    let github = Policy::parse("anygithub");
-    assert!(github.is_configured());
-    assert!(github.names_a_login());
-    assert!(!github.names_an_email_or_domain());
-    assert!(github.allows("alice"));
-    assert!(!github.allows("alice@example.org"));
-    assert!(!github.allows(""));
+fn account(provider: &str, handle: &str) -> Identity {
+    Identity::from_provider(provider, "42", handle, handle, "")
 }
 
 #[test]
-fn publishing_policy_refuses_anonymous_spellings() {
-    for value in ["anyone", " public "] {
-        let error = Policy::parse_publishers(value).expect_err("anonymous publishing survived");
-        assert!(error.contains("signed-in accounts"));
+fn policy_public_description_hides_entries() {
+    let policy = Policy::allowing("github", &["alice", "bob"]).with("google", &["@example.org"]);
+    assert_eq!(policy.public_description(), "an allowlist of 3 entries");
+    assert_eq!(policy.describe(), "github: alice, bob; google: @example.org");
+    assert_eq!(
+        Policy::allowing("github", &["*"]).public_description(),
+        "any account of github"
+    );
+    assert_eq!(Policy::anonymous().public_description(), "anyone");
+    assert_eq!(Policy::default().public_description(), "nobody");
+    assert_eq!(Policy::default().describe(), "nobody");
+    assert_eq!(Policy::anonymous().describe(), "anyone");
+}
+
+#[test]
+fn policy_matches_the_provider_of_the_identity() {
+    let github = Policy::allowing("github", &["alice", "0000-0002-1825-0097"]);
+    assert!(github.allows(&account("github", "Alice")));
+    assert!(!github.allows(&account("orcid", "0000-0002-1825-0097")));
+    assert!(!github.allows(&account("google", "alice")));
+    let orcid = Policy::allowing("orcid", &["0000-0002-1825-0097"]);
+    assert!(orcid.allows(&account("orcid", "0000-0002-1825-0097")));
+    assert!(!orcid.allows(&account("github", "0000-0002-1825-0097")));
+    let star = Policy::allowing("github", &["*"]);
+    assert!(star.allows(&account("github", "anyone")));
+    assert!(!star.allows(&account("orcid", "0000-0002-1825-0097")));
+    assert!(!star.allows(&account("google", "a@example.org")));
+}
+
+#[test]
+fn policy_domain_entries_match_the_exact_domain() {
+    let policy = Policy::allowing("google", &["@example.org", "bob@other.org"]);
+    assert!(policy.allows(&account("google", "alice@example.org")));
+    assert!(policy.allows(&account("google", "bob@other.org")));
+    assert!(!policy.allows(&account("google", "alice@mail.example.org")));
+    assert!(!policy.allows(&account("google", "carol@other.org")));
+    assert!(!policy.allows(&account("entra", "alice@example.org")));
+}
+
+#[test]
+fn policy_anonymous_and_signed_out() {
+    assert!(Policy::anonymous().allows(&Identity::anonymous()));
+    let policy = Policy::allowing("github", &["*"]);
+    assert!(!policy.allows(&Identity::anonymous()));
+    assert!(!Policy::default().allows(&account("github", "alice")));
+    assert!(!Policy::default().is_configured());
+    assert!(Policy::anonymous().is_configured());
+    assert!(policy.is_configured());
+    assert!(!Policy::allowing("github", &[]).is_configured());
+}
+
+#[test]
+fn normalize_entry_checks_each_provider_shape() {
+    assert_eq!(normalize_entry("github", " Alice-1 ").unwrap(), "alice-1");
+    assert_eq!(normalize_entry("github", "*").unwrap(), "*");
+    assert!(normalize_entry("github", "@alice").unwrap_err().contains("without @"));
+    for bad in ["", "-alice", "alice-", "a_b", "a@b.org", &"a".repeat(40)] {
+        assert!(normalize_entry("github", bad).is_err(), "{bad}");
     }
-    let any = Policy::parse_publishers("any").expect("authenticated publishing rejected");
-    assert!(any.any);
-    assert!(!any.allows(""));
+    assert_eq!(
+        normalize_entry("orcid", "0000-0002-1825-0097").unwrap(),
+        "0000-0002-1825-0097"
+    );
+    assert_eq!(
+        normalize_entry("orcid", "0000-0002-1694-233x").unwrap(),
+        "0000-0002-1694-233X"
+    );
+    assert!(normalize_entry("orcid", "0000-0002-1825-0098").is_err());
+    assert!(normalize_entry("orcid", "alice").is_err());
+    assert_eq!(normalize_entry("orcid", "*").unwrap(), "*");
+    for provider in ["google", "entra", "oidc-acme"] {
+        assert_eq!(normalize_entry(provider, "Bob@Example.ORG").unwrap(), "bob@example.org");
+        assert_eq!(normalize_entry(provider, "@Example.org").unwrap(), "@example.org");
+        assert_eq!(normalize_entry(provider, "*").unwrap(), "*");
+        for bad in ["alice", "@example", "@", "a@b@c.org", "a b@c.org", "alice@", "@a@b.org"] {
+            assert!(normalize_entry(provider, bad).is_err(), "{bad}");
+        }
+    }
 }
 
 #[test]

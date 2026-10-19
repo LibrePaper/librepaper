@@ -374,8 +374,8 @@ impl Server {
             owner_key: current_who.key.clone(),
             session_generation: current_who.id.session_generation.clone(),
             link_hash: current_who.link.clone(),
-            policy_editor: self.publishers.allows(&current_who.id.handle),
-            policy_comment: self.commenters.allows(&current_who.id.handle),
+            policy_editor: self.publishers.allows(&current_who.id),
+            policy_comment: self.commenters.allows(&current_who.id),
             automation: current_who.automation,
             unowned_publisher: false,
         };

@@ -35,8 +35,8 @@ async fn a_new_account_receives_one_project_holding_every_tutorial() {
             main: "fixture.md".into(),
         },
         Vec::new(),
-        "any",
-        "anyone",
+        librepaper_base::auth::Policy::allowing("github", &["*"]),
+        librepaper_base::auth::Policy::anonymous(),
     )
     .await
     else {

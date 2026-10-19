@@ -445,8 +445,8 @@ async fn frugal_mixed_workload_benchmark() {
         },
         vec![9; 32],
         config.clone(),
-        Policy::parse_publishers(&owner.handle).expect("publisher policy"),
-        Policy::parse(""),
+        Policy::allowing("github", &[owner.handle.as_str()]),
+        Policy::default(),
     );
     server.install_writer(writer);
     let server = Arc::new(server);

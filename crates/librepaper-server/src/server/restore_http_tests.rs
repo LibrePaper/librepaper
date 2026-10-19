@@ -36,8 +36,8 @@ async fn deployment(slug: &str) -> Option<super::http_test_support::Deployment> 
             main: "paper.md".into(),
         },
         Vec::new(),
-        "owner",
-        "",
+        librepaper_base::auth::Policy::allowing("github", &["owner"]),
+        librepaper_base::auth::Policy::default(),
     )
     .await
 }

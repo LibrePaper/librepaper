@@ -1183,9 +1183,9 @@ impl Server {
     }
 
     /// The most this deployment's switches will let a document give one
-    /// caller. `access.publishers` governs editing, because an editor puts content
-    /// on the server; `access.commenters` governs commenting. A link asks the same
-    /// question with an empty handle, since it names nobody, and that is
+    /// caller. The publishers lists govern editing, because an editor puts content
+    /// on the server; the commenters lists govern commenting. A link asks the same
+    /// question with an anonymous identity, since it names nobody, and that is
     /// exactly what makes "a link cannot edit unless the deployment lets
     /// anyone publish" fall out of the same switch a named caller is asked
     /// against, rather than out of a rule of its own.
@@ -1196,9 +1196,9 @@ impl Server {
         // provider-backed identity, and a session from a provider that is no
         // longer configured is not an authorization bypass.
         let edit =
-            id.is_signed_in() && self.provider_configured(id) && self.publishers.allows(&id.handle);
+            id.is_signed_in() && self.provider_configured(id) && self.publishers.allows(id);
         Ceiling {
-            comment: self.commenters.allows(&id.handle),
+            comment: self.commenters.allows(id),
             edit,
         }
     }
@@ -1452,7 +1452,7 @@ impl Server {
                 ));
             }
         };
-        if id.is_signed_in() && self.provider_configured(&id) && self.publishers.allows(&id.handle)
+        if id.is_signed_in() && self.provider_configured(&id) && self.publishers.allows(&id)
         {
             return Ok(Caller {
                 key: self.owner(headers, arrival, &id),

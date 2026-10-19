@@ -17,7 +17,7 @@ const VISITOR_COOKIE_NAME: &str = "__Host-librepaper_visitor";
 
 /// Runs the visitor cookie step for one HTML page request on the app origin,
 /// with the given commenter policy and an optional incoming cookie value.
-async fn visitor_response(commenters: &str, cookie: Option<&str>) -> Option<Response<Body>> {
+async fn visitor_response(commenters: librepaper_base::auth::Policy, cookie: Option<&str>) -> Option<Response<Body>> {
     let deployment = deployment(
         DocumentInput {
             slug: SLUG.into(),
@@ -27,7 +27,7 @@ async fn visitor_response(commenters: &str, cookie: Option<&str>) -> Option<Resp
             main: "paper.md".into(),
         },
         vec![],
-        "any",
+        librepaper_base::auth::Policy::allowing("github", &["*"]),
         commenters,
     )
     .await?;
@@ -58,7 +58,7 @@ async fn visitor_response(commenters: &str, cookie: Option<&str>) -> Option<Resp
 #[tokio::test]
 #[ignore = "requires LIBREPAPER_TEST_POSTGRES_URL; run with --test-threads=1"]
 async fn sign_in_required_without_cookie_sets_no_visitor_cookie() {
-    let Some(response) = visitor_response("any", None).await else {
+    let Some(response) = visitor_response(librepaper_base::auth::Policy::allowing("github", &["*"]), None).await else {
         return;
     };
     assert!(response.headers().get(header::SET_COOKIE).is_none());
@@ -67,7 +67,7 @@ async fn sign_in_required_without_cookie_sets_no_visitor_cookie() {
 #[tokio::test]
 #[ignore = "requires LIBREPAPER_TEST_POSTGRES_URL; run with --test-threads=1"]
 async fn sign_in_required_with_cookie_clears_the_visitor_cookie() {
-    let Some(response) = visitor_response("any", Some("v1.sometoken.somesig")).await else {
+    let Some(response) = visitor_response(librepaper_base::auth::Policy::allowing("github", &["*"]), Some("v1.sometoken.somesig")).await else {
         return;
     };
     let cookies: Vec<&str> = response
@@ -88,7 +88,7 @@ async fn sign_in_required_with_cookie_clears_the_visitor_cookie() {
 #[tokio::test]
 #[ignore = "requires LIBREPAPER_TEST_POSTGRES_URL; run with --test-threads=1"]
 async fn anyone_commenting_without_cookie_sets_a_signed_visitor_cookie() {
-    let Some(response) = visitor_response("anyone", None).await else {
+    let Some(response) = visitor_response(librepaper_base::auth::Policy::anonymous(), None).await else {
         return;
     };
     let cookie = response
