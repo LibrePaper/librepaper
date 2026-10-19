@@ -6,7 +6,8 @@
 // directions; two peers that each delete one half of a passage collapse it, and
 // marking it leaves one detached record on both; a tracked deletion rejected or
 // accepted in another session restores or drops it; and undo through the real
-// UndoManager walks a cut and a paste back.
+// UndoManager walks a cut and a paste back. The AnchorIndex tests follow remote
+// edits into a second peer's cache, which must agree with resolveAnchors.
 //
 // The seeded fuzzers check random histories against a tagged oracle. Each
 // character carries the ids of the anchors it belongs to, so the expected place
@@ -19,6 +20,7 @@ import { LoroDoc, LoroText, UndoManager } from "loro-crdt";
 import {
   ANCHORS,
   ANCHORS_ORIGIN,
+  AnchorIndex,
   CONTEXT_UNITS,
   MoveMemory,
   applyOperation,
@@ -92,6 +94,51 @@ function assertAttached(doc, id, from, to, exact, fileId = "f1") {
   assert.deepEqual([anchor.from, anchor.to], [from, to], `${id} range`);
   assert.equal(anchor.exact, exact, `${id} exact`);
   assert.equal(statusOf(doc, anchor), "exact", `${id} status`);
+}
+
+// The fields that place an anchor. An index must agree with resolveAnchors on them.
+function placed(a) {
+  return {
+    id: a.id,
+    file: a.file,
+    from: a.from,
+    to: a.to,
+    detached: a.detached,
+    length: a.length,
+    fragment: a.fragment,
+    offset: a.offset,
+    collapsed: a.collapsed,
+  };
+}
+
+function assertIndexMatches(index, doc, fileId = "f1") {
+  const byId = (x, y) => (x.id < y.id ? -1 : x.id > y.id ? 1 : 0);
+  const cached = index.anchors(fileId).map(placed).sort(byId);
+  const truth = resolveAnchors(doc, fileId).map(placed).sort(byId);
+  assert.deepEqual(cached, truth, `index of ${fileId} equals resolveAnchors`);
+}
+
+// Edits the text of doc and records the edit through index as two commits: the
+// text, then the anchors. Returns the update that carries the text alone, and
+// the one that carries the rest.
+function editInTwoCommits(doc, index, memory, fileId, edits) {
+  const before = doc.oplogVersion();
+  const text = doc.getMap("files").get(fileId);
+  let adj = 0;
+  for (const edit of edits) {
+    const ef = edit.from + adj;
+    const et = edit.to + adj;
+    if (et > ef) text.delete(ef, et - ef);
+    if (edit.insert) text.insert(ef, edit.insert);
+    adj += edit.insert.length - (edit.to - edit.from);
+  }
+  doc.commit();
+  const afterText = doc.oplogVersion();
+  const textOnly = doc.export({ mode: "update", from: before });
+  index.record([{ fileId, edits }], memory, {});
+  doc.commit({ origin: ANCHORS_ORIGIN });
+  const rest = doc.export({ mode: "update", from: afterText });
+  return { textOnly, rest };
 }
 
 // The insertion points at which `piece` turns `before` into `after`.
@@ -228,7 +275,15 @@ function checkAnchors(doc, files, wordOf) {
 // One random edit to a target: a file, or the region of a file that one peer
 // owns. `units` is the oracle for the target and `base` its offset in the file.
 // Returns the clipboard: the cut waiting for its paste, or null.
-function stepOn(rng, doc, memory, target, clip, log, { who = "", typeAnywhere = true } = {}) {
+function stepOn(
+  rng,
+  doc,
+  memory,
+  target,
+  clip,
+  log,
+  { who = "", typeAnywhere = true, apply = (files) => applyOperation(doc, files, memory, {}) } = {},
+) {
   const { fileId, units, base } = target;
   const note = (text) => log.push(who ? `${who} ${text}` : text);
   const at = (p) => base + p;
@@ -239,7 +294,7 @@ function stepOn(rng, doc, memory, target, clip, log, { who = "", typeAnywhere = 
   if (kind === "cut" && !clip && runs.length > 0) {
     const run = runs[rng.pick(runs.length)];
     const removed = units.slice(run.from, run.to);
-    applyOperation(doc, [{ fileId, edits: [{ from: at(run.from), to: at(run.to), insert: "" }] }], memory, {});
+    apply([{ fileId, edits: [{ from: at(run.from), to: at(run.to), insert: "" }] }]);
     units.splice(run.from, run.to - run.from);
     note(`cut ${fileId}[${run.from},${run.to})`);
     return { text: textOfUnits(removed), units: removed };
@@ -248,7 +303,7 @@ function stepOn(rng, doc, memory, target, clip, log, { who = "", typeAnywhere = 
   if (kind === "paste" && clip) {
     const spots = edgePositions(units);
     const p = spots[rng.pick(spots.length)];
-    applyOperation(doc, [{ fileId, edits: [{ from: at(p), to: at(p), insert: clip.text }] }], memory, {});
+    apply([{ fileId, edits: [{ from: at(p), to: at(p), insert: clip.text }] }]);
     units.splice(p, 0, ...clip.units);
     note(`paste ${fileId}@${p} '${clip.text}'`);
     return null;
@@ -261,7 +316,7 @@ function stepOn(rng, doc, memory, target, clip, log, { who = "", typeAnywhere = 
     if (!clip || !copied.includes(clip.text)) {
       const spots = edgePositions(units);
       const p = spots[rng.pick(spots.length)];
-      applyOperation(doc, [{ fileId, edits: [{ from: at(p), to: at(p), insert: copied }] }], memory, {});
+      apply([{ fileId, edits: [{ from: at(p), to: at(p), insert: copied }] }]);
       units.splice(p, 0, ...[...copied].map((ch) => unit(ch)));
       note(`copy ${fileId}@${p} '${copied}'`);
       return clip;
@@ -277,7 +332,7 @@ function stepOn(rng, doc, memory, target, clip, log, { who = "", typeAnywhere = 
       const text = textOfUnits(moved);
       const lift = { from: at(run.from), to: at(run.to), insert: "" };
       const drop = { from: at(p), to: at(p), insert: text };
-      applyOperation(doc, [{ fileId, edits: p < run.from ? [drop, lift] : [lift, drop] }], memory, {});
+      apply([{ fileId, edits: p < run.from ? [drop, lift] : [lift, drop] }]);
       units.splice(run.from, run.to - run.from);
       units.splice(p < run.from ? p : p - (run.to - run.from), 0, ...moved);
       note(`drag ${fileId}[${run.from},${run.to}) to ${p}`);
@@ -289,7 +344,7 @@ function stepOn(rng, doc, memory, target, clip, log, { who = "", typeAnywhere = 
   const spots = typeAnywhere ? Array.from({ length: units.length + 1 }, (_, i) => i) : edgePositions(units);
   const p = spots[rng.pick(spots.length)];
   const ch = LETTERS[rng.pick(LETTERS.length)];
-  applyOperation(doc, [{ fileId, edits: [{ from: at(p), to: at(p), insert: ch }] }], memory, {});
+  apply([{ fileId, edits: [{ from: at(p), to: at(p), insert: ch }] }]);
   units.splice(p, 0, unit(ch));
   note(`type ${fileId}@${p} ${ch}`);
   return clip;
@@ -547,6 +602,110 @@ test("undo through the UndoManager walks a cut and a paste back", () => {
   assert.equal(manager.canUndo(), false, "only anchor commits were left, and they are excluded");
 });
 
+// A peer B that starts as a snapshot of A, with an index on each.
+function twoIndexedPeers(A) {
+  const B = new LoroDoc();
+  B.setPeerId(2);
+  B.import(A.export({ mode: "snapshot" }));
+  const indexA = new AnchorIndex(A);
+  const indexB = new AnchorIndex(B);
+  return { B, indexA, indexB };
+}
+
+test("an index on another peer follows a remote cut and paste across files", () => {
+  const A = makeDoc(1, { f1: "one two three", f2: "alpha beta" });
+  createAnchor(A, "f1", "a1", 4, 7, ctx("one two three", 4, 7));
+  createAnchor(A, "f2", "a2", 6, 10, ctx("alpha beta", 6, 10));
+  A.commit();
+  const { B, indexA, indexB } = twoIndexedPeers(A);
+  for (const index of [indexA, indexB]) {
+    index.load("f1");
+    index.load("f2");
+  }
+  indexA.attach();
+  const memory = new MoveMemory();
+  indexB.apply([{ fileId: "f1", edits: [{ from: 4, to: 8, insert: "" }] }], memory, {});
+  indexB.apply([{ fileId: "f2", edits: [{ from: 6, to: 6, insert: "two " }] }], memory, {});
+  sync(A, B);
+  assert.equal(textOf(A, "f2"), "alpha two beta");
+  for (const [index, doc] of [
+    [indexA, A],
+    [indexB, B],
+  ]) {
+    assertIndexMatches(index, doc, "f1");
+    assertIndexMatches(index, doc, "f2");
+  }
+  assert.equal(indexA.anchors("f1").some((a) => a.id === "a1"), false, "a1 left f1");
+  const moved = indexA.anchors("f2").find((a) => a.id === "a1");
+  assert.deepEqual([moved.from, moved.to, moved.detached], [6, 9, false]);
+  assert.equal(indexA.anchors("f2").find((a) => a.id === "a2").from, 10);
+});
+
+test("an index on another peer shrinks an anchor that a remote deletion overlapped", () => {
+  const text = "one two three";
+  const A = makeDoc(1, { f1: text });
+  createAnchor(A, "f1", "a1", 4, 7, ctx(text, 4, 7));
+  A.commit();
+  const { B, indexA, indexB } = twoIndexedPeers(A);
+  indexA.load("f1");
+  indexA.attach();
+  indexB.load("f1");
+  // B deletes "o " at 6 and 7, the end of "two".
+  indexB.apply([{ fileId: "f1", edits: [{ from: 6, to: 8, insert: "" }] }], new MoveMemory(), {});
+  sync(A, B);
+  assert.equal(textOf(A), "one twthree");
+  const shrunk = indexA.anchors("f1").find((a) => a.id === "a1");
+  assert.deepEqual([shrunk.from, shrunk.to, shrunk.detached], [4, 6, false]);
+  assertIndexMatches(indexA, A);
+  assertIndexMatches(indexB, B);
+});
+
+test("an index on another peer detaches an anchor when a remote cut takes its text", () => {
+  const text = "one two three";
+  const A = makeDoc(1, { f1: text });
+  createAnchor(A, "f1", "a1", 4, 7, ctx(text, 4, 7));
+  A.commit();
+  const { B, indexA, indexB } = twoIndexedPeers(A);
+  indexA.load("f1");
+  indexA.attach();
+  indexB.load("f1");
+  indexB.apply([{ fileId: "f1", edits: [{ from: 4, to: 8, insert: "" }] }], new MoveMemory(), {});
+  sync(A, B);
+  const cut = indexA.anchors("f1").find((a) => a.id === "a1");
+  assert.equal(cut.detached, true);
+  assert.equal(cut.exact, "two");
+  assert.equal(statusOf(A, cut), "deleted");
+  assertIndexMatches(indexA, A);
+  assertIndexMatches(indexB, B);
+});
+
+test("a remote cut seen as text alone collapses the anchor, and its record write detaches it", () => {
+  const text = "one two three";
+  const A = makeDoc(1, { f1: text });
+  createAnchor(A, "f1", "a1", 4, 7, ctx(text, 4, 7));
+  A.commit();
+  const { B, indexA, indexB } = twoIndexedPeers(A);
+  indexA.load("f1");
+  indexA.attach();
+  indexB.load("f1");
+  const { textOnly, rest } = editInTwoCommits(B, indexB, new MoveMemory(), "f1", [{ from: 4, to: 8, insert: "" }]);
+
+  A.import(textOnly);
+  assert.equal(textOf(A), "one three");
+  const collapsed = indexA.anchors("f1").find((a) => a.id === "a1");
+  assert.equal(collapsed.collapsed, true);
+  assert.equal(collapsed.detached, false);
+  assert.equal(statusOf(A, collapsed), "deleted");
+  assertIndexMatches(indexA, A);
+
+  A.import(rest);
+  const detached = indexA.anchors("f1").find((a) => a.id === "a1");
+  assert.equal(detached.detached, true);
+  assert.equal(detached.collapsed, false);
+  assert.equal(statusOf(A, detached), "deleted");
+  assertIndexMatches(indexA, A);
+});
+
 // ---------------------------------------------------------------------------
 // Fuzzers
 
@@ -572,15 +731,22 @@ function oneSession(seed) {
     }
   }
   doc.commit();
-  withLog(`one session seed=${seed}`, log, () => {
+  const index = new AnchorIndex(doc);
+  for (const fileId of files.keys()) index.load(fileId);
+  const apply = (edits) => index.apply(edits, memory, {});
+  const checkAll = () => {
     checkAnchors(doc, files, wordOf);
+    for (const fileId of files.keys()) assertIndexMatches(index, doc, fileId);
+  };
+  withLog(`one session seed=${seed}`, log, () => {
+    checkAll();
     let clip = null;
     const steps = 4 + rng.pick(13);
     for (let k = 0; k < steps; k++) {
       const ids = [...files.keys()];
       const fileId = ids[rng.pick(ids.length)];
-      clip = stepOn(rng, doc, memory, { fileId, units: files.get(fileId), base: 0 }, clip, log);
-      checkAnchors(doc, files, wordOf);
+      clip = stepOn(rng, doc, memory, { fileId, units: files.get(fileId), base: 0 }, clip, log, { apply });
+      checkAll();
     }
   });
 }
@@ -608,12 +774,14 @@ function twoPeers(seed) {
     createAnchor(A, "f1", a.id, from, to, ctx(text, from, to));
   }
   A.commit();
-  const B = new LoroDoc();
-  B.setPeerId(2);
-  B.import(A.export({ mode: "snapshot" }));
+  const { B, indexA, indexB } = twoIndexedPeers(A);
+  indexA.load("f1");
+  indexB.load("f1");
+  indexA.attach();
+  indexB.attach();
   const peers = [
-    { who: "A", side: "A", doc: A, units: left.units, memory: new MoveMemory(), clip: null },
-    { who: "B", side: "B", doc: B, units: right.units, memory: new MoveMemory(), clip: null },
+    { who: "A", side: "A", doc: A, index: indexA, units: left.units, memory: new MoveMemory(), clip: null },
+    { who: "B", side: "B", doc: B, index: indexB, units: right.units, memory: new MoveMemory(), clip: null },
   ];
   // The whole file as the oracle sees it: region A, the separator, region B.
   const expected = () => new Map([["f1", [...left.units, ...[...SEP].map((ch) => unit(ch)), ...right.units]]]);
@@ -627,9 +795,15 @@ function twoPeers(seed) {
     return side === "A" ? 0 : at + 5;
   };
 
-  withLog(`two peers seed=${seed}`, log, () => {
+  // Both peers' documents match the oracle, and both indexes match the records.
+  const checkPeers = () => {
     checkAnchors(A, expected(), wordOf);
     checkAnchors(B, expected(), wordOf);
+    for (const peer of peers) assertIndexMatches(peer.index, peer.doc, "f1");
+  };
+
+  withLog(`two peers seed=${seed}`, log, () => {
+    checkPeers();
     let untilSync = 1 + rng.pick(4);
     const steps = 4 + rng.pick(12);
     for (let k = 0; k < steps; k++) {
@@ -638,20 +812,19 @@ function twoPeers(seed) {
       peer.clip = stepOn(rng, peer.doc, peer.memory, target, peer.clip, log, {
         who: peer.who,
         typeAnywhere: false,
+        apply: (edits) => peer.index.apply(edits, peer.memory, {}),
       });
       untilSync -= 1;
       if (untilSync === 0) {
         sync(A, B);
         log.push("sync");
-        checkAnchors(A, expected(), wordOf);
-        checkAnchors(B, expected(), wordOf);
+        checkPeers();
         untilSync = 1 + rng.pick(4);
       }
     }
     sync(A, B);
     log.push("sync");
-    checkAnchors(A, expected(), wordOf);
-    checkAnchors(B, expected(), wordOf);
+    checkPeers();
   });
 }
 
@@ -673,6 +846,8 @@ function undoCase(seed) {
     createAnchor(doc, "f1", a.id, a.from, a.to, ctx(layout.text, a.from, a.to));
   }
   doc.commit();
+  const index = new AnchorIndex(doc);
+  index.load("f1");
   const textId = doc.getMap("files").get("f1").id;
   let pending = [];
   doc.subscribe((batch) => {
@@ -682,15 +857,13 @@ function undoCase(seed) {
   });
   const manager = new UndoManager(doc, { mergeInterval: 0, excludeOriginPrefixes: [ANCHORS_ORIGIN] });
   const memory = new MoveMemory();
-  const snapshot = () => ({ text: textOf(doc), anchors: resolveAnchors(doc, "f1") });
-  let last = snapshot();
+  const apply = (edits) => index.apply(edits, memory, {});
 
   withLog(`undo seed=${seed}`, log, () => {
     let clip = null;
     const steps = 3 + rng.pick(6);
     for (let k = 0; k < steps; k++) {
-      clip = stepOn(rng, doc, memory, { fileId: "f1", units: layout.units, base: 0 }, clip, log);
-      last = snapshot();
+      clip = stepOn(rng, doc, memory, { fileId: "f1", units: layout.units, base: 0 }, clip, log, { apply });
     }
     for (let k = 0; k < steps; k++) {
       pending = [];
@@ -698,12 +871,12 @@ function undoCase(seed) {
       assert.equal(pending.length, 1, `undo ${k + 1} of ${steps} text events`);
       const edits = editsFromDelta(pending[0]);
       pending = [];
-      recordOperation(doc, [{ fileId: "f1", before: last.text, anchors: last.anchors, edits }], memory, {});
+      index.record([{ fileId: "f1", edits }], memory, {});
       doc.commit({ origin: ANCHORS_ORIGIN });
-      last = snapshot();
     }
     assert.equal(manager.canUndo(), false, "nothing left to undo");
     assert.equal(textOf(doc), layout.text, "text after every undo");
+    assertIndexMatches(index, doc, "f1");
     const found = anchorsById(doc, "f1");
     for (const [id, [from, to]] of ranges) {
       const anchor = found.get(id);

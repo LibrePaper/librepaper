@@ -16,6 +16,9 @@
 // writer sets the commit origin first and does all its reads before its first
 // write.
 //
+// AnchorIndex keeps each file's resolved offsets for the session, so an edit
+// resolves no cursor. Only the anchors an edit touched get cursors written.
+//
 // Offsets are UTF-16 everywhere, the same as CodeMirror and loro-crdt in JS.
 
 import { Cursor, LoroMap } from "loro-crdt";
@@ -34,7 +37,9 @@ export const CONTEXT_UNITS = 32;
  *   is gone.
  *   collapsed: attached, but its cursors resolve to to <= from.
  *   unresolved: a cursor cannot be resolved at all.
- * @typedef {Anchor & { state: "kept" | "set", movedFrom?: string }} PlannedAnchor
+ * @typedef {Anchor & { state: "kept" | "set", touched: boolean, movedFrom?: string }} PlannedAnchor
+ *   touched: its text was cut, overlapped by a deletion, or re-pinned in this
+ *   operation. False for an anchor that only shifted or grew.
  * @typedef {{ id: string, edit: number, start: number, end: number }} FragmentRange
  *   edit is the index of the deleting edit in the file's edits. start and end
  *   are offsets within that edit's deleted text.
@@ -97,16 +102,17 @@ export class MoveMemory {
  *
  * @param {{ fileId: string, before: string, anchors: Anchor[], edits: Edit[], fragments?: FragmentRange[] }[]} files
  * @param {MoveMemory} memory
- * @param {{ context?: number }} [opts]
+ * @param {{ context?: number, foreign?: boolean }} [opts] foreign: a remote text
+ *   change (see AnchorIndex). Phase 2 is skipped and nothing is remembered.
  * @returns {{ files: { fileId: string, after: string, anchors: PlannedAnchor[] }[] }}
  */
-export function planOperation(files, memory, { context = CONTEXT_UNITS } = {}) {
+export function planOperation(files, memory, { context = CONTEXT_UNITS, foreign = false } = {}) {
   const work = files.map((file) => ({
     fileId: file.fileId,
     before: file.before,
     edits: file.edits,
     fragments: file.fragments ?? [],
-    anchors: /** @type {PlannedAnchor[]} */ (file.anchors.map((a) => ({ ...a, state: "kept" }))),
+    anchors: /** @type {PlannedAnchor[]} */ (file.anchors.map((a) => ({ ...a, state: "kept", touched: false }))),
     after: file.before,
     inserts: /** @type {{ at: number, text: string }[]} */ ([]),
   }));
@@ -131,6 +137,12 @@ export function planOperation(files, memory, { context = CONTEXT_UNITS } = {}) {
           if (!attached(a)) continue;
           const { from, to } = a;
           if (ef <= from && et >= to) {
+            a.touched = true;
+            if (foreign) {
+              // The remote session writes the detached record with its text.
+              Object.assign(a, { collapsed: true, from: ef, to: ef });
+              continue;
+            }
             // Wholly deleted. The quote keys stay as they are; the length tells a
             // later re-pin how much text to bring back.
             const fragment = w.fragments.find((f) => f.edit === index && from - ef >= f.start && to - ef <= f.end);
@@ -145,7 +157,10 @@ export function planOperation(files, memory, { context = CONTEXT_UNITS } = {}) {
               state: "set",
             });
           } else {
-            if (from < et && to > ef) partial.add(a);
+            if (from < et && to > ef) {
+              partial.add(a);
+              a.touched = true;
+            }
             a.from = afterDelete(from, ef, et);
             a.to = afterDelete(to, ef, et);
             if (a.from !== from || a.to !== to) moved.add(a);
@@ -184,7 +199,7 @@ export function planOperation(files, memory, { context = CONTEXT_UNITS } = {}) {
 
   // Phase 2: an insertion that brings remembered text back re-pins the anchors
   // that were in it.
-  for (const w of work) {
+  for (const w of foreign ? [] : work) {
     for (const ins of w.inserts) {
       const hit = memory.take(ins.text);
       if (!hit) continue;
@@ -213,6 +228,7 @@ export function planOperation(files, memory, { context = CONTEXT_UNITS } = {}) {
           collapsed: false,
           unresolved: false,
           state: "set",
+          touched: true,
         };
         if (owner !== w) pinned.movedFrom = owner.fileId;
         w.anchors.push(pinned);
@@ -301,6 +317,19 @@ function detachedAnchor(value, id, fileId) {
   return { ...recordFields(value, id, fileId), detached: true, from: 0, to: 0, collapsed: false, unresolved: false };
 }
 
+// One record as an anchor, its cursors resolved against body (the file's text).
+function recordAnchor(doc, id, value, fileId, body) {
+  if (value.get("detached") === true) return detachedAnchor(value, id, fileId);
+  const base = recordFields(value, id, fileId);
+  const start = value.get("start");
+  const end = value.get("end");
+  const s = start instanceof Uint8Array ? cursorPos(doc, start) : null;
+  const e = end instanceof Uint8Array ? cursorPos(doc, end) : null;
+  if (!s || !e) return { ...base, detached: false, from: 0, to: 0, collapsed: false, unresolved: true };
+  const to = Math.max(s.offset, e.stale ? e.offset : e.offset + charWidth(body, e.offset));
+  return { ...base, detached: false, from: s.offset, to, collapsed: to <= s.offset, unresolved: false };
+}
+
 /**
  * The anchor records of one file, resolved to offsets. Detached records are
  * returned without resolving their cursors.
@@ -315,22 +344,7 @@ export function resolveAnchors(doc, fileId) {
   const out = [];
   for (const [id, entry] of doc.getMap(ANCHORS).entries()) {
     if (!(entry instanceof LoroMap) || entry.get("file") !== fileId) continue;
-    const value = /** @type {any} */ (entry);
-    if (value.get("detached") === true) {
-      out.push(detachedAnchor(value, id, fileId));
-      continue;
-    }
-    const base = recordFields(value, id, fileId);
-    const start = value.get("start");
-    const end = value.get("end");
-    const s = start instanceof Uint8Array ? cursorPos(doc, start) : null;
-    const e = end instanceof Uint8Array ? cursorPos(doc, end) : null;
-    if (!s || !e) {
-      out.push({ ...base, detached: false, from: 0, to: 0, collapsed: false, unresolved: true });
-      continue;
-    }
-    const to = Math.max(s.offset, e.stale ? e.offset : e.offset + charWidth(body, e.offset));
-    out.push({ ...base, detached: false, from: s.offset, to, collapsed: to <= s.offset, unresolved: false });
+    out.push(recordAnchor(doc, id, /** @type {any} */ (entry), fileId, body));
   }
   return out;
 }
@@ -359,10 +373,11 @@ export function createAnchor(doc, fileId, id, from, to, { exact, prefix, suffix 
 
 /**
  * Writes the anchors marked "set" in a plan. A detached record keeps its
- * cursors. An attached record gets a cursor only when the stored one resolves
- * to another offset, except that a record coming back from detached, or from
- * another file, always gets both: its old cursors belong elsewhere. Does not
- * commit.
+ * cursors. An attached anchor that was touched gets both cursors, fresh. One
+ * that only shifted (touched false) is skipped: its cursors follow its text.
+ * A plan built by hand has no touched flag: there a cursor is written only
+ * when the stored one resolves to another offset, and a record coming back
+ * from detached, or from another file, always gets both. Does not commit.
  *
  * @param {import("loro-crdt").LoroDoc} doc
  * @param {{ files: { fileId: string, after: string, anchors: PlannedAnchor[] }[] }} planned
@@ -378,6 +393,7 @@ export function writeAnchors(doc, planned) {
     const text = fileText(doc, file.fileId);
     for (const a of file.anchors) {
       if (a.state !== "set") continue;
+      if (!a.detached && a.touched === false) continue;
       const record = map.get(a.id);
       if (!(record instanceof LoroMap)) continue;
       /** @type {[string, any][]} */
@@ -408,7 +424,7 @@ export function writeAnchors(doc, planned) {
       const end = text.getCursor(lastCharStart(body, a.to), 1);
       if (!start || !end) continue;
       const reattach = record.get("detached") === true || record.get("file") !== file.fileId;
-      const have = reattach ? null : resolvedSpan(doc, text, record);
+      const have = a.touched === true || reattach ? null : resolvedSpan(doc, text, record);
       if (!have || have.from !== a.from) sets.push(["start", start.encode()]);
       if (!have || have.to !== a.to) sets.push(["end", end.encode()]);
       put("file", file.fileId);
@@ -454,15 +470,19 @@ export function markCollapsed(doc, fileId) {
  * `files` are the ones resolved before the edits. An anchor that arrived
  * collapsed is treated as detached and written detached. Detached anchors of
  * files this operation does not name join the plan with no edits, so that an
- * insertion here can re-pin them. Does not commit.
+ * insertion here can re-pin them. Those come from opts.others when it is
+ * given, and otherwise from a scan of the document. Does not commit.
  *
  * @param {import("loro-crdt").LoroDoc} doc
  * @param {{ fileId: string, before: string, anchors: Anchor[], edits: Edit[], fragments?: FragmentRange[] }[]} files
  * @param {MoveMemory} memory
- * @param {{ context?: number }} [opts]
+ * @param {{ context?: number, others?: { fileId: string, before: string, anchors: Anchor[], edits: Edit[] }[] }} [opts]
+ *   others: the pseudo-files for files this operation does not name, each with
+ *   its detached anchors. When given, the document is not scanned.
  * @returns {{ files: { fileId: string, after: string, anchors: PlannedAnchor[] }[] }}
  */
 export function recordOperation(doc, files, memory, opts) {
+  const { others, ...planOpts } = opts ?? {};
   const collapsed = new Set();
   const input = files.map((file) => ({
     ...file,
@@ -472,21 +492,25 @@ export function recordOperation(doc, files, memory, opts) {
       return { ...a, detached: true, collapsed: false, from: 0, to: 0, length: null };
     }),
   }));
-  const named = new Set(files.map((file) => file.fileId));
-  const elsewhere = new Map();
-  for (const [id, entry] of doc.getMap(ANCHORS).entries()) {
-    if (!(entry instanceof LoroMap)) continue;
-    const value = /** @type {any} */ (entry);
-    const fileId = value.get("file");
-    if (typeof fileId !== "string" || named.has(fileId) || value.get("detached") !== true) continue;
-    if (!elsewhere.has(fileId)) elsewhere.set(fileId, []);
-    elsewhere.get(fileId).push(detachedAnchor(value, id, fileId));
+  if (others) {
+    input.push(...others);
+  } else {
+    const named = new Set(files.map((file) => file.fileId));
+    const elsewhere = new Map();
+    for (const [id, entry] of doc.getMap(ANCHORS).entries()) {
+      if (!(entry instanceof LoroMap)) continue;
+      const value = /** @type {any} */ (entry);
+      const fileId = value.get("file");
+      if (typeof fileId !== "string" || named.has(fileId) || value.get("detached") !== true) continue;
+      if (!elsewhere.has(fileId)) elsewhere.set(fileId, []);
+      elsewhere.get(fileId).push(detachedAnchor(value, id, fileId));
+    }
+    for (const [fileId, anchors] of elsewhere) {
+      const text = fileText(doc, fileId);
+      input.push({ fileId, before: text ? text.toString() : "", anchors, edits: [] });
+    }
   }
-  for (const [fileId, anchors] of elsewhere) {
-    const text = fileText(doc, fileId);
-    input.push({ fileId, before: text ? text.toString() : "", anchors, edits: [] });
-  }
-  const plan = planOperation(input, memory, opts);
+  const plan = planOperation(input, memory, planOpts);
   for (const file of plan.files) {
     for (const a of file.anchors) if (collapsed.has(a.id)) a.state = "set";
   }
@@ -635,4 +659,299 @@ export function restoreByFragments(doc, fileId, restored) {
     value.delete("offset");
   }
   return repins.map((r) => r.id);
+}
+
+// The fields an Anchor carries, without the planner's bookkeeping.
+function toAnchor(a) {
+  return {
+    id: a.id,
+    file: a.file,
+    from: a.from,
+    to: a.to,
+    detached: a.detached,
+    fragment: a.fragment,
+    offset: a.offset,
+    length: a.length,
+    exact: a.exact,
+    prefix: a.prefix,
+    suffix: a.suffix,
+    collapsed: a.collapsed,
+    unresolved: a.unresolved,
+  };
+}
+
+/**
+ * The resolved anchors of each file, kept current in this session. Local
+ * operations go through record() and shift the cache with the planner, so an
+ * edit resolves no cursor. Remote text changes shift the cache in foreign mode,
+ * and the records another session changed are resolved again on import.
+ */
+export class AnchorIndex {
+  #doc;
+  /** @type {Map<string, { text: string, anchors: Anchor[] }>} */
+  #files = new Map();
+  /** text container id to file id, for the files that are cached */
+  #texts = new Map();
+  /** record container id to record id, and back */
+  #recordIds = new Map();
+  #containerIds = new Map();
+  #scratch = new MoveMemory();
+
+  /** @param {import("loro-crdt").LoroDoc} doc */
+  constructor(doc) {
+    this.#doc = doc;
+  }
+
+  /**
+   * Resolves a file's records from the document and caches them, with the
+   * text. Each record's container is remembered for its later changes.
+   * @param {string} fileId
+   * @returns {{ text: string, anchors: Anchor[] }}
+   */
+  load(fileId) {
+    const doc = this.#doc;
+    const text = fileText(doc, fileId);
+    const body = text ? text.toString() : "";
+    const anchors = [];
+    for (const [id, entry] of doc.getMap(ANCHORS).entries()) {
+      if (!(entry instanceof LoroMap)) continue;
+      const value = /** @type {any} */ (entry);
+      if (value.get("file") !== fileId) continue;
+      this.#remember(id, value);
+      anchors.push(toAnchor(recordAnchor(doc, id, value, fileId, body)));
+    }
+    if (text) this.#texts.set(text.id, fileId);
+    const entry = { text: body, anchors };
+    this.#files.set(fileId, entry);
+    return entry;
+  }
+
+  /**
+   * The cached text and anchors of a file, loading it when absent.
+   * @param {string} fileId
+   * @returns {{ text: string, anchors: Anchor[] }}
+   */
+  get(fileId) {
+    return this.#files.get(fileId) ?? this.load(fileId);
+  }
+
+  /**
+   * The cached anchors of a file, loading it when absent.
+   * @param {string} fileId
+   * @returns {Anchor[]}
+   */
+  anchors(fileId) {
+    return this.get(fileId).anchors;
+  }
+
+  /**
+   * Records an operation whose text is already in the document. The cached
+   * text and anchors are the before state, so no cursor is resolved. The cache
+   * takes the planned text and anchors of every file in the plan. Files must be
+   * cached before their text is edited. Does not commit.
+   *
+   * The detached anchors of the other cached files are the only ones a paste
+   * here can re-pin. Files that were never loaded are not consulted, so a
+   * detached anchor there stays where it is. The application loads every file
+   * of a project when it opens, so this does not come up in practice.
+   *
+   * @param {{ fileId: string, edits: Edit[], fragments?: FragmentRange[] }[]} files
+   * @param {MoveMemory} memory
+   * @param {{ context?: number }} [opts]
+   * @returns {{ files: { fileId: string, after: string, anchors: PlannedAnchor[] }[] }}
+   */
+  record(files, memory, opts) {
+    const input = files.map((file) => {
+      const entry = this.#loaded(file.fileId);
+      return {
+        fileId: file.fileId,
+        before: entry.text,
+        anchors: entry.anchors,
+        edits: file.edits,
+        fragments: file.fragments,
+      };
+    });
+    const named = new Set(input.map((file) => file.fileId));
+    const others = [];
+    for (const [fileId, entry] of this.#files) {
+      if (named.has(fileId)) continue;
+      const anchors = entry.anchors.filter((a) => a.detached);
+      if (anchors.length > 0) others.push({ fileId, before: entry.text, anchors, edits: [] });
+    }
+    const plan = recordOperation(this.#doc, input, memory, { ...opts, others });
+    for (const file of plan.files) {
+      const anchors = file.anchors.map(toAnchor);
+      if (named.has(file.fileId)) {
+        this.#files.set(file.fileId, { text: file.after, anchors });
+        continue;
+      }
+      // Recorded only for its detached anchors, which a paste here may re-pin.
+      // Its attached anchors were not passed in, so they stay.
+      const entry = this.#files.get(file.fileId);
+      if (entry) {
+        const kept = entry.anchors.filter((a) => !a.detached);
+        this.#files.set(file.fileId, { text: file.after, anchors: [...kept, ...anchors] });
+      }
+    }
+    return plan;
+  }
+
+  /**
+   * Applies the edits to each file's text, commits, records them with
+   * record(), and commits the anchor work under ANCHORS_ORIGIN. Like
+   * applyOperation, but with no cursor resolution. Returns the plan.
+   *
+   * @param {{ fileId: string, edits: Edit[], fragments?: FragmentRange[] }[]} files
+   * @param {MoveMemory} memory
+   * @param {{ context?: number }} [opts]
+   * @returns {{ files: { fileId: string, after: string, anchors: PlannedAnchor[] }[] }}
+   */
+  apply(files, memory, opts) {
+    const doc = this.#doc;
+    const edited = files.filter((file) => fileText(doc, file.fileId) !== null);
+    // Loaded before the first edit, so the cache holds the before state.
+    for (const file of edited) this.get(file.fileId);
+    for (const file of edited) {
+      const text = fileText(doc, file.fileId);
+      let adj = 0;
+      for (const edit of file.edits) {
+        const ef = edit.from + adj;
+        const et = edit.to + adj;
+        if (et > ef) text.delete(ef, et - ef);
+        if (edit.insert) text.insert(ef, edit.insert);
+        adj += edit.insert.length - (edit.to - edit.from);
+      }
+    }
+    doc.commit();
+    const plan = this.record(edited, memory, opts);
+    doc.commit({ origin: ANCHORS_ORIGIN });
+    return plan;
+  }
+
+  /**
+   * Keeps the cache current across imports. For each import batch: the cached
+   * files' text deltas shift their anchors in foreign mode, then the records
+   * that the batch changed are resolved again by refresh(). Local batches are
+   * ignored: they go through record().
+   *
+   * @returns {() => void} the unsubscribe function
+   */
+  attach() {
+    return this.#doc.subscribe((batch) => {
+      if (batch.by !== "import") return;
+      for (const event of batch.events) {
+        const fileId = this.#texts.get(event.target);
+        if (fileId !== undefined && event.diff.type === "text") {
+          this.#shift(fileId, editsFromDelta(event.diff.diff));
+        }
+      }
+      const root = this.#doc.getMap(ANCHORS).id;
+      const maps = batch.events.filter((event) => event.diff.type === "map");
+      // Records that appeared or were replaced are learned first, so that the
+      // events on their containers can be placed.
+      const changed = new Set();
+      for (const event of maps) {
+        if (event.target !== root) continue;
+        for (const [id, value] of Object.entries(event.diff.updated)) {
+          if (value instanceof LoroMap) this.#remember(id, value);
+          changed.add(id);
+        }
+      }
+      // A record of a file that is not cached can move into one that is, so an
+      // unknown container triggers one pass that learns every record's container.
+      if (maps.some((event) => event.target !== root && !this.#recordIds.has(event.target))) {
+        this.#learn();
+      }
+      for (const event of maps) {
+        if (event.target === root) continue;
+        const id = this.#recordIds.get(event.target);
+        if (id !== undefined) changed.add(id);
+      }
+      if (changed.size > 0) this.refresh([...changed]);
+    });
+  }
+
+  /**
+   * Resolves the given records from the document and replaces them in the
+   * cache. A record that is gone is removed from every file. A record whose file
+   * changed leaves its old file and joins the new one, loading that file when it
+   * is not cached. Does not commit.
+   *
+   * @param {string[]} ids
+   * @returns {string[]} the ids refreshed
+   */
+  refresh(ids) {
+    const doc = this.#doc;
+    const records = doc.getMap(ANCHORS);
+    /** @type {Map<string, string>} */
+    const bodies = new Map();
+    for (const id of ids) {
+      const value = /** @type {any} */ (records.get(id));
+      const fileId = value instanceof LoroMap ? value.get("file") : undefined;
+      if (!(value instanceof LoroMap) || typeof fileId !== "string") {
+        this.#forget(id);
+        continue;
+      }
+      this.#remember(id, value);
+      this.#drop(id, fileId);
+      if (!this.#files.has(fileId)) {
+        this.load(fileId);
+        continue;
+      }
+      if (!bodies.has(fileId)) {
+        const text = fileText(doc, fileId);
+        bodies.set(fileId, text ? text.toString() : "");
+      }
+      const anchor = toAnchor(recordAnchor(doc, id, value, fileId, /** @type {string} */ (bodies.get(fileId))));
+      const entry = /** @type {{ text: string, anchors: Anchor[] }} */ (this.#files.get(fileId));
+      this.#files.set(fileId, { ...entry, anchors: [...entry.anchors.filter((a) => a.id !== id), anchor] });
+    }
+    return [...ids];
+  }
+
+  /** @returns {{ text: string, anchors: Anchor[] }} */
+  #loaded(fileId) {
+    const entry = this.#files.get(fileId);
+    if (!entry) throw new Error(`anchors: ${fileId} must be loaded before its edit is recorded`);
+    return entry;
+  }
+
+  #learn() {
+    for (const [id, value] of this.#doc.getMap(ANCHORS).entries()) {
+      if (value instanceof LoroMap) this.#remember(id, /** @type {any} */ (value));
+    }
+  }
+
+  #remember(id, value) {
+    const old = this.#containerIds.get(id);
+    if (old !== undefined) this.#recordIds.delete(old);
+    this.#containerIds.set(id, value.id);
+    this.#recordIds.set(value.id, id);
+  }
+
+  #forget(id) {
+    const container = this.#containerIds.get(id);
+    if (container !== undefined) this.#recordIds.delete(container);
+    this.#containerIds.delete(id);
+    this.#drop(id, null);
+  }
+
+  // Removes a record from every cached file except keep.
+  #drop(id, keep) {
+    for (const [fileId, entry] of this.#files) {
+      if (fileId === keep || !entry.anchors.some((a) => a.id === id)) continue;
+      this.#files.set(fileId, { ...entry, anchors: entry.anchors.filter((a) => a.id !== id) });
+    }
+  }
+
+  #shift(fileId, edits) {
+    const entry = this.#files.get(fileId);
+    if (!entry || edits.length === 0) return;
+    const [file] = planOperation(
+      [{ fileId, before: entry.text, anchors: entry.anchors, edits }],
+      this.#scratch,
+      { foreign: true },
+    ).files;
+    this.#files.set(fileId, { text: file.after, anchors: file.anchors.map(toAnchor) });
+  }
 }

@@ -1,14 +1,23 @@
 // Timings for the anchor layer on one document of about 60,000 characters.
 //
-// Each run builds N anchors on distinct words, then times 200 keystrokes through
-// applyOperation and 20 full resolutions, each call timed alone. With no
-// argument it runs N = 1, 100 and 1000, one line each; with an argument it runs
-// that N only.
+// Each run builds N anchors on distinct words, then times 200 keystrokes on
+// that document twice: through applyOperation, which resolves every anchor's
+// cursors (path "resolve"), and through an AnchorIndex that is loaded and
+// attached once before the timing (path "index"). The resolve path also times
+// 20 full resolutions, each call timed alone. With no argument it runs N = 1,
+// 100 and 1000, two lines each; with an argument it runs that N only.
 //
 // Usage: node web/tools/anchors-bench.mjs [N]
 import { performance } from "node:perf_hooks";
 import { LoroDoc, LoroText } from "loro-crdt";
-import { CONTEXT_UNITS, MoveMemory, applyOperation, createAnchor, resolveAnchors } from "../src/lib/anchors.js";
+import {
+  AnchorIndex,
+  CONTEXT_UNITS,
+  MoveMemory,
+  applyOperation,
+  createAnchor,
+  resolveAnchors,
+} from "../src/lib/anchors.js";
 
 const TARGET_CHARS = 60000;
 const KEYSTROKES = 200;
@@ -50,7 +59,9 @@ function p95(values) {
   return sorted[Math.min(sorted.length - 1, Math.ceil(0.95 * sorted.length) - 1)];
 }
 
-function run(anchorCount) {
+// path is "resolve" (applyOperation) or "index" (AnchorIndex.apply). Both see
+// the same document and the same keystrokes.
+function run(anchorCount, path) {
   const rnd = random(7);
   const started = performance.now();
   const { text, words } = buildText(rnd);
@@ -80,37 +91,48 @@ function run(anchorCount) {
   doc.commit();
 
   const memory = new MoveMemory();
-  const applyMs = [];
+  let index = null;
+  if (path === "index") {
+    index = new AnchorIndex(doc);
+    index.load("f1");
+    index.attach();
+  }
+  const keystrokeMs = [];
   let length = text.length;
   for (let k = 0; k < KEYSTROKES; k++) {
     const at = Math.floor(rnd() * (length + 1));
     const letter = LETTERS[Math.floor(rnd() * LETTERS.length)];
     const edits = [{ from: at, to: at, insert: letter }];
     const t0 = performance.now();
-    applyOperation(doc, [{ fileId: "f1", edits }], memory, {});
-    applyMs.push(performance.now() - t0);
+    if (index) index.apply([{ fileId: "f1", edits }], memory, {});
+    else applyOperation(doc, [{ fileId: "f1", edits }], memory, {});
+    keystrokeMs.push(performance.now() - t0);
     length += 1;
   }
 
   const resolveMs = [];
-  for (let k = 0; k < RESOLVES; k++) {
-    const t0 = performance.now();
-    resolveAnchors(doc, "f1");
-    resolveMs.push(performance.now() - t0);
+  if (!index) {
+    for (let k = 0; k < RESOLVES; k++) {
+      const t0 = performance.now();
+      resolveAnchors(doc, "f1");
+      resolveMs.push(performance.now() - t0);
+    }
   }
 
-  return { applyMs, resolveMs, totalMs: performance.now() - started };
+  return { keystrokeMs, resolveMs, totalMs: performance.now() - started };
 }
 
 function report(anchorCount) {
-  const { applyMs, resolveMs, totalMs } = run(anchorCount);
-  console.log(
-    `anchors=${anchorCount}` +
-      ` applyOperation_ms_median=${median(applyMs).toFixed(3)}` +
-      ` applyOperation_ms_p95=${p95(applyMs).toFixed(3)}` +
-      ` resolveAnchors_ms_median=${median(resolveMs).toFixed(3)}` +
-      ` total_ms=${totalMs.toFixed(1)}`,
-  );
+  for (const path of ["resolve", "index"]) {
+    const { keystrokeMs, resolveMs, totalMs } = run(anchorCount, path);
+    let line =
+      `anchors=${anchorCount} path=${path}` +
+      ` keystroke_ms_median=${median(keystrokeMs).toFixed(3)}` +
+      ` keystroke_ms_p95=${p95(keystrokeMs).toFixed(3)}`;
+    if (path === "resolve") line += ` resolveAnchors_ms_median=${median(resolveMs).toFixed(3)}`;
+    line += ` total_ms=${totalMs.toFixed(1)}`;
+    console.log(line);
+  }
 }
 
 const argument = process.argv[2];
