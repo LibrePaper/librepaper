@@ -11,7 +11,7 @@ use std::collections::HashSet;
 
 use loro::LoroDoc;
 
-use librepaper_document::document::anchors::{self, Status};
+use librepaper_document::document::anchors::{Reader, Status};
 use librepaper_document::document::projection::Projected;
 use librepaper_engine::storage::annotation::{
     AnchorStatus, DerivedAttachment, FileId, ResolutionDiagnostic,
@@ -23,7 +23,8 @@ impl Room {
     /// Fills in where each source-anchored comment's passage is now.
     ///
     /// One read of the head covers the whole slice, so every attachment in it
-    /// names the same projection digest. A comment about the document as a whole
+    /// names the same projection digest. Each file's text is read once per page,
+    /// however many comments sit on it. A comment about the document as a whole
     /// has no passage and keeps none. A failed read leaves the comments without
     /// one, which every caller already reads as "not yet known".
     pub(crate) async fn derive(&self, comments: &mut [Comment]) {
@@ -47,17 +48,23 @@ fn derive_into(doc: &LoroDoc, projected: &Projected, comments: &mut [Comment]) {
         .filter(|entry| entry.kind == "text" && !entry.id.is_empty())
         .map(|entry| entry.id.as_str())
         .collect();
+    let mut reader = Reader::new(doc);
     for comment in comments.iter_mut() {
         if comment.source().is_none() {
             continue;
         }
-        comment.attachment = Some(attach(doc, &texts, &comment.id, &tree_digest));
+        comment.attachment = Some(attach(&mut reader, &texts, &comment.id, &tree_digest));
     }
 }
 
 /// Where one comment's passage is, from its record and the text it names.
-fn attach(doc: &LoroDoc, texts: &HashSet<&str>, id: &str, tree_digest: &str) -> DerivedAttachment {
-    let Some(anchor) = anchors::resolve_anchor(doc, id) else {
+fn attach(
+    reader: &mut Reader<'_>,
+    texts: &HashSet<&str>,
+    id: &str,
+    tree_digest: &str,
+) -> DerivedAttachment {
+    let Some(anchor) = reader.resolve(id) else {
         // No record: nothing says where this comment's passage is.
         return without_range(tree_digest, AnchorStatus::Unresolved, None);
     };
@@ -70,7 +77,7 @@ fn attach(doc: &LoroDoc, texts: &HashSet<&str>, id: &str, tree_digest: &str) -> 
             Some(ResolutionDiagnostic::RemovedFile),
         );
     }
-    let status = attachment_status(anchors::status_of(doc, &anchor));
+    let status = attachment_status(reader.status(&anchor));
     let placed = status.is_placed();
     DerivedAttachment {
         tree_digest: tree_digest.to_string(),

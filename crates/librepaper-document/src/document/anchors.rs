@@ -733,6 +733,80 @@ fn record_anchor(
     anchor
 }
 
+/// Reads records against the head, materializing each file's text once.
+///
+/// A pass that reads many records of one file keeps that file's text here, so
+/// the text is copied once for the pass and not once per record. The cached
+/// text is valid only while the head does not change, so a reader lives for one
+/// read-only pass. It never writes: resolving a stale cursor can commit pending
+/// operations.
+pub struct Reader<'a> {
+    doc: &'a LoroDoc,
+    lives: HashMap<String, Option<Live>>,
+}
+
+impl<'a> Reader<'a> {
+    /// A reader over the head of `doc`. No file has been read yet.
+    pub fn new(doc: &'a LoroDoc) -> Self {
+        Self {
+            doc,
+            lives: HashMap::new(),
+        }
+    }
+
+    /// One anchor record, read by its comment id and resolved as
+    /// [`resolve_anchors`] resolves it. None when there is no such record.
+    pub fn resolve(&mut self, id: &str) -> Option<Anchor> {
+        let doc = self.doc;
+        let map = doc.get_map(ANCHORS);
+        let record = record_map(&map, id)?;
+        let file_id = str_of(&record, "file")?;
+        let live = self.live(&file_id);
+        Some(record_anchor(doc, id, &record, &file_id, live))
+    }
+
+    /// The status of an anchor, from its record and the text now.
+    pub fn status(&mut self, anchor: &Anchor) -> Status {
+        let doc = self.doc;
+        if anchor.unresolved {
+            return Status::Unresolved;
+        }
+        if anchor.detached {
+            let pending = anchor.fragment.as_deref().is_some_and(|fragment| {
+                matches!(
+                    doc.get_map(CHANGES).get(fragment),
+                    Some(ValueOrContainer::Container(Container::Map(_)))
+                )
+            });
+            return if pending {
+                Status::PendingDeletion
+            } else {
+                Status::Deleted
+            };
+        }
+        if anchor.collapsed {
+            return Status::Deleted;
+        }
+        let body = self
+            .live(&anchor.file)
+            .map_or("", |live| live.body.as_str());
+        if slice16(body, anchor.from, anchor.to) == anchor.exact {
+            Status::Exact
+        } else {
+            Status::Modified
+        }
+    }
+
+    /// The file's live text, read on first use. None when the file has no text.
+    fn live(&mut self, file_id: &str) -> Option<&Live> {
+        let doc = self.doc;
+        self.lives
+            .entry(file_id.to_string())
+            .or_insert_with(|| live_of(doc, file_id))
+            .as_ref()
+    }
+}
+
 /// The anchor records of one file, resolved to offsets. Detached records are
 /// returned without resolving their cursors.
 pub fn resolve_anchors(doc: &LoroDoc, file_id: &str) -> Vec<Anchor> {
@@ -755,11 +829,7 @@ pub fn resolve_anchors(doc: &LoroDoc, file_id: &str) -> Vec<Anchor> {
 /// One anchor record, read by its comment id and resolved as
 /// [`resolve_anchors`] resolves it. None when there is no such record.
 pub fn resolve_anchor(doc: &LoroDoc, id: &str) -> Option<Anchor> {
-    let map = doc.get_map(ANCHORS);
-    let record = record_map(&map, id)?;
-    let file_id = str_of(&record, "file")?;
-    let live = live_of(doc, &file_id);
-    Some(record_anchor(doc, id, &record, &file_id, live.as_ref()))
+    Reader::new(doc).resolve(id)
 }
 
 /// Creates an attached anchor record. Does not commit. Returns false when the
@@ -1200,33 +1270,7 @@ pub enum Status {
 
 /// The status of an anchor, from its record and the text now.
 pub fn status_of(doc: &LoroDoc, anchor: &Anchor) -> Status {
-    if anchor.unresolved {
-        return Status::Unresolved;
-    }
-    if anchor.detached {
-        let pending = anchor.fragment.as_deref().is_some_and(|fragment| {
-            matches!(
-                doc.get_map(CHANGES).get(fragment),
-                Some(ValueOrContainer::Container(Container::Map(_)))
-            )
-        });
-        return if pending {
-            Status::PendingDeletion
-        } else {
-            Status::Deleted
-        };
-    }
-    if anchor.collapsed {
-        return Status::Deleted;
-    }
-    let body = text_of(doc, &anchor.file)
-        .map(|t| t.to_string())
-        .unwrap_or_default();
-    if slice16(&body, anchor.from, anchor.to) == anchor.exact {
-        Status::Exact
-    } else {
-        Status::Modified
-    }
+    Reader::new(doc).status(anchor)
 }
 
 /// Text that a rejected tracked deletion put back. `at` is its UTF-16 offset
@@ -1886,6 +1930,34 @@ mod tests {
         assert_eq!((anchors[0].from, anchors[0].to), (6, 10));
         assert_eq!(anchors[0].exact, "beta");
         assert_eq!(status_of(&doc, &anchors[0]), Status::Exact);
+    }
+
+    /// One reader answers each record of a file as the free functions do. A
+    /// record that names a file which is gone reads as unresolved.
+    #[test]
+    fn a_reader_answers_each_record_as_the_free_functions_do() {
+        let (doc, file) = setup("alpha beta gamma");
+        assert!(create_anchor(
+            &doc, &file, "c1", 6, 10, "beta", "alpha ", " gamma"
+        ));
+        assert!(create_anchor(&doc, &file, "c2", 11, 16, "gamma", "beta ", ""));
+        let (start, end) = capture_cursors(&doc, &file, 6, 10).unwrap();
+        assert!(create_anchor_with_cursors(
+            &doc, "gone.md", "c3", &start, &end, "beta", "", ""
+        ));
+        doc.commit();
+
+        let mut reader = Reader::new(&doc);
+        for id in ["c1", "c2"] {
+            let anchor = reader.resolve(id).unwrap();
+            assert_eq!(Some(anchor.clone()), resolve_anchor(&doc, id));
+            assert_eq!(reader.status(&anchor), status_of(&doc, &anchor));
+            assert_eq!(reader.status(&anchor), Status::Exact);
+        }
+        let gone = reader.resolve("c3").unwrap();
+        assert!(gone.unresolved);
+        assert_eq!(Some(gone.clone()), resolve_anchor(&doc, "c3"));
+        assert_eq!(reader.status(&gone), Status::Unresolved);
     }
 
     #[test]
