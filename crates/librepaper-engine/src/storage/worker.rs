@@ -21,16 +21,17 @@
 //! long ago carries a low id, and its `deleted_at` may be set while the pass
 //! is already past that id, which leaves the work invisible to the rest of
 //! the pass. The unconditional second pass, from a fresh cursor, sees it.
-//! Once both are done, the worker never runs a bare document scan again on its
-//! own. The two storage sweeps run on bounded periodic deadlines.
-//! Afterwards document work is woken by events that create its state. The
-//! orphan-object sweep is the exception: it runs periodically so blobs left
-//! by refused uploads are eventually reclaimed. Each orphan sweep also asks
-//! for one durable rescan, because an operator command in another process
-//! can write durable work with no live ask in this one. A full bounded queue sets one coalesced overflow bit;
-//! when the worker reaches it, the worker walks the durable state again in
-//! bounded pages. Wake-ups therefore remain recoverable without allocating a
-//! waiter per sender or polling an idle database.
+//! Once both are done, the worker runs no document scan of its own except
+//! the one that follows each orphan sweep. The two storage sweeps run on
+//! bounded periodic deadlines. Afterwards document work is woken by events
+//! that create its state. The orphan-object sweep is the exception: it runs
+//! periodically so blobs left by refused uploads are eventually reclaimed,
+//! and each sweep also asks for one durable rescan, because an operator
+//! command in another process can write durable work with no live ask in
+//! this one. A full bounded queue sets one coalesced overflow bit; when the
+//! worker reaches it, the worker walks the durable state again in bounded
+//! pages. Wake-ups therefore remain recoverable without allocating a waiter
+//! per sender or polling an idle database.
 //!
 //! Wake-ups that need a future deadline instead of an immediate task (a
 //! failure's backoff, a deletion's grace period, a superseded base's grace,
@@ -1455,7 +1456,10 @@ mod tests {
             now,
         );
 
-        assert_eq!(local, VecDeque::from([Task::Scan(PendingWorkCursor::default())]));
+        assert_eq!(
+            local,
+            VecDeque::from([Task::Scan(PendingWorkCursor::default())])
+        );
         assert!(!handle.rescan.load(Ordering::Acquire));
     }
 
