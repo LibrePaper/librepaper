@@ -409,10 +409,10 @@
             steps.push({ transaction, edits });
           }
           if (!steps.length) return;
-          const edits = composeEdits(steps.map((step) => step.edits));
+          const composed = composeEdits(steps.map((step) => step.edits));
           const before = steps[0].transaction.startState.doc.toString();
-          const fragments = edits.some((edit) => edit.to > edit.from) ? fragmentRangesFor(before, edits, createdFragments()) : [];
-          session.anchors.record([{ fileId, edits, fragments }], session.anchorMemory);
+          const fragments = composed.some((edit) => edit.to > edit.from) ? fragmentRangesFor(before, composed, createdFragments()) : [];
+          session.anchors.record([{ fileId, edits: composed, fragments }], session.anchorMemory);
           doc.commit({ origin: ANCHORS_ORIGIN });
         },
       };

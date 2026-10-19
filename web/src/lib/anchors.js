@@ -1031,7 +1031,7 @@ export class AnchorIndex {
    * recorded here from the text events it produced. The edits of each file it
    * touched go through record() under ANCHORS_ORIGIN, so the anchors follow the
    * text back even in a file that is not on screen. Every other local batch is
-   * ignored, since the editor plugin records those through apply().
+   * ignored: the editor plugin records the user's own edits through record().
    *
    * For each import batch: the cached files' text deltas shift their anchors in
    * foreign mode, then the records that the batch changed are resolved again by
