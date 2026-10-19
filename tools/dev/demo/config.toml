@@ -16,8 +16,7 @@ address = "0.0.0.0:9091"
 trusted_networks = ["172.30.0.0/16"]
 
 [access]
-publishers = ["any"]
-commenters = ["anyone"]
+anonymous_comments = true
 
 [demo]
 simulate_activity_days = 21

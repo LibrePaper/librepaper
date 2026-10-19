@@ -14,5 +14,4 @@ fsync = false
 object_store = "filesystem"
 
 [access]
-publishers = ["any"]
-commenters = ["anyone"]
+anonymous_comments = true
