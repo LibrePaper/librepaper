@@ -105,6 +105,7 @@ pub enum ModerationAction {
     UnhideProject,
     BanHandle,
     UnbanHandle,
+    EraseAccount,
 }
 
 impl ModerationAction {
@@ -116,6 +117,7 @@ impl ModerationAction {
             Self::UnhideProject => "unhide_project",
             Self::BanHandle => "ban_handle",
             Self::UnbanHandle => "unban_handle",
+            Self::EraseAccount => "erase_account",
         }
     }
 }
@@ -187,6 +189,88 @@ impl PostgresCatalog {
             } else {
                 ModerationAction::UnblockAccount
             },
+            "account",
+            id,
+            &label,
+            reason,
+        )
+        .await?;
+        tx.commit().await?;
+        Ok((id, label))
+    }
+
+    /// Starts the same erasure the owner's Settings button starts: the account
+    /// becomes `erasing`, its sessions end, and its active documents are marked
+    /// `deleting`. The background worker then purges those documents after the
+    /// deletion grace and deletes the account row. The running service picks
+    /// this durable state up on its hourly rescan or at startup.
+    pub async fn erase_account_by_operator(
+        &self,
+        selector: &str,
+        actor: &str,
+        reason: &str,
+    ) -> Result<(Uuid, String)> {
+        validate_operator_fields(actor, reason)?;
+        let mut tx = self.begin_metered().await?;
+        let matches = if let Ok(id) = Uuid::parse_str(selector) {
+            sqlx::query(
+                "SELECT id,kind,provider,handle,status FROM accounts WHERE id=$1 FOR UPDATE",
+            )
+            .bind(id)
+            .fetch_all(&mut *tx)
+            .await?
+        } else {
+            sqlx::query(
+                "SELECT id,kind,provider,handle,status FROM accounts
+                 WHERE lower(handle)=lower($1) ORDER BY id LIMIT 2 FOR UPDATE",
+            )
+            .bind(selector.trim())
+            .fetch_all(&mut *tx)
+            .await?
+        };
+        let row = match matches.as_slice() {
+            [] => return Err(Error::NotFound),
+            [row] => row,
+            _ => {
+                return Err(Error::Invalid(
+                    "account handle is ambiguous; use its UUID".into(),
+                ))
+            }
+        };
+        let id: Uuid = row.try_get("id")?;
+        let kind: String = row.try_get("kind")?;
+        let provider: Option<String> = row.try_get("provider")?;
+        let handle: String = row.try_get("handle")?;
+        let status: String = row.try_get("status")?;
+        if kind != "registered" {
+            return Err(Error::Conflict(
+                "only registered accounts can be erased".into(),
+            ));
+        }
+        if status == "erasing" {
+            return Err(Error::Conflict("account is already being erased".into()));
+        }
+        // A blocked account is accepted on purpose. The owner path refuses
+        // blocked accounts so a blocked person cannot erase the record
+        // themselves, but the operator may.
+        sqlx::query("UPDATE accounts SET status='erasing',session_generation=session_generation+1 WHERE id=$1")
+            .bind(id)
+            .execute(&mut *tx)
+            .await?;
+        sqlx::query(
+            "UPDATE documents SET status='deleting',deleted_at=COALESCE(deleted_at,now()),updated_at=now()
+             WHERE owner_id=$1 AND status='active'",
+        )
+        .bind(id)
+        .execute(&mut *tx)
+        .await?;
+        let label = provider
+            .map(|provider| format!("{provider}:{handle}"))
+            .unwrap_or(handle);
+        insert_audit(
+            &mut tx,
+            actor,
+            ModerationAction::EraseAccount,
             "account",
             id,
             &label,
@@ -576,6 +660,86 @@ mod tests {
         .await
         .unwrap();
         assert_eq!(audits, 2);
+        catalog.close().await;
+    }
+
+    #[tokio::test]
+    #[ignore = "requires LIBREPAPER_TEST_POSTGRES_URL"]
+    async fn operator_erasure_marks_the_account_and_its_documents_and_audits_it() {
+        let catalog = test_catalog().await;
+        crate::testing::reset(&catalog).await;
+        let id = insert_account(&catalog, "registered", "active", 0).await;
+        insert_document_with_bytes(&catalog, id, 100).await;
+        let before: i64 = sqlx::query_scalar("SELECT session_generation FROM accounts WHERE id=$1")
+            .bind(id)
+            .fetch_one(catalog.pool())
+            .await
+            .unwrap();
+        let handle = format!("inactive-{id}");
+
+        let (erased, label) = catalog
+            .erase_account_by_operator(&handle, "operator", "erase request")
+            .await
+            .unwrap();
+        assert_eq!(erased, id);
+        assert_eq!(label, format!("github:{handle}"));
+        let status: String = sqlx::query_scalar("SELECT status FROM accounts WHERE id=$1")
+            .bind(id)
+            .fetch_one(catalog.pool())
+            .await
+            .unwrap();
+        let generation: i64 = sqlx::query_scalar("SELECT session_generation FROM accounts WHERE id=$1")
+            .bind(id)
+            .fetch_one(catalog.pool())
+            .await
+            .unwrap();
+        assert_eq!(status, "erasing");
+        assert_eq!(generation, before + 1);
+        let documents: Vec<(String, bool)> = sqlx::query_as(
+            "SELECT status, deleted_at IS NOT NULL FROM documents WHERE owner_id=$1",
+        )
+        .bind(id)
+        .fetch_all(catalog.pool())
+        .await
+        .unwrap();
+        assert_eq!(documents.len(), 1);
+        assert!(documents
+            .iter()
+            .all(|(status, deleted)| status == "deleting" && *deleted));
+        let audits: i64 = sqlx::query_scalar(
+            "SELECT count(*) FROM moderation_audit WHERE target_id=$1 AND action='erase_account'",
+        )
+        .bind(id)
+        .fetch_one(catalog.pool())
+        .await
+        .unwrap();
+        assert_eq!(audits, 1);
+        assert!(matches!(
+            catalog
+                .erase_account_by_operator(&handle, "operator", "erase request")
+                .await,
+            Err(Error::Conflict(_))
+        ));
+
+        let blocked = insert_account(&catalog, "registered", "blocked", 0).await;
+        catalog
+            .erase_account_by_operator(&blocked.to_string(), "operator", "erase request")
+            .await
+            .unwrap();
+        let blocked_status: String = sqlx::query_scalar("SELECT status FROM accounts WHERE id=$1")
+            .bind(blocked)
+            .fetch_one(catalog.pool())
+            .await
+            .unwrap();
+        assert_eq!(blocked_status, "erasing");
+
+        let anonymous = insert_account(&catalog, "anonymous", "active", 0).await;
+        assert!(matches!(
+            catalog
+                .erase_account_by_operator(&anonymous.to_string(), "operator", "erase request")
+                .await,
+            Err(Error::Conflict(_))
+        ));
         catalog.close().await;
     }
 
