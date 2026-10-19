@@ -3,14 +3,16 @@
   import { Tabs } from "@skeletonlabs/skeleton-svelte";
   // The New project page: three ways to begin, one name. Blank starts empty,
   // From Template starts from a catalog, Upload Files from what the person
-  // already has. Nothing here creates a project until Create project is
-  // pressed; switching tabs and picking a template only change what the
-  // button would make.
+  // already has. The desktop app adds a fourth, From a Link, which opens a
+  // project someone shared rather than creating one. Nothing here creates a
+  // project until Create project is pressed; switching tabs and picking a
+  // template only change what the button would make.
   //
   // All state lives in this file, not in the tabs, because a tab that is not
   // showing is not in the page and must still remember what was typed in it.
   import Modal from "./Modal.svelte";
   import IconButton from "./IconButton.svelte";
+  import * as localBridge from "../lib/desktop/client.js";
   import { SHELL_HEADERS, upload } from "../lib/api.js";
   import { FORMATS, formatNamed, fillTemplate } from "../lib/starter.js";
   import { BUILT_IN, templateFiles } from "../lib/templates.js";
@@ -41,7 +43,21 @@
     { id: "blank", label: "Blank" },
     { id: "template", label: "From Template" },
     { id: "upload", label: "Upload Files" },
+    ...(localBridge.desktop() ? [{ id: "link", label: "From a Link" }] : []),
   ];
+
+  // A link from this server, share links included, opens here with its key.
+  // Links are pasted rather than passed by the system, so a key never leaves the page.
+  let linkInput = $state("");
+  let linkError = $state("");
+  function openLink(event) {
+    event.preventDefault();
+    linkError = "";
+    let url;
+    try { url = new URL(linkInput.trim(), location.href); } catch { linkError = "That is not a link."; return; }
+    if (url.origin !== location.origin) { linkError = `Paste a link from ${location.host}.`; return; }
+    location.assign(url.href);
+  }
 
   function rememberedFormat() {
     try {
@@ -400,6 +416,19 @@
         {@render uploader()}
       {/if}
     </Tabs.Content>
+
+    <Tabs.Content value="link">
+      {#if tab === "link"}
+        <form class="np-form open-link" onsubmit={openLink}>
+          <p class="np-muted">Open a project someone shared with you. Paste its link from this server.</p>
+          <input class="input input-sm" type="url" placeholder="Paste a LibrePaper link, such as a share link" aria-label="LibrePaper link" bind:value={linkInput} />
+          <div class="np-actions">
+            <button type="submit" class="btn btn-sm lp-control-brand">Open</button>
+          </div>
+          {#if linkError}<p class="open-link-error" role="alert">{linkError}</p>{/if}
+        </form>
+      {/if}
+    </Tabs.Content>
   </Tabs>
 </section>
 
@@ -658,6 +687,9 @@
   .np-label { font-size: var(--text-sm); color: var(--color-text-secondary); }
   .np-actions { display: flex; justify-content: flex-end; }
   .np-preview .np-actions { width: 100%; }
+  .open-link p { flex-basis: 100%; }
+  .open-link input { flex: 1; min-width: 12rem; max-width: 32rem; }
+  .open-link-error { color: var(--color-error-text); font-size: var(--text-sm); }
   .np-form :global(.new-project-error) { flex-basis: 100%; order: 1; margin: 0; }
   .np-row { display: flex; flex-wrap: wrap; gap: calc(var(--spacing) * 2); }
 
