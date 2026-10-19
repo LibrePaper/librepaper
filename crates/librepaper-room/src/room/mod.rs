@@ -39,6 +39,7 @@ pub mod agent;
 pub mod agent_query;
 mod agent_view;
 pub use librepaper_engine::storage::annotation;
+mod backfill;
 mod catalog;
 pub mod chat;
 mod command;
@@ -648,6 +649,13 @@ impl Rooms {
             #[cfg(test)]
             event_comment_reads: std::sync::atomic::AtomicUsize::new(0),
         });
+        // Before the room is shared, so no socket can edit it first. A comment
+        // made before anchor records existed gets its record here. A failure
+        // opens the room anyway, and its comments read as unresolved until the
+        // next open.
+        if let Err(error) = backfill::backfill_anchors(&room).await {
+            tracing::warn!("could not backfill comment anchors for {slug}: {error}");
+        }
         let mut open = self.open.lock().await;
         // Somebody may have opened it while the two reads above were in
         // flight; theirs is the one holding the sockets.

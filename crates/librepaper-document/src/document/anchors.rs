@@ -654,25 +654,75 @@ pub fn create_anchor(
     prefix: &str,
     suffix: &str,
 ) -> bool {
-    let Some(live) = live_of(doc, file_id) else {
+    let Some((start, end)) = capture_cursors(doc, file_id, from, to) else {
         return false;
     };
+    create_anchor_with_cursors(doc, file_id, id, &start, &end, exact, prefix, suffix)
+}
+
+/// The pair of cursors a record holds for the passage `from..to`: the start on
+/// its first character and the end on its last, which is how the browser's
+/// planner writes them too. Does not commit. None when the file has no text,
+/// `to` is not past `from`, or a cursor cannot be made.
+pub fn capture_cursors(
+    doc: &LoroDoc,
+    file_id: &str,
+    from: usize,
+    to: usize,
+) -> Option<(Vec<u8>, Vec<u8>)> {
+    let live = live_of(doc, file_id)?;
     if to <= from {
-        return false;
+        return None;
     }
-    let (Some(start), Some(end)) = (
-        cursor_at(&live.text, from, Side::Left),
-        cursor_at(&live.text, last_char_start(&live.body, to), Side::Right),
-    ) else {
-        return false;
-    };
+    let start = cursor_at(&live.text, from, Side::Left)?;
+    let end = cursor_at(&live.text, last_char_start(&live.body, to), Side::Right)?;
+    Some((start.encode(), end.encode()))
+}
+
+/// Creates an attached anchor record from cursors that are already encoded,
+/// such as the ones a comment's frontier gives when it is captured. Does not
+/// commit. Returns false when the record cannot be made.
+#[allow(clippy::too_many_arguments)]
+pub fn create_anchor_with_cursors(
+    doc: &LoroDoc,
+    file_id: &str,
+    id: &str,
+    start: &[u8],
+    end: &[u8],
+    exact: &str,
+    prefix: &str,
+    suffix: &str,
+) -> bool {
     doc.set_next_commit_origin(ANCHORS_ORIGIN);
     let Ok(record) = doc.get_map(ANCHORS).insert_container(id, LoroMap::new()) else {
         return false;
     };
     record.insert("file", LoroValue::from(file_id)).ok();
-    record.insert("start", LoroValue::from(start.encode())).ok();
-    record.insert("end", LoroValue::from(end.encode())).ok();
+    record.insert("start", LoroValue::from(start.to_vec())).ok();
+    record.insert("end", LoroValue::from(end.to_vec())).ok();
+    record.insert("exact", LoroValue::from(exact)).ok();
+    record.insert("prefix", LoroValue::from(prefix)).ok();
+    record.insert("suffix", LoroValue::from(suffix)).ok();
+    true
+}
+
+/// Creates a detached anchor record: the file and the quote, with no cursors
+/// and no length. The passage is taken to be gone, so nothing can re-pin it.
+/// Does not commit. Returns false when the record cannot be made.
+pub fn create_detached_anchor(
+    doc: &LoroDoc,
+    file_id: &str,
+    id: &str,
+    exact: &str,
+    prefix: &str,
+    suffix: &str,
+) -> bool {
+    doc.set_next_commit_origin(ANCHORS_ORIGIN);
+    let Ok(record) = doc.get_map(ANCHORS).insert_container(id, LoroMap::new()) else {
+        return false;
+    };
+    record.insert("file", LoroValue::from(file_id)).ok();
+    record.insert("detached", LoroValue::Bool(true)).ok();
     record.insert("exact", LoroValue::from(exact)).ok();
     record.insert("prefix", LoroValue::from(prefix)).ok();
     record.insert("suffix", LoroValue::from(suffix)).ok();

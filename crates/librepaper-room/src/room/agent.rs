@@ -611,7 +611,7 @@ fn utf16_byte(s: &str, units: usize) -> usize {
 /// id as `client_seq`"; nothing reads this value back to make a decision --
 /// it is a trace, not a key -- so a deterministic slice of the id is all the
 /// value it needs to carry.
-fn client_seq_of(id: Uuid) -> i64 {
+pub(crate) fn client_seq_of(id: Uuid) -> i64 {
     let bytes = id.as_bytes();
     let mut half = [0u8; 8];
     half.copy_from_slice(&bytes[8..16]);

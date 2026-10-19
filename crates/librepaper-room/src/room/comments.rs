@@ -41,7 +41,7 @@ use uuid::Uuid;
 
 use librepaper_base::config::Configuration;
 use librepaper_base::util::clean;
-use librepaper_document::document::session;
+use librepaper_document::document::{anchors, session};
 use librepaper_engine::log::sequencer::{
     Command as SequencerCommand, CommandError, Evidence, Head, PreparedSource, Rung,
 };
@@ -50,6 +50,7 @@ use librepaper_engine::storage::postgres::{
     PostgresCatalog, ReplyRecord,
 };
 
+use super::agent::client_seq_of;
 use super::locate::{self, Quote};
 use super::{Room, WriteError};
 use librepaper_engine::storage::annotation::{
@@ -1171,8 +1172,34 @@ impl SequencerCommand for AddComment {
                 "a highlight has to be about a passage".into(),
             ));
         }
+        // The passage's anchor record is written with the comment, in the same
+        // transaction. Its cursors are made on the head before this write,
+        // which is the state the range was measured against.
+        let prepared = match &source {
+            Some(source) => {
+                let id = self.id.to_string();
+                head.prepare(client_seq_of(self.id), |draft| {
+                    if anchors::create_anchor(
+                        draft,
+                        &source.file_id.0,
+                        &id,
+                        source.start_utf16 as usize,
+                        source.end_utf16 as usize,
+                        &source.exact,
+                        &source.prefix,
+                        &source.suffix,
+                    ) {
+                        Ok(())
+                    } else {
+                        Err("the passage could not be anchored".into())
+                    }
+                })
+                .map_err(CommandError::Conflict)?
+            }
+            None => None,
+        };
         self.resolved_target = Some(target);
-        Ok(None)
+        Ok(prepared)
     }
 
     fn transact<'a>(
@@ -1185,6 +1212,8 @@ impl SequencerCommand for AddComment {
                 .resolved_target
                 .take()
                 .expect("evaluate ran before transact");
+            // The frontier is the state before this comment's record was
+            // written, so the range is measured against exactly this state.
             let anchor = OriginalAnchor {
                 source_sequence: evidence.source_sequence,
                 frontier: evidence.before_frontier.clone(),
@@ -1455,8 +1484,22 @@ impl SequencerCommand for DeleteComment {
         Rung::Commenter
     }
 
-    fn evaluate(&mut self, _head: &Head<'_>) -> Result<Option<PreparedSource>, CommandError> {
-        Ok(None)
+    // A comment that has no record (a whole-document remark, or one from
+    // before records existed) has nothing to delete here. Otherwise the record
+    // goes in the same transaction as the comment, and if the authorship check
+    // in `transact` refuses, the prepared source is discarded with it.
+    fn evaluate(&mut self, head: &Head<'_>) -> Result<Option<PreparedSource>, CommandError> {
+        let id = self.comment_id.to_string();
+        if head.doc().get_map(anchors::ANCHORS).get(&id).is_none() {
+            return Ok(None);
+        }
+        head.prepare(client_seq_of(self.comment_id), |draft| {
+            draft
+                .get_map(anchors::ANCHORS)
+                .delete(&id)
+                .map_err(|error| error.to_string())
+        })
+        .map_err(CommandError::Conflict)
     }
 
     fn transact<'a>(
