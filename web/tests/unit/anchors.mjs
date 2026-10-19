@@ -181,13 +181,23 @@ function occurrences(hay, needle) {
 // pieces apply nothing. The model has no partial pieces, so it never does.
 function takeMemory(model, inserted, free) {
   for (let i = model.memory.length - 1; i >= 0; i--) {
-    const at = occurrences(inserted, model.memory[i].text);
-    if (at.length === 1 && free(at[0], at[0] + model.memory[i].text.length)) {
+    const text = model.memory[i].text;
+    // The text as it was, or else with its newline moved to the other end, as
+    // the planner's movedNewline looks for it.
+    let hit = onceIn(inserted, text, 0);
+    if (!hit && text.length > 1 && text.endsWith("\n")) hit = onceIn(inserted, "\n" + text.slice(0, -1), 1);
+    else if (!hit && text.length > 1 && text.startsWith("\n")) hit = onceIn(inserted, text.slice(1) + "\n", -1);
+    if (hit && free(hit.at, hit.at + text.length)) {
       const [entry] = model.memory.splice(i, 1);
-      return { entry, at: at[0] };
+      return { entry, at: hit.at, shift: hit.shift };
     }
   }
   return null;
+}
+
+function onceIn(hay, needle, shift) {
+  const at = occurrences(hay, needle);
+  return at.length === 1 ? { at: at[0], shift } : null;
 }
 
 // Applies one operation's edits to the model the way the planner does:
@@ -226,7 +236,7 @@ function applyEdits(model, fileIdx, edits) {
       for (const h of hit.entry.held) {
         const attached = model.files.some((f) => f.units.some((u) => u.tags.has(h.id)));
         assert.equal(attached, false, `held anchor ${h.id} is still attached`);
-        const start = pos + hit.at + h.offset;
+        const start = pos + hit.at + hit.shift + h.offset;
         assert.equal(textOf(out.slice(start, start + h.text.length)), h.text, `re-pin of ${h.id} misplaced`);
         for (let k = 0; k < h.text.length; k++) out[start + k].tags.add(h.id);
         model.home.set(h.id, file.fileId);
@@ -957,4 +967,23 @@ test("an entry whose comment is gone does not shadow an older one with the same 
   assert.equal(b.detached, false);
   assert.deepEqual([b.from, b.to], [16, 19]);
   assert.equal(memory.size, 1, "the entry that held a stays, the entry of b is gone");
+});
+
+test("Vim mode: dd then p re-pins the comment on the pasted line", () => {
+  const line = "Alpha beta gamma delta.";
+  const before = "Intro.\n" + line + "\nOutro.\n";
+  const from = before.indexOf("beta");
+  const memory = new MoveMemory();
+  const start = before.indexOf(line);
+  // dd deletes the line with its newline.
+  const cut = planOne(before, [anchorOn("a", from, from + 10, "beta gamma")], [{ from: start, to: start + line.length + 1, insert: "" }], memory);
+  assert.equal(cut.anchors[0].detached, true);
+  // p puts a newline and the line at the end of the current line.
+  const end = cut.after.indexOf("Outro.") + "Outro.".length;
+  const pasted = planOne(cut.after, cut.anchors, [{ from: end, to: end, insert: "\n" + line }], memory);
+  assert.equal(pasted.after, "Intro.\nOutro.\n" + line + "\n");
+  const a = pasted.anchors[0];
+  assert.equal(a.detached, false);
+  assert.equal(pasted.after.slice(a.from, a.to), "beta gamma");
+  assert.equal(memory.size, 0);
 });

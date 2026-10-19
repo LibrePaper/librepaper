@@ -57,6 +57,26 @@ export const CONTEXT_UNITS = 32;
  *   in, as an offset into the text after every edit of the list.
  */
 
+// Where needle occurs exactly once in hay, with the shift its pieces gain
+// there. Overlapping occurrences count as two: "aa" in "aaa" is ambiguous.
+function once(hay, needle, shift) {
+  const at = hay.indexOf(needle);
+  if (at < 0 || hay.indexOf(needle, at + 1) >= 0) return null;
+  return { at, shift };
+}
+
+// A linewise cut and paste in Vim mode moves the newline from one end of the
+// text to the other: `dd` takes "line\n" and `p` puts back "\nline", and on
+// the last line `dd` takes "\nline" and `P` puts back "line\n". A remembered
+// text that the insertion does not hold as it was is looked for with its
+// newline at the other end, where a piece's offset in it shifts by one.
+function movedNewline(hay, text) {
+  if (text.length < 2) return null;
+  if (text.endsWith("\n")) return once(hay, "\n" + text.slice(0, -1), 1);
+  if (text.startsWith("\n")) return once(hay, text.slice(1) + "\n", -1);
+  return null;
+}
+
 // What the session deleted, oldest first. Each entry keeps the pieces that the
 // deletion took: anchors taken whole, and the head or tail of an anchor cut at
 // one end, with their offsets in the deleted text. An entry leaves the memory
@@ -93,16 +113,16 @@ export class MoveMemory {
    * @param {number} [below] only entries below this index are scanned, so a
    *   caller passes the last hit's index to pass over an entry whose pieces did
    *   not apply. By default every entry is scanned.
-   * @returns {{ entry: { text: string, held: Held[] }, index: number, at: number } | null}
+   * @returns {{ entry: { text: string, held: Held[] }, index: number, at: number, shift: number } | null}
+   *   at is where the text starts in `inserted`, as it was or with its newline
+   *   moved (see movedNewline); a held offset lands at `at + shift + offset`.
    */
   find(inserted, free = () => true, below = this.#entries.length) {
     for (let i = Math.min(below, this.#entries.length) - 1; i >= 0; i--) {
       const entry = this.#entries[i];
-      const at = inserted.indexOf(entry.text);
-      // Overlapping occurrences count as two: "aa" in "aaa" is ambiguous.
-      if (at < 0 || inserted.indexOf(entry.text, at + 1) >= 0) continue;
-      if (!free(at, at + entry.text.length)) continue;
-      return { entry, index: i, at };
+      const hit = once(inserted, entry.text, 0) ?? movedNewline(inserted, entry.text);
+      if (!hit || !free(hit.at, hit.at + entry.text.length)) continue;
+      return { entry, index: i, at: hit.at, shift: hit.shift };
     }
     return null;
   }
@@ -293,7 +313,8 @@ export function planOperation(files, memory, { context = CONTEXT_UNITS, foreign 
           if (!owner) continue;
           const index = owner.anchors.findIndex((a) => a.id === h.id);
           const anchor = owner.anchors[index];
-          const from = ins.at + hit.at + h.offset;
+          const from = ins.at + hit.at + hit.shift + h.offset;
+          if (from < 0) continue;
           const to = from + h.text.length;
           if (h.side) {
             const edge = h.side === "head" ? to === anchor.from : from === anchor.to;
