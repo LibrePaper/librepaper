@@ -46,47 +46,48 @@ export function captureAttachment(selection, path = "", revision = "") {
 // The wire vocabulary is fixed (see docs/dev/protocol/chat.md), but a launcher
 // entry is a task the user recognizes: a kind plus the request it phrases.
 // Several entries may share a kind, which is what lets the catalog grow
-// without touching the protocol.
+// without touching the protocol. An entry may sit in several categories and is
+// still one definition.
 export const TASK_CATALOG = [
-  { id: "proofread", kind: "proofread", category: "Writing", label: "Proofread",
+  { id: "proofread", kind: "proofread", categories: ["Writing"], label: "Proofread",
     description: "Correct spelling, grammar, and wording while preserving meaning.",
     keywords: ["grammar", "spelling", "typos", "errors", "mistakes"],
     prompt: "Proofread {target}." },
-  { id: "tighten", kind: "tighten", category: "Writing", label: "Tighten",
+  { id: "tighten", kind: "tighten", categories: ["Writing"], label: "Tighten",
     description: "Cut redundancy and shorten without losing substance.",
     keywords: ["shorter", "concise", "shorten", "trim", "cut"],
     scopes: ["selection"], prompt: "Tighten {target}." },
-  { id: "rewrite", kind: "rewrite", category: "Writing", label: "Rewrite",
+  { id: "rewrite", kind: "rewrite", categories: ["Writing"], label: "Rewrite",
     description: "Rework the wording for clarity and flow.",
     keywords: ["rephrase", "reword", "clarity", "flow"],
     scopes: ["selection"], prompt: "Rewrite {target}." },
-  { id: "explain", kind: "explain", category: "Writing", label: "Explain",
+  { id: "explain", kind: "explain", categories: ["Writing", "Review"], label: "Explain",
     description: "Say what this passage claims and how it is put together.",
     keywords: ["meaning", "understand", "clarify", "unclear"],
     prompt: "Explain {target}." },
 
-  { id: "review-argument", kind: "explain", category: "Review", label: "Review the argument",
+  { id: "review-argument", kind: "explain", categories: ["Review"], label: "Review the argument",
     description: "Name unsupported claims, gaps in reasoning, and weak transitions.",
     keywords: ["logic", "reasoning", "claims", "critique", "support"],
     prompt: "Review the argument in {target}. Name unsupported claims, gaps in reasoning, and weak transitions." },
-  { id: "check-consistency", kind: "explain", category: "Review", label: "Check consistency",
+  { id: "check-consistency", kind: "explain", categories: ["Review"], label: "Check consistency",
     description: "Find contradictions and inconsistent terminology, notation, or definitions.",
     keywords: ["terminology", "notation", "definitions", "consistent", "conflicts", "contradictions", "contradict"],
     prompt: "Check {target} for inconsistent terminology, notation, and definitions." },
-  { id: "check-citations", kind: "explain", category: "Review", label: "Check citations",
+  { id: "check-citations", kind: "explain", categories: ["Review"], label: "Check citations",
     description: "Check that each citation resolves in the bibliography and supports its claim.",
     keywords: ["references", "bibliography", "sources", "cite", "refs"],
     prompt: "Check the citations in {target}: each one should resolve in the bibliography and support the claim it is attached to." },
-  { id: "suggest-improvements", kind: "proofread", category: "Review", label: "Suggest improvements",
+  { id: "suggest-improvements", kind: "proofread", categories: ["Review"], label: "Suggest improvements",
     description: "Propose concrete anchored edits rather than commentary.",
     keywords: ["edits", "feedback", "improve", "suggestions", "better"],
     prompt: "Suggest concrete improvements to {target} as anchored edits." },
 
-  { id: "outline", kind: "outline", category: "Document", label: "Outline",
+  { id: "outline", kind: "outline", categories: ["Document"], label: "Outline",
     description: "List the headings and what each section does.",
     keywords: ["headings", "structure", "sections", "layout", "toc"],
     scopes: ["file", "document"], prompt: "Outline {target}: list the headings and say what each section does." },
-  { id: "summarize", kind: "explain", category: "Document", label: "Summarize",
+  { id: "summarize", kind: "explain", categories: ["Document", "Review"], label: "Summarize",
     description: "Summarize the argument in a few paragraphs.",
     keywords: ["summary", "abstract", "overview", "tldr", "recap"],
     scopes: ["file", "document"], prompt: "Summarize {target}." },
@@ -95,15 +96,15 @@ export const TASK_CATALOG = [
 // Context tasks are offered only when the reader is already looking at a
 // comment or diagnostic. They are never searched or browsed.
 export const CONTEXT_TASKS = [
-  { id: "address-comment", kind: "respond", category: "Context", label: "Address comment",
+  { id: "address-comment", kind: "respond", categories: ["Context"], label: "Address comment",
     description: "Answer the comment, and change the passage it is about when that helps.",
     prompt: "Address this comment." },
-  { id: "fix-diagnostic", kind: "fix", category: "Context", label: "Fix diagnostic",
+  { id: "fix-diagnostic", kind: "fix", categories: ["Context"], label: "Fix diagnostic",
     description: "Find what causes this compiler message and fix the source.",
     scopes: ["file", "document"], prompt: "Fix this diagnostic." },
 ];
 
-export const TASK_CATEGORIES = [...new Set(TASK_CATALOG.map((entry) => entry.category))];
+export const TASK_CATEGORIES = [...new Set(TASK_CATALOG.flatMap((entry) => entry.categories))];
 
 export const TASK_TARGETS = { selection: "the selected passage", file: "this file", document: "the whole document" };
 
@@ -161,7 +162,7 @@ function wordTier(word, entry, phrase) {
   const label = entry.label.toLowerCase();
   const labelWords = label.split(/\s+/);
   const keywords = entry.keywords || [];
-  const context = `${entry.description || ""} ${entry.category || ""}`.toLowerCase();
+  const context = `${entry.description || ""} ${(entry.categories || []).join(" ")}`.toLowerCase();
   if (label.startsWith(phrase)) return 0;
   if (labelWords.some((item) => item.startsWith(word))) return 1;
   if (label.includes(word)) return 2;
@@ -192,17 +193,18 @@ export function searchTasks(query, catalog = TASK_CATALOG) {
 
 // The catalog as the Tasks browser shows it: one section per category, in
 // the order categories first appear, each keeping the catalog's own order.
-// A category narrows it to that one section.
-export function taskSections(category = "", catalog = TASK_CATALOG) {
+// An entry appears in every section it belongs to.
+export function taskSections(catalog = TASK_CATALOG) {
   const sections = [];
   for (const entry of catalog) {
-    if (category && entry.category !== category) continue;
-    let section = sections.find((item) => item.category === entry.category);
-    if (!section) {
-      section = { category: entry.category, entries: [] };
-      sections.push(section);
+    for (const category of entry.categories) {
+      let section = sections.find((item) => item.category === category);
+      if (!section) {
+        section = { category, entries: [] };
+        sections.push(section);
+      }
+      section.entries.push(entry);
     }
-    section.entries.push(entry);
   }
   return sections;
 }
@@ -271,6 +273,50 @@ export function taskBlocker(capabilities, task, { attached = null, path = "", de
 
 export function capabilityAllows(capabilities, task, context = {}) {
   return taskBlocker(capabilities, task, context) === "";
+}
+
+// Why a task cannot run with what the reader has in hand right now, or null
+// when it can. Access is left out: it is checked when the agent starts.
+export function taskHint(entry, { attached = null, path = "" } = {}) {
+  if (!entry) return null;
+  const scope = inferScope(entry, { attached, path });
+  const reason = taskBlocker({}, { kind: entry.kind, scope }, { attached, path, deferAccess: true });
+  if (!reason) return null;
+  const short = scope === "selection" ? "Needs a selection"
+    : scope === "file" ? "Needs an open file"
+      : "Unavailable";
+  return { short, reason };
+}
+
+// Usage is keyed by stable task ids and records only counts and times, never
+// document content.
+export const FREQUENT_LIMIT = 5;
+export const FREQUENT_MINIMUM = 2;
+
+export function recordTaskUse(usage, id, now = Date.now(), catalog = TASK_CATALOG) {
+  const previous = usage && typeof usage === "object" && !Array.isArray(usage) ? usage : {};
+  const known = new Set(catalog.map((entry) => entry.id));
+  const next = {};
+  for (const [key, value] of Object.entries(previous)) {
+    if (!known.has(key)) continue;
+    if (!Number.isFinite(value?.count) || !Number.isFinite(value?.last)) continue;
+    next[key] = { count: value.count, last: value.last };
+  }
+  if (known.has(id)) next[id] = { count: (next[id]?.count || 0) + 1, last: now };
+  return next;
+}
+
+export function frequentTasks(usage, { limit = FREQUENT_LIMIT, minimum = FREQUENT_MINIMUM, catalog = TASK_CATALOG } = {}) {
+  if (!usage || typeof usage !== "object" || Array.isArray(usage)) return [];
+  const ranked = [];
+  catalog.forEach((entry, index) => {
+    const record = usage[entry.id];
+    if (!Number.isFinite(record?.count) || !Number.isFinite(record?.last)) return;
+    if (record.count < minimum) return;
+    ranked.push({ entry, index, count: record.count, last: record.last });
+  });
+  ranked.sort((a, b) => b.count - a.count || b.last - a.last || a.index - b.index);
+  return ranked.slice(0, limit).map((item) => item.entry);
 }
 
 // The compact diagnostic entry a task's context carries, distinct from
