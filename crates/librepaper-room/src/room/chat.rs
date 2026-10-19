@@ -300,8 +300,10 @@ impl Room {
     }
 
     fn note_chat_reservation(&self, buffer: &ChatBuffer) {
-        self.chat_holds
-            .store(buffer.holds_reservation(), std::sync::atomic::Ordering::Relaxed);
+        self.chat_holds.store(
+            buffer.holds_reservation(),
+            std::sync::atomic::Ordering::Relaxed,
+        );
     }
 
     /// Whether the room may hold a chat reservation row, without taking the
@@ -711,7 +713,10 @@ mod tests {
             .unwrap();
         room.forget_chat_reservation().await;
         assert!(room.chat_holds_reservation());
-        room.clear_chat(deployment.account_id).await.unwrap().unwrap();
+        room.clear_chat(deployment.account_id)
+            .await
+            .unwrap()
+            .unwrap();
         let mut second = record(2, "de");
         second.id = Uuid::now_v7();
         second.created_at = librepaper_engine::storage::postgres::chat_now();

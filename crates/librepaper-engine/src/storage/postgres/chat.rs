@@ -127,9 +127,11 @@ impl PostgresCatalog {
                 .bind(document_id)
                 .fetch_optional(&mut *tx)
                 .await?;
-            sqlx::query_scalar::<_, i64>("SELECT bytes FROM storage_usage WHERE singleton FOR UPDATE")
-                .fetch_one(&mut *tx)
-                .await?;
+            sqlx::query_scalar::<_, i64>(
+                "SELECT bytes FROM storage_usage WHERE singleton FOR UPDATE",
+            )
+            .fetch_one(&mut *tx)
+            .await?;
         }
         let inserted: Vec<i64> = sqlx::query_scalar(
             "INSERT INTO chat_messages (id,document_id,author_account_id,author_label,body,created_at) \
