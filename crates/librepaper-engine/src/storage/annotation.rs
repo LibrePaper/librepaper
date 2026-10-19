@@ -5,8 +5,9 @@
 //! it stood when they selected it: it is written once and never touched again,
 //! because a record of what someone said something about cannot be edited by
 //! later events. [`DerivedAttachment`] is where that passage is now, which
-//! changes every time anyone types. It is a cache, keyed by the projection
-//! digest it was computed against, and throwing it away costs nothing.
+//! changes every time anyone types. It is derived from the comment's anchor
+//! record in the document on every read, named by the projection digest it
+//! was derived against, and never stored.
 //!
 //! [`PresentationContext`] is the third thing, and the one that used to be
 //! mistaken for the first: the words as the page had them. It is evidence for
