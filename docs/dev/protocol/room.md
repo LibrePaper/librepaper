@@ -150,6 +150,8 @@ View-only links never see chat, in `hello`, in broadcasts or over HTTP.
 Chat never enters the document log. The server buffers messages per room
 and writes them in batches, one transaction every 2 seconds or every 64
 messages. Chat counts toward the owner's storage, with no message cap.
+Before the room accepts messages it reserves owner storage in PostgreSQL in
+chunks, so accepted chat cannot pass the quota.
 
 A message object has this shape:
 
