@@ -1149,7 +1149,9 @@ impl AddComment {
 ///
 /// The retry is answered here, before a second record is prepared. It
 /// compares the row's content and leaves the evidence out, because a replay
-/// cannot reproduce the evidence once the record is in the document.
+/// cannot reproduce the evidence once the record is in the document. The
+/// target kind is compared too, so a whole-document request is never answered
+/// by a passage comment that reused its id.
 impl SequencerCommand for AddComment {
     type Output = Comment;
 
@@ -1169,8 +1171,17 @@ impl SequencerCommand for AddComment {
             let Some(row) = self.catalog.annotation(self.document_id, self.id).await? else {
                 return Ok(None);
             };
+            // The kind this request would create. It follows `locate_anchor`,
+            // where a whole-document request and a blank quote are both a
+            // document.
+            let target_kind = if self.whole_document || self.exact.trim().is_empty() {
+                "document"
+            } else {
+                "source_text"
+            };
             let same = row.document_id == self.document_id
                 && row.kind == kind_of(&self.motivation)
+                && row.target_kind == target_kind
                 && row.body == self.body
                 && row.author_account_id == self.author_account_id
                 && row.author_key == self.author_key

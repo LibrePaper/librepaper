@@ -976,7 +976,7 @@ async fn a_retried_passage_comment_answers_from_its_row_and_writes_no_second_rec
     // One request, sent twice with the same id, as a client that lost the
     // first answer would send it.
     let id = Uuid::new_v4();
-    let request = || {
+    let request = |whole_document: bool| {
         AddComment::new(
             deployment.catalog.clone(),
             room.document_id,
@@ -989,7 +989,7 @@ async fn a_retried_passage_comment_answers_from_its_row_and_writes_no_second_rec
             "Interval estimates The ",
             " of the posterior.",
             Some(0),
-            false,
+            whole_document,
             None,
             None,
         )
@@ -1001,7 +1001,7 @@ async fn a_retried_passage_comment_answers_from_its_row_and_writes_no_second_rec
         .with_head(|doc| doc.oplog_frontiers().encode())
         .await
         .unwrap();
-    let mut first = request();
+    let mut first = request(false);
     let (comment, replayed) = room
         .command_reporting_replay(&deployment.authority(), &mut first)
         .await
@@ -1017,7 +1017,7 @@ async fn a_retried_passage_comment_answers_from_its_row_and_writes_no_second_rec
         "the passage's anchor record moved the frontier"
     );
 
-    let mut retry = request();
+    let mut retry = request(false);
     let (again, replayed) = room
         .command_reporting_replay(&deployment.authority(), &mut retry)
         .await
@@ -1037,6 +1037,20 @@ async fn a_retried_passage_comment_answers_from_its_row_and_writes_no_second_rec
         after_retry, after_first,
         "the retry wrote no second anchor record"
     );
+
+    // The same id asking for a whole-document comment is a different comment,
+    // so the row must not answer it.
+    let mut other_kind = request(true);
+    let error = room
+        .command_reporting_replay(&deployment.authority(), &mut other_kind)
+        .await
+        .unwrap_err();
+    match error {
+        CommandError::Conflict(message) => {
+            assert!(message.contains("reused"), "{message}");
+        }
+        other => panic!("expected a conflict, got {other:?}"),
+    }
 
     let comments = room.all_comments().await.unwrap();
     assert_eq!(comments.len(), 1, "the retry added no second comment");
