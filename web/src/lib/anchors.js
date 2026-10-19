@@ -783,15 +783,18 @@ export function composeEdits(lists) {
  * Rust fragment_ranges. Each deletion, in edit order, looks for the first run of
  * created fragments that sit at its gap and whose texts join up to exactly its
  * deleted text. The gap is where the deleted text sits in the final text, after
- * every edit of the list. It starts
- * at the deletion's own position and each later edit moves it. A later edit
- * that ends at or before the position shifts it by that edit's net length
- * change, so an insertion exactly at the position moves it past the inserted
- * text. A later edit that deletes across the position moves it to the start of
- * that edit. A run is contiguous in the list, every fragment in it is still
- * unconsumed and sits at that gap, and it may start at any such fragment. Each
- * fragment of the run becomes one range, with start and end inside that text,
- * and is consumed. A deletion with no such run gets no ranges and consumes
+ * every edit of the list. It starts at the deletion's own position and each
+ * later edit moves it. A later edit that ends at or before the position shifts
+ * it by that edit's net length change, so an insertion exactly at the position
+ * moves it past the inserted text. A later edit that deletes across the position
+ * moves it to the start of that edit. A run is contiguous in the list and every
+ * fragment in it is still unconsumed. In the gap search every fragment also sits
+ * at that gap, and the run may start at any such fragment. If no run sits at the
+ * gap, the deletion takes the first run at any gap whose texts join up to its
+ * deleted text. That fallback exists because a deletion that joins the author's
+ * own pending change files its fragment at that change's start, not at the gap.
+ * Each fragment of the run becomes one range, with start and end inside that
+ * text, and is consumed. A deletion with no such run gets no ranges and consumes
  * nothing, so a later deletion can still take those fragments. That covers an
  * untracked deletion and a deletion whose text was joined with something else.
  *
@@ -808,6 +811,22 @@ export function composeEdits(lists) {
 export function fragmentRangesFor(before, edits, fragments) {
   const out = [];
   const consumed = fragments.map(() => false);
+  // The first run of unconsumed fragments that joins up to `deleted`, contiguous in the list. When `gap` is null
+  // the run may sit at any gap. Otherwise every fragment of the run sits at that gap.
+  const firstRun = (deleted, gap) => {
+    const fits = (i) => !consumed[i] && (gap === null || fragments[i].at === gap);
+    for (let first = 0; first < fragments.length; first++) {
+      if (!fits(first)) continue;
+      let last = first;
+      let joined = "";
+      while (last < fragments.length && fits(last) && joined.length < deleted.length) {
+        joined += fragments[last].text;
+        last++;
+      }
+      if (joined === deleted) return { first, last };
+    }
+    return null;
+  };
   // Each edit's span in the running text, computed the way planOperation does.
   const spans = [];
   let adj = 0;
@@ -826,18 +845,9 @@ export function fragmentRangesFor(before, edits, fragments) {
         if (later.et <= point) point += later.n - (later.et - later.ef);
         else if (later.ef < point) point = later.ef;
       }
-      // The first run of unconsumed fragments at that gap, contiguous in the list, that joins up to the deleted text.
-      let run = null;
-      for (let first = 0; first < fragments.length && run === null; first++) {
-        if (consumed[first] || fragments[first].at !== point) continue;
-        let last = first;
-        let joined = "";
-        while (last < fragments.length && !consumed[last] && fragments[last].at === point && joined.length < deleted.length) {
-          joined += fragments[last].text;
-          last++;
-        }
-        if (joined === deleted) run = { first, last };
-      }
+      // The gap search comes first, so identical texts at different gaps keep their own fragments. The fallback
+      // covers a deletion that joins the author's own pending change, which files its fragment at that change's start.
+      const run = firstRun(deleted, point) ?? firstRun(deleted, null);
       if (run) {
         let start = 0;
         for (let i = run.first; i < run.last; i++) {

@@ -520,6 +520,26 @@ test("fragmentRangesFor: identical texts deleted in reverse order keep their own
   ]);
 });
 
+test("fragmentRangesFor: a deletion that joins the author's own pending insertion still finds its fragment", () => {
+  const doc = new LoroDoc();
+  const text = doc.getMap("files").setContainer("f1", new LoroText());
+  text.insert(0, "one two three");
+  doc.commit();
+  // The author inserts "X" at 4, then deletes "two" at 5..8, which joins that insertion.
+  trackedSplice(doc, "f1", 4, 4, "X", { who: "me", author: "Me" });
+  doc.commit();
+  trackedSplice(doc, "f1", 5, 8, "", { who: "me", author: "Me" });
+  doc.commit();
+  const created = resolveFile(doc, "f1").gaps.flatMap((gap) =>
+    gap.fragments.map((f) => ({ id: f.id, text: f.text, at: gap.at })),
+  );
+  // The fragment "two" files at gap 4, not at the deletion point 5.
+  assert.deepEqual(created.map((f) => [f.text, f.at]), [["two", 4]]);
+  assert.deepEqual(fragmentRangesFor("one Xtwo three", [{ from: 5, to: 8, insert: "" }], created), [
+    { id: created[0].id, edit: 0, start: 0, end: 3 },
+  ]);
+});
+
 // An anchor record as planOperation takes it.
 const anchorOn = (id, from, to, exact) => ({
   id,
