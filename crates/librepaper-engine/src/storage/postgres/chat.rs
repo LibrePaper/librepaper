@@ -175,7 +175,10 @@ impl PostgresCatalog {
             }
         }
         tx.commit().await?;
-        Ok(ChatInserted { charged: charge, reserved })
+        Ok(ChatInserted {
+            charged: charge,
+            reserved,
+        })
     }
 
     /// Adds up to `wanted` bytes to the reservation row `key` for this
@@ -215,13 +218,23 @@ impl PostgresCatalog {
         .bind(key)
         .fetch_optional(&mut *tx)
         .await?;
-        if let Some((existing_document, existing_epoch)) = existing {
-            if existing_document != document_id || existing_epoch != epoch {
-                return Err(Error::Conflict(
-                    "chat reservation identity was reused for another writer".into(),
+        let existing = match existing {
+            Some((existing_document, _)) if existing_document != document_id => {
+                return Err(Error::Invalid(
+                    "chat reservation identity was reused for another document".into(),
                 ));
             }
-        }
+            // A row from an earlier writer epoch belongs to a writer that is
+            // gone. This writer holds the lease, so it replaces the row.
+            Some((_, existing_epoch)) if existing_epoch != epoch => {
+                sqlx::query("DELETE FROM pending_log_reservations WHERE reservation_id=$1")
+                    .bind(key)
+                    .execute(&mut *tx)
+                    .await?;
+                None
+            }
+            other => other,
+        };
         let log_usage: i64 = sqlx::query_scalar(
             "SELECT COALESCE((SELECT sum(snapshot_bytes)::bigint FROM document_snapshots WHERE delete_after IS NULL),0) \
              + COALESCE((SELECT sum(uncompacted_update_bytes + chat_bytes)::bigint FROM documents),0)",
@@ -278,11 +291,13 @@ impl PostgresCatalog {
     /// Deletes the chat reservation row `key`. A missing row is not an error.
     pub async fn release_chat_reservation(&self, document_id: Uuid, key: Uuid) -> Result<()> {
         let mut tx = self.begin_writer_transaction().await?;
-        sqlx::query("DELETE FROM pending_log_reservations WHERE reservation_id=$1 AND document_id=$2")
-            .bind(key)
-            .bind(document_id)
-            .execute(&mut *tx)
-            .await?;
+        sqlx::query(
+            "DELETE FROM pending_log_reservations WHERE reservation_id=$1 AND document_id=$2",
+        )
+        .bind(key)
+        .bind(document_id)
+        .execute(&mut *tx)
+        .await?;
         tx.commit().await?;
         Ok(())
     }
@@ -464,7 +479,11 @@ mod tests {
             message(Some(owner.id), "hello"),
             message(Some(owner.id), "world!"),
         ];
-        let charged = catalog.insert_chat_messages(document, &rows, None).await.unwrap().charged;
+        let charged = catalog
+            .insert_chat_messages(document, &rows, None)
+            .await
+            .unwrap()
+            .charged;
         assert_eq!(charged, 5 + 6 + 2 * CHAT_ROW_OVERHEAD_BYTES);
         assert_eq!(chat_bytes(&catalog, document).await, charged);
         let after = catalog.usage_bytes(Some(owner.id)).await.unwrap();
@@ -481,7 +500,11 @@ mod tests {
         let rows: Vec<ChatRecord> = (0..5)
             .map(|n| message(Some(owner.id), &format!("m{n}")))
             .collect();
-        catalog.insert_chat_messages(document, &rows, None).await.unwrap().charged;
+        catalog
+            .insert_chat_messages(document, &rows, None)
+            .await
+            .unwrap()
+            .charged;
 
         let (newest, more) = catalog.chat_page(document, None, 2).await.unwrap();
         assert_eq!(newest, rows[3..5].to_vec());
@@ -511,7 +534,11 @@ mod tests {
         let owner = account(&catalog).await;
         let document = project(&catalog, &owner).await;
         let rows = vec![message(None, "one"), message(None, "two")];
-        let charged = catalog.insert_chat_messages(document, &rows, None).await.unwrap().charged;
+        let charged = catalog
+            .insert_chat_messages(document, &rows, None)
+            .await
+            .unwrap()
+            .charged;
         let cleared = catalog
             .clear_chat(document, &[], owner.id)
             .await
@@ -537,7 +564,11 @@ mod tests {
         let owner = account(&catalog).await;
         let document = project(&catalog, &owner).await;
         let rows = vec![message(Some(owner.id), "kept until trim")];
-        let charged = catalog.insert_chat_messages(document, &rows, None).await.unwrap().charged;
+        let charged = catalog
+            .insert_chat_messages(document, &rows, None)
+            .await
+            .unwrap()
+            .charged;
         let mut tx = catalog.begin_writer_transaction().await.unwrap();
         let outcome = catalog
             .trim_retained_in_transaction(&mut tx, document, &[], &[], Some(owner.id))
@@ -561,7 +592,11 @@ mod tests {
         let editor = account(&catalog).await;
         let document = project(&catalog, &owner).await;
         let rows = vec![message(Some(owner.id), "survives an editor's trim")];
-        let charged = catalog.insert_chat_messages(document, &rows, None).await.unwrap().charged;
+        let charged = catalog
+            .insert_chat_messages(document, &rows, None)
+            .await
+            .unwrap()
+            .charged;
         for trimmer in [None, Some(editor.id)] {
             let mut tx = catalog.begin_writer_transaction().await.unwrap();
             let outcome = catalog
@@ -588,7 +623,11 @@ mod tests {
         let author = account(&catalog).await;
         let document = project(&catalog, &owner).await;
         let rows = vec![message(Some(author.id), "from a guest")];
-        let charged = catalog.insert_chat_messages(document, &rows, None).await.unwrap().charged;
+        let charged = catalog
+            .insert_chat_messages(document, &rows, None)
+            .await
+            .unwrap()
+            .charged;
         sqlx::query("UPDATE accounts SET status='erasing' WHERE id=$1")
             .bind(author.id)
             .execute(catalog.pool())
@@ -611,7 +650,11 @@ mod tests {
         let owner = account(&catalog).await;
         let document = project(&catalog, &owner).await;
         let rows = vec![message(Some(Uuid::now_v7()), "from nobody")];
-        let charged = catalog.insert_chat_messages(document, &rows, None).await.unwrap().charged;
+        let charged = catalog
+            .insert_chat_messages(document, &rows, None)
+            .await
+            .unwrap()
+            .charged;
         let (page, _) = catalog.chat_page(document, None, 10).await.unwrap();
         assert_eq!(page.len(), 1);
         assert_eq!(page[0].author_account_id, None);
@@ -627,8 +670,16 @@ mod tests {
         let owner = account(&catalog).await;
         let document = project(&catalog, &owner).await;
         let rows = vec![message(None, "one"), message(None, "two")];
-        let first = catalog.insert_chat_messages(document, &rows, None).await.unwrap().charged;
-        let second = catalog.insert_chat_messages(document, &rows, None).await.unwrap().charged;
+        let first = catalog
+            .insert_chat_messages(document, &rows, None)
+            .await
+            .unwrap()
+            .charged;
+        let second = catalog
+            .insert_chat_messages(document, &rows, None)
+            .await
+            .unwrap()
+            .charged;
         assert_eq!(first, 3 + 3 + 2 * super::CHAT_ROW_OVERHEAD_BYTES);
         assert_eq!(second, 0);
         let (page, _) = catalog.chat_page(document, None, 10).await.unwrap();
@@ -653,7 +704,11 @@ mod tests {
             message(Some(erasing.id), "from the erased"),
             message(Some(owner.id), "from the owner"),
         ];
-        catalog.insert_chat_messages(document, &rows, None).await.unwrap().charged;
+        catalog
+            .insert_chat_messages(document, &rows, None)
+            .await
+            .unwrap()
+            .charged;
         let (page, _) = catalog.chat_page(document, None, 10).await.unwrap();
         assert_eq!(page.len(), 2);
         assert_eq!(page[0].author_account_id, None);
@@ -693,7 +748,11 @@ mod tests {
         let other = account(&catalog).await;
         let document = project(&catalog, &owner).await;
         let rows = vec![message(None, "one"), message(None, "two")];
-        let charged = catalog.insert_chat_messages(document, &rows, None).await.unwrap().charged;
+        let charged = catalog
+            .insert_chat_messages(document, &rows, None)
+            .await
+            .unwrap()
+            .charged;
         let refused = catalog.clear_chat(document, &[], other.id).await.unwrap();
         assert_eq!(refused, None);
         assert_eq!(chat_bytes(&catalog, document).await, charged);
@@ -813,8 +872,14 @@ mod tests {
             .reserve_chat_bytes(document, key, 100, 10)
             .await
             .unwrap();
-        catalog.release_chat_reservation(document, key).await.unwrap();
+        catalog
+            .release_chat_reservation(document, key)
+            .await
+            .unwrap();
         assert_eq!(reservation_bytes(&catalog, key).await, None);
-        catalog.release_chat_reservation(document, key).await.unwrap();
+        catalog
+            .release_chat_reservation(document, key)
+            .await
+            .unwrap();
     }
 }

@@ -239,11 +239,7 @@ impl Room {
     async fn write_chat(&self, buffer: &mut ChatBuffer) {
         match self
             .catalog
-            .insert_chat_messages(
-                self.document_id,
-                &buffer.rows,
-                Some(buffer.reservation_key),
-            )
+            .insert_chat_messages(self.document_id, &buffer.rows, Some(buffer.reservation_key))
             .await
         {
             Ok(inserted) => {

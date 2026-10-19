@@ -36,7 +36,8 @@ mod schema_regression_tests;
 mod deployment_setup_tests;
 
 pub use chat::{
-    chat_now, ChatCleared, ChatInserted, ChatRecord, CHAT_RESERVATION_CHUNK, CHAT_ROW_OVERHEAD_BYTES,
+    chat_now, ChatCleared, ChatInserted, ChatRecord, CHAT_RESERVATION_CHUNK,
+    CHAT_ROW_OVERHEAD_BYTES,
 };
 pub use commit::Authority;
 pub use document_log::{FlushRow, LogRow, NewSnapshot, PendingWorkCursor, RowCoverage};
