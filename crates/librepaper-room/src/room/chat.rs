@@ -10,6 +10,14 @@
 //! A flush whose reply is lost can leave rows both stored and buffered. A
 //! clear or trim therefore credits a buffered row only when the database did
 //! not already hold it; the stored rows are credited through `chat_bytes`.
+//!
+//! The sequencer's storage ledger is only an estimate, so it does not decide
+//! whether a message is kept. The room holds a reservation row in
+//! PostgreSQL (`pending_log_reservations`, which every usage sum counts) and
+//! admits a message only when the reservation covers the buffered rows plus
+//! the new one. It asks for more in chunks. Writing a batch takes its charge
+//! off the row in the same transaction. The row stays as headroom across
+//! clears and trims, and a forced flush with nothing waiting deletes it.
 
 use serde_json::{json, Value};
 use time::OffsetDateTime;
@@ -17,7 +25,9 @@ use uuid::Uuid;
 
 #[cfg(test)]
 use librepaper_engine::storage::postgres::CHAT_ROW_OVERHEAD_BYTES;
-use librepaper_engine::storage::postgres::{ChatCleared, ChatRecord};
+use librepaper_engine::storage::postgres::{
+    ChatCleared, ChatRecord, Error as CatalogError, CHAT_RESERVATION_CHUNK,
+};
 
 use super::{Room, WriteError};
 
@@ -29,11 +39,26 @@ pub const CHAT_BUFFER_MAX_ROWS: usize = 256;
 pub const CHAT_FLUSH_AFTER: std::time::Duration = std::time::Duration::from_secs(2);
 
 /// Messages accepted but not yet written.
-#[derive(Default)]
 pub struct ChatBuffer {
     rows: Vec<ChatRecord>,
     /// When the oldest waiting message was queued.
     oldest: Option<tokio::time::Instant>,
+    /// The id of this room's reservation row, kept for the room's life.
+    reservation_key: Uuid,
+    /// The bytes the reservation row holds, as last reported. It is never
+    /// less than `charged()`, and the difference is the headroom.
+    reserved: i64,
+}
+
+impl Default for ChatBuffer {
+    fn default() -> Self {
+        Self {
+            rows: Vec::new(),
+            oldest: None,
+            reservation_key: Uuid::now_v7(),
+            reserved: 0,
+        }
+    }
 }
 
 impl ChatBuffer {
@@ -126,9 +151,10 @@ pub fn merge_page(
 }
 
 impl Room {
-    /// Queues one message, or says why it cannot be kept. Accepting it
-    /// reserves its bytes on the owner's ledger at once, so another room of
-    /// the same owner cannot spend the same allowance before the flush. The
+    /// Queues one message, or says why it cannot be kept. It is kept only when
+    /// the PostgreSQL reservation covers it, which the room tops up first when
+    /// the headroom is short, so another room of the same owner cannot spend
+    /// the same allowance before the flush. The
     /// message goes to every other listener and, with `temp_id` added, back
     /// to the sender, before the lock is released, so a clear can never
     /// deliver `chat-cleared` ahead of a message it did not delete or after
@@ -143,14 +169,30 @@ impl Room {
         if buffer.rows.len() >= CHAT_BUFFER_MAX_ROWS {
             return Err("chat is not being saved right now; try again shortly");
         }
-        if self
-            .log
-            .storage_would_exceed(record.charged_bytes())
-            .is_some()
-        {
-            return Err("the project owner's storage is full");
+        let charge = record.charged_bytes();
+        let headroom = buffer.reserved - buffer.charged();
+        if headroom < charge {
+            match self
+                .catalog
+                .reserve_chat_bytes(
+                    self.document_id,
+                    buffer.reservation_key,
+                    CHAT_RESERVATION_CHUNK.max(charge),
+                    charge - headroom,
+                )
+                .await
+            {
+                Ok(total) => buffer.reserved = total,
+                Err(CatalogError::Conflict(_)) => {
+                    return Err("the project owner's storage is full");
+                }
+                Err(error) => {
+                    tracing::warn!("could not reserve chat storage of {}: {error}", self.slug);
+                    return Err("chat is not being saved right now; try again shortly");
+                }
+            }
         }
-        self.log.charge_storage(record.charged_bytes());
+        self.log.charge_storage(charge);
         let message = chat_json(&record);
         let mut echo = message.clone();
         echo["temp_id"] = Value::String(temp_id.to_owned());
@@ -170,24 +212,44 @@ impl Room {
 
     /// Writes the waiting messages when they are due, or whatever is waiting
     /// when forced. A failed write keeps the rows, and their reservation, for
-    /// the next pass.
+    /// the next pass. A forced flush that leaves nothing waiting also gives
+    /// the reservation back.
     pub async fn flush_chat(&self, force: bool) {
         let mut buffer = self.chat.lock().await;
-        if buffer.rows.is_empty() || !(force || buffer.due()) {
-            return;
+        if !buffer.rows.is_empty() && (force || buffer.due()) {
+            self.write_chat(&mut buffer).await;
         }
-        self.write_chat(&mut buffer).await;
+        if force && buffer.rows.is_empty() && buffer.reserved > 0 {
+            match self
+                .catalog
+                .release_chat_reservation(self.document_id, buffer.reservation_key)
+                .await
+            {
+                Ok(()) => buffer.reserved = 0,
+                Err(error) => {
+                    tracing::warn!(
+                        "could not release the chat reservation of {}: {error}",
+                        self.slug
+                    );
+                }
+            }
+        }
     }
 
     async fn write_chat(&self, buffer: &mut ChatBuffer) {
         match self
             .catalog
-            .insert_chat_messages(self.document_id, &buffer.rows)
+            .insert_chat_messages(
+                self.document_id,
+                &buffer.rows,
+                Some(buffer.reservation_key),
+            )
             .await
         {
-            Ok(_) => {
-                // The bytes were reserved when each message was accepted.
+            Ok(inserted) => {
+                // The ledger was charged when each message was accepted.
                 let _ = buffer.discard();
+                buffer.reserved = inserted.reserved;
             }
             Err(error) => {
                 tracing::warn!("could not write the chat of {}: {error}", self.slug);
@@ -501,7 +563,7 @@ mod tests {
         assert_eq!(room.log().owner_storage_bytes(), before + charge);
         // The flush committed, but its reply was lost, so the rows stay buffered.
         room.catalog()
-            .insert_chat_messages(room.document_id, &rows)
+            .insert_chat_messages(room.document_id, &rows, None)
             .await
             .unwrap();
         let cleared = room
@@ -512,5 +574,45 @@ mod tests {
         assert_eq!(cleared.bytes, charge);
         assert_eq!(room.log().owner_storage_bytes(), before);
         assert_eq!(room.chat_waiting(), 0);
+    }
+
+    #[tokio::test]
+    #[ignore = "requires LIBREPAPER_TEST_POSTGRES_URL"]
+    async fn chat_reserves_in_postgres_and_a_forced_flush_gives_it_back() {
+        let Some(deployment) =
+            super::super::label_replay_tests::deployment("chat-reservation-paper").await
+        else {
+            return;
+        };
+        let room = deployment.rooms.get(&deployment.slug).await.unwrap();
+        let held = || async {
+            sqlx::query_scalar::<_, Option<i64>>(
+                "SELECT sum(bytes)::bigint FROM pending_log_reservations WHERE document_id=$1",
+            )
+            .bind(room.document_id)
+            .fetch_one(room.catalog().pool())
+            .await
+            .unwrap()
+        };
+        let mut row = record(1, "abc");
+        row.id = Uuid::now_v7();
+        row.created_at = librepaper_engine::storage::postgres::chat_now();
+        let charge = row.charged_bytes();
+        // Dropping the soft ledger to zero does not change what PostgreSQL holds.
+        room.log().charge_storage(-room.log().owner_storage_bytes());
+        room.enqueue_chat(row, 1, "t").await.unwrap();
+        assert_eq!(held().await, Some(CHAT_RESERVATION_CHUNK));
+        // A non-forced flush with nothing due writes nothing and keeps the row.
+        room.flush_chat(false).await;
+        assert_eq!(held().await, Some(CHAT_RESERVATION_CHUNK));
+        room.flush_chat(true).await;
+        assert_eq!(room.chat_waiting(), 0);
+        assert_eq!(held().await, None);
+        let stored: i64 = sqlx::query_scalar("SELECT chat_bytes FROM documents WHERE id=$1")
+            .bind(room.document_id)
+            .fetch_one(room.catalog().pool())
+            .await
+            .unwrap();
+        assert_eq!(stored, charge);
     }
 }
