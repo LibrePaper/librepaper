@@ -216,12 +216,12 @@ pub struct SignInAdvice {
 /// start for reading/commenting when no provider is configured, and reports
 /// that publishing is unavailable.
 ///
-/// `email_provider` is whether any OpenID Connect provider is configured,
-/// since each of them yields email addresses. `callbacks` are the addresses an
-/// operator with no provider yet would register one at.
+/// `oidc` is whether any OpenID Connect provider is configured, ORCID
+/// included. `callbacks` are the addresses an operator with no provider yet
+/// would register one at.
 pub fn sign_in_advice(
     github: bool,
-    email_provider: bool,
+    oidc: bool,
     // The origin a provider must have registered: the deployment's configured
     // reader origin rather than whatever this process is bound to. An operator
     // copying a callback URL out of this warning needs the one their users
@@ -231,9 +231,9 @@ pub fn sign_in_advice(
     callbacks: &[String],
 ) -> SignInAdvice {
     let mut advice = SignInAdvice::default();
-    if !github && !email_provider {
+    if !github && !oidc {
         advice.warnings.push(format!(
-            "warning: no sign-in provider is configured; publishing and source writes are unavailable. Configure auth.github, auth.google, auth.entra or an auth.oidc table in the TOML file. The callback URLs to register at the provider, served by {reader_origin} on port {port}, are {}.",
+            "warning: no sign-in provider is configured; publishing and source writes are unavailable. Configure auth.github, auth.google, auth.entra, auth.orcid or an auth.oidc table in the TOML file. The callback URLs to register at the provider, served by {reader_origin} on port {port}, are {}.",
             callbacks.join(", ")
         ));
     }
@@ -247,6 +247,7 @@ fn callback_urls(reader_origin: &str) -> Vec<String> {
         format!("{reader_origin}/auth/callback (GitHub)"),
         format!("{reader_origin}/auth/callback/google"),
         format!("{reader_origin}/auth/callback/entra"),
+        format!("{reader_origin}/auth/callback/orcid"),
         format!("{reader_origin}/auth/callback/oidc-<slug> (one for each auth.oidc table)"),
     ]
 }

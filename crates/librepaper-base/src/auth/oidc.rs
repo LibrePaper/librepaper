@@ -2483,9 +2483,7 @@ mod tests {
         assert_eq!(identity.name, "Josiah Carberry");
         let mut family_only = merged(orcid_claims(), json!({"family_name": "Carberry"}));
         family_only.as_object_mut().unwrap().remove("name");
-        let identity = orcid_signed_in(&stand, family_only)
-            .await
-            .unwrap();
+        let identity = orcid_signed_in(&stand, family_only).await.unwrap();
         assert_eq!(identity.name, "Carberry");
     }
 

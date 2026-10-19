@@ -491,7 +491,14 @@ fn check_keys(v: &toml::Value) -> Result<(), String> {
     section(
         v,
         "auth",
-        &["github", "google", "entra", "orcid", "oidc", "session_lifetime"],
+        &[
+            "github",
+            "google",
+            "entra",
+            "orcid",
+            "oidc",
+            "session_lifetime",
+        ],
     )?;
     if let Some(x) = v.get("auth") {
         for p in ["github", "google"] {
@@ -1101,7 +1108,8 @@ fn resolve_lists(
         entries
             .iter()
             .map(|entry| {
-                normalize_entry(provider, entry).map_err(|reason| format!("{table}.{field}: {reason}"))
+                normalize_entry(provider, entry)
+                    .map_err(|reason| format!("{table}.{field}: {reason}"))
             })
             .collect()
     };
@@ -2354,7 +2362,8 @@ client_secret = { file = "missing-oauth-secret" }
     }
 
     const GITHUB_TABLE: &str = "[auth.github]\nclient_id = \"id\"\nclient_secret = \"secret\"\n";
-    const ORCID_TABLE: &str = "[auth.orcid]\nclient_id = \"orcid-id\"\nclient_secret = \"orcid-secret\"\n";
+    const ORCID_TABLE: &str =
+        "[auth.orcid]\nclient_id = \"orcid-id\"\nclient_secret = \"orcid-secret\"\n";
 
     #[test]
     fn the_old_access_lists_are_refused_with_their_new_home() {
@@ -2405,10 +2414,16 @@ client_secret = { file = "missing-oauth-secret" }
             "auth.google.commenters: expected an email address, @domain or *"
         );
         let error = load_text(&format!("{ORCID_TABLE}publishers = [\"alice\"]\n")).unwrap_err();
-        assert!(error.starts_with("auth.orcid.publishers: expected an ORCID iD"), "{error}");
+        assert!(
+            error.starts_with("auth.orcid.publishers: expected an ORCID iD"),
+            "{error}"
+        );
         let body = format!("{CUSTOM_BODY}publishers = [\"nobody\"]\n");
         let error = load_text(&custom_entry("keycloak", &body)).unwrap_err();
-        assert!(error.starts_with("auth.oidc.keycloak.publishers: "), "{error}");
+        assert!(
+            error.starts_with("auth.oidc.keycloak.publishers: "),
+            "{error}"
+        );
     }
 
     #[test]

@@ -64,8 +64,10 @@ pub fn valid_oidc_slug(slug: &str) -> bool {
 /// Whether text is a provider id this code can issue: one of the four named
 /// providers, or `oidc-` and a valid slug.
 pub fn valid_provider_id(id: &str) -> bool {
-    matches!(id, PROVIDER_GITHUB | PROVIDER_GOOGLE | PROVIDER_ENTRA | PROVIDER_ORCID)
-        || id.strip_prefix(OIDC_ID_PREFIX).is_some_and(valid_oidc_slug)
+    matches!(
+        id,
+        PROVIDER_GITHUB | PROVIDER_GOOGLE | PROVIDER_ENTRA | PROVIDER_ORCID
+    ) || id.strip_prefix(OIDC_ID_PREFIX).is_some_and(valid_oidc_slug)
 }
 
 /// A short-lived credential delegated by a signed-in browser to its local

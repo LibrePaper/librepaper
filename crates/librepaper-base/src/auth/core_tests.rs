@@ -139,7 +139,10 @@ fn account(provider: &str, handle: &str) -> Identity {
 fn policy_public_description_hides_entries() {
     let policy = Policy::allowing("github", &["alice", "bob"]).with("google", &["@example.org"]);
     assert_eq!(policy.public_description(), "an allowlist of 3 entries");
-    assert_eq!(policy.describe(), "github: alice, bob; google: @example.org");
+    assert_eq!(
+        policy.describe(),
+        "github: alice, bob; google: @example.org"
+    );
     assert_eq!(
         Policy::allowing("github", &["*"]).public_description(),
         "any account of github"
@@ -191,7 +194,9 @@ fn policy_anonymous_and_signed_out() {
 fn normalize_entry_checks_each_provider_shape() {
     assert_eq!(normalize_entry("github", " Alice-1 ").unwrap(), "alice-1");
     assert_eq!(normalize_entry("github", "*").unwrap(), "*");
-    assert!(normalize_entry("github", "@alice").unwrap_err().contains("without @"));
+    assert!(normalize_entry("github", "@alice")
+        .unwrap_err()
+        .contains("without @"));
     for bad in ["", "-alice", "alice-", "a_b", "a@b.org", &"a".repeat(40)] {
         assert!(normalize_entry("github", bad).is_err(), "{bad}");
     }
@@ -207,10 +212,24 @@ fn normalize_entry_checks_each_provider_shape() {
     assert!(normalize_entry("orcid", "alice").is_err());
     assert_eq!(normalize_entry("orcid", "*").unwrap(), "*");
     for provider in ["google", "entra", "oidc-acme"] {
-        assert_eq!(normalize_entry(provider, "Bob@Example.ORG").unwrap(), "bob@example.org");
-        assert_eq!(normalize_entry(provider, "@Example.org").unwrap(), "@example.org");
+        assert_eq!(
+            normalize_entry(provider, "Bob@Example.ORG").unwrap(),
+            "bob@example.org"
+        );
+        assert_eq!(
+            normalize_entry(provider, "@Example.org").unwrap(),
+            "@example.org"
+        );
         assert_eq!(normalize_entry(provider, "*").unwrap(), "*");
-        for bad in ["alice", "@example", "@", "a@b@c.org", "a b@c.org", "alice@", "@a@b.org"] {
+        for bad in [
+            "alice",
+            "@example",
+            "@",
+            "a@b@c.org",
+            "a b@c.org",
+            "alice@",
+            "@a@b.org",
+        ] {
             assert!(normalize_entry(provider, bad).is_err(), "{bad}");
         }
     }
@@ -367,7 +386,7 @@ fn oidc_slugs_are_a_lowercase_letter_then_up_to_23_letters_digits_or_hyphens() {
 }
 
 #[test]
-fn provider_ids_are_the_three_names_and_oidc_slugs() {
+fn provider_ids_are_the_named_providers_and_oidc_slugs() {
     for good in [
         "github",
         "google",

@@ -351,11 +351,7 @@ fn server_flags_are_rejected_and_server_environment_overrides_are_ignored() {
 
     let temp = tempfile::tempdir().unwrap();
     let config = temp.path().join("config.toml");
-    std::fs::write(
-        &config,
-        "[server]\naddress = \"0.0.0.0:8179\"\n",
-    )
-    .unwrap();
+    std::fs::write(&config, "[server]\naddress = \"0.0.0.0:8179\"\n").unwrap();
     let output = Command::new(env!("CARGO_BIN_EXE_librepaper"))
         .args([
             "admin",
@@ -448,11 +444,7 @@ fn config_check_is_side_effect_free_and_validates_serve_inputs() {
     assert!(String::from_utf8_lossy(&valid.stdout).contains("configuration is valid"));
     assert!(!temp.path().join("librepaper-data").exists());
 
-    std::fs::write(
-        &config,
-        "[origins]\napp = \"javascript:alert(1)\"\n",
-    )
-    .unwrap();
+    std::fs::write(&config, "[origins]\napp = \"javascript:alert(1)\"\n").unwrap();
     let invalid = cli(&["admin", "config", "check", "--config", config_arg]);
     assert!(!invalid.status.success(), "{invalid:?}");
     assert!(String::from_utf8_lossy(&invalid.stderr).contains("origins.app"));

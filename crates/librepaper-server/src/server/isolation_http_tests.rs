@@ -495,7 +495,12 @@ async fn shared_visibility_routes_enforce_account_and_access_boundaries() {
     Arc::get_mut(&mut deployment.server).unwrap().publishers =
         librepaper_base::auth::Policy::allowing(
             "github",
-            &["isolation-owner", "shared-viewer", "shared-peer", "shared-outsider"],
+            &[
+                "isolation-owner",
+                "shared-viewer",
+                "shared-peer",
+                "shared-outsider",
+            ],
         );
     let (base, _address, stop) = serve(deployment.server.clone()).await;
     let client = reqwest::Client::new();

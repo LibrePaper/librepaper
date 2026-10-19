@@ -1195,8 +1195,7 @@ impl Server {
         // share link into a publisher.  Source and input writes always need a
         // provider-backed identity, and a session from a provider that is no
         // longer configured is not an authorization bypass.
-        let edit =
-            id.is_signed_in() && self.provider_configured(id) && self.publishers.allows(id);
+        let edit = id.is_signed_in() && self.provider_configured(id) && self.publishers.allows(id);
         Ceiling {
             comment: self.commenters.allows(id),
             edit,
@@ -1452,8 +1451,7 @@ impl Server {
                 ));
             }
         };
-        if id.is_signed_in() && self.provider_configured(&id) && self.publishers.allows(&id)
-        {
+        if id.is_signed_in() && self.provider_configured(&id) && self.publishers.allows(&id) {
             return Ok(Caller {
                 key: self.owner(headers, arrival, &id),
                 id: id.id,
