@@ -8,7 +8,7 @@
 
   const available = Boolean(desktop());
   const message = $derived(feature ? `${feature} needs the LibrePaper desktop app.` : DESKTOP_ONLY_MESSAGE);
-  // Never the fragment: a share link's key would pass through the system's link handler and the app's command line. The app keeps its own storage, so a share link is pasted into the app instead (Projects, Open a link).
+  // Never the fragment: a share link's key would pass through the system's link handler and the app's command line. The app keeps its own storage, so a share link is pasted into the app instead (New project, From a Link).
   const here = globalThis.location;
   const openLink = $derived(`librepaper://open?url=${encodeURIComponent(here ? here.origin + here.pathname + here.search : "")}`);
 </script>

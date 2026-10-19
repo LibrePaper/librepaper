@@ -67,6 +67,7 @@ try {
   await tab.navigate(`${origin}/desktop/?in`);
   await until("project browser", () => tab.evaluate("Boolean(document.querySelector('.projects'))"));
   assert.equal(await at(), "/desktop/?in", "a signed-in desktop user stays on the project browser");
+  assert.equal(await tab.evaluate("Boolean(document.querySelector('.open-link'))"), false, "the project browser has no link field");
 
   // The desktop app opens a pasted link from its own server, keys and all, and
   // refuses one from anywhere else.
@@ -76,6 +77,7 @@ try {
     input.dispatchEvent(new Event('input', { bubbles: true }));
     document.querySelector('.open-link').requestSubmit();
   })()`);
+  await tab.navigate(`${origin}/desktop/?in&new=link`);
   await until("open a link", () => tab.evaluate("Boolean(document.querySelector('.open-link input'))"));
   await pasteLink("https://elsewhere.example/docs/x#k=secret");
   await until("other server refused", () => tab.evaluate("document.querySelector('.open-link-error')?.textContent.includes('Paste a link from')"));
