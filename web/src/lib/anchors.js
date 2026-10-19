@@ -90,16 +90,19 @@ export class MoveMemory {
    * @param {(from: number, to: number) => boolean} [free] tells whether the span
    *   of `inserted` from `from` to `to` is still unclaimed. By default every
    *   span is free.
-   * @returns {{ entry: { text: string, held: Held[] }, at: number } | null}
+   * @param {number} [below] only entries below this index are scanned, so a
+   *   caller passes the last hit's index to pass over an entry whose pieces did
+   *   not apply. By default every entry is scanned.
+   * @returns {{ entry: { text: string, held: Held[] }, index: number, at: number } | null}
    */
-  find(inserted, free = () => true) {
-    for (let i = this.#entries.length - 1; i >= 0; i--) {
+  find(inserted, free = () => true, below = this.#entries.length) {
+    for (let i = Math.min(below, this.#entries.length) - 1; i >= 0; i--) {
       const entry = this.#entries[i];
       const at = inserted.indexOf(entry.text);
       // Overlapping occurrences count as two: "aa" in "aaa" is ambiguous.
       if (at < 0 || inserted.indexOf(entry.text, at + 1) >= 0) continue;
       if (!free(at, at + entry.text.length)) continue;
-      return { entry, at };
+      return { entry, index: i, at };
     }
     return null;
   }
@@ -276,9 +279,13 @@ export function planOperation(files, memory, { context = CONTEXT_UNITS, foreign 
       /** @type {{ from: number, to: number }[]} */
       const claimed = [];
       const free = (from, to) => !claimed.some((c) => from < c.to && to > c.from);
-      for (let hit = memory.find(ins.text, free); hit; hit = memory.find(ins.text, free)) {
+      // Each find looks below the last hit, so an entry whose pieces did not
+      // apply is passed over, and does not shadow an older entry with the same
+      // text.
+      let below = memory.size;
+      for (let hit = memory.find(ins.text, free, below); hit; hit = memory.find(ins.text, free, below)) {
         const { entry } = hit;
-        claimed.push({ from: hit.at, to: hit.at + entry.text.length });
+        below = hit.index;
         let applied = false;
         for (const h of entry.held) {
           if (!h.text) continue;
@@ -321,7 +328,10 @@ export function planOperation(files, memory, { context = CONTEXT_UNITS, foreign 
           w.anchors.push(pinned);
           applied = true;
         }
-        if (applied) memory.drop(entry);
+        if (applied) {
+          claimed.push({ from: hit.at, to: hit.at + entry.text.length });
+          memory.drop(entry);
+        }
       }
     }
   }

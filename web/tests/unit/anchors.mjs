@@ -943,3 +943,18 @@ test("rejecting a tracked deletion that cut the head of a passage rejoins it", (
   assert.equal(statusOf(doc, anchor), "exact");
   assert.deepEqual([anchor.from, anchor.to], [4, 7]);
 });
+
+test("an entry whose comment is gone does not shadow an older one with the same text", () => {
+  const memory = new MoveMemory();
+  const before = "one two three two four";
+  const one = planOperation([{ fileId: "f1", before, anchors: [anchorOn("a", 4, 7, "two"), anchorOn("b", 14, 17, "two")], edits: [{ from: 14, to: 17, insert: "" }] }], memory).files[0];
+  const two = planOperation([{ fileId: "f1", before: one.after, anchors: one.anchors, edits: [{ from: 4, to: 7, insert: "" }] }], memory).files[0];
+  assert.equal(memory.size, 2);
+  // Comment "a" was deleted since, so the paste sees only "b". The newer
+  // entry, which held "a", is passed over and the older one applies.
+  const paste = planOperation([{ fileId: "f1", before: two.after, anchors: two.anchors.filter((a) => a.id === "b"), edits: [{ from: 16, to: 16, insert: "two" }] }], memory).files[0];
+  const b = paste.anchors.find((a) => a.id === "b");
+  assert.equal(b.detached, false);
+  assert.deepEqual([b.from, b.to], [16, 19]);
+  assert.equal(memory.size, 1, "the entry that held a stays, the entry of b is gone");
+});
