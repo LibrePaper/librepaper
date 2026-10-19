@@ -574,32 +574,65 @@ test("undo through the UndoManager walks a cut and a paste back", () => {
   });
   const manager = new UndoManager(doc, { mergeInterval: 0, excludeOriginPrefixes: [ANCHORS_ORIGIN] });
   const memory = new MoveMemory();
-  const snapshot = () => ({ text: textOf(doc), anchors: resolveAnchors(doc, "f1") });
-  let last = snapshot();
-  applyOperation(doc, [{ fileId: "f1", edits: [{ from: 4, to: 8, insert: "" }] }], memory, {});
-  last = snapshot();
-  applyOperation(doc, [{ fileId: "f1", edits: [{ from: 4, to: 4, insert: "two " }] }], memory, {});
-  last = snapshot();
+  const index = new AnchorIndex(doc);
+  index.load("f1");
+  index.attach(memory);
+  index.apply([{ fileId: "f1", edits: [{ from: 4, to: 8, insert: "" }] }], memory, {});
+  index.apply([{ fileId: "f1", edits: [{ from: 4, to: 4, insert: "two " }] }], memory, {});
   const undoOnce = () => {
     pending = [];
     assert.equal(manager.undo(), true, "undo applied");
     assert.equal(pending.length, 1, "one text event per undo");
-    const edits = editsFromDelta(pending[0]);
     pending = [];
-    recordOperation(doc, [{ fileId: "f1", before: last.text, anchors: last.anchors, edits }], memory, {});
-    doc.commit({ origin: ANCHORS_ORIGIN });
-    last = snapshot();
   };
 
   undoOnce();
+  assertIndexMatches(index, doc, "f1");
   const afterPaste = anchorsById(doc, "f1").get("a1");
   assert.equal(afterPaste.detached, true, "the paste is undone, so the anchor is detached");
   assert.equal(statusOf(doc, afterPaste), "deleted");
 
   undoOnce();
+  assertIndexMatches(index, doc, "f1");
   assert.equal(textOf(doc), text);
   assertAttached(doc, "a1", 4, 7, "two");
   assert.equal(manager.canUndo(), false, "only anchor commits were left, and they are excluded");
+});
+
+test("undo through the UndoManager brings a passage back to a file that is not being edited", () => {
+  const doc = makeDoc(1, { f1: "one two three", f2: "alpha beta" });
+  createAnchor(doc, "f1", "a1", 4, 7, ctx("one two three", 4, 7));
+  doc.commit();
+  const manager = new UndoManager(doc, { mergeInterval: 0, excludeOriginPrefixes: [ANCHORS_ORIGIN] });
+  const memory = new MoveMemory();
+  const index = new AnchorIndex(doc);
+  index.load("f1");
+  index.load("f2");
+  index.attach(memory);
+  // The cut takes "two " out of f1, and the paste puts it into f2.
+  index.apply([{ fileId: "f1", edits: [{ from: 4, to: 8, insert: "" }] }], memory, {});
+  index.apply([{ fileId: "f2", edits: [{ from: 6, to: 6, insert: "two " }] }], memory, {});
+  const pasted = index.find("a1");
+  assert.equal(pasted.fileId, "f2");
+  assert.deepEqual([pasted.anchor.from, pasted.anchor.to, pasted.anchor.detached], [6, 9, false]);
+
+  assert.equal(manager.undo(), true, "the paste is undone");
+  const undone = index.find("a1");
+  assert.equal(undone.anchor.detached, true, "the anchor is detached once the paste is undone");
+  assert.equal(statusOf(doc, undone.anchor), "deleted");
+  assertIndexMatches(index, doc, "f1");
+  assertIndexMatches(index, doc, "f2");
+
+  assert.equal(manager.undo(), true, "the cut is undone");
+  assert.equal(textOf(doc, "f1"), "one two three");
+  assert.equal(textOf(doc, "f2"), "alpha beta");
+  assertAttached(doc, "a1", 4, 7, "two");
+  const back = index.find("a1");
+  assert.equal(back.fileId, "f1");
+  assert.deepEqual([back.anchor.from, back.anchor.to, back.anchor.detached], [4, 7, false]);
+  assert.equal(statusOf(doc, back.anchor), "exact");
+  assertIndexMatches(index, doc, "f1");
+  assertIndexMatches(index, doc, "f2");
 });
 
 // A peer B that starts as a snapshot of A, with an index on each.
@@ -622,7 +655,7 @@ test("an index on another peer follows a remote cut and paste across files", () 
     index.load("f1");
     index.load("f2");
   }
-  indexA.attach();
+  indexA.attach(new MoveMemory());
   const memory = new MoveMemory();
   indexB.apply([{ fileId: "f1", edits: [{ from: 4, to: 8, insert: "" }] }], memory, {});
   indexB.apply([{ fileId: "f2", edits: [{ from: 6, to: 6, insert: "two " }] }], memory, {});
@@ -648,7 +681,7 @@ test("an index on another peer shrinks an anchor that a remote deletion overlapp
   A.commit();
   const { B, indexA, indexB } = twoIndexedPeers(A);
   indexA.load("f1");
-  indexA.attach();
+  indexA.attach(new MoveMemory());
   indexB.load("f1");
   // B deletes "o " at 6 and 7, the end of "two".
   indexB.apply([{ fileId: "f1", edits: [{ from: 6, to: 8, insert: "" }] }], new MoveMemory(), {});
@@ -667,7 +700,7 @@ test("an index on another peer detaches an anchor when a remote cut takes its te
   A.commit();
   const { B, indexA, indexB } = twoIndexedPeers(A);
   indexA.load("f1");
-  indexA.attach();
+  indexA.attach(new MoveMemory());
   indexB.load("f1");
   indexB.apply([{ fileId: "f1", edits: [{ from: 4, to: 8, insert: "" }] }], new MoveMemory(), {});
   sync(A, B);
@@ -686,7 +719,7 @@ test("a remote cut seen as text alone collapses the anchor, and its record write
   A.commit();
   const { B, indexA, indexB } = twoIndexedPeers(A);
   indexA.load("f1");
-  indexA.attach();
+  indexA.attach(new MoveMemory());
   indexB.load("f1");
   const { textOnly, rest } = editInTwoCommits(B, indexB, new MoveMemory(), "f1", [{ from: 4, to: 8, insert: "" }]);
 
@@ -777,12 +810,12 @@ function twoPeers(seed) {
   const { B, indexA, indexB } = twoIndexedPeers(A);
   indexA.load("f1");
   indexB.load("f1");
-  indexA.attach();
-  indexB.attach();
   const peers = [
     { who: "A", side: "A", doc: A, index: indexA, units: left.units, memory: new MoveMemory(), clip: null },
     { who: "B", side: "B", doc: B, index: indexB, units: right.units, memory: new MoveMemory(), clip: null },
   ];
+  indexA.attach(peers[0].memory);
+  indexB.attach(peers[1].memory);
   // The whole file as the oracle sees it: region A, the separator, region B.
   const expected = () => new Map([["f1", [...left.units, ...[...SEP].map((ch) => unit(ch)), ...right.units]]]);
   // Where a peer's region starts in its own copy of the file. Region A starts at
@@ -858,6 +891,7 @@ function undoCase(seed) {
   const manager = new UndoManager(doc, { mergeInterval: 0, excludeOriginPrefixes: [ANCHORS_ORIGIN] });
   const memory = new MoveMemory();
   const apply = (edits) => index.apply(edits, memory, {});
+  index.attach(memory);
 
   withLog(`undo seed=${seed}`, log, () => {
     let clip = null;
@@ -869,10 +903,7 @@ function undoCase(seed) {
       pending = [];
       assert.equal(manager.undo(), true, `undo ${k + 1} of ${steps} applied`);
       assert.equal(pending.length, 1, `undo ${k + 1} of ${steps} text events`);
-      const edits = editsFromDelta(pending[0]);
       pending = [];
-      index.record([{ fileId: "f1", edits }], memory, {});
-      doc.commit({ origin: ANCHORS_ORIGIN });
     }
     assert.equal(manager.canUndo(), false, "nothing left to undo");
     assert.equal(textOf(doc), layout.text, "text after every undo");

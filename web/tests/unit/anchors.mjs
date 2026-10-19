@@ -18,6 +18,7 @@ import {
   CONTEXT_UNITS,
   MoveMemory,
   attachByHand,
+  composeEdits,
   createAnchor,
   deriveAttachment,
   fragmentRangesFor,
@@ -25,7 +26,6 @@ import {
   resolveAnchors,
   restoreByFragments,
   statusOf,
-  throughEdits,
 } from "../../src/lib/anchors.js";
 import { rejectRestoring, resolveFile, trackedSplice } from "../../src/lib/track-changes.js";
 
@@ -413,35 +413,130 @@ test("seeded fuzz: anchors follow typing, cutting, pasting, copying and dragging
 // ---------------------------------------------------------------------------
 // The browser side: the fragments of a deletion, and the attachment of a comment
 
-test("throughEdits: a point moves past earlier edits and stays before an insertion", () => {
-  assert.equal(throughEdits(5, [{ from: 0, to: 0, insert: "ab" }]), 7);
-  assert.equal(throughEdits(5, [{ from: 5, to: 5, insert: "ab" }]), 5);
-  assert.equal(throughEdits(5, [{ from: 4, to: 7, insert: "" }]), 4);
-  assert.equal(throughEdits(5, [{ from: 3, to: 5, insert: "" }]), 3);
-});
-
-test("fragmentRangesFor: a deletion takes the two fragments of its gap in rank order", () => {
+test("fragmentRangesFor: a deletion takes the two created fragments of its text, in order", () => {
   const before = "one two three";
-  // "two " is deleted at 4..8, so its point is 4.
-  const gaps = [{ at: 4, fragments: [{ id: "f-b", text: "o ", rank: 1 }, { id: "f-a", text: "tw", rank: 0 }] }];
-  assert.deepEqual(fragmentRangesFor(before, [{ from: 4, to: 8, insert: "" }], gaps), [
+  const fragments = [
+    { id: "f-a", text: "tw" },
+    { id: "f-b", text: "o " },
+  ];
+  assert.deepEqual(fragmentRangesFor(before, [{ from: 4, to: 8, insert: "" }], fragments), [
     { id: "f-a", edit: 0, start: 0, end: 2 },
     { id: "f-b", edit: 0, start: 2, end: 4 },
   ]);
-  // An insertion before the deletion moves its point to 6 in the new text.
-  const later = [{ at: 6, fragments: gaps[0].fragments }];
-  const edits = [{ from: 0, to: 0, insert: "XX" }, { from: 4, to: 8, insert: "" }];
-  assert.deepEqual(fragmentRangesFor(before, edits, later).map((r) => [r.id, r.edit]), [["f-a", 1], ["f-b", 1]]);
-  // A gap that is mapped by the caller is found where the mapping sends it.
-  assert.equal(fragmentRangesFor(before, [{ from: 4, to: 8, insert: "" }], [{ at: 9, fragments: gaps[0].fragments }], () => 9).length, 2);
 });
 
-test("fragmentRangesFor: a gap whose texts do not make the deleted text gets no range", () => {
+test("fragmentRangesFor: a deletion whose fragments do not make its text takes none and leaves them", () => {
   const before = "one two three";
-  const gaps = [{ at: 4, fragments: [{ id: "f-a", text: "tw", rank: 0 }, { id: "f-b", text: "x ", rank: 1 }] }];
-  assert.deepEqual(fragmentRangesFor(before, [{ from: 4, to: 8, insert: "" }], gaps), []);
-  // An untracked deletion has no gap at its point.
-  assert.deepEqual(fragmentRangesFor(before, [{ from: 0, to: 3, insert: "" }], gaps), []);
+  const fragments = [
+    { id: "f-a", text: "tw" },
+    { id: "f-b", text: "o " },
+  ];
+  // "two t" is joined with the "t" after it, so the fragments do not make it.
+  assert.deepEqual(fragmentRangesFor(before, [{ from: 4, to: 9, insert: "" }], fragments), []);
+  // "one" is not the fragments either. The deletion of "two " after it still takes both.
+  const edits = [
+    { from: 0, to: 3, insert: "" },
+    { from: 4, to: 8, insert: "" },
+  ];
+  assert.deepEqual(fragmentRangesFor(before, edits, fragments), [
+    { id: "f-a", edit: 1, start: 0, end: 2 },
+    { id: "f-b", edit: 1, start: 2, end: 4 },
+  ]);
+});
+
+test("fragmentRangesFor: two deletions in one transaction take their fragments one after the other", () => {
+  const before = "one two three four";
+  const fragments = [
+    { id: "f-two", text: "two " },
+    { id: "f-four", text: "four" },
+  ];
+  // "four" is at 14..18 in the text before the edits.
+  const edits = [
+    { from: 4, to: 8, insert: "" },
+    { from: 14, to: 18, insert: "" },
+  ];
+  assert.deepEqual(fragmentRangesFor(before, edits, fragments), [
+    { id: "f-two", edit: 0, start: 0, end: 4 },
+    { id: "f-four", edit: 1, start: 0, end: 4 },
+  ]);
+});
+
+test("fragmentRangesFor: a composed second step matches through the running text", () => {
+  const before = "one two three";
+  // List 1 inserts "XX" at 0. List 2 deletes "two " from "XXone two three" at 6..10.
+  const edits = composeEdits([
+    [{ from: 0, to: 0, insert: "XX" }],
+    [{ from: 6, to: 10, insert: "" }],
+  ]);
+  assert.deepEqual(fragmentRangesFor(before, edits, [{ id: "f-two", text: "two " }]), [
+    { id: "f-two", edit: 1, start: 0, end: 4 },
+  ]);
+});
+
+// An anchor record as planOperation takes it.
+const anchorOn = (id, from, to, exact) => ({
+  id,
+  file: "f1",
+  from,
+  to,
+  detached: false,
+  fragment: null,
+  offset: null,
+  length: null,
+  exact,
+  prefix: "",
+  suffix: "",
+  collapsed: false,
+  unresolved: false,
+});
+
+// Runs each list through planOperation on the output of the list before it.
+function runInSequence(before, anchors, lists) {
+  let text = before;
+  let current = anchors;
+  for (const edits of lists) {
+    const [file] = planOperation([{ fileId: "f1", before: text, anchors: current, edits }], new MoveMemory()).files;
+    text = file.after;
+    current = file.anchors;
+  }
+  return { after: text, anchors: current };
+}
+
+test("composeEdits: one planOperation over the composed lists matches running them in sequence", () => {
+  const before = "one two three four";
+  const lists = [
+    // Deletes "two ".
+    [{ from: 4, to: 8, insert: "" }],
+    // In the coordinates of "one three four": inserts "zero " at the start.
+    [{ from: 0, to: 0, insert: "zero " }],
+  ];
+  const sequential = runInSequence(before, [anchorOn("a1", 8, 13, "three")], lists);
+  const [file] = planOperation(
+    [{ fileId: "f1", before, anchors: [anchorOn("a1", 8, 13, "three")], edits: composeEdits(lists) }],
+    new MoveMemory(),
+  ).files;
+  assert.equal(file.after, sequential.after);
+  assert.equal(file.after, "zero one three four");
+  const anchor = file.anchors.find((a) => a.id === "a1");
+  const seqAnchor = sequential.anchors.find((a) => a.id === "a1");
+  assert.deepEqual([anchor.from, anchor.to], [seqAnchor.from, seqAnchor.to]);
+  assert.deepEqual([anchor.from, anchor.to], [9, 14]);
+  assert.equal(file.after.slice(anchor.from, anchor.to), "three");
+});
+
+test("composeEdits: a later list may edit inside the text an earlier list inserted", () => {
+  const before = "one two three";
+  const lists = [
+    // Inserts "ABCD" at 4: "one ABCDtwo three".
+    [{ from: 4, to: 4, insert: "ABCD" }],
+    // In that text, deletes "BC" at 5..7.
+    [{ from: 5, to: 7, insert: "" }],
+  ];
+  const plan = planOperation([{ fileId: "f1", before, anchors: [], edits: composeEdits(lists) }], new MoveMemory());
+  const [file] = plan.files;
+  assert.equal(file.after, "one ADtwo three");
+  assert.equal(file.after.slice(4, 6), "AD");
+  assert.equal(file.after, runInSequence(before, [], lists).after);
 });
 
 test("deriveAttachment: an attached, a detached and a missing record, through a real document", () => {
@@ -467,6 +562,27 @@ test("deriveAttachment: an attached, a detached and a missing record, through a 
     status: "unresolved", resolved_range_utf16: null, resolved_file_id: null, tree_digest: "",
   });
   assert.equal(deriveAttachment(doc, index, { id: "c-attached" }), null);
+});
+
+test("deriveAttachment: a comment whose file was removed is unresolved, and the index keeps its anchor", () => {
+  const doc = new LoroDoc();
+  const text = doc.getMap("files").setContainer("f1", new LoroText());
+  text.insert(0, "Hello brave world");
+  createAnchor(doc, "f1", "c1", 6, 11, { exact: "brave", prefix: "Hello ", suffix: " world" });
+  doc.commit();
+  const index = new AnchorIndex(doc);
+  index.load("f1");
+  doc.getMap("files").delete("f1");
+  doc.commit();
+
+  const source = { id: "c1", original_anchor: { kind: "source_text" } };
+  assert.deepEqual(deriveAttachment(doc, index, source), {
+    status: "unresolved", resolved_range_utf16: null, resolved_file_id: null, tree_digest: "",
+  });
+  // The cache is not told of the removal, so the record is still there.
+  const hit = index.find("c1");
+  assert.equal(hit.fileId, "f1");
+  assert.deepEqual([hit.anchor.from, hit.anchor.to, hit.anchor.exact], [6, 11, "brave"]);
 });
 
 test("attachByHand: a deleted comment attaches to the selection and its quote is refreshed", () => {
@@ -509,7 +625,10 @@ test("rejectRestoring: the text a rejection puts back is listed, and restoreByFr
   const edit = { from: 4, to: 8, insert: "" };
   const [changeId] = trackedSplice(doc, "f1", edit.from, edit.to, edit.insert, { who: "me", author: "Me" });
   doc.commit();
-  const fragments = fragmentRangesFor(source, [edit], resolveFile(doc, "f1").gaps);
+  const created = resolveFile(doc, "f1").gaps.flatMap((gap) =>
+    gap.fragments.map((f) => ({ id: f.id, text: f.text })),
+  );
+  const fragments = fragmentRangesFor(source, [edit], created);
   assert.equal(fragments.length, 1);
   index.record([{ fileId: "f1", edits: [edit], fragments }], new MoveMemory());
   doc.commit({ origin: ANCHORS_ORIGIN });

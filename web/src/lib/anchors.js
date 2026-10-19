@@ -30,7 +30,8 @@ export const CONTEXT_UNITS = 32;
 
 /**
  * @typedef {{ from: number, to: number, insert: string }} Edit
- *   Before-coordinates (UTF-16), ascending, non-overlapping.
+ *   Before-coordinates (UTF-16), ascending, non-overlapping. A composed list
+ *   (see composeEdits) is in the running coordinates of planOperation instead.
  * @typedef {{ id: string, file: string, from: number, to: number, detached: boolean, fragment: string | null, offset: number | null, length: number | null, exact: string, prefix: string, suffix: string, collapsed: boolean, unresolved: boolean }} Anchor
  *   When detached, from and to are 0 and mean nothing. length is the span
  *   length in UTF-16 units at detachment; null when attached or when the span
@@ -675,63 +676,79 @@ export function statusOf(doc, anchor, body) {
 }
 
 /**
- * Where a point goes when a batch of edits is applied to the text it is in.
- * The edits are in that text's coordinates, ascending. A point inside deleted
- * text goes to the start of the deletion, where a tracked deletion's gap sits;
- * a point where text is inserted stays before the insertion.
+ * Joins the edit lists of one update into one list for planOperation. The
+ * planner runs a single batch, but an update can hold several editor
+ * transactions. Each list is in the coordinates of the text its transaction
+ * started from, which is the text after the lists before it. planOperation
+ * adds the net length change of the edits before an edit to its position, so
+ * each edit of a later list is reduced by the net length change of all earlier
+ * lists. Its insert is unchanged. The result is in planOperation's coordinates,
+ * and its edits apply in order without ascending: a later list may edit before
+ * an earlier one.
  *
- * @param {number} point
- * @param {Edit[]} edits
- * @returns {number}
+ * @param {Edit[][]} lists one list per transaction, oldest first
+ * @returns {Edit[]}
  */
-export function throughEdits(point, edits) {
-  let p = point;
-  let adj = 0;
-  for (const edit of edits) {
-    const ef = edit.from + adj;
-    const et = edit.to + adj;
-    const n = edit.insert.length;
-    adj += n - (edit.to - edit.from);
-    if (ef > p) break;
-    if (et < p || (et === p && et > ef)) p += n - (et - ef);
-    else if (ef < p) p = ef;
+export function composeEdits(lists) {
+  /** @type {Edit[]} */
+  const out = [];
+  let delta = 0;
+  for (const list of lists) {
+    let listDelta = 0;
+    for (const edit of list) {
+      out.push({ from: edit.from - delta, to: edit.to - delta, insert: edit.insert });
+      listDelta += edit.insert.length - (edit.to - edit.from);
+    }
+    delta += listDelta;
   }
-  return p;
+  return out;
 }
 
 /**
- * The fragment ranges of the deletions in one transaction. A deletion gets
- * ranges when its text is exactly the texts of the gap at its point, in rank
- * order; each fragment becomes one range. Anything else, such as an untracked
- * deletion or fragments that were joined, gets none.
+ * The fragment ranges of the deletions in one transaction. The walk mirrors the
+ * Rust fragment_ranges. Each deletion takes the created fragments at the front,
+ * in document order, whose texts join up to exactly its deleted text, and each
+ * fragment becomes one range with start and end inside that text. A deletion
+ * whose text is not exactly the next fragments gets none and takes none, so a
+ * later deletion can still take them. That covers an untracked deletion and a
+ * deletion whose text was joined with something else.
  *
- * The edits are in the coordinates of `before`. A deletion's point is its
- * `from` after the edits before it, so the gaps are read in the coordinates of
- * the text after these edits, unless `toGap` maps them. A caller whose update
- * has later transactions maps the point through them with `throughEdits`.
+ * The edits are in planOperation's coordinates, so a composed list (see
+ * composeEdits) is walked in order against the running text.
  *
  * @param {string} before the text the edits apply to
  * @param {Edit[]} edits
- * @param {{ at: number, fragments: { id: string, text: string, rank: number }[] }[]} gaps
- * @param {(point: number) => number} [toGap]
+ * @param {{ id: string, text: string }[]} fragments the created fragments, in document order
  * @returns {FragmentRange[]}
  */
-export function fragmentRangesFor(before, edits, gaps, toGap = (point) => point) {
+export function fragmentRangesFor(before, edits, fragments) {
   const out = [];
+  let next = 0;
+  let cur = before;
   let adj = 0;
   edits.forEach((edit, index) => {
-    const point = edit.from + adj;
-    adj += edit.insert.length - (edit.to - edit.from);
-    if (!(edit.to > edit.from)) return;
-    const gap = gaps.find((g) => g.at === toGap(point));
-    if (!gap) return;
-    const fragments = [...gap.fragments].sort((a, b) => a.rank - b.rank);
-    if (fragments.map((f) => f.text).join("") !== before.slice(edit.from, edit.to)) return;
-    let start = 0;
-    for (const fragment of fragments) {
-      out.push({ id: fragment.id, edit: index, start, end: start + fragment.text.length });
-      start += fragment.text.length;
+    const ef = edit.from + adj;
+    const et = edit.to + adj;
+    if (et > ef) {
+      const deleted = cur.slice(ef, et);
+      let taken = next;
+      let joined = "";
+      while (taken < fragments.length && joined.length < deleted.length) {
+        joined += fragments[taken].text;
+        taken++;
+      }
+      if (joined === deleted) {
+        let start = 0;
+        for (let i = next; i < taken; i++) {
+          const fragment = fragments[i];
+          out.push({ id: fragment.id, edit: index, start, end: start + fragment.text.length });
+          start += fragment.text.length;
+        }
+        next = taken;
+      }
     }
+    cur = cur.slice(0, ef) + edit.insert + cur.slice(et);
+    adj += edit.insert.length - (edit.to - edit.from);
   });
   return out;
 }
@@ -742,12 +759,13 @@ export function fragmentRangesFor(before, edits, gaps, toGap = (point) => point)
  * shape the server used to send. A comment with no source passage has none.
  *
  * `bodies` caches each file's text across one pass over many comments. Pass
- * the same Map to every call of that pass.
+ * the same Map to every call of that pass. A file that is gone is cached as
+ * null.
  *
  * @param {import("loro-crdt").LoroDoc} doc
  * @param {AnchorIndex} index
  * @param {{ id: string, original_anchor?: { kind?: string } }} comment
- * @param {Map<string, string>} [bodies]
+ * @param {Map<string, string | null>} [bodies]
  * @returns {{ status: string, resolved_range_utf16: [number, number] | null, resolved_file_id: string | null, tree_digest: string } | null}
  */
 export function deriveAttachment(doc, index, comment, bodies = new Map()) {
@@ -755,11 +773,15 @@ export function deriveAttachment(doc, index, comment, bodies = new Map()) {
   const hit = index.find(String(comment.id));
   if (!hit) return { status: "unresolved", resolved_range_utf16: null, resolved_file_id: null, tree_digest: "" };
   const { anchor } = hit;
-  let body = bodies.get(anchor.file);
-  if (body === undefined) {
+  // A file that was removed, or is no longer a text, is not a deleted passage.
+  // The comment is unresolved, and no status is read.
+  if (!bodies.has(anchor.file)) {
     const text = fileText(doc, anchor.file);
-    body = text ? text.toString() : "";
-    bodies.set(anchor.file, body);
+    bodies.set(anchor.file, text ? text.toString() : null);
+  }
+  const body = bodies.get(anchor.file) ?? null;
+  if (body === null) {
+    return { status: "unresolved", resolved_range_utf16: null, resolved_file_id: null, tree_digest: "" };
   }
   const status = statusOf(doc, anchor, body);
   const placed = status === "exact" || status === "modified";
@@ -841,6 +863,10 @@ function toAnchor(a) {
  * operations go through record() and shift the cache with the planner, so an
  * edit resolves no cursor. Remote text changes shift the cache in foreign mode,
  * and the records another session changed are resolved again on import.
+ *
+ * An undo or redo in a file that is not on screen produces no editor
+ * transaction, so the index follows undo and redo from the document itself
+ * (see attach). The editor plugin records only the user's own edits.
  */
 export class AnchorIndex {
   #doc;
@@ -1001,15 +1027,39 @@ export class AnchorIndex {
   }
 
   /**
-   * Keeps the cache current across imports. For each import batch: the cached
-   * files' text deltas shift their anchors in foreign mode, then the records
-   * that the batch changed are resolved again by refresh(). Local batches are
-   * ignored: they go through record().
+   * Keeps the cache current across the document's changes. An undo or redo is
+   * recorded here from the text events it produced. The edits of each file it
+   * touched go through record() under ANCHORS_ORIGIN, so the anchors follow the
+   * text back even in a file that is not on screen. Every other local batch is
+   * ignored, since the editor plugin records those through apply().
    *
+   * For each import batch: the cached files' text deltas shift their anchors in
+   * foreign mode, then the records that the batch changed are resolved again by
+   * refresh(). Imports are the only remote change, so no other batch is read.
+   *
+   * @param {MoveMemory} memory the session's memory, the one its edits are recorded with
    * @returns {() => void} the unsubscribe function
    */
-  attach() {
+  attach(memory) {
     return this.#doc.subscribe((batch) => {
+      if (batch.by === "local" && batch.origin === "undo") {
+        // Loro gives undo and redo commits the same origin. Successive events on
+        // one text are composed into one list for that file.
+        /** @type {Map<string, Edit[][]>} */
+        const lists = new Map();
+        for (const event of batch.events) {
+          const fileId = this.#texts.get(event.target);
+          if (fileId === undefined || event.diff.type !== "text") continue;
+          if (!lists.has(fileId)) lists.set(fileId, []);
+          lists.get(fileId).push(editsFromDelta(event.diff.diff));
+        }
+        if (lists.size > 0) {
+          const files = [...lists].map(([fileId, edits]) => ({ fileId, edits: composeEdits(edits) }));
+          this.record(files, memory);
+          this.#doc.commit({ origin: ANCHORS_ORIGIN });
+        }
+        return;
+      }
       if (batch.by !== "import") return;
       for (const event of batch.events) {
         const fileId = this.#texts.get(event.target);
