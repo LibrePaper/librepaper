@@ -91,6 +91,23 @@ fn admin_help_lists_the_admin_commands() {
     );
 }
 
+#[test]
+fn moderate_help_lists_the_moderation_commands() {
+    let help = help_of(&["admin", "moderate", "--help"]);
+    for command in [
+        "block-account",
+        "unblock-account",
+        "erase-account",
+        "hide-project",
+        "unhide-project",
+    ] {
+        assert!(
+            lists_command(&help, command),
+            "moderation command {command:?} is absent from moderate help:\n{help}"
+        );
+    }
+}
+
 /// `local` is the desktop app's interface to the background service, and the
 /// sidebar assistant's own chosen agent spawns `mcp`. Both parse, neither is
 /// advertised in root help.
@@ -316,6 +333,18 @@ fn server_flags_are_rejected_and_server_environment_overrides_are_ignored() {
             "--reason",
             "review",
         ][..],
+        &[
+            "admin",
+            "moderate",
+            "erase-account",
+            "paper",
+            "--database-url",
+            "postgresql:///other",
+            "--actor",
+            "operator",
+            "--reason",
+            "review",
+        ][..],
     ] {
         assert!(!cli(args).status.success(), "{args:?} should be rejected");
     }
@@ -369,6 +398,18 @@ fn config_commands_accept_explicit_paths() {
             "admin",
             "moderate",
             "hide-project",
+            "paper",
+            "--actor",
+            "operator",
+            "--reason",
+            "review",
+            "--config",
+            config,
+        ][..],
+        &[
+            "admin",
+            "moderate",
+            "erase-account",
             "paper",
             "--actor",
             "operator",
