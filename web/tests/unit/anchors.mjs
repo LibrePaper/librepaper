@@ -727,13 +727,13 @@ test("deriveAttachment: an attached, a detached and a missing record, through a 
 
   const source = { original_anchor: { kind: "source_text" } };
   assert.deepEqual(deriveAttachment(doc, index, { id: "c-attached", ...source }), {
-    status: "exact", resolved_range_utf16: [7, 12], resolved_file_id: "f1", tree_digest: "", attached_by_hand: false,
+    status: "exact", resolved_range_utf16: [7, 12], resolved_file_id: "f1", tree_digest: "", attached_by_hand: false, diagnostic: null,
   });
   assert.deepEqual(deriveAttachment(doc, index, { id: "c-detached", ...source }), {
-    status: "deleted", resolved_range_utf16: null, resolved_file_id: "f1", tree_digest: "", attached_by_hand: false,
+    status: "deleted", resolved_range_utf16: null, resolved_file_id: "f1", tree_digest: "", attached_by_hand: false, diagnostic: null,
   });
   assert.deepEqual(deriveAttachment(doc, index, { id: "c-missing", ...source }), {
-    status: "unresolved", resolved_range_utf16: null, resolved_file_id: null, tree_digest: "", attached_by_hand: false,
+    status: "unresolved", resolved_range_utf16: null, resolved_file_id: null, tree_digest: "", attached_by_hand: false, diagnostic: null,
   });
   assert.equal(deriveAttachment(doc, index, { id: "c-attached" }), null);
 });
@@ -751,7 +751,7 @@ test("deriveAttachment: a comment whose file was removed is unresolved, and the 
 
   const source = { id: "c1", original_anchor: { kind: "source_text" } };
   assert.deepEqual(deriveAttachment(doc, index, source), {
-    status: "unresolved", resolved_range_utf16: null, resolved_file_id: null, tree_digest: "", attached_by_hand: false,
+    status: "unresolved", resolved_range_utf16: null, resolved_file_id: null, tree_digest: "", attached_by_hand: false, diagnostic: "removed_file",
   });
   // The cache is not told of the removal, so the record is still there.
   const hit = index.find("c1");
@@ -792,7 +792,7 @@ test("attachByHand: a deleted comment attaches to the selection and its quote is
   assert.equal(attachByHand(doc, index, "c1", "f1", 12, 12), false, "an empty selection attaches nothing");
   assert.equal(attachByHand(doc, index, "c1", "f1", 7, 12), true);
   assert.deepEqual(deriveAttachment(doc, index, source), {
-    status: "exact", resolved_range_utf16: [7, 12], resolved_file_id: "f1", tree_digest: "", attached_by_hand: false,
+    status: "exact", resolved_range_utf16: [7, 12], resolved_file_id: "f1", tree_digest: "", attached_by_hand: false, diagnostic: null,
   });
   const record = doc.getMap("anchors").get("c1");
   assert.equal(record.get("detached"), undefined);

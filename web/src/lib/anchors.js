@@ -886,6 +886,9 @@ export function fragmentRangesFor(before, edits, fragments) {
  * attached the comment to a passage by hand. It is false when the comment has
  * no record in the document, and when its original quote is not a string.
  *
+ * `diagnostic` is "removed_file" when the file the record names is gone, or is
+ * no longer a text. It is null on every other path, the no-record path included.
+ *
  * `bodies` caches each file's text across one pass over many comments. Pass
  * the same Map to every call of that pass. A file that is gone is cached as
  * null.
@@ -894,24 +897,24 @@ export function fragmentRangesFor(before, edits, fragments) {
  * @param {AnchorIndex} index
  * @param {{ id: string, original_anchor?: { kind?: string, target?: { exact?: string } } }} comment
  * @param {Map<string, string | null>} [bodies]
- * @returns {{ status: string, resolved_range_utf16: [number, number] | null, resolved_file_id: string | null, tree_digest: string, attached_by_hand: boolean } | null}
+ * @returns {{ status: string, resolved_range_utf16: [number, number] | null, resolved_file_id: string | null, tree_digest: string, attached_by_hand: boolean, diagnostic: "removed_file" | null } | null}
  */
 export function deriveAttachment(doc, index, comment, bodies = new Map()) {
   if (comment?.original_anchor?.kind !== "source_text") return null;
   const hit = index.find(String(comment.id));
-  if (!hit) return { status: "unresolved", resolved_range_utf16: null, resolved_file_id: null, tree_digest: "", attached_by_hand: false };
+  if (!hit) return { status: "unresolved", resolved_range_utf16: null, resolved_file_id: null, tree_digest: "", attached_by_hand: false, diagnostic: null };
   const { anchor } = hit;
   const original = comment.original_anchor?.target?.exact;
   const attached_by_hand = typeof original === "string" && anchor.exact !== original;
   // A file that was removed, or is no longer a text, is not a deleted passage.
-  // The comment is unresolved, and no status is read.
+  // The comment is unresolved, with the removed_file diagnostic, and no status is read.
   if (!bodies.has(anchor.file)) {
     const text = fileText(doc, anchor.file);
     bodies.set(anchor.file, text ? text.toString() : null);
   }
   const body = bodies.get(anchor.file) ?? null;
   if (body === null) {
-    return { status: "unresolved", resolved_range_utf16: null, resolved_file_id: null, tree_digest: "", attached_by_hand };
+    return { status: "unresolved", resolved_range_utf16: null, resolved_file_id: null, tree_digest: "", attached_by_hand, diagnostic: "removed_file" };
   }
   const status = statusOf(doc, anchor, body);
   const placed = status === "exact" || status === "modified";
@@ -921,6 +924,7 @@ export function deriveAttachment(doc, index, comment, bodies = new Map()) {
     resolved_file_id: anchor.file,
     tree_digest: "",
     attached_by_hand,
+    diagnostic: null,
   };
 }
 

@@ -22,16 +22,19 @@ const REFRESH_PAGES_MAX = 8;
 // still the page's, and genuinely so: both depend on the visible frame, which
 // this module cannot see.
 /**
- * Whether two attachments agree on where a passage is and on whether it was
- * attached by hand. Server attachments never carry the flag, so an editor's
- * derived copy replaces a server copy that differs only by it.
+ * Whether two attachments agree on where a passage is, on whether it was
+ * attached by hand and on the diagnostic. Server attachments never carry the
+ * flag, so an editor's derived copy replaces a server copy that differs only by
+ * it. The diagnostic is compared the same way, so a derived "removed_file" replaces
+ * a server copy that lacks it.
  */
 function sameAttachment(a, b) {
   if (!a || !b) return (a ?? null) === (b ?? null);
   return a.status === b.status
     && a.resolved_file_id === b.resolved_file_id
     && String(a.resolved_range_utf16) === String(b.resolved_range_utf16)
-    && Boolean(a.attached_by_hand) === Boolean(b.attached_by_hand);
+    && Boolean(a.attached_by_hand) === Boolean(b.attached_by_hand)
+    && (a.diagnostic ?? null) === (b.diagnostic ?? null);
 }
 
 // `attachmentOf(comment, bodies)` gives an editor's attachment, worked out from

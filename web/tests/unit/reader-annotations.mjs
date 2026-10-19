@@ -176,6 +176,33 @@ assert.equal(annotations.receive({ type: "attachments", attachments: [] }), fals
   assert.equal(commented.attachment.attached_by_hand, true, "a server row that repeats the range does not drop the flag");
 }
 
+// Attachments that differ only by diagnostic are not the same. A derived
+// "removed_file" replaces a server copy that lacks it, though status, file and range all match.
+{
+  const gone = { status: "unresolved", resolved_file_id: null, resolved_range_utf16: null, tree_digest: "" };
+  let deriving = false;
+  let repaints = 0;
+  const removed = createAnnotations({
+    slug: "attachment-removed-file",
+    anchor: () => {},
+    repaint: () => repaints++,
+    send: () => {},
+    attachmentOf: () => (deriving ? { ...gone, diagnostic: "removed_file" } : undefined),
+  });
+  removed.seed(
+    [{ id: "gone", body: "Passage", replies: [], attachment: { ...gone } }],
+    { total: 1, open: 1, replies: 0, revision: "r1", complete: true },
+  );
+  const commented = removed.state.comments[0];
+  assert.equal(commented.attachment.diagnostic, undefined);
+  deriving = true;
+  removed.deriveNow();
+  assert.equal(commented.attachment.diagnostic, "removed_file", "a derived removed_file replaces a server copy without it");
+  assert.equal(repaints, 1, "a changed diagnostic repaints");
+  removed.deriveNow();
+  assert.equal(repaints, 1, "an unchanged diagnostic does not repaint");
+}
+
 // The comments are paged: what arrives is a prefix, and everything the panel
 // says about the collection as a whole comes from the server's own counts.
 //
