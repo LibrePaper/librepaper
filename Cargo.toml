@@ -51,12 +51,15 @@ codegen-units = 4
 inherits = "release"
 
 # The local demo builds with this profile. A demo needs no LTO, and without
-# it the large server crate compiles in parallel and incrementally.
+# it the large server crate compiles in parallel. Incremental compilation is
+# off, as in release: the demo's Docker build keeps its target directory in a
+# cache that cargo clean cannot reach, and an incremental optimized build
+# there once reused objects referencing drop glue that no object defined,
+# which failed at link time.
 [profile.demo]
 inherits = "release"
 lto = false
 codegen-units = 256
-incremental = true
 
 # The edit-test loop rebuilds one very large test binary, and full debuginfo
 # is the bulk of what it writes and links. Line tables keep backtraces
