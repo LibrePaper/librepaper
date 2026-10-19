@@ -961,7 +961,9 @@ export class AnchorIndex {
 
   /**
    * Resolves a file's records from the document and caches them, with the
-   * text. Each record's container is remembered for its later changes.
+   * text. Each record's container is remembered for its later changes. The
+   * file maps to its current text container only, so an older container of
+   * the file no longer maps to it.
    * @param {string} fileId
    * @returns {{ text: string, anchors: Anchor[] }}
    */
@@ -977,6 +979,7 @@ export class AnchorIndex {
       this.#remember(id, value);
       anchors.push(toAnchor(recordAnchor(doc, id, value, fileId, body)));
     }
+    this.#unmap(fileId);
     if (text) this.#texts.set(text.id, fileId);
     const entry = { text: body, anchors };
     this.#files.set(fileId, entry);
@@ -1168,9 +1171,14 @@ export class AnchorIndex {
         return;
       }
       if (batch.by !== "import") return;
+      // A restored file keeps its id but gets a new text container, so the
+      // cached files that changed are loaded again first. The text of a
+      // container loaded here already holds this batch's edits, so its text
+      // events are not applied a second time.
+      const loaded = this.#followFiles(batch.events);
       for (const event of batch.events) {
         const fileId = this.#texts.get(event.target);
-        if (fileId !== undefined && event.diff.type === "text") {
+        if (fileId !== undefined && event.diff.type === "text" && !loaded.has(event.target)) {
           this.#shift(fileId, editsFromDelta(event.diff.diff));
         }
       }
@@ -1279,6 +1287,45 @@ export class AnchorIndex {
       if (fileId === keep || !entry.anchors.some((a) => a.id === id)) continue;
       this.#files.set(fileId, { ...entry, anchors: entry.anchors.filter((a) => a.id !== id) });
     }
+  }
+
+  // Forgets the text container that a file was mapped to, if any.
+  #unmap(fileId) {
+    for (const [textId, owner] of this.#texts) {
+      if (owner === fileId) this.#texts.delete(textId);
+    }
+  }
+
+  /**
+   * Follows the files whose value an import replaced or removed. A restored
+   * file keeps its file id but has a new text container, and the old one is no
+   * longer its text. A cached file that holds a text is loaded from that text.
+   * A cached file that holds no text is dropped, so that find() reads the
+   * record from the document and deriveAttachment reports the file as gone.
+   * Does not commit.
+   *
+   * @param {{ target: string, diff: any }[]} events the events of one import batch
+   * @returns {Set<string>} the ids of the text containers loaded here
+   */
+  #followFiles(events) {
+    const filesRoot = this.#doc.getMap("files").id;
+    /** @type {Set<string>} */
+    const loaded = new Set();
+    for (const event of events) {
+      if (event.target !== filesRoot || event.diff.type !== "map") continue;
+      for (const fileId of Object.keys(event.diff.updated)) {
+        if (!this.#files.has(fileId)) continue;
+        const text = fileText(this.#doc, fileId);
+        if (text) {
+          this.load(fileId);
+          loaded.add(text.id);
+        } else {
+          this.#unmap(fileId);
+          this.#files.delete(fileId);
+        }
+      }
+    }
+    return loaded;
   }
 
   #shift(fileId, edits) {

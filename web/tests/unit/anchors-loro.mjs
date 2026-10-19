@@ -25,7 +25,9 @@ import {
   CONTEXT_UNITS,
   MoveMemory,
   applyOperation,
+  attachByHand,
   createAnchor,
+  deriveAttachment,
   editsFromDelta,
   fragmentRangesFor,
   markCollapsed,
@@ -853,6 +855,51 @@ test("a remote cut seen as text alone collapses the anchor, and its record write
   assert.equal(detached.collapsed, false);
   assert.equal(statusOf(A, detached), "deleted");
   assertIndexMatches(indexA, A);
+});
+
+test("an index follows a file whose text container was replaced by an import", () => {
+  const text = "one two three";
+  const A = makeDoc(1, { f1: text });
+  createAnchor(A, "f1", "a1", 4, 7, ctx(text, 4, 7));
+  A.commit();
+  const { B, indexA, indexB } = twoIndexedPeers(A);
+  for (const index of [indexA, indexB]) {
+    index.load("f1");
+    index.attach(new MoveMemory());
+  }
+  // B replaces the file under the same id, as a restore from history does. The
+  // replacement is B's own commit, which B's index does not see as an import,
+  // so B loads the file again.
+  const replaced = B.getMap("files").setContainer("f1", new LoroText());
+  replaced.insert(0, text);
+  B.commit();
+  indexB.load("f1");
+  sync(A, B);
+
+  // A's cache holds the new container's text, and its insert is not applied twice.
+  assert.equal(indexA.get("f1").text, textOf(A));
+  // The cursors of a1 were made in the old container, so they no longer resolve.
+  const hit = indexA.find("a1");
+  assert.ok(hit, "a1 is listed");
+  assert.equal(hit.anchor.unresolved, true, "a1 is unresolved");
+  const attachment = deriveAttachment(A, indexA, {
+    id: "a1",
+    original_anchor: { kind: "source_text", target: { exact: "two" } },
+  });
+  assert.equal(attachment.status, "unresolved");
+
+  // B edits the new container, and A follows the edit through its cache.
+  indexB.apply([{ fileId: "f1", edits: [{ from: 0, to: 0, insert: "X" }] }], new MoveMemory(), {});
+  sync(A, B);
+  assert.equal(textOf(A), "Xone two three");
+  assert.equal(indexA.get("f1").text, textOf(A));
+
+  // B attaches a1 to "two" in the new container, and A shows it attached.
+  assert.equal(attachByHand(B, indexB, "a1", "f1", 5, 8), true);
+  sync(A, B);
+  assertAttached(A, "a1", 5, 8, "two");
+  assertIndexMatches(indexA, A, "f1");
+  assertIndexMatches(indexB, B, "f1");
 });
 
 // ---------------------------------------------------------------------------
