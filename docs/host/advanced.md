@@ -373,11 +373,11 @@ Add this override before you first start the kit, because the bundled Caddy cann
 docker compose up -d
 ```
 
-Then follow the setup that matches how your Caddy runs.
+What comes next depends on where your Caddy runs. If it runs as a Docker container, follow [Caddy in Docker](#caddy-in-docker). If you installed it on the host, for example with `apt`, follow [Caddy on the host](#caddy-on-the-host). Both end with the same [site block](#site-block).
 
 ### Caddy in Docker
 
-Your Caddy container joins LibrePaper's edge network and reaches the app by its service name. In your Caddy's own compose file:
+A Caddy container cannot see LibrePaper until the two share a Docker network. Connect your Caddy to LibrePaper's edge network, and it reaches the app by its service name, `librepaper`. Add this to your Caddy's own compose file:
 
 ```yaml
 services:
@@ -393,7 +393,7 @@ LibrePaper's Compose project creates that network, so start LibrePaper (`docker 
 
 ### Caddy on the host
 
-A Caddy installed on the host (for example from a package) cannot resolve Docker service names, so LibrePaper gets a fixed address on the edge network. The host reaches that network from `172.29.0.1`, which is inside the trusted range. This setup needs the kit from v0.0.47 or later, whose `./manage check` works with a fixed address. Under `services:` in the same override file, next to `caddy:`, add:
+A Caddy installed on the host is outside Docker and cannot look up service names like `librepaper`. Instead, give LibrePaper a fixed address on the edge network and point your Caddy at that address. The host reaches that network from `172.29.0.1`, which is inside the trusted range. This setup needs the kit from v0.0.47 or later, whose `./manage check` works with a fixed address. Under `services:` in the same override file, next to `caddy:`, add:
 
 ```yaml
   librepaper:
@@ -406,7 +406,7 @@ Then run `docker compose up -d`, which recreates LibrePaper at that address.
 
 ### Site block
 
-Your Caddy needs one site block for LibrePaper's names. List the names from the [DNS](#dns) table, and leave out `admin.paper.example` unless you configured the admin console.
+Your Caddy now reaches LibrePaper, but it does not yet know which names belong to it. One site block tells it to forward those names to LibrePaper and to obtain their certificates. List the names from the [DNS](#dns) table, and leave out `admin.paper.example` unless you configured the admin console.
 
 ```
 paper.example, docs.paper.example, admin.paper.example {

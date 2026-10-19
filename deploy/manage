@@ -111,11 +111,25 @@ run_check() {
 	fi
 }
 
-# check_app <file> <image>: app config, checked with the given image.
+# check_app <file> [image]: app config, with the pinned image or the given one.
+# The compose check keeps the override's mounts and image but leaves every
+# network, so it never collides with a fixed address the running app holds.
 check_app() {
-	local file=$1 image=$2
-	run_check "app config ($file)" docker run --rm -v "$PWD/$file:/etc/librepaper/librepaper.toml:ro" \
-		"$image" admin config check --config /etc/librepaper/librepaper.toml
+	local file=$1 image=${2:-}
+	if [ -n "$image" ]; then
+		run_check "app config ($file)" docker run --rm -v "$PWD/$file:/etc/librepaper/librepaper.toml:ro" \
+			"$image" admin config check --config /etc/librepaper/librepaper.toml
+		return
+	fi
+	local offline files=(-f compose.yaml)
+	[ ! -e compose.override.yaml ] || files+=(-f compose.override.yaml)
+	offline=$(mktemp)
+	printf 'services:\n  librepaper:\n    networks: !reset {}\n    network_mode: none\n' >"$offline"
+	run_check "app config ($file)" docker compose "${files[@]}" -f "$offline" run --rm --no-deps -T \
+		-v "./$file:/etc/librepaper/librepaper.toml:ro" librepaper admin config check --config /etc/librepaper/librepaper.toml
+	local status=$?
+	rm -f -- "$offline"
+	return $status
 }
 
 # check_backup <file> <app file> [image]: the backup image's entrypoint validates.
@@ -168,7 +182,7 @@ check_dns() {
 # Checks 1-3; returns non-zero when any fails.
 check_configs() {
 	local failed=0
-	check_app "$(config_file librepaper.toml)" "$(service_image librepaper)" || failed=1
+	check_app "$(config_file librepaper.toml)" || failed=1
 	check_backup "$(config_file resticprofile.toml)" "$(config_file librepaper.toml)" || failed=1
 	check_caddy || failed=1
 	return $failed
