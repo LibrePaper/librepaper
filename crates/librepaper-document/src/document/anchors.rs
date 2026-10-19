@@ -183,14 +183,17 @@ impl MoveMemory {
     /// when `free` accepts the span that the text would take there. Returns the
     /// index of its entry and the UTF-16 offset `at` of its text in `inserted`.
     /// `free` gets the span's UTF-16 start and end. An entry that `free` refuses
-    /// stays remembered, and the scan goes on to older entries. Nothing is
-    /// removed here. `drop` removes the entry once one of its pieces is applied.
+    /// stays remembered, and the scan goes on to older entries. Only entries
+    /// below index `below` are scanned, so a caller passes the last hit to pass
+    /// over an entry whose pieces did not apply. Nothing is removed here.
+    /// `drop` removes the entry once one of its pieces is applied.
     pub fn find(
         &self,
         inserted: &str,
         free: impl Fn(usize, usize) -> bool,
+        below: usize,
     ) -> Option<(usize, usize)> {
-        for i in (0..self.entries.len()).rev() {
+        for i in (0..below.min(self.entries.len())).rev() {
             let text = self.entries[i].text.as_str();
             let Some(byte) = inserted.find(text) else {
                 continue;
@@ -302,12 +305,18 @@ pub fn plan_operation(files: &[OperationFile], memory: &mut MoveMemory) -> Vec<P
             // The spans of this insertion that a find has claimed, in the
             // insertion's own offsets. A later find may not overlap one of them.
             let mut claimed: Vec<(usize, usize)> = Vec::new();
-            while let Some((entry, hit_at)) = memory.find(&text, |from, to| {
-                !claimed.iter().any(|c| from < c.1 && to > c.0)
-            }) {
+            // Each find looks below the last hit, so an entry whose pieces did not
+            // apply is passed over, and does not shadow an older entry with the
+            // same text.
+            let mut below = memory.len();
+            while let Some((entry, hit_at)) = memory.find(
+                &text,
+                |from, to| !claimed.iter().any(|c| from < c.1 && to > c.0),
+                below,
+            ) {
+                below = entry;
                 let hit_text = memory.entries[entry].text.clone();
                 let held = memory.entries[entry].held.clone();
-                claimed.push((hit_at, hit_at + utf16_len(&hit_text)));
                 let mut applied = false;
                 for h in held {
                     if h.text.is_empty() {
@@ -363,6 +372,7 @@ pub fn plan_operation(files: &[OperationFile], memory: &mut MoveMemory) -> Vec<P
                 }
                 // A text whose pieces all failed stays remembered for a later insertion.
                 if applied {
+                    claimed.push((hit_at, hit_at + utf16_len(&hit_text)));
                     memory.drop(entry);
                 }
             }
@@ -1770,6 +1780,68 @@ mod tests {
         assert!(!rejoined.anchor.detached);
         assert!(rejoined.touched);
         assert!(memory.is_empty());
+    }
+
+    /// The newer entry's comment is gone, so its piece can never apply. It
+    /// must not shadow the older entry with the same text at the same spot.
+    #[test]
+    fn an_entry_whose_comment_is_gone_does_not_shadow_an_older_one() {
+        let mut memory = MoveMemory::new(32);
+        let first = OperationFile {
+            file_id: "main.md".to_string(),
+            before: "one two three two four".to_string(),
+            anchors: vec![
+                anchor_at("a", "main.md", 4, 7),
+                anchor_at("b", "main.md", 14, 17),
+            ],
+            edits: vec![Edit {
+                at: 14,
+                delete: 3,
+                insert: String::new(),
+            }],
+            fragments: Vec::new(),
+        };
+        let one = plan_operation(&[first], &mut memory);
+        let second = OperationFile {
+            file_id: "main.md".to_string(),
+            before: one[0].after.clone(),
+            anchors: one[0].anchors.iter().map(|pa| pa.anchor.clone()).collect(),
+            edits: vec![Edit {
+                at: 4,
+                delete: 3,
+                insert: String::new(),
+            }],
+            fragments: Vec::new(),
+        };
+        let two = plan_operation(&[second], &mut memory);
+        assert_eq!(memory.len(), 2);
+        // Comment "a" was deleted since, so the paste sees only "b".
+        let paste = OperationFile {
+            file_id: "main.md".to_string(),
+            before: two[0].after.clone(),
+            anchors: two[0]
+                .anchors
+                .iter()
+                .map(|pa| pa.anchor.clone())
+                .filter(|a| a.id == "b")
+                .collect(),
+            edits: vec![Edit {
+                at: 16,
+                delete: 0,
+                insert: "two".to_string(),
+            }],
+            fragments: Vec::new(),
+        };
+        let planned = plan_operation(&[paste], &mut memory);
+        let attached = planned[0]
+            .anchors
+            .iter()
+            .find(|pa| pa.anchor.id == "b")
+            .unwrap();
+        assert!(!attached.anchor.detached);
+        assert_eq!((attached.anchor.from, attached.anchor.to), (16, 19));
+        // The entry of "a" stays, the entry of "b" is gone.
+        assert_eq!(memory.len(), 1);
     }
 
     #[test]
