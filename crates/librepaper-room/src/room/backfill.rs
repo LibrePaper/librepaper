@@ -8,6 +8,9 @@
 //! comments is built when its room opens, because checking for a record reads
 //! the document. When every comment has its record, that costs reads and no
 //! write.
+//!
+//! The heal a history trim runs before its shallow snapshot is here too: it
+//! gives each stale record fresh cursors, so the snapshot cannot strand it.
 
 use futures_util::future::BoxFuture;
 use loro::Frontiers;
@@ -112,6 +115,60 @@ impl SequencerCommand for BackfillAnchors {
     ) -> BoxFuture<'a, Result<Self::Output, CommandError>> {
         Box::pin(async move { Ok(self.written) })
     }
+}
+
+/// Heals the anchor records of every text in the document. A history trim runs
+/// it before the shallow snapshot, which keeps no history that a stale cursor
+/// could resolve through. Evaluated against head under the sequencer's lock.
+struct HealAnchors {
+    healed: usize,
+}
+
+impl SequencerCommand for HealAnchors {
+    type Output = usize;
+
+    fn name(&self) -> &'static str {
+        "anchors-heal"
+    }
+
+    fn authority(&self) -> Rung {
+        Rung::Editor
+    }
+
+    fn evaluate(&mut self, head: &Head<'_>) -> Result<Option<PreparedSource>, CommandError> {
+        let mut healed = 0;
+        let prepared = head
+            .prepare(client_seq_of(Uuid::now_v7()), |draft| {
+                for file_id in anchors::text_file_ids(draft) {
+                    healed += anchors::heal_stale(draft, &file_id).len();
+                    // The next file's reads resolve cursors, which commits the
+                    // pending writes, so commit this file's first.
+                    draft.commit();
+                }
+                Ok(())
+            })
+            .map_err(CommandError::Conflict)?;
+        self.healed = healed;
+        Ok(prepared)
+    }
+
+    fn transact<'a>(
+        &'a mut self,
+        _tx: &'a mut sqlx::Transaction<'_, sqlx::Postgres>,
+        _evidence: &'a Evidence,
+    ) -> BoxFuture<'a, Result<Self::Output, CommandError>> {
+        Box::pin(async move { Ok(self.healed) })
+    }
+}
+
+/// Heals the anchor records of `room`'s document under the caller's authority.
+/// Returns how many records were changed.
+pub(crate) async fn heal_anchors(
+    room: &Room,
+    authority: &Authority,
+) -> Result<usize, CommandError> {
+    let mut command = HealAnchors { healed: 0 };
+    room.command(authority, &mut command).await
 }
 
 /// The authority the backfill writes under. The editor rung needs the owner or

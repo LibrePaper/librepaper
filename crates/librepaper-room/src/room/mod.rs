@@ -320,6 +320,12 @@ impl Room {
         self.log.command_reporting_replay(authority, command).await
     }
 
+    /// Heals the comment anchors of this document before a history trim takes
+    /// its shallow snapshot. Returns how many records changed.
+    pub async fn heal_comment_anchors(&self, authority: &Authority) -> Result<usize, CommandError> {
+        backfill::heal_anchors(self, authority).await
+    }
+
     // -- comments ----------------------------------------------------------
 
     /// One page of this document's comments, as the caller may see them.

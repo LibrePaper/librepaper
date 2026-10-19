@@ -13,11 +13,17 @@ use axum::body::Body;
 use axum::http::Request;
 use serde_json::json;
 use sha2::{Digest, Sha256};
+use uuid::Uuid;
 
 use crate::server::origins::Origins;
+use librepaper_document::document::{anchors, session};
+use librepaper_engine::log::Ingested;
+use librepaper_engine::storage::annotation::AnchorStatus;
 use librepaper_engine::storage::postgres::Authority;
-use librepaper_engine::storage::store::{DocumentInput, MutationActor};
+use librepaper_engine::storage::store::{DocumentInput, MutationActor, Role};
+use librepaper_room::room::{Message as RoomMessage, Room};
 
+use super::history_frontier_tests::viewer;
 use super::http_test_support::{deployment as http_deployment, owner_bearer};
 
 const PAPER: &str = "# Figure test\n\nA document with figures.\n";
@@ -503,4 +509,312 @@ async fn periodic_compaction_of_a_trimmed_document_keeps_working() {
         base_is_shallow().await,
         "the base stays shallow after a full compaction"
     );
+}
+
+const ESSAY: &str = "# Interval estimates\n\nThe *interval* covers the mean of the posterior.\n\nA second paragraph, for company.\n";
+
+async fn essay_deployment(slug: &str) -> Option<super::http_test_support::Deployment> {
+    http_deployment(
+        DocumentInput {
+            slug: slug.into(),
+            title: "A Paper".into(),
+            source: ESSAY.into(),
+            source_format: "markdown".into(),
+            main: "paper.md".into(),
+        },
+        Vec::new(),
+        "owner",
+        "any",
+    )
+    .await
+}
+
+/// The owner comments on a passage the way the editor does. Returns the answer
+/// the server gives, which carries the comment and its original anchor.
+async fn comment_on(
+    deployment: &super::http_test_support::Deployment,
+    room: &Room,
+    exact: &str,
+    prefix: &str,
+    suffix: &str,
+) -> serde_json::Value {
+    let incoming: RoomMessage = serde_json::from_value(json!({
+        "type": "comment",
+        "body": "A remark.",
+        "exact": exact,
+        "prefix": prefix,
+        "suffix": suffix,
+        "request_id": Uuid::new_v4().to_string(),
+    }))
+    .unwrap();
+    let who = viewer(
+        deployment.owner_id,
+        "owner",
+        &deployment.owner_session_generation,
+        Role::Owner,
+    );
+    let (result, ok) = deployment
+        .server
+        .apply_from(
+            room,
+            incoming,
+            "203.0.113.9",
+            &who,
+            &format!("account:{}", deployment.owner_id),
+        )
+        .await;
+    assert!(ok, "the comment must land: {result}");
+    result
+}
+
+/// An edit from another socket, sent the way the editor sends one: the whole
+/// text, made against the head it is written over.
+async fn edit_paper(room: &Room, socket: u64, body: &str) {
+    let (vector, edited) = room
+        .log()
+        .with_head(|doc| (session::encode_vector(doc), doc.fork()))
+        .await
+        .unwrap();
+    session::put_text(&edited, "paper.md", body);
+    let update = session::encode_diff(&edited, &vector).unwrap();
+    let peer = format!("editor-{socket}");
+    let ingested = room.ingest(socket, &peer, &peer, 1, update).await;
+    assert!(matches!(ingested, Ingested::Accepted), "{ingested:?}");
+}
+
+/// The owner's trim, as the route receives it. Returns the status.
+async fn trim_as_owner(deployment: &super::http_test_support::Deployment) -> u16 {
+    let headers = owner_bearer(deployment);
+    let arrival = Origins::loopback_only().resolve("localhost").unwrap();
+    let request = Request::builder()
+        .method("POST")
+        .uri(format!("/api/documents/{}/history/trim", deployment.slug))
+        .header("content-type", "application/json")
+        .header(
+            "authorization",
+            headers.get("authorization").unwrap().clone(),
+        )
+        .body(Body::from(json!({}).to_string()))
+        .unwrap();
+    let response = deployment
+        .server
+        .handle_history_trim(request, &arrival, &deployment.slug)
+        .await;
+    response.status().as_u16()
+}
+
+/// The owner's read of one moment, through the route's handler. Returns the
+/// status and the JSON body.
+async fn read_moment(
+    deployment: &super::http_test_support::Deployment,
+    sha: &str,
+) -> (u16, serde_json::Value) {
+    let headers = owner_bearer(deployment);
+    let arrival = Origins::loopback_only().resolve("localhost").unwrap();
+    // The context the cost middleware would have attached.
+    let context = crate::server::RequestContext::resolved(
+        &deployment.server,
+        &headers,
+        arrival,
+        "127.0.0.1:0".parse().unwrap(),
+    )
+    .await;
+    let response = deployment
+        .server
+        .handle_label_read(&headers, &context, &deployment.slug, sha, None)
+        .await;
+    let status = response.status().as_u16();
+    let bytes = axum::body::to_bytes(response.into_body(), 1024 * 1024)
+        .await
+        .unwrap();
+    (
+        status,
+        serde_json::from_slice(&bytes).unwrap_or(serde_json::Value::Null),
+    )
+}
+
+/// A trim heals the comment whose passage shrank, so the comment still finds
+/// it. The comment whose passage went stays detached. Nothing else changes.
+#[tokio::test]
+#[ignore = "requires LIBREPAPER_TEST_POSTGRES_URL"]
+async fn a_trim_heals_a_stale_anchor_and_keeps_the_rest() {
+    let Some(deployment) = essay_deployment("trim-heals-anchors").await else {
+        return;
+    };
+    let room = deployment
+        .server
+        .documents
+        .rooms
+        .get(&deployment.slug)
+        .await
+        .unwrap();
+    let shrunk = comment_on(
+        &deployment,
+        &room,
+        "interval covers the mean",
+        "Interval estimates The ",
+        " of the posterior.",
+    )
+    .await;
+    let gone = comment_on(
+        &deployment,
+        &room,
+        "A second paragraph, for company.",
+        "posterior.\n\n",
+        "\n",
+    )
+    .await;
+    let shrunk_id = shrunk["comment"]["id"].as_str().unwrap().to_string();
+    let gone_id = gone["comment"]["id"].as_str().unwrap().to_string();
+    let file_id = room
+        .comment_by_id(&shrunk_id)
+        .await
+        .unwrap()
+        .unwrap()
+        .source()
+        .expect("a source-text anchor")
+        .file_id
+        .0
+        .clone();
+
+    // The last word of the first passage goes, which leaves its end cursor on a
+    // deleted character. The second passage goes whole.
+    edit_paper(
+        &room,
+        901,
+        "# Interval estimates\n\nThe *interval* covers the of the posterior.\n\nA second paragraph, for company.\n",
+    )
+    .await;
+    edit_paper(
+        &room,
+        902,
+        "# Interval estimates\n\nThe *interval* covers the of the posterior.\n\n",
+    )
+    .await;
+    let before = room.comment_by_id(&shrunk_id).await.unwrap().unwrap();
+    assert_eq!(
+        before.attachment.expect("an attachment").status,
+        AnchorStatus::Modified
+    );
+    let before = room.comment_by_id(&gone_id).await.unwrap().unwrap();
+    assert_eq!(
+        before.attachment.expect("an attachment").status,
+        AnchorStatus::Deleted
+    );
+
+    assert_eq!(
+        trim_as_owner(&deployment).await,
+        200,
+        "the trim must succeed"
+    );
+
+    // The shrunk passage is found again, at the span it covers now.
+    let attachment = room
+        .comment_by_id(&shrunk_id)
+        .await
+        .unwrap()
+        .unwrap()
+        .attachment
+        .expect("an attachment");
+    assert_eq!(attachment.status, AnchorStatus::Modified);
+    let (start, end) = attachment.resolved_range_utf16.expect("a resolved range");
+    let text = "# Interval estimates\n\nThe *interval* covers the of the posterior.\n\n";
+    let span = &text[start as usize..end as usize];
+    assert!(
+        span == "*interval* covers the" || span == "*interval* covers the ",
+        "{span:?}"
+    );
+
+    // The passage that went stays gone, and reads as deleted, not unresolved.
+    let attachment = room
+        .comment_by_id(&gone_id)
+        .await
+        .unwrap()
+        .unwrap()
+        .attachment
+        .expect("an attachment");
+    assert_eq!(attachment.status, AnchorStatus::Deleted);
+    assert_eq!(attachment.resolved_range_utf16, None);
+
+    // Nothing is stale any more, so healing again changes nothing.
+    let again = room
+        .log()
+        .with_head(|doc| anchors::heal_stale(&doc.fork(), &file_id))
+        .await
+        .unwrap();
+    assert!(again.is_empty(), "{again:?}");
+
+    let catalog = deployment.catalog.clone();
+    drop(room);
+    drop(deployment);
+    catalog.close().await;
+}
+
+/// A comment's own frontier reads back until a trim, and answers gone after it.
+/// A moment made after the trim still reads.
+#[tokio::test]
+#[ignore = "requires LIBREPAPER_TEST_POSTGRES_URL"]
+async fn a_comment_moment_before_the_trim_answers_gone() {
+    let Some(deployment) = essay_deployment("trim-moment-gone").await else {
+        return;
+    };
+    let room = deployment
+        .server
+        .documents
+        .rooms
+        .get(&deployment.slug)
+        .await
+        .unwrap();
+    let comment = comment_on(
+        &deployment,
+        &room,
+        "interval covers the mean",
+        "Interval estimates The ",
+        " of the posterior.",
+    )
+    .await;
+    let frontier = comment["comment"]["original_anchor"]["frontier"]
+        .as_str()
+        .expect("frontier is base64 on the wire")
+        .to_string();
+    let sha = format!("frontier:{frontier}");
+
+    let (status, _) = read_moment(&deployment, &sha).await;
+    assert_eq!(status, 200, "the moment reads back before the trim");
+
+    assert_eq!(
+        trim_as_owner(&deployment).await,
+        200,
+        "the trim must succeed"
+    );
+    let (status, body) = read_moment(&deployment, &sha).await;
+    assert_eq!(status, 410, "the moment is before the trim point");
+    assert_eq!(body["error"], "history before the trim point is gone");
+
+    let authority = Authority {
+        principal_key: deployment.owner_id.to_string(),
+        account_id: Some(deployment.owner_id),
+        link_hash: None,
+        session_generation: Some(deployment.owner_session_generation.parse().unwrap()),
+        policy_edit: true,
+        policy_comment: true,
+        automation: false,
+    };
+    let label = room
+        .take_label(
+            "after-trim",
+            Some("After the trim".into()),
+            "Owner",
+            &authority,
+            None,
+        )
+        .await
+        .unwrap();
+    let (status, _) = read_moment(&deployment, &label.id.to_string()).await;
+    assert_eq!(status, 200, "a label made after the trim still reads");
+
+    let catalog = deployment.catalog.clone();
+    drop(room);
+    drop(deployment);
+    catalog.close().await;
 }

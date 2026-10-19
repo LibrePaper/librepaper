@@ -893,6 +893,83 @@ pub fn mark_collapsed(doc: &LoroDoc, file_id: &str) -> Vec<String> {
     marked.into_iter().map(|(id, _)| id).collect()
 }
 
+/// The id of every text in the files map. A text is listed whether or not a
+/// path still names it, since a record can point at a text no path names.
+pub fn text_file_ids(doc: &LoroDoc) -> Vec<String> {
+    let files = doc.get_map(FILES);
+    files
+        .keys()
+        .map(|key| key.to_string())
+        .filter(|id| {
+            matches!(
+                files.get(id.as_str()),
+                Some(ValueOrContainer::Container(Container::Text(_)))
+            )
+        })
+        .collect()
+}
+
+/// Whether either cursor of a record resolves onto a deleted character.
+fn has_stale_cursor(doc: &LoroDoc, live: &Live, record: &LoroMap) -> bool {
+    ["start", "end"].into_iter().any(|key| {
+        bytes_of(record, key)
+            .and_then(|bytes| cursor_pos(doc, &live.text, &bytes))
+            .is_some_and(|pos| pos.stale)
+    })
+}
+
+/// Heals the attached anchors of a file before a shallow snapshot drops the
+/// history their cursors resolve through. A record with a cursor on a deleted
+/// character gets fresh cursors on the span it resolves to now. A record whose
+/// span has collapsed is marked detached, as the next edit would mark it, since
+/// no cursor into the deleted text survives the snapshot. Quotes are kept. Reads
+/// come first. Does not commit. Returns the ids changed.
+pub fn heal_stale(doc: &LoroDoc, file_id: &str) -> Vec<String> {
+    let Some(live) = live_of(doc, file_id) else {
+        return Vec::new();
+    };
+    let map = doc.get_map(ANCHORS);
+    let mut fresh: Vec<(String, LoroMap, Vec<u8>, Vec<u8>)> = Vec::new();
+    let mut collapsed: Vec<(String, LoroMap)> = Vec::new();
+    for a in resolve_anchors(doc, file_id) {
+        if a.detached || a.unresolved {
+            continue;
+        }
+        let Some(record) = record_map(&map, &a.id) else {
+            continue;
+        };
+        if a.collapsed {
+            collapsed.push((a.id, record));
+            continue;
+        }
+        if !has_stale_cursor(doc, &live, &record) {
+            continue;
+        }
+        let (Some(start), Some(end)) = (
+            cursor_at(&live.text, a.from, Side::Left),
+            cursor_at(&live.text, last_char_start(&live.body, a.to), Side::Right),
+        ) else {
+            continue;
+        };
+        fresh.push((a.id, record, start.encode(), end.encode()));
+    }
+    // Every read is done. The commit origin is set before the first write.
+    if !fresh.is_empty() || !collapsed.is_empty() {
+        doc.set_next_commit_origin(ANCHORS_ORIGIN);
+    }
+    let mut ids = Vec::with_capacity(fresh.len() + collapsed.len());
+    for (id, record, start, end) in fresh {
+        record.insert("start", LoroValue::from(start)).ok();
+        record.insert("end", LoroValue::from(end)).ok();
+        ids.push(id);
+    }
+    for (id, record) in collapsed {
+        record.insert("detached", LoroValue::Bool(true)).ok();
+        ids.push(id);
+    }
+    ids
+}
+
 /// The detached anchors of the files a write does not name. Each file comes
 /// back as a pseudo-file with no edits, so that an insertion in the named files
 /// can re-pin them.
@@ -1628,5 +1705,44 @@ mod tests {
         assert_eq!((anchors[0].from, anchors[0].to), (6, 11));
         assert_eq!(slice16(&body(&doc, &file), 6, 11), "bXYZa");
         assert_eq!(status_of(&doc, &anchors[0]), Status::Modified);
+    }
+
+    #[test]
+    fn a_healed_anchor_survives_a_shallow_snapshot() {
+        let (doc, file) = setup("alpha beta gamma");
+        assert!(create_anchor(
+            &doc, &file, "c1", 6, 10, "beta", "alpha ", " gamma"
+        ));
+        doc.commit();
+        // "ta" goes, and the end cursor's character with it.
+        let text = text_of(&doc, &file).unwrap();
+        assert!(apply_text_edits(
+            &text,
+            &[Edit {
+                at: 8,
+                delete: 2,
+                insert: String::new(),
+            }]
+        ));
+        doc.commit();
+
+        assert_eq!(heal_stale(&doc, &file), vec!["c1".to_string()]);
+        doc.commit();
+        assert!(
+            heal_stale(&doc, &file).is_empty(),
+            "a healed record is not stale again"
+        );
+
+        let snapshot = doc
+            .export(loro::ExportMode::ShallowSnapshot(std::borrow::Cow::Owned(
+                doc.oplog_frontiers(),
+            )))
+            .unwrap();
+        let shallow = LoroDoc::new();
+        shallow.import(&snapshot).unwrap();
+        assert!(shallow.is_shallow());
+        let found = resolve_anchors(&shallow, &file);
+        assert_eq!((found[0].from, found[0].to), (6, 8));
+        assert_eq!(status_of(&shallow, &found[0]), Status::Modified);
     }
 }

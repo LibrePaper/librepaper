@@ -44,7 +44,12 @@ async fn deployment(slug: &str) -> Option<super::http_test_support::Deployment> 
     .await
 }
 
-fn viewer(account_id: Uuid, handle: &str, session_generation: &str, role: Role) -> Viewer {
+pub(super) fn viewer(
+    account_id: Uuid,
+    handle: &str,
+    session_generation: &str,
+    role: Role,
+) -> Viewer {
     Viewer {
         id: Identity {
             provider: PROVIDER_GITHUB.into(),
