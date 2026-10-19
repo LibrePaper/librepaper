@@ -346,24 +346,38 @@ Every limit and the retention settings are listed, with their defaults, at the e
 
 ## Behind your own Caddy
 
-When the VPS already runs Caddy for other sites, that Caddy owns ports 80 and 443. Keep it and let it proxy to LibrePaper.
+The kit ships its own Caddy, which answers on ports 80 and 443. Many VPS already run a Caddy for other sites, and only one program can hold those ports. In that case, keep your Caddy as the single entry point for every site and let it forward LibrePaper's names to the LibrePaper container. The bundled Caddy keeps running without host ports, so it no longer competes with yours.
 
-- The bundled Caddy keeps running but publishes no host ports. `./manage check` and `./manage apply` still validate and reload it. It costs one idle container.
+The setup rests on four facts about the kit:
+
+- The bundled Caddy stays in place because `./manage` validates and reloads it. Without host ports it receives no traffic and costs one idle container.
 - LibrePaper trusts forwarded client addresses only from the kit's edge network, `172.29.0.0/16` (`[proxy] trusted_networks` in `librepaper.toml`). Both setups below put your Caddy inside that network, so `librepaper.toml` needs no change. Do not widen `trusted_networks`.
-- Your Caddy must pass `Host` through unchanged. Caddy's `reverse_proxy` does this by default. LibrePaper answers 421 to names it is not configured for.
-- Make the changes in `compose.override.yaml`, next to `compose.yaml`. Upgrades replace `compose.yaml` and keep the override. There is only one override file. If you already use one (for example for [Database elsewhere](#database-elsewhere)), add these keys to it.
+- LibrePaper answers 421 to names it is not configured for, so your Caddy must pass `Host` through unchanged. Caddy's `reverse_proxy` does this by default.
+- Upgrades replace `compose.yaml` but keep `compose.override.yaml`, so every change below goes in the override, next to `compose.yaml`. There is only one override file. If you already use one (for example for [Database elsewhere](#database-elsewhere)), add these keys to it.
 
-Both setups start with this override for the bundled Caddy:
+Both setups start the same way. In `compose.yaml`, the bundled Caddy publishes ports 80 and 443 on the host. Create `compose.override.yaml` in the `librepaper/` directory, next to `compose.yaml`, with the content below. Docker Compose reads both files and merges them, and `!reset []` replaces the bundled Caddy's port list with an empty one. The bundled Caddy then publishes no ports, and your Caddy keeps 80 and 443.
 
 ```yaml
+# compose.override.yaml
 services:
   caddy:
     ports: !reset []
 ```
 
+To check the result, run `docker compose config` and look under `caddy:`. It should show no `ports:` entry.
+
+Add this override before you first start the kit, because the bundled Caddy cannot start while your Caddy holds ports 80 and 443. On an installation that is already running, apply it with `docker compose up -d`. `./manage apply` is not enough, because it recreates only the app and backup containers.
+
+```sh
+# Recreate every service whose configuration changed, including the bundled Caddy.
+docker compose up -d
+```
+
+Then follow the setup that matches how your Caddy runs.
+
 ### Caddy in Docker
 
-Attach your Caddy container to the network `librepaper_edge`. In your Caddy's own compose file:
+Your Caddy container joins LibrePaper's edge network and reaches the app by its service name. In your Caddy's own compose file:
 
 ```yaml
 services:
@@ -375,11 +389,11 @@ networks:
     external: true
 ```
 
-Run `./manage apply` in the LibrePaper directory before you start your Caddy. LibrePaper's Compose project creates that network. Do not run `docker compose down` in the LibrePaper directory: it tries to remove the network your Caddy is attached to. Use `./manage apply` or `docker compose up -d` instead.
+LibrePaper's Compose project creates that network, so start LibrePaper (`docker compose up -d` in its directory) before your Caddy. Do not run `docker compose down` in the LibrePaper directory, because it tries to remove the network your Caddy is attached to. Use `docker compose up -d` instead.
 
 ### Caddy on the host
 
-Give LibrePaper a fixed address on the edge network. Your host Caddy reaches it from `172.29.0.1`, which is inside the trusted network. Under `services:` in the same override file, next to `caddy:`, add:
+A Caddy installed on the host (for example from a package) cannot resolve Docker service names, so LibrePaper gets a fixed address on the edge network. The host reaches that network from `172.29.0.1`, which is inside the trusted range. This setup needs the kit from v0.0.47 or later, whose `./manage check` works with a fixed address. Under `services:` in the same override file, next to `caddy:`, add:
 
 ```yaml
   librepaper:
@@ -388,11 +402,11 @@ Give LibrePaper a fixed address on the edge network. Your host Caddy reaches it 
         ipv4_address: 172.29.200.10
 ```
 
-Then run `./manage apply`.
+Then run `docker compose up -d`, which recreates LibrePaper at that address.
 
 ### Site block
 
-Add a site block to your Caddy. List the names from the [DNS](#dns) table, and leave out `admin.paper.example` unless you configured the admin console.
+Your Caddy needs one site block for LibrePaper's names. List the names from the [DNS](#dns) table, and leave out `admin.paper.example` unless you configured the admin console.
 
 ```
 paper.example, docs.paper.example, admin.paper.example {
@@ -402,9 +416,7 @@ paper.example, docs.paper.example, admin.paper.example {
 }
 ```
 
-Use `librepaper:8080` as the upstream with Caddy in Docker. With Caddy on the host, use `172.29.200.10:8080`.
-
-The `encode` and `header` lines copy what the bundled Caddy does. Then reload your Caddy (`caddy reload` or its container equivalent) and open `https://paper.example`.
+With Caddy in Docker, the upstream is `librepaper:8080` as shown. With Caddy on the host, use `172.29.200.10:8080`. The `encode` and `header` lines copy what the bundled Caddy does. Reload your Caddy (`caddy reload` or its container equivalent) and open `https://paper.example`.
 
 ## Without Docker
 
