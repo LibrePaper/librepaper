@@ -137,12 +137,12 @@ try {
     }
     await b.resize(1280, 900);
   };
-  const everything = ["render-latex-engine", "render-latex-files", "render-markdown-tool", "rendering-profile", "rendering-parameters",
+  const everything = ["render-latex-preview", "render-latex-engine", "render-latex-files", "render-typst-preview", "render-markdown-preview", "render-markdown-tool", "render-quarto-preview", "rendering-profile", "rendering-parameters",
     "tools-programs", "tools-quarto", "tools-calepin", "tools-zotero", "quarto-executable", "quarto-arguments",
     "tools-folders", "tools-activity", "diagnostics-report",
     "remote-status", "remote-address", "storage-account", "account-erase"];
-  const renderingRows = ["render-latex-engine", "render-latex-files", "render-markdown-tool", "rendering-profile", "rendering-parameters"];
-  const renderingSections = ["LaTeX", "Markdown and Quarto"];
+  const renderingRows = ["render-latex-preview", "render-latex-engine", "render-latex-files", "render-typst-preview", "render-markdown-preview", "render-markdown-tool", "render-quarto-preview", "rendering-profile", "rendering-parameters"];
+  const renderingSections = ["LaTeX", "Typst", "Markdown", "Quarto"];
 
   // The navigation, in order, for a visitor on a Quarto document.
   await until("harness mounted", () => b.evaluate("typeof window.show === \"function\""), 10000);
@@ -166,7 +166,7 @@ try {
   }, 5000);
   await show("rendering", "quarto", "Rendering");
 
-  // Rendering shows two sections with global build options visible for all formats.
+  // Rendering shows one section per format, with the global build options visible in each.
   await until("the Quarto profile rows", () => present(["rendering-profile"]).then((found) => found.length === 1), 5000);
   assert.deepEqual(await present(everything), renderingRows);
   assert.deepEqual(await subheads(), renderingSections);

@@ -33,9 +33,13 @@ export const CATEGORIES = [
     id: "rendering", says: "Rendering", offered: always,
     note: "This browser",
     entries: [
+      { id: "render-latex-preview", says: "LaTeX default preview", terms: "latex default preview pdf html output" },
       { id: "render-latex-engine", says: "LaTeX engine", terms: "engine pdflatex xelatex automatic compiler" },
       { id: "render-latex-files", says: "Downloaded LaTeX files", terms: "latex compiler cache clear free space packages storage" },
+      { id: "render-typst-preview", says: "Typst default preview", terms: "typst default preview pdf html output" },
+      { id: "render-markdown-preview", says: "Markdown default preview", terms: "markdown default preview pdf html output" },
       { id: "render-markdown-tool", says: "Markdown renderer", terms: "markdown browser pandoc quarto render tool" },
+      { id: "render-quarto-preview", says: "Quarto default preview", terms: "quarto default preview pdf html output" },
       { id: "rendering-profile", says: "Quarto profile", terms: "quarto profile render preview" },
       { id: "rendering-parameters", says: "Quarto parameters", terms: "quarto params parameters json render preview" },
     ],

@@ -36,9 +36,13 @@ assert.ok(rows.includes("render-latex-engine"), "Rendering keeps LaTeX engine se
 assert.ok(rows.includes("render-latex-files"), "Rendering keeps browser-wide LaTeX cache controls visible");
 assert.ok(rows.includes("render-markdown-tool"), "Rendering keeps Markdown renderer selection visible");
 assert.ok(rows.includes("rendering-profile") && rows.includes("rendering-parameters"), "Rendering keeps Quarto profile and parameters visible");
+for (const format of ["latex", "typst", "markdown", "quarto"]) {
+  assert.ok(rows.includes(`render-${format}-preview`), `Rendering keeps the ${format} default preview visible`);
+  assert.match(dialog, new RegExp(`<DefaultPreviewSetting format="${format}"`));
+}
 
-// The rendering page shows sections for LaTeX and Markdown/Quarto.
-for (const name of ["LaTeX", "Markdown and Quarto"]) {
+// The rendering page shows one section per format.
+for (const name of ["LaTeX", "Typst", "Markdown", "Quarto"]) {
   assert.ok(dialog.includes(`<h4 class="settings-subhead">${name}</h4>`), `Rendering always includes ${name}`);
 }
 assert.match(dialog, /<RenderingSettings \{userId\} \{onquartooptions\} \/>/);
@@ -82,4 +86,4 @@ assert.match(statusPill, /tone = "neutral"/);
 assert.match(statusPill, /role="status" aria-label=\{accessibleLabel \|\| label\}/);
 assert.match(statusPill, /aria-hidden="true"/);
 
-console.log("settings-quarto: Rendering page shows LaTeX and Markdown/Quarto sections; format-specific controls stay available");
+console.log("settings-quarto: Rendering page shows one section per format; format-specific controls stay available");

@@ -1092,6 +1092,7 @@ main.reader .cm-scroller, main.reader .panel { overscroll-behavior: contain; }
 .settings-subhead { margin: 0; margin-top: --spacing(6); font: inherit; font-size: var(--text-base); font-weight: var(--panel-title-weight); padding-bottom: --spacing(1); border-bottom: 1px solid var(--color-divider); }
 .settings-section-title { display: flex; align-items: baseline; flex-wrap: wrap; gap: --spacing(2); }
 .settings-section-title .settings-subhead { flex: 1; min-width: 0; }
+.settings-section-note { margin: --spacing(2) 0 0; color: var(--panel-muted); font-size: var(--panel-meta-size); line-height: var(--panel-line-height); }
 .settings-group-title { margin: --spacing(3) 0 0; color: var(--panel-muted); font-size: var(--panel-meta-size); font-weight: 600; }
 /* In settings the shortcut table sits inside a row, so its group names rank below the row title. */
 .settings-body h3.group-name { color: var(--panel-muted); font-size: var(--panel-meta-size); font-weight: 600; text-transform: none; letter-spacing: normal; }

@@ -13,7 +13,7 @@
   const ROWS = {
     latex: {
       id: "render-latex-engine", title: "Engine", label: "LaTeX engine",
-      description: "Automatic follows a % !TEX program line, then the packages the document loads.",
+      description: "Automatic reads a % !TEX program line, then the packages the document loads.",
       choices: [
         { value: "automatic", says: "Automatic", patch: { selection: "automatic" } },
         { value: "pdflatex", says: "pdfLaTeX", patch: { ...browser("tex"), engine: "pdflatex" } },
@@ -22,12 +22,12 @@
       chosen: (preference) => preference.selection === "tool" && ["pdflatex", "xelatex"].includes(preference.engine) ? preference.engine : "automatic",
     },
     markdown: {
-      id: "render-markdown-tool", title: "Markdown files", label: "Markdown renderer",
-      description: "Pandoc and Quarto must be installed on this computer.",
+      id: "render-markdown-tool", title: "Renderer", label: "Markdown renderer",
+      description: "Pandoc and Quarto run through the desktop app and must be installed on this computer.",
       choices: [
         { value: "browser", says: "Browser", patch: browser("markdown") },
-        { value: "pandoc", says: "Pandoc (local)", patch: local("pandoc") },
-        { value: "quarto", says: "Quarto (local)", patch: local("quarto") },
+        { value: "pandoc", says: "Pandoc on this computer", patch: local("pandoc") },
+        { value: "quarto", says: "Quarto on this computer", patch: local("quarto") },
       ],
       chosen: (preference) => preference.backend === "local" && ["pandoc", "quarto"].includes(preference.tool) ? preference.tool : "browser",
     },

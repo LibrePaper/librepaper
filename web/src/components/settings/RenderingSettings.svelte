@@ -93,14 +93,14 @@
 </script>
 
 <SettingRow id="rendering-profile" title="Profile"
-            description="Optional Quarto profile, such as draft for _quarto-draft.yml.">
+            description="The Quarto profile to use, such as draft for _quarto-draft.yml. Markdown files that Quarto renders use it too.">
   <input class="input setting-input" type="text" value={draftProfile}
          aria-label="Quarto profile" autocomplete="off" spellcheck="false"
          oninput={(event) => { draftProfile = event.currentTarget.value; changed(); }} disabled={controlsDisabled} />
 </SettingRow>
 
 <SettingRow id="rendering-parameters" title="Parameters" stacked
-            description="Optional JSON values for params declared in the document’s front matter.">
+            description="Values for the params in the front matter, written as JSON. Leave it empty to use none.">
   <textarea class="textarea setting-textarea" rows="4" value={parametersText}
             aria-label="Quarto parameters" aria-invalid={Boolean(validationError)} spellcheck="false"
             aria-describedby={validationError || applyError ? "rendering-parameters-error" : undefined}

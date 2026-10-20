@@ -13,6 +13,7 @@
   import QuotaSettings from "./QuotaSettings.svelte";
   import BuildSettings from "./BuildSettings.svelte";
   import RenderingSettings from "./RenderingSettings.svelte";
+  import DefaultPreviewSetting from "./DefaultPreviewSetting.svelte";
   import AccountSettings from "./AccountSettings.svelte";
   import RemoteSettings from "./RemoteSettings.svelte";
   import BackupsSettings from "./BackupsSettings.svelte";
@@ -96,13 +97,29 @@
         {:else if shown.id === "rendering"}
           <section class="settings-subsection">
             <div class="settings-section-title"><h4 class="settings-subhead">LaTeX</h4></div>
+            <p class="settings-section-note">LaTeX documents render in the browser.</p>
+            <DefaultPreviewSetting format="latex" {userId} onpreferences={onbuildpreferences} />
             <BuildSettings format="latex" {userId} onpreferences={onbuildpreferences} />
             <LatexFilesSettings />
           </section>
 
           <section class="settings-subsection">
-            <div class="settings-section-title"><h4 class="settings-subhead">Markdown and Quarto</h4></div>
+            <div class="settings-section-title"><h4 class="settings-subhead">Typst</h4></div>
+            <p class="settings-section-note">Typst documents render in the browser. With Run code on, Calepin renders them on this computer.</p>
+            <DefaultPreviewSetting format="typst" {userId} onpreferences={onbuildpreferences} />
+          </section>
+
+          <section class="settings-subsection">
+            <div class="settings-section-title"><h4 class="settings-subhead">Markdown</h4></div>
+            <p class="settings-section-note">Markdown documents render with the renderer you choose here.</p>
+            <DefaultPreviewSetting format="markdown" {userId} onpreferences={onbuildpreferences} />
             <BuildSettings format="markdown" {userId} onpreferences={onbuildpreferences} ontools={() => go("tools")} />
+          </section>
+
+          <section class="settings-subsection">
+            <div class="settings-section-title"><h4 class="settings-subhead">Quarto</h4></div>
+            <p class="settings-section-note">Quarto documents render a draft in the browser. With Run code on, Quarto renders them on this computer.</p>
+            <DefaultPreviewSetting format="quarto" {userId} onpreferences={onbuildpreferences} />
             <RenderingSettings {userId} {onquartooptions} />
           </section>
         {:else if shown.id === "agents"}
