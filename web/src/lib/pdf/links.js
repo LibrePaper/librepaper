@@ -36,17 +36,6 @@ export function externalHref(annotation) {
   return safeUrl(annotation?.url) ?? safeUrl(annotation?.unsafeUrl);
 }
 
-/// Distance in PDF points from the top edge of a page to a destination whose
-/// `top` is measured up from the bottom, or null when the destination does not
-/// say. `view` is the page's `[x0, y0, x1, y1]`; the result is clamped to it.
-export function yFromTop(view, top) {
-  if (typeof top !== "number" || !Number.isFinite(top)) return null;
-  if (!Array.isArray(view) || view.length < 4) return null;
-  const height = view[3] - view[1];
-  const y = view[3] - top;
-  return Math.max(0, Math.min(height, y));
-}
-
 /// The `top` a destination's arguments carry, by destination kind.
 ///
 /// XYZ is `[left, top, zoom]`; FitH and FitBH are `[top]`; the rest (Fit,

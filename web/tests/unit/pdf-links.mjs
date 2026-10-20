@@ -9,7 +9,6 @@ import {
   destLeft,
   resolveDest,
   safeUrl,
-  yFromTop,
 } from "../../src/lib/pdf/links.js";
 
 assert.equal(safeUrl("https://example.org/a"), "https://example.org/a");
@@ -25,13 +24,6 @@ assert.equal(externalHref({ unsafeUrl: "javascript:x" }), null);
 assert.equal(externalHref({}), null);
 
 const view = [0, 0, 612, 792];
-assert.equal(yFromTop(view, 700), 92);
-assert.equal(yFromTop(view, 900), 0, "clamped to the top");
-assert.equal(yFromTop(view, -50), 792, "clamped to the bottom");
-assert.equal(yFromTop([0, 10, 612, 802], 802), 0, "offset boxes work");
-assert.equal(yFromTop(view, null), null);
-assert.equal(yFromTop(view, undefined), null);
-assert.equal(yFromTop(null, 5), null);
 
 assert.equal(destTop("XYZ", [72, 700, null]), 700);
 assert.equal(destTop("XYZ", [72, null, null]), null);
