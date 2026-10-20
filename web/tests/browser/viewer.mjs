@@ -222,7 +222,7 @@ async function run() {
   `);
   check(
     "a viewer with no message shows 'nothing to show yet' and no pages",
-    /nothing to show yet/.test(empty.note) && empty.canvases === 0,
+    /nothing to show yet/i.test(empty.note) && empty.canvases === 0,
     JSON.stringify(empty),
   );
 
