@@ -103,7 +103,7 @@ live = { sha: "live", main: "main.md", texts: { "main.md": "current", "steady.md
 await controller.select("A");
 assert.equal(controller.path, "main.md");
 
-// A base version: the base is the older side, the selected version the newer.
+// A base version: the base is the left side, the selected version the right.
 await controller.select("B");
 await controller.compareWith("A");
 assert.equal(controller.against, "A");

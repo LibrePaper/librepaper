@@ -570,14 +570,13 @@
            reached -- and always where the mark is already set, because there
            the icon is not a control offering itself, it is the answer. -->
       {#if canEdit || bookmarked(point) || !here}
-        <span class="day-tools" class:on={bookmarked(point) || against === point.sha}
-              class:mark-still={!canEdit && here}>
+        <span class="day-tools" class:on={bookmarked(point) || against === point.sha}>
           {#if canEdit}
             <IconButton icon="bookmark" tone="plain" size="btn-icon-sm" filled={bookmarked(point)}
                         label={bookmarked(point) ? "Rename this bookmark" : "Bookmark this version"}
                         onclick={() => startNaming(point)} />
           {:else if bookmarked(point)}
-            <Icon name="bookmark" filled />
+            <span class="mark-still"><Icon name="bookmark" filled /></span>
           {/if}
           {@render compareTool(point)}
         </span>

@@ -3,8 +3,8 @@
 //
 // Two comparisons. Alone, the selected version is compared with the project
 // as it stands, captured when the comparison opens and again on request. With
-// a base version set, the base is the older side and the selected version is
-// the newer one, or the project as it stands when nothing is selected. It
+// a base version set, the base is the left side and the selected version the
+// right, or the project as it stands when nothing is selected. It
 // deliberately has no dependency on preview rendering or the live editor.
 import { createGeneration } from "./generation.js";
 import { isMoment } from "../moment.js";

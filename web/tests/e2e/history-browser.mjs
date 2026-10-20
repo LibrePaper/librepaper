@@ -102,7 +102,7 @@ async function main() {
     "a read-link reader has no History workspace");
   assert.equal(await reader.evaluate('!!document.querySelector(".history-workspace")'), false);
   assert.equal(await reader.evaluate(`[...document.querySelectorAll('button')]
-    .some((button) => button.textContent.trim() === 'Restore this version')`), false,
+    .some((button) => button.textContent.trim() === 'Restore')`), false,
     "a read-link reader has no restore control");
 
   // History is an owner workspace. Keep its captured current side open in a
@@ -130,13 +130,13 @@ async function main() {
   assert.ok(await comparisonOwner.evaluate(`document.querySelector('.cm-merge-b .cm-content')?.textContent.includes('blue fox')`),
     "the selected comparison keeps its captured current source until refreshed");
   await comparisonOwner.evaluate(`([...document.querySelectorAll('.history-source-actions button')]
-    .find((button) => button.textContent.trim() === 'Refresh comparison')?.click())`);
+    .find((button) => button.textContent.trim() === 'Refresh')?.click())`);
   await until("refreshed history comparison", () => comparisonOwner.evaluate(`(() => {
     const newText = document.querySelector('.cm-merge-b .cm-content')?.textContent || '';
     return newText.includes('green fox') && !newText.includes('blue fox');
   })()`));
   // Restoring an earlier label creates a new event and updates the live source.
-  await comparisonOwner.evaluate(`([...document.querySelectorAll('button')].find(button => button.textContent.trim() === 'Restore this version')?.click())`);
+  await comparisonOwner.evaluate(`([...document.querySelectorAll('.history-workspace button')].find(button => button.textContent.trim() === 'Restore')?.click())`);
   await until("restore confirmation", () => comparisonOwner.evaluate('document.body.innerText.includes("Restore this version?")'));
   await comparisonOwner.evaluate(`([...document.querySelectorAll('button')].find(button => button.textContent.trim() === 'Restore version')?.click())`);
   await until("restore label", async () => (await request(historyPath)).labels?.some((label) => label.reason === "restore"));

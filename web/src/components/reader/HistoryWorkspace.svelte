@@ -74,7 +74,7 @@
           : "No differences"}
       </span>
       <span class="history-source-actions">
-        <button type="button" class="btn btn-sm" onclick={() => source.select()}>Refresh comparison</button>
+        <button type="button" class="btn btn-sm lp-control-tonal-brand" onclick={() => source.select()}>Refresh</button>
         <!-- A moment is a position in the editing history, not a label: it has
              no archive to download and nothing to restore to by name. -->
         {#if canEdit && source.selected && !isMoment(source.selected)}
@@ -83,14 +83,13 @@
                than sitting quiet or, worse, looking done before the file
                exists. Editor-only, like the rest of this panel: a reader or
                commenter link cannot reach the history routes this asks. -->
-          <button type="button" class="btn btn-sm" disabled={downloading === source.selected}
+          <button type="button" class="btn btn-sm lp-control-tonal-brand" disabled={downloading === source.selected}
                   onclick={() => ondownload?.(source.selected)}>
-            {downloading === source.selected ? "Preparing download…"
-              : result.against ? `Download ${result.newLabel}` : "Download this version"}
+            {downloading === source.selected ? "Downloading…" : "Download"}
           </button>
         {/if}
         {#if canEdit && source.selected && !isMoment(source.selected)}
-          <button type="button" class="btn btn-sm lp-control-tonal-brand" onclick={() => onrestore?.(source.selected)}>{result.against ? `Restore ${result.newLabel}` : "Restore this version"}</button>
+          <button type="button" class="btn btn-sm lp-control-tonal-brand" onclick={() => onrestore?.(source.selected)}>Restore</button>
         {/if}
       </span>
     </div>
