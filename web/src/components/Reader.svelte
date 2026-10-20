@@ -1814,9 +1814,10 @@
     sourceFormat,
   );
   // This browser-only choice affects the pane and is never published. It is
-  // not conditioned on the source pane being open: HTML is the default output
-  // of every format, so somebody who only reads the document gets the same
-  // page its author is looking at rather than a paged fallback.
+  // not conditioned on the source pane being open: the output starts on the
+  // person's default preview for this format (HTML unless they chose PDF in
+  // Settings), so somebody who only reads the document is not left on a paged
+  // fallback.
   const previewFormat = $derived.by(() =>
     ((displayedFormat === "typst" && typstOutput === "html") ||
       (displayedFormat === "latex" && latexOutput === "html")) ? "html" : displayedFormat,

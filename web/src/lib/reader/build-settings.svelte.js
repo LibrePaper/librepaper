@@ -46,8 +46,9 @@ export function createBuildSettings({
     typstPreviewMode: "typst",
   });
 
-  // HTML unless a reader has asked for pages: the default is flow for every
-  // format, so only the explicit "pdf" reads as one.
+  // HTML unless the reader's stored default for this format is PDF or they
+  // chose PDF from the View menu for this visit. Only the explicit "pdf" reads
+  // as one.
   /** @param {BuildPreference} preference */
   const outputOf = (preference) => (preference.output === "pdf" ? "pdf" : "html");
 

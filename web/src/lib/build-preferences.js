@@ -22,20 +22,10 @@ function key({ origin = globalThis.location?.origin || "", user = "anonymous" } 
   return `${PREFIX}:${JSON.stringify([String(origin), String(user || "anonymous"), String(what)])}`;
 }
 
-/// HTML for every format. A preview is read on a screen, and a flow page
-/// reflows to the pane it is read in, arrives faster than a paged compile, and
-/// is what the annotation layer can place a highlight in. A paged PDF is what
-/// LaTeX and Typst are ultimately for, so it stays one choice away in the
-/// View menu -- but it is a choice, not the starting point.
+// HTML is the default for every format. Each person can set their own default
+// per format in Settings > Rendering, kept in its own record. The View menu's
+// choice lasts for the visit and is never written.
 export function defaults(format = "") { return { ...DEFAULTS, format, output: "html" }; }
-
-/// And the starting point is where every visit starts. Unlike the tool and the
-/// backend, which say how this browser can build at all and are worth keeping,
-/// the output is a choice about what to look at right now: somebody who asked
-/// for pages once to check a figure's placement does not want every later
-/// visit to open on a paged compile. So the output is not written, and not
-/// read back -- opening a project is always opening it on HTML, and PDF lasts
-/// as long as the visit that asked for it.
 
 // The Quarto profile and parameters. Markdown rendered by Quarto takes the
 // same ones as a Quarto document, so they are kept once, beside the formats.
@@ -61,12 +51,27 @@ function withQuartoOptions(scope, format, preference) {
   return takesQuartoOptions(format) ? { ...preference, ...readQuartoOptions(scope) } : preference;
 }
 
+const defaultPreview = (format) => `default-preview:${format}`;
+
+export function readDefaultPreview(scope, format = "") {
+  try {
+    return JSON.parse(storage()?.getItem(key(scope, defaultPreview(format))) || "null") === "pdf" ? "pdf" : "html";
+  } catch { return "html"; }
+}
+
+export function writeDefaultPreview(scope, format, value) {
+  const output = value === "pdf" ? "pdf" : "html";
+  try { storage()?.setItem(key(scope, defaultPreview(format)), JSON.stringify(output)); } catch { /* private mode/quota */ }
+  return read(scope, format);
+}
+
 export function read(scope, format = "") {
   return withQuartoOptions(scope, format, stored(scope, format));
 }
 
 function stored(scope, format) {
-  const fallback = defaults(format);
+  const output = readDefaultPreview(scope, format);
+  const fallback = { ...defaults(format), output };
   try {
     const raw = storage()?.getItem(key(scope, format));
     if (!raw) return fallback;
@@ -75,7 +80,7 @@ function stored(scope, format) {
     const allowed = ["automatic", "tool"];
     if (!allowed.includes(value.selection)) return fallback;
     if (value.backend && !["auto", "browser", "local"].includes(value.backend)) return fallback;
-    const result = { ...fallback, ...value, format: format || value.format || "", output: "html" };
+    const result = { ...fallback, ...value, format: format || value.format || "", output };
     // LaTeX has no local builder. A stored preference from another format, or
     // from an older build of the app, is read back as the browser engine
     // rather than as a choice the menu can no longer offer.
@@ -92,10 +97,10 @@ function stored(scope, format) {
 function write(scope, format, next) {
   const value = { ...next };
   delete value.user;
-  // The output is the visit's, not the browser's: what is stored leaves it
-  // out, and what is handed back keeps it, because the caller is about to
-  // render with the choice that was just made. The Quarto options have their
-  // own record.
+  // The output is the View menu's choice for this visit: what is stored leaves
+  // it out, and what is handed back keeps it, because the caller is about to
+  // render with the choice that was just made. The default preview and the
+  // Quarto options have their own records.
   const kept = { ...value };
   delete kept.output;
   delete kept.profile;
@@ -107,7 +112,7 @@ function write(scope, format, next) {
 export function update(scope, format, patch) {
   const current = read(scope, format);
   const changingTool = patch.selection === "tool" && patch.tool && (patch.tool !== current.tool || patch.backend !== current.backend);
-  const next = { ...(changingTool || patch.selection === "automatic" ? defaults(format) : current), ...patch, format };
+  const next = { ...(changingTool || patch.selection === "automatic" ? { ...defaults(format), output: current.output } : current), ...patch, format };
   if (next.selection === "automatic") {
     delete next.tool;
     delete next.engine;

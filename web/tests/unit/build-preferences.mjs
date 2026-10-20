@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { defaults, read, update, readQuartoOptions, writeQuartoOptions } from "../../src/lib/build-preferences.js";
+import { defaults, read, update, readDefaultPreview, writeDefaultPreview, readQuartoOptions, writeQuartoOptions } from "../../src/lib/build-preferences.js";
 
 function store() {
   const values = new Map();
@@ -114,5 +114,35 @@ test("local typst preference reads back as browser typst", () => {
     assert.equal(preference.backend, "browser");
     assert.equal(preference.tool, "typst");
     assert.equal(preference.selection, "tool");
+  } finally { globalThis.localStorage = previous; }
+});
+
+test("the default preview is stored per format and the View menu choice is not", () => {
+  const previous = globalThis.localStorage;
+  globalThis.localStorage = store();
+  try {
+    const scope = { origin: "https://a.test", user: "alice", document: "paper" };
+    assert.equal(readDefaultPreview(scope, "latex"), "html");
+    const chosen = writeDefaultPreview(scope, "latex", "pdf");
+    assert.equal(chosen.output, "pdf");
+    assert.equal(read(scope, "latex").output, "pdf");
+    assert.equal(read(scope, "typst").output, "html");
+    assert.equal(read({ ...scope, user: "bob" }, "latex").output, "html");
+    // The View menu choice lasts for the visit: it is returned but not stored.
+    assert.equal(update(scope, "latex", { output: "html" }).output, "html");
+    assert.equal(read(scope, "latex").output, "pdf");
+  } finally { globalThis.localStorage = previous; }
+});
+
+test("a stored default preview survives changing the tool and going automatic", () => {
+  const previous = globalThis.localStorage;
+  globalThis.localStorage = store();
+  try {
+    const scope = { origin: "https://a.test", user: "alice", document: "paper" };
+    writeDefaultPreview(scope, "latex", "pdf");
+    const tool = update(scope, "latex", { selection: "tool", backend: "browser", tool: "tex", engine: "xelatex" });
+    assert.equal(tool.output, "pdf");
+    const automatic = update(scope, "latex", { selection: "automatic" });
+    assert.equal(automatic.output, "pdf");
   } finally { globalThis.localStorage = previous; }
 });
