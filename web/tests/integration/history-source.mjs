@@ -103,5 +103,67 @@ live = { sha: "live", main: "main.md", texts: { "main.md": "current", "steady.md
 await controller.select("A");
 assert.equal(controller.path, "main.md");
 
+// A base version: the base is the older side, the selected version the newer.
+await controller.select("B");
+await controller.compareWith("A");
+assert.equal(controller.against, "A");
+assert.equal(controller.selected, "B");
+assert.equal(controller.result.oldTree.texts["main.md"], "original");
+assert.equal(controller.result.newTree.texts["main.md"], "revision");
+assert.equal(controller.result.oldLabel, "A");
+assert.equal(controller.result.newLabel, "B");
+assert.equal(controller.result.against, "A");
+assert.equal(controller.result.diff, true);
+assert.equal(controller.result.status["main.md"], "changed");
+
+// Swapping puts the base on the right.
+await controller.swap();
+assert.equal(controller.selected, "A");
+assert.equal(controller.against, "B");
+assert.equal(controller.result.oldTree.texts["main.md"], "revision");
+assert.equal(controller.result.newTree.texts["main.md"], "original");
+
+// A base against the current source: the project is the newer side.
+await controller.select("");
+assert.equal(controller.selected, "");
+assert.equal(controller.against, "B");
+assert.equal(controller.result.oldTree.texts["main.md"], "revision");
+assert.equal(controller.result.newTree.texts["main.md"], live.texts["main.md"]);
+assert.equal(controller.result.newLabel, "Current version");
+assert.equal(controller.result.diff, true);
+
+// Selecting the base itself drops it and compares that version with current.
+await controller.select("B");
+assert.equal(controller.against, "");
+assert.equal(controller.result.oldTree.texts["main.md"], "revision");
+assert.equal(controller.result.newTree.texts["main.md"], live.texts["main.md"]);
+
+// Clearing the base returns to the plain comparison.
+await controller.compareWith("A");
+await controller.compareWith("");
+assert.equal(controller.against, "");
+assert.equal(controller.result.against, "");
+assert.equal(controller.result.oldTree.texts["main.md"], "revision");
+assert.equal(controller.result.newTree.texts["main.md"], live.texts["main.md"]);
+
+// Comparing a version with itself clears the base.
+await controller.compareWith("A");
+assert.equal(controller.against, "A");
+await controller.compareWith("B");
+assert.equal(controller.against, "");
+assert.equal(controller.selected, "B");
+
+// Closing drops the base too.
+await controller.compareWith("A");
+controller.close();
+assert.equal(controller.against, "");
+
+// A base the server cannot read says so and shows nothing.
+await controller.select("A");
+await controller.compareWith("missing");
+assert.notEqual(controller.problem, "");
+assert.equal(controller.result, null);
+controller.close();
+
 controller.dispose(); raced.dispose();
 console.log("history source: one comparison against current, selection races, snapshots, and per-file status passed");

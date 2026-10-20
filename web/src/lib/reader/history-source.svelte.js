@@ -1,8 +1,10 @@
 // One owner for history selection, the source endpoints behind it, and the
 // request lifetime of a comparison.
 //
-// There is one comparison: the selected version against the project as it
-// stands, captured when the comparison opens and again on request. It
+// Two comparisons. Alone, the selected version is compared with the project
+// as it stands, captured when the comparison opens and again on request. With
+// a base version set, the base is the older side and the selected version is
+// the newer one, or the project as it stands when nothing is selected. It
 // deliberately has no dependency on preview rendering or the live editor.
 import { createGeneration } from "./generation.js";
 import { isMoment } from "../moment.js";
@@ -11,7 +13,7 @@ import { isMoment } from "../moment.js";
 /// versions, and a minute nobody saved is not one.
 
 export function createHistorySource({ read, currentTree, labels = () => [], preferredPath = () => "" }) {
-  const state = $state({ selected: "", path: "", loading: false, problem: "", gone: false, result: null });
+  const state = $state({ selected: "", against: "", path: "", loading: false, problem: "", gone: false, result: null });
   const selections = createGeneration();
   let disposed = false;
 
@@ -55,6 +57,7 @@ export function createHistorySource({ read, currentTree, labels = () => [], pref
 
   async function select(sha = state.selected, path = state.path || preferredPath()) {
     if (disposed) return;
+    if (sha && sha === state.against) state.against = "";
     const stale = selections.begin();
     state.selected = sha;
     state.path = path;
@@ -68,10 +71,15 @@ export function createHistorySource({ read, currentTree, labels = () => [], pref
       const available = currentTree();
       const live = snapshot(available?.then ? await available : available);
       if (disposed || stale()) return;
-      const point = sha ? await readPoint(sha) : null;
+      const base = state.against;
+      const [before, after] = base
+        ? await Promise.all([readPoint(base), sha ? readPoint(sha) : null])
+        : [null, sha ? await readPoint(sha) : null];
       if (disposed || stale()) return;
-      const oldTree = point || live;
-      const newTree = live;
+      const oldPoint = base ? before : after;
+      const newPoint = base ? after : null;
+      const oldTree = oldPoint || live;
+      const newTree = newPoint || live;
       const paths = [...new Set([
         ...Object.keys(oldTree.texts), ...Object.keys(newTree.texts),
         ...Object.keys(oldTree.files || {}), ...Object.keys(newTree.files || {}),
@@ -80,21 +88,23 @@ export function createHistorySource({ read, currentTree, labels = () => [], pref
       const changed = paths.filter(name => status[name] !== "same");
       // Land on a file the reader came for, then on one that actually
       // differs, and only then on the document itself.
+      const main = (after || before)?.main || newTree.main;
       state.path = paths.includes(path) ? path
         : changed[0]
-          || (paths.includes(point?.main || newTree.main) ? (point?.main || newTree.main) : paths[0] || "");
+          || (paths.includes(main) ? main : paths[0] || "");
       state.result = {
         oldTree,
         newTree,
-        oldLabel: point ? label(point) : "Current version",
-        newLabel: "Current version",
+        oldLabel: oldPoint ? label(oldPoint) : "Current version",
+        newLabel: newPoint ? label(newPoint) : "Current version",
+        against: base,
         paths,
         status,
         changed,
         binary: Object.fromEntries(paths.map(name =>
           [name, (entryOf(oldTree, name) || entryOf(newTree, name))?.kind === "binary"])),
         capturedAt: new Date().toISOString(),
-        diff: Boolean(sha),
+        diff: Boolean(sha || base),
       };
     } catch (error) {
       if (!disposed && !stale()) {
@@ -109,9 +119,28 @@ export function createHistorySource({ read, currentTree, labels = () => [], pref
   function selectFile(path) {
     if (state.result?.paths.includes(path)) state.path = path;
   }
+  function compareWith(sha) {
+    state.against = sha && sha !== state.selected ? sha : "";
+    return select(state.selected);
+  }
+  function swap() {
+    if (state.against && state.selected) {
+      [state.selected, state.against] = [state.against, state.selected];
+    } else if (state.against) {
+      state.selected = state.against;
+      state.against = "";
+    } else {
+      return;
+    }
+    return select(state.selected);
+  }
+  function clearBase() {
+    state.against = "";
+  }
   function close() {
     selections.cancel();
     state.selected = "";
+    state.against = "";
     state.result = null;
     state.loading = false;
     state.problem = "";
@@ -119,13 +148,14 @@ export function createHistorySource({ read, currentTree, labels = () => [], pref
   }
   return {
     get selected() { return state.selected; },
+    get against() { return state.against; },
     get path() { return state.path; },
     get loading() { return state.loading; },
     get problem() { return state.problem; },
     /// The last comparison's moment was trimmed away, which the server says with a 410.
     get gone() { return state.gone; },
     get result() { return state.result; },
-    select, selectFile, close,
+    select, selectFile, compareWith, swap, clearBase, close,
     dispose() { close(); disposed = true; },
   };
 }
