@@ -32,7 +32,7 @@ export function chatRows(messages, { authorKey, roleLabel, now = new Date(), gro
     const previousAt = previous ? parseTime(previous.created) : null;
     const date = at && (!latest || !sameDay(latest, at)) ? dayLabel(at, now) : null;
     const starts = index === 0 || authorKey(previous) !== key || date !== null ||
-      Boolean(at && previousAt && at - previousAt > groupMs);
+      Boolean(at && previousAt && at.getTime() - previousAt.getTime() > groupMs);
     if (at) latest = at;
     return {
       message,

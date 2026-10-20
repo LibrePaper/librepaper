@@ -264,22 +264,21 @@ try {
   await page.evaluate(`(()=>{const input=document.querySelector('textarea[placeholder]');input.value='Explain this';input.dispatchEvent(new Event('input',{bubbles:true}));input.dispatchEvent(new KeyboardEvent('keydown',{key:'Enter',bubbles:true}));})()`);
   await until("agent reply",()=>page.evaluate('document.querySelector("[role=log]")?.textContent.includes("<img")'),10000);
   assert.equal(await page.evaluate("Boolean(window.injected||document.querySelector('[role=log] img'))"),false);
-  // The quiet transcript drops the visible "You"/"Agent" labels; they are
-  // sr-only now, not gone from the accessibility tree.
-  assert.equal(await page.evaluate('Boolean(document.querySelector(".chat-author"))'), false,
-    "author names are visually hidden in the quiet transcript");
-  assert.ok(await page.evaluate('Boolean(document.querySelector("[role=log] .sr-only"))'),
-    "author names stay in the accessibility tree as sr-only text");
-  // The quiet gutter is narrower, so the avatar must shrink with it rather
-  // than spill over the message beside it.
-  assert.ok(await page.evaluate(`Array.from(document.querySelectorAll("[role=log] .chat-message.starts")).every((row) => row.querySelector(".avatar").getBoundingClientRect().right <= row.querySelector(".chat-bubble").getBoundingClientRect().left)`),
+  // The agent transcript is the same compact layout as the people chat: a
+  // visible author line opens each series, beside an avatar that stays clear
+  // of the text.
+  assert.ok(await page.evaluate('Boolean(document.querySelector("[role=log] .chat-author"))'),
+    "each series names its author");
+  assert.equal(await page.evaluate('Boolean(document.querySelector("[role=log] .chat-bubble"))'), false,
+    "messages are not drawn as bubbles");
+  assert.ok(await page.evaluate(`Array.from(document.querySelectorAll("[role=log] .chat-message.starts")).every((row) => row.querySelector(".avatar").getBoundingClientRect().right <= row.querySelector(".chat-content").getBoundingClientRect().left)`),
     "avatars stay clear of their messages");
   const posted=await page.evaluate('window.sockets[0].sent.find(frame=>frame.type==="message")');
   assert.equal(posted.context.file,"paper.md");
   assert.deepEqual(posted.context.diagnostics, [{severity:'warning',file:'librepaper.tex',line:12,message:'Reference undefined',revision:'render-sha',source:'source line'}]);
   assert.deepEqual(posted.context.selection,{path:"paper.md",exact:"A passage",prefix:"",suffix:"",position:null});
-  assert.equal(await page.evaluate(`document.querySelector('.chat-form button[type=submit]')?.textContent.trim()`), "Send",
-    "the composer exposes a visible Send button");
+  assert.equal(await page.evaluate(`document.querySelector('.chat-form button[type=submit]')?.getAttribute("aria-label")`), "Send message",
+    "the composer has a labelled send button");
   await page.evaluate(`(()=>{const field=document.querySelector('.chat-form textarea');field.value='Send button request';field.dispatchEvent(new Event('input',{bubbles:true}));})()`);
   await until("draft enables Send", () => page.evaluate(`!document.querySelector('.chat-form button[type=submit]').disabled`), 1000);
   await page.evaluate(`document.querySelector('.chat-form button[type=submit]').click()`);

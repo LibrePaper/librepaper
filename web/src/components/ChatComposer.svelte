@@ -94,7 +94,7 @@
 
 <form class="chat-form" onsubmit={submit} data-cansend={canSend && !disabled && !sending}>
   <div class="composer-box">
-    <textarea bind:this={input} class="textarea" rows="1" value={draft} {placeholder} aria-label="Message"
+    <textarea bind:this={input} rows="1" value={draft} {placeholder} aria-label="Message"
       {disabled} required oninput={update} onkeydown={keydown}></textarea>
     <div class="composer-buttons">
       {#if onstop}

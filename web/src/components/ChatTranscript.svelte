@@ -95,7 +95,7 @@
             <time class="chat-time chat-time-hover" datetime={message.created} title={stamp}>{time}</time>
           {/if}
         </span>
-        <div class="chat-body">
+        <div class="chat-content">
           {#if starts}
             <div class="chat-meta">
               <strong class="chat-author">{name}</strong>
@@ -144,16 +144,17 @@
   .chat-message { display: grid; grid-template-columns: calc(var(--spacing) * 7) minmax(0, 1fr); column-gap: calc(var(--spacing) * 2); align-items: start; min-width: 0; flex-shrink: 0; }
   /* A new author or a long pause opens a new group: a little more air above it. */
   .chat-message.starts:not(:first-child) { margin-top: calc(var(--spacing) * 3); }
-  .chat-gutter { display: block; width: calc(var(--spacing) * 7); min-width: 0; height: calc(var(--spacing) * 7); }
-  .chat-body { display: flex; min-width: 0; flex-direction: column; align-items: flex-start; }
+  .chat-gutter { display: block; width: calc(var(--spacing) * 7); min-width: 0; }
+  .chat-message.starts .chat-gutter { height: calc(var(--spacing) * 7); }
+  .chat-content { display: flex; min-width: 0; flex-direction: column; align-items: flex-start; }
   .chat-meta { display: flex; min-width: 0; max-width: 100%; align-items: baseline; gap: calc(var(--spacing) * 2); line-height: var(--panel-line-height); }
   .chat-author { min-width: 0; overflow: hidden; color: var(--panel-text, inherit); font-weight: 600; text-overflow: ellipsis; white-space: nowrap; }
   .chat-time { flex-shrink: 0; color: var(--panel-muted); font-size: var(--panel-meta-size); line-height: var(--panel-line-height); }
-  .chat-time-hover { display: block; height: calc(var(--spacing) * 7); overflow: hidden; color: var(--panel-muted); font-size: var(--panel-meta-size); line-height: calc(var(--spacing) * 7); text-align: center; opacity: 0; }
+  .chat-time-hover { display: block; overflow: hidden; line-height: var(--panel-line-height); text-align: center; white-space: nowrap; opacity: 0; }
   .chat-message:hover .chat-time-hover, .chat-message:focus-within .chat-time-hover { opacity: 1; }
-  .chat-text, .chat-body p { min-width: 0; margin: 0; max-width: 100%; white-space: pre-wrap; overflow-wrap: anywhere; }
-  .chat-body .effect-warning { margin-top: var(--spacing); color: var(--color-warning-text); font-weight: 600; }
-  .chat-body .btn { margin-top: var(--spacing); }
+  .chat-text, .chat-content p { min-width: 0; margin: 0; max-width: 100%; white-space: pre-wrap; overflow-wrap: anywhere; }
+  .chat-content .effect-warning { margin-top: var(--spacing); color: var(--color-warning-text); font-weight: 600; }
+  .chat-content .btn { margin-top: var(--spacing); }
   .chat-empty { display: flex; min-width: 0; max-width: 100%; flex-direction: column; align-items: center; gap: calc(var(--spacing) * 1.5); margin: auto; padding-block: calc(var(--spacing) * 4); text-align: center; }
   .chat-empty-icon { display: inline-flex; color: var(--panel-muted); }
   .chat-empty-icon :global(svg) { width: 20px; height: 20px; }

@@ -61,7 +61,7 @@
       {:else}
         <button
           {...attributes}
-          type={type}
+          type={type === "submit" ? "submit" : "button"}
           class={classes}
           aria-label={label}
           aria-controls={controls ?? undefined}

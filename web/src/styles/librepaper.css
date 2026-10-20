@@ -328,6 +328,11 @@ body:has(.explorer-menu[data-state="open"]) .viewport iframe {
   padding: var(--panel-padding);
 }
 .panel-tabs-root :where([role="tabpanel"][hidden]) { display: none; }
+/* The tab row: the strip, then any controls for the open tab. The row
+   carries the divider, so the controls sit above it too. */
+.panel-tabs-row { display: flex; align-items: center; flex-shrink: 0; border-bottom: 1px solid var(--color-divider); }
+.panel-tabs-row > .panel-tabs { flex: 1 1 0; min-width: 0; }
+.panel-tabs-actions { display: flex; flex-shrink: 0; align-items: center; padding-inline: --spacing(1); }
 /* Two sidebar panels head themselves with a row of tabs, and the sidebar
    narrows to PANES.sidebar.min (240px), so the row has to survive there:
    equal shares that are allowed to shrink, one line, and an ellipsis once a
@@ -338,9 +343,6 @@ body:has(.explorer-menu[data-state="open"]) .viewport iframe {
    the whole recipe here rather than in each panel: written twice it drifts,
    and note the query only ever resolves for descendants of the container,
    never for the tab row that declares it. */
-.panel-tabs-row { display: flex; align-items: center; flex-shrink: 0; border-bottom: 1px solid var(--color-divider); }
-.panel-tabs-row > .panel-tabs { flex: 1 1 0; min-width: 0; border-bottom: 0; }
-.panel-tabs-actions { display: flex; flex-shrink: 0; align-items: center; padding-inline: --spacing(1); }
 .panel-tabs {
   container-type: inline-size;
   position: relative;

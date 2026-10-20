@@ -172,8 +172,11 @@ try {
   socket.emit({ type: "task", id: "event-2", task_id: sent.id, status: "cancelled" });
   assert.equal(client.current.tasks[sent.id].status, "cancelled");
   assert.match(client.current.messages.find((message) => message.context?.task_id === sent.id && message.role === "agent").text, /cancel/i);
-  assert.deepEqual(client.current.messages.find((message) => message.id === sent.id), {
-    id: sent.id, role: "user", text: "Explain this", task_id: sent.id,
+  const userMessage = client.current.messages.find((message) => message.id === sent.id);
+  // The client stamps a message with the time it arrived, for the transcript.
+  assert.match(userMessage.created, /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$/);
+  assert.deepEqual(userMessage, {
+    id: sent.id, role: "user", text: "Explain this", task_id: sent.id, created: userMessage.created,
     context: { file: "paper.md", selection: { path: "paper.md", exact: "A passage", prefix: "", suffix: "", position: null }, diagnostics: [], diagnostics_omitted: 0 },
   });
   await client.previewResult({ id: "preview-result", request_id: "preview-request", task_id: sent.id,
