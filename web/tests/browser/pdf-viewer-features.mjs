@@ -199,8 +199,10 @@ async function run() {
   // frame is the same point in the browser's viewport.
   await tab.send("Emulation.setDeviceMetricsOverride", { width: 1000, height: 900, deviceScaleFactor: 1, mobile: false });
   await tab.send("Page.navigate", { url: `${BASE}/harness.html` });
+  // The frame says "nothing drawn" once its listener is up; a preview posted
+  // before that lands in the blank document the iframe starts with.
   for (let tries = 0; tries < 200; tries++) {
-    if (await tab.eval("return Boolean(window.ready && window.doc && window.doc())")) break;
+    if (await tab.eval("return Boolean(window.ready && window.state())")) break;
     await wait(100);
   }
 
