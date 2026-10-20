@@ -92,6 +92,10 @@ export function createSidebar({ ongo }) {
   let doc = null;
   let observer = null;
   let items = []; // index = page - 1: { button, thumb, drawn }
+  let density = 1; // the host's page zoom, for thumbnails drawn from now on
+  // Outline sections the reader collapsed or opened, by their path of titles,
+  // so a recompile does not fold them back to the default.
+  const collapsedPaths = new Map();
   const tasks = new Set();
 
   function showTab(name) {
@@ -138,7 +142,7 @@ export function createSidebar({ ongo }) {
       if (mine !== generation) return;
       const base = page.getViewport({ scale: 1 });
       const viewport = page.getViewport({ scale: THUMB_WIDTH / base.width });
-      const ratio = Math.min(globalThis.devicePixelRatio || 1, 2);
+      const ratio = Math.min((globalThis.devicePixelRatio || 1) * density, 3);
       const canvas = document.createElement("canvas");
       canvas.width = Math.max(1, Math.floor(viewport.width * ratio));
       canvas.height = Math.max(1, Math.floor(viewport.height * ratio));
@@ -170,12 +174,22 @@ export function createSidebar({ ongo }) {
     const [x0, y0, x1, y1] = first.view;
     const ratio = `${x1 - x0} / ${y1 - y0}`;
     const list = el("ol");
+    // The old thumbnails stay in place until the new document draws its own,
+    // so a recompile does not blank the panel.
+    const previous = items;
+    const scroll = pagesBody.scrollTop;
     items = [];
     for (let number = 1; number <= doc.numPages; number += 1) {
       const li = el("li");
       const button = el("button", "item", { type: "button", "aria-label": `Page ${number}` });
       const thumb = el("div", "thumb");
       thumb.style.aspectRatio = ratio;
+      const old = previous[number - 1];
+      const stale = old?.thumb.firstElementChild;
+      if (stale) {
+        thumb.style.aspectRatio = old.thumb.style.aspectRatio || ratio;
+        thumb.append(stale);
+      }
       const label = el("div", "num");
       label.textContent = String(number);
       button.dataset.page = String(number);
@@ -186,6 +200,7 @@ export function createSidebar({ ongo }) {
       items.push({ button, thumb, drawn: false });
     }
     pagesBody.replaceChildren(list);
+    pagesBody.scrollTop = scroll;
     if (typeof IntersectionObserver === "function") {
       observer = new IntersectionObserver(
         (entries) => {
@@ -219,19 +234,21 @@ export function createSidebar({ ongo }) {
     if (target && mine === generation) ongo(target);
   }
 
-  function outlineList(entries, depth, mine) {
+  function outlineList(entries, depth, mine, path = "") {
     const list = el("ul");
     for (const entry of entries) {
       const li = el("li");
       const row = el("div", "row");
       const children = Array.isArray(entry.items) ? entry.items : [];
+      const key = `${path}/${entry.title || "Untitled"}`;
       if (children.length > 0) {
-        const collapsed = depth >= 1;
+        const collapsed = collapsedPaths.get(key) ?? depth >= 1;
         const twist = el("button", "twist", { type: "button", "aria-expanded": String(!collapsed), "aria-label": "Toggle section" });
         twist.textContent = collapsed ? "+" : "-";
         if (collapsed) li.dataset.collapsed = "";
         twist.addEventListener("click", () => {
           const closed = li.toggleAttribute("data-collapsed");
+          collapsedPaths.set(key, closed);
           twist.setAttribute("aria-expanded", String(!closed));
           twist.textContent = closed ? "+" : "-";
         });
@@ -244,7 +261,7 @@ export function createSidebar({ ongo }) {
       link.addEventListener("click", () => go(entry, mine));
       row.append(link);
       li.append(row);
-      if (children.length > 0) li.append(outlineList(children, depth + 1, mine));
+      if (children.length > 0) li.append(outlineList(children, depth + 1, mine, key));
       list.append(li);
     }
     return list;
@@ -255,19 +272,30 @@ export function createSidebar({ ongo }) {
     const mine = generation;
     cancelWork();
     doc = next ?? null;
-    items = [];
-    pagesBody.replaceChildren();
-    outlineBody.replaceChildren();
-    outlineTab.hidden = true;
-    showTab("pages");
-    if (!doc || !(doc.numPages >= 1)) return;
+    if (!doc || !(doc.numPages >= 1)) {
+      items = [];
+      pagesBody.replaceChildren();
+      outlineBody.replaceChildren();
+      outlineTab.hidden = true;
+      collapsedPaths.clear();
+      showTab("pages");
+      return;
+    }
+    const wasOutline = outlineTab.getAttribute("aria-selected") === "true";
     try {
       await buildPages(mine);
       if (mine !== generation) return;
       const outline = await doc.getOutline();
-      if (mine !== generation || !Array.isArray(outline) || outline.length === 0) return;
+      if (mine !== generation) return;
+      if (!Array.isArray(outline) || outline.length === 0) {
+        outlineBody.replaceChildren();
+        outlineTab.hidden = true;
+        showTab("pages");
+        return;
+      }
       outlineBody.replaceChildren(outlineList(outline, 0, mine));
       outlineTab.hidden = false;
+      showTab(wasOutline ? "outline" : "pages");
     } catch {
       // The document went away while the sidebar was reading it.
     }
@@ -282,6 +310,9 @@ export function createSidebar({ ongo }) {
       if (open) keepInView();
     },
     setDocument,
+    setDensity(zoom) {
+      if (Number.isFinite(zoom) && zoom > 0) density = zoom;
+    },
     setCurrent(page) {
       current = Number.isInteger(page) ? page : 0;
       markCurrent();

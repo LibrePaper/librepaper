@@ -30,6 +30,7 @@ let sidebarOpen = false;
 let spread = false;
 let invert = false;
 let presenting = false;
+let density = 1; // the host's page zoom, which WebKit leaves out of devicePixelRatio
 let saved = null; // what presentation took over, put back when it ends
 let findQuery = "";
 let findState = null;
@@ -132,8 +133,14 @@ function waiting(title, detail = "") {
   find.clear();
   void sidebar.setDocument(null);
   retire(null);
+  // The host ends its fullscreen on its own; what presentation took over is
+  // put back so the next document does not open in page-fit.
+  if (presenting) {
+    presenting = false;
+    if (saved) ({ mode: scaleMode, spread, sidebarOpen } = saved);
+    saved = null;
+  }
   applyChrome();
-  if (presenting) document.exitFullscreen?.().catch(() => {});
   report();
 }
 
@@ -261,7 +268,7 @@ async function paint(bytes) {
     if (mine !== paintGeneration) return;
     applyChrome();
     const result = await viewer.render(keep.slice(), ready(), {
-      mode: scaleMode, spread, sidebarWidth: sidebarOffset(), presenting, ongo: go,
+      mode: scaleMode, spread, sidebarWidth: sidebarOffset(), presenting, density, ongo: go,
       beforeswap: () => forcedAnchor ?? captureAnchor(sidebarOffset(), 0),
       afterswap: settle,
     });
@@ -490,12 +497,14 @@ installInput({
   isPresenting: () => presenting,
 });
 
-// Presentation is the browser's fullscreen: entering it draws the current
-// page to fit the screen, alone, and leaving puts back what the reader had.
-// The state changes on the event, not on the request, so Escape and the
-// browser's own exit take the same road as the host's.
-document.addEventListener("fullscreenchange", () => {
-  const on = Boolean(document.fullscreenElement);
+// Presentation is the host's fullscreen: a postMessage carries no user
+// activation, so the frame cannot ask for it. The host fullscreens its iframe
+// on the click and says here when it enters and leaves (Escape included).
+// Entering draws the current page to fit the screen, alone, and leaving puts
+// back what the reader had. The host's fullscreen also resizes the frame; the
+// resize handler compares against the size `paint` recorded, so it finds
+// nothing left to do once this redraw has started.
+function setPresenting(on) {
   if (on === presenting) return;
   const page = currentPage;
   if (on) {
@@ -513,7 +522,7 @@ document.addEventListener("fullscreenchange", () => {
   forcedAnchor = page ? pageTopAnchor(page) : null;
   report();
   redraw();
-});
+}
 
 // Report scroll position changes so the Reader can hide its top bar on
 // phones when the user scrolls down and reveal it when they scroll up. The
@@ -640,14 +649,18 @@ addEventListener("message", async (event) => {
     return;
   }
   if (message.type === "viewer-present") {
-    if (!drawn || presenting) return;
-    // Refused without a user gesture or by an embedder that disallows it; the
-    // state then simply stays as it was.
-    try {
-      await document.documentElement.requestFullscreen?.();
-    } catch {
-      /* not presenting */
-    }
+    if (typeof message.on !== "boolean" || message.on === presenting) return;
+    if (message.on && !drawn) return;
+    setPresenting(message.on);
+    return;
+  }
+  if (message.type === "viewer-density") {
+    const zoom = message.zoom;
+    if (typeof zoom !== "number" || !Number.isFinite(zoom) || zoom < 0.5 || zoom > 3) return;
+    if (zoom === density) return;
+    density = zoom;
+    sidebar.setDensity(zoom);
+    redraw();
     return;
   }
   // A frame that has just loaded says nothing until it is asked: the header
