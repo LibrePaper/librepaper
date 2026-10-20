@@ -25,12 +25,12 @@
         differ and this frame cannot read the reader's storage or CSS, and
         viewer.js sets `data-mode` on this element to pin it.
       */
-      html { background: #f6f6f4; color-scheme: light; --note: #5d666a; --note-title: #1a2225; }
+      html { background: #f6f6f4; color-scheme: light; --note: #5d666a; --note-title: #1a2225; --lp-sidebar-bg: #f6f6f4; --lp-sidebar-border: #dcdcd6; --lp-sidebar-text: #1a2225; --lp-sidebar-muted: #5d666a; --lp-sidebar-active: #2563c9; --lp-thumb-filter: none; }
       @media (prefers-color-scheme: dark) {
-        html { background: #202221; color-scheme: dark; --note: #a2a8a3; --note-title: #eceeed; }
+        html { background: #202221; color-scheme: dark; --note: #a2a8a3; --note-title: #eceeed; --lp-sidebar-bg: #202221; --lp-sidebar-border: #343836; --lp-sidebar-text: #eceeed; --lp-sidebar-muted: #a2a8a3; --lp-sidebar-active: #6ea2f5; --lp-thumb-filter: none; }
       }
-      html[data-mode="light"] { background: #f6f6f4; color-scheme: light; --note: #5d666a; --note-title: #1a2225; }
-      html[data-mode="dark"] { background: #202221; color-scheme: dark; --note: #a2a8a3; --note-title: #eceeed; }
+      html[data-mode="light"] { background: #f6f6f4; color-scheme: light; --note: #5d666a; --note-title: #1a2225; --lp-sidebar-bg: #f6f6f4; --lp-sidebar-border: #dcdcd6; --lp-sidebar-text: #1a2225; --lp-sidebar-muted: #5d666a; --lp-sidebar-active: #2563c9; --lp-thumb-filter: none; }
+      html[data-mode="dark"] { background: #202221; color-scheme: dark; --note: #a2a8a3; --note-title: #eceeed; --lp-sidebar-bg: #202221; --lp-sidebar-border: #343836; --lp-sidebar-text: #eceeed; --lp-sidebar-muted: #a2a8a3; --lp-sidebar-active: #6ea2f5; --lp-thumb-filter: none; }
       html { /* A pinch zooms the PDF in viewer.js, not the whole frame. */
              touch-action: pan-x pan-y; }
       body { margin: 0; }
@@ -46,10 +46,56 @@
               font: 0.875rem/1.5 system-ui, -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; }
       .note p { margin: 0 0 0.5rem; }
       .note .note-title { color: var(--note-title); font-size: 1rem; font-weight: 600; }
-      main { display: flex; flex-direction: column; align-items: center; gap: 24px; padding: 24px 16px 48px; }
+      /*
+        The sidebar is fixed on the left and lives in its own shadow root, so
+        the page column is shifted right by its width: --lp-sidebar-offset is
+        set by viewer.js, and the scale was fitted to what is left.
+      */
+      main { display: flex; flex-direction: column; align-items: center; gap: 24px; padding: 24px 16px 48px;
+             margin-left: var(--lp-sidebar-offset, 0px); }
       main > .pages { align-self: safe center; display: flex; flex-direction: column; gap: 24px; }
+      /*
+        Two pages to a row, as a book opens: the first page sits alone on the
+        right, then 2|3, 4|5. Rows start at the same height so the page under
+        a point can be told by its top edge.
+      */
+      main > .pages.spread { display: grid; grid-template-columns: repeat(2, max-content); justify-content: center;
+                             align-items: start; }
+      .pages.spread > .page:nth-child(odd) { grid-column: 2; justify-self: start; }
+      .pages.spread > .page:nth-child(even) { grid-column: 1; justify-self: end; }
       .page { position: relative; background: #fff; box-shadow: 0 1px 5px rgb(24 31 28 / 0.14); overflow: hidden; }
       .page canvas { display: block; }
+      /*
+        Presentation: black ground, one page to a screen, each snapping to the
+        centre. The scale was fitted to the whole screen, so nothing is padded.
+      */
+      html.presenting { background: #000; scroll-snap-type: y mandatory; }
+      html.presenting main { padding: 0; gap: 0; margin-left: 0; }
+      html.presenting main > .pages { gap: 0; }
+      html.presenting .page { box-shadow: none; scroll-snap-align: center; scroll-snap-stop: always; }
+      /*
+        Links sit above the text layer. The layer itself lets every pointer
+        through so text stays selectable; only the anchors catch it.
+      */
+      .linkLayer { position: absolute; inset: 0; z-index: 1; pointer-events: none; }
+      .linkLayer a { position: absolute; display: block; pointer-events: auto; border-radius: 2px; }
+      .linkLayer a:hover { background: rgb(0 100 255 / 0.12); }
+      /* Search matches, painted by the Custom Highlight API so the text layer is never touched. */
+      ::highlight(lp-find) { background-color: rgb(255 214 0 / 0.45); color: inherit; }
+      ::highlight(lp-find-current) { background-color: rgb(255 120 0 / 0.6); color: inherit; }
+      /*
+        Inverted pages for reading in the dark: only while the frame itself is
+        dark, and only the canvas, so the text layer and links stay put. The
+        sidebar is a shadow root and reads --lp-thumb-filter instead.
+      */
+      @media (prefers-color-scheme: dark) {
+        html:not([data-mode="light"])[data-invert] { --lp-thumb-filter: invert(1) hue-rotate(180deg); }
+        html:not([data-mode="light"])[data-invert] .page { background: #1a1c1b; }
+        html:not([data-mode="light"])[data-invert] .page canvas { filter: invert(1) hue-rotate(180deg); }
+      }
+      html[data-mode="dark"][data-invert] { --lp-thumb-filter: invert(1) hue-rotate(180deg); }
+      html[data-mode="dark"][data-invert] .page { background: #1a1c1b; }
+      html[data-mode="dark"][data-invert] .page canvas { filter: invert(1) hue-rotate(180deg); }
       .textLayer {
         position: absolute;
         inset: 0;

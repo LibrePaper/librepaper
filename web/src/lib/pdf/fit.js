@@ -30,11 +30,23 @@ export function scaleFor(width, points) {
   return Math.max(MIN_SCALE, Math.min(SCALE, (width - GUTTER) / points));
 }
 
+// The space `viewer.html` leaves between two pages, in a column or in a spread.
+export const GAP = 24;
+
 // PDF.js percentages use CSS pixels (96 dpi); PDF dimensions use 72 dpi.
-export function viewerScale(mode, width, height, pageWidth, pageHeight) {
+//
+// `pageWidth` and `pageHeight` are those of the widest and the tallest page,
+// so no page of a mixed document overflows. `layout` describes the room:
+// `columns` is 2 for a spread, where the width to fit is two pages and the
+// gap between them; `sidebar` is the width the open sidebar takes off the
+// frame; `bleed` is presentation, where the page may touch the edges of the
+// screen and nothing is reserved for padding.
+export function viewerScale(mode, width, height, pageWidth, pageHeight, layout = {}) {
+  const { columns = 1, sidebar = 0, bleed = false } = layout;
   const actual = 96 / 72;
-  const fitWidth = Math.max(1, width - GUTTER) / pageWidth;
-  const fitHeight = Math.max(1, height - 48) / pageHeight;
+  const room = Math.max(1, width - sidebar - (bleed ? 0 : GUTTER) - GAP * (columns - 1));
+  const fitWidth = room / (pageWidth * columns);
+  const fitHeight = Math.max(1, height - (bleed ? 0 : 48)) / pageHeight;
   if (mode === "page-width") return fitWidth;
   if (mode === "page-fit") return Math.min(fitWidth, fitHeight);
   if (mode === "page-actual") return actual;

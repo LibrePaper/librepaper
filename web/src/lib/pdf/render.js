@@ -16,6 +16,7 @@ import * as pdfjs from "pdfjs-dist";
 import workerUrl from "pdfjs-dist/build/pdf.worker.min.mjs?url";
 import { piecesOf } from "./text.js";
 import { viewerScale } from "./fit.js";
+import { linkLayer } from "./links.js";
 
 pdfjs.GlobalWorkerOptions.workerSrc = workerUrl;
 
@@ -48,7 +49,17 @@ export function locatePoint(page, x, y) {
   if (!element || !renderScale) return false;
   const rect = element.getBoundingClientRect();
   scrollTo({ top: scrollY + rect.top + Number(y) * renderScale - innerHeight / 3, behavior: "smooth" });
+  // The marker is drawn at the point's place in the document, not on screen,
+  // because the scroll above is still moving when this runs. It is the
+  // overlay's to draw: the page DOM must not change once it is swapped in.
+  marker?.(scrollX + rect.left + Number(x) * renderScale, scrollY + rect.top + Number(y) * renderScale);
   return true;
+}
+
+let marker = null;
+/// Where `locatePoint` draws its marker: `draw(documentX, documentY)`.
+export function setMarker(draw) {
+  marker = typeof draw === "function" ? draw : null;
 }
 
 let generation = 0;
@@ -62,13 +73,10 @@ function documentWorker() {
   return pdfWorker;
 }
 
-/// Open `bytes` as a pdf.js document, run `fn` against it, and release the
-/// document afterward. `fn` receives the resolved document and its
-/// result becomes this function's result; whatever `fn` throws or returns
-/// early propagates the same way, since the teardown lives in `finally` and
-/// runs on every path.
-async function withDocument(bytes, fn) {
-  const loading = pdfjs.getDocument({
+const loadings = new WeakMap();
+
+function startLoading(bytes) {
+  return pdfjs.getDocument({
     worker: documentWorker(),
     data: bytes instanceof Uint8Array ? bytes : new Uint8Array(bytes),
     // No fetching of anything, from anywhere, at draw time. A PDF that names
@@ -78,24 +86,46 @@ async function withDocument(bytes, fn) {
     isEvalSupported: false,
     disableFontFace: false,
   });
+}
+
+async function closeDocument(document_, loading) {
+  // Release document resources on success, failure, and generation
+  // cancellation. An explicitly supplied worker survives task destruction
+  // and can also serve concurrent text extraction or a newer preview.
+  try {
+    await document_?.destroy();
+  } catch {
+    /* cleanup must not mask the render result */
+  }
+  try {
+    await loading.destroy();
+  } catch {
+    /* the document destroy above is sufficient on older pdf.js versions */
+  }
+}
+
+/// Release a document `render` handed out. The caller does this once the
+/// next document is drawn and the sidebar has moved on to it, so the
+/// thumbnails and the outline never read from a destroyed document.
+export async function discard(document_) {
+  const loading = loadings.get(document_);
+  loadings.delete(document_);
+  if (loading) await closeDocument(document_, loading);
+}
+
+/// Open `bytes` as a pdf.js document, run `fn` against it, and release the
+/// document afterward. `fn` receives the resolved document and its
+/// result becomes this function's result; whatever `fn` throws or returns
+/// early propagates the same way, since the teardown lives in `finally` and
+/// runs on every path.
+async function withDocument(bytes, fn) {
+  const loading = startLoading(bytes);
   let document_ = null;
   try {
     document_ = await loading.promise;
     return await fn(document_);
   } finally {
-    // Release document resources on success, failure, and generation
-    // cancellation. An explicitly supplied worker survives task destruction
-    // and can also serve concurrent text extraction or a newer preview.
-    try {
-      await document_?.destroy();
-    } catch {
-      /* cleanup must not mask the render result */
-    }
-    try {
-      await loading.destroy();
-    } catch {
-      /* the document destroy above is sufficient on older pdf.js versions */
-    }
+    await closeDocument(document_, loading);
   }
 }
 
@@ -105,37 +135,61 @@ async function withDocument(bytes, fn) {
 /// call again while the last one is still rendering: `generation` is the
 /// token that lets a superseded run drop its pages on the floor instead of
 /// appending them under the new document's.
-export async function render(bytes, root, mode = "auto") {
+///
+/// `options` is `{ mode, spread, sidebarWidth, presenting, ongo, beforeswap,
+/// afterswap }`. The result is `null` when a newer render won, otherwise
+/// `{ pages, document, sizes }` with the page sizes in PDF points. The
+/// document is left open for the sidebar; `discard` releases it. A superseded
+/// or failed render releases its own.
+///
+/// `beforeswap()` runs just before the single swap and returns whatever the
+/// caller needs to keep the reading position; `afterswap` gets it back
+/// straight after, in the same task, so no frame is painted between.
+export async function render(bytes, root, options = {}) {
+  const { mode = "auto", spread = false, sidebarWidth = 0, presenting = false, ongo = () => {},
+    beforeswap = null, afterswap = null } = options;
   const mine = ++generation;
-  return withDocument(bytes, async (document_) => {
-    if (mine !== generation) return 0;
+  const loading = startLoading(bytes);
+  let document_ = null;
+  let handedOn = false;
+  try {
+    document_ = await loading.promise;
+    if (mine !== generation) return null;
 
     // Everything is built off-document and swapped in at the end. Painting page
     // by page into the live body would have the agent's observer republish a
     // half-drawn document once per page, and the sidebar re-anchor every
     // comment against text that is about to grow.
     const staging = document.createElement("div");
-    staging.className = "pages";
+    staging.className = spread ? "pages spread" : "pages";
     const starts = [];
     let offset = 0;
 
-    // Every page is drawn at one scale, chosen from the first page's width:
-    // a document whose pages disagree about their size is still one column of
-    // pages, and rescaling halfway down it would read as a mistake.
-    const first = await document_.getPage(1);
-    if (mine !== generation) return 0;
-    const size = first.getViewport({ scale: 1 });
+    // Every page is drawn at one scale, chosen from the widest page: a
+    // document whose pages disagree about their size is still one column of
+    // pages, and rescaling halfway down it would read as a mistake, but a
+    // later page wider than the first must not be the one that overflows.
+    const sizes = [];
+    for (let number = 1; number <= document_.numPages; number++) {
+      const probe = await document_.getPage(number);
+      if (mine !== generation) return null;
+      const size = probe.getViewport({ scale: 1 });
+      sizes.push({ width: size.width, height: size.height });
+      probe.cleanup();
+    }
+    const widest = Math.max(1, ...sizes.map((size) => size.width));
+    const tallest = Math.max(1, ...sizes.map((size) => size.height));
     // The frame is all page now: the controls moved out to the preview
     // header, so nothing is subtracted for a bar inside it.
     const scale = viewerScale(mode, document.documentElement.clientWidth,
-      document.documentElement.clientHeight, size.width, size.height);
+      document.documentElement.clientHeight, widest, tallest,
+      { columns: spread ? 2 : 1, sidebar: sidebarWidth, bleed: presenting });
     renderScale = scale;
     staging.dataset.scale = String(scale / (96 / 72));
-    first.cleanup();
 
     for (let number = 1; number <= document_.numPages; number++) {
       const page = await document_.getPage(number);
-      if (mine !== generation) return 0;
+      if (mine !== generation) return null;
       const viewport = page.getViewport({ scale });
 
       const frame = document.createElement("div");
@@ -169,12 +223,12 @@ export async function render(bytes, root, mode = "auto") {
         viewport,
         transform: ratio === 1 ? null : [ratio, 0, 0, ratio, 0, 0],
       }).promise;
-      if (mine !== generation) return 0;
+      if (mine !== generation) return null;
 
       const content = await page.getTextContent();
       const text = new pdfjs.TextLayer({ textContentSource: content, container: layer, viewport });
       await text.render();
-      if (mine !== generation) return 0;
+      if (mine !== generation) return null;
 
       starts.push(offset);
       rewrite(text.textDivs, content.items, number > 1);
@@ -183,13 +237,30 @@ export async function render(bytes, root, mode = "auto") {
       // can actually walk, so page offsets must use that DOM length rather
       // than the theoretical content-item total returned by rewrite().
       offset += frame.textContent.length;
+
+      // The links come after the offset is taken, so that nothing they hold
+      // could ever count as text. A page whose annotations cannot be read is
+      // still a page worth showing.
+      try {
+        const links = await linkLayer(page, viewport, document_, ongo);
+        if (mine !== generation) return null;
+        frame.append(links);
+      } catch {
+        if (mine !== generation) return null;
+      }
       page.cleanup();
     }
 
+    const anchor = beforeswap?.();
     root.replaceChildren(staging);
     pageStarts = starts;
-    return document_.numPages;
-  });
+    afterswap?.(anchor);
+    loadings.set(document_, loading);
+    handedOn = true;
+    return { pages: document_.numPages, document: document_, sizes };
+  } finally {
+    if (!handedOn) await closeDocument(document_, loading);
+  }
 }
 
 /// Extract the same normalized visible text the viewer publishes, without
