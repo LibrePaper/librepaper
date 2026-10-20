@@ -82,11 +82,13 @@ assert.equal(compiled.ok, true, JSON.stringify(compiled.diagnostics));
 const PDFs = { features: compiled.bytes };
 
 const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
-const PORT = 8800 + Math.floor(Math.random() * 200);
-const DEBUG_PORT = 9800 + Math.floor(Math.random() * 200);
+// The page server takes whatever port the system hands it, and the DevTools
+// port sits in a range no other browser test uses, so this file can run
+// beside typst-viewer.mjs and latex-browser.mjs under `--test-concurrency`.
+const DEBUG_PORT = 24000 + Math.floor(Math.random() * 1000);
 let chrome = null;
 let profile = null;
-const BASE = `http://localhost:${PORT}`;
+let BASE = "http://localhost";
 const TYPES = {
   ".html": "text/html; charset=utf-8",
   ".js": "text/javascript; charset=utf-8",
@@ -544,7 +546,8 @@ async function run() {
   await until(tab, "window.state().presenting === false");
 }
 
-server.listen(PORT);
+await new Promise((resolve) => server.listen(0, "localhost", resolve));
+BASE = `http://localhost:${server.address().port}`;
 try {
   await run();
 } catch (error) {
