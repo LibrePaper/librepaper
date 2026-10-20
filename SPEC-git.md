@@ -1,11 +1,13 @@
 # SPEC: LibrePaper as a git remote
 
-Status: proposed 2026-10-14, revised 2026-10-18, not started. This replaces
-the earlier project-folder sync design in full. The 2026-10-18 revision
-moves the helper from the retired companion to the `librepaper` command
-that every desktop app package installs, signs in with `librepaper login`
-instead of a new git grant, and replaces the three-way push check with a
-strict per-file hash check.
+Status: proposed 2026-10-14, revised 2026-10-18 and 2026-10-20, not
+started. This replaces the earlier project-folder sync design in full. The
+2026-10-18 revision moves the helper from the retired companion to the
+`librepaper` command that every desktop app package installs, signs in with
+`librepaper login` instead of a new git grant, and replaces the three-way
+push check with a strict per-file hash check. The 2026-10-20 revision drops
+the committed `.librepaper` and `.librepaperignore` files. The remote URL
+names the project, and the local-only list lives under `.git/`.
 
 ## Summary
 
@@ -87,25 +89,23 @@ git pull librepaper main
   prints a URL and a code, waits for approval in the browser, stores the
   token and continues the git command. See "Credentials".
 - **Short URLs.** `librepaper::<slug>` means the project `<slug>` on the
-  site named in `.librepaper`, or else the only site the user is signed in
-  to. The full form `librepaper::https://librepaper.org/p/<slug>` names the
-  site explicitly. Both forms work everywhere a remote URL is accepted.
-- **The `.librepaper` file.** Connecting writes a `.librepaper` file at the
-  repository root that names the project. It is committed like any other
-  file. A coauthor who clones the repository from GitHub runs one command
-  with no arguments:
+  only site the user is signed in to. The full form
+  `librepaper::https://librepaper.org/p/<slug>` names the site explicitly.
+  Both forms work everywhere a remote URL is accepted. Once the remote is
+  added, git keeps its URL in `.git/config`, so the repository needs no
+  other record of the project.
+- **Coauthors on GitHub.** A coauthor who clones the repository from GitHub
+  links it with one command, copied from the "Use with git" panel:
 
   ```sh
-  librepaper git link    # reads .librepaper, adds the remote, joins the histories
+  librepaper git link <slug>    # adds the remote, joins the histories
   ```
 
-  When the helper or `librepaper` runs in a repository that has a
-  `.librepaper` file but no `librepaper` remote, it prints that command as a
-  hint.
+  The repository commits no file that names the project. A README line is
+  enough when the authors want one.
 - **The helper commands.** `librepaper git clone <slug|url> [dir]` and
-  `librepaper git link [<slug|url>]` wrap the git commands above. They also
-  write `.librepaper`. `link` also joins an existing history, see
-  "`librepaper git link` in detail".
+  `librepaper git link <slug|url>` wrap the git commands above. `link` also
+  joins an existing history, see "`librepaper git link` in detail".
 - **The "Use with git" panel.** The project menu shows the commands above
   with the slug filled in.
 
@@ -207,32 +207,18 @@ The helper never updates itself. It updates with the desktop app:
 
 The helper detects the method from its own install path.
 
-## The `.librepaper` file
-
-```toml
-# Written by librepaper. Names the LibrePaper project this repository syncs with.
-site = "https://librepaper.org"
-project = "<slug>"
-```
-
-- It holds no secret, so committing it is safe.
-- It is local-only: it is never uploaded into the project.
-- `site` lets `librepaper::<slug>` resolve correctly for a coauthor who is
-  signed in to more than one site.
-- A repository with two LibrePaper remotes keeps the first one in the file.
-  The second remote works, but `link` with no argument uses the file.
-
 ## Remote URL forms
 
 | Form | Meaning |
 |---|---|
-| `librepaper::<slug>` | Project `<slug>` on the site named in `.librepaper`, or else the only site with a stored token |
+| `librepaper::<slug>` | Project `<slug>` on the only site with a stored token |
 | `librepaper::https://<site>/p/<slug>` | Project `<slug>` on `<site>` |
 
 When the short form is ambiguous because the user is signed in to several
-sites and no `.librepaper` names one, the helper refuses and lists the full
-URLs to choose from. When the user is signed in nowhere, the helper uses
-the default server, as `librepaper login` does.
+sites, the helper refuses and lists the full URLs to choose from. When the
+user is signed in nowhere, the helper uses the default server, as
+`librepaper login` does. The remote URL is the only record of the project.
+No file in the repository names it.
 
 ## Base: the state kept by the helper
 
@@ -251,8 +237,13 @@ ordinary commit in the user's repository, and git never sends it anywhere.
     `null` when unknown;
   - `marks`, the path of the fast-import and fast-export marks file.
 
+- `.git/librepaper/<remote>/local-only` lists the local-only paths, see
+  "Local-only paths".
+
 Losing `state.json` loses nothing that matters. The helper rebuilds it from
-the ref and learns the digest on the next fetch.
+the ref and learns the digest on the next fetch. Losing `local-only` loses
+the user's choices, and the helper then treats every path as a project
+path.
 
 ### When it moves
 
@@ -291,6 +282,25 @@ Binary files are read from `GET /api/documents/{slug}/assets/{sha}`, which
 records do not change it, so adding a comment never makes a fetch write a
 commit or a push refuse.
 
+### Pending tracked changes are not fetched
+
+Tracked changes live in the document (`changes` root records), so a file
+with pending suggestions holds more than one plausible text. Fetch writes
+the text without them: suggested insertions are left out and suggested
+deletions are kept. Suggestions stay in LibrePaper, to be accepted or
+rejected there.
+
+- The git routes read, hash and digest this suggestion-free projection.
+  `texts`, `project_digest` and the per-file dependency hashes all use it,
+  so a new suggestion never makes a fetch write a commit or a push refuse.
+- A push's patch offsets are offsets in that projection. The server maps
+  them onto the document text, stepping over suggested insertions.
+- A patch that overlaps or touches a pending suggestion refuses, naming the
+  file and the suggestion. Suggestions elsewhere in the file are left
+  alone.
+- Accepting a suggestion in LibrePaper changes the projection, so the next
+  fetch carries it as an ordinary edit.
+
 ### Steps
 
 1. Read `state.json`. If the server's `project_digest` equals the recorded
@@ -314,12 +324,18 @@ A git repository often holds files the project should not, such as a
 Makefile, data or CI configuration. Fetch must not delete them, and push
 must not upload them.
 
-- `.librepaperignore` at the repository root uses gitignore syntax.
-- These paths are always local-only: `.git/`, `.gitignore`,
-  `.gitattributes`, `.librepaper`, `.librepaperignore`, `.github/`, and
-  `*.local`.
+- The list lives in `.git/librepaper/<remote>/local-only`, in gitignore
+  syntax. It is never committed, so each clone keeps its own.
+- `librepaper git link` writes it from the answers to its per-path
+  question. A user who later adds a local-only file edits the list by hand.
+- These paths are always local-only and need no entry: `.git/`,
+  `.gitignore`, `.gitattributes`, `.github/`, and `*.local`.
 - Fetch carries local-only paths over from base unchanged.
 - Push skips them.
+
+The list cannot be inferred from the trees. A path in base that is missing
+from the project could be local-only or could have been deleted in
+LibrePaper, and only the list tells them apart.
 
 ### Line endings
 
@@ -392,10 +408,12 @@ always `git pull`.
 | A path is a symlink or a submodule | helper | path |
 | A touched file changed in LibrePaper since base | server | every such file |
 | A created path already exists in LibrePaper | server | path |
+| A patch overlaps or touches a pending suggestion | server | file and suggestion |
 | A path fails the server's path rules (`validate_path` in `agent.rs`) | server | path |
 | A file is larger than the project's per-file limit | server | file and limit |
 | The push exceeds the account's storage quota | server | quota |
-| The push exceeds the git patch limits | server | the limit |
+| The push is larger than one update may be | server | the log quota |
+| The memory budget cannot hold the request | server | "busy, push again later" |
 | The user is not an editor | server | role |
 | The token is refused | server | `librepaper login` |
 | The helper is too old | server | the update command |
@@ -463,10 +481,11 @@ that both call, and both gain from every improvement to it.
    | Origin | `automation` | Recorded source | Patch limits |
    |---|---|---|---|
    | `Agent` | true | `agent` | 100 patches, 256 KiB (today's values) |
-   | `Git` | false | `git` | 5,000 patches, 8 MiB |
+   | `Git` | false | `git` | none of its own, see "Push size" |
 
-   The limits move from the constants `MAX_PATCHES` and `MAX_PATCH_BYTES`
-   into the origin, so each caller keeps its own bound. The recorded
+   The agent limits move from the constants `MAX_PATCHES` and
+   `MAX_PATCH_BYTES` into the origin. They keep a model's edits small and
+   reviewable, and do not protect the server. The recorded
    source drives the editor notice ("pushed from git") and the activity
    record. Like the operation scope, `Origin` is kept out of the request
    digest, so it cannot alter a retry's identity.
@@ -523,6 +542,29 @@ same id after a dropped connection, and maps refusals to messages. The
 helper reuses it. A retry after a dropped connection resends the same
 operation id, so it can never apply twice.
 
+### Push size
+
+A git push has no patch or byte limit of its own. The deployment's
+existing bounds already cover it, and a fixed git size would be the kind of
+per-document constant the 2026-09-23 cost cutover removed.
+
+- **One update.** The applied change is one update, and one update may be
+  as large as the document's log quota (`max_update_bytes` in
+  `crates/librepaper-base/src/config/budget.rs`, 32 MiB by default). A
+  larger push refuses and names the quota.
+- **Memory.** The request body reserves four times its declared length from
+  the memory budget, as every mutation does. When that does not fit, the
+  route answers `busy` and the helper says to push again later.
+- **Storage.** The owner's storage quota applies as it does to typing.
+- **All or nothing.** A push is never split into several mutations to fit,
+  because that would break the all-or-nothing apply.
+
+Real pushes are far below these bounds. A thesis is one or two MiB of
+source, and figures arrive through the asset route, outside the log. A
+2 MiB document rebuilds in about 8 ms since the `import_batch` fix.
+Validating thousands of byte-range patches is cheap, and their bytes are
+already counted.
+
 ## Known limits
 
 - **Any edit to a touched file refuses the push.** A coauthor who changed
@@ -543,22 +585,6 @@ operation id, so it can never apply twice.
   project the account can edit, as it already can through `librepaper
   agent`.
 
-## Open questions
-
-These need answers before the step that depends on them.
-
-- **Pending tracked changes in fetched text (before step 2).** Since
-  tracked changes live in the document (`changes` root records), a file
-  with pending suggestions has more than one plausible text: without the
-  suggestions, with all of them accepted, or the raw document text. Fetch
-  must pick one, and push must say what happens to a patch that edits
-  inside a suggested insertion or deletion. The likely answer is: fetch
-  writes the text without pending suggestions, and push refuses a patch
-  that overlaps a pending suggestion, naming it.
-- **Large first pushes (before step 4).** `librepaper git link` on an
-  existing repository can push a whole thesis at once. Measure an 8 MiB,
-  5,000-patch push against the per-document log quota and the compaction
-  cost on a real `admin serve` before fixing the git limits.
 
 ## Build order
 
@@ -566,6 +592,8 @@ Each step can be merged and shipped on its own.
 
 1. **Server: read.**
    - `/api/documents/{slug}/project` accepts the login token as a bearer;
+   - the git projection without pending suggestions, its digest and file
+     hashes;
    - check that the asset route does too, as `librepaper export` relies on.
 2. **Helper: fetch.**
    - `git-remote-librepaper` installed by every package that installs
@@ -573,13 +601,13 @@ Each step can be merged and shipped on its own.
    - remote-helper protocol with `import`;
    - base state, local-only paths, line endings, file modes;
    - both remote URL forms, and sign-in on first use;
-   - `librepaper git clone` and `librepaper git link`, the `.librepaper`
-     file, and the hint when a repository has the file but no remote.
+   - `librepaper git clone` and `librepaper git link`, and the local-only
+     list under `.git/librepaper/`.
    At this point clone, pull and backup to GitHub work.
 3. **Server: shared source-change core.**
    - rename the agent apply path to `SourceChange` and move it to
      `room/source_change.rs`, with no behavior change for agents;
-   - file operations, `Origin` with per-origin limits and the recorded
+   - file operations, `Origin` with the agent limits and the recorded
      source, `base_matched`;
    - tracked changes accept a `SourceChange`;
    - the thin push route and the version handshake.
@@ -598,21 +626,16 @@ Linking joins an existing repository's history to the project without an
 "unrelated histories" error.
 
 1. Refuse if the working tree has uncommitted changes.
-2. Find the project. Use the argument when one is given. Otherwise read
-   `.librepaper`. Refuse with "Name the project:
-   `librepaper git link <slug>`" when neither exists.
-3. Add the `librepaper` remote. Sign in first if there is no token for the
-   site.
-4. Write `.librepaper` if it is missing, and commit it alone with the
-   message `Connect to LibrePaper project <slug>`.
-5. Download the project. List the paths that exist in `HEAD` but not in the
+2. Add the `librepaper` remote for the project named by the argument. Sign
+   in first if there is no token for the site.
+3. Download the project. List the paths that exist in `HEAD` but not in the
    project and are not already local-only. Ask once per path, or once for
-   all of them, whether to add it to `.librepaperignore` (kept local) or
+   all of them, whether to add it to the local-only list (kept local) or
    upload it (pushed on the next push).
-6. Write the first LibrePaper commit with `HEAD` as its parent, so the two
+4. Write the first LibrePaper commit with `HEAD` as its parent, so the two
    histories are related from the start. Its tree is the project's files
    plus the local-only paths from `HEAD`. It becomes base.
-7. Print a diffstat of `HEAD` against that commit and say: "Run `git merge
+5. Print a diffstat of `HEAD` against that commit and say: "Run `git merge
    librepaper/main` to take LibrePaper's version. To keep your local
    version instead, merge, then `git revert` the LibrePaper commit and
    push."
@@ -631,10 +654,15 @@ Server, in the gated Postgres suite:
 - `base_matched` is true only when the whole project equaled base;
 - a creation over an existing path refuses, and a binary replacement
   refuses when the current asset is not the expected one;
-- the git route's limits are enforced, and the agent limits are unchanged;
+- a git push larger than the agent limits applies, the agent limits are
+  unchanged, and a push larger than the log quota refuses;
 - a replayed operation key returns the first receipt;
 - the stored mutation has `automation: false` and `source: "git"`;
-- adding a comment does not change `project_digest`.
+- adding a comment does not change `project_digest`;
+- fetched text leaves out pending suggestions, and a new suggestion does
+  not change `project_digest`;
+- a patch next to a suggestion lands at the right offset, and a patch
+  that overlaps or touches one refuses and names it.
 
 Helper, unit tests with a temporary repository:
 
@@ -648,10 +676,10 @@ Helper, unit tests with a temporary repository:
 - base moves on fetch and on an applied push, and not on a refusal;
 - losing `state.json` is recovered from the ref;
 - link joins histories, so the first `git merge` is not "unrelated";
-- link with no argument reads `.librepaper`, and the hint appears when
-  the file exists without a remote;
-- the short URL resolves from `.librepaper`, from a single signed-in site,
-  and refuses when ambiguous.
+- link writes the local-only list from its answers, and nothing it writes
+  is committed;
+- the short URL resolves from a single signed-in site, and refuses when
+  ambiguous.
 
 End to end, against a real `admin serve` (see the Node full-deployment
 tests):
@@ -662,7 +690,10 @@ tests):
   `paper.qmd`, then `git pull` merges (with conflict markers when the
   lines overlap), and the next push applies;
 - a comment anchored on untouched text keeps its anchor through a push;
-- a binary figure push replaces the figure in the editor.
+- a binary figure push replaces the figure in the editor;
+- with the default quota, `librepaper git link` then a push of a
+  thesis-sized repository applies, and a push over the quota refuses with
+  the quota message and leaves the project unchanged.
 
 ## Rejected designs
 
