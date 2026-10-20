@@ -90,6 +90,21 @@ function overflowsSideways() {
   return root.scrollWidth > root.clientWidth + 1;
 }
 
+// Whether the wheel is over something that scrolls on its own, such as the
+// sidebar's list. `composedPath` crosses the shadow boundary. The walk stops
+// at the body, because the document is the scroller the axis lock is for.
+function overScroller(event) {
+  for (const node of event.composedPath()) {
+    if (node === document.body || node === document.documentElement) break;
+    if (!(node instanceof Element)) continue;
+    const style = getComputedStyle(node);
+    const y = (style.overflowY === "auto" || style.overflowY === "scroll") && node.scrollHeight > node.clientHeight;
+    const x = (style.overflowX === "auto" || style.overflowX === "scroll") && node.scrollWidth > node.clientWidth;
+    if (x || y) return true;
+  }
+  return false;
+}
+
 /// Install the frame's wheel and key handling. Returns `{ dispose }`.
 export function installInput({ zoomStep, zoomReset, pageStep, pageEdge, onfind, isPresenting }) {
   const lock = createAxisLock();
@@ -101,7 +116,7 @@ export function installInput({ zoomStep, zoomReset, pageStep, pageEdge, onfind, 
     const dx = normalizeDelta(event.deltaX, event.deltaMode, window.innerWidth);
     const dy = normalizeDelta(event.deltaY, event.deltaMode, window.innerHeight);
     const axis = lock.next(event.timeStamp, dx, dy);
-    if (!axis || !overflowsSideways()) return;
+    if (!axis || !overflowsSideways() || overScroller(event)) return;
     // Only the off-axis part is taken away. A swipe that is vertical with a
     // little sideways drift would otherwise wobble the page left and right.
     if (axis === "y" && dx !== 0) {

@@ -357,6 +357,55 @@ async function run() {
   check("all five matches are highlighted without touching the DOM", highlighted.all === 5 && highlighted.current === 1, JSON.stringify(highlighted));
   check("an empty query clears the search and its highlights", cleared && !gone.all && !gone.current, JSON.stringify(gone));
 
+  // 6b. Painting a comment over a match must not collapse the search highlights.
+  await tab.eval("window.ask({ type: 'viewer-find', query: 'zebrafish', step: 0 })");
+  await until(tab, "window.state().find && window.state().find.total === 5");
+  await tab.eval(`
+    const at = window.text().indexOf('zebrafish');
+    window.win().postMessage({ librepaper: true, type: 'highlight',
+      ranges: [{ id: 'over-find', start: at + 3, end: at + 20, motivation: 'highlighting' }] }, '*');
+  `);
+  await until(tab, "window.doc().querySelector('mark[data-librepaper]')");
+  await wait(500);
+  const survived = await tab.eval(`
+    const set = window.win().CSS.highlights.get('lp-find');
+    const ranges = set ? [...set] : [];
+    return { size: ranges.length, collapsed: ranges.filter((range) => range.collapsed).length,
+      texts: ranges.map((range) => range.toString().toLowerCase()) };
+  `);
+  check("painting a comment over a match leaves all five search highlights intact",
+    survived.size === 5 && survived.collapsed === 0 && survived.texts.every((text) => text === "zebrafish"), JSON.stringify(survived));
+  await tab.eval("window.win().postMessage({ librepaper: true, type: 'highlight', ranges: [] }, '*')");
+  await tab.eval("window.ask({ type: 'viewer-find', query: '', step: 0 })");
+  await until(tab, "window.state().find === null");
+
+  // 6c. A diagonal wheel over the sidebar scrolls its list, not the window.
+  await tab.eval("window.ask({ type: 'viewer-scale', mode: '3' })");
+  await until(tab, "window.state().scale && window.state().mode === '3'");
+  await tab.eval("window.ask({ type: 'viewer-sidebar', open: true })");
+  await until(tab, "window.state().sidebar === true && window.side() && window.side().host.hasAttribute('open')");
+  await wait(1500);
+  const lockBefore = await tab.eval(`
+    const root = window.doc().documentElement;
+    const list = window.side().root.querySelector('.body.pages');
+    return { overflows: root.scrollWidth > root.clientWidth + 1, scrollable: list.scrollHeight > list.clientHeight,
+      scrollY: window.win().scrollY, top: list.scrollTop };
+  `);
+  await mouse("mouseWheel", 100, 400, { deltaX: 20, deltaY: 200 });
+  await wait(500);
+  const lockAfter = await tab.eval(`
+    const list = window.side().root.querySelector('.body.pages');
+    return { scrollY: window.win().scrollY, top: list.scrollTop };
+  `);
+  check("a diagonal wheel over the sidebar scrolls its list and leaves the window alone",
+    lockBefore.overflows && lockBefore.scrollable && lockAfter.top > lockBefore.top && lockAfter.scrollY === lockBefore.scrollY,
+    JSON.stringify({ lockBefore, lockAfter }));
+  await tab.eval("window.ask({ type: 'viewer-scale', mode: 'auto' })");
+  await until(tab, "window.state().mode === 'auto'");
+  await settle(tab);
+  await wait(1000);
+  await toTop();
+
   // 7. Page jump.
   await tab.eval("window.ask({ type: 'viewer-page', page: 4 })");
   const landed = await until(tab, "window.state().page === 4 && Math.abs(window.page(4).getBoundingClientRect().top) <= 5", 4000);

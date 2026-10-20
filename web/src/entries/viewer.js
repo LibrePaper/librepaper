@@ -102,7 +102,29 @@ function ready() {
   note = null;
   stage = document.createElement("main");
   document.body.prepend(stage);
+  watchText(stage);
   return stage;
+}
+
+// Comment marks are painted into the text layers by splitting and merging text
+// nodes, which collapses the Ranges the search highlights hold. So a structural
+// change under the stage while a search is active has the highlights rebuilt,
+// once per burst. `find.refresh` only touches CSS.highlights, so it cannot
+// trip this observer again. The swap in `render` is skipped: `paint` refreshes
+// after it.
+let textObserver = null;
+let refreshQueued = false;
+function watchText(target) {
+  textObserver?.disconnect();
+  textObserver = new MutationObserver(() => {
+    if (!findQuery || painting || refreshQueued) return;
+    refreshQueued = true;
+    requestAnimationFrame(() => {
+      refreshQueued = false;
+      if (findQuery && !painting) find.refresh();
+    });
+  });
+  textObserver.observe(target, { childList: true, subtree: true, characterData: true });
 }
 
 /// What the frame has nothing to show. Two sentences at most, in the same
@@ -121,6 +143,8 @@ function waiting(title, detail = "") {
     element.append(line);
   }
   pan?.select();
+  textObserver?.disconnect();
+  textObserver = null;
   stage?.remove();
   note?.remove();
   note = element;
