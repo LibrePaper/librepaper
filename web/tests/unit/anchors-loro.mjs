@@ -15,6 +15,11 @@
 // of every anchor is known after every step: where its tagged characters are
 // contiguous the anchor is exact, where an untagged character splits them it is
 // modified, and where none are left it is deleted.
+//
+// The overlapping fuzzer lets three peers edit the same passages at once, so no
+// tagged oracle can say where an anchor must sit. It checks invariants instead:
+// the index agrees with the records, every live anchor spans one word's worth of
+// text, and after a full sync an anchor sits on whatever survives of its word.
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { LoroDoc, LoroText, UndoManager } from "loro-crdt";
@@ -1111,6 +1116,258 @@ function undoCase(seed) {
   });
 }
 
+// Three peers edit the same passages of one or two files, with no region of text
+// owned by one of them. There is no exact oracle for this, so every step checks
+// invariants, and the end checks each anchor against the characters of its word
+// that survive. Original characters are unique code points to make them findable.
+function overlappingPeers(seed) {
+  const rng = random(seed);
+  const log = [];
+  const counter = { next: 0x4e00 };
+  const texts = {};
+  const originals = [];
+  const fileIds = [];
+  const fileCount = 1 + rng.pick(2);
+  for (let i = 1; i <= fileCount; i++) {
+    const fileId = `f${i}`;
+    fileIds.push(fileId);
+    const words = 3 + rng.pick(6);
+    let text = "";
+    const spans = [];
+    for (let w = 0; w < words; w++) {
+      if (w > 0) text += rng.rnd() < 0.2 ? "\n" : " ";
+      let word = "";
+      const n = 2 + rng.pick(4);
+      for (let k = 0; k < n; k++) word += String.fromCharCode(counter.next++);
+      if (rng.rnd() < 0.6) spans.push({ from: text.length, to: text.length + word.length, word });
+      text += word;
+    }
+    texts[fileId] = text;
+    for (const span of spans) {
+      originals.push({ id: `${fileId}-${originals.length}`, fileId, text, ...span, chars: new Set(span.word) });
+    }
+  }
+  const A = makeDoc(1, texts);
+  for (const o of originals) createAnchor(A, o.fileId, o.id, o.from, o.to, ctx(o.text, o.from, o.to));
+  A.commit();
+  const snapshot = A.export({ mode: "snapshot" });
+  const violations = [];
+  // Characters a copy has duplicated. A later cut of the original leaves the
+  // copy looking like a survivor, so the end check skips their anchors.
+  const copied = new Set();
+  const peers = ["A", "B", "C"].map((who, i) => {
+    let doc = A;
+    if (i > 0) {
+      doc = new LoroDoc();
+      doc.setPeerId(i + 1);
+      doc.import(snapshot);
+    }
+    const index = new AnchorIndex(doc);
+    for (const fileId of fileIds) index.load(fileId);
+    const memory = new MoveMemory();
+    index.attach(memory);
+    const manager = new UndoManager(doc, { mergeInterval: 0, excludeOriginPrefixes: [ANCHORS_ORIGIN] });
+    doc.subscribe((batch) => {
+      if (batch.by !== "local" || batch.origin === ANCHORS_ORIGIN) return;
+      for (const event of batch.events) {
+        if (event.path?.[0] === ANCHORS) violations.push(`${who} wrote anchors under origin ${String(batch.origin)}`);
+      }
+    });
+    return { who, doc, index, memory, manager, clip: null };
+  });
+
+  // Maximal runs of non-separator characters, and the positions next to a
+  // separator or an edge, computed from the peer's own text.
+  const runsIn = (text) => {
+    const runs = [];
+    let i = 0;
+    while (i < text.length) {
+      if (isSpace(text[i])) {
+        i++;
+        continue;
+      }
+      let j = i;
+      while (j < text.length && !isSpace(text[j])) j++;
+      runs.push({ from: i, to: j });
+      i = j;
+    }
+    return runs;
+  };
+  const edgesIn = (text) => {
+    const out = [];
+    for (let p = 0; p <= text.length; p++) {
+      const before = p > 0 ? text[p - 1] : " ";
+      const after = p < text.length ? text[p] : " ";
+      if (isSpace(before) || isSpace(after)) out.push(p);
+    }
+    return out;
+  };
+
+  const checkPeer = (peer) => {
+    const listedIn = new Map();
+    for (const fileId of fileIds) {
+      assertIndexMatches(peer.index, peer.doc, fileId);
+      const text = textOf(peer.doc, fileId);
+      for (const anchor of resolveAnchors(peer.doc, fileId)) {
+        const files = listedIn.get(anchor.id) ?? [];
+        files.push(fileId);
+        listedIn.set(anchor.id, files);
+        if (anchor.detached || anchor.collapsed) continue;
+        const where = `${anchor.id} on peer ${peer.who}`;
+        assert.ok(0 <= anchor.from && anchor.from <= anchor.to && anchor.to <= text.length, `${where} range`);
+        const covered = text.slice(anchor.from, anchor.to);
+        assert.ok(!/[ \n]/.test(covered), `${where} spans a separator: ${JSON.stringify(covered)}`);
+      }
+    }
+    for (const o of originals) {
+      const files = listedIn.get(o.id) ?? [];
+      assert.equal(files.length, 1, `${o.id} on peer ${peer.who} is listed under ${files.length} files`);
+    }
+    assert.deepEqual(violations, [], `anchor writes outside ANCHORS_ORIGIN on peer ${peer.who}`);
+  };
+  const checkAll = () => {
+    for (const peer of peers) checkPeer(peer);
+  };
+
+  const weights = [
+    ["type", 3],
+    ["backspace", 2],
+    ["cut", 2],
+    ["paste", 2],
+    ["copy", 1],
+    ["drag", 1],
+    ["undo", 1],
+    ["sync", 3],
+  ];
+  const kinds = weights.flatMap(([kind, n]) => Array(n).fill(kind));
+
+  withLog(`overlapping peers seed=${seed}`, log, () => {
+    checkAll();
+    const steps = 8 + rng.pick(17);
+    for (let k = 0; k < steps; k++) {
+      const peer = peers[rng.pick(peers.length)];
+      const kind = kinds[rng.pick(kinds.length)];
+      const fileId = fileIds[rng.pick(fileIds.length)];
+      const text = textOf(peer.doc, fileId);
+      const runs = runsIn(text);
+      const apply = (edits) => peer.index.apply([{ fileId, edits }], peer.memory, {});
+      const label = `${peer.who} `;
+      let done = false;
+
+      if (kind === "sync") {
+        const x = rng.pick(peers.length);
+        const y = (x + 1 + rng.pick(peers.length - 1)) % peers.length;
+        sync(peers[x].doc, peers[y].doc);
+        log.push(`sync ${peers[x].who}-${peers[y].who}`);
+        done = true;
+      } else if (kind === "undo") {
+        peer.manager.undo();
+        log.push(`${label}undo`);
+        done = true;
+      } else if (kind === "backspace" && runs.length > 0) {
+        const run = runs[rng.pick(runs.length)];
+        const n = Math.min(1 + rng.pick(2), run.to - run.from);
+        const from = run.from + rng.pick(run.to - run.from - n + 1);
+        apply([{ from, to: from + n, insert: "" }]);
+        log.push(`${label}backspace ${fileId}[${from},${from + n})`);
+        done = true;
+      } else if (kind === "cut" && peer.clip === null && runs.length > 0) {
+        const run = runs[rng.pick(runs.length)];
+        peer.clip = text.slice(run.from, run.to);
+        apply([{ from: run.from, to: run.to, insert: "" }]);
+        log.push(`${label}cut ${fileId}[${run.from},${run.to})`);
+        done = true;
+      } else if (kind === "paste" && peer.clip !== null) {
+        const spots = edgesIn(text);
+        const p = spots[rng.pick(spots.length)];
+        apply([{ from: p, to: p, insert: peer.clip }]);
+        log.push(`${label}paste ${fileId}@${p}`);
+        peer.clip = null;
+        done = true;
+      } else if (kind === "copy" && runs.length > 0) {
+        const run = runs[rng.pick(runs.length)];
+        const spots = edgesIn(text);
+        const p = spots[rng.pick(spots.length)];
+        apply([{ from: p, to: p, insert: text.slice(run.from, run.to) }]);
+        for (const ch of text.slice(run.from, run.to)) copied.add(ch);
+        log.push(`${label}copy ${fileId}[${run.from},${run.to}) to ${p}`);
+        done = true;
+      } else if (kind === "drag" && peer.clip === null && runs.length > 0) {
+        const run = runs[rng.pick(runs.length)];
+        const spots = edgesIn(text).filter((p) => p < run.from || p > run.to);
+        if (spots.length > 0) {
+          const p = spots[rng.pick(spots.length)];
+          const lift = { from: run.from, to: run.to, insert: "" };
+          const drop = { from: p, to: p, insert: text.slice(run.from, run.to) };
+          apply(p < run.from ? [drop, lift] : [lift, drop]);
+          log.push(`${label}drag ${fileId}[${run.from},${run.to}) to ${p}`);
+          done = true;
+        }
+      }
+      if (!done) {
+        const p = rng.pick(text.length + 1);
+        const ch = LETTERS[rng.pick(LETTERS.length)];
+        apply([{ from: p, to: p, insert: ch }]);
+        log.push(`${label}type ${fileId}@${p} ${ch}`);
+      }
+      checkAll();
+    }
+
+    for (const [x, y] of [
+      [0, 1],
+      [1, 2],
+      [0, 2],
+      [0, 1],
+    ]) {
+      sync(peers[x].doc, peers[y].doc);
+      log.push(`sync ${peers[x].who}-${peers[y].who}`);
+    }
+    for (const fileId of fileIds) {
+      const want = textOf(A, fileId);
+      for (const peer of peers) assert.equal(textOf(peer.doc, fileId), want, `text of ${fileId} on peer ${peer.who}`);
+    }
+    checkAll();
+
+    // Where the characters of each word survive, in the merged text.
+    const merged = fileIds.map((fileId) => [fileId, textOf(A, fileId)]);
+    for (const o of originals) {
+      const survivors = [];
+      const seen = new Map();
+      for (const [fileId, text] of merged) {
+        for (let i = 0; i < text.length; i++) {
+          if (!o.chars.has(text[i])) continue;
+          survivors.push({ fileId, pos: i, ch: text[i] });
+          seen.set(text[i], (seen.get(text[i]) ?? 0) + 1);
+        }
+      }
+      if ([...seen.values()].some((n) => n > 1) || [...o.chars].some((ch) => copied.has(ch))) continue;
+      const where = `${o.id} on peer A`;
+      const hits = fileIds.filter((fileId) => anchorsById(A, fileId).has(o.id));
+      if (survivors.length === 0) {
+        assert.equal(hits.length, 1, `${where} is listed`);
+        assert.equal(statusOf(A, anchorsById(A, hits[0]).get(o.id)), "deleted", `${where} status`);
+        continue;
+      }
+      if (new Set(survivors.map((s) => s.fileId)).size > 1) continue;
+      const fileId = survivors[0].fileId;
+      assert.deepEqual(hits, [fileId], `${where} is listed under ${fileId}`);
+      const anchor = anchorsById(A, fileId).get(o.id);
+      assert.equal(anchor.detached, false, `${where} is attached`);
+      const first = survivors[0].pos;
+      const intact =
+        survivors.length === o.word.length && survivors.every((s, k) => s.pos === first + k && s.ch === o.word[k]);
+      if (intact) {
+        assert.deepEqual([anchor.from, anchor.to], [first, first + o.word.length], `${where} range`);
+        assert.equal(statusOf(A, anchor), "exact", `${where} status`);
+      } else {
+        for (const s of survivors) {
+          assert.ok(anchor.from <= s.pos && s.pos < anchor.to, `${where} range [${anchor.from},${anchor.to}) misses ${s.pos}`);
+        }
+      }
+    }
+  });
+}
+
 test("fuzz: one session of moves keeps every anchor on the tagged oracle", () => {
   for (let seed = 1; seed <= 150; seed++) oneSession(seed);
 });
@@ -1122,3 +1379,13 @@ test("fuzz: two peers in disjoint halves converge on the oracle", () => {
 test("fuzz: undoing a random history walks every anchor back", () => {
   for (let seed = 2001; seed <= 2100; seed++) undoCase(seed);
 });
+
+// Todo until anchor records are written whole: two peers that re-plan one comment
+// concurrently merge into a record with keys from both writes.
+test(
+  "fuzz: three peers editing the same passages keep every anchor on its surviving text",
+  { todo: "concurrent record writes merge key by key" },
+  () => {
+    for (let seed = 3001; seed <= 3150; seed++) overlappingPeers(seed);
+  },
+);
