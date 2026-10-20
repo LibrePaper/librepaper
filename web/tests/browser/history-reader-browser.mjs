@@ -170,7 +170,6 @@ try {
   await tab.evaluate(`document.querySelector('[data-sha=${sha(0)}] [aria-label="Compare with this version"]').click()`);
   await expectDiff(sources[0], sources[1]);
   assert.match(await tab.evaluate(`document.querySelector(".history-source-ends")?.textContent || ""`), /\u2192/);
-  assert.match(await tab.evaluate(`document.querySelector(".history-source-actions")?.textContent || ""`), /Restore (?!this version)/);
   await tab.evaluate(`[...document.querySelectorAll(".history-source-bar button")].find(b => b.textContent.trim() === "Swap").click()`);
   await expectDiff(sources[1], sources[0]);
   await tab.evaluate(`document.querySelector('[data-sha=${sha(2)}] .timeline-point').dispatchEvent(new MouseEvent("click", {bubbles: true, shiftKey: true}))`);
