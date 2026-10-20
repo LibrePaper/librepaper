@@ -22,6 +22,7 @@
 // text, and after a full sync an anchor sits on whatever survives of its word.
 import assert from "node:assert/strict";
 import { test } from "node:test";
+import { isDeepStrictEqual } from "node:util";
 import { LoroDoc, LoroText, UndoManager } from "loro-crdt";
 import {
   ANCHORS,
@@ -417,7 +418,7 @@ test("a cut in one file and a paste in another moves the record to the new file"
   applyOperation(doc, [{ fileId: "f1", edits: [{ from: 4, to: 8, insert: "" }] }], memory, {});
   applyOperation(doc, [{ fileId: "f2", edits: [{ from: 6, to: 6, insert: "two " }] }], memory, {});
   assert.equal(textOf(doc, "f2"), "alpha two beta");
-  assert.equal(doc.getMap(ANCHORS).get("a1").get("file"), "f2");
+  assert.equal(doc.getMap(ANCHORS).get("a1").get("place").file, "f2");
   assert.equal(anchorsById(doc, "f1").has("a1"), false);
   assertAttached(doc, "a1", 6, 9, "two", "f2");
 });
@@ -476,10 +477,37 @@ test("two peers that delete each half of a passage collapse it, and marking leav
   A.commit({ origin: ANCHORS_ORIGIN });
   sync(A, B);
   for (const doc of [A, B]) {
-    assert.equal(doc.getMap(ANCHORS).get("a1").get("detached"), true, "record is detached");
+    assert.equal(doc.getMap(ANCHORS).get("a1").get("place").detached, true, "record is detached");
     const anchor = anchorsById(doc, "f1").get("a1");
     assert.equal(anchor.detached, true);
     assert.equal(anchor.exact, "two");
+  }
+});
+
+test("two peers that re-place one comment concurrently merge to one peer's placement", () => {
+  const text = "one two three";
+  const A = makeDoc(1, { f1: text });
+  createAnchor(A, "f1", "a1", 4, 7, ctx(text, 4, 7));
+  A.commit();
+  const B = new LoroDoc();
+  B.setPeerId(2);
+  B.import(A.export({ mode: "snapshot" }));
+  // A inserts at the start edge, which moves the anchor and rewrites its start.
+  // B deletes the "w" inside it, which touches the anchor and rewrites both cursors.
+  applyOperation(A, [{ fileId: "f1", edits: [{ from: 4, to: 4, insert: "X" }] }], new MoveMemory(), {});
+  applyOperation(B, [{ fileId: "f1", edits: [{ from: 5, to: 6, insert: "" }] }], new MoveMemory(), {});
+  const placeA = A.getMap(ANCHORS).get("a1").get("place");
+  const placeB = B.getMap(ANCHORS).get("a1").get("place");
+  sync(A, B);
+  for (const doc of [A, B]) {
+    const merged = doc.getMap(ANCHORS).get("a1").get("place");
+    assert.ok(
+      isDeepStrictEqual(merged, placeA) || isDeepStrictEqual(merged, placeB),
+      "the merged place is exactly one peer's place",
+    );
+    const anchor = anchorsById(doc, "f1").get("a1");
+    assert.equal(anchor.detached, false);
+    assert.equal(textOf(doc).slice(anchor.from, anchor.to).includes(" "), false, "the range holds no space");
   }
 });
 
@@ -524,8 +552,8 @@ test("a tracked deletion rejected in another session restores the anchor", () =>
   const pending = anchorsById(A, "f1").get("a1");
   assert.equal(statusOf(A, pending), "pending_deletion");
   const record = A.getMap(ANCHORS).get("a1");
-  assert.equal(record.get("fragment"), fragment.id);
-  assert.notEqual(record.get("offset"), undefined);
+  assert.equal(record.get("place").fragment, fragment.id);
+  assert.notEqual(record.get("place").offset, undefined);
 
   const B = new LoroDoc();
   B.setPeerId(2);
