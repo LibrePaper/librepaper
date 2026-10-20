@@ -197,6 +197,8 @@ export async function render(bytes, root, options = {}) {
       frame.dataset.page = String(number);
       frame.style.width = `${Math.floor(viewport.width)}px`;
       frame.style.height = `${Math.floor(viewport.height)}px`;
+      // Presentation centres the page in a slot one viewport high from this.
+      frame.style.setProperty("--page-height", `${Math.floor(viewport.height)}px`);
       // The text layer's spans size themselves from these, which is how the
       // selection overlay stays on top of the glyphs at any scale.
       frame.style.setProperty("--scale-factor", String(scale));
