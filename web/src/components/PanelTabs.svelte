@@ -29,6 +29,8 @@
     onchange,
     listClass = "",
     children = undefined,
+    // Trailing controls on the same row. They act on the open tab only.
+    actions = undefined,
   } = $props();
 </script>
 
@@ -38,12 +40,15 @@
   onValueChange={(event) => onchange?.(event.value)}
   ids={{ trigger: (one) => `${id}-tab-${one}`, content: (one) => `${id}-pane-${one}` }}
 >
-  <Tabs.List class="panel-tabs {listClass}" aria-label={label}>
-    {#each tabs as tab (tab.id)}
-      <Tabs.Trigger value={tab.id} title={tab.label}>
-        {tab.label}{#if tab.dot}<span class="unread" aria-label={tab.dot}></span>{/if}
-      </Tabs.Trigger>
-    {/each}
-  </Tabs.List>
+  <div class="panel-tabs-row">
+    <Tabs.List class="panel-tabs {listClass}" aria-label={label}>
+      {#each tabs as tab (tab.id)}
+        <Tabs.Trigger value={tab.id} title={tab.label}>
+          {tab.label}{#if tab.dot}<span class="unread" aria-label={tab.dot}></span>{/if}
+        </Tabs.Trigger>
+      {/each}
+    </Tabs.List>
+    {#if actions}<div class="panel-tabs-actions">{@render actions()}</div>{/if}
+  </div>
   {@render children?.()}
 </Tabs>

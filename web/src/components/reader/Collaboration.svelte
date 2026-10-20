@@ -3,6 +3,7 @@
   import Chat from "../Chat.svelte";
   import Comments from "../Comments.svelte";
   import PanelTabs from "../PanelTabs.svelte";
+  import IconButton from "../IconButton.svelte";
 
   let {
     messages = [], connected = false, canPost = false, onsend = undefined,
@@ -39,11 +40,15 @@
 <!-- The strip, its ids and the layout of a pane are PanelTabs', shared with
      the agent panel. What is left here is what the tabs contain. -->
 <section class="collaboration panel panel-tabbed" aria-label="Collaboration">
+  {#snippet clearChat()}
+    <IconButton icon="trash" label="Clear chat" tone="plain" size="btn-icon-sm" onclick={() => onclear?.()} />
+  {/snippet}
   <PanelTabs id="collaboration" label="Collaboration views" listClass="collab-tabs"
              tabs={VIEWS.map((view) => ({ ...view,
                dot: view.id === "chat" && unreadChat ? "Unread messages" : "" }))}
-             value={tab} onchange={(value) => (tab = value)}>
-    <Tabs.Content value="chat"><Chat {messages} {more} {loadingOlder} {loadError} {canClear} {onloadolder} {onclear} {connected} {canPost} {onsend} /></Tabs.Content>
+             value={tab} onchange={(value) => (tab = value)}
+             actions={tab === "chat" && canClear && messages.length > 0 ? clearChat : undefined}>
+    <Tabs.Content value="chat"><Chat {messages} {more} {loadingOlder} {loadError} {onloadolder} {connected} {canPost} {onsend} /></Tabs.Content>
     <Tabs.Content value="comments">
       <Comments {...common()} {comments} filter="comments" cardIdPrefix="collaboration-comment"
         {composing} {needsLogin} {signInHref} onsend={oncommentsend} oncancel={oncommentcancel} />

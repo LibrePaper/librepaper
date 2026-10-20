@@ -4247,9 +4247,9 @@
 <!-- Clearing the chat deletes it for everyone, so it is confirmed. -->
 <Modal
   bind:open={clearingChat}
-  title="Clear chat history?"
-  description="This deletes every chat message in this project for everyone. It cannot be undone."
-  confirm={{ label: "Clear", tone: "error", onclick: confirmClearChat }}
+  title="Delete chat history?"
+  description="This permanently deletes the shared chat history of this project for everyone who has access to it."
+  confirm={{ label: "Delete history", tone: "error", onclick: confirmClearChat }}
 ></Modal>
 
 <!-- Signed out, a commenter chooses how to be named before they write. -->
