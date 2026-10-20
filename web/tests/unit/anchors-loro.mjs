@@ -1152,6 +1152,9 @@ function overlappingPeers(seed) {
   A.commit();
   const snapshot = A.export({ mode: "snapshot" });
   const violations = [];
+  // Characters a copy has duplicated. A later cut of the original leaves the
+  // copy looking like a survivor, so the end check skips their anchors.
+  const copied = new Set();
   const peers = ["A", "B", "C"].map((who, i) => {
     let doc = A;
     if (i > 0) {
@@ -1286,6 +1289,7 @@ function overlappingPeers(seed) {
         const spots = edgesIn(text);
         const p = spots[rng.pick(spots.length)];
         apply([{ from: p, to: p, insert: text.slice(run.from, run.to) }]);
+        for (const ch of text.slice(run.from, run.to)) copied.add(ch);
         log.push(`${label}copy ${fileId}[${run.from},${run.to}) to ${p}`);
         done = true;
       } else if (kind === "drag" && peer.clip === null && runs.length > 0) {
@@ -1336,7 +1340,7 @@ function overlappingPeers(seed) {
           seen.set(text[i], (seen.get(text[i]) ?? 0) + 1);
         }
       }
-      if ([...seen.values()].some((n) => n > 1)) continue;
+      if ([...seen.values()].some((n) => n > 1) || [...o.chars].some((ch) => copied.has(ch))) continue;
       const where = `${o.id} on peer A`;
       const hits = fileIds.filter((fileId) => anchorsById(A, fileId).has(o.id));
       if (survivors.length === 0) {
