@@ -384,6 +384,8 @@ async function run() {
   await until(tab, "window.state().scale && window.state().mode === '3'");
   await tab.eval("window.ask({ type: 'viewer-sidebar', open: true })");
   await until(tab, "window.state().sidebar === true && window.side() && window.side().host.hasAttribute('open')");
+  // Check 5 left the Outline tab selected, and the outline is too short to scroll.
+  await tab.eval("window.side().root.querySelectorAll('.tabs button')[0].click()");
   await wait(1500);
   const lockBefore = await tab.eval(`
     const root = window.doc().documentElement;
