@@ -796,7 +796,8 @@ test("resolveAnchors: a record that names another text is unresolved, since its 
   createAnchor(doc, "f2", "c1", 6, 10, { exact: "beta", prefix: "alpha ", suffix: " gamma" });
   doc.commit();
   // The cursors still belong to f2. Only the file key names f1.
-  doc.getMap("anchors").get("c1").set("file", "f1");
+  const held = doc.getMap("anchors").get("c1");
+  held.set("place", { ...held.get("place"), file: "f1" });
   doc.commit();
 
   const [anchor] = resolveAnchors(doc, "f1");
@@ -829,7 +830,7 @@ test("attachByHand: a deleted comment attaches to the selection and its quote is
     status: "exact", resolved_range_utf16: [7, 12], resolved_file_id: "f1", tree_digest: "", attached_by_hand: false, diagnostic: null,
   });
   const record = doc.getMap("anchors").get("c1");
-  assert.equal(record.get("detached"), undefined);
+  assert.equal(record.get("place").detached, undefined);
   assert.equal(record.get("exact"), "world");
   assert.equal(record.get("prefix"), "Hello  ");
   assert.equal(record.get("suffix"), "");

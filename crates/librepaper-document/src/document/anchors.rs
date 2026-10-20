@@ -1,10 +1,19 @@
 //! Comment anchors: where a comment sits in the shared document.
 //!
 //! An anchor is one record in the `anchors` root, one map container per comment
-//! id. A record holds the file it sits in, two Loro cursors (start and end)
-//! while it is attached, and the quote the comment was made on. A record whose
-//! text was deleted whole is detached: it keeps its quote and, when a tracked
+//! id. A record holds the quote the comment was made on (`exact`, `prefix` and
+//! `suffix`) and one `place` value. The place is a plain map value, not a
+//! container, that holds the file the anchor sits in and two Loro cursors (start
+//! and end) while it is attached. A record whose text was deleted whole is
+//! detached: its place says so, keeps the quote's file and, when a tracked
 //! deletion took the text, the id of the fragment that holds it.
+//!
+//! Loro merges the keys of a map one at a time, last writer wins per key. Two
+//! peers that re-place one comment at the same time would therefore leave a
+//! record neither wrote, with the start of one and the end of the other. The
+//! place is one value, written whole in one insert, so one peer's place wins
+//! as a unit. A record without a place is skipped by every reader.
+//! [`upgrade_records`] moves the old top-level placement keys into a place.
 //!
 //! [`plan_operation`] is pure. It moves the attached anchors through one batch
 //! of edits, and re-pins a detached anchor when an insertion brings its text
@@ -14,12 +23,12 @@
 //! is remembered, so that cut and paste, drag and drop, undo and agent patches
 //! keep comments exact. Nothing searches the document for words.
 //!
-//! This is a port of `web/src/lib/anchors.js`. Both share the record keys and
+//! This is a port of `web/src/lib/anchors.js`. Both share the record format and
 //! `web/tests/fixtures/anchors.json`. The browser's AnchorIndex cache and the
 //! planner's foreign mode are browser-only, so they are not ported here.
 //!
 //! Offsets are UTF-16 code units, as in the JavaScript module and in the
-//! `offset` and `length` keys that browsers write. This planner therefore counts
+//! `offset` and `length` fields that browsers write. This planner therefore counts
 //! differently from [`super::track`], which counts code points. Strings are
 //! sliced through helpers that map UTF-16 offsets to byte offsets. The
 //! conversion to a Loro code point position happens only where a cursor is made
@@ -680,11 +689,127 @@ fn cursor_pos(doc: &LoroDoc, text: &LoroText, bytes: &[u8]) -> Option<Pos> {
     })
 }
 
-/// The span a record's cursors resolve to now. A live end sits on the last
+/// Where an anchor sits: the `place` value of a record, read or built whole.
+/// An attached place holds the file and both cursors. A detached place holds
+/// the file, `detached`, what a tracked deletion left (`length`, `fragment`,
+/// `offset`) and the cursors it had, when it had them.
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct Place {
+    file: String,
+    start: Option<Vec<u8>>,
+    end: Option<Vec<u8>>,
+    detached: bool,
+    length: Option<usize>,
+    fragment: Option<String>,
+    offset: Option<usize>,
+}
+
+impl Place {
+    /// An attached place at the given cursors.
+    fn attached(file: &str, start: Vec<u8>, end: Vec<u8>) -> Self {
+        Self {
+            file: file.to_string(),
+            start: Some(start),
+            end: Some(end),
+            detached: false,
+            length: None,
+            fragment: None,
+            offset: None,
+        }
+    }
+
+    /// A detached place with nothing known about the lost passage.
+    fn detached(file: &str) -> Self {
+        Self {
+            file: file.to_string(),
+            start: None,
+            end: None,
+            detached: true,
+            length: None,
+            fragment: None,
+            offset: None,
+        }
+    }
+
+    /// The place of a record. None when the record has no place map, or the
+    /// place names no file.
+    fn read(record: &LoroMap) -> Option<Self> {
+        match record.get("place")? {
+            ValueOrContainer::Value(value) => Self::from_value(&value),
+            _ => None,
+        }
+    }
+
+    fn from_value(value: &LoroValue) -> Option<Self> {
+        if !matches!(value, LoroValue::Map(_)) {
+            return None;
+        }
+        let file = match value.get_by_key("file")? {
+            LoroValue::String(s) => s.to_string(),
+            _ => return None,
+        };
+        let bytes = |key: &str| match value.get_by_key(key) {
+            Some(LoroValue::Binary(b)) => Some(b.to_vec()),
+            _ => None,
+        };
+        Some(Self {
+            file,
+            start: bytes("start"),
+            end: bytes("end"),
+            detached: matches!(value.get_by_key("detached"), Some(LoroValue::Bool(true))),
+            length: count_value(value.get_by_key("length")),
+            fragment: match value.get_by_key("fragment") {
+                Some(LoroValue::String(s)) => Some(s.to_string()),
+                _ => None,
+            },
+            offset: count_value(value.get_by_key("offset")),
+        })
+    }
+
+    /// The map value a record stores. Absent fields are left out.
+    fn to_value(&self) -> LoroValue {
+        let mut entries: Vec<(String, LoroValue)> =
+            vec![("file".to_string(), LoroValue::from(self.file.as_str()))];
+        if let Some(start) = &self.start {
+            entries.push(("start".to_string(), LoroValue::from(start.clone())));
+        }
+        if let Some(end) = &self.end {
+            entries.push(("end".to_string(), LoroValue::from(end.clone())));
+        }
+        if self.detached {
+            entries.push(("detached".to_string(), LoroValue::Bool(true)));
+        }
+        if let Some(length) = self.length {
+            entries.push(("length".to_string(), LoroValue::I64(length as i64)));
+        }
+        if let Some(fragment) = &self.fragment {
+            entries.push(("fragment".to_string(), LoroValue::from(fragment.as_str())));
+        }
+        if let Some(offset) = self.offset {
+            entries.push(("offset".to_string(), LoroValue::I64(offset as i64)));
+        }
+        LoroValue::Map(entries.into())
+    }
+}
+
+/// Whether the record's stored place is `value`.
+fn holds_place(record: &LoroMap, value: &LoroValue) -> bool {
+    matches!(record.get("place"), Some(ValueOrContainer::Value(v)) if v == *value)
+}
+
+/// Stores `place` whole in `record`, unless the record holds that value.
+fn put_place(record: &LoroMap, place: &Place) {
+    let value = place.to_value();
+    if !holds_place(record, &value) {
+        record.insert("place", value).ok();
+    }
+}
+
+/// The span a place's cursors resolve to now. A live end sits on the last
 /// character of the span, and a stale end is already the exclusive end.
-fn span_of(doc: &LoroDoc, live: &Live, record: &LoroMap) -> Option<(usize, usize)> {
-    let s = cursor_pos(doc, &live.text, &bytes_of(record, "start")?)?;
-    let e = cursor_pos(doc, &live.text, &bytes_of(record, "end")?)?;
+fn span_of(doc: &LoroDoc, live: &Live, place: &Place) -> Option<(usize, usize)> {
+    let s = cursor_pos(doc, &live.text, place.start.as_deref()?)?;
+    let e = cursor_pos(doc, &live.text, place.end.as_deref()?)?;
     let to = if e.stale {
         e.offset
     } else {
@@ -717,12 +842,18 @@ fn bytes_of(m: &LoroMap, key: &str) -> Option<Vec<u8>> {
 
 /// A count field. Browsers write integers, which Loro may store as I64 or as
 /// Double.
+fn count_value(v: Option<&LoroValue>) -> Option<usize> {
+    match v? {
+        LoroValue::I64(v) => usize::try_from(*v).ok(),
+        LoroValue::Double(v) if *v >= 0.0 && v.fract() == 0.0 => Some(*v as usize),
+        _ => None,
+    }
+}
+
+/// A count at a top-level key of an old record.
 fn count_of(m: &LoroMap, key: &str) -> Option<usize> {
     match m.get(key)? {
-        ValueOrContainer::Value(LoroValue::I64(v)) => usize::try_from(v).ok(),
-        ValueOrContainer::Value(LoroValue::Double(v)) if v >= 0.0 && v.fract() == 0.0 => {
-            Some(v as usize)
-        }
+        ValueOrContainer::Value(v) => count_value(Some(&v)),
         _ => None,
     }
 }
@@ -735,16 +866,16 @@ fn is_true(m: &LoroMap, key: &str) -> bool {
 }
 
 /// The fields every record carries, read without resolving its cursors.
-fn record_fields(record: &LoroMap, id: &str, file_id: &str) -> Anchor {
+fn record_fields(record: &LoroMap, id: &str, place: &Place) -> Anchor {
     Anchor {
         id: id.to_string(),
-        file: file_id.to_string(),
+        file: place.file.clone(),
         from: 0,
         to: 0,
         detached: false,
-        fragment: str_of(record, "fragment"),
-        offset: count_of(record, "offset"),
-        length: count_of(record, "length"),
+        fragment: place.fragment.clone(),
+        offset: place.offset,
+        length: place.length,
         exact: str_of(record, "exact").unwrap_or_default(),
         prefix: str_of(record, "prefix").unwrap_or_default(),
         suffix: str_of(record, "suffix").unwrap_or_default(),
@@ -754,8 +885,8 @@ fn record_fields(record: &LoroMap, id: &str, file_id: &str) -> Anchor {
 }
 
 /// A detached record as an anchor. Its cursors are not resolved.
-fn detached_anchor(record: &LoroMap, id: &str, file_id: &str) -> Anchor {
-    let mut anchor = record_fields(record, id, file_id);
+fn detached_anchor(record: &LoroMap, id: &str, place: &Place) -> Anchor {
+    let mut anchor = record_fields(record, id, place);
     anchor.detached = true;
     anchor
 }
@@ -766,14 +897,14 @@ fn record_anchor(
     doc: &LoroDoc,
     id: &str,
     record: &LoroMap,
-    file_id: &str,
+    place: &Place,
     live: Option<&Live>,
 ) -> Anchor {
-    if is_true(record, "detached") {
-        return detached_anchor(record, id, file_id);
+    if place.detached {
+        return detached_anchor(record, id, place);
     }
-    let mut anchor = record_fields(record, id, file_id);
-    match live.and_then(|live| span_of(doc, live, record)) {
+    let mut anchor = record_fields(record, id, place);
+    match live.and_then(|live| span_of(doc, live, place)) {
         Some((from, to)) => {
             anchor.from = from;
             anchor.to = to;
@@ -811,9 +942,9 @@ impl<'a> Reader<'a> {
         let doc = self.doc;
         let map = doc.get_map(ANCHORS);
         let record = record_map(&map, id)?;
-        let file_id = str_of(&record, "file")?;
-        let live = self.live(&file_id);
-        Some(record_anchor(doc, id, &record, &file_id, live))
+        let place = Place::read(&record)?;
+        let live = self.live(&place.file);
+        Some(record_anchor(doc, id, &record, &place, live))
     }
 
     /// The status of an anchor, from its record and the text now.
@@ -869,10 +1000,10 @@ pub fn resolve_anchors(doc: &LoroDoc, file_id: &str) -> Vec<Anchor> {
         let Some(record) = record_map(&map, &id) else {
             continue;
         };
-        if str_of(&record, "file").as_deref() != Some(file_id) {
+        let Some(place) = Place::read(&record).filter(|p| p.file == file_id) else {
             continue;
-        }
-        out.push(record_anchor(doc, &id, &record, file_id, live.as_ref()));
+        };
+        out.push(record_anchor(doc, &id, &record, &place, live.as_ref()));
     }
     out
 }
@@ -943,9 +1074,10 @@ pub fn create_anchor_with_cursors(
     let Ok(record) = doc.get_map(ANCHORS).insert_container(id, LoroMap::new()) else {
         return false;
     };
-    record.insert("file", LoroValue::from(file_id)).ok();
-    record.insert("start", LoroValue::from(start.to_vec())).ok();
-    record.insert("end", LoroValue::from(end.to_vec())).ok();
+    put_place(
+        &record,
+        &Place::attached(file_id, start.to_vec(), end.to_vec()),
+    );
     record.insert("exact", LoroValue::from(exact)).ok();
     record.insert("prefix", LoroValue::from(prefix)).ok();
     record.insert("suffix", LoroValue::from(suffix)).ok();
@@ -967,45 +1099,26 @@ pub fn create_detached_anchor(
     let Ok(record) = doc.get_map(ANCHORS).insert_container(id, LoroMap::new()) else {
         return false;
     };
-    record.insert("file", LoroValue::from(file_id)).ok();
-    record.insert("detached", LoroValue::Bool(true)).ok();
+    put_place(&record, &Place::detached(file_id));
     record.insert("exact", LoroValue::from(exact)).ok();
     record.insert("prefix", LoroValue::from(prefix)).ok();
     record.insert("suffix", LoroValue::from(suffix)).ok();
     true
 }
 
-/// A pending record write, read in pass 1 of `write_anchors`.
+/// A pending record write, read in pass 1 of `write_anchors`. `place` is None
+/// when the record already holds the value to write.
 struct Pending {
     id: String,
     record: LoroMap,
-    sets: Vec<(&'static str, LoroValue)>,
-    deletes: Vec<&'static str>,
+    place: Option<LoroValue>,
 }
 
-/// Queues `key` to be set to `value`, unless the record holds that value.
-fn put(
-    sets: &mut Vec<(&'static str, LoroValue)>,
-    record: &LoroMap,
-    key: &'static str,
-    value: LoroValue,
-) {
-    if !matches!(record.get(key), Some(ValueOrContainer::Value(v)) if v == value) {
-        sets.push((key, value));
-    }
-}
-
-/// Queues `key` to be deleted, when the record holds it.
-fn drop_key(deletes: &mut Vec<&'static str>, record: &LoroMap, key: &'static str) {
-    if record.get(key).is_some() {
-        deletes.push(key);
-    }
-}
-
-/// Writes the anchors marked set in a plan. A detached record keeps its
-/// cursors. An attached anchor that was touched gets both cursors, fresh. One
-/// that only shifted (touched false) is skipped: its cursors follow its text.
-/// Does not commit. Returns the ids written.
+/// Writes the anchors marked set in a plan. Each writes its whole place in one
+/// insert, and not at all when the record already holds it. A detached record
+/// keeps the cursors it had. An attached anchor that was touched gets both
+/// cursors, fresh. One that only shifted (touched false) is skipped: its
+/// cursors follow its text. Does not commit. Returns the ids written.
 pub fn write_anchors(doc: &LoroDoc, planned: &[PlannedFile]) -> Vec<String> {
     let map = doc.get_map(ANCHORS);
     // Pass 1 reads everything and works out the writes. Resolving a stale
@@ -1022,36 +1135,16 @@ pub fn write_anchors(doc: &LoroDoc, planned: &[PlannedFile]) -> Vec<String> {
             let Some(record) = record_map(&map, &a.id) else {
                 continue;
             };
-            let mut sets = Vec::new();
-            let mut deletes = Vec::new();
-            if a.detached {
-                put(
-                    &mut sets,
-                    &record,
-                    "file",
-                    LoroValue::from(file.file_id.as_str()),
-                );
-                put(&mut sets, &record, "detached", LoroValue::Bool(true));
-                match a.length {
-                    Some(length) => {
-                        put(&mut sets, &record, "length", LoroValue::I64(length as i64))
-                    }
-                    None => drop_key(&mut deletes, &record, "length"),
-                }
-                match &a.fragment {
-                    Some(fragment) => put(
-                        &mut sets,
-                        &record,
-                        "fragment",
-                        LoroValue::from(fragment.as_str()),
-                    ),
-                    None => drop_key(&mut deletes, &record, "fragment"),
-                }
-                match a.offset {
-                    Some(offset) => {
-                        put(&mut sets, &record, "offset", LoroValue::I64(offset as i64))
-                    }
-                    None => drop_key(&mut deletes, &record, "offset"),
+            let place = if a.detached {
+                let stored = Place::read(&record);
+                Place {
+                    file: file.file_id.clone(),
+                    start: stored.as_ref().and_then(|p| p.start.clone()),
+                    end: stored.as_ref().and_then(|p| p.end.clone()),
+                    detached: true,
+                    length: a.length,
+                    fragment: a.fragment.clone(),
+                    offset: a.offset,
                 }
             } else {
                 let Some(live) = live.as_ref() else {
@@ -1070,40 +1163,24 @@ pub fn write_anchors(doc: &LoroDoc, planned: &[PlannedFile]) -> Vec<String> {
                 ) else {
                     continue;
                 };
-                put(
-                    &mut sets,
-                    &record,
-                    "file",
-                    LoroValue::from(file.file_id.as_str()),
-                );
-                sets.push(("start", LoroValue::from(start.encode())));
-                sets.push(("end", LoroValue::from(end.encode())));
-                drop_key(&mut deletes, &record, "detached");
-                drop_key(&mut deletes, &record, "length");
-                drop_key(&mut deletes, &record, "fragment");
-                drop_key(&mut deletes, &record, "offset");
-            }
+                Place::attached(&file.file_id, start.encode(), end.encode())
+            };
+            let value = place.to_value();
+            let place = (!holds_place(&record, &value)).then_some(value);
             pending.push(Pending {
                 id: a.id.clone(),
                 record,
-                sets,
-                deletes,
+                place,
             });
         }
     }
     // Pass 2 writes. The commit origin is set before the first write.
-    let dirty = pending
-        .iter()
-        .any(|p| !p.sets.is_empty() || !p.deletes.is_empty());
-    if dirty {
+    if pending.iter().any(|p| p.place.is_some()) {
         doc.set_next_commit_origin(ANCHORS_ORIGIN);
     }
     for p in &pending {
-        for (key, value) in &p.sets {
-            p.record.insert(key, value.clone()).ok();
-        }
-        for key in &p.deletes {
-            p.record.delete(key).ok();
+        if let Some(value) = &p.place {
+            p.record.insert("place", value.clone()).ok();
         }
     }
     pending.into_iter().map(|p| p.id).collect()
@@ -1115,22 +1192,28 @@ pub fn write_anchors(doc: &LoroDoc, planned: &[PlannedFile]) -> Vec<String> {
 pub fn mark_collapsed(doc: &LoroDoc, file_id: &str) -> Vec<String> {
     let map = doc.get_map(ANCHORS);
     // Reads come first. The commit origin is set before the first write.
-    let mut marked: Vec<(String, LoroMap)> = Vec::new();
+    let mut marked: Vec<(String, LoroMap, Place)> = Vec::new();
     for a in resolve_anchors(doc, file_id) {
         if !a.collapsed {
             continue;
         }
-        if let Some(record) = record_map(&map, &a.id) {
-            marked.push((a.id, record));
-        }
+        let Some(record) = record_map(&map, &a.id) else {
+            continue;
+        };
+        let Some(mut place) = Place::read(&record) else {
+            continue;
+        };
+        place.detached = true;
+        place.length = None;
+        marked.push((a.id, record, place));
     }
     if !marked.is_empty() {
         doc.set_next_commit_origin(ANCHORS_ORIGIN);
     }
-    for (_, record) in &marked {
-        record.insert("detached", LoroValue::Bool(true)).ok();
+    for (_, record, place) in &marked {
+        put_place(record, place);
     }
-    marked.into_iter().map(|(id, _)| id).collect()
+    marked.into_iter().map(|(id, _, _)| id).collect()
 }
 
 /// The id of every text in the files map. A text is listed whether or not a
@@ -1149,11 +1232,12 @@ pub fn text_file_ids(doc: &LoroDoc) -> Vec<String> {
         .collect()
 }
 
-/// Whether either cursor of a record resolves onto a deleted character.
-fn has_stale_cursor(doc: &LoroDoc, live: &Live, record: &LoroMap) -> bool {
-    ["start", "end"].into_iter().any(|key| {
-        bytes_of(record, key)
-            .and_then(|bytes| cursor_pos(doc, &live.text, &bytes))
+/// Whether either cursor of a place resolves onto a deleted character.
+fn has_stale_cursor(doc: &LoroDoc, live: &Live, place: &Place) -> bool {
+    [&place.start, &place.end].into_iter().any(|bytes| {
+        bytes
+            .as_deref()
+            .and_then(|bytes| cursor_pos(doc, &live.text, bytes))
             .is_some_and(|pos| pos.stale)
     })
 }
@@ -1162,15 +1246,15 @@ fn has_stale_cursor(doc: &LoroDoc, live: &Live, record: &LoroMap) -> bool {
 /// history their cursors resolve through. A record with a cursor on a deleted
 /// character gets fresh cursors on the span it resolves to now. A record whose
 /// span has collapsed is marked detached, as the next edit would mark it, since
-/// no cursor into the deleted text survives the snapshot. Quotes are kept. Reads
-/// come first. Does not commit. Returns the ids changed.
+/// no cursor into the deleted text survives the snapshot. Quotes are kept. Each
+/// record's place is written whole. Reads come first. Does not commit. Returns
+/// the ids changed.
 pub fn heal_stale(doc: &LoroDoc, file_id: &str) -> Vec<String> {
     let Some(live) = live_of(doc, file_id) else {
         return Vec::new();
     };
     let map = doc.get_map(ANCHORS);
-    let mut fresh: Vec<(String, LoroMap, Vec<u8>, Vec<u8>)> = Vec::new();
-    let mut collapsed: Vec<(String, LoroMap)> = Vec::new();
+    let mut writes: Vec<(String, LoroMap, Place)> = Vec::new();
     for a in resolve_anchors(doc, file_id) {
         if a.detached || a.unresolved {
             continue;
@@ -1178,11 +1262,16 @@ pub fn heal_stale(doc: &LoroDoc, file_id: &str) -> Vec<String> {
         let Some(record) = record_map(&map, &a.id) else {
             continue;
         };
+        let Some(mut place) = Place::read(&record) else {
+            continue;
+        };
         if a.collapsed {
-            collapsed.push((a.id, record));
+            place.detached = true;
+            place.length = None;
+            writes.push((a.id, record, place));
             continue;
         }
-        if !has_stale_cursor(doc, &live, &record) {
+        if !has_stale_cursor(doc, &live, &place) {
             continue;
         }
         let (Some(start), Some(end)) = (
@@ -1195,20 +1284,17 @@ pub fn heal_stale(doc: &LoroDoc, file_id: &str) -> Vec<String> {
         ) else {
             continue;
         };
-        fresh.push((a.id, record, start.encode(), end.encode()));
+        place.start = Some(start.encode());
+        place.end = Some(end.encode());
+        writes.push((a.id, record, place));
     }
     // Every read is done. The commit origin is set before the first write.
-    if !fresh.is_empty() || !collapsed.is_empty() {
+    if !writes.is_empty() {
         doc.set_next_commit_origin(ANCHORS_ORIGIN);
     }
-    let mut ids = Vec::with_capacity(fresh.len() + collapsed.len());
-    for (id, record, start, end) in fresh {
-        record.insert("start", LoroValue::from(start)).ok();
-        record.insert("end", LoroValue::from(end)).ok();
-        ids.push(id);
-    }
-    for (id, record) in collapsed {
-        record.insert("detached", LoroValue::Bool(true)).ok();
+    let mut ids = Vec::with_capacity(writes.len());
+    for (id, record, place) in writes {
+        put_place(&record, &place);
         ids.push(id);
     }
     ids
@@ -1225,13 +1311,14 @@ fn detached_elsewhere(doc: &LoroDoc, named: &[OperationFile]) -> Vec<OperationFi
         let Some(record) = record_map(&map, &id) else {
             continue;
         };
-        let Some(file_id) = str_of(&record, "file") else {
+        let Some(place) = Place::read(&record) else {
             continue;
         };
-        if !is_true(&record, "detached") || named.iter().any(|f| f.file_id == file_id) {
+        let file_id = place.file.clone();
+        if !place.detached || named.iter().any(|f| f.file_id == file_id) {
             continue;
         }
-        let anchor = detached_anchor(&record, &id, &file_id);
+        let anchor = detached_anchor(&record, &id, &place);
         match groups.iter().position(|group| group.0 == file_id) {
             Some(at) => groups[at].1.push(anchor),
             None => groups.push((file_id, vec![anchor])),
@@ -1347,23 +1434,26 @@ pub fn restore_by_fragments(doc: &LoroDoc, file_id: &str, restored: &[Restored])
         restored.iter().map(|r| (r.fragment.as_str(), r)).collect();
     let map = doc.get_map(ANCHORS);
     // Reads come first. The commit origin is set before the first write.
-    let mut repins: Vec<(String, LoroMap, Vec<u8>, Vec<u8>)> = Vec::new();
+    let mut repins: Vec<(String, LoroMap, Place)> = Vec::new();
     for key in map.keys() {
         let id = key.to_string();
         let Some(record) = record_map(&map, &id) else {
             continue;
         };
-        if str_of(&record, "file").as_deref() != Some(file_id) || !is_true(&record, "detached") {
+        let Some(place) = Place::read(&record) else {
+            continue;
+        };
+        if place.file != file_id || !place.detached {
             continue;
         }
-        let Some(r) = str_of(&record, "fragment")
-            .and_then(|fragment| by_fragment.get(fragment.as_str()).copied())
+        let Some(r) = place
+            .fragment
+            .as_deref()
+            .and_then(|fragment| by_fragment.get(fragment).copied())
         else {
             continue;
         };
-        let (Some(offset), Some(length)) =
-            (count_of(&record, "offset"), count_of(&record, "length"))
-        else {
+        let (Some(offset), Some(length)) = (place.offset, place.length) else {
             continue;
         };
         let from = r.at + offset;
@@ -1381,19 +1471,77 @@ pub fn restore_by_fragments(doc: &LoroDoc, file_id: &str, restored: &[Restored])
         ) else {
             continue;
         };
-        repins.push((id, record, start.encode(), end.encode()));
+        repins.push((
+            id,
+            record,
+            Place::attached(file_id, start.encode(), end.encode()),
+        ));
     }
     if !repins.is_empty() {
         doc.set_next_commit_origin(ANCHORS_ORIGIN);
     }
     let mut ids = Vec::with_capacity(repins.len());
-    for (id, record, start, end) in repins {
-        record.insert("start", LoroValue::from(start)).ok();
-        record.insert("end", LoroValue::from(end)).ok();
-        record.delete("detached").ok();
-        record.delete("length").ok();
-        record.delete("fragment").ok();
-        record.delete("offset").ok();
+    for (id, record, place) in repins {
+        put_place(&record, &place);
+        ids.push(id);
+    }
+    ids
+}
+
+/// Whether any anchor record still has the old top-level placement keys.
+pub fn has_legacy_records(doc: &LoroDoc) -> bool {
+    let map = doc.get_map(ANCHORS);
+    let legacy = map.keys().any(|key| {
+        record_map(&map, key.as_ref()).is_some_and(|record| record.get("file").is_some())
+    });
+    legacy
+}
+
+/// Moves the old top-level placement keys of every legacy record into one
+/// `place` value and deletes them. Does not commit. Returns the ids converted.
+///
+/// The place is built as the old readers read the keys: `detached` set to true
+/// makes it detached, and `start`, `end`, `length`, `fragment` and `offset`
+/// are copied when present. A legacy record whose file is not a string had no
+/// place for any reader, so it only loses its keys. Reads come first, and the
+/// commit origin is set before the first write.
+pub fn upgrade_records(doc: &LoroDoc) -> Vec<String> {
+    const OLD_KEYS: [&str; 7] = [
+        "file", "start", "end", "detached", "length", "fragment", "offset",
+    ];
+    let map = doc.get_map(ANCHORS);
+    let mut legacy: Vec<(String, LoroMap, Option<Place>)> = Vec::new();
+    for key in map.keys() {
+        let id = key.to_string();
+        let Some(record) = record_map(&map, &id) else {
+            continue;
+        };
+        if record.get("file").is_none() {
+            continue;
+        }
+        let place = str_of(&record, "file").map(|file| Place {
+            file,
+            start: bytes_of(&record, "start"),
+            end: bytes_of(&record, "end"),
+            detached: is_true(&record, "detached"),
+            length: count_of(&record, "length"),
+            fragment: str_of(&record, "fragment"),
+            offset: count_of(&record, "offset"),
+        });
+        legacy.push((id, record, place));
+    }
+    if legacy.is_empty() {
+        return Vec::new();
+    }
+    doc.set_next_commit_origin(ANCHORS_ORIGIN);
+    let mut ids = Vec::with_capacity(legacy.len());
+    for (id, record, place) in legacy {
+        if let Some(place) = place {
+            record.insert("place", place.to_value()).ok();
+        }
+        for key in OLD_KEYS {
+            record.delete(key).ok();
+        }
         ids.push(id);
     }
     ids
@@ -2015,7 +2163,7 @@ mod tests {
 
     fn record_file(doc: &LoroDoc, id: &str) -> Option<String> {
         let root = doc.get_map(ANCHORS);
-        str_of(&record_map(&root, id)?, "file")
+        Some(Place::read(&record_map(&root, id)?)?.file)
     }
 
     fn sync(a: &LoroDoc, b: &LoroDoc) {
@@ -2086,6 +2234,121 @@ mod tests {
         );
         doc.commit();
         plan
+    }
+
+    /// A record in the old format, as a document written before the place
+    /// value holds it: top-level placement keys and the quote.
+    fn write_legacy(doc: &LoroDoc, id: &str, keys: Vec<(&str, LoroValue)>) -> LoroMap {
+        let record = doc
+            .get_map(ANCHORS)
+            .insert_container(id, LoroMap::new())
+            .unwrap();
+        for (key, value) in keys {
+            record.insert(key, value).unwrap();
+        }
+        record.insert("exact", LoroValue::from("beta")).unwrap();
+        record.insert("prefix", LoroValue::from("alpha ")).unwrap();
+        record.insert("suffix", LoroValue::from(" gamma")).unwrap();
+        record
+    }
+
+    #[test]
+    fn an_old_attached_record_upgrades_to_a_place() {
+        let (doc, file) = setup("alpha beta gamma");
+        let (start, end) = capture_cursors(&doc, &file, 6, 10).unwrap();
+        let record = write_legacy(
+            &doc,
+            "c1",
+            vec![
+                ("file", LoroValue::from(file.as_str())),
+                ("start", LoroValue::from(start)),
+                ("end", LoroValue::from(end)),
+            ],
+        );
+        doc.commit();
+        assert!(has_legacy_records(&doc));
+        assert!(
+            resolve_anchors(&doc, &file).is_empty(),
+            "readers skip a record with no place"
+        );
+
+        assert_eq!(upgrade_records(&doc), vec!["c1".to_string()]);
+        doc.commit();
+        assert!(!has_legacy_records(&doc));
+        assert!(record.get("file").is_none());
+        assert!(record.get("start").is_none());
+        assert!(record.get("end").is_none());
+        let after = resolve_anchors(&doc, &file);
+        assert_eq!((after[0].from, after[0].to), (6, 10));
+        assert_eq!(after[0].exact, "beta");
+        assert_eq!(status_of(&doc, &after[0]), Status::Exact);
+        assert!(upgrade_records(&doc).is_empty());
+    }
+
+    #[test]
+    fn an_old_detached_record_keeps_its_fragment_offset_and_length() {
+        let (doc, file) = setup("alpha beta gamma");
+        write_legacy(
+            &doc,
+            "c1",
+            vec![
+                ("file", LoroValue::from(file.as_str())),
+                ("detached", LoroValue::Bool(true)),
+                ("length", LoroValue::Double(4.0)),
+                ("fragment", LoroValue::from("frag1")),
+                ("offset", LoroValue::I64(1)),
+            ],
+        );
+        doc.commit();
+        assert!(has_legacy_records(&doc));
+        assert_eq!(upgrade_records(&doc), vec!["c1".to_string()]);
+        doc.commit();
+        let after = resolve_anchors(&doc, &file);
+        assert_eq!(after.len(), 1);
+        assert!(after[0].detached);
+        assert_eq!(after[0].length, Some(4));
+        assert_eq!(after[0].fragment.as_deref(), Some("frag1"));
+        assert_eq!(after[0].offset, Some(1));
+        let record = record_map(&doc.get_map(ANCHORS), "c1").unwrap();
+        assert!(record.get("file").is_none());
+        assert!(record.get("detached").is_none());
+        assert!(record.get("length").is_none());
+    }
+
+    /// Two peers re-place one comment at the same time. The record ends as one
+    /// of the two places, not a mix of their starts and ends.
+    #[test]
+    fn two_peers_replacing_one_anchor_converge_on_one_place() {
+        let (a, file) = setup("alpha beta gamma");
+        assert!(create_anchor(
+            &a, &file, "c1", 6, 10, "beta", "alpha ", " gamma"
+        ));
+        a.commit();
+        let b = new_doc();
+        b.import(&a.export(loro::ExportMode::snapshot()).unwrap())
+            .unwrap();
+
+        // Each peer cuts one end of the passage, which re-places the anchor: "b"
+        // on one peer and "a" on the other.
+        let mut memory_a = MoveMemory::new(32);
+        let mut memory_b = MoveMemory::new(32);
+        edit_and_record(&a, &file, &mut memory_a, 6, 1, "");
+        edit_and_record(&b, &file, &mut memory_b, 9, 1, "");
+        let place_a = Place::read(&record_map(&a.get_map(ANCHORS), "c1").unwrap()).unwrap();
+        let place_b = Place::read(&record_map(&b.get_map(ANCHORS), "c1").unwrap()).unwrap();
+        assert_ne!(place_a, place_b);
+        sync(&a, &b);
+
+        let merged_a = Place::read(&record_map(&a.get_map(ANCHORS), "c1").unwrap()).unwrap();
+        let merged_b = Place::read(&record_map(&b.get_map(ANCHORS), "c1").unwrap()).unwrap();
+        assert_eq!(merged_a, merged_b);
+        assert!(merged_a == place_a || merged_a == place_b);
+
+        // Either place resolves to the passage that is left of "beta".
+        let on_a = resolve_anchors(&a, &file);
+        assert_eq!(body(&a, &file), "alpha et gamma");
+        assert_eq!(slice16(&body(&a, &file), on_a[0].from, on_a[0].to), "et");
+        assert_eq!(resolve_anchors(&b, &file), on_a);
     }
 
     #[test]
@@ -2227,7 +2490,7 @@ mod tests {
         assert_eq!(status_of(&a, &marked[0]), Status::Deleted);
         let root = a.get_map(ANCHORS);
         let record = record_map(&root, "c1").unwrap();
-        assert!(is_true(&record, "detached"));
+        assert!(Place::read(&record).unwrap().detached);
     }
 
     #[test]
