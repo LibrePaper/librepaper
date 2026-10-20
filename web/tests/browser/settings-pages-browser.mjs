@@ -252,7 +252,7 @@ try {
   await b.evaluate(`document.querySelector("#diagnostics-report details summary").click()`);
   await until("the report fills", () => b.evaluate(`/## App/.test(document.querySelector("#diagnostics-report textarea").value) && /## Environment/.test(document.querySelector("#diagnostics-report textarea").value)`), 5000);
 
-  console.log("settings-pages-browser: Rendering shows two sections with global format options, Tools lists the programs with Quarto commands behind Details, a browser gets one notice on each desktop page, and a browser has a Diagnostics page");
+  console.log("settings-pages-browser: Rendering shows one section per format with a default preview, Tools lists the programs with Quarto commands behind Details, a browser gets one notice on each desktop page, and a browser has a Diagnostics page");
 } finally {
   if (b) await b.close();
   server.close();

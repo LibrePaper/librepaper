@@ -1,6 +1,6 @@
 <script>
-  // The preview a document of one format opens on. The choice is global for
-  // this browser; View > HTML and View > PDF change it for one visit only.
+  // The preview every document of one format opens on, for this person in
+  // this browser. View > HTML and View > PDF change it for one visit only.
   import SettingRow from "./SettingRow.svelte";
   import { readDefaultPreview, writeDefaultPreview } from "../../lib/build-preferences.js";
 
