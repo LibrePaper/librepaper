@@ -1,9 +1,15 @@
 // Comment anchors live in the shared document, in the `anchors` root map: one
-// map container per comment id. A record holds the file it sits in, two Loro
-// cursors (start and end) while it is attached, and the quote the comment was
-// made on. A record whose text was deleted whole is detached: it keeps its
-// quote and, when a tracked deletion took the text, the id of the fragment
-// that holds it.
+// map container per comment id. A record holds the quote the comment was made
+// on (exact, prefix, suffix) and a `place`. The place is one plain value, not
+// a container: { file, start, end } while the anchor is attached, with two
+// encoded Loro cursors. A record whose text was deleted whole is detached:
+// its place is { file, detached: true } with the old cursors and, when
+// known, length, fragment (the id of the tracked deletion that holds the
+// text) and offset. The place is one value because Loro merges map keys one
+// at a time. Two peers that re-place the same comment at once would otherwise
+// leave a record neither wrote, such as one peer's start with the other's end.
+// Every placement change writes the whole place with one set. A record
+// without a place is skipped by every reader.
 //
 // The planner (planOperation) is pure. It moves the attached anchors through
 // one batch of edits made in this session, and re-pins detached anchors when an
@@ -423,10 +429,56 @@ function lastCharStart(body, to) {
   return lo >= 0xdc00 && lo <= 0xdfff && hi >= 0xd800 && hi <= 0xdbff ? to - 2 : to - 1;
 }
 
+const isBytes = (v) => v instanceof Uint8Array;
+const isNum = (v) => typeof v === "number" && Number.isFinite(v);
+
+// The record's place, normalized, or null when it has none. Cursor bytes are
+// kept only when they are bytes, and the numbers only when they are finite.
+function placeOf(record) {
+  const p = record.get("place");
+  if (!p || typeof p !== "object" || typeof p.file !== "string") return null;
+  return {
+    file: p.file,
+    detached: p.detached === true,
+    start: isBytes(p.start) ? p.start : undefined,
+    end: isBytes(p.end) ? p.end : undefined,
+    length: isNum(p.length) ? p.length : undefined,
+    fragment: typeof p.fragment === "string" ? p.fragment : undefined,
+    offset: isNum(p.offset) ? p.offset : undefined,
+  };
+}
+
+function sameValue(a, b) {
+  if (isBytes(a) && isBytes(b)) {
+    return a.length === b.length && a.every((x, i) => x === b[i]);
+  }
+  return a === b;
+}
+
+// Whether the stored place is exactly `next`, so that the write can be skipped.
+function samePlace(record, next) {
+  const have = record.get("place");
+  if (!have || typeof have !== "object") return false;
+  const keys = Object.keys(next);
+  if (Object.keys(have).length !== keys.length) return false;
+  return keys.every((k) => sameValue(have[k], next[k]));
+}
+
+// The detached place that follows `old`: the cursors are kept when it had them.
+function detachedPlace(fileId, old, { length, fragment, offset }) {
+  const next = { file: fileId, detached: true };
+  if (isNum(length)) next.length = length;
+  if (typeof fragment === "string") next.fragment = fragment;
+  if (isNum(offset)) next.offset = offset;
+  if (old?.start) next.start = old.start;
+  if (old?.end) next.end = old.end;
+  return next;
+}
+
 // The span the stored cursors resolve to now, or null without a span.
-function resolvedSpan(doc, text, record) {
-  const startBytes = record.get("start");
-  const endBytes = record.get("end");
+function resolvedSpan(doc, text, place) {
+  const startBytes = place?.start;
+  const endBytes = place?.end;
   if (!(startBytes instanceof Uint8Array) || !(endBytes instanceof Uint8Array)) return null;
   const s = cursorPos(doc, text, startBytes);
   const e = cursorPos(doc, text, endBytes);
@@ -439,15 +491,13 @@ const str = (value) => (typeof value === "string" ? value : "");
 
 // The fields every record carries, read without resolving its cursors.
 function recordFields(value, id, fileId) {
-  const fragment = value.get("fragment");
-  const offset = value.get("offset");
-  const length = value.get("length");
+  const place = placeOf(value);
   return {
     id,
     file: fileId,
-    fragment: typeof fragment === "string" ? fragment : null,
-    offset: typeof offset === "number" ? offset : null,
-    length: typeof length === "number" ? length : null,
+    fragment: place?.fragment ?? null,
+    offset: place?.offset ?? null,
+    length: place?.length ?? null,
     exact: str(value.get("exact")),
     prefix: str(value.get("prefix")),
     suffix: str(value.get("suffix")),
@@ -461,13 +511,12 @@ function detachedAnchor(value, id, fileId) {
 
 // One record as an anchor, its cursors resolved against body (the file's text).
 function recordAnchor(doc, id, value, fileId, body) {
-  if (value.get("detached") === true) return detachedAnchor(value, id, fileId);
+  const place = placeOf(value);
+  if (place?.detached) return detachedAnchor(value, id, fileId);
   const base = recordFields(value, id, fileId);
   const text = fileText(doc, fileId);
-  const start = value.get("start");
-  const end = value.get("end");
-  const s = start instanceof Uint8Array ? cursorPos(doc, text, start) : null;
-  const e = end instanceof Uint8Array ? cursorPos(doc, text, end) : null;
+  const s = place?.start ? cursorPos(doc, text, place.start) : null;
+  const e = place?.end ? cursorPos(doc, text, place.end) : null;
   if (!s || !e) return { ...base, detached: false, from: 0, to: 0, collapsed: false, unresolved: true };
   const to = Math.max(s.offset, e.stale ? e.offset : e.offset + charWidth(body, e.offset));
   return { ...base, detached: false, from: s.offset, to, collapsed: to <= s.offset, unresolved: false };
@@ -486,7 +535,7 @@ export function resolveAnchors(doc, fileId) {
   const body = text ? text.toString() : "";
   const out = [];
   for (const [id, entry] of doc.getMap(ANCHORS).entries()) {
-    if (!(entry instanceof LoroMap) || entry.get("file") !== fileId) continue;
+    if (!(entry instanceof LoroMap) || placeOf(entry)?.file !== fileId) continue;
     out.push(recordAnchor(doc, id, /** @type {any} */ (entry), fileId, body));
   }
   return out;
@@ -505,9 +554,7 @@ export function createAnchor(doc, fileId, id, from, to, { exact, prefix, suffix 
   if (!start || !end) return false;
   doc.setNextCommitOrigin(ANCHORS_ORIGIN);
   const record = doc.getMap(ANCHORS).setContainer(id, new LoroMap());
-  record.set("file", fileId);
-  record.set("start", start.encode());
-  record.set("end", end.encode());
+  record.set("place", { file: fileId, start: start.encode(), end: end.encode() });
   record.set("exact", exact);
   record.set("prefix", prefix);
   record.set("suffix", suffix);
@@ -549,15 +596,10 @@ export function attachByHand(doc, index, memory, id, fileId, from, to) {
   const held = map.get(id);
   doc.setNextCommitOrigin(ANCHORS_ORIGIN);
   const record = held instanceof LoroMap ? held : map.setContainer(id, new LoroMap());
-  record.set("file", fileId);
-  record.set("start", start.encode());
-  record.set("end", end.encode());
+  record.set("place", { file: fileId, start: start.encode(), end: end.encode() });
   record.set("exact", body.slice(from, to));
   record.set("prefix", body.slice(prefixAt, from));
   record.set("suffix", body.slice(to, suffixEnd));
-  for (const key of ["detached", "length", "fragment", "offset"]) {
-    if (record.get(key) !== undefined) record.delete(key);
-  }
   doc.commit({ origin: ANCHORS_ORIGIN });
   memory.forget(id);
   index.refresh([id]);
@@ -590,7 +632,7 @@ export function writeAnchors(doc, planned) {
   const map = doc.getMap(ANCHORS);
   // Pass 1 reads everything and works out the writes. Resolving a stale cursor
   // commits pending operations, so no read may come after the first write.
-  /** @type {{ id: string, record: any, sets: [string, any][], deletes: string[] }[]} */
+  /** @type {{ id: string, record: any, place: object | null }[]} */
   const pending = [];
   for (const file of planned.files) {
     const text = fileText(doc, file.fileId);
@@ -599,26 +641,10 @@ export function writeAnchors(doc, planned) {
       if (!a.detached && a.touched === false) continue;
       const record = map.get(a.id);
       if (!(record instanceof LoroMap)) continue;
-      /** @type {[string, any][]} */
-      const sets = [];
-      /** @type {string[]} */
-      const deletes = [];
-      const put = (key, value) => {
-        if (record.get(key) !== value) sets.push([key, value]);
-      };
-      const drop = (key) => {
-        if (record.get(key) !== undefined) deletes.push(key);
-      };
+      const old = placeOf(record);
       if (a.detached) {
-        put("file", file.fileId);
-        put("detached", true);
-        if (typeof a.length === "number") put("length", a.length);
-        else drop("length");
-        if (typeof a.fragment === "string") put("fragment", a.fragment);
-        else drop("fragment");
-        if (typeof a.offset === "number") put("offset", a.offset);
-        else drop("offset");
-        pending.push({ id: a.id, record, sets, deletes });
+        const next = detachedPlace(file.fileId, old, a);
+        pending.push({ id: a.id, record, place: samePlace(record, next) ? null : next });
         continue;
       }
       if (!text || !(a.to > a.from)) continue;
@@ -626,26 +652,21 @@ export function writeAnchors(doc, planned) {
       const start = text.getCursor(a.from, -1);
       const end = text.getCursor(lastCharStart(body, a.to), 1);
       if (!start || !end) continue;
-      const reattach = record.get("detached") === true || record.get("file") !== file.fileId;
-      const have = a.touched === true || reattach ? null : resolvedSpan(doc, text, record);
-      if (!have || have.from !== a.from) sets.push(["start", start.encode()]);
-      if (!have || have.to !== a.to) sets.push(["end", end.encode()]);
-      put("file", file.fileId);
-      drop("detached");
-      drop("length");
-      drop("fragment");
-      drop("offset");
-      pending.push({ id: a.id, record, sets, deletes });
+      const reattach = !old || old.detached || old.file !== file.fileId;
+      const have = a.touched === true || reattach ? null : resolvedSpan(doc, text, old);
+      const next = {
+        file: file.fileId,
+        start: have && have.from === a.from && old?.start ? old.start : start.encode(),
+        end: have && have.to === a.to && old?.end ? old.end : end.encode(),
+      };
+      pending.push({ id: a.id, record, place: samePlace(record, next) ? null : next });
     }
   }
   // Pass 2 writes. The commit origin is set before the first write, so the
   // commit that carries these writes is labelled as anchor work.
-  const dirty = pending.filter((p) => p.sets.length > 0 || p.deletes.length > 0);
+  const dirty = pending.filter((p) => p.place);
   if (dirty.length > 0) doc.setNextCommitOrigin(ANCHORS_ORIGIN);
-  for (const p of dirty) {
-    for (const [key, value] of p.sets) p.record.set(key, value);
-    for (const key of p.deletes) p.record.delete(key);
-  }
+  for (const p of dirty) p.record.set("place", p.place);
   return pending.map((p) => p.id);
 }
 
@@ -661,10 +682,12 @@ export function markCollapsed(doc, fileId) {
   const marked = [];
   for (const a of resolveAnchors(doc, fileId)) {
     const record = map.get(a.id);
-    if (a.collapsed && record instanceof LoroMap) marked.push({ id: a.id, record });
+    if (!a.collapsed || !(record instanceof LoroMap)) continue;
+    const stored = record.get("place");
+    if (stored && typeof stored === "object") marked.push({ id: a.id, record, place: { ...stored, detached: true } });
   }
   if (marked.length > 0) doc.setNextCommitOrigin(ANCHORS_ORIGIN);
-  for (const { record } of marked) record.set("detached", true);
+  for (const { record, place } of marked) record.set("place", place);
   return marked.map((m) => m.id);
 }
 
@@ -703,8 +726,9 @@ export function recordOperation(doc, files, memory, opts) {
     for (const [id, entry] of doc.getMap(ANCHORS).entries()) {
       if (!(entry instanceof LoroMap)) continue;
       const value = /** @type {any} */ (entry);
-      const fileId = value.get("file");
-      if (typeof fileId !== "string" || named.has(fileId) || value.get("detached") !== true) continue;
+      const place = placeOf(value);
+      if (!place || named.has(place.file) || !place.detached) continue;
+      const fileId = place.file;
       if (!elsewhere.has(fileId)) elsewhere.set(fileId, []);
       elsewhere.get(fileId).push(detachedAnchor(value, id, fileId));
     }
@@ -1019,12 +1043,12 @@ export function restoreByFragments(doc, fileId, restored) {
   // Reads come first. The commit origin is set before the first write.
   const repins = [];
   for (const [id, entry] of map.entries()) {
-    if (!(entry instanceof LoroMap) || entry.get("file") !== fileId || entry.get("detached") !== true) continue;
+    if (!(entry instanceof LoroMap)) continue;
     const value = /** @type {any} */ (entry);
-    const fragment = value.get("fragment");
-    const offset = value.get("offset");
+    const place = placeOf(value);
+    if (!place || place.file !== fileId || !place.detached) continue;
+    const { fragment, offset, length } = place;
     const r = typeof fragment === "string" ? byFragment.get(fragment) : undefined;
-    const length = value.get("length");
     if (!r || typeof offset !== "number" || typeof length !== "number") continue;
     const from = r.at + offset;
     const to = Math.min(from + length, r.at + r.text.length);
@@ -1032,17 +1056,10 @@ export function restoreByFragments(doc, fileId, restored) {
     const start = text.getCursor(from, -1);
     const end = text.getCursor(lastCharStart(body, to), 1);
     if (!start || !end) continue;
-    repins.push({ id, value, start: start.encode(), end: end.encode() });
+    repins.push({ id, value, place: { file: fileId, start: start.encode(), end: end.encode() } });
   }
   if (repins.length > 0) doc.setNextCommitOrigin(ANCHORS_ORIGIN);
-  for (const { value, start, end } of repins) {
-    value.set("start", start);
-    value.set("end", end);
-    value.delete("detached");
-    value.delete("length");
-    value.delete("fragment");
-    value.delete("offset");
-  }
+  for (const { value, place } of repins) value.set("place", place);
   return repins.map((r) => r.id);
 }
 
@@ -1107,7 +1124,7 @@ export class AnchorIndex {
     for (const [id, entry] of doc.getMap(ANCHORS).entries()) {
       if (!(entry instanceof LoroMap)) continue;
       const value = /** @type {any} */ (entry);
-      if (value.get("file") !== fileId) continue;
+      if (placeOf(value)?.file !== fileId) continue;
       this.#remember(id, value);
       anchors.push(toAnchor(recordAnchor(doc, id, value, fileId, body)));
     }
@@ -1155,7 +1172,7 @@ export class AnchorIndex {
     const hit = this.#locate(id);
     if (hit) return hit;
     const record = this.#doc.getMap(ANCHORS).get(id);
-    const fileId = record instanceof LoroMap ? record.get("file") : undefined;
+    const fileId = record instanceof LoroMap ? placeOf(record)?.file : undefined;
     if (typeof fileId !== "string") return null;
     this.load(fileId);
     return this.#locate(id);
@@ -1360,7 +1377,7 @@ export class AnchorIndex {
     const bodies = new Map();
     for (const id of ids) {
       const value = /** @type {any} */ (records.get(id));
-      const fileId = value instanceof LoroMap ? value.get("file") : undefined;
+      const fileId = value instanceof LoroMap ? placeOf(value)?.file : undefined;
       if (!(value instanceof LoroMap) || typeof fileId !== "string") {
         this.#forget(id);
         continue;
