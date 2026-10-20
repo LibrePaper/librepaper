@@ -59,7 +59,10 @@ fn requested(app: &AppHandle, url: &Url, destination: &mut PathBuf) {
     let n = downloads.next.fetch_add(1, Ordering::Relaxed);
     let temp = dir.join(format!("{n}-{name}"));
     *destination = temp.clone();
-    let mut pending = downloads.pending.lock().unwrap_or_else(|err| err.into_inner());
+    let mut pending = downloads
+        .pending
+        .lock()
+        .unwrap_or_else(|err| err.into_inner());
     pending.push(Pending {
         url: url.to_string(),
         temp,
@@ -71,7 +74,10 @@ fn requested(app: &AppHandle, url: &Url, destination: &mut PathBuf) {
 fn finished(app: &AppHandle, url: &Url, success: bool) {
     let downloads = app.state::<Downloads>();
     let entry = {
-        let mut pending = downloads.pending.lock().unwrap_or_else(|err| err.into_inner());
+        let mut pending = downloads
+            .pending
+            .lock()
+            .unwrap_or_else(|err| err.into_inner());
         take(&mut pending, url.as_str())
     };
     let Some(entry) = entry else {
