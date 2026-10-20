@@ -57,6 +57,12 @@ export function destTop(kind, args) {
   return null;
 }
 
+/// The `left` a destination's arguments carry: XYZ is `[left, top, zoom]`, the
+/// others pin no horizontal position.
+export function destLeft(kind, args) {
+  return kind === "XYZ" ? args?.[0] : null;
+}
+
 /// The page a named action leads to from page `current` of `count`, or null.
 export function namedActionPage(action, current, count) {
   if (!(count >= 1)) return null;
@@ -86,8 +92,8 @@ export function boxPercent(corners, width, height) {
 }
 
 /// Resolve a PDF destination (a name, or an explicit array) to
-/// `{ page, y }`: `page` 1-based, `y` in PDF points from the page's top edge
-/// or null. Anything that cannot be resolved gives null; it never throws,
+/// `{ page, y }`: `page` 1-based, `y` in PDF points from the top edge of the
+/// page as displayed (rotation applied) or null. Anything that cannot be resolved gives null; it never throws,
 /// because a broken link must not stop the page it is on from drawing.
 export async function resolveDest(pdfDocument, dest) {
   try {
@@ -102,8 +108,14 @@ export async function resolveDest(pdfDocument, dest) {
     if (!Number.isInteger(index) || index < 0 || index >= pdfDocument.numPages) return null;
     const top = destTop(mode?.name, args);
     if (typeof top !== "number") return { page: index + 1, y: null };
-    const { view } = await pdfDocument.getPage(index + 1);
-    return { page: index + 1, y: yFromTop(view, top) };
+    // The page's own viewport, so /Rotate and the user unit are applied: the
+    // y of a rotated page is not "height minus top".
+    const page = await pdfDocument.getPage(index + 1);
+    const viewport = page.getViewport({ scale: 1 });
+    const left = destLeft(mode?.name, args);
+    const [, y] = viewport.convertToViewportPoint(typeof left === "number" ? left : 0, top);
+    if (!Number.isFinite(y)) return { page: index + 1, y: null };
+    return { page: index + 1, y: Math.max(0, Math.min(viewport.height, y)) };
   } catch {
     return null;
   }
