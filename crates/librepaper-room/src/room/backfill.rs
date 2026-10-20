@@ -9,6 +9,10 @@
 //! the document. When every comment has its record, that costs reads and no
 //! write.
 //!
+//! Opening a room also converts the records that older releases wrote into the
+//! current format, as one server-authored command, before the room is shared. A
+//! document with no old records pays one read.
+//!
 //! The heal a history trim runs before its shallow snapshot is here too: it
 //! gives each stale record fresh cursors, so the snapshot cannot strand it.
 
@@ -169,6 +173,45 @@ impl SequencerCommand for HealAnchors {
     }
 }
 
+/// Converts the anchor records that older releases wrote into the current
+/// format. Evaluated against head under the sequencer's lock, like the other
+/// anchor commands.
+struct UpgradeAnchors {
+    upgraded: usize,
+}
+
+impl SequencerCommand for UpgradeAnchors {
+    type Output = usize;
+
+    fn name(&self) -> &'static str {
+        "anchors-upgrade"
+    }
+
+    fn authority(&self) -> Rung {
+        Rung::Editor
+    }
+
+    fn evaluate(&mut self, head: &Head<'_>) -> Result<Option<PreparedSource>, CommandError> {
+        let mut upgraded = 0;
+        let prepared = head
+            .prepare(client_seq_of(Uuid::now_v7()), |draft| {
+                upgraded = anchors::upgrade_records(draft).len();
+                Ok(())
+            })
+            .map_err(CommandError::Conflict)?;
+        self.upgraded = upgraded;
+        Ok(prepared)
+    }
+
+    fn transact<'a>(
+        &'a mut self,
+        _tx: &'a mut sqlx::Transaction<'_, sqlx::Postgres>,
+        _evidence: &'a Evidence,
+    ) -> BoxFuture<'a, Result<Self::Output, CommandError>> {
+        Box::pin(async move { Ok(self.upgraded) })
+    }
+}
+
 /// Heals the anchor records of `room`'s document under the caller's authority.
 /// Returns how many records were changed and the encoded frontier the healing
 /// left.
@@ -210,8 +253,19 @@ async fn owner_authority(room: &Room) -> Result<Authority, WriteError> {
 
 /// Writes an anchor record for each comment of `room`'s document that has none.
 /// Returns how many records were written. Comments are read a page at a time,
-/// as every other reader reads them, so no whole collection is held.
+/// as every other reader reads them, so no whole collection is held. Records in
+/// an older format are converted first, so they count as present.
 pub(crate) async fn backfill_anchors(room: &Room) -> Result<usize, WriteError> {
+    let legacy = room
+        .log()
+        .with_head(|doc| anchors::has_legacy_records(doc))
+        .await?;
+    if legacy {
+        let authority = owner_authority(room).await?;
+        room.command(&authority, &mut UpgradeAnchors { upgraded: 0 })
+            .await
+            .map_err(WriteError::from)?;
+    }
     let mut missing: Vec<Missing> = Vec::new();
     let mut after = None;
     loop {
