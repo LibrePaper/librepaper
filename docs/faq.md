@@ -2,6 +2,17 @@
 title: "FAQ"
 ---
 
+## How do I move a project from Overleaf?
+
+- In Overleaf, open the project and choose Menu > Download > Source. This saves a ZIP of every file.
+- In LibrePaper, choose New project > Upload Files and drop the ZIP on the page. Folders are kept, and a wrapper folder around the whole archive is removed.
+- Check the Open first choice, usually `main.tex`, then press Create project.
+- The browser compiler has pdfLaTeX and XeLaTeX. LuaLaTeX projects need changes before they compile.
+- The engine follows a `% !TEX program = xelatex` line, then the packages the document loads. Settings > Render forces one engine everywhere.
+- BibTeX and Biber run on their own. Upload the `.bib` files with the rest of the project.
+- Unsupported file types are skipped and listed after the upload.
+- Only the files come across. Overleaf comments, tracked changes and history do not.
+
 ## How do I use my own fonts in LaTeX and Typst?
 
 - Upload `.ttf` or `.otf` files into the project. A `fonts/` folder keeps them out of the way.

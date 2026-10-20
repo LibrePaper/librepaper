@@ -44,7 +44,6 @@ export const nav = [
       { path: "architecture/building", label: "Building from source" },
     ],
   },
-  { path: "migration", label: "Migration" },
   { path: "privacy", label: "Privacy and data retention" },
   { path: "faq", label: "FAQ" },
   { path: "contact", label: "Contact" },
