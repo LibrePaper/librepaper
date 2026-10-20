@@ -190,13 +190,25 @@ const NEW_WINDOW_SCRIPT: &str = r#"if (window.top === window) {
       window.dispatchEvent(new CustomEvent("librepaper:open-settings"));
     }
   });
-  // WebKitGTK does not ask the shell about a target="_blank" link, only about
-  // window.open, so such a click becomes window.open.
+  // A link to another site, or one asking for a new window, goes to
+  // window.open, which the shell sends to the system browser or a new app
+  // window. Followed in place, it would replace the app with that site.
+  // WebKitGTK also never reports target="_blank" clicks.
   document.addEventListener("click", (event) => {
-    const link = event.target instanceof Element && event.target.closest("a[target=_blank][href]");
-    if (event.defaultPrevented || !link || event.button !== 0) return;
+    const link = event.target instanceof Element && event.target.closest("a[href], area[href]");
+    if (!link || event.defaultPrevented || event.button !== 0) return;
+    if (event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;
+    if (link.hasAttribute("download")) return;
+    let url;
+    try {
+      url = new URL(link.href, document.baseURI);
+    } catch {
+      return;
+    }
+    if (url.protocol !== "http:" && url.protocol !== "https:") return;
+    if (link.target !== "_blank" && url.origin === location.origin) return;
     event.preventDefault();
-    window.open(link.href, "_blank");
+    window.open(url.href, "_blank");
   });
 }"#;
 
