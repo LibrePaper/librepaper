@@ -1589,40 +1589,35 @@
   const confirmRestore = async () => timeline.confirm(projectSignature(), await projectFrontier());
   const nameLabel = (sha, given) => timeline.name(sha, given);
 
-  /// A version's plain-source archive is produced on request (room.md
-  /// "Labels", §8.5): the first ask starts it, and it is a 404 until it
-  /// finishes. Without this the only affordance would be a click that either
-  /// does nothing visible for a while or silently 404s a moment later; this
-  /// polls `archive_status` and keeps the panel saying so until it is
-  /// `"ready"` (then downloads) or `"failed"` (then says that instead of
-  /// spinning forever).
+  /// A version downloads as a zip built here from that version's source and
+  /// figures, the same way the project download is built, so nothing needs to
+  /// be prepared on the server first. `downloadingSha` is the version being
+  /// fetched; asking for another version supersedes it.
   let downloadingSha = $state("");
   let downloadProblem = $state("");
+  // `YYYY-MM-DD-HHMM` in local time, or the start of the version's id when
+  // its time is missing or not a date.
+  function versionStamp(at, sha) {
+    const when = at ? new Date(at) : null;
+    if (!when || Number.isNaN(when.getTime())) return sha.slice(0, 8);
+    const pad = (n) => String(n).padStart(2, "0");
+    return `${when.getFullYear()}-${pad(when.getMonth() + 1)}-${pad(when.getDate())}-${pad(when.getHours())}${pad(when.getMinutes())}`;
+  }
   async function downloadArchive(sha) {
     if (downloadingSha === sha) return;
     downloadingSha = sha;
     downloadProblem = "";
     try {
-      let retry = true;
-      for (;;) {
-        const label = await history.requestArchive(SLUG, sha, keyHeaders(KEY), retry);
-        retry = false;
-        if (downloadingSha !== sha) return; // superseded by a later request
-        if (label.archive_status === "ready") {
-          const anchor = document.createElement("a");
-          anchor.href = history.archiveUrl(SLUG, sha);
-          anchor.download = "";
-          anchor.click();
-          return;
-        }
-        if (label.archive_status === "failed") {
-          downloadProblem = "That version's archive could not be prepared.";
-          return;
-        }
-        await new Promise((resolve) => setTimeout(resolve, 1500));
+      const point = await history.read(SLUG, sha, keyHeaders(KEY));
+      const digests = {};
+      for (const [path, file] of Object.entries(point.files || {})) {
+        if (file?.kind !== "text" && file?.digest) digests[path] = file.digest;
       }
+      const files = await projectFiles({ tree: { texts: point.texts || {}, digests }, folders: [], gather: gatherFigures });
+      if (downloadingSha !== sha) return; // superseded by a later request
+      saveBlob(await archive(files), `${SLUG}-${versionStamp(point.at, sha)}.zip`);
     } catch (error) {
-      if (downloadingSha === sha) downloadProblem = error.message || "That version's archive could not be prepared.";
+      if (downloadingSha === sha) downloadProblem = error.message || "That version could not be downloaded.";
     } finally {
       if (downloadingSha === sha) downloadingSha = "";
     }

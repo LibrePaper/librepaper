@@ -103,24 +103,6 @@ export async function read(slug, sha, headers = {}) {
   return { ...payload, files };
 }
 
-/// Asks for a version's plain-source archive (room.md "Labels" and
-/// §8.5): the first call requests one if none is pending or ready yet, and
-/// every call reports where that request stands. Polls leave terminal
-/// failures alone; a fresh download can explicitly retry one.
-export async function requestArchive(slug, sha, headers = {}, retry = false) {
-  const query = retry ? "archive=1&retry=1" : "archive=1";
-  const response = await fetch(`/api/documents/${slug}/history/${sha}?${query}`, {
-    headers: asked(headers),
-    cache: "no-store",
-  });
-  if (!response.ok) throw new Error("that version's archive could not be prepared");
-  return fromWire(await response.json());
-}
-
-/// Where the bytes are, once `archive_status` reads `"ready"`. A 404 until
-/// then, the same as any object this server has not produced yet.
-export const archiveUrl = (slug, sha) => `/api/documents/${slug}/history/${sha}/archive`;
-
 /// Names a label, or takes its name away with an empty one. Editors only,
 /// which the server decides and this does not pretend to know.
 export async function label(slug, sha, text, headers = {}, requestId = null) {
