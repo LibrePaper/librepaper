@@ -22,11 +22,11 @@ use librepaper_engine::log::sequencer::{
     Command as SequencerCommand, Evidence, Head, PreparedSource, Rung,
 };
 use librepaper_engine::log::Registry;
-use loro::{Container, LoroValue, ValueOrContainer};
 use librepaper_engine::storage::annotation::{AnchorStatus, CommentTarget};
 use librepaper_engine::storage::blob::FsStore;
 use librepaper_engine::storage::postgres::Authority;
 use librepaper_engine::storage::store::{DocumentInput, MutationActor, Store};
+use loro::{Container, LoroValue, ValueOrContainer};
 use serde_json::json;
 
 const PAPER: &str = "# Interval estimates\n\nThe *interval* covers the mean of the posterior.\n\nA second paragraph, for company.\n";

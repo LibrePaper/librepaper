@@ -1471,7 +1471,11 @@ pub fn restore_by_fragments(doc: &LoroDoc, file_id: &str, restored: &[Restored])
         ) else {
             continue;
         };
-        repins.push((id, record, Place::attached(file_id, start.encode(), end.encode())));
+        repins.push((
+            id,
+            record,
+            Place::attached(file_id, start.encode(), end.encode()),
+        ));
     }
     if !repins.is_empty() {
         doc.set_next_commit_origin(ANCHORS_ORIGIN);
