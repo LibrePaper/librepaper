@@ -136,8 +136,8 @@ async function withDocument(bytes, fn) {
 /// token that lets a superseded run drop its pages on the floor instead of
 /// appending them under the new document's.
 ///
-/// `options` is `{ mode, spread, sidebarWidth, presenting, ongo, beforeswap,
-/// afterswap }`. The result is `null` when a newer render won, otherwise
+/// `options` is `{ mode, spread, sidebarWidth, presenting, density, ongo,
+/// beforeswap, afterswap }`. The result is `null` when a newer render won, otherwise
 /// `{ pages, document, sizes }` with the page sizes in PDF points. The
 /// document is left open for the sidebar; `discard` releases it. A superseded
 /// or failed render releases its own.
@@ -146,8 +146,8 @@ async function withDocument(bytes, fn) {
 /// caller needs to keep the reading position; `afterswap` gets it back
 /// straight after, in the same task, so no frame is painted between.
 export async function render(bytes, root, options = {}) {
-  const { mode = "auto", spread = false, sidebarWidth = 0, presenting = false, ongo = () => {},
-    beforeswap = null, afterswap = null } = options;
+  const { mode = "auto", spread = false, sidebarWidth = 0, presenting = false, density = 1,
+    ongo = () => {}, beforeswap = null, afterswap = null } = options;
   const mine = ++generation;
   const loading = startLoading(bytes);
   let document_ = null;
@@ -205,7 +205,11 @@ export async function render(bytes, root, options = {}) {
       frame.style.setProperty("--scale-round-x", "1px");
       frame.style.setProperty("--scale-round-y", "1px");
 
-      const ratio = Math.min(globalThis.devicePixelRatio || 1, 2);
+      // WebKit leaves page zoom out of devicePixelRatio, so in the desktop app
+      // at 125% the canvas would be drawn for 100% and stretched. The host
+      // tells the frame the zoom as `density` and it multiplies in here. The
+      // cap bounds the canvas memory of a large page on a dense screen.
+      const ratio = Math.min((globalThis.devicePixelRatio || 1) * density, 3);
       const canvas = document.createElement("canvas");
       canvas.width = Math.floor(viewport.width * ratio);
       canvas.height = Math.floor(viewport.height * ratio);
