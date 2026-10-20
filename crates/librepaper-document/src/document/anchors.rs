@@ -1492,7 +1492,7 @@ pub fn restore_by_fragments(doc: &LoroDoc, file_id: &str, restored: &[Restored])
 pub fn has_legacy_records(doc: &LoroDoc) -> bool {
     let map = doc.get_map(ANCHORS);
     let legacy = map.keys().any(|key| {
-        record_map(&map, &key.to_string()).is_some_and(|record| record.get("file").is_some())
+        record_map(&map, key.as_ref()).is_some_and(|record| record.get("file").is_some())
     });
     legacy
 }

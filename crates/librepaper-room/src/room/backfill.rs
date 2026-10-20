@@ -256,10 +256,7 @@ async fn owner_authority(room: &Room) -> Result<Authority, WriteError> {
 /// as every other reader reads them, so no whole collection is held. Records in
 /// an older format are converted first, so they count as present.
 pub(crate) async fn backfill_anchors(room: &Room) -> Result<usize, WriteError> {
-    let legacy = room
-        .log()
-        .with_head(|doc| anchors::has_legacy_records(doc))
-        .await?;
+    let legacy = room.log().with_head(anchors::has_legacy_records).await?;
     if legacy {
         let authority = owner_authority(room).await?;
         room.command(&authority, &mut UpgradeAnchors { upgraded: 0 })
