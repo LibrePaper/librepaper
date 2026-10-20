@@ -47,7 +47,7 @@
     observer.observe(viewport);
     const stopMode = onMode((next) => tell({ type: "theme", mode: next }));
     const standard = () => document.fullscreenElement === frame;
-    const current = () => standard() || document.webkitFullscreenElement === frame;
+    const current = () => standard() || /** @type {any} */ (document).webkitFullscreenElement === frame;
     let presenting = false;
     const changed = () => {
       const on = !!frame && current();

@@ -15,9 +15,21 @@ function factor(level) {
 
 /// Calls `listener` now with the correction factor, and again whenever the
 /// shell changes the zoom. Returns the unsubscribe.
+///
+/// The level in the init script is the one the window opened at, so a page
+/// loaded after a later zoom also asks the shell for the level it has now.
 export function onPageZoom(listener) {
   const heard = (event) => listener(factor(event.detail));
   listener(factor());
   globalThis.window?.addEventListener("librepaper:zoom", heard);
+  const app = desktop();
+  if (app && !/Windows/.test(globalThis.navigator?.userAgent ?? "")) {
+    fetch(`${app.base}shell/zoom`)
+      .then((response) => (response.ok ? response.json() : null))
+      .then((body) => {
+        if (typeof body?.zoom === "number") listener(factor(body.zoom));
+      })
+      .catch(() => {});
+  }
   return () => globalThis.window?.removeEventListener("librepaper:zoom", heard);
 }

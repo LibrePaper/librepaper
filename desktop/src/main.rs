@@ -623,6 +623,19 @@ fn serve(app: &AppHandle, label: String, request: Request<Vec<u8>>, responder: U
         return responder.respond(with_origin(res, &origin));
     }
 
+    // The level now. The init script carries the level the window opened at,
+    // which is stale for a page loaded after a later zoom.
+    if request.method() == Method::GET && request.uri().path() == "/shell/zoom" {
+        let body = serde_json::json!({ "zoom": app.state::<zoom::Zoom>().get() })
+            .to_string()
+            .into_bytes();
+        let res = Response::builder()
+            .header(header::CONTENT_TYPE, "application/json")
+            .body(body)
+            .expect("the zoom response is valid");
+        return responder.respond(with_origin(res, &origin));
+    }
+
     // Copies the report to the clipboard. The page only learns that it was copied.
     if request.method() == Method::POST && request.uri().path() == "/shell/diagnostics" {
         let app = app.clone();

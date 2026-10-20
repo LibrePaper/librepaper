@@ -223,6 +223,7 @@ export async function render(bytes, root, options = {}) {
       staging.append(frame);
 
       await page.render({
+        canvas,
         canvasContext: canvas.getContext("2d"),
         viewport,
         transform: ratio === 1 ? null : [ratio, 0, 0, ratio, 0, 0],

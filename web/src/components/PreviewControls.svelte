@@ -15,7 +15,7 @@
   import { Menu } from "@skeletonlabs/skeleton-svelte";
   import { tick } from "svelte";
   import ExplorerMenu from "./ExplorerMenu.svelte";
-  import Icon from "./Icon.svelte";
+  import MenuIconButton from "./MenuIconButton.svelte";
   import IconButton from "./IconButton.svelte";
 
   // `view` is the whole validated viewer-state. `send` puts a message on the
@@ -166,9 +166,7 @@
     <span class="preview-spacer"></span>
     {#if busy}<span class="preview-busy" role="status" aria-label="Compiling"><span class="spinner"></span></span>{/if}
     <Menu onSelect={chosen} positioning={{ placement: "bottom-end" }}>
-      <Menu.Trigger class="btn-icon icon-control icon-plain btn-icon-sm" aria-label="More">
-        <Icon name="more-horizontal" />
-      </Menu.Trigger>
+      <MenuIconButton icon="more-horizontal" label="More" size="1rem" />
       <ExplorerMenu>
         <Menu.Item value="spread" class="menuitem">
           <span class="menuitem-check" aria-hidden="true">{view.spread ? "✓" : ""}</span>

@@ -27,33 +27,33 @@ const STYLE = `
           display: none; z-index: 20; box-sizing: border-box; }
   :host([open]) { display: block; }
   .panel { height: 100%; box-sizing: border-box; display: flex; flex-direction: column;
-           background: var(--lp-sidebar-bg, #ffffff); color: var(--lp-sidebar-text, #1a2225);
-           border-right: 1px solid var(--lp-sidebar-border, #d6d8d4);
+           background: var(--lp-sidebar-bg); color: var(--lp-sidebar-text);
+           border-right: 1px solid var(--lp-sidebar-border);
            font: 0.8125rem/1.4 system-ui, -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; }
-  .tabs { display: flex; flex: none; border-bottom: 1px solid var(--lp-sidebar-border, #d6d8d4); }
-  .tabs button { flex: 1; padding: 0.5rem 0.25rem; border: 0; background: none; color: var(--lp-sidebar-muted, #5d666a);
+  .tabs { display: flex; flex: none; border-bottom: 1px solid var(--lp-sidebar-border); }
+  .tabs button { flex: 1; padding: 0.5rem 0.25rem; border: 0; background: none; color: var(--lp-sidebar-muted);
                  font: inherit; cursor: pointer; border-bottom: 2px solid transparent; }
-  .tabs button[aria-selected="true"] { color: var(--lp-sidebar-text, #1a2225); border-bottom-color: var(--lp-sidebar-active, #2f6fdb); }
-  button:focus-visible { outline: 2px solid var(--lp-sidebar-active, #2f6fdb); outline-offset: -2px; }
+  .tabs button[aria-selected="true"] { color: var(--lp-sidebar-text); border-bottom-color: var(--lp-sidebar-active); }
+  button:focus-visible { outline: 2px solid var(--lp-sidebar-active); outline-offset: -2px; }
   .body { flex: 1; min-height: 0; overflow-y: auto; position: relative; }
   .body[hidden] { display: none; }
   ol, ul { list-style: none; margin: 0; padding: 0; }
   .pages { padding: 12px 0; }
   .item { display: block; width: 100%; padding: 6px 0; border: 0; background: none; color: inherit; font: inherit; cursor: pointer; text-align: center; }
-  .item .thumb { width: ${THUMB_WIDTH}px; margin: 0 auto 4px; box-sizing: border-box; background: #ffffff;
-                 border: 1px solid var(--lp-sidebar-border, #d6d8d4); overflow: hidden; }
+  .item .thumb { width: ${THUMB_WIDTH}px; margin: 0 auto 4px; box-sizing: border-box; background: var(--lp-thumb-bg);
+                 border: 1px solid var(--lp-sidebar-border); overflow: hidden; }
   .item canvas { display: block; width: 100%; height: auto; filter: var(--lp-thumb-filter, none); }
-  .item .num { color: var(--lp-sidebar-muted, #5d666a); }
-  .item[aria-current="page"] .thumb { outline: 3px solid var(--lp-sidebar-active, #2f6fdb); outline-offset: 0; }
-  .item[aria-current="page"] .num { color: var(--lp-sidebar-text, #1a2225); font-weight: 600; }
+  .item .num { color: var(--lp-sidebar-muted); }
+  .item[aria-current="page"] .thumb { outline: 3px solid var(--lp-sidebar-active); outline-offset: 0; }
+  .item[aria-current="page"] .num { color: var(--lp-sidebar-text); font-weight: 600; }
   .outline { padding: 6px 0; }
   .outline ul { padding-left: 0.9rem; }
   .row { display: flex; align-items: flex-start; }
-  .row .twist { flex: none; width: 1.25rem; padding: 0.2rem 0; border: 0; background: none; color: var(--lp-sidebar-muted, #5d666a); font: inherit; cursor: pointer; }
+  .row .twist { flex: none; width: 1.25rem; padding: 0.2rem 0; border: 0; background: none; color: var(--lp-sidebar-muted); font: inherit; cursor: pointer; }
   .row .spacer { flex: none; width: 1.25rem; }
   .row .link { flex: 1; min-width: 0; padding: 0.2rem 0.5rem 0.2rem 0; border: 0; background: none; color: inherit;
                font: inherit; text-align: left; cursor: pointer; overflow-wrap: anywhere; }
-  .row .link:hover { color: var(--lp-sidebar-active, #2f6fdb); }
+  .row .link:hover { color: var(--lp-sidebar-active); }
   li[data-collapsed] > ul { display: none; }
 `;
 
@@ -148,6 +148,7 @@ export function createSidebar({ ongo }) {
       canvas.height = Math.max(1, Math.floor(viewport.height * ratio));
       canvas.setAttribute("aria-hidden", "true");
       const task = page.render({
+        canvas,
         canvasContext: canvas.getContext("2d"),
         viewport,
         transform: ratio === 1 ? null : [ratio, 0, 0, ratio, 0, 0],
@@ -205,7 +206,7 @@ export function createSidebar({ ongo }) {
       observer = new IntersectionObserver(
         (entries) => {
           for (const entry of entries) {
-            if (entry.isIntersecting) draw(Number(entry.target.dataset.page), mine);
+            if (entry.isIntersecting) draw(Number(/** @type {HTMLElement} */ (entry.target).dataset.page), mine);
           }
         },
         { root: pagesBody, rootMargin: "300px 0px" },

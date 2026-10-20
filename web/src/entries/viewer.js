@@ -85,7 +85,7 @@ function createOverlay() {
     flash(x, y) {
       const ring = document.createElement("div");
       ring.style.cssText = `position:absolute;left:${x - 16}px;top:${y - 16}px;width:32px;height:32px;`
-        + "box-sizing:border-box;border:3px solid rgb(240 110 20);border-radius:50%;";
+        + "box-sizing:border-box;border:3px solid var(--lp-marker);border-radius:50%;";
       root.append(ring);
       if (!reducedMotion() && ring.animate) {
         ring.animate([{ opacity: 1, transform: "scale(0.6)" }, { opacity: 1, transform: "scale(1)", offset: 0.4 },

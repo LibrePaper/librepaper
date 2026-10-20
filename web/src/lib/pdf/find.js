@@ -130,7 +130,7 @@ export function createFind({ root, onresult }) {
       let text = "";
       for (const node of nodes) {
         starts.push(text.length);
-        text += node.data;
+        text += /** @type {Text} */ (node).data;
       }
       for (const { start, end } of findOffsets(text, query, MAX_MATCHES - found.length)) {
         const from = locate(nodes, starts, start, false);

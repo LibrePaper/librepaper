@@ -2083,12 +2083,14 @@
   let pageZoom = $state(1);
   let pageZoomChanged = false;
   let densitySent = false;
-  $effect(() => onPageZoom((next) => {
+  // Untracked: the listener's first call runs inside the effect, and reading
+  // pageZoom there would resubscribe on every change.
+  $effect(() => untrack(() => onPageZoom((next) => {
     if (next === pageZoom) return;
     if (pageZoom !== 1 || next !== 1) pageZoomChanged = true;
     pageZoom = next;
     if (viewerView) tell({ type: "viewer-density", zoom: next });
-  }));
+  })));
   // Whether the application is dark right now; the invert item is only
   // offered then, because the frame ignores it in a light theme.
   let darkNow = $state(false);
