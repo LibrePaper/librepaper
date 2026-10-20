@@ -16,8 +16,11 @@ assert.deepEqual(accepted({ type: "selection", selector: { exact: "selected text
 assert.deepEqual(accepted({ type: "selection", selector: null }), { type: "selection", selector: null });
 assert.deepEqual(accepted({ type: "caret", offset: 9, pdf: { page: 2, x: 0, y: 12 } }), { type: "caret", offset: 9, pdf: { page: 2, x: 0, y: 12 } });
 assert.deepEqual(accepted({ type: "pdf-caret", pdf: { page: 1, x: 10, y: 20 } }), { type: "pdf-caret", pdf: { page: 1, x: 10, y: 20 } });
-assert.deepEqual(accepted({ type: "viewer-state", drawn: true, mode: "page-fit", scale: 1.25 }), { type: "viewer-state", drawn: true, mode: "page-fit", scale: 1.25 });
-assert.deepEqual(accepted({ type: "viewer-state", drawn: false, mode: "1.5", scale: null }), { type: "viewer-state", drawn: false, mode: "1.5", scale: null });
+const viewerBase = { page: 3, pages: 12, sidebar: true, spread: false, invert: false, presenting: false, find: null };
+assert.deepEqual(accepted({ type: "viewer-state", drawn: true, mode: "page-fit", scale: 1.25, ...viewerBase }), { type: "viewer-state", drawn: true, mode: "page-fit", scale: 1.25, ...viewerBase });
+assert.deepEqual(accepted({ type: "viewer-state", drawn: false, mode: "1.5", scale: null, ...viewerBase, page: 0, pages: 0 }), { type: "viewer-state", drawn: false, mode: "1.5", scale: null, ...viewerBase, page: 0, pages: 0 });
+assert.deepEqual(accepted({ type: "viewer-state", drawn: true, mode: "auto", scale: 1, ...viewerBase, find: { current: 3, total: 17, extra: 1 }, junk: 1 }), { type: "viewer-state", drawn: true, mode: "auto", scale: 1, ...viewerBase, find: { current: 3, total: 17 } });
+assert.deepEqual(accepted({ type: "viewer-find-open", junk: 1 }), { type: "viewer-find-open" });
 for (const message of [
   { type: "annotate" }, { type: "disarm" }, { type: "unfocus" }, { type: "focus", id: "mark-1" },
   { type: "reading-position", start: 4 },
@@ -34,9 +37,17 @@ for (const message of [
   { type: "selection", selector: { exact: "x", prefix: "", suffix: "" }, rect: { top: 0, left: 0, right: 1, bottom: Infinity } },
   { type: "caret", offset: Number.MAX_SAFE_INTEGER + 1 }, { type: "caret", offset: -1 },
   { type: "pdf-caret", pdf: { page: 1, x: NaN, y: 1 } },
-  { type: "viewer-state", drawn: true, mode: "page-fit", scale: Infinity },
-  { type: "viewer-state", drawn: "yes", mode: "page-fit", scale: 1 },
-  { type: "viewer-state", drawn: true, mode: "10.1", scale: 1 },
+  { type: "viewer-state", drawn: true, mode: "page-fit", scale: Infinity, ...viewerBase },
+  { type: "viewer-state", drawn: "yes", mode: "page-fit", scale: 1, ...viewerBase },
+  { type: "viewer-state", drawn: true, mode: "10.1", scale: 1, ...viewerBase },
+  { type: "viewer-state", drawn: true, mode: "auto", scale: 1 },
+  { type: "viewer-state", drawn: true, mode: "auto", scale: 1, ...viewerBase, page: 1.5 },
+  { type: "viewer-state", drawn: true, mode: "auto", scale: 1, ...viewerBase, pages: 100_001 },
+  { type: "viewer-state", drawn: true, mode: "auto", scale: 1, ...viewerBase, sidebar: 1 },
+  { type: "viewer-state", drawn: true, mode: "auto", scale: 1, ...viewerBase, find: undefined },
+  { type: "viewer-state", drawn: true, mode: "auto", scale: 1, ...viewerBase, find: { current: 5, total: 4 } },
+  { type: "viewer-state", drawn: true, mode: "auto", scale: 1, ...viewerBase, find: { current: 1, total: 10_001 } },
+  { type: "viewer-state", drawn: true, mode: "auto", scale: 1, ...viewerBase, find: { current: -1, total: 4 } },
   { type: "focus", id: "x".repeat(257) }, { type: "reading-position", start: 1.25 },
 ]) rejected(message);
 
