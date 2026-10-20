@@ -520,6 +520,35 @@ async function run() {
   check("ctrl+wheel redraws the page at the scale its preview showed", zoomed && previewed > 1 && Math.abs(ratio / previewed - 1) < 0.03,
     JSON.stringify({ before: scaleBefore, after: scaleAfter, previewed, ratio }));
 
+  // 14b. A second ctrl+wheel gesture that starts before the first one's redraw
+  // has landed. Its preview is measured against the pages still on screen, so
+  // the transform times the rendered scale is the scale its commit will ask
+  // for. pinch.js turns a delta into the factor exp(-delta / 100).
+  const baseScale = await tab.eval("return window.state().scale");
+  const firstFactor = Math.exp(30 / 100);
+  const secondFactor = Math.exp(20 / 100);
+  await mouse("mouseWheel", 500, 400, { deltaX: 0, deltaY: -30, modifiers: 2 });
+  // The first gesture commits 200 ms after its wheel (WHEEL_IDLE_MS in
+  // pinch.js); the second starts about 30 ms later, while that redraw runs.
+  await wait(230);
+  await mouse("mouseWheel", 500, 400, { deltaX: 0, deltaY: -20, modifiers: 2 });
+  await wait(60);
+  const midway = await tab.eval(`
+    const main = window.doc().querySelector('main');
+    const matrix = new (window.win().DOMMatrix)(window.win().getComputedStyle(main).transform);
+    return { transform: matrix.a, rendered: Number(window.doc().querySelector('.page').dataset.scale) };
+  `);
+  await wait(1500);
+  await until(tab, `Math.abs(window.state().scale / ${baseScale / 1} / ${firstFactor * secondFactor} - 1) < 0.03`, 8000);
+  await wait(500);
+  const chained = await tab.eval("return window.state().scale");
+  const wanted = baseScale * firstFactor * secondFactor;
+  const shown = midway.transform * midway.rendered;
+  check("a second ctrl+wheel gesture during a redraw commits both factors",
+    Math.abs(chained / wanted - 1) < 0.03, JSON.stringify({ baseScale, chained, wanted }));
+  check("its preview already shows the scale the commit lands on",
+    Math.abs(shown / chained - 1) < 0.03, JSON.stringify({ midway, shown, chained }));
+
   // 15. Presentation shows one page to a screen: the current page is centred
   // in the viewport, its neighbour is below the fold, and a step centres the next.
   await tab.eval("window.__pages = window.doc().querySelector('.pages'); window.ask({ type: 'viewer-present', on: true })");

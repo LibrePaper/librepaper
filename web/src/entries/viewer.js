@@ -260,11 +260,18 @@ function settleOverflow() {
 /// Runs inside `render`, straight after the swap.
 function settle(anchor) {
   clearPreview();
-  zoom = null;
   forcedAnchor = null;
   applyChrome();
   settleOverflow();
   restoreAnchor(anchor);
+  // A gesture that began before this swap is still running: it keeps its
+  // anchor and its preview, now measured against the pages just drawn.
+  if (gesturing && zoom) {
+    setPreviewOrigin(zoom.x, zoom.y);
+    applyPreview();
+  } else {
+    zoom = null;
+  }
 }
 
 /// Draw `bytes`, which may be the ones already on screen.
@@ -454,7 +461,8 @@ function focusPage(list, index) {
 // Zoom. A gesture is previewed with a transform while it runs and committed as
 // a redraw at the new numeric scale when it ends, anchored at the cursor: the
 // pinch on a phone, ctrl+wheel and the keyboard share this.
-let zoom = null; // { anchor } for the gesture in progress
+let zoom = null; // { anchor, x, y, factor } for the gesture in progress
+let gesturing = false; // a gesture has previewed and not yet committed
 function clearPreview() {
   if (!stage) return;
   stage.style.transform = "";
@@ -469,19 +477,42 @@ function zoomBase() {
   return Number(stage?.firstElementChild?.dataset.scale);
 }
 
+/// Show the scale the commit will produce, relative to the pages on screen.
+/// Those were drawn at the scale of the last redraw to land, which is not the
+/// base while a redraw is still running, so the factor alone would preview too
+/// small and the commit would jump.
+function applyPreview() {
+  const base = zoomBase();
+  const rendered = Number(stage.firstElementChild?.dataset.scale);
+  if (!(base > 0) || !(rendered > 0)) {
+    stage.style.transform = `scale(${zoom.factor})`;
+    return;
+  }
+  const limited = Math.min(10 / base, Math.max(0.1 / base, zoom.factor));
+  stage.style.transform = `scale(${(base * limited) / rendered})`;
+}
+
+/// Point the transform at a client position. The stage is measured without
+/// its own transform, which would otherwise move its box.
+function setPreviewOrigin(x, y) {
+  stage.style.transform = "";
+  const rect = stage.getBoundingClientRect();
+  stage.style.transformOrigin = `${x - rect.left}px ${y - rect.top}px`;
+}
+
 function zoomPreview(factor, x, y) {
   if (!stage?.firstElementChild || !drawn) return;
-  if (!zoom) {
-    const rect = stage.getBoundingClientRect();
-    zoom = { anchor: captureAnchor(x, y) };
-    stage.style.transformOrigin = `${x - rect.left}px ${y - rect.top}px`;
+  if (!gesturing) {
+    gesturing = true;
+    zoom = { anchor: captureAnchor(x, y), x, y, factor };
+    setPreviewOrigin(x, y);
   }
-  const base = zoomBase();
-  const limited = Number.isFinite(base) && base > 0 ? Math.min(10 / base, Math.max(0.1 / base, factor)) : factor;
-  stage.style.transform = `scale(${limited})`;
+  zoom.factor = factor;
+  applyPreview();
 }
 
 function zoomCommit(factor, x, y) {
+  gesturing = false;
   const current = zoomBase();
   const next = Math.min(10, Math.max(0.1, Number((current * factor).toFixed(2))));
   if (!drawn || !Number.isFinite(current) || Math.abs(next - current) < 0.01) {
@@ -497,6 +528,7 @@ function zoomCommit(factor, x, y) {
 
 function zoomStep(factor) {
   if (!stage?.firstElementChild || !drawn) return;
+  gesturing = false;
   zoom = null;
   clearPreview();
   const offset = sidebarOffset();
@@ -506,6 +538,7 @@ function zoomStep(factor) {
 function zoomReset() {
   scaleMode = "auto";
   forcedAnchor = null;
+  gesturing = false;
   zoom = null;
   report();
   redraw();
