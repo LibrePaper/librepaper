@@ -1487,9 +1487,10 @@ pub fn restore_by_fragments(doc: &LoroDoc, file_id: &str, restored: &[Restored])
 /// Whether any anchor record still has the old top-level placement keys.
 pub fn has_legacy_records(doc: &LoroDoc) -> bool {
     let map = doc.get_map(ANCHORS);
-    map.keys().any(|key| {
+    let legacy = map.keys().any(|key| {
         record_map(&map, &key.to_string()).is_some_and(|record| record.get("file").is_some())
-    })
+    });
+    legacy
 }
 
 /// Moves the old top-level placement keys of every legacy record into one

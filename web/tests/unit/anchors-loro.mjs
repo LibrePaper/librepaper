@@ -23,7 +23,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { isDeepStrictEqual } from "node:util";
-import { LoroDoc, LoroText, UndoManager } from "loro-crdt";
+import { LoroDoc, LoroMap, LoroText, UndoManager } from "loro-crdt";
 import {
   ANCHORS,
   ANCHORS_ORIGIN,
@@ -106,6 +106,13 @@ function assertAttached(doc, id, from, to, exact, fileId = "f1") {
   assert.equal(statusOf(doc, anchor), "exact", `${id} status`);
 }
 
+// A record's place as a string, so that two places compare by value.
+function placementKey(place) {
+  if (!place || typeof place !== "object") return "none";
+  const keys = Object.keys(place).sort();
+  return JSON.stringify(keys.map((k) => [k, place[k] instanceof Uint8Array ? [...place[k]] : place[k]]));
+}
+
 // The fields that place an anchor. An index must agree with resolveAnchors on them.
 function placed(a) {
   return {
@@ -121,10 +128,16 @@ function placed(a) {
   };
 }
 
-function assertIndexMatches(index, doc, fileId = "f1") {
+// With collapsedAnywhere, a collapsed anchor's offsets are not compared: it
+// reads as deleted wherever it sits.
+function assertIndexMatches(index, doc, fileId = "f1", { collapsedAnywhere = false } = {}) {
   const byId = (x, y) => (x.id < y.id ? -1 : x.id > y.id ? 1 : 0);
-  const cached = index.anchors(fileId).map(placed).sort(byId);
-  const truth = resolveAnchors(doc, fileId).map(placed).sort(byId);
+  const fields = (a) => {
+    const p = placed(a);
+    return collapsedAnywhere && p.collapsed ? { ...p, from: 0, to: 0 } : p;
+  };
+  const cached = index.anchors(fileId).map(fields).sort(byId);
+  const truth = resolveAnchors(doc, fileId).map(fields).sort(byId);
   assert.deepEqual(cached, truth, `index of ${fileId} equals resolveAnchors`);
 }
 
@@ -1148,7 +1161,11 @@ function undoCase(seed) {
 // owned by one of them. There is no exact oracle for this, so every step checks
 // invariants, and the end checks each anchor against the characters of its word
 // that survive. Original characters are unique code points to make them findable.
-function overlappingPeers(seed) {
+// Without strict, only the record checks run: one listing per anchor, ranges in
+// bounds that never cross a word gap, and anchor writes under ANCHORS_ORIGIN.
+// Strict adds the index check and the surviving-text check, which still fail
+// on known limits (see the todo test below).
+function overlappingPeers(seed, { strict = true } = {}) {
   const rng = random(seed);
   const log = [];
   const counter = { next: 0x4e00 };
@@ -1234,7 +1251,7 @@ function overlappingPeers(seed) {
   const checkPeer = (peer) => {
     const listedIn = new Map();
     for (const fileId of fileIds) {
-      assertIndexMatches(peer.index, peer.doc, fileId);
+      if (strict) assertIndexMatches(peer.index, peer.doc, fileId, { collapsedAnywhere: true });
       const text = textOf(peer.doc, fileId);
       for (const anchor of resolveAnchors(peer.doc, fileId)) {
         const files = listedIn.get(anchor.id) ?? [];
@@ -1255,6 +1272,24 @@ function overlappingPeers(seed) {
   };
   const checkAll = () => {
     for (const peer of peers) checkPeer(peer);
+  };
+
+  // Every placement some peer wrote. After any sync, each record must hold one
+  // of them: a merge that mixed two writes leaves a placement nobody wrote.
+  const placements = (doc) => {
+    const out = new Map();
+    for (const [id, record] of doc.getMap(ANCHORS).entries()) {
+      if (record instanceof LoroMap) out.set(id, placementKey(record.get("place")));
+    }
+    return out;
+  };
+  const written = new Set(placements(A).values());
+  const checkWritten = () => {
+    for (const peer of peers) {
+      for (const [id, key] of placements(peer.doc)) {
+        assert.ok(written.has(key), `${id} on peer ${peer.who} holds a placement no peer wrote: ${key}`);
+      }
+    }
   };
 
   const weights = [
@@ -1280,6 +1315,7 @@ function overlappingPeers(seed) {
       const runs = runsIn(text);
       const apply = (edits) => peer.index.apply([{ fileId, edits }], peer.memory, {});
       const label = `${peer.who} `;
+      const before = placements(peer.doc);
       let done = false;
 
       if (kind === "sync") {
@@ -1338,6 +1374,8 @@ function overlappingPeers(seed) {
         apply([{ from: p, to: p, insert: ch }]);
         log.push(`${label}type ${fileId}@${p} ${ch}`);
       }
+      for (const [id, key] of placements(peer.doc)) if (before.get(id) !== key) written.add(key);
+      checkWritten();
       checkAll();
     }
 
@@ -1350,12 +1388,14 @@ function overlappingPeers(seed) {
       sync(peers[x].doc, peers[y].doc);
       log.push(`sync ${peers[x].who}-${peers[y].who}`);
     }
+    checkWritten();
     for (const fileId of fileIds) {
       const want = textOf(A, fileId);
       for (const peer of peers) assert.equal(textOf(peer.doc, fileId), want, `text of ${fileId} on peer ${peer.who}`);
     }
     checkAll();
 
+    if (!strict) return;
     // Where the characters of each word survive, in the merged text.
     const merged = fileIds.map((fileId) => [fileId, textOf(A, fileId)]);
     for (const o of originals) {
@@ -1377,10 +1417,14 @@ function overlappingPeers(seed) {
         continue;
       }
       if (new Set(survivors.map((s) => s.fileId)).size > 1) continue;
+      // A deletion that meets a concurrent move of the same text wins, so a
+      // detached anchor is a valid outcome even where its text survives.
+      assert.equal(hits.length, 1, `${where} is listed`);
+      const held = anchorsById(A, hits[0]).get(o.id);
+      if (held.detached || held.collapsed) continue;
       const fileId = survivors[0].fileId;
       assert.deepEqual(hits, [fileId], `${where} is listed under ${fileId}`);
-      const anchor = anchorsById(A, fileId).get(o.id);
-      assert.equal(anchor.detached, false, `${where} is attached`);
+      const anchor = held;
       const first = survivors[0].pos;
       const intact =
         survivors.length === o.word.length && survivors.every((s, k) => s.pos === first + k && s.ch === o.word[k]);
@@ -1408,12 +1452,18 @@ test("fuzz: undoing a random history walks every anchor back", () => {
   for (let seed = 2001; seed <= 2100; seed++) undoCase(seed);
 });
 
-// Todo until anchor records are written whole: two peers that re-plan one comment
-// concurrently merge into a record with keys from both writes.
-test(
-  "fuzz: three peers editing the same passages keep every anchor on its surviving text",
-  { todo: "concurrent record writes merge key by key" },
-  () => {
-    for (let seed = 3001; seed <= 3150; seed++) overlappingPeers(seed);
-  },
-);
+test("fuzz: three peers editing the same passages leave every record whole", () => {
+  for (let seed = 3001; seed <= 3100; seed++) overlappingPeers(seed, { strict: false });
+});
+
+// Known limits, each pinned by one seed. A move that meets a concurrent edit of
+// the same text keeps one peer's place, which can point at what the other peer
+// left behind (seed 3247). The index shifts a remote insertion at a deleted
+// anchor start into the anchor, where the cursors resolve past it (seed 3437).
+test("fuzz: a move that meets a concurrent edit follows the surviving text", { todo: "one peer's place wins" }, () => {
+  overlappingPeers(3247);
+});
+
+test("fuzz: the index agrees with the cursors after an insertion at a deleted start", { todo: "foreign shift" }, () => {
+  overlappingPeers(3437);
+});

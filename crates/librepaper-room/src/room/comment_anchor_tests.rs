@@ -22,6 +22,7 @@ use librepaper_engine::log::sequencer::{
     Command as SequencerCommand, Evidence, Head, PreparedSource, Rung,
 };
 use librepaper_engine::log::Registry;
+use loro::{Container, LoroValue, ValueOrContainer};
 use librepaper_engine::storage::annotation::{AnchorStatus, CommentTarget};
 use librepaper_engine::storage::blob::FsStore;
 use librepaper_engine::storage::postgres::Authority;
@@ -734,6 +735,104 @@ impl SequencerCommand for DropAnchorRecord {
     ) -> BoxFuture<'a, Result<(), CommandError>> {
         Box::pin(async move { Ok(()) })
     }
+}
+
+/// Rewrites a comment's anchor record in the format older releases wrote: the
+/// placement as top-level keys, with no `place` value.
+struct LegacyAnchorRecord {
+    id: String,
+}
+
+impl SequencerCommand for LegacyAnchorRecord {
+    type Output = ();
+
+    fn name(&self) -> &'static str {
+        "test-legacy-anchor"
+    }
+
+    fn authority(&self) -> Rung {
+        Rung::Editor
+    }
+
+    fn evaluate(&mut self, head: &Head<'_>) -> Result<Option<PreparedSource>, CommandError> {
+        let id = self.id.clone();
+        head.prepare(1, |draft| {
+            let Some(ValueOrContainer::Container(Container::Map(record))) =
+                draft.get_map(anchors::ANCHORS).get(&id)
+            else {
+                return Err("no record".to_string());
+            };
+            let Some(ValueOrContainer::Value(LoroValue::Map(place))) = record.get("place") else {
+                return Err("no place".to_string());
+            };
+            for (key, value) in place.iter() {
+                record
+                    .insert(key, value.clone())
+                    .map_err(|error| error.to_string())?;
+            }
+            record.delete("place").map_err(|error| error.to_string())
+        })
+        .map_err(CommandError::Conflict)
+    }
+
+    fn transact<'a>(
+        &'a mut self,
+        _tx: &'a mut sqlx::Transaction<'_, sqlx::Postgres>,
+        _evidence: &'a Evidence,
+    ) -> BoxFuture<'a, Result<(), CommandError>> {
+        Box::pin(async move { Ok(()) })
+    }
+}
+
+#[tokio::test]
+#[ignore = "requires LIBREPAPER_TEST_POSTGRES_URL"]
+async fn a_room_opening_converts_a_record_an_older_release_wrote() {
+    let Some(deployment) = deployment("anchor-upgrade").await else {
+        return;
+    };
+    let room = deployment.rooms.get(&deployment.slug).await.unwrap();
+    let mut cmd = deployment.add_comment(
+        &room,
+        "interval covers the mean",
+        "Interval estimates The ",
+        " of the posterior.",
+        "commenting",
+    );
+    let comment = room
+        .command(&deployment.authority(), &mut cmd)
+        .await
+        .unwrap();
+    let target = comment.source().expect("a source-text anchor").clone();
+    let file_id = target.file_id.0.clone();
+
+    let mut legacy = LegacyAnchorRecord {
+        id: comment.id.clone(),
+    };
+    room.command(&deployment.authority(), &mut legacy)
+        .await
+        .unwrap();
+    assert!(
+        records_of(&room, &file_id).await.is_empty(),
+        "no reader sees a record in the old format"
+    );
+
+    deployment.rooms.close(&deployment.slug).await;
+    let room = deployment.rooms.get(&deployment.slug).await.unwrap();
+    assert!(!room
+        .log()
+        .with_head(anchors::has_legacy_records)
+        .await
+        .unwrap());
+    let found = records_of(&room, &file_id).await;
+    assert_eq!(found.len(), 1, "opening the room converted the record");
+    let (record, status) = &found[0];
+    assert_eq!(record.id, comment.id);
+    assert_eq!(
+        (record.from, record.to),
+        (target.start_utf16 as usize, target.end_utf16 as usize),
+    );
+    assert_eq!(*status, anchors::Status::Exact);
+    deployment.catalog.close().await;
 }
 
 #[tokio::test]
