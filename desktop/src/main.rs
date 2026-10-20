@@ -1,5 +1,6 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+mod download;
 #[cfg(target_os = "linux")]
 mod drop;
 mod notice;
@@ -100,6 +101,7 @@ fn setup(app: &mut App) -> Result<(), Box<dyn std::error::Error>> {
     app.manage(Service::new(&first));
     app.manage(zoom::Zoom::load(app.handle()));
     app.manage(theme::Theme::load(app.handle()));
+    app.manage(download::Downloads::default());
     theme::watch_system(app.handle());
     #[cfg(target_os = "linux")]
     app.manage(drop::Dropped::default());
@@ -269,6 +271,7 @@ fn open_window(app: &AppHandle, url: Url) -> tauri::Result<tauri::WebviewWindow>
         format!("window-{}", NEXT.fetch_add(1, Ordering::Relaxed))
     };
     let opener = app.clone();
+    let downloader = app.clone();
     let checked = url.clone();
     let theme = app.state::<theme::Theme>();
     let choice = theme.choice();
@@ -293,7 +296,8 @@ fn open_window(app: &AppHandle, url: Url) -> tauri::Result<tauri::WebviewWindow>
                 }
             }
             NewWindowResponse::Deny
-        });
+        })
+        .on_download(move |_webview, event| download::handle(&downloader, event));
     // Tauri's own drop handler swallows file drops, so the page's HTML drop
     // events (the file explorer upload) never fire without this. Windows and
     // macOS pass the files to the page. WebKitGTK hides dropped files from the
