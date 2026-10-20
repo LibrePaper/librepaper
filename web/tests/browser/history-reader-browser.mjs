@@ -156,6 +156,8 @@ try {
     })()`), 4000);
   };
   await select(1); await expectDiff(sources[1], current);
+  // The host scrolls; an editor scroller would take the wheel and scroll nothing.
+  assert.equal(await tab.evaluate(`getComputedStyle(document.querySelector(".cm-merge-b .cm-scroller")).overflowY`), "visible");
   await select(0); await expectDiff(sources[0], current);
   await select(2); await expectDiff(sources[2], current);
   await select(0); await expectDiff(sources[0], current);

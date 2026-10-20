@@ -119,5 +119,8 @@
   .merge-host { min-height: 12rem; overflow: auto; }
   :global(.merge-editor .cm-mergeView) { min-height: 100%; }
   :global(.merge-editor .cm-editor) { min-height: 100%; }
-  :global(.merge-editor .cm-scroller) { overflow: auto; }
+  /* The host is the one scroller. An editor scroller set to auto ends up a
+     fraction of a pixel taller than its content, and Chromium hands it the
+     wheel, which then scrolls nothing. Lines wrap, so it needs no scrolling. */
+  :global(.merge-editor .cm-scroller) { overflow: visible; }
 </style>
