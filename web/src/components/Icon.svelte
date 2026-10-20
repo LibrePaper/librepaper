@@ -258,6 +258,12 @@
       ["path", "M7 2h1a4 4 0 0 1 4 4"],
     ],
     eraser: [["path", "M21 21H8a2 2 0 0 1-1.42-.587l-3.994-3.999a2 2 0 0 1 0-2.828l10-10a2 2 0 0 1 2.829 0l5.999 6a2 2 0 0 1 0 2.828L12.834 21"], ["path", "m5.082 11.09 8.828 8.828"]],
+    // Lucide's send-horizontal, for sending a message from the composer.
+    "send-horizontal": [["path", "M3.714 3.048a.498.498 0 0 0-.683.627l2.843 7.627a2 2 0 0 1 0 1.396l-2.842 7.627a.498.498 0 0 0 .682.627l18-8.5a.5.5 0 0 0 0-.904z"], ["path", "M6 12h16"]],
+    // Lucide's square, for stopping a running reply.
+    square: [["rect", { width: 18, height: 18, x: 3, y: 3, rx: 2 }]],
+    // Lucide's arrow-down, for jumping to the newest message.
+    "arrow-down": [["path", "M12 5v14"], ["path", "m19 12-7 7-7-7"]],
     // Stops a running agent.
   };
 

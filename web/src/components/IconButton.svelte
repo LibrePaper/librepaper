@@ -28,6 +28,7 @@
     controls = null,
     expanded = null,
     disabled = false,
+    type = "button",
     tone = null,
     size = null,
     colour = null,
@@ -60,7 +61,7 @@
       {:else}
         <button
           {...attributes}
-          type="button"
+          type={type}
           class={classes}
           aria-label={label}
           aria-controls={controls ?? undefined}

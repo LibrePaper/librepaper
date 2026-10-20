@@ -1,5 +1,6 @@
 <script>
   import { tick } from "svelte";
+  import IconButton from "./IconButton.svelte";
   let {
     placeholder = "Message…",
     disabled = false,
@@ -16,19 +17,21 @@
   let sending = $state(false);
   let input;
 
-  // Auto-grow the textarea with its content: starts at about two lines,
-  // grows as the draft grows, and caps at roughly 40% of the viewport
-  // (about ten lines) where it scrolls instead of growing further. A hidden
-  // textarea (a background tab) measures zero, so it keeps its rows until it
-  // is shown; the observer below measures it again then, and whenever its
-  // width changes, and the window listener keeps the cap current.
+  // Auto-grow the textarea with its content, from one line up to five lines,
+  // then scroll inside the box. The cap is read from the textarea's own line
+  // height and padding. A hidden textarea (a background tab) measures zero,
+  // so it keeps its rows until it is shown; the observer below measures it
+  // again then, and whenever its width changes.
   let measuredWidth = 0;
   function autogrow() {
     if (!input) return;
     measuredWidth = input.clientWidth;
     input.style.height = "";
     if (!input.scrollHeight) return;
-    const cap = window.innerHeight * 0.4;
+    const style = getComputedStyle(input);
+    const fontSize = parseFloat(style.fontSize);
+    const lineHeight = style.lineHeight === "normal" ? fontSize * 1.4 : parseFloat(style.lineHeight);
+    const cap = lineHeight * 5 + parseFloat(style.paddingTop) + parseFloat(style.paddingBottom);
     input.style.height = `${Math.min(input.scrollHeight, cap)}px`;
   }
 
@@ -65,6 +68,7 @@
       if (await onsend?.(text) && draft === submitted) {
         draft = "";
         ondraft?.(draft);
+        input?.focus();
       }
     } finally {
       sending = false;
@@ -88,26 +92,49 @@
   }
 </script>
 
-<svelte:window onresize={autogrow} />
 <form class="chat-form" onsubmit={submit} data-cansend={canSend && !disabled && !sending}>
-  <div class="composer-input">
-    <textarea bind:this={input} class="textarea" rows="2" value={draft} {placeholder} aria-label="Message" title="Enter to send · Shift+Enter for a new line"
+  <div class="composer-box">
+    <textarea bind:this={input} class="textarea" rows="1" value={draft} {placeholder} aria-label="Message"
       {disabled} required oninput={update} onkeydown={keydown}></textarea>
-  </div>
-  <div class="composer-actions">
-    <span class="panel-meta">Enter to send · Shift+Enter for a new line</span>
     <div class="composer-buttons">
-      {#if onstop}<button class="btn btn-sm lp-control-tonal-brand" type="button" onclick={() => onstop()}>{stopLabel}</button>{/if}
-      <button class="btn btn-sm lp-control-brand" type="submit"
-              disabled={disabled || !canSend || sending || !draft.trim()}>
-        {sending ? "Sending…" : "Send"}
-      </button>
+      {#if onstop}
+        <IconButton icon="square" label={stopLabel} tone="plain" size="btn-icon-sm" onclick={() => onstop()} />
+      {/if}
+      <IconButton type="submit" icon="send-horizontal" label="Send message" title="Send message. Shift+Enter adds a new line." tone="plain" size="btn-icon-sm"
+        disabled={disabled || !canSend || sending || !draft.trim()} />
     </div>
   </div>
 </form>
 <style>
-  .chat-form { display: flex; flex-direction: column; gap: var(--spacing); }
-  .composer-actions { display: flex; align-items: center; justify-content: space-between; gap: calc(var(--spacing) * 2); }
-  .composer-buttons { display: flex; align-items: center; gap: var(--spacing); }
-  .composer-input textarea { display: block; width: 100%; resize: none; overflow-y: auto; }
+  .chat-form { display: flex; flex-direction: column; padding-bottom: env(safe-area-inset-bottom, 0px); }
+  .composer-box {
+    display: flex;
+    align-items: flex-end;
+    border: 1px solid var(--color-border);
+    border-radius: calc(var(--radius-base) * 2);
+  }
+  .composer-box:focus-within { border-color: var(--color-brand); }
+  .composer-box textarea {
+    flex: 1;
+    min-width: 0;
+    display: block;
+    border: 0;
+    outline: none;
+    background: transparent;
+    font: inherit;
+    color: inherit;
+    resize: none;
+    overflow-y: auto;
+    padding: calc(var(--spacing) * 1.5) calc(var(--spacing) * 2);
+  }
+  .composer-buttons {
+    display: flex;
+    align-items: center;
+    gap: calc(var(--spacing) * 0.5);
+    align-self: flex-end;
+    padding: calc(var(--spacing) * 1) calc(var(--spacing) * 1.5) calc(var(--spacing) * 1) 0;
+  }
+  @media (pointer: coarse) {
+    .composer-buttons :global(.btn-icon) { min-width: 44px; min-height: 44px; }
+  }
 </style>
