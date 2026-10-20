@@ -920,6 +920,7 @@
     const moment = momentOf(comment);
     if (!moment) return;
     await showPanel("history");
+    historySource.clearBase();
     await viewPoint(moment);
     if (historySource.gone) {
       comment.momentTrimmed = true;
@@ -1507,6 +1508,7 @@
     // restore made, and its Restore button is the undo.
     onrestored: () => {
       const newest = [...timeline.state.labels].sort((a, b) => b.seq - a.seq);
+      historySource.clearBase();
       return historySource.select(newest[0]?.why === "restore" ? newest[1]?.sha || "" : "");
     },
     disposed: () => readerDisposed,
@@ -3886,8 +3888,9 @@
   {/snippet}
 
   {#snippet historyPanel()}
-    <History {labels} viewing={historySelectedSha} canEdit={mayEdit}
+    <History {labels} viewing={historySelectedSha} against={historySource.against} canEdit={mayEdit}
       problem={historyProblem} onview={viewPoint}
+      oncompare={(sha) => historySource.compareWith(sha)}
       onname={nameLabel} />
   {/snippet}
 

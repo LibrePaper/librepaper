@@ -55,6 +55,13 @@
     </div>
   {:else if result}
     <div class="history-source-bar">
+      {#if result.against}
+        <!-- The base is the old side and the selected version the new one, so
+             the line names them in that order. -->
+        <span class="history-source-ends">{result.oldLabel} → {result.newLabel}</span>
+        <button type="button" class="btn btn-sm" onclick={() => source.swap()}>Swap</button>
+        <button type="button" class="btn btn-sm" onclick={() => source.compareWith("")}>Compare with current</button>
+      {/if}
       <label class="history-source-file">
         File
         <select class="select" aria-label="History file" value={path} onchange={event => source.selectFile(event.currentTarget.value)}>
@@ -78,11 +85,12 @@
                commenter link cannot reach the history routes this asks. -->
           <button type="button" class="btn btn-sm" disabled={downloading === source.selected}
                   onclick={() => ondownload?.(source.selected)}>
-            {downloading === source.selected ? "Preparing download…" : "Download this version"}
+            {downloading === source.selected ? "Preparing download…"
+              : result.against ? `Download ${result.newLabel}` : "Download this version"}
           </button>
         {/if}
         {#if canEdit && source.selected && !isMoment(source.selected)}
-          <button type="button" class="btn btn-sm lp-control-tonal-brand" onclick={() => onrestore?.(source.selected)}>Restore this version</button>
+          <button type="button" class="btn btn-sm lp-control-tonal-brand" onclick={() => onrestore?.(source.selected)}>{result.against ? `Restore ${result.newLabel}` : "Restore this version"}</button>
         {/if}
       </span>
     </div>
@@ -105,7 +113,7 @@
       {/if}
     {/if}
   {:else}
-    <p role="status">Select a version to compare it with the current source.</p>
+    <p role="status">Select a version to compare it with the current source. Shift-click another version to compare the two.</p>
   {/if}
 </section>
 
@@ -113,6 +121,7 @@
   .history-workspace { height: 100%; min-width: 0; display: flex; flex-direction: column; overflow: hidden; }
   .history-workspace > p, .history-workspace > div[role="alert"] { padding: 1rem; }
   .history-source-bar { display: flex; align-items: center; flex-wrap: wrap; gap: 0.5rem; padding: 0.5rem; }
+  .history-source-ends { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .history-source-file { display: flex; align-items: center; gap: 0.5rem; }
   .history-source-file select { width: auto; min-width: 12rem; }
   .history-source-actions { display: flex; align-items: center; gap: 0.5rem; margin-left: auto; }

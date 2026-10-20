@@ -47,8 +47,10 @@
   let {
     labels = [],
     viewing = null,
+    against = "",
     canEdit = false,
     onview,
+    oncompare,
     problem = "",
     onname,
     currentLabel = "",
@@ -97,15 +99,19 @@
     labels.filter((point) => point.label).sort((a, b) => (a.at < b.at ? 1 : -1)),
   );
   const bookmarked = (point) => Boolean(point?.label);
+  // What a row's title says it is compared with: the base, when there is one
+  // and this row is not it, and the current source otherwise.
+  const compareTo = (point) => (against && against !== point.sha ? "comparison base" : "current source");
   const anything = $derived(labels.length > 0);
 
   const entries = $derived(dayEntries(labels, day, timezone));
-  // Which runs are open. A run holding the version being compared is open
-  // whether or not anybody opened it: the alternative is a selection nobody
-  // can see.
+  // Which runs are open. A run holding the version being compared, or the
+  // base it is compared with, is open whether or not anybody opened it: the
+  // alternative is a selection nobody can see.
   let unrolled = $state(new Set());
   const showing = (entry) =>
-    unrolled.has(entry.key) || entry.points.some((point) => point.sha === viewing);
+    unrolled.has(entry.key)
+    || entry.points.some((point) => point.sha === viewing || point.sha === against);
   function unroll(entry) {
     const next = new Set(unrolled);
     if (next.has(entry.key)) next.delete(entry.key);
@@ -415,18 +421,27 @@
             {:else}
               <button type="button" class="timeline-point mark-point"
                       class:timeline-here={viewing === point.sha}
+                      class:timeline-against={against === point.sha}
                       aria-current={viewing === point.sha ? "true" : undefined}
-                      title="Compare {point.label} from {stamp(point.at) || shortSha(point.sha)} with the current source"
-                      onclick={() => { open(dayOf(point.at, timezone)); onview?.(point.sha); }}>
+                      title="Compare {point.label} from {stamp(point.at) || shortSha(point.sha)} with the {compareTo(point)}"
+                      onclick={(event) => {
+                        open(dayOf(point.at, timezone));
+                        if (event.shiftKey) oncompare?.(point.sha);
+                        else onview?.(point.sha);
+                      }}>
                 <span class="mark-name">{point.label}</span>
                 <span class="mark-when panel-meta">{stamp(point.at)}</span>
+                {#if against === point.sha}<span class="sr-only">Comparison base</span>{/if}
               </button>
-              {#if canEdit}
-                <span class="day-tools">
-                  <IconButton icon="pencil" tone="plain" size="btn-icon-sm"
-                              label="Rename this bookmark" onclick={() => startNaming(point)} />
-                  <IconButton icon="trash" tone="plain" size="btn-icon-sm"
-                              label="Remove this bookmark" onclick={() => unbookmark(point)} />
+              {#if canEdit || viewing !== point.sha}
+                <span class="day-tools" class:on={against === point.sha}>
+                  {#if canEdit}
+                    <IconButton icon="pencil" tone="plain" size="btn-icon-sm"
+                                label="Rename this bookmark" onclick={() => startNaming(point)} />
+                    <IconButton icon="trash" tone="plain" size="btn-icon-sm"
+                                label="Remove this bookmark" onclick={() => unbookmark(point)} />
+                  {/if}
+                  {@render compareTool(point)}
                 </span>
               {/if}
             {/if}
@@ -524,9 +539,10 @@
         type="button"
         class="timeline-point day-point"
         class:timeline-here={here}
+        class:timeline-against={against === point.sha}
         aria-current={here ? "true" : undefined}
-        title="Compare {told(point)} from {stamp(point.at) || shortSha(point.sha)} with the current source"
-        onclick={() => onview?.(point.sha)}
+        title="Compare {told(point)} from {stamp(point.at) || shortSha(point.sha)} with the {compareTo(point)}"
+        onclick={(event) => (event.shiftKey ? oncompare?.(point.sha) : onview?.(point.sha))}
       >
         <span class="day-when">{clock(point.at)}</span>
         <!-- The word, where there is one. The cell stays either way, so that
@@ -535,6 +551,7 @@
              out of the flow, beside the cell rather than in it. -->
         <span class="day-what">{said(point)}</span>
         {#if !said(point)}<span class="sr-only">Synced</span>{/if}
+        {#if against === point.sha}<span class="sr-only">Comparison base</span>{/if}
         <!-- Who, at the right edge, where it can be ignored. It is metadata
              on a list whose job is moving through time, so it is the first
              thing to go: it stands down for the controls when this is the row
@@ -552,17 +569,35 @@
            the pointer, on the row being read, on the row a keyboard has
            reached -- and always where the mark is already set, because there
            the icon is not a control offering itself, it is the answer. -->
-      {#if canEdit}
-        <span class="day-tools" class:on={bookmarked(point)}>
-          <IconButton icon="bookmark" tone="plain" size="btn-icon-sm" filled={bookmarked(point)}
-                      label={bookmarked(point) ? "Rename this bookmark" : "Bookmark this version"}
-                      onclick={() => startNaming(point)} />
+      {#if canEdit || bookmarked(point) || !here}
+        <span class="day-tools" class:on={bookmarked(point) || against === point.sha}
+              class:mark-still={!canEdit && here}>
+          {#if canEdit}
+            <IconButton icon="bookmark" tone="plain" size="btn-icon-sm" filled={bookmarked(point)}
+                        label={bookmarked(point) ? "Rename this bookmark" : "Bookmark this version"}
+                        onclick={() => startNaming(point)} />
+          {:else if bookmarked(point)}
+            <Icon name="bookmark" filled />
+          {/if}
+          {@render compareTool(point)}
         </span>
-      {:else if bookmarked(point)}
-        <span class="day-tools on mark-still"><Icon name="bookmark" filled /></span>
       {/if}
     {/if}
   </li>
+{/snippet}
+
+<!-- Comparing. Any version but the one being read can be made the base of a
+     comparison, or stop being it, by anyone who can see the panel. -->
+{#snippet compareTool(point)}
+  {#if viewing !== point.sha}
+    {#if against === point.sha}
+      <IconButton icon="diff" tone="plain" size="btn-icon-sm"
+                  label="Stop comparing with this version" onclick={() => oncompare?.("")} />
+    {:else}
+      <IconButton icon="diff" tone="plain" size="btn-icon-sm"
+                  label="Compare with this version" onclick={() => oncompare?.(point.sha)} />
+    {/if}
+  {/if}
 {/snippet}
 
 {#snippet nameField(label)}
@@ -771,6 +806,9 @@
      than under the time, and that is the whole of the difference: medium
      weight and a tinted ground, no rule, no box, no third row. */
   .timeline-here .day-what { font-weight: 500; }
+  /* The base of a comparison is a second place to look, not the one being
+     read, so it gets a thin accent on the leading edge and no ground. */
+  .timeline-against { box-shadow: inset 2px 0 var(--color-brand); }
   .day-about {
     grid-column: 2 / -1;
     padding-bottom: 2px;
@@ -793,7 +831,8 @@
   .day-row .day-tools:not(.on) { opacity: 0; }
   .day-row:hover .day-tools,
   .day-row:focus-within .day-tools,
-  .day-row:has(.timeline-here) .day-tools { opacity: 1; }
+  .day-row:has(.timeline-here) .day-tools,
+  .day-row:has(.timeline-against) .day-tools { opacity: 1; }
   /* The mark itself is coloured; an empty bookmark waiting to be set is not,
      or every row would read as half-marked. */
   .day-tools.on { color: var(--color-link); }
