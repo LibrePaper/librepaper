@@ -536,7 +536,7 @@ async function run() {
   const midway = await tab.eval(`
     const main = window.doc().querySelector('main');
     const matrix = new (window.win().DOMMatrix)(window.win().getComputedStyle(main).transform);
-    return { transform: matrix.a, rendered: Number(window.doc().querySelector('.page').dataset.scale) };
+    return { transform: matrix.a, rendered: Number(window.doc().querySelector('.pages').dataset.scale) };
   `);
   await wait(1500);
   await until(tab, `Math.abs(window.state().scale / ${baseScale / 1} / ${firstFactor * secondFactor} - 1) < 0.03`, 8000);
