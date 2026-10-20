@@ -989,16 +989,17 @@
   .task-search { width:100%; min-width:0; }
   .task-results { display:flex; flex-direction:column; }
   .task-list { list-style:none; margin:0; padding:0; display:flex; flex-direction:column; }
-  .task-group-label { margin:0; padding:.25rem .5rem; font-size:.8em; font-weight:600; color:var(--color-text-secondary); }
+  /* Headings sit at the rows' size and stand out by weight, so a heading is
+     never smaller than the tasks under it. */
+  .task-group-label { margin:0; padding:.25rem .5rem; font-size:1em; font-weight:600; }
   .task-section { display:flex; align-items:center; gap:var(--spacing); width:100%; margin-top:var(--spacing); padding:.25rem .5rem;
-                  border:0; background:transparent; cursor:pointer; text-align:left; font-size:.8em; font-weight:600;
-                  color:var(--color-text-secondary); }
+                  border:0; background:transparent; cursor:pointer; text-align:left; font:inherit; font-weight:600;
+                  color:inherit; }
   .task-section:first-child { margin-top:0; }
-  .task-section:hover { color:inherit; }
   /* The chevron turns with the state and does not animate. */
   .task-chevron { flex:none; display:inline-block; width:.75em; }
   .task-section[aria-expanded="true"] .task-chevron { transform:rotate(90deg); }
-  .task-count { margin-left:auto; font-weight:400; }
+  .task-count { margin-left:auto; font-size:.8em; font-weight:400; color:var(--color-text-secondary); }
   .task-row { display:flex; flex-direction:column; justify-content:center; gap:.125rem; width:100%; min-height:2.25rem;
               padding:.25rem .5rem; border:0; background:transparent; border-radius:var(--radius-base, .25rem);
               cursor:pointer; text-align:left; font:inherit; color:inherit; }
