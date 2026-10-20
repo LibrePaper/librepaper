@@ -7,17 +7,11 @@ import {
   dominantAxis,
   keyAction,
   normalizeDelta,
-  wheelZoomFactor,
 } from "../../src/lib/pdf/input.js";
 
 assert.equal(normalizeDelta(10, 0, 800), 10);
 assert.equal(normalizeDelta(3, 1, 800), 48, "lines are 16px");
 assert.equal(normalizeDelta(1, 2, 800), 800, "pages are a window high");
-
-assert.equal(wheelZoomFactor(0), 1);
-assert.ok(wheelZoomFactor(-100) > 1, "wheel up zooms in");
-assert.ok(wheelZoomFactor(100) < 1);
-assert.ok(Math.abs(wheelZoomFactor(50) * wheelZoomFactor(-50) - 1) < 1e-12, "out and back is neutral");
 
 assert.equal(dominantAxis(0, 10), "y");
 assert.equal(dominantAxis(10, 0), "x");

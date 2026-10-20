@@ -1,12 +1,13 @@
 // Wheel, keyboard and gesture handling for the PDF frame.
 //
 // The frame is a plain scrolling document, so most input is the browser's own.
-// This module claims only what the browser does badly or not at all: zooming
-// the page with Ctrl+wheel (which is also what a trackpad pinch sends in
-// Chromium and Firefox, where otherwise it would zoom the whole frame, UI
-// included), keeping a diagonal trackpad swipe on one axis, and the keys a PDF
-// reader is expected to have. It never zooms or scrolls by itself: it reports
-// what was asked for through the callbacks, and `viewer.js` decides.
+// This module claims only what the browser does badly or not at all: keeping a
+// diagonal trackpad swipe on one axis, and the keys a PDF reader is expected
+// to have. Ctrl+wheel, which is also what a trackpad pinch sends in Chromium
+// and Firefox, is `watchPinch`'s alone (`lib/pinch.js`), so a zoom gesture is
+// seen once; the wheel handler here lets it pass untouched. It never zooms or
+// scrolls by itself: it reports what was asked for through the callbacks, and
+// `viewer.js` decides.
 //
 // The decisions are pure functions, exported for `tests/unit/pdf-input.mjs`;
 // `installInput` is the thin layer that reads the DOM and calls them.
@@ -21,12 +22,6 @@ export function normalizeDelta(delta, deltaMode, pageHeight) {
   if (deltaMode === 1) return delta * LINE;
   if (deltaMode === 2) return delta * pageHeight;
   return delta;
-}
-
-/// The zoom factor one ctrl+wheel event contributes. Exponential, so that
-/// scrolling out and back by the same amount returns to the same zoom.
-export function wheelZoomFactor(deltaY) {
-  return Math.exp(-deltaY * 0.002);
 }
 
 /// "x" or "y" when one delta is at least twice the other, else null: a
@@ -96,30 +91,12 @@ function overflowsSideways() {
 }
 
 /// Install the frame's wheel and key handling. Returns `{ dispose }`.
-export function installInput({ zoomPreview, zoomCommit, zoomStep, zoomReset, pageStep, pageEdge, onfind, isPresenting }) {
-  let factor = 1;
-  let timer = 0;
-  let pointX = 0;
-  let pointY = 0;
+export function installInput({ zoomStep, zoomReset, pageStep, pageEdge, onfind, isPresenting }) {
   const lock = createAxisLock();
 
   function onwheel(event) {
-    if (event.ctrlKey) {
-      // A zoom gesture is ours entirely; the browser's page zoom must not run.
-      event.preventDefault();
-      factor *= wheelZoomFactor(normalizeDelta(event.deltaY, event.deltaMode, window.innerHeight));
-      pointX = event.clientX;
-      pointY = event.clientY;
-      zoomPreview(factor, pointX, pointY);
-      clearTimeout(timer);
-      timer = setTimeout(() => {
-        const final = factor;
-        factor = 1;
-        timer = 0;
-        zoomCommit(final, pointX, pointY);
-      }, 200);
-      return;
-    }
+    // Ctrl+wheel is a zoom gesture and `watchPinch` owns it.
+    if (event.ctrlKey) return;
     if (event.metaKey || event.shiftKey || event.altKey) return;
     const dx = normalizeDelta(event.deltaX, event.deltaMode, window.innerWidth);
     const dy = normalizeDelta(event.deltaY, event.deltaMode, window.innerHeight);
@@ -160,9 +137,6 @@ export function installInput({ zoomPreview, zoomCommit, zoomStep, zoomReset, pag
     dispose() {
       window.removeEventListener("wheel", onwheel);
       document.removeEventListener("keydown", onkeydown);
-      clearTimeout(timer);
-      timer = 0;
-      factor = 1;
     },
   };
 }

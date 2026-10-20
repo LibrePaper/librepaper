@@ -68,11 +68,14 @@
       /*
         Presentation: black ground, one page to a screen, each snapping to the
         centre. The scale was fitted to the whole screen, so nothing is padded.
+        Each page gets a slot one viewport high, with the page centred in it by
+        its margins, so a page shorter than the screen never shows a neighbour.
       */
       html.presenting { background: #000; scroll-snap-type: y mandatory; }
       html.presenting main { padding: 0; gap: 0; margin-left: 0; }
       html.presenting main > .pages { gap: 0; }
-      html.presenting .page { box-shadow: none; scroll-snap-align: center; scroll-snap-stop: always; }
+      html.presenting .page { box-shadow: none; scroll-snap-align: center; scroll-snap-stop: always;
+        margin-block: max(0px, calc((100vh - var(--page-height)) / 2)); margin-inline: auto; }
       /*
         Links sit above the text layer. The layer itself lets every pointer
         through so text stays selectable; only the anchors catch it.

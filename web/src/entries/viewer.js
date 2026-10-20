@@ -333,10 +333,17 @@ function go({ page, y }) {
   const rect = element.getBoundingClientRect();
   const scale = Number(stage.firstElementChild?.dataset.scale) * (96 / 72);
   const inside = !presenting && typeof y === "number" && Number.isFinite(y) && scale > 0 ? y * scale - 16 : 0;
-  scrollToTop(scrollY + rect.top + Math.max(0, inside));
+  scrollToTop(scrollY + rect.top - slotMargin(rect) + Math.max(0, inside));
   currentPage = Number(element.dataset.page);
   sidebar.setCurrent(currentPage);
   report();
+}
+
+/// How far above a page's top edge the scroll should land. In presentation
+/// each page sits centred in a slot one viewport high, so the slot starts
+/// above the page by the margin that centres it; elsewhere the page is the top.
+function slotMargin(rect) {
+  return presenting ? Math.max(0, (innerHeight - rect.height) / 2) : 0;
 }
 
 function scrollToTop(top) {
@@ -411,7 +418,8 @@ function pageEdge(which) {
 }
 
 function focusPage(list, index) {
-  scrollToTop(scrollY + list[index].getBoundingClientRect().top);
+  const rect = list[index].getBoundingClientRect();
+  scrollToTop(scrollY + rect.top - slotMargin(rect));
   // Taken now rather than when the scroll has finished, so keys pressed in a
   // row each step from the page the last one chose.
   currentPage = Number(list[index].dataset.page);
@@ -485,8 +493,6 @@ watchPinch(document, {
 });
 
 installInput({
-  zoomPreview,
-  zoomCommit,
   zoomStep,
   zoomReset,
   pageStep,

@@ -450,12 +450,47 @@ async function run() {
     presenting && during.mode === "page-fit" && left && restored.mode === "auto" && restored.spread === false && restored.sidebar === false,
     JSON.stringify({ during, restored }));
 
-  // 14. Ctrl+wheel zooms the page.
+  // 14. Ctrl+wheel zooms the page once. The commit must land on the scale the
+  // preview showed: a second handler for the same gesture would compound it.
   const scaleBefore = await tab.eval("return window.state().scale");
-  await mouse("mouseWheel", 500, 400, { deltaX: 0, deltaY: -300, modifiers: 2 });
+  await mouse("mouseWheel", 500, 400, { deltaX: 0, deltaY: -30, modifiers: 2 });
+  // Read at once, well inside the 200 ms (WHEEL_IDLE_MS in pinch.js) before the commit.
+  const previewed = await tab.eval(`
+    const main = window.doc().querySelector('main');
+    const matrix = new (window.win().DOMMatrix)(window.win().getComputedStyle(main).transform);
+    return matrix.a;
+  `);
   const zoomed = await until(tab, `window.state().scale > ${scaleBefore} + 0.05`, 8000);
-  check("ctrl+wheel redraws the page at a larger scale", zoomed,
-    JSON.stringify({ before: scaleBefore, after: await tab.eval("return window.state().scale") }));
+  await wait(800);
+  const scaleAfter = await tab.eval("return window.state().scale");
+  const ratio = scaleAfter / scaleBefore;
+  check("ctrl+wheel redraws the page at the scale its preview showed", zoomed && previewed > 1 && Math.abs(ratio / previewed - 1) < 0.03,
+    JSON.stringify({ before: scaleBefore, after: scaleAfter, previewed, ratio }));
+
+  // 15. Presentation shows one page to a screen: the current page is centred
+  // in the viewport, its neighbour is below the fold, and a step centres the next.
+  await tab.eval("window.__pages = window.doc().querySelector('.pages'); window.ask({ type: 'viewer-present', on: true })");
+  await until(tab, "window.state().presenting === true");
+  await until(tab, "window.doc().querySelector('.pages') !== window.__pages", 10000);
+  await wait(500);
+  await tab.eval("window.ask({ type: 'viewer-page', page: 1 })");
+  await wait(500);
+  const slot = (n) => tab.eval(`
+    const rect = window.page(${n}).getBoundingClientRect();
+    const next = window.page(${n + 1});
+    return { top: rect.top, height: rect.height, inner: window.win().innerHeight,
+      nextTop: next ? next.getBoundingClientRect().top : null };
+  `);
+  const one = await slot(1);
+  check("presentation centres the current page and hides its neighbour",
+    Math.abs(one.top - (one.inner - one.height) / 2) < 2 && one.nextTop >= one.inner - 1, JSON.stringify(one));
+  await tab.eval("window.ask({ type: 'viewer-page', page: 2 })");
+  await wait(500);
+  const two = await slot(2);
+  check("stepping a page in presentation centres the next one",
+    Math.abs(two.top - (two.inner - two.height) / 2) < 2, JSON.stringify(two));
+  await tab.eval("window.ask({ type: 'viewer-present', on: false })");
+  await until(tab, "window.state().presenting === false");
 }
 
 server.listen(PORT);
