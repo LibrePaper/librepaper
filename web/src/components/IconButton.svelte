@@ -20,6 +20,8 @@
     label,
     title = label,
     href = null,
+    // A link to another site opens in a new tab, which the desktop app sends to the system browser.
+    external = false,
     pressed = null,
     // For a button that reveals something: what it reveals, and whether it is
     // showing. A pressed icon says the control is on; these say what the page
@@ -54,7 +56,7 @@
   <Tooltip.Trigger>
     {#snippet element(attributes)}
       {#if href}
-        <a {...retargetElementAttributes(attributes)} {href} class={classes} aria-label={label}>
+        <a {...retargetElementAttributes(attributes)} {href} target={external ? "_blank" : undefined} rel={external ? "noreferrer" : undefined} class={classes} aria-label={label}>
           <Icon name={icon} {filled} />
           {#if visibleLabel}<span class="compact-label" aria-hidden="true">{visibleLabel}</span>{/if}
         </a>

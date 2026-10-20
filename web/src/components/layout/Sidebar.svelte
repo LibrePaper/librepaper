@@ -3,6 +3,7 @@
   import PanelRail from "./PanelRail.svelte";
   import Grip from "../Grip.svelte";
   import { slotId } from "../../lib/panels.js";
+  import { DOCUMENTATION_URL } from "../../lib/site-links.js";
 
   // The column at the left: a rail of icons, and one panel at a time beside
   // it. What is *in* a panel is none of this component's business -- each
@@ -72,7 +73,7 @@
     </div>
     <div class="activity-bottom" role="group" aria-label="Workspace controls">
       {@render controls?.()}
-      <IconButton icon="help" label="Documentation" href="/documentation" />
+      <IconButton icon="help" label="Documentation" href={DOCUMENTATION_URL} external />
     </div>
   </div>
   {#if settled}

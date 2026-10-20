@@ -5,6 +5,7 @@
   import { retargetElementAttributes } from "../element-attributes.js";
   import { PANEL_POSITIONING } from "../../lib/menubar.svelte.js";
   import { signInHref, signOut } from "../../lib/api.js";
+  import { DOCUMENTATION_URL } from "../../lib/site-links.js";
 
   // `open` marks the current tab and, by default, tints the trigger; a page
   // whose places are always open passes `pressed={false}` to keep it plain.
@@ -131,7 +132,7 @@
       </Menu.Item>
       <Menu.Item value="docs" class="menuitem workspace-action" data-workspace-action="docs">
         {#snippet element(attributes)}
-          <a {...retargetElementAttributes(attributes)} href="/documentation" class="menuitem workspace-action" data-workspace-action="docs">
+          <a {...retargetElementAttributes(attributes)} href={DOCUMENTATION_URL} target="_blank" rel="noreferrer" class="menuitem workspace-action" data-workspace-action="docs">
             <span class="menuitem-check" aria-hidden="true"></span>
             <Icon name="help" size="1rem" />
             <span class="menuitem-label">Docs</span>

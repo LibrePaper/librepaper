@@ -4,6 +4,7 @@
   import Logo from "./Logo.svelte";
   import { me as whoami } from "../lib/api.js";
   import { INSTALL_URL, desktop, shellAction } from "../lib/desktop/client.js";
+  import { BACKUPS_URL } from "../lib/site-links.js";
 
   // The page the server shows when there is more than one way in. It is served
   // for /auth/login, so the choice is made here and every other page can link
@@ -48,7 +49,7 @@
          by the desktop app is the safety net. -->
     <div class="signin-warning" role="note">
       <p><strong>LibrePaper is experimental.</strong> The website and service may change at any time.</p>
-      <p>We recommend you use the <a href={INSTALL_URL}>desktop app</a> to make <a href="https://librepaper.org/backups.html">automatic local backups</a> of your projects as you edit them.</p>
+      <p>We recommend you use the <a href={INSTALL_URL} target="_blank" rel="noreferrer">desktop app</a> to make <a href={BACKUPS_URL} target="_blank" rel="noreferrer">automatic local backups</a> of your projects as you edit them.</p>
     </div>
     <div class="signin-providers">
       {#each me.providers ?? [] as provider (provider.id)}

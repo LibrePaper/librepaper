@@ -5,6 +5,7 @@
   import * as desktopClient from "../../lib/desktop/client.js";
   import { backups } from "../../lib/desktop/backups.svelte.js";
   import { me, post } from "../../lib/api.js";
+  import { BACKUPS_URL } from "../../lib/site-links.js";
 
   let { account = {} } = $props();
   const accountId = $derived(typeof account.id === "string" ? account.id : "");
@@ -144,7 +145,7 @@
 </script>
 
 <p class="setting-description backups-intro">
-  Your account's projects, copied as ZIP files to a folder on this computer by the desktop app. <a href="https://librepaper.org/backups.html" target="_blank" rel="noreferrer">Backup guide</a>
+  Your account's projects, copied as ZIP files to a folder on this computer by the desktop app. <a href={BACKUPS_URL} target="_blank" rel="noreferrer">Backup guide</a>
 </p>
 
 <DesktopOnly>
