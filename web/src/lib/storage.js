@@ -25,6 +25,9 @@ export function write(key, value) {
 
 export const VIEWED = "librepaper-viewed";
 export const LINKED = "librepaper-linked";
+// Whether PDF pages are drawn inverted while the application is dark. A habit
+// of the person reading rather than of the document.
+export const PDF_INVERT = "librepaper-pdf-invert";
 // Which side the source was on. A habit of the reader rather than anything
 // about a document, so reopening an editor puts the source where they left it.
 export const SOURCE_SIDE = "librepaper-source-side";

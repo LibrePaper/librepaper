@@ -11,14 +11,15 @@
   // Everything arriving from the frame is untrusted. The injected agent
   // shares an origin with the document, and a hostile document can rewrite it.
   //
-  // `controls` is whatever the format in the frame can be asked for -- zoom
-  // and a cursor tool for a PDF, nothing for flowing HTML. It is a snippet
-  // rather than anything this component knows about, and it floats over the
-  // document rather than standing in a row above it: a band across the top of
-  // the pane cost every format a strip of the document's height, including
-  // the formats with nothing to put in it. What is being previewed is said in
-  // the Files pane, by the eye beside the file, rather than spelled out again
-  // here.
+  // `controls` is whatever the format in the frame can be asked for -- page,
+  // zoom, search and a cursor tool for a PDF, nothing for flowing HTML. It is
+  // a snippet rather than anything this component knows about, and it stands
+  // in a slim band across the top of the pane, above the frame and never over
+  // it, so no control can cover a page. The pane is a column: the band takes
+  // the height it needs and the frame the rest, and a format whose snippet
+  // renders nothing leaves the frame the whole pane, so it loses no height at
+  // all. What is being previewed is said in the Files pane, by the eye beside
+  // the file, rather than spelled out again here.
   //
   // A thin progress line along the top edge signals a render under way without
   // covering the document, and nothing shows for renders under the
@@ -106,6 +107,7 @@
         tell({ type: "theme", mode: mode() });
       }}
       style:pointer-events={grabbing ? "none" : null}
+      allow="fullscreen"
       sandbox="allow-same-origin allow-scripts allow-popups allow-popups-to-escape-sandbox allow-forms"
     ></iframe>
   {/key}

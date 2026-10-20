@@ -75,8 +75,25 @@ export function validateFrameMessage(input) {
         && Number(input.mode) >= 0.1 && Number(input.mode) <= 10;
       if (typeof input.drawn !== "boolean" || (!namedMode && !numericMode)
           || (input.scale !== null && !finite(input.scale, 0, 100))) return null;
-      return { type: "viewer-state", drawn: input.drawn, mode: input.mode, scale: input.scale };
+      const count = (value) => Number.isSafeInteger(value) && value >= 0 && value <= 100_000;
+      let find = null;
+      if (input.find !== null) {
+        if (!plainObject(input.find) || !Number.isSafeInteger(input.find.current) || !Number.isSafeInteger(input.find.total)
+            || input.find.current < 0 || input.find.total < 0 || input.find.total > 10_000
+            || input.find.current > input.find.total) return null;
+        find = { current: input.find.current, total: input.find.total };
+      }
+      if (!count(input.page) || !count(input.pages) || typeof input.sidebar !== "boolean"
+          || typeof input.spread !== "boolean" || typeof input.invert !== "boolean"
+          || typeof input.presenting !== "boolean") return null;
+      return {
+        type: "viewer-state", drawn: input.drawn, mode: input.mode, scale: input.scale,
+        page: input.page, pages: input.pages, sidebar: input.sidebar, spread: input.spread,
+        invert: input.invert, presenting: input.presenting, find,
+      };
     }
+    case "viewer-find-open":
+      return { type: "viewer-find-open" };
     case "annotate":
     case "disarm":
     case "unfocus":
@@ -97,7 +114,8 @@ const RATE = {
   // allowance as cheaply as short notes.
   ready: { capacity: 32, refillPerSecond: 2 },
   selection: { capacity: 48, refillPerSecond: 12 },
-  "viewer-state": { capacity: 24, refillPerSecond: 4 },
+  // Page changes while scrolling each send one, so this is the roomiest class.
+  "viewer-state": { capacity: 48, refillPerSecond: 16 },
   default: { capacity: 40, refillPerSecond: 8 },
 };
 

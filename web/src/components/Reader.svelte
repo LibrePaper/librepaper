@@ -44,6 +44,7 @@
   } from "../lib/api.js";
   import {
     LINKED,
+    PDF_INVERT,
     linkFor,
     markViewed,
     read,
@@ -55,6 +56,7 @@
   import { APPLE, availability, commandFor, menuKeys } from "../lib/commands.js";
 
   import { tick, untrack } from "svelte";
+  import { onMode } from "../lib/theme.js";
   import { Menu } from "@skeletonlabs/skeleton-svelte";
   import MenubarMenu from "./MenubarMenu.svelte";
   import { menubar } from "../lib/menubar.svelte.js";
@@ -526,8 +528,23 @@
         break;
       case "viewer-state":
         viewerView = message.drawn
-          ? { mode: String(message.mode || "auto"), scale: Number(message.scale) || null }
+          ? {
+              mode: String(message.mode || "auto"), scale: Number(message.scale) || null,
+              page: message.page, pages: message.pages, sidebar: message.sidebar, spread: message.spread,
+              invert: message.invert, presenting: message.presenting, find: message.find,
+            }
           : null;
+        // The remembered inversion is sent once per document, the first time
+        // the frame says it has drawn: a frame that was just opened starts
+        // with the pages as they are, whatever was chosen last time. After
+        // that the frame is the authority, and a toggle sends its own.
+        if (message.drawn && !invertSent) {
+          invertSent = true;
+          if (invertPages) tell({ type: "viewer-invert", invert: true });
+        }
+        break;
+      case "viewer-find-open":
+        findAsk += 1;
         break;
       case "selection":
         showSelection(message.selector, message.rect);
@@ -2048,6 +2065,17 @@
   // A format with no paged frame never sends it, which is exactly how the
   // controls stay out of the header for flowing HTML.
   let viewerView = $state(null);
+  // Counts the frame's requests for the search row; the controls watch it.
+  let findAsk = $state(0);
+  // Whether PDF pages are inverted while the application is dark. Remembered
+  // like the other habits of the person reading, and sent to each new frame
+  // once it reports a page drawn.
+  let invertPages = $state(read(PDF_INVERT, false) === true);
+  let invertSent = false;
+  // Whether the application is dark right now; the invert item is only
+  // offered then, because the frame ignores it in a light theme.
+  let darkNow = $state(false);
+  $effect(() => onMode((next) => (darkNow = next === "dark")));
   let viewerTool = $state("select");
   let activeSynctex = null;
   framePreview = createFramePreview({
@@ -2063,6 +2091,8 @@
       // document that just left.
       viewerView = null;
       viewerTool = "select";
+      invertSent = false;
+      findAsk = 0;
       renderCoordinator.invalidate();
       deliveredKind = "";
       renderStatus.clearDocx();
@@ -4088,7 +4118,15 @@
        would reload the document and lose the reader's place in it. -->
   {#snippet previewControls()}
     {#if viewerView}
-      <PreviewControls mode={viewerView.mode} scale={viewerView.scale} tool={viewerTool} busy={previewBusy}
+      <PreviewControls view={viewerView} tool={viewerTool} busy={previewBusy} dark={darkNow} {findAsk}
+        send={(message) => {
+          // The one message that is also a preference: remember what was chosen.
+          if (message.type === "viewer-invert") {
+            invertPages = message.invert;
+            write(PDF_INVERT, message.invert);
+          }
+          return tell(message);
+        }}
         onmode={(mode) => {
           // Optimistic, so the select does not snap back while the page is
           // redrawn; the frame corrects it with the scale it really used.
@@ -4098,7 +4136,8 @@
         ontool={(next) => {
           viewerTool = next;
           tell({ type: "viewer-tool", tool: next });
-        }} />
+        }}
+        ondownload={can["download-pdf"] ? () => downloadRendering("pdf") : null} />
     {/if}
   {/snippet}
   <Preview bind:this={preview} src={frameSrc} {docsOrigin} onmessage={fromFrame} onload={frameLoaded} {grabbing}

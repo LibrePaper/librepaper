@@ -60,6 +60,10 @@
     "chevrons-left": [["path", "m11 17-5-5 5-5"], ["path", "m18 17-5-5 5-5"]],
     "chevrons-right": [["path", "m6 17 5-5-5-5"], ["path", "m13 17 5-5-5-5"]],
     x: [["path", "M18 6 6 18"], ["path", "m6 6 12 12"]],
+    // Lucide's presentation, for the PDF preview's full-screen slide mode, and
+    // moon, for inverting the pages while the application is dark.
+    presentation: [["path", "M2 3h20"], ["path", "M21 3v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V3"], ["path", "m7 21 5-5 5 5"]],
+    moon: [["path", "M12 3a6 6 0 0 0 9 9 9 9 0 1 1-9-9Z"]],
     "folder-plus": [["path", "M20 20H4a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2h5l2 2h9a2 2 0 0 1 2 2v10a2 2 0 0 1-2 2"], ["path", "M12 10v6"], ["path", "M9 13h6"]],
     book: [["path", "M4 19.5v-15A2.5 2.5 0 0 1 6.5 2H19a1 1 0 0 1 1 1v18a1 1 0 0 1-1 1H6.5a1 1 0 0 1 0-5H20"]],
     "panel-left": [["rect", { width: 18, height: 18, x: 3, y: 3, rx: 2 }], ["path", "M9 3v18"]],
