@@ -145,8 +145,9 @@ fn setup(app: &mut App) -> Result<(), Box<dyn std::error::Error>> {
 }
 
 // The page reads its base URL before any script of its own runs. The
-// new-window shortcut is added after that line.
-fn desktop_script() -> String {
+// new-window shortcut is added after that line. `zoom` is the level the
+// window opens at; later changes arrive as a `librepaper:zoom` event.
+fn desktop_script(zoom: f64) -> String {
     let base = if cfg!(windows) {
         "http://lp-local.localhost/"
     } else {
@@ -158,7 +159,7 @@ fn desktop_script() -> String {
         shortcut.push_str(&DROP_SCRIPT.replace("{base}", base));
     }
     format!(
-        "window.__LIBREPAPER_DESKTOP__ = Object.freeze({{ base: \"{base}\", version: \"{}\" }});\n{shortcut}",
+        "window.__LIBREPAPER_DESKTOP__ = Object.freeze({{ base: \"{base}\", version: \"{}\", zoom: {zoom} }});\n{shortcut}",
         env!("CARGO_PKG_VERSION")
     )
 }
@@ -280,7 +281,7 @@ fn open_window(app: &AppHandle, url: Url) -> tauri::Result<tauri::WebviewWindow>
         .theme(theme.tauri_theme(choice))
         .background_color(theme::background(choice, theme.system_dark(app)))
         .inner_size(1280.0, 860.0)
-        .initialization_script(desktop_script())
+        .initialization_script(desktop_script(app.state::<zoom::Zoom>().get()))
         .on_new_window(move |url, _features| {
             let origin = url.origin().ascii_serialization();
             if trusted(&opener, &origin) {

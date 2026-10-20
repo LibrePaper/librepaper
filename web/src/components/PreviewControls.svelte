@@ -24,7 +24,7 @@
   // explain why. `findAsk` counts the times the frame asked for the search
   // row (Ctrl or Cmd+F pressed inside it), so a second press focuses the field
   // again even though the row is already open.
-  let { view, tool = "select", busy = false, dark = false, findAsk = 0, send, onmode, ontool, ondownload = null } = $props();
+  let { view, tool = "select", busy = false, dark = false, findAsk = 0, send, onmode, ontool, ondownload = null, onpresent } = $props();
 
   // pdf.js's own steps, and its own ceiling and floor. A zoom button moves by
   // a tenth of the *drawn* scale rather than by a step of this list: the list
@@ -120,7 +120,7 @@
   function chosen(item) {
     if (item.value === "spread") send({ type: "viewer-spread", spread: !view.spread });
     else if (item.value === "invert") send({ type: "viewer-invert", invert: !view.invert });
-    else if (item.value === "present") send({ type: "viewer-present" });
+    else if (item.value === "present") onpresent?.();
     else if (item.value === "download") ondownload?.();
   }
 </script>

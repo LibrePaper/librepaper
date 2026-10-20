@@ -68,6 +68,10 @@ impl Zoom {
         };
         for window in app.webview_windows().values() {
             let _ = window.set_zoom(level);
+            // Pages that draw at devicePixelRatio need to hear about it.
+            let _ = window.eval(format!(
+                "window.dispatchEvent(new CustomEvent(\"librepaper:zoom\", {{ detail: {level} }}));"
+            ));
         }
         if let Err(err) = save(app, level) {
             shell_log::write(&format!("could not save the zoom level: {err}"));

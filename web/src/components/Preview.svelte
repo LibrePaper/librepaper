@@ -46,7 +46,20 @@
     });
     observer.observe(viewport);
     const stopMode = onMode((next) => tell({ type: "theme", mode: next }));
+    const standard = () => document.fullscreenElement === frame;
+    const current = () => standard() || document.webkitFullscreenElement === frame;
+    let presenting = false;
+    const changed = () => {
+      const on = !!frame && current();
+      if (on === presenting) return;
+      presenting = on;
+      tell({ type: "viewer-present", on });
+    };
+    document.addEventListener("fullscreenchange", changed);
+    document.addEventListener("webkitfullscreenchange", changed);
     return () => {
+      document.removeEventListener("fullscreenchange", changed);
+      document.removeEventListener("webkitfullscreenchange", changed);
       stopMode();
       window.removeEventListener("message", receiver.receive);
       receiver.dispose();
@@ -71,6 +84,16 @@
     if (!trusted || target.origin !== trusted) return false;
     frame.contentWindow.postMessage({ librepaper: true, ...message }, trusted, transfer);
     return true;
+  }
+
+  /// Presentation mode. A message carries no user activation, so the frame
+  /// cannot go fullscreen itself; this has to run inside the click, with
+  /// nothing awaited first. The frame is told once the browser has actually
+  /// changed state, which also covers leaving with Escape.
+  export function present() {
+    if (!frame) return;
+    if (frame.requestFullscreen) frame.requestFullscreen().catch(() => {});
+    else frame.webkitRequestFullscreen?.();
   }
 
   /// Where "Focus Preview" goes. The frame rather than the section around it:

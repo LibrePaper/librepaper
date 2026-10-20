@@ -70,6 +70,7 @@
   import { archive, availableDownloads, docxFile, entryDownload, projectFiles, renderingFile, saveBlob } from "../lib/reader/downloads.js";
   import Preview from "./Preview.svelte";
   import PreviewControls from "./PreviewControls.svelte";
+  import { onPageZoom } from "../lib/desktop/zoom.js";
   import Grip from "./Grip.svelte";
   import { parseRenderOptions } from "../lib/quarto-options.js";
   import SettingsDialog from "./settings/SettingsDialog.svelte";
@@ -541,6 +542,10 @@
         if (message.drawn && !invertSent) {
           invertSent = true;
           if (invertPages) tell({ type: "viewer-invert", invert: true });
+        }
+        if (message.drawn && !densitySent) {
+          densitySent = true;
+          if (pageZoom !== 1 || pageZoomChanged) tell({ type: "viewer-density", zoom: pageZoom });
         }
         break;
       case "viewer-find-open":
@@ -2072,6 +2077,18 @@
   // once it reports a page drawn.
   let invertPages = $state(read(PDF_INVERT, false) === true);
   let invertSent = false;
+  // The desktop app's page zoom as far as WebKit leaves it out of
+  // devicePixelRatio (1 everywhere else), so the frame can draw sharp.
+  // Nothing is sent while it is 1 and never was anything else.
+  let pageZoom = $state(1);
+  let pageZoomChanged = false;
+  let densitySent = false;
+  $effect(() => onPageZoom((next) => {
+    if (next === pageZoom) return;
+    if (pageZoom !== 1 || next !== 1) pageZoomChanged = true;
+    pageZoom = next;
+    if (viewerView) tell({ type: "viewer-density", zoom: next });
+  }));
   // Whether the application is dark right now; the invert item is only
   // offered then, because the frame ignores it in a light theme.
   let darkNow = $state(false);
@@ -2092,6 +2109,7 @@
       viewerView = null;
       viewerTool = "select";
       invertSent = false;
+      densitySent = false;
       findAsk = 0;
       renderCoordinator.invalidate();
       deliveredKind = "";
@@ -4119,6 +4137,7 @@
   {#snippet previewControls()}
     {#if viewerView}
       <PreviewControls view={viewerView} tool={viewerTool} busy={previewBusy} dark={darkNow} {findAsk}
+        onpresent={() => preview?.present()}
         send={(message) => {
           // The one message that is also a preference: remember what was chosen.
           if (message.type === "viewer-invert") {
