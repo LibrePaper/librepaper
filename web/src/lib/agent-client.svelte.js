@@ -309,9 +309,13 @@ export function createAgentClient({ origin = globalThis.location?.origin || "", 
         ...previous, ...message,
         ...(message.task_id || !previous.task_id ? {} : { task_id: previous.task_id }),
         ...(message.task || !previous.task ? {} : { task: previous.task }),
+        ...(previous.created ? { created: previous.created } : {}),
       };
       publish({ messages, error: "" });
-    } else publish({ messages: [...view.messages, message].slice(-MAX_MESSAGES), error: "" });
+    } else {
+      const created = message.created || new Date().toISOString().replace(/\.\d{3}Z$/, "Z");
+      publish({ messages: [...view.messages, { ...message, created }].slice(-MAX_MESSAGES), error: "" });
+    }
   }
   function updateTask(taskId, patch) {
     if (!taskId) return;

@@ -784,8 +784,9 @@
     <p class="panel-meta" role="alert">Message delivery was not confirmed. <button class="btn btn-sm lp-control-tonal-brand" disabled={busy} onclick={() => void retryTask(item.id)}>Retry delivery</button></p>
   {/each}
   <ChatTranscript messages={connection.messages}
-                  empty={connection.runnerConnected ? "No messages yet." : "Send a message to start the agent."}
-                  authors={false} quiet onresult={chooseResult} after={transcriptEnd}
+                  emptyTitle="No messages yet"
+                  emptyText={connection.runnerConnected ? "Messages go to the agent on this computer." : "Send a message to start the agent."}
+                  onresult={chooseResult} after={transcriptEnd}
                   roleLabel={(message) => message.role === "user" ? userName : (message.creator || message.role)} />
 
   <!-- The draft carries its own context, so the chat pane states it in one
