@@ -18,8 +18,14 @@ use super::{Error, PostgresCatalog, Result};
 /// new key and never a new spelling of an old one. The set is Okabe and Ito's
 /// colour-blind-safe palette, and web/src/lib/tag-colours.js holds the same keys.
 pub const COLOURS: [&str; 8] = [
-    "gray", "orange", "sky-blue", "bluish-green",
-    "yellow", "blue", "vermillion", "reddish-purple",
+    "gray",
+    "orange",
+    "sky-blue",
+    "bluish-green",
+    "yellow",
+    "blue",
+    "vermillion",
+    "reddish-purple",
 ];
 
 /// How many tags one account may create. The built-in tag does not count.

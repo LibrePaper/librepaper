@@ -228,8 +228,8 @@ const context = (values) => vm.createContext({
   }
 }
 
-// Edits to one tag go out one at a time. Picking vermillion and then blue again on
-// a blue tag is two saves, and the tag ends blue.
+// Edits to one tag go out one at a time. Picking vermillion and then blue
+// again on a blue tag is two saves, and the tag ends blue.
 {
   const tick = () => new Promise((done) => setTimeout(done, 0));
   const calls = [];

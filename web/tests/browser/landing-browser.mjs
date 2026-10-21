@@ -25,7 +25,7 @@ const documents = [
 const tagList = [
   { id: "favorites", name: "Favorites", colour: "yellow", builtin: true },
   { id: "thesis", name: "Thesis", colour: "blue", builtin: false },
-  { id: "teaching", name: "Teaching", colour: "green", builtin: false },
+  { id: "teaching", name: "Teaching", colour: "bluish-green", builtin: false },
 ];
 let server, tab;
 try {
