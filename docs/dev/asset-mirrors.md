@@ -1,18 +1,20 @@
 # Browser asset mirrors
 
 The server binary embeds pins, not renderer binaries or LaTeX files. Browsers
-fetch all five pinned assets from the mirror in `[assets].mirror`; the default
+fetch every pinned asset from the mirror in `[assets].mirror`; the default
 is [`DEFAULT_ASSET_MIRROR`](../../crates/librepaper-base/src/config/mod.rs).
 The official production config points to an OVH bucket in `bhs`.
 
-- `assets.lock` pins four WASM modules and one LaTeX release. Each WASM pin
-  names a GitHub repository, tag, and SHA-256. The LaTeX pin names a
+- `assets.lock` pins the WASM modules, the editor fonts and one LaTeX release.
+  Each WASM pin names a GitHub repository, tag, and SHA-256. Font pins name the
+  `editor-fonts` repository. The LaTeX pin names a
   `wasm-latex` release tag and the SHA-256 of its `MANIFEST.json`.
-- The published keys are `wasm/<sha256>/<module>.wasm` and
+- The published keys are `wasm/<sha256>/<module>.wasm`,
+  `fonts/<sha256>/<font>.woff2` and
   `latex/<sha256>/<release files>`. LaTeX `release.json` uses format 2; its
   engine records and bundle index identify the files in that release.
-- `node tools/assets/pins.mjs fetch` verifies pinned module and CodeMirror source bytes.
-  It writes WASM to `web/wasm/` and the binding to ignored build output under
+- `node tools/assets/pins.mjs fetch` verifies pinned module, font and CodeMirror source bytes.
+  It writes WASM to `web/wasm/`, fonts to `web/fonts/` and the binding to ignored build output under
   `web/vendor/`.
 
 ## Release order
@@ -21,11 +23,11 @@ Update only the pins for assets that changed; an application release does not
 require new renderer and LaTeX releases.
 If `assets.lock` is unchanged, there is no mirror update to publish.
 
-1. For each changed renderer, publish its tagged release in the source
-   repository, then update that module's row. For example:
+1. For each changed release repository (a renderer or `editor-fonts`), publish
+   its tagged release, then update that repository's rows. For example:
 
    ```sh
-   node tools/assets/pins.mjs update wasm --repo wasm-markdown --tag vX.Y.Z
+   node tools/assets/pins.mjs update release --repo wasm-markdown --tag vX.Y.Z
    ```
 
 2. For a changed LaTeX distribution, build and tag the release in the
@@ -40,7 +42,7 @@ If `assets.lock` is unchanged, there is no mirror update to publish.
    Both commands default to `../wasm-latex/mirror`. For another directory,
    pass its path to `pins update latex` and set `MIRROR` for `mirror build`,
    `check`, and `publish`.
-3. Fetch the pinned renderer modules and binding, then check the local LaTeX
+3. Fetch the pinned renderer modules, fonts and binding, then check the local LaTeX
    mirror:
 
    ```sh

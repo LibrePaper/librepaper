@@ -7,7 +7,7 @@ import { existsSync } from "node:fs";
 import { mkdir, readFile, readdir, writeFile } from "node:fs/promises";
 import { basename, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { parseAssetsLock, PINNED_MODULES } from "./pins-lock.mjs";
+import { parseAssetsLock, PINNED_FILES } from "./pins-lock.mjs";
 
 const ROOT = fileURLToPath(new URL("../..", import.meta.url));
 const digest = (bytes) => createHash("sha256").update(bytes).digest("hex");
@@ -22,31 +22,36 @@ async function downloadVerified(url, expected, label) {
   return bytes;
 }
 
-async function fetchModules(root, only) {
-  const { modules } = await parseAssetsLock(root);
-  if (only && !PINNED_MODULES.has(only)) throw new Error(`unknown module ${only}; expected one of ${[...PINNED_MODULES.keys()].join(", ")}`);
-  const out = join(root, "web/wasm");
-  await mkdir(out, { recursive: true });
+// Checks that run on a downloaded file before it is written, keyed by file name.
+const FILE_CHECKS = new Map([
+  ["typst.wasm", async (bytes, url) => {
+    const instantiated = await WebAssembly.instantiate(bytes, {});
+    const requiresFonts = instantiated.instance.exports.default_fonts_required;
+    if (typeof requiresFonts === "function" && requiresFonts() !== 0) throw new Error(`typst.wasm at ${url} requires external fonts; pin an embedded-font build`);
+  }],
+]);
+
+async function fetchPinned(root, only) {
+  const { pinned } = await parseAssetsLock(root);
+  if (only && !PINNED_FILES.has(only)) throw new Error(`unknown file ${only}; expected one of ${[...PINNED_FILES.keys()].join(", ")}`);
   let fetched = 0;
-  for (const { module, repo, tag, sha256 } of modules) {
-    if (only && only !== module) continue;
-    const target = join(out, module);
+  for (const { module: file, repo, tag, sha256, prefix } of pinned) {
+    if (only && only !== file) continue;
+    const out = join(root, "web", prefix);
+    await mkdir(out, { recursive: true });
+    const target = join(out, file);
     if (existsSync(target) && digest(await readFile(target)) === sha256) {
-      console.log(`${module.padEnd(20)} ok`);
+      console.log(`${file.padEnd(30)} ok`);
       continue;
     }
-    const url = `https://github.com/LibrePaper/${repo}/releases/download/${tag}/${module}`;
-    const bytes = await downloadVerified(url, sha256, module);
-    if (module === "typst.wasm") {
-      const instantiated = await WebAssembly.instantiate(bytes, {});
-      const requiresFonts = instantiated.instance.exports.default_fonts_required;
-      if (typeof requiresFonts === "function" && requiresFonts() !== 0) throw new Error(`${module} at ${url} requires external fonts; pin an embedded-font build`);
-    }
+    const url = `https://github.com/LibrePaper/${repo}/releases/download/${tag}/${file}`;
+    const bytes = await downloadVerified(url, sha256, file);
+    await FILE_CHECKS.get(file)?.(bytes, url);
     await writeFile(target, bytes);
     fetched++;
-    console.log(`${module.padEnd(20)} ${(bytes.length / 1024).toFixed(0)} KiB  ${tag}`);
+    console.log(`${file.padEnd(30)} ${(bytes.length / 1024).toFixed(0)} KiB  ${tag}`);
   }
-  if (!fetched && !only) console.log("every pinned module was already in place");
+  if (!fetched && !only) console.log("every pinned file was already in place");
 }
 
 async function parseLoroLock(root) {
@@ -102,25 +107,26 @@ function parseSums(text) {
   return sums;
 }
 
-async function updateWasmPin(args) {
+async function updateReleasePin(args) {
   const allowed = ["--repo", "--tag", "--root", "--sums-file"];
   const values = new Map();
   for (let i = 0; i < args.length; i += 2) {
     const name = args[i];
     const value = args[i + 1];
-    if (!allowed.includes(name) || !value || value.startsWith("--") || values.has(name)) throw new Error("invalid wasm pin options");
+    if (!allowed.includes(name) || !value || value.startsWith("--") || values.has(name)) throw new Error("invalid release pin options");
     values.set(name, value);
   }
   const repo = values.get("--repo");
   const tag = values.get("--tag");
   const root = values.get("--root") || ROOT;
+  const repos = [...new Set([...PINNED_FILES.values()].map((entry) => entry.repo))];
   const sumsFile = values.get("--sums-file");
   if (!repo || !tag ||
-      !/^wasm-(markdown|bibliography|typst)$/.test(repo) || !/^v\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)?$/.test(tag)) {
-    throw new Error("usage: pins update wasm --repo wasm-markdown|wasm-bibliography|wasm-typst --tag vX.Y.Z [--root DIR] [--sums-file FILE]");
+      !repos.includes(repo) || !/^v\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)?$/.test(tag)) {
+    throw new Error(`usage: pins update release --repo ${repos.join("|")} --tag vX.Y.Z [--root DIR] [--sums-file FILE]`);
   }
-  const { text, modules } = await parseAssetsLock(root);
-  if (!modules.some(({ repo: entryRepo }) => entryRepo === repo)) throw new Error(`${repo}: no lock entry`);
+  const { text, pinned } = await parseAssetsLock(root);
+  if (!pinned.some(({ repo: entryRepo }) => entryRepo === repo)) throw new Error(`${repo}: no lock entry`);
   const sumsText = sumsFile ? await readFile(sumsFile, "utf8") : await (async () => {
     const response = await fetch(`https://github.com/LibrePaper/${repo}/releases/download/${tag}/SHA256SUMS`);
     if (!response.ok) throw new Error(`${repo} ${tag}: release has no SHA256SUMS (${response.status})`);
@@ -148,7 +154,7 @@ function fetchArguments(args) {
     if (!root || root.startsWith("--")) throw new Error("fetch --root requires a directory");
     rest.splice(rootAt, 2);
   }
-  if (rest.some((arg) => arg.startsWith("--")) || rest.length > 1) throw new Error("usage: pins fetch [module.wasm] [--root DIR]");
+  if (rest.some((arg) => arg.startsWith("--")) || rest.length > 1) throw new Error("usage: pins fetch [file] [--root DIR]");
   return { root, only: rest[0] };
 }
 
@@ -208,16 +214,16 @@ async function updateLatexPin(args) {
 }
 
 function usage() {
-  return `usage: node tools/assets/pins.mjs <command>\n\n  fetch [module.wasm]             fetch pinned wasm and CodeMirror inputs\n  update wasm --repo <repo> --tag <tag> [--root DIR] [--sums-file FILE]\n  update loro <full-40-character-sha>\n  update latex [mirror-dir]`;
+  return `usage: node tools/assets/pins.mjs <command>\n\n  fetch [file]                    fetch pinned wasm, font and CodeMirror inputs\n  update release --repo <repo> --tag <tag> [--root DIR] [--sums-file FILE]\n  update loro <full-40-character-sha>\n  update latex [mirror-dir]`;
 }
 
 async function main() {
   const [command = "help", ...args] = process.argv.slice(2);
   if (command === "fetch") {
     const { root, only } = fetchArguments(args);
-    await fetchModules(root, only);
+    await fetchPinned(root, only);
     if (!only) await fetchLoro(root);
-  } else if (command === "update" && args[0] === "wasm") await updateWasmPin(args.slice(1));
+  } else if (command === "update" && args[0] === "release") await updateReleasePin(args.slice(1));
   else if (command === "update" && args[0] === "loro") {
     const commit = args[1];
     const rest = args.slice(2);

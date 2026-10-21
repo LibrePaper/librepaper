@@ -1,7 +1,8 @@
 #!/usr/bin/env node
 
 // The browser asset mirror: validates a LaTeX release tree, stages the pinned
-// wasm modules, and publishes both to S3 with integrity checks.
+// wasm modules and editor fonts, and publishes them to S3 with integrity
+// checks.
 // `tools/assets/mirror` is the shell front end.
 
 import { execFile } from "node:child_process";
@@ -16,7 +17,7 @@ import { createGzip } from "node:zlib";
 import { pipeline } from "node:stream/promises";
 import { fileURLToPath } from "node:url";
 import { statSync } from "node:fs";
-import { parseAssetsLockText } from "./pins-lock.mjs";
+import { PINNED_FILES, parseAssetsLockText } from "./pins-lock.mjs";
 
 const runFile = promisify(execFile);
 
@@ -142,6 +143,8 @@ const MIME = new Map([
   [".wasm", "application/wasm"], [".woff", "font/woff"], [".woff2", "font/woff2"], [".xml", "application/xml"],
 ]);
 const SHA256 = /^[a-f0-9]{64}$/;
+const MIRROR_PREFIXES = new Set([...PINNED_FILES.values()].map((entry) => entry.prefix));
+const isMirrorPrefix = (prefix) => prefix === "latex" || MIRROR_PREFIXES.has(prefix);
 const AWS_OPERATIONS = new Set(["head-object", "put-bucket-cors", "s3 sync"]);
 const AWS_HINTS = new Map([
   ["AccessDenied", "Check that the mirror credentials have permission for this bucket and prefix."],
@@ -263,14 +266,16 @@ async function validateMirrorFiles(root, prefix, files) {
     totalBytes += record.size;
   }
 
-  if (prefix === "wasm") {
-    // Every module is content-addressed: <sha256>/<name>.wasm, the directory
+  if (prefix !== "latex") {
+    // Every pinned file is content-addressed: <sha256>/<file>, the directory
     // being the hash of the bytes, so a URL can never name different bytes.
     for (const file of files) {
-      const match = file.relative.match(/^([a-f0-9]{64})\/[a-z][a-z0-9-]*\.wasm$/);
-      if (!match) throw new Error(`wasm mirror file must be <sha256>/<name>.wasm: ${file.relative}`);
+      const match = file.relative.match(/^([a-f0-9]{64})\/([^/]+)$/);
+      if (!match || PINNED_FILES.get(match[2])?.prefix !== prefix) {
+        throw new Error(`${prefix} mirror file must be <sha256>/<pinned file>: ${file.relative}`);
+      }
       if (expected.get(file.relative).sha256 !== match[1]) {
-        throw new Error(`WASM hash directory does not match raw bytes: ${file.relative}`);
+        throw new Error(`${prefix} hash directory does not match raw bytes: ${file.relative}`);
       }
     }
   } else {
@@ -366,7 +371,7 @@ async function validateLatexReleases(root, files, expected) {
 }
 
 export async function preflightMirror({ dir, prefix }) {
-  if (!/^(wasm|latex)$/.test(prefix || "")) throw new Error("prefix must be exactly wasm or latex");
+  if (!isMirrorPrefix(prefix)) throw new Error(`prefix must be latex or one of ${[...MIRROR_PREFIXES].join(", ")}`);
   const root = resolve(dir);
   const info = await stat(root).catch(() => null);
   if (!info?.isDirectory()) throw new Error("--dir must name an existing directory");
@@ -475,7 +480,7 @@ async function spotCheck(prefix, groups, target, env) {
 }
 
 export async function publish({ dir, prefix, dryRun = false, configureCors = false, env = process.env, output = console.log }) {
-  if (!/^(wasm|latex)$/.test(prefix || "")) throw new Error("prefix must be exactly wasm or latex");
+  if (!isMirrorPrefix(prefix)) throw new Error(`prefix must be latex or one of ${[...MIRROR_PREFIXES].join(", ")}`);
   const root = resolve(dir);
   const info = await stat(root).catch(() => null);
   if (!info?.isDirectory()) throw new Error("--dir must name an existing directory");
@@ -566,28 +571,32 @@ export async function publish({ dir, prefix, dryRun = false, configureCors = fal
 
 // === Staging and credential resolution ===
 
-export async function stageWasmMirror(directory = join(fileURLToPath(new URL("../..", import.meta.url)), "web/wasm"), lockPath = join(fileURLToPath(new URL("../..", import.meta.url)), "assets.lock")) {
-  const { modules } = parseAssetsLockText(await readFile(lockPath, "utf8"));
-  const staged = await mkdtemp(join(tmpdir(), "librepaper-wasm-mirror-"));
+export async function stagePinnedMirrors(directory = join(fileURLToPath(new URL("../..", import.meta.url)), "web"), lockPath = join(fileURLToPath(new URL("../..", import.meta.url)), "assets.lock")) {
+  const { pinned } = parseAssetsLockText(await readFile(lockPath, "utf8"));
+  const staged = await mkdtemp(join(tmpdir(), "librepaper-pinned-mirror-"));
   try {
-    for (const { module, sha256 } of modules) {
+    for (const { module, sha256, prefix } of pinned) {
+      const source = join(directory, prefix, module);
       let bytes;
       try {
-        bytes = await readFile(join(directory, module));
+        bytes = await readFile(source);
       } catch {
-        throw new Error(`${module} not found in ${directory}; run node tools/assets/pins.mjs fetch first`);
+        throw new Error(`${module} not found in ${join(directory, prefix)}; run node tools/assets/pins.mjs fetch first`);
       }
       if (createHash("sha256").update(bytes).digest("hex") !== sha256) {
-        throw new Error(`${module} in ${directory} does not match assets.lock; run node tools/assets/pins.mjs fetch first`);
+        throw new Error(`${module} in ${join(directory, prefix)} does not match assets.lock; run node tools/assets/pins.mjs fetch first`);
       }
-      await mkdir(join(staged, sha256), { recursive: true });
-      await copyFile(join(directory, module), join(staged, sha256, module));
+      await mkdir(join(staged, prefix, sha256), { recursive: true });
+      await copyFile(source, join(staged, prefix, sha256, module));
     }
   } catch (error) {
     await rm(staged, { recursive: true, force: true });
     throw error;
   }
-  return staged;
+  return {
+    mirrors: [...MIRROR_PREFIXES].map((prefix) => ({ dir: join(staged, prefix), prefix })),
+    cleanup: () => rm(staged, { recursive: true, force: true }),
+  };
 }
 
 export function mappedEnvironment(env) {
@@ -657,7 +666,7 @@ if (invoked) {
     console.log("Usage: mirror <command> [args]\n");
     console.log("Commands:");
     console.log("  check <dir|url>    Validate LaTeX mirror directory or URL");
-    console.log("  publish            Check and publish wasm and LaTeX mirrors to S3");
+    console.log("  publish            Check and publish wasm, font and LaTeX mirrors to S3");
     console.log("  credentials        Resolve S3 credentials from SOPS secrets (stdin)");
     process.exit(command ? 0 : 2);
   }
@@ -675,8 +684,8 @@ if (invoked) {
         case "publish": {
           const keys = process.env.KEYS || "tools/deploy/keys.yaml";
           const root = fileURLToPath(new URL("../..", import.meta.url));
-          const wasmDirectory = process.env.WASM_DIR || join(root, "web/wasm");
-          const wasmLock = process.env.WASM_LOCK || join(root, "assets.lock");
+          const assetsDirectory = process.env.ASSETS_DIR || join(root, "web");
+          const assetsLock = process.env.ASSETS_LOCK || join(root, "assets.lock");
           const mirrorPath = process.env.MIRROR || "../wasm-latex/mirror";
 
           if (![undefined, "", "0", "1"].includes(process.env.MIRRORS_DRY_RUN)) {
@@ -684,12 +693,9 @@ if (invoked) {
           }
           const dryRun = process.env.MIRRORS_DRY_RUN === "1";
 
-          const staged = await stageWasmMirror(wasmDirectory, wasmLock);
+          const staged = await stagePinnedMirrors(assetsDirectory, assetsLock);
           try {
-            const mirrors = [
-              { dir: staged, prefix: "wasm" },
-              { dir: mirrorPath, prefix: "latex" },
-            ];
+            const mirrors = [...staged.mirrors, { dir: mirrorPath, prefix: "latex" }];
 
             // Validate both trees before either publisher makes a remote call
             let env = process.env;
@@ -716,7 +722,7 @@ if (invoked) {
               console.log("Dry run complete; no credentials loaded or objects changed.");
             }
           } finally {
-            await rm(staged, { recursive: true, force: true });
+            await staged.cleanup();
           }
           break;
         }

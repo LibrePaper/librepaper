@@ -8,7 +8,8 @@ import { createServer } from 'node:http';
 import { createHash } from 'node:crypto';
 import test from 'node:test';
 import { fileURLToPath } from 'node:url';
-import { awsFailureMessage, mappedEnvironment, metadataFor, preflightMirror, publish, publisherEnvironment, selectedMirrorFields, stageWasmMirror } from './mirror.mjs';
+import { awsFailureMessage, mappedEnvironment, metadataFor, preflightMirror, publish, publisherEnvironment, selectedMirrorFields, stagePinnedMirrors } from './mirror.mjs';
+import { PINNED_FILES } from './pins-lock.mjs';
 
 const repo = fileURLToPath(new URL('../..', import.meta.url));
 const deploy = join(repo, 'tools/assets/mirror');
@@ -576,7 +577,7 @@ test('WASM hash mismatch fails preflight before making AWS calls', async () => {
   }
 });
 
-test('wasm preflight accepts only <sha256>/<name>.wasm files whose directory is their hash', async () => {
+test('wasm preflight accepts only <sha256>/<pinned file> files whose directory is their hash', async () => {
   const root = await mkdtemp(join(tmpdir(), 'publish-mirror-wasm-layout-'));
   const bytes = Buffer.from('module bytes');
   const hash = sha256(bytes);
@@ -587,7 +588,7 @@ test('wasm preflight accepts only <sha256>/<name>.wasm files whose directory is 
     assert.equal(result.count, 1);
     assert.equal(result.bytes, bytes.length);
     await writeFile(join(root, 'stray.txt'), 'not a module');
-    await assert.rejects(preflightMirror({ dir: root, prefix: 'wasm' }), /must be <sha256>\/<name>\.wasm/);
+    await assert.rejects(preflightMirror({ dir: root, prefix: 'wasm' }), /must be <sha256>\/<pinned file>/);
   } finally {
     await rm(root, { recursive: true, force: true });
   }
@@ -596,19 +597,21 @@ test('wasm preflight accepts only <sha256>/<name>.wasm files whose directory is 
 // === push-mirrors tests ===
 
 
-async function makeMirrors(root, wasmName = 'wasm dir', latexName = 'latex mirror') {
-  const wasm = join(root, wasmName);
+async function makeMirrors(root, assetsName = 'assets dir', latexName = 'latex mirror') {
+  const assets = join(root, assetsName);
   const latex = join(root, latexName);
   const module = Buffer.from('valid markdown wasm');
-  await mkdir(wasm, { recursive: true });
-  const modules = [
-    ['markdown.wasm', 'wasm-markdown'], ['bibliography.wasm', 'wasm-bibliography'],
-    ['citations.wasm', 'wasm-bibliography'], ['typst.wasm', 'wasm-typst'],
-  ];
-  for (const [name] of modules) await writeFile(join(wasm, name), module);
+  const font = Buffer.from('valid font');
+  await mkdir(join(assets, 'wasm'), { recursive: true });
+  await mkdir(join(assets, 'fonts'), { recursive: true });
+  const rows = [];
+  for (const [name, { repo, prefix }] of PINNED_FILES) {
+    const bytes = prefix === 'wasm' ? module : font;
+    await writeFile(join(assets, prefix, name), bytes);
+    rows.push(`${name} ${repo} v0.1.1 ${sha256(bytes)}`);
+  }
   const lock = join(root, 'assets.lock');
-  const moduleRows = modules.map(([name, repo]) => `${name} ${repo} v0.1.1 ${sha256(module)}`).join('\n');
-  await writeFile(lock, `# test lock\n${moduleRows}\nlatex wasm-latex v0.1.0 ${'a'.repeat(64)}\n`);
+  await writeFile(lock, `# test lock\n${rows.join('\n')}\nlatex wasm-latex v0.1.0 ${'a'.repeat(64)}\n`);
   // One release directory: <id>/ where id is the SHA-256 of MANIFEST.json.
   const manifest = Buffer.from('{"label":"push-mirrors"}\n');
   const id = sha256(manifest);
@@ -632,7 +635,7 @@ async function makeMirrors(root, wasmName = 'wasm dir', latexName = 'latex mirro
     },
     bundles: { index: 'bundles/bundles.json', count: 1, sha256: sha256(index) },
   }));
-  return { wasm, lock, latex, release: releaseDir, moduleHash: sha256(module) };
+  return { assets, lock, latex, release: releaseDir, moduleHash: sha256(module), fontHash: sha256(font) };
 }
 
 test('Mirror variables map safely and canonical overrides win', () => {
@@ -690,36 +693,78 @@ test('complete canonical publisher settings skip SOPS while incomplete settings 
   assert.equal(partial.AWS_ACCESS_KEY_ID, 'sops-id');
 });
 
-test('staging refuses a module whose bytes do not match assets.lock', async () => {
+test('staging refuses a file whose bytes do not match assets.lock', async () => {
   const root = await mkdtemp(join(tmpdir(), 'push-mirrors-stage-'));
   const paths = await makeMirrors(root);
   try {
-    const staged = await stageWasmMirror(paths.wasm, paths.lock);
+    const staged = await stagePinnedMirrors(paths.assets, paths.lock);
     try {
-      assert.equal(await readFile(join(staged, paths.moduleHash, 'markdown.wasm'), 'utf8'), 'valid markdown wasm');
-    } finally { await rm(staged, { recursive: true, force: true }); }
-    await writeFile(join(paths.wasm, 'markdown.wasm'), 'tampered');
-    await assert.rejects(stageWasmMirror(paths.wasm, paths.lock), /does not match assets\.lock/);
-    await rm(join(paths.wasm, 'markdown.wasm'));
-    await assert.rejects(stageWasmMirror(paths.wasm, paths.lock), /run node tools\/assets\/pins\.mjs fetch first/);
+      assert.deepEqual(staged.mirrors.map(({ prefix }) => prefix).sort(), ['fonts', 'wasm']);
+      const wasm = staged.mirrors.find(({ prefix }) => prefix === 'wasm');
+      const fonts = staged.mirrors.find(({ prefix }) => prefix === 'fonts');
+      assert.equal(await readFile(join(wasm.dir, paths.moduleHash, 'markdown.wasm'), 'utf8'), 'valid markdown wasm');
+      assert.equal(await readFile(join(fonts.dir, paths.fontHash, 'fira-code.woff2'), 'utf8'), 'valid font');
+      assert.equal((await preflightMirror(fonts)).count, 14);
+    } finally { await staged.cleanup(); }
+    await writeFile(join(paths.assets, 'wasm', 'markdown.wasm'), 'tampered');
+    await assert.rejects(stagePinnedMirrors(paths.assets, paths.lock), /does not match assets\.lock/);
+    await rm(join(paths.assets, 'wasm', 'markdown.wasm'));
+    await assert.rejects(stagePinnedMirrors(paths.assets, paths.lock), /run node tools\/assets\/pins\.mjs fetch first/);
   } finally { await rm(root, { recursive: true, force: true }); }
+});
+
+test('staging refuses a font that is missing or tampered', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'push-mirrors-stage-fonts-'));
+  const paths = await makeMirrors(root);
+  try {
+    await writeFile(join(paths.assets, 'fonts', 'fira-code.woff2'), 'tampered');
+    await assert.rejects(stagePinnedMirrors(paths.assets, paths.lock), /fira-code\.woff2 .* does not match assets\.lock/);
+    await rm(join(paths.assets, 'fonts', 'fira-code.woff2'));
+    await assert.rejects(stagePinnedMirrors(paths.assets, paths.lock), /fira-code\.woff2 not found/);
+  } finally { await rm(root, { recursive: true, force: true }); }
+});
+
+test('font preflight rejects unknown names, strays and hash mismatches', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'publish-mirror-fonts-layout-'));
+  const bytes = Buffer.from('font bytes');
+  const hash = sha256(bytes);
+  await mkdir(join(root, hash));
+  await writeFile(join(root, hash, 'fira-code.woff2'), bytes);
+  try {
+    assert.equal((await preflightMirror({ dir: root, prefix: 'fonts' })).count, 1);
+    await writeFile(join(root, hash, 'unknown.woff2'), bytes);
+    await assert.rejects(preflightMirror({ dir: root, prefix: 'fonts' }), /must be <sha256>\/<pinned file>: .*unknown\.woff2/);
+    await rm(join(root, hash, 'unknown.woff2'));
+    await assert.rejects(preflightMirror({ dir: root, prefix: 'wasm' }), /must be <sha256>\/<pinned file>/);
+    await writeFile(join(root, hash, 'fira-code.woff2'), 'other bytes');
+    await assert.rejects(preflightMirror({ dir: root, prefix: 'fonts' }), /hash directory does not match/);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test('font keys are served as immutable uncompressed woff2', () => {
+  assert.deepEqual(metadataFor('fonts/' + 'a'.repeat(64) + '/fira-code.woff2'), {
+    contentType: 'font/woff2', contentEncoding: undefined, cacheControl: 'public, max-age=31536000, immutable',
+  });
 });
 
 // === Additional push-mirrors tests (from original push-mirrors.test.mjs) ===
 
-test("dry run stages the wasm mirror, hashes both mirrors and skips SOPS, even without credentials", async () => {
+test("dry run stages the pinned mirrors, hashes both mirrors and skips SOPS, even without credentials", async () => {
   const root = await mkdtemp(join(tmpdir(), "push-mirrors-dryrun-"));
   const bin = join(root, "bin");
-  const paths = await makeMirrors(root, "wasm 'dir'", "latex mirror");
+  const paths = await makeMirrors(root, "assets 'dir'", "latex mirror");
   await mkdir(bin);
   const sops = join(bin, "sops");
   await writeFile(sops, `#!${process.execPath}\nrequire('node:fs').writeFileSync(process.env.SOPS_CALLED, 'yes');\n`);
   await chmod(sops, 0o755);
   try {
     const output = execFileSync(process.execPath, ['tools/assets/mirror.mjs', 'publish'], { encoding: "utf8", env: { ...process.env,
-      PATH: `${bin}:${process.env.PATH}`, MIRRORS_DRY_RUN: "1", WASM_DIR: paths.wasm, WASM_LOCK: paths.lock, MIRROR: paths.latex,
+      PATH: `${bin}:${process.env.PATH}`, MIRRORS_DRY_RUN: "1", ASSETS_DIR: paths.assets, ASSETS_LOCK: paths.lock, MIRROR: paths.latex,
       SOPS_CALLED: join(root, "sops-called") } });
     assert.match(output, /Validated wasm: 4 files/);
+    assert.match(output, /Validated fonts: 14 files/);
     assert.match(output, /Validated latex: 6 files/);
     await assert.rejects(readFile(join(root, "sops-called")));
   } finally { await rm(root, { recursive: true, force: true }); }
@@ -758,7 +803,7 @@ test("both mirrors are preflighted before any AWS upload", async () => {
   try {
     let error;
     try { execFileSync(process.execPath, ['tools/assets/mirror.mjs', 'publish'], { encoding: "utf8", env: { ...process.env,
-      PATH: `${bin}:${process.env.PATH}`, WASM_DIR: paths.wasm, WASM_LOCK: paths.lock, MIRROR: paths.latex, AWS_CALLED: calls } }); }
+      PATH: `${bin}:${process.env.PATH}`, ASSETS_DIR: paths.assets, ASSETS_LOCK: paths.lock, MIRROR: paths.latex, AWS_CALLED: calls } }); }
     catch (caught) { error = caught; }
     assert.ok(error);
     assert.match(error.stderr, /release\.json is invalid JSON/);
@@ -798,12 +843,13 @@ fs.writeFileSync(storePath,JSON.stringify(store));
   await chmod(aws, 0o755);
   try {
     execFileSync(process.execPath, ['tools/assets/mirror.mjs', 'publish'], { encoding: "utf8", env: { ...process.env,
-      PATH: `${bin}:${process.env.PATH}`, WASM_DIR: paths.wasm, WASM_LOCK: paths.lock, MIRROR: paths.latex, AWS_LOG: log, AWS_STORE: store,
+      PATH: `${bin}:${process.env.PATH}`, ASSETS_DIR: paths.assets, ASSETS_LOCK: paths.lock, MIRROR: paths.latex, AWS_LOG: log, AWS_STORE: store,
       S3_BUCKET: "explicit-bucket", AWS_ACCESS_KEY_ID: "override-id", AWS_SECRET_ACCESS_KEY: "override-secret" } });
     const calls = (await readFile(log, "utf8")).trim().split("\n").map(JSON.parse);
     const puts = calls.filter((call) => call.cmd === "s3 sync");
     assert.ok(calls.every((call) => !call.deleting));
     assert.ok(puts.some((call) => call.key === `wasm/${paths.moduleHash}/markdown.wasm`));
+    assert.ok(puts.some((call) => call.key === `fonts/${paths.fontHash}/fira-code.woff2`));
     assert.ok(puts.some((call) => call.key.startsWith("latex/")));
     assert.ok(calls.every((call) => call.endpoint === "https://ovh.example.invalid" && call.region === "bhs" &&
       call.bucket === "explicit-bucket" && call.id === "override-id" && call.secret === "override-secret"));

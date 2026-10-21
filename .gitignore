@@ -20,6 +20,7 @@ deploy/site/
 web/dist
 web/dist/
 web/wasm
+web/fonts
 .claude
 
 # The docs site: docs/.build is the markdown rendered by

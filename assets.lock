@@ -1,15 +1,16 @@
 # Every browser asset this build serves, pinned.
 #
-# Each is built and released by its own repository; `node tools/assets/pins.mjs fetch` fetches them
-# and refuses anything whose bytes do not hash to what is written here. The
+# Each is built and released by its own repository;
+# `node tools/assets/pins.mjs fetch` fetches them and refuses anything whose bytes do not hash to what is written here. The
 # digest is the contract: it also pins what the asset mirror serves, so
 # browsers load exactly what that repository released. Modules are at
-# wasm/<sha256>/<module>; LaTeX is at latex/<sha256>/, a release directory
-# whose MANIFEST.json hashes to that value (the latex row's sha256 is the
+# wasm/<sha256>/<module> and fonts at fonts/<sha256>/<font>; LaTeX is at
+# latex/<sha256>/, a release directory whose MANIFEST.json hashes to that value (the latex row's sha256 is the
 # sha256 of the release's MANIFEST.json).
 #
-# To move a pin: run `node tools/assets/pins.mjs update wasm --repo wasm-markdown --tag vX.Y.Z` with an
-# explicit repository and tag, then review the lockfile diff.
+# To move a pin: run
+# `node tools/assets/pins.mjs update release --repo wasm-markdown --tag vX.Y.Z`
+# with an explicit repository and tag, then review the lockfile diff.
 #
 # module             repository          tag       sha256
 markdown.wasm        wasm-markdown       v0.1.1    c701483e38f9da1691e752be48c8283119ec78598a296479a4da4986ecaf1114

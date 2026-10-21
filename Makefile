@@ -3,7 +3,8 @@
 # The application crate provides the server and CLI. The web app in web/ is
 # Svelte, bundled by Vite and installed by Bun. The binary embeds the web build
 # (from web/dist) and serves it. Browser WASM renderers are separate pinned
-# inputs fetched into web/wasm and published to the asset mirror for browsers.
+# inputs fetched into web/wasm and web/fonts and published to the asset mirror
+# for browsers.
 
 # Recipes see every make variable in their environment.
 export
