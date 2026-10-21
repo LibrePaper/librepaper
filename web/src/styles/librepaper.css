@@ -722,6 +722,113 @@ main.reader.source-right .editorpane {
   outline: solid 1px var(--color-focus);
 }
 
+/* Lint marks from @codemirror/lint, in the palette rather than its own reds
+ * and oranges. Error is vermillion, warning is orange, info is blue and hint
+ * is grey. The underline is a wavy text decoration instead of the library's
+ * SVG image, so its colour comes from a token. The library's base theme sits
+ * at the same specificity as these rules and the app's stylesheet loads after
+ * it, so these win. */
+.cm-editor .cm-lintRange {
+  text-decoration: underline wavy;
+  text-decoration-skip-ink: none;
+  text-underline-offset: 3px;
+}
+.cm-editor .cm-lintRange-error {
+  background-image: none;
+  text-decoration-color: var(--color-error-solid);
+}
+.cm-editor .cm-lintRange-warning {
+  background-image: none;
+  text-decoration-color: var(--color-warning-solid);
+}
+.cm-editor .cm-lintRange-info {
+  background-image: none;
+  text-decoration-color: var(--oi-blue);
+}
+.cm-editor .cm-lintRange-hint {
+  background-image: none;
+  text-decoration-color: var(--oi-gray);
+}
+
+.cm-editor .cm-diagnostic-error { border-left-color: var(--color-error-solid); }
+.cm-editor .cm-diagnostic-warning { border-left-color: var(--color-warning-solid); }
+.cm-editor .cm-diagnostic-info { border-left-color: var(--oi-blue); }
+.cm-editor .cm-diagnostic-hint { border-left-color: var(--oi-gray); }
+
+.cm-editor .cm-lintPoint-error:after { border-bottom-color: var(--color-error-solid); }
+.cm-editor .cm-lintPoint-warning:after { border-bottom-color: var(--color-warning-solid); }
+.cm-editor .cm-lintPoint-info:after { border-bottom-color: var(--oi-blue); }
+.cm-editor .cm-lintPoint-hint:after { border-bottom-color: var(--oi-gray); }
+
+/* Gutter markers were SVG images with baked colours. These are plain shapes
+ * in the same colours: a disc for error, a triangle for warning and a square
+ * for info. The library gives the marker a 1em box and an SVG `content`; the
+ * shapes replace both, and are slightly smaller so they sit inside the cell.
+ * The library has no hint marker, so there is no rule for one. */
+.cm-editor .cm-lint-marker-error,
+.cm-editor .cm-lint-marker-warning,
+.cm-editor .cm-lint-marker-info {
+  content: none;
+  display: inline-block;
+  width: 0.7em;
+  height: 0.7em;
+  margin: 0.15em;
+}
+.cm-editor .cm-lint-marker-error {
+  background: var(--color-error-solid);
+  border-radius: 50%;
+}
+.cm-editor .cm-lint-marker-warning {
+  background: var(--color-warning-solid);
+  clip-path: polygon(50% 0, 100% 100%, 0 100%);
+}
+.cm-editor .cm-lint-marker-info {
+  background: var(--oi-blue);
+  border-radius: 1px;
+}
+
+/* The merge view, from @codemirror/merge. Its base theme paints deletions red
+ * and insertions green in hard-coded hex, once for light and once for dark.
+ * These rules sit under `.merge-editor .cm-mergeView`, which is more specific
+ * than those variants, so one set of tokens covers both modes. Strong marks
+ * (underlines, gutter bars, the reject button) are solid. Line and chunk
+ * tints use the status background tokens, except the inline-change marks,
+ * which are blue so that they are not read as either side. */
+.merge-editor .cm-mergeView .cm-editor.cm-merge-a .cm-changedText,
+.merge-editor .cm-mergeView .cm-deletedChunk .cm-deletedText {
+  background: linear-gradient(var(--color-error-solid), var(--color-error-solid)) bottom / 100% 2px no-repeat;
+}
+.merge-editor .cm-mergeView .cm-editor.cm-merge-b .cm-changedText {
+  background: linear-gradient(var(--color-success-solid), var(--color-success-solid)) bottom / 100% 2px no-repeat;
+}
+.merge-editor .cm-mergeView .cm-editor.cm-merge-a .cm-changedLine,
+.merge-editor .cm-mergeView .cm-deletedChunk {
+  background-color: var(--color-error-bg);
+}
+.merge-editor .cm-mergeView .cm-editor.cm-merge-b .cm-changedLine,
+.merge-editor .cm-mergeView .cm-inlineChangedLine {
+  background-color: var(--color-success-bg);
+}
+.merge-editor .cm-mergeView .cm-editor.cm-merge-b .cm-deletedText {
+  background: color-mix(in srgb, var(--color-error-solid) 20%, transparent);
+}
+.merge-editor .cm-mergeView .cm-editor.cm-merge-a .cm-changedLineGutter,
+.merge-editor .cm-mergeView .cm-deletedLineGutter {
+  background: var(--color-error-solid);
+}
+.merge-editor .cm-mergeView .cm-editor.cm-merge-b .cm-changedLineGutter {
+  background: var(--color-success-solid);
+}
+.merge-editor .cm-mergeView .cm-inlineChangedLineGutter {
+  background: var(--oi-blue);
+}
+.merge-editor .cm-mergeView .cm-deletedChunk button[name="accept"] {
+  background: var(--color-success-solid);
+}
+.merge-editor .cm-mergeView .cm-deletedChunk button[name="reject"] {
+  background: var(--color-error-solid);
+}
+
 /* Somebody else's caret, and their name beside it.
  *
  * The binding draws the caret as an absolutely positioned element, hands the
@@ -731,26 +838,26 @@ main.reader.source-right .editorpane {
  * The binding's own base theme puts the label below the line, which these
  * rules override.
  *
- * The class names are generated from the palette in `lib/collab.js`, one per
+ * The class names are generated from the palette in `lib/presence-colour.js`, one per
  * colour somebody can be given when they join. They are written out rather
  * than injected at runtime because the palette is fixed and short: a person's
  * colour is chosen from six, not from anywhere. Adding a colour there means
  * adding a rule here, which is the coupling worth having -- the alternative is
  * building stylesheets in JavaScript to serve six values. */
-.user-color-2f5bd0 { --presence: #2f5bd0; }
-.user-color-c2410c { --presence: #c2410c; }
-.user-color-15803d { --presence: #15803d; }
-.user-color-7c3aed { --presence: #7c3aed; }
-.user-color-be123c { --presence: #be123c; }
-.user-color-0e7490 { --presence: #0e7490; }
+.user-color-0072b2 { --presence: #0072b2; }
+.user-color-af4d00 { --presence: #af4d00; }
+.user-color-007a59 { --presence: #007a59; }
+.user-color-975a7c { --presence: #975a7c; }
+.user-color-926500 { --presence: #926500; }
+.user-color-377395 { --presence: #377395; }
 /* On a dark document the same hues are lightened a step so cursors and name
  * labels stand out, with the white label text still readable. */
-[data-mode="dark"] .user-color-2f5bd0 { --presence: #4f78e0; }
-[data-mode="dark"] .user-color-c2410c { --presence: #dd5a1c; }
-[data-mode="dark"] .user-color-15803d { --presence: #1f9446; }
-[data-mode="dark"] .user-color-7c3aed { --presence: #8f5cf0; }
-[data-mode="dark"] .user-color-be123c { --presence: #d02a50; }
-[data-mode="dark"] .user-color-0e7490 { --presence: #1488a8; }
+[data-mode="dark"] .user-color-0072b2 { --presence: #4598c7; }
+[data-mode="dark"] .user-color-af4d00 { --presence: #dc7829; }
+[data-mode="dark"] .user-color-007a59 { --presence: #1ca982; }
+[data-mode="dark"] .user-color-975a7c { --presence: #cc79a7; }
+[data-mode="dark"] .user-color-926500 { --presence: #e69f00; }
+[data-mode="dark"] .user-color-377395 { --presence: #56b4e9; }
 
 .loro-cursor {
   background: var(--presence, var(--color-brand));
