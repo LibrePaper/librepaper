@@ -6,7 +6,7 @@ For maintainers. Self-hosters use `deploy/` at the repository root, the download
 tools/
   assets/     pinned browser inputs and the asset mirror
     pins.mjs                  fetch or update the pins in assets.lock and web/loro-codemirror.lock
-    mirror                    build, check, smoke, publish the wasm and LaTeX mirror; the only publisher
+    mirror                    build, check, smoke, publish the wasm, font and LaTeX mirror; the only publisher
     mirror.mjs                what mirror calls: validation, staging, S3 upload
   deploy/     the official instance (librepaper.org)
     production                deploy a release, rebuild the site, verify, logs

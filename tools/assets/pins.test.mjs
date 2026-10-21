@@ -5,11 +5,13 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
+import { PINNED_FILES } from "./pins-lock.mjs";
 
 const here = fileURLToPath(new URL(".", import.meta.url));
 const pins = join(here, "pins.mjs");
 const sha = "a".repeat(64);
-const lock = `markdown.wasm wasm-markdown v0.1.1 ${sha}\nbibliography.wasm wasm-bibliography v0.1.1 ${sha}\ncitations.wasm wasm-bibliography v0.1.1 ${sha}\ntypst.wasm wasm-typst v0.1.1 ${sha}\nlatex wasm-latex v0.1.0 ${sha}\n`;
+const rowFor = (file, { repo }) => `${file} ${repo} v0.1.1 ${sha}`;
+const lock = `${[...PINNED_FILES].map(([file, entry]) => rowFor(file, entry)).join("\n")}\nlatex wasm-latex v0.1.0 ${sha}\n`;
 
 async function fixture(contents = lock) {
   const root = await mkdtemp(join(tmpdir(), "librepaper-pins-"));
@@ -19,14 +21,14 @@ async function fixture(contents = lock) {
 
 const run = (script, args, cwd = undefined) => execFileSync(process.execPath, [script, ...args], { cwd, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] });
 
-test("module fetch rejects an unknown selector instead of succeeding without fetching", () => {
+test("fetch rejects an unknown selector instead of succeeding without fetching", () => {
   let error;
   try {
     run(pins, ["fetch", "not-a-module"]);
   } catch (caught) {
     error = caught;
   }
-  assert.match(String(error?.stderr ?? ""), /unknown module not-a-module/);
+  assert.match(String(error?.stderr ?? ""), /unknown file not-a-module/);
 });
 
 test("fetch parses --root before the optional module selector", async () => {
@@ -34,7 +36,7 @@ test("fetch parses --root before the optional module selector", async () => {
   try {
     let error;
     try { run(pins, ["fetch", "--root", root, "not-a-module"]); } catch (caught) { error = caught; }
-    assert.match(String(error?.stderr ?? ""), /unknown module not-a-module/);
+    assert.match(String(error?.stderr ?? ""), /unknown file not-a-module/);
   } finally {
     await rm(root, { recursive: true, force: true });
   }
@@ -45,7 +47,7 @@ test("pin commands reject a lock with a missing latex row before fetching", asyn
   try {
     let error;
     try { run(pins, ["fetch", "markdown.wasm", "--root", root]); } catch (caught) { error = caught; }
-    assert.match(String(error?.stderr ?? ""), /exactly the four required wasm modules plus one latex row/);
+    assert.match(String(error?.stderr ?? ""), /exactly the required pinned files .* plus one latex row/);
   } finally {
     await rm(root, { recursive: true, force: true });
   }
@@ -54,7 +56,7 @@ test("pin commands reject a lock with a missing latex row before fetching", asyn
 test("pin update validates checksums before changing the pin", async () => {
   const root = await fixture();
   const lockPath = join(root, "assets.lock");
-  const args = ["wasm", "--root", root, "--repo", "wasm-markdown", "--tag", "v0.2.0"];
+  const args = ["release", "--root", root, "--repo", "wasm-markdown", "--tag", "v0.2.0"];
   try {
     const beforeLock = await readFile(lockPath, "utf8");
     const badSums = join(root, "SHA256SUMS");
@@ -66,6 +68,33 @@ test("pin update validates checksums before changing the pin", async () => {
     await writeFile(badSums, `${nextSha} markdown.wasm\n`);
     run(pins, ["update", ...args, "--sums-file", badSums]);
     assert.match(await readFile(lockPath, "utf8"), new RegExp(`markdown\\.wasm wasm-markdown v0\\.2\\.0 ${nextSha}`));
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("a lock missing a font row is rejected", async () => {
+  const root = await fixture(lock.replace(/^fira-code\.woff2 .*\n/m, ""));
+  try {
+    assert.throws(() => run(pins, ["fetch", "markdown.wasm", "--root", root]), /exactly the required pinned files/);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("release update for editor-fonts rewrites all eleven font rows and no others", async () => {
+  const root = await fixture();
+  const lockPath = join(root, "assets.lock");
+  try {
+    const fonts = [...PINNED_FILES].filter(([, { repo }]) => repo === "editor-fonts").map(([file]) => file);
+    assert.equal(fonts.length, 11);
+    const sums = join(root, "SHA256SUMS");
+    await writeFile(sums, fonts.map((file, i) => `${String(i).padStart(2, "0").repeat(32)}  ${file}`).join("\n") + "\n");
+    run(pins, ["update", "release", "--root", root, "--repo", "editor-fonts", "--tag", "v1.0.0", "--sums-file", sums]);
+    const rows = (await readFile(lockPath, "utf8")).trim().split("\n");
+    fonts.forEach((file, i) => assert.ok(rows.includes(`${file} editor-fonts v1.0.0 ${String(i).padStart(2, "0").repeat(32)}`), file));
+    assert.ok(rows.includes(`markdown.wasm wasm-markdown v0.1.1 ${sha}`));
+    assert.throws(() => run(pins, ["update", "release", "--root", root, "--repo", "wasm-latex", "--tag", "v1.0.0", "--sums-file", sums]), /usage: pins update release/);
   } finally {
     await rm(root, { recursive: true, force: true });
   }
