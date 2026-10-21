@@ -253,19 +253,13 @@
 	--color-error-on-solid: #ffffff;
 }
 
-/* Project tag colours. The keys are the palette in lib/tag-colours.js. Each
-   has one shade for light pages and one for dark, because a dot that reads
-   on the sage ground is too faint on the dark one and the other way round. */
+/* Project tag colours. These are the Okabe-Ito hexes. The keys are the palette
+   in lib/tag-colours.js. One set serves both modes, so the colours stay the
+   ones the palette was designed and checked as. */
 [data-theme="librepaper"] {
-	--tag-gray: #6b7280; --tag-red: #dc2626; --tag-orange: #ea580c;
-	--tag-yellow: #ca8a04; --tag-green: #16a34a; --tag-teal: #0f766e;
-	--tag-blue: #2563eb; --tag-purple: #9333ea; --tag-pink: #db2777;
-}
-
-[data-theme="librepaper"][data-mode="dark"] {
-	--tag-gray: #9ca3af; --tag-red: #f87171; --tag-orange: #fb923c;
-	--tag-yellow: #facc15; --tag-green: #4ade80; --tag-teal: #2dd4bf;
-	--tag-blue: #60a5fa; --tag-purple: #c084fc; --tag-pink: #f472b6;
+	--tag-gray: #999999; --tag-orange: #e69f00; --tag-sky-blue: #56b4e9;
+	--tag-bluish-green: #009e73; --tag-yellow: #f0e442; --tag-blue: #0072b2;
+	--tag-vermillion: #d55e00; --tag-reddish-purple: #cc79a7;
 }
 
 /* Skeleton declares its edge widths as `var(--default-ring-width, 1px)` on

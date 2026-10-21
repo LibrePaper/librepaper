@@ -228,7 +228,7 @@ const context = (values) => vm.createContext({
   }
 }
 
-// Edits to one tag go out one at a time. Picking red and then blue again on
+// Edits to one tag go out one at a time. Picking vermillion and then blue again on
 // a blue tag is two saves, and the tag ends blue.
 {
   const tick = () => new Promise((done) => setTimeout(done, 0));
@@ -243,12 +243,12 @@ const context = (values) => vm.createContext({
     say: () => {},
   });
   vm.runInContext(tagEditing, ctx);
-  vm.runInContext('editTag("t", "colour", "red", "failed", "x")', ctx);
+  vm.runInContext('editTag("t", "colour", "vermillion", "failed", "x")', ctx);
   vm.runInContext('editTag("t", "colour", "blue", "failed", "x")', ctx);
   assert.equal(ctx.tags[0].colour, "blue", "the last pick shows at once");
   await tick();
   assert.equal(calls.length, 1, "the second save waits for the first");
-  calls[0].resolve({ ok: true, json: async () => ({ tag: { id: "t", name: "Thesis", colour: "red", builtin: false } }) });
+  calls[0].resolve({ ok: true, json: async () => ({ tag: { id: "t", name: "Thesis", colour: "vermillion", builtin: false } }) });
   await tick(); await tick();
   assert.equal(calls.length, 2);
   assert.deepEqual(calls[1].body, { colour: "blue" });
