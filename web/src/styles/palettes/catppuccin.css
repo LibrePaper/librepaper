@@ -74,6 +74,10 @@
 	/* Surfaces: step 4 for raised menus. */
 	--color-raised: #313244;
 
+	/* The first avatar takes the brand, which is too pale for its white
+	   initials here, so it takes the Latte mauve instead. */
+	--color-avatar-1: #8839ef;
+
 	/* Brand: Mocha mauve with crust text. */
 	--color-brand: #cba6f7;
 	--color-on-brand: #11111b;

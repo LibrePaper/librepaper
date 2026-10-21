@@ -47,6 +47,9 @@
 	--color-border-strong: var(--neutral-8);
 	--color-row-hover: var(--neutral-4);
 	--color-row-selected: var(--neutral-5);
+	/* The secondary button's fills, a little darker than the selected row. */
+	--color-tonal-hover: color-mix(in srgb, var(--color-row-selected) 96%, black);
+	--color-tonal-pressed: color-mix(in srgb, var(--color-row-selected) 94%, black);
 
 	/* Text and interaction */
 	--color-text: var(--neutral-12);
@@ -197,6 +200,8 @@
 	--color-raised: var(--neutral-4);
 	--color-row-hover: var(--neutral-5);
 	--color-row-selected: var(--neutral-6);
+	--color-tonal-hover: color-mix(in srgb, var(--color-row-selected) 90%, black);
+	--color-tonal-pressed: color-mix(in srgb, var(--color-row-selected) 80%, black);
 	--color-subtle: var(--neutral-4);
 	--color-disabled-bg: var(--neutral-4);
 

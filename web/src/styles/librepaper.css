@@ -1311,13 +1311,13 @@ main.reader .cm-scroller, main.reader .panel { overscroll-behavior: contain; }
 .lp-control-neutral:hover:not(:disabled):not([aria-disabled="true"]):not([data-disabled]) { background: var(--color-row-hover); }
 .lp-control-tonal { background: var(--color-subtle); color: var(--color-text); border-color: transparent; }
 .lp-control-tonal:hover:not(:disabled):not([aria-disabled="true"]):not([data-disabled]) { background: var(--color-row-hover); }
-/* The secondary button darkens on hover and press like the primary one. */
-.lp-control-tonal-brand { background: var(--color-row-selected); color: var(--color-link); border-color: transparent; }
-.lp-control-tonal-brand:hover:not(:disabled):not([aria-disabled="true"]):not([data-disabled]) { background: var(--neutral-6); }
-.lp-control-tonal-brand:active:not(:disabled):not([aria-disabled="true"]):not([data-disabled]) { background: var(--neutral-7); }
-/* The dark selected fill is one step higher, so hover and press follow it. */
-[data-mode="dark"] .lp-control-tonal-brand:hover:not(:disabled):not([aria-disabled="true"]):not([data-disabled]) { background: var(--neutral-7); }
-[data-mode="dark"] .lp-control-tonal-brand:active:not(:disabled):not([aria-disabled="true"]):not([data-disabled]) { background: var(--neutral-8); }
+/* The secondary button darkens on hover and press like the primary one. Its
+   label is the text colour, and its fills stay a small step from the selected
+   one: the link colour and the border steps both fell under 4.5:1 against
+   each other in every palette. */
+.lp-control-tonal-brand { background: var(--color-row-selected); color: var(--color-text); border-color: transparent; }
+.lp-control-tonal-brand:hover:not(:disabled):not([aria-disabled="true"]):not([data-disabled]) { background: var(--color-tonal-hover); }
+.lp-control-tonal-brand:active:not(:disabled):not([aria-disabled="true"]):not([data-disabled]) { background: var(--color-tonal-pressed); }
 :where(.lp-control-brand, .lp-control-danger, .lp-control-success, .lp-control-neutral, .lp-control-tonal, .lp-control-tonal-brand):focus-visible {
   outline: 2px solid var(--color-focus);
   outline-offset: 2px;

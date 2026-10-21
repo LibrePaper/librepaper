@@ -64,6 +64,10 @@
 
 	--color-raised: #30525c;
 
+	/* The second avatar sits on step 8, base00, which is just under 4.5:1
+	   behind white initials, so it takes base01. */
+	--color-avatar-2: #586e75;
+
 	/* Brand. A darkened blue fill, so white text reaches 4.5:1. */
 	--color-brand: #1f6fa8;
 	--color-on-brand: #ffffff;
