@@ -17,5 +17,5 @@ export function formatOf(path) {
 export function previewFormatOf(path) {
   const format = formatOf(path);
   if (format) return format;
-  return /\.(?:json|ya?ml|toml|txt|bib|csl|r|py|jl|lua|sty|cls|bst|css|csv)$/i.test(path || "") ? "text" : "";
+  return /\.(?:json|ya?ml|toml|txt|bib|csl|r|py|jl|lua|sty|cls|bst|css|csv|tsv)$/i.test(path || "") ? "text" : "";
 }

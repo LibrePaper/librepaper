@@ -101,7 +101,7 @@ assert.equal(notes[0].severity, "warning", "unrenderable main is a warning");
 for (const openPath of [
   "data.json", "config.yaml", "config.yml", "config.toml", "notes.txt", "refs.bib",
   "bundle.csl", "script.r", "script.py", "script.jl", "script.lua", "mystyle.sty",
-  "mystyle.cls", "mystyle.bst", "site.css", "data.csv", "DATA.CSV",
+  "mystyle.cls", "mystyle.bst", "site.css", "data.csv", "DATA.CSV", "data.tsv",
 ]) {
   notes = previewNotes({
     openPath,

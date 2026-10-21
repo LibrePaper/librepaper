@@ -7,7 +7,7 @@ import { render } from "../../src/lib/renderers.js";
 for (const path of [
   "a.json", "b.yaml", "c.yml", "d.toml", "E.JSON", "notes.txt", "refs.bib",
   "bundle.csl", "script.r", "script.py", "script.jl", "script.lua", "mystyle.sty",
-  "mystyle.cls", "mystyle.bst", "site.css", "x.csv", "X.CSV",
+  "mystyle.cls", "mystyle.bst", "site.css", "x.csv", "X.CSV", "x.tsv", "X.TSV",
 ]) {
   assert.equal(previewFormatOf(path), "text", `${path} previews as text`);
 }
