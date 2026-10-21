@@ -429,8 +429,10 @@
   }
 
   // The latest tag request per project and tag, and the membership the server
-  // last confirmed for each. A failed request returns the row to that confirmed
-  // state, and only when no newer request for the same tag has started.
+  // last confirmed for each while requests are in flight. A failed request
+  // returns the row to that confirmed state, and only when no newer request for
+  // the same tag has started. The entry goes once the latest request settles,
+  // so the next one starts from the row as a refresh last left it.
   const tagRequests = new Map();
   const tagConfirmed = new Map();
 
@@ -449,12 +451,14 @@
         headers: SHELL_HEADERS,
       });
       if (!response.ok) throw new Error("that could not be saved");
-      tagConfirmed.set(key, on);
+      if (tagRequests.get(key) === request) tagConfirmed.delete(key);
+      else if (tagConfirmed.has(key)) tagConfirmed.set(key, on);
     } catch {
       if (tagRequests.get(key) === request) {
         const now = doc.tags || [];
         const confirmed = tagConfirmed.get(key);
         doc.tags = confirmed ? [...new Set([...now, id])] : now.filter((each) => each !== id);
+        tagConfirmed.delete(key);
       }
       if (id === "favorites") say("That star could not be saved.", { kind: "problem", id: "landing:favorite" });
       else say("That tag could not be saved.", { kind: "problem", id: `landing:tag:${doc.slug}` });
