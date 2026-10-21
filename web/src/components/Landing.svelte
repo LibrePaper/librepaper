@@ -428,9 +428,11 @@
     return setTag(doc, "favorites", !hasTag(doc, "favorites"));
   }
 
-  // The latest tag request per project and tag. A failed request undoes only
-  // its own change, and only when no newer request for that tag has started.
+  // The latest tag request per project and tag, and the membership the server
+  // last confirmed for each. A failed request returns the row to that confirmed
+  // state, and only when no newer request for the same tag has started.
   const tagRequests = new Map();
+  const tagConfirmed = new Map();
 
   // Putting a tag on a project or taking it off is the same request whatever
   // the tag is. The row changes first and is put back if the server refuses,
@@ -439,6 +441,7 @@
     const key = `${doc.slug}:${id}`;
     const request = (tagRequests.get(key) || 0) + 1;
     tagRequests.set(key, request);
+    if (!tagConfirmed.has(key)) tagConfirmed.set(key, hasTag(doc, id));
     doc.tags = on ? [...new Set([...(doc.tags || []), id])] : (doc.tags || []).filter((each) => each !== id);
     try {
       const response = await fetch(`/api/documents/${doc.slug}/tags/${id}`, {
@@ -446,10 +449,12 @@
         headers: SHELL_HEADERS,
       });
       if (!response.ok) throw new Error("that could not be saved");
+      tagConfirmed.set(key, on);
     } catch {
       if (tagRequests.get(key) === request) {
         const now = doc.tags || [];
-        doc.tags = on ? now.filter((each) => each !== id) : [...new Set([...now, id])];
+        const confirmed = tagConfirmed.get(key);
+        doc.tags = confirmed ? [...new Set([...now, id])] : now.filter((each) => each !== id);
       }
       if (id === "favorites") say("That star could not be saved.", { kind: "problem", id: "landing:favorite" });
       else say("That tag could not be saved.", { kind: "problem", id: `landing:tag:${doc.slug}` });
@@ -551,7 +556,14 @@
     });
     if (!response.ok) throw new Error((await response.json().catch(() => ({}))).error || failure);
     const { tag: saved } = await response.json();
-    tags = sortTags(tags.map((each) => (each.id === saved.id ? saved : each)));
+    // Only the fields this request sent are copied, so a reply to an older edit
+    // cannot undo a newer one to another field.
+    tags = sortTags(tags.map((each) => {
+      if (each.id !== saved.id) return each;
+      const merged = { ...each };
+      for (const key of Object.keys(body)) merged[key] = saved[key];
+      return merged;
+    }));
   }
 
   async function renameTag(tag, input) {
@@ -1200,16 +1212,16 @@
                     <span class="menuitem-label">{tag.name}</span>
                   </Menu.Item>
                 {/each}
-                <div class="tags-menu-divider" role="separator"></div>
-                <Menu.Item value="new-tag" class="menuitem project-action-item" data-rail-action="new-tag">
-                  <Icon name="plus" size="1rem" /><span class="menuitem-label">New tag</span>
-                </Menu.Item>
-                {#if userTags.length}
-                  <Menu.Item value="manage-tags" class="menuitem project-action-item" data-rail-action="manage-tags">
-                    <Icon name="pencil" size="1rem" /><span class="menuitem-label">Manage tags</span>
-                  </Menu.Item>
-                {/if}
               </div>
+              <div class="tags-menu-divider" role="separator"></div>
+              <Menu.Item value="new-tag" class="menuitem project-action-item" data-rail-action="new-tag">
+                <Icon name="plus" size="1rem" /><span class="menuitem-label">New tag</span>
+              </Menu.Item>
+              {#if userTags.length}
+                <Menu.Item value="manage-tags" class="menuitem project-action-item" data-rail-action="manage-tags">
+                  <Icon name="pencil" size="1rem" /><span class="menuitem-label">Manage tags</span>
+                </Menu.Item>
+              {/if}
             </ExplorerMenu>
           </Menu>
         {/snippet}
@@ -1755,9 +1767,9 @@
   .tag-chip.tag-more { flex: none; border-color: var(--color-border); background: none; color: var(--color-text-secondary); }
   .tag-chip.tag-more::before { display: none; }
 
-  /* The rail's Tags menu. A hundred tags scroll inside it; the menu does not
-     run off the bottom of the screen. */
-  .tags-menu-items { display: flex; flex-direction: column; max-height: 70vh; overflow-y: auto; overscroll-behavior: contain; }
+  /* The rail's Tags menu. A hundred tags scroll inside their list, and the
+     actions under it stay on screen. */
+  .tags-menu-items { display: flex; flex-direction: column; max-height: min(60vh, calc(var(--available-height, 80vh) - 7rem)); overflow-y: auto; overscroll-behavior: contain; }
   .tags-menu-divider { height: 1px; margin: calc(var(--spacing) * 1) calc(var(--spacing) * 1.5); background: var(--color-divider); }
 
   .tags-heading { padding: calc(var(--spacing) * 1.5) calc(var(--spacing) * 2) 0; font-size: var(--text-xs); color: var(--color-text-secondary); }
