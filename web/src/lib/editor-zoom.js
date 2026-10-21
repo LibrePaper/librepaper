@@ -1,47 +1,42 @@
-// A pinch or ctrl+wheel over the source sizes its text. The size is a habit of
-// the person looking at the source, so it is remembered in this browser only.
+// A pinch or ctrl+wheel over the source sizes its text. The size itself lives in
+// editor-type.js, which the settings row changes too, so a change made there, or
+// in another tab, moves the text here as well. The size is remembered in this
+// browser only.
 import { EditorView } from "@codemirror/view";
 import { watchPinch } from "./pinch.js";
-import { read, write, EDITOR_SIZE } from "./storage.js";
-
-export const DEFAULT_SIZE = 14;
-export const MIN_SIZE = 10;
-export const MAX_SIZE = 28;
-
-/// A size in pixels kept between MIN_SIZE and MAX_SIZE. Anything that is not a finite number is DEFAULT_SIZE.
-export function clampSize(size) {
-  if (typeof size !== "number" || !Number.isFinite(size)) return DEFAULT_SIZE;
-  return Math.min(MAX_SIZE, Math.max(MIN_SIZE, size));
-}
+import { clampSize, size, setSize, onSize } from "./editor-type.js";
 
 /// The size a gesture that started at `base` and has scaled by `factor` asks for, clamped (not rounded).
 export function sizeAfter(base, factor) {
   return clampSize(base * factor);
 }
 
-/// The size this browser remembered, or DEFAULT_SIZE. Rounded to a whole pixel and clamped.
-export function storedSize() {
-  const size = read(EDITOR_SIZE, DEFAULT_SIZE);
-  return clampSize(typeof size === "number" ? Math.round(size) : DEFAULT_SIZE);
-}
-
 /// Pinch and ctrl+wheel over `host` change the editor's text size. `getView()` returns the current EditorView or null. Returns stop().
 export function attachEditorZoom(host, getView) {
-  let size = storedSize();
+  let current = size();
   let gesture = null; // { base, anchor, offset } while a gesture is active
-  host.style.setProperty("--editor-font-size", `${size}px`);
+  host.style.setProperty("--editor-font-size", `${current}px`);
+
+  // A change from the settings row or another tab. It waits while a gesture is
+  // in progress, so the gesture keeps its own size until it ends.
+  const stopSize = onSize((next) => {
+    if (gesture) return;
+    current = next;
+    host.style.setProperty("--editor-font-size", `${current}px`);
+    getView()?.requestMeasure();
+  });
 
   const apply = (factor, x, y) => {
     const view = getView();
     if (!gesture) {
-      gesture = { base: size, anchor: null, offset: 0 };
+      gesture = { base: current, anchor: null, offset: 0 };
       if (view) {
         gesture.anchor = view.posAtCoords({ x, y });
         gesture.offset = y - view.scrollDOM.getBoundingClientRect().top;
       }
     }
-    size = sizeAfter(gesture.base, factor);
-    host.style.setProperty("--editor-font-size", `${size}px`);
+    current = sizeAfter(gesture.base, factor);
+    host.style.setProperty("--editor-font-size", `${current}px`);
     if (view) {
       view.requestMeasure();
       if (gesture.anchor !== null) {
@@ -52,15 +47,18 @@ export function attachEditorZoom(host, getView) {
     }
   };
 
-  const stop = watchPinch(host, {
+  const stopPinch = watchPinch(host, {
     onchange: (factor, x, y) => apply(factor, x, y),
     onend: (factor, x, y) => {
       apply(factor, x, y);
-      size = Math.round(size);
-      host.style.setProperty("--editor-font-size", `${size}px`);
-      write(EDITOR_SIZE, size);
+      current = Math.round(current);
+      host.style.setProperty("--editor-font-size", `${current}px`);
       gesture = null;
+      setSize(current);
     },
   });
-  return stop;
+  return () => {
+    stopPinch();
+    stopSize();
+  };
 }
