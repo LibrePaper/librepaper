@@ -1,6 +1,7 @@
 //! Internal to librepaper: no stable API, versioned in lockstep with it.
 //! The reader shell: the pages and the bundles they load, compiled into the
-//! binary. The renderers are not: the pages are told where to fetch them.
+//! binary. The renderers and the editor fonts are not: the pages are told
+//! where to fetch them.
 //!
 //! What is embedded is a build output. `web/` holds the Svelte sources, bun
 //! and vite build them into `web/dist`, and this serves whatever is there --
@@ -16,14 +17,45 @@ use include_dir::{include_dir, Dir, File};
 pub use librepaper_base::shell::{content_type, renderers, ShellFile};
 
 static SHELL: Dir<'static> = include_dir!("$LIBREPAPER_SHELL_DIST");
-const WASM_LOCK: &str = include_str!(concat!(env!("OUT_DIR"), "/assets.lock"));
+const ASSETS_LOCK: &str = include_str!(concat!(env!("OUT_DIR"), "/assets.lock"));
 
-/// The renderers, which are not in the binary. Each is a release of its own
-/// engine repository, published to the asset mirror under a directory named
-/// for the SHA-256 of its bytes: a module is fetched once per browser and
-/// cached for a year, so the URL has to change whenever the module does. The
-/// reader page is told the current URLs when it is served.
-const MODULES: &[&str] = &["markdown", "bibliography", "citations", "typst"];
+/// A file the lock pins, and the directory it lives under on the asset mirror:
+/// `{prefix}/{sha256}/{file}`. Each is a release of its own repository, named
+/// for the SHA-256 of its bytes, so a browser caches it for a year and the URL
+/// has to change whenever the file does. The reader page is told the current
+/// URLs when it is served.
+struct Pin {
+    file: &'static str,
+    prefix: &'static str,
+}
+
+/// The renderers and the editor fonts, which are not in the binary. The four
+/// `wasm` modules are fetched by the page that renders with them; the `fonts`
+/// files are the faces the editor offers, each fetched when it is used.
+const PINS: &[Pin] = &[
+    pin("markdown.wasm", "wasm"),
+    pin("bibliography.wasm", "wasm"),
+    pin("citations.wasm", "wasm"),
+    pin("typst.wasm", "wasm"),
+    pin("jetbrains-mono.woff2", "fonts"),
+    pin("jetbrains-mono-italic.woff2", "fonts"),
+    pin("jetbrains-mono-semibold.woff2", "fonts"),
+    pin("fira-code.woff2", "fonts"),
+    pin("source-code-pro.woff2", "fonts"),
+    pin("source-code-pro-italic.woff2", "fonts"),
+    pin("ibm-plex-mono.woff2", "fonts"),
+    pin("ibm-plex-mono-italic.woff2", "fonts"),
+    pin("ibm-plex-mono-semibold.woff2", "fonts"),
+    pin("cascadia-code.woff2", "fonts"),
+    pin("cascadia-code-italic.woff2", "fonts"),
+    pin("opendyslexic.woff2", "fonts"),
+    pin("opendyslexic-italic.woff2", "fonts"),
+    pin("opendyslexic-bold.woff2", "fonts"),
+];
+
+const fn pin(file: &'static str, prefix: &'static str) -> Pin {
+    Pin { file, prefix }
+}
 
 fn file(name: &str) -> Option<&'static [u8]> {
     SHELL.get_file(name).map(File::contents)
@@ -38,7 +70,7 @@ const LATEX: &str = "latex";
 pub fn latex_release() -> &'static str {
     static RELEASE: std::sync::OnceLock<String> = std::sync::OnceLock::new();
     RELEASE.get_or_init(|| {
-        parse_lock(WASM_LOCK)
+        parse_lock(ASSETS_LOCK)
             .expect("assets.lock is valid")
             .remove(LATEX)
             .expect("assets.lock pins a latex release")
@@ -46,9 +78,9 @@ pub fn latex_release() -> &'static str {
 }
 
 /// The pinned digest of each asset, read from `assets.lock`: comment lines
-/// start with `#`, and each other line is `module repository tag sha256`.
-/// Exactly the four known `.wasm` modules and one `latex` row (no `.wasm`
-/// suffix), each once, each with a lowercase SHA-256.
+/// start with `#`, and each other line is `file repository tag sha256`.
+/// Exactly the files in `PINS` and one `latex` row (no `.wasm` suffix), each
+/// once, each with a lowercase SHA-256. Keyed by file name.
 fn parse_lock(source: &str) -> Result<HashMap<String, String>, String> {
     let mut pins = HashMap::new();
     for line in source.lines() {
@@ -57,15 +89,14 @@ fn parse_lock(source: &str) -> Result<HashMap<String, String>, String> {
             continue;
         }
         let columns: Vec<&str> = line.split_whitespace().collect();
-        let [module, _repository, _tag, sha] = columns[..] else {
+        let [file, _repository, _tag, sha] = columns[..] else {
             return Err(format!(
-                "assets.lock: expected `module repository tag sha256`, got {line:?}"
+                "assets.lock: expected `file repository tag sha256`, got {line:?}"
             ));
         };
-        let name = module.strip_suffix(".wasm").unwrap_or(module);
-        let known = module == LATEX || (MODULES.contains(&name) && module != name);
+        let known = file == LATEX || PINS.iter().any(|pin| pin.file == file);
         if !known {
-            return Err(format!("assets.lock: unknown module {module:?}"));
+            return Err(format!("assets.lock: unknown module {file:?}"));
         }
         let valid_sha = sha.len() == 64
             && sha
@@ -73,16 +104,16 @@ fn parse_lock(source: &str) -> Result<HashMap<String, String>, String> {
                 .all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase());
         if !valid_sha {
             return Err(format!(
-                "assets.lock: {module} needs a lowercase 64-digit SHA-256, got {sha:?}"
+                "assets.lock: {file} needs a lowercase 64-digit SHA-256, got {sha:?}"
             ));
         }
-        if pins.insert(name.to_string(), sha.to_string()).is_some() {
-            return Err(format!("assets.lock: {module} appears twice"));
+        if pins.insert(file.to_string(), sha.to_string()).is_some() {
+            return Err(format!("assets.lock: {file} appears twice"));
         }
     }
-    for name in MODULES {
-        if !pins.contains_key(*name) {
-            return Err(format!("assets.lock: missing {name}.wasm"));
+    for pin in PINS {
+        if !pins.contains_key(pin.file) {
+            return Err(format!("assets.lock: missing {}", pin.file));
         }
     }
     if !pins.contains_key(LATEX) {
@@ -91,31 +122,52 @@ fn parse_lock(source: &str) -> Result<HashMap<String, String>, String> {
     Ok(pins)
 }
 
-/// The browser URL of every renderer, `{mirror}wasm/{sha256}/{module}.wasm`,
-/// as the JSON object a page is given in place of `__MODULES__`. `mirror` is
-/// the validated asset mirror, which ends in `/`.
+/// A JSON object of the URL of every pinned file with `prefix`, each
+/// `{mirror}{prefix}/{sha256}/{file}`, keyed by `key` of the file name. `mirror`
+/// is the validated asset mirror, which ends in `/`.
 ///
 /// The page carries it in a `<script type="application/json">` element, so
 /// every `<` is written as `\u003c`: the same JSON, but it can never close
 /// that element early.
-fn modules_json(mirror: &str, lock: &str) -> Result<String, String> {
+fn urls_json(
+    mirror: &str,
+    lock: &str,
+    prefix: &str,
+    key: fn(&'static str) -> &'static str,
+) -> Result<String, String> {
     let pins = parse_lock(lock)?;
-    let mut modules = serde_json::Map::new();
-    for name in MODULES {
-        let url = format!("{mirror}wasm/{}/{name}.wasm", pins[*name]);
-        modules.insert(name.to_string(), serde_json::Value::String(url));
+    let mut urls = serde_json::Map::new();
+    for pin in PINS.iter().filter(|pin| pin.prefix == prefix) {
+        let url = format!("{mirror}{prefix}/{}/{}", pins[pin.file], pin.file);
+        urls.insert(key(pin.file).to_string(), serde_json::Value::String(url));
     }
-    Ok(serde_json::Value::Object(modules)
+    Ok(serde_json::Value::Object(urls)
         .to_string()
         .replace('<', "\\u003c"))
 }
 
+/// The browser URL of every renderer, `{mirror}wasm/{sha256}/{module}.wasm`,
+/// keyed by the module's name without `.wasm`, as the JSON object a page is
+/// given in place of `__MODULES__`.
+fn modules_json(mirror: &str, lock: &str) -> Result<String, String> {
+    urls_json(mirror, lock, "wasm", |file| {
+        file.strip_suffix(".wasm").unwrap_or(file)
+    })
+}
+
+/// The browser URL of every editor font, `{mirror}fonts/{sha256}/{file}`, keyed
+/// by the file name, as the JSON object a page is given in place of `__FONTS__`.
+fn fonts_json(mirror: &str, lock: &str) -> Result<String, String> {
+    urls_json(mirror, lock, "fonts", |file| file)
+}
+
 /// Everything the server answers with, ready to serve.
 pub fn load_shell(asset_mirror: &str) -> Result<HashMap<String, ShellFile>, String> {
-    // Where the renderers are comes first, because the reader page has to be
-    // told before it is served.
+    // Where the renderers and the fonts are comes first, because the reader
+    // page has to be told before it is served.
     let mut shell = HashMap::new();
-    let modules = modules_json(asset_mirror, WASM_LOCK)?;
+    let modules = modules_json(asset_mirror, ASSETS_LOCK)?;
+    let fonts = fonts_json(asset_mirror, ASSETS_LOCK)?;
 
     for entry in walk(&SHELL) {
         let path = entry.path().to_string_lossy().to_string();
@@ -135,11 +187,12 @@ pub fn load_shell(asset_mirror: &str) -> Result<HashMap<String, ShellFile>, Stri
         let body = if kind.starts_with("text/html") {
             // The one thing a page is told when it is served rather than when
             // it is built: what this deployment holds. The prose of the
-            // documentation page, and where the renderers are.
+            // documentation page, and where the renderers and fonts are.
             entry
                 .contents_utf8()
                 .unwrap_or_default()
                 .replace("__MODULES__", &modules)
+                .replace("__FONTS__", &fonts)
                 .into_bytes()
                 .into()
         } else {
@@ -182,27 +235,26 @@ mod shell_tests {
         load_shell(MIRROR).expect("the shell is embedded in the binary")
     }
 
+    /// A lock with every row `PINS` names, and the `latex` row.
     fn lock(sha: &str) -> String {
-        format!(
-            "# pinned renderers\n\
-             markdown.wasm wasm-markdown v0.1.1 {sha}\n\
-             bibliography.wasm wasm-bibliography v0.1.0 {sha}\n\
-             citations.wasm wasm-citations v0.1.0 {sha}\n\
-             typst.wasm wasm-typst v0.1.0 {sha}\n\
-             latex wasm-latex engines-test {sha}\n"
-        )
+        let mut lock = String::from("# pinned renderers and fonts\n");
+        for pin in PINS {
+            lock.push_str(&format!("{} librepaper-test v0.0.0 {sha}\n", pin.file));
+        }
+        lock.push_str(&format!("latex wasm-latex engines-test {sha}\n"));
+        lock
     }
 
     #[test]
     fn the_latex_release_is_the_pinned_manifest_digest() {
         let release = latex_release();
         assert_eq!(release.len(), 64);
-        assert_eq!(parse_lock(WASM_LOCK).unwrap()[LATEX], release);
+        assert_eq!(parse_lock(ASSETS_LOCK).unwrap()[LATEX], release);
     }
 
     #[test]
     fn the_checked_in_lock_parses() {
-        parse_lock(WASM_LOCK).expect("assets.lock is valid");
+        parse_lock(ASSETS_LOCK).expect("assets.lock is valid");
     }
 
     #[test]
@@ -210,13 +262,33 @@ mod shell_tests {
         let sha = "a".repeat(64);
         let json = modules_json("https://assets.example/", &lock(&sha)).unwrap();
         let modules: serde_json::Value = serde_json::from_str(&json).unwrap();
-        for name in MODULES {
+        for name in ["markdown", "bibliography", "citations", "typst"] {
             assert_eq!(
                 modules[name],
                 format!("https://assets.example/wasm/{sha}/{name}.wasm")
             );
         }
         assert_eq!(modules.as_object().unwrap().len(), 4);
+    }
+
+    #[test]
+    fn a_font_url_is_the_mirror_then_its_digest_then_its_name() {
+        let sha = "a".repeat(64);
+        let json = fonts_json("https://assets.example/", &lock(&sha)).unwrap();
+        let fonts: serde_json::Value = serde_json::from_str(&json).unwrap();
+        let names: Vec<&str> = PINS
+            .iter()
+            .filter(|pin| pin.prefix == "fonts")
+            .map(|pin| pin.file)
+            .collect();
+        assert_eq!(names.len(), 14);
+        assert_eq!(fonts.as_object().unwrap().len(), 14);
+        for name in names {
+            assert_eq!(
+                fonts[name],
+                format!("https://assets.example/fonts/{sha}/{name}")
+            );
+        }
     }
 
     #[test]
@@ -242,6 +314,17 @@ mod shell_tests {
         assert!(parse_lock(&without_latex).is_err());
         assert!(parse_lock(&format!("{good}latex wasm-latex engines-test {sha}\n")).is_err());
         assert!(parse_lock(&good.replace("latex ", "latex.wasm ")).is_err());
+    }
+
+    #[test]
+    fn a_lock_missing_one_font_is_refused() {
+        let sha = "a".repeat(64);
+        let without_font: String = lock(&sha)
+            .lines()
+            .filter(|line| !line.starts_with("fira-code.woff2"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(parse_lock(&without_font).is_err());
     }
 
     #[test]
