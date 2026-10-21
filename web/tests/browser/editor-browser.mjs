@@ -377,7 +377,7 @@ window.editorTypeCheck = async () => {
   const bodyColorAfter = getComputedStyle(document.body).color;
   setFont("default");
   await frame();
-  const defaultVariable = document.documentElement.style.getPropertyValue("--font-editor");
+  const defaultVariable = document.documentElement.style.getPropertyValue("--editor-font-family");
   setSize(14);
   setLineHeight("normal");
   typed.$destroy();
@@ -1261,7 +1261,7 @@ try {
   assert.ok(type.comic.startsWith('"Comic Neue"'), `the custom font family was ${type.comic}`);
   assert.ok(!type.evil.includes("}") && !type.evil.includes(";"), `a custom font name escaped its declaration: ${type.evil}`);
   assert.equal(type.bodyColorAfter, type.bodyColor, "a custom font name changed the page colour");
-  assert.equal(type.defaultVariable, "", "the default font left --font-editor set");
+  assert.equal(type.defaultVariable, "", "the default font left --editor-font-family set");
   console.log("editor-browser: the font, size and line height settings restyle the open editor, and a pinch starts from the chosen size");
 } finally {
   socket?.close();

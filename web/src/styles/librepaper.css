@@ -640,7 +640,7 @@ main.reader.source-right .editorpane {
   min-height: 0;
   background: var(--color-shell);
   color: var(--color-text);
-  font-family: var(--font-editor);
+  font-family: var(--editor-font-family, var(--font-editor));
   font-size: var(--editor-font-size, 14px);
   line-height: var(--editor-line-height, 1.6);
 }

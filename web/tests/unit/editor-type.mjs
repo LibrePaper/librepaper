@@ -120,12 +120,12 @@ const LINE_KEY = "librepaper-editor-line-height";
   };
   globalThis.document = { documentElement: { style } };
   setFont("fira-code");
-  assert.deepEqual(calls.find((call) => call[1] === "--font-editor"), ["set", "--font-editor", fontStack({ id: "fira-code", custom: "" })]);
+  assert.deepEqual(calls.find((call) => call[1] === "--editor-font-family"), ["set", "--editor-font-family", fontStack({ id: "fira-code", custom: "" })]);
   setLineHeight("compact");
-  assert.deepEqual(calls.find((call) => call[1] === "--editor-line-height"), ["set", "--editor-line-height", "1.35"]);
+  assert.deepEqual(calls.filter((call) => call[1] === "--editor-line-height").at(-1), ["set", "--editor-line-height", "1.35"]);
   calls.length = 0;
   setFont("default");
-  assert.deepEqual(calls, [["remove", "--font-editor"], ["set", "--editor-line-height", "1.35"]]);
+  assert.deepEqual(calls, [["remove", "--editor-font-family"], ["set", "--editor-line-height", "1.35"]]);
   delete globalThis.document;
 }
 

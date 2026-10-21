@@ -156,13 +156,15 @@ function isLineHeight(value) {
 }
 
 // Puts the font and the line height on the page for the stylesheet to read. The
-// default font removes its property so the theme's own font applies.
+// font has a name of its own rather than replacing the theme's --font-editor,
+// which the theme declares again on whichever element carries it. The default
+// font removes its property, so the theme's own font applies.
 function apply() {
   const root = globalThis.document?.documentElement;
   if (!root) return;
   const choice = font();
-  if (choice.id === "default") root.style.removeProperty("--font-editor");
-  else root.style.setProperty("--font-editor", fontStack(choice));
+  if (choice.id === "default") root.style.removeProperty("--editor-font-family");
+  else root.style.setProperty("--editor-font-family", fontStack(choice));
   root.style.setProperty("--editor-line-height", String(LINE_HEIGHTS[lineHeight()]));
 }
 
