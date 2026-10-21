@@ -375,8 +375,15 @@ window.editorTypeCheck = async () => {
   await frame();
   const evil = getComputedStyle(editor).fontFamily;
   const bodyColorAfter = getComputedStyle(document.body).color;
+  globalThis.LIBREPAPER_FONTS = { "fira-code.woff2": "/fira-code.woff2" };
+  setFont("fira-code");
+  await frame();
+  await document.fonts.ready;
+  const firaFace = () => [...document.fonts].find((face) => face.family.replace(/"/g, "") === "Fira Code");
+  const firaStatus = firaFace()?.status ?? "missing";
   setFont("default");
   await frame();
+  const firaAfter = firaFace() ? "present" : "gone";
   const defaultVariable = document.documentElement.style.getPropertyValue("--editor-font-family");
   const keyed = EditorView.findFromDOM(editor);
   keyed.focus();
@@ -401,7 +408,7 @@ window.editorTypeCheck = async () => {
   typed.$destroy();
   host.remove();
   value.leave();
-  return { sized, pinched, wideLine, normalLine, serif, comic, evil, bodyColor, bodyColorAfter, defaultVariable, keyBigger, keySmaller, keyReset };
+  return { sized, pinched, wideLine, normalLine, serif, comic, evil, firaStatus, firaAfter, bodyColor, bodyColorAfter, defaultVariable, keyBigger, keySmaller, keyReset };
 };
 window.vimUndoCheck = async () => {
   const value = joinSession({ send: () => {}, mayEdit: true });
@@ -1034,6 +1041,11 @@ try {
   });
 
   server = createServer((request, response) => {
+    if (request.url === "/fira-code.woff2") {
+      response.setHeader("Content-Type", "font/woff2");
+      response.end(readFileSync(join(root, "web/node_modules/katex/dist/fonts/KaTeX_Main-Regular.woff2")));
+      return;
+    }
     const file = join(output, request.url.slice(1));
     if (request.url !== "/" && existsSync(file)) {
       response.setHeader("Content-Type", contentType(file));
@@ -1278,6 +1290,8 @@ try {
   assert.ok(type.serif.startsWith("ui-serif"), `the serif font family was ${type.serif}`);
   assert.ok(type.comic.startsWith('"Comic Neue"'), `the custom font family was ${type.comic}`);
   assert.ok(!type.evil.includes("}") && !type.evil.includes(";"), `a custom font name escaped its declaration: ${type.evil}`);
+  assert.equal(type.firaStatus, "loaded", `the Fira Code face was ${type.firaStatus}`);
+  assert.equal(type.firaAfter, "gone", "the default font left the Fira Code face loaded");
   assert.equal(type.bodyColorAfter, type.bodyColor, "a custom font name changed the page colour");
   assert.equal(type.defaultVariable, "", "the default font left --editor-font-family set");
   assert.equal(type.keyBigger, "15px", "Ctrl+= did not grow the source text from 14px");

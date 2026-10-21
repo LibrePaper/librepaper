@@ -15,6 +15,8 @@ const {
   cleanFamily,
   clampSize,
   fontStack,
+  fontFaces,
+  installed,
   font,
   setFont,
   onFont,
@@ -188,3 +190,27 @@ const LINE_KEY = "librepaper-editor-line-height";
 }
 
 console.log("editor-type: all checks passed");
+
+// A bundled font becomes one face per file whose URL the server gave.
+{
+  const urls = { "ibm-plex-mono.woff2": "https://m/a.woff2", "ibm-plex-mono-italic.woff2": "https://m/b.woff2", "ibm-plex-mono-semibold.woff2": "https://m/c.woff2" };
+  const faces = fontFaces({ id: "ibm-plex-mono" }, urls);
+  assert.deepEqual(faces.map((face) => [face.family, face.descriptors.weight, face.descriptors.style]), [
+    ["IBM Plex Mono", "400", "normal"],
+    ["IBM Plex Mono", "400", "italic"],
+    ["IBM Plex Mono", "600", "normal"],
+  ]);
+  assert.equal(faces[0].source, 'url("https://m/a.woff2") format("woff2")');
+  const one = fontFaces({ id: "jetbrains-mono" }, { "jetbrains-mono-italic.woff2": "https://m/j.woff2" });
+  assert.equal(one.length, 1);
+  assert.deepEqual(one[0].descriptors, { weight: "100 800", style: "italic" });
+  assert.deepEqual(fontFaces({ id: "fira-code" }, {}), []);
+  for (const id of ["default", "sans", "serif"]) assert.deepEqual(fontFaces({ id }, urls), []);
+  assert.deepEqual(fontFaces({ id: "custom", custom: "IBM Plex Mono" }, urls), []);
+}
+
+// A font name is installed when it is empty or when there is nothing to measure with.
+{
+  assert.equal(installed(""), true);
+  assert.equal(installed("Some Font"), true);
+}

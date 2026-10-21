@@ -33,6 +33,7 @@ blockPageZoom(document);
 // page's policy refuses inline script. Read before anything renders, because
 // the reader asks which formats it can render as it mounts.
 globalThis.LIBREPAPER_MODULES = JSON.parse(document.getElementById("librepaper-modules").textContent);
+globalThis.LIBREPAPER_FONTS = JSON.parse(document.getElementById("librepaper-fonts").textContent);
 
 const initialSettings = intake() ? "tools" : "";
 mount(Boundary, { target: document.body, props: { component: Reader, props: { initialSettings }, name: "the reader" } });

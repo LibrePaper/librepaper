@@ -163,7 +163,8 @@ try {
     // and the renderer manifest -- which only the binary can write -- emptied.
     const shell = readFileSync(join(root, screen.shell), "utf8")
       .replace(screen.script, "/check.js")
-      .replace("__MODULES__", "{}");
+      .replace("__MODULES__", "{}")
+      .replace("__FONTS__", "{}");
     server?.close();
     server = createServer((request, response) => {
     if (serveKatex(request, response)) return;

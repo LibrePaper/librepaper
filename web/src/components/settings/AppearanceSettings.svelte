@@ -3,7 +3,7 @@
   import { onMount } from "svelte";
   import SettingRow from "./SettingRow.svelte";
   import { choice, onChoice, setChoice, PALETTES, PALETTE_NAMES, palette, onPalette, setPalette } from "../../lib/theme.js";
-  import { FONTS, MIN_SIZE, MAX_SIZE, font, setFont, onFont, size, setSize, onSize, lineHeight, setLineHeight, onLineHeight } from "../../lib/editor-type.js";
+  import { FONTS, installed, MIN_SIZE, MAX_SIZE, font, setFont, onFont, size, setSize, onSize, lineHeight, setLineHeight, onLineHeight } from "../../lib/editor-type.js";
 
   // Follows the choice, which another tab of this browser may make too.
   let current = $state(choice());
@@ -42,7 +42,7 @@
 </SettingRow>
 
 <SettingRow id="appearance-font" title="Font"
-            description="Fonts installed on this computer. LibrePaper does not download fonts.">
+            description="Six fonts are included and download when you pick one. Another font has to be installed on this computer.">
   <span class="setting-inline">
     <select class="select setting-select" aria-label="Font" value={currentFont.id}
             onchange={(event) => setFont(event.currentTarget.value, currentFont.custom)}>
@@ -54,6 +54,9 @@
       <input type="text" class="input input-sm setting-input" aria-label="Font name" placeholder="Font name"
              value={currentFont.custom}
              onchange={(event) => setFont("custom", event.currentTarget.value)} />
+      {#if currentFont.custom && !installed(currentFont.custom)}
+        <span class="font-missing">Not found on this computer.</span>
+      {/if}
     {/if}
   </span>
 </SettingRow>
@@ -90,6 +93,12 @@
     justify-content: flex-end;
     align-items: center;
     gap: calc(var(--spacing) * 2);
+  }
+  .font-missing {
+    flex-basis: 100%;
+    text-align: right;
+    color: var(--panel-muted);
+    font-size: var(--panel-meta-size);
   }
   /* A size is two digits, so its field is narrow. */
   .setting-number {

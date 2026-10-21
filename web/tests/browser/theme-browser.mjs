@@ -69,6 +69,7 @@ await build({
 const shell = readFileSync(join(root, "web/pages/reader.html"), "utf8")
   .replace("../src/entries/reader.js", "/check.js")
   .replace("__MODULES__", "{}")
+  .replace("__FONTS__", "{}")
   // A library build writes its stylesheet beside the script instead of
   // importing it, so the page links to whatever it wrote.
   .replace("</head>", readdirSync(out).filter((name) => name.endsWith(".css")).map((name) => `<link rel="stylesheet" href="/${name}">`).join("") + "</head>");

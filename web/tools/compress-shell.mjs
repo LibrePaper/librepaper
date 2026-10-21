@@ -14,7 +14,7 @@
 // Only `assets/` and `fonts/`. Every file under them is named for a digest of
 // its contents and is immutable, so the compressed copy can never fall out of
 // step with the original. The pages are deliberately excluded: the server
-// rewrites `__MODULES__` into each one as it serves it, so a page compressed
+// rewrites `__MODULES__` and `__FONTS__` into each one as it serves it, so a page compressed
 // here would be a page served with the placeholder still in it.
 import { brotliCompressSync, constants } from "node:zlib";
 import { readFileSync, writeFileSync, statSync } from "node:fs";

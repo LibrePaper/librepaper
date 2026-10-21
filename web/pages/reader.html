@@ -18,6 +18,10 @@
          cached for a year cannot outlive the loader that speaks to it, and the
          editor never has to ask for them. -->
     <script type="application/json" id="librepaper-modules">__MODULES__</script>
+    <!-- The editor font URLs arrive the same way, keyed by file name. They
+         name the mirror's copy of each font, which the page fetches only when
+         that font is chosen. -->
+    <script type="application/json" id="librepaper-fonts">__FONTS__</script>
   </head>
   <body>
     <script type="module" src="../src/entries/reader.js"></script>
