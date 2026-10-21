@@ -22,6 +22,7 @@
   import IconButton from "./IconButton.svelte";
   import MenuIconButton from "./MenuIconButton.svelte";
   import Modal from "./Modal.svelte";
+  import TagSwatches from "./TagSwatches.svelte";
   import NewProject from "./NewProject.svelte";
   import SettingsDialog from "./settings/SettingsDialog.svelte";
   import Hero from "./Hero.svelte";
@@ -37,6 +38,7 @@
   import { SHELL_HEADERS, get, getPrivate, me as whoami, signInHref } from "../lib/api.js";
   import { day as isoDay, since } from "../lib/dates.js";
   import { PROJECT_TABS, PROJECT_TAB_IDS } from "../lib/panels.js";
+  import { tagColour } from "../lib/tag-colours.js";
   import { FORMATS } from "../lib/starter.js";
   import { localProjects } from "../lib/offline-projects.js";
   import { provide } from "../lib/support/providers.js";
@@ -80,6 +82,19 @@
   // "my favourites" is a link, and so going back from a project returns to
   // the place it was opened from rather than to the top of everything.
   let place = $state(placeFromUrl());
+  // The tag the list is filtered by, when the place is "tag". Read from the
+  // address as the place is, so a link to one tag is a link to it.
+  let tagId = $state(new URLSearchParams(location.search).get("tag") || "");
+  // Every tag the account has, Favorites included, as the listing last said.
+  let tags = $state([]);
+  let managing = $state(false);
+  let tagToDelete = $state(null);
+  // The tag being made: null while its dialog is closed, otherwise the
+  // projects it is to be put on. An empty list makes a tag nothing has yet.
+  let tagFor = $state(null);
+  let tagName = $state("");
+  let tagShade = $state("blue");
+  let tagError = $state("");
   let sortBy = $state("updated");
   let ascending = $state(false);
   const compactSort = $derived(`${sortBy}:${ascending ? "asc" : "desc"}`);
@@ -200,8 +215,12 @@
   });
 
   function placeFromUrl() {
-    const asked = new URLSearchParams(location.search).get("in") || "";
-    return PROJECT_TAB_IDS.includes(asked) ? asked : "projects";
+    const params = new URLSearchParams(location.search);
+    const asked = params.get("in") || "";
+    if (PROJECT_TAB_IDS.includes(asked)) return asked;
+    // A tag is a place of its own, named in the address by its id rather than
+    // by one of the rail's words.
+    return params.get("tag") ? "tag" : "projects";
   }
 
   // Changing place is a navigation, so it goes in the address bar -- but not
@@ -211,11 +230,22 @@
     place = id;
     selected = new Set();
     const url = new URL(location.href);
+    url.searchParams.delete("tag");
     if (id === "projects") url.searchParams.delete("in");
     else url.searchParams.set("in", id);
     history.replaceState(null, "", url);
     if (id === "trash") void showTrash();
     if (id === "templates") void loadTemplates();
+  }
+
+  function goToTag(id) {
+    place = "tag";
+    tagId = id;
+    selected = new Set();
+    const url = new URL(location.href);
+    url.searchParams.delete("in");
+    url.searchParams.set("tag", id);
+    history.replaceState(null, "", url);
   }
 
   /* ------------------------------------------------------------- the listing */
@@ -249,11 +279,14 @@
   // to look at your projects -- which is what opening it usually is -- costs
   // one request; looking for a file costs a request per project, while you
   // are looking.
+  // A tag name matches the same way a title does. It is not shown as the
+  // reason for the match, because the chips on the row already say it.
   function found(doc, needle) {
     if (!needle) return { matches: true, path: "" };
     if (doc.title.toLowerCase().includes(needle)) return { matches: true, path: "" };
-    const path = (paths.get(doc.slug) || []).find((each) => each.toLowerCase().includes(needle));
-    return { matches: Boolean(path), path: path || "" };
+    const path = (paths.get(doc.slug) || []).find((each) => each.toLowerCase().includes(needle)) || "";
+    const tagged = tagsOf(doc).some((tag) => tag.name.toLowerCase().includes(needle));
+    return { matches: tagged || Boolean(path), path };
   }
 
   // Ask each project what is in it, once. A failure is silent and leaves that
@@ -299,15 +332,32 @@
     projects: () => true,
     recent: (doc) => Boolean(doc.opened_at),
     shared: (doc) => !mine(doc) && !doc.shared_hidden,
-    favorites: (doc) => doc.favorite,
+    favorites: (doc) => hasTag(doc, "favorites"),
+    tag: (doc) => hasTag(doc, tagId),
     trash: () => true,
     templates: () => true,
   };
 
+  // A row's tags. A project from this browser's copies, or a template, has none
+  // and so is in no tag. Ids rather than objects, because the row stores ids.
+  const hasTag = (doc, id) => (doc.tags || []).includes(id);
+  const tagsOf = (doc) => tags.filter((tag) => hasTag(doc, tag.id));
+  // The same, without Favorites: the tags a row shows as chips.
+  const userTagsOf = (doc) => userTags.filter((tag) => hasTag(doc, tag.id));
+  // Favorites first, then the rest by name, as the server lists them.
+  const sortTags = (list) => [...list].sort((a, b) => (b.builtin ? 1 : 0) - (a.builtin ? 1 : 0)
+    || a.name.localeCompare(b.name, undefined, { sensitivity: "base" }));
+
   const PLACE_NAMES = Object.fromEntries(PROJECT_TABS.map((tab) => [tab.id, tab.says]));
+  // Favorites is a built-in tag and has its own place, so only the others are
+  // listed as groupings in the rail and the menus.
+  const userTags = $derived(tags.filter((tag) => !tag.builtin));
+  const activeTag = $derived(tags.find((tag) => tag.id === tagId));
+  const placeName = $derived(place === "tag" ? (activeTag?.name || "Projects") : PLACE_NAMES[place]);
 
   function nothingHere() {
     if (needle) return "No projects match that search.";
+    if (place === "tag") return `Nothing is tagged ${activeTag?.name ?? ""} yet. Add this tag from a project's menu.`;
     return {
       projects: me.can_publish
         ? "No projects yet. Make one, then drop your files into it."
@@ -337,6 +387,9 @@
   });
 
   const hereSelected = $derived(shown.filter((doc) => selected.has(doc.slug)).length);
+  // The selection as projects, which is what the Tag control acts on. The list
+  // it is picked from may be filtered, so this is the whole of what is ticked.
+  const selectedDocs = $derived(documents.filter((doc) => selected.has(doc.slug)));
   const selectable = $derived(shown.filter(mine).length);
   // A project of your own. What the onboarding strip watches: once there is
   // work here, it has done its job.
@@ -362,18 +415,166 @@
   // local write. Set first and reconciled after: the star is the feedback for
   // pressing it, and waiting a round trip to draw it makes the listing feel
   // like it did not hear.
-  async function star(doc) {
-    const wanted = !doc.favorite;
-    doc.favorite = wanted;
+  // A star is the Favorites tag, so starring is tagging and nothing else.
+  function star(doc) {
+    return setTag(doc, "favorites", !hasTag(doc, "favorites"));
+  }
+
+  // Putting a tag on a project or taking it off is the same request whatever
+  // the tag is. The row changes first and is put back if the server refuses,
+  // which is what the star always did.
+  async function setTag(doc, id, on) {
+    const before = doc.tags || [];
+    doc.tags = on ? [...new Set([...before, id])] : before.filter((each) => each !== id);
     try {
-      const response = await fetch(`/api/documents/${doc.slug}/favorite`, {
-        method: wanted ? "POST" : "DELETE",
+      const response = await fetch(`/api/documents/${doc.slug}/tags/${id}`, {
+        method: on ? "PUT" : "DELETE",
         headers: SHELL_HEADERS,
       });
       if (!response.ok) throw new Error("that could not be saved");
     } catch {
-      doc.favorite = !wanted;
-      say("That star could not be saved.", { kind: "problem", id: "landing:favorite" });
+      doc.tags = before;
+      if (id === "favorites") say("That star could not be saved.", { kind: "problem", id: "landing:favorite" });
+      else say("That tag could not be saved.", { kind: "problem", id: `landing:tag:${doc.slug}` });
+    }
+  }
+
+  // The same change to several projects. Each is asked for once, and the
+  // ones the server refuses are counted rather than quietly left out.
+  async function setTagOnMany(docs, id, on) {
+    const changed = docs.filter((doc) => hasTag(doc, id) !== on);
+    const done = await Promise.all(changed.map(async (doc) => {
+      try {
+        const response = await fetch(`/api/documents/${doc.slug}/tags/${id}`, {
+          method: on ? "PUT" : "DELETE",
+          headers: SHELL_HEADERS,
+        });
+        return response.ok ? doc : null;
+      } catch {
+        return null;
+      }
+    }));
+    for (const doc of done) {
+      if (!doc) continue;
+      const before = doc.tags || [];
+      doc.tags = on ? [...new Set([...before, id])] : before.filter((each) => each !== id);
+    }
+    const failed = changed.length - done.filter(Boolean).length;
+    if (failed) {
+      say(`${failed} project${failed === 1 ? "" : "s"} could not be tagged.`, { kind: "problem", id: "landing:tag-many" });
+    }
+  }
+
+  // What a tag menu asks for. A tag that every project has is taken off all of
+  // them; otherwise it is put on every one, so the check mark says what the
+  // next press does. A menu closes before a dialog opens, hence the timeout.
+  // The two things the rail's tag list offers beneath the tags.
+  function tagAction(action) {
+    if (action === "new") askNewTag([]);
+    else managing = true;
+  }
+
+  function tagChosen(value, docs) {
+    if (value === "new-tag") {
+      setTimeout(() => askNewTag(docs), 0);
+      return;
+    }
+    const id = value.slice(4);
+    if (docs.length === 1) return setTag(docs[0], id, !hasTag(docs[0], id));
+    const allHave = docs.every((doc) => hasTag(doc, id));
+    return setTagOnMany(docs, id, !allHave);
+  }
+
+  /* ---------------------------------------------------------------- tags */
+
+  function askNewTag(docs) {
+    tagFor = docs;
+    tagName = "";
+    tagShade = "blue";
+    tagError = "";
+  }
+
+  // Making a tag puts it on the projects it was asked from, so the one step
+  // from a menu leaves the project tagged, which is what it was for.
+  async function createTag(event) {
+    event.preventDefault();
+    const name = tagName.trim();
+    const docs = tagFor;
+    if (!docs) return;
+    if (!name) {
+      tagError = "Give the tag a name.";
+      return;
+    }
+    try {
+      const response = await fetch("/api/tags", {
+        method: "POST",
+        headers: { ...SHELL_HEADERS, "Content-Type": "application/json" },
+        body: JSON.stringify({ name, colour: tagShade }),
+      });
+      if (!response.ok) {
+        tagError = (await response.json().catch(() => ({}))).error || "That tag could not be created.";
+        return;
+      }
+      const { tag } = await response.json();
+      tags = sortTags([...tags, tag]);
+      tagFor = null;
+      if (docs.length) await setTagOnMany(docs, tag.id, true);
+    } catch (error) {
+      tagError = error?.message || "That tag could not be created.";
+    }
+  }
+
+  // Saves a change to one tag. The list is replaced by what the server says
+  // the tag now is, so every row that shows it agrees.
+  async function saveTag(tag, body, failure) {
+    const response = await fetch(`/api/tags/${tag.id}`, {
+      method: "PATCH",
+      headers: { ...SHELL_HEADERS, "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    });
+    if (!response.ok) throw new Error((await response.json().catch(() => ({}))).error || failure);
+    const { tag: saved } = await response.json();
+    tags = sortTags(tags.map((each) => (each.id === saved.id ? saved : each)));
+  }
+
+  async function renameTag(tag, input) {
+    const name = input.value.trim();
+    if (name === tag.name) return;
+    try {
+      if (!name) throw new Error("Give the tag a name.");
+      await saveTag(tag, { name }, "That tag could not be renamed.");
+    } catch (error) {
+      input.value = tag.name;
+      say(error?.message || "That tag could not be renamed.", { kind: "problem", id: "landing:tag-rename" });
+    }
+  }
+
+  async function recolourTag(tag, colour) {
+    if (colour === tag.colour) return;
+    try {
+      await saveTag(tag, { colour }, "That colour could not be saved.");
+    } catch (error) {
+      say(error?.message || "That colour could not be saved.", { kind: "problem", id: "landing:tag-colour" });
+    }
+  }
+
+  // Deleting a tag takes it off every project and leaves the projects
+  // themselves alone, which the confirmation says before anybody presses it.
+  async function reallyDeleteTag() {
+    const tag = tagToDelete;
+    tagToDelete = null;
+    if (!tag) return;
+    try {
+      const response = await fetch(`/api/tags/${tag.id}`, { method: "DELETE", headers: SHELL_HEADERS });
+      if (!response.ok) throw new Error((await response.json().catch(() => ({}))).error || "That tag could not be deleted.");
+      tags = tags.filter((each) => each.id !== tag.id);
+      for (const doc of documents) {
+        if (hasTag(doc, tag.id)) doc.tags = doc.tags.filter((id) => id !== tag.id);
+      }
+      if (place === "tag" && tagId === tag.id) goTo("projects");
+      say(`${tag.name} was deleted. Its projects are still here.`, { id: "landing:tag-deleted" });
+    } catch (error) {
+      say(error?.message || "That tag could not be deleted.", { kind: "problem", id: "landing:tag-delete" });
     }
   }
 
@@ -425,6 +626,7 @@
       // The server caps each page at 200 rows. Keep the old listing visible
       // until every page has arrived, so a failed refresh does not erase it.
       const bySlug = new Map();
+      let latestTags = [];
       let cursor = null;
       do {
         const query = new URLSearchParams();
@@ -443,10 +645,18 @@
         for (const doc of page.documents) {
           if (doc?.slug) bySlug.set(doc.slug, doc);
         }
+        // Every page carries the whole tag list, so the last one read is the
+        // list, and there is nothing to merge.
+        if (Array.isArray(page.tags)) latestTags = page.tags;
         cursor = page.next_cursor;
       } while (cursor?.after_updated && cursor?.after_slug);
 
       documents = [...bySlug.values()];
+      tags = sortTags(latestTags);
+      // A tag in the address that the account does not have is not a place,
+      // so the page shows Projects instead of an empty list under a name that
+      // means nothing.
+      if (place === "tag" && !activeTag) goTo("projects");
       // The counts arrive with the listing now. They used to be a request per
       // project -- forty projects meant forty-one requests to open this page
       // -- because neither number was in the catalogue. Both are now.
@@ -712,6 +922,7 @@
       else if (action === "fork") askFork(doc);
       else if (action === "from-template") askNameFrom(doc);
       else if (action === "favorite") void star(doc);
+      else if (action === "new-tag" || action.startsWith("tag:")) tagChosen(action, [doc]);
       else if (action === "hide-shared") void setSharedVisibility(doc, true);
       else if (action === "show-shared") void setSharedVisibility(doc, false);
       else if (action === "trash") askDelete(doc);
@@ -872,6 +1083,9 @@
           return;
         }
         me = who;
+        // Only a publisher's listing carries tags, so anybody else has no tag
+        // to show and the address goes back to Projects.
+        if (!who.can_publish && place === "tag") goTo("projects");
         if (who.can_publish) {
           if (newTab) void loadTemplates();
           await showList();
@@ -882,18 +1096,37 @@
   });
 </script>
 
+{#snippet tagItems(isOn)}
+  <!-- The account's tags as check items for one project or for the selection.
+       A check says the project has the tag, and picking the item changes that.
+       Tag items carry no data-project-action: the action list is the list of
+       what a row can do to the project, and a tag is not one of those. -->
+  <div class="tags-heading" role="presentation">Tags</div>
+  {#each userTags as tag (tag.id)}
+    <Menu.Item value={"tag:" + tag.id} class="menuitem project-action-item" data-project-tag={tag.id}>
+      <span class="menuitem-check" aria-hidden="true">{isOn(tag) ? "✓" : ""}</span>
+      <span class="menuitem-swatch" style:background={tagColour(tag.colour)} aria-hidden="true"></span>
+      <span class="menuitem-label">{tag.name}</span>
+    </Menu.Item>
+  {/each}
+  <Menu.Item value="new-tag" class="menuitem project-action-item" data-project-tag="new">
+    <Icon name="plus" size="1rem" /><span class="menuitem-label">New tag...</span>
+  </Menu.Item>
+{/snippet}
+
 {#if me.name}
   <!-- The workspace half. The trail says where in the account this is, which
        is the same slot a project's title takes when one is open: going in
        replaces the last segment and nothing else in the bar. -->
   <Nav {me} phoneMenu={narrow} hidden={barHidden && !newTab}>
     {#snippet children()}
-      <span class="nav-place">{newTab ? "New project" : PLACE_NAMES[place]}</span>
+      <span class="nav-place">{newTab ? "New project" : placeName}</span>
     {/snippet}
     {#snippet tools()}
       {#if narrow}
         <CompactPanelMenu tabs={PROJECT_TABS} panel={place} open pressed={false} {me} onselect={goTo} onsettings={() => openSettings()}
-                          counts={trashed.length ? { trash: trashed.length } : {}} />
+                          counts={trashed.length ? { trash: trashed.length } : {}}
+                          tags={userTags} activeTag={place === "tag" ? tagId : ""} ontag={goToTag} ontagaction={tagAction} />
         {#if searching}
           <input class="input project-search" type="search" placeholder="Search projects"
                  aria-label="Search projects by title or file" bind:value={search} use:focusOnMount
@@ -933,6 +1166,21 @@
       <Sidebar tabs={PROJECT_TABS} panel={place} shown={{ comments: false }}
                resizable={false} label="Projects" onselectpanel={goTo}
                badges={trashed.length ? { trash: { counts: [{ tone: "warnings", of: trashed.length }] } } : {}}>
+        <!-- The tags of this account, under the places. A tag is a dot, because
+             a rail three rem wide has no room for its name: the name is what the
+             button says to a screen reader and what the tooltip shows. -->
+        {#snippet places()}
+          <div class="rail-tags">
+            {#each userTags as tag (tag.id)}
+              <IconButton swatch={tagColour(tag.colour)} label={tag.name} pressed={place === "tag" && tagId === tag.id}
+                          onclick={() => goToTag(tag.id)} />
+            {/each}
+            <IconButton icon="plus" label="New tag" tone="plain" onclick={() => askNewTag([])} />
+            {#if userTags.length}
+              <IconButton icon="pencil" label="Manage tags" tone="plain" onclick={() => (managing = true)} />
+            {/if}
+          </div>
+        {/snippet}
         {#snippet controls()}
           <IconButton icon="settings" label="Settings" tone="plain" onclick={() => openSettings()} />
         {/snippet}
@@ -941,19 +1189,19 @@
 
     <section class="projects">
       <div class="place-line">
-        <h1 class="place-heading">{PLACE_NAMES[place]}</h1>
+        <h1 class="place-heading">{placeName}</h1>
 
-        {#if narrow && ["projects", "shared", "favorites", "templates"].includes(place)}
+        {#if narrow && ["projects", "shared", "favorites", "templates", "tag"].includes(place)}
           <span class="compact-sort">
             <Icon name="arrow-up-down" />
             <select id="project-sort" class="select" value={compactSort} aria-label="Sort" title="Sort"
                     onchange={(event) => chooseCompactSort(event.currentTarget.value)}>
               <option value="updated:desc">Updated: newest first</option>
               <option value="updated:asc">Updated: oldest first</option>
-              <option value="title:asc">Title: A–Z</option>
-              <option value="title:desc">Title: Z–A</option>
+              <option value="title:asc">Title: A to Z</option>
+              <option value="title:desc">Title: Z to A</option>
               {#if sortBy === "owner"}
-                <option value={`owner:${ascending ? "asc" : "desc"}`}>Owner: {ascending ? "A–Z" : "Z–A"}</option>
+                <option value={`owner:${ascending ? "asc" : "desc"}`}>Owner: {ascending ? "A to Z" : "Z to A"}</option>
               {:else if sortBy === "files"}
                 <option value={`files:${ascending ? "asc" : "desc"}`}>Files: {ascending ? "fewest first" : "most first"}</option>
               {/if}
@@ -995,6 +1243,18 @@
               <Icon name="trash" size={16} /> Delete forever
             </button>
           {:else}
+            <!-- One control for every selected project. Its check marks show
+                 what the next press does to all of them, as the row menu does
+                 for one. -->
+            <Menu onSelect={(chosen) => tagChosen(chosen.value, selectedDocs)}
+                  positioning={{ placement: "bottom-start", gutter: 4, flip: true, fitViewport: true, overflowPadding: 8 }}>
+              <Menu.Trigger class="btn btn-sm lp-control-tonal-brand">
+                <Icon name="tag" size={16} /> Tag
+              </Menu.Trigger>
+              <ExplorerMenu>
+                {@render tagItems((tag) => selectedDocs.length > 0 && selectedDocs.every((doc) => hasTag(doc, tag.id)))}
+              </ExplorerMenu>
+            </Menu>
             <button type="button" class="btn btn-sm lp-tone-error" onclick={deleteSelected}>
               <Icon name="trash" size={16} /> Delete
             </button>
@@ -1020,7 +1280,7 @@
         rowKey={(doc) => doc.slug}
         rowClass={(doc) => (selected.has(doc.slug) ? "picked" : "")}
         className="projects-table"
-        label={PLACE_NAMES[place]}
+        label={placeName}
         {sortBy}
         {ascending}
         onsort={sortColumn}
@@ -1059,11 +1319,27 @@
               {/if}
             </span>
           {:else if column.key === "title"}
-            {#if place === "trash"}
-              <span class="title-line">{doc.title}</span>
-            {:else}
-              <a class="title-line" href="/docs/{doc.slug}">{doc.title}</a>
-            {/if}
+            {@const chips = place === "trash" ? [] : userTagsOf(doc)}
+            {@const chipsShown = narrow ? chips.slice(0, 2) : chips}
+            <span class="title-row">
+              {#if place === "trash"}
+                <span class="title-line">{doc.title}</span>
+              {:else}
+                <a class="title-line" href="/docs/{doc.slug}">{doc.title}</a>
+              {/if}
+              {#if chips.length}
+                <!-- The tags as chips after the title. A phone row has room for
+                     two; the rest are counted, so the row stays one line. -->
+                <span class="tag-chips">
+                  {#each chipsShown as tag (tag.id)}
+                    <span class="tag-chip" style="--tag-colour: {tagColour(tag.colour)}">{tag.name}</span>
+                  {/each}
+                  {#if chips.length > chipsShown.length}
+                    <span class="tag-chip tag-more">+{chips.length - chipsShown.length}</span>
+                  {/if}
+                </span>
+              {/if}
+            </span>
             <span class="title-note">
               {#if doc.local_copy}<span>Offline</span>{/if}
               <!-- The file the search found, when it was not the title.
@@ -1085,7 +1361,7 @@
               <span class="owner-name">{mine(doc) ? "You" : doc.owner}</span>
             {/if}
           {:else if column.key === "files"}
-            {doc.files ?? "—"}
+            {doc.files ?? "-"}
           {:else if column.key === "updated"}
             <!-- Relative, with the date itself in the tooltip. Six copies of
                  today's date answer nothing; "12 min ago" answers the
@@ -1138,9 +1414,10 @@
                       <Icon name="git-fork" size="1rem" /><span class="menuitem-label">Fork</span>
                     </Menu.Item>
                     <Menu.Item value="favorite" class="menuitem project-action-item" data-project-action="favorite">
-                      <Icon name="star" size="1rem" filled={doc.favorite} />
-                      <span class="menuitem-label">{doc.favorite ? "Remove from favorites" : "Add to favorites"}</span>
+                      <Icon name="star" size="1rem" filled={hasTag(doc, "favorites")} />
+                      <span class="menuitem-label">{hasTag(doc, "favorites") ? "Remove from favorites" : "Add to favorites"}</span>
                     </Menu.Item>
+                    {@render tagItems((tag) => hasTag(doc, tag.id))}
                     {#if mine(doc)}
                       <Menu.Item value="trash" class="menuitem project-action-item" data-project-action="trash">
                         <Icon name="trash" size="1rem" /><span class="menuitem-label">Move to trash</span>
@@ -1186,14 +1463,21 @@
                   <IconButton icon="trash" colour="lp-text-muted lp-hover-error"
                               title="Move to trash" label="Move {doc.title} to the trash" onclick={() => askDelete(doc)} />
                 {/if}
+                <Menu onSelect={(chosen) => tagChosen(chosen.value, [doc])}
+                      positioning={{ placement: "bottom-end", gutter: 4, flip: true, fitViewport: true, overflowPadding: 8 }}>
+                  <MenuIconButton icon="tag" label="Tags for {doc.title}" projectSlug={doc.slug} />
+                  <ExplorerMenu>
+                    {@render tagItems((tag) => hasTag(doc, tag.id))}
+                  </ExplorerMenu>
+                </Menu>
                 <IconButton
                   icon="star"
                   tone="plain"
                   size="btn-icon-sm"
-                  colour={doc.favorite ? "lp-text-warning" : "lp-text-muted"}
-                  filled={doc.favorite}
-                  pressed={doc.favorite}
-                  label={doc.favorite ? "Remove from favorites" : "Add to favorites"}
+                  colour={hasTag(doc, "favorites") ? "lp-text-warning" : "lp-text-muted"}
+                  filled={hasTag(doc, "favorites")}
+                  pressed={hasTag(doc, "favorites")}
+                  label={hasTag(doc, "favorites") ? "Remove from favorites" : "Add to favorites"}
                   onclick={() => star(doc)}
                 />
               </span>
@@ -1290,6 +1574,54 @@
   {/snippet}
 </Modal>
 
+<Modal open={Boolean(tagFor)} title="New tag"
+       description="Tags are yours. Nobody else sees the tags you put on a project."
+       onclose={() => { tagFor = null; tagError = ""; }}
+       confirm={{ form: "new-tag", label: "Make tag", oncancel: () => (tagFor = null) }}>
+  {#snippet children()}
+    <form id="new-tag" onsubmit={createTag}>
+      <label class="label">
+        <span class="label-text">Name</span>
+        <!-- svelte-ignore a11y_autofocus -- the dialog exists to ask this one thing -->
+        <input class="input" autofocus maxlength="40" bind:value={tagName} />
+      </label>
+      <div class="label">
+        <span class="label-text">Colour</span>
+        <TagSwatches value={tagShade} label="Colour" onchange={(key) => (tagShade = key)} />
+      </div>
+      {#if tagError}<p class="lp-text-error text-sm">{tagError}</p>{/if}
+    </form>
+  {/snippet}
+</Modal>
+
+<Modal open={managing} title="Manage tags" wider
+       description="A change to a tag shows on every project that has it. Deleting a tag does not delete any project."
+       onclose={() => (managing = false)}
+       confirm={{ label: "Done", onclick: () => (managing = false), cancel: false }}>
+  {#snippet children()}
+    {#if userTags.length}
+      <ul class="tag-manage">
+        {#each userTags as tag (tag.id)}
+          <li class="tag-manage-row">
+            <input class="input" aria-label="Name of {tag.name}" maxlength="40" value={tag.name}
+                   onchange={(event) => renameTag(tag, event.currentTarget)} />
+            <TagSwatches value={tag.colour} label="Colour of {tag.name}" onchange={(key) => recolourTag(tag, key)} />
+            <IconButton icon="trash" colour="lp-text-muted lp-hover-error" title="Delete tag"
+                        label="Delete {tag.name}" onclick={() => (tagToDelete = tag)} />
+          </li>
+        {/each}
+      </ul>
+    {:else}
+      <p class="lp-text-secondary text-sm">No tags yet. Use New tag in the rail to make one.</p>
+    {/if}
+  {/snippet}
+</Modal>
+
+<Modal open={Boolean(tagToDelete)} title="Delete this tag?"
+       description={tagToDelete ? `${tagToDelete.name} is taken off every project that has it. The projects themselves stay where they are.` : ""}
+       onclose={() => (tagToDelete = null)}
+       confirm={{ label: "Delete tag", tone: "error", onclick: reallyDeleteTag, oncancel: () => (tagToDelete = null) }}></Modal>
+
 <Modal bind:open={confirming}
        title={confirmKind === "purge" ? "Delete for good?" : "Move to the trash?"}
        description={confirmText}
@@ -1375,6 +1707,25 @@
   .title-note:empty { display: none; }
 
   .owner-name { font-size: var(--text-sm); }
+
+  /* The tags sit under the places, behind a rule: they are groupings the
+     reader made, not one of the places the page has. */
+  .rail-tags { display: flex; flex-direction: column; align-items: center; gap: var(--spacing); padding-top: var(--spacing); border-top: 1px solid var(--color-pane-edge); }
+
+  /* The title and its chips share a line. The title keeps its place when the
+     chips are many, and the chips are the part that gives way. */
+  .title-row { display: flex; align-items: center; gap: calc(var(--spacing) * 2); min-width: 0; }
+  .title-row > .title-line { min-width: 0; overflow-wrap: anywhere; }
+  .tag-chips { display: inline-flex; align-items: center; flex: 0 1 auto; min-width: 0; gap: var(--spacing); overflow: hidden; }
+  .tag-chip { display: inline-flex; align-items: center; gap: .3rem; flex: none; max-width: 9rem; padding: 0 .45rem; border: 1px solid color-mix(in srgb, var(--tag-colour) 45%, transparent); border-radius: 999px; background: color-mix(in srgb, var(--tag-colour) 16%, transparent); color: var(--color-text); font-size: var(--text-xs); line-height: 1.25rem; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .tag-chip::before { content: ""; width: .5rem; height: .5rem; flex: none; border-radius: 50%; background: var(--tag-colour); }
+  .tag-chip.tag-more { border-color: var(--color-border); background: none; color: var(--color-text-secondary); }
+  .tag-chip.tag-more::before { display: none; }
+
+  .tags-heading { padding: calc(var(--spacing) * 1.5) calc(var(--spacing) * 2) 0; font-size: var(--text-xs); color: var(--color-text-secondary); }
+  .menuitem-swatch { width: .75rem; height: .75rem; flex: none; border-radius: 50%; }
+  .tag-manage { display: flex; flex-direction: column; gap: calc(var(--spacing) * 4); margin: 0; padding: 0; list-style: none; }
+  .tag-manage-row { display: grid; grid-template-columns: minmax(8rem, 1fr) auto auto; align-items: center; gap: calc(var(--spacing) * 3); }
   .trash-actions { display: inline-flex; align-items: center; gap: calc(var(--spacing)); }
   .project-actions { display: inline-flex; align-items: center; gap: calc(var(--spacing)); }
   :global(.project-actions-trigger) { display: inline-flex; width: 2.75rem; height: 2.75rem; align-items: center; justify-content: center; padding: 0; font-size: 1.5rem; line-height: 1; }
