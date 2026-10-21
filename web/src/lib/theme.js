@@ -4,19 +4,26 @@
 //
 // Nothing here may need a document or a window at load, so the unit tests can
 // import it under node.
-import { read, write, THEME } from "./storage.js";
+import { read, write, THEME, PALETTE } from "./storage.js";
 import { desktop, shellAction } from "./desktop/client.js";
 
 export const CHOICES = ["system", "light", "dark"];
 
+// The colour themes. "librepaper" is the default and has no file of its own.
+export const PALETTES = ["librepaper", "flexoki", "solarized", "gruvbox", "catppuccin", "nord"];
+export const PALETTE_NAMES = { librepaper: "LibrePaper", flexoki: "Flexoki", solarized: "Solarized", gruvbox: "Gruvbox", catppuccin: "Catppuccin", nord: "Nord" };
+
 const QUERY = "(prefers-color-scheme: dark)";
 const modeListeners = new Set();
 const choiceListeners = new Set();
+const paletteListeners = new Set();
 let started = false;
 let applied = null;
 // The choice made on this page. Storage is best effort: a browser that refuses
 // the write still gets the theme it asked for, until another tab writes one.
 let chosen = null;
+// The colour theme chosen on this page, with the same fallback as the mode.
+let chosenPalette = null;
 // The one media query list, made on first use and held for the module's
 // lifetime. The change listener in start() hangs off it, and a list that
 // nothing holds was seen to stop reporting changes in headless Chromium: the
@@ -31,6 +38,11 @@ function query() {
 export function choice() {
   const stored = chosen ?? read(THEME, "system");
   return CHOICES.includes(stored) ? stored : "system";
+}
+
+export function palette() {
+  const stored = chosenPalette ?? read(PALETTE, "librepaper");
+  return PALETTES.includes(stored) ? stored : "librepaper";
 }
 
 function resolve() {
@@ -48,7 +60,10 @@ export function mode() {
 function apply() {
   const now = resolve();
   const root = globalThis.document?.documentElement;
-  if (root) root.dataset.mode = now;
+  if (root) {
+    root.dataset.mode = now;
+    root.dataset.palette = palette();
+  }
   if (now === applied) return;
   applied = now;
   for (const listener of [...modeListeners]) listener(now);
@@ -57,6 +72,11 @@ function apply() {
 function announce() {
   const now = choice();
   for (const listener of [...choiceListeners]) listener(now);
+}
+
+function announcePalette() {
+  const now = palette();
+  for (const listener of [...paletteListeners]) listener(now);
 }
 
 // The desktop app colours its own title bar from this. It is a courtesy, so a
@@ -72,6 +92,21 @@ export function setChoice(next) {
   apply();
   announce();
   tellShell();
+}
+
+export function setPalette(next) {
+  if (!PALETTES.includes(next)) return;
+  chosenPalette = next;
+  write(PALETTE, next);
+  apply();
+  announcePalette();
+}
+
+// Hears the colour theme now and whenever one is made.
+export function onPalette(listener) {
+  paletteListeners.add(listener);
+  listener(palette());
+  return () => paletteListeners.delete(listener);
 }
 
 // Hears the mode now and whenever it moves.
@@ -99,10 +134,20 @@ export function start() {
   // Another tab or window of this browser made a choice, and this page
   // follows it. A null key is the whole store being cleared.
   globalThis.addEventListener?.("storage", (event) => {
+    // A palette change from another tab. The mode does not move, so the mode
+    // listeners stay quiet.
+    if (event.key === PALETTE) {
+      chosenPalette = null;
+      apply();
+      announcePalette();
+      return;
+    }
     if (event.key !== null && event.key !== THEME) return;
     chosen = null;
+    chosenPalette = null;
     apply();
     announce();
+    announcePalette();
   });
   tellShell();
 }

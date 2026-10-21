@@ -13,6 +13,7 @@
 @import "tailwindcss";
 @import "@skeletonlabs/skeleton";
 @import "./theme.css";
+@import "./palettes.css";
 @import "./librepaper.css";
 
 /* Where to look for the classes actually used, since the pages are Svelte
