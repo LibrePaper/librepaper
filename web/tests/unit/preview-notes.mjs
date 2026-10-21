@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { previewNotes, unrenderableMain } from "../../src/lib/reader/preview-notes.js";
+import { previewFormatOf } from "../../src/lib/formats.js";
 
 // --- no notes when file is previewable ----------------------------------------
 
@@ -100,20 +101,15 @@ notes = previewNotes({
 assert.equal(notes.length, 1, "one note when main is unrenderable");
 assert.equal(notes[0].severity, "warning", "unrenderable main is a warning");
 
-// --- open .json file opens appropriate message ----------------------------------------
+// --- open .json file has a preview, so no note ----------------------------------------
 
 notes = previewNotes({
   openPath: "data.json",
   openIsText: true,
   mainPath: "main.tex",
-  formatOf: (path) => (path.endsWith(".tex") ? "latex" : null),
+  formatOf: previewFormatOf,
 });
-assert.equal(notes.length, 1, "one note for .json file");
-assert.match(
-  notes[0].message,
-  /JSON files have/,
-  ".json file named as JSON type"
-);
+assert.equal(notes.length, 0, "no note for .json file, which previews as text");
 
 // --- open .csv file opens appropriate message ----------------------------------------
 
@@ -130,34 +126,49 @@ assert.match(
   ".csv file named as CSV type"
 );
 
-// --- open .yaml file opens appropriate message ----------------------------------------
+// --- open .yaml file has a preview, so no note ----------------------------------------
 
 notes = previewNotes({
   openPath: "config.yaml",
   openIsText: true,
   mainPath: "main.tex",
-  formatOf: (path) => (path.endsWith(".tex") ? "latex" : null),
+  formatOf: previewFormatOf,
 });
-assert.equal(notes.length, 1, "one note for .yaml file");
-assert.match(
-  notes[0].message,
-  /YAML files have/,
-  ".yaml file named as YAML type"
-);
+assert.equal(notes.length, 0, "no note for .yaml file, which previews as text");
 
-// --- open .yml file opens appropriate message ----------------------------------------
+// --- open .yml file has a preview, so no note ----------------------------------------
 
 notes = previewNotes({
   openPath: "config.yml",
   openIsText: true,
   mainPath: "main.tex",
-  formatOf: (path) => (path.endsWith(".tex") ? "latex" : null),
+  formatOf: previewFormatOf,
 });
-assert.equal(notes.length, 1, "one note for .yml file");
+assert.equal(notes.length, 0, "no note for .yml file, which previews as text");
+
+// --- open .toml file has a preview, so no note ----------------------------------------
+
+notes = previewNotes({
+  openPath: "config.toml",
+  openIsText: true,
+  mainPath: "main.tex",
+  formatOf: previewFormatOf,
+});
+assert.equal(notes.length, 0, "no note for .toml file, which previews as text");
+
+// --- open .bib file still gets its note under the preview mapping ------------------
+
+notes = previewNotes({
+  openPath: "config.bib",
+  openIsText: true,
+  mainPath: "main.tex",
+  formatOf: previewFormatOf,
+});
+assert.equal(notes.length, 1, "one note for .bib file under the preview mapping");
 assert.match(
   notes[0].message,
-  /YAML files have/,
-  ".yml file named as YAML type"
+  /BibTeX files have no preview/,
+  ".bib file still named as BibTeX under the preview mapping"
 );
 
 // --- open .cls file opens appropriate message ----------------------------------------

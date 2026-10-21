@@ -334,6 +334,7 @@ impl Default for Configuration {
                 ".json",
                 ".yml",
                 ".yaml",
+                ".toml",
                 ".html",
                 ".css",
             ]

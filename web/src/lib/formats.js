@@ -10,3 +10,11 @@ export function formatOf(path) {
   if (lower.endsWith(".tex") || lower.endsWith(".ltx")) return "latex";
   return "";
 }
+
+/// What the preview shows a file as. Every document format previews as
+/// itself; data files (JSON, YAML, TOML) preview as their plain text.
+export function previewFormatOf(path) {
+  const format = formatOf(path);
+  if (format) return format;
+  return /\.(?:json|ya?ml|toml)$/i.test(path || "") ? "text" : "";
+}

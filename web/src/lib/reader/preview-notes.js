@@ -7,10 +7,7 @@
 
 const labels = {
   bib: "BibTeX",
-  json: "JSON",
   csv: "CSV",
-  yml: "YAML",
-  yaml: "YAML",
   cls: "LaTeX class and style",
   sty: "LaTeX class and style",
   lua: "Lua",
