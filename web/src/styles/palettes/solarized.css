@@ -1,0 +1,101 @@
+/* Solarized palette by Ethan Schoonover (MIT licence, github.com/altercation/solarized).
+   The light block uses Solarized Light on base3 and the dark block uses Solarized Dark on base03. */
+
+[data-theme="librepaper"][data-palette="solarized"][data-mode="light"] {
+	color-scheme: light;
+
+	/* Neutral scale. Solarized has eight base tones, so the steps between them are interpolated. */
+	--neutral-1: #fdf6e3;
+	--neutral-2: #f6efdc;
+	--neutral-3: #eee8d5;
+	--neutral-4: #e6e0cc;
+	--neutral-5: #ddd6c1;
+	--neutral-6: #c0c4bb;
+	--neutral-7: #93a1a1;
+	--neutral-8: #839496;
+	--neutral-9: #657b83;
+	--neutral-10: #586e75;
+	/* base01 reaches only 4.4:1 on base2, so this step is darkened to clear 4.5:1 on steps 1 to 4. */
+	--neutral-11: #4f6369;
+	--neutral-12: #073642;
+
+	--color-document: #fdf6e3;
+	--color-raised: #fdf6e3;
+
+	/* Brand. Solarized blue is too light for white text, so a darker blue is used. */
+	--color-brand: #1f6fa8;
+	--color-brand-hover: #1a5f91;
+	--color-brand-pressed: #155079;
+	--color-on-brand: #ffffff;
+
+	--color-link: #1f6fa8;
+	--color-focus: #1f6fa8;
+
+	--color-editor-tint: #268bd2;
+
+	--source-highlight-keyword: #7d9400;
+	--source-highlight-string: #2a978f;
+	--source-highlight-constant: #6c71c4;
+	--source-highlight-comment: #657b83;
+	--source-highlight-tag: #268bd2;
+	--source-highlight-property: #af8000;
+	--source-highlight-function: #268bd2;
+	--source-highlight-variable: #268bd2;
+	--source-highlight-heading: #268bd2;
+	--source-highlight-link: #6c71c4;
+	--source-highlight-monospace: #2a978f;
+	--source-highlight-punctuation: #586e75;
+	--source-highlight-meta: #cb4b16;
+	--source-highlight-invalid: #dc322f;
+	/* Keyword, property, string and monospace are darkened from yellow, green and cyan to reach 3:1 on base3. */
+}
+
+[data-theme="librepaper"][data-palette="solarized"][data-mode="dark"] {
+	color-scheme: dark;
+
+	/* Neutral scale. Solarized has eight base tones, so the steps between them are interpolated. */
+	--neutral-1: #00212b;
+	--neutral-2: #002b36;
+	--neutral-3: #073642;
+	--neutral-4: #30525c;
+	--neutral-5: #446069;
+	--neutral-6: #4e676f;
+	--neutral-7: #586e75;
+	--neutral-8: #657b83;
+	--neutral-9: #839496;
+	--neutral-10: #93a1a1;
+	/* base1 reaches only 3.2:1 on step 4, so this step is lightened to clear 4.5:1 on steps 1 to 4. */
+	--neutral-11: #bccac8;
+	--neutral-12: #eee8d5;
+
+	--color-document: #073642;
+	--color-raised: #30525c;
+
+	/* Brand. A blue fill with white text, lighter on hover and darker on press. */
+	--color-brand: #1f6fa8;
+	--color-brand-hover: #2377b3;
+	--color-brand-pressed: #1a5f91;
+	--color-on-brand: #ffffff;
+
+	/* Solarized blue reaches only 4.1:1 on base03, so a lighter sky blue is used for text. */
+	--color-link: #8cc8f0;
+	--color-focus: #8cc8f0;
+
+	--color-editor-tint: #268bd2;
+
+	--source-highlight-keyword: #859900;
+	--source-highlight-string: #2aa198;
+	--source-highlight-constant: #6c71c4;
+	/* Comment is base00 rather than base01, which reaches only 2.8:1 on base03. */
+	--source-highlight-comment: #657b83;
+	--source-highlight-tag: #268bd2;
+	--source-highlight-property: #b58900;
+	--source-highlight-function: #268bd2;
+	--source-highlight-variable: #268bd2;
+	--source-highlight-heading: #268bd2;
+	--source-highlight-link: #6c71c4;
+	--source-highlight-monospace: #2aa198;
+	--source-highlight-punctuation: #839496;
+	--source-highlight-meta: #cb4b16;
+	--source-highlight-invalid: #dc322f;
+}
