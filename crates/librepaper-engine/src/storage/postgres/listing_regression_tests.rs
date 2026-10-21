@@ -1,4 +1,4 @@
-//! PostgreSQL regressions for schema invariants, marks, and listing access.
+//! PostgreSQL regressions for schema invariants, marks, tags, and listing access.
 
 use uuid::Uuid;
 
@@ -47,36 +47,43 @@ async fn document(catalog: &PostgresCatalog, owner_id: Uuid, mode: &str) -> Uuid
 
 #[tokio::test]
 #[ignore = "requires LIBREPAPER_TEST_POSTGRES_URL"]
-async fn removing_an_unopened_favorite_preserves_the_mark_invariant() {
+async fn untagging_an_unopened_document_leaves_no_mark() {
     let catalog = test_catalog().await;
     let writer = catalog.claim_writer().await.unwrap();
     let account = account(&catalog).await;
     let document = document(&catalog, account, "owned").await;
+    let favorites = catalog.ensure_favorites(account).await.unwrap();
 
-    catalog.set_favorite(account, document, true).await.unwrap();
-    assert!(!catalog
-        .set_favorite(account, document, false)
+    catalog
+        .set_document_tag(account, document, favorites, true)
         .await
-        .unwrap());
+        .unwrap();
+    catalog
+        .set_document_tag(account, document, favorites, false)
+        .await
+        .unwrap();
     assert!(catalog
         .marks_for_documents(account, &[document])
         .await
         .unwrap()
         .is_empty());
     // Removal is idempotent and never forgets an existing open timestamp.
-    assert!(!catalog
-        .set_favorite(account, document, false)
+    catalog
+        .set_document_tag(account, document, favorites, false)
         .await
-        .unwrap());
+        .unwrap();
     catalog.mark_opened(account, document).await.unwrap();
     let opened = catalog
         .marks_for_documents(account, &[document])
         .await
         .unwrap()[0]
         .opened_at;
-    catalog.set_favorite(account, document, true).await.unwrap();
     catalog
-        .set_favorite(account, document, false)
+        .set_document_tag(account, document, favorites, true)
+        .await
+        .unwrap();
+    catalog
+        .set_document_tag(account, document, favorites, false)
         .await
         .unwrap();
     let marks = catalog
@@ -85,7 +92,6 @@ async fn removing_an_unopened_favorite_preserves_the_mark_invariant() {
         .unwrap();
     assert_eq!(marks.len(), 1);
     assert_eq!(marks[0].opened_at, opened);
-    assert!(marks[0].favorited_at.is_none());
     drop(writer);
     catalog.close().await;
 }
@@ -103,7 +109,11 @@ async fn shared_visibility_is_a_private_persistent_mark_and_preserves_other_mark
         .await
         .unwrap();
 
-    catalog.set_favorite(viewer, paper, true).await.unwrap();
+    let favorites = catalog.ensure_favorites(viewer).await.unwrap();
+    catalog
+        .set_document_tag(viewer, paper, favorites, true)
+        .await
+        .unwrap();
     catalog.mark_opened(viewer, paper).await.unwrap();
     let before = catalog
         .marks_for_documents(viewer, &[paper])
@@ -117,8 +127,16 @@ async fn shared_visibility_is_a_private_persistent_mark_and_preserves_other_mark
     let hidden = catalog.marks_for_documents(viewer, &[paper]).await.unwrap();
     assert_eq!(hidden.len(), 1);
     assert!(hidden[0].shared_hidden);
-    assert_eq!(hidden[0].favorited_at, before.favorited_at);
     assert_eq!(hidden[0].opened_at, before.opened_at);
+    assert_eq!(
+        catalog
+            .tags_for_documents(viewer, &[paper])
+            .await
+            .unwrap()
+            .len(),
+        1,
+        "hiding a shared project leaves its tags alone",
+    );
     // Hiding affects only this viewer's listing preference; it neither
     // removes the underlying grant nor another account's marks.
     assert_eq!(
@@ -143,7 +161,6 @@ async fn shared_visibility_is_a_private_persistent_mark_and_preserves_other_mark
     let restored = catalog.marks_for_documents(viewer, &[paper]).await.unwrap();
     assert_eq!(restored.len(), 1);
     assert!(!restored[0].shared_hidden);
-    assert_eq!(restored[0].favorited_at, before.favorited_at);
     assert_eq!(restored[0].opened_at, before.opened_at);
 
     // A different account's never-opened shared document exercises the
@@ -163,21 +180,21 @@ async fn shared_visibility_is_a_private_persistent_mark_and_preserves_other_mark
         .await
         .unwrap()
         .is_empty());
+    let other_favorites = catalog.ensure_favorites(other_viewer).await.unwrap();
     catalog
-        .set_favorite(other_viewer, never_opened, true)
+        .set_document_tag(other_viewer, never_opened, other_favorites, true)
         .await
         .unwrap();
-    assert!(!catalog
-        .set_favorite(other_viewer, never_opened, false)
+    catalog
+        .set_document_tag(other_viewer, never_opened, other_favorites, false)
         .await
-        .unwrap());
+        .unwrap();
     let hidden_only = catalog
         .marks_for_documents(other_viewer, &[never_opened])
         .await
         .unwrap();
     assert_eq!(hidden_only.len(), 1);
     assert!(hidden_only[0].shared_hidden);
-    assert!(hidden_only[0].favorited_at.is_none());
     assert!(hidden_only[0].opened_at.is_none());
     assert!(!catalog
         .set_shared_hidden(other_viewer, never_opened, false)

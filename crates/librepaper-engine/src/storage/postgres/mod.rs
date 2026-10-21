@@ -26,6 +26,7 @@ pub use operation_outcomes::OperationReceipt;
 mod persistence;
 pub use persistence::PersistenceConnection;
 mod repository;
+mod tags;
 
 #[cfg(test)]
 #[path = "schema_regression_tests.rs"]
@@ -49,6 +50,9 @@ pub use moderation::{
 pub use ownership::WriterLease;
 pub use repository::{
     AccountRecord, AssetRecord, DocumentRecord, DocumentStorage, NewAccount, NewAsset, NewDocument,
+};
+pub use tags::{
+    built_in_refusal, DocumentTagRecord, TagRecord, FAVORITES_COLOUR, FAVORITES_NAME,
 };
 
 static MIGRATOR: sqlx::migrate::Migrator = sqlx::migrate!("./migrations/postgres");
@@ -2327,31 +2331,37 @@ mod tests {
         let other = seed_account(&catalog, "marks-other").await;
         let paper = seed_document(&catalog, owner.id, "marks-paper").await;
 
-        assert!(catalog
-            .set_favorite(owner.id, paper.id, true)
-            .await
-            .unwrap());
-        assert!(catalog
-            .set_favorite(owner.id, paper.id, true)
-            .await
-            .unwrap());
-        let mine = catalog
-            .marks_for_documents(owner.id, &[paper.id])
+        let favorites = catalog.ensure_favorites(owner.id).await.unwrap();
+        catalog
+            .set_document_tag(owner.id, paper.id, favorites, true)
             .await
             .unwrap();
-        assert_eq!(mine.len(), 1, "one row, however many times it was starred");
-        assert!(mine[0].favorited_at.is_some());
+        catalog
+            .set_document_tag(owner.id, paper.id, favorites, true)
+            .await
+            .unwrap();
+        let mine = catalog
+            .tags_for_documents(owner.id, &[paper.id])
+            .await
+            .unwrap();
+        assert_eq!(mine.len(), 1, "one link, however many times it was starred");
+        assert_eq!(mine[0].tag_id, favorites);
+        assert!(mine[0].builtin);
         assert!(
-            mine[0].opened_at.is_none(),
+            catalog
+                .marks_for_documents(owner.id, &[paper.id])
+                .await
+                .unwrap()
+                .is_empty(),
             "starring is not opening: Recent must not fill up with things nobody read",
         );
         assert!(
             catalog
-                .marks_for_documents(other.id, &[paper.id])
+                .tags_for_documents(other.id, &[paper.id])
                 .await
                 .unwrap()
                 .is_empty(),
-            "one person's favourites are invisible to everybody else",
+            "one person's tags are invisible to everybody else",
         );
 
         catalog.mark_opened(owner.id, paper.id).await.unwrap();
@@ -2360,21 +2370,34 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(both.len(), 1);
-        assert!(both[0].favorited_at.is_some() && both[0].opened_at.is_some());
+        assert!(both[0].opened_at.is_some());
+        assert_eq!(
+            catalog
+                .tags_for_documents(owner.id, &[paper.id])
+                .await
+                .unwrap()
+                .len(),
+            1
+        );
 
-        assert!(!catalog
-            .set_favorite(owner.id, paper.id, false)
+        catalog
+            .set_document_tag(owner.id, paper.id, favorites, false)
             .await
-            .unwrap());
+            .unwrap();
+        assert!(catalog
+            .tags_for_documents(owner.id, &[paper.id])
+            .await
+            .unwrap()
+            .is_empty());
         let after = catalog
             .marks_for_documents(owner.id, &[paper.id])
             .await
             .unwrap();
         assert_eq!(after.len(), 1, "the visit outlives the star");
-        assert!(after[0].favorited_at.is_none() && after[0].opened_at.is_some());
+        assert!(after[0].opened_at.is_some());
 
         catalog
-            .set_favorite(owner.id, paper.id, true)
+            .set_document_tag(owner.id, paper.id, favorites, true)
             .await
             .unwrap();
 
@@ -2419,12 +2442,15 @@ mod tests {
             .marks_for_documents(owner.id, &[paper.id])
             .await
             .unwrap();
+        let restored_tags = catalog
+            .tags_for_documents(owner.id, &[paper.id])
+            .await
+            .unwrap();
         assert!(
-            restored
-                .first()
-                .is_some_and(|mark| mark.favorited_at.is_some()),
+            restored_tags.iter().any(|link| link.tag_id == favorites),
             "a project comes back from the trash exactly as it went in",
         );
+        assert!(restored.first().is_some_and(|mark| mark.opened_at.is_some()));
 
         assert!(
             !catalog.restore_document(paper.id).await.unwrap(),

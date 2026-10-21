@@ -2,6 +2,7 @@
 //! state and snapshot, its comments over HTTP, and deleting it.
 
 use super::*;
+use librepaper_engine::storage::postgres::Error as CatalogError;
 
 pub(super) struct Upload {
     pub(super) title: String,
@@ -1965,18 +1966,113 @@ impl Server {
         }
     }
 
-    /// Star a document, or take the star off it. A favourite is this account's
-    /// note about a document it can already see, so the gate is the same one
-    /// reading it is: anyone who may open it may star it, which is what makes
-    /// a project shared with you starrable without it becoming yours.
-    pub(super) async fn handle_favorite(
+    /// The caller's tags, Favorites first.
+    pub(super) async fn handle_tags(&self, headers: &HeaderMap, arrival: &Arrival) -> Reply {
+        let account = match self.tag_caller(headers, arrival).await {
+            Ok(account) => account,
+            Err(response) => return response,
+        };
+        match self.store.list_tags(&account).await {
+            Ok(tags) => write_json(200, &json!({"tags": tags})),
+            Err(error) => tag_failure(error),
+        }
+    }
+
+    /// Make a tag of the caller's own. The body carries the name and colour.
+    pub(super) async fn handle_create_tag(&self, request: Request<Body>, arrival: &Arrival) -> Reply {
+        let headers = request.headers().clone();
+        let account = match self.tag_caller(&headers, arrival).await {
+            Ok(account) => account,
+            Err(response) => return response,
+        };
+        let Ok(body) = to_bytes(request.into_body(), 1 << 14).await else {
+            return write_json(400, &json!({"error": "bad request"}));
+        };
+        let Ok(value) = serde_json::from_slice::<Value>(&body) else {
+            return write_json(400, &json!({"error": "send the tag as JSON"}));
+        };
+        let name = value.get("name").and_then(Value::as_str).unwrap_or_default();
+        let colour = value.get("colour").and_then(Value::as_str).unwrap_or_default();
+        match self.store.create_tag(&account, name, colour).await {
+            Ok(tag) => write_json(201, &json!({"tag": tag})),
+            Err(error) => tag_failure(error),
+        }
+    }
+
+    /// Rename or recolour one of the caller's tags. Either field may be
+    /// left out to keep what it is.
+    pub(super) async fn handle_update_tag(
+        &self,
+        request: Request<Body>,
+        arrival: &Arrival,
+        tag: &str,
+    ) -> Reply {
+        let headers = request.headers().clone();
+        let account = match self.tag_caller(&headers, arrival).await {
+            Ok(account) => account,
+            Err(response) => return response,
+        };
+        let Ok(body) = to_bytes(request.into_body(), 1 << 14).await else {
+            return write_json(400, &json!({"error": "bad request"}));
+        };
+        let Ok(value) = serde_json::from_slice::<Value>(&body) else {
+            return write_json(400, &json!({"error": "send the tag as JSON"}));
+        };
+        let name = value.get("name").map(|name| name.as_str().unwrap_or_default());
+        let colour = value
+            .get("colour")
+            .map(|colour| colour.as_str().unwrap_or_default());
+        match self.store.update_tag(&account, tag, name, colour).await {
+            Ok(tag) => write_json(200, &json!({"tag": tag})),
+            Err(error) => tag_failure(error),
+        }
+    }
+
+    /// Delete one of the caller's tags. The projects it was on are untouched.
+    pub(super) async fn handle_delete_tag(
+        &self,
+        headers: &HeaderMap,
+        arrival: &Arrival,
+        tag: &str,
+    ) -> Reply {
+        let account = match self.tag_caller(headers, arrival).await {
+            Ok(account) => account,
+            Err(response) => return response,
+        };
+        match self.store.delete_tag(&account, tag).await {
+            Ok(()) => {
+                let mut response = Response::new(Body::empty());
+                *response.status_mut() = StatusCode::NO_CONTENT;
+                response
+            }
+            Err(error) => tag_failure(error),
+        }
+    }
+
+    /// Put a tag on a document, or take it off. A tag is this account's note
+    /// about a document it can already see, so the gate is the one reading it
+    /// is, and a document it cannot see answers as a missing one does.
+    pub(super) async fn handle_document_tag(
         &self,
         headers: &HeaderMap,
         arrival: &Arrival,
         slug: &str,
+        tag: &str,
         on: bool,
     ) -> Reply {
-        self.handle_mark(headers, arrival, slug, Some(on)).await
+        let account = match self.note_account(headers, arrival, slug).await {
+            Ok(account) => account,
+            Err(response) => return response,
+        };
+        match self.store.set_document_tag(slug, &account, tag, on).await {
+            Ok(()) => write_json(200, &json!({"slug": slug, "tag": tag, "on": on})),
+            Err(ModifyError::NotFound) => write_json(404, &json!({"error": "not found"})),
+            Err(ModifyError::Refused(message)) => write_json(400, &json!({"error": message})),
+            Err(ModifyError::Storage(error)) => {
+                tracing::warn!("could not tag {slug}: {error}");
+                write_json(500, &json!({"error": "could not save that"}))
+            }
+        }
     }
 
     /// Hide a shared document from this account's shared-project view, or
@@ -2031,48 +2127,76 @@ impl Server {
         arrival: &Arrival,
         slug: &str,
     ) -> Reply {
-        self.handle_mark(headers, arrival, slug, None).await
-    }
-
-    async fn handle_mark(
-        &self,
-        headers: &HeaderMap,
-        arrival: &Arrival,
-        slug: &str,
-        favorite: Option<bool>,
-    ) -> Reply {
-        if cross_site_refused(headers, arrival) {
-            return write_json(403, &cross_site_refusal());
-        }
-        if !self.valid_slug(slug) {
-            return write_json(400, &json!({"error": "bad slug"}));
-        }
-        let entry = match self.checked_entry(slug).await {
-            Ok(Some(entry)) => entry,
-            Ok(None) => return write_json(404, &json!({"error": "not found"})),
+        let account = match self.note_account(headers, arrival, slug).await {
+            Ok(account) => account,
             Err(response) => return response,
         };
-        let who = self.viewer(&entry, headers, arrival, None).await;
-        if self.needs_sign_in(&entry, &who) {
-            return sign_in_to_read();
-        }
-        if !self.may_read(&entry, &who) {
-            return write_json(404, &json!({"error": "not found"}));
-        }
-        if !who.id.is_signed_in() {
-            return write_json(401, &json!({"error": "sign in first"}));
-        }
-        let account = who.id.id.clone();
-        let done = match favorite {
-            Some(on) => self.store.set_favorite(slug, &account, on).await.map(Some),
-            None => self.store.mark_opened(slug, &account).await.map(|()| None),
-        };
-        match done {
-            Ok(starred) => write_json(200, &json!({"slug": slug, "favorite": starred})),
+        match self.store.mark_opened(slug, &account).await {
+            Ok(()) => write_json(200, &json!({"slug": slug})),
             Err(error) => {
                 tracing::warn!("could not mark {slug}: {error:?}");
                 write_json(500, &json!({"error": "could not save that"}))
             }
+        }
+    }
+
+    /// The signed-in account making a tag request. Tagging is not publishing,
+    /// so the publisher policy does not apply to it.
+    #[allow(clippy::result_large_err)]
+    async fn tag_caller(&self, headers: &HeaderMap, arrival: &Arrival) -> Result<String, Reply> {
+        if cross_site_refused(headers, arrival) {
+            return Err(write_json(403, &cross_site_refusal()));
+        }
+        let who = self.whoami(headers, arrival).await;
+        if !who.is_signed_in() {
+            return Err(write_json(401, &json!({"error": "sign in first"})));
+        }
+        Ok(who.id)
+    }
+
+    /// The signed-in account making a note about a document. The document
+    /// must be one the caller may read, and anything else answers as missing.
+    #[allow(clippy::result_large_err)]
+    async fn note_account(
+        &self,
+        headers: &HeaderMap,
+        arrival: &Arrival,
+        slug: &str,
+    ) -> Result<String, Reply> {
+        if cross_site_refused(headers, arrival) {
+            return Err(write_json(403, &cross_site_refusal()));
+        }
+        if !self.valid_slug(slug) {
+            return Err(write_json(400, &json!({"error": "bad slug"})));
+        }
+        let entry = match self.checked_entry(slug).await {
+            Ok(Some(entry)) => entry,
+            Ok(None) => return Err(write_json(404, &json!({"error": "not found"}))),
+            Err(response) => return Err(response),
+        };
+        let who = self.viewer(&entry, headers, arrival, None).await;
+        if self.needs_sign_in(&entry, &who) {
+            return Err(sign_in_to_read());
+        }
+        if !self.may_read(&entry, &who) {
+            return Err(write_json(404, &json!({"error": "not found"})));
+        }
+        if !who.id.is_signed_in() {
+            return Err(write_json(401, &json!({"error": "sign in first"})));
+        }
+        Ok(who.id.id.clone())
+    }
+}
+
+/// The reply for a tag the catalogue refused or could not write.
+fn tag_failure(error: CatalogError) -> Reply {
+    match error {
+        CatalogError::Invalid(message) => write_json(400, &json!({"error": message})),
+        CatalogError::Conflict(message) => write_json(409, &json!({"error": message})),
+        CatalogError::NotFound => write_json(404, &json!({"error": "not found"})),
+        other => {
+            tracing::warn!("could not save a tag: {other:?}");
+            write_json(500, &json!({"error": "could not save that"}))
         }
     }
 }

@@ -1,11 +1,12 @@
-//! Favourites, and what each person opened when.
+//! What each person opened when, and which shared projects they hid.
 //!
 //! Both are one person's private notes about a document rather than anything
 //! the document itself knows, so nothing here is visible to the owner of a
-//! project somebody else has starred, and nothing here grants any access: a
-//! mark on a document whose share link was since revoked simply stops being
-//! reachable, because the listing that reads these marks joins them to the
-//! documents the caller may already see.
+//! project somebody else has opened or hidden, and nothing here grants any
+//! access: a mark on a document whose share link was since revoked simply
+//! stops being reachable, because the listing that reads these marks joins
+//! them to the documents the caller may already see. Tags, the other private
+//! notes a person keeps about a document, live in `tags.rs`.
 
 use time::OffsetDateTime;
 use uuid::Uuid;
@@ -19,7 +20,6 @@ mod listing_regression_tests;
 #[derive(Clone, Debug)]
 pub struct MarkRecord {
     pub document_id: Uuid,
-    pub favorited_at: Option<OffsetDateTime>,
     pub opened_at: Option<OffsetDateTime>,
     pub shared_hidden: bool,
 }
@@ -34,63 +34,6 @@ pub struct CountRecord {
 }
 
 impl PostgresCatalog {
-    /// Star a document, or take the star off it. Returns whether it is starred
-    /// afterwards, which is what the caller was asking for and saves it
-    /// reading the row back to find out.
-    pub async fn set_favorite(
-        &self,
-        account_id: Uuid,
-        document_id: Uuid,
-        on: bool,
-    ) -> Result<bool> {
-        if on {
-            sqlx::query!(
-                "INSERT INTO document_marks(account_id,document_id,favorited_at)
-                 VALUES($1,$2,now())
-                 ON CONFLICT(account_id,document_id) DO UPDATE SET favorited_at=now()",
-                account_id,
-                document_id,
-            )
-            .execute(&self.pool)
-            .await?;
-            return Ok(true);
-        }
-        // Keep the pair of writes together.  In particular, do not briefly
-        // clear a never-opened favourite: the CHECK quite deliberately rejects
-        // that intermediate row.  The row lock also makes this serialize with
-        // mark_opened when both operations race on an existing mark.
-        let mut tx = self.begin_metered().await?;
-        let _ = sqlx::query!(
-            "SELECT account_id FROM document_marks
-             WHERE account_id=$1 AND document_id=$2 FOR UPDATE",
-            account_id,
-            document_id,
-        )
-        .fetch_optional(&mut *tx)
-        .await?;
-        sqlx::query!(
-            "DELETE FROM document_marks
-             WHERE account_id=$1 AND document_id=$2
-               AND favorited_at IS NOT NULL AND opened_at IS NULL
-               AND NOT shared_hidden",
-            account_id,
-            document_id,
-        )
-        .execute(&mut *tx)
-        .await?;
-        sqlx::query!(
-            "UPDATE document_marks SET favorited_at=NULL
-             WHERE account_id=$1 AND document_id=$2
-               AND (opened_at IS NOT NULL OR shared_hidden)",
-            account_id,
-            document_id,
-        )
-        .execute(&mut *tx)
-        .await?;
-        tx.commit().await?;
-        Ok(false)
-    }
-
     /// Hide or restore a shared document in this account's shared-project
     /// view. This is a private listing preference and grants no authority.
     pub async fn set_shared_hidden(
@@ -124,7 +67,7 @@ impl PostgresCatalog {
         sqlx::query!(
             "DELETE FROM document_marks
              WHERE account_id=$1 AND document_id=$2 AND shared_hidden
-               AND favorited_at IS NULL AND opened_at IS NULL",
+               AND opened_at IS NULL",
             account_id,
             document_id,
         )
@@ -133,7 +76,7 @@ impl PostgresCatalog {
         sqlx::query!(
             "UPDATE document_marks SET shared_hidden=false
              WHERE account_id=$1 AND document_id=$2 AND shared_hidden
-               AND (favorited_at IS NOT NULL OR opened_at IS NOT NULL)",
+               AND opened_at IS NOT NULL",
             account_id,
             document_id,
         )
@@ -173,7 +116,7 @@ impl PostgresCatalog {
         }
         sqlx::query_as!(
             MarkRecord,
-            "SELECT document_id,favorited_at,opened_at,shared_hidden FROM document_marks
+            "SELECT document_id,opened_at,shared_hidden FROM document_marks
              WHERE account_id=$1 AND document_id=ANY($2)",
             account_id,
             document_ids,
