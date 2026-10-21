@@ -2,7 +2,8 @@
 
 Releasing a version publishes downloadable artifacts. It does not deploy
 librepaper.org; that is an operator command described in the private runbook
-(`tools/deploy/runbook`).
+(`tools/deploy/runbook`). Upgrade downtime and host updates are in
+[VPS maintenance](dev/vps-maintenance.md).
 
 ## Release a version
 
