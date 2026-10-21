@@ -16,9 +16,16 @@ const root = dirname(dirname(dirname(dirname(fileURLToPath(import.meta.url)))));
 const temp = mkdtempSync(join(tmpdir(), "librepaper-landing-browser-"));
 const entry = join(temp, "entry.js"), out = join(temp, "build");
 const documents = [
-  { slug: "owned", title: "My paper", role: "owner", owner: "You", favorite: false, files: 3, updated_at: "2026-09-30T12:00:00Z" },
-  { slug: "shared", title: "Shared paper", role: "editor", owner: "Alex", favorite: false, files: 2, updated_at: "2026-09-28T12:00:00Z" },
-  { slug: "older", title: "Older draft", role: "owner", owner: "You", favorite: false, files: 1, updated_at: "2026-09-20T12:00:00Z" },
+  { slug: "owned", title: "My paper", role: "owner", owner: "You", tags: ["thesis"], files: 3, updated_at: "2026-09-30T12:00:00Z" },
+  { slug: "shared", title: "Shared paper", role: "editor", owner: "Alex", tags: [], files: 2, updated_at: "2026-09-28T12:00:00Z" },
+  { slug: "older", title: "Older draft", role: "owner", owner: "You", tags: [], files: 1, updated_at: "2026-09-20T12:00:00Z" },
+];
+// The account's tags as the listing carries them: Favorites, which is built in,
+// and the ones the reader made.
+const tagList = [
+  { id: "favorites", name: "Favorites", colour: "yellow", builtin: true },
+  { id: "thesis", name: "Thesis", colour: "blue", builtin: false },
+  { id: "teaching", name: "Teaching", colour: "green", builtin: false },
 ];
 let server, tab;
 try {
@@ -28,6 +35,7 @@ try {
     import { mount } from ${JSON.stringify(join(root, "web/node_modules/svelte/src/index-client.js"))};
     window.testCalls = [];
     window.failShared = false;
+    window.tagList = ${JSON.stringify(tagList)};
     const docs = ${JSON.stringify(documents)};
     for (const doc of docs) doc.shared_hidden = sessionStorage.getItem('shared-hidden:' + doc.slug) === 'true';
     const trash = [{ slug: 'gone', title: 'Old project', role: 'owner', updated_at: '2026-09-10T12:00:00Z', purge_due: '2026-10-10T12:00:00Z' }];
@@ -36,15 +44,22 @@ try {
       window.testCalls.push({ path, method: init.method || 'GET', body: typeof init.body === 'string' ? init.body : null });
       if (path === '/api/config') return Response.json({ extensions: ['.md'], text_extensions: ['.md'], asset_extensions: ['.png'], derived_extensions: [] });
       if (path === '/api/me') return Response.json({ name: 'Tester', can_publish: true, providers: [] });
-      if (path.startsWith('/api/list')) return Response.json({ documents: docs });
+      if (path.startsWith('/api/list')) return Response.json({ documents: docs, tags: window.tagList });
       if (path === '/api/trash') return Response.json({ documents: trash });
+      if (path === '/api/tags' && init.method === 'POST') {
+        const body = JSON.parse(init.body);
+        const tag = { id: 'tag-' + (window.tagList.length + 1), name: body.name, colour: body.colour, builtin: false };
+        window.tagList.push(tag);
+        return Response.json({ tag }, { status: 201 });
+      }
       const parts = path.split('/');
       const slug = parts[3], action = parts[4];
       const match = slug && action ? [path, slug, action] : null;
-      if (match && match[2] === 'favorite') {
+      if (match && match[2] === 'tags') {
         const doc = docs.find(item => item.slug === match[1]);
-        if (doc) doc.favorite = init.method === 'POST';
-        return Response.json({ ok: true });
+        const id = parts[5];
+        if (doc) doc.tags = init.method === 'PUT' ? [...new Set([...doc.tags, id])] : doc.tags.filter(each => each !== id);
+        return Response.json({ slug: match[1], tag: id, on: init.method === 'PUT' });
       }
       if (match && match[2] === 'shared') {
         if (window.failShared) return Response.json({ error: 'could not save shared preference' }, { status: 500 });
@@ -215,7 +230,7 @@ try {
   const sharedActions = await menuActions();
   assert.deepEqual(sharedActions.sort(), ["favorite", "fork", "hide-shared"], "shared project offers remove, fork and favorite");
   await click('.explorer-menu[data-state="open"] [data-project-action="favorite"]');
-  await until("favorite saved", () => tab.evaluate("testCalls.some(call => call.path === '/api/documents/shared/favorite' && call.method === 'POST')"));
+  await until("favorite saved", () => tab.evaluate("testCalls.some(call => call.path === '/api/documents/shared/tags/favorites' && call.method === 'PUT')"));
 
   // A failed request leaves the project in Shared. A successful one hides it
   // and offers an immediate Undo; the preference can also be cleared from
@@ -307,6 +322,65 @@ try {
   assert.ok(trashActions.includes("restore"), "trash menu offers restore");
   await click('.explorer-menu[data-state="open"] [data-project-action="restore"]');
   await until("project restored", () => tab.evaluate("testCalls.some(call => call.path === '/api/documents/gone/untrash')"));
+
+  // Tags: the rail filters by one, a project's menu puts one on and takes it
+  // off, the rail makes a new one, and search finds a project by a tag's name.
+  // Menu items are placed a frame after they open, so each click waits for a
+  // rect on screen rather than for the item to exist.
+  const onScreen = (selector) => tab.evaluate(`(() => { const node = document.querySelector(${JSON.stringify(selector)}); if (!node) return false; const rect = node.getBoundingClientRect(); return rect.width > 0 && rect.height > 0 && rect.left >= 0 && rect.top >= 0 && rect.right <= innerWidth && rect.bottom <= innerHeight; })()`);
+  const clickOnScreen = async (label, selector) => {
+    await until(label, () => onScreen(selector));
+    await click(selector);
+  };
+  const titles = () => tab.evaluate(`[...document.querySelectorAll('.projects-table a.title-line')].map(link => link.textContent.trim())`);
+  const placeHeading = () => tab.evaluate(`document.querySelector('.place-heading')?.textContent.trim()`);
+  await tab.resize(1100, 850);
+  await flush();
+
+  await until("tag in the rail", () => tab.evaluate(`Boolean(document.querySelector('.activity-sections button[aria-label="Thesis"]'))`));
+  await click('.activity-sections button[aria-label="Thesis"]');
+  await until("thesis place", () => tab.evaluate(`document.querySelector('.place-heading')?.textContent.trim() === "Thesis"`));
+  assert.deepEqual(await titles(), ["My paper"], "the rail filters the list to projects with the tag");
+  assert.match(await tab.evaluate("location.search"), /[?&]tag=thesis(&|$)/, "the tag is in the address");
+  assert.equal(await tab.evaluate("new URLSearchParams(location.search).has('in')"), false, "a tag leaves the place parameter alone");
+  assert.equal(await tab.evaluate(`document.querySelector('.activity-sections button[aria-label="Thesis"]').getAttribute('aria-pressed')`), "true", "the tag's rail button is pressed");
+  await click('.rail-item button[aria-label="Projects"]');
+  await until("projects after the tag", () => tab.evaluate("document.querySelectorAll('.projects-table tbody tr').length === 3"));
+  assert.equal(await tab.evaluate("new URLSearchParams(location.search).has('tag')"), false, "a place removes the tag from the address");
+
+  // The project's own menu puts the tag on and takes it off, and the row shows
+  // the chip as soon as the server has agreed.
+  const olderRow = () => tab.evaluate(`[...document.querySelectorAll('.projects-table tbody tr')].find(row => row.textContent.includes('Older draft'))?.querySelector('.tag-chip')?.textContent.trim() ?? ''`);
+  const toggleTeaching = async (wanted) => {
+    await click('button[aria-label="Tags for Older draft"]');
+    await clickOnScreen("tag menu item on screen", '.explorer-menu[data-state="open"] [data-project-tag="teaching"]');
+    await until(wanted ? "teaching put on" : "teaching taken off", () => tab.evaluate(`testCalls.some(call => call.path === '/api/documents/older/tags/teaching' && call.method === '${wanted ? "PUT" : "DELETE"}')`));
+  };
+  await toggleTeaching(true);
+  await until("teaching chip shown", async () => (await olderRow()) === "Teaching");
+  await toggleTeaching(false);
+  await until("teaching chip removed", async () => (await olderRow()) === "");
+  await toggleTeaching(true);
+  await until("teaching chip back", async () => (await olderRow()) === "Teaching");
+
+  // A new tag is made from the rail, and the dialog says it is the account's.
+  await click('button[aria-label="New tag"]');
+  await until("new tag dialog", () => tab.evaluate("Boolean(document.querySelector('#new-tag input'))"));
+  await tab.evaluate(`(() => { const input = document.querySelector('#new-tag input'); input.value = 'Draft'; input.dispatchEvent(new Event('input', { bubbles: true })); document.querySelector('#new-tag').requestSubmit(); })()`);
+  await until("draft tag in the rail", () => tab.evaluate(`Boolean(document.querySelector('.activity-sections button[aria-label="Draft"]'))`));
+  assert.equal(await tab.evaluate("testCalls.some(call => call.path === '/api/tags' && call.method === 'POST' && JSON.parse(call.body).name === 'Draft')"), true, "New tag posts the name to the account");
+
+  // Search finds a project by the name of a tag it has, and not by anything else.
+  const searchInput = 'body > nav input.project-search';
+  await tab.evaluate(`(() => { const field = document.querySelector(${JSON.stringify(searchInput)}); field.value = 'teaching'; field.dispatchEvent(new Event('input', { bubbles: true })); })()`);
+  await until("search by tag name", async () => JSON.stringify(await titles()) === JSON.stringify(["Older draft"]));
+  await tab.evaluate(`(() => { const field = document.querySelector(${JSON.stringify(searchInput)}); field.value = ''; field.dispatchEvent(new Event('input', { bubbles: true })); })()`);
+  await until("search cleared", () => tab.evaluate("document.querySelectorAll('.projects-table tbody tr').length === 3"));
+
+  // An address naming a tag the account does not have shows Projects instead.
+  await tab.navigate(`http://127.0.0.1:${server.address().port}/?tag=missing`);
+  await until("unknown tag falls back to Projects", () => tab.evaluate(`!new URLSearchParams(location.search).has('tag') && document.querySelectorAll('.projects-table tbody tr').length === 3`));
+  assert.equal(await placeHeading(), "Projects", "an unknown tag shows Projects");
 
   // Widths stored by a desktop drag must not reach the phone layout. The
   // actions column is not resizable, and the title takes the row up to the menu.

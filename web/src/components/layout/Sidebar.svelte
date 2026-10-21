@@ -40,6 +40,9 @@
     // whatever the page puts here. A snippet rather than a list of flags,
     // because this component has no business knowing what a layout is.
     controls = undefined,
+    // What follows the places in the rail, in the same column: the landing
+    // page's tags. Nothing is drawn after the places unless the page asks.
+    places = undefined,
     // Whether the column can be dragged wider, and whether a panel is even
     // expected. The landing page's rail is navigation with nothing beside it,
     // so it takes neither.
@@ -70,6 +73,7 @@
     <div class="activity-sections" role="group" aria-label="{label} sections">
       <PanelRail {tabs} {panel} {badges} open={shown.comments} marksWhenClosed
         onselect={(id) => onselectpanel?.(id)} />
+      {@render places?.()}
     </div>
     <div class="activity-bottom" role="group" aria-label="Workspace controls">
       {@render controls?.()}

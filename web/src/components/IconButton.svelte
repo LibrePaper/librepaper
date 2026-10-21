@@ -18,6 +18,10 @@
   let {
     icon,
     label,
+    // A colour drawn as a dot in place of the icon, for a tag in the rail. The
+    // dot is the button's whole face, so it takes the same square and the same
+    // pressed marking as an icon beside it.
+    swatch = null,
     title = label,
     href = null,
     // A link to another site opens in a new tab, which the desktop app sends to the system browser.
@@ -72,7 +76,7 @@
           {disabled}
           {onclick}
         >
-          <Icon name={icon} {filled} />
+          {#if swatch}<span class="swatch" style:background={swatch} aria-hidden="true"></span>{:else}<Icon name={icon} {filled} />{/if}
           {#if visibleLabel}<span class="compact-label" aria-hidden="true">{visibleLabel}</span>{/if}
         </button>
       {/if}
@@ -86,5 +90,6 @@
 </Tooltip>
 
 <style>
+  .swatch { display: block; width: .75rem; height: .75rem; border-radius: 50%; }
   .compact-label { display: block; max-width: 100%; overflow: hidden; color: inherit; font-size: 10px; font-weight: 500; line-height: 1.1; text-overflow: ellipsis; white-space: nowrap; }
 </style>

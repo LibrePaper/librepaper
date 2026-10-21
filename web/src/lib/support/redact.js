@@ -20,8 +20,8 @@ const ROUTE_WORDS = new Set([
   "api", "docs", "ws", "assets", "documents", "account", "auth", "backup", "config", "device",
   "erase", "list", "me", "projects", "storage", "templates", "trash", "agent", "agent-token",
   "archive", "assistant", "candidates", "capabilities", "chat", "checkpoint", "comments", "delete",
-  "favorite", "fork", "history", "opened", "project", "purge", "quarto", "rename", "replies",
-  "restore", "share", "shared", "snapshot", "source", "state", "template", "tools", "transfer",
+  "fork", "history", "opened", "project", "purge", "quarto", "rename", "replies",
+  "restore", "share", "shared", "snapshot", "source", "state", "tags", "template", "tools", "transfer",
   "trim", "untrash", "shell", "signin",
 ]);
 

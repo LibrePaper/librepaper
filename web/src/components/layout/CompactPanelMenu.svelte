@@ -6,13 +6,19 @@
   import { PANEL_POSITIONING } from "../../lib/menubar.svelte.js";
   import { signInHref, signOut } from "../../lib/api.js";
   import { DOCUMENTATION_URL } from "../../lib/site-links.js";
+  import { tagColour } from "../../lib/tag-colours.js";
 
   // `open` marks the current tab and, by default, tints the trigger; a page
   // whose places are always open passes `pressed={false}` to keep it plain.
   // `badges` is the rail's: a panel whose badge carries a dot is marked on its
   // item, and the trigger is marked too, because a closed menu is all a phone
   // shows of the panels.
-  let { tabs = [], panel = "", open = false, pressed = open, onselect, onsettings, menus = [], onmenu = undefined, me = {}, counts = {}, badges = {} } = $props();
+  //
+  // `tags` are a page's own groupings, listed under the places. A phone has no
+  // rail to put them in, so they are listed here; `activeTag` marks the one
+  // showing, `ontag` takes a tag's id, and `ontagaction` takes "new" or
+  // "manage" for the two things a tag list offers beneath it.
+  let { tabs = [], panel = "", open = false, pressed = open, onselect, onsettings, menus = [], onmenu = undefined, me = {}, counts = {}, badges = {}, tags = [], activeTag = "", ontag = undefined, ontagaction = undefined } = $props();
   const marked = $derived(tabs.find((tab) => badges[tab.id]?.dot));
 
   // The menu is portalled so it cannot inherit a height; measure the room
@@ -65,7 +71,12 @@
 <Menu
   onSelect={(chosen) => {
     if (tabs.some((tab) => tab.id === chosen.value)) onselect?.(chosen.value);
+    else if (chosen.value.startsWith("tag:")) ontag?.(chosen.value.slice(4));
     // Let the menu finish closing before opening a focus-trapping dialog.
+    else if (chosen.value.startsWith("tags:")) {
+      const action = chosen.value.slice(5);
+      setTimeout(() => ontagaction?.(action), 0);
+    }
     else if (chosen.value === "settings") setTimeout(() => onsettings?.(), 0);
     else if (chosen.value.startsWith("menu:")) {
       const id = chosen.value.slice(5);
@@ -115,6 +126,29 @@
           {#if badges[tab.id]?.dot}<span class="menuitem-dot" aria-hidden="true"></span>{/if}
         </Menu.Item>
       {/each}
+      {#if tags.length || ontagaction}
+        <div class="compact-panels-divider" role="separator"></div>
+        {#each tags as tag (tag.id)}
+          <Menu.Item value={"tag:" + tag.id} class="menuitem compact-panel-item" data-tag-id={tag.id}
+                     aria-current={activeTag === tag.id ? "true" : undefined}>
+            <span class="menuitem-check" aria-hidden="true">{activeTag === tag.id ? "✓" : ""}</span>
+            <span class="menuitem-swatch" style:background={tagColour(tag.colour)} aria-hidden="true"></span>
+            <span class="menuitem-label">{tag.name}</span>
+          </Menu.Item>
+        {/each}
+        <Menu.Item value="tags:new" class="menuitem workspace-action" data-workspace-action="new-tag">
+          <span class="menuitem-check" aria-hidden="true"></span>
+          <Icon name="plus" size="1rem" />
+          <span class="menuitem-label">New tag</span>
+        </Menu.Item>
+        {#if tags.length}
+          <Menu.Item value="tags:manage" class="menuitem workspace-action" data-workspace-action="manage-tags">
+            <span class="menuitem-check" aria-hidden="true"></span>
+            <Icon name="pencil" size="1rem" />
+            <span class="menuitem-label">Manage tags</span>
+          </Menu.Item>
+        {/if}
+      {/if}
       <div class="compact-panels-divider" role="separator"></div>
       <Menu.Item value="settings" class="menuitem workspace-action" data-workspace-action="settings">
         <span class="menuitem-check" aria-hidden="true"></span>
@@ -181,6 +215,8 @@
 
   .compact-dot { position: absolute; right: 8px; top: 4px; width: 7px; height: 7px; border-radius: 50%; background: var(--color-brand); pointer-events: none; }
   .menuitem-dot { margin-inline-start: auto; width: 7px; height: 7px; flex: none; border-radius: 50%; background: var(--color-brand); }
+
+  .menuitem-swatch { width: .75rem; height: .75rem; flex: none; border-radius: 50%; }
 
   .menuitem-count { margin-inline-start: auto; color: var(--color-text-secondary); font-size: var(--text-xs); font-variant-numeric: tabular-nums; }
 
