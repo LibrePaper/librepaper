@@ -9,8 +9,8 @@ push check with a strict per-file hash check. The 2026-10-20 revision drops
 the committed `.librepaper` and `.librepaperignore` files. The remote URL
 names the project, and the local-only list lives under `.git/`. The
 2026-10-21 revision makes `link` merge against a root commit, makes the
-server's checks use the suggestion-free projection, and refuses a push
-that adds a path nobody has classified.
+server's checks use the suggestion-free projection, and treats a file
+LibrePaper cannot hold as local-only.
 
 ## Summary
 
@@ -352,6 +352,9 @@ must not upload them.
   also be edited by hand.
 - These paths are always local-only and need no entry: `.git/`,
   `.gitignore`, `.gitattributes`, `.github/`, and `*.local`.
+- A path whose extension is in neither `text_extensions` nor
+  `asset_extensions` is local-only too, because LibrePaper cannot hold it.
+  A `Makefile` or an `.Rproj` file needs no entry.
 - Fetch carries local-only paths over from base unchanged.
 - Push skips them.
 
@@ -359,30 +362,12 @@ The list cannot be inferred from the trees. A path in base that is missing
 from the project could be local-only or could have been deleted in
 LibrePaper, and only the list tells them apart.
 
-#### New paths need a decision
-
-Because the list is never committed, it does not travel with the
-repository. A coauthor's `Makefile` or `data/` folder can arrive through
-GitHub into a clone whose list has never heard of it. A push therefore
-never uploads a path by default. A path is **new** when it is in the pushed
-tree but in neither base's tree, the project, nor the local-only list. A
-push with new paths refuses and lists them, with the two ways out:
-
-```text
-! [remote rejected] main -> main (new paths)
-  Makefile, data/survey.csv are not in LibrePaper.
-  Keep them local: librepaper git local Makefile data/survey.csv
-  Or upload them: git push -o add librepaper main
-```
-
-- `-o add` uploads every new path in this push. The helper declares the
-  `push-options` capability to receive it.
-- A new path whose extension is in neither `text_extensions` nor
-  `asset_extensions` cannot be uploaded. It refuses with only the
-  `librepaper git local` line.
-- A file created in a commit on top of base is new as well. Uploading it
-  takes `-o add` once, after which it is in the project and later pushes
-  treat it as an ordinary file.
+A file added locally is pushed like any other change, with no extra step,
+unless it is local-only. The list is never committed, so it does not
+travel through GitHub. A file a coauthor added to the shared repository
+reaches LibrePaper on the next push from any clone that has not listed it.
+That is the same as the coauthor pushing it, and `librepaper git local`
+followed by a deletion in LibrePaper undoes it.
 
 ### Line endings
 
@@ -453,8 +438,6 @@ always `git pull`.
 |---|---|---|
 | Ref is not `main`, or is a deletion | helper | the ref |
 | Pushed commit does not descend from base | helper | `git pull`, then push |
-| A path is new and the push has no `-o add` | helper | every new path |
-| A new path has an extension that is neither text nor binary | helper | path |
 | A text file contains a line starting with `<<<<<<< `, `=======` or `>>>>>>> ` | helper | file and line |
 | A text file is not valid UTF-8 | helper | file |
 | A path is a symlink or a submodule | helper | path |
@@ -693,9 +676,8 @@ Each step can be merged and shipped on its own.
    - tracked changes accept a `SourceChange`;
    - the thin push route and the version handshake.
 4. **Helper: push.**
-   - `export` and `push-options` capabilities, ancestry check, local
-     refusal rules including new paths and `-o add`, patch generation,
-     per-file dependencies, state update.
+   - `export` capability, ancestry check, local refusal rules, patch
+     generation, per-file dependencies, state update.
 5. **Web.**
    - "Use with git" panel with the commands;
    - the "pushed from git" notice in the editor.
@@ -726,8 +708,8 @@ empty base, and `link` runs it.
    - a path that differs is an add/add conflict, with conflict markers
      around the whole region that differs.
 6. When the merge has conflicts, stop and say: "Resolve the conflicts,
-   commit, then push." When paths remain that are neither in the project
-   nor local-only, say the push needs `-o add`, and print the command.
+   commit, then push." Otherwise say to push, and list the local files
+   that the push will upload.
 
 After the merge, `main` descends from base, so the first push sends
 exactly the user's resolutions and uploads.
@@ -776,8 +758,9 @@ Helper, unit tests with a temporary repository:
 - the per-file hash the helper computes equals the server's projected
   hash on a shared fixture, with and without pending suggestions;
 - text or binary follows the lists from `/api/config`;
-- a new path refuses without `-o add` and lists every new path, uploads
-  with it, and an unknown extension refuses even with it;
+- a file added locally is pushed with no extra step;
+- a path with an extension LibrePaper cannot hold is never pushed and
+  survives every fetch, with no entry in the list;
 - `librepaper git local` adds to the list, and the path is then skipped;
 - with no terminal, a first use refuses at once and names `librepaper
   login`;
@@ -807,9 +790,6 @@ tests):
   lines overlap), and the next push applies;
 - a comment anchored on untouched text keeps its anchor through a push;
 - a binary figure push replaces the figure in the editor;
-- a coauthor clones the GitHub repository, links, and pushes: their
-  `Makefile` refuses as a new path until `librepaper git local` or
-  `-o add`;
 - with the default quota, `librepaper git link` then a push of a
   thesis-sized repository applies, and a push over the quota refuses with
   the quota message and leaves the project unchanged.
