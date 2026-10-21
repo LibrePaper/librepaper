@@ -13,7 +13,12 @@ server's checks use the suggestion-free projection, and treats a file
 LibrePaper cannot hold as local-only. A later 2026-10-21 revision makes the
 remote URL a share link with `librepaper::` in front: the login token says
 who the user is, and the link's key says what they may do, because the
-server bounds every automation request by a presented link.
+server bounds every automation request by a presented link. A third
+2026-10-21 revision drops every `librepaper git` command, so plain git
+with the git URL does every job. Local-only paths are marked with a git
+attribute, a first fetch adopts a LibrePaper commit already in the
+repository's history, and a repository with its own history connects with
+`git pull --allow-unrelated-histories`.
 
 ## Summary
 
@@ -31,6 +36,8 @@ non-fast-forward push, narrowed to the touched files.
 
 The design is conservative on purpose:
 
+- The workflow is plain git. Given the git URL, `git clone`, `git pull`
+  and `git push` do every job, and no LibrePaper command is part of it.
 - The helper never acts as a Loro peer. It sends plain text patches, and
   the server turns them into document edits.
 - The helper never merges. Git merges, during `git pull`.
@@ -55,7 +62,7 @@ The design is conservative on purpose:
    since the last pull, never because someone typed in another file.
 5. Every refusal names the file and the reason, and says what to run next.
 6. An existing git repository can be connected to an existing project with
-   one command.
+   plain git commands.
 
 ## Non-goals for v1
 
@@ -77,26 +84,28 @@ The design is conservative on purpose:
 
 The Share dialog gives each link (read, comment, edit) a "Copy git URL"
 button next to "Copy link". The git URL is the share link with
-`librepaper::` in front. Plain git is enough from there:
+`librepaper::` in front. Every workflow is plain git with that URL:
 
 ```sh
 git clone "librepaper::https://librepaper.org/docs/<slug>#k=<key>" thesis
-# or, in an existing repository:
-git remote add librepaper "librepaper::https://librepaper.org/docs/<slug>#k=<key>"
-git pull librepaper main
 ```
 
-The quotes keep the shell from reading `#` as a comment.
+The quotes keep the shell from reading `#` as a comment. A repository
+that already has commits connects with `git remote add` and a first pull,
+see "Connecting an existing repository".
 
 - **Remote names.** `librepaper` in `git pull librepaper main` is the name
   given to the remote by `git remote add`, in the same way GitHub is
   usually `origin`. A repository that also pushes to GitHub keeps `origin`
   for GitHub and `librepaper` for the project. A repository cloned from
   LibrePaper calls the remote `origin`, and plain `git pull` works.
-- **Why the URL looks unusual.** Git runs a program named
-  `git-remote-<x>` for any URL of the form `<x>::<address>`. Other tools
-  use the same mechanism, for example `git-remote-hg` and
-  `git-remote-gcrypt`.
+- **How git finds the helper.** Git runs a program named
+  `git-remote-<x>` for any URL of the form `<x>::<address>`, passing it
+  the remote's name and the address unchanged. Git's own `https://`
+  support works the same way, through `git-remote-https`, as do
+  `git-remote-hg` and `git-remote-gcrypt`. Without a desktop app package
+  that installs the helper, git stops with `fatal: Unable to find remote
+  helper for 'librepaper'`.
 - **Sign-in on first use.** When the helper finds no stored token for the
   site, it runs the `librepaper login` device flow in the terminal: it
   prints a URL and a code, waits for approval in the browser, stores the
@@ -106,28 +115,56 @@ The quotes keep the shell from reading `#` as a comment.
   terminal, for example a clone started from an editor, the helper refuses
   at once and says to run `librepaper login`. See "Credentials".
 - **The URL holds the key.** Git keeps the remote URL in `.git/config`,
-  which is never committed or pushed, so the repository needs no other
-  record of the project. `git remote -v` shows the key, like a GitHub token
-  written into a URL. The docs say never to paste that URL into a README or
-  an issue; the plain share link without `librepaper::` carries the same
-  key.
-- **Coauthors on GitHub.** A coauthor who clones the repository from GitHub
-  links it with the git URL from a link they were given:
-
-  ```sh
-  librepaper git link "librepaper::https://librepaper.org/docs/<slug>#k=<key>"
-  ```
-
-  The repository commits no file that names the project or holds a key.
-- **The helper commands.** `librepaper git clone <url> [dir]` and
-  `librepaper git link <url>` wrap the git commands above. Both accept the
-  git URL or the plain share link, and add `librepaper::` when it is
-  missing. `link` also merges the project into an existing history, see
-  "`librepaper git link` in detail". `librepaper git local <path>...` adds
-  paths to the local-only list, see "Local-only paths".
+  which is never committed or pushed. `git remote -v` shows the key, like a
+  GitHub token written into a URL. The docs say never to paste that URL
+  into a README or an issue. The plain share link without `librepaper::`
+  carries the same key. No commit ever holds a key.
 - **The owner.** The owner uses an edit link like anyone else. When the
   project has none, the owner creates one in the Share dialog first, and
   the "Use with git" panel in the project menu says so and opens Share.
+
+### Connecting an existing repository
+
+A repository that already has commits connects with `git remote add` and
+a first pull. What that pull needs depends on where the repository came
+from.
+
+| Starting point | First pull |
+|---|---|
+| A clone of a repository that already syncs with this project, for example a coauthor's clone from GitHub | `git pull librepaper main` |
+| A repository and a project that were never connected | `git pull --allow-unrelated-histories librepaper main` |
+| The same, with the repository winning where both sides changed the same lines | `git pull --allow-unrelated-histories -X ours librepaper main` |
+| The same, with the project winning | `git pull --allow-unrelated-histories -X theirs librepaper main` |
+| A repository going into a new, empty project | `git pull --allow-unrelated-histories librepaper main` |
+
+Each starts with
+`git remote add librepaper "librepaper::https://<site>/docs/<slug>#k=<key>"`.
+After the first pull, the user resolves any conflicts, commits, marks
+local-only paths (see "Local-only paths") and pushes. Every later pull and
+push is plain.
+
+- **Already connected.** Fetch commits carry a `LibrePaper-Project`
+  trailer. A first fetch adopts the newest such commit in `HEAD`'s history
+  as base, so the pull is an ordinary three-way merge and needs no flag.
+  See "First fetch".
+- **Never connected.** The repository and the project share no version.
+  The first fetch writes a root commit, and the merge uses an empty base:
+  a path on one side only is kept, identical paths merge cleanly, and a
+  path that differs is an add/add conflict. Any shared version git
+  assumed instead would be a lie that loses work without a conflict. Git
+  refuses such a merge without `--allow-unrelated-histories`, so nothing
+  merges until the user chooses. The helper prints the command on
+  standard error before git's refusal.
+- **Choosing a side.** `-X ours` and `-X theirs` pick a side only for
+  lines both sides changed. Paths on one side only are kept either way. A
+  file where both sides made unrelated edits keeps both sets of edits, so
+  the docs recommend the plain merge when in doubt.
+- **An empty project.** Its first fetch is a root commit with an empty
+  tree, so the merge adds the repository's files and the push uploads
+  them. It needs no special case.
+- **No force.** `git push --force` is refused, see "Push". A user who wants
+  the repository to win uses `-X ours` on the first pull, which deletes
+  nothing in the project.
 
 ### Daily use
 
@@ -248,8 +285,9 @@ librepaper::https://<site>/docs/<slug>#k=<key>
 It is a share link (`/docs/{slug}#k={key}`, as `sharing.rs` writes it)
 with `librepaper::` in front. The site picks the stored token, and the
 fragment is the link key. A URL without `#k=` refuses and says to copy the
-git URL from the Share dialog. The remote URL is the only record of the
-project. No file in the repository names it.
+git URL from the Share dialog. No file in the repository names the
+project. Fetch commits name it in a trailer without the key, see "First
+fetch".
 
 ## Base: the state kept by the helper
 
@@ -268,13 +306,8 @@ ordinary commit in the user's repository, and git never sends it anywhere.
     `null` when unknown;
   - `marks`, the path of the fast-import and fast-export marks file.
 
-- `.git/librepaper/<remote>/local-only` lists the local-only paths, see
-  "Local-only paths".
-
 Losing `state.json` loses nothing that matters. The helper rebuilds it from
-the ref and learns the digest on the next fetch. Losing `local-only` loses
-the user's choices, and the helper then treats every path as a project
-path.
+the ref and learns the digest on the next fetch.
 
 ### When it moves
 
@@ -354,12 +387,37 @@ rejected there.
    - every project file, at its project path, with mode `100644`;
    - every path in base's tree that is local-only (see below), unchanged.
 4. Write one commit through fast-import:
-   - parent: base, or none on the first clone;
+   - parent: base, or as "First fetch" says when there is no base;
    - author and committer: `LibrePaper <git@librepaper.org>`, dated at the
      fetch time;
-   - message: `LibrePaper edits` plus a blank line and a trailer
+   - message: `LibrePaper edits` plus a blank line and two trailers,
+     `LibrePaper-Project: https://<site>/docs/<slug>` and
      `LibrePaper-Digest: <project_digest>`.
 5. Move base: update the ref and `state.json`.
+
+### First fetch
+
+With no base, the helper decides the new commit's parent from the
+repository:
+
+1. When `HEAD` is unborn, as in `git clone` or a fresh `git init`, the
+   commit has no parent.
+2. Otherwise the helper looks for the newest commit in `HEAD`'s history
+   whose `LibrePaper-Project` trailer names this project. When it finds
+   one, that commit becomes base, with `project_digest` set to `null`, and
+   fetch continues from step 2 as usual. The commit's tree holds the
+   project as it was when that commit was written, so the pull is a
+   three-way merge against a version both sides really share.
+3. Otherwise the commit has no parent, and the helper writes to standard
+   error: "This repository has its own history. To merge it with the
+   project, run: git pull --allow-unrelated-histories librepaper main. See
+   https://<site>/docs/git." Git then refuses a plain merge with its own
+   message.
+
+The trailer is the share link without the key. A slug opens nothing
+without a key, so a public repository can carry it. A trailer that was
+edited or forged can only make a push refuse, because the server still
+checks every touched file's hash.
 
 ### Local-only paths
 
@@ -367,29 +425,42 @@ A git repository often holds files the project should not, such as a
 Makefile, data or CI configuration. Fetch must not delete them, and push
 must not upload them.
 
-- The list lives in `.git/librepaper/<remote>/local-only`, in gitignore
-  syntax. It is never committed, so each clone keeps its own.
-- `librepaper git link` writes it from the answers to its per-path
-  question. `librepaper git local <path>...` adds to it later. The list can
-  also be edited by hand.
-- These paths are always local-only and need no entry: `.git/`,
+- A path is marked local-only by unsetting the `librepaper` git attribute:
+
+  ```text
+  # .gitattributes: committed, shared by every clone
+  data/**          -librepaper
+  draft-notes.md   -librepaper
+  ```
+
+  `.git/info/attributes` takes the same lines for one clone only. A path
+  committed to a shared repository is marked in `.gitattributes`, because
+  a mark in one clone's `.git/info/attributes` is invisible to the
+  others, which push the file.
+- The helper reads attributes from the commit it is working on, never
+  from the working tree: base's tree on fetch, the pushed commit's tree on
+  push, plus `.git/info/attributes`. `git check-attr --source` does this
+  from git 2.40. With an older git, the helper reads the `.gitattributes`
+  blobs itself.
+- These paths are always local-only and need no mark: `.git/`,
   `.gitignore`, `.gitattributes`, `.github/`, and `*.local`.
 - A path whose extension is in neither `text_extensions` nor
   `asset_extensions` is local-only too, because LibrePaper cannot hold it.
-  A `Makefile` or an `.Rproj` file needs no entry.
+  A `Makefile` or an `.Rproj` file needs no mark.
 - Fetch carries local-only paths over from base unchanged.
 - Push skips them.
 
-The list cannot be inferred from the trees. A path in base that is missing
+Marks cannot be inferred from the trees. A path in base that is missing
 from the project could be local-only or could have been deleted in
-LibrePaper, and only the list tells them apart.
+LibrePaper, and only the attribute tells them apart. Because
+`.gitattributes` travels with the history, a coauthor whose first fetch
+adopts another clone's commit reads the same marks from it.
 
 A file added locally is pushed like any other change, with no extra step,
-unless it is local-only. The list is never committed, so it does not
-travel through GitHub. A file a coauthor added to the shared repository
-reaches LibrePaper on the next push from any clone that has not listed it.
-That is the same as the coauthor pushing it, and `librepaper git local`
-followed by a deletion in LibrePaper undoes it.
+unless it is local-only. A file a coauthor added to the shared repository
+reaches LibrePaper on the next push from any clone, unless it is marked.
+That is the same as the coauthor pushing it, and marking it and deleting it
+in LibrePaper undoes it.
 
 ### Line endings
 
@@ -423,11 +494,14 @@ it.
 
 1. **Branch check.** Refuse any ref other than `refs/heads/main`. Refuse
    ref deletion.
-2. **Ancestry check.** The pushed commit must descend from base.
-   Otherwise refuse, even for `--force`. LibrePaper never rewinds. A plain
-   `git fetch` moves base without merging it, so the message says to merge
-   rather than to fetch: "LibrePaper has edits you have not merged. Run:
-   git pull librepaper main, then push again."
+2. **Ancestry check.** With no base, refuse and say to pull first. The
+   pushed commit must descend from base. Otherwise refuse, even for
+   `--force`, which git passes to the helper as `option force true`.
+   LibrePaper never rewinds. A plain `git fetch` moves base without
+   merging it, so the message says to merge rather than to fetch:
+   "LibrePaper has edits you have not merged. Run: git pull librepaper
+   main, then push again." When base is a root commit, the message names
+   `git pull --allow-unrelated-histories librepaper main` instead.
 3. **Collect changes.** Diff base against ours, skipping local-only paths.
    Intermediate commits are collapsed. Only the net change is applied.
 4. **Validate.** Apply every rule in "Push: refusal rules" that the helper
@@ -686,14 +760,13 @@ Each step can be merged and shipped on its own.
    - `git-remote-librepaper` installed by every package that installs
      `librepaper`;
    - remote-helper protocol with `import`;
-   - base state, local-only paths, line endings, file modes;
-   - the git URL, a plain share link accepted by `clone` and `link`, and
-     sign-in on first use, refusing without a terminal;
+   - base state, the `librepaper` attribute, line endings, file modes;
+   - the git URL and sign-in on first use, refusing without a terminal;
    - text or binary from `/api/config`;
-   - `librepaper git clone`, `librepaper git link` and `librepaper git
-     local`, and the local-only list under `.git/librepaper/`.
+   - the first fetch: adopting a commit with this project's trailer, or a
+     root commit with the `--allow-unrelated-histories` hint.
    At this point clone, pull and backup to GitHub work, starting from a
-   share link pasted into `librepaper git clone`.
+   share link with `librepaper::` typed in front.
 3. **Server: shared source-change core.**
    - rename the agent apply path to `SourceChange` and move it to
      `room/source_change.rs`, with no behavior change for agents;
@@ -711,46 +784,9 @@ Each step can be merged and shipped on its own.
    - "Use with git" panel in the project menu with the commands, pointing
      to Share for the URL;
    - the "pushed from git" notice in the editor.
-6. **Docs.** A `docs/git.md` page with the commands and every refusal
-   message.
-
-## `librepaper git link` in detail
-
-Linking merges the project into an existing repository. The repository
-and the project have no common commit, so the honest merge is one with an
-empty base, and `link` runs it.
-
-1. Refuse if the working tree has uncommitted changes.
-2. Add the `librepaper` remote with the git URL given as the argument,
-   adding `librepaper::` to a plain share link. Sign in first if there is
-   no token for the site.
-3. Download the project. List the paths that exist in `HEAD` but not in the
-   project and are not always local-only. Ask once per path, or once for
-   all of them, whether to keep it local. The answers that say yes go into
-   the local-only list.
-4. Write the first LibrePaper commit as a root commit, with no parent. Its
-   tree is the project's files and nothing else. It becomes base.
-5. Run `git merge --allow-unrelated-histories librepaper/main`. With an
-   empty merge base:
-   - a path only in `HEAD` stays, so local-only files and files to upload
-     are both kept;
-   - a path only in the project is added;
-   - a path that is identical on both sides merges cleanly;
-   - a path that differs is an add/add conflict, with conflict markers
-     around the whole region that differs.
-6. When the merge has conflicts, stop and say: "Resolve the conflicts,
-   commit, then push." Otherwise say to push, and list the local files
-   that the push will upload.
-
-After the merge, `main` descends from base, so the first push sends
-exactly the user's resolutions and uploads.
-
-The earlier draft gave that first commit `HEAD` as its parent. Then
-`git merge` fast-forwarded to the project's version, silently dropping
-files meant for upload. Worse, when `HEAD` held a coauthor's GitHub commits
-not yet pushed to LibrePaper, the project's commit descended from them
-while holding the older text, so a later merge with GitHub reverted the
-coauthor's work without a conflict.
+6. **Docs.** A `docs/git.md` page with the commands for each starting
+   point, the `--allow-unrelated-histories`, `-X ours` and `-X theirs`
+   flags, the `librepaper` attribute, and every refusal message.
 
 ## Tests
 
@@ -794,8 +830,10 @@ Helper, unit tests with a temporary repository:
 - text or binary follows the lists from `/api/config`;
 - a file added locally is pushed with no extra step;
 - a path with an extension LibrePaper cannot hold is never pushed and
-  survives every fetch, with no entry in the list;
-- `librepaper git local` adds to the list, and the path is then skipped;
+  survives every fetch, with no mark;
+- a path marked `-librepaper` in `.gitattributes` or
+  `.git/info/attributes` is never pushed and survives every fetch, and the
+  marks are read from the commit, not the working tree;
 - with no terminal, a first use refuses at once and names `librepaper
   login`;
 - after a plain `git fetch`, pushing an unmerged `main` refuses with the
@@ -803,17 +841,26 @@ Helper, unit tests with a temporary repository:
 - each helper-side refusal rule produces its message;
 - base moves on fetch and on an applied push, and not on a refusal;
 - losing `state.json` is recovered from the ref;
-- link writes a root commit holding only the project files, and its merge
-  keeps paths only in `HEAD`, adds paths only in the project, merges
-  identical files cleanly and conflicts on differing ones;
-- link on a `HEAD` that is ahead of the project keeps those edits as
+- a first fetch with an unborn `HEAD` writes a root commit, and a first
+  fetch into a history holding this project's trailer adopts the newest
+  such commit as base, ignoring trailers for other projects;
+- a first fetch into an unrelated history writes a root commit holding
+  only the project files and prints the `--allow-unrelated-histories`
+  hint, and the merge with that flag keeps paths only in `HEAD`, adds
+  paths only in the project, merges identical files cleanly and conflicts
+  on differing ones;
+- that merge on a `HEAD` ahead of the project keeps those edits as
   conflicts, never reverting them, and a later merge with that same
   history reverts nothing;
-- link writes the local-only list from its answers, and nothing it writes
-  is committed;
+- a coauthor's clone that adopts another clone's commit keeps the files
+  that `.gitattributes` marks, and a pull after adoption merges three
+  ways;
+- a push with no base refuses and says to pull, a push after a plain
+  fetch of a root commit names `--allow-unrelated-histories`, and `git
+  push --force` refuses;
 - the git URL yields the site and key, the key goes in the header and
-  never in a query string, a plain share link given to `clone` or `link`
-  gains `librepaper::`, and a URL without `#k=` refuses;
+  never in a query string, no commit holds the key, and a URL without
+  `#k=` refuses;
 - a dead link prints the `git remote set-url` advice.
 
 End to end, against a real `admin serve` (see the Node full-deployment
@@ -826,8 +873,8 @@ tests):
   lines overlap), and the next push applies;
 - a comment anchored on untouched text keeps its anchor through a push;
 - a binary figure push replaces the figure in the editor;
-- with the default quota, `librepaper git link` then a push of a
-  thesis-sized repository applies, and a push over the quota refuses with
+- with the default quota, `git pull --allow-unrelated-histories` from an
+  empty project then a push of a thesis-sized repository applies, and a push over the quota refuses with
   the quota message and leaves the project unchanged.
 
 ## Rejected designs
@@ -873,6 +920,24 @@ tests):
   browser visit left. It weakens the rule that a local tool never inherits
   a browser's access and is always bounded by a presented link, and a
   coauthor would have to open the link in a browser before git worked.
+- **A `librepaper git link` command** (the 2026-10-14 to 2026-10-21
+  drafts), with `librepaper git clone` and `librepaper git local` beside
+  it. `link` added the remote, asked once per path which files stay local,
+  wrote a root commit and ran the unrelated-histories merge. Plain git
+  does the same with one documented flag, and the per-path question became
+  an attribute that travels with the repository. An earlier version of
+  `link` gave the first LibrePaper commit `HEAD` as its parent. Then
+  `git merge` fast-forwarded to the project's version, silently dropping
+  files meant for upload, and when `HEAD` held a coauthor's GitHub commits
+  not yet pushed to LibrePaper, a later merge reverted them without a
+  conflict.
+- **A local-only list under `.git/`** (the 2026-10-20 and 2026-10-21
+  drafts). Each clone kept its own list, so a coauthor who cloned from
+  GitHub had none, and a first fetch that adopted another clone's commit
+  would read that clone's local-only files as deleted in LibrePaper.
+- **Replacing a project with `git push --force`.** It would overwrite
+  coauthors' browser edits made since the last pull. `-X ours` on the
+  first pull gives the repository precedence without deleting anything.
 
 ## Later
 
@@ -887,8 +952,9 @@ tests):
   then record.
 - **Connect from the desktop app.** "Clone to this computer" and "Connect
   a local repository" in the project menu. The app opens a native folder
-  dialog and runs `clone` or `link`. The question about files that exist
-  only in the repository becomes a checklist in the page.
+  dialog and runs `git clone`, or `git remote add` and the first pull. A
+  checklist of the files that exist only in the repository writes their
+  marks to `.gitattributes`.
 - **New project from a local repository.** Pick a folder, and a project is
   created from its files with the remote already set.
 - **New project from GitHub.** The server fetches public repositories. For
