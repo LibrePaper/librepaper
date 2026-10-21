@@ -57,7 +57,7 @@
 <SettingRow id="editor-font-size" title="Font size"
             description="Pinch or Ctrl and scroll over the source to change it there too.">
   <span class="setting-inline">
-    <input type="number" class="input input-sm setting-input" min={MIN_SIZE} max={MAX_SIZE} step="1"
+    <input type="number" class="input input-sm setting-input setting-number" min={MIN_SIZE} max={MAX_SIZE} step="1"
            aria-label="Font size in pixels" value={currentSize}
            onchange={(event) => {
              const field = event.currentTarget;
@@ -113,9 +113,16 @@
 </SettingRow>
 
 <style>
+  /* A font name goes under the list when both do not fit beside the words. */
   .setting-inline {
     display: flex;
+    flex-wrap: wrap;
+    justify-content: flex-end;
     align-items: center;
     gap: calc(var(--spacing) * 2);
+  }
+  /* A size is two digits, so its field is narrow. */
+  .setting-number {
+    width: 5rem;
   }
 </style>
