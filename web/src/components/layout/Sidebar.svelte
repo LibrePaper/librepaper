@@ -3,7 +3,6 @@
   import PanelRail from "./PanelRail.svelte";
   import Grip from "../Grip.svelte";
   import { slotId } from "../../lib/panels.js";
-  import { DOCUMENTATION_URL } from "../../lib/site-links.js";
 
   // The column at the left: a rail of icons, and one panel at a time beside
   // it. What is *in* a panel is none of this component's business -- each
@@ -36,9 +35,8 @@
     // What sits at the foot of the rail, under the places: the controls that
     // belong to the page rather than to any one panel. The reader puts its
     // layout switch, settings and way home there; the landing page
-    // has no home to go to and puts only settings. Help is always drawn, after
-    // whatever the page puts here. A snippet rather than a list of flags,
-    // because this component has no business knowing what a layout is.
+    // has no home to go to and puts only settings. A snippet rather than a list
+    // of flags, because this component has no business knowing what a layout is.
     controls = undefined,
     // What follows the places in the rail, in the same column: the landing
     // page's tags. Nothing is drawn after the places unless the page asks.
@@ -77,7 +75,6 @@
     </div>
     <div class="activity-bottom" role="group" aria-label="Workspace controls">
       {@render controls?.()}
-      <IconButton icon="help" label="Documentation" href={DOCUMENTATION_URL} external />
     </div>
   </div>
   {#if settled}
@@ -106,7 +103,7 @@
   .activity-bottom { display: flex; flex: none; flex-direction: column; align-items: center; gap: var(--spacing); margin-top: auto; }
   /* Eight panels and four workspace controls are taller than a short window,
      and the column clips what it cannot fit -- so the panels scroll and the
-     controls below them stay put, rather than the home and help buttons
+     controls below them stay put, rather than the home and settings buttons
      disappearing off the bottom of a laptop in landscape with no sign that
      they were ever there. The bar is hidden because it would be most of the
      rail's width; the wheel, a drag and the keyboard all still reach it.

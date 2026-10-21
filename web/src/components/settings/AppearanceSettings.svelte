@@ -23,7 +23,7 @@
   onMount(() => onLineHeight((now) => { currentLineHeight = now; }));
 </script>
 
-<SettingRow id="appearance-theme" title="Theme" description="Light, dark, or whatever this computer uses.">
+<SettingRow id="appearance-theme" title="Theme">
   <select class="select setting-select" aria-label="Theme" value={current}
           onchange={(event) => setChoice(event.currentTarget.value)}>
     <option value="system">System</option>
@@ -32,7 +32,7 @@
   </select>
 </SettingRow>
 
-<SettingRow id="appearance-colours" title="Colours" description="The colours of the window, the editor and its highlighting. Each one has a light and a dark version, and the Theme above picks which.">
+<SettingRow id="appearance-colours" title="Colours">
   <select class="select setting-select" aria-label="Colours" value={currentPalette}
           onchange={(event) => setPalette(event.currentTarget.value)}>
     {#each PALETTES as name (name)}
