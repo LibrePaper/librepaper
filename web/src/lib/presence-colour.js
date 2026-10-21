@@ -12,7 +12,7 @@
 // picked to stay apart from each other and to carry white text in both themes.
 // A hue added here needs its rule there, or the caret falls back to the theme
 // colour and two people are the same again.
-export const PRESENCE_COLOURS = ["#2f5bd0", "#c2410c", "#15803d", "#7c3aed", "#be123c", "#0e7490"];
+export const PRESENCE_COLOURS = ["#0072b2", "#af4d00", "#007a59", "#975a7c", "#926500", "#377395"];
 
 /// The colour for `seed` -- a name, a handle, or, for somebody who has not
 /// said who they are, their tab's presence id -- avoiding `taken`, the

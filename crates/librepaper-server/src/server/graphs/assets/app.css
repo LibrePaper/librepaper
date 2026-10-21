@@ -6,9 +6,9 @@
   --ink: #1d2327;
   --muted: #5d666d;
   --rule: #d9dcdf;
-  --line: #2b6cb0;
-  --fill: rgba(43, 108, 176, 0.12);
-  --alert: #b3261e;
+  --line: #0072b2;
+  --fill: rgba(0, 114, 178, 0.12);
+  --alert: #af4d00;
 }
 @media (prefers-color-scheme: dark) {
   :root {
@@ -17,9 +17,9 @@
     --ink: #e6e8ea;
     --muted: #9aa4ab;
     --rule: #323a40;
-    --line: #6aa5e0;
-    --fill: rgba(106, 165, 224, 0.16);
-    --alert: #f2918a;
+    --line: #4598c7;
+    --fill: rgba(69, 152, 199, 0.16);
+    --alert: #dc7829;
   }
 }
 * { box-sizing: border-box; }
