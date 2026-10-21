@@ -1,0 +1,15 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "DELETE FROM tags WHERE id=$1 AND account_id=$2 AND builtin IS NULL",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "4cebb486008c2c493a8ef06bbdbb1e34c01b02870f3fb25283d04a2fd8f63b16"
+}

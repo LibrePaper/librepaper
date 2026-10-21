@@ -1,0 +1,31 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "UPDATE tags SET name=COALESCE($3::text,name), colour=COALESCE($4::text,colour)\n             WHERE id=$1 AND account_id=$2 AND builtin IS NULL\n             RETURNING name, colour",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "name",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 1,
+        "name": "colour",
+        "type_info": "Text"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid",
+        "Text",
+        "Text"
+      ]
+    },
+    "nullable": [
+      false,
+      false
+    ]
+  },
+  "hash": "4ea154411176ea73225e568e847c7a0c3310c8c2a773512c9d2f3e2b50b58112"
+}

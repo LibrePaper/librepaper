@@ -664,10 +664,10 @@ async fn blocking_an_account_refuses_writes_and_unblock_does_not_restore_its_ses
     let (base, _address, stop) = serve(deployment.server.clone()).await;
     let client = reqwest::Client::new();
     let cookie = cookie(&deployment);
-    let write_url = format!("{base}/api/documents/{}/favorite", deployment.slug);
+    let write_url = format!("{base}/api/documents/{}/tags/favorites", deployment.slug);
 
     let before = client
-        .post(&write_url)
+        .put(&write_url)
         .header("host", "paper.example")
         .header("origin", READER)
         .header("sec-fetch-site", "same-origin")
@@ -689,7 +689,7 @@ async fn blocking_an_account_refuses_writes_and_unblock_does_not_restore_its_ses
         .await
         .unwrap();
     let while_blocked = client
-        .post(&write_url)
+        .put(&write_url)
         .header("host", "paper.example")
         .header("origin", READER)
         .header("sec-fetch-site", "same-origin")
@@ -711,7 +711,7 @@ async fn blocking_an_account_refuses_writes_and_unblock_does_not_restore_its_ses
         .await
         .unwrap();
     let after_unblock = client
-        .post(&write_url)
+        .put(&write_url)
         .header("host", "paper.example")
         .header("origin", READER)
         .header("sec-fetch-site", "same-origin")

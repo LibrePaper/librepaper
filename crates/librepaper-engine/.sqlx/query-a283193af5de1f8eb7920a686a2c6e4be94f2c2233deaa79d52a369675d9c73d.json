@@ -1,0 +1,17 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "INSERT INTO tags(id,account_id,name,colour,builtin)\n             VALUES($1,$2,$3,$4,'favorites')\n             ON CONFLICT(account_id,builtin) WHERE builtin IS NOT NULL DO NOTHING",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid",
+        "Text",
+        "Text"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "a283193af5de1f8eb7920a686a2c6e4be94f2c2233deaa79d52a369675d9c73d"
+}

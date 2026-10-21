@@ -266,9 +266,9 @@ async fn authenticated_browser_routes_enforce_the_origin_boundary() {
     );
 
     // Repeat the refusal against a second write route whose effect is a
-    // per-account database mark, then confirm the mark is still absent.
-    let hostile_favorite = client
-        .post(format!("{base}/api/documents/{}/favorite", deployment.slug))
+    // per-account database row, then confirm the row is still absent.
+    let hostile_tag = client
+        .put(format!("{base}/api/documents/{}/tags/favorites", deployment.slug))
         .header("host", "paper.example")
         .header("origin", DOCS)
         .header("sec-fetch-site", "same-site")
@@ -277,10 +277,10 @@ async fn authenticated_browser_routes_enforce_the_origin_boundary() {
         .send()
         .await
         .unwrap();
-    assert_eq!(hostile_favorite.status().as_u16(), 403);
+    assert_eq!(hostile_tag.status().as_u16(), 403);
     assert!(deployment
         .catalog
-        .marks_for_documents(deployment.account_id, &[deployment.document_id])
+        .tags_for_documents(deployment.account_id, &[deployment.document_id])
         .await
         .unwrap()
         .is_empty());
@@ -308,8 +308,8 @@ async fn authenticated_browser_routes_enforce_the_origin_boundary() {
             .comments,
         1
     );
-    let same_origin_favorite = client
-        .post(format!("{base}/api/documents/{}/favorite", deployment.slug))
+    let same_origin_tag = client
+        .put(format!("{base}/api/documents/{}/tags/favorites", deployment.slug))
         .header("host", "paper.example")
         .header("origin", READER)
         .header("sec-fetch-site", "same-origin")
@@ -318,7 +318,7 @@ async fn authenticated_browser_routes_enforce_the_origin_boundary() {
         .send()
         .await
         .unwrap();
-    assert_eq!(same_origin_favorite.status().as_u16(), 200);
+    assert_eq!(same_origin_tag.status().as_u16(), 200);
 
     // The authorized source endpoint may answer to a same-site request, but
     // it does not grant CORS access to the document origin. A request to the
@@ -694,6 +694,68 @@ async fn every_response_refuses_type_sniffing() {
     );
     let body: serde_json::Value = response.json().await.unwrap();
     assert_eq!(body["version"], env!("CARGO_PKG_VERSION"));
+
+    let _ = stop.send(());
+    deployment.catalog.close().await;
+}
+
+/// Tagging a private document is refused to somebody who cannot see it, the
+/// same way starring one was: the answer is the one for a missing document,
+/// and the built-in tag row is never created for the refused caller.
+#[tokio::test]
+#[ignore = "requires LIBREPAPER_TEST_POSTGRES_URL"]
+async fn tagging_a_private_document_you_cannot_see_is_refused_as_missing() {
+    let Some(deployment) = deployment("tag-private-http").await else {
+        return;
+    };
+    let outsider = deployment
+        .catalog
+        .create_account(NewAccount {
+            kind: "registered".into(),
+            provider: Some(PROVIDER_GITHUB.into()),
+            provider_subject: Some("tag-private-outsider".into()),
+            handle: "tag-outsider".into(),
+            display_name: "No grant".into(),
+            email: None,
+        })
+        .await
+        .unwrap();
+    let outsider_cookie = session_cookie_for(&Identity {
+        provider: PROVIDER_GITHUB.into(),
+        id: outsider.id.to_string(),
+        handle: outsider.handle.clone(),
+        name: outsider.display_name.clone(),
+        picture: String::new(),
+        session_generation: outsider.session_generation.to_string(),
+    });
+    let (base, _address, stop) = serve(deployment.server.clone()).await;
+    let client = reqwest::Client::new();
+
+    let refused = client
+        .put(format!(
+            "{base}/api/documents/{}/tags/favorites",
+            deployment.slug
+        ))
+        .header("host", "paper.example")
+        .header("origin", READER)
+        .header("sec-fetch-site", "same-origin")
+        .header("x-librepaper-client", "web")
+        .header("cookie", &outsider_cookie)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(refused.status().as_u16(), 404);
+    assert!(deployment
+        .catalog
+        .tags_for_documents(outsider.id, &[deployment.document_id])
+        .await
+        .unwrap()
+        .is_empty());
+    assert_eq!(
+        deployment.catalog.favorites_tag(outsider.id).await.unwrap(),
+        None,
+        "a refused tag does not create the built-in row",
+    );
 
     let _ = stop.send(());
     deployment.catalog.close().await;

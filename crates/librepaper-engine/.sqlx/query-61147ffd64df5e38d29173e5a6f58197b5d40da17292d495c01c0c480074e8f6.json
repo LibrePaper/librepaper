@@ -1,0 +1,15 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "UPDATE document_marks SET shared_hidden=false\n             WHERE account_id=$1 AND document_id=$2 AND shared_hidden\n               AND opened_at IS NOT NULL",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "61147ffd64df5e38d29173e5a6f58197b5d40da17292d495c01c0c480074e8f6"
+}

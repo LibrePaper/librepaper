@@ -4,7 +4,7 @@
 use super::*;
 use axum::extract::{Extension, Path, State};
 use axum::middleware::Next;
-use axum::routing::{any, get, post};
+use axum::routing::{any, get, patch, post, put};
 
 /// Typed API routes. Routes migrate here without changing their domain
 /// handlers; the remaining fallback serves origin-specific pages and static
@@ -41,9 +41,11 @@ pub(super) fn api_router(server: Arc<Server>) -> Router {
         .route("/api/trash", get(trash))
         .route("/api/documents/{slug}/untrash", post(untrash))
         .route("/api/documents/{slug}/purge", post(purge))
+        .route("/api/tags", get(tags).post(create_tag))
+        .route("/api/tags/{id}", patch(update_tag).delete(delete_tag))
         .route(
-            "/api/documents/{slug}/favorite",
-            post(favorite).delete(favorite),
+            "/api/documents/{slug}/tags/{id}",
+            put(tag_document).delete(tag_document),
         )
         .route(
             "/api/documents/{slug}/shared",
@@ -370,17 +372,53 @@ async fn purge(
         .await
 }
 
-/// Starring and unstarring are the same route and differ by method, because
-/// they are one fact being set and unset rather than two things to do.
-async fn favorite(
+async fn tags(
     State(server): State<Arc<Server>>,
     Extension(ctx): Extension<RequestContext>,
-    Path(slug): Path<String>,
     request: Request<Body>,
 ) -> Reply {
-    let on = request.method() != Method::DELETE;
+    server.handle_tags(request.headers(), &ctx.arrival).await
+}
+
+async fn create_tag(
+    State(server): State<Arc<Server>>,
+    Extension(ctx): Extension<RequestContext>,
+    request: Request<Body>,
+) -> Reply {
+    server.handle_create_tag(request, &ctx.arrival).await
+}
+
+async fn update_tag(
+    State(server): State<Arc<Server>>,
+    Extension(ctx): Extension<RequestContext>,
+    Path(tag): Path<String>,
+    request: Request<Body>,
+) -> Reply {
+    server.handle_update_tag(request, &ctx.arrival, &tag).await
+}
+
+async fn delete_tag(
+    State(server): State<Arc<Server>>,
+    Extension(ctx): Extension<RequestContext>,
+    Path(tag): Path<String>,
+    request: Request<Body>,
+) -> Reply {
     server
-        .handle_favorite(request.headers(), &ctx.arrival, &slug, on)
+        .handle_delete_tag(request.headers(), &ctx.arrival, &tag)
+        .await
+}
+
+/// Putting a tag on a document and taking it off are the same route and
+/// differ by method, because they are one fact being set and unset.
+async fn tag_document(
+    State(server): State<Arc<Server>>,
+    Extension(ctx): Extension<RequestContext>,
+    Path((slug, tag)): Path<(String, String)>,
+    request: Request<Body>,
+) -> Reply {
+    let on = request.method() == Method::PUT;
+    server
+        .handle_document_tag(request.headers(), &ctx.arrival, &slug, &tag, on)
         .await
 }
 
@@ -1321,7 +1359,8 @@ impl Server {
         // What this caller has done with each of these documents. Fetched
         // beside the listing rather than joined into it, so a mark can never
         // widen what the listing returns: the rows are chosen by what the
-        // caller may see, and only then decorated with what they did.
+        // caller may see, and only then decorated with what they did. Tags
+        // are fetched the same way, and so is the caller's whole tag list.
         let marks = if who.id.is_empty() {
             Default::default()
         } else {
@@ -1330,6 +1369,17 @@ impl Server {
                 .await
                 .unwrap_or_default()
         };
+        let (tag_ids, account_tags) = if who.id.is_empty() {
+            Default::default()
+        } else {
+            (
+                self.store
+                    .tags_for(&who.id, &entries)
+                    .await
+                    .unwrap_or_default(),
+                self.store.list_tags(&who.id).await.unwrap_or_default(),
+            )
+        };
         // How many comments and how many files, for the whole page at once.
         // This is what the landing page used to ask for a project at a time.
         let counts = self.store.counts_for(&entries).await.unwrap_or_default();
@@ -1337,11 +1387,10 @@ impl Server {
             .iter()
             .map(|entry| {
                 let mut row = self.listing_row(entry, &who);
-                let (favorite, opened, shared_hidden) =
-                    marks.get(&entry.slug).cloned().unwrap_or_default();
-                row["favorite"] = json!(favorite);
+                let (opened, shared_hidden) = marks.get(&entry.slug).cloned().unwrap_or_default();
                 row["opened_at"] = json!(opened);
                 row["shared_hidden"] = json!(shared_hidden);
+                row["tags"] = json!(tag_ids.get(&entry.slug).cloned().unwrap_or_default());
                 let (comments, open, files) =
                     counts.get(&entry.slug).copied().unwrap_or((0, 0, None));
                 row["comments"] = json!(comments);
@@ -1350,7 +1399,7 @@ impl Server {
                 row
             })
             .collect();
-        let mut body = json!({"documents": documents});
+        let mut body = json!({"documents": documents, "tags": account_tags});
         if entries.len() == listing_limit as usize {
             if let Some(last) = entries.last() {
                 body["next_cursor"] = json!({

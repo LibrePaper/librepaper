@@ -21,7 +21,8 @@ use uuid::Uuid;
 use crate::log::{Command, CommandError, Evidence, Head, PreparedSource, Registry};
 use crate::storage::blob::BlobStore;
 use crate::storage::postgres::{
-    Authority, Error as CatalogError, NewAsset, NewLabel, PostgresCatalog as Catalog,
+    built_in_refusal, Authority, Error as CatalogError, NewAsset, NewLabel,
+    PostgresCatalog as Catalog, TagRecord, FAVORITES_COLOUR, FAVORITES_NAME,
 };
 use librepaper_base::config::Configuration;
 use librepaper_base::util::parse_timestamp;
@@ -412,6 +413,42 @@ pub enum ModifyError {
     NotFound,
     Refused(String),
     Storage(String),
+}
+
+/// The public id of the built-in Favorites tag. Every other tag is named by
+/// its UUID.
+pub const FAVORITES_TAG: &str = "favorites";
+
+/// A tag as the API shows it.
+#[derive(Clone, Debug, Serialize)]
+pub struct TagView {
+    pub id: String,
+    pub name: String,
+    pub colour: String,
+    pub builtin: bool,
+}
+
+impl TagView {
+    fn from_record(record: TagRecord) -> Self {
+        if record.builtin {
+            return Self::favorites();
+        }
+        Self {
+            id: record.id.to_string(),
+            name: record.name,
+            colour: record.colour,
+            builtin: false,
+        }
+    }
+
+    fn favorites() -> Self {
+        Self {
+            id: FAVORITES_TAG.into(),
+            name: FAVORITES_NAME.into(),
+            colour: FAVORITES_COLOUR.into(),
+            builtin: true,
+        }
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -897,18 +934,96 @@ impl Store {
         Ok(changed.then_some(document.id))
     }
 
-    /// Star a document for this account, or take the star off it.
-    pub async fn set_favorite(
+    /// Every tag this account holds, Favorites first. Favorites is listed
+    /// even before the account has starred anything, because it always exists.
+    pub async fn list_tags(&self, account_id: &str) -> Result<Vec<TagView>, CatalogError> {
+        let records = self
+            .catalog
+            .list_tags(parse_account_id(account_id)?)
+            .await?;
+        let mut tags: Vec<TagView> = records.into_iter().map(TagView::from_record).collect();
+        if !tags.iter().any(|tag| tag.builtin) {
+            tags.insert(0, TagView::favorites());
+        }
+        Ok(tags)
+    }
+
+    /// Make a tag of this account's own.
+    pub async fn create_tag(
+        &self,
+        account_id: &str,
+        name: &str,
+        colour: &str,
+    ) -> Result<TagView, CatalogError> {
+        let record = self
+            .catalog
+            .create_tag(parse_account_id(account_id)?, name, colour)
+            .await?;
+        Ok(TagView::from_record(record))
+    }
+
+    /// Rename or recolour one of this account's own tags. The built-in tag
+    /// refuses either, whatever the request asks for.
+    pub async fn update_tag(
+        &self,
+        account_id: &str,
+        tag: &str,
+        name: Option<&str>,
+        colour: Option<&str>,
+    ) -> Result<TagView, CatalogError> {
+        let record = self
+            .catalog
+            .update_tag(
+                parse_account_id(account_id)?,
+                custom_tag_id(tag)?,
+                name,
+                colour,
+            )
+            .await?;
+        Ok(TagView::from_record(record))
+    }
+
+    /// Delete one of this account's own tags. Projects keep everything else
+    /// they hold.
+    pub async fn delete_tag(&self, account_id: &str, tag: &str) -> Result<(), CatalogError> {
+        self.catalog
+            .delete_tag(parse_account_id(account_id)?, custom_tag_id(tag)?)
+            .await
+    }
+
+    /// Put a tag on a document this account can already see, or take it off.
+    /// Favorites is created the first time it is put on anything.
+    pub async fn set_document_tag(
         &self,
         slug: &str,
         account_id: &str,
+        tag: &str,
         on: bool,
-    ) -> Result<bool, ModifyError> {
+    ) -> Result<(), ModifyError> {
         let (document_id, account_id) = self.mark_target(slug, account_id).await?;
+        let tag_id = if tag != FAVORITES_TAG {
+            Uuid::parse_str(tag).map_err(|_| ModifyError::NotFound)?
+        } else if on {
+            self.catalog
+                .ensure_favorites(account_id)
+                .await
+                .map_err(tag_modify_error)?
+        } else {
+            // An account that never starred has nothing to take off.
+            match self
+                .catalog
+                .favorites_tag(account_id)
+                .await
+                .map_err(tag_modify_error)?
+            {
+                Some(id) => id,
+                None => return Ok(()),
+            }
+        };
         self.catalog
-            .set_favorite(account_id, document_id, on)
+            .set_document_tag(account_id, document_id, tag_id, on)
             .await
-            .map_err(|error| ModifyError::Storage(error.to_string()))
+            .map_err(tag_modify_error)
     }
 
     /// Hide or restore a shared document in this account's shared-project view.
@@ -934,9 +1049,6 @@ impl Store {
             .map_err(|error| ModifyError::Storage(error.to_string()))
     }
 
-    /// The marks this account holds on the documents listed, by slug. The
-    /// listing decorates its rows with these; a document the caller has never
-    /// touched simply has no entry.
     /// Every file in a project, by path, as it currently stands.
     ///
     /// The log is the document (§1): this reads the head through the
@@ -1041,11 +1153,14 @@ impl Store {
             .collect())
     }
 
+    /// The marks this account holds on the documents listed, by slug. The
+    /// listing decorates its rows with these; a document the caller has never
+    /// touched simply has no entry.
     pub async fn marks_for(
         &self,
         account_id: &str,
         entries: &[IndexEntry],
-    ) -> Result<std::collections::HashMap<String, (bool, String, bool)>, CatalogError> {
+    ) -> Result<std::collections::HashMap<String, (String, bool)>, CatalogError> {
         let account_id = uuid::Uuid::parse_str(account_id)
             .map_err(|_| CatalogError::Invalid("invalid listing account".into()))?;
         let mut by_id = std::collections::HashMap::new();
@@ -1064,12 +1179,41 @@ impl Store {
                     .opened_at
                     .map(|at| librepaper_base::util::format_unix(at.unix_timestamp()))
                     .unwrap_or_default();
-                Some((
-                    slug,
-                    (mark.favorited_at.is_some(), opened, mark.shared_hidden),
-                ))
+                Some((slug, (opened, mark.shared_hidden)))
             })
             .collect())
+    }
+
+    /// The tags this account has put on each document listed, by slug. The
+    /// built-in tag is named "favorites" and every other tag by its UUID.
+    pub async fn tags_for(
+        &self,
+        account_id: &str,
+        entries: &[IndexEntry],
+    ) -> Result<std::collections::HashMap<String, Vec<String>>, CatalogError> {
+        let account_id = parse_account_id(account_id)?;
+        let mut by_id = std::collections::HashMap::new();
+        for entry in entries {
+            if let Ok(id) = uuid::Uuid::parse_str(&entry.storage_id) {
+                by_id.insert(id, entry.slug.clone());
+            }
+        }
+        let ids: Vec<_> = by_id.keys().copied().collect();
+        let links = self.catalog.tags_for_documents(account_id, &ids).await?;
+        let mut by_slug: std::collections::HashMap<String, Vec<String>> =
+            std::collections::HashMap::new();
+        for link in links {
+            let Some(slug) = by_id.get(&link.document_id) else {
+                continue;
+            };
+            let tag = if link.builtin {
+                FAVORITES_TAG.to_string()
+            } else {
+                link.tag_id.to_string()
+            };
+            by_slug.entry(slug.clone()).or_default().push(tag);
+        }
+        Ok(by_slug)
     }
 
     /// A mark is written against a document the caller can already see, and
@@ -1659,4 +1803,29 @@ pub fn digest_of(text: &str) -> String {
 }
 pub fn digest_of_bytes(bytes: &[u8]) -> String {
     librepaper_document::results::sha256(bytes)
+}
+
+fn parse_account_id(account_id: &str) -> Result<uuid::Uuid, CatalogError> {
+    uuid::Uuid::parse_str(account_id)
+        .map_err(|_| CatalogError::Invalid("invalid account".into()))
+}
+
+/// The UUID of one of the account's own tags. A tag id that is not a UUID can
+/// name no tag of anybody's, so it is simply not found; the built-in tag is
+/// refused before that, because it is a tag but never a writable one.
+fn custom_tag_id(tag: &str) -> Result<uuid::Uuid, CatalogError> {
+    if tag == FAVORITES_TAG {
+        return Err(built_in_refusal());
+    }
+    uuid::Uuid::parse_str(tag).map_err(|_| CatalogError::NotFound)
+}
+
+fn tag_modify_error(error: CatalogError) -> ModifyError {
+    match error {
+        CatalogError::NotFound => ModifyError::NotFound,
+        CatalogError::Invalid(message) | CatalogError::Conflict(message) => {
+            ModifyError::Refused(message)
+        }
+        other => ModifyError::Storage(other.to_string()),
+    }
 }
