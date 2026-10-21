@@ -115,7 +115,7 @@ import { watchPinch } from "../lib/pinch.js";
        of its passage, so that it stands out from the wash the others sit
        under. */
     mark[data-librepaper][data-librepaper-selected] {
-      outline: 2px solid hsl(220 85% 50%);
+      outline: 2px solid #0072b2;
       outline-offset: 1px;
       border-radius: 2px;
       box-decoration-break: clone;
@@ -151,24 +151,32 @@ import { watchPinch } from "../lib/pinch.js";
   }
 
   // One tint per tool, so what a mark means is legible without opening the
-  // sidebar. Hue carries the meaning and saturation stays low: these sit under
+  // sidebar. Hue carries the meaning and the wash stays pale: these sit under
   // running text for as long as the document is open, and a saturated wash
   // would fight the words it is meant to mark. Kept in step with the tool
-  // buttons and the sidebar labels, which use the same hues.
-  /** @type {Record<string, [number, number]>} */
+  // buttons and the sidebar labels, which use the same hues. The hues are
+  // literal Okabe-Ito hex, because this frame cannot read the app's CSS
+  // variables.
+  /** @type {Record<string, [number, number, number]>} */
   const TINTS = {
-    commenting: [42, 55],
-    highlighting: [145, 28],
+    commenting: [230, 159, 0], // #e69f00
+    highlighting: [0, 158, 115], // #009e73
   };
-  /** @type {[number, number]} */
-  const NEUTRAL = [220, 12]; // resolved: the colour has served its purpose
-  /** @param {string} motivation @returns {[number, number]} */
+  /** @type {[number, number, number]} */
+  const NEUTRAL = [153, 153, 153]; // #999999, resolved: the colour has served its purpose
+  /** @param {string} motivation @returns {[number, number, number]} */
   const tintOf = (motivation) => TINTS[motivation] || TINTS.commenting;
   // Each annotation stacked on the same words takes the wash a step deeper,
-  // stopping where dark text would start to struggle against it.
-  /** @param {[number, number]} tint @param {number} depth @param {number} [alpha] */
-  const wash = ([hue, saturation], depth, alpha = 1) =>
-    `hsl(${hue} ${saturation}% ${Math.max(70, 90 - (Math.min(depth, 5) - 1) * 5)}% / ${alpha})`;
+  // stopping where dark text would start to struggle against it. The base
+  // hue is mixed toward white until it reaches that lightness.
+  /** @param {[number, number, number]} rgb @param {number} depth @param {number} [alpha] */
+  const wash = (rgb, depth, alpha = 1) => {
+    const target = Math.max(70, 90 - (Math.min(depth, 5) - 1) * 5) / 100;
+    const lightness = (Math.max(...rgb) + Math.min(...rgb)) / 510;
+    const mix = (target - lightness) / (1 - lightness);
+    const [r, g, b] = rgb.map((channel) => Math.round(channel + (255 - channel) * mix));
+    return `rgb(${r} ${g} ${b} / ${alpha})`;
+  };
 
   function post(message) {
     if (!READER) return;
