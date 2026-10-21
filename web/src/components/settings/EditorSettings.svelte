@@ -1,7 +1,9 @@
 <script>
   // How the source pane behaves for the person at this browser.
+  import { onMount } from "svelte";
   import SettingRow from "./SettingRow.svelte";
   import ShortcutTable from "../ShortcutTable.svelte";
+  import { FONTS, MIN_SIZE, MAX_SIZE, font, setFont, onFont, size, setSize, onSize, lineHeight, setLineHeight, onLineHeight } from "../../lib/editor-type.js";
 
   let {
     keys = "default",
@@ -14,6 +16,16 @@
     oncheck,
     commands = {},
   } = $props();
+
+  // Follows the font, size and line height, which a pinch or another tab may change.
+  let currentFont = $state(font());
+  onMount(() => onFont((now) => { currentFont = now; }));
+
+  let currentSize = $state(size());
+  onMount(() => onSize((now) => { currentSize = now; }));
+
+  let currentLineHeight = $state(lineHeight());
+  onMount(() => onLineHeight((now) => { currentLineHeight = now; }));
 </script>
 
 <SettingRow id="editor-keys" title="Key bindings">
@@ -22,6 +34,47 @@
     <option value="default">Standard</option>
     <option value="vim">Vim</option>
     <option value="emacs">Emacs</option>
+  </select>
+</SettingRow>
+
+<SettingRow id="editor-font" title="Font"
+            description="Fonts installed on this computer. LibrePaper does not download fonts.">
+  <span class="setting-inline">
+    <select class="select setting-select" aria-label="Font" value={currentFont.id}
+            onchange={(event) => setFont(event.currentTarget.value, currentFont.custom)}>
+      {#each FONTS as entry (entry.id)}
+        <option value={entry.id}>{entry.name}</option>
+      {/each}
+    </select>
+    {#if currentFont.id === "custom"}
+      <input type="text" class="input input-sm setting-input" aria-label="Font name" placeholder="Font name"
+             value={currentFont.custom}
+             onchange={(event) => setFont("custom", event.currentTarget.value)} />
+    {/if}
+  </span>
+</SettingRow>
+
+<SettingRow id="editor-font-size" title="Font size"
+            description="Pinch or Ctrl and scroll over the source to change it there too.">
+  <span class="setting-inline">
+    <input type="number" class="input input-sm setting-input" min={MIN_SIZE} max={MAX_SIZE} step="1"
+           aria-label="Font size in pixels" value={currentSize}
+           onchange={(event) => {
+             const field = event.currentTarget;
+             const next = field.value.trim() === "" ? NaN : Number(field.value);
+             if (Number.isFinite(next)) setSize(next);
+             field.value = String(size());
+           }} />
+    <span>px</span>
+  </span>
+</SettingRow>
+
+<SettingRow id="editor-line-height" title="Line height">
+  <select class="select setting-select" aria-label="Line height" value={currentLineHeight}
+          onchange={(event) => setLineHeight(event.currentTarget.value)}>
+    <option value="compact">Compact</option>
+    <option value="normal">Normal</option>
+    <option value="wide">Wide</option>
   </select>
 </SettingRow>
 
@@ -58,3 +111,11 @@
             description="Press ? anywhere outside the source to come back here.">
   <ShortcutTable context={commands} />
 </SettingRow>
+
+<style>
+  .setting-inline {
+    display: flex;
+    align-items: center;
+    gap: calc(var(--spacing) * 2);
+  }
+</style>
