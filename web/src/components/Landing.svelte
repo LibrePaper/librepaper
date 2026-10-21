@@ -1,9 +1,6 @@
 <script>
   import { untrack } from "svelte";
   import { Menu } from "@skeletonlabs/skeleton-svelte";
-  // The latest tag request per project and tag. A failed request undoes only
-  // its own change, and only when no newer request for that tag has started.
-  const tagRequests = new Map();
   // The landing page, which for anyone signed in is not a landing page at all
   // but the other half of the workspace.
   //
@@ -422,6 +419,10 @@
   function star(doc) {
     return setTag(doc, "favorites", !hasTag(doc, "favorites"));
   }
+
+  // The latest tag request per project and tag. A failed request undoes only
+  // its own change, and only when no newer request for that tag has started.
+  const tagRequests = new Map();
 
   // Putting a tag on a project or taking it off is the same request whatever
   // the tag is. The row changes first and is put back if the server refuses,

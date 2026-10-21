@@ -169,13 +169,10 @@ impl PostgresCatalog {
         validate_colour(colour)?;
         let id = Uuid::now_v7();
         let mut tx = self.begin_metered().await?;
-        sqlx::query_scalar!(
-            "SELECT id FROM accounts WHERE id=$1 FOR UPDATE",
-            account_id,
-        )
-        .fetch_optional(&mut *tx)
-        .await?
-        .ok_or(Error::NotFound)?;
+        sqlx::query_scalar!("SELECT id FROM accounts WHERE id=$1 FOR UPDATE", account_id,)
+            .fetch_optional(&mut *tx)
+            .await?
+            .ok_or(Error::NotFound)?;
         let inserted = sqlx::query_scalar!(
             "INSERT INTO tags(id,account_id,name,colour)
              SELECT $1::uuid,$2::uuid,$3::text,$4::text
