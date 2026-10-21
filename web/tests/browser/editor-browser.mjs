@@ -31,6 +31,7 @@ import ${JSON.stringify(join(root, "web/src/styles/librepaper.css"))};
 import { LoroDoc } from "loro-crdt";
 import { tick } from ${JSON.stringify(join(root, "web/node_modules/svelte/src/index-client.js"))};
 import { EditorView } from ${JSON.stringify(join(root, "web/node_modules/@codemirror/view/dist/index.js"))};
+import { startCompletion } from ${JSON.stringify(join(root, "web/node_modules/@codemirror/autocomplete/dist/index.js"))};
 import { undoManagerStateField } from ${JSON.stringify(join(root, "web/vendor/loro-codemirror/undo.ts"))};
 // The binding offers whether an undo is available, not how many are stacked
 // up. What these checks are really about is whether the history survived, so
@@ -834,6 +835,59 @@ window.vimCheck = async () => {
     undoKept: undoDepth(offView.state) === undo,
   };
 };
+// The Editor settings switch autocomplete, closing brackets and the drawing
+// of compiler messages. Each is reconfigured in the open view: the same
+// EditorView before and after.
+window.switchesCheck = async () => {
+  const value = joinSession({ send: () => {}, mayEdit: true });
+  const textId = value.addText("switches.md", "alpha");
+  value.setMain(textId);
+  const host = document.createElement("section");
+  document.body.append(host);
+  const local = createClassComponent({
+    component: Editor,
+    target: host,
+    props: { session: value, format: "markdown", file: textId },
+  });
+  await tick();
+  const view = EditorView.findFromDOM(host.querySelector(".cm-editor"));
+  // Typing goes through the input handlers before the default insertion,
+  // which is where closeBrackets answers.
+  const type = (text) => {
+    const { from, to } = view.state.selection.main;
+    const insert = () => view.state.update({ changes: { from, to, insert: text }, selection: { anchor: from + text.length } });
+    if (!view.state.facet(EditorView.inputHandler).some((handler) => handler(view, from, to, text, insert))) view.dispatch(insert());
+  };
+  const typed = () => {
+    view.dispatch({ changes: { from: 0, to: view.state.doc.length, insert: "" }, selection: { anchor: 0 } });
+    type("(");
+    return view.state.doc.toString();
+  };
+  const marks = () => host.querySelectorAll(".cm-lintRange").length;
+  const diagnostics = [{ severity: "error", message: "Undefined control sequence", file: "switches.md", line: 1, column: 1, end_line: 1, end_column: 2 }];
+
+  const result = { bracketsOn: typed(), completionOn: startCompletion(view) };
+  view.dispatch({ changes: { from: 0, insert: "alpha" } });
+  local.setDiagnostics(diagnostics);
+  await tick();
+  result.marksOn = marks();
+  local.$set({ completion: false, brackets: false, check: false });
+  await tick();
+  result.bracketsOff = typed();
+  result.completionOff = startCompletion(view);
+  view.dispatch({ changes: { from: 0, insert: "alpha" } });
+  local.setDiagnostics(diagnostics);
+  await tick();
+  result.marksOff = marks();
+  local.$set({ check: true });
+  await tick();
+  result.marksBack = marks();
+  result.sameView = EditorView.findFromDOM(host.querySelector(".cm-editor")) === view;
+  local.$destroy();
+  host.remove();
+  value.leave();
+  return result;
+};
 window.multiTabPersistenceCheck = async () => {
   const identity = { origin: location.origin, documentId: crypto.randomUUID(), slug: "multi-tab" };
   const events = { writing() {}, persisted() {}, hydrated() {}, confirmed() {}, failed(error) { throw error; } };
@@ -1074,6 +1128,16 @@ try {
   assert.equal(vim.panelGone, true, "turning Vim off left its status panel");
   assert.equal(vim.sameViewOff, true, "turning Vim off rebuilt the editor");
   assert.equal(vim.undoKept, true, "toggling Vim dropped the undo history");
+  const switches = await evaluate("switchesCheck()");
+  assert.equal(switches.bracketsOn, "()", "an opening bracket was not closed with the switch on");
+  assert.equal(switches.bracketsOff, "(", "an opening bracket was closed with the switch off");
+  assert.equal(switches.completionOn, true, "autocomplete could not start with the switch on");
+  assert.equal(switches.completionOff, false, "autocomplete started with the switch off");
+  assert.ok(switches.marksOn > 0, "a compiler error was not drawn with the check on");
+  assert.equal(switches.marksOff, 0, "a compiler error was drawn with the check off");
+  assert.ok(switches.marksBack > 0, "turning the check back on did not redraw the last render's marks");
+  assert.equal(switches.sameView, true, "a switch rebuilt the editor");
+  console.log("editor-browser: the autocomplete, bracket and check switches reconfigure the open editor");
   console.log("editor-browser: vim keys toggle in place, keeping the view and its history");
 
   const tracked = await evaluate("trackingCheck()");

@@ -42,6 +42,14 @@ export const KEYMAP = "librepaper-keymap";
 // The source text size in pixels. Like the keymap, a habit of the person
 // looking at the source rather than of the document.
 export const EDITOR_SIZE = "librepaper-editor-size";
+// Whether suggestions pop up while typing in the source. Like the keymap, a
+// habit of the person typing.
+export const EDITOR_COMPLETION = "librepaper-editor-completion";
+// Whether typing an opening bracket adds the closing one.
+export const EDITOR_BRACKETS = "librepaper-editor-brackets";
+// Whether compiler messages are drawn in the source: underlines and gutter
+// marks. The list of messages stays available either way.
+export const EDITOR_CHECK = "librepaper-editor-check";
 // Whether the pages are light, dark, or follow the computer: "system", "light"
 // or "dark". Like the keymap, a habit of the person looking at the screen.
 export const THEME = "librepaper-theme";

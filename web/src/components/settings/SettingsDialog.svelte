@@ -27,6 +27,12 @@
     // The editor.
     keys = "default",
     onkeys = undefined,
+    completion = true,
+    oncompletion = undefined,
+    brackets = true,
+    onbrackets = undefined,
+    check = true,
+    oncheck = undefined,
     // What the workspace can currently be asked to do, for the shortcut table
     // the editor category shows. The reader assembles it; lib/commands.js
     // decides from it what is available.
@@ -93,7 +99,7 @@
         {#if shown.id === "appearance"}
           <AppearanceSettings />
         {:else if shown.id === "editor"}
-          <EditorSettings {keys} {onkeys} {commands} />
+          <EditorSettings {keys} {onkeys} {completion} {oncompletion} {brackets} {onbrackets} {check} {oncheck} {commands} />
         {:else if shown.id === "rendering"}
           <section class="settings-subsection">
             <div class="settings-section-title"><h4 class="settings-subhead">LaTeX</h4></div>

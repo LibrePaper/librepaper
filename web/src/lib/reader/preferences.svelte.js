@@ -1,9 +1,10 @@
 // The habits this reader keeps between visits.
 //
-// Which side the source is on, which keys the editor answers to, how wide the
-// panes are: none of it is about the document, all of it is about the person
-// at this browser, and all of it is remembered. Where the last visit ended is
-// not: every project opens on its files, its main file and its preview.
+// Which side the source is on, which keys the editor answers to, which editor
+// helps are on, how wide the panes are: none of it is about the document, all
+// of it is about the person at this browser, and all of it is remembered.
+// Where the last visit ended is not: every project opens on its files, its
+// main file and its preview.
 //
 // It is here rather than in the page because remembering was the part that
 // kept going wrong. Setting a habit and writing it down were two statements,
@@ -15,7 +16,7 @@
 // this one does not, so every one of them is checked against what is on
 // offer now rather than trusted.
 
-import { KEYMAP, SOURCE_SIDE, read, write } from "../storage.js";
+import { EDITOR_BRACKETS, EDITOR_CHECK, EDITOR_COMPLETION, KEYMAP, SOURCE_SIDE, read, write } from "../storage.js";
 import { PANES, remember, stored } from "../panes.js";
 
 const KEYMAPS = ["vim", "emacs"];
@@ -26,6 +27,10 @@ export function createPreferences() {
   const state = $state({
     sourceSide: read(SOURCE_SIDE, "left") === "right" ? "right" : "left",
     keys: oneOf(KEYMAPS, read(KEYMAP, "default"), "default"),
+    // On unless a stored false says otherwise, so a first visit gets all three.
+    completion: read(EDITOR_COMPLETION, true) !== false,
+    brackets: read(EDITOR_BRACKETS, true) !== false,
+    check: read(EDITOR_CHECK, true) !== false,
     // The source and the document are kept as a share of what they have
     // between them; the comment column is kept in pixels. Two units because
     // they are two different kinds of pane: half a window stays half when the
@@ -46,6 +51,18 @@ export function createPreferences() {
     setKeys(next) {
       state.keys = next;
       write(KEYMAP, next);
+    },
+    setCompletion(on) {
+      state.completion = Boolean(on);
+      write(EDITOR_COMPLETION, Boolean(on));
+    },
+    setBrackets(on) {
+      state.brackets = Boolean(on);
+      write(EDITOR_BRACKETS, Boolean(on));
+    },
+    setCheck(on) {
+      state.check = Boolean(on);
+      write(EDITOR_CHECK, Boolean(on));
     },
     /// What the reader asked a pane to be. What fits is worked out again
     /// every time it is needed: writing the fitted size back would make a
