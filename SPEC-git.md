@@ -23,6 +23,10 @@ current committed `HEAD` policy during adoption, records server path
 membership explicitly, handles local-only transitions as creates or
 preserved files, and makes merge-oriented pulls opt out of rebasing.
 
+The 2026-10-21 destructive-risk revision binds helper state to immutable
+project identity, validates adopted fetch snapshots, adds a read-only push
+preview, and documents conservative first-connection and recovery rules.
+
 ## Summary
 
 Every desktop app package ships a git remote helper,
@@ -137,15 +141,15 @@ rebase. What that pull needs depends on where the repository came from.
 |---|---|
 | A clone of a repository that already syncs with this project, for example a coauthor's clone from GitHub | `git pull --no-rebase librepaper main` |
 | A repository and a project that were never connected | `git pull --no-rebase --allow-unrelated-histories librepaper main` |
-| The same, with the repository winning where both sides changed the same lines | `git pull --no-rebase --allow-unrelated-histories -X ours librepaper main` |
-| The same, with the project winning | `git pull --no-rebase --allow-unrelated-histories -X theirs librepaper main` |
 | A repository going into a new, empty project | `git pull --no-rebase --allow-unrelated-histories librepaper main` |
 
 Each starts with
 `git remote add librepaper "librepaper::https://<site>/docs/<slug>#k=<key>"`.
 After the first pull, the user resolves any conflicts, commits, marks
 local-only paths (see "Local-only paths") and pushes. Every later pull and
-push is plain.
+push is plain. Before the first real push, `git push --dry-run librepaper
+main` previews the proposed path operations; then review warnings before
+running the ordinary push.
 
 Set the repository-local default with:
 
@@ -160,8 +164,37 @@ setting may still reject a merge commit; use
 intentionally prefer rebase for daily work can continue using
 `git pull --rebase`, with the same caveats as ordinary Git rebasing.
 
-- **Already connected.** Fetch commits carry a `LibrePaper-Project`
-  trailer. A first fetch adopts the newest such commit in `HEAD`'s history
+Before a first fetch into any existing repository, including one with
+unborn `HEAD`, the helper requires a clean index and working tree.
+`git status --short --untracked-files=all`
+shows untracked files; ignored files are not covered and need a separate
+backup. After dirty-state, target-identity, and candidate-snapshot
+validation, and before the first import, a real fetch creates a uniquely named backup
+branch at current `HEAD`. Rejected identity or snapshot checks leave all
+refs, including backup refs, unchanged. Dry-run never creates this branch.
+On collision, choose another name; never overwrite a ref. A clone or any
+repository with unborn `HEAD` gets no empty backup branch, but still gets the
+dirty-state check. The branch protects committed content only; it does not
+save untracked, ignored, or dirty content, and a reflog is not a backup.
+
+The helper never auto-stashes, resets, cleans, rebases, or rewrites the
+user's branches. Its working-tree and index effects are limited to Git's
+normal checkout/merge behavior for the requested command.
+
+For never-connected histories, the ordinary merge is recommended. Advanced,
+consequential alternatives are:
+
+```sh
+git pull --no-rebase --allow-unrelated-histories -X ours librepaper main
+git pull --no-rebase --allow-unrelated-histories -X theirs librepaper main
+```
+
+These can discard conflicting content from one side. Review the merge and
+backup before pushing; hash checks cannot detect a harmful resolution.
+
+- **Already connected.** Fetch commits carry `LibrePaper-Project` and
+  `LibrePaper-Project-Id`
+  trailers. A first fetch adopts the newest such commit in `HEAD`'s history
   as base, so the pull is an ordinary three-way merge and needs no
   `--allow-unrelated-histories` flag.
   See "First fetch".
@@ -180,16 +213,17 @@ intentionally prefer rebase for daily work can continue using
 - **An empty project.** Its first fetch is a root commit with an empty
   tree, so the merge adds the repository's files and the push uploads
   them. It needs no special case.
-- **No force.** `git push --force` is refused, see "Push". A user who wants
-  the repository to win uses `-X ours` on the first pull, which deletes
-  nothing in the project.
+- **No force.** `git push --force` is refused, see "Push". Advanced
+  first-merge side choices are consequential, require review, and can discard
+  conflicting content.
 
 ### Daily use
 
 ```sh
 git pull librepaper main      # bring in everyone's LibrePaper edits
 # edit locally, commit as usual
-git push librepaper main      # send your commits to LibrePaper
+git push --dry-run librepaper main  # inspect the proposed operations
+git push librepaper main      # review warnings, then send your commits
 ```
 
 - A push that applies prints `LibrePaper: applied 3 files (paper.qmd,
@@ -212,7 +246,10 @@ problem and a final line saying what to do:
   Run: git pull --no-rebase librepaper main, then push again.
 ```
 
-The full list is in "Push: refusal rules".
+Identity mismatches name the expected and resolved project ids; an invalid
+snapshot names the commit and validation failure; dirty first fetch names
+the dirty paths and says to commit or move the files before retrying. The
+full list is in "Push: refusal rules".
 
 ## Architecture
 
@@ -325,9 +362,9 @@ ordinary commit in the user's repository, and git never sends it anywhere.
   `synced_paths` (paths with known server baseline values in base, after
   LF normalization for text),
   `pending_create` (local candidate paths that must be created remotely),
-  `policy_digest` (effective attributes plus the `/api/config` text and
-  asset extension lists), and the hashes of preserved local-only and
-  pending-candidate values in the base tree.
+  canonical origin and immutable project UUID, `policy_digest` (effective
+  attributes plus `/api/config` text and asset extension lists), and hashes
+  of preserved local-only and pending-candidate values in the base tree.
   The helper advances this ref and the base ref in one ref transaction.
 - `.git/librepaper/<remote>/state.json` holds:
   - a cache of all fields in the durable metadata ref, including base OID,
@@ -344,6 +381,8 @@ rebuilds it from the metadata ref. It never infers remote presence from a
 blob in the commit tree. If both refs are absent, the helper must fetch
 before push.
 
+Before credential lookup or network use, the helper compares the parsed
+canonical remote origin with durable metadata. A mismatch refuses locally.
 The helper serializes operations for the same repository and remote from
 reading these refs through recording the outcome. A cache whose base id
 differs from the metadata ref is discarded. Missing or inconsistent durable
@@ -388,11 +427,30 @@ reuses them.
 
 ### Server read
 
-`GET /api/documents/{slug}/project` returns `schema`, `project_digest`,
+`GET /api/documents/{slug}/project` returns `schema`, immutable
+`project_id` (the immutable catalogue `IndexEntry.storage_id`), `project_digest`,
 `tree` and `texts`. It accepts the login token and link key, in the same
 way `/snapshot` does for `librepaper export`, and supports `If-None-Match`.
 Binary files are read from `GET /api/documents/{slug}/assets/{sha}`, which
 `librepaper export` already reads with the same pair.
+A Git-identified request (`LibrePaper-Git: 1`) on a bound remote requires
+`LibrePaper-Project-Id`; missing or mismatched ids refuse before conditional
+responses or effects, including `304`. This applies to project and asset
+reads, asset uploads, and pushes. The server gates Git asset upload before
+upload admission, quota reservation, or blob persistence, and rechecks the id
+for mutations/replay. Existing browser, export, and agent authentication
+contracts remain unchanged. The initial unbound bootstrap project GET may
+omit the id and returns the resolved identity without conditional reuse.
+The helper checks that response identity before caching a digest or adopting
+history. Durable metadata binds canonical origin plus project UUID; slug
+and link key are not identity. Canonical origin has normalized scheme,
+lowercase host and effective port, with default port omitted and no path,
+key, or userinfo. Compare it with durable state locally before credential
+lookup or any network request. A different origin refuses locally. Key
+rotation or slug rename remains valid for the same UUID after server
+validation. A different project requires a new remote name and the documented
+first-connection procedure; never reuse or delete old state to bypass the
+check. Push sends the expected id and does not perform a full-project read.
 
 `project_digest` covers every path, the projected text of every text file
 and the asset hash of every binary file. Renaming a file or replacing a
@@ -470,25 +528,47 @@ rejected there.
      fetch time;
    - message: `LibrePaper edits` plus a blank line and trailers,
      `LibrePaper-Project: https://<site>/docs/<slug>`,
-     `LibrePaper-Digest: <project_digest>`, and
-     `LibrePaper-Synced-Paths: <canonical JSON array>`. The array contains
-     the byte-sorted managed paths whose exact fetched values remain in
-     this tree. It is a single-line JSON array with canonical JSON string
+     `LibrePaper-Project-Id: <project UUID>`,
+     `LibrePaper-Digest: <project_digest>`,
+     `LibrePaper-Synced-Paths: <canonical JSON array>`, and
+     `LibrePaper-Snapshot: v1:<sha256>`. The array contains the byte-sorted
+     managed paths whose exact fetched values remain in this tree. It is a
+     single-line JSON array with canonical JSON string
      escaping, for example `["paper.qmd","refs.bib"]`. This trailer transfers
      membership when another clone adopts the fetch commit. The metadata
      ref also records pending candidates.
+
+   `LibrePaper-Snapshot` is SHA-256 over UTF-8 bytes of the compact
+   [RFC 8785](https://www.rfc-editor.org/rfc/rfc8785.html) JSON
+   Canonicalization Scheme (JCS) serialization of this exact ordered array:
+   `["librepaper-snapshot-v1", project_id, canonical_origin, tree_oid,
+   object_format, synced_paths, project_digest]`. Render the SHA-256 digest
+   as 64 lowercase hexadecimal characters. Read `tree_oid` from the actual
+   candidate Git tree and `object_format` from the repository, never from
+   claimed trailer values. Recompute the checksum with those values and the
+   validated metadata. Use the full tree oid and object format `sha1` or
+   `sha256`. Paths are byte-sorted and unique. The commit id is excluded to
+   avoid circularity. The checksum binds
+   immutable identity, origin, tree, membership, and server digest. It catches
+   accidental edits, but is not a signature: deliberately false metadata
+   can be regenerated with a matching checksum.
+
 5. Move base: update the base ref, metadata ref, and `state.json`.
 
 ### First fetch
 
-With no base, the helper decides the new commit's parent from the
-repository:
+With no base, first parse the URL and compare its canonical origin with
+any durable binding before credentials or network use. Bootstrap with a
+project GET, resolve the UUID, and only then inspect candidate commits. The
+helper decides the new commit's parent from the repository:
 
 1. When `HEAD` is unborn, as in `git clone` or a fresh `git init`, the
    commit has no parent.
 2. Otherwise the helper looks for the newest commit in
-   `HEAD`'s history whose `LibrePaper-Project` trailer names this project
-   and which has a valid `LibrePaper-Synced-Paths` trailer.
+   `HEAD`'s history whose canonical origin and `LibrePaper-Project-Id` match the resolved
+   target. Require exactly one of every snapshot trailer and validate the
+   checksum and all snapshot fields before adoption; a slug change alone is
+   allowed.
    When it finds one, that historical commit becomes base, with
    `project_digest` set to `null`. Fetch writes a new commit parented by
    that historical base. It downloads the current server projection and
@@ -511,10 +591,20 @@ repository:
    or classify them as pending creates. The unrelated-history merge keeps
    those files as ordinary Git-side additions.
 
-The trailer is the share link without the key. A slug opens nothing
-without a key, so a public repository can carry it. A trailer that was
-edited or forged can only make a push refuse, because the server still
-checks every touched file's hash.
+Before adoption, validate all required trailers exactly once, UUID and
+origin, canonical unique synced-path membership, supported object format,
+tree membership and modes, and checksum. Do not assign base or move any ref
+until this validation succeeds. Every claimed member must exist with
+regular-file mode `100644`. Malformed or duplicate metadata, missing members, wrong
+modes, or a tree changed by amend, rebase, or cherry-pick while trailers
+remain causes refusal. Message-only edits that leave snapshot tree and metadata
+unchanged do not invalidate it. A matching-project invalid snapshot is a
+hard error: preserve refs and working tree; do not fall through to an older baseline.
+A different project or origin is never adopted. All produced snapshots
+require this format; there is no deployed legacy format. Recovery preserves
+the repository and restores original snapshot history from a trusted backup
+or fresh LibrePaper clone, then explicitly merges the saved local branch.
+Do not perform metadata surgery or hard-reset to hide the issue.
 
 ### Local-only paths
 
@@ -608,6 +698,26 @@ refuses, naming the path.
 
 ## Push
 
+`git push --force` and any other force update are refused; there is no
+force-push bypass.
+
+### Preview
+
+`git push --dry-run <remote> main` uses remote-helper `option dry-run true`
+and prints the bound expected identity from local state plus a per-path
+plan of create, edit, delete, binary replacement, and skipped local-only
+paths. It does not freshly resolve or authenticate the target, download the
+project, or claim permission/dependency preflight. A rename appears
+as delete plus create and warns that comments anchored in the old file are
+lost. The preview never uploads assets, calls the mutating push route,
+advances refs, marks or metadata, or mints/persists operation receipts.
+It does not claim server dependency
+checks passed. Use temporary marks and suppress private ref updates. Any
+transport dry-run option is honored. Actual push recomputes the plan and the
+server rechecks identity and dependencies. Before applying an actual push,
+print warnings for new uploads, deletions/renames, and local-only to
+synchronized transitions. There is no mandatory interactive confirmation.
+
 ### Inputs
 
 Git sends a fast-export stream for `refs/heads/main`. The helper reads two
@@ -622,8 +732,12 @@ it.
 
 ### Steps
 
+Dry-run performs only the local planning and validation in steps 1 through
+6, with policy changes held in memory. It prints the plan and exits before
+asset uploads, Submit, or Record, including for an empty change set.
+
 1. **Branch check.** Refuse any ref other than `refs/heads/main`. Refuse
-   ref deletion.
+   ref deletion and any force option.
 2. **Ancestry check.** With no base, refuse and say to pull first. The
    pushed commit must descend from base. Otherwise refuse, even for
    `--force`, which git passes to the helper as `option force true`.
@@ -710,6 +824,9 @@ the local candidate before resolving an occupied pending-create path.
 | The token is refused | server | `librepaper login` |
 | The link was replaced, revoked or expired | server | `git remote set-url` with a new git URL |
 | The helper is too old | server | the update command |
+| Project identity is missing or mismatched | helper/server | expected and resolved project id; correct remote URL or use a new remote name |
+| First fetch has dirty staged, tracked or untracked files | helper | paths; commit or move them and retry |
+| Matching-project snapshot metadata is invalid | helper | commit and failed validation; restore trusted snapshot history and merge saved branch |
 
 The `=======` rule refuses only when a `<<<<<<< ` line also appears in the
 same file, because a line of `=` is valid Markdown.
@@ -856,7 +973,9 @@ that both call, and both gain from every improvement to it.
   }
   ```
 
-  The route parses the body, sets `Origin::Git`, and calls
+  The route requires `LibrePaper-Project-Id`, resolves the slug, validates
+  the immutable id before conditional behavior or effects, and rechecks it
+  during mutation. It parses the body, sets `Origin::Git`, and calls
   `apply_source_change`. With `"publish": "suggestions"` it calls the
   tracked-change command instead, which is how `git push -o review` will
   work. The route holds no logic of its own beyond authentication and
@@ -897,6 +1016,24 @@ source, and figures arrive through the asset route, outside the log. A
 Validating thousands of byte-range patches is cheap, and their bytes are
 already counted.
 
+## Destructive risks and recovery
+
+Deleting a synchronized file in Git deletes it in LibrePaper after a
+successful push. A rename is delete plus create and loses comment anchors.
+Git carries file content and history, not annotations or pending suggestions,
+so it is not a full project backup. Fetch writes mode `100644`; an
+executable bit is lost. Supported files in the pushed tree are uploaded
+unless marked local-only, even if their commits were previously kept local
+or in private repositories. Local-only is not a confidentiality guarantee
+when publishing to GitHub or another host. `.git/info/attributes` affects
+only that clone; use committed `.gitattributes` for shared policy. Treat the link key
+as a secret; rotate or revoke it after exposure and update remotes. The
+metadata cache is reconstructible, but refs hold safety-critical state.
+`reset --hard` and `clean` can destroy local work; reflogs expire and are
+not backups. Keep the dedicated backup branch and independent backups
+before risky merges. Occupied-path pending-create recovery and
+`-X no-renames` remain explicit as specified under "Local-only paths".
+
 ## Known limits
 
 - **Any edit to a touched file refuses the push.** A coauthor who changed
@@ -926,11 +1063,16 @@ already counted.
 Each step can be merged and shipped on its own.
 
 1. **Server: read.**
+   - `/api/documents/{slug}/project` returns the immutable project UUID and
+     checks mandatory `LibrePaper-Project-Id` on bound reads; bootstrap
+     returns identity without conditional reuse;
    - `/api/documents/{slug}/project` accepts the login token with a link
      key, as `/snapshot` does;
    - the git projection without pending suggestions, its digest and file
      hashes;
-   - check that the asset route does too, as `librepaper export` relies on.
+   - Git asset reads and uploads require the expected project id and reject
+     mismatch before conditional response or upload admission; browser/export
+     routes retain their existing authentication contract.
 2. **Helper: fetch.**
    - `git-remote-librepaper` installed by every package that installs
      `librepaper`;
@@ -938,9 +1080,9 @@ Each step can be merged and shipped on its own.
    - base state, the `librepaper` attribute, line endings, file modes;
    - the git URL and sign-in on first use, refusing without a terminal;
    - text or binary from `/api/config`;
-   - the first fetch: current-HEAD policy during adoption, pending-create
-     preservation, and adopting a commit with this project's trailer, or a
-     root commit with the `--no-rebase --allow-unrelated-histories` hint;
+   - bootstrap identity resolution, checksum validation before adoption,
+     current-HEAD policy, pending-create preservation, and a non-overwriting
+     backup branch after validation and before import;
    - the durable metadata ref for base membership, digest and pending
      creates.
    At this point clone, pull and backup to GitHub work, starting from a
@@ -955,8 +1097,9 @@ Each step can be merged and shipped on its own.
    - tracked changes accept a `SourceChange`;
    - the thin push route and the version handshake.
 4. **Helper: push.**
-   - `export` capability, ancestry check, local refusal rules, patch
-     generation, per-file dependencies, state update.
+   - `export` capability, expected project-id header, ancestry check, local
+     refusal rules, patch generation, per-file dependencies, state update;
+     `option dry-run true` with temporary marks and no private-ref updates.
 5. **Web.**
    - "Copy git URL" on each link in the Share dialog;
    - "Use with git" panel in the project menu with the commands, pointing
@@ -976,13 +1119,17 @@ Server, in the gated Postgres suite:
   for the owner too;
 - replacing, revoking or expiring the link ends access at the next
   request, and signing out everywhere does too;
-- the push route applies all or nothing;
+- the push route applies all or nothing and rejects missing or mismatched
+  `LibrePaper-Project-Id` before effects, including on replay;
 - a touched file changed since base refuses and names the file, while an
   untouched file changed since base does not refuse;
 - a refusal lists every changed touched file, not only the first;
 - a file with a pending suggestion: its dependency hash is the projected
   text's, and an agent patch to the same file still checks the stored text;
 - replacing a figure and renaming a file each change `project_digest`;
+- a Git asset upload with a mismatched id (including slug reuse) refuses
+  before admission, quota changes or blob persistence, and a mismatched-id
+  conditional read cannot return `304`;
 - deleting a binary refuses when its asset hash is not the expected one;
 - a text delete object has `path`, omits `expect`, and uses its dependency;
   a text delete with `expect` refuses. A binary delete requires `path` and
@@ -1006,6 +1153,26 @@ Server, in the gated Postgres suite:
   that overlaps or touches one refuses and names it.
 
 Helper, unit tests with a temporary repository:
+
+- reusing bound state with a changed origin or project UUID refuses without
+  moving refs, marks or state, and without file writes/uploads; a slug rename
+  or key rotation for the same UUID succeeds after server validation;
+- first bootstrap resolves project identity before adopting history;
+- shared checksum fixtures for SHA-1 and SHA-256 repositories and a non-ASCII
+  path produce the specified JCS/SHA-256 bytes;
+- amended/rebased snapshot tree, checksum/member tampering, duplicate or
+  malformed trailers, missing members and wrong file modes refuse in local
+  clones and clones fetched from GitHub; message-only edits with identical
+  snapshot tree/metadata remain valid; the checksum contains no secret;
+- backup branch names never overwrite collisions, and dirty tracked,
+  untracked or staged files, including in unborn repositories, refuse before
+  import; identity/snapshot rejection also leaves backup refs untouched;
+- `git push --dry-run` reports target, operations, binary replacements,
+  skipped local-only paths and rename warning while causing zero mutations,
+  asset uploads or receipt persistence; an actual push still refuses a
+  stale file after preview;
+- actual pushes warn before new uploads, deletion/rename and local-only
+  transitions; rename recovery retains the old file as delete/add;
 
 - clone, then pull with no change, makes no new commit;
 - local-only paths survive fetch and are never pushed;
