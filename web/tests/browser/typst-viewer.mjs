@@ -145,8 +145,11 @@ async function settle(tab) {
   let last = -1;
   for (let tries = 0; tries < 120; tries++) {
     await wait(100);
-    const now = await tab.eval("return window.text().length");
-    if (now > 0 && now === last) return;
+    const { now, placeholder } = await tab.eval(`
+      const text = window.text();
+      return { now: text.length, placeholder: text.startsWith('Nothing to show yet') };
+    `);
+    if (now > 0 && now === last && !placeholder) return;
     last = now;
   }
   throw new Error("viewer did not publish PDF text");
@@ -178,9 +181,13 @@ async function run() {
   ` });
   await tab.send("Page.navigate", { url: `${BASE}/harness.html` });
   for (let tries = 0; tries < 200; tries++) {
-    if (await tab.eval("return Boolean(window.ready && window.doc && window.doc())")) break;
+    if (await tab.eval("return Boolean(window.ready && window.doc && window.doc() && window.text().startsWith('Nothing to show yet'))")) break;
     await wait(100);
   }
+  // The frame publishes its placeholder on load and again after a 250ms
+  // debounce. Outwait that debounce so no placeholder publish can land after
+  // the first sendPdf() has emptied window.seen.ready.
+  await wait(300);
 
   await tab.eval("await window.sendPdf('/pdf/paper')");
   await settle(tab);
