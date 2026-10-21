@@ -8,7 +8,8 @@ globalThis.localStorage = {
   setItem: (key, value) => values.set(key, value),
 };
 
-const { clampSize, sizeAfter, storedSize } = await import("../../src/lib/editor-zoom.js");
+const { clampSize, size } = await import("../../src/lib/editor-type.js");
+const { sizeAfter } = await import("../../src/lib/editor-zoom.js");
 const KEY = "librepaper-editor-size";
 
 assert.equal(clampSize(14), 14);
@@ -21,12 +22,12 @@ assert.equal(sizeAfter(14, 2), 28);
 assert.equal(sizeAfter(14, 0.5), 10);
 assert.equal(sizeAfter(14, 1.5), 21);
 
-assert.equal(storedSize(), 14);
+assert.equal(size(), 14);
 values.set(KEY, JSON.stringify(17.6));
-assert.equal(storedSize(), 18);
+assert.equal(size(), 18);
 values.set(KEY, JSON.stringify(50));
-assert.equal(storedSize(), 28);
+assert.equal(size(), 28);
 values.set(KEY, "not json");
-assert.equal(storedSize(), 14);
+assert.equal(size(), 14);
 
 console.log("editor-zoom: all checks passed");

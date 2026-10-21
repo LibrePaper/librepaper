@@ -218,6 +218,7 @@
   import { ANCHORS_ORIGIN, composeEdits, fragmentRangesFor } from "../lib/anchors.js";
   import { projectDirectory } from "../lib/projection.js";
   import { attachEditorZoom } from "../lib/editor-zoom.js";
+  import { start as startEditorType, onFont, onLineHeight, size, setSize, DEFAULT_SIZE } from "../lib/editor-type.js";
   import { snippetTemplate } from "../lib/snippet-template.js";
   import { formatOf as documentFormat } from "../lib/formats.js";
   import { untrack } from "svelte";
@@ -1105,6 +1106,12 @@
           // highest-precedence keymap, so Vim and Emacs keep Ctrl+B and Ctrl+I.
           { key: "Mod-b", preventDefault: true, run: boldCommand },
           { key: "Mod-i", preventDefault: true, run: italicCommand },
+          // Source text size. The keyboard half of the pinch: lib/commands.js names
+          // these bindings, and the size is the one lib/editor-zoom.js changes.
+          { key: "Mod-=", preventDefault: true, run: () => (setSize(size() + 1), true) },
+          { key: "Mod-+", preventDefault: true, run: () => (setSize(size() + 1), true) },
+          { key: "Mod--", preventDefault: true, run: () => (setSize(size() - 1), true) },
+          { key: "Mod-0", preventDefault: true, run: () => (setSize(DEFAULT_SIZE), true) },
           ...foldKeymap,
           indentWithTab,
           ...completionKeymap,
@@ -1404,6 +1411,14 @@
       syncKeys(view);
       syncFeatures(view);
       const unsubscribeMode = onMode(() => syncTheme(view));
+      // The font and line height are the person's, and a change in the settings row lands here.
+      startEditorType();
+      const unsubscribeFont = onFont(() => {
+        view?.requestMeasure();
+        // A newly chosen installed font may finish loading after the change.
+        globalThis.document?.fonts?.ready?.then(() => view?.requestMeasure());
+      });
+      const unsubscribeLineHeight = onLineHeight(() => view?.requestMeasure());
       drawChanges();
       if (initial.first) session.inFile?.(initial.first);
       const bibliographyWatcher = scheduleBibliography;
@@ -1423,6 +1438,8 @@
         if (typeof unsubscribeBibliography === "function") unsubscribeBibliography();
         unsubscribeChanges();
         unsubscribeMode();
+        unsubscribeFont();
+        unsubscribeLineHeight();
         if (view) viewCallbacks.delete(view);
         view?.destroy();
         insertTargets.clear();

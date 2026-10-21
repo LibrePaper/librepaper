@@ -54,6 +54,8 @@
   import { ACTIVITY_WIDTH, DOCUMENT_MIN, GRIP, PANES, RATIOS, clamp, measure, pixels, px, showing } from "../lib/panes.js";
   import { slotId, tabsFor } from "../lib/panels.js";
   import { APPLE, availability, commandFor, menuKeys } from "../lib/commands.js";
+  // Aliased because this file has its own setSize for the pane sizes.
+  import { size as textSize, setSize as setTextSize, DEFAULT_SIZE } from "../lib/editor-type.js";
 
   import { tick, untrack } from "svelte";
   import { onMode } from "../lib/theme.js";
@@ -2699,6 +2701,14 @@
   // Everything the layout menu offers, named by what was chosen. The menu
   // reports the value of the line rather than each line calling back, so this
   // is the one place those names are read.
+  // The source text size, from the View menu, the palette or the keyboard.
+  // The same size the pinch and the editor keys change.
+  function changeTextSize(id) {
+    if (id === "text-bigger") return setTextSize(textSize() + 1);
+    if (id === "text-smaller") return setTextSize(textSize() - 1);
+    return setTextSize(DEFAULT_SIZE);
+  }
+
   function chose(what) {
     if (what.startsWith("layout-")) {
       layout = what.slice(7);
@@ -2708,6 +2718,7 @@
     if (what === "side-left" || what === "side-right") return putSourceOn(what.slice(5));
     if (what.startsWith("ratio-")) return setSize(PANES.editor, Number(what.slice(6)));
     if (what === "linked") return setLinked(!linked);
+    if (TEXT_SIZE_COMMANDS.includes(what)) return changeTextSize(what);
   }
 
   function chooseViewCommand(value) {
@@ -3586,11 +3597,13 @@
     if (id === "layout-cycle") return cycleLayout();
     if (LAYOUT_COMMANDS.includes(id)) return chose(id);
     if (id === "preview-file") return chooseViewCommand(id);
+    if (TEXT_SIZE_COMMANDS.includes(id)) return changeTextSize(id);
     return chooseFileCommand(id);
   }
 
   const EDIT_COMMANDS = ["undo", "redo", "cut", "copy", "paste", "select-all", "find", "replace", "bold", "italic"];
   const LAYOUT_COMMANDS = ["linked", "layout-source", "layout-document", "layout-split", "side-left", "side-right"];
+  const TEXT_SIZE_COMMANDS = ["text-bigger", "text-smaller", "text-reset"];
 
   // The palettes open over the editor. Each one inserts at the caret the
   // editor had when it opened, so there is nothing to open without a source.
@@ -3751,6 +3764,16 @@
   <hr class="hr my-1" />
   <Menu.Item value="linked" class="menuitem">
     <span class="menuitem-check">{linked ? "✓" : ""}</span><span class="menuitem-label">Keep in step</span>{#if MENU_KEYS.linked}<span class="menuitem-keys">{MENU_KEYS.linked}</span>{/if}
+  </Menu.Item>
+  <hr class="hr my-1" />
+  <Menu.Item value="text-bigger" class="menuitem">
+    <span class="menuitem-check"></span><span class="menuitem-label">Bigger text</span>{#if MENU_KEYS["text-bigger"]}<span class="menuitem-keys">{MENU_KEYS["text-bigger"]}</span>{/if}
+  </Menu.Item>
+  <Menu.Item value="text-smaller" class="menuitem">
+    <span class="menuitem-check"></span><span class="menuitem-label">Smaller text</span>{#if MENU_KEYS["text-smaller"]}<span class="menuitem-keys">{MENU_KEYS["text-smaller"]}</span>{/if}
+  </Menu.Item>
+  <Menu.Item value="text-reset" class="menuitem">
+    <span class="menuitem-check"></span><span class="menuitem-label">Reset text size</span>{#if MENU_KEYS["text-reset"]}<span class="menuitem-keys">{MENU_KEYS["text-reset"]}</span>{/if}
   </Menu.Item>
 {/snippet}
 
