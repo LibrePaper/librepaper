@@ -71,9 +71,8 @@
     }
   }
 
-  // The tab opens before anything is awaited, or a popup blocker stops it.
+  // The link opens the issue page itself, in a new tab or, in the desktop app, in the system browser. The click only copies the report.
   async function reportIssue() {
-    window.open(ISSUES_URL, "_blank", "noopener");
     try {
       await copy();
       say("The report is copied. Paste it into the issue, or email it to admin@librepaper.org.");
@@ -96,7 +95,7 @@
   <div class="diagnostics-buttons">
     <button type="button" class="btn btn-sm lp-control-tonal-brand" onclick={() => void copyReport()}>Copy diagnostics</button>
     <button type="button" class="btn btn-sm lp-control-tonal-brand" onclick={() => void download()}>Download</button>
-    <button type="button" class="btn btn-sm lp-control-tonal-brand" onclick={() => void reportIssue()}>Report an issue</button>
+    <a href={ISSUES_URL} target="_blank" rel="noreferrer" class="btn btn-sm lp-control-tonal-brand" onclick={() => void reportIssue()}>Report an issue</a>
     {#if inDesktop}<button type="button" class="btn btn-sm lp-control-tonal-brand" onclick={() => void openLogs()}>Open logs</button>{/if}
   </div>
   <p class="setting-description">Diagnostics are copied locally. Nothing is sent automatically.</p>
