@@ -871,6 +871,16 @@ window.switchesCheck = async () => {
   local.setDiagnostics(diagnostics);
   await tick();
   result.marksOn = marks();
+  // An edit before the mark moves it. Turning an unrelated switch over must
+  // leave it where the edit put it.
+  view.dispatch({ changes: { from: 0, insert: "moved " } });
+  await tick();
+  const before = host.querySelector(".cm-lintRange")?.textContent;
+  local.$set({ completion: false });
+  await tick();
+  result.markStays = host.querySelector(".cm-lintRange")?.textContent === before;
+  local.$set({ completion: true });
+  await tick();
   local.$set({ completion: false, brackets: false, check: false });
   await tick();
   result.bracketsOff = typed();
@@ -1134,6 +1144,7 @@ try {
   assert.equal(switches.completionOn, true, "autocomplete could not start with the switch on");
   assert.equal(switches.completionOff, false, "autocomplete started with the switch off");
   assert.ok(switches.marksOn > 0, "a compiler error was not drawn with the check on");
+  assert.equal(switches.markStays, true, "turning autocomplete over moved a compiler mark back to where the text used to be");
   assert.equal(switches.marksOff, 0, "a compiler error was drawn with the check off");
   assert.ok(switches.marksBack > 0, "turning the check back on did not redraw the last render's marks");
   assert.equal(switches.sameView, true, "a switch rebuilt the editor");

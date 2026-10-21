@@ -1477,12 +1477,18 @@
     if (view) syncKeys(view);
   });
 
-  // The completion, bracket and check switches work the same way. Turning the
-  // check back on redraws the last render's marks, and turning it off clears
-  // them.
+  // The completion and bracket switches work the same way.
   $effect(() => {
     void completion;
     void brackets;
+    if (view) syncFeatures(view);
+  });
+
+  // So does the check, and turning it back on redraws the last render's marks
+  // while turning it off clears them. Only this switch redraws: the marks on
+  // screen have moved with every edit since the render, and drawing them again
+  // from the compiler's lines would put them back where the text used to be.
+  $effect(() => {
     void check;
     if (view) {
       syncFeatures(view);
