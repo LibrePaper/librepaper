@@ -56,6 +56,7 @@ import { join as joinSession } from ${JSON.stringify(join(root, "web/src/lib/col
 import { rejectMany, resolveChanges, trackedSplice } from ${JSON.stringify(join(root, "web/src/lib/track-changes.js"))};
 import { durableProjectPersistence, rememberProject, localProject } from ${JSON.stringify(join(root, "web/src/lib/offline-projects.js"))};
 import { createClassComponent } from ${JSON.stringify(join(root, "web/node_modules/svelte/src/legacy/legacy-client.js"))};
+import { setSize, setFont, setLineHeight, start as startEditorType } from ${JSON.stringify(join(root, "web/src/lib/editor-type.js"))};
 
 const session = joinSession({ send: () => {}, mayEdit: true });
 const firstFile = session.addText("a.md", "alpha");
@@ -328,6 +329,61 @@ window.editorZoomCheck = async () => {
   value.leave();
   localStorage.removeItem("librepaper-editor-size");
   return { before, prevented, grown, storedGrown, shrunk, storedShrunk };
+};
+window.editorTypeCheck = async () => {
+  const value = joinSession({ send: () => {}, mayEdit: true });
+  const textId = value.addText("type.md", "alpha");
+  const host = document.createElement("section");
+  document.body.append(host);
+  const typed = createClassComponent({
+    component: Editor, target: host,
+    props: { session: value, format: "markdown", file: textId },
+  });
+  for (let attempt = 0; attempt < 100 && !host.querySelector(".cm-content"); attempt++) {
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+  startEditorType();
+  const frame = () => new Promise((resolve) => requestAnimationFrame(() => resolve()));
+  const editor = host.querySelector(".cm-editor");
+  const content = host.querySelector(".cm-content");
+  setSize(20);
+  await frame();
+  const sized = getComputedStyle(editor).fontSize;
+  const box = content.getBoundingClientRect();
+  content.dispatchEvent(new WheelEvent("wheel", {
+    deltaY: -100, ctrlKey: true, bubbles: true, cancelable: true,
+    clientX: box.left + box.width / 2, clientY: box.top + 20,
+  }));
+  await new Promise((resolve) => setTimeout(resolve, 300));
+  const pinched = getComputedStyle(editor).fontSize;
+  setSize(14);
+  setLineHeight("wide");
+  await frame();
+  const lineRatio = () => Math.round(parseFloat(getComputedStyle(content).lineHeight) / parseFloat(getComputedStyle(editor).fontSize) * 100) / 100;
+  const wideLine = lineRatio();
+  setLineHeight("normal");
+  await frame();
+  const normalLine = lineRatio();
+  setFont("serif");
+  await frame();
+  const serif = getComputedStyle(editor).fontFamily;
+  setFont("custom", "Comic Neue");
+  await frame();
+  const comic = getComputedStyle(editor).fontFamily;
+  const bodyColor = getComputedStyle(document.body).color;
+  setFont("custom", 'Evil"; } body { color: red');
+  await frame();
+  const evil = getComputedStyle(editor).fontFamily;
+  const bodyColorAfter = getComputedStyle(document.body).color;
+  setFont("default");
+  await frame();
+  const defaultVariable = document.documentElement.style.getPropertyValue("--font-editor");
+  setSize(14);
+  setLineHeight("normal");
+  typed.$destroy();
+  host.remove();
+  value.leave();
+  return { sized, pinched, wideLine, normalLine, serif, comic, evil, bodyColor, bodyColorAfter, defaultVariable };
 };
 window.vimUndoCheck = async () => {
   const value = joinSession({ send: () => {}, mayEdit: true });
@@ -1196,6 +1252,17 @@ try {
   const zoom = await evaluate("editorZoomCheck()");
   assert.deepEqual(zoom, { before: "14px", prevented: true, grown: "28px", storedGrown: "28", shrunk: "10px", storedShrunk: "10" }, "ctrl+wheel over the source sizes its text and remembers it");
   console.log("editor-browser: ctrl+wheel over the source sizes its text and remembers it");
+  const type = await evaluate("editorTypeCheck()");
+  assert.equal(type.sized, "20px", "setSize did not resize the open editor");
+  assert.ok(parseFloat(type.pinched) > 20, `a pinch started from ${type.pinched}, not from the chosen size of 20px`);
+  assert.equal(type.wideLine, 1.9, "the wide line height did not restyle the open editor");
+  assert.equal(type.normalLine, 1.6, "the normal line height did not restyle the open editor");
+  assert.ok(type.serif.startsWith("ui-serif"), `the serif font family was ${type.serif}`);
+  assert.ok(type.comic.startsWith('"Comic Neue"'), `the custom font family was ${type.comic}`);
+  assert.ok(!type.evil.includes("}") && !type.evil.includes(";"), `a custom font name escaped its declaration: ${type.evil}`);
+  assert.equal(type.bodyColorAfter, type.bodyColor, "a custom font name changed the page colour");
+  assert.equal(type.defaultVariable, "", "the default font left --font-editor set");
+  console.log("editor-browser: the font, size and line height settings restyle the open editor, and a pinch starts from the chosen size");
 } finally {
   socket?.close();
   await stopBrowserProcess(browser);
