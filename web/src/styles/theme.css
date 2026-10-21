@@ -228,8 +228,9 @@
 	--source-highlight-invalid: #dc7829;
 
 	/* Status colors, lightened for the dark ground. Text shades are the same
-	   hues lightened to 4.5:1 on their background and the shell. Solids are
-	   the raw Okabe-Ito hues, and their text is the darkest neutral. */
+	   hues lightened to 4.5:1 on their background and the shell.
+	   Error goes a little lighter still, so it also clears the Nord shell.
+	   Solids are the raw Okabe-Ito hues, and their text is the darkest neutral. */
 	--color-success-bg: #12342a;
 	--color-success-border: #0a624a;
 	--color-success-text: #1ca982;
@@ -244,7 +245,7 @@
 
 	--color-error-bg: #3d2713;
 	--color-error-border: #803f0b;
-	--color-error-text: #dc7829;
+	--color-error-text: #e88b51;
 	--color-error-solid: #d55e00;
 	--color-error-on-solid: var(--neutral-1);
 }
