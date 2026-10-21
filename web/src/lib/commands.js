@@ -235,6 +235,9 @@ export const COMMANDS = [
   // together. The two that had shortcuts before this file existed keep them.
   { id: "layout-cycle", label: "Toggle source / preview / split", category: "Workspace", scope: "workspace", keys: ["Mod+\\"], available: (c) => Boolean(c.editing) },
   { id: "linked", label: "Toggle linked scrolling", category: "Workspace", scope: "workspace", menu: "view", keys: ["Mod+Alt+L"], available: (c) => Boolean(c.editing) },
+  { id: "text-bigger", label: "Bigger source text", category: "Workspace", scope: "editor", owner: "editor", menu: "view", keys: ["Mod+=", "Mod+Shift+="], available: (c) => Boolean(c.editing) },
+  { id: "text-smaller", label: "Smaller source text", category: "Workspace", scope: "editor", owner: "editor", menu: "view", keys: ["Mod+-"], available: (c) => Boolean(c.editing) },
+  { id: "text-reset", label: "Reset source text size", category: "Workspace", scope: "editor", owner: "editor", menu: "view", keys: ["Mod+0"], available: (c) => Boolean(c.editing) },
   { id: "layout-source", label: "Show source only", category: "Workspace", scope: "workspace", keys: [], available: (c) => Boolean(c.editing) },
   { id: "layout-document", label: "Show preview only", category: "Workspace", scope: "workspace", keys: [], available: (c) => Boolean(c.editing) },
   { id: "layout-split", label: "Show source and preview", category: "Workspace", scope: "workspace", keys: [], available: (c) => Boolean(c.editing) && !c.compact },
@@ -320,6 +323,9 @@ export function commandFor(event, context = {}, { commands = COMMANDS, apple = A
   const command = match(canonical, { commands, apple });
   if (!command) return null;
   if (typeable(canonical) && writing(target)) return null;
+  // An editor-owned command is run by CodeMirror when the focus is in the source.
+  // The window would run it a second time on the same keystroke.
+  if (command.owner === "editor" && writing(target)) return null;
   const available = command.available || ALWAYS;
   return available(context) ? command : null;
 }
