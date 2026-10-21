@@ -155,9 +155,10 @@ impl PostgresCatalog {
         .map_err(Error::from)
     }
 
-    /// A new tag of the account's own. The limit is checked in the same
-    /// statement as the insert, so two creates cannot both claim the last
-    /// place.
+    /// A new tag of the account's own. The count and the insert run in one
+    /// transaction behind a row lock on the account. The count alone would
+    /// let two concurrent creates both see room for the last place, because
+    /// neither insert is visible to the other until it commits.
     pub async fn create_tag(
         &self,
         account_id: Uuid,
@@ -167,6 +168,14 @@ impl PostgresCatalog {
         let name = validate_name(name)?;
         validate_colour(colour)?;
         let id = Uuid::now_v7();
+        let mut tx = self.begin_metered().await?;
+        sqlx::query_scalar!(
+            "SELECT id FROM accounts WHERE id=$1 FOR UPDATE",
+            account_id,
+        )
+        .fetch_optional(&mut *tx)
+        .await?
+        .ok_or(Error::NotFound)?;
         let inserted = sqlx::query_scalar!(
             "INSERT INTO tags(id,account_id,name,colour)
              SELECT $1::uuid,$2::uuid,$3::text,$4::text
@@ -179,7 +188,7 @@ impl PostgresCatalog {
             colour,
             MAX_TAGS,
         )
-        .fetch_optional(&self.pool)
+        .fetch_optional(&mut *tx)
         .await
         .map_err(duplicate_as_conflict)?;
         if inserted.is_none() {
@@ -187,6 +196,7 @@ impl PostgresCatalog {
                 "An account can have at most {MAX_TAGS} tags."
             )));
         }
+        tx.commit().await?;
         Ok(TagRecord {
             id,
             builtin: false,

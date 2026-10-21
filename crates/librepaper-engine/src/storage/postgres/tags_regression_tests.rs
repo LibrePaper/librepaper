@@ -258,3 +258,34 @@ async fn another_accounts_tag_id_is_not_found() {
     drop(writer);
     catalog.close().await;
 }
+
+#[tokio::test]
+#[ignore = "requires LIBREPAPER_TEST_POSTGRES_URL"]
+async fn two_creates_cannot_both_take_the_last_place() {
+    let catalog = test_catalog().await;
+    let writer = catalog.claim_writer().await.unwrap();
+    let owner = account(&catalog).await;
+    for number in 0..99 {
+        catalog
+            .create_tag(owner, &format!("Tag {number}"), "gray")
+            .await
+            .unwrap();
+    }
+
+    let (first, second) = tokio::join!(
+        catalog.create_tag(owner, "Last one", "red"),
+        catalog.create_tag(owner, "Also last", "blue"),
+    );
+    let results = [first, second];
+    let succeeded = results.iter().filter(|result| result.is_ok()).count();
+    assert_eq!(succeeded, 1, "exactly one create takes the hundredth place");
+    let refused = results
+        .iter()
+        .find(|result| result.is_err())
+        .expect("one create is refused");
+    assert!(matches!(refused, Err(Error::Invalid(_))));
+    assert_eq!(catalog.list_tags(owner).await.unwrap().len(), 100);
+
+    drop(writer);
+    catalog.close().await;
+}

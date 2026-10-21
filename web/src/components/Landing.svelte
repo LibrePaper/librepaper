@@ -1,6 +1,9 @@
 <script>
   import { untrack } from "svelte";
   import { Menu } from "@skeletonlabs/skeleton-svelte";
+  // The latest tag request per project and tag. A failed request undoes only
+  // its own change, and only when no newer request for that tag has started.
+  const tagRequests = new Map();
   // The landing page, which for anyone signed in is not a landing page at all
   // but the other half of the workspace.
   //
@@ -424,8 +427,10 @@
   // the tag is. The row changes first and is put back if the server refuses,
   // which is what the star always did.
   async function setTag(doc, id, on) {
-    const before = doc.tags || [];
-    doc.tags = on ? [...new Set([...before, id])] : before.filter((each) => each !== id);
+    const key = `${doc.slug}:${id}`;
+    const request = (tagRequests.get(key) || 0) + 1;
+    tagRequests.set(key, request);
+    doc.tags = on ? [...new Set([...(doc.tags || []), id])] : (doc.tags || []).filter((each) => each !== id);
     try {
       const response = await fetch(`/api/documents/${doc.slug}/tags/${id}`, {
         method: on ? "PUT" : "DELETE",
@@ -433,7 +438,10 @@
       });
       if (!response.ok) throw new Error("that could not be saved");
     } catch {
-      doc.tags = before;
+      if (tagRequests.get(key) === request) {
+        const now = doc.tags || [];
+        doc.tags = on ? now.filter((each) => each !== id) : [...new Set([...now, id])];
+      }
       if (id === "favorites") say("That star could not be saved.", { kind: "problem", id: "landing:favorite" });
       else say("That tag could not be saved.", { kind: "problem", id: `landing:tag:${doc.slug}` });
     }
@@ -1246,15 +1254,18 @@
             <!-- One control for every selected project. Its check marks show
                  what the next press does to all of them, as the row menu does
                  for one. -->
-            <Menu onSelect={(chosen) => tagChosen(chosen.value, selectedDocs)}
-                  positioning={{ placement: "bottom-start", gutter: 4, flip: true, fitViewport: true, overflowPadding: 8 }}>
-              <Menu.Trigger class="btn btn-sm lp-control-tonal-brand">
-                <Icon name="tag" size={16} /> Tag
-              </Menu.Trigger>
-              <ExplorerMenu>
-                {@render tagItems((tag) => selectedDocs.length > 0 && selectedDocs.every((doc) => hasTag(doc, tag.id)))}
-              </ExplorerMenu>
-            </Menu>
+            <!-- Templates are not projects, so there is nothing here to tag. -->
+            {#if place !== "templates"}
+              <Menu onSelect={(chosen) => tagChosen(chosen.value, selectedDocs)}
+                    positioning={{ placement: "bottom-start", gutter: 4, flip: true, fitViewport: true, overflowPadding: 8 }}>
+                <Menu.Trigger class="btn btn-sm lp-control-tonal-brand">
+                  <Icon name="tag" size={16} /> Tag
+                </Menu.Trigger>
+                <ExplorerMenu>
+                  {@render tagItems((tag) => selectedDocs.length > 0 && selectedDocs.every((doc) => hasTag(doc, tag.id)))}
+                </ExplorerMenu>
+              </Menu>
+            {/if}
             <button type="button" class="btn btn-sm lp-tone-error" onclick={deleteSelected}>
               <Icon name="trash" size={16} /> Delete
             </button>
