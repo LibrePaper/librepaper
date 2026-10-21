@@ -17,7 +17,13 @@ https:// {
 	# Every served origin is HTTPS only, so browsers may refuse plain HTTP for a year.
 	header Strict-Transport-Security "max-age=31536000; includeSubDomains"
 	handle {
-		reverse_proxy librepaper:8080
+		# During an upgrade the app is briefly gone. Caddy holds the request and
+		# retries the connection instead of answering 502; a failed dial never
+		# reached the app, so retrying is safe for every method.
+		reverse_proxy librepaper:8080 {
+			lb_try_duration 30s
+			lb_try_interval 250ms
+		}
 	}
 }
 

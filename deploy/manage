@@ -339,8 +339,10 @@ cmd_upgrade() {
 	install_candidates
 
 	step "Restarting"
-	docker compose up -d --wait --remove-orphans
+	# Recreate the app once: forcing it first leaves the plain up below
+	# nothing to do for it, and that up only touches services whose pins changed.
 	docker compose up -d --wait --force-recreate librepaper backup
+	docker compose up -d --wait --remove-orphans
 	reload_caddy
 
 	step "Checking /ready"
