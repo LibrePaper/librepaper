@@ -1,6 +1,6 @@
 import { MATH_TEMPLATES } from "./symbols/templates.js";
 
-/** @typedef {{ id: string, label: string, category: string, scope: string, keys: Array<string | {apple?: string, other?: string}>, available: (context: any) => boolean, owner?: string, menu?: string, note?: string, palette?: boolean, help?: boolean }} Command */
+/** @typedef {{ id: string, label: string, category: string, scope: string, keys: Array<string | {apple?: string, other?: string}>, available: (context: any) => boolean, owner?: string, menu?: string, browserKeys?: boolean, note?: string, palette?: boolean, help?: boolean }} Command */
 
 // What the workspace can be asked to do, written once.
 //
@@ -235,9 +235,12 @@ export const COMMANDS = [
   // together. The two that had shortcuts before this file existed keep them.
   { id: "layout-cycle", label: "Toggle source / preview / split", category: "Workspace", scope: "workspace", keys: ["Mod+\\"], available: (c) => Boolean(c.editing) },
   { id: "linked", label: "Toggle linked scrolling", category: "Workspace", scope: "workspace", menu: "view", keys: ["Mod+Alt+L"], available: (c) => Boolean(c.editing) },
-  { id: "text-bigger", label: "Bigger source text", category: "Workspace", scope: "editor", owner: "editor", menu: "view", keys: ["Mod+=", "Mod+Shift+="], available: (c) => Boolean(c.editing) },
-  { id: "text-smaller", label: "Smaller source text", category: "Workspace", scope: "editor", owner: "editor", menu: "view", keys: ["Mod+-"], available: (c) => Boolean(c.editing) },
-  { id: "text-reset", label: "Reset source text size", category: "Workspace", scope: "editor", owner: "editor", menu: "view", keys: ["Mod+0"], available: (c) => Boolean(c.editing) },
+  // The browser's zoom keys, taken only while the focus is in the source: there
+  // they size the source like a pinch, and everywhere else the browser keeps
+  // them. The editor owns them, so the window never listens for them.
+  { id: "text-bigger", label: "Bigger source text", category: "Workspace", scope: "editor", owner: "editor", menu: "view", keys: ["Mod+="], browserKeys: true, available: (c) => Boolean(c.editing) },
+  { id: "text-smaller", label: "Smaller source text", category: "Workspace", scope: "editor", owner: "editor", menu: "view", keys: ["Mod+-"], browserKeys: true, available: (c) => Boolean(c.editing) },
+  { id: "text-reset", label: "Reset source text size", category: "Workspace", scope: "editor", owner: "editor", menu: "view", keys: ["Mod+0"], browserKeys: true, available: (c) => Boolean(c.editing) },
   { id: "layout-source", label: "Show source only", category: "Workspace", scope: "workspace", keys: [], available: (c) => Boolean(c.editing) },
   { id: "layout-document", label: "Show preview only", category: "Workspace", scope: "workspace", keys: [], available: (c) => Boolean(c.editing) },
   { id: "layout-split", label: "Show source and preview", category: "Workspace", scope: "workspace", keys: [], available: (c) => Boolean(c.editing) && !c.compact },

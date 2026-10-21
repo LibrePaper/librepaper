@@ -70,8 +70,14 @@ assert.equal(label("Mod+Shift+Z", false), "Ctrl+Shift+Z");
 /* -------------------------------------------------- what the browser keeps */
 
 // The reason this list exists: a command bound to a browser shortcut is a
-// command that works until somebody presses it in a second browser.
+// command that works until somebody presses it in a second browser. The one
+// exception says so: the source text size takes the zoom keys only inside the
+// source, which the editor owns, and the browser keeps them everywhere else.
 for (const command of COMMANDS) {
+  if (command.browserKeys) {
+    assert.equal(command.owner, "editor", `${command.id} takes browser keys outside the source`);
+    continue;
+  }
   for (const binding of [...bindings(command, true), ...bindings(command, false)]) {
     assert.ok(!reserved(binding), `${command.id} claims ${binding}, which the browser answers`);
   }
