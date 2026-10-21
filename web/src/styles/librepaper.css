@@ -844,20 +844,15 @@ main.reader.source-right .editorpane {
  * colour is chosen from six, not from anywhere. Adding a colour there means
  * adding a rule here, which is the coupling worth having -- the alternative is
  * building stylesheets in JavaScript to serve six values. */
+/* The six are dark enough to carry the white name label on both grounds, so
+ * dark mode uses the same values. Lighter shades of these hues would drop
+ * white text below 4.5:1. */
 .user-color-0072b2 { --presence: #0072b2; }
 .user-color-af4d00 { --presence: #af4d00; }
 .user-color-007a59 { --presence: #007a59; }
 .user-color-975a7c { --presence: #975a7c; }
 .user-color-926500 { --presence: #926500; }
 .user-color-377395 { --presence: #377395; }
-/* On a dark document the same hues are lightened a step so cursors and name
- * labels stand out, with the white label text still readable. */
-[data-mode="dark"] .user-color-0072b2 { --presence: #4598c7; }
-[data-mode="dark"] .user-color-af4d00 { --presence: #dc7829; }
-[data-mode="dark"] .user-color-007a59 { --presence: #1ca982; }
-[data-mode="dark"] .user-color-975a7c { --presence: #cc79a7; }
-[data-mode="dark"] .user-color-926500 { --presence: #e69f00; }
-[data-mode="dark"] .user-color-377395 { --presence: #56b4e9; }
 
 .loro-cursor {
   background: var(--presence, var(--color-brand));
