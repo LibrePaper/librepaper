@@ -337,13 +337,16 @@ try {
   await tab.resize(1100, 850);
   await flush();
 
-  await until("tag in the rail", () => tab.evaluate(`Boolean(document.querySelector('.activity-sections button[aria-label="Thesis"]'))`));
-  await click('.activity-sections button[aria-label="Thesis"]');
+  // The rail's one Tags control opens a menu of the account's tags.
+  const railTags = '.activity-sections button[aria-label="Tags"]';
+  await until("tags control in the rail", () => tab.evaluate(`Boolean(document.querySelector(${JSON.stringify(railTags)}))`));
+  await click(railTags);
+  await clickOnScreen("thesis item on screen", '.explorer-menu[data-state="open"] [data-rail-tag="thesis"]');
   await until("thesis place", () => tab.evaluate(`document.querySelector('.place-heading')?.textContent.trim() === "Thesis"`));
   assert.deepEqual(await titles(), ["Renamed paper"], "the rail filters the list to projects with the tag");
   assert.match(await tab.evaluate("location.search"), /[?&]tag=thesis(&|$)/, "the tag is in the address");
   assert.equal(await tab.evaluate("new URLSearchParams(location.search).has('in')"), false, "a tag leaves the place parameter alone");
-  assert.equal(await tab.evaluate(`document.querySelector('.activity-sections button[aria-label="Thesis"]').getAttribute('aria-pressed')`), "true", "the tag's rail button is pressed");
+  assert.equal(await tab.evaluate(`document.querySelector(${JSON.stringify(railTags)}).getAttribute('aria-pressed')`), "true", "the Tags control is pressed while a tag is the place");
   await click('.rail-item button[aria-label="Projects"]');
   await until("projects after the tag", () => tab.evaluate("document.querySelectorAll('.projects-table tbody tr').length === 3"));
   assert.equal(await tab.evaluate("new URLSearchParams(location.search).has('tag')"), false, "a place removes the tag from the address");
@@ -363,12 +366,15 @@ try {
   await toggleTeaching(true);
   await until("teaching chip back", async () => (await olderRow()) === "Teaching");
 
-  // A new tag is made from the rail, and the dialog says it is the account's.
-  await click('button[aria-label="New tag"]');
+  // A new tag is made from the rail's Tags menu, and the dialog says it is the account's.
+  await click(railTags);
+  await clickOnScreen("new tag item on screen", '.explorer-menu[data-state="open"] [data-rail-action="new-tag"]');
   await until("new tag dialog", () => tab.evaluate("Boolean(document.querySelector('#new-tag input'))"));
   await tab.evaluate(`(() => { const input = document.querySelector('#new-tag input'); input.value = 'Draft'; input.dispatchEvent(new Event('input', { bubbles: true })); document.querySelector('#new-tag').requestSubmit(); })()`);
-  await until("draft tag in the rail", () => tab.evaluate(`Boolean(document.querySelector('.activity-sections button[aria-label="Draft"]'))`));
   assert.equal(await tab.evaluate("testCalls.some(call => call.path === '/api/tags' && call.method === 'POST' && JSON.parse(call.body).name === 'Draft')"), true, "New tag posts the name to the account");
+  await click(railTags);
+  await until("draft tag in the Tags menu", () => tab.evaluate(`[...document.querySelectorAll('.explorer-menu[data-state="open"] [data-rail-tag]')].some(item => item.textContent.includes('Draft'))`));
+  await key("Escape");
 
   // Search finds a project by the name of a tag it has, and not by anything else.
   const searchInput = 'body > nav input.project-search';

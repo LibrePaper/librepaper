@@ -248,6 +248,14 @@
     history.replaceState(null, "", url);
   }
 
+  // The rail's Tags menu. A tag is a place, so choosing one goes there; New and
+  // Manage open their dialogs after the menu has closed, as the row menu does.
+  function railTagChosen(value) {
+    if (value === "new-tag") setTimeout(() => askNewTag([]), 0);
+    else if (value === "manage-tags") setTimeout(() => (managing = true), 0);
+    else goToTag(value.slice(4));
+  }
+
   /* ------------------------------------------------------------- the listing */
 
   // One comparison per column. Documents never opened sort as if they were
@@ -1175,20 +1183,35 @@
       <Sidebar tabs={PROJECT_TABS} panel={place} shown={{ comments: false }}
                resizable={false} label="Projects" onselectpanel={goTo}
                badges={trashed.length ? { trash: { counts: [{ tone: "warnings", of: trashed.length }] } } : {}}>
-        <!-- The tags of this account, under the places. A tag is a dot, because
-             a rail three rem wide has no room for its name: the name is what the
-             button says to a screen reader and what the tooltip shows. -->
+        <!-- The tags of this account are one control under the places. A rail
+             three rem wide has no room for a list of names, so the names are in
+             its menu, which scrolls, and the control shows when a tag is the
+             place. -->
         {#snippet places()}
-          <div class="rail-tags">
-            {#each userTags as tag (tag.id)}
-              <IconButton swatch={tagColour(tag.colour)} label={tag.name} pressed={place === "tag" && tagId === tag.id}
-                          onclick={() => goToTag(tag.id)} />
-            {/each}
-            <IconButton icon="plus" label="New tag" tone="plain" onclick={() => askNewTag([])} />
-            {#if userTags.length}
-              <IconButton icon="pencil" label="Manage tags" tone="plain" onclick={() => (managing = true)} />
-            {/if}
-          </div>
+          <Menu onSelect={(chosen) => railTagChosen(chosen.value)}
+                positioning={{ placement: "right-start", gutter: 4, flip: true, fitViewport: true, overflowPadding: 8 }}>
+            <MenuIconButton icon="tag" label="Tags" pressed={place === "tag"} />
+            <ExplorerMenu>
+              <div class="tags-menu-items">
+                {#each userTags as tag (tag.id)}
+                  <Menu.Item value={"tag:" + tag.id} class="menuitem project-action-item" data-rail-tag={tag.id}>
+                    <span class="menuitem-check" aria-hidden="true">{place === "tag" && tagId === tag.id ? "✓" : ""}</span>
+                    <span class="menuitem-swatch" style:background={tagColour(tag.colour)} aria-hidden="true"></span>
+                    <span class="menuitem-label">{tag.name}</span>
+                  </Menu.Item>
+                {/each}
+                <div class="tags-menu-divider" role="separator"></div>
+                <Menu.Item value="new-tag" class="menuitem project-action-item" data-rail-action="new-tag">
+                  <Icon name="plus" size="1rem" /><span class="menuitem-label">New tag</span>
+                </Menu.Item>
+                {#if userTags.length}
+                  <Menu.Item value="manage-tags" class="menuitem project-action-item" data-rail-action="manage-tags">
+                    <Icon name="pencil" size="1rem" /><span class="menuitem-label">Manage tags</span>
+                  </Menu.Item>
+                {/if}
+              </div>
+            </ExplorerMenu>
+          </Menu>
         {/snippet}
         {#snippet controls()}
           <IconButton icon="settings" label="Settings" tone="plain" onclick={() => openSettings()} />
@@ -1333,25 +1356,24 @@
           {:else if column.key === "title"}
             {@const chips = place === "trash" ? [] : userTagsOf(doc)}
             {@const chipsShown = narrow ? chips.slice(0, 2) : chips}
-            <span class="title-row">
-              {#if place === "trash"}
-                <span class="title-line">{doc.title}</span>
-              {:else}
-                <a class="title-line" href="/docs/{doc.slug}">{doc.title}</a>
-              {/if}
-              {#if chips.length}
-                <!-- The tags as chips after the title. A phone row has room for
-                     two; the rest are counted, so the row stays one line. -->
-                <span class="tag-chips">
-                  {#each chipsShown as tag (tag.id)}
-                    <span class="tag-chip" style="--tag-colour: {tagColour(tag.colour)}">{tag.name}</span>
-                  {/each}
-                  {#if chips.length > chipsShown.length}
-                    <span class="tag-chip tag-more">+{chips.length - chipsShown.length}</span>
-                  {/if}
-                </span>
-              {/if}
-            </span>
+            {#if place === "trash"}
+              <span class="title-line">{doc.title}</span>
+            {:else}
+              <a class="title-line" href="/docs/{doc.slug}">{doc.title}</a>
+            {/if}
+            {#if chips.length}
+              <!-- The tags on the line under the title. A wide row wraps them;
+                   a phone row has room for two, and the rest are counted, so
+                   the line stays one line. -->
+              <span class="tag-chips" class:compact={narrow}>
+                {#each chipsShown as tag (tag.id)}
+                  <span class="tag-chip" style="--tag-colour: {tagColour(tag.colour)}" title={tag.name}><span class="tag-chip-name">{tag.name}</span></span>
+                {/each}
+                {#if chips.length > chipsShown.length}
+                  <span class="tag-chip tag-more">+{chips.length - chipsShown.length}</span>
+                {/if}
+              </span>
+            {/if}
             <span class="title-note">
               {#if doc.local_copy}<span>Offline</span>{/if}
               <!-- The file the search found, when it was not the title.
@@ -1720,19 +1742,23 @@
 
   .owner-name { font-size: var(--text-sm); }
 
-  /* The tags sit under the places, behind a rule: they are groupings the
-     reader made, not one of the places the page has. */
-  .rail-tags { display: flex; flex-direction: column; align-items: center; gap: var(--spacing); padding-top: var(--spacing); border-top: 1px solid var(--color-pane-edge); }
-
-  /* The title and its chips share a line. The title keeps its place when the
-     chips are many, and the chips are the part that gives way. */
-  .title-row { display: flex; align-items: center; gap: calc(var(--spacing) * 2); min-width: 0; }
-  .title-row > .title-line { min-width: 0; overflow-wrap: anywhere; }
-  .tag-chips { display: inline-flex; align-items: center; flex: 0 1 auto; min-width: 0; gap: var(--spacing); overflow: hidden; }
-  .tag-chip { display: inline-flex; align-items: center; gap: .3rem; flex: none; max-width: 9rem; padding: 0 .45rem; border: 1px solid color-mix(in srgb, var(--tag-colour) 45%, transparent); border-radius: 999px; background: color-mix(in srgb, var(--tag-colour) 16%, transparent); color: var(--color-text); font-size: var(--text-xs); line-height: 1.25rem; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  /* The tags sit on the line under the title. A wide row wraps them; a phone
+     row keeps them on one line, and each name gives way to an ellipsis rather
+     than the line being cut off. Nothing here clips the line itself, so a
+     chip is never half drawn. */
+  .tag-chips { display: flex; flex-wrap: wrap; align-items: center; gap: var(--spacing); min-width: 0; }
+  .tag-chips.compact { flex-wrap: nowrap; }
+  .tag-chip { display: inline-flex; align-items: center; gap: .3rem; flex: 0 1 auto; min-width: 0; max-width: 12rem; padding: 0 .45rem; border: 1px solid color-mix(in srgb, var(--tag-colour) 45%, transparent); border-radius: 999px; background: color-mix(in srgb, var(--tag-colour) 16%, transparent); color: var(--color-text); font-size: var(--text-xs); line-height: 1.25rem; white-space: nowrap; }
+  .tag-chips.compact .tag-chip:not(.tag-more) { max-width: 7rem; }
+  .tag-chip-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
   .tag-chip::before { content: ""; width: .5rem; height: .5rem; flex: none; border-radius: 50%; background: var(--tag-colour); }
-  .tag-chip.tag-more { border-color: var(--color-border); background: none; color: var(--color-text-secondary); }
+  .tag-chip.tag-more { flex: none; border-color: var(--color-border); background: none; color: var(--color-text-secondary); }
   .tag-chip.tag-more::before { display: none; }
+
+  /* The rail's Tags menu. A hundred tags scroll inside it; the menu does not
+     run off the bottom of the screen. */
+  .tags-menu-items { display: flex; flex-direction: column; max-height: 70vh; overflow-y: auto; overscroll-behavior: contain; }
+  .tags-menu-divider { height: 1px; margin: calc(var(--spacing) * 1) calc(var(--spacing) * 1.5); background: var(--color-divider); }
 
   .tags-heading { padding: calc(var(--spacing) * 1.5) calc(var(--spacing) * 2) 0; font-size: var(--text-xs); color: var(--color-text-secondary); }
   .menuitem-swatch { width: .75rem; height: .75rem; flex: none; border-radius: 50%; }
