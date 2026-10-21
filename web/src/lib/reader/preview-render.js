@@ -113,7 +113,7 @@ export function createPreviewRenderer({
     const capturedSource = start.source;
     const capturedProjectDigest = start.projectDigest || "";
     let identity = "";
-    const format = renderers.formatOf(source.main);
+    const format = renderers.previewFormatOf(source.main);
     debug("preview: tree", source.main, format, Object.keys(source.texts || {}).length);
     // The collaboration session exists before its first document state arrives.
     // Rendering that placeholder used to call the renderer registry with an

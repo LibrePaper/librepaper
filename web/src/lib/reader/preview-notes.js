@@ -5,18 +5,6 @@
  * @typedef {{ severity: "warning" | "info", message: string, file?: string, line?: number, source: "preview" }} PreviewNote
  */
 
-const labels = {
-  bib: "BibTeX",
-  json: "JSON",
-  csv: "CSV",
-  yml: "YAML",
-  yaml: "YAML",
-  cls: "LaTeX class and style",
-  sty: "LaTeX class and style",
-  lua: "Lua",
-  txt: "Plain text",
-};
-
 /**
  * The message shown when the main file cannot be rendered, or "" when it can.
  * @param {{ mainPath: string | null, formatOf: (path: string) => string | null }} options
@@ -51,15 +39,9 @@ export function previewNotes({ openPath, openIsText, mainPath, formatOf }) {
     !formatOf(openPath) &&
     openPath !== mainPath
   ) {
-    const ext = openPath.split(".").pop()?.toLowerCase();
-    const label = labels[ext] || "This file";
-    const isPlural = label !== "This file";
-    const message = isPlural
-      ? `${label} files have no preview of their own${mainPath ? `; the preview shows ${mainPath}` : ""}.`
-      : `This file has no preview of its own${mainPath ? `; the preview shows ${mainPath}` : ""}.`;
     notes.push({
       severity: "info",
-      message,
+      message: `This file has no preview of its own${mainPath ? `; the preview shows ${mainPath}` : ""}.`,
       file: openPath,
       line: 0,
       source: "preview",

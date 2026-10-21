@@ -30,7 +30,9 @@ const THEME = new Set(["src/styles/theme.css", "src/styles/librepaper.css", "src
 // here controls.
 // Annotation palette values likewise travel with a document, independently
 // of the application's theme; only this shared palette may define them.
-const OUTSIDE = [/^src\/agent\//, /^src\/lib\/presence-colour\.js$/, /^src\/lib\/annotation-colors\.js$/];
+// The plain-text preview page is painted on the documents origin, so its
+// highlighting colours travel with the page.
+const OUTSIDE = [/^src\/agent\//, /^src\/lib\/presence-colour\.js$/, /^src\/lib\/annotation-colors\.js$/, /^src\/lib\/text-page\.js$/];
 
 function files(dir) {
   return readdirSync(dir).flatMap((name) => {

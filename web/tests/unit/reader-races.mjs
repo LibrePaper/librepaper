@@ -322,7 +322,7 @@ const preview = (values = {}) => {
     snapshotDigest: async () => "digest-A",
     heading: async () => "",
     renderers: {
-      formatOf: () => "latex", render: () => rendered.promise,
+      formatOf: () => "latex", previewFormatOf: () => "latex", render: () => rendered.promise,
       producesPdf: () => true,
       failurePage: async () => "<p>failure</p>",
     },
@@ -349,6 +349,7 @@ const preview = (values = {}) => {
     heading: async () => "",
     renderers: {
       formatOf: () => "latex",
+      previewFormatOf: () => "latex",
       producesPdf: () => true,
       render: (_tree, _title, options) => {
         asked.push(options.format);
@@ -365,7 +366,7 @@ const preview = (values = {}) => {
 {
   const harness = preview({
     facts: { format: "quarto", livePreviewOwnsPane: true },
-    renderers: { formatOf: () => assert.fail("a live preview must not be compiled over"), producesPdf: () => false },
+    renderers: { formatOf: () => assert.fail("a live preview must not be compiled over"), previewFormatOf: () => assert.fail("a live preview must not be compiled over"), producesPdf: () => false },
   });
   await harness.paint();
   assert.deepEqual(harness.published, []);
@@ -377,7 +378,7 @@ const preview = (values = {}) => {
 {
   const harness = preview({
     facts: { paintsTheFrame: false },
-    renderers: { formatOf: () => assert.fail("nothing is compiled for a frame this render does not own"), producesPdf: () => false },
+    renderers: { formatOf: () => assert.fail("nothing is compiled for a frame this render does not own"), previewFormatOf: () => assert.fail("nothing is compiled for a frame this render does not own"), producesPdf: () => false },
   });
   await harness.paint();
   assert.equal(harness.refreshed, 1);
@@ -453,7 +454,7 @@ console.log("reader-races: all checks passed");
     framePreview: { clear: () => {} },
     renderCoordinator: { invalidate: () => {} },
     renderStatus: { resetFailure: () => {} },
-    renderers: { formatOf: () => "latex", warm: () => {} },
+    renderers: { formatOf: () => "latex", previewFormatOf: () => "latex", warm: () => {} },
     readQuartoBinding: () => {},
     configureLatex: () => configured++,
   });
@@ -606,6 +607,7 @@ for (const invalidate of [null, "navigation", "main"]) {
     tree: () => ({ main, texts: { [main]: text }, digests: {} }),
     renderers: {
       formatOf: () => "markdown",
+      previewFormatOf: () => "markdown",
       producesPdf: () => false,
       render: (tree) => {
         calls.push(tree);
@@ -764,7 +766,7 @@ for (const invalidate of [null, "navigation", "main"]) {
     facts: { format: "quarto", everPainted: true },
     tree: () => ({ main: "main.qmd", texts: { "main.qmd": "source" }, digests: {} }),
     renderers: {
-      formatOf: () => "quarto", producesPdf: () => false,
+      formatOf: () => "quarto", previewFormatOf: () => "quarto", producesPdf: () => false,
       render: async (_tree, _title, options) => {
         builds.push(options.buildPreferences);
         return { html: "<p>draft</p>", diagnostics: [] };
@@ -799,6 +801,7 @@ for (const invalidate of [null, "navigation", "main"]) {
     snapshotDigest: async () => "digest-typst",
     renderers: {
       formatOf: () => "typst",
+      previewFormatOf: () => "typst",
       producesPdf: () => true,
       render: (tree) => {
         calls.push(tree);
@@ -830,7 +833,7 @@ for (const invalidate of [null, "navigation", "main"]) {
 // reader in its explicit PDF failure state instead of a blank frame.
 {
   const renderers = {
-    formatOf: () => "typst", producesPdf: () => true,
+    formatOf: () => "typst", previewFormatOf: () => "typst", producesPdf: () => true,
     render: async () => ({ pdf: null, diagnostics: [{ severity: "error", message: "broken" }] }),
     failurePage: async () => null,
   };
@@ -854,6 +857,7 @@ for (const invalidate of [null, "navigation", "main"]) {
   harness.facts.format = "latex";
   tree = () => ({ main: "main.tex", texts: { "main.tex": "source" }, digests: {} });
   renderers.formatOf = () => "latex";
+  renderers.previewFormatOf = () => "latex";
   renderers.render = async () => ({ pdf: null, log: "", diagnostics: [], failure: { message: "The mirror has no engine release" } });
   await harness.paint();
   assert.equal(harness.state.failureReason, "The mirror has no engine release");
@@ -1090,7 +1094,7 @@ for (const latest of [
     previewFile: '', canPreviewFile: true, compact: false, layout: 'split',
     viewing: null, editing: true, editor: { text: () => null },
     liveTreeNow: () => ({main:'paper.qmd',texts,digests:{}}),
-    renderers: { formatOf: p => p.endsWith('.typ') ? 'typst' : 'quarto', warm: () => {} },
+    renderers: { formatOf: p => p.endsWith('.typ') ? 'typst' : 'quarto', previewFormatOf: p => p.endsWith('.typ') ? 'typst' : 'quarto', warm: () => {} },
     configureLatex: f => configured.push(f), mayEdit: true,
     localQuarto: { configure: () => {}, bindingId: () => 'hosted', probe: async () => {} },
     SLUG: 'mixed', location: {origin:'http://localhost'},

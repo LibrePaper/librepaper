@@ -1,5 +1,6 @@
 import { needsBibliography } from "./bibliography-engine.js";
-import { formatOf } from "./formats.js";
+import { formatOf, previewFormatOf } from "./formats.js";
+import { textPage } from "./text-page.js";
 // The renderers, loaded into the editor.
 //
 // The modules come from the same pinned renderer releases as the native
@@ -56,7 +57,7 @@ function urls() {
 export function available(format) {
   if (format === "latex") return latexOffered;
   if (format === "quarto") return Boolean(urls().markdown);
-  return format === "html" || Boolean(urls()[format]);
+  return format === "html" || format === "text" || Boolean(urls()[format]);
 }
 
 // The source format and the output painted by the reader are separate
@@ -65,7 +66,7 @@ export function available(format) {
 // accidentally using LaTeX's compiler chooser as a proxy for PDF support.
 export function outputKind(format) {
   if (format === "latex" || format === "typst") return "pdf";
-  if (format === "markdown" || format === "quarto" || format === "html") return "html";
+  if (format === "markdown" || format === "quarto" || format === "html" || format === "text") return "html";
   return "";
 }
 
@@ -145,7 +146,7 @@ export function diff(oldText, newText, format = "markdown") {
   return request(chosen, "diff", { old: oldText || "", new: newText || "" });
 }
 
-export { formatOf } from "./formats.js";
+export { formatOf, previewFormatOf } from "./formats.js";
 
 /// Renders a document into the page a save would store, and says what the
 /// compiler had to say about it.
@@ -165,11 +166,11 @@ export { formatOf } from "./formats.js";
 /// documents into the PDF frame, and that is the whole difference here.
 export async function render(tree, title, { manual = false, format: requestedFormat = "pdf", configuration = null, buildPreferences = null, project = "" } = {}) {
   const source = tree.texts?.[tree.main] ?? "";
-  const format = formatOf(tree.main);
+  const format = previewFormatOf(tree.main);
   // LaTeX is never dispatched to the desktop app from here. It builds in the
   // browser, and its one local path is the automatic Biber and native
   // fallback that `latex.js` routes for itself.
-  if (buildPreferences?.selection === "tool" && buildPreferences.backend === "local" && format !== "latex") {
+  if (buildPreferences?.selection === "tool" && buildPreferences.backend === "local" && format !== "latex" && format !== "text") {
     localBridge.configure({ project, origin: globalThis.location?.origin || "" });
     const digest = await snapshotDigest(tree);
     const usesWorkspace = ["quarto", "calepin"].includes(buildPreferences.tool);
@@ -199,6 +200,8 @@ export async function render(tree, title, { manual = false, format: requestedFor
   // binary dependencies because the page itself is displayed from the
   // isolated documents origin rather than from the source directory.
   if (format === "html") return { html: resolveHtmlAssetUrls(source, tree), diagnostics: [] };
+  // A text file needs no compiler either. Its source is shown as text.
+  if (format === "text") return { html: await textPage(source, tree.main, title || tree.main), diagnostics: [] };
   // LaTeX branches before `load`, and not into it. What follows below writes
   // files into a WebAssembly module's memory through `alloc`/`add_file`/
   // `set_main`, an ABI the engine crate exports and a TeX distribution has
@@ -300,6 +303,8 @@ export async function render(tree, title, { manual = false, format: requestedFor
 export async function failurePage(title, format) {
   // No TeX makes a page out of a log.
   if (producesPdf(format)) return null;
+  // A data file never fails to preview.
+  if (format === "text") return null;
   return request(format === "quarto" ? "markdown" : format, "failure", { title });
 }
 
@@ -427,7 +432,7 @@ export function htmlTitleOf(source) {
 /// Starts the download before anyone asks to render, so the wait for the
 /// renderer overlaps with reading the document rather than following it.
 export function warm(format) {
-  if (format === "html") return; // the identity has nothing to fetch
+  if (format === "html" || format === "text") return; // the identity has nothing to fetch
   // LaTeX is not a renderer-worker format: `latex.js` loads the pinned
   // engine release itself, on the editor's side, so there is nothing here to
   // warm.

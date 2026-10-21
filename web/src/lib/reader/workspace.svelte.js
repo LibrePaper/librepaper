@@ -250,7 +250,7 @@ export function createWorkspace({
   /// Whether the open file is one this browser could preview on its own.
   function canPreview() {
     return state.files.some((file) => file.id === state.openFile && file.kind === "text"
-      && Boolean(renderers.formatOf(file.path)));
+      && Boolean(renderers.previewFormatOf(file.path)));
   }
 
   /// The path of the open file, which is what the toolbar names.

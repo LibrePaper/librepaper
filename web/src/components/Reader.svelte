@@ -2381,7 +2381,7 @@
     if (followPdfClick(pdfPoint)) return;
     const found = sync.sourcePlaceInTree(docText, offset, tree, {
       open: session?.paths?.get(openFile) || "",
-      formatOf: renderers.formatOf,
+      formatOf: renderers.previewFormatOf,
     });
     if (!found) return;
     const id = session.idOf(found.path);
@@ -2892,17 +2892,17 @@
     openPath: toolbarPath,
     openIsText: files.find((file) => file.id === openFile)?.kind === "text",
     mainPath: previewMain || session?.mainPath?.() || "",
-    formatOf: renderers.formatOf,
+    formatOf: renderers.previewFormatOf,
   }));
   // session.mainPath() is not reactive on its own, so read files to recompute
   // when the directory changes.
   const mainUnrenderable = $derived.by(() => {
     void files;
-    return unrenderableMain({ mainPath: previewMain || session?.mainPath?.() || "", formatOf: renderers.formatOf });
+    return unrenderableMain({ mainPath: previewMain || session?.mainPath?.() || "", formatOf: renderers.previewFormatOf });
   });
   const editorFormat = $derived(toolbarPath ? renderers.formatOf(toolbarPath) : sourceFormat);
   const canPreviewFile = $derived(files.some((file) =>
-    file.id === openFile && file.kind === "text" && Boolean(renderers.formatOf(file.path))));
+    file.id === openFile && file.kind === "text" && Boolean(renderers.previewFormatOf(file.path))));
   loadConfig()
     .then((answer) => {
       workspace.setRules(answer || {});
@@ -2955,10 +2955,10 @@
   function updatePreviewTarget() {
     if (!session) return;
     const selected = files.find((file) => file.id === previewFile);
-    if (!selected || selected.kind !== "text" || !renderers.formatOf(selected.path)) previewFile = "";
-    const path = selected?.kind === "text" && renderers.formatOf(selected.path)
+    if (!selected || selected.kind !== "text" || !renderers.previewFormatOf(selected.path)) previewFile = "";
+    const path = selected?.kind === "text" && renderers.previewFormatOf(selected.path)
       ? selected.path : session.mainPath();
-    const format = renderers.formatOf(path);
+    const format = renderers.previewFormatOf(path);
     // Nothing the preview could follow: the file it showed is gone and the
     // main file now is not a format that renders, or there is no file at all.
     if (!format) {
@@ -2991,7 +2991,7 @@
 
   function previewTheFile(id) {
     const file = files.find((entry) => entry.id === id);
-    if (!file || file.kind !== "text" || !renderers.formatOf(file.path)) return;
+    if (!file || file.kind !== "text" || !renderers.previewFormatOf(file.path)) return;
     // Choosing the main file goes back to following it, so a later change of main still shows.
     previewFile = file.path === session?.mainPath?.() ? "" : id;
     updatePreviewTarget();
@@ -3253,7 +3253,7 @@
       changeRows = readerChangeRows(next.changes);
       if (selectedChange && !changeRows.some((row) => row.id === selectedChange)) selectedChange = null;
       projectUnreadable = "";
-      sourceFormat = next.format || sourceFormat;
+      sourceFormat = renderers.previewFormatOf(next.main) || next.format || sourceFormat;
       configureLatex(sourceFormat, readerProjectOwner);
       sourceGeneration += 1;
       outlineRevision += 1;
@@ -3872,7 +3872,7 @@
       ondelete={deleteFiles} onduplicate={(entry, path) => workspace.duplicate(entry, path)}
       onmain={makeMain} onfigure={addFigure} ontext={addDroppedText}
       ondownload={downloadTree} ondownloaditem={downloadEntry}
-      previewable={(path) => Boolean(renderers.formatOf(path))} onpreview={openAndPreview} />
+      previewable={(path) => Boolean(renderers.previewFormatOf(path))} onpreview={openAndPreview} />
   {/snippet}
 
   {#snippet outlinePanel()}

@@ -331,9 +331,11 @@ impl Default for Configuration {
                 ".bst",
                 ".txt",
                 ".csv",
+                ".tsv",
                 ".json",
                 ".yml",
                 ".yaml",
+                ".toml",
                 ".html",
                 ".css",
             ]
