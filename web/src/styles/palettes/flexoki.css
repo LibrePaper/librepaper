@@ -15,23 +15,18 @@
 	--neutral-7: #B7B5AC;
 	--neutral-8: #9F9D96;
 	--neutral-9: #878580;
-	--neutral-10: #6F6E69;
 	--neutral-11: #575653;
 	--neutral-12: #100F0F;
 
 	/* Surfaces */
-	--color-document: #FFFCF0;
 	--color-raised: #FFFCF0;
 
 	/* Brand */
 	--color-brand: #1C6C66;
-	--color-brand-hover: #164F4A;
-	--color-brand-pressed: #123F3B;
 	--color-on-brand: #FFFFFF;
 
 	/* Cyan 600 is 4.4:1 on paper, so links and focus use cyan 700. */
 	--color-link: #1C6C66;
-	--color-focus: #1C6C66;
 
 	/* Editor tint */
 	--color-editor-tint: #24837B;
@@ -66,24 +61,19 @@
 	--neutral-7: #575653;
 	--neutral-8: #6F6E69;
 	--neutral-9: #878580;
-	--neutral-10: #9F9D96;
 	--neutral-11: #B7B5AC;
 	--neutral-12: #CECDC3;
 
 	/* Surfaces */
-	--color-document: #282726;
 	--color-raised: #343331;
 
-	/* Brand: cyan 700 with white text, hover lighter, pressed darker. */
+	/* Brand: cyan 700 with white text. */
 	--color-brand: #1C6C66;
-	--color-brand-hover: #24837B;
-	--color-brand-pressed: #164F4A;
 	--color-on-brand: #FFFFFF;
 
 	/* Cyan 400 is 4.4:1 on the raised surface, so links and focus use a
 	   lighter tint of it. */
 	--color-link: #61BEB1;
-	--color-focus: #61BEB1;
 
 	/* Editor tint */
 	--color-editor-tint: #3AA99F;

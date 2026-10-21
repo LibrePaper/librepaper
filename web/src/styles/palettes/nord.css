@@ -14,22 +14,17 @@
 	--neutral-7: #a3acbd;
 	--neutral-8: #8c96aa;
 	--neutral-9: #7b88a1;
-	--neutral-10: #616e88;
 	--neutral-11: #4c566a;
 	--neutral-12: #2e3440;
 
-	--color-document: #eceff4;
 	--color-raised: #eceff4;
 
 	/* Not a Nord colour. nord10 darkened so white text reaches 4.5:1. */
 	--color-brand: #4c6d96;
-	--color-brand-hover: #435f86;
-	--color-brand-pressed: #3a5377;
 	--color-on-brand: #ffffff;
 
 	/* A darkened frost blue, the only link colour that reaches 4.5:1 on neutral-2. */
 	--color-link: #435f86;
-	--color-focus: #435f86;
 
 	--color-editor-tint: #5e81ac;
 
@@ -63,21 +58,16 @@
 	--neutral-7: #566279;
 	--neutral-8: #616e88;
 	--neutral-9: #7b88a1;
-	--neutral-10: #a3acbd;
 	--neutral-11: #d8dee9;
 	--neutral-12: #eceff4;
 
-	--color-document: #353b49;
 	--color-raised: #3b4252;
 
-	/* Not a Nord colour. Hover is lighter and pressed darker, and white text stays at 4.5:1 on each fill. */
+	/* Not a Nord colour: frost blue darkened until white text reaches 4.5:1. */
 	--color-brand: #4c6d96;
-	--color-brand-hover: #50749a;
-	--color-brand-pressed: #3a5377;
 	--color-on-brand: #ffffff;
 
 	--color-link: #88c0d0;
-	--color-focus: #88c0d0;
 
 	--color-editor-tint: #88c0d0;
 

@@ -158,6 +158,7 @@ const { CHOICES, choice, mode, setChoice, onMode, onChoice, start, palette, setP
 {
   store.clear();
   globalThis.document = { documentElement: { dataset: {} } };
+  setPalette("librepaper");
   const heard = [];
   const stop = onPalette((now) => heard.push(now));
   assert.deepEqual(heard, ["librepaper"]);

@@ -16,23 +16,18 @@
   --neutral-7: #bdae93;
   --neutral-8: #a89984;
   --neutral-9: #928374;
-  --neutral-10: #7c6f64;
   --neutral-11: #665c54;
   --neutral-12: #3c3836;
 
   /* Surfaces */
-  --color-document: #f9f5d7;
   --color-raised: #f9f5d7;
 
   /* Brand */
   --color-brand: #af3a03;
-  --color-brand-hover: #9a3304;
-  --color-brand-pressed: #7e2a03;
   --color-on-brand: #ffffff;
 
   /* Links and focus */
   --color-link: #076678;
-  --color-focus: #076678;
 
   /* Editor tint */
   --color-editor-tint: #af3a03;
@@ -67,24 +62,19 @@
   --neutral-7: #665c54;
   --neutral-8: #7c6f64;
   --neutral-9: #928374;
-  --neutral-10: #a89984;
   --neutral-11: #bdae93;
   --neutral-12: #ebdbb2;
 
   /* Surfaces */
-  --color-document: #32302f;
   --color-raised: #3c3836;
 
   /* Brand */
   --color-brand: #af3a03;
-  --color-brand-hover: #c4470b;
-  --color-brand-pressed: #7e2a03;
   --color-on-brand: #ffffff;
 
   /* Links and focus. The bright gruvbox blue #83a598 reaches only 4.3:1 on
      the raised surface, so a lighter tint of the same blue is used. */
   --color-link: #8fb1a2;
-  --color-focus: #8fb1a2;
 
   /* Editor tint */
   --color-editor-tint: #fabd2f;

@@ -286,7 +286,7 @@ try {
   for (let index = 1; index <= 6; index++) {
     assertContrast(`color-avatar-${index}`, "color-text-inverse", 4.5, `white initials on avatar ${index}`);
   }
-  assertContrast("color-line-number", "color-document", 4.5, "line numbers on the editor");
+  assertContrast("color-line-number", "color-shell", 4.5, "line numbers on the editor");
   console.log(`accessibility-browser: landing and reader, every panel, clean against ${TAGS.join(", ")}`);
 } finally {
   await tab?.close();

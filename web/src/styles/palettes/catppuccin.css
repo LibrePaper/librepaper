@@ -15,24 +15,19 @@
 	--neutral-7: #bcc0cc;
 	--neutral-8: #acb0be;
 	--neutral-9: #9ca0b0;
-	--neutral-10: #8c8fa1;
 	/* Subtext1 darkened so that it reaches 4.5:1 on step 4 (subtext0 reaches only 3.5:1). */
 	--neutral-11: #545770;
 	--neutral-12: #4c4f69;
 
 	/* Surfaces: Latte base is the lightest tone. */
-	--color-document: #eff1f5;
 	--color-raised: #eff1f5;
 
-	/* Brand: Latte mauve with white text. Hover and pressed are darker; they are not published Catppuccin values. */
+	/* Brand: Latte mauve with white text. */
 	--color-brand: #8839ef;
-	--color-brand-hover: #7b33d9;
-	--color-brand-pressed: #6d2bc4;
 	--color-on-brand: #ffffff;
 
 	/* Links and focus: Latte blue darkened to reach 4.5:1 on steps 1, 2 and raised. */
 	--color-link: #1a5ee0;
-	--color-focus: #1a5ee0;
 
 	/* Editor tint: Latte mauve. */
 	--color-editor-tint: #8839ef;
@@ -73,23 +68,18 @@
 	--neutral-7: #585b70;
 	--neutral-8: #6c7086;
 	--neutral-9: #7f849c;
-	--neutral-10: #9399b2;
 	--neutral-11: #a6adc8;
 	--neutral-12: #cdd6f4;
 
-	/* Surfaces: step 3 for the document and step 4 for raised menus. */
-	--color-document: #282839;
+	/* Surfaces: step 4 for raised menus. */
 	--color-raised: #313244;
 
-	/* Brand: Mocha mauve with crust text. Hover is lighter and pressed is darker. */
+	/* Brand: Mocha mauve with crust text. */
 	--color-brand: #cba6f7;
-	--color-brand-hover: #d6b9ff;
-	--color-brand-pressed: #b890ef;
 	--color-on-brand: #11111b;
 
 	/* Links and focus: Mocha blue. */
 	--color-link: #89b4fa;
-	--color-focus: #89b4fa;
 
 	/* Editor tint: Mocha mauve. */
 	--color-editor-tint: #cba6f7;
