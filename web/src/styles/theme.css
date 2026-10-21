@@ -8,38 +8,59 @@
 [data-theme="librepaper"] {
 	color-scheme: light;
 
-	/* Brand */
+	/* The app reads the neutral scale through these names, so a palette can
+	   replace the scale without touching the rules that use it. */
+	--neutral-1: var(--sage-1);
+	--neutral-2: var(--sage-2);
+	--neutral-3: var(--sage-3);
+	--neutral-4: var(--sage-4);
+	--neutral-5: var(--sage-5);
+	--neutral-6: var(--sage-6);
+	--neutral-7: var(--sage-7);
+	--neutral-8: var(--sage-8);
+	--neutral-9: var(--sage-9);
+	--neutral-11: var(--sage-11);
+	--neutral-12: var(--sage-12);
+
+	/* Brand. Hover and press are the brand itself, darkened, so a palette
+	   sets one fill and its buttons follow. */
 	--color-brand: #2b5748;
-	--color-brand-hover: #24483c;
-	--color-brand-pressed: #1c3930;
+	--color-brand-hover: color-mix(in srgb, var(--color-brand) 85%, black);
+	--color-brand-pressed: color-mix(in srgb, var(--color-brand) 70%, black);
 	--color-on-brand: #ffffff;
 
+	/* The colour the editor mixes into its active line, selection and search
+	   matches. */
+	--color-editor-tint: var(--color-brand);
+
 	/* Workspace surfaces */
-	--color-shell: var(--sage-1);
-	--color-sidebar: var(--sage-2);
-	--color-preview: var(--sage-3);
-	--color-document: #ffffff;
+	--color-shell: var(--neutral-1);
+	--color-sidebar: var(--neutral-2);
+	--color-preview: var(--neutral-3);
 	--color-raised: #ffffff;
-	--color-subtle: var(--sage-3);
+	--color-subtle: var(--neutral-3);
 
 	/* Separators, borders, and row states */
-	--color-divider: var(--sage-6);
-	--color-pane-edge: var(--sage-8);
-	--color-border: var(--sage-7);
-	--color-border-strong: var(--sage-8);
-	--color-row-hover: var(--sage-4);
-	--color-row-selected: var(--sage-5);
+	--color-divider: var(--neutral-6);
+	--color-pane-edge: var(--neutral-8);
+	--color-border: var(--neutral-7);
+	--color-border-strong: var(--neutral-8);
+	--color-row-hover: var(--neutral-4);
+	--color-row-selected: var(--neutral-5);
+	/* The secondary button's fills, a little darker than the selected row. */
+	--color-tonal-hover: color-mix(in srgb, var(--color-row-selected) 96%, black);
+	--color-tonal-pressed: color-mix(in srgb, var(--color-row-selected) 94%, black);
 
 	/* Text and interaction */
-	--color-text: var(--sage-12);
-	--color-text-secondary: var(--sage-11);
-	--color-text-muted: var(--sage-11);
+	--color-text: var(--neutral-12);
+	--color-text-secondary: var(--neutral-11);
+	--color-text-muted: var(--neutral-11);
 	--color-text-inverse: #ffffff;
-	--color-line-number: var(--sage-11);
+	--color-line-number: var(--neutral-11);
 	--color-link: var(--color-brand);
-	--color-focus: var(--color-brand);
-	--color-disabled-bg: var(--sage-3);
-	--color-disabled-text: var(--sage-9);
+	--color-focus: var(--color-link);
+	--color-disabled-bg: var(--neutral-3);
+	--color-disabled-text: var(--neutral-9);
 
 	/* Source syntax colors follow GitHub Light (Primer prettylights). */
 	--source-highlight-keyword: #cf222e;
@@ -59,7 +80,7 @@
 
 	/* Avatar fills keep white initials readable at normal text size. */
 	--color-avatar-1: var(--color-brand);
-	--color-avatar-2: var(--sage-11);
+	--color-avatar-2: var(--neutral-11);
 	--color-avatar-3: var(--green-11);
 	--color-avatar-4: var(--green-12);
 	--color-avatar-5: var(--amber-12);
@@ -133,17 +154,18 @@
 }
 
 /* Dark mode. The Radix dark files are scoped to `.dark`, which this app does
-   not set, so the twelve steps of each scale are copied here as literal values
-   from @radix-ui/colors 3.0.0. Reassigning the scales also flips every rule
-   that names a step directly, and the role tokens above follow because they
-   resolve on this same element. Only tokens that hold a hard-coded value, or
-   whose step needs a different role in the dark, are set again below. */
+   not set, so the twelve neutral steps are copied here as literal values from
+   @radix-ui/colors 3.0.0 (the sage dark scale) and set under the neutral names.
+   Reassigning the scales also flips every rule that names a step directly, and
+   the role tokens above follow because they resolve on this same element. Only
+   tokens that hold a hard-coded value, or whose step needs a different role in
+   the dark, are set again below. */
 [data-theme="librepaper"][data-mode="dark"] {
 	color-scheme: dark;
 
-	--sage-1: #101211; --sage-2: #171918; --sage-3: #202221; --sage-4: #272a29;
-	--sage-5: #2e3130; --sage-6: #373b39; --sage-7: #444947; --sage-8: #5b625f;
-	--sage-9: #63706b; --sage-10: #717d79; --sage-11: #adb5b2; --sage-12: #eceeed;
+	--neutral-1: #101211; --neutral-2: #171918; --neutral-3: #202221; --neutral-4: #272a29;
+	--neutral-5: #2e3130; --neutral-6: #373b39; --neutral-7: #444947; --neutral-8: #5b625f;
+	--neutral-9: #63706b; --neutral-11: #adb5b2; --neutral-12: #eceeed;
 
 	--green-1: #0e1512; --green-2: #121b17; --green-3: #132d21; --green-4: #113b29;
 	--green-5: #174933; --green-6: #20573e; --green-7: #28684a; --green-8: #2f7c57;
@@ -161,26 +183,30 @@
 	   readable on the fill. As text the brand is too dim on a dark ground,
 	   so links and focus rings use a lighter pine instead. */
 	--color-brand: #3f7a63;
-	--color-brand-hover: #4a8a71;
-	--color-brand-pressed: #356a56;
+	--color-brand-hover: color-mix(in srgb, var(--color-brand) 96%, white);
+	--color-brand-pressed: color-mix(in srgb, var(--color-brand) 85%, black);
 	--color-on-brand: #ffffff;
+
+	/* The editor's active line, selection and search tints mix in the brighter
+	   green, since the brand is dim on a dark ground. */
+	--color-editor-tint: var(--green-9);
 
 	/* Surfaces start one step above the darkest sage so the page is charcoal
 	   rather than black. Every surface role sits one step higher than in light
 	   mode, and hover and selection move up with them. */
-	--color-shell: var(--sage-2);
-	--color-sidebar: var(--sage-3);
-	--color-preview: var(--sage-4);
-	--color-document: var(--sage-3);
-	--color-raised: var(--sage-4);
-	--color-row-hover: var(--sage-5);
-	--color-row-selected: var(--sage-6);
-	--color-subtle: var(--sage-4);
-	--color-disabled-bg: var(--sage-4);
+	--color-shell: var(--neutral-2);
+	--color-sidebar: var(--neutral-3);
+	--color-preview: var(--neutral-4);
+	--color-raised: var(--neutral-4);
+	--color-row-hover: var(--neutral-5);
+	--color-row-selected: var(--neutral-6);
+	--color-tonal-hover: color-mix(in srgb, var(--color-row-selected) 90%, black);
+	--color-tonal-pressed: color-mix(in srgb, var(--color-row-selected) 80%, black);
+	--color-subtle: var(--neutral-4);
+	--color-disabled-bg: var(--neutral-4);
 
 	/* A muted pine, the light brand's hue lightened for a dark ground. */
 	--color-link: #83b5a1;
-	--color-focus: #83b5a1;
 	--color-text-inverse: #ffffff;
 
 	/* Source syntax colors follow GitHub Dark (Primer prettylights). */
@@ -200,7 +226,7 @@
 	--source-highlight-invalid: #ffa198;
 
 	/* Avatar fills use mid steps so white initials stay readable. */
-	--color-avatar-2: var(--sage-8);
+	--color-avatar-2: var(--neutral-8);
 	--color-avatar-3: var(--green-7);
 	--color-avatar-4: var(--green-8);
 	--color-avatar-5: var(--amber-8);
@@ -212,13 +238,13 @@
 	--color-success-border: var(--green-7);
 	--color-success-text: var(--green-11);
 	--color-success-solid: var(--green-9);
-	--color-success-on-solid: var(--sage-1);
+	--color-success-on-solid: var(--neutral-1);
 
 	--color-warning-bg: var(--amber-3);
 	--color-warning-border: var(--amber-7);
 	--color-warning-text: var(--amber-11);
 	--color-warning-solid: var(--amber-9);
-	--color-warning-on-solid: var(--sage-1);
+	--color-warning-on-solid: var(--neutral-1);
 
 	--color-error-bg: var(--red-3);
 	--color-error-border: var(--red-7);

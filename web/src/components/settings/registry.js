@@ -19,6 +19,7 @@ export const CATEGORIES = [
     note: "This browser",
     entries: [
       { id: "appearance-theme", says: "Theme", terms: "dark light theme mode night colour color scheme system appearance" },
+      { id: "appearance-colours", says: "Colours", terms: "colours colors palette theme scheme flexoki solarized gruvbox catppuccin nord syntax highlighting editor" },
     ],
   },
   {

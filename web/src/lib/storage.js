@@ -53,6 +53,10 @@ export const EDITOR_CHECK = "librepaper-editor-check";
 // Whether the pages are light, dark, or follow the computer: "system", "light"
 // or "dark". Like the keymap, a habit of the person looking at the screen.
 export const THEME = "librepaper-theme";
+// Which colour theme the pages use: "librepaper", "flexoki", "solarized",
+// "gruvbox", "catppuccin" or "nord". Like the theme, a habit of the person
+// looking at the screen rather than of the document.
+export const PALETTE = "librepaper-palette";
 // The symbol ids the picker used last, most recent first.
 export const SYMBOLS_RECENT = "librepaper-symbols-recent";
 // The symbol ids starred in the picker, in the order they were starred.

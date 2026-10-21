@@ -1,0 +1,96 @@
+/* Flexoki by Steph Ango (https://stephango.com/flexoki), released under the
+   MIT licence. The light variant uses the paper ground with the 600 accents,
+   and the dark variant uses the black ground with the 400 accents. */
+
+[data-theme="librepaper"][data-palette="flexoki"][data-mode="light"] {
+	color-scheme: light;
+
+	/* Neutral scale: paper, then the Flexoki base tones in order. */
+	--neutral-1: #FFFCF0;
+	--neutral-2: #F2F0E5;
+	--neutral-3: #E6E4D9;
+	--neutral-4: #DAD8CE;
+	--neutral-5: #CECDC3;
+	--neutral-6: #C2C1B8;
+	--neutral-7: #B7B5AC;
+	--neutral-8: #9F9D96;
+	--neutral-9: #878580;
+	--neutral-11: #565552;
+	--neutral-12: #100F0F;
+
+	/* Surfaces */
+	--color-raised: #FFFCF0;
+
+	/* Brand */
+	--color-brand: #1C6C66;
+	--color-on-brand: #FFFFFF;
+
+	/* Cyan 600 is 4.4:1 on paper, so links and focus use cyan 700. */
+	--color-link: #1C6C66;
+
+	/* Editor tint */
+	--color-editor-tint: #24837B;
+
+	/* Syntax, following the Flexoki token mapping. */
+	--source-highlight-keyword: #66800B;
+	--source-highlight-string: #24837B;
+	--source-highlight-constant: #5E409D;
+	--source-highlight-comment: #878580;
+	--source-highlight-tag: #205EA6;
+	--source-highlight-property: #AD8301;
+	--source-highlight-function: #BC5215;
+	--source-highlight-variable: #205EA6;
+	--source-highlight-heading: #205EA6;
+	--source-highlight-link: #24837B;
+	--source-highlight-monospace: #24837B;
+	--source-highlight-punctuation: #6F6E69;
+	--source-highlight-meta: #A02F6F;
+	--source-highlight-invalid: #AF3029;
+}
+
+[data-theme="librepaper"][data-palette="flexoki"][data-mode="dark"] {
+	color-scheme: dark;
+
+	/* Neutral scale: black, then the Flexoki base tones in order. */
+	--neutral-1: #100F0F;
+	--neutral-2: #1C1B1A;
+	--neutral-3: #282726;
+	--neutral-4: #343331;
+	--neutral-5: #403E3C;
+	--neutral-6: #4B4A48;
+	--neutral-7: #575653;
+	--neutral-8: #6F6E69;
+	--neutral-9: #878580;
+	--neutral-11: #bdbbb2;
+	--neutral-12: #CECDC3;
+
+	/* Surfaces */
+	--color-raised: #343331;
+
+	/* Brand: cyan 700 with white text. */
+	--color-brand: #1C6C66;
+	--color-on-brand: #FFFFFF;
+
+	/* Cyan 400 is 4.4:1 on the raised surface, so links and focus use a
+	   lighter tint of it. */
+	--color-link: #61BEB1;
+
+	/* Editor tint */
+	--color-editor-tint: #3AA99F;
+
+	/* Syntax, following the Flexoki token mapping. */
+	--source-highlight-keyword: #879A39;
+	--source-highlight-string: #3AA99F;
+	--source-highlight-constant: #8B7EC8;
+	--source-highlight-comment: #6F6E69;
+	--source-highlight-tag: #4385BE;
+	--source-highlight-property: #D0A215;
+	--source-highlight-function: #DA702C;
+	--source-highlight-variable: #4385BE;
+	--source-highlight-heading: #4385BE;
+	--source-highlight-link: #3AA99F;
+	--source-highlight-monospace: #3AA99F;
+	--source-highlight-punctuation: #878580;
+	--source-highlight-meta: #CE5D97;
+	--source-highlight-invalid: #D14D41;
+}

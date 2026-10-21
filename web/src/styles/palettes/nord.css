@@ -1,0 +1,89 @@
+/* Nord by Arctic Ice Studio and Sven Greb, released under the MIT licence.
+   The dark variant is the published Nord palette. The light variant is built from the same palette, with Snow Storm as the ground and Polar Night as the text, and its accents darkened to reach contrast. */
+
+[data-theme="librepaper"][data-palette="nord"][data-mode="light"] {
+	color-scheme: light;
+
+	/* Neutral scale from Snow Storm to Polar Night. Steps 5 to 8 are interpolated. */
+	--neutral-1: #eceff4;
+	--neutral-2: #e5e9f0;
+	--neutral-3: #d8dee9;
+	--neutral-4: #cdd3de;
+	--neutral-5: #c2c9d6;
+	--neutral-6: #b4bccb;
+	--neutral-7: #a3acbd;
+	--neutral-8: #8c96aa;
+	--neutral-9: #7b88a1;
+	--neutral-11: #4a5367;
+	--neutral-12: #2e3440;
+
+	--color-raised: #eceff4;
+
+	/* Not a Nord colour. nord10 darkened so white text reaches 4.5:1. */
+	--color-brand: #4c6d96;
+	--color-on-brand: #ffffff;
+
+	/* A darkened frost blue, the only link colour that reaches 4.5:1 on neutral-2. */
+	--color-link: #435f86;
+
+	--color-editor-tint: #5e81ac;
+
+	/* Nord accents, darkened until each reaches 3:1 on Snow Storm. */
+	--source-highlight-keyword: #5e81ac;
+	--source-highlight-string: #5c7a3f;
+	--source-highlight-constant: #8e5f86;
+	--source-highlight-comment: #616e88;
+	--source-highlight-tag: #5e81ac;
+	--source-highlight-property: #4f8a89;
+	--source-highlight-function: #3b7a8c;
+	--source-highlight-variable: #3e7b7a;
+	--source-highlight-heading: #3b7a8c;
+	--source-highlight-link: #3b7a8c;
+	--source-highlight-monospace: #5c7a3f;
+	--source-highlight-punctuation: #4c566a;
+	--source-highlight-meta: #5e81ac;
+	--source-highlight-invalid: #a5444d;
+}
+
+[data-theme="librepaper"][data-palette="nord"][data-mode="dark"] {
+	color-scheme: dark;
+
+	/* Neutral scale from Polar Night to Snow Storm. Steps 1, 3, 5, 7 and 10 are interpolated. */
+	--neutral-1: #272c36;
+	--neutral-2: #2e3440;
+	--neutral-3: #353b49;
+	--neutral-4: #3b4252;
+	--neutral-5: #434c5e;
+	--neutral-6: #4c566a;
+	--neutral-7: #566279;
+	--neutral-8: #616e88;
+	--neutral-9: #7b88a1;
+	--neutral-11: #d8dee9;
+	--neutral-12: #eceff4;
+
+	--color-raised: #3b4252;
+
+	/* Not a Nord colour: frost blue darkened until white text reaches 4.5:1. */
+	--color-brand: #4c6d96;
+	--color-on-brand: #ffffff;
+
+	--color-link: #88c0d0;
+
+	--color-editor-tint: #88c0d0;
+
+	/* Nord's published editor mapping. The comment colour is nord3 brightened to #7b88a1, because the published #616e88 reaches only 2.4:1 on nord0. */
+	--source-highlight-keyword: #81a1c1;
+	--source-highlight-string: #a3be8c;
+	--source-highlight-constant: #b48ead;
+	--source-highlight-comment: #7b88a1;
+	--source-highlight-tag: #81a1c1;
+	--source-highlight-property: #8fbcbb;
+	--source-highlight-function: #88c0d0;
+	--source-highlight-variable: #8fbcbb;
+	--source-highlight-heading: #88c0d0;
+	--source-highlight-link: #88c0d0;
+	--source-highlight-monospace: #a3be8c;
+	--source-highlight-punctuation: #eceff4;
+	--source-highlight-meta: #5e81ac;
+	--source-highlight-invalid: #bf616a;
+}

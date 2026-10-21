@@ -15,8 +15,10 @@ const SRC = join(ROOT, "src");
 const portableRelative = (root, path) => relative(root, path).split(sep).join("/");
 
 // The theme is the one place a colour is written down, and the stylesheet
-// beside it is the one place the application's own shapes are described.
-const THEME = new Set(["src/styles/theme.css", "src/styles/librepaper.css", "src/styles/app.css"]);
+// beside it is the one place the application's own shapes are described. A
+// palette is the theme again under another name, so its files count too.
+const THEME = new Set(["src/styles/theme.css", "src/styles/librepaper.css", "src/styles/app.css", "src/styles/palettes.css"]);
+const PALETTE = /^src\/styles\/palettes\/[a-z]+\.css$/;
 
 // Two things are outside the design system, and have to be.
 //
@@ -47,7 +49,7 @@ const complain = (file, line, rule, text) =>
 
 for (const path of files(SRC)) {
   const name = portableRelative(ROOT, path);
-  if (THEME.has(name) || OUTSIDE.some((each) => each.test(name))) continue;
+  if (THEME.has(name) || PALETTE.test(name) || OUTSIDE.some((each) => each.test(name))) continue;
   if (!/\.(svelte|js|css)$/.test(name)) continue;
   const source = readFileSync(path, "utf8");
 
