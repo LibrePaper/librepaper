@@ -8,9 +8,9 @@ export const PINNED_FILES = new Map([
   ["bibliography.wasm", { repo: "wasm-bibliography", prefix: "wasm" }],
   ["citations.wasm", { repo: "wasm-bibliography", prefix: "wasm" }],
   ["typst.wasm", { repo: "wasm-typst", prefix: "wasm" }],
-  ...["jetbrains-mono", "jetbrains-mono-italic", "fira-code", "source-code-pro", "source-code-pro-italic",
-    "ibm-plex-mono", "ibm-plex-mono-italic", "ibm-plex-mono-semibold", "cascadia-code", "cascadia-code-italic",
-    "opendyslexic-mono"].map((name) => [`${name}.woff2`, { repo: "editor-fonts", prefix: "fonts" }]),
+  ...["jetbrains-mono", "jetbrains-mono-italic", "jetbrains-mono-semibold", "fira-code", "source-code-pro",
+    "source-code-pro-italic", "ibm-plex-mono", "ibm-plex-mono-italic", "ibm-plex-mono-semibold", "cascadia-code",
+    "cascadia-code-italic", "opendyslexic", "opendyslexic-italic", "opendyslexic-bold"].map((name) => [`${name}.woff2`, { repo: "editor-fonts", prefix: "fonts" }]),
 ]);
 const SHA256 = /^[a-f0-9]{64}$/;
 

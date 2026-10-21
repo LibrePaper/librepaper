@@ -82,12 +82,12 @@ test("a lock missing a font row is rejected", async () => {
   }
 });
 
-test("release update for editor-fonts rewrites all eleven font rows and no others", async () => {
+test("release update for editor-fonts rewrites all fourteen font rows and no others", async () => {
   const root = await fixture();
   const lockPath = join(root, "assets.lock");
   try {
     const fonts = [...PINNED_FILES].filter(([, { repo }]) => repo === "editor-fonts").map(([file]) => file);
-    assert.equal(fonts.length, 11);
+    assert.equal(fonts.length, 14);
     const sums = join(root, "SHA256SUMS");
     await writeFile(sums, fonts.map((file, i) => `${String(i).padStart(2, "0").repeat(32)}  ${file}`).join("\n") + "\n");
     run(pins, ["update", "release", "--root", root, "--repo", "editor-fonts", "--tag", "v1.0.0", "--sums-file", sums]);
@@ -151,4 +151,11 @@ test("latex pin update fails if manifest hash does not match dir name", async ()
   } finally {
     await rm(root, { recursive: true, force: true });
   }
+});
+
+test("the Rust pin table in the shell crate matches PINNED_FILES in order", async () => {
+  const source = await readFile(join(here, "../../crates/librepaper-shell/src/lib.rs"), "utf8");
+  const found = [...source.matchAll(/\bpin\("([^"]+)",\s*"([^"]+)"\)/g)].map(([, file, prefix]) => [file, prefix]);
+  assert.ok(found.length > 0, "no pin(...) entries found in lib.rs");
+  assert.deepEqual(found, [...PINNED_FILES].map(([file, { prefix }]) => [file, prefix]));
 });

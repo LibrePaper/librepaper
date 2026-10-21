@@ -1,7 +1,8 @@
 #!/usr/bin/env node
 
 // The browser asset mirror: validates a LaTeX release tree, stages the pinned
-// wasm modules and editor fonts, and publishes them to S3 with integrity checks.
+// wasm modules and editor fonts, and publishes them to S3 with integrity
+// checks.
 // `tools/assets/mirror` is the shell front end.
 
 import { execFile } from "node:child_process";

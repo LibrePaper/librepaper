@@ -1,11 +1,12 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Build, check and publish the browser assets: the wasm modules, the editor fonts and
-# the LaTeX mirror that DEFAULT_ASSET_MIRROR names (an OVH S3 bucket by default).
+# Build, check and publish the browser assets: the wasm modules, the editor
+# fonts and the LaTeX mirror that DEFAULT_ASSET_MIRROR names (an OVH S3 bucket
+# by default).
 #
-# The bucket holds wasm/<sha256>/<module>.wasm, fonts/<sha256>/<font>.woff2 and latex/<sha256>/ (the release
-# assets.lock pins). Nothing is ever deleted, so older binaries keep working.
+# The bucket holds wasm/<sha256>/<module>.wasm, fonts/<sha256>/<font>.woff2 and
+# latex/<sha256>/ (the release assets.lock pins). Nothing is ever deleted, so older binaries keep working.
 #
 # One-time setup:
 # 1. Public Cloud > Object Storage > Users: create an S3 user and generate its S3 credentials.
@@ -15,8 +16,9 @@ set -euo pipefail
 #    LIBREPAPER_MIRROR_S3_SECRET_ACCESS_KEY and LIBREPAPER_MIRROR_S3_BUCKET.
 #
 # Each publish:
-# 1. node tools/assets/pins.mjs fetch && tools/assets/mirror build: fetch the pinned wasm modules and fonts into web/wasm and web/fonts, and
-#    build the LaTeX mirror (in ../wasm-latex, or MIRROR=).
+# 1. node tools/assets/pins.mjs fetch && tools/assets/mirror build: fetch the pinned wasm modules and
+#    fonts into web/wasm and web/fonts, and build the LaTeX mirror (in
+#    ../wasm-latex, or MIRROR=).
 # 2. node tools/assets/pins.mjs update latex: pin the one release in ../wasm-latex/mirror.
 # 3. tools/assets/mirror publish: checks, smokes in Chromium, probes the bucket with two small test
 #    files, then uploads everything and verifies public read with CORS. Stop at first failure.
@@ -29,11 +31,12 @@ Usage: tools/assets/mirror <command> [args]
 Commands:
   build                     Build the LaTeX mirror (make -C <dir of MIRROR> mirror)
   check [DIR|URL]           Validate the LaTeX mirror (a directory also gets the
-                            pinned-file publish dry-run); no credentials, no network for a directory
+                            pinned-file publish dry-run); no credentials, no network
+                            for a directory
   smoke                     Build dist/librepaper, then compile and display the LaTeX
                             tutorial in Chromium against MIRROR
-  publish [--dry-run]       Check, smoke, probe bucket, then upload wasm modules, fonts and LaTeX
-                            mirror. Stop at first failure.
+  publish [--dry-run]       Check, smoke, probe bucket, then upload wasm modules, fonts and
+                            LaTeX mirror. Stop at first failure.
                             --dry-run  validate without credentials or touching the bucket
   help, -h, --help          Show this help
 
@@ -95,8 +98,8 @@ cmd_smoke() {
   fi
 }
 
-# Upload the wasm modules, the fonts and the prepared LaTeX mirror. Needs AWS_* in the
-# environment (set by cmd_publish) unless MIRRORS_DRY_RUN=1.
+# Upload the wasm modules, the fonts and the prepared LaTeX mirror. Needs AWS_*
+# in the environment (set by cmd_publish) unless MIRRORS_DRY_RUN=1.
 push_mirrors() {
   if [ "${MIRRORS_DRY_RUN:-}" = 1 ] || command -v aws >/dev/null 2>&1; then
     MIRROR="$MIRROR" node tools/assets/mirror.mjs publish
@@ -172,8 +175,8 @@ cmd_publish() {
   cmd_check "$MIRROR"
 
   # Stage 2/6: every pin must name a public GitHub release. `node tools/assets/pins.mjs fetch` downloads
-  # the pinned files anonymously, and the LaTeX release's source link is its licence
-  # obligation. A draft release answers 404 to anyone signed out. Cheap, so before the smoke.
+  # the pinned files anonymously, and the LaTeX release's source link is its
+  # licence obligation. A draft release answers 404 to anyone signed out. Cheap, so before the smoke.
   printf '%s\n' "publish: 2/6 check GitHub releases"
   public() { [ "$(bounded_curl -sSIL -o /dev/null -w '%{http_code}' "$1")" = 200 ] || { printf '%s\n' "Error: $2 is not publicly downloadable (a draft release?): $1" >&2; exit 1; }; }
   local module repo tag _

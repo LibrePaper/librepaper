@@ -1,12 +1,13 @@
 # Browser asset mirrors
 
 The server binary embeds pins, not renderer binaries or LaTeX files. Browsers
-fetch all five pinned assets from the mirror in `[assets].mirror`; the default
+fetch every pinned asset from the mirror in `[assets].mirror`; the default
 is [`DEFAULT_ASSET_MIRROR`](../../crates/librepaper-base/src/config/mod.rs).
 The official production config points to an OVH bucket in `bhs`.
 
-- `assets.lock` pins four WASM modules and one LaTeX release. Each WASM pin
-  names a GitHub repository, tag, and SHA-256. The LaTeX pin names a
+- `assets.lock` pins the WASM modules, the editor fonts and one LaTeX release.
+  Each WASM pin names a GitHub repository, tag, and SHA-256. Font pins name the
+  `editor-fonts` repository. The LaTeX pin names a
   `wasm-latex` release tag and the SHA-256 of its `MANIFEST.json`.
 - The published keys are `wasm/<sha256>/<module>.wasm`,
   `fonts/<sha256>/<font>.woff2` and

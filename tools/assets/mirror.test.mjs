@@ -704,7 +704,7 @@ test('staging refuses a file whose bytes do not match assets.lock', async () => 
       const fonts = staged.mirrors.find(({ prefix }) => prefix === 'fonts');
       assert.equal(await readFile(join(wasm.dir, paths.moduleHash, 'markdown.wasm'), 'utf8'), 'valid markdown wasm');
       assert.equal(await readFile(join(fonts.dir, paths.fontHash, 'fira-code.woff2'), 'utf8'), 'valid font');
-      assert.equal((await preflightMirror(fonts)).count, 11);
+      assert.equal((await preflightMirror(fonts)).count, 14);
     } finally { await staged.cleanup(); }
     await writeFile(join(paths.assets, 'wasm', 'markdown.wasm'), 'tampered');
     await assert.rejects(stagePinnedMirrors(paths.assets, paths.lock), /does not match assets\.lock/);
@@ -764,7 +764,7 @@ test("dry run stages the pinned mirrors, hashes both mirrors and skips SOPS, eve
       PATH: `${bin}:${process.env.PATH}`, MIRRORS_DRY_RUN: "1", ASSETS_DIR: paths.assets, ASSETS_LOCK: paths.lock, MIRROR: paths.latex,
       SOPS_CALLED: join(root, "sops-called") } });
     assert.match(output, /Validated wasm: 4 files/);
-    assert.match(output, /Validated fonts: 11 files/);
+    assert.match(output, /Validated fonts: 14 files/);
     assert.match(output, /Validated latex: 6 files/);
     await assert.rejects(readFile(join(root, "sops-called")));
   } finally { await rm(root, { recursive: true, force: true }); }
