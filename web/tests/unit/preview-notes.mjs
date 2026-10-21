@@ -12,27 +12,22 @@ let notes = previewNotes({
 });
 assert.equal(notes.length, 0, "previewable open file gives no notes");
 
-// --- info note when .bib file is open ----------------------------------------
+// --- generic info note when a text file has no preview ------------------------
 
 notes = previewNotes({
-  openPath: "refs.bib",
+  openPath: "notes.dat",
   openIsText: true,
   mainPath: "main.tex",
   formatOf: (path) => (path.endsWith(".tex") ? "latex" : null),
 });
 assert.equal(notes.length, 1, "one note for non-previewable file");
-assert.equal(notes[0].severity, "info", "BibTeX note has info severity");
+assert.equal(notes[0].severity, "info", "generic note has info severity");
 assert.match(
   notes[0].message,
-  /BibTeX files have no preview/,
-  "BibTeX note names the file type"
+  /^This file has no preview of its own; the preview shows main\.tex\.$/,
+  "generic note names the main file"
 );
-assert.match(
-  notes[0].message,
-  /main\.tex/,
-  "note names the main file"
-);
-assert.equal(notes[0].file, "refs.bib", "note has the open file");
+assert.equal(notes[0].file, "notes.dat", "note has the open file");
 
 // --- generic message for unknown extension -----------------------------------
 
@@ -93,7 +88,7 @@ assert.match(
 // --- no note for main file when open file text but main unrenderable ----
 
 notes = previewNotes({
-  openPath: "refs.bib",
+  openPath: "notes.dat",
   openIsText: true,
   mainPath: "main.xyz",
   formatOf: () => null,
@@ -101,140 +96,41 @@ notes = previewNotes({
 assert.equal(notes.length, 1, "one note when main is unrenderable");
 assert.equal(notes[0].severity, "warning", "unrenderable main is a warning");
 
-// --- open .json file has a preview, so no note ----------------------------------------
+// --- text files with a preview, so no note ------------------------------------
+
+for (const openPath of [
+  "data.json", "config.yaml", "config.yml", "config.toml", "notes.txt", "refs.bib",
+  "bundle.csl", "script.r", "script.py", "script.jl", "script.lua", "mystyle.sty",
+  "mystyle.cls", "mystyle.bst", "site.css", "data.csv", "DATA.CSV",
+]) {
+  notes = previewNotes({
+    openPath,
+    openIsText: true,
+    mainPath: "main.tex",
+    formatOf: previewFormatOf,
+  });
+  assert.equal(notes.length, 0, `no note for ${openPath}, which previews as text`);
+}
+
+// --- a text file with no preview format gets the generic note under the preview mapping ---
 
 notes = previewNotes({
-  openPath: "data.json",
+  openPath: "x.foo",
   openIsText: true,
   mainPath: "main.tex",
   formatOf: previewFormatOf,
 });
-assert.equal(notes.length, 0, "no note for .json file, which previews as text");
-
-// --- open .csv file opens appropriate message ----------------------------------------
-
-notes = previewNotes({
-  openPath: "data.csv",
-  openIsText: true,
-  mainPath: "main.tex",
-  formatOf: (path) => (path.endsWith(".tex") ? "latex" : null),
-});
-assert.equal(notes.length, 1, "one note for .csv file");
+assert.equal(notes.length, 1, "one note for .foo file under the preview mapping");
 assert.match(
   notes[0].message,
-  /CSV files have/,
-  ".csv file named as CSV type"
-);
-
-// --- open .yaml file has a preview, so no note ----------------------------------------
-
-notes = previewNotes({
-  openPath: "config.yaml",
-  openIsText: true,
-  mainPath: "main.tex",
-  formatOf: previewFormatOf,
-});
-assert.equal(notes.length, 0, "no note for .yaml file, which previews as text");
-
-// --- open .yml file has a preview, so no note ----------------------------------------
-
-notes = previewNotes({
-  openPath: "config.yml",
-  openIsText: true,
-  mainPath: "main.tex",
-  formatOf: previewFormatOf,
-});
-assert.equal(notes.length, 0, "no note for .yml file, which previews as text");
-
-// --- open .toml file has a preview, so no note ----------------------------------------
-
-notes = previewNotes({
-  openPath: "config.toml",
-  openIsText: true,
-  mainPath: "main.tex",
-  formatOf: previewFormatOf,
-});
-assert.equal(notes.length, 0, "no note for .toml file, which previews as text");
-
-// --- open .bib file still gets its note under the preview mapping ------------------
-
-notes = previewNotes({
-  openPath: "config.bib",
-  openIsText: true,
-  mainPath: "main.tex",
-  formatOf: previewFormatOf,
-});
-assert.equal(notes.length, 1, "one note for .bib file under the preview mapping");
-assert.match(
-  notes[0].message,
-  /BibTeX files have no preview/,
-  ".bib file still named as BibTeX under the preview mapping"
-);
-
-// --- open .cls file opens appropriate message ----------------------------------------
-
-notes = previewNotes({
-  openPath: "mystyle.cls",
-  openIsText: true,
-  mainPath: "main.tex",
-  formatOf: (path) => (path.endsWith(".tex") ? "latex" : null),
-});
-assert.equal(notes.length, 1, "one note for .cls file");
-assert.match(
-  notes[0].message,
-  /LaTeX class and style files have/,
-  ".cls file named as LaTeX class and style"
-);
-
-// --- open .sty file opens appropriate message ----------------------------------------
-
-notes = previewNotes({
-  openPath: "mystyle.sty",
-  openIsText: true,
-  mainPath: "main.tex",
-  formatOf: (path) => (path.endsWith(".tex") ? "latex" : null),
-});
-assert.equal(notes.length, 1, "one note for .sty file");
-assert.match(
-  notes[0].message,
-  /LaTeX class and style files have/,
-  ".sty file named as LaTeX class and style"
-);
-
-// --- open .lua file opens appropriate message ----------------------------------------
-
-notes = previewNotes({
-  openPath: "script.lua",
-  openIsText: true,
-  mainPath: "main.tex",
-  formatOf: (path) => (path.endsWith(".tex") ? "latex" : null),
-});
-assert.equal(notes.length, 1, "one note for .lua file");
-assert.match(
-  notes[0].message,
-  /Lua files have/,
-  ".lua file named as Lua"
-);
-
-// --- open .txt file opens appropriate message ----------------------------------------
-
-notes = previewNotes({
-  openPath: "notes.txt",
-  openIsText: true,
-  mainPath: "main.tex",
-  formatOf: (path) => (path.endsWith(".tex") ? "latex" : null),
-});
-assert.equal(notes.length, 1, "one note for .txt file");
-assert.match(
-  notes[0].message,
-  /Plain text files have/,
-  ".txt file named as Plain text"
+  /^This file has no preview of its own; the preview shows main\.tex\.$/,
+  ".foo file gets the generic message"
 );
 
 // --- note ends with period when mainPath is empty ----------------------------------------
 
 notes = previewNotes({
-  openPath: "refs.bib",
+  openPath: "notes.dat",
   openIsText: true,
   mainPath: null,
   formatOf: () => null,

@@ -12,9 +12,10 @@ export function formatOf(path) {
 }
 
 /// What the preview shows a file as. Every document format previews as
-/// itself; data files (JSON, YAML, TOML) preview as their plain text.
+/// itself. Every other text file the server accepts that has no renderer
+/// previews as its plain text, so a data file or a script shows its source.
 export function previewFormatOf(path) {
   const format = formatOf(path);
   if (format) return format;
-  return /\.(?:json|ya?ml|toml)$/i.test(path || "") ? "text" : "";
+  return /\.(?:json|ya?ml|toml|txt|bib|csl|r|py|jl|lua|sty|cls|bst|css|csv)$/i.test(path || "") ? "text" : "";
 }

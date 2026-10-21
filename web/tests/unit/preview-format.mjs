@@ -1,9 +1,13 @@
 import assert from "node:assert/strict";
 import { formatOf, previewFormatOf } from "../../src/lib/formats.js";
 
-// --- data files preview as their plain text -------------------------------------
+// --- data files and scripts preview as their plain text -------------------------
 
-for (const path of ["a.json", "b.yaml", "c.yml", "d.toml", "E.JSON"]) {
+for (const path of [
+  "a.json", "b.yaml", "c.yml", "d.toml", "E.JSON", "notes.txt", "refs.bib",
+  "bundle.csl", "script.r", "script.py", "script.jl", "script.lua", "mystyle.sty",
+  "mystyle.cls", "mystyle.bst", "site.css", "x.csv", "X.CSV",
+]) {
   assert.equal(previewFormatOf(path), "text", `${path} previews as text`);
 }
 
@@ -15,7 +19,7 @@ assert.equal(previewFormatOf("x.typ"), "typst", "Typst previews as Typst");
 
 // --- everything else has no preview ---------------------------------------------
 
-for (const path of ["x.csv", "x.bib", "x.txt", ""]) {
+for (const path of ["x.dat", ""]) {
   assert.equal(previewFormatOf(path), "", `${path} has no preview`);
 }
 
