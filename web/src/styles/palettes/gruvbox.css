@@ -1,5 +1,5 @@
 /*
-  Gruvbox by Pavel Pertsev (morhetz), MIT licence. The light block uses the medium contrast light variant with the faded accents, and the dark block uses the medium contrast dark variant with the bright accents.
+  Gruvbox by Pavel Pertsev (morhetz), MIT licence. The light block uses the medium contrast light variant with the faded accents, and the dark block uses the medium contrast dark variant with the bright accents. The light neutrals and raised surface are gruvbox's ramp with about half the saturation, because the original cream read as a stark yellow.
   Neutrals follow the bg and fg ramps of each variant, and syntax follows gruvbox's own vim highlighting groups.
 */
 
@@ -7,12 +7,12 @@
   color-scheme: light;
 
   /* Neutral scale */
-  --neutral-1: #fbf1c7;
-  --neutral-2: #f3e6bc;
-  --neutral-3: #f2e5bc;
-  --neutral-4: #ebdbb2;
-  --neutral-5: #e0d0aa;
-  --neutral-6: #d5c4a1;
+  --neutral-1: #f5f0de;
+  --neutral-2: #ebe5cf;
+  --neutral-3: #e6e0ca;
+  --neutral-4: #ddd5c0;
+  --neutral-5: #d2cab7;
+  --neutral-6: #c8c0ae;
   --neutral-7: #bdae93;
   --neutral-8: #a89984;
   --neutral-9: #928374;
@@ -20,7 +20,7 @@
   --neutral-12: #3c3836;
 
   /* Surfaces */
-  --color-raised: #f9f5d7;
+  --color-raised: #faf7ec;
 
   /* Brand */
   --color-brand: #af3a03;
