@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { formatOf, previewFormatOf } from "../../src/lib/formats.js";
+import { render } from "../../src/lib/renderers.js";
 
 // --- data files and scripts preview as their plain text -------------------------
 
@@ -26,5 +27,13 @@ for (const path of ["x.dat", ""]) {
 // --- the document format is unchanged for data files ----------------------------
 
 assert.equal(formatOf("a.json"), "", "a data file is still not a document format");
+
+// --- a text file renders as a highlighted page with no script ------------------
+
+const page = await render({ main: "a.json", texts: { "a.json": "{\"k\": 1} <x>" } }, "");
+assert.match(page.html, /<pre>/, "the text page has a preformatted block");
+assert.match(page.html, /&lt;x&gt;/, "source is escaped");
+assert.match(page.html, /tok-/, "a known language is highlighted");
+assert.doesNotMatch(page.html, /<script/i, "the text page has no script");
 
 console.log("preview format tests passed");
