@@ -1,10 +1,9 @@
 @import "@radix-ui/colors/sage.css";
-@import "@radix-ui/colors/green.css";
-@import "@radix-ui/colors/amber.css";
-@import "@radix-ui/colors/red.css";
 
-/* The LibrePaper theme. Radix supplies the neutral and status scales; this
-   file assigns those steps to the roles used by the application. */
+/* The LibrePaper theme. Radix supplies the neutral scale. The Okabe-Ito
+   palette supplies the status, avatar and syntax hues, so error and success
+   stay apart for red-green colour blindness. This file assigns those steps to
+   the roles used by the application. */
 [data-theme="librepaper"] {
 	color-scheme: light;
 
@@ -21,6 +20,18 @@
 	--neutral-9: var(--sage-9);
 	--neutral-11: var(--sage-11);
 	--neutral-12: var(--sage-12);
+
+	/* Okabe-Ito colour-blind-safe hues. These raw hues are the same in both
+	   modes, so dark mode does not redefine them. Every role below is built
+	   from them. */
+	--oi-orange: #e69f00;
+	--oi-sky-blue: #56b4e9;
+	--oi-bluish-green: #009e73;
+	--oi-yellow: #f0e442;
+	--oi-blue: #0072b2;
+	--oi-vermillion: #d55e00;
+	--oi-reddish-purple: #cc79a7;
+	--oi-gray: #999999;
 
 	/* Brand. Hover and press are the brand itself, darkened, so a palette
 	   sets one fill and its buttons follow. */
@@ -62,48 +73,51 @@
 	--color-disabled-bg: var(--neutral-3);
 	--color-disabled-text: var(--neutral-9);
 
-	/* Source syntax colors follow GitHub Light (Primer prettylights). */
-	--source-highlight-keyword: #cf222e;
-	--source-highlight-string: #0a3069;
-	--source-highlight-constant: #0550ae;
-	--source-highlight-comment: #6e7781;
-	--source-highlight-tag: #116329;
-	--source-highlight-property: #0550ae;
-	--source-highlight-function: #8250df;
-	--source-highlight-variable: #953800;
-	--source-highlight-heading: #0550ae;
-	--source-highlight-link: #0a3069;
-	--source-highlight-monospace: #0a3069;
-	--source-highlight-punctuation: #1f2328;
-	--source-highlight-meta: #6e7781;
-	--source-highlight-invalid: #82071e;
+	/* Source syntax colors are Okabe-Ito hues, darkened to 4.5:1 on the light
+	   grounds. */
+	--source-highlight-keyword: #b34f00;
+	--source-highlight-string: #377395;
+	--source-highlight-constant: #0072b2;
+	--source-highlight-comment: #6d6d6d;
+	--source-highlight-tag: #007d5b;
+	--source-highlight-property: #0072b2;
+	--source-highlight-function: #975a7c;
+	--source-highlight-variable: #916400;
+	--source-highlight-heading: #0072b2;
+	--source-highlight-link: #377395;
+	--source-highlight-monospace: #377395;
+	--source-highlight-punctuation: var(--neutral-12);
+	--source-highlight-meta: #6d6d6d;
+	--source-highlight-invalid: #af4d00;
 
-	/* Avatar fills keep white initials readable at normal text size. */
+	/* Okabe-Ito hues dark enough for white initials. */
 	--color-avatar-1: var(--color-brand);
-	--color-avatar-2: var(--neutral-11);
-	--color-avatar-3: var(--green-11);
-	--color-avatar-4: var(--green-12);
-	--color-avatar-5: var(--amber-12);
-	--color-avatar-6: var(--red-11);
+	--color-avatar-2: #0072b2;
+	--color-avatar-3: #af4d00;
+	--color-avatar-4: #007a59;
+	--color-avatar-5: #975a7c;
+	--color-avatar-6: #8a6000;
 
-	/* Status colors: steps 3, 7, 11, and 9 respectively. Amber uses its
-	   darkest text step on the solid control for readable contrast. */
-	--color-success-bg: var(--green-3);
-	--color-success-border: var(--green-7);
-	--color-success-text: var(--green-12);
-	--color-success-solid: var(--green-11);
+	/* Status colors. The hues are Okabe-Ito vermillion, orange and bluish
+	   green, so error and success stay apart for red-green colour blindness.
+	   Text shades are the same hue darkened to 4.5:1 on their background and
+	   the shell. */
+	--color-success-bg: #dbf1eb;
+	--color-success-border: #8cd3c0;
+	--color-success-text: #007a59;
+	--color-success-solid: #008762;
 	--color-success-on-solid: #ffffff;
 
-	--color-warning-bg: var(--amber-3);
-	--color-warning-border: var(--amber-7);
-	--color-warning-text: var(--amber-12);
-	--color-warning-solid: var(--amber-9);
-	--color-warning-on-solid: var(--amber-12);
+	--color-warning-bg: #fcf2db;
+	--color-warning-border: #f4d48c;
+	--color-warning-text: #926500;
+	--color-warning-solid: #e69f00;
+	--color-warning-on-solid: #1a211e;
 
-	--color-error-bg: var(--red-3);
-	--color-error-border: var(--red-7);
-	--color-error-text: var(--red-11);
-	--color-error-solid: var(--red-11);
+	--color-error-bg: #f9e8db;
+	--color-error-border: #ecb78c;
+	--color-error-text: #af4d00;
+	--color-error-solid: #c35600;
 	--color-error-on-solid: #ffffff;
 
 	/* Narrow compatibility values for Skeleton base and form styles. */
@@ -167,18 +181,6 @@
 	--neutral-5: #2e3130; --neutral-6: #373b39; --neutral-7: #444947; --neutral-8: #5b625f;
 	--neutral-9: #63706b; --neutral-11: #adb5b2; --neutral-12: #eceeed;
 
-	--green-1: #0e1512; --green-2: #121b17; --green-3: #132d21; --green-4: #113b29;
-	--green-5: #174933; --green-6: #20573e; --green-7: #28684a; --green-8: #2f7c57;
-	--green-9: #30a46c; --green-10: #33b074; --green-11: #3dd68c; --green-12: #b1f1cb;
-
-	--amber-1: #16120c; --amber-2: #1d180f; --amber-3: #302008; --amber-4: #3f2700;
-	--amber-5: #4d3000; --amber-6: #5c3d05; --amber-7: #714f19; --amber-8: #8f6424;
-	--amber-9: #ffc53d; --amber-10: #ffd60a; --amber-11: #ffca16; --amber-12: #ffe7b3;
-
-	--red-1: #191111; --red-2: #201314; --red-3: #3b1219; --red-4: #500f1c;
-	--red-5: #611623; --red-6: #72232d; --red-7: #8c333a; --red-8: #b54548;
-	--red-9: #e5484d; --red-10: #ec5d5e; --red-11: #ff9592; --red-12: #ffd1d9;
-
 	/* Brand: lighter on hover and darker on press, with white text still
 	   readable on the fill. As text the brand is too dim on a dark ground,
 	   so links and focus rings use a lighter pine instead. */
@@ -187,9 +189,9 @@
 	--color-brand-pressed: color-mix(in srgb, var(--color-brand) 85%, black);
 	--color-on-brand: #ffffff;
 
-	/* The editor's active line, selection and search tints mix in the brighter
+	/* The editor's active line, selection and search tints mix in the bluish
 	   green, since the brand is dim on a dark ground. */
-	--color-editor-tint: var(--green-9);
+	--color-editor-tint: var(--oi-bluish-green);
 
 	/* Surfaces start one step above the darkest sage so the page is charcoal
 	   rather than black. Every surface role sits one step higher than in light
@@ -209,57 +211,51 @@
 	--color-link: #83b5a1;
 	--color-text-inverse: #ffffff;
 
-	/* Source syntax colors follow GitHub Dark (Primer prettylights). */
-	--source-highlight-keyword: #ff7b72;
-	--source-highlight-string: #a5d6ff;
-	--source-highlight-constant: #79c0ff;
-	--source-highlight-comment: #8b949e;
-	--source-highlight-tag: #7ee787;
-	--source-highlight-property: #79c0ff;
-	--source-highlight-function: #d2a8ff;
-	--source-highlight-variable: #ffa657;
-	--source-highlight-heading: #79c0ff;
-	--source-highlight-link: #a5d6ff;
-	--source-highlight-monospace: #a5d6ff;
-	--source-highlight-punctuation: #e6edf3;
-	--source-highlight-meta: #8b949e;
-	--source-highlight-invalid: #ffa198;
+	/* Source syntax colors are Okabe-Ito hues, lightened for the dark ground. */
+	--source-highlight-keyword: #dc7829;
+	--source-highlight-string: #56b4e9;
+	--source-highlight-constant: #4598c7;
+	--source-highlight-comment: #999999;
+	--source-highlight-tag: #1ca982;
+	--source-highlight-property: #4598c7;
+	--source-highlight-function: #cc79a7;
+	--source-highlight-variable: #e69f00;
+	--source-highlight-heading: #4598c7;
+	--source-highlight-link: #56b4e9;
+	--source-highlight-monospace: #56b4e9;
+	--source-highlight-punctuation: var(--neutral-12);
+	--source-highlight-meta: #999999;
+	--source-highlight-invalid: #dc7829;
 
-	/* Avatar fills use mid steps so white initials stay readable. */
-	--color-avatar-2: var(--neutral-8);
-	--color-avatar-3: var(--green-7);
-	--color-avatar-4: var(--green-8);
-	--color-avatar-5: var(--amber-8);
-	--color-avatar-6: var(--red-8);
-
-	/* Status colors: text uses step 11 and solids a bright step. The bright
-	   green and amber solids carry the darkest neutral as their text. */
-	--color-success-bg: var(--green-3);
-	--color-success-border: var(--green-7);
-	--color-success-text: var(--green-11);
-	--color-success-solid: var(--green-9);
+	/* Status colors, lightened for the dark ground. Text shades are the same
+	   hues lightened to 4.5:1 on their background and the shell. Solids are
+	   the raw Okabe-Ito hues, and their text is the darkest neutral. */
+	--color-success-bg: #12342a;
+	--color-success-border: #0a624a;
+	--color-success-text: #1ca982;
+	--color-success-solid: #009e73;
 	--color-success-on-solid: var(--neutral-1);
 
-	--color-warning-bg: var(--amber-3);
-	--color-warning-border: var(--amber-7);
-	--color-warning-text: var(--amber-11);
-	--color-warning-solid: var(--amber-9);
+	--color-warning-bg: #403413;
+	--color-warning-border: #89630b;
+	--color-warning-text: #e69f00;
+	--color-warning-solid: #e69f00;
 	--color-warning-on-solid: var(--neutral-1);
 
-	--color-error-bg: var(--red-3);
-	--color-error-border: var(--red-7);
-	--color-error-text: var(--red-11);
-	--color-error-solid: var(--red-8);
-	--color-error-on-solid: #ffffff;
+	--color-error-bg: #3d2713;
+	--color-error-border: #803f0b;
+	--color-error-text: #dc7829;
+	--color-error-solid: #d55e00;
+	--color-error-on-solid: var(--neutral-1);
 }
 
-/* Project tag colours. These are the Okabe-Ito hexes. The keys are the palette
-   in lib/tag-colours.js. One set serves both modes, so the colours stay the
-   ones the palette was designed and checked as. */
+/* Project tag colours. These reference the Okabe-Ito hues above. The keys are
+   the palette in lib/tag-colours.js. One set serves both modes, so the colours
+   stay the ones the palette was designed and checked as. */
 [data-theme="librepaper"] {
-	--tag-gray: #999999; --tag-orange: #e69f00; --tag-sky-blue: #56b4e9;
-	--tag-bluish-green: #009e73; --tag-yellow: #f0e442; --tag-blue: #0072b2;
-	--tag-vermillion: #d55e00; --tag-reddish-purple: #cc79a7;
+	--tag-gray: var(--oi-gray); --tag-orange: var(--oi-orange); --tag-sky-blue: var(--oi-sky-blue);
+	--tag-bluish-green: var(--oi-bluish-green); --tag-yellow: var(--oi-yellow); --tag-blue: var(--oi-blue);
+	--tag-vermillion: var(--oi-vermillion); --tag-reddish-purple: var(--oi-reddish-purple);
 }
 
 /* Skeleton declares its edge widths as `var(--default-ring-width, 1px)` on

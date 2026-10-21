@@ -234,59 +234,62 @@ try {
 
   assert.equal(failures.length, 0, `axe-core found violations:\n${say(failures)}`);
 
-  // Compute contrast from the actual imported Radix sRGB palettes and the
-  // semantic aliases in the theme. This covers colors axe cannot reliably
-  // composite on the mounted screens.
+  // Compute contrast from the Radix sage palette and the semantic aliases in
+  // the theme, in both modes. The light values are every declaration outside
+  // the dark block. The dark values are the light ones with the dark block laid
+  // over them, which is how the cascade resolves them on the one element. This
+  // covers colors axe cannot reliably composite on the mounted screens.
   const theme = readFileSync(join(root, "web/src/styles/theme.css"), "utf8");
-  const paletteNames = ["sage", "green", "amber", "red"];
-  const values = new Map();
-  for (const palette of paletteNames) {
-    const css = readFileSync(join(root, `web/node_modules/@radix-ui/colors/${palette}.css`), "utf8");
-    for (const [, name, color] of css.matchAll(/(--[\w-]+)\s*:\s*(#[0-9a-f]{6})\s*;/gi)) {
-      values.set(name, color);
+  const darkStart = theme.indexOf('[data-theme="librepaper"][data-mode="dark"]');
+  const darkEnd = theme.indexOf("\n}", darkStart);
+  const declarations = (css) => new Map(Array.from(css.matchAll(/(--[\w-]+)\s*:\s*([^;]+)\s*;/g), ([, name, color]) => [name, color.trim()]));
+  const sage = readFileSync(join(root, "web/node_modules/@radix-ui/colors/sage.css"), "utf8");
+  const radix = new Map(Array.from(sage.matchAll(/(--[\w-]+)\s*:\s*(#[0-9a-f]{6})\s*;/gi), ([, name, color]) => [name, color]));
+  const light = new Map([...radix, ...declarations(theme.slice(0, darkStart) + theme.slice(darkEnd))]);
+  const dark = new Map([...light, ...declarations(theme.slice(darkStart, darkEnd))]);
+
+  const checkContrast = (mode, values) => {
+    const value = (name, seen = new Set()) => {
+      const key = name.startsWith("--") ? name : `--${name}`;
+      assert.ok(values.has(key), `${mode}: ${key} is defined in the Radix sage palette or theme.css`);
+      assert.ok(!seen.has(key), `${mode}: ${key} has no cyclic aliases`);
+      const nextSeen = new Set(seen).add(key);
+      const raw = values.get(key);
+      const alias = /^var\((--[\w-]+)\)$/.exec(raw);
+      if (alias) return value(alias[1], nextSeen);
+      assert.match(raw, /^#[0-9a-f]{6}$/i, `${mode}: ${key} resolves to an sRGB hex color`);
+      return raw;
+    };
+    const luminance = (hex) => {
+      const channels = [1, 3, 5].map((at) => Number.parseInt(hex.slice(at, at + 2), 16) / 255)
+        .map((channel) => (channel <= 0.03928 ? channel / 12.92 : ((channel + 0.055) / 1.055) ** 2.4));
+      return 0.2126 * channels[0] + 0.7152 * channels[1] + 0.0722 * channels[2];
+    };
+    const ratio = (one, other) => {
+      const [high, low] = [luminance(one), luminance(other)].sort((a, b) => b - a);
+      return (high + 0.05) / (low + 0.05);
+    };
+    const assertContrast = (foreground, background, minimum, description) => {
+      const against = ratio(value(foreground), value(background));
+      assert.ok(against >= minimum, `${mode}: ${description} are ${against.toFixed(2)}:1 (need ${minimum}:1)`);
+    };
+    for (const token of ["color-text", "color-text-muted", "color-link"]) {
+      assertContrast(token, "color-shell", 4.5, `${token} on shell`);
     }
-  }
-  for (const [, name, value] of theme.matchAll(/(--[\w-]+)\s*:\s*([^;]+)\s*;/g)) {
-    values.set(name, value.trim());
-  }
-  const value = (name, seen = new Set()) => {
-    const key = name.startsWith("--") ? name : `--${name}`;
-    assert.ok(values.has(key), `${key} is defined in a Radix palette or theme.css`);
-    assert.ok(!seen.has(key), `${key} has no cyclic aliases`);
-    const nextSeen = new Set(seen).add(key);
-    const raw = values.get(key);
-    const alias = /^var\((--[\w-]+)\)$/.exec(raw);
-    if (alias) return value(alias[1], nextSeen);
-    assert.match(raw, /^#[0-9a-f]{6}$/i, `${key} resolves to an sRGB hex color`);
-    return raw;
+    assertContrast("color-on-brand", "color-brand", 4.5, "brand action text");
+    for (const status of ["success", "warning", "error"]) {
+      assertContrast(`color-${status}-on-solid`, `color-${status}-solid`, 4.5, `${status} solid action text`);
+      assertContrast(`color-${status}-text`, `color-${status}-bg`, 4.5, `${status} text on background`);
+    }
+    assertContrast("color-focus", "color-shell", 3, "focus indicator on shell");
+    assertContrast("color-text", "color-row-selected", 4.5, "selected row text");
+    for (let index = 1; index <= 6; index++) {
+      assertContrast(`color-avatar-${index}`, "color-text-inverse", 4.5, `white initials on avatar ${index}`);
+    }
+    assertContrast("color-line-number", "color-shell", 4.5, "line numbers on the editor");
   };
-  const luminance = (hex) => {
-    const channels = [1, 3, 5].map((at) => Number.parseInt(hex.slice(at, at + 2), 16) / 255)
-      .map((channel) => (channel <= 0.03928 ? channel / 12.92 : ((channel + 0.055) / 1.055) ** 2.4));
-    return 0.2126 * channels[0] + 0.7152 * channels[1] + 0.0722 * channels[2];
-  };
-  const ratio = (one, other) => {
-    const [high, low] = [luminance(one), luminance(other)].sort((a, b) => b - a);
-    return (high + 0.05) / (low + 0.05);
-  };
-  const assertContrast = (foreground, background, minimum, description) => {
-    const against = ratio(value(foreground), value(background));
-    assert.ok(against >= minimum, `${description} are ${against.toFixed(2)}:1 (need ${minimum}:1)`);
-  };
-  for (const token of ["color-text", "color-text-muted", "color-link"]) {
-    assertContrast(token, "color-shell", 4.5, `${token} on shell`);
-  }
-  assertContrast("color-on-brand", "color-brand", 4.5, "brand action text");
-  for (const status of ["success", "warning", "error"]) {
-    assertContrast(`color-${status}-on-solid`, `color-${status}-solid`, 4.5, `${status} solid action text`);
-    assertContrast(`color-${status}-text`, `color-${status}-bg`, 4.5, `${status} text on background`);
-  }
-  assertContrast("color-focus", "color-shell", 3, "focus indicator on shell");
-  assertContrast("color-text", "color-row-selected", 4.5, "selected row text");
-  for (let index = 1; index <= 6; index++) {
-    assertContrast(`color-avatar-${index}`, "color-text-inverse", 4.5, `white initials on avatar ${index}`);
-  }
-  assertContrast("color-line-number", "color-shell", 4.5, "line numbers on the editor");
+  checkContrast("light", light);
+  checkContrast("dark", dark);
   console.log(`accessibility-browser: landing and reader, every panel, clean against ${TAGS.join(", ")}`);
 } finally {
   await tab?.close();

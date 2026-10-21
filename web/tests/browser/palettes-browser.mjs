@@ -105,7 +105,10 @@ function contrastCheck(palette, mode) {
   pairs.push(["--color-warning-text", "--color-warning-bg", 4.5]);
   pairs.push(["--color-error-text", "--color-error-bg", 4.5]);
   pairs.push(["--color-error-text", "--color-shell", 4.5]);
-  for (const name of highlights) pairs.push(["--source-highlight-" + name, "--color-shell", 3]);
+  // The default palette's source colors read as text, so they meet the text
+  // floor. The other palettes keep the lower floor for highlights.
+  const highlightFloor = palette === "librepaper" ? 4.5 : 3;
+  for (const name of highlights) pairs.push(["--source-highlight-" + name, "--color-shell", highlightFloor]);
   pairs.push(["--color-focus", "--color-shell", 3]);
   // Rows in lists, the command palette and History carry secondary text when
   // hovered and selected.
