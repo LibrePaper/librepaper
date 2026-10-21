@@ -375,6 +375,9 @@ window.editorTypeCheck = async () => {
   await frame();
   const evil = getComputedStyle(editor).fontFamily;
   const bodyColorAfter = getComputedStyle(document.body).color;
+  // A font chosen before its URLs are known still loads once they arrive.
+  delete globalThis.LIBREPAPER_FONTS;
+  setFont("fira-code");
   globalThis.LIBREPAPER_FONTS = { "fira-code.woff2": "/fira-code.woff2" };
   setFont("fira-code");
   await frame();

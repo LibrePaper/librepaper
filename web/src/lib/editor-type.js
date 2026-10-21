@@ -18,8 +18,9 @@ export const DEFAULT_STACK = '"JetBrains Mono", "IBM Plex Mono", "Geist Mono", u
 export const FONTS = [
   { id: "default", name: "Default" },
   { id: "jetbrains-mono", name: "JetBrains Mono", family: "JetBrains Mono", files: [
-    { file: "jetbrains-mono.woff2", weight: "100 800", style: "normal" },
-    { file: "jetbrains-mono-italic.woff2", weight: "100 800", style: "italic" },
+    { file: "jetbrains-mono.woff2", weight: "400", style: "normal" },
+    { file: "jetbrains-mono-italic.woff2", weight: "400", style: "italic" },
+    { file: "jetbrains-mono-semibold.woff2", weight: "600", style: "normal" },
   ] },
   { id: "fira-code", name: "Fira Code", family: "Fira Code", files: [
     { file: "fira-code.woff2", weight: "300 700", style: "normal" },
@@ -37,8 +38,10 @@ export const FONTS = [
     { file: "cascadia-code.woff2", weight: "200 700", style: "normal" },
     { file: "cascadia-code-italic.woff2", weight: "200 700", style: "italic" },
   ] },
-  { id: "opendyslexic-mono", name: "OpenDyslexic Mono", family: "OpenDyslexic Mono", files: [
-    { file: "opendyslexic-mono.woff2", weight: "400", style: "normal" },
+  { id: "opendyslexic", name: "OpenDyslexic", family: "OpenDyslexic", files: [
+    { file: "opendyslexic.woff2", weight: "400", style: "normal" },
+    { file: "opendyslexic-italic.woff2", weight: "400", style: "italic" },
+    { file: "opendyslexic-bold.woff2", weight: "700", style: "normal" },
   ] },
   { id: "sans", name: "System sans serif", stack: 'system-ui, -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif' },
   { id: "serif", name: "System serif", stack: 'ui-serif, Georgia, Cambria, "Times New Roman", serif' },
@@ -57,9 +60,10 @@ let started = false;
 let chosenSize = null;
 let chosenFont = null;
 let chosenLineHeight = null;
-// The faces this page added to document.fonts, and the font they belong to.
+// The faces this page added to document.fonts, and the font and sources they
+// were built from.
 let loadedFaces = [];
-let loadedFontId = null;
+let loadedKey = null;
 
 /// A size in pixels kept between MIN_SIZE and MAX_SIZE. Anything that is not a finite number is DEFAULT_SIZE.
 export function clampSize(value) {
@@ -221,15 +225,17 @@ function apply() {
 
 // Fetches the faces of a bundled font and drops those of the one before. The
 // fallback stack applies while a face loads, or if it never does. The same font
-// applied again changes nothing.
+// applied again with the same URLs changes nothing.
 function loadFaces(choice) {
   const fonts = globalThis.document?.fonts;
   if (!fonts || !globalThis.FontFace) return;
-  if (choice.id === loadedFontId) return;
-  loadedFontId = choice.id;
+  const wanted = fontFaces(choice, globalThis.LIBREPAPER_FONTS || {});
+  const key = `${choice.id} ${wanted.map((item) => item.source).join(" ")}`;
+  if (key === loadedKey) return;
+  loadedKey = key;
   for (const face of loadedFaces) fonts.delete(face);
   loadedFaces = [];
-  for (const { family, source, descriptors } of fontFaces(choice, globalThis.LIBREPAPER_FONTS || {})) {
+  for (const { family, source, descriptors } of wanted) {
     const face = new FontFace(family, source, descriptors);
     loadedFaces.push(face);
     fonts.add(face);

@@ -189,8 +189,6 @@ const LINE_KEY = "librepaper-editor-line-height";
   delete globalThis.addEventListener;
 }
 
-console.log("editor-type: all checks passed");
-
 // A bundled font becomes one face per file whose URL the server gave.
 {
   const urls = { "ibm-plex-mono.woff2": "https://m/a.woff2", "ibm-plex-mono-italic.woff2": "https://m/b.woff2", "ibm-plex-mono-semibold.woff2": "https://m/c.woff2" };
@@ -203,7 +201,7 @@ console.log("editor-type: all checks passed");
   assert.equal(faces[0].source, 'url("https://m/a.woff2") format("woff2")');
   const one = fontFaces({ id: "jetbrains-mono" }, { "jetbrains-mono-italic.woff2": "https://m/j.woff2" });
   assert.equal(one.length, 1);
-  assert.deepEqual(one[0].descriptors, { weight: "100 800", style: "italic" });
+  assert.deepEqual(one[0].descriptors, { weight: "400", style: "italic" });
   assert.deepEqual(fontFaces({ id: "fira-code" }, {}), []);
   for (const id of ["default", "sans", "serif"]) assert.deepEqual(fontFaces({ id }, urls), []);
   assert.deepEqual(fontFaces({ id: "custom", custom: "IBM Plex Mono" }, urls), []);
@@ -214,3 +212,5 @@ console.log("editor-type: all checks passed");
   assert.equal(installed(""), true);
   assert.equal(installed("Some Font"), true);
 }
+
+console.log("editor-type: all checks passed");
