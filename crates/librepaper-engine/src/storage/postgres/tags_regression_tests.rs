@@ -225,7 +225,10 @@ async fn another_accounts_tag_id_is_not_found() {
     let owner = account(&catalog).await;
     let other = account(&catalog).await;
     let paper = document(&catalog, owner).await;
-    let tag = catalog.create_tag(owner, "Mine", "reddish-purple").await.unwrap();
+    let tag = catalog
+        .create_tag(owner, "Mine", "reddish-purple")
+        .await
+        .unwrap();
 
     assert!(matches!(
         catalog.tag_for(other, tag.id).await,
