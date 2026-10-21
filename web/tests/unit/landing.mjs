@@ -17,6 +17,8 @@ const body = (start, end) => {
 const showList = body("  async function showList()", "  async function deleteSelected");
 const reallyDelete = body("  async function reallyDelete()", "  /* --------------------------------------------------------- a new project */");
 const requestPaths = body("  const pathRequests = new Map();", "  async function learnPaths()");
+const tagging = body("  const tagQueues = new Map();", "  // The two things the rail's tag list offers beneath the tags.");
+const tagEditing = body("  const tagEdits = new Map();", "  function renameTag(");
 
 const context = (values) => vm.createContext({
   Promise,
@@ -169,4 +171,90 @@ const context = (values) => vm.createContext({
   assert.ok(urls.every((url) => url.endsWith("?files=1")), urls.join(", "));
 }
 
-console.log("landing: pagination, refresh preservation, silent offline refresh, deletion failure checks passed");
+// Tag requests for one project and tag go out one at a time, and once nothing
+// is in flight the row shows what the server last confirmed.
+{
+  const deferred = () => { let resolve; const promise = new Promise((done) => { resolve = done; }); return { promise, resolve }; };
+  const tick = () => new Promise((done) => setTimeout(done, 0));
+  const harness = () => {
+    const calls = [];
+    const problems = [];
+    const ctx = context({
+      SHELL_HEADERS: {},
+      hasTag: (doc, id) => (doc.tags || []).includes(id),
+      fetch: (url, options) => {
+        const answer = deferred();
+        calls.push({ url, method: options.method, answer });
+        return answer.promise;
+      },
+      say: (message) => problems.push(message),
+    });
+    vm.runInContext(tagging, ctx);
+    return { ctx, calls, problems };
+  };
+
+  // Add, then remove before the add is answered. The removal waits for the
+  // add, so it fails after the add succeeded and the row keeps the saved tag.
+  {
+    const { ctx, calls } = harness();
+    ctx.doc = { slug: "p", tags: [] };
+    const adding = vm.runInContext('setTag(doc, "t", true)', ctx);
+    const removing = vm.runInContext('setTag(doc, "t", false)', ctx);
+    assert.deepEqual([...ctx.doc.tags], [], "the row shows the latest choice at once");
+    await tick();
+    assert.equal(calls.length, 1, "the removal waits for the add");
+    calls[0].answer.resolve({ ok: true });
+    await tick();
+    assert.equal(calls.length, 2);
+    assert.equal(calls[1].method, "DELETE");
+    calls[1].answer.resolve({ ok: false, status: 500 });
+    await Promise.all([adding, removing]);
+    assert.deepEqual([...ctx.doc.tags], ["t"], "a failed removal leaves the tag the server has");
+  }
+
+  // Add and remove both fail: the row ends as the server holds it, untagged.
+  {
+    const { ctx, calls, problems } = harness();
+    ctx.doc = { slug: "p", tags: [] };
+    const adding = vm.runInContext('setTag(doc, "t", true)', ctx);
+    const removing = vm.runInContext('setTag(doc, "t", false)', ctx);
+    await tick();
+    calls[0].answer.resolve({ ok: false, status: 500 });
+    await tick();
+    calls[1].answer.resolve({ ok: false, status: 500 });
+    await Promise.all([adding, removing]);
+    assert.deepEqual([...ctx.doc.tags], [], "two failures never show a tag the server does not have");
+    assert.equal(problems.length, 2);
+  }
+}
+
+// Edits to one tag go out one at a time. Picking red and then blue again on
+// a blue tag is two saves, and the tag ends blue.
+{
+  const tick = () => new Promise((done) => setTimeout(done, 0));
+  const calls = [];
+  const ctx = context({
+    SHELL_HEADERS: {},
+    tags: [{ id: "t", name: "Thesis", colour: "blue", builtin: false }],
+    sortTags: (list) => list,
+    fetch: (url, options) => new Promise((resolve) => {
+      calls.push({ body: JSON.parse(options.body), resolve });
+    }),
+    say: () => {},
+  });
+  vm.runInContext(tagEditing, ctx);
+  vm.runInContext('editTag("t", "colour", "red", "failed", "x")', ctx);
+  vm.runInContext('editTag("t", "colour", "blue", "failed", "x")', ctx);
+  assert.equal(ctx.tags[0].colour, "blue", "the last pick shows at once");
+  await tick();
+  assert.equal(calls.length, 1, "the second save waits for the first");
+  calls[0].resolve({ ok: true, json: async () => ({ tag: { id: "t", name: "Thesis", colour: "red", builtin: false } }) });
+  await tick(); await tick();
+  assert.equal(calls.length, 2);
+  assert.deepEqual(calls[1].body, { colour: "blue" });
+  calls[1].resolve({ ok: true, json: async () => ({ tag: { id: "t", name: "Thesis", colour: "blue", builtin: false } }) });
+  await tick(); await tick();
+  assert.equal(ctx.tags[0].colour, "blue");
+}
+
+console.log("landing: pagination, refresh preservation, silent offline refresh, deletion failure and tag ordering checks passed");

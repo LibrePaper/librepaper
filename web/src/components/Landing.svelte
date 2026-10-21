@@ -428,64 +428,66 @@
     return setTag(doc, "favorites", !hasTag(doc, "favorites"));
   }
 
-  // The latest tag request per project and tag, and the membership the server
-  // last confirmed for each while requests are in flight. A failed request
-  // returns the row to that confirmed state, and only when no newer request for
-  // the same tag has started. The entry goes once the latest request settles,
-  // so the next one starts from the row as a refresh last left it.
-  const tagRequests = new Map();
-  const tagConfirmed = new Map();
+  // Requests for one project and tag go out one at a time, in the order they
+  // were asked for. The row changes at once; the answers then arrive in order,
+  // so what the server last confirmed is known exactly, and once nothing is in
+  // flight the row shows that. A failure therefore never leaves a tag the
+  // server does not have, nor hides one it does.
+  const tagQueues = new Map();
 
-  // Putting a tag on a project or taking it off is the same request whatever
-  // the tag is. The row changes first and is put back if the server refuses,
-  // which is what the star always did.
-  async function setTag(doc, id, on) {
-    const key = `${doc.slug}:${id}`;
-    const request = (tagRequests.get(key) || 0) + 1;
-    tagRequests.set(key, request);
-    if (!tagConfirmed.has(key)) tagConfirmed.set(key, hasTag(doc, id));
-    doc.tags = on ? [...new Set([...(doc.tags || []), id])] : (doc.tags || []).filter((each) => each !== id);
-    try {
-      const response = await fetch(`/api/documents/${doc.slug}/tags/${id}`, {
-        method: on ? "PUT" : "DELETE",
-        headers: SHELL_HEADERS,
-      });
-      if (!response.ok) throw new Error("that could not be saved");
-      if (tagRequests.get(key) === request) tagConfirmed.delete(key);
-      else if (tagConfirmed.has(key)) tagConfirmed.set(key, on);
-    } catch {
-      if (tagRequests.get(key) === request) {
-        const now = doc.tags || [];
-        const confirmed = tagConfirmed.get(key);
-        doc.tags = confirmed ? [...new Set([...now, id])] : now.filter((each) => each !== id);
-        tagConfirmed.delete(key);
-      }
-      if (id === "favorites") say("That star could not be saved.", { kind: "problem", id: "landing:favorite" });
-      else say("That tag could not be saved.", { kind: "problem", id: `landing:tag:${doc.slug}` });
-    }
+  function putTag(doc, id, on) {
+    const now = doc.tags || [];
+    doc.tags = on ? [...new Set([...now, id])] : now.filter((each) => each !== id);
   }
 
-  // The same change to several projects. Each is asked for once, and the
-  // ones the server refuses are counted rather than quietly left out.
-  async function setTagOnMany(docs, id, on) {
-    const changed = docs.filter((doc) => hasTag(doc, id) !== on);
-    const done = await Promise.all(changed.map(async (doc) => {
+  // Resolves to whether the server took this one request.
+  function queueTag(doc, id, on) {
+    const key = `${doc.slug}:${id}`;
+    let queue = tagQueues.get(key);
+    if (!queue) {
+      queue = { tail: Promise.resolve(), confirmed: hasTag(doc, id), pending: 0 };
+      tagQueues.set(key, queue);
+    }
+    queue.pending++;
+    putTag(doc, id, on);
+    const result = queue.tail.then(async () => {
       try {
         const response = await fetch(`/api/documents/${doc.slug}/tags/${id}`, {
           method: on ? "PUT" : "DELETE",
           headers: SHELL_HEADERS,
         });
-        return response.ok ? doc : null;
+        if (!response.ok) return false;
+        queue.confirmed = on;
+        return true;
       } catch {
-        return null;
+        return false;
       }
-    }));
-    for (const doc of done) {
-      if (!doc) continue;
-      const before = doc.tags || [];
-      doc.tags = on ? [...new Set([...before, id])] : before.filter((each) => each !== id);
-    }
-    const failed = changed.length - done.filter(Boolean).length;
+    }).then((saved) => {
+      queue.pending--;
+      if (queue.pending === 0) {
+        putTag(doc, id, queue.confirmed);
+        tagQueues.delete(key);
+      }
+      return saved;
+    });
+    queue.tail = result;
+    return result;
+  }
+
+  // Putting a tag on a project or taking it off is the same request whatever
+  // the tag is, the star included.
+  async function setTag(doc, id, on) {
+    if (await queueTag(doc, id, on)) return;
+    if (id === "favorites") say("That star could not be saved.", { kind: "problem", id: "landing:favorite" });
+    else say("That tag could not be saved.", { kind: "problem", id: `landing:tag:${doc.slug}` });
+  }
+
+  // The same change to several projects. Each goes through its own queue, and
+  // the ones the server refuses are counted rather than quietly left out.
+  async function setTagOnMany(docs, id, on) {
+    const changed = docs.filter((doc) => hasTag(doc, id) !== on);
+    const saved = await Promise.all(changed.map((doc) => queueTag(doc, id, on)));
+    const failed = saved.filter((each) => !each).length;
     if (failed) {
       say(`${failed} project${failed === 1 ? "" : "s"} could not be tagged.`, { kind: "problem", id: "landing:tag-many" });
     }
@@ -550,45 +552,63 @@
     }
   }
 
-  // Saves a change to one tag. The list is replaced by what the server says
-  // the tag now is, so every row that shows it agrees.
-  async function saveTag(tag, body, failure) {
-    const response = await fetch(`/api/tags/${tag.id}`, {
-      method: "PATCH",
-      headers: { ...SHELL_HEADERS, "Content-Type": "application/json" },
-      body: JSON.stringify(body),
+  // Edits to one tag go out one at a time, like tag requests on a project:
+  // the name or colour changes at once, and once nothing is in flight the tag
+  // shows what the server last confirmed. A colour picked and picked back
+  // before the first save lands is two saves, not one lost click.
+  const tagEdits = new Map();
+
+  function putTagField(id, field, value) {
+    tags = sortTags(tags.map((each) => (each.id === id ? { ...each, [field]: value } : each)));
+  }
+
+  function editTag(id, field, value, failure, problemId) {
+    const current = tags.find((each) => each.id === id);
+    if (!current || current[field] === value) return;
+    let queue = tagEdits.get(id);
+    if (!queue) {
+      queue = { tail: Promise.resolve(), confirmed: { name: current.name, colour: current.colour }, pending: 0 };
+      tagEdits.set(id, queue);
+    }
+    queue.pending++;
+    putTagField(id, field, value);
+    queue.tail = queue.tail.then(async () => {
+      try {
+        const response = await fetch(`/api/tags/${id}`, {
+          method: "PATCH",
+          headers: { ...SHELL_HEADERS, "Content-Type": "application/json" },
+          body: JSON.stringify({ [field]: value }),
+        });
+        if (!response.ok) return (await response.json().catch(() => ({}))).error || failure;
+        const { tag: saved } = await response.json();
+        queue.confirmed[field] = saved[field];
+        return "";
+      } catch {
+        return failure;
+      }
+    }).then((problem) => {
+      queue.pending--;
+      if (queue.pending === 0) {
+        putTagField(id, "name", queue.confirmed.name);
+        putTagField(id, "colour", queue.confirmed.colour);
+        tagEdits.delete(id);
+      }
+      if (problem) say(problem, { kind: "problem", id: problemId });
     });
-    if (!response.ok) throw new Error((await response.json().catch(() => ({}))).error || failure);
-    const { tag: saved } = await response.json();
-    // Only the fields this request sent are copied, so a reply to an older edit
-    // cannot undo a newer one to another field.
-    tags = sortTags(tags.map((each) => {
-      if (each.id !== saved.id) return each;
-      const merged = { ...each };
-      for (const key of Object.keys(body)) merged[key] = saved[key];
-      return merged;
-    }));
   }
 
-  async function renameTag(tag, input) {
+  function renameTag(tag, input) {
     const name = input.value.trim();
-    if (name === tag.name) return;
-    try {
-      if (!name) throw new Error("Give the tag a name.");
-      await saveTag(tag, { name }, "That tag could not be renamed.");
-    } catch (error) {
-      input.value = tag.name;
-      say(error?.message || "That tag could not be renamed.", { kind: "problem", id: "landing:tag-rename" });
+    if (!name) {
+      input.value = tags.find((each) => each.id === tag.id)?.name ?? tag.name;
+      say("Give the tag a name.", { kind: "problem", id: "landing:tag-rename" });
+      return;
     }
+    editTag(tag.id, "name", name, "That tag could not be renamed.", "landing:tag-rename");
   }
 
-  async function recolourTag(tag, colour) {
-    if (colour === tag.colour) return;
-    try {
-      await saveTag(tag, { colour }, "That colour could not be saved.");
-    } catch (error) {
-      say(error?.message || "That colour could not be saved.", { kind: "problem", id: "landing:tag-colour" });
-    }
+  function recolourTag(tag, colour) {
+    editTag(tag.id, "colour", colour, "That colour could not be saved.", "landing:tag-colour");
   }
 
   // Deleting a tag takes it off every project and leaves the projects
