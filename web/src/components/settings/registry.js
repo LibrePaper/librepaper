@@ -20,6 +20,9 @@ export const CATEGORIES = [
     entries: [
       { id: "appearance-theme", says: "Theme", terms: "dark light theme mode night colour color scheme system appearance" },
       { id: "appearance-colours", says: "Colours", terms: "colours colors palette theme scheme flexoki solarized gruvbox catppuccin nord syntax highlighting editor" },
+      { id: "appearance-font", says: "Font", terms: "font family typeface monospace serif sans dyslexia opendyslexic fira jetbrains source code pro cascadia plex" },
+      { id: "appearance-font-size", says: "Font size", terms: "font size text size zoom bigger smaller pinch scale pixels" },
+      { id: "appearance-line-height", says: "Line height", terms: "line height spacing leading compact wide dense" },
     ],
   },
   {
@@ -27,9 +30,6 @@ export const CATEGORIES = [
     note: "This browser",
     entries: [
       { id: "editor-keys", says: "Key bindings", terms: "vim emacs keymap keyboard bindings modal source standard" },
-      { id: "editor-font", says: "Font", terms: "font family typeface monospace serif sans dyslexia opendyslexic fira jetbrains source code pro cascadia plex" },
-      { id: "editor-font-size", says: "Font size", terms: "font size text size zoom bigger smaller pinch scale pixels" },
-      { id: "editor-line-height", says: "Line height", terms: "line height spacing leading compact wide dense" },
       { id: "editor-completion", says: "Autocomplete", terms: "autocomplete completion suggestions suggest popup intellisense commands citations" },
       { id: "editor-brackets", says: "Close brackets", terms: "close brackets auto pair braces parentheses quotes dollar autoclose" },
       { id: "editor-check", says: "Code check", terms: "code check lint errors warnings underline gutter diagnostics squiggle" },
