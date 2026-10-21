@@ -1,13 +1,16 @@
 # SPEC: LibrePaper as a git remote
 
-Status: proposed 2026-10-14, revised 2026-10-18 and 2026-10-20, not
-started. This replaces the earlier project-folder sync design in full. The
+Status: proposed 2026-10-14, revised 2026-10-18, 2026-10-20 and
+2026-10-21, not started. This replaces the earlier project-folder sync design in full. The
 2026-10-18 revision moves the helper from the retired companion to the
 `librepaper` command that every desktop app package installs, signs in with
 `librepaper login` instead of a new git grant, and replaces the three-way
 push check with a strict per-file hash check. The 2026-10-20 revision drops
 the committed `.librepaper` and `.librepaperignore` files. The remote URL
-names the project, and the local-only list lives under `.git/`.
+names the project, and the local-only list lives under `.git/`. The
+2026-10-21 revision makes `link` merge against a root commit, makes the
+server's checks use the suggestion-free projection, and refuses a push
+that adds a path nobody has classified.
 
 ## Summary
 
@@ -87,7 +90,11 @@ git pull librepaper main
 - **Sign-in on first use.** When the helper finds no stored token for the
   site, it runs the `librepaper login` device flow in the terminal: it
   prints a URL and a code, waits for approval in the browser, stores the
-  token and continues the git command. See "Credentials".
+  token and continues the git command. Git owns the helper's standard
+  input and output, so the prompt goes to standard error and the helper
+  checks for a terminal on `/dev/tty` (the console on Windows). With no
+  terminal, for example a clone started from an editor, the helper refuses
+  at once and says to run `librepaper login`. See "Credentials".
 - **Short URLs.** `librepaper::<slug>` means the project `<slug>` on the
   only site the user is signed in to. The full form
   `librepaper::https://librepaper.org/p/<slug>` names the site explicitly.
@@ -98,14 +105,16 @@ git pull librepaper main
   links it with one command, copied from the "Use with git" panel:
 
   ```sh
-  librepaper git link <slug>    # adds the remote, joins the histories
+  librepaper git link <slug>    # adds the remote, merges the project in
   ```
 
   The repository commits no file that names the project. A README line is
   enough when the authors want one.
 - **The helper commands.** `librepaper git clone <slug|url> [dir]` and
   `librepaper git link <slug|url>` wrap the git commands above. `link` also
-  joins an existing history, see "`librepaper git link` in detail".
+  merges the project into an existing history, see "`librepaper git link`
+  in detail". `librepaper git local <path>...` adds paths to the local-only
+  list, see "Local-only paths".
 - **The "Use with git" panel.** The project menu shows the commands above
   with the slug filled in.
 
@@ -263,10 +272,13 @@ A refused push leaves base where it was.
 A push names, for each touched file, the hash the server must still hold.
 The helper computes it from base on the spot: it reads the file's blob
 from base's tree, normalizes CRLF to LF, and takes SHA-256 of the UTF-8
-bytes. That is what the server's `digest_of`
-(`crates/librepaper-engine/src/storage/store.rs`) computes. Git's own
-object ids hash a header plus the content and never equal these hashes, so
-the helper never reuses them.
+bytes. The server computes the same thing with `digest_of`
+(`crates/librepaper-engine/src/storage/store.rs`), applied to the file's
+projection without pending suggestions (see "Pending tracked changes are
+not fetched"), not to the stored text. For a binary file the hash is the
+asset hash, which is the SHA-256 of its bytes. Git's own object ids hash a
+header plus the content and never equal these hashes, so the helper never
+reuses them.
 
 ## Fetch
 
@@ -278,9 +290,18 @@ the helper never reuses them.
 Binary files are read from `GET /api/documents/{slug}/assets/{sha}`, which
 `librepaper export` already reads with the token.
 
-`project_digest` covers file text only. Comments and pending tracked-change
-records do not change it, so adding a comment never makes a fetch write a
-commit or a push refuse.
+`project_digest` covers every path, the projected text of every text file
+and the asset hash of every binary file. Renaming a file or replacing a
+figure changes it. Comments and pending tracked-change records do not, so
+adding a comment never makes a fetch write a commit or a push refuse.
+
+### Text or binary
+
+A path's extension decides whether it is text or binary, by the
+deployment's `text_extensions` and `asset_extensions` (`kind_of` in the
+projection's path rules). The helper reads both lists from `/api/config`,
+as the web app does, so it never keeps its own copy. A path whose extension
+is in neither list cannot be a project file.
 
 ### Pending tracked changes are not fetched
 
@@ -327,7 +348,8 @@ must not upload them.
 - The list lives in `.git/librepaper/<remote>/local-only`, in gitignore
   syntax. It is never committed, so each clone keeps its own.
 - `librepaper git link` writes it from the answers to its per-path
-  question. A user who later adds a local-only file edits the list by hand.
+  question. `librepaper git local <path>...` adds to it later. The list can
+  also be edited by hand.
 - These paths are always local-only and need no entry: `.git/`,
   `.gitignore`, `.gitattributes`, `.github/`, and `*.local`.
 - Fetch carries local-only paths over from base unchanged.
@@ -336,6 +358,31 @@ must not upload them.
 The list cannot be inferred from the trees. A path in base that is missing
 from the project could be local-only or could have been deleted in
 LibrePaper, and only the list tells them apart.
+
+#### New paths need a decision
+
+Because the list is never committed, it does not travel with the
+repository. A coauthor's `Makefile` or `data/` folder can arrive through
+GitHub into a clone whose list has never heard of it. A push therefore
+never uploads a path by default. A path is **new** when it is in the pushed
+tree but in neither base's tree, the project, nor the local-only list. A
+push with new paths refuses and lists them, with the two ways out:
+
+```text
+! [remote rejected] main -> main (new paths)
+  Makefile, data/survey.csv are not in LibrePaper.
+  Keep them local: librepaper git local Makefile data/survey.csv
+  Or upload them: git push -o add librepaper main
+```
+
+- `-o add` uploads every new path in this push. The helper declares the
+  `push-options` capability to receive it.
+- A new path whose extension is in neither `text_extensions` nor
+  `asset_extensions` cannot be uploaded. It refuses with only the
+  `librepaper git local` line.
+- A file created in a commit on top of base is new as well. Uploading it
+  takes `-o add` once, after which it is in the project and later pushes
+  treat it as an ordinary file.
 
 ### Line endings
 
@@ -370,8 +417,10 @@ it.
 1. **Branch check.** Refuse any ref other than `refs/heads/main`. Refuse
    ref deletion.
 2. **Ancestry check.** The pushed commit must descend from base.
-   Otherwise refuse with "fetch first", even for `--force`. LibrePaper
-   never rewinds.
+   Otherwise refuse, even for `--force`. LibrePaper never rewinds. A plain
+   `git fetch` moves base without merging it, so the message says to merge
+   rather than to fetch: "LibrePaper has edits you have not merged. Run:
+   git pull librepaper main, then push again."
 3. **Collect changes.** Diff base against ours, skipping local-only paths.
    Intermediate commits are collapsed. Only the net change is applied.
 4. **Validate.** Apply every rule in "Push: refusal rules" that the helper
@@ -382,10 +431,11 @@ it.
    there. Minimal patches are what keep comment anchors attached. Because
    the server applies only when the file still equals base, offsets in base
    are offsets in the server's file.
-6. **Dependencies.** For every touched file, add a dependency with the
-   base hash (see "Per-file hashes are computed, not stored"). A created
-   file has no dependency. The server refuses a creation over an existing
-   path.
+6. **Dependencies.** For every touched text file, patched or deleted, add
+   a dependency with the base hash (see "Per-file hashes are computed, not
+   stored"). A touched binary file carries the asset hash it must still
+   hold in `expect`, on a `put_binary` or a `delete`. A created file has no
+   dependency. The server refuses a creation over an existing path.
 7. **Submit.** Send one change set (see "Server apply") with `base_tree`
    set to base's `project_digest`.
 8. **Record.** On success, move base to the pushed commit and set
@@ -402,7 +452,9 @@ always `git pull`.
 | Rule | Checked by | Message names |
 |---|---|---|
 | Ref is not `main`, or is a deletion | helper | the ref |
-| Pushed commit does not descend from base | helper | "fetch first" |
+| Pushed commit does not descend from base | helper | `git pull`, then push |
+| A path is new and the push has no `-o add` | helper | every new path |
+| A new path has an extension that is neither text nor binary | helper | path |
 | A text file contains a line starting with `<<<<<<< `, `=======` or `>>>>>>> ` | helper | file and line |
 | A text file is not valid UTF-8 | helper | file |
 | A path is a symlink or a submodule | helper | path |
@@ -437,14 +489,16 @@ does this (`Room::apply_agent_request`, `AgentPatchCommand`,
 not get a second apply path. The agent path is generalized into one core
 that both call, and both gain from every improvement to it.
 
-### What exists and is reused unchanged
+### What exists and is reused
 
 - **`PatchRequest`.** Byte-range patches with the `exact` text currently
   there, an operation key and a base tree digest.
 - **`Consistency::UnchangedDependencies`.** A dependency with a
   `file_hash` refuses when that file's SHA-256 differs. One dependency per
-  touched file is exactly the strict check a push needs. No new consistency
-  mode is required.
+  touched file is the strict check a push needs, so no new consistency
+  mode is required. Today it hashes the stored text and stops at the first
+  mismatch. Git needs both changed, see "Checks against the projection"
+  below.
 - **Sequencing and replay.** `AgentPatchCommand` runs inside
   `Sequencer::command` under the transaction lock, so the dependency check
   and the apply are one step. Its replay check returns the first outcome
@@ -490,9 +544,32 @@ that both call, and both gain from every improvement to it.
    record. Like the operation scope, `Origin` is kept out of the request
    digest, so it cannot alter a retry's identity.
 4. **Whether base matched.** The outcome reports `base_matched`, true when
-   `base_tree` equaled the project digest just before the apply. The
-   helper needs it to know whether the server now equals the pushed commit.
-5. **Tracked changes take a `SourceChange`.** `AgentTrackedCommand` accepts
+   `base_tree` equaled the projection's `project_digest` just before the
+   apply. The helper needs it to know whether the server now equals the
+   pushed commit.
+5. **Checks against the projection.** This is the largest new piece of
+   server code. Today every check reads the stored text, which holds
+   pending suggested insertions, and the untracked-edit planner
+   (`track::untracked_edits`) moves pending records around a patch. Git
+   fetches the projection without suggestions (see "Pending tracked
+   changes are not fetched"), so for `Origin::Git` the core checks against
+   that projection instead:
+   - a dependency's `file_hash` is compared with `digest_of` of the
+     projected text;
+   - patch and dependency offsets are offsets in the projected text, and
+     the core maps them onto the stored text, stepping over suggested
+     insertions, before the planner applies them;
+   - a patch whose range overlaps or touches a pending suggestion refuses,
+     naming the file and the suggestion;
+   - `base_tree` is compared with the projection's digest.
+
+   `Origin::Agent` keeps checking the stored text, as it does today. A
+   file with no pending suggestion projects to its stored text, so both
+   origins give the same answers for such a file.
+6. **Every failure, not the first.** Dependency validation collects every
+   touched file that changed and refuses once with the whole list, instead
+   of returning at the first mismatch.
+7. **Tracked changes take a `SourceChange`.** `AgentTrackedCommand` accepts
    the same type, so any caller that can apply a change can also publish it
    for review. File operations cannot be tracked changes yet. A change that
    has them and asks for review is refused with that reason.
@@ -600,20 +677,25 @@ Each step can be merged and shipped on its own.
      `librepaper`;
    - remote-helper protocol with `import`;
    - base state, local-only paths, line endings, file modes;
-   - both remote URL forms, and sign-in on first use;
-   - `librepaper git clone` and `librepaper git link`, and the local-only
-     list under `.git/librepaper/`.
+   - both remote URL forms, and sign-in on first use, refusing without a
+     terminal;
+   - text or binary from `/api/config`;
+   - `librepaper git clone`, `librepaper git link` and `librepaper git
+     local`, and the local-only list under `.git/librepaper/`.
    At this point clone, pull and backup to GitHub work.
 3. **Server: shared source-change core.**
    - rename the agent apply path to `SourceChange` and move it to
      `room/source_change.rs`, with no behavior change for agents;
    - file operations, `Origin` with the agent limits and the recorded
      source, `base_matched`;
+   - checks against the projection for `Origin::Git`, and dependency
+     refusals that list every changed file;
    - tracked changes accept a `SourceChange`;
    - the thin push route and the version handshake.
 4. **Helper: push.**
-   - `export` capability, ancestry check, local refusal rules, patch
-     generation, per-file dependencies, state update.
+   - `export` and `push-options` capabilities, ancestry check, local
+     refusal rules including new paths and `-o add`, patch generation,
+     per-file dependencies, state update.
 5. **Web.**
    - "Use with git" panel with the commands;
    - the "pushed from git" notice in the editor.
@@ -622,23 +704,40 @@ Each step can be merged and shipped on its own.
 
 ## `librepaper git link` in detail
 
-Linking joins an existing repository's history to the project without an
-"unrelated histories" error.
+Linking merges the project into an existing repository. The repository
+and the project have no common commit, so the honest merge is one with an
+empty base, and `link` runs it.
 
 1. Refuse if the working tree has uncommitted changes.
 2. Add the `librepaper` remote for the project named by the argument. Sign
    in first if there is no token for the site.
 3. Download the project. List the paths that exist in `HEAD` but not in the
-   project and are not already local-only. Ask once per path, or once for
-   all of them, whether to add it to the local-only list (kept local) or
-   upload it (pushed on the next push).
-4. Write the first LibrePaper commit with `HEAD` as its parent, so the two
-   histories are related from the start. Its tree is the project's files
-   plus the local-only paths from `HEAD`. It becomes base.
-5. Print a diffstat of `HEAD` against that commit and say: "Run `git merge
-   librepaper/main` to take LibrePaper's version. To keep your local
-   version instead, merge, then `git revert` the LibrePaper commit and
-   push."
+   project and are not always local-only. Ask once per path, or once for
+   all of them, whether to keep it local. The answers that say yes go into
+   the local-only list.
+4. Write the first LibrePaper commit as a root commit, with no parent. Its
+   tree is the project's files and nothing else. It becomes base.
+5. Run `git merge --allow-unrelated-histories librepaper/main`. With an
+   empty merge base:
+   - a path only in `HEAD` stays, so local-only files and files to upload
+     are both kept;
+   - a path only in the project is added;
+   - a path that is identical on both sides merges cleanly;
+   - a path that differs is an add/add conflict, with conflict markers
+     around the whole region that differs.
+6. When the merge has conflicts, stop and say: "Resolve the conflicts,
+   commit, then push." When paths remain that are neither in the project
+   nor local-only, say the push needs `-o add`, and print the command.
+
+After the merge, `main` descends from base, so the first push sends
+exactly the user's resolutions and uploads.
+
+The earlier draft gave that first commit `HEAD` as its parent. Then
+`git merge` fast-forwarded to the project's version, silently dropping
+files meant for upload. Worse, when `HEAD` held a coauthor's GitHub commits
+not yet pushed to LibrePaper, the project's commit descended from them
+while holding the older text, so a later merge with GitHub reverted the
+coauthor's work without a conflict.
 
 ## Tests
 
@@ -650,7 +749,11 @@ Server, in the gated Postgres suite:
 - the push route applies all or nothing;
 - a touched file changed since base refuses and names the file, while an
   untouched file changed since base does not refuse;
-- a refusal lists every changed touched file;
+- a refusal lists every changed touched file, not only the first;
+- a file with a pending suggestion: its dependency hash is the projected
+  text's, and an agent patch to the same file still checks the stored text;
+- replacing a figure and renaming a file each change `project_digest`;
+- deleting a binary refuses when its asset hash is not the expected one;
 - `base_matched` is true only when the whole project equaled base;
 - a creation over an existing path refuses, and a binary replacement
   refuses when the current asset is not the expected one;
@@ -670,12 +773,25 @@ Helper, unit tests with a temporary repository:
 - local-only paths survive fetch and are never pushed;
 - CRLF blobs push as LF without changing every line, and hash equal to
   the LF text;
-- the per-file hash the helper computes equals the server's `digest_of`
-  on a shared fixture;
+- the per-file hash the helper computes equals the server's projected
+  hash on a shared fixture, with and without pending suggestions;
+- text or binary follows the lists from `/api/config`;
+- a new path refuses without `-o add` and lists every new path, uploads
+  with it, and an unknown extension refuses even with it;
+- `librepaper git local` adds to the list, and the path is then skipped;
+- with no terminal, a first use refuses at once and names `librepaper
+  login`;
+- after a plain `git fetch`, pushing an unmerged `main` refuses with the
+  merge message;
 - each helper-side refusal rule produces its message;
 - base moves on fetch and on an applied push, and not on a refusal;
 - losing `state.json` is recovered from the ref;
-- link joins histories, so the first `git merge` is not "unrelated";
+- link writes a root commit holding only the project files, and its merge
+  keeps paths only in `HEAD`, adds paths only in the project, merges
+  identical files cleanly and conflicts on differing ones;
+- link on a `HEAD` that is ahead of the project keeps those edits as
+  conflicts, never reverting them, and a later merge with that same
+  history reverts nothing;
 - link writes the local-only list from its answers, and nothing it writes
   is committed;
 - the short URL resolves from a single signed-in site, and refuses when
@@ -691,6 +807,9 @@ tests):
   lines overlap), and the next push applies;
 - a comment anchored on untouched text keeps its anchor through a push;
 - a binary figure push replaces the figure in the editor;
+- a coauthor clones the GitHub repository, links, and pushes: their
+  `Makefile` refuses as a new path until `librepaper git local` or
+  `-o add`;
 - with the default quota, `librepaper git link` then a push of a
   thesis-sized repository applies, and a push over the quota refuses with
   the quota message and leaves the project unchanged.
