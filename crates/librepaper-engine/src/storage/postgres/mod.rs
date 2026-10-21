@@ -51,9 +51,7 @@ pub use ownership::WriterLease;
 pub use repository::{
     AccountRecord, AssetRecord, DocumentRecord, DocumentStorage, NewAccount, NewAsset, NewDocument,
 };
-pub use tags::{
-    built_in_refusal, DocumentTagRecord, TagRecord, FAVORITES_COLOUR, FAVORITES_NAME,
-};
+pub use tags::{built_in_refusal, DocumentTagRecord, TagRecord, FAVORITES_COLOUR, FAVORITES_NAME};
 
 static MIGRATOR: sqlx::migrate::Migrator = sqlx::migrate!("./migrations/postgres");
 
@@ -2450,7 +2448,9 @@ mod tests {
             restored_tags.iter().any(|link| link.tag_id == favorites),
             "a project comes back from the trash exactly as it went in",
         );
-        assert!(restored.first().is_some_and(|mark| mark.opened_at.is_some()));
+        assert!(restored
+            .first()
+            .is_some_and(|mark| mark.opened_at.is_some()));
 
         assert!(
             !catalog.restore_document(paper.id).await.unwrap(),

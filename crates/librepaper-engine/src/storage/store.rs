@@ -1806,8 +1806,7 @@ pub fn digest_of_bytes(bytes: &[u8]) -> String {
 }
 
 fn parse_account_id(account_id: &str) -> Result<uuid::Uuid, CatalogError> {
-    uuid::Uuid::parse_str(account_id)
-        .map_err(|_| CatalogError::Invalid("invalid account".into()))
+    uuid::Uuid::parse_str(account_id).map_err(|_| CatalogError::Invalid("invalid account".into()))
 }
 
 /// The UUID of one of the account's own tags. A tag id that is not a UUID can

@@ -31,6 +31,10 @@ const context = (values) => vm.createContext({
   // The New project page is closed and the place is the project list unless a case says otherwise.
   newTab: "",
   place: "projects",
+  // Every listing page carries the account's tags, which the refresh keeps
+  // in the order the rail shows them. No case here is about tags.
+  tags: [],
+  sortTags: (list) => list,
   ...values,
 });
 

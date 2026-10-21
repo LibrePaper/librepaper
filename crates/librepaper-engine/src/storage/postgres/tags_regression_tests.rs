@@ -53,7 +53,10 @@ async fn tags_are_created_renamed_recoloured_and_deleted_by_their_owner() {
     let writer = catalog.claim_writer().await.unwrap();
     let owner = account(&catalog).await;
 
-    let created = catalog.create_tag(owner, "  Draft  ", "blue").await.unwrap();
+    let created = catalog
+        .create_tag(owner, "  Draft  ", "blue")
+        .await
+        .unwrap();
     assert_eq!(created.name, "Draft", "the name is kept trimmed");
     assert_eq!(created.colour, "blue");
     assert!(!created.builtin);
@@ -68,7 +71,10 @@ async fn tags_are_created_renamed_recoloured_and_deleted_by_their_owner() {
         .update_tag(owner, created.id, None, Some("red"))
         .await
         .unwrap();
-    assert_eq!(recoloured.name, "Final", "a colour change leaves the name alone");
+    assert_eq!(
+        recoloured.name, "Final",
+        "a colour change leaves the name alone"
+    );
     assert_eq!(recoloured.colour, "red");
 
     let listed = catalog.list_tags(owner).await.unwrap();
@@ -132,7 +138,9 @@ async fn the_built_in_favorites_tag_cannot_be_renamed_recoloured_or_deleted() {
         Err(Error::Invalid(_))
     ));
     assert!(matches!(
-        catalog.update_tag(owner, favorites, None, Some("red")).await,
+        catalog
+            .update_tag(owner, favorites, None, Some("red"))
+            .await,
         Err(Error::Invalid(_))
     ));
     assert!(matches!(
@@ -189,10 +197,7 @@ async fn a_tag_survives_its_project_going_to_the_trash_and_coming_back() {
         .unwrap();
 
     assert!(catalog.mark_document_deleting(paper).await.unwrap());
-    assert_eq!(
-        catalog.trashed_documents(owner, 50).await.unwrap().len(),
-        1
-    );
+    assert_eq!(catalog.trashed_documents(owner, 50).await.unwrap().len(), 1);
     assert_eq!(
         catalog
             .tags_for_documents(owner, &[paper])
@@ -204,10 +209,7 @@ async fn a_tag_survives_its_project_going_to_the_trash_and_coming_back() {
     );
 
     assert!(catalog.restore_document(paper).await.unwrap());
-    let restored = catalog
-        .tags_for_documents(owner, &[paper])
-        .await
-        .unwrap();
+    let restored = catalog.tags_for_documents(owner, &[paper]).await.unwrap();
     assert_eq!(restored.len(), 1);
     assert_eq!(restored[0].tag_id, tag.id);
 
@@ -230,7 +232,9 @@ async fn another_accounts_tag_id_is_not_found() {
         Err(Error::NotFound)
     ));
     assert!(matches!(
-        catalog.update_tag(other, tag.id, Some("Theirs"), None).await,
+        catalog
+            .update_tag(other, tag.id, Some("Theirs"), None)
+            .await,
         Err(Error::NotFound)
     ));
     assert!(matches!(

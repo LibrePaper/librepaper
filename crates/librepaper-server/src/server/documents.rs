@@ -1979,7 +1979,11 @@ impl Server {
     }
 
     /// Make a tag of the caller's own. The body carries the name and colour.
-    pub(super) async fn handle_create_tag(&self, request: Request<Body>, arrival: &Arrival) -> Reply {
+    pub(super) async fn handle_create_tag(
+        &self,
+        request: Request<Body>,
+        arrival: &Arrival,
+    ) -> Reply {
         let headers = request.headers().clone();
         let account = match self.tag_caller(&headers, arrival).await {
             Ok(account) => account,
@@ -1991,8 +1995,14 @@ impl Server {
         let Ok(value) = serde_json::from_slice::<Value>(&body) else {
             return write_json(400, &json!({"error": "send the tag as JSON"}));
         };
-        let name = value.get("name").and_then(Value::as_str).unwrap_or_default();
-        let colour = value.get("colour").and_then(Value::as_str).unwrap_or_default();
+        let name = value
+            .get("name")
+            .and_then(Value::as_str)
+            .unwrap_or_default();
+        let colour = value
+            .get("colour")
+            .and_then(Value::as_str)
+            .unwrap_or_default();
         match self.store.create_tag(&account, name, colour).await {
             Ok(tag) => write_json(201, &json!({"tag": tag})),
             Err(error) => tag_failure(error),
@@ -2018,7 +2028,9 @@ impl Server {
         let Ok(value) = serde_json::from_slice::<Value>(&body) else {
             return write_json(400, &json!({"error": "send the tag as JSON"}));
         };
-        let name = value.get("name").map(|name| name.as_str().unwrap_or_default());
+        let name = value
+            .get("name")
+            .map(|name| name.as_str().unwrap_or_default());
         let colour = value
             .get("colour")
             .map(|colour| colour.as_str().unwrap_or_default());

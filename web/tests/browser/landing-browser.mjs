@@ -340,7 +340,7 @@ try {
   await until("tag in the rail", () => tab.evaluate(`Boolean(document.querySelector('.activity-sections button[aria-label="Thesis"]'))`));
   await click('.activity-sections button[aria-label="Thesis"]');
   await until("thesis place", () => tab.evaluate(`document.querySelector('.place-heading')?.textContent.trim() === "Thesis"`));
-  assert.deepEqual(await titles(), ["My paper"], "the rail filters the list to projects with the tag");
+  assert.deepEqual(await titles(), ["Renamed paper"], "the rail filters the list to projects with the tag");
   assert.match(await tab.evaluate("location.search"), /[?&]tag=thesis(&|$)/, "the tag is in the address");
   assert.equal(await tab.evaluate("new URLSearchParams(location.search).has('in')"), false, "a tag leaves the place parameter alone");
   assert.equal(await tab.evaluate(`document.querySelector('.activity-sections button[aria-label="Thesis"]').getAttribute('aria-pressed')`), "true", "the tag's rail button is pressed");

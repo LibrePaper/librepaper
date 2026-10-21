@@ -74,7 +74,9 @@ pub fn validate_colour(colour: &str) -> Result<()> {
     if COLOURS.contains(&colour) {
         Ok(())
     } else {
-        Err(Error::Invalid("that colour is not one of the palette".into()))
+        Err(Error::Invalid(
+            "that colour is not one of the palette".into(),
+        ))
     }
 }
 

@@ -268,7 +268,10 @@ async fn authenticated_browser_routes_enforce_the_origin_boundary() {
     // Repeat the refusal against a second write route whose effect is a
     // per-account database row, then confirm the row is still absent.
     let hostile_tag = client
-        .put(format!("{base}/api/documents/{}/tags/favorites", deployment.slug))
+        .put(format!(
+            "{base}/api/documents/{}/tags/favorites",
+            deployment.slug
+        ))
         .header("host", "paper.example")
         .header("origin", DOCS)
         .header("sec-fetch-site", "same-site")
@@ -309,7 +312,10 @@ async fn authenticated_browser_routes_enforce_the_origin_boundary() {
         1
     );
     let same_origin_tag = client
-        .put(format!("{base}/api/documents/{}/tags/favorites", deployment.slug))
+        .put(format!(
+            "{base}/api/documents/{}/tags/favorites",
+            deployment.slug
+        ))
         .header("host", "paper.example")
         .header("origin", READER)
         .header("sec-fetch-site", "same-origin")

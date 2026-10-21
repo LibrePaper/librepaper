@@ -206,7 +206,7 @@
       key: "actions",
       label: "",
       // A narrow row has one trigger; its actions live in the menu.
-      width: narrow ? 48 : trash ? 88 : 150,
+      width: narrow ? 48 : trash ? 88 : 190,
       resizable: false,
       align: "right",
       class: "col-actions",
@@ -465,15 +465,15 @@
     }
   }
 
-  // What a tag menu asks for. A tag that every project has is taken off all of
-  // them; otherwise it is put on every one, so the check mark says what the
-  // next press does. A menu closes before a dialog opens, hence the timeout.
   // The two things the rail's tag list offers beneath the tags.
   function tagAction(action) {
     if (action === "new") askNewTag([]);
     else managing = true;
   }
 
+  // What a tag menu asks for. A tag that every project has is taken off all of
+  // them; otherwise it is put on every one, so the check mark says what the
+  // next press does. A menu closes before a dialog opens, hence the timeout.
   function tagChosen(value, docs) {
     if (value === "new-tag") {
       setTimeout(() => askNewTag(docs), 0);

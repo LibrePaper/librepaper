@@ -16,7 +16,7 @@
   // page has no say over; this says it to the keyboard too, promptly, in the
   // application's own colours.
   let {
-    icon,
+    icon = null,
     label,
     // A colour drawn as a dot in place of the icon, for a tag in the rail. The
     // dot is the button's whole face, so it takes the same square and the same
