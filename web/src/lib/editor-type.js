@@ -2,6 +2,9 @@
 // size and its line height. They are habits of the reader rather than of the
 // document, so they are remembered in this browser only.
 //
+// The six named fonts are fetched from the asset mirror when one is chosen.
+// Any other font has to be installed on the computer.
+//
 // Nothing here may need a document or a window at load, so the unit tests can
 // import it under node.
 import { read, write, EDITOR_SIZE, EDITOR_FONT, EDITOR_LINE_HEIGHT } from "./storage.js";
@@ -14,12 +17,32 @@ export const DEFAULT_STACK = '"JetBrains Mono", "IBM Plex Mono", "Geist Mono", u
 
 export const FONTS = [
   { id: "default", name: "Default" },
-  { id: "jetbrains-mono", name: "JetBrains Mono", family: "JetBrains Mono" },
-  { id: "fira-code", name: "Fira Code", family: "Fira Code" },
-  { id: "source-code-pro", name: "Source Code Pro", family: "Source Code Pro" },
-  { id: "ibm-plex-mono", name: "IBM Plex Mono", family: "IBM Plex Mono" },
-  { id: "cascadia-code", name: "Cascadia Code", family: "Cascadia Code" },
-  { id: "opendyslexic-mono", name: "OpenDyslexic Mono", family: "OpenDyslexic Mono" },
+  { id: "jetbrains-mono", name: "JetBrains Mono", family: "JetBrains Mono", files: [
+    { file: "jetbrains-mono.woff2", weight: "400", style: "normal" },
+    { file: "jetbrains-mono-italic.woff2", weight: "400", style: "italic" },
+    { file: "jetbrains-mono-semibold.woff2", weight: "600", style: "normal" },
+  ] },
+  { id: "fira-code", name: "Fira Code", family: "Fira Code", files: [
+    { file: "fira-code.woff2", weight: "300 700", style: "normal" },
+  ] },
+  { id: "source-code-pro", name: "Source Code Pro", family: "Source Code Pro", files: [
+    { file: "source-code-pro.woff2", weight: "200 900", style: "normal" },
+    { file: "source-code-pro-italic.woff2", weight: "200 900", style: "italic" },
+  ] },
+  { id: "ibm-plex-mono", name: "IBM Plex Mono", family: "IBM Plex Mono", files: [
+    { file: "ibm-plex-mono.woff2", weight: "400", style: "normal" },
+    { file: "ibm-plex-mono-italic.woff2", weight: "400", style: "italic" },
+    { file: "ibm-plex-mono-semibold.woff2", weight: "600", style: "normal" },
+  ] },
+  { id: "cascadia-code", name: "Cascadia Code", family: "Cascadia Code", files: [
+    { file: "cascadia-code.woff2", weight: "200 700", style: "normal" },
+    { file: "cascadia-code-italic.woff2", weight: "200 700", style: "italic" },
+  ] },
+  { id: "opendyslexic", name: "OpenDyslexic", family: "OpenDyslexic", files: [
+    { file: "opendyslexic.woff2", weight: "400", style: "normal" },
+    { file: "opendyslexic-italic.woff2", weight: "400", style: "italic" },
+    { file: "opendyslexic-bold.woff2", weight: "700", style: "normal" },
+  ] },
   { id: "sans", name: "System sans serif", stack: 'system-ui, -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif' },
   { id: "serif", name: "System serif", stack: 'ui-serif, Georgia, Cambria, "Times New Roman", serif' },
   { id: "custom", name: "Another font" },
@@ -37,6 +60,10 @@ let started = false;
 let chosenSize = null;
 let chosenFont = null;
 let chosenLineHeight = null;
+// The faces this page added to document.fonts, and the font and sources they
+// were built from.
+let loadedFaces = [];
+let loadedKey = null;
 
 /// A size in pixels kept between MIN_SIZE and MAX_SIZE. Anything that is not a finite number is DEFAULT_SIZE.
 export function clampSize(value) {
@@ -108,6 +135,33 @@ export function fontStack(choice) {
   return `"${entry.family}", ${DEFAULT_STACK}`;
 }
 
+/// The font faces a bundled font needs, one { family, source, descriptors } per file whose URL is in urls (a map from file name to URL). Any other choice has none.
+export function fontFaces(choice, urls) {
+  const entry = FONTS.find((item) => item.id === choice.id);
+  if (!entry?.files) return [];
+  return entry.files
+    .filter(({ file }) => typeof urls?.[file] === "string")
+    .map(({ file, weight, style }) => ({
+      family: entry.family,
+      source: `url("${urls[file]}") format("woff2")`,
+      descriptors: { weight, style },
+    }));
+}
+
+/// Whether a font family is available on this computer, found by measuring a test string against the generic families. True when there is no canvas to measure with, so nothing warns wrongly.
+export function installed(name) {
+  const family = cleanFamily(name);
+  if (!family) return true;
+  const context = globalThis.document?.createElement?.("canvas")?.getContext?.("2d");
+  if (!context) return true;
+  const sample = "mmmmmmmmmmlliWW0123456789";
+  const width = (list) => {
+    context.font = `72px ${list}`;
+    return context.measureText(sample).width;
+  };
+  return width(`"${family}", monospace`) !== width("monospace") || width(`"${family}", serif`) !== width("serif");
+}
+
 /// The line height this browser remembers: "compact", "normal" or "wide".
 export function lineHeight() {
   const stored = chosenLineHeight ?? read(EDITOR_LINE_HEIGHT, "normal");
@@ -163,9 +217,30 @@ function apply() {
   const root = globalThis.document?.documentElement;
   if (!root) return;
   const choice = font();
+  loadFaces(choice);
   if (choice.id === "default") root.style.removeProperty("--editor-font-family");
   else root.style.setProperty("--editor-font-family", fontStack(choice));
   root.style.setProperty("--editor-line-height", String(LINE_HEIGHTS[lineHeight()]));
+}
+
+// Fetches the faces of a bundled font and drops those of the one before. The
+// fallback stack applies while a face loads, or if it never does. The same font
+// applied again with the same URLs changes nothing.
+function loadFaces(choice) {
+  const fonts = globalThis.document?.fonts;
+  if (!fonts || !globalThis.FontFace) return;
+  const wanted = fontFaces(choice, globalThis.LIBREPAPER_FONTS || {});
+  const key = `${choice.id} ${wanted.map((item) => item.source).join(" ")}`;
+  if (key === loadedKey) return;
+  loadedKey = key;
+  for (const face of loadedFaces) fonts.delete(face);
+  loadedFaces = [];
+  for (const { family, source, descriptors } of wanted) {
+    const face = new FontFace(family, source, descriptors);
+    loadedFaces.push(face);
+    fonts.add(face);
+    face.load().catch(() => {});
+  }
 }
 
 function announceSize() {

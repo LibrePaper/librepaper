@@ -13,6 +13,10 @@ import { blockPageZoom } from "../lib/pinch.js";
 import { listenForSignOut } from "../lib/local-data.js";
 import { signedOutHref } from "../lib/api.js";
 
+// The editor font URLs arrive the same way and are read first, because the
+// font is applied as soon as the editor type starts.
+globalThis.LIBREPAPER_FONTS = JSON.parse(document.getElementById("librepaper-fonts").textContent);
+
 startTheme();
 // The settings can be open before any editor is, and still follow another tab.
 startEditorType();
