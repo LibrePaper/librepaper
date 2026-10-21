@@ -10,7 +10,10 @@ the committed `.librepaper` and `.librepaperignore` files. The remote URL
 names the project, and the local-only list lives under `.git/`. The
 2026-10-21 revision makes `link` merge against a root commit, makes the
 server's checks use the suggestion-free projection, and treats a file
-LibrePaper cannot hold as local-only.
+LibrePaper cannot hold as local-only. A later 2026-10-21 revision makes the
+remote URL a share link with `librepaper::` in front: the login token says
+who the user is, and the link's key says what they may do, because the
+server bounds every automation request by a presented link.
 
 ## Summary
 
@@ -35,7 +38,10 @@ The design is conservative on purpose:
   checks and applies in one step under its transaction lock, so there is
   no race to retry.
 - No browser tab and no running desktop app are needed. The helper reads
-  the token that `librepaper login` stored.
+  the token that `librepaper login` stored, and the share link's key from
+  the remote URL.
+- Git access is a share link. Its role decides fetch or push, and
+  replacing or revoking the link ends git access with it.
 - The server holds no third-party git credential and builds no git objects.
 
 ## Goals
@@ -69,14 +75,18 @@ The design is conservative on purpose:
 
 ### Connecting
 
-Plain git is enough. No `librepaper` subcommand is required:
+The Share dialog gives each link (read, comment, edit) a "Copy git URL"
+button next to "Copy link". The git URL is the share link with
+`librepaper::` in front. Plain git is enough from there:
 
 ```sh
-git clone librepaper::<slug> thesis
+git clone "librepaper::https://librepaper.org/docs/<slug>#k=<key>" thesis
 # or, in an existing repository:
-git remote add librepaper librepaper::<slug>
+git remote add librepaper "librepaper::https://librepaper.org/docs/<slug>#k=<key>"
 git pull librepaper main
 ```
+
+The quotes keep the shell from reading `#` as a comment.
 
 - **Remote names.** `librepaper` in `git pull librepaper main` is the name
   given to the remote by `git remote add`, in the same way GitHub is
@@ -95,28 +105,29 @@ git pull librepaper main
   checks for a terminal on `/dev/tty` (the console on Windows). With no
   terminal, for example a clone started from an editor, the helper refuses
   at once and says to run `librepaper login`. See "Credentials".
-- **Short URLs.** `librepaper::<slug>` means the project `<slug>` on the
-  only site the user is signed in to. The full form
-  `librepaper::https://librepaper.org/p/<slug>` names the site explicitly.
-  Both forms work everywhere a remote URL is accepted. Once the remote is
-  added, git keeps its URL in `.git/config`, so the repository needs no
-  other record of the project.
+- **The URL holds the key.** Git keeps the remote URL in `.git/config`,
+  which is never committed or pushed, so the repository needs no other
+  record of the project. `git remote -v` shows the key, like a GitHub token
+  written into a URL. The docs say never to paste that URL into a README or
+  an issue; the plain share link without `librepaper::` carries the same
+  key.
 - **Coauthors on GitHub.** A coauthor who clones the repository from GitHub
-  links it with one command, copied from the "Use with git" panel:
+  links it with the git URL from a link they were given:
 
   ```sh
-  librepaper git link <slug>    # adds the remote, merges the project in
+  librepaper git link "librepaper::https://librepaper.org/docs/<slug>#k=<key>"
   ```
 
-  The repository commits no file that names the project. A README line is
-  enough when the authors want one.
-- **The helper commands.** `librepaper git clone <slug|url> [dir]` and
-  `librepaper git link <slug|url>` wrap the git commands above. `link` also
-  merges the project into an existing history, see "`librepaper git link`
-  in detail". `librepaper git local <path>...` adds paths to the local-only
-  list, see "Local-only paths".
-- **The "Use with git" panel.** The project menu shows the commands above
-  with the slug filled in.
+  The repository commits no file that names the project or holds a key.
+- **The helper commands.** `librepaper git clone <url> [dir]` and
+  `librepaper git link <url>` wrap the git commands above. Both accept the
+  git URL or the plain share link, and add `librepaper::` when it is
+  missing. `link` also merges the project into an existing history, see
+  "`librepaper git link` in detail". `librepaper git local <path>...` adds
+  paths to the local-only list, see "Local-only paths".
+- **The owner.** The owner uses an edit link like anyone else. When the
+  project has none, the owner creates one in the Share dialog first, and
+  the "Use with git" panel in the project menu says so and opens Share.
 
 ### Daily use
 
@@ -160,7 +171,7 @@ There are two parts.
    store directly, so neither the desktop app nor its local service has to
    be running.
 2. **The server.** Fetch uses the routes that `librepaper export` already
-   uses with the login token. Push gets one thin route,
+   uses with the login token and a link key. Push gets one thin route,
    `POST /api/git/v1/{slug}/push`, on one source-change core shared with
    the agent tools. See "Server apply".
 
@@ -173,28 +184,38 @@ every touched file or is refused.
 
 ## Credentials
 
-The helper uses the token that `librepaper login` stores. It adds no new
+The helper sends two things, as `librepaper export` and `librepaper agent`
+already do (`auth_headers` in
+`crates/librepaper-companion/src/automation/peer.rs`). It adds no new
 credential type.
 
-- **What it is.** The device-flow token (`lp_` prefix) that the CLI already
-  sends as a bearer to `/api/me`, `/api/documents/{slug}/snapshot` and the
-  asset routes (`crates/librepaper/src/cli/tokens.rs`).
-- **Storage.** The token cache under the state home, keyed by the server's
-  origin, with the file lock in
+- **Who: the login token.** The device-flow token (`lp_` prefix), sent as
+  a bearer. It is stored in the token cache under the state home, keyed by
+  the server's origin, with the file lock in
   `crates/librepaper-companion/src/local/credentials.rs`. A token for one
   deployment is never sent to another.
-- **Role.** Every request rechecks the account's current role on the
-  document. Viewers and commenters can fetch. Only editors can push.
-  Removing a person from the project ends their git access at once.
-- **Lifetime and revocation.** A device token ends with the session that
-  approved it, and signing out everywhere revokes it. When the token is
-  refused, the helper says to run `librepaper login` and stops. It does not
-  start a sign-in in the middle of a push.
-- **Scope.** The token covers the whole account, not one project. This is
-  wider than the per-project grant in the 2026-10-14 draft. The `agent`
-  command already accepts the same token, and a per-project grant needed a
-  new table, routes, a consent page and a phishing guard. See "Rejected
-  designs".
+- **What: the link key.** The `k` from the remote URL's fragment, sent in
+  the `x-librepaper-key` header, never in a query string. The helper
+  marks its requests as automation like the other CLI commands.
+- **Why both.** The server bounds every automation request by a presented
+  link: `may_read` in `crates/librepaper-server/src/server/mod.rs` refuses
+  automation without a live link, even for the owner, and does not fall
+  back on the guest pin a browser visit left. A token alone opens nothing.
+  Every link needs a signed-in account, so the key alone opens nothing
+  either.
+- **Role.** Every request resolves the role from the link, capped by the
+  account's own ceiling, as for any link holder. A read or comment link
+  can fetch. Only an edit link can push.
+- **Revocation.** Replacing or revoking the link, or its expiry, ends git
+  access at the next request. A device token ends with the session that
+  approved it, and signing out everywhere revokes it.
+- **Refusals.** A refused token makes the helper say to run `librepaper
+  login`. A dead link makes it say to ask for a new link and run `git
+  remote set-url <remote> "<new git URL>"`. The helper never starts a
+  sign-in in the middle of a push.
+- **Scope.** A token and a key together reach one project, at the link's
+  role. The key in `.git/config` is the main secret on disk, and it is
+  the same secret the browser keeps for that link.
 
 ### Version handshake
 
@@ -218,16 +239,17 @@ The helper detects the method from its own install path.
 
 ## Remote URL forms
 
-| Form | Meaning |
-|---|---|
-| `librepaper::<slug>` | Project `<slug>` on the only site with a stored token |
-| `librepaper::https://<site>/p/<slug>` | Project `<slug>` on `<site>` |
+There is one form:
 
-When the short form is ambiguous because the user is signed in to several
-sites, the helper refuses and lists the full URLs to choose from. When the
-user is signed in nowhere, the helper uses the default server, as
-`librepaper login` does. The remote URL is the only record of the project.
-No file in the repository names it.
+```text
+librepaper::https://<site>/docs/<slug>#k=<key>
+```
+
+It is a share link (`/docs/{slug}#k={key}`, as `sharing.rs` writes it)
+with `librepaper::` in front. The site picks the stored token, and the
+fragment is the link key. A URL without `#k=` refuses and says to copy the
+git URL from the Share dialog. The remote URL is the only record of the
+project. No file in the repository names it.
 
 ## Base: the state kept by the helper
 
@@ -285,10 +307,10 @@ reuses them.
 ### Server read
 
 `GET /api/documents/{slug}/project` returns `schema`, `project_digest`,
-`tree` and `texts`. It accepts the login token as a bearer, in the same way
-`/snapshot` does for `librepaper export`, and supports `If-None-Match`.
+`tree` and `texts`. It accepts the login token and link key, in the same
+way `/snapshot` does for `librepaper export`, and supports `If-None-Match`.
 Binary files are read from `GET /api/documents/{slug}/assets/{sha}`, which
-`librepaper export` already reads with the token.
+`librepaper export` already reads with the same pair.
 
 `project_digest` covers every path, the projected text of every text file
 and the asset hash of every binary file. Renaming a file or replacing a
@@ -449,8 +471,9 @@ always `git pull`.
 | The push exceeds the account's storage quota | server | quota |
 | The push is larger than one update may be | server | the log quota |
 | The memory budget cannot hold the request | server | "busy, push again later" |
-| The user is not an editor | server | role |
+| The link is not an edit link, or the account cannot edit | server | role |
 | The token is refused | server | `librepaper login` |
+| The link was replaced, revoked or expired | server | `git remote set-url` with a new git URL |
 | The helper is too old | server | the update command |
 
 The `=======` rule refuses only when a `<<<<<<< ` line also appears in the
@@ -565,7 +588,7 @@ that both call, and both gain from every improvement to it.
   because they protect a model from inventing offsets. They are the agent's
   front end, not part of the core.
 - **Git push.** `POST /api/git/v1/{slug}/push`, authenticated by the login
-  token, editor role required. The helper is deterministic code, so it
+  token and an edit link's key, editor role required. The helper is deterministic code, so it
   sends a `SourceChange` directly:
 
   ```json
@@ -641,9 +664,12 @@ already counted.
 - **Desktop only.** The helper ships with the desktop app packages.
 - **History is coarse.** One LibrePaper commit per fetch that saw a
   change. The detailed history stays in LibrePaper.
-- **The token is account-wide.** A stolen token reads and edits every
-  project the account can edit, as it already can through `librepaper
-  agent`.
+- **The key sits in `.git/config`.** Anyone who copies a clone's
+  `.git/config` and is signed in to LibrePaper gets that link's access,
+  exactly as if they had the share link. Replacing the link in the Share
+  dialog ends it, and every clone then needs `git remote set-url`.
+- **Replacing a link breaks every clone.** That is the point of replacing
+  it, but coauthors who use git must each update their remote.
 
 
 ## Build order
@@ -651,7 +677,8 @@ already counted.
 Each step can be merged and shipped on its own.
 
 1. **Server: read.**
-   - `/api/documents/{slug}/project` accepts the login token as a bearer;
+   - `/api/documents/{slug}/project` accepts the login token with a link
+     key, as `/snapshot` does;
    - the git projection without pending suggestions, its digest and file
      hashes;
    - check that the asset route does too, as `librepaper export` relies on.
@@ -660,12 +687,13 @@ Each step can be merged and shipped on its own.
      `librepaper`;
    - remote-helper protocol with `import`;
    - base state, local-only paths, line endings, file modes;
-   - both remote URL forms, and sign-in on first use, refusing without a
-     terminal;
+   - the git URL, a plain share link accepted by `clone` and `link`, and
+     sign-in on first use, refusing without a terminal;
    - text or binary from `/api/config`;
    - `librepaper git clone`, `librepaper git link` and `librepaper git
      local`, and the local-only list under `.git/librepaper/`.
-   At this point clone, pull and backup to GitHub work.
+   At this point clone, pull and backup to GitHub work, starting from a
+   share link pasted into `librepaper git clone`.
 3. **Server: shared source-change core.**
    - rename the agent apply path to `SourceChange` and move it to
      `room/source_change.rs`, with no behavior change for agents;
@@ -679,7 +707,9 @@ Each step can be merged and shipped on its own.
    - `export` capability, ancestry check, local refusal rules, patch
      generation, per-file dependencies, state update.
 5. **Web.**
-   - "Use with git" panel with the commands;
+   - "Copy git URL" on each link in the Share dialog;
+   - "Use with git" panel in the project menu with the commands, pointing
+     to Share for the URL;
    - the "pushed from git" notice in the editor.
 6. **Docs.** A `docs/git.md` page with the commands and every refusal
    message.
@@ -691,8 +721,9 @@ and the project have no common commit, so the honest merge is one with an
 empty base, and `link` runs it.
 
 1. Refuse if the working tree has uncommitted changes.
-2. Add the `librepaper` remote for the project named by the argument. Sign
-   in first if there is no token for the site.
+2. Add the `librepaper` remote with the git URL given as the argument,
+   adding `librepaper::` to a plain share link. Sign in first if there is
+   no token for the site.
 3. Download the project. List the paths that exist in `HEAD` but not in the
    project and are not always local-only. Ask once per path, or once for
    all of them, whether to keep it local. The answers that say yes go into
@@ -725,9 +756,12 @@ coauthor's work without a conflict.
 
 Server, in the gated Postgres suite:
 
-- the login token works for fetch at viewer role and for push only at
-  editor role;
-- signing out everywhere and removing the person each end access;
+- with the login token, a read or comment link can fetch and not push,
+  and an edit link can do both;
+- the token without a key, and a key without a token, are each refused,
+  for the owner too;
+- replacing, revoking or expiring the link ends access at the next
+  request, and signing out everywhere does too;
 - the push route applies all or nothing;
 - a touched file changed since base refuses and names the file, while an
   untouched file changed since base does not refuse;
@@ -777,8 +811,10 @@ Helper, unit tests with a temporary repository:
   history reverts nothing;
 - link writes the local-only list from its answers, and nothing it writes
   is committed;
-- the short URL resolves from a single signed-in site, and refuses when
-  ambiguous.
+- the git URL yields the site and key, the key goes in the header and
+  never in a query string, a plain share link given to `clone` or `link`
+  gains `librepaper::`, and a URL without `#k=` refuses;
+- a dead link prints the `git remote set-url` advice.
 
 End to end, against a real `admin serve` (see the Node full-deployment
 tests):
@@ -831,6 +867,12 @@ tests):
   request, with a typed-code fallback over SSH. It was narrower than the
   login token, but it was the largest and riskiest new code in the design,
   and the companion it relied on is retired.
+- **The login token alone, with git treated as the person** (the
+  2026-10-18 to 2026-10-21 drafts). The helper would send no link key and
+  the server would resolve the role from ownership and the guest pin a
+  browser visit left. It weakens the rule that a local tool never inherits
+  a browser's access and is always bounded by a presented link, and a
+  coauthor would have to open the link in a browser before git worked.
 
 ## Later
 
@@ -858,7 +900,7 @@ tests):
   created since the last fetch.
 - **Hosted access without the desktop app.** The same routes, behind a
   smart-HTTP front end on the server, would let CI and lab servers use
-  plain `git` with a token as the password. The push logic would move
+  plain `git` with a token and link key as the password. The push logic would move
   from the helper to the server unchanged.
 - **Shared commit ids.** The server stores commit metadata per fetch and
   push so every machine writes the same commits.
