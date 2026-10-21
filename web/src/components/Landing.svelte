@@ -1391,25 +1391,28 @@
             </span>
           {:else if column.key === "title"}
             {@const chips = place === "trash" ? [] : userTagsOf(doc)}
-            {@const chipsShown = narrow ? chips.slice(0, 2) : chips}
-            {#if place === "trash"}
-              <span class="title-line">{doc.title}</span>
-            {:else}
-              <a class="title-line" href="/docs/{doc.slug}">{doc.title}</a>
-            {/if}
-            {#if chips.length}
-              <!-- The tags on the line under the title. A wide row wraps them;
-                   a phone row has room for two, and the rest are counted, so
-                   the line stays one line. -->
-              <span class="tag-chips" class:compact={narrow}>
-                {#each chipsShown as tag (tag.id)}
-                  <span class="tag-chip" style="--tag-colour: {tagColour(tag.colour)}" title={tag.name}><span class="tag-chip-name">{tag.name}</span></span>
-                {/each}
-                {#if chips.length > chipsShown.length}
-                  <span class="tag-chip tag-more">+{chips.length - chipsShown.length}</span>
-                {/if}
-              </span>
-            {/if}
+            {@const chipsShown = chips.slice(0, narrow ? 2 : 4)}
+            <!-- The title and its tags share a line when they fit, so a tagged
+                 row is no taller than any other. When they do not, the tags
+                 move under the title as one group: the title never shrinks to
+                 make room, and the tags never take more than one line. -->
+            <span class="title-head">
+              {#if place === "trash"}
+                <span class="title-line">{doc.title}</span>
+              {:else}
+                <a class="title-line" href="/docs/{doc.slug}">{doc.title}</a>
+              {/if}
+              {#if chips.length}
+                <span class="tag-chips" class:compact={narrow}>
+                  {#each chipsShown as tag (tag.id)}
+                    <span class="tag-chip" style="--tag-colour: {tagColour(tag.colour)}" title={tag.name}><span class="tag-chip-name">{tag.name}</span></span>
+                  {/each}
+                  {#if chips.length > chipsShown.length}
+                    <span class="tag-chip tag-more">+{chips.length - chipsShown.length}</span>
+                  {/if}
+                </span>
+              {/if}
+            </span>
             <span class="title-note">
               {#if doc.local_copy}<span>Offline</span>{/if}
               <!-- The file the search found, when it was not the title.
@@ -1782,9 +1785,10 @@
      row keeps them on one line, and each name gives way to an ellipsis rather
      than the line being cut off. Nothing here clips the line itself, so a
      chip is never half drawn. */
-  .tag-chips { display: flex; flex-wrap: wrap; align-items: center; gap: var(--spacing); min-width: 0; }
-  .tag-chips.compact { flex-wrap: nowrap; }
-  .tag-chip { display: inline-flex; align-items: center; gap: .3rem; flex: 0 1 auto; min-width: 0; max-width: 12rem; padding: 0 .45rem; border: 1px solid color-mix(in srgb, var(--tag-colour) 45%, transparent); border-radius: 999px; background: color-mix(in srgb, var(--tag-colour) 16%, transparent); color: var(--color-text); font-size: var(--text-xs); line-height: 1.25rem; white-space: nowrap; }
+  .title-head { display: flex; flex-wrap: wrap; align-items: center; column-gap: calc(var(--spacing) * 2); row-gap: 2px; min-width: 0; }
+  .title-head > .title-line { flex: 0 1 auto; min-width: 0; }
+  .tag-chips { display: flex; flex: 0 1 auto; flex-wrap: nowrap; align-items: center; gap: var(--spacing); min-width: 0; max-width: 100%; }
+  .tag-chip { display: inline-flex; align-items: center; gap: .3rem; flex: 0 1 auto; min-width: 2.5rem; max-width: 10rem; padding: 0 .45rem; border: 1px solid color-mix(in srgb, var(--tag-colour) 45%, transparent); border-radius: 999px; background: color-mix(in srgb, var(--tag-colour) 16%, transparent); color: var(--color-text); font-size: var(--text-xs); line-height: 1.125rem; white-space: nowrap; }
   .tag-chips.compact .tag-chip:not(.tag-more) { max-width: 7rem; }
   .tag-chip-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
   .tag-chip::before { content: ""; width: .5rem; height: .5rem; flex: none; border-radius: 50%; background: var(--tag-colour); }
