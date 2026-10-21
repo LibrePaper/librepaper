@@ -1,0 +1,15 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "DELETE FROM document_marks\n             WHERE account_id=$1 AND document_id=$2 AND shared_hidden\n               AND opened_at IS NULL",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "17588e61a52ff0534bd5cffd95a766e55a9ce4c53868fda245c2bd0bd63b5061"
+}

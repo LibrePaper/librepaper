@@ -1,0 +1,35 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT dt.document_id, dt.tag_id, t.builtin IS NOT NULL AS \"builtin!\"\n               FROM document_tags dt\n               JOIN tags t ON t.id = dt.tag_id\n               WHERE t.account_id=$1 AND dt.document_id=ANY($2)\n               ORDER BY t.builtin IS NULL, lower(t.name)",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "document_id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 1,
+        "name": "tag_id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 2,
+        "name": "builtin!",
+        "type_info": "Bool"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "UuidArray"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      null
+    ]
+  },
+  "hash": "6e5fd90d5ece03ee9bf92a7e889b726a2e3185eff9b51820722e04d9b4ea4dec"
+}

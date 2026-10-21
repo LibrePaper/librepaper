@@ -1,0 +1,26 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "INSERT INTO tags(id,account_id,name,colour)\n             SELECT $1::uuid,$2::uuid,$3::text,$4::text\n             WHERE (SELECT count(*) FROM tags\n                    WHERE account_id=$2::uuid AND builtin IS NULL) < $5::bigint\n             RETURNING id",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id",
+        "type_info": "Uuid"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid",
+        "Text",
+        "Text",
+        "Int8"
+      ]
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "c41a1f63c1fef51044ddbce889d48182e3ca9e5888733430355ad8e6ea68cc0a"
+}

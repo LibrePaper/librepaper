@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "SELECT document_id,favorited_at,opened_at,shared_hidden FROM document_marks\n             WHERE account_id=$1 AND document_id=ANY($2)",
+  "query": "SELECT document_id,opened_at,shared_hidden FROM document_marks\n             WHERE account_id=$1 AND document_id=ANY($2)",
   "describe": {
     "columns": [
       {
@@ -10,16 +10,11 @@
       },
       {
         "ordinal": 1,
-        "name": "favorited_at",
-        "type_info": "Timestamptz"
-      },
-      {
-        "ordinal": 2,
         "name": "opened_at",
         "type_info": "Timestamptz"
       },
       {
-        "ordinal": 3,
+        "ordinal": 2,
         "name": "shared_hidden",
         "type_info": "Bool"
       }
@@ -33,9 +28,8 @@
     "nullable": [
       false,
       true,
-      true,
       false
     ]
   },
-  "hash": "4c293fd3b06eb26602abaa5348af4985ae1a0e71cb58bc91fbe1d4978d1c4a37"
+  "hash": "22f0d37afe751e607273b9ab951fdf90744205c30a95685bcad7cded9a874f58"
 }
