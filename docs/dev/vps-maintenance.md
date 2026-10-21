@@ -1,6 +1,6 @@
 # VPS maintenance
 
-The official instance runs on one OVH VPS (Ubuntu 24.04) with the Docker kit
+The official instance runs on one OVH VPS (Ubuntu 26.04) with the Docker kit
 in `deploy/`. This page covers what an upgrade costs in downtime and how to
 keep the host itself up to date. Keep each `ssh` command on one line: a pasted
 command that wraps runs only up to the break.
