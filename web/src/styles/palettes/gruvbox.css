@@ -1,0 +1,107 @@
+/*
+  Gruvbox by Pavel Pertsev (morhetz), MIT licence. The light block uses the medium contrast light variant with the faded accents, and the dark block uses the medium contrast dark variant with the bright accents.
+  Neutrals follow the bg and fg ramps of each variant, and syntax follows gruvbox's own vim highlighting groups.
+*/
+
+[data-theme="librepaper"][data-palette="gruvbox"][data-mode="light"] {
+  color-scheme: light;
+
+  /* Neutral scale */
+  --neutral-1: #fbf1c7;
+  --neutral-2: #f3e6bc;
+  --neutral-3: #f2e5bc;
+  --neutral-4: #ebdbb2;
+  --neutral-5: #e0d0aa;
+  --neutral-6: #d5c4a1;
+  --neutral-7: #bdae93;
+  --neutral-8: #a89984;
+  --neutral-9: #928374;
+  --neutral-10: #7c6f64;
+  --neutral-11: #665c54;
+  --neutral-12: #3c3836;
+
+  /* Surfaces */
+  --color-document: #f9f5d7;
+  --color-raised: #f9f5d7;
+
+  /* Brand */
+  --color-brand: #af3a03;
+  --color-brand-hover: #9a3304;
+  --color-brand-pressed: #7e2a03;
+  --color-on-brand: #ffffff;
+
+  /* Links and focus */
+  --color-link: #076678;
+  --color-focus: #076678;
+
+  /* Editor tint */
+  --color-editor-tint: #af3a03;
+
+  /* Syntax */
+  --source-highlight-keyword: #9d0006;
+  --source-highlight-string: #79740e;
+  --source-highlight-constant: #8f3f71;
+  --source-highlight-comment: #928374;
+  --source-highlight-tag: #427b58;
+  --source-highlight-property: #076678;
+  --source-highlight-function: #79740e;
+  --source-highlight-variable: #076678;
+  --source-highlight-heading: #af3a03;
+  --source-highlight-link: #427b58;
+  --source-highlight-monospace: #427b58;
+  --source-highlight-punctuation: #7c6f64;
+  --source-highlight-meta: #af3a03;
+  --source-highlight-invalid: #9d0006;
+}
+
+[data-theme="librepaper"][data-palette="gruvbox"][data-mode="dark"] {
+  color-scheme: dark;
+
+  /* Neutral scale */
+  --neutral-1: #1d2021;
+  --neutral-2: #282828;
+  --neutral-3: #32302f;
+  --neutral-4: #3c3836;
+  --neutral-5: #504945;
+  --neutral-6: #5b524d;
+  --neutral-7: #665c54;
+  --neutral-8: #7c6f64;
+  --neutral-9: #928374;
+  --neutral-10: #a89984;
+  --neutral-11: #bdae93;
+  --neutral-12: #ebdbb2;
+
+  /* Surfaces */
+  --color-document: #32302f;
+  --color-raised: #3c3836;
+
+  /* Brand */
+  --color-brand: #af3a03;
+  --color-brand-hover: #c4470b;
+  --color-brand-pressed: #7e2a03;
+  --color-on-brand: #ffffff;
+
+  /* Links and focus. The bright gruvbox blue #83a598 reaches only 4.3:1 on
+     the raised surface, so a lighter tint of the same blue is used. */
+  --color-link: #8fb1a2;
+  --color-focus: #8fb1a2;
+
+  /* Editor tint */
+  --color-editor-tint: #fabd2f;
+
+  /* Syntax */
+  --source-highlight-keyword: #fb4934;
+  --source-highlight-string: #b8bb26;
+  --source-highlight-constant: #d3869b;
+  --source-highlight-comment: #928374;
+  --source-highlight-tag: #8ec07c;
+  --source-highlight-property: #83a598;
+  --source-highlight-function: #b8bb26;
+  --source-highlight-variable: #83a598;
+  --source-highlight-heading: #fabd2f;
+  --source-highlight-link: #8ec07c;
+  --source-highlight-monospace: #8ec07c;
+  --source-highlight-punctuation: #a89984;
+  --source-highlight-meta: #fe8019;
+  --source-highlight-invalid: #fb4934;
+}
