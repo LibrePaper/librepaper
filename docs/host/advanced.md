@@ -19,40 +19,7 @@ Everything here is optional. Start with the [simple deployment](simple.html).
 
 ## Sign-in and access
 
-At least one sign-in provider is needed.
-
-| Provider | Callback URL |
-|---|---|
-| GitHub | `https://paper.example/auth/callback` |
-| Google | `https://paper.example/auth/callback/google` |
-| Microsoft Entra ID | `https://paper.example/auth/callback/entra` |
-| ORCID | `https://paper.example/auth/callback/orcid` |
-| Other OpenID Connect | `https://paper.example/auth/callback/oidc-<name>` |
-
-Each provider has its own table in `librepaper.toml`. The keys are:
-
-- `[auth.github]` and `[auth.google]` take `client_id` and `client_secret`.
-- `[auth.entra]` takes `tenant`, `client_id`, `client_secret` and `label`. The tenant is the Directory (tenant) ID, a GUID. The label is the button text and defaults to `Microsoft`.
-- `[auth.oidc.<name>]` takes `issuer`, `client_id`, `client_secret`, `label` and `scopes`. The label is required. The scopes default to `openid email profile`. You can add up to 8 tables.
-- `[auth.orcid]` takes `client_id` and `client_secret`.
-- `[auth]` takes `session_lifetime`, from `1h` to `30d`. It is optional. Absent, a browser session lasts 30 days. Set, it bounds sessions to that. Sessions do not renew on use, and a CLI token never lasts longer than the browser session that approved it.
-
-Every provider table also says who may publish and comment:
-
-```toml
-[auth.github]
-client_id = "replace"
-client_secret = "replace"
-publishers = ["alice", "bob"]
-commenters = ["*"]
-```
-
-- `publishers` lists the accounts that may publish. A provider table without it lets nobody from that provider publish. Each entry is one of:
-  - `"*"` for any account of that provider.
-  - A GitHub login.
-  - An email address the provider has verified, or `"@example.org"` for a whole domain. This applies to Google, Entra and custom OpenID Connect providers.
-  - An ORCID iD, such as `"0000-0002-1825-0097"`. This applies to ORCID.
-- `commenters` takes the same values and defaults to `["*"]`, which admits any account of that provider.
+Providers, `publishers`, `commenters` and session length are set up in [Sign-in](simple.html#sign-in).
 
 Anonymous comments need no sign-in. Turn them on in `[access]`:
 
@@ -60,19 +27,6 @@ Anonymous comments need no sign-in. Turn them on in `[access]`:
 [access]
 anonymous_comments = true
 ```
-
-### ORCID
-
-ORCID signs in researchers with their ORCID account. Register a public API client at [ORCID developer tools](https://orcid.org/developer-tools) with the redirect URI `https://paper.example/auth/callback/orcid`. Then put the client ID and client secret in `[auth.orcid]`:
-
-```toml
-[auth.orcid]
-client_id = "APP-XXXXXXXXXXXXXXXX"
-client_secret = "replace"
-publishers = ["0000-0002-1825-0097"]
-```
-
-- ORCID accounts have no email address, so their handle is the iD, such as `0000-0002-1825-0097`. Put iDs in `publishers` and `commenters`.
 
 ### Identity providers
 

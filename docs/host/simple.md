@@ -188,9 +188,25 @@ cp librepaper.toml librepaper.toml.candidate
 
 LibrePaper has no passwords of its own. People sign in with GitHub, Google, Microsoft Entra ID, ORCID or any OpenID Connect provider, and the server never sees or stores a password. You register LibrePaper once with each provider. Each gives you a client ID and a client secret for `librepaper.toml`. At least one provider is required. You can enable several.
 
-Each provider table also lists who may publish, in its `publishers` key. Without that key, nobody from the provider may publish. See [Sign-in and access](advanced.html#sign-in-and-access) for the values.
+Every provider table also says who may publish and comment:
 
-An email or `@domain` entry in `publishers` admits whoever that provider verifies as owning the address. Turning on a provider means trusting its administrators with every address in its list, so prefer `@domain` entries for domains the provider owns.
+```toml
+[auth.github]
+client_id = "replace"
+client_secret = "replace"
+publishers = ["alice", "bob"]
+commenters = ["*"]
+```
+
+- `publishers` lists the accounts that may publish. A provider table without it lets nobody from that provider publish. Each entry is one of:
+  - `"*"` for any account of that provider.
+  - A GitHub login.
+  - An email address the provider has verified, or `"@example.org"` for a whole domain. This applies to Google, Entra and custom OpenID Connect providers.
+  - An ORCID iD, such as `"0000-0002-1825-0097"`. This applies to ORCID.
+- `commenters` takes the same values and defaults to `["*"]`, which admits any account of that provider.
+- An email or `@domain` entry admits whoever that provider verifies as owning the address. Turning on a provider means trusting its administrators with every address in its list, so prefer `@domain` entries for domains the provider owns.
+
+A browser session lasts 30 days. Set `session_lifetime` in `[auth]`, from `1h` to `30d`, to make it shorter. Sessions do not renew on use, and a CLI token never lasts longer than the browser session that approved it.
 
 **GitHub.** LibrePaper requests no scopes and receives the account's public login name.
 
@@ -237,11 +253,10 @@ client_secret = "replace"
 publishers = ["0000-0002-1825-0097"]   # ORCID iDs, or "*" for any ORCID account
 ```
 
-See [ORCID](advanced.html#orcid) for more.
-
 **Other OpenID Connect providers.** Any provider with an OpenID Connect discovery document works. Add one `[auth.oidc.<name>]` table for each provider, up to 8. The name uses lowercase letters, digits and hyphens.
 
 - Register LibrePaper as a client, with the callback URL `https://paper.example/auth/callback/oidc-<name>`.
+- Set `label`, the button text. It is required. `scopes` defaults to `openid email profile`.
 - The provider must send `email_verified` and mark addresses as verified. AD FS does not, so it is not supported.
 
 Here are examples for Keycloak and GitLab:
@@ -260,6 +275,8 @@ client_secret = "replace"
 label = "GitLab"
 # scopes = "openid email profile"                 # the default
 ```
+
+**Accounts on your own server.** LibrePaper has no local accounts or passwords. To sign people in without an outside service, run a self-hosted OpenID Connect provider next to LibrePaper, such as [Authentik](https://goauthentik.io), [Authelia](https://www.authelia.com), [Keycloak](https://www.keycloak.org), [Pocket ID](https://pocket-id.org), [Kanidm](https://kanidm.com) or [Zitadel](https://zitadel.com). The accounts then live on your machine, and you create and remove them in the provider. Some providers offer invitation links. In Authentik, for example, the operator creates a one-time [invitation](https://docs.goauthentik.io/docs/users-sources/user/invitations) and the recipient picks a username and password. Add the provider as an `[auth.oidc.<name>]` table like the examples above, and check that it sends `email_verified: true` for your users.
 
 **Known limits.**
 
