@@ -42,6 +42,10 @@ export const KEYMAP = "librepaper-keymap";
 // The source text size in pixels. Like the keymap, a habit of the person
 // looking at the source rather than of the document.
 export const EDITOR_SIZE = "librepaper-editor-size";
+// The source font as { id, custom }. Like the size, a habit of the person looking at the source.
+export const EDITOR_FONT = "librepaper-editor-font";
+// The source line height: "compact", "normal" or "wide". Like the size, a habit of the reader.
+export const EDITOR_LINE_HEIGHT = "librepaper-editor-line-height";
 // Whether suggestions pop up while typing in the source. Like the keymap, a
 // habit of the person typing.
 export const EDITOR_COMPLETION = "librepaper-editor-completion";

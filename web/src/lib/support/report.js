@@ -8,7 +8,7 @@
 import { desktop } from "../desktop/client.js";
 import { PREFIX } from "../build-preferences.js";
 import { PANES } from "../panes.js";
-import { EDITOR_BRACKETS, EDITOR_CHECK, EDITOR_COMPLETION, EDITOR_SIZE, KEYMAP, KEYS, SOURCE_SIDE, keyFor, read } from "../storage.js";
+import { EDITOR_BRACKETS, EDITOR_CHECK, EDITOR_COMPLETION, EDITOR_FONT, EDITOR_LINE_HEIGHT, EDITOR_SIZE, KEYMAP, KEYS, SOURCE_SIDE, keyFor, read } from "../storage.js";
 import { entries } from "./log.js";
 import { snapshot } from "./providers.js";
 import { scrubMessage } from "./redact.js";
@@ -140,6 +140,11 @@ function changedSettings() {
   differs("Keymap", KEYMAP, "default");
   differs("Source side", SOURCE_SIDE, "left");
   differs("Editor size", EDITOR_SIZE, 14);
+  differs("Editor line height", EDITOR_LINE_HEIGHT, "normal");
+  // The font name is not reported, only its id, which is one of the built-in choices.
+  const font = read(EDITOR_FONT, null);
+  const fontId = font && typeof font === "object" ? font.id : null;
+  if (fontId && fontId !== "default") lines.push(["Editor font", String(fontId)]);
   differs("Autocomplete", EDITOR_COMPLETION, true);
   differs("Close brackets", EDITOR_BRACKETS, true);
   differs("Code check", EDITOR_CHECK, true);
