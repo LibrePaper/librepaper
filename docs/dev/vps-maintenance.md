@@ -83,6 +83,8 @@ tools/deploy/production verify
 
 - A reboot takes about a minute. Docker starts at boot and
   `restart: unless-stopped` brings every container back.
+- Tried on production on 2026-10-21: the reboot was very fast, and users with
+  the app open saw only a moment of unusual latency, not an error.
 - The VPS also runs `jev-human-validation-web`, which goes down for the same
   minute.
 - Reboot right after a LibrePaper deploy so the two outages land together.
