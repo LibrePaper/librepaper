@@ -30,70 +30,32 @@ struct Pin {
 }
 
 /// The renderers and the editor fonts, which are not in the binary. The four
-/// `wasm` modules are fetched by the page that renders with them; the eleven
-/// `fonts` files are the faces the editor offers, each fetched when it is used.
+/// `wasm` modules are fetched by the page that renders with them; the `fonts`
+/// files are the faces the editor offers, each fetched when it is used.
 const PINS: &[Pin] = &[
-    Pin {
-        file: "markdown.wasm",
-        prefix: "wasm",
-    },
-    Pin {
-        file: "bibliography.wasm",
-        prefix: "wasm",
-    },
-    Pin {
-        file: "citations.wasm",
-        prefix: "wasm",
-    },
-    Pin {
-        file: "typst.wasm",
-        prefix: "wasm",
-    },
-    Pin {
-        file: "jetbrains-mono.woff2",
-        prefix: "fonts",
-    },
-    Pin {
-        file: "jetbrains-mono-italic.woff2",
-        prefix: "fonts",
-    },
-    Pin {
-        file: "fira-code.woff2",
-        prefix: "fonts",
-    },
-    Pin {
-        file: "source-code-pro.woff2",
-        prefix: "fonts",
-    },
-    Pin {
-        file: "source-code-pro-italic.woff2",
-        prefix: "fonts",
-    },
-    Pin {
-        file: "ibm-plex-mono.woff2",
-        prefix: "fonts",
-    },
-    Pin {
-        file: "ibm-plex-mono-italic.woff2",
-        prefix: "fonts",
-    },
-    Pin {
-        file: "ibm-plex-mono-semibold.woff2",
-        prefix: "fonts",
-    },
-    Pin {
-        file: "cascadia-code.woff2",
-        prefix: "fonts",
-    },
-    Pin {
-        file: "cascadia-code-italic.woff2",
-        prefix: "fonts",
-    },
-    Pin {
-        file: "opendyslexic-mono.woff2",
-        prefix: "fonts",
-    },
+    pin("markdown.wasm", "wasm"),
+    pin("bibliography.wasm", "wasm"),
+    pin("citations.wasm", "wasm"),
+    pin("typst.wasm", "wasm"),
+    pin("jetbrains-mono.woff2", "fonts"),
+    pin("jetbrains-mono-italic.woff2", "fonts"),
+    pin("jetbrains-mono-semibold.woff2", "fonts"),
+    pin("fira-code.woff2", "fonts"),
+    pin("source-code-pro.woff2", "fonts"),
+    pin("source-code-pro-italic.woff2", "fonts"),
+    pin("ibm-plex-mono.woff2", "fonts"),
+    pin("ibm-plex-mono-italic.woff2", "fonts"),
+    pin("ibm-plex-mono-semibold.woff2", "fonts"),
+    pin("cascadia-code.woff2", "fonts"),
+    pin("cascadia-code-italic.woff2", "fonts"),
+    pin("opendyslexic.woff2", "fonts"),
+    pin("opendyslexic-italic.woff2", "fonts"),
+    pin("opendyslexic-bold.woff2", "fonts"),
 ];
+
+const fn pin(file: &'static str, prefix: &'static str) -> Pin {
+    Pin { file, prefix }
+}
 
 fn file(name: &str) -> Option<&'static [u8]> {
     SHELL.get_file(name).map(File::contents)
@@ -165,7 +127,7 @@ fn parse_lock(source: &str) -> Result<HashMap<String, String>, String> {
 /// is the validated asset mirror, which ends in `/`.
 ///
 /// The page carries it in a `<script type="application/json">` element, so
-/// every `<` is written as `<`: the same JSON, but it can never close
+/// every `<` is written as `\u003c`: the same JSON, but it can never close
 /// that element early.
 fn urls_json(
     mirror: &str,
@@ -319,8 +281,8 @@ mod shell_tests {
             .filter(|pin| pin.prefix == "fonts")
             .map(|pin| pin.file)
             .collect();
-        assert_eq!(names.len(), 11);
-        assert_eq!(fonts.as_object().unwrap().len(), 11);
+        assert_eq!(names.len(), 14);
+        assert_eq!(fonts.as_object().unwrap().len(), 14);
         for name in names {
             assert_eq!(
                 fonts[name],
