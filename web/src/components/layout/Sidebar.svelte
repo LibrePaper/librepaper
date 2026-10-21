@@ -112,7 +112,9 @@
   .activity-sections { display: flex; flex-direction: column; align-self: stretch; align-items: center; gap: var(--spacing); min-height: 0; padding-bottom: 4px; overflow-y: auto; scrollbar-width: none; }
   .activity-sections::-webkit-scrollbar { display: none; }
   .activity-sections :global(.icon-control) { position: relative; width: 2rem; height: 2rem; border-radius: var(--radius-base); }
-  .activity-sections :global(.icon-control[aria-pressed="true"]) { background: var(--color-row-selected); color: var(--color-link); }
+  /* The open panel's icon keeps the text colour: the bar beside it carries the
+     palette's brand, and a link colour on the icon read as green in most themes. */
+  .activity-sections :global(.icon-control[aria-pressed="true"]) { background: var(--color-row-selected); color: var(--color-text); }
   .activity-sections :global(.icon-control[aria-pressed="true"]::before) { content: ""; position: absolute; left: calc((2rem - var(--librepaper-activity)) / 2 + 1px); top: .375rem; bottom: .375rem; width: 3px; border-radius: 0 2px 2px 0; background: var(--color-brand); }
   .sidebar-content { display: flex; flex-direction: column; flex: 1 1 auto; min-width: 0; min-height: 0; overflow: hidden; }
   .panel-slot { display: flex; flex-direction: column; flex: 1 1 auto; min-width: 0; min-height: 0; overflow: hidden; }

@@ -71,7 +71,8 @@
     }
   }
 
-  // The link opens the issue page itself, in a new tab or, in the desktop app, in the system browser. The click only copies the report.
+  // The link opens the issue page itself, in a new tab or, in the desktop app,
+  // in the system browser. The click only copies the report.
   async function reportIssue() {
     try {
       await copy();
