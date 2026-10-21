@@ -25,7 +25,7 @@ const documents = [
 const tagList = [
   { id: "favorites", name: "Favorites", colour: "yellow", builtin: true },
   { id: "thesis", name: "Thesis", colour: "blue", builtin: false },
-  { id: "teaching", name: "Teaching", colour: "green", builtin: false },
+  { id: "teaching", name: "Teaching", colour: "bluish-green", builtin: false },
 ];
 let server, tab;
 try {
@@ -38,6 +38,10 @@ try {
     window.tagList = ${JSON.stringify(tagList)};
     const docs = ${JSON.stringify(documents)};
     for (const doc of docs) doc.shared_hidden = sessionStorage.getItem('shared-hidden:' + doc.slug) === 'true';
+    if (sessionStorage.getItem('landing-many-tags') === 'yes') {
+      for (let i = 1; i <= 100; i++) window.tagList.push({ id: 'many-' + i, name: 'Many tag ' + i, colour: 'blue', builtin: false });
+      docs.find(doc => doc.slug === 'older').tags.push('many-100');
+    }
     const trash = [{ slug: 'gone', title: 'Old project', role: 'owner', updated_at: '2026-09-10T12:00:00Z', purge_due: '2026-10-10T12:00:00Z' }];
     globalThis.fetch = async (url, init = {}) => {
       const path = String(url);
@@ -366,6 +370,14 @@ try {
   await toggleTeaching(true);
   await until("teaching chip back", async () => (await olderRow()) === "Teaching");
 
+  // The chip is a button that opens its tag as the place.
+  await click('.projects-table tbody tr button.tag-chip[aria-label="Show projects tagged Teaching"]');
+  await until("teaching place from its chip", async () => (await placeHeading()) === "Teaching");
+  assert.match(await tab.evaluate("location.search"), /[?&]tag=teaching(&|$)/, "the chip puts the tag in the address");
+  assert.deepEqual(await titles(), ["Older draft"], "the chip filters the list to projects with the tag");
+  await click('.rail-item button[aria-label="Projects"]');
+  await until("projects after the chip", () => tab.evaluate("document.querySelectorAll('.projects-table tbody tr').length === 3"));
+
   // A new tag is made from the rail's Tags menu, and the dialog says it is the account's.
   await click(railTags);
   await clickOnScreen("new tag item on screen", '.explorer-menu[data-state="open"] [data-rail-action="new-tag"]');
@@ -421,6 +433,74 @@ try {
   await flush();
   await flush();
   assert.equal(await visible("th[data-column=owner]"), true, "1100px: Owner comes back");
+
+  // A hundred tags: each menu and the Manage dialog scroll inside the window
+  // rather than running past it. The entry adds the tags on load when this
+  // flag is set, so the page is loaded again to list them.
+  await tab.evaluate("sessionStorage.setItem('landing-many-tags', 'yes')");
+  await tab.navigate(`http://127.0.0.1:${server.address().port}/`);
+  await until("project list with many tags", () => tab.evaluate("document.querySelectorAll('.projects-table tbody tr').length === 3"));
+  await tab.resize(1100, 850);
+  await flush();
+  const scrolls = (selector) => tab.evaluate(`(() => { const node = document.querySelector(${JSON.stringify(selector)}); if (!node) return 'missing'; const rect = node.getBoundingClientRect(); return { fits: rect.bottom <= innerHeight && rect.top >= 0, scrollable: node.scrollHeight > node.clientHeight + 1 }; })()`);
+  const fitsNow = async (selector) => (await scrolls(selector))?.fits === true;
+
+  const railList = '.explorer-menu[data-state="open"] .tags-menu-items';
+  const manyLast = '.explorer-menu[data-state="open"] [data-rail-tag="many-100"]';
+  await click(railTags);
+  await until("rail tags list in the window", () => fitsNow(railList));
+  const railShape = await scrolls(railList);
+  assert.equal(railShape.fits, true, "the rail's Tags list fits the window");
+  assert.equal(railShape.scrollable, true, "the rail's Tags list scrolls");
+  await tab.evaluate(`document.querySelector(${JSON.stringify(manyLast)}).scrollIntoView({ block: 'nearest' })`);
+  await clickOnScreen("last tag on screen", manyLast);
+  await until("last tag place", async () => (await placeHeading()) === "Many tag 100");
+  await click('.rail-item button[aria-label="Projects"]');
+  await until("projects after many tags", () => tab.evaluate("document.querySelectorAll('.projects-table tbody tr').length === 3"));
+
+  const rowMenu = '.explorer-menu[data-state="open"]';
+  const newTagItem = '.explorer-menu[data-state="open"] [data-project-tag="new"]';
+  await click('button[aria-label="Tags for Older draft"]');
+  await until("row tag menu in the window", () => fitsNow(rowMenu));
+  const rowShape = await scrolls(rowMenu);
+  assert.equal(rowShape.fits, true, "the row's tag menu fits the window");
+  assert.equal(rowShape.scrollable, true, "the row's tag menu scrolls");
+  await tab.evaluate(`document.querySelector(${JSON.stringify(newTagItem)}).scrollIntoView({ block: 'nearest' })`);
+  assert.equal(await onScreen(newTagItem), true, "New tag can be reached in the row's tag menu");
+  await key("Escape");
+  await flush();
+
+  // Manage tags opens a dialog whose list scrolls inside it, with Done in view.
+  const manageDialog = '[role="dialog"][data-state="open"]';
+  const checkManage = async (label) => {
+    await until(`${label} manage dialog in the window`, () => fitsNow(manageDialog));
+    const shape = await scrolls(manageDialog);
+    assert.equal(shape.fits, true, `${label}: the Manage tags dialog fits the window`);
+    const listScrolls = await tab.evaluate("(() => { const list = document.querySelector('.tag-manage').parentElement; return list.scrollHeight > list.clientHeight + 1; })()");
+    assert.equal(listScrolls, true, `${label}: the tag list scrolls inside the dialog`);
+    const doneOnScreen = await tab.evaluate(`(() => { const button = [...document.querySelectorAll(${JSON.stringify(manageDialog + " button")})].find(each => each.textContent.trim() === 'Done'); if (!button) return false; const rect = button.getBoundingClientRect(); return rect.width > 0 && rect.bottom <= innerHeight && rect.top >= 0; })()`);
+    assert.equal(doneOnScreen, true, `${label}: Done is on screen`);
+    await key("Escape");
+    await until(`${label} manage dialog closed`, () => tab.evaluate(`!document.querySelector(${JSON.stringify(manageDialog)})`));
+  };
+  const manageItem = '.explorer-menu[data-state="open"] [data-rail-action="manage-tags"]';
+  await click(railTags);
+  await until("manage tags item rendered", () => tab.evaluate(`Boolean(document.querySelector(${JSON.stringify(manageItem)}))`));
+  await tab.evaluate(`document.querySelector(${JSON.stringify(manageItem)}).scrollIntoView({ block: 'nearest' })`);
+  await clickOnScreen("manage tags on screen", manageItem);
+  await until("manage tags dialog", () => tab.evaluate("Boolean(document.querySelector('.tag-manage'))"));
+  await checkManage("1100px");
+
+  // At phone width the same dialog opens from the Menu.
+  await tab.resize(390, 844);
+  await flush();
+  const phoneManage = '.explorer-menu[data-state="open"] [data-workspace-action="manage-tags"]';
+  await click("body > nav .compact-panels-trigger");
+  await until("phone manage tags item rendered", () => tab.evaluate(`Boolean(document.querySelector(${JSON.stringify(phoneManage)}))`));
+  await tab.evaluate(`document.querySelector(${JSON.stringify(phoneManage)}).scrollIntoView({ block: 'nearest' })`);
+  await clickOnScreen("phone manage tags on screen", phoneManage);
+  await until("phone manage tags dialog", () => tab.evaluate("Boolean(document.querySelector('.tag-manage'))"));
+  await checkManage("390px");
 
   console.log("landing-browser: compact project actions, row density, responsive metadata, keyboard access and project operations passed");
 } finally {

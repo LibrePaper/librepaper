@@ -15,9 +15,17 @@ use uuid::Uuid;
 use super::{Error, PostgresCatalog, Result};
 
 /// The colours a tag may take. Clients draw them by key, so a new colour is a
-/// new key and never a new spelling of an old one.
-pub const COLOURS: [&str; 9] = [
-    "gray", "red", "orange", "yellow", "green", "teal", "blue", "purple", "pink",
+/// new key and never a new spelling of an old one. The set is Okabe and Ito's
+/// colour-blind-safe palette, and web/src/lib/tag-colours.js holds the same keys.
+pub const COLOURS: [&str; 8] = [
+    "gray",
+    "orange",
+    "sky-blue",
+    "bluish-green",
+    "yellow",
+    "blue",
+    "vermillion",
+    "reddish-purple",
 ];
 
 /// How many tags one account may create. The built-in tag does not count.

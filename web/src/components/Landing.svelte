@@ -1405,7 +1405,8 @@
               {#if chips.length}
                 <span class="tag-chips" class:compact={narrow}>
                   {#each chipsShown as tag (tag.id)}
-                    <span class="tag-chip" style="--tag-colour: {tagColour(tag.colour)}" title={tag.name}><span class="tag-chip-name">{tag.name}</span></span>
+                    <button type="button" class="tag-chip" style="--tag-colour: {tagColour(tag.colour)}" title={tag.name}
+                            aria-label="Show projects tagged {tag.name}" onclick={() => goToTag(tag.id)}><span class="tag-chip-name">{tag.name}</span></button>
                   {/each}
                   {#if chips.length > chipsShown.length}
                     <span class="tag-chip tag-more">+{chips.length - chipsShown.length}</span>
@@ -1787,11 +1788,14 @@
   /* The tags sit on the line under the title. A wide row wraps them; a phone
      row keeps them on one line, and each name gives way to an ellipsis rather
      than the line being cut off. Nothing here clips the line itself, so a
-     chip is never half drawn. */
+     chip is never half drawn. A chip is a button that shows the projects with
+     that tag. */
   .title-head { display: flex; flex-wrap: wrap; align-items: center; column-gap: calc(var(--spacing) * 2); row-gap: 2px; min-width: 0; }
   .title-head > .title-line { flex: 0 1 auto; min-width: 0; }
   .tag-chips { display: flex; flex: 0 1 auto; flex-wrap: nowrap; align-items: center; gap: var(--spacing); min-width: 0; max-width: 100%; }
-  .tag-chip { display: inline-flex; align-items: center; gap: .3rem; flex: 0 1 auto; min-width: 2.5rem; max-width: 10rem; padding: 0 .45rem; border: 1px solid color-mix(in srgb, var(--tag-colour) 45%, transparent); border-radius: 999px; background: color-mix(in srgb, var(--tag-colour) 16%, transparent); color: var(--color-text); font-size: var(--text-xs); line-height: 1.125rem; white-space: nowrap; }
+  .tag-chip { display: inline-flex; align-items: center; gap: .3rem; flex: 0 1 auto; min-width: 2.5rem; max-width: 10rem; padding: 0 .45rem; border: 1px solid color-mix(in srgb, var(--tag-colour) 45%, transparent); border-radius: 999px; background: color-mix(in srgb, var(--tag-colour) 16%, transparent); color: var(--color-text); font: inherit; font-size: var(--text-xs); line-height: 1.125rem; margin: 0; appearance: none; white-space: nowrap; cursor: pointer; }
+  button.tag-chip:hover { background: color-mix(in srgb, var(--tag-colour) 28%, transparent); }
+  button.tag-chip:focus-visible { outline: 2px solid var(--tag-colour); outline-offset: 1px; }
   .tag-chips.compact .tag-chip:not(.tag-more) { max-width: 7rem; }
   .tag-chip-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
   .tag-chip::before { content: ""; width: .5rem; height: .5rem; flex: none; border-radius: 50%; background: var(--tag-colour); }

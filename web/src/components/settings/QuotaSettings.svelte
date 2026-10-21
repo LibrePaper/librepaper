@@ -253,9 +253,9 @@
   .account-bar { flex: 1; }
   .doc-bar { width: 140px; flex-shrink: 0; }
   .bar-segment { flex: 0 0 auto; height: 100%; }
-  .figure { background: var(--color-brand); }
-  .versions { background: var(--color-success-solid); }
-  .history { background: var(--color-warning-solid); }
+  .figure { background: var(--oi-blue); }
+  .versions { background: var(--oi-orange); }
+  .history { background: var(--oi-bluish-green); }
 
   .storage-toolbar { display: flex; justify-content: space-between; align-items: center; gap: calc(var(--spacing) * 2); flex-wrap: wrap; }
   .legend { display: flex; gap: calc(var(--spacing) * 3); font-size: 0.75rem; color: var(--color-text-secondary); }

@@ -62,20 +62,20 @@ async fn tags_are_created_renamed_recoloured_and_deleted_by_their_owner() {
     assert!(!created.builtin);
 
     let renamed = catalog
-        .update_tag(owner, created.id, Some("Final"), Some("green"))
+        .update_tag(owner, created.id, Some("Final"), Some("bluish-green"))
         .await
         .unwrap();
     assert_eq!(renamed.name, "Final");
-    assert_eq!(renamed.colour, "green");
+    assert_eq!(renamed.colour, "bluish-green");
     let recoloured = catalog
-        .update_tag(owner, created.id, None, Some("red"))
+        .update_tag(owner, created.id, None, Some("vermillion"))
         .await
         .unwrap();
     assert_eq!(
         recoloured.name, "Final",
         "a colour change leaves the name alone"
     );
-    assert_eq!(recoloured.colour, "red");
+    assert_eq!(recoloured.colour, "vermillion");
 
     let listed = catalog.list_tags(owner).await.unwrap();
     assert_eq!(listed.len(), 1);
@@ -99,18 +99,18 @@ async fn names_are_unique_per_account_ignoring_case_and_favorites_is_reserved() 
     let other = account(&catalog).await;
 
     catalog.create_tag(owner, "Draft", "gray").await.unwrap();
-    let duplicate = catalog.create_tag(owner, "draft", "red").await;
+    let duplicate = catalog.create_tag(owner, "draft", "vermillion").await;
     assert!(
         matches!(duplicate, Err(Error::Conflict(_))),
         "a name the account already has is a conflict",
     );
     catalog.create_tag(other, "Draft", "gray").await.unwrap();
 
-    let reserved = catalog.create_tag(owner, "FAVORITES", "red").await;
+    let reserved = catalog.create_tag(owner, "FAVORITES", "vermillion").await;
     assert!(matches!(reserved, Err(Error::Invalid(_))));
     let unknown_colour = catalog.create_tag(owner, "Plum", "plum").await;
     assert!(matches!(unknown_colour, Err(Error::Invalid(_))));
-    let blank = catalog.create_tag(owner, "   ", "red").await;
+    let blank = catalog.create_tag(owner, "   ", "vermillion").await;
     assert!(matches!(blank, Err(Error::Invalid(_))));
 
     drop(writer);
@@ -139,7 +139,7 @@ async fn the_built_in_favorites_tag_cannot_be_renamed_recoloured_or_deleted() {
     ));
     assert!(matches!(
         catalog
-            .update_tag(owner, favorites, None, Some("red"))
+            .update_tag(owner, favorites, None, Some("vermillion"))
             .await,
         Err(Error::Invalid(_))
     ));
@@ -190,7 +190,7 @@ async fn a_tag_survives_its_project_going_to_the_trash_and_coming_back() {
     let writer = catalog.claim_writer().await.unwrap();
     let owner = account(&catalog).await;
     let paper = document(&catalog, owner).await;
-    let tag = catalog.create_tag(owner, "Keep", "teal").await.unwrap();
+    let tag = catalog.create_tag(owner, "Keep", "sky-blue").await.unwrap();
     catalog
         .set_document_tag(owner, paper, tag.id, true)
         .await
@@ -225,7 +225,10 @@ async fn another_accounts_tag_id_is_not_found() {
     let owner = account(&catalog).await;
     let other = account(&catalog).await;
     let paper = document(&catalog, owner).await;
-    let tag = catalog.create_tag(owner, "Mine", "pink").await.unwrap();
+    let tag = catalog
+        .create_tag(owner, "Mine", "reddish-purple")
+        .await
+        .unwrap();
 
     assert!(matches!(
         catalog.tag_for(other, tag.id).await,
@@ -273,7 +276,7 @@ async fn two_creates_cannot_both_take_the_last_place() {
     }
 
     let (first, second) = tokio::join!(
-        catalog.create_tag(owner, "Last one", "red"),
+        catalog.create_tag(owner, "Last one", "vermillion"),
         catalog.create_tag(owner, "Also last", "blue"),
     );
     let results = [first, second];
