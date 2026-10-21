@@ -218,7 +218,7 @@
   import { ANCHORS_ORIGIN, composeEdits, fragmentRangesFor } from "../lib/anchors.js";
   import { projectDirectory } from "../lib/projection.js";
   import { attachEditorZoom } from "../lib/editor-zoom.js";
-  import { start as startEditorType, onFont, onLineHeight } from "../lib/editor-type.js";
+  import { start as startEditorType, onFont, onLineHeight, size, setSize, DEFAULT_SIZE } from "../lib/editor-type.js";
   import { snippetTemplate } from "../lib/snippet-template.js";
   import { formatOf as documentFormat } from "../lib/formats.js";
   import { untrack } from "svelte";
@@ -1106,6 +1106,12 @@
           // highest-precedence keymap, so Vim and Emacs keep Ctrl+B and Ctrl+I.
           { key: "Mod-b", preventDefault: true, run: boldCommand },
           { key: "Mod-i", preventDefault: true, run: italicCommand },
+          // Source text size. The keyboard half of the pinch: lib/commands.js names
+          // these bindings, and the size is the one lib/editor-zoom.js changes.
+          { key: "Mod-=", preventDefault: true, run: () => (setSize(size() + 1), true) },
+          { key: "Mod-+", preventDefault: true, run: () => (setSize(size() + 1), true) },
+          { key: "Mod--", preventDefault: true, run: () => (setSize(size() - 1), true) },
+          { key: "Mod-0", preventDefault: true, run: () => (setSize(DEFAULT_SIZE), true) },
           ...foldKeymap,
           indentWithTab,
           ...completionKeymap,

@@ -378,12 +378,30 @@ window.editorTypeCheck = async () => {
   setFont("default");
   await frame();
   const defaultVariable = document.documentElement.style.getPropertyValue("--editor-font-family");
+  const keyed = EditorView.findFromDOM(editor);
+  keyed.focus();
+  setSize(14);
+  await frame();
+  const press = (key, code) => keyed.contentDOM.dispatchEvent(new KeyboardEvent("keydown", {
+    key, code, ctrlKey: true, bubbles: true, cancelable: true,
+  }));
+  press("=", "Equal");
+  await frame();
+  const keyBigger = getComputedStyle(editor).fontSize;
+  press("-", "Minus");
+  await frame();
+  press("-", "Minus");
+  await frame();
+  const keySmaller = getComputedStyle(editor).fontSize;
+  press("0", "Digit0");
+  await frame();
+  const keyReset = getComputedStyle(editor).fontSize;
   setSize(14);
   setLineHeight("normal");
   typed.$destroy();
   host.remove();
   value.leave();
-  return { sized, pinched, wideLine, normalLine, serif, comic, evil, bodyColor, bodyColorAfter, defaultVariable };
+  return { sized, pinched, wideLine, normalLine, serif, comic, evil, bodyColor, bodyColorAfter, defaultVariable, keyBigger, keySmaller, keyReset };
 };
 window.vimUndoCheck = async () => {
   const value = joinSession({ send: () => {}, mayEdit: true });
@@ -1262,6 +1280,9 @@ try {
   assert.ok(!type.evil.includes("}") && !type.evil.includes(";"), `a custom font name escaped its declaration: ${type.evil}`);
   assert.equal(type.bodyColorAfter, type.bodyColor, "a custom font name changed the page colour");
   assert.equal(type.defaultVariable, "", "the default font left --editor-font-family set");
+  assert.equal(type.keyBigger, "15px", "Ctrl+= did not grow the source text from 14px");
+  assert.equal(type.keySmaller, "13px", "two Ctrl+- presses did not shrink the source text to 13px");
+  assert.equal(type.keyReset, "14px", "Ctrl+0 did not reset the source text to 14px");
   console.log("editor-browser: the font, size and line height settings restyle the open editor, and a pinch starts from the chosen size");
 } finally {
   socket?.close();
