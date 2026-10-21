@@ -50,21 +50,21 @@ pub struct DocumentTagRecord {
 pub fn validate_name(name: &str) -> Result<String> {
     let name = name.trim();
     if name.is_empty() {
-        return Err(Error::Invalid("give the tag a name".into()));
+        return Err(Error::Invalid("Give the tag a name.".into()));
     }
     if name.chars().count() > NAME_MAX_CHARS {
         return Err(Error::Invalid(format!(
-            "a tag name is at most {NAME_MAX_CHARS} characters"
+            "A tag name is at most {NAME_MAX_CHARS} characters."
         )));
     }
     if name.chars().any(char::is_control) {
         return Err(Error::Invalid(
-            "a tag name cannot contain control characters".into(),
+            "A tag name cannot contain control characters.".into(),
         ));
     }
     if name.eq_ignore_ascii_case(FAVORITES_NAME) {
         return Err(Error::Invalid(format!(
-            "{FAVORITES_NAME} is the built-in tag's name"
+            "{FAVORITES_NAME} is the name of the built-in tag."
         )));
     }
     Ok(name.to_owned())
@@ -74,9 +74,7 @@ pub fn validate_colour(colour: &str) -> Result<()> {
     if COLOURS.contains(&colour) {
         Ok(())
     } else {
-        Err(Error::Invalid(
-            "that colour is not one of the palette".into(),
-        ))
+        Err(Error::Invalid("That colour is not in the palette.".into()))
     }
 }
 
@@ -85,7 +83,7 @@ pub fn validate_colour(colour: &str) -> Result<()> {
 fn duplicate_as_conflict(error: sqlx::Error) -> Error {
     match error {
         sqlx::Error::Database(ref database) if database.is_unique_violation() => {
-            Error::Conflict("a tag with that name already exists".into())
+            Error::Conflict("A tag with that name already exists.".into())
         }
         other => Error::Database(other),
     }
@@ -186,7 +184,7 @@ impl PostgresCatalog {
         .map_err(duplicate_as_conflict)?;
         if inserted.is_none() {
             return Err(Error::Invalid(format!(
-                "an account can have at most {MAX_TAGS} tags"
+                "An account can have at most {MAX_TAGS} tags."
             )));
         }
         Ok(TagRecord {
@@ -313,7 +311,7 @@ impl PostgresCatalog {
 /// the message is said once.
 pub fn built_in_refusal() -> Error {
     Error::Invalid(format!(
-        "{FAVORITES_NAME} cannot be renamed, recoloured or deleted"
+        "{FAVORITES_NAME} cannot be renamed, recoloured or deleted."
     ))
 }
 
