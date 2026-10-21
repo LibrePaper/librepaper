@@ -17,7 +17,9 @@
 </div>
 
 <style>
-  .tag-swatches { display: flex; flex-wrap: wrap; gap: calc(var(--spacing) * 2); }
+  /* Padded by the width of the chosen swatch's ring, so a dialog body that
+     scrolls does not clip it on any side. */
+  .tag-swatches { display: flex; flex-wrap: wrap; gap: calc(var(--spacing) * 2); padding: 4px; }
   /* The chosen swatch gets a ring in the colour it is, set apart from the
      card by a gap, so the choice is a shape and not only a tint. */
   .tag-swatch { width: 1.5rem; height: 1.5rem; border-radius: 50%; border: 0; padding: 0; background: var(--swatch); cursor: pointer; }

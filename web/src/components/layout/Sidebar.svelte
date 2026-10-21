@@ -109,8 +109,10 @@
      controls below them stay put, rather than the home and help buttons
      disappearing off the bottom of a laptop in landscape with no sign that
      they were ever there. The bar is hidden because it would be most of the
-     rail's width; the wheel, a drag and the keyboard all still reach it. */
-  .activity-sections { display: flex; flex-direction: column; align-self: stretch; align-items: center; gap: var(--spacing); min-height: 0; overflow-y: auto; scrollbar-width: none; }
+     rail's width; the wheel, a drag and the keyboard all still reach it.
+     The padding is room for the focus ring of the last control, which the
+     scrolling column would otherwise cut off at the bottom. */
+  .activity-sections { display: flex; flex-direction: column; align-self: stretch; align-items: center; gap: var(--spacing); min-height: 0; padding-bottom: 4px; overflow-y: auto; scrollbar-width: none; }
   .activity-sections::-webkit-scrollbar { display: none; }
   .activity-sections :global(.icon-control) { position: relative; width: 2rem; height: 2rem; border-radius: var(--radius-base); }
   .activity-sections :global(.icon-control[aria-pressed="true"]) { background: var(--color-row-selected); color: var(--color-link); }
