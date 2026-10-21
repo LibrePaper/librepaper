@@ -24,6 +24,7 @@ const {
   size,
   setSize,
   onSize,
+  start,
 } = await import("../../src/lib/editor-type.js");
 
 const SIZE_KEY = "librepaper-editor-size";
@@ -161,6 +162,29 @@ const LINE_KEY = "librepaper-editor-line-height";
   stopHeight();
   setLineHeight("compact");
   assert.deepEqual(heights, ["normal", "wide"]);
+}
+
+// Another tab's choice reaches a page that has no editor, once the page has
+// started: the copy this page kept is dropped, and the listeners hear the new
+// value.
+{
+  const handlers = [];
+  globalThis.addEventListener = (type, handler) => { if (type === "storage") handlers.push(handler); };
+  start();
+  assert.equal(handlers.length, 1);
+  setSize(20);
+  const heard = [];
+  const stop = onSize((now) => heard.push(now));
+  store.set(SIZE_KEY, JSON.stringify(18));
+  handlers[0]({ key: SIZE_KEY });
+  assert.equal(size(), 18);
+  assert.deepEqual(heard, [20, 18]);
+  setLineHeight("compact");
+  store.set(LINE_KEY, JSON.stringify("wide"));
+  handlers[0]({ key: null });
+  assert.equal(lineHeight(), "wide");
+  stop();
+  delete globalThis.addEventListener;
 }
 
 console.log("editor-type: all checks passed");
