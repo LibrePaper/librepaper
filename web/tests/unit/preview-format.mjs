@@ -33,7 +33,7 @@ assert.equal(formatOf("a.json"), "", "a data file is still not a document format
 const page = await render({ main: "a.json", texts: { "a.json": "{\"k\": 1} <x>" } }, "");
 assert.match(page.html, /<pre>/, "the text page has a preformatted block");
 assert.match(page.html, /&lt;x&gt;/, "source is escaped");
-assert.match(page.html, /tok-/, "a known language is highlighted");
+assert.match(page.html, /<span class="tok-/, "a known language is highlighted");
 assert.doesNotMatch(page.html, /<script/i, "the text page has no script");
 
 console.log("preview format tests passed");

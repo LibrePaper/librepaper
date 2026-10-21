@@ -138,8 +138,8 @@ notes = previewNotes({
 assert.equal(notes.length, 1, "one note when mainPath is null");
 assert.match(
   notes[0].message,
-  /of their own\.$/,
-  "note ends after 'of their own' when mainPath is empty"
+  /of its own\.$/,
+  "note ends after 'of its own' when mainPath is empty"
 );
 
 // --- unrenderableMain names the main file when it has no format ----------------
