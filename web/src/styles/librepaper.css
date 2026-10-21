@@ -672,28 +672,28 @@ main.reader.source-right .editorpane {
 }
 .cm-editor .cm-activeLineGutter,
 .cm-editor .cm-activeLine {
-  background: color-mix(in srgb, var(--color-brand) 5%, transparent);
+  background: color-mix(in srgb, var(--color-editor-tint) 5%, transparent);
 }
 .cm-editor .cm-selectionBackground,
 .cm-editor.cm-focused .cm-selectionBackground,
 .cm-editor .cm-content ::selection {
-  background: color-mix(in srgb, var(--color-brand) 18%, transparent);
+  background: color-mix(in srgb, var(--color-editor-tint) 18%, transparent);
 }
 .cm-editor .cm-searchMatch {
-  background: color-mix(in srgb, var(--color-brand) 14%, transparent);
+  background: color-mix(in srgb, var(--color-editor-tint) 14%, transparent);
 }
 /* The brand is dim on a dark document, so the tints use a brighter green. */
 [data-mode="dark"] .cm-editor .cm-activeLineGutter,
 [data-mode="dark"] .cm-editor .cm-activeLine {
-  background: color-mix(in srgb, var(--green-9) 8%, transparent);
+  background: color-mix(in srgb, var(--color-editor-tint) 8%, transparent);
 }
 [data-mode="dark"] .cm-editor .cm-selectionBackground,
 [data-mode="dark"] .cm-editor.cm-focused .cm-selectionBackground,
 [data-mode="dark"] .cm-editor .cm-content ::selection {
-  background: color-mix(in srgb, var(--green-9) 35%, transparent);
+  background: color-mix(in srgb, var(--color-editor-tint) 35%, transparent);
 }
 [data-mode="dark"] .cm-editor .cm-searchMatch {
-  background: color-mix(in srgb, var(--green-9) 28%, transparent);
+  background: color-mix(in srgb, var(--color-editor-tint) 28%, transparent);
 }
 .cm-editor .cm-panels {
   background: var(--color-subtle);
@@ -1313,11 +1313,11 @@ main.reader .cm-scroller, main.reader .panel { overscroll-behavior: contain; }
 .lp-control-tonal:hover:not(:disabled):not([aria-disabled="true"]):not([data-disabled]) { background: var(--color-row-hover); }
 /* The secondary button darkens on hover and press like the primary one. */
 .lp-control-tonal-brand { background: var(--color-row-selected); color: var(--color-link); border-color: transparent; }
-.lp-control-tonal-brand:hover:not(:disabled):not([aria-disabled="true"]):not([data-disabled]) { background: var(--sage-6); }
-.lp-control-tonal-brand:active:not(:disabled):not([aria-disabled="true"]):not([data-disabled]) { background: var(--sage-7); }
+.lp-control-tonal-brand:hover:not(:disabled):not([aria-disabled="true"]):not([data-disabled]) { background: var(--neutral-6); }
+.lp-control-tonal-brand:active:not(:disabled):not([aria-disabled="true"]):not([data-disabled]) { background: var(--neutral-7); }
 /* The dark selected fill is one step higher, so hover and press follow it. */
-[data-mode="dark"] .lp-control-tonal-brand:hover:not(:disabled):not([aria-disabled="true"]):not([data-disabled]) { background: var(--sage-7); }
-[data-mode="dark"] .lp-control-tonal-brand:active:not(:disabled):not([aria-disabled="true"]):not([data-disabled]) { background: var(--sage-8); }
+[data-mode="dark"] .lp-control-tonal-brand:hover:not(:disabled):not([aria-disabled="true"]):not([data-disabled]) { background: var(--neutral-7); }
+[data-mode="dark"] .lp-control-tonal-brand:active:not(:disabled):not([aria-disabled="true"]):not([data-disabled]) { background: var(--neutral-8); }
 :where(.lp-control-brand, .lp-control-danger, .lp-control-success, .lp-control-neutral, .lp-control-tonal, .lp-control-tonal-brand):focus-visible {
   outline: 2px solid var(--color-focus);
   outline-offset: 2px;

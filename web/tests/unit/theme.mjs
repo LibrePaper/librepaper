@@ -11,7 +11,7 @@ globalThis.localStorage = {
   removeItem: (key) => store.delete(key),
 };
 
-const { CHOICES, choice, mode, setChoice, onMode, onChoice, start } = await import("../../src/lib/theme.js");
+const { CHOICES, choice, mode, setChoice, onMode, onChoice, start, palette, setPalette, onPalette, PALETTES } = await import("../../src/lib/theme.js");
 
 // A first visit follows the computer, which node says is light.
 {
@@ -120,4 +120,51 @@ const { CHOICES, choice, mode, setChoice, onMode, onChoice, start } = await impo
   assert.deepEqual(choices, ["dark", "light", "system"]);
   stopMode();
   stopChoice();
+}
+
+// The colour theme defaults to librepaper, and a stored value this version
+// does not offer reads back as librepaper too.
+{
+  store.clear();
+  assert.deepEqual(PALETTES, ["librepaper", "flexoki", "solarized", "gruvbox", "catppuccin", "nord"]);
+  assert.equal(palette(), "librepaper");
+  store.set("librepaper-palette", JSON.stringify("neon"));
+  assert.equal(palette(), "librepaper");
+  store.delete("librepaper-palette");
+}
+
+// A palette that is not offered changes nothing.
+{
+  store.clear();
+  globalThis.document = { documentElement: { dataset: {} } };
+  setPalette("bogus");
+  assert.equal(palette(), "librepaper");
+  assert.equal(store.has("librepaper-palette"), false);
+  assert.equal(globalThis.document.documentElement.dataset.palette, undefined);
+}
+
+// A palette is written as JSON and the page carries it on the root element.
+{
+  store.clear();
+  setPalette("nord");
+  assert.equal(store.get("librepaper-palette"), '"nord"');
+  assert.equal(palette(), "nord");
+  assert.equal(globalThis.document.documentElement.dataset.palette, "nord");
+  delete globalThis.document;
+}
+
+// Palette listeners hear the palette at once and after each change, until they
+// leave.
+{
+  store.clear();
+  globalThis.document = { documentElement: { dataset: {} } };
+  const heard = [];
+  const stop = onPalette((now) => heard.push(now));
+  assert.deepEqual(heard, ["librepaper"]);
+  setPalette("gruvbox");
+  assert.deepEqual(heard, ["librepaper", "gruvbox"]);
+  stop();
+  setPalette("nord");
+  assert.deepEqual(heard, ["librepaper", "gruvbox"]);
+  delete globalThis.document;
 }

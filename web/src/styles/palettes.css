@@ -1,0 +1,8 @@
+/* Each colour theme is one file that sets the neutral scale, the brand, the
+   editor tint and the syntax colours for both modes. The default palette,
+   librepaper, is set in theme.css and needs no file of its own. */
+@import "./palettes/flexoki.css";
+@import "./palettes/solarized.css";
+@import "./palettes/gruvbox.css";
+@import "./palettes/catppuccin.css";
+@import "./palettes/nord.css";
