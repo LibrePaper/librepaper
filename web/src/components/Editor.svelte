@@ -27,6 +27,19 @@
     target?.dispatch({ effects: themeCompartment.reconfigure(themeFor(mode() === "dark")) });
   }
 
+  // Each switch in the Editor settings is a compartment of its own, so turning
+  // one over changes open editors in place. Like the theme, a cached state is
+  // brought into line with the setting when it is activated.
+  const completionCompartment = new Compartment();
+  const bracketsCompartment = new Compartment();
+  const checkCompartment = new Compartment();
+  // The bracket keymap goes with auto-closing brackets. Its Backspace deletes an
+  // empty pair even without closeBrackets, so leaving it in the main keymap
+  // would leave the switch half off.
+  const completionOn = (on) => (on ? autocompletion({ activateOnTyping: true }) : []);
+  const bracketsOn = (on) => (on ? [closeBrackets(), keymap.of(closeBracketsKeymap)] : []);
+  const checkOn = (on) => (on ? lintGutter() : []);
+
   // Loro merges nearby commits by default. A handled Vim key starts a new
   // command boundary; the first local edit after it consumes that boundary
   // only after the Loro sync plugin has committed the edit.
@@ -218,6 +231,7 @@
   // is the id of the change the reviewer is looking at.
   /** @type {{ me?: { who: string, author: string }, [key: string]: any }} */
   let { session, format = "", file = "", keys = "default", editable = true,
+    completion = true, brackets = true, check = true,
     tracking = false, me = { who: "", author: "" }, selectedChange = null,
     analyze = analyzeBibliography,
     onchange, oncaret, onfilechange, onbibliography, onsave, onquit,
@@ -685,7 +699,9 @@
         };
       })
       .sort((a, b) => a.from - b.from);
-    view.dispatch(setLintDiagnostics(view.state, shown));
+    // With the check off nothing is drawn in the source, and the reader's list
+    // of messages is unchanged.
+    view.dispatch(setLintDiagnostics(view.state, untrack(() => check) ? shown : []));
   }
 
   /// Moves the caret to the diagnostic after the one the caret is at, round
@@ -1059,20 +1075,21 @@
         EditorState.allowMultipleSelections.of(true),
         rectangularSelection(),
         bracketMatching(),
-        closeBrackets(),
+        bracketsCompartment.of(bracketsOn(untrack(() => brackets))),
         foldGutter(),
         indentOnInput(),
         highlightSelectionMatches(),
         sourceHighlighting,
         sourceLanguage(path, format),
-        autocompletion({ activateOnTyping: true }),
+        completionCompartment.of(completionOn(untrack(() => completion))),
         completionExtension({
           project: completionProject,
           sources: [bibliographyCompletion({ entries: bibliographyEntries, format: () => formatOf(pathOfDoc(session.doc, showing)), remote: remoteBibliography, onRemote: importZotero })],
         }),
         // Where a compile's errors are shown: the gutter mark, and with it the
-        // underline and the hover the lint extension draws.
-        lintGutter(),
+        // underline and the hover the lint extension draws. Drawn only while
+        // the check is on.
+        checkCompartment.of(checkOn(untrack(() => check))),
         EditorView.lineWrapping,
         // Pending changes, drawn in the text they changed.
         pendingChanges,
@@ -1088,7 +1105,6 @@
           // highest-precedence keymap, so Vim and Emacs keep Ctrl+B and Ctrl+I.
           { key: "Mod-b", preventDefault: true, run: boldCommand },
           { key: "Mod-i", preventDefault: true, run: italicCommand },
-          ...closeBracketsKeymap,
           ...foldKeymap,
           indentWithTab,
           ...completionKeymap,
@@ -1178,6 +1194,21 @@
       if (view === target && untrack(() => keys) === want) {
         target.dispatch({ effects: vimCompartment.reconfigure(extension) });
       }
+    });
+  }
+
+  /// Reconfigures the live view's completion, bracket and check switches to
+  /// match their props, in one transaction. Like `syncKeys`, it reads the
+  /// props without tracking, so the effect at the end of the script is the one
+  /// that follows them.
+  function syncFeatures(target) {
+    if (!target) return;
+    target.dispatch({
+      effects: [
+        completionCompartment.reconfigure(completionOn(untrack(() => completion))),
+        bracketsCompartment.reconfigure(bracketsOn(untrack(() => brackets))),
+        checkCompartment.reconfigure(checkOn(untrack(() => check))),
+      ],
     });
   }
 
@@ -1324,6 +1355,7 @@
     view.setState(documentStates.get(id));
     activeDocument = document_;
     syncKeys(view);
+    syncFeatures(view);
     syncTheme(view);
     showing = id;
     // A file this browser has open is where its caret is, which is what the
@@ -1370,6 +1402,7 @@
       });
       untrack(() => viewCallbacks.set(view, { onsave, onquit }));
       syncKeys(view);
+      syncFeatures(view);
       const unsubscribeMode = onMode(() => syncTheme(view));
       drawChanges();
       if (initial.first) session.inFile?.(initial.first);
@@ -1442,6 +1475,25 @@
   $effect(() => {
     void keys;
     if (view) syncKeys(view);
+  });
+
+  // The completion and bracket switches work the same way.
+  $effect(() => {
+    void completion;
+    void brackets;
+    if (view) syncFeatures(view);
+  });
+
+  // So does the check, and turning it back on redraws the last render's marks
+  // while turning it off clears them. Only this switch redraws: the marks on
+  // screen have moved with every edit since the render, and drawing them again
+  // from the compiler's lines would put them back where the text used to be.
+  $effect(() => {
+    void check;
+    if (view) {
+      syncFeatures(view);
+      untrack(() => setDiagnostics(all));
+    }
   });
 
 </script>

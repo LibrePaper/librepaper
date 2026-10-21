@@ -31,7 +31,23 @@ const got = (key) => JSON.parse(store.get(key));
   const prefs = createPreferences();
   assert.equal(prefs.state.sourceSide, "left");
   assert.equal(prefs.state.keys, "default");
+  assert.equal(prefs.state.completion, true);
+  assert.equal(prefs.state.brackets, true);
+  assert.equal(prefs.state.check, true);
   assert.equal(store.size, 0, "reading remembers nothing");
+}
+
+// The editor helps are on unless a stored false turns one off. A junk value is
+// not a false, so it reads as on.
+{
+  store.clear();
+  put("librepaper-editor-completion", false);
+  put("librepaper-editor-brackets", false);
+  put("librepaper-editor-check", "no");
+  const prefs = createPreferences();
+  assert.equal(prefs.state.completion, false);
+  assert.equal(prefs.state.brackets, false);
+  assert.equal(prefs.state.check, true);
 }
 
 // A value from a version that offered a choice this one does not is checked
@@ -61,6 +77,22 @@ const got = (key) => JSON.parse(store.get(key));
   prefs.setSize(PANES.editor, 0.35);
   assert.equal(prefs.state.sizes[PANES.editor.key], 0.35);
   assert.equal(got(PANES.editor.key), 0.35);
+
+  prefs.setCompletion(false);
+  assert.equal(prefs.state.completion, false);
+  assert.equal(got("librepaper-editor-completion"), false);
+
+  prefs.setBrackets(false);
+  assert.equal(prefs.state.brackets, false);
+  assert.equal(got("librepaper-editor-brackets"), false);
+
+  prefs.setCheck(false);
+  assert.equal(prefs.state.check, false);
+  assert.equal(got("librepaper-editor-check"), false);
+
+  prefs.setCheck(true);
+  assert.equal(prefs.state.check, true);
+  assert.equal(got("librepaper-editor-check"), true);
 }
 
 // Storage can be switched off, and a page that threw when it was would be a

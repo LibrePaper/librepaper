@@ -1610,7 +1610,10 @@
 {/if}
 
 <SettingsDialog bind:open={settingsOpen} bind:category={settingsCategory} account={me}
-                keys={preferences.state.keys} onkeys={preferences.setKeys} />
+                keys={preferences.state.keys} onkeys={preferences.setKeys}
+                completion={preferences.state.completion} oncompletion={preferences.setCompletion}
+                brackets={preferences.state.brackets} onbrackets={preferences.setBrackets}
+                check={preferences.state.check} oncheck={preferences.setCheck} />
 
 <Modal open={Boolean(renaming)} title="Rename project"
        description="The name changes; the link does not, so anything already shared still works."

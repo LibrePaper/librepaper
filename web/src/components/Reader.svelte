@@ -2440,6 +2440,9 @@
   });
   const sourceSide = $derived(prefs.sourceSide);
   const keys = $derived(prefs.keys);
+  const completion = $derived(prefs.completion);
+  const brackets = $derived(prefs.brackets);
+  const check = $derived(prefs.check);
   const sizes = $derived(prefs.sizes);
 
   // Settings open as a dialog from the navbar menu or the sidebar. Every entry
@@ -2685,6 +2688,9 @@
   const putSourceOn = (side) => preferences.setSourceSide(side);
 
   const setKeys = (next) => preferences.setKeys(next);
+  const setCompletion = (on) => preferences.setCompletion(on);
+  const setBrackets = (on) => preferences.setBrackets(on);
+  const setCheck = (on) => preferences.setCheck(on);
 
   // What ":q" in Vim mode asks for: the document alone, set directly rather
   // than reached by cycling.
@@ -4007,7 +4013,7 @@
         </div>
       {:else if Editor && sourceBound}
         {#key sourceEpoch}
-          <Editor bind:this={editor} {session} format={editorFormat} file={openFile} {keys} {rules} {tracking} me={trackingMe} {selectedChange} editable={mayEdit}
+          <Editor bind:this={editor} {session} format={editorFormat} file={openFile} {keys} {completion} {brackets} {check} {rules} {tracking} me={trackingMe} {selectedChange} editable={mayEdit}
                   onbibliography={bibliographyAnalyzed} onchange={outlineTextChanged} oncaret={outlineCaretChanged} onsave={reportPersistence} onquit={showDocumentAlone}
                   onfilechange={(id) => { ws.openFile = id; outlineActiveFrom = null; ws.figure = null; noteSourceSelection(); }} />
         {/key}
@@ -4255,7 +4261,9 @@
 <!-- The preferences dialog is shared by the navbar menu and sidebar button. -->
 <SettingsDialog bind:open={settingsOpen} bind:category={settingsCategory}
                 remoteConnected={connected} remoteNote={connectionNote}
-                {keys} onkeys={setKeys} commands={commandContext}
+                {keys} onkeys={setKeys}
+                {completion} oncompletion={setCompletion} {brackets} onbrackets={setBrackets} {check} oncheck={setCheck}
+                commands={commandContext}
                 userId={buildUserId}
                 onbuildpreferences={(format, next) => { if (format === sourceFormat) setBuildPreferences(next); }}
                 onquartooptions={applyRenderOptions}

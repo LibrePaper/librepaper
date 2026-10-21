@@ -3,7 +3,17 @@
   import SettingRow from "./SettingRow.svelte";
   import ShortcutTable from "../ShortcutTable.svelte";
 
-  let { keys = "default", onkeys, commands = {} } = $props();
+  let {
+    keys = "default",
+    onkeys,
+    completion = true,
+    oncompletion,
+    brackets = true,
+    onbrackets,
+    check = true,
+    oncheck,
+    commands = {},
+  } = $props();
 </script>
 
 <SettingRow id="editor-keys" title="Key bindings">
@@ -13,6 +23,30 @@
     <option value="vim">Vim</option>
     <option value="emacs">Emacs</option>
   </select>
+</SettingRow>
+
+<SettingRow id="editor-completion" title="Autocomplete"
+            description="Suggest commands, labels and citations while you type.">
+  <button type="button" role="switch" class="switch" aria-checked={completion} aria-label="Autocomplete"
+          data-state={completion ? "checked" : "unchecked"} onclick={() => oncompletion?.(!completion)}>
+    <span class="switch-thumb" data-state={completion ? "checked" : "unchecked"}></span>
+  </button>
+</SettingRow>
+
+<SettingRow id="editor-brackets" title="Close brackets"
+            description="Typing an opening bracket adds the closing one.">
+  <button type="button" role="switch" class="switch" aria-checked={brackets} aria-label="Close brackets"
+          data-state={brackets ? "checked" : "unchecked"} onclick={() => onbrackets?.(!brackets)}>
+    <span class="switch-thumb" data-state={brackets ? "checked" : "unchecked"}></span>
+  </button>
+</SettingRow>
+
+<SettingRow id="editor-check" title="Code check"
+            description="Underline errors and warnings from the last render in the source. The list of messages stays available.">
+  <button type="button" role="switch" class="switch" aria-checked={check} aria-label="Code check"
+          data-state={check ? "checked" : "unchecked"} onclick={() => oncheck?.(!check)}>
+    <span class="switch-thumb" data-state={check ? "checked" : "unchecked"}></span>
+  </button>
 </SettingRow>
 
 <!-- The table is shown here and only here: `?` and the keyboard button both
