@@ -18,7 +18,10 @@ server bounds every automation request by a presented link. A third
 with the git URL does every job. Local-only paths are marked with a git
 attribute, a first fetch adopts a LibrePaper commit already in the
 repository's history, and a repository with its own history connects with
-`git pull --allow-unrelated-histories`.
+`git pull --no-rebase --allow-unrelated-histories`. This revision reads
+current committed `HEAD` policy during adoption, records server path
+membership explicitly, handles local-only transitions as creates or
+preserved files, and makes merge-oriented pulls opt out of rebasing.
 
 ## Summary
 
@@ -126,16 +129,17 @@ see "Connecting an existing repository".
 ### Connecting an existing repository
 
 A repository that already has commits connects with `git remote add` and
-a first pull. What that pull needs depends on where the repository came
-from.
+a first pull. Merge-oriented first pulls use `--no-rebase` explicitly, so
+a user's `pull.rebase` setting cannot turn the required merge into a
+rebase. What that pull needs depends on where the repository came from.
 
 | Starting point | First pull |
 |---|---|
-| A clone of a repository that already syncs with this project, for example a coauthor's clone from GitHub | `git pull librepaper main` |
-| A repository and a project that were never connected | `git pull --allow-unrelated-histories librepaper main` |
-| The same, with the repository winning where both sides changed the same lines | `git pull --allow-unrelated-histories -X ours librepaper main` |
-| The same, with the project winning | `git pull --allow-unrelated-histories -X theirs librepaper main` |
-| A repository going into a new, empty project | `git pull --allow-unrelated-histories librepaper main` |
+| A clone of a repository that already syncs with this project, for example a coauthor's clone from GitHub | `git pull --no-rebase librepaper main` |
+| A repository and a project that were never connected | `git pull --no-rebase --allow-unrelated-histories librepaper main` |
+| The same, with the repository winning where both sides changed the same lines | `git pull --no-rebase --allow-unrelated-histories -X ours librepaper main` |
+| The same, with the project winning | `git pull --no-rebase --allow-unrelated-histories -X theirs librepaper main` |
+| A repository going into a new, empty project | `git pull --no-rebase --allow-unrelated-histories librepaper main` |
 
 Each starts with
 `git remote add librepaper "librepaper::https://<site>/docs/<slug>#k=<key>"`.
@@ -143,9 +147,23 @@ After the first pull, the user resolves any conflicts, commits, marks
 local-only paths (see "Local-only paths") and pushes. Every later pull and
 push is plain.
 
+Set the repository-local default with:
+
+```sh
+git config --local pull.rebase false
+```
+
+Do not change global Git configuration. A preexisting `pull.ff=only`
+setting may still reject a merge commit; use
+`git pull --no-rebase --no-ff librepaper main` in that case, retaining
+`--allow-unrelated-histories` for an unrelated first pull. Users who
+intentionally prefer rebase for daily work can continue using
+`git pull --rebase`, with the same caveats as ordinary Git rebasing.
+
 - **Already connected.** Fetch commits carry a `LibrePaper-Project`
   trailer. A first fetch adopts the newest such commit in `HEAD`'s history
-  as base, so the pull is an ordinary three-way merge and needs no flag.
+  as base, so the pull is an ordinary three-way merge and needs no
+  `--allow-unrelated-histories` flag.
   See "First fetch".
 - **Never connected.** The repository and the project share no version.
   The first fetch writes a root commit, and the merge uses an empty base:
@@ -179,7 +197,9 @@ git push librepaper main      # send your commits to LibrePaper
 - Coauthors with the project open see the text change live and a notice
   that reads `<name> pushed 3 files from git`.
 - `git pull` makes a merge commit when the user also has local commits.
-  `git pull --rebase` avoids that, and the docs say so.
+  Merge-oriented recovery commands use `--no-rebase` explicitly. For
+  plain daily pulls, set repo-local `pull.rebase=false`; users who prefer
+  rebase can explicitly run `git pull --rebase`.
 
 ### Refusals
 
@@ -189,7 +209,7 @@ problem and a final line saying what to do:
 ```text
 ! [remote rejected] main -> main (LibrePaper changed since your last pull)
   paper.qmd was edited in LibrePaper since your last pull.
-  Run: git pull librepaper main, then push again.
+  Run: git pull --no-rebase librepaper main, then push again.
 ```
 
 The full list is in "Push: refusal rules".
@@ -300,25 +320,54 @@ ordinary commit in the user's repository, and git never sends it anywhere.
 - `refs/librepaper/<remote>/main` points at base. Being a ref keeps the
   commit safe from garbage collection, and the user can inspect it with
   `git log`.
+- `refs/librepaper/<remote>/state` points at a small metadata blob kept
+  from garbage collection. It records the base commit id, `project_digest`,
+  `synced_paths` (paths with known server baseline values in base, after
+  LF normalization for text),
+  `pending_create` (local candidate paths that must be created remotely),
+  `policy_digest` (effective attributes plus the `/api/config` text and
+  asset extension lists), and the hashes of preserved local-only and
+  pending-candidate values in the base tree.
+  The helper advances this ref and the base ref in one ref transaction.
 - `.git/librepaper/<remote>/state.json` holds:
-  - `commit`, the same commit id as the ref;
-  - `project_digest`, the server's projection digest at that commit, or
-    `null` when unknown;
+  - a cache of all fields in the durable metadata ref, including base OID,
+    digest, `synced_paths`, `pending_create` and `policy_digest`;
   - `marks`, the path of the fast-import and fast-export marks file.
 
-Losing `state.json` loses nothing that matters. The helper rebuilds it from
-the ref and learns the digest on the next fetch.
+`project_digest` is the last full server projection digest associated with
+an exchange. It does not assert that every path in the local base tree has
+the same bytes as the server, because the tree can preserve local-only
+files and pending create candidates.
+
+Losing `state.json` loses no state that cannot be recovered. The helper
+rebuilds it from the metadata ref. It never infers remote presence from a
+blob in the commit tree. If both refs are absent, the helper must fetch
+before push.
+
+The helper serializes operations for the same repository and remote from
+reading these refs through recording the outcome. A cache whose base id
+differs from the metadata ref is discarded. Missing or inconsistent durable
+metadata refuses a push rather than guessing which paths were synchronized.
 
 ### When it moves
 
 Base moves in exactly two cases:
 
-1. **Fetch.** The new LibrePaper commit becomes base, and `project_digest`
-   is set to the digest the server reported.
-2. **A push that applies.** The pushed commit becomes base. `project_digest`
-   is set to the server's new digest only when the server's whole project
-   equaled base before the push. Otherwise it is set to `null`, so the next
-   fetch makes a commit carrying the edits others made in untouched files.
+1. **Fetch.** The new LibrePaper commit becomes base. Metadata records the
+   fetched digest, the server paths whose exact values remain in the base
+   tree as `synced_paths`, and preserved local candidates as
+   `pending_create`. It also records current `policy_digest` and hashes
+   for preserved local-only and pending-candidate values. The same
+   `synced_paths` set is written to the fetch commit trailer for adoption
+   by another clone.
+2. **A push that succeeds.** The pushed commit becomes base, and the base
+   ref and metadata ref move atomically. If the successful response has
+   `base_matched: true`, record its new `project_digest`; otherwise record
+   `null` so fetch reconciles edits in untouched files. Derive
+   `synced_paths` and `pending_create` as specified in Push step 8. The
+   pushed commit itself need not carry LibrePaper trailers. An authenticated
+   empty Git request also succeeds and advances base metadata without a
+   document edit.
 
 A refused push leaves base where it was.
 
@@ -379,21 +428,56 @@ rejected there.
 
 ### Steps
 
-1. Read `state.json`. If the server's `project_digest` equals the recorded
-   one, report the recorded commit as `main` and stop. Nothing changed.
+1. Read the metadata ref and `state.json`. Resolve current policy and the
+   preservation source and pending candidates defined in step 3. If the server's
+   `project_digest` equals the recorded full server digest, `policy_digest`
+   matches the effective current policy, the pending-candidate set is
+   unchanged, and the complete map of preserved paths and values equals
+   the recorded map, report the recorded commit as `main` and stop.
+   Comparing complete maps also detects removed paths. Nothing changed.
 2. Download the project. Download each binary whose content hash is not
    already a blob in the repository.
-3. Build the new tree:
-   - every project file, at its project path, with mode `100644`;
-   - every path in base's tree that is local-only (see below), unchanged.
+3. Define the preservation source as committed `HEAD` for a connected
+   repository, falling back to the previous base tree when `HEAD` is
+   unborn. For a first fetch into an unrelated history, use an empty
+   preservation source. Before building the tree, identify pending
+   candidates as current-policy included paths present in the preservation
+   source that were already pending or exist in the old base but are absent
+   from its `synced_paths`. With no prior base, this set is empty. This
+   presence rule prunes candidates deleted from current `HEAD`; a candidate
+   now marked local-only is handled as local-only instead. Candidate values
+   come from the preservation source, retaining edits in current `HEAD`.
+   Build the tree in this order:
+   - start with server paths eligible under current policy, at their project
+     paths with mode `100644`; omit server paths that current policy marks
+     local-only;
+   - overlay every current-policy local-only path found in the preservation
+     source, unchanged, and remove it from `synced_paths`;
+   - overlay every known pending-create candidate from the preservation
+     source, unchanged, and keep it out of `synced_paths`, even if the
+     server projection already contains that path.
+
+   `synced_paths` contains eligible server paths other than pending
+   candidates, with their exact fetched values in the resulting base tree.
+   An unrelated/root first fetch does
+   not overlay any `HEAD` paths or mark them pending. Existing repository
+   files survive the unrelated-history merge and become ordinary additions
+   for push. A local-only server path absent from the preservation source
+   is omitted from the fetch tree.
 4. Write one commit through fast-import:
    - parent: base, or as "First fetch" says when there is no base;
    - author and committer: `LibrePaper <git@librepaper.org>`, dated at the
      fetch time;
-   - message: `LibrePaper edits` plus a blank line and two trailers,
-     `LibrePaper-Project: https://<site>/docs/<slug>` and
-     `LibrePaper-Digest: <project_digest>`.
-5. Move base: update the ref and `state.json`.
+   - message: `LibrePaper edits` plus a blank line and trailers,
+     `LibrePaper-Project: https://<site>/docs/<slug>`,
+     `LibrePaper-Digest: <project_digest>`, and
+     `LibrePaper-Synced-Paths: <canonical JSON array>`. The array contains
+     the byte-sorted managed paths whose exact fetched values remain in
+     this tree. It is a single-line JSON array with canonical JSON string
+     escaping, for example `["paper.qmd","refs.bib"]`. This trailer transfers
+     membership when another clone adopts the fetch commit. The metadata
+     ref also records pending candidates.
+5. Move base: update the base ref, metadata ref, and `state.json`.
 
 ### First fetch
 
@@ -402,17 +486,30 @@ repository:
 
 1. When `HEAD` is unborn, as in `git clone` or a fresh `git init`, the
    commit has no parent.
-2. Otherwise the helper looks for the newest commit in `HEAD`'s history
-   whose `LibrePaper-Project` trailer names this project. When it finds
-   one, that commit becomes base, with `project_digest` set to `null`, and
-   fetch continues from step 2 as usual. The commit's tree holds the
-   project as it was when that commit was written, so the pull is a
-   three-way merge against a version both sides really share.
+2. Otherwise the helper looks for the newest commit in
+   `HEAD`'s history whose `LibrePaper-Project` trailer names this project
+   and which has a valid `LibrePaper-Synced-Paths` trailer.
+   When it finds one, that historical commit becomes base, with
+   `project_digest` set to `null`. Fetch writes a new commit parented by
+   that historical base. It downloads the current server projection and
+   uses attributes in the adopted commit to reconstruct the old policy.
+   The adopted fetch commit's `LibrePaper-Synced-Paths` trailer initializes
+   `synced_paths`; the helper does not infer membership from tree blobs.
+   Then committed current `HEAD` plus `.git/info/attributes` supplies
+   current policy. A path in the adopted tree but absent from the trailer
+   that is present in `HEAD` and included by current policy becomes
+   `pending_create`; preserve its `HEAD` value until a create succeeds.
+   Current local-only paths are also
+   overlaid from `HEAD`.
+   `HEAD` is never used as a synthetic parent. This keeps the genuine
+   shared ancestor while applying later marks and preserving local work.
 3. Otherwise the commit has no parent, and the helper writes to standard
    error: "This repository has its own history. To merge it with the
-   project, run: git pull --allow-unrelated-histories librepaper main. See
+   project, run: git pull --no-rebase --allow-unrelated-histories librepaper main. See
    https://<site>/docs/git." Git then refuses a plain merge with its own
-   message.
+   message. Do not import synchronized `HEAD` files into this root commit
+   or classify them as pending creates. The unrelated-history merge keeps
+   those files as ordinary Git-side additions.
 
 The trailer is the share link without the key. A slug opens nothing
 without a key, so a public repository can carry it. A trailer that was
@@ -437,30 +534,63 @@ must not upload them.
   committed to a shared repository is marked in `.gitattributes`, because
   a mark in one clone's `.git/info/attributes` is invisible to the
   others, which push the file.
-- The helper reads attributes from the commit it is working on, never
-  from the working tree: base's tree on fetch, the pushed commit's tree on
-  push, plus `.git/info/attributes`. `git check-attr --source` does this
-  from git 2.40. With an older git, the helper reads the `.gitattributes`
-  blobs itself.
+- On fetch and first-fetch adoption, the helper reads attributes from
+  committed `HEAD`, falling back to base when `HEAD` is unborn, or an empty
+  tree when neither exists. It adds `.git/info/attributes` and never reads
+  working-tree attribute files. On push it reads the pushed commit's tree plus
+  `.git/info/attributes`. `git check-attr --source` does this from git
+  2.40. With an older git, the helper reads the `.gitattributes` blobs
+  itself. `policy_digest` covers the effective result, including
+  `.git/info/attributes` and the `/api/config` extension lists.
 - These paths are always local-only and need no mark: `.git/`,
   `.gitignore`, `.gitattributes`, `.github/`, and `*.local`.
 - A path whose extension is in neither `text_extensions` nor
   `asset_extensions` is local-only too, because LibrePaper cannot hold it.
   A `Makefile` or an `.Rproj` file needs no mark.
-- Fetch carries local-only paths over from base unchanged.
+- Fetch carries local-only paths over from the preservation source defined
+  in "Fetch: Steps", unchanged. Paths transitioning from local-only to
+  synchronized are preserved as pending creates until confirmed by the
+  server. A pending create is removed if the candidate is deleted from
+  current committed `HEAD` or becomes local-only again. A preserved blob
+  alone never establishes remote presence.
 - Push skips them.
 
-Marks cannot be inferred from the trees. A path in base that is missing
-from the project could be local-only or could have been deleted in
-LibrePaper, and only the attribute tells them apart. Because
-`.gitattributes` travels with the history, a coauthor whose first fetch
-adopts another clone's commit reads the same marks from it.
+Marks cannot be inferred from the trees. A path missing from the project
+could be local-only or could have been deleted in LibrePaper. The metadata
+ref records which base paths were known server values and which local
+candidates are pending creation. On first adoption without that metadata,
+the helper reads the adopted commit's membership trailer, downloads the
+project, and applies current committed `HEAD` policy plus
+`.git/info/attributes`.
 
 A file added locally is pushed like any other change, with no extra step,
 unless it is local-only. A file a coauthor added to the shared repository
 reaches LibrePaper on the next push from any clone, unless it is marked.
 That is the same as the coauthor pushing it, and marking it and deleting it
 in LibrePaper undoes it.
+
+Changing a path from local-only to synchronized is an explicit transition.
+The user commits the attribute change. If the path is absent from
+`synced_paths`, the helper records it in `pending_create` and preserves the
+local candidate across fetches. The next push submits it as text `create`
+or binary `put_binary` without `expect`, even if the blob is already in the
+local base tree. The server creates it only if that path is still absent.
+If the path already exists remotely, the
+server refuses the whole push and names the occupied path. It does not
+adopt server bytes as the expected value and does not overwrite unseen
+remote work. To recover, commit a copy of the local candidate under an
+explicitly local-only path, remove or rename the candidate at its original
+path, then run `git pull --no-rebase -X no-renames <remote> main`. Disabling
+rename detection prevents Git from treating the backup as a renamed file
+and applying the remote edits to it. The fetch drops the pending overlay
+and lets the remote version appear. Resolve any
+modify/delete conflict by keeping or merging the remote file with the
+saved candidate, commit the resolution, then push. A successful create
+moves the path from `pending_create` to `synced_paths`. Fetching before the create preserves
+the candidate and the absent membership, so the next push still creates
+it. Adding a `-librepaper` mark to an already synchronized path does not
+delete the remote copy; the path becomes local-only for subsequent
+operations.
 
 ### Line endings
 
@@ -483,8 +613,8 @@ refuses, naming the path.
 Git sends a fast-export stream for `refs/heads/main`. The helper reads two
 versions of every file:
 
-- **base**: the file in base's tree, which is what the user last received
-  from LibrePaper;
+- **base**: the file in base's tree, whose normalized content is a server
+  baseline only for paths in `synced_paths`;
 - **ours**: the file in the pushed commit's tree.
 
 The helper does not read the server's current project. The server checks
@@ -499,11 +629,21 @@ it.
    `--force`, which git passes to the helper as `option force true`.
    LibrePaper never rewinds. A plain `git fetch` moves base without
    merging it, so the message says to merge rather than to fetch:
-   "LibrePaper has edits you have not merged. Run: git pull librepaper
+   "LibrePaper has edits you have not merged. Run: git pull --no-rebase librepaper
    main, then push again." When base is a root commit, the message names
-   `git pull --allow-unrelated-histories librepaper main` instead.
-3. **Collect changes.** Diff base against ours, skipping local-only paths.
-   Intermediate commits are collapsed. Only the net change is applied.
+   `git pull --no-rebase --allow-unrelated-histories librepaper main`
+   instead.
+3. **Reconcile policy and membership, then collect changes.** Evaluate the
+   pushed commit's effective policy. Drop a `pending_create` entry if its
+   candidate is deleted from the pushed tree or now marked local-only. For
+   each included path present in ours but absent from `synced_paths`, emit
+   a remote create even when its blob is unchanged from base: text uses
+   `create`, and binary uses `put_binary` with `expect` omitted to require
+   remote absence. For known synchronized paths, diff base against ours
+   and emit patches, replacements or deletions. If current policy marks a
+   previously synchronized path local-only, remove it from metadata and
+   skip its content change without deleting the remote copy. Intermediate
+   commits are collapsed. Only the net change is applied.
 4. **Validate.** Apply every rule in "Push: refusal rules" that the helper
    can check locally. Any failure refuses the whole push.
 5. **Build patches.** For each changed text file, compute line hunks from
@@ -515,30 +655,51 @@ it.
 6. **Dependencies.** For every touched text file, patched or deleted, add
    a dependency with the base hash (see "Per-file hashes are computed, not
    stored"). A touched binary file carries the asset hash it must still
-   hold in `expect`, on a `put_binary` or a `delete`. A created file has no
-   dependency. The server refuses a creation over an existing path.
+   hold in `expect`, on a `put_binary` or a binary `delete`. Text `create`
+   and absent-path binary `put_binary` have no dependency. A path in
+   `pending_create` is sent as a create even if its blob exists in base;
+   absent membership requires a creation guarded by remote absence,
+   rather than a patch inferred from the local blob's presence.
+   If the server already has it, creation refuses and does not use current
+   server bytes as an expected value. A known synchronized path is patched
+   or deleted only with its base dependency.
+   If that path's blob is missing from base, fetch and explicit recovery
+   are required.
 7. **Submit.** Send one change set (see "Server apply") with `base_tree`
    set to base's `project_digest`.
-8. **Record.** On success, move base to the pushed commit and set
+   If all changes were local-only and the change set is empty, still submit
+   it to authenticate the link and confirm the exchange before moving base.
+8. **Record.** Only after a successful server response, move base to the
+   pushed commit and set
    `project_digest` as described in "When it moves", using the server's
-   `base_matched` answer. Report `ok refs/heads/main`. On a refusal, leave
+   `base_matched` answer. On success, derive `synced_paths` from the old
+   set filtered by pushed policy, minus successful deletions in the
+   applied-path list, plus confirmed creates in that list. Prune resolved
+   candidates from `pending_create`; retain candidates that were not part of the successful
+   operation. If `base_matched` is false, leave `project_digest` null and
+   retain untouched stale baseline membership. Update `policy_digest` and
+   the hashes for preserved local-only and pending-candidate values from
+   the pushed tree. Atomically update the metadata ref with the base ref.
+   Report `ok refs/heads/main`. On a refusal, leave
    base alone and report `error refs/heads/main <reason>`.
 
-There is no retry loop. The server checks and applies in one step, so a
-refusal always means a touched file really changed, and the answer is
-always `git pull`.
+There is no retry loop for conflicts. When a touched file changed, run
+`git pull --no-rebase` and resolve the merge before pushing again. Other
+refusals give the specific recovery described below, including preserving
+the local candidate before resolving an occupied pending-create path.
 
 ### Push: refusal rules
 
 | Rule | Checked by | Message names |
 |---|---|---|
 | Ref is not `main`, or is a deletion | helper | the ref |
-| Pushed commit does not descend from base | helper | `git pull`, then push |
+| Pushed commit does not descend from base | helper | `git pull --no-rebase`, then push |
 | A text file contains a line starting with `<<<<<<< `, `=======` or `>>>>>>> ` | helper | file and line |
 | A text file is not valid UTF-8 | helper | file |
 | A path is a symlink or a submodule | helper | path |
 | A touched file changed in LibrePaper since base | server | every such file |
-| A created path already exists in LibrePaper | server | path |
+| A created path already exists in LibrePaper | server | path and `git pull --no-rebase` |
+| The occupied path is a pending-create candidate | helper maps the server refusal | path and backup, remove or rename, pull, resolve, and retry instructions |
 | A patch overlaps or touches a pending suggestion | server | file and suggestion |
 | A path fails the server's path rules (`validate_path` in `agent.rs`) | server | path |
 | A file is larger than the project's per-file limit | server | file and limit |
@@ -600,10 +761,15 @@ that both call, and both gain from every improvement to it.
 2. **File operations.** `SourceChange` gains three lists next to
    `patches`:
    - `create`: a new text file with its path and text;
-   - `delete`: a path, guarded by a whole-file dependency like a patch;
+   - `delete`: an object with `path` and optional `expect`. Text deletion
+     uses the ordinary whole-file dependency entry for that path and must
+     omit `expect`. Binary deletion requires `expect` to contain the expected
+     asset SHA-256.
    - `put_binary`: a path, the asset hash already uploaded through the
-     existing asset route, and the asset hash the path must hold now, or
-     none for a new path.
+     existing asset route, and optional `expect` with the asset hash the
+     path must hold now. Omit `expect` for a new path, which requires remote
+     absence.
+
    Validation covers them: valid paths, no creation over an existing
    path, no patch and deletion on the same file, and the storage quota.
    They apply in the same mutation as the patches, all or nothing.
@@ -623,11 +789,17 @@ that both call, and both gain from every improvement to it.
    source drives the editor notice ("pushed from git") and the activity
    record. Like the operation scope, `Origin` is kept out of the request
    digest, so it cannot alter a retry's identity.
-4. **Whether base matched.** The outcome reports `base_matched`, true when
-   `base_tree` equaled the projection's `project_digest` just before the
-   apply. The helper needs it to know whether the server now equals the
-   pushed commit.
-5. **Checks against the projection.** This is the largest new piece of
+4. **Whether base matched.** On a successful apply, the outcome reports
+   `base_matched: true` exactly when `base_tree` equals the full projection's
+   `project_digest` just before apply. It does not assert that a preserved
+   local-only path equals any server path. A refused occupied create has no
+   `base_matched` result.
+5. **Empty Git exchange.** `Origin::Git` accepts an authenticated empty
+   change set. It makes no document edit and emits no editor notice, but
+   returns the current `project_digest`, `base_matched` and operation
+   receipt so a no-op push can confirm access before advancing local base
+   metadata. Empty `Origin::Agent` requests keep their existing behavior.
+6. **Checks against the projection.** This is the largest new piece of
    server code. Today every check reads the stored text, which holds
    pending suggested insertions, and the untracked-edit planner
    (`track::untracked_edits`) moves pending records around a patch. Git
@@ -646,10 +818,10 @@ that both call, and both gain from every improvement to it.
    `Origin::Agent` keeps checking the stored text, as it does today. A
    file with no pending suggestion projects to its stored text, so both
    origins give the same answers for such a file.
-6. **Every failure, not the first.** Dependency validation collects every
+7. **Every failure, not the first.** Dependency validation collects every
    touched file that changed and refuses once with the whole list, instead
    of returning at the first mismatch.
-7. **Tracked changes take a `SourceChange`.** `AgentTrackedCommand` accepts
+8. **Tracked changes take a `SourceChange`.** `AgentTrackedCommand` accepts
    the same type, so any caller that can apply a change can also publish it
    for review. File operations cannot be tracked changes yet. A change that
    has them and asks for review is refused with that reason.
@@ -670,11 +842,14 @@ that both call, and both gain from every improvement to it.
     "operation": {"epoch": "...", "id": "v2...."},
     "base_tree": "<base's project_digest, or empty when unknown>",
     "consistency": "unchanged_dependencies",
-    "dependencies": [{"path": "paper.qmd", "file_hash": "<sha256 of base text>", "start": 0, "end": 0, "exact": ""}],
+    "dependencies": [
+      {"path": "paper.qmd", "file_hash": "<sha256 of base text>", "start": 0, "end": 0, "exact": ""},
+      {"path": "old.tex", "file_hash": "<sha256 of base text>", "start": 0, "end": 0, "exact": ""}
+    ],
     "patches": [{"path": "paper.qmd", "start": 120, "end": 131,
                  "exact": "old words", "replacement": "new words"}],
     "create": [{"path": "notes.md", "text": "..."}],
-    "delete": ["old.tex"],
+    "delete": [{"path": "old.tex"}, {"path": "fig/old.png", "expect": "<base asset sha>"}],
     "put_binary": [{"path": "fig/plot.png", "sha": "<new asset sha>", "expect": "<base asset sha>"}],
     "message": "Chapter 2 draft",
     "publish": "apply"
@@ -763,8 +938,11 @@ Each step can be merged and shipped on its own.
    - base state, the `librepaper` attribute, line endings, file modes;
    - the git URL and sign-in on first use, refusing without a terminal;
    - text or binary from `/api/config`;
-   - the first fetch: adopting a commit with this project's trailer, or a
-     root commit with the `--allow-unrelated-histories` hint.
+   - the first fetch: current-HEAD policy during adoption, pending-create
+     preservation, and adopting a commit with this project's trailer, or a
+     root commit with the `--no-rebase --allow-unrelated-histories` hint;
+   - the durable metadata ref for base membership, digest and pending
+     creates.
    At this point clone, pull and backup to GitHub work, starting from a
    share link with `librepaper::` typed in front.
 3. **Server: shared source-change core.**
@@ -806,9 +984,17 @@ Server, in the gated Postgres suite:
   text's, and an agent patch to the same file still checks the stored text;
 - replacing a figure and renaming a file each change `project_digest`;
 - deleting a binary refuses when its asset hash is not the expected one;
-- `base_matched` is true only when the whole project equaled base;
-- a creation over an existing path refuses, and a binary replacement
-  refuses when the current asset is not the expected one;
+- a text delete object has `path`, omits `expect`, and uses its dependency;
+  a text delete with `expect` refuses. A binary delete requires `path` and
+  `expect`; missing or stale hashes refuse;
+- on a successful request, `base_matched` is true exactly when the supplied
+  full projection digest equals the current projection digest;
+- an occupied pending create refuses and has no `base_matched` result;
+- an empty Git change set authenticates and returns digest, match result
+  and receipt without a document edit or notice; empty agent behavior is
+  unchanged;
+- a creation over an existing path refuses with recovery instructions,
+  and a binary replacement refuses when the current asset is not expected;
 - a git push larger than the agent limits applies, the agent limits are
   unchanged, and a push larger than the log quota refuses;
 - a replayed operation key returns the first receipt;
@@ -823,6 +1009,20 @@ Helper, unit tests with a temporary repository:
 
 - clone, then pull with no change, makes no new commit;
 - local-only paths survive fetch and are never pushed;
+- a local-only to synchronized transition is persisted as pending create,
+  remains preserved across fetch, creates when absent remotely, and refuses
+  with recovery guidance when already occupied remotely;
+- removing only an attribute mark creates unchanged text and binary files;
+  repeated fetches with unchanged pending candidates create no new commit;
+- committing a candidate's removal clears its pending state, so the
+  documented occupied-path recovery exposes the remote version through
+  the normal merge with `-X no-renames`, preserving the backup's original
+  content even when Git would otherwise detect a rename;
+- a fresh clone adopting a fetch commit with a pending candidate reads
+  `LibrePaper-Synced-Paths` and does not mistake that candidate for a
+  server-backed path;
+- changing committed `.gitattributes` after the adopted trailer commit
+  affects first-fetch policy while retaining the historical commit as base;
 - CRLF blobs push as LF without changing every line, and hash equal to
   the LF text;
 - the per-file hash the helper computes equals the server's projected
@@ -838,9 +1038,18 @@ Helper, unit tests with a temporary repository:
   login`;
 - after a plain `git fetch`, pushing an unmerged `main` refuses with the
   merge message;
+- a clean temporary Git configuration performs the first unrelated pull
+  with `--no-rebase`; a configured `pull.rebase=true` is overridden by
+  that command, and a configured `pull.ff=only` is overridden by the
+  documented `--no-ff` recovery command;
+- `git config --local pull.rebase false` affects only this repository and
+  makes the documented plain daily pull use a merge;
 - each helper-side refusal rule produces its message;
 - base moves on fetch and on an applied push, and not on a refusal;
-- losing `state.json` is recovered from the ref;
+- a no-op push that only skips local-only paths advances base and metadata
+  only after an authenticated successful response;
+- losing `state.json` recovers base membership, digest and pending creates
+  from the metadata ref, including after a successful push;
 - a first fetch with an unborn `HEAD` writes a root commit, and a first
   fetch into a history holding this project's trailer adopts the newest
   such commit as base, ignoring trailers for other projects;
@@ -852,9 +1061,9 @@ Helper, unit tests with a temporary repository:
 - that merge on a `HEAD` ahead of the project keeps those edits as
   conflicts, never reverting them, and a later merge with that same
   history reverts nothing;
-- a coauthor's clone that adopts another clone's commit keeps the files
-  that `.gitattributes` marks, and a pull after adoption merges three
-  ways;
+- a coauthor's clone that adopts another clone's commit uses current
+  `HEAD` attributes, preserves newly local-only files, and does not use
+  `HEAD` as a synthetic parent;
 - a push with no base refuses and says to pull, a push after a plain
   fetch of a root commit names `--allow-unrelated-histories`, and `git
   push --force` refuses;
@@ -869,11 +1078,11 @@ tests):
 - a browser typing in `intro.tex` while a push edits `paper.qmd`: the push
   applies, and the browser converges;
 - a browser edit in `paper.qmd` after the last pull refuses a push to
-  `paper.qmd`, then `git pull` merges (with conflict markers when the
+  `paper.qmd`, then `git pull --no-rebase` merges (with conflict markers when the
   lines overlap), and the next push applies;
 - a comment anchored on untouched text keeps its anchor through a push;
 - a binary figure push replaces the figure in the editor;
-- with the default quota, `git pull --allow-unrelated-histories` from an
+- with the default quota, `git pull --no-rebase --allow-unrelated-histories` from an
   empty project then a push of a thesis-sized repository applies, and a push over the quota refuses with
   the quota message and leaves the project unchanged.
 
