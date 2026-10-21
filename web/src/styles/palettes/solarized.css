@@ -15,7 +15,7 @@
 	--neutral-8: #839496;
 	--neutral-9: #657b83;
 	/* base01 reaches only 4.4:1 on base2, so this step is darkened to clear 4.5:1 on steps 1 to 4. */
-	--neutral-11: #4f6369;
+	--neutral-11: #495f66;
 	--neutral-12: #073642;
 
 	--color-raised: #fdf6e3;
@@ -53,13 +53,13 @@
 	--neutral-2: #002b36;
 	--neutral-3: #073642;
 	--neutral-4: #30525c;
-	--neutral-5: #446069;
-	--neutral-6: #4e676f;
+	--neutral-5: #385861;
+	--neutral-6: #405d66;
 	--neutral-7: #586e75;
 	--neutral-8: #657b83;
 	--neutral-9: #839496;
 	/* base1 reaches only 3.2:1 on step 4, so this step is lightened to clear 4.5:1 on steps 1 to 4. */
-	--neutral-11: #bccac8;
+	--neutral-11: #cbd3cc;
 	--neutral-12: #eee8d5;
 
 	--color-raised: #30525c;

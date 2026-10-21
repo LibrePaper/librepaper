@@ -107,6 +107,9 @@ function contrastCheck(palette, mode) {
   pairs.push(["--color-error-text", "--color-shell", 4.5]);
   for (const name of highlights) pairs.push(["--source-highlight-" + name, "--color-shell", 3]);
   pairs.push(["--color-focus", "--color-shell", 3]);
+  // Rows in lists, the command palette and History carry secondary text when
+  // hovered and selected.
+  for (const foreground of text.filter((name) => name !== "--color-link")) for (const background of ["--color-row-hover", "--color-row-selected"]) pairs.push([foreground, background, 4.5]);
   // The secondary button: its label at rest, hovered and pressed.
   for (const background of ["--color-row-selected", "--color-tonal-hover", "--color-tonal-pressed"]) pairs.push(["--color-text", background, 4.5]);
   // Avatars carry white initials at normal text size.

@@ -16,7 +16,7 @@
 	--neutral-8: #acb0be;
 	--neutral-9: #9ca0b0;
 	/* Subtext1 darkened so that it reaches 4.5:1 on step 4 (subtext0 reaches only 3.5:1). */
-	--neutral-11: #545770;
+	--neutral-11: #535670;
 	--neutral-12: #4c4f69;
 
 	/* Surfaces: Latte base is the lightest tone. */
@@ -68,7 +68,7 @@
 	--neutral-7: #585b70;
 	--neutral-8: #6c7086;
 	--neutral-9: #7f849c;
-	--neutral-11: #a6adc8;
+	--neutral-11: #b0b8d3;
 	--neutral-12: #cdd6f4;
 
 	/* Surfaces: step 4 for raised menus. */
