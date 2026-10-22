@@ -108,6 +108,7 @@
   import Share from "./reader/Share.svelte";
   import Diagnostics from "./reader/Diagnostics.svelte";
   import History from "./reader/History.svelte";
+  import GitHub from "./reader/GitHub.svelte";
   import PendingAnnotations from "./reader/PendingAnnotations.svelte";
 
   const SLUG = location.pathname.split("/").pop();
@@ -2513,7 +2514,7 @@
   }
   // The tabs this browser is offered. Which reader may see which panel is
   // written with the panels, in lib/panels.js; this only says who is asking.
-  const tabs = $derived(tabsFor({ role: doc.role, mayEdit, editing, canSeeSharing, canPublish }));
+  const tabs = $derived(tabsFor({ role: doc.role, mayEdit, editing, canSeeSharing, canPublish, forge: Boolean(forgeGitHub) }));
   // The robot buttons hand work to the agent. The agent runs only in the
   // desktop app, so in a browser they say so rather than disappear.
   const agentOffered = $derived(tabs.some((tab) => tab.id === "agent"));
@@ -2756,7 +2757,7 @@
     if (value === "download") return downloadTree();
     if (value === "download-docx") return downloadDocx();
     if (value === "download-pdf" || value === "download-html") return downloadRendering(value.slice(9));
-    if (value === "share" || value === "history") return openPanel(value);
+    if (value === "share" || value === "history" || value === "github") return openPanel(value);
     if (value === "save-template") return openSaveTemplateModal();
     if (!["new-file", "new-folder", "upload"].includes(value)) return;
     await openPanel("files");
@@ -2920,8 +2921,11 @@
   const editorFormat = $derived(toolbarPath ? renderers.formatOf(toolbarPath) : sourceFormat);
   const canPreviewFile = $derived(files.some((file) =>
     file.id === openFile && file.kind === "text" && Boolean(renderers.previewFormatOf(file.path))));
+  // The GitHub app the deployment offers, or null when sync is not configured.
+  let forgeGitHub = $state(null);
   loadConfig()
     .then((answer) => {
+      forgeGitHub = answer?.forge?.github || null;
       workspace.setRules(answer || {});
       if (typeof answer?.latexMirror === "string") latex.at(answer.latexMirror);
     })
@@ -3724,6 +3728,7 @@
   {/if}
   {#if me?.id}<Menu.Item value="save-template" class="menuitem">Save as template…</Menu.Item>{/if}
   <hr class="hr my-1" />
+  {#if tabs.some((tab) => tab.id === "github")}<Menu.Item value="github" class="menuitem">GitHub…</Menu.Item>{/if}
   {#if canSeeSharing || canPublish}<Menu.Item value="share" class="menuitem">Share…</Menu.Item>{/if}
   <!-- Only where the panel behind it is one this reader is offered: a menu
        that opens a column the rail does not have is the second list of who
@@ -3949,6 +3954,11 @@
       onclose={() => showPanel("")} />
   {/snippet}
 
+  {#snippet githubPanel()}
+    <GitHub open={panel === "github" && shown.comments} slug={SLUG} key={KEY} {session} {rules}
+      forge={forgeGitHub} me={{ name: me.name, handle: me.handle }} />
+  {/snippet}
+
   {#snippet diagnosticsPanel()}
     <Diagnostics {diagnostics} localAppProblem={localAppDiagnostics.length > 0} {desktopNeeds}
       onretrylocal={() => localExecutionRelevant ? startLocalExecution() : ensureLocalApp()}
@@ -3985,7 +3995,7 @@
     label="Document"
     panels={{ files: filesPanel, outline: outlinePanel, agent: agentPanel,
               collaboration: collaborationPanel, changes: changesPanel,
-              share: sharePanel, diagnostics: diagnosticsPanel, history: historyPanel }}
+              share: sharePanel, github: githubPanel, diagnostics: diagnosticsPanel, history: historyPanel }}
     panes={panes} sidebarPane={PANES.sidebar}
     onselectpanel={selectPanel} ondrop={dropped}
     onsize={(size) => setSize(PANES.sidebar, size)} onguide={(where) => (guide = where)}
