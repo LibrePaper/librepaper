@@ -170,6 +170,7 @@ async function pullOnce(ctx, store) {
     project,
     readBlob: (sha) => ctx.github.blob(repo, sha),
     exportMerged,
+    isSynced: listing.rules.isSynced,
   });
   if (plan.refusals.length) {
     return result("refused", { refusals: plan.refusals, skipped: plan.skipped, link });

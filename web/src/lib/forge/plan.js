@@ -59,18 +59,21 @@ export function textPatches(path, from, to) {
       toA += 1;
       toB += 1;
     }
-    if (fromA < units) continue;
+    // Widening can make a hunk reach back into the one before it; the two
+    // then become one patch.
+    const last = patches.at(-1);
+    if (last && fromA < units) {
+      last.end = at(Math.max(toA, units));
+      last.exact = from.slice(last.fromA, units);
+      last.replacement = to.slice(last.fromB, Math.max(toB, last.toB));
+      last.toB = Math.max(toB, last.toB);
+      continue;
+    }
     const start = at(fromA);
     const end = at(toA);
-    patches.push({
-      path,
-      start,
-      end,
-      exact: from.slice(fromA, toA),
-      replacement: to.slice(fromB, toB),
-    });
+    patches.push({ path, start, end, exact: from.slice(fromA, toA), replacement: to.slice(fromB, toB), fromA, fromB, toB });
   }
-  return patches;
+  return patches.map(({ path, start, end, exact, replacement }) => ({ path, start, end, exact, replacement }));
 }
 
 /// The dependency that guards a patched or deleted text file: the digest of

@@ -74,7 +74,7 @@ function fakeFetch(handler) {
   const many = Array.from({ length: 100 }, (_, i) => ({ id: i, full_name: `o/r${i}`, default_branch: "main", permissions: { push: i % 2 === 0 } }));
   const { fetch, calls } = fakeFetch((url) => {
     if (url.includes("/user/installations?")) return { status: 200, body: { installations: [{ id: 7 }] } };
-    if (url.includes("page=1")) return { status: 200, body: { repositories: many } };
+    if (url.endsWith("&page=1")) return { status: 200, body: { repositories: many } };
     return { status: 200, body: { repositories: [{ id: 500, full_name: "o/last", default_branch: "dev", permissions: { push: true } }] } };
   });
   const repositories = await gitHub({ token: TOKEN, fetch }).repositories();
