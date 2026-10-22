@@ -110,14 +110,23 @@ impl Fixture {
     }
 
     async fn connect(&self) {
-        let grant = self
-            .manager
-            .insert_grant_for_test(ORIGIN, PROJECT, &self.remote);
+        self.connect_to(&self.remote).await;
+    }
+
+    /// Connects the project to `folder` through a grant.
+    async fn connect_to(&self, folder: &Path) {
+        let grant = self.manager.insert_grant_for_test(ORIGIN, PROJECT, folder);
         self.ok(
             "connect",
             json!({"connection_id": CONNECTION_ID, "remote": {"grant": grant}, "branch": "main"}),
         )
         .await;
+    }
+
+    /// The head of the connected branch, fetched into the private repository.
+    async fn fetched_head(&self) -> String {
+        let fetched = self.ok("fetch", json!({"also": []})).await;
+        fetched["head"].as_str().unwrap().to_string()
     }
 
     async fn blob(&self, text: &str) -> String {
@@ -626,6 +635,73 @@ async fn a_push_that_is_behind_the_remote_is_moved() {
 
 fn push_body(commit: &str, expected: Option<&str>, connection_id: &str) -> Value {
     json!({"commit": commit, "expected": expected, "connection_id": connection_id})
+}
+
+/// An ordinary repository in `scratch` with `a.txt` committed on main.
+fn ordinary_folder(scratch: &Path, name: &str, text: &str) -> PathBuf {
+    let folder = scratch.join(name);
+    std::fs::create_dir(&folder).unwrap();
+    git_in(&folder, &["init", "--quiet", "--initial-branch=main"], "");
+    std::fs::write(folder.join("a.txt"), text).unwrap();
+    git_in(&folder, &["add", "a.txt"], "");
+    git_in(&folder, &["commit", "--quiet", "-m", "one"], "");
+    folder
+}
+
+#[tokio::test]
+async fn a_push_updates_a_local_folder_with_the_branch_checked_out() {
+    let fx = Fixture::new();
+    let folder = ordinary_folder(fx.scratch.path(), "work", "one\n");
+    fx.connect_to(&folder).await;
+    let head = fx.fetched_head().await;
+    let next = fx.commit(&[&head], &[("a.txt", "two\n")]).await;
+    assert_eq!(
+        fx.ok("push", push_body(&next, Some(&head), CONNECTION_ID))
+            .await["pushed"],
+        true
+    );
+    assert_eq!(
+        std::fs::read_to_string(folder.join("a.txt")).unwrap(),
+        "two\n"
+    );
+    assert_eq!(git_in(&folder, &["rev-parse", "refs/heads/main"], ""), next);
+}
+
+#[tokio::test]
+async fn a_push_into_an_empty_local_folder_succeeds() {
+    let fx = Fixture::new();
+    let folder = fx.scratch.path().join("empty");
+    std::fs::create_dir(&folder).unwrap();
+    git_in(&folder, &["init", "--quiet", "--initial-branch=main"], "");
+    fx.connect_to(&folder).await;
+    let one = fx.commit(&[], &[("a.txt", "one\n")]).await;
+    assert_eq!(
+        fx.ok("push", push_body(&one, None, CONNECTION_ID)).await["pushed"],
+        true
+    );
+    assert_eq!(
+        std::fs::read_to_string(folder.join("a.txt")).unwrap(),
+        "one\n"
+    );
+}
+
+#[tokio::test]
+async fn a_push_into_a_folder_with_uncommitted_changes_is_refused() {
+    let fx = Fixture::new();
+    let folder = ordinary_folder(fx.scratch.path(), "dirty", "one\n");
+    fx.connect_to(&folder).await;
+    let head = fx.fetched_head().await;
+    let next = fx.commit(&[&head], &[("a.txt", "two\n")]).await;
+    std::fs::write(folder.join("a.txt"), "edited\n").unwrap();
+    let error = fx
+        .call("push", push_body(&next, Some(&head), CONNECTION_ID))
+        .await
+        .unwrap_err();
+    assert_eq!(error.kind, Some("dirty"), "{}", error.message);
+    assert_eq!(
+        std::fs::read_to_string(folder.join("a.txt")).unwrap(),
+        "edited\n"
+    );
 }
 
 #[tokio::test]

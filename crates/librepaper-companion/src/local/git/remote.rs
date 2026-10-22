@@ -541,22 +541,20 @@ impl GitManager {
             expected.unwrap_or("")
         );
         let refspec = format!("{commit}:refs/heads/{}", record.branch);
+        // A chosen folder is usually an ordinary repository with the branch
+        // checked out. With updateInstead, Git updates that folder's files when
+        // the folder is clean and refuses the push when it is not. URL remotes
+        // keep Git's default.
+        let receive_pack =
+            "--receive-pack=git -c receive.denyCurrentBranch=updateInstead receive-pack";
+        let mut args: Vec<&str> = vec!["push", "--no-verify", lease.as_str()];
+        if target.local {
+            args.push(receive_pack);
+        }
+        args.extend(["--", target.location.as_str(), refspec.as_str()]);
         let output = self
             .runtime
-            .run(
-                GitEnv::Transport,
-                At::Repo(&conn.repo),
-                &[
-                    "push",
-                    "--no-verify",
-                    &lease,
-                    "--",
-                    &target.location,
-                    &refspec,
-                ],
-                None,
-                &[],
-            )
+            .run(GitEnv::Transport, At::Repo(&conn.repo), &args, None, &[])
             .await?;
         if output.code != 0 {
             let said = format!(
@@ -575,13 +573,26 @@ impl GitManager {
                     "The branch on the remote has moved. Fetch it and merge before pushing.",
                 ));
             }
+            let dirty = [
+                "working directory has unstaged changes",
+                "working directory has staged changes",
+                "untracked working tree file",
+                "would be overwritten",
+                "could not update working tree",
+            ];
+            if target.local && dirty.iter().any(|needle| lower.contains(needle)) {
+                return Err(GitError::refused(
+                    "dirty",
+                    format!(
+                        "The folder {} has changes that are not committed. Commit or stash them there, then push again.",
+                        target.label
+                    ),
+                ));
+            }
             if lower.contains("checked out") {
                 return Err(GitError::refused(
                     "checked-out",
-                    format!(
-                        "The remote refused the push because that branch is checked out there. Push to another branch. {}",
-                        redact(&said)
-                    ),
+                    "The remote refused the push because that branch is checked out there. Push to another branch.",
                 ));
             }
             if lower.contains("remote rejected") || lower.contains("hook declined") {

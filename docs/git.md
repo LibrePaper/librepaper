@@ -25,7 +25,7 @@ Install Git if the command is missing or too old.
 
 ## Connect
 
-1. Open the project menu and choose "Connect to Git repository".
+1. Open the Git panel from the Git tab in the side rail, or from "Git..." in the file menu.
 2. Enter an HTTPS or SSH URL, or pick a local repository folder.
 3. Pick a branch. Optionally pick a folder inside the repository. The folder holds the project's files. Everything outside it is never touched.
 4. Read the first comparison. It lists the files that will come in, the files that will go out, the files that differ on both sides, and the files that will not sync. It also shows how many syncable files each top-level folder holds.
@@ -33,6 +33,13 @@ Install Git if the command is missing or too old.
 6. Click "Connect" to record the connection and run the first sync. Click Cancel to change nothing on either side.
 
 Link the folder that holds the project's files. A repository often holds code next to the paper. Link the repository root only if the project is the whole repository.
+
+## Local folders
+
+Pushing to a local repository folder updates the files in that folder, even when the branch is checked out there.
+
+- The folder must be clean. Push is refused if it has uncommitted changes or untracked files that the push would overwrite. Commit or stash them first, then push again.
+- Remote URLs are not affected. A checked-out branch on an SSH or HTTPS remote is still refused, and the panel suggests another branch.
 
 ## Credentials
 

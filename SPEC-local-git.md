@@ -55,7 +55,7 @@ desktop that did the work.
 
 ### Connecting
 
-The project menu of the desktop app offers "Connect to Git repository".
+The Git panel of the desktop app opens from the Git tab in the side rail, or from "Git..." in the file menu.
 
 1. The user enters an HTTPS or SSH URL, or picks a local repository with the
    system folder chooser.
@@ -367,8 +367,11 @@ a Git command.
   `core.hooksPath` pointing at an empty app directory, `GIT_TERMINAL_PROMPT=0`,
   and SSH in batch mode, so a missing credential is an error the panel shows,
   never a prompt that hangs. Error text has user info redacted.
-- Pushing to a branch that is checked out in an ordinary local repository is
-  refused by Git; the panel shows that message and suggests another branch.
+- Pushing to a local folder runs the receiving side with
+  `receive.denyCurrentBranch=updateInstead`, so a clean folder with that branch
+  checked out gets the new files, and a folder with uncommitted changes refuses
+  the push with a plain message. Remote (SSH/HTTPS) non-bare repositories still
+  refuse a push to the checked-out branch; the panel suggests another branch.
 - The bare repository and the journal have app-private permissions.
 
 ## Crash recovery
@@ -555,7 +558,8 @@ record and branch flow, the GitHub panel, the fake GitHub and
   in "What syncs"; the push tree preserves unsynced paths and untouched CRLF
   files; the tree diff becomes the expected source change.
 - Sidecar, against temporary bare and ordinary repositories: fetch, non-force
-  push, refusal to push to a checked-out branch, `protocol.allow`, no hook
+  push, push into a local folder with the branch checked out (clean and with
+  uncommitted changes), `protocol.allow`, no hook
   runs, no global attribute applies to a merge.
 - Server, gated Postgres: the `sync` block is written only with a successful
   apply, a stale revision applies nothing, replay by operation id.
