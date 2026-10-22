@@ -22,7 +22,10 @@ fn git_cmd(dir: &Path) -> StdCommand {
     }
     command
         .env("GIT_CONFIG_NOSYSTEM", "1")
-        .env("GIT_CONFIG_GLOBAL", if cfg!(windows) { "NUL" } else { "/dev/null" })
+        .env(
+            "GIT_CONFIG_GLOBAL",
+            if cfg!(windows) { "NUL" } else { "/dev/null" },
+        )
         .env("GIT_AUTHOR_NAME", "t")
         .env("GIT_AUTHOR_EMAIL", "t@t")
         .env("GIT_COMMITTER_NAME", "t")
@@ -74,7 +77,13 @@ impl Fixture {
         let scratch = tempfile::tempdir().unwrap();
         git_in(
             scratch.path(),
-            &["init", "--bare", "--quiet", "--initial-branch=main", "remote.git"],
+            &[
+                "init",
+                "--bare",
+                "--quiet",
+                "--initial-branch=main",
+                "remote.git",
+            ],
             "",
         );
         let remote = scratch.path().join("remote.git").canonicalize().unwrap();
@@ -89,7 +98,9 @@ impl Fixture {
 
     async fn call(&self, op: &str, mut body: Value) -> Result<Value, super::GitError> {
         body["project"] = json!(PROJECT);
-        self.manager.call(ORIGIN, op, body.to_string().as_bytes()).await
+        self.manager
+            .call(ORIGIN, op, body.to_string().as_bytes())
+            .await
     }
 
     async fn ok(&self, op: &str, body: Value) -> Value {
@@ -99,7 +110,9 @@ impl Fixture {
     }
 
     async fn connect(&self) {
-        let grant = self.manager.insert_grant_for_test(ORIGIN, PROJECT, &self.remote);
+        let grant = self
+            .manager
+            .insert_grant_for_test(ORIGIN, PROJECT, &self.remote);
         self.ok(
             "connect",
             json!({"connection_id": CONNECTION_ID, "remote": {"grant": grant}, "branch": "main"}),
@@ -108,7 +121,9 @@ impl Fixture {
     }
 
     async fn blob(&self, text: &str) -> String {
-        let answer = self.ok("put-blobs", json!({"blobs": [{"text": text}]})).await;
+        let answer = self
+            .ok("put-blobs", json!({"blobs": [{"text": text}]}))
+            .await;
         answer["ids"][0].as_str().unwrap().to_string()
     }
 
@@ -118,7 +133,9 @@ impl Fixture {
             let id = self.blob(text).await;
             edits.push(json!({"path": path, "id": id}));
         }
-        let answer = self.ok("tree-edit", json!({"base": null, "edits": edits})).await;
+        let answer = self
+            .ok("tree-edit", json!({"base": null, "edits": edits}))
+            .await;
         answer["tree"].as_str().unwrap().to_string()
     }
 
@@ -148,10 +165,16 @@ async fn the_same_inputs_make_the_same_commit() {
     let fx = Fixture::new();
     fx.connect().await;
     let ids = fx
-        .ok("put-blobs", json!({"blobs": [{"text": "hello\n"}, {"base64": "AAEC"}]}))
+        .ok(
+            "put-blobs",
+            json!({"blobs": [{"text": "hello\n"}, {"base64": "AAEC"}]}),
+        )
         .await;
     let again = fx
-        .ok("put-blobs", json!({"blobs": [{"text": "hello\n"}, {"base64": "AAEC"}]}))
+        .ok(
+            "put-blobs",
+            json!({"blobs": [{"text": "hello\n"}, {"base64": "AAEC"}]}),
+        )
         .await;
     assert_eq!(ids, again);
     let (text, binary) = (
@@ -162,8 +185,12 @@ async fn the_same_inputs_make_the_same_commit() {
         {"path": "a.txt", "id": text},
         {"path": "dir/b.bin", "id": binary, "mode": "100755"},
     ]);
-    let first = fx.ok("tree-edit", json!({"base": null, "edits": edits})).await;
-    let second = fx.ok("tree-edit", json!({"base": null, "edits": edits})).await;
+    let first = fx
+        .ok("tree-edit", json!({"base": null, "edits": edits}))
+        .await;
+    let second = fx
+        .ok("tree-edit", json!({"base": null, "edits": edits}))
+        .await;
     assert_eq!(first, second);
     let tree = first["tree"].as_str().unwrap();
     let make = || json!({"tree": tree, "parents": [], "message": "m\n", "author": null});
@@ -222,13 +249,19 @@ async fn tree_edit_refuses_paths_that_escape_the_repository() {
     let id = fx.blob("x").await;
     for path in ["../x", ".git/config", "/etc/passwd", "a/../../b", "a\\b"] {
         let error = fx
-            .call("tree-edit", json!({"base": null, "edits": [{"path": path, "id": id}]}))
+            .call(
+                "tree-edit",
+                json!({"base": null, "edits": [{"path": path, "id": id}]}),
+            )
             .await
             .unwrap_err();
         assert_eq!(error.status, 400, "{path}");
     }
     let error = fx
-        .call("tree-edit", json!({"base": null, "edits": [{"path": "a", "id": "0".repeat(40)}]}))
+        .call(
+            "tree-edit",
+            json!({"base": null, "edits": [{"path": "a", "id": "0".repeat(40)}]}),
+        )
         .await
         .unwrap_err();
     assert_eq!(error.kind, Some("missing"));
@@ -241,7 +274,9 @@ async fn a_merge_is_clean_when_the_edits_are_on_different_lines() {
     let base = fx.commit(&[], &[("f.txt", "a\nb\nc\n")]).await;
     let ours = fx.commit(&[&base], &[("f.txt", "A\nb\nc\n")]).await;
     let theirs = fx.commit(&[&base], &[("f.txt", "a\nb\nC\n")]).await;
-    let merged = fx.ok("merge", json!({"ours": ours, "theirs": theirs})).await;
+    let merged = fx
+        .ok("merge", json!({"ours": ours, "theirs": theirs}))
+        .await;
     assert_eq!(merged["clean"], true);
     let listing = fx.ok("tree", json!({"commit": merged["tree"]})).await;
     let id = listing["entries"][0]["id"].as_str().unwrap().to_string();
@@ -255,26 +290,43 @@ async fn a_merge_reports_each_conflict_with_its_three_stages() {
     let base = fx.commit(&[], &[("f.txt", "a\nb\nc\n")]).await;
     let ours = fx.commit(&[&base], &[("f.txt", "A\nb\nc\n")]).await;
     let theirs = fx.commit(&[&base], &[("f.txt", "X\nb\nc\n")]).await;
-    let merged = fx.ok("merge", json!({"ours": ours, "theirs": theirs})).await;
+    let merged = fx
+        .ok("merge", json!({"ours": ours, "theirs": theirs}))
+        .await;
     assert_eq!(merged["clean"], false);
     let conflicts = merged["conflicts"].as_array().unwrap();
     assert_eq!(conflicts.len(), 1);
     let conflict = &conflicts[0];
     assert_eq!(conflict["path"], "f.txt");
     assert_eq!(conflict["mode"], "100644");
-    assert_eq!(fx.blob_text(conflict["base"].as_str().unwrap()).await, "a\nb\nc\n");
-    assert_eq!(fx.blob_text(conflict["ours"].as_str().unwrap()).await, "A\nb\nc\n");
-    assert_eq!(fx.blob_text(conflict["theirs"].as_str().unwrap()).await, "X\nb\nc\n");
+    assert_eq!(
+        fx.blob_text(conflict["base"].as_str().unwrap()).await,
+        "a\nb\nc\n"
+    );
+    assert_eq!(
+        fx.blob_text(conflict["ours"].as_str().unwrap()).await,
+        "A\nb\nc\n"
+    );
+    assert_eq!(
+        fx.blob_text(conflict["theirs"].as_str().unwrap()).await,
+        "X\nb\nc\n"
+    );
 }
 
 #[tokio::test]
 async fn a_delete_against_an_edit_leaves_one_stage_empty() {
     let fx = Fixture::new();
     fx.connect().await;
-    let base = fx.commit(&[], &[("f.txt", "a\n"), ("keep.txt", "k\n")]).await;
-    let ours = fx.commit(&[&base], &[("f.txt", "changed\n"), ("keep.txt", "k\n")]).await;
+    let base = fx
+        .commit(&[], &[("f.txt", "a\n"), ("keep.txt", "k\n")])
+        .await;
+    let ours = fx
+        .commit(&[&base], &[("f.txt", "changed\n"), ("keep.txt", "k\n")])
+        .await;
     let theirs = fx.commit(&[&base], &[("keep.txt", "k\n")]).await;
-    let merged = fx.ok("merge", json!({"ours": ours, "theirs": theirs})).await;
+    let merged = fx
+        .ok("merge", json!({"ours": ours, "theirs": theirs}))
+        .await;
     assert_eq!(merged["clean"], false);
     let conflict = &merged["conflicts"][0];
     assert_eq!(conflict["path"], "f.txt");
@@ -287,8 +339,12 @@ async fn a_delete_against_an_edit_leaves_one_stage_empty() {
 async fn a_diff_lists_added_modified_and_deleted_files() {
     let fx = Fixture::new();
     fx.connect().await;
-    let from = fx.tree_of(&[("a.txt", "1"), ("b.txt", "2"), ("c.txt", "3")]).await;
-    let to = fx.tree_of(&[("a.txt", "1x"), ("b.txt", "2"), ("d.txt", "4")]).await;
+    let from = fx
+        .tree_of(&[("a.txt", "1"), ("b.txt", "2"), ("c.txt", "3")])
+        .await;
+    let to = fx
+        .tree_of(&[("a.txt", "1x"), ("b.txt", "2"), ("d.txt", "4")])
+        .await;
     let answer = fx.ok("diff", json!({"from": from, "to": to})).await;
     let changes = answer["changes"].as_array().unwrap();
     let by = |path: &str| changes.iter().find(|c| c["path"] == path).unwrap();
@@ -307,8 +363,12 @@ async fn ancestry_follows_the_parents() {
     fx.connect().await;
     let one = fx.commit(&[], &[("f.txt", "1")]).await;
     let two = fx.commit(&[&one], &[("f.txt", "2")]).await;
-    let yes = fx.ok("ancestor", json!({"ancestor": one, "descendant": two})).await;
-    let no = fx.ok("ancestor", json!({"ancestor": two, "descendant": one})).await;
+    let yes = fx
+        .ok("ancestor", json!({"ancestor": one, "descendant": two}))
+        .await;
+    let no = fx
+        .ok("ancestor", json!({"ancestor": two, "descendant": one}))
+        .await;
     assert_eq!(yes["is_ancestor"], true);
     assert_eq!(no["is_ancestor"], false);
 }
@@ -343,11 +403,25 @@ async fn refs_keep_and_release_an_operations_commits() {
     .await;
     let repo = super::storage::conn_for(&fx.manager.root, ORIGIN, PROJECT).repo;
     let listing = || {
-        git_in(&repo, &["for-each-ref", "--format=%(refname)", "refs/librepaper/ops/"], "")
+        git_in(
+            &repo,
+            &[
+                "for-each-ref",
+                "--format=%(refname)",
+                "refs/librepaper/ops/",
+            ],
+            "",
+        )
     };
     let kept = listing();
-    assert!(kept.contains(&format!("refs/librepaper/ops/{operation}/base")), "{kept}");
-    assert!(kept.contains(&format!("refs/librepaper/ops/{operation}/local")), "{kept}");
+    assert!(
+        kept.contains(&format!("refs/librepaper/ops/{operation}/base")),
+        "{kept}"
+    );
+    assert!(
+        kept.contains(&format!("refs/librepaper/ops/{operation}/local")),
+        "{kept}"
+    );
     fx.ok("release", json!({"operation": operation})).await;
     assert_eq!(listing(), "");
     let error = fx
@@ -365,12 +439,18 @@ async fn known_assets_come_from_the_table_and_must_still_exist() {
     let digest = hex::encode(Sha256::digest(b"hello\n"));
     let wrong = "0".repeat(64);
     let error = fx
-        .call("put-blobs", json!({"blobs": [{"text": "hello\n", "sha256": wrong}]}))
+        .call(
+            "put-blobs",
+            json!({"blobs": [{"text": "hello\n", "sha256": wrong}]}),
+        )
         .await
         .unwrap_err();
     assert_eq!(error.status, 400);
     let put = fx
-        .ok("put-blobs", json!({"blobs": [{"text": "hello\n", "sha256": digest}]}))
+        .ok(
+            "put-blobs",
+            json!({"blobs": [{"text": "hello\n", "sha256": digest}]}),
+        )
         .await;
     let known = fx
         .ok("known-assets", json!({"sha256": [digest, "1".repeat(64)]}))
@@ -384,7 +464,11 @@ async fn the_journal_round_trips_and_forget_keeps_the_repository() {
     let fx = Fixture::new();
     fx.connect().await;
     assert_eq!(fx.ok("journal", json!({})).await["entries"], json!([]));
-    fx.ok("journal", json!({"entries": [{"op": "x", "phase": "planned"}]})).await;
+    fx.ok(
+        "journal",
+        json!({"entries": [{"op": "x", "phase": "planned"}]}),
+    )
+    .await;
     assert_eq!(
         fx.ok("journal", json!({})).await["entries"][0]["phase"],
         "planned"
@@ -399,7 +483,13 @@ async fn the_journal_round_trips_and_forget_keeps_the_repository() {
         fx.ok("journal", json!({})).await["entries"][0]["phase"],
         "planned"
     );
-    assert_eq!(fx.call("tree", json!({"commit": "0".repeat(40)})).await.unwrap_err().status, 404);
+    assert_eq!(
+        fx.call("tree", json!({"commit": "0".repeat(40)}))
+            .await
+            .unwrap_err()
+            .status,
+        404
+    );
 }
 
 #[tokio::test]
@@ -410,7 +500,10 @@ async fn a_push_that_is_behind_the_remote_is_moved() {
     assert_eq!(fx.ok("push", json!({"commit": one})).await["pushed"], true);
     let two = fx.commit(&[&one], &[("f.txt", "two")]).await;
     assert_eq!(fx.ok("push", json!({"commit": two})).await["pushed"], true);
-    assert_eq!(git_in(&fx.remote, &["rev-parse", "refs/heads/main"], ""), two);
+    assert_eq!(
+        git_in(&fx.remote, &["rev-parse", "refs/heads/main"], ""),
+        two
+    );
     let fetched = fx.ok("fetch", json!({"also": []})).await;
     assert_eq!(fetched["head"], json!(two));
 
@@ -418,7 +511,10 @@ async fn a_push_that_is_behind_the_remote_is_moved() {
     let error = fx.call("push", json!({"commit": stale})).await.unwrap_err();
     assert_eq!(error.status, 409);
     assert_eq!(error.kind, Some("moved"));
-    assert_eq!(git_in(&fx.remote, &["rev-parse", "refs/heads/main"], ""), two);
+    assert_eq!(
+        git_in(&fx.remote, &["rev-parse", "refs/heads/main"], ""),
+        two
+    );
 }
 
 #[tokio::test]
@@ -444,7 +540,9 @@ async fn branches_lists_the_remote_and_its_default() {
     let head = git_in(&fx.remote, &["commit-tree", &empty, "-m", "remote"], "");
     git_in(&fx.remote, &["update-ref", "refs/heads/main", &head], "");
     git_in(&fx.remote, &["update-ref", "refs/heads/dev", &head], "");
-    let grant = fx.manager.insert_grant_for_test(ORIGIN, PROJECT, &fx.remote);
+    let grant = fx
+        .manager
+        .insert_grant_for_test(ORIGIN, PROJECT, &fx.remote);
     let answer = fx.ok("branches", json!({"remote": {"grant": grant}})).await;
     assert_eq!(answer["branches"], json!(["dev", "main"]));
     assert_eq!(answer["default"], "main");
@@ -455,7 +553,10 @@ async fn branches_lists_the_remote_and_its_default() {
 async fn a_url_with_a_password_is_refused_before_anything_runs() {
     let fx = Fixture::new();
     let remote = json!({"url": "https://user:secret@example.invalid/o/r.git"});
-    let error = fx.call("branches", json!({"remote": remote})).await.unwrap_err();
+    let error = fx
+        .call("branches", json!({"remote": remote}))
+        .await
+        .unwrap_err();
     assert_eq!(error.status, 400);
     assert!(!error.message.contains("secret"));
     let error = fx
@@ -471,7 +572,9 @@ async fn a_url_with_a_password_is_refused_before_anything_runs() {
 #[tokio::test]
 async fn a_grant_belongs_to_one_page_and_project() {
     let fx = Fixture::new();
-    let grant = fx.manager.insert_grant_for_test(ORIGIN, "other-project", &fx.remote);
+    let grant = fx
+        .manager
+        .insert_grant_for_test(ORIGIN, "other-project", &fx.remote);
     let error = fx
         .call(
             "connect",
@@ -485,7 +588,9 @@ async fn a_grant_belongs_to_one_page_and_project() {
 #[tokio::test]
 async fn a_branch_name_that_looks_like_an_option_is_refused() {
     let fx = Fixture::new();
-    let grant = fx.manager.insert_grant_for_test(ORIGIN, PROJECT, &fx.remote);
+    let grant = fx
+        .manager
+        .insert_grant_for_test(ORIGIN, PROJECT, &fx.remote);
     let error = fx
         .call(
             "connect",
@@ -507,21 +612,41 @@ async fn a_pre_push_hook_from_the_users_configuration_does_not_run() {
         std::fs::create_dir_all(&hooks).unwrap();
         marker = scratch.join("hook-ran");
         let hook = hooks.join("pre-push");
-        std::fs::write(&hook, format!("#!/bin/sh\ntouch '{}'\nexit 0\n", marker.display())).unwrap();
+        std::fs::write(
+            &hook,
+            format!("#!/bin/sh\ntouch '{}'\nexit 0\n", marker.display()),
+        )
+        .unwrap();
         std::fs::set_permissions(&hook, std::fs::Permissions::from_mode(0o755)).unwrap();
         config = scratch.join("user.gitconfig");
-        std::fs::write(&config, format!("[core]\n\thooksPath = {}\n", hooks.display())).unwrap();
-        vec![("GIT_CONFIG_GLOBAL".to_string(), config.clone().into_os_string())]
+        std::fs::write(
+            &config,
+            format!("[core]\n\thooksPath = {}\n", hooks.display()),
+        )
+        .unwrap();
+        vec![(
+            "GIT_CONFIG_GLOBAL".to_string(),
+            config.clone().into_os_string(),
+        )]
     });
 
     // The control: plain Git with that configuration does run the hook.
     let control = fx.scratch.path().join("control");
     std::fs::create_dir_all(&control).unwrap();
     git_in(&control, &["init", "--quiet"], "");
-    git_in(&control, &["commit", "--quiet", "--allow-empty", "-m", "x"], "");
+    git_in(
+        &control,
+        &["commit", "--quiet", "--allow-empty", "-m", "x"],
+        "",
+    );
     let status = git_cmd(&control)
         .env("GIT_CONFIG_GLOBAL", &config)
-        .args(["push", "--quiet", fx.remote.to_str().unwrap(), "HEAD:refs/heads/control"])
+        .args([
+            "push",
+            "--quiet",
+            fx.remote.to_str().unwrap(),
+            "HEAD:refs/heads/control",
+        ])
         .status()
         .unwrap();
     assert!(status.success());
@@ -530,6 +655,9 @@ async fn a_pre_push_hook_from_the_users_configuration_does_not_run() {
 
     fx.connect().await;
     let commit = fx.commit(&[], &[("f.txt", "one")]).await;
-    assert_eq!(fx.ok("push", json!({"commit": commit})).await["pushed"], true);
+    assert_eq!(
+        fx.ok("push", json!({"commit": commit})).await["pushed"],
+        true
+    );
     assert!(!marker.exists(), "the sidecar's push ran a user hook");
 }

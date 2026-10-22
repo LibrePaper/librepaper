@@ -60,7 +60,10 @@ impl GitManager {
         let output = self
             .local(
                 conn,
-                &["cat-file", "--batch-check=%(objectname) %(objecttype) %(objectsize)"],
+                &[
+                    "cat-file",
+                    "--batch-check=%(objectname) %(objecttype) %(objectsize)",
+                ],
                 Some(input.into_bytes()),
             )
             .await?;
@@ -111,7 +114,9 @@ impl GitManager {
             let (Some(mode), Some(kind), Some(entry_id), Some(size)) =
                 (fields.next(), fields.next(), fields.next(), fields.next())
             else {
-                return Err(GitError::internal("Git's tree listing had an unexpected shape."));
+                return Err(GitError::internal(
+                    "Git's tree listing had an unexpected shape.",
+                ));
             };
             let size = if kind == "blob" {
                 size.parse::<u64>().ok()
@@ -256,7 +261,11 @@ impl GitManager {
                 (None, Some(encoded)) => base64::engine::general_purpose::STANDARD
                     .decode(encoded)
                     .map_err(|_| GitError::bad("A blob's base64 is not valid."))?,
-                _ => return Err(GitError::bad("Each blob needs exactly one of text or base64.")),
+                _ => {
+                    return Err(GitError::bad(
+                        "Each blob needs exactly one of text or base64.",
+                    ))
+                }
             };
             let digest = match &item.sha256 {
                 Some(claimed) => {
@@ -278,7 +287,9 @@ impl GitManager {
         let scratch = tempfile::Builder::new()
             .prefix("tmp-blobs-")
             .tempdir_in(&conn.dir)
-            .map_err(|error| GitError::internal(format!("could not make a scratch directory: {error}")))?;
+            .map_err(|error| {
+                GitError::internal(format!("could not make a scratch directory: {error}"))
+            })?;
         let mut names = String::new();
         for (index, bytes) in contents.iter().enumerate() {
             let path = scratch.path().join(index.to_string());
@@ -298,9 +309,15 @@ impl GitManager {
                 Some(names.into_bytes()),
             )
             .await?;
-        let ids: Vec<String> = output.text().lines().map(|line| line.trim().to_string()).collect();
+        let ids: Vec<String> = output
+            .text()
+            .lines()
+            .map(|line| line.trim().to_string())
+            .collect();
         if ids.len() != contents.len() || !ids.iter().all(|id| is_id(id)) {
-            return Err(GitError::internal("Git hashed a different number of blobs than were sent."));
+            return Err(GitError::internal(
+                "Git hashed a different number of blobs than were sent.",
+            ));
         }
         let mut table = self.read_assets(conn);
         let mut changed = false;
@@ -359,7 +376,9 @@ impl GitManager {
         let mut existing: HashMap<String, String> = HashMap::new();
         let needs_modes = request.edits.iter().any(|e| !e.delete && e.mode.is_none());
         if let (Some(base), true) = (&base, needs_modes) {
-            let output = self.local(conn, &["ls-tree", "-r", "-z", base], None).await?;
+            let output = self
+                .local(conn, &["ls-tree", "-r", "-z", base], None)
+                .await?;
             for (meta, path) in records(&output.stdout) {
                 if let Some(mode) = meta.split_whitespace().next() {
                     existing.insert(path, mode.to_string());
@@ -403,7 +422,9 @@ impl GitManager {
         let scratch = tempfile::Builder::new()
             .prefix("tmp-index-")
             .tempdir_in(&conn.dir)
-            .map_err(|error| GitError::internal(format!("could not make a scratch directory: {error}")))?;
+            .map_err(|error| {
+                GitError::internal(format!("could not make a scratch directory: {error}"))
+            })?;
         let index = scratch.path().join("index");
         let envs: [(&str, &OsStr); 1] = [("GIT_INDEX_FILE", index.as_os_str())];
         if let Some(base) = &base {
@@ -412,9 +433,14 @@ impl GitManager {
                 .ok()?;
         }
         if !stream.is_empty() {
-            self.local_raw(conn, &["update-index", "-z", "--index-info"], Some(stream), &envs)
-                .await?
-                .ok()?;
+            self.local_raw(
+                conn,
+                &["update-index", "-z", "--index-info"],
+                Some(stream),
+                &envs,
+            )
+            .await?
+            .ok()?;
         }
         let written = self
             .local_raw(conn, &["write-tree"], None, &envs)
@@ -488,7 +514,8 @@ impl GitManager {
             Some(author) => {
                 let name = author.name.trim();
                 let email = author.email.trim();
-                let usable = |text: &str| !text.is_empty() && text.len() <= 256 && !text.contains('\0');
+                let usable =
+                    |text: &str| !text.is_empty() && text.len() <= 256 && !text.contains('\0');
                 if !usable(name) || !usable(email) {
                     return Err(GitError::bad("The author needs a name and an email."));
                 }
@@ -513,7 +540,12 @@ impl GitManager {
         }
         args.extend(["-F", "-"]);
         let output = self
-            .local_raw(conn, &args, Some(request.message.clone().into_bytes()), &envs)
+            .local_raw(
+                conn,
+                &args,
+                Some(request.message.clone().into_bytes()),
+                &envs,
+            )
             .await?
             .ok()?;
         let commit = output.text();
@@ -535,7 +567,13 @@ impl GitManager {
         let mut output = self
             .local_raw(
                 conn,
-                &["merge-tree", "--write-tree", "-z", &request.ours, &request.theirs],
+                &[
+                    "merge-tree",
+                    "--write-tree",
+                    "-z",
+                    &request.ours,
+                    &request.theirs,
+                ],
                 None,
                 &[],
             )
@@ -563,7 +601,10 @@ impl GitManager {
         if output.code != 0 && output.code != 1 {
             return Err(GitError::refused(
                 "git",
-                format!("Git could not merge: {}", super::validate::redact(&output.stderr)),
+                format!(
+                    "Git could not merge: {}",
+                    super::validate::redact(&output.stderr)
+                ),
             ));
         }
         let mut fields = output.stdout.split(|b| *b == 0);
@@ -634,7 +675,14 @@ impl GitManager {
         let output = self
             .local(
                 conn,
-                &["diff-tree", "-r", "-z", "--no-renames", &request.from, &request.to],
+                &[
+                    "diff-tree",
+                    "-r",
+                    "-z",
+                    "--no-renames",
+                    &request.from,
+                    &request.to,
+                ],
                 None,
             )
             .await?;
@@ -653,7 +701,9 @@ impl GitManager {
                 fields.next(),
                 fields.next(),
             ) else {
-                return Err(GitError::internal("Git's diff listing had an unexpected shape."));
+                return Err(GitError::internal(
+                    "Git's diff listing had an unexpected shape.",
+                ));
             };
             let status = match status.chars().next() {
                 Some('A') => "A",
@@ -719,7 +769,9 @@ impl GitManager {
                     .bytes()
                     .all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-')
             {
-                return Err(GitError::bad("A ref name may use letters, digits, - and _ only."));
+                return Err(GitError::bad(
+                    "A ref name may use letters, digits, - and _ only.",
+                ));
             }
             require_id(commit, "A ref target")?;
             script.push_str(&format!("update {prefix}{name} {commit}\n"));
@@ -739,7 +791,11 @@ impl GitManager {
         let request: Request = parse(body)?;
         let prefix = operation_prefix(&request.operation)?;
         let listed = self
-            .local(conn, &["for-each-ref", "--format=%(refname)", &prefix], None)
+            .local(
+                conn,
+                &["for-each-ref", "--format=%(refname)", &prefix],
+                None,
+            )
             .await?;
         let mut script = String::new();
         for name in listed.text().lines() {

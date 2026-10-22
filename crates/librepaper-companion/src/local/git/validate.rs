@@ -30,7 +30,12 @@ pub(super) fn require_id<'a>(text: &'a str, what: &str) -> Result<&'a str, GitEr
 /// A repository-relative path the page may put in a tree. It must be a plain
 /// relative path with no empty, `.`, `..` or `.git` segment.
 pub(super) fn require_repo_path(path: &str) -> Result<(), GitError> {
-    let bad = |why: &str| GitError::bad(format!("The path \"{}\" is not allowed: {why}.", path.escape_debug()));
+    let bad = |why: &str| {
+        GitError::bad(format!(
+            "The path \"{}\" is not allowed: {why}.",
+            path.escape_debug()
+        ))
+    };
     if path.is_empty() {
         return Err(bad("it is empty"));
     }
@@ -96,7 +101,9 @@ pub(super) fn validate_url(raw: &str) -> Result<String, GitError> {
     if url.contains("://") {
         let parsed = url::Url::parse(url).map_err(|_| refuse("it is not a valid URL"))?;
         if parsed.scheme() != "https" && parsed.scheme() != "ssh" {
-            return Err(refuse("only https://, ssh:// and user@host:path are accepted"));
+            return Err(refuse(
+                "only https://, ssh:// and user@host:path are accepted",
+            ));
         }
         if parsed.password().is_some() {
             return Err(refuse(
@@ -151,7 +158,11 @@ pub(super) fn label_for_url(url: &str) -> String {
 /// Git's version from the `git version` banner, and whether it is new
 /// enough (2.38, the first with `merge-tree --write-tree`).
 pub(super) fn parse_version(banner: &str) -> Option<(String, bool)> {
-    let word = banner.trim().strip_prefix("git version")?.split_whitespace().next()?;
+    let word = banner
+        .trim()
+        .strip_prefix("git version")?
+        .split_whitespace()
+        .next()?;
     let numbers: Vec<u32> = word
         .split('.')
         .map_while(|part| part.parse::<u32>().ok())
@@ -201,12 +212,27 @@ mod tests {
 
     #[test]
     fn repository_paths_are_plain_and_relative() {
-        for good in ["a.txt", "dir/sub/a.tex", "dir.git/x", ".gitignore", ".github/x.yml"] {
+        for good in [
+            "a.txt",
+            "dir/sub/a.tex",
+            "dir.git/x",
+            ".gitignore",
+            ".github/x.yml",
+        ] {
             assert!(require_repo_path(good).is_ok(), "{good}");
         }
         for bad in [
-            "", "/abs", "../x", "a/../b", "a//b", "a/", ".git/config", "a/.GIT/x", "a\\b",
-            "a\0b", "./a",
+            "",
+            "/abs",
+            "../x",
+            "a/../b",
+            "a//b",
+            "a/",
+            ".git/config",
+            "a/.GIT/x",
+            "a\\b",
+            "a\0b",
+            "./a",
         ] {
             assert!(require_repo_path(bad).is_err(), "{bad:?}");
         }
@@ -264,12 +290,18 @@ mod tests {
             label_for_url("ssh://git@github.com/o/r.git"),
             "ssh://github.com/o/r.git"
         );
-        assert_eq!(label_for_url("git@github.com:o/r.git"), "github.com:o/r.git");
+        assert_eq!(
+            label_for_url("git@github.com:o/r.git"),
+            "github.com:o/r.git"
+        );
     }
 
     #[test]
     fn version_banners_parse() {
-        assert_eq!(parse_version("git version 2.43.0\n"), Some(("2.43.0".into(), true)));
+        assert_eq!(
+            parse_version("git version 2.43.0\n"),
+            Some(("2.43.0".into(), true))
+        );
         assert_eq!(
             parse_version("git version 2.39.3 (Apple Git-146)"),
             Some(("2.39.3".into(), true))
@@ -278,8 +310,14 @@ mod tests {
             parse_version("git version 2.45.1.windows.1"),
             Some(("2.45.1".into(), true))
         );
-        assert_eq!(parse_version("git version 2.37.9"), Some(("2.37.9".into(), false)));
-        assert_eq!(parse_version("git version 1.9"), Some(("1.9".into(), false)));
+        assert_eq!(
+            parse_version("git version 2.37.9"),
+            Some(("2.37.9".into(), false))
+        );
+        assert_eq!(
+            parse_version("git version 1.9"),
+            Some(("1.9".into(), false))
+        );
         assert_eq!(parse_version("nonsense"), None);
     }
 

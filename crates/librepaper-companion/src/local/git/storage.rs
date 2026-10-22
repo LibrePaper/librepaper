@@ -53,7 +53,10 @@ fn dir_name(project: &str) -> String {
     if plain {
         project.to_string()
     } else {
-        format!("x-{}", &hex::encode(Sha256::digest(project.as_bytes()))[..32])
+        format!(
+            "x-{}",
+            &hex::encode(Sha256::digest(project.as_bytes()))[..32]
+        )
     }
 }
 
@@ -105,7 +108,11 @@ struct GrantFile {
     grants: Vec<Grant>,
 }
 
-fn write_json_file<T: Serialize + ?Sized>(path: &Path, value: &T, what: &str) -> Result<(), GitError> {
+fn write_json_file<T: Serialize + ?Sized>(
+    path: &Path,
+    value: &T,
+    what: &str,
+) -> Result<(), GitError> {
     let bytes = serde_json::to_vec_pretty(value)
         .map_err(|error| GitError::internal(format!("could not encode {what}: {error}")))?;
     librepaper_base::private_files::publish(path, &bytes, what).map_err(GitError::internal)
@@ -121,7 +128,10 @@ impl GitManager {
         {
             use std::os::unix::fs::PermissionsExt;
             let private = std::fs::Permissions::from_mode(0o700);
-            for path in [Some(conn.dir.as_path()), conn.dir.parent()].into_iter().flatten() {
+            for path in [Some(conn.dir.as_path()), conn.dir.parent()]
+                .into_iter()
+                .flatten()
+            {
                 let _ = std::fs::set_permissions(path, private.clone());
             }
         }
@@ -134,7 +144,11 @@ impl GitManager {
         serde_json::from_slice(&bytes).ok()
     }
 
-    pub(super) fn write_record(&self, conn: &Conn, record: &ConnectionRecord) -> Result<(), GitError> {
+    pub(super) fn write_record(
+        &self,
+        conn: &Conn,
+        record: &ConnectionRecord,
+    ) -> Result<(), GitError> {
         self.ensure_dir(conn)?;
         write_json_file(&conn.file("connection.json"), record, "Git connection")
     }
@@ -189,10 +203,15 @@ impl GitManager {
                 .unwrap_or_default();
             return Ok(json!({"entries": stored}));
         };
-        let bytes = serde_json::to_vec(&entries)
-            .map_err(|error| GitError::internal(format!("could not encode the journal: {error}")))?;
+        let bytes = serde_json::to_vec(&entries).map_err(|error| {
+            GitError::internal(format!("could not encode the journal: {error}"))
+        })?;
         if bytes.len() > MAX_JOURNAL_BYTES {
-            return Err(GitError::new(413, None, "The journal is larger than 1 MiB."));
+            return Err(GitError::new(
+                413,
+                None,
+                "The journal is larger than 1 MiB.",
+            ));
         }
         self.ensure_dir(conn)?;
         librepaper_base::private_files::publish(&path, &bytes, "Git journal")
@@ -226,11 +245,7 @@ impl GitManager {
     /// Records a new grant for `path`, and drops older grants of the same page
     /// and project beyond the few kept as spares. The connection's own grant is
     /// never dropped.
-    pub(super) fn add_grant_record(
-        &self,
-        conn: &Conn,
-        path: &Path,
-    ) -> Result<Grant, GitError> {
+    pub(super) fn add_grant_record(&self, conn: &Conn, path: &Path) -> Result<Grant, GitError> {
         let path = path
             .to_str()
             .ok_or_else(|| GitError::bad("That folder's path is not valid text."))?

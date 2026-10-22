@@ -207,8 +207,9 @@ impl Runtime {
     fn support(&self) -> Result<(PathBuf, PathBuf), GitError> {
         let config = self.root.join("empty.gitconfig");
         let hooks = self.root.join("empty-hooks");
-        std::fs::create_dir_all(&hooks)
-            .map_err(|error| GitError::internal(format!("could not create {}: {error}", hooks.display())))?;
+        std::fs::create_dir_all(&hooks).map_err(|error| {
+            GitError::internal(format!("could not create {}: {error}", hooks.display()))
+        })?;
         if !config.exists() {
             std::fs::write(&config, b"").map_err(|error| {
                 GitError::internal(format!("could not create {}: {error}", config.display()))
@@ -327,7 +328,8 @@ impl Runtime {
     ) -> Result<GitOutput, GitError> {
         let exe = self.exe().await?;
         let mut command = self.command(&exe, env, at)?;
-        if env == GitEnv::Transport && matches!(args.first(), Some(&"fetch" | &"push" | &"ls-remote"))
+        if env == GitEnv::Transport
+            && matches!(args.first(), Some(&"fetch" | &"push" | &"ls-remote"))
         {
             self.batch_ssh(&exe, at, &mut command).await?;
         }
@@ -340,14 +342,16 @@ impl Runtime {
             GitEnv::Local => LOCAL_TIMEOUT,
             GitEnv::Transport => TRANSPORT_TIMEOUT,
         };
-        exec(command, stdin, limit).await.map_err(|error| match error {
-            ExecError::Spawn(message) => GitError::internal(message),
-            ExecError::Timeout if env == GitEnv::Transport => {
-                GitError::remote("network", "Git took too long to reach the remote.")
-            }
-            ExecError::Timeout => GitError::internal("Git took too long to answer."),
-            ExecError::TooLarge => GitError::internal("Git produced more output than allowed."),
-        })
+        exec(command, stdin, limit)
+            .await
+            .map_err(|error| match error {
+                ExecError::Spawn(message) => GitError::internal(message),
+                ExecError::Timeout if env == GitEnv::Transport => {
+                    GitError::remote("network", "Git took too long to reach the remote.")
+                }
+                ExecError::Timeout => GitError::internal("Git took too long to answer."),
+                ExecError::TooLarge => GitError::internal("Git produced more output than allowed."),
+            })
     }
 
     #[cfg(test)]
@@ -489,8 +493,7 @@ async fn join_reader(task: Option<tokio::task::JoinHandle<(Vec<u8>, bool)>>) -> 
 
 /// Parses a JSON request body into the typed request an operation expects.
 fn parse<T: DeserializeOwned>(body: &[u8]) -> Result<T, GitError> {
-    serde_json::from_slice(body)
-        .map_err(|error| GitError::bad(format!("bad JSON body: {error}")))
+    serde_json::from_slice(body).map_err(|error| GitError::bad(format!("bad JSON body: {error}")))
 }
 
 /// Every operation the sidecar answers, in the order the contract lists them.
@@ -566,7 +569,11 @@ impl GitManager {
         body: &[u8],
     ) -> Result<Value, GitError> {
         if !OPERATIONS.contains(&op) || op == "choose-local" {
-            return Err(GitError::new(404, None, "That Git operation does not exist."));
+            return Err(GitError::new(
+                404,
+                None,
+                "That Git operation does not exist.",
+            ));
         }
         #[derive(serde::Deserialize)]
         struct Project {
@@ -585,7 +592,9 @@ impl GitManager {
         let lock = self.lock_for(&conn.key);
         let _guard = if op == "push" {
             lock.try_lock_owned().map_err(|_| {
-                GitError::busy("Another Git operation is running for this project. Try again in a moment.")
+                GitError::busy(
+                    "Another Git operation is running for this project. Try again in a moment.",
+                )
             })?
         } else {
             lock.lock_owned().await
@@ -593,7 +602,9 @@ impl GitManager {
         if op == "connect" {
             return self.connect(&conn, body).await;
         }
-        let record = self.read_record(&conn).ok_or_else(GitError::not_connected)?;
+        let record = self
+            .read_record(&conn)
+            .ok_or_else(GitError::not_connected)?;
         match op {
             "fetch" => self.fetch(&conn, &record, body).await,
             "push" => self.push(&conn, &record, body).await,
@@ -609,7 +620,11 @@ impl GitManager {
             "ancestor" => self.ancestor(&conn, body).await,
             "keep" => self.keep(&conn, body).await,
             "release" => self.release(&conn, body).await,
-            _ => Err(GitError::new(404, None, "That Git operation does not exist.")),
+            _ => Err(GitError::new(
+                404,
+                None,
+                "That Git operation does not exist.",
+            )),
         }
     }
 

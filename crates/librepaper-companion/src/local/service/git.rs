@@ -79,13 +79,15 @@ mod tests {
 
     async fn send(inner: &Arc<Inner>, request: Request<Body>) -> (u16, Value) {
         let peer: SocketAddr = "127.0.0.1:12345".parse().unwrap();
-        let response =
-            super::super::handle(State(inner.clone()), ConnectInfo(peer), request).await;
+        let response = super::super::handle(State(inner.clone()), ConnectInfo(peer), request).await;
         let status = response.status().as_u16();
         let bytes = axum::body::to_bytes(response.into_body(), 1 << 20)
             .await
             .unwrap();
-        (status, serde_json::from_slice(&bytes).unwrap_or(Value::Null))
+        (
+            status,
+            serde_json::from_slice(&bytes).unwrap_or(Value::Null),
+        )
     }
 
     async fn ask(inner: &Arc<Inner>, op: &str, mut body: Value) -> (u16, Value) {
@@ -110,7 +112,11 @@ mod tests {
         let state = tempfile::tempdir().unwrap();
         let cache = tempfile::tempdir().unwrap();
         let inner = build_inner(state.path(), cache.path()).await;
-        let (status, _) = send(&inner, post(&inner, "status", json!({"project": "paper"}), false)).await;
+        let (status, _) = send(
+            &inner,
+            post(&inner, "status", json!({"project": "paper"}), false),
+        )
+        .await;
         assert_eq!(status, 401);
         let (status, _) = ask(&inner, "no-such-op", json!({})).await;
         assert_eq!(status, 404);
@@ -126,15 +132,19 @@ mod tests {
         let init = std::process::Command::new("git")
             .args(["init", "--bare", "--quiet"])
             .arg(remote.path())
-            .env("GIT_CONFIG_GLOBAL", if cfg!(windows) { "NUL" } else { "/dev/null" })
+            .env(
+                "GIT_CONFIG_GLOBAL",
+                if cfg!(windows) { "NUL" } else { "/dev/null" },
+            )
             .env("GIT_CONFIG_NOSYSTEM", "1")
             .status()
             .unwrap();
         assert!(init.success());
         let inner = build_inner(state.path(), cache.path()).await;
-        let grant = inner
-            .git
-            .insert_grant_for_test(PAGE, "paper", &remote.path().canonicalize().unwrap());
+        let grant =
+            inner
+                .git
+                .insert_grant_for_test(PAGE, "paper", &remote.path().canonicalize().unwrap());
 
         let (status, answer) = ask(
             &inner,
@@ -153,7 +163,8 @@ mod tests {
         assert_eq!(answer["connected"], true);
         assert_eq!(answer["branch"], "main");
 
-        let (status, answer) = ask(&inner, "put-blobs", json!({"blobs": [{"text": "hello\n"}]})).await;
+        let (status, answer) =
+            ask(&inner, "put-blobs", json!({"blobs": [{"text": "hello\n"}]})).await;
         assert_eq!(status, 200, "{answer}");
         let id = answer["ids"][0].as_str().unwrap().to_string();
         let (status, answer) = ask(&inner, "blobs", json!({"ids": [id.clone()]})).await;

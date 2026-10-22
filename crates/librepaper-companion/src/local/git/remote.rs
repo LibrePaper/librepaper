@@ -156,7 +156,9 @@ impl GitManager {
         let dir = tokio::task::spawn_blocking(move || chosen.canonicalize())
             .await
             .map_err(|error| GitError::internal(format!("could not resolve the folder: {error}")))?
-            .map_err(|error| GitError::bad(format!("could not resolve the selected folder: {error}")))?;
+            .map_err(|error| {
+                GitError::bad(format!("could not resolve the selected folder: {error}"))
+            })?;
         let dir = strip_verbatim(dir);
         if !dir.is_dir() {
             return Err(GitError::bad("Select an existing folder."));
@@ -177,7 +179,10 @@ impl GitManager {
         if output.code != 0 {
             return Err(not_repository());
         }
-        let git_dir = Path::new(&output.text()).canonicalize().ok().map(strip_verbatim);
+        let git_dir = Path::new(&output.text())
+            .canonicalize()
+            .ok()
+            .map(strip_verbatim);
         let toplevel = git_dir.as_deref() == Some(dir.as_path())
             || dir
                 .join(".git")
@@ -201,15 +206,28 @@ impl GitManager {
         let request: Request = parse(body)?;
         let target = self.resolve(conn, &request.remote)?;
         if target.local {
-            self.require_sha1_folder(Path::new(&target.location)).await?;
+            self.require_sha1_folder(Path::new(&target.location))
+                .await?;
         }
-        let ceiling = self.root.parent().unwrap_or(&self.root).as_os_str().to_owned();
+        let ceiling = self
+            .root
+            .parent()
+            .unwrap_or(&self.root)
+            .as_os_str()
+            .to_owned();
         let output = self
             .runtime
             .run(
                 GitEnv::Transport,
                 At::Dir(&self.root),
-                &["ls-remote", "--symref", "--", &target.location, "HEAD", "refs/heads/*"],
+                &[
+                    "ls-remote",
+                    "--symref",
+                    "--",
+                    &target.location,
+                    "HEAD",
+                    "refs/heads/*",
+                ],
                 None,
                 &[("GIT_CEILING_DIRECTORIES", ceiling.as_os_str())],
             )
@@ -266,7 +284,8 @@ impl GitManager {
         };
         let target = self.resolve(conn, &remote)?;
         if target.local {
-            self.require_sha1_folder(Path::new(&target.location)).await?;
+            self.require_sha1_folder(Path::new(&target.location))
+                .await?;
         }
         self.ensure_dir(conn)?;
         // Scratch directories a crashed operation left behind.
@@ -282,7 +301,13 @@ impl GitManager {
                 .run(
                     GitEnv::Local,
                     At::Dir(&conn.dir),
-                    &["init", "--bare", "--quiet", "--object-format=sha1", "repo.git"],
+                    &[
+                        "init",
+                        "--bare",
+                        "--quiet",
+                        "--object-format=sha1",
+                        "repo.git",
+                    ],
                     None,
                     &[],
                 )
@@ -303,13 +328,20 @@ impl GitManager {
         let hooks = hooks
             .to_str()
             .ok_or_else(|| GitError::internal("The state directory path is not valid text."))?;
-        self.local(conn, &["config", "core.hooksPath", hooks], None).await?;
-        self.local(conn, &["config", "core.autocrlf", "false"], None).await?;
+        self.local(conn, &["config", "core.hooksPath", hooks], None)
+            .await?;
+        self.local(conn, &["config", "core.autocrlf", "false"], None)
+            .await?;
         let previous = self.read_record(conn);
         if let Some(previous) = &previous {
             if previous.remote != remote || previous.branch != request.branch {
                 let _ = self
-                    .local_raw(conn, &["update-ref", "-d", "refs/librepaper/remote"], None, &[])
+                    .local_raw(
+                        conn,
+                        &["update-ref", "-d", "refs/librepaper/remote"],
+                        None,
+                        &[],
+                    )
                     .await;
             }
         }
@@ -356,7 +388,14 @@ impl GitManager {
             .run(
                 GitEnv::Transport,
                 At::Repo(&conn.repo),
-                &["fetch", "--no-tags", "--no-write-fetch-head", "--", &target.location, &refspec],
+                &[
+                    "fetch",
+                    "--no-tags",
+                    "--no-write-fetch-head",
+                    "--",
+                    &target.location,
+                    &refspec,
+                ],
                 None,
                 &[],
             )
@@ -365,7 +404,12 @@ impl GitManager {
             if output.stderr.contains("couldn't find remote ref") {
                 // The branch does not exist yet, or was deleted.
                 let _ = self
-                    .local_raw(conn, &["update-ref", "-d", "refs/librepaper/remote"], None, &[])
+                    .local_raw(
+                        conn,
+                        &["update-ref", "-d", "refs/librepaper/remote"],
+                        None,
+                        &[],
+                    )
                     .await;
             } else {
                 return Err(remote_error(&output.stderr));
@@ -374,7 +418,12 @@ impl GitManager {
         let head = self
             .local_raw(
                 conn,
-                &["rev-parse", "--verify", "-q", "refs/librepaper/remote^{commit}"],
+                &[
+                    "rev-parse",
+                    "--verify",
+                    "-q",
+                    "refs/librepaper/remote^{commit}",
+                ],
                 None,
                 &[],
             )
@@ -392,7 +441,14 @@ impl GitManager {
                 .run(
                     GitEnv::Transport,
                     At::Repo(&conn.repo),
-                    &["fetch", "--no-tags", "--no-write-fetch-head", "--", &target.location, id],
+                    &[
+                        "fetch",
+                        "--no-tags",
+                        "--no-write-fetch-head",
+                        "--",
+                        &target.location,
+                        id,
+                    ],
                     None,
                     &[],
                 )
@@ -435,7 +491,11 @@ impl GitManager {
             )
             .await?;
         if output.code != 0 {
-            let said = format!("{}\n{}", output.stderr, String::from_utf8_lossy(&output.stdout));
+            let said = format!(
+                "{}\n{}",
+                output.stderr,
+                String::from_utf8_lossy(&output.stdout)
+            );
             let lower = said.to_lowercase();
             if lower.contains("non-fast-forward") || lower.contains("fetch first") {
                 return Err(GitError::new(
@@ -461,8 +521,12 @@ impl GitManager {
             }
             return Err(remote_error(&said));
         }
-        self.local(conn, &["update-ref", "refs/librepaper/remote", commit], None)
-            .await?;
+        self.local(
+            conn,
+            &["update-ref", "refs/librepaper/remote", commit],
+            None,
+        )
+        .await?;
         Ok(json!({"pushed": true}))
     }
 }
