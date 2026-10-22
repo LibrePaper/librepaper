@@ -6,7 +6,7 @@
   import { createBridge } from "../../lib/gitsync/bridge.js";
   import { syncApi } from "../../lib/gitsync/server.js";
   import {
-    compare, connect, outgoing, pull, push, recover, status,
+    compare, connect, defaultMessage, disconnect, outgoing, pull, push, recover, status,
   } from "../../lib/gitsync/sync.js";
 
   let { open = false, slug, key = "", session = null, rules = {}, me = {} } = $props();
@@ -15,8 +15,10 @@
   const api = $derived(syncApi(slug, key));
   const DOCS = "/docs/git.html";
 
+  // The sidecar's status, the shared record and what is saved on this computer.
   let info = $state(null);
   let link = $state(null);
+  let pending = $state([]);
   let loaded = $state(false);
   let busy = $state(false);
   let error = $state(null);
@@ -29,7 +31,7 @@
   let branch = $state("");
   let folder = $state("");
   let comparison = $state(null);
-  let direction = $state("librepaper");
+  let direction = $state("local");
   let draft = null;
 
   // The review before a push.
@@ -46,7 +48,7 @@
   const cleanFolder = (value) => value.trim().replace(/^\/+|\/+$/g, "");
   const label = (value) => value?.name || value?.handle || value || "";
 
-  const connectedHere = $derived(Boolean(link && info?.connected && info?.connection_id === link.connection_id));
+  const connectedHere = $derived(Boolean(link && info?.connected && info.connection_id === link.connection_id));
   const remote = $derived(grant ? { grant: grant.grant } : { url: remoteText.trim() });
   const haveRemote = $derived(Boolean(grant || remoteText.trim()));
 
@@ -82,14 +84,20 @@
     }
   }
 
+  function adopt(state) {
+    info = state.git;
+    link = state.link;
+    pending = state.pending || [];
+    // A resolver that is open keeps the session it is working on.
+    if (!resolverOpen) conflictSession = state.conflict;
+  }
+
   async function load() {
     const request = ++generation;
     try {
-      const [state, answer] = await Promise.all([status(context()), api.getLink()]);
+      const state = await status(context());
       if (request !== generation) return;
-      info = state;
-      link = answer.link;
-      if (state?.session && !conflictSession) conflictSession = state.session;
+      adopt(state);
     } catch (failure) {
       if (request === generation) fail(failure);
     } finally {
@@ -105,9 +113,7 @@
   });
 
   async function refresh() {
-    const [state, answer] = await Promise.all([status(context()), api.getLink()]);
-    info = state;
-    link = answer.link;
+    adopt(await status(context()));
   }
 
   function resetDraft() {
@@ -124,6 +130,8 @@
     await guard(async () => {
       const answer = await git.branches(remote);
       branches = answer.branches || [];
+      // A repository without commits lists no branch, only the one HEAD names.
+      if (!branches.length && answer.default) branches = [answer.default];
       branch = branches.includes(answer.default) ? answer.default : branches[0] || "";
     });
   }
@@ -140,8 +148,14 @@
     if (!haveRemote || !branch) return;
     await guard(async () => {
       draft = { remote, label: grant?.label || remoteText.trim(), branch, folder: cleanFolder(folder) };
-      comparison = await compare(context(), draft);
-      direction = "librepaper";
+      const answer = await compare(context(), draft);
+      if (answer.status === "refused") {
+        if (answer.kind === "auth") error = { auth: true };
+        comparison = { incoming: [], outgoing: [], differing: [], unsynced: [], folders: [], refusals: answer.refusals || [] };
+      } else {
+        comparison = answer;
+      }
+      direction = "local";
     });
   }
 
@@ -164,10 +178,11 @@
 
   function show(result) {
     outcome = null;
-    const from = link?.remote_label || "the repository";
     if (result.link) link = result.link;
+    const from = link?.remote_label || "the repository";
+    if (result.pulled?.status === "pulled") show(result.pulled);
     if (result.status === "pulled") {
-      say(`${name} pulled ${plural(result.files)} from ${from}`, { kind: "done", id: "git:pull" });
+      say(`${name} pulled ${plural(result.files?.length || 0)} from ${from}`, { kind: "done", id: "git:pull" });
     } else if (result.status === "pushed") {
       const id = String(result.commit || "").slice(0, 7);
       say(`Pushed ${id} to ${from}`, { kind: "done", id: "git:push" });
@@ -176,6 +191,8 @@
     } else if (result.status === "conflict") {
       conflictSession = result.session;
       resolverOpen = true;
+    } else if (result.status === "refused" && result.kind === "auth") {
+      error = { auth: true };
     } else {
       outcome = result;
     }
@@ -191,12 +208,13 @@
   async function reviewPush() {
     await guard(async () => {
       const result = await outgoing(context());
-      if (["nothing", "pulled", "conflict", "refused", "moved"].includes(result.status)) {
-        show(result.status === "nothing" ? { ...result, kind: "push" } : result);
-        review = null;
-      } else {
+      if (result.status === "outgoing") {
+        if (result.pulled?.status === "pulled") show(result.pulled);
         review = result;
         message = "";
+      } else {
+        show(result.status === "nothing" ? { ...result, kind: "push" } : result);
+        review = null;
       }
       await refresh();
     });
@@ -205,12 +223,12 @@
   async function doPush() {
     if (!review) return;
     await guard(async () => {
-      const result = await push(context(), message.trim(), { confirmed: review.prepared });
-      if (result.status === "pushed" || result.status === "nothing") review = null;
+      const result = await push(context(), message.trim(), { confirmed: review.outgoing });
       if (result.status === "moved") {
-        review = null;
         outcome = result;
+        review = result;
       } else {
+        review = null;
         show(result.status === "nothing" ? { ...result, kind: "push" } : result);
       }
       await refresh();
@@ -218,14 +236,24 @@
   }
 
   async function resume() {
-    if (info?.session && !info?.pending) {
-      conflictSession = info.session;
+    if (conflictSession && !pending.length) {
       resolverOpen = true;
       return;
     }
     await guard(async () => {
-      show(await recover(context()));
+      const answer = await recover(context());
+      if (answer.status === "refused") {
+        show(answer);
+      } else if (answer.pending.length) {
+        error = { text: "The interrupted sync could not be finished yet. Try again later." };
+      } else {
+        say("Finished the interrupted sync", { kind: "done", id: "git:recover" });
+      }
       await refresh();
+      if (answer.conflict && !pending.length) {
+        conflictSession = answer.conflict;
+        resolverOpen = true;
+      }
     });
   }
 
@@ -234,10 +262,9 @@
     await guard(refresh);
   }
 
-  async function disconnect() {
+  async function doDisconnect() {
     await guard(async () => {
-      await api.deleteLink();
-      await git.forget();
+      await disconnect(context());
       link = null;
       outcome = null;
       review = null;
@@ -252,6 +279,8 @@
     return item.reason;
   };
   const gitVersion = $derived(info?.git ? `Git ${info.git}` : "no Git");
+  const STATUS_WORDS = { A: "Add", M: "Change", D: "Delete" };
+  const outgoingLines = $derived((review?.files || []).map((file) => `${STATUS_WORDS[file.status] || file.status} ${file.path}`));
 </script>
 
 {#snippet files(title, paths)}
@@ -274,9 +303,9 @@
       <p><a href={DOCS} target="_blank" rel="noopener noreferrer">How to set up Git</a></p>
     </div>
   {:else}
-    {#if info?.pending || info?.session}
+    {#if pending.length || conflictSession}
       <div class="gh-box" role="status">
-        <p>{info.pending ? "A sync was interrupted." : "A conflict is saved."}</p>
+        <p>{pending.length ? "A sync was interrupted." : "A conflict is saved."}</p>
         <button type="button" class="btn btn-sm lp-control-tonal-brand" disabled={busy} onclick={resume}>Resume</button>
       </div>
     {/if}
@@ -296,10 +325,10 @@
       </div>
 
       {#if review}
-        {@render files("Will go out on Push", review.outgoing)}
+        {@render files("Will go out on Push", outgoingLines)}
         <label class="gh-field panel-meta">Commit message
           <input class="input gh-input" type="text" bind:value={message} disabled={busy}
-            placeholder={review.message || "The names of the changed files"} />
+            placeholder={defaultMessage(review.files)} />
         </label>
         <div class="gh-row">
           <button type="button" class="btn btn-sm lp-control-brand" disabled={busy} onclick={doPush}>Push</button>
@@ -377,9 +406,9 @@
         {#if comparison.differing?.length}
           <fieldset class="gh-choice">
             <legend class="panel-meta">{plural(comparison.differing.length)} differ. Which copies do you keep?</legend>
-            <label><input type="radio" name="git-direction" value="librepaper" bind:group={direction} />
+            <label><input type="radio" name="git-direction" value="local" bind:group={direction} />
               Keep LibrePaper's copies. The repository gets them on the first push.</label>
-            <label><input type="radio" name="git-direction" value="repository" bind:group={direction} />
+            <label><input type="radio" name="git-direction" value="remote" bind:group={direction} />
               Keep the repository's copies. LibrePaper takes them now.</label>
           </fieldset>
         {/if}
@@ -404,7 +433,7 @@
 
     {#if link}
       <div class="gh-row">
-        <button type="button" class="gh-action gh-destructive" disabled={busy} onclick={disconnect}>Disconnect</button>
+        <button type="button" class="gh-action gh-destructive" disabled={busy} onclick={doDisconnect}>Disconnect</button>
       </div>
     {/if}
   {/if}
