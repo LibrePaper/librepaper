@@ -455,7 +455,9 @@ async function buildChange(ctx, changes, kinds, known) {
       const hash = await sha256Hex(bytes);
       const current = status === "A" ? null : await lAsset(item);
       if (current === hash) continue;
-      await ctx.api.uploadAsset(bytes);
+      // A retried pull builds the change again, and uploads are rate limited,
+      // so an asset the server already holds is not sent twice.
+      if (!(await ctx.api.hasAsset(hash))) await ctx.api.uploadAsset(bytes);
       change.put_binary.push({ path, hash, expect: current });
       expect.assets.set(path, hash);
     }
@@ -666,6 +668,10 @@ async function openConflict(ctx, prepared, op, carry) {
     theirs: item.theirs,
     kind: kinds.get(item.path) || "text",
   }));
+  // The merged tree is only an id until a commit holds it, and an unreferenced
+  // tree and its blobs could be collected before the session is applied.
+  const merged = await ctx.git.commitTree(merge.tree, [local.commit, theirs.commit], "LibrePaper sync conflict", null);
+  await ctx.git.keep(op, { merged });
   const session = {
     id: op,
     revision: link.revision,
@@ -676,6 +682,7 @@ async function openConflict(ctx, prepared, op, carry) {
     local: local.commit,
     theirs: theirs.commit,
     tree: merge.tree,
+    merged,
     paths,
     kinds: Object.fromEntries(kinds),
     conflicts,
@@ -1268,9 +1275,19 @@ export async function recover(ctx) {
     const pending = [];
     const reasons = {};
     let conflict = null;
+    // Only this connection's conflict is offered; another connection's stays
+    // in the journal untouched.
+    let connection = null;
+    try {
+      connection = (await ctx.api.getLink()).link?.connection_id ?? null;
+    } catch {
+      connection = null;
+    }
     for (const entry of await journalRead(ctx)) {
       if (entry.kind === "conflict") {
-        conflict = await restoreSession(ctx, entry.session);
+        if (connection != null && entry.session?.connection_id === connection) {
+          conflict = await restoreSession(ctx, entry.session);
+        }
         continue;
       }
       try {

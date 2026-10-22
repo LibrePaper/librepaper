@@ -38,6 +38,15 @@ export function syncApi(slug, key) {
     sourceChange: (body) => send("POST", "/source-change", body),
     uploadAsset: (bytes) =>
       fetch(`${base}/assets`, { method: "PUT", headers: authHeaders(key), body: bytes }).then(parse),
+    // The asset route answers HEAD for a present asset with 200 and a missing
+    // one with 404, without sending the body.
+    async hasAsset(sha) {
+      const response = await fetch(`${base}/assets/${sha}`, { method: "HEAD", headers: authHeaders(key) });
+      if (response.ok) return true;
+      if (response.status === 404) return false;
+      await parse(response);
+      return false;
+    },
     async assetBytes(sha) {
       const response = await fetch(`${base}/assets/${sha}`, { headers: authHeaders(key) });
       if (!response.ok) await parse(response);

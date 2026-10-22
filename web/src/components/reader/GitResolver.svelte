@@ -17,6 +17,14 @@
   let error = $state("");
   let current = $state(null);
   let loaded = null;
+  // Saves run one at a time. A request made meanwhile only marks that the
+  // latest choices still need saving, so an older save never lands after a
+  // newer one. `held` stops new saves while Apply runs and after it succeeded,
+  // so no save recreates a session that Apply removed.
+  let inflight = null;
+  let wanted = false;
+  let held = false;
+  let failed = false;
 
   const decoder = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true });
 
@@ -69,6 +77,7 @@
     if (open && session && session !== loaded) {
       loaded = session;
       current = session;
+      held = false;
       load(session);
     }
   });
@@ -81,16 +90,32 @@
     timer = null;
   }
 
-  /// Stores the choices on the saved session so a closed window or a restart keeps them.
+  async function drain() {
+    try {
+      while (wanted && !held && current) {
+        wanted = false;
+        try {
+          await saveResolutions(ctx, current, resolutions);
+          failed = false;
+        } catch (failure) {
+          // The choices stay on screen; the next change tries again.
+          failed = true;
+          error = `Could not save your choices: ${failure?.message || "unknown error"}`;
+        }
+      }
+    } finally {
+      inflight = null;
+    }
+  }
+
+  /// Stores the choices on the saved session so a closed window or a restart
+  /// keeps them. Resolves when no save is outstanding.
   async function persist() {
     cancelSave();
-    if (!current) return;
-    try {
-      await saveResolutions(ctx, current, resolutions);
-    } catch (failure) {
-      // The choices stay on screen; the next change tries again.
-      error = `Could not save your choices: ${failure?.message || "unknown error"}`;
-    }
+    if (!current || held) return;
+    wanted = true;
+    inflight ??= drain();
+    await inflight;
   }
 
   const choose = (path, value) => {
@@ -130,26 +155,30 @@
     error = "";
     try {
       // A pending autosave is flushed, not dropped: what is applied is what is saved.
+      // An outstanding save is awaited first, and none starts while Apply runs.
       cancelSave();
-      try {
-        await saveResolutions(ctx, current, resolutions);
-      } catch (failure) {
-        error = `Could not save your choices: ${failure?.message || "unknown error"}`;
+      await persist();
+      held = true;
+      if (failed) {
+        held = false;
         return;
       }
       const result = await applyResolution(ctx, current, resolutions);
       if (result.status === "refused") {
+        held = false;
         // The saved session and the choices stay, and so does this window.
         if (result.session) current = result.session;
         error = result.refusals?.map((item) => item.reason).join(" ") || "The resolution could not be applied.";
         return;
       }
       if (result.status === "conflict" && result.unresolved?.length) {
+        held = false;
         error = `These files still need a choice: ${result.unresolved.join(", ")}`;
         return;
       }
       if (result.status === "conflict") {
         // The repository moved and the merge was made again.
+        held = false;
         current = result.session;
         loaded = result.session;
         await load(result.session);
@@ -159,6 +188,7 @@
       open = false;
       onresult?.(result);
     } catch (failure) {
+      held = false;
       error = failure?.message || "Could not apply the resolution.";
     } finally {
       busy = false;
