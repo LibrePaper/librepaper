@@ -156,7 +156,7 @@ If Tailscale fails on the server, you can still get in through the public addres
 ### Maintenance
 
 - Turn on unattended security upgrades. Reboot when `/var/run/reboot-required` exists.
-- Keep the kit directory at mode 0700. It holds the rendered secrets.
+- Keep the `librepaper/` directory from the download at mode 0700 (`chmod 700 ~/librepaper`). Its TOML files hold your secrets but must stay readable for the containers, so the directory is what keeps other users out.
 - Remove old release images now and then. The recipe is at the end of the [upgrade section](simple.html#upgrade).
 
 ## Backups
