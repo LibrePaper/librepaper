@@ -117,6 +117,7 @@ jobs:
             "$APP_DIGEST" "$BACKUP_DIGEST"
 
       - name: Attest deployment kit
+        id: attest_kit
         if: steps.resolve.outputs.proceed == 'true'
         uses: actions/attest@v4
         with:
@@ -128,6 +129,9 @@ jobs:
           TAG: ${{ steps.resolve.outputs.tag }}
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
+          # The bundle lets ./manage upgrade verify the kit with cosign, without a GitHub login.
+          cp "${{ steps.attest_kit.outputs.bundle-path }}" "$RUNNER_TEMP/deploy-kit/librepaper-deploy.tar.gz.sigstore.json"
           gh release upload "$TAG" \
             "$RUNNER_TEMP/deploy-kit/librepaper-deploy.tar.gz" \
+            "$RUNNER_TEMP/deploy-kit/librepaper-deploy.tar.gz.sigstore.json" \
             --clobber

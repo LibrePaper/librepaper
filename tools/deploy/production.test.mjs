@@ -62,9 +62,9 @@ function mockCommand(dir, name, contents) {
 // appended to one events file, tab separated:
 // kind, then the arguments.
 // The server's public address, and the DNS records the dig mock serves: one
-// "name TYPE address" line each. Every deployed name and the ssh host resolve to it.
+// "name TYPE address" line each. Every deployed name resolves to it.
 const productionAddress = '15.235.24.221';
-const deployNames = ['librepaper.org', 'app.librepaper.org', 'docs.librepaper.org', 'admin.librepaper.org', 'www.librepaper.org', 'librepaper.com', 'www.librepaper.com', sshHost.split('@')[1]];
+const deployNames = ['librepaper.org', 'app.librepaper.org', 'docs.librepaper.org', 'admin.librepaper.org', 'www.librepaper.org', 'librepaper.com', 'www.librepaper.com'];
 function defaultDnsRecords() {
   return deployNames.map((name) => `${name} A ${productionAddress}`);
 }
@@ -84,6 +84,7 @@ function fixture({
   sopsFailureKey = '',
   manageFailure = false,
   attestationFailure = false,
+  hostAddress = productionAddress,
 } = {}) {
   const root = mkdtempSync(path.join(os.tmpdir(), 'librepaper-deploy-test-'));
   const bin = path.join(root, 'bin');
@@ -114,6 +115,8 @@ for arg do
 done
 awk -v name="$name" -v type="$type" '$1 == name && $2 == type { print $3 }' "$DNS_ZONE"
 `);
+  // The fake host's addresses, as `ip -o addr show scope global` prints them.
+  mockCommand(bin, 'ip', `printf '2: ens3    inet %s/32 scope global ens3\\n' "$HOST_ADDRESS"`);
   mockCommand(bin, 'sops', `
 for arg do
   case "$arg" in
@@ -275,6 +278,7 @@ fi`);
       EVENTS_FILE: eventsFile,
       MANAGE_FAILURE: manageFailure ? '1' : '0',
       ATTESTATION_FAILURE: attestationFailure ? '1' : '0',
+      HOST_ADDRESS: hostAddress,
       DNS_ZONE: dnsFile,
       ADDRESSES: productionAddress,
       TMPDIR: temp,
@@ -569,6 +573,19 @@ test('a kit without a valid release-workflow attestation stops the deploy before
     assert.deepEqual(events(f).filter(([kind]) => ['ssh', 'rsync', 'docker'].includes(kind)), [], 'called the host');
     assert.deepEqual(readdirSync(f.remote), [], 'mutated the remote');
     assert.deepEqual(readdirSync(path.join(f.root, 'tmp')), [], 'left the downloaded kit behind');
+    assert.doesNotMatch(`${result.stdout}${result.stderr}`, /Done:|Upgrade:/);
+  } finally {
+    f.cleanup();
+  }
+});
+
+test('deploy refuses an ssh host that owns none of ADDRESSES, before writing remotely', () => {
+  const f = fixture({ hostAddress: '192.0.2.9' });
+  try {
+    const result = run(f, 'deploy', 'v0.0.24');
+    assert.notEqual(result.status, 0);
+    assert.match(result.stderr, /ubuntu@test-host has none of ADDRESSES \(15\.235\.24\.221\)/);
+    assert.deepEqual(readdirSync(f.remote), [], 'mutated the remote');
     assert.doesNotMatch(`${result.stdout}${result.stderr}`, /Done:|Upgrade:/);
   } finally {
     f.cleanup();

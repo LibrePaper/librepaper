@@ -110,9 +110,83 @@ docker compose exec backup resticprofile -c /etc/resticprofile/profiles.toml -n 
 
 Notes:
 
-- The restic password is fixed for the life of the repository. Keep a copy off the VPS: losing it loses every backup.
 - A backup records the database's migration version, and `admin restore` refuses a backup whose version differs from the binary's. Take a fresh backup after upgrading to a release that changes the migration history.
 - Set up [backup alerts](#backup-alerts) so a failed backup emails you.
+- After the first backup has created the repository, add `initialize = false` under `[resticprofile]`. A mistyped bucket or path then fails the run and the alert, instead of quietly starting an empty repository.
+- For hourly backups, set `schedule = "hourly"` and give the Healthchecks check a 1 hour period and a 2 hour grace. Every run reads all stored files, so revisit an hourly schedule once the data passes about 20 GiB.
+- A stored file that is missing from object storage does not stop the backup. The backup leaves it out, prints a `WARNING` line in the backup container's log, and lists it under `missing` in the backup's manifest. The snapshot is kept, but the run counts as failed, so the failure alert fires every hour until the file is back or no longer referenced. A `run-after` of your own in `resticprofile.toml` replaces this check.
+
+### Keys and passwords
+
+- The restic password is fixed for the life of the repository. Losing it loses every backup.
+- Keep the restic password in a password manager, separate from any file it is also rendered into.
+- If your secrets are encrypted with SOPS, add a second recovery key as a recipient (for example an age key from `age-keygen`) and keep it in your password manager or on paper. Losing your everyday key then does not lock you out.
+- Keep the two-factor recovery codes in the same place.
+
+### Bucket keys and versioning
+
+- Give the app and the backups separate buckets and separate keys.
+- Limit each key to its own bucket, with only the actions it needs.
+
+```json
+{
+  "Statement": [{
+    "Effect": "Allow",
+    "Action": [
+      "s3:GetObject", "s3:PutObject", "s3:DeleteObject",
+      "s3:ListBucket", "s3:GetBucketLocation",
+      "s3:ListBucketMultipartUploads", "s3:ListMultipartUploadParts", "s3:AbortMultipartUpload"
+    ],
+    "Resource": ["arn:aws:s3:::your-backups-bucket", "arn:aws:s3:::your-backups-bucket/*"]
+  }]
+}
+```
+
+- Turn on versioning for the backups bucket. The bucket then keeps the old copy when a file is changed or deleted, which protects against mistakes. Add a lifecycle rule that removes those old copies after 30 days, so storage does not grow forever.
+
+### A copy the server cannot delete
+
+The server needs a key that can write to the backups bucket, and that key can also delete from it. If someone takes over the server, they can erase your live data and your backups in one go. Bucket versioning keeps old copies of changed or deleted files, but on some providers the same key can delete those old copies too.
+
+The fix is a second copy that the server has no key for. Many object storage services, including AWS S3, OVHcloud and Backblaze B2, can copy every new file from one bucket to another bucket on their side. This is called replication. The server never talks to the second bucket, so it cannot damage it.
+
+Set it up in your provider's console:
+
+1. Create a second bucket, the replica, and turn on versioning in both buckets.
+2. Add a replication rule from the backups bucket to the replica. Turn on the option to replicate deletes, often called delete markers. A file deleted from the backups bucket then stays in the replica as an old version, which you can still restore.
+3. Copy the files that are already in the backups bucket. Replication only copies new files, and new snapshots depend on old ones. Most consoles have a one-time job for this, such as Batch Replication on AWS. Wait until it reports every file copied.
+4. Give the replica a lifecycle rule that removes old versions after 30 days. Without it, the replica keeps every file forever.
+5. Create a read-only key for the replica, under a different user from the one that owns the bucket. On some providers the owner can always delete, whatever its policy says. Keep that key on your own computer, never on the server. It needs the two version permissions, because a restore after an attack reads old versions. Some providers reject `s3:GetObjectVersion` and let `s3:GetObject` read old versions instead. Leave it out there. A new policy can take a few minutes to apply.
+
+```json
+{
+  "Statement": [{
+    "Effect": "Allow",
+    "Action": ["s3:GetObject", "s3:GetObjectVersion", "s3:ListBucket", "s3:ListBucketVersions", "s3:GetBucketLocation"],
+    "Resource": ["arn:aws:s3:::your-backups-replica", "arn:aws:s3:::your-backups-replica/*"]
+  }]
+}
+```
+
+Replication runs in the background, and nothing warns you if it stops. Check the replica from your own computer now and then. The `--no-lock` flag lets restic read without writing, which a read-only key cannot do.
+
+```sh
+export RESTIC_REPOSITORY=s3:s3.provider.example/your-backups-replica/restic
+export RESTIC_PASSWORD=... AWS_ACCESS_KEY_ID=... AWS_SECRET_ACCESS_KEY=...
+restic snapshots --no-lock --latest 1   # the newest snapshot should be about an hour old
+restic check --no-lock
+```
+
+Before you rely on the replica, restore the latest snapshot from it once with the same variables. It should finish without errors.
+
+```sh
+restic restore --no-lock latest --target /tmp/replica-test
+```
+
+- **To restore after an attack,** first copy the replica as it was before the damage, for example with `rclone copy --s3-version-at`. Then restore from that copy.
+- **A key that can add but not delete does not work.** Restic must delete its own lock files, and it stops a backup that cannot do so for about 22 minutes.
+- **The replica sits in the same provider account.** Someone who takes over that account reaches both buckets, which is why [Accounts](security.html#accounts) comes first.
+- **The replica gives you a window, not a permanent copy.** Deleted files stay for 30 days. Damage that goes unnoticed for longer cannot be undone from the replica.
 
 ### Inspect a backup
 
@@ -320,6 +394,44 @@ Every limit and the retention settings are listed, with their defaults, at the e
 - With [object storage](#object-storage), disk is no longer the constraint on `deployment_storage_mib`: set it to what you are willing to store.
 - `[retention]` deletes documents after `expire_after`, counted from the last update by default or from creation.
 - `erase_inactive_after` in `[retention]` erases accounts that have not signed in for that long, with every document they own. It is off by default and must be at least 60 days. The admin console shows how many accounts it will erase in the next 30 days.
+
+## Other apps on the same server
+
+Another web app can share the kit's Caddy. It then needs no host ports of its own, so it gets HTTPS and nothing skips Caddy. Join the app to LibrePaper's edge network in the app's own compose file:
+
+```yaml
+services:
+  web:
+    ports: !reset []   # publish nothing on the host
+    networks:
+      default:
+      librepaper:
+        aliases: [otherapp]
+networks:
+  librepaper:
+    name: librepaper_edge
+    external: true
+```
+
+Then give Caddy a site block in `caddy/local.d/otherapp.caddy`, with the port the app listens on inside its container:
+
+```
+other.example {
+	reverse_proxy otherapp:8000
+}
+```
+
+```sh
+# in the other app's directory
+docker compose up -d
+# in the LibrePaper directory
+docker compose exec -T caddy caddy validate --config /etc/caddy/Caddyfile --adapter caddyfile
+docker compose exec -T caddy caddy reload --config /etc/caddy/Caddyfile --adapter caddyfile
+```
+
+- Point the app's DNS name at the server before the reload. Caddy obtains the certificate for a named site block when it loads the block.
+- Upgrades never overwrite `local.d`.
+- Start LibrePaper before the other app, because LibrePaper's project creates the network. Do not run `docker compose down` in the LibrePaper directory while the other app is attached.
 
 ## Behind your own Caddy
 

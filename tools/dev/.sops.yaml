@@ -1,0 +1,6 @@
+# Same recipients as tools/deploy/.sops.yaml.
+creation_rules:
+  - path_regex: (^|/)keys\.yaml$
+    age: >-
+      age1zlp9lzrcszhrac3x8p5nmtnrkagqrsjvrkucglngafdecs9fs4eqnfcz4z,
+      age1tsqkxrcxanj3wxv8rvr3d3t7z84g7gswea2jrl0u4a6zd47qw9gqm67nk2

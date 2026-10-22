@@ -22,6 +22,9 @@ source = ["/usr/local/bin/librepaper-backup-export"]
 # restic runs the export and stores its stdout. It saves no snapshot when the export fails.
 stdin-from-command = true
 stdin-filename = "librepaper-backup.tar"
+# A backup that had to leave stored files out still keeps its snapshot, but
+# counts as failed so the failure alert fires. An operator run-after replaces this.
+run-after = "/usr/local/bin/librepaper-backup-missing-check"
 
 [resticprofile.retention]
 after-backup = true

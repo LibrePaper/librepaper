@@ -315,6 +315,7 @@ Caddy obtains a certificate the first time a name is visited, so the first reque
 ./manage upgrade v0.0.25    # a specific release
 ```
 
+- It verifies the downloaded kit's attestation with cosign, run from a pinned Docker image, before it runs anything from the kit. Releases before this check have no bundle file. For one of those, `gh attestation download librepaper-deploy.tar.gz --repo LibrePaper/librepaper` fetches the bundle. Verify the kit as in [Upgrades](security.html#upgrades) and pass it with `LIBREPAPER_KIT`, or add `--unverified`.
 - It backs up first when backups are configured. `--no-backup` skips this.
 - It checks your configuration with the new release before switching. If a check fails, nothing switches.
 - It keeps your `.toml` files and `caddy/local.d/`.
