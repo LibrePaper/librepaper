@@ -208,7 +208,11 @@ mod proxy_tests {
 
     #[test]
     fn a_return_path_cannot_normalise_into_a_scheme_relative_url() {
-        for next in ["/.//evil.example", "/..//evil.example", "/a/..//evil.example"] {
+        for next in [
+            "/.//evil.example",
+            "/..//evil.example",
+            "/a/..//evil.example",
+        ] {
             assert_eq!(local_path(next), "/", "{next}");
         }
         assert_eq!(local_path("/docs/x?a=1"), "/docs/x?a=1");

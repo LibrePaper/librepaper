@@ -121,7 +121,11 @@ async fn a_trashed_document_cannot_be_forked_or_read_for_assets() {
         .server
         .handle_asset_read(&headers, &context, &deployment.slug, &sha)
         .await;
-    assert_eq!(live.status(), 200, "the figure reads while the project lives");
+    assert_eq!(
+        live.status(),
+        200,
+        "the figure reads while the project lives"
+    );
 
     trash(&deployment, &headers).await;
 
