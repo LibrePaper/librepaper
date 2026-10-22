@@ -67,7 +67,7 @@
     const documentSlug = slug;
     if (open) {
       load(documentSlug);
-      return () => { generation += 1; editing = null; confirming = null; reveal = null; };
+      return () => { generation += 1; editing = null; confirming = null; reveal = null; copyFallback = ""; };
     }
   });
 
@@ -157,8 +157,12 @@
     if (!reveal) focusBack("");
   }
 
+  // The manual-copy fallback may hold the token or its configuration, so it
+  // goes with the reveal.
   function done() {
     reveal = null;
+    copyFallback = "";
+    error = "";
     focusBack("");
   }
 
@@ -200,9 +204,7 @@
 {#snippet list(kind)}
   {@const active = activeOf(kind)}
   {@const expired = expiredOf(kind)}
-  {#if editing?.mode === "create" && editing.kind === kind}
-    <ShareForm {kind} mode="create" bind:draft {busy} {allowed} onsubmit={commit} oncancel={cancelForm} />
-  {:else}
+  {#if !(editing?.mode === "create" && editing.kind === kind)}
     <div class="share-toolbar">
       <span class="share-count">{countOf(kind)}</span>
       <button type="button" class="share-new" data-share-new disabled={busy || editing !== null} onclick={() => startCreate(kind)}>
@@ -211,6 +213,10 @@
     </div>
   {/if}
   <div class="share-scroll">
+    <!-- Inside the scroller, so a short panel still reaches the form's buttons. -->
+    {#if editing?.mode === "create" && editing.kind === kind}
+      <ShareForm {kind} mode="create" bind:draft {busy} {allowed} onsubmit={commit} oncancel={cancelForm} />
+    {/if}
     {#if active.length === 0}
       <p class="panel-meta">{kind === "link" ? "No sharing links yet." : "No agent tokens yet."}</p>
     {:else}

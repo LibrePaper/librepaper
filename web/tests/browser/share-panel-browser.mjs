@@ -244,6 +244,7 @@ window.sharePanelCheck = async () => {
   check(![...document.querySelectorAll(".share-form option")].some((node) => node.textContent === "Never"), "and cannot be made to last forever");
   check(text().includes("Its comments and suggestions appear under this name."), "the helper line");
   const tokenForm = document.querySelector(".share-form");
+  check(tokenForm.closest(".share-scroll"), "the new form scrolls with the list, so a short panel reaches its buttons");
   await type(tokenForm.querySelector("input[type=text]"), "Codex");
   await type(tokenForm.querySelectorAll("select")[0], "suggester");
   await press(button("Create token"));
@@ -274,8 +275,15 @@ window.sharePanelCheck = async () => {
   await pick("More actions for Codex", "Replace token");
   check(text().includes("Replace token?") && text().includes("The agent will need the new token."), "replacing a token asks first");
   await press([...document.querySelectorAll('[role="dialog"] button')].find((node) => node.textContent.trim() === "Replace token"));
-  check(document.querySelector('input[aria-label="Agent token"]')?.value.startsWith("lpt_paper.rotated"), "a replaced token is shown once too");
+  const rotated = document.querySelector('input[aria-label="Agent token"]')?.value || "";
+  check(rotated.startsWith("lpt_paper.rotated"), "a replaced token is shown once too");
+  const clipboard = navigator.clipboard.writeText;
+  navigator.clipboard.writeText = async () => { throw new Error("blocked"); };
+  await press(button("Copy token"));
+  check(document.querySelector('textarea[aria-label="Text to copy manually"]')?.value === rotated, "a blocked copy offers the token to copy by hand");
+  navigator.clipboard.writeText = clipboard;
   await press(button("Done"));
+  check(!document.querySelector('textarea[aria-label="Text to copy manually"]') && !text().includes(rotated), "Done also clears the manual copy");
   await pick("More actions for Codex", "Revoke token");
   check(text().includes("Revoke token?") && text().includes("The agent loses access at once."), "revoking a token asks first");
   await press([...document.querySelectorAll('[role="dialog"] button')].find((node) => node.textContent.trim() === "Revoke token"));
