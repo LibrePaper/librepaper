@@ -1,11 +1,10 @@
 // On a shared computer the next person must not be able to open what the
 // last one edited. Projects and rendered pages are kept in this browser, so
-// signing out deletes all of them. The forge database holds the GitHub tokens.
+// signing out deletes all of them.
 export const OFFLINE_DATABASE = "librepaper-offline-v2";
 export const PREVIEW_DATABASE = "librepaper-preview-v1";
-export const FORGE_DATABASE = "librepaper-forge-v1";
 
-const DATABASES = [OFFLINE_DATABASE, PREVIEW_DATABASE, FORGE_DATABASE];
+const DATABASES = [OFFLINE_DATABASE, PREVIEW_DATABASE];
 const CHANNEL = "librepaper-local-data";
 
 // Set once this tab has signed out, or heard another tab do so. Writers check

@@ -2,7 +2,7 @@
 
 import assert from "node:assert/strict";
 
-import { syncRules } from "../../src/lib/forge/rules.js";
+import { syncRules } from "../../src/lib/gitsync/rules.js";
 
 const rules = {
   text_extensions: [".tex", ".md", ".qmd", ".bib", ".csv"],
@@ -16,7 +16,7 @@ const blob = (path, size = 10, extra = {}) => ({
   path,
   mode: "100644",
   type: "blob",
-  sha: `sha-${path}`,
+  id: `sha-${path}`,
   size,
   ...extra,
 });
@@ -43,8 +43,8 @@ function classify(entries, options = {}) {
     blob("main.aux"),
     blob("link.md", 3, { mode: "120000" }),
     blob("huge.md", 5000),
-    { path: "fig", mode: "040000", type: "tree", sha: "t" },
-    { path: "sub", mode: "160000", type: "commit", sha: "c" },
+    { path: "fig", mode: "040000", type: "tree", id: "t" },
+    { path: "sub", mode: "160000", type: "commit", id: "c" },
   ]);
   assert.deepEqual([...result.synced.keys()], ["paper.qmd", "fig/a.png"]);
   assert.equal(result.synced.get("paper.qmd").kind, "text");
