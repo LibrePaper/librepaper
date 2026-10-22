@@ -137,13 +137,12 @@ pub(super) fn link_expiry(asked: &str) -> Result<String, String> {
         .ok_or_else(|| "that expiry is too far away".to_string())
 }
 
-/// A token's role word, as the stored role it maps to: `commenter` for a
-/// comment token, `suggester` for a suggest token that proposes and never
-/// writes source, and `editor` for an edit token.
+/// A token's role word, as the stored role it maps to: the same three words
+/// a share link takes.
 pub(super) fn parse_token_role(value: &str) -> Option<&'static str> {
     match value.trim().to_ascii_lowercase().as_str() {
+        "read" | "reader" => Some("reader"),
         "comment" | "commenter" => Some("commenter"),
-        "suggest" | "suggester" => Some("suggester"),
         "edit" | "editor" => Some("editor"),
         _ => None,
     }
@@ -497,7 +496,7 @@ impl Server {
             }
             "token" => {
                 let role =
-                    parse_token_role(&wanted.role).ok_or("a token is 'comment', 'suggest' or 'edit'")?;
+                    parse_token_role(&wanted.role).ok_or("a token is 'read', 'comment' or 'edit'")?;
                 if name.is_empty() {
                     return Err("a token needs a name".to_string());
                 }

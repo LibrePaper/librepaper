@@ -1,6 +1,6 @@
 <script>
   import { onMount } from "svelte";
-  import { EXPIRIES, rolesOf, fullDateOf } from "./shared.js";
+  import { EXPIRIES, ROLES, fullDateOf } from "./shared.js";
 
   // The new and the edit form for a link or a token. Permission is chosen
   // when something is created and fixed afterwards.
@@ -12,7 +12,7 @@
   const expiries = $derived(kind === "token" ? EXPIRIES.filter(([value]) => value !== "never") : EXPIRIES);
   const needsName = $derived(kind === "token");
   const valid = $derived(!needsName || draft.name.trim() !== "");
-  const spends = $derived(kind === "token" || draft.role !== "reader");
+  const spends = $derived(draft.role !== "reader");
 </script>
 
 <form class="share-form" onsubmit={(event) => { event.preventDefault(); if (valid && !busy) onsubmit(); }}>
@@ -23,7 +23,7 @@
   {#if creating}
     <label class="share-field panel-meta">Permission
       <select class="select share-select" bind:value={draft.role} disabled={busy} onchange={(event) => { if (kind === "token" && event.currentTarget.value === "editor" && draft.until === "7d") draft.until = "1d"; }}>
-        {#each rolesOf(kind) as role (role.id)}
+        {#each ROLES as role (role.id)}
           <option value={role.id} disabled={!allowed(role.id)}>{role.label}{allowed(role.id) ? "" : " (not allowed here)"}</option>
         {/each}
       </select>

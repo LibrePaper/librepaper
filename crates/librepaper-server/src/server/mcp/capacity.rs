@@ -113,7 +113,6 @@ mod tests {
             automation: true,
             bearer: true,
             auth_failed: false,
-            suggest_only: false,
             token: None,
         }
     }

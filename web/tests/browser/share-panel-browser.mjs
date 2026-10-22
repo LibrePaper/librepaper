@@ -248,7 +248,7 @@ window.sharePanelCheck = async () => {
   await type(tokenForm.querySelector("input[type=text]"), "Codex");
   const roleSelect = tokenForm.querySelectorAll("select")[0];
   const permissions = [...roleSelect.options].map((node) => node.textContent).join("|");
-  check(permissions === "Comment|Suggest|Edit", "the token permissions: " + permissions);
+  check(permissions === "Read|Comment|Edit", "the token permissions: " + permissions);
   check(!text().includes("Edit lets the agent change the project directly, without review."), "no warning until Edit is chosen");
   await type(roleSelect, "editor");
   check(text().includes("Edit lets the agent change the project directly, without review."), "choosing Edit shows the warning: " + text());

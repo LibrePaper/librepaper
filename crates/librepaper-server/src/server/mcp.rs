@@ -271,20 +271,17 @@ impl Server {
             return sign_in_to_read();
         }
         // MCP exposes source views, ranges, candidate trees, and source
-        // mutations. A commenter is admitted because a comment has to be
-        // written against the source it quotes; every mutation is gated per
-        // tool below, so a commenter reaches comments and nothing that
-        // touches source. A reader cannot use it at all, through a link or
-        // an ambient signed-in identity. A commenter is also offered only
-        // the tools it can call, so it never sees the editor-only ones.
-        if !who.at_least(Role::Commenter) || !self.may_read(&entry, &who) {
+        // mutations. A reader is admitted to read; every other tool is gated
+        // per tool below, so a reader reaches the source and nothing that
+        // writes. A caller is offered only the tools its role can call.
+        if !who.at_least(Role::Reader) || !self.may_read(&entry, &who) {
             return plain(404, "not found");
         }
         let mut reply = write_json(
             200,
             &json!({
                 "instructions": INSTRUCTIONS,
-                "tools": schema::served_tools(who.at_least(Role::Editor), who.suggest_only),
+                "tools": schema::served_tools(who.role),
             }),
         );
         set(&mut reply, "cache-control", "no-store");
@@ -346,7 +343,7 @@ impl Server {
         if self.needs_sign_in(&entry, &who) {
             return sign_in_to_read();
         }
-        if !who.at_least(Role::Commenter) || !self.may_read(&entry, &who) {
+        if !who.at_least(Role::Reader) || !self.may_read(&entry, &who) {
             return plain(404, "not found");
         }
         if !schema::tools().iter().any(|tool| tool["name"] == name) {
@@ -699,7 +696,7 @@ impl Server {
             }
         };
         let author = self.mcp_author(headers, arrival, who, actor);
-        let editor = who.edits_source();
+        let editor = who.at_least(Role::Editor);
         for query in wanted {
             let fingerprint = librepaper_room::room::agent_query::query_fingerprint(query);
             // Where this query continues, if it is a continuation. The
@@ -916,7 +913,7 @@ impl Server {
         // `handle_mcp` rechecks access around every tool call already; a
         // second recheck here only re-served the same permissions computed
         // moments earlier from `who`.
-        result["permissions"] = json!({"read":true,"suggest":who.at_least(Role::Editor),"comment":who.at_least(Role::Commenter),"apply":who.edits_source()});
+        result["permissions"] = json!({"read":true,"suggest":who.at_least(Role::Editor),"comment":who.at_least(Role::Commenter),"apply":who.at_least(Role::Editor)});
         result["limits"] = json!({"control_bytes":MAX_MESSAGE,"source_bytes":self.config.log_quota_bytes,"queries":8,"patches":100,"view_lifetime_seconds":3600,"concurrent_reads":8,"concurrent_effects":8,"concurrent_results":4});
         // The only place a final size is computed: inserting
         // `returned_bytes`/`estimated_tokens` changes the serialized size,
