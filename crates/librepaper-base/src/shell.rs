@@ -31,8 +31,9 @@ pub struct ShellFile {
     /// one, so serving a bundle costs no compression work per request.
     pub brotli: Option<axum::body::Bytes>,
     /// A file whose bytes never change under this name, so it can be cached
-    /// for a year rather than five minutes. Everything the bundler names for
-    /// its own contents is one.
+    /// for a year. Other files are cached for five minutes, and HTML pages are
+    /// revalidated on every load. Everything the bundler names for its own
+    /// contents is one.
     pub immutable: bool,
 }
 

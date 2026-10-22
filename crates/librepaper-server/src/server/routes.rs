@@ -690,7 +690,8 @@ pub(super) async fn dispatch(
                 let mut response = Response::new(Body::from(asset.body.clone()));
                 set(&mut response, "content-type", asset.kind);
                 privacy_headers(&mut response);
-                set(&mut response, "cache-control", "public, max-age=300");
+                // Unhashed, so it must be revalidated to match this deployment.
+                set(&mut response, "cache-control", "no-cache");
                 return response;
             }
         }
