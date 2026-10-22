@@ -5,6 +5,8 @@
 //! code units, matching JavaScript and the browser; that is enforced by the
 //! *_utf16 family of methods with no exceptions and no conversion.
 
+use std::borrow::Cow;
+
 use loro::{LoroDoc, LoroMap, LoroText};
 
 use super::shape::{mint_id, ASSETS, FILES, MAIN, META, PATHS};
@@ -60,12 +62,26 @@ fn id_of_path(path_map: &LoroMap, path: &str) -> Option<String> {
     None
 }
 
+/// A file body never holds a carriage return. The browser editor counts a
+/// CRLF as one line break while a LoroText keeps both characters, and the
+/// editor copies its offsets straight into the text, so a body with CRLF
+/// shifts every edit made on it (gh#74). Every route that writes a whole
+/// body passes through here, and the room passes an agent's replacement
+/// through it as well.
+pub fn line_feeds(body: &str) -> Cow<'_, str> {
+    if !body.contains('\r') {
+        return Cow::Borrowed(body);
+    }
+    Cow::Owned(body.replace("\r\n", "\n").replace('\r', "\n"))
+}
+
 /// Replaces a file's text with `wanted`. This is how a command-line
 /// publish, a `sync` write and a restore all reach the live document.
 /// `path` names the file when the document has none yet, which is the
 /// case for a document being seeded from what it was published with. A
 /// document that already has one keeps it: this writes words, never names.
 pub fn replace_text(doc: &LoroDoc, wanted: &str, path: &str) {
+    let wanted = line_feeds(wanted);
     let (files, path_map, _, meta) = maps(doc);
     let id = match string_at(&meta, MAIN) {
         Some(id) => id,
@@ -76,13 +92,13 @@ pub fn replace_text(doc: &LoroDoc, wanted: &str, path: &str) {
             if let Ok(text) = files.insert_container(&id, LoroText::new()) {
                 path_map.insert(&id, path).ok();
                 meta.insert(MAIN, id.as_str()).ok();
-                text.update(wanted, loro::UpdateOptions::default()).ok();
+                text.update(&wanted, loro::UpdateOptions::default()).ok();
             }
             return;
         }
     };
     if let Some(text) = text_at(&files, &id) {
-        text.update(wanted, loro::UpdateOptions::default()).ok();
+        text.update(&wanted, loro::UpdateOptions::default()).ok();
     }
 }
 
@@ -143,14 +159,15 @@ pub fn apply_edits_at(doc: &LoroDoc, path: &str, edits: &[Edit]) -> bool {
 
 /// Puts a text at a path, making the file if there is none there. Returns its
 /// id. What a publish of a directory and a restore both build the document
-/// with.
+/// with. The body is stored with LF line endings.
 pub fn put_text(doc: &LoroDoc, path: &str, body: &str) -> String {
+    let body = line_feeds(body);
     let (files, path_map, _, _) = maps(doc);
     let existing = id_of_path(&path_map, path);
     match existing {
         Some(id) => {
             if let Some(text) = text_at(&files, &id) {
-                text.update(body, loro::UpdateOptions::default()).ok();
+                text.update(&body, loro::UpdateOptions::default()).ok();
             }
             id
         }
@@ -159,7 +176,7 @@ pub fn put_text(doc: &LoroDoc, path: &str, body: &str) -> String {
             if let Ok(text) = files.insert_container(&id, LoroText::new()) {
                 path_map.insert(&id, path).ok();
                 if !body.is_empty() {
-                    text.insert_utf16(0, body).ok();
+                    text.insert_utf16(0, &body).ok();
                 }
             }
             id
@@ -170,6 +187,7 @@ pub fn put_text(doc: &LoroDoc, path: &str, body: &str) -> String {
 /// Creates a text under a caller-supplied stable id. Restore uses this only
 /// after proving that neither the id nor path exists in the live document.
 pub fn put_text_with_id(doc: &LoroDoc, id: &str, path: &str, body: &str) -> bool {
+    let body = line_feeds(body);
     let (files, path_map, _, _) = maps(doc);
     if text_at(&files, id).is_some() || id_of_path(&path_map, path).is_some() {
         return false;
@@ -179,7 +197,7 @@ pub fn put_text_with_id(doc: &LoroDoc, id: &str, path: &str, body: &str) -> bool
     };
     path_map.insert(id, path).ok();
     if !body.is_empty() {
-        text.insert_utf16(0, body).ok();
+        text.insert_utf16(0, &body).ok();
     }
     true
 }
