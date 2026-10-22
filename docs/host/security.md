@@ -85,7 +85,17 @@ nc -z -w5 203.0.113.10 18080
 
 ### Private access with Tailscale
 
-Tailscale lets you close SSH and the admin console to the internet while the app and documents stay public.
+Only you need SSH and the admin console, so they do not have to be open to the whole internet.
+
+- **With a fixed IP address**, you can skip Tailscale. Allow SSH only from that address in the provider firewall. Limit the admin console to it with a `remote_ip` matcher like the one in step 5 below.
+- **Without one**, an allow list breaks whenever your address changes. Home connections get new addresses from time to time, and a laptop changes address with every network it joins.
+
+[Tailscale](https://tailscale.com) solves this. It is a hosted service that joins your devices into a private network, called a tailnet, over encrypted WireGuard connections. Each device keeps the same private address in `100.64.0.0/10` on any network. The server joins as one more device. SSH and the admin console then answer only tailnet addresses, while the app and documents stay public.
+
+- Traffic between devices is end-to-end encrypted. Tailscale's coordination servers decide which devices belong to your tailnet, so you trust them with that.
+- The free plan covers personal use. [Headscale](https://github.com/juanfont/headscale) is a self-hosted replacement for the coordination server.
+
+The setup takes seven steps.
 
 1. Tag the server in the tailnet policy. Let your own devices reach it on ports 22 and 443 only. The server reaches none of your devices.
 
