@@ -1281,6 +1281,32 @@ const baseFiles = (repo) => {
   assert.ok(!repo.refs.has("op-big/base"));
 }
 
+// A resolution whose answer was lost, then applied on the server, finishes its
+// conflict session when recovery sends it again.
+{
+  const { repo, session, api, ctx } = await connected({ "intro.qmd": "same\n" });
+  await session.setText("intro.qmd", "local\n");
+  repo.advance({ "intro.qmd": "remote\n" });
+  const conflict = await sync.pull(ctx);
+  await sync.saveResolutions(ctx, conflict.session, { "intro.qmd": { text: "both\n" } });
+  const original = api.sourceChange;
+  api.sourceChange = async (body) => {
+    await original(body);
+    throw new TypeError("network error");
+  };
+  await assert.rejects(sync.applyResolution(ctx, (await sync.status(ctx)).conflict));
+  // The server remembers the operation id and answers the same request 200.
+  api.sourceChange = async () => ({ receipt: {}, link: structuredClone(api.state.link), version: api.state.version });
+  assert.ok(repo.journal.some((entry) => entry.kind === "conflict"));
+  const settled = await sync.recover(ctx);
+  assert.equal(settled.conflict, null);
+  assert.equal(settled.pending.length, 0);
+  assert.equal(settled.recovered.length, 1);
+  assert.ok(!repo.journal.some((entry) => entry.kind === "conflict"));
+  assert.deepEqual(repo.journal, []);
+  assert.equal((await sync.status(ctx)).conflict, null);
+}
+
 // A file that starts with a byte order mark keeps it when its conflict is resolved.
 {
   const bom = "\uFEFF";
