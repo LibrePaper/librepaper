@@ -31,6 +31,7 @@ export const nav = [
     pages: [
       { path: "host/simple", label: "Simple deployment" },
       { path: "host/advanced", label: "Advanced features" },
+      { path: "host/security", label: "Security" },
     ],
   },
   {
