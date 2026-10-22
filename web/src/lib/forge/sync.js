@@ -56,6 +56,24 @@ function changeFiles(change) {
   return paths.size;
 }
 
+/**
+ * @typedef {object} PullResult
+ * @property {string} [status]
+ * @property {any} [files]
+ * @property {any[]} [conflicts]
+ * @property {any[]} [refusals]
+ * @property {any[]} [skipped]
+ * @property {any} [link]
+ * @property {boolean} [arrived]
+ * @property {any} [commit]
+ * @property {string} [retry]
+ */
+
+/**
+ * @param {string} status
+ * @param {PullResult} [extra]
+ * @returns {PullResult}
+ */
 function result(status, extra = {}) {
   return { status, files: 0, conflicts: [], refusals: [], skipped: [], link: null, ...extra };
 }
@@ -148,6 +166,7 @@ export async function pull(ctx) {
   throw new Error("The link kept changing during the pull. Try again.");
 }
 
+/** @returns {Promise<PullResult>} */
 async function pullOnce(ctx, store) {
   const link = await requireLink(ctx);
   const repo = link.repository;

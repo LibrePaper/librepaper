@@ -2512,6 +2512,8 @@
     showPanel(next);
     if (width <= 760) showMobileView(next ? "sidebar" : "document");
   }
+  // The GitHub app the deployment offers, or null when sync is not configured.
+  let forgeGitHub = $state(null);
   // The tabs this browser is offered. Which reader may see which panel is
   // written with the panels, in lib/panels.js; this only says who is asking.
   const tabs = $derived(tabsFor({ role: doc.role, mayEdit, editing, canSeeSharing, canPublish, forge: Boolean(forgeGitHub) }));
@@ -2921,8 +2923,6 @@
   const editorFormat = $derived(toolbarPath ? renderers.formatOf(toolbarPath) : sourceFormat);
   const canPreviewFile = $derived(files.some((file) =>
     file.id === openFile && file.kind === "text" && Boolean(renderers.previewFormatOf(file.path))));
-  // The GitHub app the deployment offers, or null when sync is not configured.
-  let forgeGitHub = $state(null);
   loadConfig()
     .then((answer) => {
       forgeGitHub = answer?.forge?.github || null;

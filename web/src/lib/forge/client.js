@@ -7,7 +7,9 @@ import { authHeaders } from "../api.js";
 async function parse(response) {
   const body = await response.json().catch(() => null);
   if (!response.ok) {
-    const error = new Error(body?.error || `The server answered ${response.status}.`);
+    const error = /** @type {Error & { status?: number, body?: any }} */ (
+      new Error(body?.error || `The server answered ${response.status}.`)
+    );
     error.status = response.status;
     error.body = body || {};
     throw error;
