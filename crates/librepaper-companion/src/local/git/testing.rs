@@ -314,6 +314,61 @@ async fn a_merge_reports_each_conflict_with_its_three_stages() {
 }
 
 #[tokio::test]
+async fn a_rename_with_an_edit_conflicts_with_an_edit_at_the_old_path() {
+    let fx = Fixture::new();
+    fx.connect().await;
+    let base_text = "1\n2\n3\n4\n5\n6\n7\n8\n";
+    let base = fx.commit(&[], &[("x.txt", base_text)]).await;
+    let ours = fx
+        .commit(&[&base], &[("x.txt", "one\n2\n3\n4\n5\n6\n7\n8\n")])
+        .await;
+    let theirs = fx
+        .commit(&[&base], &[("y.txt", "1\n2\n3\n4\n5\n6\n7\neight\n")])
+        .await;
+    let merged = fx
+        .ok("merge", json!({"ours": ours, "theirs": theirs}))
+        .await;
+    assert_eq!(merged["clean"], false);
+    let conflicts = merged["conflicts"].as_array().unwrap();
+    let conflict = conflicts.iter().find(|c| c["path"] == "x.txt").unwrap();
+    assert!(conflict["base"].is_string());
+    assert!(conflict["ours"].is_string());
+    assert!(conflict["theirs"].is_null());
+    let listing = fx.ok("tree", json!({"commit": merged["tree"]})).await;
+    let paths: Vec<&str> = listing["entries"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|e| e["path"].as_str())
+        .collect();
+    assert!(paths.contains(&"y.txt"), "{paths:?}");
+}
+
+#[tokio::test]
+async fn a_renamed_and_edited_asset_conflicts_with_an_edit_at_the_old_path() {
+    let fx = Fixture::new();
+    fx.connect().await;
+    let base = fx
+        .commit(&[], &[("fig.pdf", "l1\nl2\nl3\nl4\nl5\nl6\nl7\nl8\n")])
+        .await;
+    let ours = fx
+        .commit(&[&base], &[("fig.pdf", "L1\nl2\nl3\nl4\nl5\nl6\nl7\nl8\n")])
+        .await;
+    let theirs = fx
+        .commit(&[&base], &[("img.pdf", "l1\nl2\nl3\nl4\nl5\nl6\nl7\nL8\n")])
+        .await;
+    let merged = fx
+        .ok("merge", json!({"ours": ours, "theirs": theirs}))
+        .await;
+    assert_eq!(merged["clean"], false);
+    assert!(merged["conflicts"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|c| c["path"] == "fig.pdf"));
+}
+
+#[tokio::test]
 async fn a_delete_against_an_edit_leaves_one_stage_empty() {
     let fx = Fixture::new();
     fx.connect().await;
