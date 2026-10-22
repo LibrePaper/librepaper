@@ -8,9 +8,19 @@ import { gitRequest } from "../desktop/client.js";
 const BLOB_BATCH_BYTES = 24 * 1024 * 1024;
 /// How many blobs go in one call when their sizes are not known.
 const BLOB_BATCH_COUNT = 64;
-/// How much a `put-blobs` call carries before it is split. The service takes
-/// 32 MiB of JSON and base64 is a third larger than the bytes.
-const PUT_BATCH_BYTES = 16 * 1024 * 1024;
+/// How much a `put-blobs` call carries before it is split, counted in
+/// serialized bytes. The service takes 32 MiB of JSON.
+const PUT_BATCH_BYTES = 24 * 1024 * 1024;
+const utf8 = new TextEncoder();
+
+/// The most bytes a blob takes in a request. Text counts its UTF-8 bytes twice,
+/// which covers the escapes JSON adds for quotes, backslashes and control
+/// characters. Base64 is ASCII and has no escapes.
+function wireBytes(wire) {
+  const slack = 128;
+  if (typeof wire.text === "string") return utf8.encode(wire.text).length * 2 + slack;
+  return wire.base64.length + (wire.sha256?.length ?? 0) + slack;
+}
 const KNOWN_BATCH = 512;
 
 export function bytesToBase64(bytes) {
@@ -101,31 +111,40 @@ export function createBridge(request = gitRequest) {
     /// Writes blobs and answers their ids in order. An item is `{ text }`,
     /// `{ bytes, sha256? }` or `{ base64, sha256? }`.
     async putBlobs(items) {
+      const wires = items.map((item) => {
+        if (typeof item.text === "string") return { text: item.text };
+        const base64 = item.base64 ?? bytesToBase64(item.bytes);
+        return item.sha256 ? { base64, sha256: item.sha256 } : { base64 };
+      });
       const ids = [];
+      // A call the service refuses as too large is halved and asked again; a
+      // single blob it refuses alone is an error.
+      const send = async (batch) => {
+        let answer;
+        try {
+          answer = await request("put-blobs", { blobs: batch });
+        } catch (error) {
+          if (error?.status !== 413 || batch.length < 2) throw error;
+          const half = Math.ceil(batch.length / 2);
+          await send(batch.slice(0, half));
+          await send(batch.slice(half));
+          return;
+        }
+        ids.push(...answer.ids);
+      };
       let batch = [];
       let weight = 0;
-      const flush = async () => {
-        if (!batch.length) return;
-        const answer = await request("put-blobs", { blobs: batch });
-        ids.push(...answer.ids);
-        batch = [];
-        weight = 0;
-      };
-      for (const item of items) {
-        let wire;
-        if (typeof item.text === "string") {
-          wire = { text: item.text };
-        } else {
-          wire = item.sha256
-            ? { base64: item.base64 ?? bytesToBase64(item.bytes), sha256: item.sha256 }
-            : { base64: item.base64 ?? bytesToBase64(item.bytes) };
+      for (const wire of wires) {
+        const cost = wireBytes(wire);
+        if (batch.length && weight + cost > PUT_BATCH_BYTES) {
+          await send(batch);
+          batch = [];
+          weight = 0;
         }
-        const cost = (wire.text ?? wire.base64).length;
-        if (batch.length && weight + cost > PUT_BATCH_BYTES) await flush();
         batch.push(wire);
         weight += cost;
       }
-      await flush();
+      if (batch.length) await send(batch);
       return ids;
     },
 
