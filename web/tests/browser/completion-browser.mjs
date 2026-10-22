@@ -5,6 +5,7 @@ import { createServer } from "node:http";
 import { spawn } from "node:child_process";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { createHash } from "node:crypto";
 import { existsSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { requireChromiumExecutable } from "../helpers/browser-executable.mjs";
@@ -15,6 +16,10 @@ const temporary = mkdtempSync(join(tmpdir(), "librepaper-completion-check-"));
 const output = join(temporary, "build"), profile = join(temporary, "chrome"), entry = join(temporary, "entry.js");
 const port = 37000 + Math.floor(Math.random() * 1000);
 const typstWasm = process.env.LIBREPAPER_TYPST_WASM || join(root, "web/wasm/typst.wasm");
+// The renderer checks a module against the digest in its URL, as the mirror lays it out.
+const digestUrl = (file, name) => `/wasm/${createHash("sha256").update(readFileSync(file)).digest("hex")}/${name}.wasm`;
+const bibliographyUrl = digestUrl(join(root, "web/wasm/bibliography.wasm"), "bibliography");
+const typstUrl = existsSync(typstWasm) ? digestUrl(typstWasm, "typst") : "/wasm/missing/typst.wasm";
 const imports = (path) => JSON.stringify(join(root, path));
 writeFileSync(entry, [
   "import { tick } from " + imports("web/node_modules/svelte/src/index-client.js") + ";",
@@ -24,7 +29,7 @@ writeFileSync(entry, [
   "import { createClassComponent } from " + imports("web/node_modules/svelte/src/legacy/legacy-client.js") + ";",
   "import { join as joinSession } from " + imports("web/src/lib/collab.js") + ";",
   "import Editor from " + imports("web/src/components/Editor.svelte") + ";",
-  "globalThis.LIBREPAPER_MODULES = { bibliography: '/bibliography.wasm', typst: '/typst.wasm' };",
+  `globalThis.LIBREPAPER_MODULES = { bibliography: ${JSON.stringify(bibliographyUrl)}, typst: ${JSON.stringify(typstUrl)} };`,
   "const pause = (ms) => new Promise((resolve) => setTimeout(resolve, ms));",
   "window.completionReady = async () => { await tick(); return Boolean(document.body); };",
   `window.completionRun = async (spec) => {
@@ -78,7 +83,7 @@ writeFileSync(entry, [
     }
   };`,
   `window.completionTypstSupport = async () => {
-    const response = await fetch("/typst.wasm");
+    const response = await fetch(${JSON.stringify(typstUrl)});
     if (!response.ok) return "missing";
     const module = await WebAssembly.compile(await response.arrayBuffer());
     return WebAssembly.Module.exports(module).some((item) => item.name === "complete") ? "ok" : "no-complete";
@@ -155,8 +160,8 @@ let server, browser, socket;
 try {
   await build({ configFile: false, root: join(root, "web"), plugins: [svelte()], logLevel: "error", build: { outDir: output, emptyOutDir: true, lib: { entry, formats: ["es"], fileName: () => "completion-check.js" } } });
   server = createServer((request, response) => {
-    if (request.url === "/bibliography.wasm") { response.setHeader("Content-Type", "application/wasm"); response.end(readFileSync(join(root, "web/wasm/bibliography.wasm"))); return; }
-    if (request.url === "/typst.wasm") {
+    if (request.url === bibliographyUrl) { response.setHeader("Content-Type", "application/wasm"); response.end(readFileSync(join(root, "web/wasm/bibliography.wasm"))); return; }
+    if (request.url === typstUrl) {
       if (!existsSync(typstWasm)) { response.statusCode = 404; response.end(); return; }
       response.setHeader("Content-Type", "application/wasm"); response.end(readFileSync(typstWasm)); return;
     }

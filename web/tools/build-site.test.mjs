@@ -40,6 +40,7 @@ test("a second docs build removes pages absent from the current nav and sources"
     for (const [source, destination] of [
       [join(here, "build-site.mjs"), join(root, "web/tools/build-site.mjs")],
       [join(here, "../src/lib/renderer-wasm.js"), join(root, "web/src/lib/renderer-wasm.js")],
+      [join(here, "../src/lib/digest.js"), join(root, "web/src/lib/digest.js")],
       [join(here, "../wasm/markdown.wasm"), join(root, "web/wasm/markdown.wasm")],
     ]) {
       await copyIntoFixture(source, destination);
