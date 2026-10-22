@@ -495,8 +495,8 @@ impl Server {
                 json!({"id": grant.id(), "kind": "link", "url": format!("/docs/{slug}#k={key}")})
             }
             "token" => {
-                let role =
-                    parse_token_role(&wanted.role).ok_or("a token is 'read', 'comment' or 'edit'")?;
+                let role = parse_token_role(&wanted.role)
+                    .ok_or("a token is 'read', 'comment' or 'edit'")?;
                 if name.is_empty() {
                     return Err("a token needs a name".to_string());
                 }

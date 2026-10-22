@@ -206,8 +206,7 @@ fn mcp_document_says_the_account_token_is_unused() {
         .output()
         .expect("CLI starts");
     assert!(
-        String::from_utf8_lossy(&output.stderr)
-            .contains("is not used with --document"),
+        String::from_utf8_lossy(&output.stderr).contains("is not used with --document"),
         "{output:?}"
     );
 }

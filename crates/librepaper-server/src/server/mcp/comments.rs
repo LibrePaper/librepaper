@@ -129,7 +129,8 @@ impl Server {
             .operation_outcome(room.document_id, actor, &key.scoped_request_id(actor))
             .await
             .map_err(|error| Failure::new("unavailable", error.to_string()))?;
-        Ok(stored.is_some_and(|stored| stored.tool == "document_comment" && stored.digest == digest))
+        Ok(stored
+            .is_some_and(|stored| stored.tool == "document_comment" && stored.digest == digest))
     }
 
     #[allow(clippy::too_many_arguments)]

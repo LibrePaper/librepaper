@@ -525,8 +525,10 @@ async fn revoked_expired_and_stale_tokens_answer_401() {
 
 async fn mint_budgeted_token(served: &Served, budget: i64) -> String {
     let (status, body) = served
-        .share(json!({"create": {"kind": "token", "role": "comment", "name": "budgeted",
-            "until": "1d", "budget": budget}}))
+        .share(
+            json!({"create": {"kind": "token", "role": "comment", "name": "budgeted",
+            "until": "1d", "budget": budget}}),
+        )
         .await;
     assert_eq!(status, 200, "{body}");
     body["created"]["token"].as_str().unwrap().to_string()
@@ -667,7 +669,10 @@ async fn an_edit_token_proposes_and_applies_its_own_proposal() {
         )
         .await;
     assert_eq!(status, 200, "{staged}");
-    let candidate = staged["result"]["candidate_id"].as_str().unwrap().to_string();
+    let candidate = staged["result"]["candidate_id"]
+        .as_str()
+        .unwrap()
+        .to_string();
 
     let apply = json!({"candidate_id": candidate, "operation": operation(&epoch)});
     let (status, applied) = served.call(&edit, "document_apply", apply).await;

@@ -365,7 +365,8 @@ mod tests {
             .as_str()
             .expect("commenter description");
         assert!(!description.contains("label"), "{description}");
-        let editor_actions = comment_for(Role::Editor)["inputSchema"]["properties"]["action"]["enum"]
+        let editor_actions = comment_for(Role::Editor)["inputSchema"]["properties"]["action"]
+            ["enum"]
             .as_array()
             .cloned()
             .expect("editor action enum");
