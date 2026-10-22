@@ -37,21 +37,21 @@ for (const role of ["reader", "commenter"]) {
   }
 }
 
-// The GitHub panel waits for a configured forge.
+// The Git panel waits for the desktop app.
 assert.ok(
-  !offered({ role: "editor", mayEdit: true, editing: true, canSeeSharing: false, canPublish: true }).includes("github"),
-  "no forge, no GitHub panel",
+  !offered({ role: "editor", mayEdit: true, editing: true, canSeeSharing: false, canPublish: true }).includes("git"),
+  "no desktop app, no Git panel",
 );
 
 // An editor keeps everything the conditions allow; the role rules take nothing
 // away from somebody who can work here.
 assert.deepEqual(
-  offered({ role: "editor", mayEdit: true, editing: true, canSeeSharing: false, canPublish: true, forge: true }),
+  offered({ role: "editor", mayEdit: true, editing: true, canSeeSharing: false, canPublish: true, desktop: true }),
   TABS.map((tab) => tab.id),
   "an editor with the source open is offered every panel",
 );
 assert.deepEqual(
-  offered({ role: "owner", mayEdit: true, editing: true, canSeeSharing: true, canPublish: true, forge: true }),
+  offered({ role: "owner", mayEdit: true, editing: true, canSeeSharing: true, canPublish: true, desktop: true }),
   TABS.map((tab) => tab.id),
   "and so is an owner",
 );
