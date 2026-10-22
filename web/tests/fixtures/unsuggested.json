@@ -49,7 +49,7 @@
     "text": "café ☕ naïve",
     "edits": [
       { "from": 7, "to": 12, "insert": "new" },
-      { "from": 4, "to": 4, "insert": "😀" }
+      { "from": 4, "to": 4, "insert": "ü" }
     ],
     "expected": "café ☕ naïve"
   },
