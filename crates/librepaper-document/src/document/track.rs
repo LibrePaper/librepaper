@@ -2232,6 +2232,156 @@ pub fn prune_at(doc: &LoroDoc, now: i64) -> usize {
     removed
 }
 
+/// A stretch of the projection that is the stored text unchanged. Offsets are
+/// UTF-8 bytes.
+#[derive(Clone, Debug)]
+struct Run {
+    proj: usize,
+    stored: usize,
+    len: usize,
+}
+
+/// A suggestion in projection coordinates: a put-back deleted fragment holds
+/// `[start, end)`, a suggested insertion left out is the point `start == end`.
+#[derive(Clone, Debug)]
+struct Mark {
+    start: usize,
+    end: usize,
+    change: String,
+}
+
+/// One file's text with every pending suggestion undone: suggested insertions
+/// left out, suggested deletions put back.
+#[derive(Clone, Debug)]
+pub struct Unsuggested {
+    pub text: String,
+    runs: Vec<Run>,
+    marks: Vec<Mark>,
+}
+
+/// The file's text without its pending suggestions, with the means to map
+/// ranges of it back onto the stored text. `None` when there is no text file
+/// with this id.
+pub fn unsuggested(doc: &LoroDoc, file_id: &str) -> Option<Unsuggested> {
+    let stored = text_of(doc, file_id)?.to_string();
+    let state = resolve_file(doc, file_id).state;
+    let chars: Vec<char> = stored.chars().collect();
+    let n = chars.len();
+    let mut byte_at = Vec::with_capacity(n + 1);
+    let mut b = 0;
+    for c in &chars {
+        byte_at.push(b);
+        b += c.len_utf8();
+    }
+    byte_at.push(b);
+
+    // The change owning each character of a pending insertion.
+    let mut owner: Vec<Option<&str>> = vec![None; n];
+    for c in &state.changes {
+        if c.orphan || c.to <= c.from {
+            continue;
+        }
+        for slot in owner.iter_mut().take(c.to.min(n)).skip(c.from.min(n)) {
+            slot.get_or_insert(c.id.as_str());
+        }
+    }
+
+    let mut text = String::new();
+    let mut runs: Vec<Run> = Vec::new();
+    let mut marks: Vec<Mark> = Vec::new();
+    let mut open: Option<(usize, usize)> = None;
+    let close = |open: &mut Option<(usize, usize)>, runs: &mut Vec<Run>, end: usize| {
+        if let Some((proj, stored)) = open.take() {
+            if end > proj {
+                runs.push(Run {
+                    proj,
+                    stored,
+                    len: end - proj,
+                });
+            }
+        }
+    };
+    for i in 0..=n {
+        for gap in state.gaps.iter().filter(|g| g.at.min(n) == i) {
+            close(&mut open, &mut runs, text.len());
+            for f in &gap.fragments {
+                let start = text.len();
+                text.push_str(&f.text);
+                marks.push(Mark {
+                    start,
+                    end: text.len(),
+                    change: f.change.clone(),
+                });
+            }
+        }
+        if i == n {
+            break;
+        }
+        match owner[i] {
+            Some(id) => {
+                close(&mut open, &mut runs, text.len());
+                let p = text.len();
+                let same = marks
+                    .last()
+                    .is_some_and(|m| m.start == p && m.end == p && m.change == id);
+                if !same {
+                    marks.push(Mark {
+                        start: p,
+                        end: p,
+                        change: id.to_string(),
+                    });
+                }
+            }
+            None => {
+                if open.is_none() {
+                    open = Some((text.len(), byte_at[i]));
+                }
+                text.push(chars[i]);
+            }
+        }
+    }
+    close(&mut open, &mut runs, text.len());
+    Some(Unsuggested { text, runs, marks })
+}
+
+impl Unsuggested {
+    /// Maps the half-open UTF-8 byte range `[start, end)` of `self.text` onto
+    /// the file's stored text, as UTF-8 byte offsets. Errs with the id of the
+    /// change when the range overlaps or touches a pending suggestion, touching
+    /// meaning that it ends at or after where the suggestion starts and starts
+    /// at or before where it ends. Errs with a short reason when the range is
+    /// outside the text or does not sit on character boundaries.
+    pub fn to_stored(&self, start: usize, end: usize) -> Result<(usize, usize), String> {
+        if start > end || end > self.text.len() {
+            return Err("range is outside the file".to_string());
+        }
+        if !self.text.is_char_boundary(start) || !self.text.is_char_boundary(end) {
+            return Err("range is not on character boundaries".to_string());
+        }
+        if let Some(m) = self
+            .marks
+            .iter()
+            .find(|m| start <= m.end && m.start <= end)
+        {
+            return Err(m.change.clone());
+        }
+        if self.marks.is_empty() {
+            return Ok((start, end));
+        }
+        let run = self
+            .runs
+            .iter()
+            .find(|r| r.proj <= start && end <= r.proj + r.len)
+            .ok_or_else(|| "range is outside the file".to_string())?;
+        Ok((run.stored + start - run.proj, run.stored + end - run.proj))
+    }
+
+    /// Whether the file has any pending suggestion.
+    pub fn has_suggestions(&self) -> bool {
+        !self.marks.is_empty()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -4018,5 +4168,155 @@ mod tests {
         assert!(!after[0].stale);
         assert_eq!(after[0].at, 2);
         assert!(record_map(&root, &fid).unwrap().get("stale").is_none());
+    }
+
+    #[derive(Deserialize)]
+    struct UnsuggestedCase {
+        name: String,
+        text: String,
+        edits: Vec<FxEdit>,
+        expected: String,
+    }
+
+    #[test]
+    fn unsuggested_fixtures() {
+        let cases: Vec<UnsuggestedCase> = serde_json::from_str(include_str!(
+            "../../../../web/tests/fixtures/unsuggested.json"
+        ))
+        .unwrap();
+        for c in cases {
+            let (doc, id) = setup(&c.text);
+            for e in &c.edits {
+                apply_tracked_edits(
+                    &doc,
+                    &id,
+                    &[edit(e.from, e.to - e.from, &e.insert)],
+                    &ME,
+                    None,
+                    1,
+                )
+                .unwrap();
+                doc.commit();
+            }
+            let u = unsuggested(&doc, &id).unwrap();
+            assert_eq!(u.text, c.expected, "{}", c.name);
+        }
+    }
+
+    #[test]
+    fn unsuggested_missing_file() {
+        let (doc, _) = setup("abc");
+        assert!(unsuggested(&doc, "nope").is_none());
+    }
+
+    #[test]
+    fn unsuggested_without_suggestions_is_identity() {
+        let (doc, id) = setup("h\u{e9}llo");
+        let u = unsuggested(&doc, &id).unwrap();
+        assert!(!u.has_suggestions());
+        assert_eq!(u.text, "h\u{e9}llo");
+        assert_eq!(u.to_stored(0, 1), Ok((0, 1)));
+        assert_eq!(u.to_stored(1, 3), Ok((1, 3)));
+        assert_eq!(u.to_stored(0, 6), Ok((0, 6)));
+        assert!(u.to_stored(0, 2).is_err());
+        assert!(u.to_stored(0, 7).is_err());
+        assert!(u.to_stored(3, 2).is_err());
+    }
+
+    #[test]
+    fn unsuggested_insertion_maps_around_it() {
+        let (doc, id) = setup("hello world");
+        apply_tracked_edits(&doc, &id, &[edit(5, 0, " big")], &ME, None, 1).unwrap();
+        doc.commit();
+        assert_eq!(body(&doc, &id), "hello big world");
+        let u = unsuggested(&doc, &id).unwrap();
+        assert!(u.has_suggestions());
+        assert_eq!(u.text, "hello world");
+        assert_eq!(u.to_stored(0, 3), Ok((0, 3)));
+        assert_eq!(u.to_stored(6, 11), Ok((10, 15)));
+        let change = resolve_changes(&doc, &id)[0].id.clone();
+        assert_eq!(u.to_stored(0, 5), Err(change.clone()));
+        assert_eq!(u.to_stored(5, 11), Err(change.clone()));
+        assert_eq!(u.to_stored(0, 6), Err(change.clone()));
+        assert_eq!(u.to_stored(5, 5), Err(change));
+    }
+
+    #[test]
+    fn unsuggested_deletion_maps_around_it() {
+        let (doc, id) = setup("abc def ghi");
+        apply_tracked_edits(&doc, &id, &[edit(4, 4, "")], &ME, None, 1).unwrap();
+        doc.commit();
+        assert_eq!(body(&doc, &id), "abc ghi");
+        let u = unsuggested(&doc, &id).unwrap();
+        assert_eq!(u.text, "abc def ghi");
+        assert_eq!(u.to_stored(0, 3), Ok((0, 3)));
+        assert_eq!(u.to_stored(9, 11), Ok((5, 7)));
+        let change = resolve_changes(&doc, &id)[0].id.clone();
+        assert_eq!(u.to_stored(0, 4), Err(change.clone()));
+        assert_eq!(u.to_stored(8, 11), Err(change.clone()));
+        assert_eq!(u.to_stored(5, 6), Err(change));
+    }
+
+    #[test]
+    fn unsuggested_replacement_maps_around_it() {
+        let (doc, id) = setup("one two three");
+        apply_tracked_edits(&doc, &id, &[edit(4, 3, "2")], &ME, None, 1).unwrap();
+        doc.commit();
+        assert_eq!(body(&doc, &id), "one 2 three");
+        let u = unsuggested(&doc, &id).unwrap();
+        assert_eq!(u.text, "one two three");
+        assert_eq!(u.to_stored(0, 3), Ok((0, 3)));
+        assert_eq!(u.to_stored(8, 13), Ok((6, 11)));
+        let change = resolve_changes(&doc, &id)[0].id.clone();
+        assert_eq!(u.to_stored(3, 4), Err(change.clone()));
+        assert_eq!(u.to_stored(6, 8), Err(change.clone()));
+        assert_eq!(u.to_stored(7, 8), Err(change));
+    }
+
+    #[test]
+    fn unsuggested_range_between_two_suggestions() {
+        let (doc, id) = setup("aaa bbb ccc ddd");
+        apply_tracked_edits(&doc, &id, &[edit(0, 0, "X")], &ME, None, 1).unwrap();
+        doc.commit();
+        apply_tracked_edits(&doc, &id, &[edit(13, 0, "Y")], &BOB, None, 2).unwrap();
+        doc.commit();
+        assert_eq!(body(&doc, &id), "Xaaa bbb ccc Yddd");
+        let u = unsuggested(&doc, &id).unwrap();
+        assert_eq!(u.text, "aaa bbb ccc ddd");
+        assert_eq!(u.to_stored(2, 6), Ok((3, 7)));
+        assert_eq!(u.to_stored(1, 11), Ok((2, 12)));
+        assert!(u.to_stored(0, 3).is_err());
+        assert!(u.to_stored(11, 15).is_err());
+        assert_eq!(u.to_stored(13, 15), Ok((14, 16)));
+        assert!(u.to_stored(12, 15).is_err());
+    }
+
+    #[test]
+    fn unsuggested_counts_bytes_of_multibyte_text() {
+        let (doc, id) = setup("\u{e9} a");
+        // After the first character, one UTF-16 unit in.
+        apply_tracked_edits(&doc, &id, &[edit(1, 0, "\u{1f600}")], &ME, None, 1).unwrap();
+        doc.commit();
+        assert_eq!(body(&doc, &id), "\u{e9}\u{1f600} a");
+        let u = unsuggested(&doc, &id).unwrap();
+        assert_eq!(u.text, "\u{e9} a");
+        assert_eq!(u.to_stored(3, 4), Ok((7, 8)));
+        assert!(u.to_stored(0, 1).is_err());
+        let change = resolve_changes(&doc, &id)[0].id.clone();
+        assert_eq!(u.to_stored(0, 2), Err(change.clone()));
+        assert_eq!(u.to_stored(2, 4), Err(change));
+    }
+
+    #[test]
+    fn unsuggested_deleted_emoji_is_put_back() {
+        let (doc, id) = setup("a\u{1f600}b");
+        apply_tracked_edits(&doc, &id, &[edit(1, 2, "")], &ME, None, 1).unwrap();
+        doc.commit();
+        let u = unsuggested(&doc, &id).unwrap();
+        assert_eq!(u.text, "a\u{1f600}b");
+        let change = resolve_changes(&doc, &id)[0].id.clone();
+        assert_eq!(u.to_stored(5, 6), Err(change.clone()));
+        assert_eq!(u.to_stored(0, 1), Err(change));
+        assert!(u.to_stored(0, 2).is_err());
     }
 }

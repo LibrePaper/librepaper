@@ -1,0 +1,83 @@
+[
+  {
+    "name": "one suggested insertion",
+    "text": "hello world",
+    "edits": [{ "from": 5, "to": 5, "insert": " big" }],
+    "expected": "hello world"
+  },
+  {
+    "name": "one suggested deletion",
+    "text": "abc def ghi",
+    "edits": [{ "from": 4, "to": 8, "insert": "" }],
+    "expected": "abc def ghi"
+  },
+  {
+    "name": "a replacement",
+    "text": "one two three",
+    "edits": [{ "from": 4, "to": 7, "insert": "2" }],
+    "expected": "one two three"
+  },
+  {
+    "name": "two separate suggestions",
+    "text": "the quick brown fox",
+    "edits": [
+      { "from": 4, "to": 10, "insert": "" },
+      { "from": 13, "to": 13, "insert": "ish" }
+    ],
+    "expected": "the quick brown fox"
+  },
+  {
+    "name": "a deletion then an insertion at its edge",
+    "text": "abcdef",
+    "edits": [
+      { "from": 2, "to": 4, "insert": "" },
+      { "from": 2, "to": 2, "insert": "X" }
+    ],
+    "expected": "abcdef"
+  },
+  {
+    "name": "an insertion then a deletion inside it",
+    "text": "abcdef",
+    "edits": [
+      { "from": 2, "to": 2, "insert": "XYZ" },
+      { "from": 3, "to": 4, "insert": "" }
+    ],
+    "expected": "abcdef"
+  },
+  {
+    "name": "non-ASCII replacement and insertion",
+    "text": "café ☕ naïve",
+    "edits": [
+      { "from": 7, "to": 12, "insert": "new" },
+      { "from": 4, "to": 4, "insert": "😀" }
+    ],
+    "expected": "café ☕ naïve"
+  },
+  {
+    "name": "deleting a surrogate pair",
+    "text": "a😀b",
+    "edits": [{ "from": 1, "to": 3, "insert": "" }],
+    "expected": "a😀b"
+  },
+  {
+    "name": "deleting everything then typing",
+    "text": "abc",
+    "edits": [
+      { "from": 0, "to": 3, "insert": "" },
+      { "from": 0, "to": 0, "insert": "xyz" }
+    ],
+    "expected": "abc"
+  },
+  {
+    "name": "typing into an empty file",
+    "text": "",
+    "edits": [{ "from": 0, "to": 0, "insert": "abc" }],
+    "expected": ""
+  },
+  {
+    "name": "a file without suggestions",
+    "text": "plain text",
+    "edits": [],
+    "expected": "plain text"
+  }
+]
