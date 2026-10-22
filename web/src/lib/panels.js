@@ -20,6 +20,8 @@ export const TABS = [
   // History is readable by link-holders too: reviewers need the “since”
   // view even when they cannot edit or restore the live source.
   { id: "history", says: "History", icon: "history" },
+  // Offered to editors where the deployment has a GitHub app configured.
+  { id: "github", says: "GitHub", icon: "github", when: (who) => who.mayEdit && who.forge },
   { id: "share", says: "Share", icon: "users", when: (who) => who.canSeeSharing || who.canPublish },
   // Last, because it comes and goes with the source pane: at the end of the
   // rail its arrival moves nothing else.
