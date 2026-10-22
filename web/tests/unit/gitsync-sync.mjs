@@ -1243,7 +1243,8 @@ const baseFiles = (repo) => {
   await assert.rejects(sync.applyResolution(ctx, (await sync.status(ctx)).conflict));
   api.sourceChange = original;
   const kept = repo.journal.find((entry) => entry.kind === "conflict");
-  assert.deepEqual(kept.session.resolutions, resolutions);
+  assert.equal(typeof kept.session.resolutions["intro.qmd"].blob, "string");
+  assert.deepEqual((await sync.status(ctx)).conflict.resolutions, resolutions);
   assert.ok(repo.journal.some((entry) => entry.kind === "pull" && entry.phase === "sent"));
 }
 {
@@ -1289,6 +1290,84 @@ const baseFiles = (repo) => {
   assert.equal(session.text("intro.qmd"), `${bom}both\n`);
   const [dependency] = api.state.calls.at(-1).change.dependencies;
   assert.equal(dependency.file_hash, await sha256HexOfText(`${bom}local\n`));
+}
+
+// An asset changed in different places on both sides is a conflict, even when
+// Git's text merge calls it clean, and nothing is applied.
+{
+  const bytes = (text) => enc.encode(text);
+  const made = await world({
+    remote: { "intro.qmd": "same\n", "fig.png": bytes("a\nb\nc\n") },
+    project: { "intro.qmd": "same\n" },
+    assets: { "fig.png": bytes("a\nb\nc\n") },
+  });
+  const { repo, session, api, ctx } = made;
+  assert.ok(["pulled", "nothing"].includes((await sync.connect(ctx, draft(), "remote")).status));
+  await session.setAsset("fig.png", bytes("A\nb\nc\n"));
+  repo.advance({ "fig.png": bytes("a\nb\nC\n") });
+  const calls = api.state.calls.length;
+  const answer = await sync.pull(ctx);
+  assert.equal(answer.status, "conflict", JSON.stringify(answer));
+  assert.equal(api.state.calls.length, calls);
+  const [conflict] = answer.session.conflicts;
+  assert.equal(conflict.path, "fig.png");
+  assert.equal(conflict.kind, "asset");
+  assert.equal(repo.text(conflict.base), "a\nb\nc\n");
+  assert.equal(repo.text(conflict.ours), "A\nb\nc\n");
+  assert.equal(repo.text(conflict.theirs), "a\nb\nC\n");
+  assert.equal(session.sha("fig.png"), await sha256Hex(bytes("A\nb\nc\n")));
+}
+
+// A saved session of another connection is refused and left as it is.
+{
+  const { repo, api, session, ctx } = await connected({ "intro.qmd": "same\n" });
+  await session.setText("intro.qmd", "local\n");
+  repo.advance({ "intro.qmd": "remote\n" });
+  const conflict = await sync.pull(ctx);
+  await sync.saveResolutions(ctx, conflict.session, { "intro.qmd": { text: "both\n" } });
+  repo.journal.find((entry) => entry.kind === "conflict").session.connection_id = "someone-else";
+  const before = JSON.stringify(repo.journal);
+  const calls = api.state.calls.length;
+  const answer = await sync.applyResolution(ctx, (await sync.status(ctx)).conflict);
+  assert.equal(answer.status, "refused");
+  assert.equal(answer.reconnect, true);
+  assert.equal(JSON.stringify(repo.journal), before);
+  assert.equal(api.state.calls.length, calls);
+  assert.equal(session.text("intro.qmd"), "local\n");
+}
+
+// A refused apply keeps the session and its saved resolutions, and returns the session.
+{
+  const { repo, session, api, ctx } = await connected({ "intro.qmd": "same\n" });
+  await session.setText("intro.qmd", "local\n");
+  repo.advance({ "intro.qmd": "remote\n" });
+  const conflict = await sync.pull(ctx);
+  const resolutions = { "intro.qmd": { text: "both\n" } };
+  await sync.saveResolutions(ctx, conflict.session, resolutions);
+  api.sourceChange = async () => {
+    throw httpError(409, { reason: "suggestion", path: "intro.qmd", change: "c1" });
+  };
+  const answer = await sync.applyResolution(ctx, (await sync.status(ctx)).conflict);
+  assert.equal(answer.status, "refused");
+  assert.equal(answer.session.id, conflict.session.id);
+  assert.deepEqual(answer.session.resolutions, resolutions);
+  assert.equal(repo.journal.filter((entry) => entry.kind === "conflict").length, 1);
+  assert.deepEqual((await sync.status(ctx)).conflict.resolutions, resolutions);
+}
+
+// A large resolution text is stored as a Git object, not in the journal.
+{
+  const { repo, session, ctx } = await connected({ "intro.qmd": "same\n" });
+  await session.setText("intro.qmd", "local\n");
+  repo.advance({ "intro.qmd": "remote\n" });
+  const conflict = await sync.pull(ctx);
+  const text = "\uFEFF" + "a line of the resolution\n".repeat(90_000);
+  assert.ok(text.length > 2 * 1024 * 1024);
+  const resolutions = { "intro.qmd": { text }, "other.md": { delete: true } };
+  await sync.saveResolutions(ctx, conflict.session, resolutions);
+  assert.ok(JSON.stringify(repo.journal).length < 10_000);
+  assert.ok(repo.refs.has(`${conflict.session.id}/resolutions`));
+  assert.deepEqual((await sync.status(ctx)).conflict.resolutions, resolutions);
 }
 
 // Large non-ASCII texts are batched by serialized bytes and split when refused.

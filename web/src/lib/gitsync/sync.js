@@ -492,6 +492,28 @@ async function untilArrived(ctx, expect) {
 
 // ---------------------------------------------------------------- pull
 
+/// Git merges every file as text, which can join two edits of a binary into
+/// bytes nobody wrote. So the merge is never trusted for assets: each asset
+/// that differs from the baseline on both sides, and differs between the sides
+/// (an absent file counts as a value), is a conflict whether or not Git
+/// reported it. Answers the merge with those added, and not clean if any was.
+async function assetConflicts(ctx, merge, kinds, [base, ours, theirs]) {
+  const assets = [...kinds].filter(([, kind]) => kind === "asset").map(([path]) => path);
+  if (!assets.length) return merge;
+  const [b, o, t] = await Promise.all([base, ours, theirs].map(async (commit) => entryMap((await ctx.git.tree(commit)).entries)));
+  const conflicts = [...merge.conflicts || []];
+  const listed = new Set(conflicts.map((item) => item.path));
+  for (const path of assets.sort(byPath)) {
+    if (listed.has(path)) continue;
+    const ids = [b, o, t].map((entries) => entries.get(path)?.id ?? null);
+    if (ids[0] !== ids[1] && ids[0] !== ids[2] && ids[1] !== ids[2]) {
+      conflicts.push({ path, base: ids[0], ours: ids[1], theirs: ids[2] });
+    }
+  }
+  if (conflicts.length === (merge.conflicts || []).length) return merge;
+  return { ...merge, clean: false, conflicts };
+}
+
 /// Everything a pull needs after fetching: the filter, the three inputs and
 /// the merge. Returns `{ refusal }` when the pull cannot start.
 async function prepare(ctx, link, op, options) {
@@ -561,7 +583,12 @@ async function prepare(ctx, link, op, options) {
   for (const [path, kind] of local.kinds) kinds.set(path, kind);
 
   await ctx.git.keep(op, { base: base.commit, local: local.commit, remote: theirs.commit });
-  const merge = await ctx.git.merge(local.commit, theirs.commit);
+  const merge = await assetConflicts(
+    ctx,
+    await ctx.git.merge(local.commit, theirs.commit),
+    kinds,
+    [base.commit, local.commit, theirs.commit],
+  );
   return { link, remote, filter, paths, kinds, base, theirs, local, merge, skipped: incoming.skipped };
 }
 
@@ -663,10 +690,11 @@ async function openConflict(ctx, prepared, op, carry) {
       }
     }
   }
-  // Resolutions saved on the newest older session carry over too, so pulling
-  // again does not lose them.
+  // Resolutions saved on the newest older session of this connection carry
+  // over too, so pulling again does not lose them.
   const older = (await journalRead(ctx)).filter((entry) => entry.kind === "conflict" && entry.id !== op);
-  const saved = older.at(-1)?.session;
+  const same = older.filter((entry) => entry.session?.connection_id === link.connection_id);
+  const saved = same.length ? await restoreSession(ctx, same.at(-1).session) : null;
   if (saved) {
     const resolutions = { ...saved.carried, ...saved.resolutions };
     for (const item of conflicts) {
@@ -677,7 +705,9 @@ async function openConflict(ctx, prepared, op, carry) {
       }
     }
   }
-  await journalSet(ctx, { id: op, kind: "conflict", phase: "conflict", session });
+  const packed = await packResolutions(ctx, session.carried);
+  if (packed.commit) await ctx.git.keep(op, { carried: packed.commit });
+  await journalSet(ctx, { id: op, kind: "conflict", phase: "conflict", session: { ...session, carried: packed.stored } });
   for (const entry of older) await finish(ctx, entry.id);
   return { result: result("conflict", { session, conflicts }) };
 }
@@ -760,36 +790,101 @@ export async function pull(ctx) {
   return guarded(async () => (await runPull(ctx)).result);
 }
 
+/// Stores the typed texts of `resolutions` as the blobs of one unparented
+/// commit, so that the journal, which is small, holds only their ids. Answers
+/// `{ stored, commit }`: the resolutions with each text replaced by
+/// `{ blob: id }`, and the commit to keep (null when there is no text).
+async function packResolutions(ctx, resolutions) {
+  const stored = {};
+  const edits = [];
+  const texts = [];
+  for (const [path, choice] of Object.entries(resolutions || {})) {
+    if (typeof choice?.text === "string") texts.push([path, choice.text]);
+    else if (choice?.blob) edits.push({ path, id: choice.blob });
+    else stored[path] = choice;
+  }
+  const ids = texts.length ? await ctx.git.putBlobs(texts.map(([, text]) => ({ text }))) : [];
+  texts.forEach(([path], i) => edits.push({ path, id: ids[i] }));
+  for (const edit of edits) stored[edit.path] = { blob: edit.id };
+  if (!edits.length) return { stored, commit: null };
+  const tree = await ctx.git.treeEdit(null, edits);
+  return { stored, commit: await ctx.git.commitTree(tree, [], "LibrePaper conflict resolutions", null) };
+}
+
+/// The inverse of `packResolutions`: each `{ blob }` read back as `{ text }`,
+/// with a leading byte order mark kept.
+async function unpackResolutions(ctx, stored) {
+  const entries = Object.entries(stored || {});
+  const blobs = await readBlobs(ctx, entries.map(([, choice]) => choice?.blob));
+  const resolutions = {};
+  for (const [path, choice] of entries) {
+    if (!choice?.blob) {
+      resolutions[path] = choice;
+      continue;
+    }
+    const bytes = blobs.get(choice.blob);
+    if (!bytes) throw new Error(`The saved resolution of ${path} is missing.`);
+    resolutions[path] = { text: contentDecoder.decode(bytes) };
+  }
+  return resolutions;
+}
+
+/// A saved conflict session with its carried and chosen resolutions read back.
+async function restoreSession(ctx, session) {
+  if (!session) return null;
+  const restored = { ...session, carried: await unpackResolutions(ctx, session.carried) };
+  if (session.resolutions) restored.resolutions = await unpackResolutions(ctx, session.resolutions);
+  return restored;
+}
+
 /// Saves the resolutions chosen so far on the conflict session in the journal,
-/// so that a restart restores them. Answers the saved session.
+/// so that a restart restores them. Answers the saved session. Throws when
+/// they could not be saved.
 export async function saveResolutions(ctx, session, resolutions) {
-  const saved = { ...session, resolutions };
-  await journalSet(ctx, { id: session.id, kind: "conflict", phase: "conflict", session: saved });
-  return saved;
+  const chosen = await packResolutions(ctx, resolutions);
+  const carried = await packResolutions(ctx, session.carried);
+  const refs = {};
+  if (chosen.commit) refs.resolutions = chosen.commit;
+  if (carried.commit) refs.carried = carried.commit;
+  if (Object.keys(refs).length) await ctx.git.keep(session.id, refs);
+  await journalSet(ctx, {
+    id: session.id,
+    kind: "conflict",
+    phase: "conflict",
+    session: { ...session, carried: carried.stored, resolutions: chosen.stored },
+  });
+  return { ...session, resolutions };
 }
 
 /// Applies the user's resolutions to a saved conflict session. `resolutions`
 /// maps a path to `{ text }`, `{ keep: "ours" | "theirs" }` or `{ delete: true }`.
 /// If the checkpoint or the remote head moved, the merge is made again and the
-/// resolutions that still apply come back as `session.carried`.
-export async function applyResolution(ctx, session, resolutions = session.resolutions || {}) {
+/// resolutions that still apply come back as `session.carried`. A refusal
+/// leaves the session and its resolutions saved and comes back with `session`.
+export async function applyResolution(ctx, session, resolutions = undefined) {
   return guarded(async () => {
     const link = (await ctx.api.getLink()).link;
     if (!link) return refused("This project is not connected to a Git repository.");
     const mismatch = await connectionRefusal(ctx, link);
     if (mismatch) return mismatch;
+    // A session of another connection is not merged into this one, and stays
+    // in the journal as it is.
+    if (session.connection_id !== link.connection_id) return refused(RECONNECT, [], { reconnect: true });
+    const restored = await restoreSession(ctx, session);
+    const chosen = resolutions ? await unpackResolutions(ctx, resolutions) : restored.resolutions || {};
+    const kept = { ...restored, resolutions: chosen };
+    const again = async () => {
+      const answer = (await runPull(ctx, { carry: { session: restored, resolutions: chosen } })).result;
+      return answer.status === "refused" ? { ...answer, session: kept } : answer;
+    };
     const fetched = await ctx.git.fetch(link.checkpoint ? [link.checkpoint] : []);
-    const carry = { session, resolutions };
-    if (link.checkpoint !== session.checkpoint || fetched.head !== session.remote) {
-      await finish(ctx, session.id);
-      return (await runPull(ctx, { carry })).result;
-    }
-    const unresolved = session.conflicts.filter((item) => !resolutions[item.path]).map((item) => item.path);
-    if (unresolved.length) return result("conflict", { session, conflicts: session.conflicts, unresolved });
+    if (link.checkpoint !== session.checkpoint || fetched.head !== session.remote) return again();
+    const unresolved = session.conflicts.filter((item) => !chosen[item.path]).map((item) => item.path);
+    if (unresolved.length) return result("conflict", { session: kept, conflicts: session.conflicts, unresolved });
 
     const edits = [];
     for (const item of session.conflicts) {
-      const choice = resolutions[item.path];
+      const choice = chosen[item.path];
       let id = null;
       if (typeof choice.text === "string") [id] = await ctx.git.putBlobs([{ text: toLf(choice.text) }]);
       else if (choice.keep === "ours") id = item.ours;
@@ -810,9 +905,9 @@ export async function applyResolution(ctx, session, resolutions = session.resolu
     // The request gets its own journal entry: the conflict session, with the
     // saved resolutions, stays until the request is known to have applied.
     const step = await complete(ctx, prepared, tree, refId());
-    if (step.retry) {
-      await finish(ctx, session.id);
-      return (await runPull(ctx, { carry })).result;
+    if (step.retry) return again();
+    if (step.result.status !== "pulled" && step.result.status !== "nothing") {
+      return { ...step.result, session: kept };
     }
     await finish(ctx, session.id);
     await clearStale(ctx, link);
@@ -1144,7 +1239,7 @@ export async function status(ctx) {
     ctx.api.getLink(),
     safeJournal(ctx),
   ]);
-  const conflict = entries.find((entry) => entry.kind === "conflict")?.session || null;
+  const conflict = await restoreSession(ctx, entries.find((entry) => entry.kind === "conflict")?.session);
   const pending = entries.filter((entry) => entry.kind !== "conflict" && entry.phase !== "planned");
   return { git, link: answer.link, conflict, pending };
 }
@@ -1169,7 +1264,7 @@ export async function recover(ctx) {
     let conflict = null;
     for (const entry of await journalRead(ctx)) {
       if (entry.kind === "conflict") {
-        conflict = entry.session;
+        conflict = await restoreSession(ctx, entry.session);
         continue;
       }
       try {
