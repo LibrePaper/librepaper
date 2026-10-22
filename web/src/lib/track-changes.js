@@ -876,6 +876,34 @@ export function untrackedSplice(doc, fileId, from, to, insert) {
   writePlanned(doc, fileId, plan);
 }
 
+/**
+ * One file's text with every pending suggestion undone: suggested insertions
+ * left out, suggested deletions put back at their gaps. Null when the file
+ * does not exist. This is the text sync sees.
+ *
+ * @param {import("loro-crdt").LoroDoc} doc
+ * @param {string} fileId
+ * @returns {string | null}
+ */
+export function unsuggestedText(doc, fileId) {
+  const text = fileText(doc, fileId);
+  if (!text) return null;
+  const body = text.toString();
+  const { changes, gaps } = resolveFile(doc, fileId);
+  const spans = changes.filter((c) => c.to > c.from).sort((a, b) => a.from - b.from);
+  const at = new Map(gaps.map((g) => [Math.min(g.at, body.length), g.fragments.map((f) => f.text).join("")]));
+  let out = "";
+  let skipUntil = 0;
+  for (let i = 0; i <= body.length; i++) {
+    out += at.get(i) ?? "";
+    if (i === body.length) break;
+    for (const c of spans) if (c.from <= i && i < c.to && c.to > skipUntil) skipUntil = c.to;
+    if (i < skipUntil) continue;
+    out += body[i];
+  }
+  return out;
+}
+
 // ---------------------------------------------------------------------------
 // Decisions
 
