@@ -5,7 +5,7 @@ set -euo pipefail
 
 cd "$(dirname "${BASH_SOURCE[0]}")/../.."
 
-HOST="${HOST:-ubuntu@librepaper.org}"
+HOST="${HOST:-ubuntu@librepaper-vps}"
 ADDRESSES="${ADDRESSES:-15.235.24.221}"  # the server's public addresses (space-separated), independent of DNS
 SITE=librepaper.org       # landing page and manual, from docs/_site (make site)
 APP=app.librepaper.org    # the application: origin in tools/deploy/production.toml
@@ -160,18 +160,26 @@ check_dns_name() {
 
 check_production_dns() {
 	step "DNS: every name -> $ADDRESSES"
-	local name names=0 target="${HOST##*@}"
+	local name names=0
 	for name in "$SITE" "$APP" "$DOCS" "$ADMIN_NAME" ${REDIRECTS//,/}; do
 		check_dns_name "$name"
 		names=$((names + 1))
 	done
-	# The ssh target must be one of the server's addresses, or a name that resolves to them.
-	if [[ "$target" =~ ^[0-9.]+$ || "$target" == *:* ]]; then
-		in_addresses "$target" || die "$HOST is not in ADDRESSES ($ADDRESSES): set HOST to an address the server has"
-	else
-		check_dns_name "$target"
-	fi
 	ok "$names names -> $ADDRESSES"
+}
+
+# check_ssh_target dies unless the machine behind HOST owns one of ADDRESSES,
+# so a tailnet name or a stale address never deploys to the wrong server.
+check_ssh_target() {
+	step "SSH: $HOST owns one of $ADDRESSES"
+	local address
+	while IFS= read -r address; do
+		if in_addresses "$address"; then
+			ok "$HOST has $address"
+			return 0
+		fi
+	done < <(ssh "$HOST" "ip -o addr show scope global | awk '{print \$4}' | cut -d/ -f1")
+	die "$HOST has none of ADDRESSES ($ADDRESSES): set HOST to the production server"
 }
 
 RENDERED_KEYS=0
@@ -198,6 +206,7 @@ render() {
 
 prepare_local() {
 	check_production_dns
+	check_ssh_target
 
 	step "Secrets from tools/deploy/keys.yaml"
 	render tools/deploy/production.toml DEPLOY_CONFIG
@@ -237,7 +246,7 @@ usage: tools/deploy/production <command>
   help, -h, --help   show this message
 
 Environment:
-  HOST=ubuntu@librepaper.org   ssh target (use the IP before DNS resolves)
+  HOST=ubuntu@librepaper-vps   ssh target (tailnet name; the public address works if SSH is open)
   ADDRESSES=15.235.24.221      server addresses DNS must resolve to (space-separated)
 USAGE
 }
