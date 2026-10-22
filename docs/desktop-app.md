@@ -30,6 +30,8 @@ Web browsers run every page in a sandbox, so a website cannot run code or use fi
 - The desktop app uses the tools installed on your computer, such as R, Python, Quarto and your coding agent.
 - The window's title bar follows the same Theme setting (Settings > Appearance), and System follows the operating system.
 
+The server you connect to decides what the desktop app runs. A document's code runs only when you turn on Run code, and the app still trusts its server. A compromised server could run code on your computer through the same tools. Connect the app only to a server you trust.
+
 ## Install the desktop app
 
 Every package except the plain macOS `.dmg` puts two commands on your PATH: `librepaper` (the [command line](cli.html)) and `librepaper-desktop` (the app). You do not need the command line to write.

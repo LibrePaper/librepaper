@@ -122,28 +122,34 @@ fn publish_agent_label(session_path: &Path, options: &Value) -> Result<(), Strin
     librepaper_base::private_files::publish(&path, label.as_bytes(), "agent label")
 }
 
-/// Resolve this runner's document link and channel credential from the
-/// private connection record the local companion parks them under before
-/// starting the runner, and return the connection's name. The runner no
-/// longer writes this record itself: it only reads what the companion
-/// already published, under the same derived name.
-fn runner_connection(peer: &AutomationPeer, config: &Config) -> Result<String, String> {
+/// Resolve this runner's connection record, which the local companion parks
+/// before starting the runner, and return its name with the record as read.
+/// The runner no longer writes this record itself: it only reads what the
+/// companion already published, under the same derived name. The record read
+/// here is what the teardown later compares against.
+fn runner_connection(
+    peer: &AutomationPeer,
+    config: &Config,
+) -> Result<(String, crate::local::connections::Connection), String> {
     let name = crate::local::connections::runner_connection_name(
-        &peer.link().credential_url(),
+        &peer.link().document_url(),
         &config.conversation,
     );
-    crate::local::connections::ConnectionStore::new(&config.state_home)
+    let connection = crate::local::connections::ConnectionStore::new(&config.state_home)
         .get(&name)
         .ok_or_else(|| {
             "the assistant's connection record is missing; start it again from the browser"
                 .to_string()
         })?;
-    Ok(name)
+    Ok((name, connection))
 }
 
 /// The scoped grant the document bridge authenticates with, published as a
 /// private file the bridge reads, and removed when the runner ends however it
-/// ends, including a hard stop that aborts this task.
+/// ends, including a hard stop that aborts this task. The runner's connection
+/// record goes with it, so nothing about the run outlives it. The record is
+/// removed only if it is still the one this runner read: a restarted runner
+/// replaces it before this teardown runs.
 ///
 /// The bridge is a grandchild process, so it cannot share the peer's
 /// in-memory token, and a renewal reaches only that in-memory value (see
@@ -155,17 +161,59 @@ fn runner_connection(peer: &AutomationPeer, config: &Config) -> Result<String, S
 /// expires absorbs.
 struct BridgeGrant {
     path: PathBuf,
+    record: BridgeRecord,
     source: std::sync::Arc<std::sync::RwLock<String>>,
     written: Option<String>,
+}
+
+/// The connection record a [`BridgeGrant`] removes when it drops.
+struct BridgeRecord {
+    store: crate::local::connections::ConnectionStore,
+    name: String,
+    seen: crate::local::connections::Connection,
+    touched: std::time::Instant,
+}
+
+/// How often a live runner marks its record as in use. It is far below the
+/// record's idle limit, so a runner that is up never loses its record to the
+/// sweep, and far above the tick, so the store is rarely rewritten.
+const RECORD_TOUCH_INTERVAL: Duration = Duration::from_secs(3600);
+
+fn record_touch_due(touched: std::time::Instant, now: std::time::Instant) -> bool {
+    now.saturating_duration_since(touched) >= RECORD_TOUCH_INTERVAL
+}
+
+impl BridgeRecord {
+    fn new(
+        store: crate::local::connections::ConnectionStore,
+        name: String,
+        seen: crate::local::connections::Connection,
+    ) -> Self {
+        Self {
+            store,
+            name,
+            seen,
+            touched: std::time::Instant::now(),
+        }
+    }
+
+    fn keep_alive(&mut self) {
+        let now = std::time::Instant::now();
+        if record_touch_due(self.touched, now) && self.store.touch(&self.name).is_ok() {
+            self.touched = now;
+        }
+    }
 }
 
 impl BridgeGrant {
     fn publish(
         path: PathBuf,
+        record: BridgeRecord,
         source: std::sync::Arc<std::sync::RwLock<String>>,
     ) -> Result<Self, String> {
         let mut grant = Self {
             path,
+            record,
             source,
             written: None,
         };
@@ -174,6 +222,7 @@ impl BridgeGrant {
     }
 
     fn sync(&mut self) -> Result<(), String> {
+        self.record.keep_alive();
         let current = self
             .source
             .read()
@@ -195,6 +244,10 @@ impl BridgeGrant {
 impl Drop for BridgeGrant {
     fn drop(&mut self) {
         let _ = std::fs::remove_file(&self.path);
+        let _ = self
+            .record
+            .store
+            .remove_if_unchanged(&self.record.name, &self.record.seen);
     }
 }
 
@@ -696,9 +749,11 @@ async fn execute(peer: &AutomationPeer, config: &Config, lease: &Lease) -> Resul
     let executable = crate::local::paths::current_executable()?;
     let mut environment = adapter_environment(&journal_path, &session_path);
     environment.extend(config.agent_environment.clone());
-    let connection = runner_connection(peer, config)?;
+    let (connection, seen) = runner_connection(peer, config)?;
+    let connections = crate::local::connections::ConnectionStore::new(&config.state_home);
     let mut grant = BridgeGrant::publish(
-        crate::local::connections::ConnectionStore::new(&config.state_home).grant_path(&connection),
+        connections.grant_path(&connection),
+        BridgeRecord::new(connections, connection.clone(), seen),
         peer.token_source(),
     )?;
     // Prove the document is reachable at this access level before starting an
@@ -1406,7 +1461,7 @@ mod tests {
 
     /// The bridge reads whatever the file holds at any moment, so it must be
     /// private from creation, hold exactly the grant, follow a renewal, and
-    /// be gone once the runner is.
+    /// be gone, with the runner's connection record, once the runner is.
     #[cfg(unix)]
     #[test]
     fn the_bridge_grant_file_is_private_current_and_removed() {
@@ -1414,7 +1469,12 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("librepaper/local/runner-x.grant");
         let source = std::sync::Arc::new(std::sync::RwLock::new("lpa_v1.first".to_string()));
-        let mut grant = BridgeGrant::publish(path.clone(), source.clone()).unwrap();
+        let store = crate::local::connections::ConnectionStore::new(dir.path());
+        let name = store
+            .put_runner("https://d.example/docs/a", "o", "c1", "t1")
+            .unwrap();
+        let record = BridgeRecord::new(store.clone(), name.clone(), store.get(&name).unwrap());
+        let mut grant = BridgeGrant::publish(path.clone(), record, source.clone()).unwrap();
         assert_eq!(std::fs::read_to_string(&path).unwrap(), "lpa_v1.first");
         let mode = std::fs::metadata(&path).unwrap().permissions().mode() & 0o777;
         assert_eq!(mode, 0o600);
@@ -1432,16 +1492,55 @@ mod tests {
         let mode = std::fs::metadata(&path).unwrap().permissions().mode() & 0o777;
         assert_eq!(mode, 0o600);
 
-        // Nothing but the grant itself is left in the directory: no
-        // temporary from either publication.
-        let entries: Vec<_> = std::fs::read_dir(path.parent().unwrap())
+        // No temporary from either publication is left beside the grant.
+        let mut entries: Vec<_> = std::fs::read_dir(path.parent().unwrap())
             .unwrap()
-            .map(|entry| entry.unwrap().file_name())
+            .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
+            .filter(|file| file.ends_with(".grant"))
             .collect();
-        assert_eq!(entries, vec![std::ffi::OsString::from("runner-x.grant")]);
+        entries.sort();
+        assert_eq!(entries, vec!["runner-x.grant".to_string()]);
 
+        assert!(store.get(&name).is_some());
         drop(grant);
         assert!(!path.exists());
+        assert!(store.get(&name).is_none());
+    }
+
+    /// A restarted runner replaces the record before the old runner's teardown
+    /// runs, and that teardown must leave the new record alone.
+    #[test]
+    fn a_record_touch_is_due_only_after_the_interval() {
+        let start = std::time::Instant::now();
+        assert!(!record_touch_due(start, start));
+        assert!(!record_touch_due(
+            start,
+            start + RECORD_TOUCH_INTERVAL - Duration::from_secs(1)
+        ));
+        assert!(record_touch_due(start, start + RECORD_TOUCH_INTERVAL));
+    }
+
+    #[test]
+    fn an_old_runners_teardown_keeps_its_replacements_record() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = crate::local::connections::ConnectionStore::new(dir.path());
+        let name = store
+            .put_runner("https://d.example/docs/a", "o", "c1", "old")
+            .unwrap();
+        let old = BridgeGrant::publish(
+            store.grant_path(&name),
+            BridgeRecord::new(store.clone(), name.clone(), store.get(&name).unwrap()),
+            std::sync::Arc::new(std::sync::RwLock::new("lpa_v1.old".to_string())),
+        )
+        .unwrap();
+        // The replacement writes a new record (a later `created`) under the
+        // same name.
+        let mut replaced = store.get(&name).unwrap();
+        replaced.created += 1;
+        replaced.chat_token = Some("new".into());
+        store.replace_for_test(&name, replaced);
+        drop(old);
+        assert_eq!(store.get(&name).unwrap().chat_token.as_deref(), Some("new"));
     }
 
     #[test]

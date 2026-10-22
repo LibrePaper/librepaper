@@ -743,6 +743,11 @@ impl Store {
         let Some(document) = catalog.document_by_slug(slug).await? else {
             return Ok(None);
         };
+        // A trashed or purging document keeps its catalogue row until the
+        // sweep removes it, but no route may resolve it in the meantime.
+        if document.status != "active" {
+            return Ok(None);
+        }
         // Hidden projects remain active catalogue rows so restoration is
         // lossless, but no public or authenticated route may resolve them.
         if catalog.project_is_hidden(document.id).await? {
@@ -796,6 +801,21 @@ impl Store {
                     .document_by_slug(slug)
                     .await?
                     .ok_or_else(|| CatalogError::Invalid("invalid listing cursor".into()))?;
+                // A cursor may only name a project the caller could already
+                // list, so a private slug cannot be probed through it.
+                let entry = entry_from_document(catalog, &document).await?;
+                let caller = account_id.map(|id| id.to_string()).unwrap_or_default();
+                // The listing also shows projects a signed-in guest was pinned
+                // to by a link, so that pin counts as the link they present.
+                let pinned = entry
+                    .guests
+                    .iter()
+                    .find(|guest| guest.id == caller)
+                    .map(|guest| guest.link.as_str())
+                    .unwrap_or_default();
+                if !entry.readable_by(&caller, pinned, librepaper_base::util::now_unix()) {
+                    return Err(CatalogError::Invalid("invalid listing cursor".into()));
+                }
                 // The wire timestamp is second-precision. Use the row's exact
                 // value so documents updated within the same second are not
                 // skipped between pages.

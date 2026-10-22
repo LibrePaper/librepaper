@@ -8,6 +8,7 @@ import {
   forgetLocalData,
   localDataForgotten,
 } from "../../src/lib/local-data.js";
+import { AGENT_SESSION_PREFIX, KEYS, LINKED, THEME, VIEWED } from "../../src/lib/storage.js";
 
 // Nothing has signed out in this module yet.
 assert.equal(localDataForgotten(), false);
@@ -69,3 +70,33 @@ assert.equal(await forgetLocalData(null, 1000), undefined);
 
 // The sign-out marks this tab, so later writes refuse to reopen the databases.
 assert.equal(localDataForgotten(), true);
+
+// Link keys, the viewed and linked lists, and every agent transcript go from
+// localStorage. A habit such as the theme stays.
+{
+  const entries = new Map([
+    [KEYS, "{}"],
+    [VIEWED, "{}"],
+    [LINKED, "{}"],
+    [`${AGENT_SESSION_PREFIX}https://app.example:one`, "[]"],
+    [`${AGENT_SESSION_PREFIX}https://app.example:two`, "[]"],
+    [THEME, "\"dark\""],
+  ]);
+  const storage = {
+    get length() { return entries.size; },
+    key: (i) => [...entries.keys()][i] ?? null,
+    removeItem: (name) => { entries.delete(name); },
+  };
+  await forgetLocalData(null, 1000, storage);
+  assert.deepEqual([...entries.keys()], [THEME]);
+}
+
+// A storage that throws on every call does not make the sign-out reject.
+{
+  const throwing = {
+    get length() { throw new Error("blocked"); },
+    key() { throw new Error("blocked"); },
+    removeItem() { throw new Error("blocked"); },
+  };
+  assert.equal(await forgetLocalData(null, 1000, throwing), undefined);
+}
