@@ -146,4 +146,12 @@ function classify(entries, options = {}) {
   assert.match(result.refusals[0].reason, /6 syncable files/);
 }
 
+// An renv folder is an environment, whatever its files' extensions.
+{
+  const set = syncRules({ rules, folder: "", maxFileBytes: 1000, ignoreRoot: null, ignoreFolder: null });
+  assert.equal(set.isSynced("renv/notes.qmd"), false);
+  assert.equal(set.isSynced("code/renv/notes.qmd"), false);
+  assert.equal(set.isSynced("analysis.qmd"), true);
+}
+
 console.log("forge rules ok");

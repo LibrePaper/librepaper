@@ -143,16 +143,8 @@ function apiFor(slug, client) {
   return {
     getLink: () => fetch(`${root}/forge`, { headers: headers() }).then(parse),
     putLink: (body) => send("PUT", "/forge", body),
-    async sourceChange(body) {
-      const before = client.state.updates;
-      const answer = await send("POST", "/source-change", body);
-      const changes = [...(body.change.patches || []), ...(body.change.create || []), ...(body.change.delete || []), ...(body.change.put_binary || [])];
-      if (changes.length) {
-        await wait("the server's update to arrive", () => client.state.updates > before);
-        await pause(100);
-      }
-      return answer;
-    },
+    // sync.js itself waits for the applied change to reach the session.
+    sourceChange: (body) => send("POST", "/source-change", body),
     uploadAsset: (bytes) => fetch(`${root}/assets`, { method: "PUT", headers: headers(), body: bytes }).then(parse),
     async assetBytes(sha) {
       const response = await fetch(`${root}/assets/${sha}`, { headers: headers() });

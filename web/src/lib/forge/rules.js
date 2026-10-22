@@ -14,6 +14,10 @@ const encoder = new TextEncoder();
 
 const SYMLINK_MODE = "120000";
 
+/// Folders that hold an environment rather than the paper. Their scripts have
+/// supported extensions, so the extension rules alone would sync them.
+const ENVIRONMENT_FOLDERS = new Set(["renv"]);
+
 function ignorer(text) {
   return text ? ignore().add(text) : null;
 }
@@ -49,6 +53,7 @@ export function syncRules({ rules, folder, maxFileBytes, ignoreRoot, ignoreFolde
   function unsyncedReason(path) {
     const checked = checkPath(lenient, path);
     if (checked.error) return checked.error;
+    if (path.split("/").some((segment) => ENVIRONMENT_FOLDERS.has(segment))) return "an R environment folder";
     if (folderIgnore?.ignores(path)) return "named by .librepaperignore";
     if (rootIgnore?.ignores(repoPath(path))) return "named by .librepaperignore";
     return "";

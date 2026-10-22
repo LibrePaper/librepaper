@@ -51,10 +51,10 @@ Other rules:
 
 `.librepaperignore` is optional. Put it where you put `.gitignore`, at the repository root or in the linked folder. It uses gitignore syntax, including `!` to bring back a path.
 
-This two-line file leaves the `renv/` folder and the `data/raw/` folder alone:
+This two-line file leaves the `scratch/` folder and the `data/raw/` folder alone:
 
 ```text
-renv/
+scratch/
 data/raw/
 ```
 
