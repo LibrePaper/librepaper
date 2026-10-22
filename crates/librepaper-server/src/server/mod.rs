@@ -1532,7 +1532,7 @@ impl Server {
         let ceiling = self.ceiling_for(&id);
         let role = clamp_to_ceiling(row.granted(), ceiling);
         Viewer {
-            suggest_only: role == Role::Editor,
+            suggest_only: row.suggest_only(),
             token: Some(AgentToken {
                 id: row.id().to_string(),
                 name: row.label.clone(),

@@ -137,12 +137,14 @@ pub(super) fn link_expiry(asked: &str) -> Result<String, String> {
         .ok_or_else(|| "that expiry is too far away".to_string())
 }
 
-/// A token's role word, as the stored role it maps to: a comment token is a
-/// commenter row and a suggest token an editor row held to suggestions.
-pub(super) fn parse_token_role(value: &str) -> Option<Role> {
+/// A token's role word, as the stored role it maps to: `commenter` for a
+/// comment token, `suggester` for a suggest token that proposes and never
+/// writes source, and `editor` for an edit token.
+pub(super) fn parse_token_role(value: &str) -> Option<&'static str> {
     match value.trim().to_ascii_lowercase().as_str() {
-        "comment" | "commenter" => Some(Role::Commenter),
-        "suggest" | "suggester" => Some(Role::Editor),
+        "comment" | "commenter" => Some("commenter"),
+        "suggest" | "suggester" => Some("suggester"),
+        "edit" | "editor" => Some("editor"),
         _ => None,
     }
 }
@@ -495,11 +497,11 @@ impl Server {
             }
             "token" => {
                 let role =
-                    parse_token_role(&wanted.role).ok_or("a token is 'comment' or 'suggest'")?;
+                    parse_token_role(&wanted.role).ok_or("a token is 'comment', 'suggest' or 'edit'")?;
                 if name.is_empty() {
                     return Err("a token needs a name".to_string());
                 }
-                grant.role = role.as_str().to_string();
+                grant.role = role.to_string();
                 grant.until = token_expiry(&wanted.until)?;
                 grant.kind = LinkKind::Agent;
                 grant.owner_generation = owner.id.session_generation.clone();
@@ -586,7 +588,7 @@ impl Server {
                 }
                 LinkKind::Agent => tokens.push(json!({
                     "id": row.id(),
-                    "role": if row.granted() == Role::Editor { "suggester" } else { "commenter" },
+                    "role": row.role,
                     "name": row.label,
                     "since": row.since,
                     "until": row.until,

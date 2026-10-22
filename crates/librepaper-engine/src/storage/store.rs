@@ -203,7 +203,17 @@ impl LinkGrant {
     }
 
     pub fn granted(&self) -> Role {
+        if self.suggest_only() {
+            return Role::Editor;
+        }
         Role::parse(&self.role).unwrap_or(Role::Reader)
+    }
+
+    /// Whether this row is a suggest token: stored as `suggester`, it grants
+    /// Editor to the token viewer, which then proposes and never writes
+    /// source. Only an agent row can carry the word.
+    pub fn suggest_only(&self) -> bool {
+        self.role == "suggester" && self.kind == LinkKind::Agent
     }
 }
 

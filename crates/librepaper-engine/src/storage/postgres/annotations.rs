@@ -430,7 +430,9 @@ impl PostgresCatalog {
             None => None,
         };
         let rank = |role: Option<&str>| match role {
-            Some("editor") => 3,
+            // A suggest token stands in for an editor wherever the database
+            // authorizes a mutation; the server holds it to proposals.
+            Some("editor" | "suggester") => 3,
             Some("commenter") => 2,
             Some("reader") => 1,
             _ => 0,

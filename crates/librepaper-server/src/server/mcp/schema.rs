@@ -31,9 +31,11 @@ pub(super) fn tools() -> &'static Vec<Value> {
 /// for a Commenter, so a Commenter is not offered them.
 const EDITOR_TOOLS: [&str; 2] = ["document_propose", "document_apply"];
 
-/// The tool that writes the source directly. A suggest-only caller proposes
-/// tracked changes and never applies, so it is not offered this one.
-const SOURCE_WRITE_TOOLS: [&str; 1] = ["document_apply"];
+/// The tools that write the source directly. A suggest-only caller proposes
+/// tracked changes and never applies, so it is neither offered these nor
+/// allowed to call them. A tool that writes source is added here and nowhere
+/// else.
+pub(super) const SOURCE_WRITING_TOOLS: [&str; 1] = ["document_apply"];
 
 /// The tools a caller may be offered: every served tool when `editor` is
 /// true, and every served tool except `EDITOR_TOOLS` when it is not. A
@@ -50,7 +52,7 @@ pub(super) fn served_tools(editor: bool, suggest_only: bool) -> Vec<Value> {
             if !editor {
                 !EDITOR_TOOLS.contains(&name)
             } else {
-                !(suggest_only && SOURCE_WRITE_TOOLS.contains(&name))
+                !(suggest_only && SOURCE_WRITING_TOOLS.contains(&name))
             }
         })
         .map(|tool| {
