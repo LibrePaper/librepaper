@@ -821,7 +821,7 @@ const baseFiles = (repo) => {
   const pushed = await sync.push(ctx, "edit");
   assert.equal(pushed.status, "pushed", JSON.stringify(pushed));
   assert.equal(repo.read("notes.md"), "target.md");
-  assert.equal(repo.flat().get("notes.md").mode, "120000");
+  assert.equal(repo.flat(repo.head).get("notes.md").mode, "120000");
   assert.equal(session.text("notes.md"), "local notes\n");
 
   // The same for a file over the size limit.
