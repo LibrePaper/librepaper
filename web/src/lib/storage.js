@@ -23,6 +23,8 @@ export function write(key, value) {
   }
 }
 
+// Every agent chat transcript is kept under this prefix, one key per document.
+export const AGENT_SESSION_PREFIX = "librepaper.agent.session.";
 export const VIEWED = "librepaper-viewed";
 export const LINKED = "librepaper-linked";
 // Whether PDF pages are drawn inverted while the application is dark. A habit
@@ -33,7 +35,7 @@ export const PDF_INVERT = "librepaper-pdf-invert";
 export const SOURCE_SIDE = "librepaper-source-side";
 // The link keys this browser has been given, by slug. A key is a secret, and
 // this is the right place for one: it is per browser, so opening the link on a
-// phone means pasting it again, and it is cleared with everything else.
+// phone means pasting it again, and forgetLocalData removes it on sign-out.
 export const KEYS = "librepaper-keys";
 // Which keys the editor answers to: "default", "vim" or "emacs". A habit of the
 // person typing rather than of the document, so it lives here rather than on

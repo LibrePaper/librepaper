@@ -1,10 +1,22 @@
 // On a shared computer the next person must not be able to open what the
 // last one edited. Projects and rendered pages are kept in this browser, so
-// signing out deletes both databases.
+// signing out deletes both databases, and the secrets and chat transcripts
+// kept in localStorage. Habits such as the theme and keymap stay.
+import { AGENT_SESSION_PREFIX, KEYS, LINKED, VIEWED } from "./storage.js";
+
 export const OFFLINE_DATABASE = "librepaper-offline-v2";
 export const PREVIEW_DATABASE = "librepaper-preview-v1";
 
 const DATABASES = [OFFLINE_DATABASE, PREVIEW_DATABASE];
+// Reading localStorage can itself throw when storage is blocked.
+function safeLocalStorage() {
+  try {
+    return globalThis.localStorage;
+  } catch {
+    return undefined;
+  }
+}
+
 const CHANNEL = "librepaper-local-data";
 
 // Set once this tab has signed out, or heard another tab do so. Writers check
@@ -13,12 +25,29 @@ const CHANNEL = "librepaper-local-data";
 let forgotten = false;
 export const localDataForgotten = () => forgotten;
 
+const SECRET_KEYS = [KEYS, VIEWED, LINKED];
+
+// Storage can be switched off or throw, and a sign-out must still finish.
+function forgetStorage(storage) {
+  try {
+    const prefixed = [];
+    for (let i = 0; i < storage.length; i++) {
+      const name = storage.key(i);
+      if (name?.startsWith(AGENT_SESSION_PREFIX)) prefixed.push(name);
+    }
+    for (const name of [...SECRET_KEYS, ...prefixed]) storage.removeItem(name);
+  } catch {
+    /* nothing more can be done about it */
+  }
+}
+
 // Resolves once both deletes have finished, failed, or run out the timeout.
 // A delete is blocked while another tab holds the database open, and the
 // browser completes it when that tab closes, so waiting longer than the
 // timeout gains nothing. It never rejects: a sign-out must still finish.
-export function forgetLocalData(indexedDB_ = globalThis.indexedDB, timeoutMs = 2000) {
+export function forgetLocalData(indexedDB_ = globalThis.indexedDB, timeoutMs = 2000, storage = safeLocalStorage()) {
   forgotten = true;
+  if (storage) forgetStorage(storage);
   if (globalThis.BroadcastChannel) {
     const channel = new BroadcastChannel(CHANNEL);
     channel.postMessage({ type: "signed-out" });
