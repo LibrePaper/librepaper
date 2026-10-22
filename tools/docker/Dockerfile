@@ -124,8 +124,10 @@ COPY --from=resticprofile-binary /usr/bin/resticprofile /usr/bin/resticprofile
 COPY tools/docker/backup-profiles.toml /etc/resticprofile/profiles.toml
 COPY tools/docker/backup-entrypoint.sh /usr/local/bin/librepaper-backup-entrypoint
 COPY tools/docker/backup-export.sh /usr/local/bin/librepaper-backup-export
+COPY tools/docker/backup-missing-check.sh /usr/local/bin/librepaper-backup-missing-check
 RUN chmod 0644 /etc/resticprofile/profiles.toml \
-	&& chmod 0755 /usr/local/bin/librepaper-backup-entrypoint /usr/local/bin/librepaper-backup-export
+	&& chmod 0755 /usr/local/bin/librepaper-backup-entrypoint /usr/local/bin/librepaper-backup-export \
+	&& chmod 0755 /usr/local/bin/librepaper-backup-missing-check
 # Only the backup service uses this volume, for restic's cache and status file.
 # The app never writes it.
 VOLUME /var/backups/librepaper

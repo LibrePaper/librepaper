@@ -114,7 +114,7 @@ Notes:
 - Set up [backup alerts](#backup-alerts) so a failed backup emails you.
 - After the first backup has created the repository, add `initialize = false` under `[resticprofile]`. A mistyped bucket or path then fails the run and the alert, instead of quietly starting an empty repository.
 - For hourly backups, set `schedule = "hourly"` and give the Healthchecks check a 1 hour period and a 2 hour grace. Every run reads all stored files, so revisit an hourly schedule once the data passes about 20 GiB.
-- A stored file that is missing from object storage does not stop the backup. The backup leaves it out, prints a `WARNING` line in the backup container's log, and lists it under `missing` in the backup's manifest. Look for those lines now and then.
+- A stored file that is missing from object storage does not stop the backup. The backup leaves it out, prints a `WARNING` line in the backup container's log, and lists it under `missing` in the backup's manifest. The snapshot is kept, but the run counts as failed, so the failure alert fires every hour until the file is back or no longer referenced. A `run-after` of your own in `resticprofile.toml` replaces this check.
 
 ### Keys and passwords
 
