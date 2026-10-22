@@ -273,6 +273,9 @@ local and incoming versions (stages 1, 2 and 3), or which of them is absent.
 The resolver reads those blobs from the repository. Nothing is checked out
 and no conflict marker is ever written into the project.
 
+Merges run with rename detection off, so a rename arrives as a deletion and an
+addition.
+
 For each conflicted path the resolver offers:
 
 - text: a three-way view (base, LibrePaper, repository) with an editable

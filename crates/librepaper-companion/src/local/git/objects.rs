@@ -564,10 +564,15 @@ impl GitManager {
         let request: Request = parse(body)?;
         require_id(&request.ours, "ours")?;
         require_id(&request.theirs, "theirs")?;
+        // Rename detection stays off so a rename arrives as a deletion plus
+        // an addition. With it on, Git merges an edit at the old path into
+        // the renamed file, and the page's per-path binary check misses it.
         let mut output = self
             .local_raw(
                 conn,
                 &[
+                    "-c",
+                    "merge.renames=false",
                     "merge-tree",
                     "--write-tree",
                     "-z",
@@ -586,6 +591,8 @@ impl GitManager {
                 .local_raw(
                     conn,
                     &[
+                        "-c",
+                        "merge.renames=false",
                         "merge-tree",
                         "--write-tree",
                         "-z",
