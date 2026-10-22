@@ -1482,6 +1482,35 @@ mod tests {
         assert!(store.get(&name).is_none());
     }
 
+    /// A restarted runner replaces the record before the old runner's teardown
+    /// runs, and that teardown must leave the new record alone.
+    #[test]
+    fn an_old_runners_teardown_keeps_its_replacements_record() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = crate::local::connections::ConnectionStore::new(dir.path());
+        let name = store
+            .put_runner("https://d.example/docs/a", "o", "c1", "old")
+            .unwrap();
+        let old = BridgeGrant::publish(
+            store.grant_path(&name),
+            BridgeRecord {
+                seen: store.get(&name).unwrap(),
+                store: store.clone(),
+                name: name.clone(),
+            },
+            std::sync::Arc::new(std::sync::RwLock::new("lpa_v1.old".to_string())),
+        )
+        .unwrap();
+        // The replacement writes a new record (a later `created`) under the
+        // same name.
+        let mut replaced = store.get(&name).unwrap();
+        replaced.created += 1;
+        replaced.chat_token = Some("new".into());
+        store.replace_for_test(&name, replaced);
+        drop(old);
+        assert_eq!(store.get(&name).unwrap().chat_token.as_deref(), Some("new"));
+    }
+
     #[test]
     fn the_agent_label_is_the_current_models_name() {
         let options = json!([

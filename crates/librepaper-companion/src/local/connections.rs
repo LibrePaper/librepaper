@@ -210,6 +210,13 @@ impl ConnectionStore {
         self.load().get(name).cloned()
     }
 
+    #[cfg(test)]
+    pub(crate) fn replace_for_test(&self, name: &str, entry: Connection) {
+        let mut all = self.load();
+        all.insert(name.to_string(), entry);
+        self.save(&all).unwrap();
+    }
+
     /// Delete a record only if it is still the one `seen` describes. A
     /// restarted runner replaces its record before the old runner's teardown
     /// runs, and that teardown must not delete the new runner's record.
