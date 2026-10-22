@@ -1814,24 +1814,33 @@ impl Server {
         let comment_id_field = command.comment_id().to_owned();
 
         // A link or token with its own hourly budget spends one action per
-        // command, and a command that fails gives it back.
-        let charge = match self.spend_comment(who) {
-            Ok(charge) => charge,
-            Err(message) => {
-                return (
-                    json!({"type": "error", "message": message, "status": 429,
-                        "temp_id": temp_id, "request_id": request_id,
-                        "version": 1, "protocol": "librepaper.room.v1"}),
-                    false,
-                );
-            }
+        // command, and a command that fails gives it back. A retry of a
+        // comment that already committed writes nothing, so it spends
+        // nothing and is answered even when the budget is gone.
+        let refusal = |message: &str| {
+            json!({"type": "error", "message": message, "status": 429,
+                "temp_id": temp_id, "request_id": request_id,
+                "version": 1, "protocol": "librepaper.room.v1"})
+        };
+        let (charge, refused) = match self.spend_comment(who) {
+            Ok(charge) => (charge, None),
+            Err(message) => (None, Some(refusal(&message))),
         };
         let outcome = self
-            .run_comment_command(room, command, &authority, &writer)
+            .run_comment_command(room, command, &authority, &writer, refused)
             .await;
-        if outcome.is_err() {
-            self.refund_comment(charge);
-        }
+        let outcome = match outcome {
+            Ok((value, replayed)) => {
+                if replayed {
+                    self.refund_comment(charge);
+                }
+                Ok(value)
+            }
+            Err(response) => {
+                self.refund_comment(charge);
+                Err(response)
+            }
+        };
         // Comment rows are read live. Their immutable anchors must stay
         // cached so source edits keep updating comments already on screen.
         let (mut result, ok) = match outcome {
@@ -1868,10 +1877,19 @@ impl Server {
         command: RoomCommand,
         authority: &librepaper_engine::storage::postgres::Authority,
         author: &librepaper_room::room::CommentAuthor,
-    ) -> Result<Value, Value> {
+        refusal: Option<Value>,
+    ) -> Result<(Value, bool), Value> {
         let catalog = self.store.catalog.clone();
         let config = &self.config;
         let document_id = room.document_id;
+
+        // With the budget spent, only the replay of a comment that already
+        // committed is answered. Everything else is refused.
+        if let (Some(refusal), false) =
+            (&refusal, matches!(command, RoomCommand::Comment { .. }))
+        {
+            return Err(refusal.clone());
+        }
 
         match command {
             RoomCommand::Comment {
@@ -1911,11 +1929,21 @@ impl Server {
                     expected_render_digest,
                 )
                 .map_err(|error| json!({"type": "error", "message": error}))?;
-                let comment = room
-                    .command(authority, &mut new_comment)
+                if let Some(refusal) = refusal {
+                    let recorded = room
+                        .recorded_result(&mut new_comment)
+                        .await
+                        .map_err(command_error_value)?;
+                    return match recorded {
+                        Some(comment) => Ok((json!({"type": "comment", "comment": comment}), true)),
+                        None => Err(refusal),
+                    };
+                }
+                let (comment, replayed) = room
+                    .command_reporting_replay(authority, &mut new_comment)
                     .await
                     .map_err(command_error_value)?;
-                Ok(json!({"type": "comment", "comment": comment}))
+                Ok((json!({"type": "comment", "comment": comment}), replayed))
             }
             RoomCommand::Reply {
                 comment_id,
@@ -1942,8 +1970,8 @@ impl Server {
                     .map_err(command_error_value)?;
                 // `reply_author` is read and removed by `prepare_comment_event`,
                 // which is how the sender's own view marks the reply `mine`.
-                Ok(json!({"type": "reply", "comment_id": outcome.comment_id,
-                    "reply": outcome.reply, "reply_author": outcome.reply.author}))
+                Ok((json!({"type": "reply", "comment_id": outcome.comment_id,
+                    "reply": outcome.reply, "reply_author": outcome.reply.author}), false))
             }
             RoomCommand::Resolve {
                 comment_id,
@@ -1961,8 +1989,8 @@ impl Server {
                     .command(authority, &mut resolve)
                     .await
                     .map_err(command_error_value)?;
-                Ok(json!({"type": "resolve", "comment_id": outcome.comment_id,
-                    "resolved": outcome.resolved, "resolved_at": outcome.resolved_at}))
+                Ok((json!({"type": "resolve", "comment_id": outcome.comment_id,
+                    "resolved": outcome.resolved, "resolved_at": outcome.resolved_at}), false))
             }
             RoomCommand::Edit {
                 comment_id,
@@ -1984,9 +2012,9 @@ impl Server {
                     .command(authority, &mut edit)
                     .await
                     .map_err(command_error_value)?;
-                Ok(json!({"type": "edit", "comment_id": outcome.comment_id,
+                Ok((json!({"type": "edit", "comment_id": outcome.comment_id,
                     "reply_id": outcome.reply_id, "body": outcome.body,
-                    "edited": outcome.edited}))
+                    "edited": outcome.edited}), false))
             }
             RoomCommand::Delete { comment_id, .. } => {
                 let parsed_id = comment_id;
@@ -1999,7 +2027,7 @@ impl Server {
                 room.command(authority, &mut delete)
                     .await
                     .map_err(command_error_value)?;
-                Ok(json!({"type": "delete", "comment_id": comment_id}))
+                Ok((json!({"type": "delete", "comment_id": comment_id}), false))
             }
         }
     }
