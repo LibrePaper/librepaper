@@ -2,7 +2,7 @@
 title: "Collaborate"
 ---
 
-Share with links, not people. The owner mints a read, comment or edit link in the Share pane. Each role includes the ones beneath it.
+Share with links, not people. The owner mints a read, comment or edit link in the Sharing panel. Each role includes the ones beneath it.
 
 | Role | May |
 | --- | --- |
@@ -12,7 +12,10 @@ Share with links, not people. The owner mints a read, comment or edit link in th
 | owner | share, destroy |
 
 - Every link needs a sign-in. A reader, commenter or editor signs in with GitHub or Google the first time they open the link, and the browser keeps the key after that.
-- The key is in the link's fragment, so it reaches no server log and no `Referer` header. Replacing a link kills the old key.
+- The key is in the link's fragment, so it reaches no server log and no `Referer` header.
+- A document can have several links for each role. Give each a name. Only the owner sees the names.
+- The Links tab lists every link. Editing a link's name, expiry or budget keeps its URL. Replace makes a new URL, and the old one stops at once.
+- For an agent on another machine, use an agent token instead. See [Remote agents](agents.html#remote-agents).
 - Moving a file does not rewrite the references inside source files.
 - Copying a checkpoint link keeps your share key. Restore records the current version before applying the earlier one.
 - Typst's HTML preview does not reproduce all PDF formatting. Choose PDF from the View menu. The first load fetches the renderer. Typst needs about 13 MB, and LaTeX needs about 6 MB plus the packages a document asks for.

@@ -163,6 +163,35 @@ fn mcp_requires_a_connection_and_rejects_a_bare_link() {
     );
 }
 
+/// `librepaper mcp --document URL` takes its token from the environment only.
+/// It cannot be combined with `--connection`, and without the variable it
+/// fails and names it.
+#[test]
+fn mcp_document_takes_its_token_from_the_environment() {
+    assert!(
+        !cli(&[
+            "mcp",
+            "--document",
+            "https://example.test/docs/a",
+            "--connection",
+            "x"
+        ])
+        .status
+        .success(),
+        "mcp --document with --connection should fail to parse"
+    );
+    let output = Command::new(env!("CARGO_BIN_EXE_librepaper"))
+        .args(["mcp", "--document", "https://example.test/docs/a"])
+        .env_remove("LIBREPAPER_AGENT_TOKEN")
+        .output()
+        .expect("CLI starts");
+    assert!(!output.status.success());
+    assert!(
+        String::from_utf8_lossy(&output.stderr).contains("LIBREPAPER_AGENT_TOKEN"),
+        "{output:?}"
+    );
+}
+
 #[test]
 fn agents_are_managed_in_the_desktop_app_not_the_cli() {
     assert!(
