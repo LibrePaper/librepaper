@@ -66,8 +66,9 @@ fn id_of_path(path_map: &LoroMap, path: &str) -> Option<String> {
 /// CRLF as one line break while a LoroText keeps both characters, and the
 /// editor copies its offsets straight into the text, so a body with CRLF
 /// shifts every edit made on it (gh#74). Every route that writes a whole
-/// body passes through here.
-fn line_feeds(body: &str) -> Cow<'_, str> {
+/// body passes through here, and the room passes an agent's replacement
+/// through it as well.
+pub fn line_feeds(body: &str) -> Cow<'_, str> {
     if !body.contains('\r') {
         return Cow::Borrowed(body);
     }
