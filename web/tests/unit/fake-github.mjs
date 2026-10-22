@@ -8,7 +8,7 @@ const binary = new Uint8Array([0, 1, 2, 255, 254]);
 
 // Values computed with `git hash-object` on the same bytes.
 const QMD = "e5c5c5583f49a34e86ce622b59363df99e09d4c6";
-const CRLF = "422c2b7ab3b3c668038da977e4e93a5fc623169c";
+const CRLF = "c30dea8a3641ea99b125d04d599d843712292759";
 const BIN = "bfa7018e30c510999bbe462316bdd3839a58aa56";
 const X = "c1b0730e0133447badcfd47fd144e254807b06e1";
 
