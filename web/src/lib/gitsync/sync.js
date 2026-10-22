@@ -108,8 +108,9 @@ async function finish(ctx, id) {
 /// ignore files found in that commit. Returns what `classify` returns plus
 /// `rules` (for path spelling and `isSynced`), `tree`, `commit` and `entries`,
 /// the blob entries by repository path.
+/// A `commit` of null is the empty remote of a branch without commits.
 export async function filterAt(ctx, link, commit) {
-  const listing = await ctx.git.tree(commit);
+  const listing = commit ? await ctx.git.tree(commit) : { tree: null, entries: [] };
   const entries = entryMap(listing.entries);
   const folder = link.folder || "";
   const rootEntry = entries.get(IGNORE_FILE);
@@ -351,10 +352,14 @@ async function prepare(ctx, link, op, options) {
       ),
     };
   }
-  if (!fetched.head) return { refusal: refused("The branch has no commits yet.") };
-  const remote = fetched.head;
+  if (!fetched.head && link.checkpoint) {
+    return { refusal: refused("The branch no longer has any commits.") };
+  }
+  // A branch without commits has nothing to bring in and nothing to record.
+  const remote = fetched.head || null;
   const filter = await filterAt(ctx, link, remote);
   if (filter.refusals.length) return { refusal: result("refused", { refusals: filter.refusals }) };
+  if (!remote) return { empty: true, link, filter, theirs: await commitFiles(ctx, new Map(), null) };
 
   const incoming = await loadFiles(ctx, filter, filter.entries, [...filter.synced.keys()]);
   pruneSkipped(filter, incoming.skipped);
@@ -500,7 +505,12 @@ async function runPull(ctx, options = {}) {
         await finish(ctx, op);
         return { result: prepared.refusal };
       }
-      if (prepared.merge.clean) {
+      if (prepared.empty) {
+        step = {
+          result: result("nothing", { files: [], skipped: [], link, arrived: true }),
+          state: { filter: prepared.filter, remote: null, theirs: prepared.theirs, link },
+        };
+      } else if (prepared.merge.clean) {
         step = await complete(ctx, prepared, prepared.merge.tree, op);
       } else {
         step = await openConflict(ctx, prepared, op, options.carry);
@@ -585,7 +595,7 @@ export async function applyResolution(ctx, session, resolutions) {
 
 // ---------------------------------------------------------------- push
 
-function defaultMessage(files) {
+export function defaultMessage(files) {
   const names = files.slice(0, 3).map((file) => file.path.split("/").pop());
   const more = files.length > 3 ? ` and ${files.length - 3} more` : "";
   return `Update ${names.join(", ")}${more}`;
@@ -666,7 +676,7 @@ async function recordPush(ctx, entry) {
 /// Writes one commit on top of the remote head and pushes it.
 async function publish(ctx, plan, message) {
   const tree = await ctx.git.treeEdit(plan.remoteTree, plan.edits);
-  const commit = await ctx.git.commitTree(tree, [plan.remote], message?.trim() || defaultMessage(plan.files), authorOf(ctx));
+  const commit = await ctx.git.commitTree(tree, plan.remote ? [plan.remote] : [], message?.trim() || defaultMessage(plan.files), authorOf(ctx));
   const op = refId();
   const entry = { id: op, kind: "push", phase: "prepared", commit, parent: plan.remote, paths: plan.paths };
   await journalSet(ctx, entry);
@@ -739,8 +749,7 @@ export async function compare(ctx, draft) {
     await openDraft(ctx, draft);
     const none = { incoming: [], outgoing: [], differing: [], unsynced: [], folders: [], refusals: [] };
     const fetched = await ctx.git.fetch([]);
-    if (!fetched.head) return { ...none, refusals: [{ reason: "The branch has no commits yet.", paths: [] }] };
-    const filter = await filterAt(ctx, draftLink(draft), fetched.head);
+    const filter = await filterAt(ctx, draftLink(draft), fetched.head || null);
     if (filter.refusals.length) return { ...none, refusals: filter.refusals };
     const incoming = await loadFiles(ctx, filter, filter.entries, [...filter.synced.keys()]);
     pruneSkipped(filter, incoming.skipped);
@@ -769,9 +778,8 @@ export async function connect(ctx, draft, direction) {
     if (direction !== "local" && direction !== "remote") throw new Error("Choose which side keeps the differing files.");
     await openDraft(ctx, draft);
     const fetched = await ctx.git.fetch([]);
-    if (!fetched.head) return refused("The branch has no commits yet.");
     const spec = draftLink(draft);
-    const filter = await filterAt(ctx, spec, fetched.head);
+    const filter = await filterAt(ctx, spec, fetched.head || null);
     if (filter.refusals.length) return result("refused", { refusals: filter.refusals });
     const incoming = await loadFiles(ctx, filter, filter.entries, [...filter.synced.keys()]);
     pruneSkipped(filter, incoming.skipped);

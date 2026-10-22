@@ -225,7 +225,7 @@ class Repo {
           this.moveOnPush -= 1;
           this.advance({ [`moved-${this.moveOnPush}.md`]: "moved\n" });
         }
-        if (this.commits.get(body.commit).parents[0] !== this.head) {
+        if ((this.commits.get(body.commit).parents[0] ?? null) !== this.head) {
           throw httpError(409, { error: "The branch moved.", kind: "moved" }, { kind: "moved", name: "Refused" });
         }
         this.head = body.commit;
@@ -513,6 +513,46 @@ const baseFiles = (repo) => {
   assert.equal(localSide.api.state.link.checkpoint, localSide.repo.head);
   assert.deepEqual(localSide.repo.journal, []);
   assert.equal(localSide.repo.refs.size, 0);
+}
+
+// ---------------------------------------------------------------- 1b. a branch without commits
+
+{
+  const fresh = () => world({ project: { "intro.qmd": "hello\n", "notes.md": "notes\n" } });
+
+  const compared = await fresh();
+  const look = await sync.compare(compared.ctx, draft("paper"));
+  assert.deepEqual(look.refusals, []);
+  assert.deepEqual(look.incoming, []);
+  assert.deepEqual(look.differing, []);
+  assert.deepEqual(look.outgoing, ["intro.qmd", "notes.md"]);
+
+  const { repo, api, ctx } = await fresh();
+  const pushed = await sync.connect(ctx, draft("paper"), "local");
+  assert.equal(pushed.status, "pushed", JSON.stringify(pushed));
+  assert.equal(repo.pushes.length, 1);
+  assert.deepEqual(repo.commits.get(repo.head).parents, []);
+  assert.deepEqual(repo.files(), { "paper/intro.qmd": "hello\n", "paper/notes.md": "notes\n" });
+  assert.equal(api.state.link.checkpoint, repo.head);
+  assert.deepEqual(api.state.link.synced_paths, ["intro.qmd", "notes.md"]);
+  assert.equal((await sync.pull(ctx)).status, "nothing");
+  assert.deepEqual(repo.journal, []);
+  assert.equal(repo.refs.size, 0);
+
+  // Keeping the repository's copies records the link and sends nothing.
+  const kept = await fresh();
+  const answer = await sync.connect(kept.ctx, draft("paper"), "remote");
+  assert.equal(answer.status, "nothing", JSON.stringify(answer));
+  assert.equal(kept.api.state.link.checkpoint, null);
+  assert.equal(kept.repo.pushes.length, 0);
+  const review = await sync.outgoing(kept.ctx);
+  assert.equal(review.status, "outgoing");
+  assert.deepEqual(review.files.map((file) => file.path), ["intro.qmd", "notes.md"]);
+  assert.equal(review.outgoing.remote, null);
+  const second = await sync.push(kept.ctx, "First", { confirmed: review.outgoing });
+  assert.equal(second.status, "pushed", JSON.stringify(second));
+  assert.equal(kept.repo.commits.get(kept.repo.head).message, "First");
+  assert.equal(kept.api.state.link.checkpoint, kept.repo.head);
 }
 
 // ---------------------------------------------------------------- 2. independent edits merge

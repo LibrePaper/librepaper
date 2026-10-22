@@ -8,20 +8,21 @@
   let { open = $bindable(false), ctx, session = null, onresult, onclose } = $props();
 
   // Per path: { kind: "text" | "binary", base, ours, theirs (text or null), baseId, oursId, theirsId }.
+  // "ours" is LibrePaper's copy and "theirs" the repository's.
   let items = $state([]);
-  // Per path: { side: "ours" | "theirs" } | { delete: true } | { text }.
+  // Per path, as applyResolution takes it: { keep: "ours" | "theirs" } | { delete: true } | { text }.
   let resolutions = $state({});
   let loading = $state(false);
   let busy = $state(false);
   let error = $state("");
+  let current = $state(null);
   let loaded = null;
 
   const decoder = new TextDecoder("utf-8", { fatal: true });
-  const bytesOf = (base64) => Uint8Array.from(atob(base64), (char) => char.charCodeAt(0));
 
-  function decode(base64) {
-    if (base64 == null) return null;
-    const bytes = bytesOf(base64);
+  /// The text of a blob, null for no blob, undefined for bytes that are not text.
+  function decode(bytes) {
+    if (bytes == null) return null;
     if (bytes.includes(0)) return undefined;
     try {
       return decoder.decode(bytes);
@@ -30,20 +31,18 @@
     }
   }
 
-  async function load(current) {
+  async function load(saved) {
     loading = true;
     error = "";
     try {
-      const conflicts = current.conflicts || [];
+      const conflicts = saved.conflicts || [];
       const ids = [...new Set(conflicts.flatMap((item) => [item.base, item.ours, item.theirs]).filter(Boolean))];
-      const answer = ids.length ? await ctx.git.blobs(ids) : {};
-      const blobs = answer?.blobs || answer || {};
-      const carried = new Set(current.carried || []);
+      const blobs = ids.length ? await ctx.git.blobs(ids) : new Map();
       const next = [];
       const chosen = {};
       for (const item of conflicts) {
-        const texts = [item.base, item.ours, item.theirs].map((id) => (id ? decode(blobs[id]) : null));
-        const binary = texts.some((text) => text === undefined);
+        const texts = [item.base, item.ours, item.theirs].map((id) => (id ? decode(blobs.get(id)) : null));
+        const binary = item.kind === "asset" || texts.some((text) => text === undefined);
         next.push({
           path: item.path,
           kind: binary ? "binary" : "text",
@@ -54,7 +53,7 @@
           ours: texts[1],
           theirs: texts[2],
         });
-        if (carried.has(item.path) && current.resolutions?.[item.path]) chosen[item.path] = current.resolutions[item.path];
+        if (saved.carried?.[item.path]) chosen[item.path] = saved.carried[item.path];
       }
       items = next;
       resolutions = chosen;
@@ -68,6 +67,7 @@
   $effect(() => {
     if (open && session && session !== loaded) {
       loaded = session;
+      current = session;
       load(session);
     }
   });
@@ -76,7 +76,8 @@
   const choose = (path, value) => (resolutions = { ...resolutions, [path]: value });
   const edit = (path, text) => choose(path, { text });
   const resultText = (item) => resolutions[item.path]?.text ?? item.ours ?? "";
-  const picked = (path, side) => resolutions[path]?.side === side;
+  const picked = (path, side) => resolutions[path]?.keep === side;
+  const keepSide = (item) => (item.oursId == null ? "theirs" : "ours");
   const resolved = $derived(items.length > 0 && items.every((item) => resolutions[item.path]));
 
   function close() {
@@ -89,10 +90,17 @@
     busy = true;
     error = "";
     try {
-      const result = await applyResolution(ctx, session, resolutions);
+      const result = await applyResolution(ctx, current, resolutions);
+      if (result.status === "conflict" && result.unresolved?.length) {
+        error = `These files still need a choice: ${result.unresolved.join(", ")}`;
+        return;
+      }
       if (result.status === "conflict") {
-        session = result.session;
-        loaded = null;
+        // The repository moved and the merge was made again.
+        current = result.session;
+        loaded = result.session;
+        await load(result.session);
+        error = "The repository changed, so the conflicts were found again. Check the choices and apply again.";
         return;
       }
       open = false;
@@ -139,15 +147,15 @@
           {/if}
           <div class="gr-row">
             {#if deleteVsModify(item)}
-              <button type="button" class="btn btn-sm {resolutions[item.path]?.delete ? 'lp-control-brand' : 'lp-control-tonal-brand'}"
-                onclick={() => choose(item.path, { side: item.oursId == null ? "theirs" : "ours" })}>Keep the file</button>
+              <button type="button" class="btn btn-sm {picked(item.path, keepSide(item)) ? 'lp-control-brand' : 'lp-control-tonal-brand'}"
+                onclick={() => choose(item.path, { keep: keepSide(item) })}>Keep the file</button>
               <button type="button" class="btn btn-sm {resolutions[item.path]?.delete ? 'lp-control-brand' : 'lp-control-tonal-brand'}"
                 onclick={() => choose(item.path, { delete: true })}>Delete the file</button>
             {:else}
               <button type="button" class="btn btn-sm {picked(item.path, 'ours') ? 'lp-control-brand' : 'lp-control-tonal-brand'}"
-                onclick={() => choose(item.path, { side: "ours" })}>Use LibrePaper's</button>
+                onclick={() => choose(item.path, { keep: "ours" })}>Use LibrePaper's</button>
               <button type="button" class="btn btn-sm {picked(item.path, 'theirs') ? 'lp-control-brand' : 'lp-control-tonal-brand'}"
-                onclick={() => choose(item.path, { side: "theirs" })}>Use the repository's</button>
+                onclick={() => choose(item.path, { keep: "theirs" })}>Use the repository's</button>
             {/if}
           </div>
         </section>
