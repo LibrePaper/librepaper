@@ -159,9 +159,8 @@
     if (!haveRemote || !branch.trim()) return;
     await guard(async () => {
       // The label stays unset unless the sidecar gave one; sync.js fills it from the sidecar.
-      draft = { remote, branch: branch.trim(), folder: cleanFolder(folder) };
       const known = discovered || grant?.label;
-      if (known) draft.label = known;
+      draft = { remote, branch: branch.trim(), folder: cleanFolder(folder), ...(known ? { label: known } : {}) };
       const answer = await compare(context(), draft);
       if (answer.status === "refused") {
         if (answer.kind === "auth") error = { auth: true };
