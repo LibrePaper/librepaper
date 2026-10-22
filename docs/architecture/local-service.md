@@ -18,6 +18,8 @@ The local service writes a local credential to `control-token.json` (mode 0600) 
 
 The desktop app chooses the server. Its default server is `https://app.librepaper.org/`. `LIBREPAPER_SERVER` selects a self-hosted server.
 
+The desktop app trusts that server. The Run code switch lives in the page, so the server origin can start a build without it. A compromised server, or a script injected into its pages, can run code on the author's machine.
+
 `librepaper local endpoint` starts the local service if it is not running. It prints one line of JSON with the address and credential. The desktop app runs it at startup and again after a failed request.
 
 Users never start, stop or pair the local service. The desktop app runs it. Folder selection opens the operating system's native chooser. Folder names and contents remain local.
