@@ -171,6 +171,38 @@ struct BridgeRecord {
     store: crate::local::connections::ConnectionStore,
     name: String,
     seen: crate::local::connections::Connection,
+    touched: std::time::Instant,
+}
+
+/// How often a live runner marks its record as in use. It is far below the
+/// record's idle limit, so a runner that is up never loses its record to the
+/// sweep, and far above the tick, so the store is rarely rewritten.
+const RECORD_TOUCH_INTERVAL: Duration = Duration::from_secs(3600);
+
+fn record_touch_due(touched: std::time::Instant, now: std::time::Instant) -> bool {
+    now.saturating_duration_since(touched) >= RECORD_TOUCH_INTERVAL
+}
+
+impl BridgeRecord {
+    fn new(
+        store: crate::local::connections::ConnectionStore,
+        name: String,
+        seen: crate::local::connections::Connection,
+    ) -> Self {
+        Self {
+            store,
+            name,
+            seen,
+            touched: std::time::Instant::now(),
+        }
+    }
+
+    fn keep_alive(&mut self) {
+        let now = std::time::Instant::now();
+        if record_touch_due(self.touched, now) && self.store.touch(&self.name).is_ok() {
+            self.touched = now;
+        }
+    }
 }
 
 impl BridgeGrant {
@@ -190,6 +222,7 @@ impl BridgeGrant {
     }
 
     fn sync(&mut self) -> Result<(), String> {
+        self.record.keep_alive();
         let current = self
             .source
             .read()
@@ -720,11 +753,7 @@ async fn execute(peer: &AutomationPeer, config: &Config, lease: &Lease) -> Resul
     let connections = crate::local::connections::ConnectionStore::new(&config.state_home);
     let mut grant = BridgeGrant::publish(
         connections.grant_path(&connection),
-        BridgeRecord {
-            store: connections,
-            name: connection.clone(),
-            seen,
-        },
+        BridgeRecord::new(connections, connection.clone(), seen),
         peer.token_source(),
     )?;
     // Prove the document is reachable at this access level before starting an
@@ -1444,11 +1473,7 @@ mod tests {
         let name = store
             .put_runner("https://d.example/docs/a", "o", "c1", "t1")
             .unwrap();
-        let record = BridgeRecord {
-            seen: store.get(&name).unwrap(),
-            store: store.clone(),
-            name: name.clone(),
-        };
+        let record = BridgeRecord::new(store.clone(), name.clone(), store.get(&name).unwrap());
         let mut grant = BridgeGrant::publish(path.clone(), record, source.clone()).unwrap();
         assert_eq!(std::fs::read_to_string(&path).unwrap(), "lpa_v1.first");
         let mode = std::fs::metadata(&path).unwrap().permissions().mode() & 0o777;
@@ -1485,6 +1510,17 @@ mod tests {
     /// A restarted runner replaces the record before the old runner's teardown
     /// runs, and that teardown must leave the new record alone.
     #[test]
+    fn a_record_touch_is_due_only_after_the_interval() {
+        let start = std::time::Instant::now();
+        assert!(!record_touch_due(start, start));
+        assert!(!record_touch_due(
+            start,
+            start + RECORD_TOUCH_INTERVAL - Duration::from_secs(1)
+        ));
+        assert!(record_touch_due(start, start + RECORD_TOUCH_INTERVAL));
+    }
+
+    #[test]
     fn an_old_runners_teardown_keeps_its_replacements_record() {
         let dir = tempfile::tempdir().unwrap();
         let store = crate::local::connections::ConnectionStore::new(dir.path());
@@ -1493,11 +1529,7 @@ mod tests {
             .unwrap();
         let old = BridgeGrant::publish(
             store.grant_path(&name),
-            BridgeRecord {
-                seen: store.get(&name).unwrap(),
-                store: store.clone(),
-                name: name.clone(),
-            },
+            BridgeRecord::new(store.clone(), name.clone(), store.get(&name).unwrap()),
             std::sync::Arc::new(std::sync::RwLock::new("lpa_v1.old".to_string())),
         )
         .unwrap();

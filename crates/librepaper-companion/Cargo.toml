@@ -34,6 +34,7 @@ serde_json.workspace = true
 serde_yaml.workspace = true
 reqwest.workspace = true
 sha2.workspace = true
+hmac.workspace = true
 # Quarto's freezer names a cached computation by the MD5 of its source, so
 # reading that cache means computing the same digest. A format requirement,
 # not a security choice: nothing here trusts MD5 for anything.

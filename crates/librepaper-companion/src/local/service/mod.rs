@@ -945,7 +945,7 @@ async fn dispatch(
     request: Request<Body>,
 ) -> Reply {
     match segs {
-        ["health"] if *method == Method::GET => handle_health(inner),
+        ["health"] if *method == Method::GET => handle_health(inner, request.uri()),
         ["bindings"] if *method == Method::GET => {
             handle_bindings_list(inner, headers, origin, request).await
         }
@@ -1107,14 +1107,36 @@ async fn handle_zotero_item(
 
 /* -------------------------------------------------------------- health */
 
-fn handle_health(inner: &Inner) -> Reply {
+/// Identifies the service. A well formed `challenge` (64 lowercase hex
+/// characters) is also answered with a `proof` only the holder of the control
+/// token can compute, so the desktop app can tell this service from a process
+/// that took over its port.
+fn handle_health(inner: &Inner, uri: &axum::http::Uri) -> Reply {
     let body = protocol::Health {
         service: "librepaper-local".to_string(),
         protocol: PROTOCOL_VERSIONS.to_vec(),
         version: crate::VERSION.to_string(),
         instance: inner.instance.clone(),
     };
-    write_json(200, &serde_json::to_value(body).unwrap_or(Value::Null))
+    let mut value = serde_json::to_value(body).unwrap_or(Value::Null);
+    if let Some(nonce) = health_challenge(uri) {
+        value["proof"] = Value::String(inner.control.prove(&nonce));
+    }
+    write_json(200, &value)
+}
+
+fn health_challenge(uri: &axum::http::Uri) -> Option<Vec<u8>> {
+    let query = uri.query()?;
+    let (_, challenge) = url::form_urlencoded::parse(query.as_bytes())
+        .find(|(name, _)| name == "challenge")?;
+    if challenge.len() != 64
+        || !challenge
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+    {
+        return None;
+    }
+    hex::decode(challenge.as_bytes()).ok()
 }
 
 /* ------------------------------------------------------- folder bindings */
@@ -2279,6 +2301,44 @@ mod settings_tests {
             .unwrap();
         let body: Value = serde_json::from_slice(&bytes).unwrap();
         assert_eq!(body["instance"], "test-instance");
+    }
+
+    #[tokio::test]
+    async fn health_proves_the_control_token_only_for_a_well_formed_challenge() {
+        let (inner, _state_home, _cache_home) = test_inner().await;
+        let health = |query: String| {
+            let inner = inner.clone();
+            async move {
+                let request = Request::get(format!("{BASE_PATH}/health{query}"))
+                    .header("host", format!("127.0.0.1:{PORT}"))
+                    .body(Body::empty())
+                    .unwrap();
+                let response = send(&inner, request).await;
+                assert_eq!(response.status(), StatusCode::OK);
+                let bytes = axum::body::to_bytes(response.into_body(), 4096)
+                    .await
+                    .unwrap();
+                serde_json::from_slice::<Value>(&bytes).unwrap()
+            }
+        };
+
+        let nonce = [7u8; 32];
+        let body = health(format!("?challenge={}", hex::encode(nonce))).await;
+        use hmac::Mac as _;
+        let mut mac = hmac::Hmac::<sha2::Sha256>::new_from_slice(credential(&inner).as_bytes())
+            .unwrap();
+        mac.update(&nonce);
+        assert_eq!(body["proof"], hex::encode(mac.finalize().into_bytes()));
+
+        assert!(health(String::new()).await.get("proof").is_none());
+        for bad in [
+            "?challenge=abc".to_string(),
+            format!("?challenge={}", "A".repeat(64)),
+            format!("?challenge={}", "g".repeat(64)),
+            format!("?challenge={}", "a".repeat(66)),
+        ] {
+            assert!(health(bad).await.get("proof").is_none());
+        }
     }
 
     #[tokio::test]
