@@ -132,6 +132,7 @@ fn definite_noncommit_code(code: &str) -> bool {
             | "conflict"
             | "permission_changed"
             | "budget_exceeded"
+            | "rate_limited"
     )
 }
 

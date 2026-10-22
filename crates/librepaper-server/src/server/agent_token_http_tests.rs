@@ -742,3 +742,29 @@ async fn a_replayed_comment_operation_spends_the_budget_once() {
         "the replay cost nothing, so the second remark fits: {second}"
     );
 }
+
+#[tokio::test]
+#[ignore = "requires LIBREPAPER_TEST_POSTGRES_URL"]
+async fn a_comment_refused_for_its_budget_is_reported_as_refused_by_document_result() {
+    let Some(served) = serve("token-budget-refusal-receipt").await else {
+        return;
+    };
+    let token = mint_budgeted_token(&served, 0).await;
+    let (_, epoch, _) = served.read(&token, "interval covers").await;
+    let comment = json!({"action": "create", "body": "Refused remark", "operation": operation(&epoch)});
+    let (_, refused) = served.call(&token, "document_comment", comment.clone()).await;
+    assert_eq!(refused["error"]["code"], "rate_limited", "{refused}");
+    let (status, looked_up) = served
+        .call(
+            &token,
+            "document_result",
+            json!({"operation": operation(&epoch), "kind": "operation",
+                "target_operation": comment["operation"]}),
+        )
+        .await;
+    assert_eq!(status, 200, "{looked_up}");
+    assert_eq!(
+        looked_up["error"]["code"], "rate_limited",
+        "a budget refusal is a definite noncommit: {looked_up}"
+    );
+}
