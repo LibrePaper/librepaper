@@ -16,7 +16,7 @@ import { unsuggestedText } from "../../src/lib/track-changes.js";
 globalThis.location = { hostname: "example.test" };
 
 const enc = new TextEncoder();
-const dec = new TextDecoder();
+const dec = new TextDecoder("utf-8", { ignoreBOM: true });
 const sha1 = (data) => createHash("sha1").update(data).digest("hex");
 const bytesOf = (content) => (typeof content === "string" ? enc.encode(content) : content);
 
