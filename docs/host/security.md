@@ -81,7 +81,7 @@ nc -z -w5 203.0.113.10 18080
 ```
 
 - A change can take several minutes to apply.
-- Run other apps on the same server without publishing host ports. Let them join the `librepaper_edge` network, and give Caddy a site block for each one in `caddy/local.d/`.
+- Run other apps on the same server without publishing host ports. Put them behind the kit's Caddy instead, as described in [Other apps on the same server](advanced.html#other-apps-on-the-same-server).
 
 ### Private access with Tailscale
 

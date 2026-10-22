@@ -321,6 +321,44 @@ Every limit and the retention settings are listed, with their defaults, at the e
 - `[retention]` deletes documents after `expire_after`, counted from the last update by default or from creation.
 - `erase_inactive_after` in `[retention]` erases accounts that have not signed in for that long, with every document they own. It is off by default and must be at least 60 days. The admin console shows how many accounts it will erase in the next 30 days.
 
+## Other apps on the same server
+
+Another web app can share the kit's Caddy. It then needs no host ports of its own, so it gets HTTPS and nothing skips Caddy. Join the app to LibrePaper's edge network in the app's own compose file:
+
+```yaml
+services:
+  web:
+    ports: !reset []   # publish nothing on the host
+    networks:
+      default:
+      librepaper:
+        aliases: [otherapp]
+networks:
+  librepaper:
+    name: librepaper_edge
+    external: true
+```
+
+Then give Caddy a site block in `caddy/local.d/otherapp.caddy`, with the port the app listens on inside its container:
+
+```
+other.example {
+	reverse_proxy otherapp:8000
+}
+```
+
+```sh
+# in the other app's directory
+docker compose up -d
+# in the LibrePaper directory
+docker compose exec -T caddy caddy validate --config /etc/caddy/Caddyfile --adapter caddyfile
+docker compose exec -T caddy caddy reload --config /etc/caddy/Caddyfile --adapter caddyfile
+```
+
+- Point the app's DNS name at the server before the reload. Caddy obtains the certificate for a named site block when it loads the block.
+- Upgrades never overwrite `local.d`.
+- Start LibrePaper before the other app, because LibrePaper's project creates the network. Do not run `docker compose down` in the LibrePaper directory while the other app is attached.
+
 ## Behind your own Caddy
 
 The kit ships its own Caddy, which answers on ports 80 and 443. Many VPS already run a Caddy for other sites, and only one program can hold those ports. In that case, keep your Caddy as the single entry point for every site and let it forward LibrePaper's names to the LibrePaper container. The bundled Caddy keeps running without host ports, so it no longer competes with yours.
