@@ -154,4 +154,4 @@ function classify(entries, options = {}) {
   assert.equal(set.isSynced("analysis.qmd"), true);
 }
 
-console.log("forge rules ok");
+console.log("gitsync rules ok");
