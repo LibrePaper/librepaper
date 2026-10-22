@@ -22,12 +22,15 @@
   </label>
   {#if creating}
     <label class="share-field panel-meta">Permission
-      <select class="select share-select" bind:value={draft.role} disabled={busy}>
+      <select class="select share-select" bind:value={draft.role} disabled={busy} onchange={(event) => { if (kind === "token" && event.currentTarget.value === "editor" && draft.until === "7d") draft.until = "1d"; }}>
         {#each rolesOf(kind) as role (role.id)}
           <option value={role.id} disabled={!allowed(role.id)}>{role.label}{allowed(role.id) ? "" : " (not allowed here)"}</option>
         {/each}
       </select>
     </label>
+    {#if kind === "token" && draft.role === "editor"}
+      <p class="share-note panel-meta">Edit lets the agent change the project directly, without review.</p>
+    {/if}
   {/if}
   <label class="share-field panel-meta">Expires
     <select class="select share-select" bind:value={draft.until} disabled={busy}>
@@ -53,7 +56,8 @@
 <style>
   .share-form { display: grid; gap: calc(var(--spacing) * 2); padding-block: calc(var(--spacing) * 2); }
   .share-field { display: grid; gap: var(--spacing); }
-  .share-field > span { font-size: 11px; }
+  .share-field > span, .share-note { font-size: 11px; }
+  .share-note { margin: 0; }
   .share-input, .share-select { width: 100%; min-width: 0; max-width: 100%; }
   .share-select { border: 0; background-color: var(--color-row-hover); font: inherit; border-radius: var(--radius-base); }
   .share-advanced summary { cursor: pointer; padding-block: var(--spacing); }

@@ -102,10 +102,13 @@ opencode auth login
 
 An agent on another machine, such as a home server or a chat bot, works on a document with an agent token. The token reaches that one document and nothing else.
 
-- The owner creates the token in the Sharing panel, on the Agent tokens tab. It takes a name, Comment or Suggest permission, and an expiry.
+- The owner creates the token in the Sharing panel, on the Agent tokens tab. It takes a name, a permission and an expiry.
+  - Comment: the agent comments only.
+  - Suggest: the agent proposes tracked changes. A person accepts or rejects each one.
+  - Edit: the agent changes the project directly, with no review. Edit tokens expire after 1 day by default.
 - LibrePaper shows the token once. Copy it then.
 
-Install the [librepaper CLI](cli.html) on the agent's machine. Then add the document to the agent's MCP config. This Codex example sets the token in the environment:
+Install the [librepaper CLI](cli.html#install) on the agent's machine. Then add the document to the agent's MCP config. This Codex example sets the token in the environment:
 
 ```toml
 [mcp_servers.librepaper]
@@ -130,5 +133,5 @@ curl -X POST -H "Authorization: Bearer lpt_..." -H "Content-Type: application/js
   - When a write times out, call `document_result` with `{"kind": "operation", "target_operation": <the same operation object>}` to learn whether it landed. Do not send the write again first.
 - The token works only on these two routes, and only for its own document.
 - Comments and suggestions appear under the token's name. A person accepts or rejects each suggestion.
-- A Comment token gives comment access only. A Suggest token never applies changes, writes files, runs code or publishes.
+- A Comment token gives comment access only. A Suggest token never applies changes. An Edit token changes the project directly. No token publishes, shares or runs code.
 - A token stops working at its expiry, when you revoke it, when you Replace it, when you sign out everywhere, and when the document changes owner. Replace issues a new token, and the old one stops at once.

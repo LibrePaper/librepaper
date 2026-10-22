@@ -193,6 +193,27 @@ fn mcp_document_takes_its_token_from_the_environment() {
 }
 
 #[test]
+fn mcp_document_refuses_a_deployment_token() {
+    let output = Command::new(env!("CARGO_BIN_EXE_librepaper"))
+        .args([
+            "mcp",
+            "--document",
+            "https://example.test/docs/a",
+            "--token",
+            "lpt_paper.abc",
+        ])
+        .env("LIBREPAPER_AGENT_TOKEN", "lpt_paper.abc")
+        .output()
+        .expect("CLI starts");
+    assert!(!output.status.success());
+    assert!(
+        String::from_utf8_lossy(&output.stderr)
+            .contains("--token is not used with --document"),
+        "{output:?}"
+    );
+}
+
+#[test]
 fn agents_are_managed_in_the_desktop_app_not_the_cli() {
     assert!(
         !cli(&["agent", "list"]).status.success(),

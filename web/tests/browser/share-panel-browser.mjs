@@ -246,10 +246,16 @@ window.sharePanelCheck = async () => {
   const tokenForm = document.querySelector(".share-form");
   check(tokenForm.closest(".share-scroll"), "the new form scrolls with the list, so a short panel reaches its buttons");
   await type(tokenForm.querySelector("input[type=text]"), "Codex");
-  await type(tokenForm.querySelectorAll("select")[0], "suggester");
+  const roleSelect = tokenForm.querySelectorAll("select")[0];
+  const permissions = [...roleSelect.options].map((node) => node.textContent).join("|");
+  check(permissions === "Comment|Suggest|Edit", "the token permissions: " + permissions);
+  check(!text().includes("Edit lets the agent change the project directly, without review."), "no warning until Edit is chosen");
+  await type(roleSelect, "editor");
+  check(text().includes("Edit lets the agent change the project directly, without review."), "choosing Edit shows the warning: " + text());
+  check(tokenForm.querySelectorAll("select")[1].value === "1d", "choosing Edit moves the expiry to one day");
   await press(button("Create token"));
   const token = window.calls.at(-1)[1].create;
-  check(token.kind === "token" && token.role === "suggester" && token.name === "Codex" && token.until === "7d", JSON.stringify(token));
+  check(token.kind === "token" && token.role === "editor" && token.name === "Codex" && token.until === "1d", JSON.stringify(token));
 
   /* ---------------------------------------------------------- token reveal */
 
