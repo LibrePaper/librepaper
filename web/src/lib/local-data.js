@@ -81,6 +81,10 @@ export function listenForSignOut(onSignedOut) {
   channel.onmessage = (event) => {
     if (event.data?.type !== "signed-out" || localDataForgotten()) return;
     markSignedOut();
+    // This tab may have written a secret after the other tab cleared storage
+    // and before this message arrived.
+    const storage = safeLocalStorage();
+    if (storage) forgetStorage(storage);
     onSignedOut();
   };
   return () => channel.close();
