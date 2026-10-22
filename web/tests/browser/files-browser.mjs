@@ -250,7 +250,7 @@ window.sharingSetup = async () => {
         url: 'https://example.test/docs/paper#k=' + key,
         since: '2026-01-01T00:00:00Z',
         until: body.create.until === 'never' ? '' : '2027-03-05T00:00:00Z',
-        budget: body.create.budget, expired: false,
+        budget: body.create.budget,
       }];
       created = { id, kind: 'link', url: 'https://example.test/docs/paper#k=' + key };
     }

@@ -499,7 +499,6 @@ async fn revoked_expired_and_stale_tokens_answer_401() {
     assert_eq!(status, 200);
     assert_eq!(served.tools(&revoked).await.0, 401);
 
-    let _ = expired_id;
     sqlx::query(
         "UPDATE share_links SET created_at=now()-interval '2 hours', expires_at=now()-interval '1 hour'
          WHERE document_id=(SELECT id FROM documents WHERE slug=$1) AND label='expired'",
@@ -509,6 +508,15 @@ async fn revoked_expired_and_stale_tokens_answer_401() {
     .await
     .unwrap();
     assert_eq!(served.tools(&expired).await.0, 401);
+    let listed = served.sharing().await;
+    assert!(
+        !listed["tokens"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|token| token["id"] == expired_id.as_str()),
+        "an expired token is not listed: {listed}"
+    );
 
     assert_eq!(served.tools(&stale).await.0, 200);
     sqlx::query("UPDATE accounts SET session_generation=session_generation+1 WHERE id=$1")

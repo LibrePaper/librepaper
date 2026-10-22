@@ -13,9 +13,8 @@ export const fullDateOf = (iso) => new Date(iso).toLocaleDateString(undefined, {
 // A link may be left unnamed and is then called by what it grants.
 export const displayName = (kind, item) => item.name || (kind === "link" ? `${roleLabel(item.role)} link` : "Agent token");
 
-// The second line of a row. An expired row says so in words, not only in colour.
+// The second line of a row.
 export const metaOf = (kind, item) => {
   const role = roleLabel(item.role);
-  if (item.expired) return `${role} · Expired ${item.until ? dateOf(item.until) : ""}`.trim();
   return `${role} · ${item.until ? dateOf(item.until) : "No expiry"}`;
 };

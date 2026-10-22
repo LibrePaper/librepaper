@@ -36,14 +36,11 @@
   // The token just made or replaced. It is shown once, kept only here, and
   // never written to any storage.
   let reveal = $state(null);
-  let showExpired = $state(false);
 
   const TABS = [{ id: "links", label: "Links" }, { id: "tokens", label: "Agent tokens" }];
   const kindOf = (id) => (id === "links" ? "link" : "token");
   const itemsOf = (kind) => (kind === "link" ? sharing?.links : sharing?.tokens) ?? [];
-  const activeOf = (kind) => itemsOf(kind).filter((item) => !item.expired);
-  const expiredOf = (kind) => itemsOf(kind).filter((item) => item.expired);
-  const countOf = (kind) => { const n = activeOf(kind).length; return `${n} ${kind}${n === 1 ? "" : "s"}`; };
+  const countOf = (kind) => { const n = itemsOf(kind).length; return `${n} ${kind}${n === 1 ? "" : "s"}`; };
   // `publishers` and `commenters_policy` describe who the deployment lets
   // through; "nobody" is the one description that rules a permission out.
   const allowed = (role) => role === "reader" || (role === "commenter"
@@ -137,9 +134,7 @@
 
   async function replace(item, kind) {
     const message = kind === "link" ? "Link replaced. The old link no longer works." : "Token replaced. The old token no longer works.";
-    // A replacement keeps the expiry, which for an expired row is a lapsed
-    // one, so the fresh credential is given a week.
-    const answer = await change({ replace: item.expired ? { id: item.id, until: "7d" } : { id: item.id } }, message);
+    const answer = await change({ replace: { id: item.id } }, message);
     if (answer?.created?.token) reveal = { token: answer.created.token };
   }
 
@@ -212,8 +207,7 @@
 {/snippet}
 
 {#snippet list(kind)}
-  {@const active = activeOf(kind)}
-  {@const expired = expiredOf(kind)}
+  {@const active = itemsOf(kind)}
   {#if !(editing?.mode === "create" && editing.kind === kind)}
     <div class="share-toolbar">
       <span class="share-count">{countOf(kind)}</span>
@@ -239,18 +233,6 @@
           {/if}
         {/each}
       </ul>
-    {/if}
-    {#if expired.length}
-      <button type="button" class="share-disclosure" aria-expanded={showExpired} onclick={() => (showExpired = !showExpired)}>
-        <Icon name={showExpired ? "chevron-down" : "chevron-right"} size={14} />Expired ({expired.length})
-      </button>
-      {#if showExpired}
-        <ul class="share-list" aria-label="Expired {kind === 'link' ? 'links' : 'tokens'}">
-          {#each expired as item (item.id)}
-            <ShareRow {kind} {item} {busy} {copied} oncopy={copy} onaction={(value, row) => onaction(value, row, kind)} />
-          {/each}
-        </ul>
-      {/if}
     {/if}
     {@render messages()}
   </div>
@@ -313,6 +295,5 @@
   .share-scroll { flex: 1 1 0; min-height: 0; overflow-y: auto; overflow-x: hidden; }
   .share-scroll > p { margin-block: calc(var(--spacing) * 1); }
   .share-list { margin: 0; padding: 0; list-style: none; border-top: 1px solid var(--color-divider); }
-  .share-disclosure { display: flex; align-items: center; gap: calc(var(--spacing) * 1); width: 100%; margin-top: calc(var(--spacing) * 2); padding: .35rem 0; border: 0; border-top: 1px solid var(--color-divider); background: none; color: var(--panel-muted); font: inherit; font-size: 12px; text-align: left; cursor: pointer; }
   .share-copy-fallback { border: 0; background: transparent; resize: none; color: var(--color-text-muted); font-size: var(--panel-meta-size); }
 </style>

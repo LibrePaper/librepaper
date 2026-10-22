@@ -243,7 +243,7 @@
     if (canShare) {
       const endpoint = `/api/documents/${encodeURIComponent(slug)}/share`;
       const sharing = await getPrivate(endpoint);
-      let accessLink = sharing.links?.find((one) => one.role === mode && one.name === "Agent" && one.key && !one.expired);
+      let accessLink = sharing.links?.find((one) => one.role === mode && one.name === "Agent" && one.key);
       if (!accessLink) {
         const answer = await post(endpoint, { create: { kind: "link", role: mode, until: "7d", name: "Agent" } });
         accessLink = answer.created;

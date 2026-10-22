@@ -1,10 +1,10 @@
 // Browser regression check for the sharing panel: links and agent tokens as
 // two lists of two-line rows, the More menu, the confirmations, the one-time
-// token screen and the collapsed expired section.
+// token screen.
 //
 // The route is stubbed rather than run, because what is under test is the
 // panel, not the server's writes. The stub follows the share contract: every
-// row the document keeps comes back in `links` or `tokens`, live or expired,
+// live row comes back in `links` or `tokens`, expired rows never do,
 // and create and replace add a `created` object. One link has no URL on
 // purpose: it stands for a link made before keys were kept.
 import assert from "node:assert/strict";
@@ -37,13 +37,12 @@ const idOf = () => String(++counter).padStart(16, "0");
 const week = () => new Date(Date.now() + 7 * 86400000).toISOString();
 const state = {
   links: [
-    { id: "a000000000000001", role: "reader", name: "", key: "", url: "", since: "2026-01-01T00:00:00Z", until: "2027-03-17T00:00:00Z", expired: false, budget: null },
-    { id: "a000000000000002", role: "commenter", name: "Reviewer", key: "commentkey", url: "/docs/paper#k=commentkey", since: "2026-01-02T00:00:00Z", until: "2027-03-17T00:00:00Z", expired: false, budget: null },
-    { id: "a000000000000003", role: "commenter", name: "A very long name that has to be cut short with an ellipsis in a narrow column", key: "k3", url: "/docs/paper#k=k3", since: "2026-01-03T00:00:00Z", until: "", expired: false, budget: 5 },
-    { id: "a000000000000004", role: "editor", name: "Old draft", key: "k4", url: "/docs/paper#k=k4", since: "2025-01-01T00:00:00Z", until: "2026-10-02T00:00:00Z", expired: true, budget: null },
+    { id: "a000000000000001", role: "reader", name: "", key: "", url: "", since: "2026-01-01T00:00:00Z", until: "2027-03-17T00:00:00Z", budget: null },
+    { id: "a000000000000002", role: "commenter", name: "Reviewer", key: "commentkey", url: "/docs/paper#k=commentkey", since: "2026-01-02T00:00:00Z", until: "2027-03-17T00:00:00Z", budget: null },
+    { id: "a000000000000003", role: "commenter", name: "A very long name that has to be cut short with an ellipsis in a narrow column", key: "k3", url: "/docs/paper#k=k3", since: "2026-01-03T00:00:00Z", until: "", budget: 5 },
   ],
   tokens: [
-    { id: "b000000000000001", role: "commenter", name: "Paul's assistant", since: "2026-01-01T00:00:00Z", until: "2027-03-17T00:00:00Z", expired: false, budget: null },
+    { id: "b000000000000001", role: "commenter", name: "Paul's assistant", since: "2026-01-01T00:00:00Z", until: "2027-03-17T00:00:00Z", budget: null },
   ],
 };
 window.calls = [];
@@ -60,7 +59,7 @@ window.fetch = async (path, options) => {
   if (body?.create) {
     const { kind, role, name, until, budget } = body.create;
     const id = idOf();
-    const row = { id, role, name, since: new Date().toISOString(), until: expiryOf(until), expired: false, budget };
+    const row = { id, role, name, since: new Date().toISOString(), until: expiryOf(until), budget };
     if (kind === "link") {
       state.links.push({ ...row, key: "minted" + id, url: "/docs/paper#k=minted" + id });
       created = { id, kind, url: "/docs/paper#k=minted" + id };
@@ -72,14 +71,14 @@ window.fetch = async (path, options) => {
   if (body?.update) {
     const row = rowOf(body.update.id);
     if (body.update.name !== undefined) row.name = body.update.name;
-    if (body.update.until) { row.until = expiryOf(body.update.until); row.expired = false; }
+    if (body.update.until) { row.until = expiryOf(body.update.until); }
     row.budget = body.update.budget ?? null;
   }
   if (body?.replace) {
     const row = rowOf(body.replace.id);
     const id = idOf();
     row.id = id;
-    if (body.replace.until) { row.until = expiryOf(body.replace.until); row.expired = false; }
+    if (body.replace.until) { row.until = expiryOf(body.replace.until); }
     if (row.url !== undefined) {
       row.key = "rotated" + id; row.url = "/docs/paper#k=rotated" + id;
       created = { id, kind: "link", url: row.url };
@@ -136,8 +135,8 @@ window.sharePanelCheck = async () => {
 
   check([...document.querySelectorAll('[role="tab"]')].map((node) => node.textContent.trim()).join("|") === "Links|Agent tokens",
     "two tabs: " + text());
-  check(text().includes("3 links") && !text().includes("4 links"), "the count is of active links only: " + text());
-  check(rows().length === 3, "three active links, the expired one is folded away");
+  check(text().includes("3 links"), "the count: " + text());
+  check(rows().length === 3 && !text().includes("Expired"), "three links and no expired section");
   check(rowText(0).startsWith("Read link Read") && rowText(0).includes("Mar 17"),
     "an unnamed link is called by what it grants, with its expiry: " + rowText(0));
   check(rowText(1).includes("Reviewer") && rowText(1).includes("Comment \\u00b7 Mar 17"), "a named link: " + rowText(1));
@@ -220,17 +219,6 @@ window.sharePanelCheck = async () => {
   check(text().includes("Revoke link?") && text().includes("People who only have access through this link will lose access."), "revoke asks first");
   await press([...document.querySelectorAll('[role="dialog"] button')].find((node) => node.textContent.trim() === "Revoke link"));
   check(window.calls.at(-1)[1].revoke && rows().length === 3, "revoked: " + text());
-
-  /* ---------------------------------------------------------------- expired */
-
-  check(text().includes("Expired (1)") && !text().includes("Old draft"), "expired rows are folded away");
-  await press(button("Expired (1)"));
-  check(text().includes("Old draft") && text().includes("Edit \\u00b7 Expired Oct 2"), "expired rows say so in words: " + text());
-  await press(labelled("More actions for Old draft"));
-  const lapsed = [...document.querySelectorAll('[role="menuitem"]')].filter((node) => node.getClientRects().length).map((node) => node.textContent.trim());
-  check(lapsed.join("|") === "Replace link|Remove", "the expired menu: " + lapsed.join("|"));
-  document.body.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
-  await flush();
 
   /* ------------------------------------------------------------ agent tokens */
 
@@ -351,7 +339,7 @@ try {
   await tab.navigate(`http://127.0.0.1:${port}/`);
   await until("share panel component", () => tab.evaluate("Boolean(window.sharePanelReady && window.sharePanelReady())"));
   assert.equal(await tab.evaluate("window.sharePanelCheck()"), true);
-  console.log("share panel: several links per role, names, the More menu, confirmations, tokens and the one-time reveal, expired rows");
+  console.log("share panel: several links per role, names, the More menu, confirmations, tokens and the one-time reveal");
 } finally {
   await tab?.close(); server?.close(); removeTemporary(temporary);
 }

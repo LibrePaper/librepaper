@@ -549,17 +549,16 @@ impl Server {
         Ok((grant, shown))
     }
 
-    /// Everything the Sharing panel draws: the owner's own URL, every link
-    /// and every agent token the document keeps, live or expired and oldest
-    /// first, and what this deployment's switches will let the owner offer.
+    /// Everything the Sharing panel draws: the owner's own URL, every live
+    /// link and agent token, oldest first, and what this deployment's switches will let the owner offer.
     /// Only the owner ever asks for this, so nothing here is held back from
     /// the caller. A token never carries its key: nothing keeps it.
     pub(super) fn sharing_json(&self, entry: &IndexEntry) -> Value {
         let now = librepaper_base::util::now_unix();
         let mut links = Vec::new();
         let mut tokens = Vec::new();
-        for row in &entry.links {
-            let expired = !row.live_at(now);
+        // An expired row admits nobody, so the panel is not shown it.
+        for row in entry.links.iter().filter(|row| row.live_at(now)) {
             match row.kind {
                 LinkKind::Link => {
                     // The key itself, from the sealed copy the catalogue keeps.
@@ -581,7 +580,6 @@ impl Server {
                         "key": key,
                         "since": row.since,
                         "until": row.until,
-                        "expired": expired,
                         "budget": row.budget,
                     }));
                 }
@@ -591,7 +589,6 @@ impl Server {
                     "name": row.label,
                     "since": row.since,
                     "until": row.until,
-                    "expired": expired,
                     "budget": row.budget,
                 })),
             }

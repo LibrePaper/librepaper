@@ -118,7 +118,7 @@ window.fetch = async (url, init) => {
       return Response.json({links:[],tokens:[],created:{id:role.padEnd(16,'0'),kind:'link',url:'/docs/paper#k='+role}});
     }
     if (window.missingAccess) return Response.json({links:[],tokens:[]});
-    return Response.json({tokens:[],links:['reader','commenter','editor'].map(role=>({id:role.padEnd(16,'0'),role,name:'Agent',key:role,url:'/docs/paper#k='+role,until:'2099-01-01T00:00:00Z',expired:false}))});
+    return Response.json({tokens:[],links:['reader','commenter','editor'].map(role=>({id:role.padEnd(16,'0'),role,name:'Agent',key:role,url:'/docs/paper#k='+role,until:'2099-01-01T00:00:00Z'}))});
   }
   if (new URL(url, location.href).pathname.endsWith('/assistant/capabilities')) {
     if(window.capabilityFailure) return Response.json({error:'The access link has expired.'},{status:403});

@@ -15,21 +15,21 @@
   const full = $derived(item.url ? new URL(item.url, location.origin).href : "");
 </script>
 
-<li class="share-row" class:share-expired={item.expired}>
+<li class="share-row">
   <span class="share-kind" aria-hidden="true"><Icon name={kind === "link" ? "link" : "bot"} size={15} /></span>
   <span class="share-name" title={name}>{name}</span>
   <span class="share-meta">{metaOf(kind, item)}</span>
   <div class="share-actions">
-    {#if full && !item.expired}
+    {#if full}
       <IconButton icon={copied === full ? "check" : "copy"} label="Copy {name}" title="Copy link" tone="plain" size="btn-icon-sm"
                   disabled={busy} onclick={() => oncopy(full, "Link copied.")} />
     {/if}
     <Menu onSelect={({ value }) => onaction(value, item)}>
       <MenuIconButton icon="more-horizontal" label="More actions for {name}" size="1rem" data-row-menu={item.id} disabled={busy} />
       <ExplorerMenu>
-        {#if !item.expired}<Menu.Item value="edit" class="menuitem">Edit settings</Menu.Item>{/if}
+        <Menu.Item value="edit" class="menuitem">Edit settings</Menu.Item>
         <Menu.Item value="replace" class="menuitem">Replace {noun}</Menu.Item>
-        <Menu.Item value="revoke" class="menuitem lp-text-error">{item.expired ? "Remove" : `Revoke ${noun}`}</Menu.Item>
+        <Menu.Item value="revoke" class="menuitem lp-text-error">Revoke {noun}</Menu.Item>
       </ExplorerMenu>
     </Menu>
   </div>
@@ -47,7 +47,6 @@
     border-top: 1px solid var(--color-divider);
   }
   .share-row:first-child { border-top: 0; }
-  .share-expired { color: var(--panel-muted); }
   .share-kind { grid-area: kind; display: grid; place-items: center; color: var(--panel-muted); }
   .share-name { grid-area: name; overflow: hidden; font-size: 13px; font-weight: 500; line-height: 1.3; text-overflow: ellipsis; white-space: nowrap; }
   .share-meta { grid-area: meta; overflow: hidden; color: var(--panel-muted); font-size: 11.5px; line-height: 1.3; text-overflow: ellipsis; white-space: nowrap; }
