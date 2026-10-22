@@ -1120,4 +1120,24 @@ const baseFiles = (repo) => {
   assert.match(answered.refusals[0].reason, /60 syncable files/);
 }
 
+// A synced file that grows over the size limit stays on both sides: it is not
+// pushed, and its absence from L is not a deletion in either direction.
+{
+  const { repo, session, ctx } = await connected({ "intro.qmd": "one\n", "notes.md": "short\n" });
+  ctx.maxFileBytes = 20;
+  await session.setText("notes.md", "x".repeat(40));
+  await session.setText("intro.qmd", "two\n");
+  const look = await sync.outgoing(ctx);
+  assert.equal(look.status, "outgoing", JSON.stringify(look));
+  assert.deepEqual(look.files.map((file) => file.path), ["intro.qmd"]);
+  const pushed = await sync.push(ctx, "x", { confirmed: look.outgoing });
+  assert.equal(pushed.status, "pushed", JSON.stringify(pushed));
+  assert.equal(repo.read("notes.md"), "short\n");
+  repo.advance({ "intro.qmd": "three\n" });
+  const pulled = await sync.pull(ctx);
+  assert.equal(pulled.status, "pulled", JSON.stringify(pulled));
+  assert.equal(session.text("notes.md"), "x".repeat(40));
+  assert.equal(repo.read("notes.md"), "short\n");
+}
+
 console.log("gitsync sync ok");

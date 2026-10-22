@@ -287,8 +287,9 @@ export async function normalized(ctx, items, entries, paths, parent) {
 /// A project path whose repository path the remote holds but does not sync (a
 /// link, a submodule, an oversize or LFS file, invalid UTF-8) is left out, so
 /// that it is never sent over that entry. A file over the size limit is left
-/// out and listed in `filter.unsynced`. Also returns the texts and asset
-/// digests it was built from, and the kind of each file.
+/// out and listed in `filter.unsynced`, and its path is returned in `oversize`
+/// so callers leave it out of every other input too. Also returns the texts
+/// and asset digests it was built from, and the kind of each file.
 export async function snapshot(ctx, filter, parent) {
   const files = new Map();
   const texts = new Map();
@@ -353,7 +354,7 @@ export async function snapshot(ctx, filter, parent) {
       filter.unsynced.push({ path: repoPath, reason: "over the file size limit" });
     }
   }
-  return { ...built, texts, assets, kinds, paths: [...files.keys()] };
+  return { ...built, texts, assets, kinds, paths: [...files.keys()], oversize };
 }
 
 /// The refusal for a remote that holds more project files than a project may,
@@ -496,6 +497,13 @@ async function prepare(ctx, link, op, options) {
   pruneSkipped(filter, incoming.skipped);
   const excess = tooManyFiles(filter);
   if (excess) return { refusal: result("refused", { refusals: [excess] }) };
+  // A project file over the size limit is unsynced in both directions. Left
+  // out of L alone, the merge would read it as a local deletion and push that.
+  const oversize = new Set((await snapshot(ctx, filter, null)).oversize);
+  for (const path of oversize) {
+    filter.synced.delete(path);
+    incoming.files.delete(path);
+  }
   const paths = [...filter.synced.keys()].sort(byPath);
 
   let base;
@@ -517,7 +525,7 @@ async function prepare(ctx, link, op, options) {
     }
     const items = new Map();
     for (const path of link.synced_paths || []) {
-      if (!filter.rules.isSynced(path)) continue;
+      if (!filter.rules.isSynced(path) || oversize.has(path)) continue;
       const kind = checkPath({ ...ctx.rules, max_path: Infinity }, path).kind;
       if (kind) items.set(path, { repoPath: spelled.get(normalisePath(path)) ?? filter.rules.repoPath(path), kind });
     }
@@ -784,7 +792,10 @@ export async function outgoing(ctx) {
     if (behind) return behind;
     const { filter, remote, theirs, link } = pulled.state;
     const local = await snapshot(ctx, filter, theirs.commit);
-    const changes = await ctx.git.diff(theirs.commit, local.commit);
+    // A file over the size limit is in neither direction, so its absence from
+    // L is not a deletion to push.
+    const skip = new Set(local.oversize);
+    const changes = (await ctx.git.diff(theirs.commit, local.commit)).filter((item) => !skip.has(item.path));
     if (!changes.length) {
       return result(pulled.result.status, { files: pulled.result.files, link });
     }
