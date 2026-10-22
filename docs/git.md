@@ -43,16 +43,42 @@ Pushing to a local repository folder updates the files in that folder, even when
 
 ## Credentials
 
-LibrePaper uses your own Git setup. It does not ask for a password and does not store one.
+LibrePaper uses your own Git setup. It never asks for or stores a password.
 
-HTTPS uses Git's credential helper. Check which helper is set.
+Git cannot ask for a password from the app. Sign in once from a terminal first. Git keeps the sign-in after that.
+
+### GitHub over HTTPS
+
+GitHub does not accept account passwords for Git. Use the GitHub CLI to sign in.
+
+- Install the [GitHub CLI](https://cli.github.com).
+- Sign in once, then let Git use that sign-in.
 
 ```sh
-# Print the credential helper Git uses. No output means none is set
-git config credential.helper
+# Sign in to GitHub once. Choose HTTPS when asked
+gh auth login
+
+# Let Git use the GitHub CLI's sign-in
+gh auth setup-git
 ```
 
-If nothing is set, set one up for your system. The [Git credential documentation](https://git-scm.com/docs/gitcredentials) lists the options.
+### Other hosts over HTTPS
+
+Run one command in a terminal to sign in. It reads the remote and changes nothing.
+
+- Windows: Git Credential Manager comes with Git for Windows. Run `git ls-remote <url>` once.
+- macOS: Save the sign-in in the keychain. Then run `git ls-remote <url>` once, and use an access token from the host as the password.
+- Linux: Install [Git Credential Manager](https://github.com/git-ecosystem/git-credential-manager). Then run `git ls-remote <url>` once.
+
+```sh
+# macOS only: store the sign-in in the keychain
+git config --global credential.helper osxkeychain
+
+# Sign in once. Replace the URL with your repository's HTTPS address
+git ls-remote https://example.com/owner/repo.git
+```
+
+### SSH
 
 SSH uses your SSH agent and keys. Add your key to the agent, then check that it is listed.
 
@@ -61,6 +87,24 @@ SSH uses your SSH agent and keys. Add your key to the agent, then check that it 
 ssh-add ~/.ssh/id_ed25519
 ssh-add -l
 ```
+
+On macOS, keep the key's passphrase in the keychain.
+
+```sh
+# macOS only: add the key and keep its passphrase in the keychain
+ssh-add --apple-use-keychain ~/.ssh/id_ed25519
+```
+
+Test the key with GitHub. Answer yes if SSH asks to trust the host.
+
+```sh
+# Check that GitHub accepts the key
+ssh -T git@github.com
+```
+
+- A key with a passphrase must be in the agent. Git cannot ask for the passphrase from the app.
+
+### Problems
 
 - If Git asks for a password in a terminal, LibrePaper cannot answer it. The sync stops with an error. Set up the credential helper or the SSH agent first.
 - Never put a password in the URL. LibrePaper refuses a URL that contains one.

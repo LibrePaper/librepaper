@@ -179,6 +179,17 @@ try {
   await evaluate(`mount(${JSON.stringify({ ...scene, remote: { status: "refused", refusals: [{ reason: "Git could not reach the remote." }] } })})`);
   await until("unknown", () => evaluate('text().includes("Git could not reach the remote.")'), 5000);
   assert.ok(await evaluate('button("Retry") !== null'));
+
+  // A sign-in Git could not make shows the steps for the remote. Try again
+  // runs the check once more, and a passing check clears the steps.
+  await evaluate(`mount(${JSON.stringify({ ...scene, remote: { status: "refused", kind: "auth", refusals: [{ reason: "Git could not sign in." }] } })})`);
+  await until("sign-in steps", () => evaluate('text().includes("gh auth setup-git")'), 5000);
+  assert.ok(await evaluate('button("Try again") !== null'));
+  await width(260);
+  assert.equal(await evaluate("overflows()"), false, "no horizontal overflow at 260px");
+  await evaluate('window.git.remote = { status: "current", head: "h1" }');
+  await evaluate('click("Try again")');
+  await until("up to date again", () => evaluate('text().includes("Up to date") && !text().includes("gh auth setup-git")'), 5000);
   assert.deepEqual(await evaluate("window.testErrors"), []);
   console.log("git panel browser ok");
 } finally {

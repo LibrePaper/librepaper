@@ -12,6 +12,7 @@
   import { createBridge } from "../../lib/gitsync/bridge.js";
   import { syncApi } from "../../lib/gitsync/server.js";
   import { remoteIdentity } from "../../lib/gitsync/identity.js";
+  import { currentPlatform, signInHelp } from "../../lib/gitsync/sign-in-help.js";
   import {
     checkRemote, compare, connect, defaultMessage, disconnect, localChanges, outgoing, pull, push, recover, status,
   } from "../../lib/gitsync/sync.js";
@@ -72,6 +73,9 @@
   const branchLine = $derived(link ? `${link.branch}${link.folder ? ` · ${link.folder}` : ""}` : "");
   const remote = $derived(grant ? { grant: grant.grant } : { url: remoteText.trim() });
   const haveRemote = $derived(Boolean(grant || remoteText.trim()));
+  // The remote a sign-in help names: the connected one, else the one being set up.
+  const remoteForHelp = $derived(connectedHere && link ? link.remote_label : remoteText.trim());
+  const platform = currentPlatform();
   const resolving = $derived(Boolean(resolver?.state.active));
   const interrupted = $derived(pending.length > 0);
   const savedConflict = $derived(Boolean(conflictSession) && !interrupted);
@@ -89,7 +93,7 @@
 
   function fail(failure) {
     if (failure?.kind === "auth") {
-      error = { auth: true };
+      error = { auth: true, remote: remoteForHelp };
     } else {
       error = { text: failure?.message || "Something went wrong." };
     }
@@ -256,7 +260,7 @@
       draft = { remote, branch: branch.trim(), folder: cleanFolder(folder), ...(known ? { label: known } : {}) };
       const answer = await compare(context(), draft);
       if (answer.status === "refused") {
-        if (answer.kind === "auth") error = { auth: true };
+        if (answer.kind === "auth") error = { auth: true, remote: remoteForHelp };
         if (answer.reconnect) reconnect = true;
         comparison = { incoming: [], outgoing: [], differing: [], unsynced: [], folders: [], refusals: answer.refusals || [] };
       } else {
@@ -300,7 +304,7 @@
       conflictSession = result.session;
       resolver?.open(context(), conflictSession, resolved);
     } else if (result.status === "refused" && result.kind === "auth") {
-      error = { auth: true };
+      error = { auth: true, remote: remoteForHelp };
     } else if (result.status === "refused" && result.reconnect) {
       reconnect = true;
       outcome = null;
@@ -416,6 +420,27 @@
     }
   }
 
+  async function copyCommand(command) {
+    try {
+      await navigator.clipboard.writeText(command);
+      say("Copied", { kind: "done", id: "git:copy-command" });
+    } catch {
+      say("Could not copy the command", { kind: "note", id: "git:copy-command" });
+    }
+  }
+
+  // Runs the remote check again after a sign-in problem, or lists the branches
+  // of a typed remote. The help goes away with the error.
+  async function retrySignIn() {
+    error = null;
+    if (connectedHere) {
+      await checkNow();
+      await refreshLocal();
+    } else if (remoteText.trim()) {
+      await loadBranches();
+    }
+  }
+
   function menuChosen(item) {
     if (item.value === "copy") copyRemote();
     else if (item.value === "disconnect") confirmingDisconnect = true;
@@ -430,6 +455,8 @@
     if (checking || remoteState === null) return { icon: "spinner", text: "Checking the remote…" };
     if (remoteState.status === "behind") return { icon: "arrow-down", text: "New commits on the remote", action: { label: "Pull", onclick: doPull, tone: "tonal" } };
     if (remoteState.status === "current") return { icon: "check", text: "Up to date", checked: checkedAt?.toLocaleTimeString() || "", action: { label: "Pull", onclick: doPull, tone: "quiet" } };
+    // The sign-in help below carries its own Try again.
+    if (error?.auth) return { icon: "triangle-alert", text: "Git could not sign in." };
     return { icon: "triangle-alert", text: remoteState.reason || "Could not check the remote.", action: { label: "Retry", onclick: checkNow, tone: "quiet" } };
   });
 
@@ -465,9 +492,33 @@
     </div>
   {/if}
   {#if error?.auth}
+    {@const help = signInHelp(error.remote, platform)}
     <div class="gh-alert" role="alert">
-      <p class="gh-alert-body lp-text-error">Git could not sign in to the remote. Check your credential helper or SSH agent. <a href={DOCS} target="_blank" rel="noopener noreferrer">Read more</a></p>
-      <button type="button" class="gh-action" onclick={() => (error = null)}>Dismiss</button>
+      <div class="gh-alert-body">
+        <p class="lp-text-error">{help.title}</p>
+        <ol class="gh-list gh-steps">
+          {#each help.steps as step}
+            <li>
+              {#if step.href}
+                <a href={step.href} target="_blank" rel="noopener noreferrer">{step.text}</a>
+              {:else}
+                <span>{step.text}</span>
+              {/if}
+              {#if step.command}
+                <span class="gh-command">
+                  <code>{step.command}</code>
+                  <IconButton icon="copy" label={`Copy ${step.command}`} tone="plain" size="btn-icon-sm" onclick={() => copyCommand(step.command)} />
+                </span>
+              {/if}
+            </li>
+          {/each}
+        </ol>
+        <div class="gh-row gh-help-actions">
+          <button type="button" class="btn btn-sm lp-control-tonal-brand" disabled={busy || checking} onclick={retrySignIn}>Try again</button>
+          <button type="button" class="gh-action" onclick={() => (error = null)}>Dismiss</button>
+          <a class="gh-help-link" href={`${DOCS}#credentials`} target="_blank" rel="noopener noreferrer">Read more</a>
+        </div>
+      </div>
     </div>
   {:else if error}
     <div class="gh-alert" role="alert">
@@ -713,6 +764,13 @@
   .gh-alert > .gh-action { flex: none; }
   .gh-alert-body { flex: 1 1 auto; min-width: 0; margin: 0; overflow-wrap: anywhere; }
   .gh-alert-body p { margin: 0 0 calc(var(--spacing) * 1.5); }
+  .gh-steps { display: grid; gap: calc(var(--spacing) * 1.5); margin: 0 0 calc(var(--spacing) * 2); padding-inline-start: 1.25rem; list-style: decimal; font-size: inherit; }
+  .gh-steps a { color: var(--color-link); }
+  .gh-command { display: flex; align-items: start; gap: calc(var(--spacing) * 1); min-width: 0; margin-top: calc(var(--spacing) * .5); }
+  .gh-command code { flex: 1 1 auto; min-width: 0; padding: .1rem .3rem; border-radius: .25rem; background: var(--color-sidebar); font-family: monospace; overflow-wrap: anywhere; white-space: normal; }
+  .gh-command :global(button) { flex: none; }
+  .gh-help-actions { flex-wrap: wrap; margin-top: calc(var(--spacing) * 1); }
+  .gh-help-link { color: var(--color-link); }
 
   .gh-local { margin-top: calc(var(--spacing) * 5); padding-top: calc(var(--spacing) * 4); border-top: 1px solid var(--color-divider); }
   .gh-local-head { display: flex; align-items: center; gap: calc(var(--spacing) * 2); min-height: 2rem; }
