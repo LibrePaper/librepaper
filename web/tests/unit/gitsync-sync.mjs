@@ -1140,4 +1140,91 @@ const baseFiles = (repo) => {
   assert.equal(repo.read("notes.md"), "short\n");
 }
 
+// ---------------------------------------------------------------- Roborev 1025 fixes
+
+// A synced file with a decomposed repository name that the remote turns into a
+// symlink stays in the project, and the remote entry is left alone.
+{
+  const decomposed = "cafe\u0301.md";
+  const composed = "caf\u00e9.md";
+  const { repo, session, ctx } = await connected({ [composed]: "coffee\n", "intro.qmd": "i\n" });
+  repo.advance({ [composed]: null, [decomposed]: "coffee\n" });
+  const renamed = await sync.pull(ctx);
+  assert.ok(["pulled", "nothing"].includes(renamed.status), JSON.stringify(renamed));
+  repo.advance({ [decomposed]: { mode: "120000", content: "target.md" } });
+  const pulled = await sync.pull(ctx);
+  assert.ok(["pulled", "nothing"].includes(pulled.status), JSON.stringify(pulled));
+  assert.equal(session.text(composed), "coffee\n");
+  assert.equal(repo.read(decomposed), "target.md");
+  assert.equal(repo.flat(repo.head).get(decomposed).mode, "120000");
+}
+
+// An unknown local asset over the size limit is never fetched into the sidecar.
+{
+  const { repo, session, ctx } = await connected({ "intro.qmd": "one\n" });
+  ctx.maxFileBytes = 20;
+  const bytes = new Uint8Array(40).fill(5);
+  await session.setAsset("fig.png", bytes);
+  const sha = session.sha("fig.png");
+  const uploaded = [];
+  const original = repo.request.bind(repo);
+  repo.request = async (op, body) => {
+    if (op === "put-blobs") uploaded.push(...body.blobs.map((item) => item.sha256));
+    return original(op, body);
+  };
+  const look = await sync.outgoing(ctx);
+  repo.request = original;
+  assert.ok(look.status === "nothing" || look.status === "pulled", JSON.stringify(look));
+  assert.ok(!uploaded.includes(sha));
+  assert.ok(!repo.known.has(sha));
+}
+
+// Pulling again keeps the resolutions saved on the older conflict session.
+{
+  const { repo, session, ctx } = await connected({ "intro.qmd": "same\n" });
+  await session.setText("intro.qmd", "local\n");
+  repo.advance({ "intro.qmd": "remote\n" });
+  const first = await sync.pull(ctx);
+  assert.equal(first.status, "conflict");
+  const resolutions = { "intro.qmd": { text: "both\n" } };
+  await sync.saveResolutions(ctx, first.session, resolutions);
+  const second = await sync.pull(ctx);
+  assert.equal(second.status, "conflict");
+  assert.deepEqual(second.session.carried, resolutions);
+  assert.equal(repo.journal.filter((entry) => entry.kind === "conflict").length, 1);
+  assert.notEqual(second.session.id, first.session.id);
+}
+
+// A prepared push of another connection stays pending before any remote is asked.
+{
+  const { repo, api, ctx } = await connected({ "intro.qmd": "one\n" });
+  const parent = repo.head;
+  const commit = repo.advance({ "intro.qmd": "two\n" });
+  await ctx.git.journalUpsert({
+    id: "op-old",
+    kind: "push",
+    phase: "prepared",
+    commit,
+    parent,
+    paths: ["intro.qmd"],
+    connection_id: "an-older-connection",
+  });
+  await ctx.git.keep("op-old", { published: commit });
+  const asked = [];
+  const original = repo.request.bind(repo);
+  repo.request = async (op, body) => {
+    if (op === "fetch" || op === "ancestor") asked.push(op);
+    return original(op, body);
+  };
+  const checkpoint = api.state.link.checkpoint;
+  const settled = await sync.recover(ctx);
+  repo.request = original;
+  assert.deepEqual(settled.pending, ["op-old"]);
+  assert.deepEqual(settled.recovered, []);
+  assert.deepEqual(asked, []);
+  assert.equal(api.state.link.checkpoint, checkpoint);
+  assert.equal(repo.journal.length, 1);
+  assert.ok(repo.refs.has("op-old/published"));
+}
+
 console.log("gitsync sync ok");

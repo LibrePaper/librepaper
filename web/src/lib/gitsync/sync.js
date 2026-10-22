@@ -180,8 +180,8 @@ async function finish(ctx, id) {
 /// `F(commit)`: the classified tree of a commit under the link's folder and the
 /// ignore files found in that commit. Returns what `classify` returns plus
 /// `rules` (for path spelling and `isSynced`), `tree`, `commit` and `entries`,
-/// the blob entries by repository path, and `occupied`, every repository path
-/// the listing holds whatever its type.
+/// the blob entries by repository path, and `occupied`, the normalized project
+/// path of every entry the listing holds under the folder, whatever its type.
 /// A `commit` of null is the empty remote of a branch without commits.
 export async function filterAt(ctx, link, commit) {
   const listing = commit ? await ctx.git.tree(commit) : { tree: null, entries: [] };
@@ -200,7 +200,12 @@ export async function filterAt(ctx, link, commit) {
     ignoreFolder: read(folderEntry),
   });
   const classified = rules.classify(listing.entries);
-  const occupied = new Set(listing.entries.map((entry) => entry.path));
+  const prefix = rules.repoPath("");
+  const occupied = new Set(
+    listing.entries
+      .filter((entry) => entry.path.startsWith(prefix))
+      .map((entry) => normalisePath(rules.projectPath(entry.path))),
+  );
   return { ...classified, rules, tree: listing.tree, commit, entries, occupied };
 }
 
@@ -283,6 +288,15 @@ export async function normalized(ctx, items, entries, paths, parent) {
   return { ...(await commitFiles(ctx, loaded.files, parent)), skipped: loaded.skipped };
 }
 
+/// Whether the remote holds an entry at a project path that it does not sync
+/// (a link, a submodule, an oversize or LFS file, invalid UTF-8). Paths are
+/// compared by their normalized project spelling, since the repository may
+/// spell a name differently from the project.
+function blocked(filter, path) {
+  const key = normalisePath(path);
+  return filter.occupied.has(key) && !filter.synced.has(key);
+}
+
 /// `L`: the project's files that pass the filter, as a commit with `parent`.
 /// A project path whose repository path the remote holds but does not sync (a
 /// link, a submodule, an oversize or LFS file, invalid UTF-8) is left out, so
@@ -295,26 +309,31 @@ export async function snapshot(ctx, filter, parent) {
   const texts = new Map();
   const assets = new Map();
   const kinds = new Map();
-  const held = new Set([...filter.synced.values()].map((item) => item.repoPath));
-  const blocked = (path) => {
-    const repoPath = filter.rules.repoPath(path);
-    return filter.occupied.has(repoPath) && !held.has(repoPath);
-  };
   const limit = ctx.maxFileBytes ?? DEFAULT_MAX_FILE_BYTES;
   const oversize = [];
   const listed = ctx.session.list()
-    .filter((file) => filter.rules.isSynced(file.path) && !blocked(file.path))
+    .filter((file) => filter.rules.isSynced(file.path) && !blocked(filter, file.path))
     .sort((a, b) => byPath(a.path, b.path));
   const shas = [...new Set(listed.filter((file) => file.kind === "asset").map((file) => file.sha))];
   const known = shas.length ? await ctx.git.knownAssets(shas) : new Map();
+  // An asset over the limit is never uploaded: it is left out of every input.
+  const tooBig = new Set();
   for (const sha of shas) {
     if (known.has(sha)) continue;
     const bytes = await ctx.api.assetBytes(sha);
+    if (bytes.length > limit) {
+      tooBig.add(sha);
+      continue;
+    }
     const [id] = await ctx.git.putBlobs([{ bytes, sha256: sha }]);
     known.set(sha, id);
   }
   for (const file of listed) {
     if (file.kind === "asset") {
+      if (tooBig.has(file.sha)) {
+        oversize.push(file.path);
+        continue;
+      }
       files.set(file.path, { kind: "asset", id: known.get(file.sha) });
       assets.set(file.path, file.sha);
       kinds.set(file.path, "asset");
@@ -525,7 +544,7 @@ async function prepare(ctx, link, op, options) {
     }
     const items = new Map();
     for (const path of link.synced_paths || []) {
-      if (!filter.rules.isSynced(path) || oversize.has(path)) continue;
+      if (!filter.rules.isSynced(path) || oversize.has(path) || blocked(filter, path)) continue;
       const kind = checkPath({ ...ctx.rules, max_path: Infinity }, path).kind;
       if (kind) items.set(path, { repoPath: spelled.get(normalisePath(path)) ?? filter.rules.repoPath(path), kind });
     }
@@ -640,10 +659,22 @@ async function openConflict(ctx, prepared, op, carry) {
       }
     }
   }
-  for (const entry of await journalRead(ctx)) {
-    if (entry.kind === "conflict" && entry.id !== op) await finish(ctx, entry.id);
+  // Resolutions saved on the newest older session carry over too, so pulling
+  // again does not lose them.
+  const older = (await journalRead(ctx)).filter((entry) => entry.kind === "conflict" && entry.id !== op);
+  const saved = older.at(-1)?.session;
+  if (saved) {
+    const resolutions = { ...saved.carried, ...saved.resolutions };
+    for (const item of conflicts) {
+      const was = saved.conflicts.find((old) => old.path === item.path);
+      const resolution = resolutions[item.path];
+      if (!session.carried[item.path] && was && resolution && was.base === item.base && was.ours === item.ours && was.theirs === item.theirs) {
+        session.carried[item.path] = resolution;
+      }
+    }
   }
   await journalSet(ctx, { id: op, kind: "conflict", phase: "conflict", session });
+  for (const entry of older) await finish(ctx, entry.id);
   return { result: result("conflict", { session, conflicts }) };
 }
 
@@ -1132,6 +1163,13 @@ export async function recover(ctx) {
           }
           await finish(ctx, entry.id);
         } else if (entry.phase === "prepared") {
+          // An entry of another connection stays as it is: the connected
+          // remote says nothing about its push.
+          const link = (await ctx.api.getLink()).link;
+          const connected = (await ctx.git.status())?.connection_id;
+          if ((link && link.connection_id !== entry.connection_id) || connected !== entry.connection_id) {
+            throw Object.assign(new Error("The push belongs to another connection."), { otherConnection: true });
+          }
           const fetched = await ctx.git.fetch([entry.commit]);
           const published = fetched.head && (fetched.head === entry.commit || await ctx.git.ancestor(entry.commit, fetched.head));
           if (published) await recordPush(ctx, entry);
