@@ -553,7 +553,7 @@ impl Server {
                 .await
             }
             "document_apply" => {
-                if !current.at_least(Role::Editor) {
+                if !current.edits_source() {
                     return Err(Failure::new(
                         "permission_changed",
                         "editor access is required to apply source",
@@ -667,7 +667,7 @@ impl Server {
         arrival: &Arrival,
         (args, key, digest): (&Value, &OperationKey, &str),
     ) -> Result<Value, Failure> {
-        if !who.at_least(Role::Editor) {
+        if !who.edits_source() {
             return Err(Failure::new(
                 "permission_changed",
                 "editor access is required to label",

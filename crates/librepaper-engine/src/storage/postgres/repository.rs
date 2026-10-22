@@ -345,6 +345,8 @@ impl PostgresCatalog {
             String,
             Option<OffsetDateTime>,
             Option<i64>,
+            String,
+            String,
         )],
         live_hashes: &[Vec<u8>],
     ) -> Result<()> {
@@ -969,7 +971,7 @@ impl PostgresCatalog {
                      SELECT 1 FROM share_links l
                      WHERE l.document_id=g.document_id
                        AND l.token_hash=g.source_link_hash
-                       AND l.revoked_at IS NULL
+                       AND l.revoked_at IS NULL AND l.kind='link'
                        AND (l.expires_at IS NULL OR l.expires_at>now())
                    ))
                    AND (d.updated_at,d.id) <

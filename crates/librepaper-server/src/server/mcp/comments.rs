@@ -138,7 +138,7 @@ impl Server {
         }
         if matches!(action, "reply" | "resolve" | "delete") {
             let supplied = args["expected_version"].as_str().unwrap_or_default();
-            let editor = who.at_least(Role::Editor);
+            let editor = who.edits_source();
             let current_version = existing.as_ref().map(|comment| comment.version());
             validate_existing_action(
                 action,
@@ -203,7 +203,7 @@ impl Server {
             uuid::Uuid::parse_str(&who.id.id).ok(),
             author.clone(),
             who.mutation_authorization(ceiling),
-            who.at_least(Role::Editor),
+            who.edits_source(),
         );
         let catalog = room.catalog().clone();
         let document_id = room.document_id;
@@ -323,7 +323,7 @@ impl Server {
             }
             "delete" => {
                 let existing = existing.expect("validated above");
-                let editor = who.at_least(Role::Editor);
+                let editor = who.edits_source();
                 if !room::deletable(&existing, &author, editor) {
                     return Err(Failure::new(
                         "permission_changed",

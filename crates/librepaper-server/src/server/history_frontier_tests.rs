@@ -66,6 +66,8 @@ pub(super) fn viewer(
         automation: false,
         bearer: false,
         auth_failed: false,
+        suggest_only: false,
+        token: None,
     }
 }
 

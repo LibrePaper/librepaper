@@ -179,6 +179,8 @@ fn viewer(account_id: Uuid, handle: &str, session_generation: &str, role: Role) 
         automation: false,
         bearer: false,
         auth_failed: false,
+        suggest_only: false,
+        token: None,
     }
 }
 

@@ -639,6 +639,8 @@ mod tests {
                     "reviewer".into(),
                     None,
                     None,
+                    "link".into(),
+                    String::new(),
                 )],
             )
             .await
@@ -700,6 +702,8 @@ mod tests {
                     "reviewer".into(),
                     Some(expired_at),
                     None,
+                    "link".into(),
+                    String::new(),
                 )],
             )
             .await
@@ -2217,6 +2221,8 @@ mod tests {
                 String::new(),
                 None,
                 None,
+                "link".into(),
+                String::new(),
             )
         };
 
@@ -2300,6 +2306,52 @@ mod tests {
             !live.iter().any(|row| row.token_hash == reader.to_vec()),
             "and no longer to the old one",
         );
+
+        catalog.close().await;
+    }
+
+    /// An agent row is stored beside the links and comes back with its kind
+    /// and owner generation, and the access probe never reads it as a link.
+    #[tokio::test]
+    #[ignore = "requires LIBREPAPER_TEST_POSTGRES_URL"]
+    async fn an_agent_row_keeps_its_kind_and_admits_no_browser() {
+        let url = std::env::var("LIBREPAPER_TEST_POSTGRES_URL")
+            .expect("set LIBREPAPER_TEST_POSTGRES_URL to run the PostgreSQL contract");
+        let catalog = PostgresCatalog::connect(PostgresOptions::new(url))
+            .await
+            .unwrap();
+        catalog.migrate().await.unwrap();
+        let _writer = catalog.claim_writer().await.unwrap();
+        truncate(&catalog).await;
+        let account = seed_account(&catalog, "agent-owner").await;
+        let document = seed_document(&catalog, account.id, "agent-shared").await;
+
+        let token = [7u8; 32];
+        catalog
+            .replace_share_links(
+                document.id,
+                &[(
+                    "commenter".into(),
+                    token,
+                    Vec::new(),
+                    "assistant".into(),
+                    None,
+                    None,
+                    "agent".into(),
+                    "3".into(),
+                )],
+            )
+            .await
+            .unwrap();
+        let rows = catalog.share_links(document.id).await.unwrap();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].kind, "agent");
+        assert_eq!(rows[0].owner_generation, "3");
+        let role = catalog
+            .access_role(document.id, None, Some(token), OffsetDateTime::now_utc())
+            .await
+            .unwrap();
+        assert!(role.is_none(), "a token key is not a browser link");
 
         catalog.close().await;
     }
