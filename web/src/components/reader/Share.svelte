@@ -134,13 +134,10 @@
 
   async function replace(item, kind) {
     const message = kind === "link" ? "Link replaced. The old link no longer works." : "Token replaced. The old token no longer works.";
-    let answer = await change({ replace: { id: item.id } }, message);
-    if (!answer) return;
-    const created = answer.created;
     // A replacement keeps the expiry, which for an expired row is a lapsed
     // one, so the fresh credential is given a week.
-    if (item.expired && created) await change({ update: { id: created.id, until: "7d" } }, message);
-    if (created?.token) reveal = { token: created.token };
+    const answer = await change({ replace: item.expired ? { id: item.id, until: "7d" } : { id: item.id } }, message);
+    if (answer?.created?.token) reveal = { token: answer.created.token };
   }
 
   const revoke = (item, kind) => change({ revoke: { id: item.id } }, kind === "link" ? "Link revoked." : "Token revoked.");

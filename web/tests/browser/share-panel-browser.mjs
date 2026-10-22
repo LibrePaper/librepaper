@@ -79,6 +79,7 @@ window.fetch = async (path, options) => {
     const row = rowOf(body.replace.id);
     const id = idOf();
     row.id = id;
+    if (body.replace.until) { row.until = expiryOf(body.replace.until); row.expired = false; }
     if (row.url !== undefined) {
       row.key = "rotated" + id; row.url = "/docs/paper#k=rotated" + id;
       created = { id, kind: "link", url: row.url };
