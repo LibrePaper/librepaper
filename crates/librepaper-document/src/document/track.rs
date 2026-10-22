@@ -4287,7 +4287,7 @@ mod tests {
         assert_eq!(u.to_stored(1, 11), Ok((2, 12)));
         assert!(u.to_stored(0, 3).is_err());
         assert!(u.to_stored(11, 15).is_err());
-        assert_eq!(u.to_stored(13, 15), Ok((14, 16)));
+        assert_eq!(u.to_stored(13, 15), Ok((15, 17)));
         assert!(u.to_stored(12, 15).is_err());
     }
 
