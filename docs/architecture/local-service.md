@@ -8,7 +8,7 @@ The desktop app runs a loopback service, the `librepaper` binary in local mode. 
 
 The local service handles two cases the browser cannot: Quarto and Calepin, which both run the document's code. It reaches Zotero read-only.
 
-The protocol is versioned and runs over loopback HTTP. It sets bounded limits on body, upload, file count, PDF, log size and job deadline. The health endpoint identifies the service and negotiates version. It does nothing else. Requests with a mismatched `Host` header are answered before parsing. This protects against DNS rebinding.
+The protocol is versioned and runs over loopback HTTP. It sets bounded limits on body, upload, file count, PDF, log size and job deadline. The health endpoint identifies the service and negotiates version. It also answers the desktop app's challenge with a proof keyed by the control token, so a process that took the service's port cannot pose as it. It does nothing else. Requests with a mismatched `Host` header are answered before parsing. This protects against DNS rebinding.
 
 The local service writes a local credential to `control-token.json` (mode 0600) in its state directory. The desktop app holds that credential. Browsers never call the local service directly.
 

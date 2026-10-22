@@ -112,6 +112,10 @@ export async function rememberProject(metadata, indexedDB_ = globalThis.indexedD
       role: metadata.role || "editor",
       can_edit: true,
       local_copy: true,
+      // A cached open must know where the documents frame lives; a record
+      // saved before this was kept has none, and the reader then refuses to
+      // show the preview rather than guess an origin.
+      ...(metadata.docs_origin ? { docs_origin: metadata.docs_origin } : {}),
     },
   };
   await withDatabase(indexedDB_, async (database) => {

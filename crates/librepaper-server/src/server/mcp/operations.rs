@@ -801,10 +801,11 @@ impl Server {
                 start,
                 end,
                 exact: view.snapshot.texts()[path][start..end].to_string(),
-                replacement: input["replacement"]
-                    .as_str()
-                    .unwrap_or_default()
-                    .to_string(),
+                // The replacement is normalised here so the candidate digest, the render and the applied text agree on line endings.
+                replacement: librepaper_document::document::session::line_feeds(
+                    input["replacement"].as_str().unwrap_or_default(),
+                )
+                .into_owned(),
             });
         }
         for handle in args["dependencies"].as_array().into_iter().flatten() {

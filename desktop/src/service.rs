@@ -5,7 +5,9 @@ use std::{
     time::{Duration, Instant},
 };
 
+use hmac::{Hmac, Mac};
 use serde::Deserialize;
+use sha2::Sha256;
 use tauri::http::{header, HeaderValue, Method, Response, StatusCode};
 use tokio::sync::Mutex;
 
@@ -121,9 +123,11 @@ impl Service {
         let mut endpoint = self.current().await?;
         let mut retried = false;
         loop {
-            if needs_liveness_check(&request.method, request.body.len())
-                && !self.is_ours(&endpoint).await
-            {
+            // Every request is verified first, whatever its method or body.
+            // The bearer is the control token, and a process that took over
+            // the old port would learn it from even a bodyless poll, then
+            // could answer every later challenge as the service.
+            if !self.is_ours(&endpoint).await {
                 *self.endpoint.lock().await = None;
                 endpoint = self.current().await?;
                 if !self.is_ours(&endpoint).await {
@@ -189,9 +193,14 @@ impl Service {
     // Whether the service at the address is the one this shell started. The
     // health request carries no token, so the instance id is what tells.
     async fn is_ours(&self, endpoint: &Endpoint) -> bool {
+        // A fresh nonce each time, answered with a proof keyed by the control
+        // token, so a recorded answer cannot be replayed by a process that
+        // took over the port.
+        let nonce: [u8; 32] = rand::random();
         let url = format!(
-            "{}/librepaper/local/health",
-            endpoint.address.trim_end_matches('/')
+            "{}/librepaper/local/health?challenge={}",
+            endpoint.address.trim_end_matches('/'),
+            hex::encode(nonce)
         );
         let Ok(response) = self
             .http
@@ -206,26 +215,42 @@ impl Service {
             return false;
         }
         match response.bytes().await {
-            Ok(body) => health_matches(&body, &endpoint.instance),
+            Ok(body) => health_matches(&body, &endpoint.instance, &endpoint.token, &nonce),
             Err(_) => false,
         }
     }
 }
 
-// The health answer names the service and its instance. An empty instance
-// never matches, so an endpoint without one is never trusted.
-fn health_matches(body: &[u8], instance: &str) -> bool {
+// The health answer names the service and its instance, and proves it holds
+// the control token by returning the HMAC of our nonce. An empty instance
+// never matches, so an endpoint without one is never trusted, and a missing
+// or wrong proof is never ours. The proof is checked in constant time.
+fn health_matches(body: &[u8], instance: &str, token: &str, nonce: &[u8]) -> bool {
     if instance.is_empty() {
         return false;
     }
-    serde_json::from_slice::<Health>(body)
-        .is_ok_and(|health| health.service == "librepaper-local" && health.instance == instance)
+    let Ok(health) = serde_json::from_slice::<Health>(body) else {
+        return false;
+    };
+    if health.service != "librepaper-local" || health.instance != instance {
+        return false;
+    }
+    let Some(Ok(given)) = health.proof.as_deref().map(hex::decode) else {
+        return false;
+    };
+    let Ok(mut mac) = Hmac::<Sha256>::new_from_slice(token.as_bytes()) else {
+        return false;
+    };
+    mac.update(nonce);
+    mac.verify_slice(&given).is_ok()
 }
 
 #[derive(Deserialize)]
 struct Health {
     service: String,
     instance: String,
+    #[serde(default)]
+    proof: Option<String>,
 }
 
 // Set by the first endpoint call after the app starts, so that call refreshes the login-shell PATH.
@@ -367,13 +392,6 @@ const RELAYED: [&str; 7] = [
     "x-content-type-options",
 ];
 
-// A request that can carry state or a body is sent only to a service that has
-// just answered as ours, because after the service dies another local process
-// may bind the old port and would receive the bearer, origin and body.
-fn needs_liveness_check(method: &Method, body_len: usize) -> bool {
-    !(matches!(*method, Method::GET | Method::HEAD) && body_len == 0)
-}
-
 async fn relay(res: reqwest::Response) -> Result<Response<Vec<u8>>, String> {
     let mut builder = Response::builder().status(res.status());
     for name in RELAYED {
@@ -387,8 +405,9 @@ async fn relay(res: reqwest::Response) -> Result<Response<Vec<u8>>, String> {
 
 #[cfg(test)]
 mod tests {
-    use super::{compatible, health_matches, needs_liveness_check, Endpoint, RELAYED};
-    use tauri::http::Method;
+    use super::{compatible, health_matches, Endpoint, RELAYED};
+    use hmac::{Hmac, Mac};
+    use sha2::Sha256;
     use tauri::http::HeaderName;
 
     #[test]
@@ -417,33 +436,72 @@ mod tests {
         assert!(endpoint.instance.is_empty());
     }
 
+    const TOKEN: &str = "control-token";
+    const NONCE: [u8; 32] = [9; 32];
+
+    fn proof(token: &str, nonce: &[u8]) -> String {
+        let mut mac = Hmac::<Sha256>::new_from_slice(token.as_bytes()).unwrap();
+        mac.update(nonce);
+        hex::encode(mac.finalize().into_bytes())
+    }
+
+    fn health(service: &str, instance: &str, proof: Option<&str>) -> Vec<u8> {
+        let mut value = serde_json::json!({
+            "service": service,
+            "instance": instance,
+            "protocol": [2],
+        });
+        if let Some(proof) = proof {
+            value["proof"] = proof.into();
+        }
+        value.to_string().into_bytes()
+    }
+
     #[test]
-    fn health_of_our_instance_is_ours() {
-        let body = br#"{"service":"librepaper-local","instance":"abc","protocol":[2]}"#;
-        assert!(health_matches(body, "abc"));
+    fn health_of_our_instance_with_the_right_proof_is_ours() {
+        let body = health("librepaper-local", "abc", Some(&proof(TOKEN, &NONCE)));
+        assert!(health_matches(&body, "abc", TOKEN, &NONCE));
+    }
+
+    #[test]
+    fn health_without_a_proof_is_not_ours() {
+        let body = health("librepaper-local", "abc", None);
+        assert!(!health_matches(&body, "abc", TOKEN, &NONCE));
+    }
+
+    #[test]
+    fn health_with_a_wrong_proof_is_not_ours() {
+        for wrong in [
+            proof("another-token", &NONCE),
+            proof(TOKEN, &[1; 32]),
+            "not hex".to_string(),
+        ] {
+            let body = health("librepaper-local", "abc", Some(&wrong));
+            assert!(!health_matches(&body, "abc", TOKEN, &NONCE));
+        }
     }
 
     #[test]
     fn health_of_another_instance_is_not_ours() {
-        let body = br#"{"service":"librepaper-local","instance":"xyz"}"#;
-        assert!(!health_matches(body, "abc"));
+        let body = health("librepaper-local", "xyz", Some(&proof(TOKEN, &NONCE)));
+        assert!(!health_matches(&body, "abc", TOKEN, &NONCE));
     }
 
     #[test]
     fn health_of_another_service_is_not_ours() {
-        let body = br#"{"service":"something-else","instance":"abc"}"#;
-        assert!(!health_matches(body, "abc"));
+        let body = health("something-else", "abc", Some(&proof(TOKEN, &NONCE)));
+        assert!(!health_matches(&body, "abc", TOKEN, &NONCE));
     }
 
     #[test]
     fn garbage_health_is_not_ours() {
-        assert!(!health_matches(b"\x00\xffnot json", "abc"));
+        assert!(!health_matches(b"\x00\xffnot json", "abc", TOKEN, &NONCE));
     }
 
     #[test]
     fn empty_expected_instance_is_never_ours() {
-        let body = br#"{"service":"librepaper-local","instance":""}"#;
-        assert!(!health_matches(body, ""));
+        let body = health("librepaper-local", "", Some(&proof(TOKEN, &NONCE)));
+        assert!(!health_matches(&body, "", TOKEN, &NONCE));
     }
 
     #[test]
@@ -456,15 +514,6 @@ mod tests {
     fn relayed_headers_include_the_sandbox_headers() {
         assert!(RELAYED.contains(&"content-security-policy"));
         assert!(RELAYED.contains(&"x-content-type-options"));
-    }
-
-    #[test]
-    fn only_bodyless_reads_skip_the_liveness_check() {
-        assert!(!needs_liveness_check(&Method::GET, 0));
-        assert!(!needs_liveness_check(&Method::HEAD, 0));
-        assert!(needs_liveness_check(&Method::GET, 1));
-        assert!(needs_liveness_check(&Method::POST, 0));
-        assert!(needs_liveness_check(&Method::PUT, 5));
     }
 
     #[test]

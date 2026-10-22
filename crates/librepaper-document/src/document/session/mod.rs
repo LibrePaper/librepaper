@@ -118,6 +118,44 @@ mod astral_tests {
     }
 
     #[test]
+    fn a_crlf_body_is_stored_with_line_feeds() {
+        let doc = doc_with("a\r\nb\r\nc");
+        assert_eq!(body(&doc), "a\nb\nc");
+    }
+
+    #[test]
+    fn a_lone_carriage_return_becomes_a_line_feed() {
+        let doc = doc_with("a\rb\r");
+        assert_eq!(body(&doc), "a\nb\n");
+    }
+
+    #[test]
+    fn replacing_a_body_with_crlf_stores_line_feeds() {
+        // The update path of put_text, then replace_text on a document it
+        // seeds and on one it finds, which is what a command-line publish and
+        // a restore use. put_text sets no main marker, so replace_text gets
+        // its own document here rather than a second text named main.md.
+        let doc = doc_with("a\nb");
+        put_text(&doc, "main.md", "a\r\nb\r\nc");
+        assert_eq!(body(&doc), "a\nb\nc");
+        let published = new_doc();
+        replace_text(&published, "x\r\ny", "main.md");
+        assert_eq!(body(&published), "x\ny");
+        replace_text(&published, "x\r\ny\r\nz", "main.md");
+        assert_eq!(body(&published), "x\ny\nz");
+    }
+
+    #[test]
+    fn a_text_put_under_an_id_stores_line_feeds() {
+        let doc = new_doc();
+        assert!(put_text_with_id(&doc, "fixed-id", "notes.md", "p\r\nq"));
+        assert_eq!(
+            texts_of(&doc).get("notes.md").cloned().unwrap_or_default(),
+            "p\nq"
+        );
+    }
+
+    #[test]
     fn an_astral_document_survives_a_round_trip_through_the_wire() {
         let doc = doc_with(&format!("{EMOJI} first"));
         put_text(&doc, "notes.md", &format!("second {EMOJI}"));
