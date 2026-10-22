@@ -442,7 +442,7 @@ test('publisher validates prefixes and selects explicit browser metadata', () =>
   });
 });
 
-test('dry run lists large files without staging or gzip compression', async () => {
+test('dry run lists large files without staging or compression', async () => {
   const root = await mkdtemp(join(tmpdir(), 'publish-mirror-dry-run-'));
   const large = join(root, 'large.wasm');
   const handle = await open(large, 'w');
