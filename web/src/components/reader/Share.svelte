@@ -1,8 +1,13 @@
 <script>
-  import { onDestroy } from "svelte";
+  import { onDestroy, tick } from "svelte";
+  import { Tabs } from "@skeletonlabs/skeleton-svelte";
   import PanelHeader from "../PanelHeader.svelte";
+  import PanelTabs from "../PanelTabs.svelte";
   import Modal from "../Modal.svelte";
   import Icon from "../Icon.svelte";
+  import ShareRow from "./share/ShareRow.svelte";
+  import ShareForm from "./share/ShareForm.svelte";
+  import TokenReveal from "./share/TokenReveal.svelte";
   import { getPrivate, post } from "../../lib/api.js";
 
   let { open = $bindable(false), slug, onclose, inline = false, canShare = false } = $props();
@@ -16,37 +21,30 @@
   let copyFallback = $state("");
   let copyTimer;
   onDestroy(() => clearTimeout(copyTimer));
-  // A permission is either showing what it is or asking what it should be,
-  // never both, and only one of the three is ever asking: the panel is a
-  // narrow column, and two open forms in it is the clutter this replaced.
-  // `{ role, mode }`, where mode is "create" or "settings".
+  let tab = $state("links");
+  let root = $state(null);
+  // Only one form is ever open: `{ kind, mode, id }` where mode is "create"
+  // or "settings". It stands in for the toolbar, or for the row it edits.
   let editing = $state(null);
-  let draft = $state({ until: "", budget: "" });
-  // `{ role, kind }` while a rotation or a revocation waits to be confirmed.
-  // Both invalidate a URL somebody may already be holding, which is not a
-  // thing to do on the way past a menu item.
+  let draft = $state({ name: "", role: "reader", until: "7d", budget: "" });
+  // `{ item, kind, action }` while a replacement or a revocation waits to be
+  // confirmed. Both stop a credential somebody may already be holding.
   let confirming = $state(null);
+  // The token just made or replaced. It is shown once, kept only here, and
+  // never written to any storage.
+  let reveal = $state(null);
+  let showExpired = $state(false);
 
-  const ROLES = [
-    { id: "reader", label: "Read", says: "Signed-in users with this link can read the current source and see ongoing changes." },
-    { id: "commenter", label: "Comment", says: "Signed-in users with this link can read the current source, see ongoing changes, and comment." },
-    { id: "editor", label: "Edit", says: "Signed-in users with this link can edit." },
-  ];
-  const EXPIRIES = [["7d", "7 days"], ["30d", "30 days"], ["180d", "6 months"], ["never", "Never"]];
-  const dateOf = (iso) => new Date(iso).toLocaleDateString(undefined, { month: "short", day: "numeric", year: "numeric" });
-  // The server answers a path, the way it does for a document's own url, so
-  // the link handed to somebody is completed against this origin here.
-  const fullUrl = (path) => new URL(path, location.origin).href;
-
-  const linkOf = (role) => sharing?.links?.[role] || null;
-  // A link the server sent a row for exists; whether it still works is what
-  // `expired` says. Not `url`: a link whose key the server cannot unseal --
-  // one minted before the catalogue kept the key, or under a session key that
-  // has since been replaced -- has a row, works, and has no URL to show.
-  const live = (link) => Boolean(link) && !link.expired;
-  // What a link's row says about itself once it exists: when it stops working,
-  // and its budget only where one was chosen.
-  const metaOf = (link) => [link.until ? `Expires ${dateOf(link.until)}` : "No expiry", link.budget == null ? "" : `${link.budget} comments/hour`].filter(Boolean).join(" · ");
+  const TABS = [{ id: "links", label: "Links" }, { id: "tokens", label: "Agent tokens" }];
+  const kindOf = (id) => (id === "links" ? "link" : "token");
+  const itemsOf = (kind) => (kind === "link" ? sharing?.links : sharing?.tokens) ?? [];
+  const activeOf = (kind) => itemsOf(kind).filter((item) => !item.expired);
+  const expiredOf = (kind) => itemsOf(kind).filter((item) => item.expired);
+  const countOf = (kind) => { const n = activeOf(kind).length; return `${n} ${kind}${n === 1 ? "" : "s"}`; };
+  // `publishers` and `commenters_policy` describe who the deployment lets
+  // through; "nobody" is the one description that rules a permission out.
+  const allowed = (role) => role === "reader" || (role === "commenter"
+    ? sharing?.commenters_policy !== "nobody" : sharing?.publishers !== "nobody");
 
   async function load(documentSlug) {
     const request = ++generation;
@@ -55,7 +53,7 @@
     error = "";
     feedback = "";
     try {
-      const answer = canShare ? await getPrivate(`/api/documents/${documentSlug}/share`) : { links: {} };
+      const answer = canShare ? await getPrivate(`/api/documents/${documentSlug}/share`) : { links: [], tokens: [] };
       if (request !== generation) return;
       sharing = answer;
     } catch (failure) {
@@ -69,12 +67,13 @@
     const documentSlug = slug;
     if (open) {
       load(documentSlug);
-      return () => { generation += 1; editing = null; confirming = null; };
+      return () => { generation += 1; editing = null; confirming = null; reveal = null; };
     }
   });
 
+  // Runs one share action and answers the server's reply, or null.
   async function change(body, message) {
-    if (busy || !canShare) return false;
+    if (busy || !canShare) return null;
     const documentSlug = slug;
     const request = generation;
     busy = true;
@@ -82,62 +81,88 @@
     feedback = "";
     try {
       const answer = await post(`/api/documents/${documentSlug}/share`, body);
-      if (documentSlug !== slug || request !== generation) return false;
+      if (documentSlug !== slug || request !== generation) return null;
       copyFallback = "";
       sharing = answer;
       feedback = message;
-      return true;
+      return answer;
     } catch (failure) {
       if (request === generation) error = failure.message || "Could not update access.";
-      return false;
+      return null;
     } finally { busy = false; }
   }
 
-  function startCreate(role) {
-    draft = { until: "7d", budget: "" };
-    editing = { role, mode: "create" };
+  async function focusBack(id) {
+    await tick();
+    const target = (id && root?.querySelector(`[data-row-menu="${id}"]`)) || root?.querySelector("[data-share-new]");
+    target?.focus();
   }
 
-  function startSettings(role) {
-    const link = linkOf(role);
+  function startCreate(kind) {
+    draft = { name: "", role: kind === "link" ? "reader" : "commenter", until: "7d", budget: "" };
+    editing = { kind, mode: "create", id: "" };
+  }
+
+  function startSettings(kind, item) {
     // An existing expiry is a day, and the control offers durations from now,
-    // so leaving it alone is its own choice rather than a date that happens to
-    // read the same. An empty value is what the route reads as "unchanged".
-    draft = { until: link?.until ? "" : "never", budget: link?.budget ?? "" };
-    editing = { role, mode: "settings" };
+    // so leaving it alone is its own choice. An empty value is what the route
+    // reads as "unchanged".
+    draft = { name: item.name, role: item.role, until: item.until ? "" : "never", budget: item.budget ?? "" };
+    editing = { kind, mode: "settings", id: item.id };
+  }
+
+  function cancelForm() {
+    const id = editing?.id;
+    editing = null;
+    focusBack(id);
   }
 
   const budgetOf = (value) => (value == null || value === "" ? null : Number(value));
-  const draftFields = (role) => ({ role, until: draft.until, budget: budgetOf(draft.budget) });
 
   async function commit() {
     if (!editing) return;
-    const { role, mode } = editing;
-    const done = mode === "create"
-      ? await change({ link: draftFields(role) }, "")
-      : await change({ settings: draftFields(role) }, "");
-    if (done) editing = null;
+    const { kind, mode, id } = editing;
+    const fields = { name: draft.name.trim(), until: draft.until, budget: budgetOf(draft.budget) };
+    const answer = mode === "create"
+      ? await change({ create: { kind, role: draft.role, ...fields } }, "")
+      : await change({ update: { id, ...fields } }, "");
+    if (!answer) return;
+    editing = null;
+    if (answer.created?.token) reveal = { token: answer.created.token };
+    else focusBack(id);
   }
 
-  // A rotation keeps the link's memo, its expiry and its budget -- the route
-  // preserves what the request leaves out -- and changes only the key, which
-  // is the whole point of asking for it.
-  async function replaceLink(role) {
-    const link = linkOf(role);
-    await change({ link: { role, budget: link?.budget ?? null } }, "Link replaced. The old link no longer works.");
+  async function replace(item, kind) {
+    const message = kind === "link" ? "Link replaced. The old link no longer works." : "Token replaced. The old token no longer works.";
+    let answer = await change({ replace: { id: item.id } }, message);
+    if (!answer) return;
+    const created = answer.created;
+    // A replacement keeps the expiry, which for an expired row is a lapsed
+    // one, so the fresh credential is given a week.
+    if (item.expired && created) await change({ update: { id: created.id, until: "7d" } }, message);
+    if (created?.token) reveal = { token: created.token };
   }
 
-  const revokeLink = (role) => change({ revoke: role }, "Access revoked.");
+  const revoke = (item, kind) => change({ revoke: { id: item.id } }, kind === "link" ? "Link revoked." : "Token revoked.");
 
-  const askFirst = (role, kind) => (confirming = { role, kind });
+  function onaction(value, item, kind) {
+    if (value === "edit") startSettings(kind, item);
+    else confirming = { item, kind, action: value };
+  }
 
   async function confirmAction() {
     if (!confirming) return;
-    const { role, kind } = confirming;
+    const { item, kind, action } = confirming;
     confirming = null;
-    if (editing?.role === role) editing = null;
-    if (kind === "replace") await replaceLink(role);
-    else await revokeLink(role);
+    if (editing?.id === item.id) editing = null;
+    if (action === "replace") await replace(item, kind);
+    else await revoke(item, kind);
+    if (!reveal) focusBack("");
+  }
+
+  function done() {
+    reveal = null;
+    focusBack("");
   }
 
   async function copy(value, label = "Link copied.") {
@@ -149,129 +174,132 @@
       feedback = label;
       copyFallback = "";
       error = "";
-    } catch { copyFallback = value; error = "Copy was blocked. Select this link and copy it manually."; }
+    } catch { copyFallback = value; error = "Copy was blocked. Select this text and copy it manually."; }
   }
+
+  const CONFIRM = {
+    link: {
+      replace: ["Replace link?", "The current link will stop working. Anyone using it will need the new link.", "Replace link"],
+      revoke: ["Revoke link?", "This link will stop working. People who only have access through this link will lose access.", "Revoke link"],
+    },
+    token: {
+      replace: ["Replace token?", "The current token will stop working. The agent will need the new token.", "Replace token"],
+      revoke: ["Revoke token?", "This token will stop working. The agent loses access at once.", "Revoke token"],
+    },
+  };
+  const ask = $derived(confirming ? CONFIRM[confirming.kind][confirming.action] : null);
 </script>
 
-{#snippet form(role)}
-  {@const creating = editing.mode === "create"}
-  <div class="share-form">
-    <label class="share-field panel-meta">Expires
-      <select class="select share-select" aria-label="{role.label} link expiry" bind:value={draft.until} disabled={busy}>
-        {#if !creating && linkOf(role.id)?.until}<option value="">Unchanged ({dateOf(linkOf(role.id).until)})</option>{/if}
-        {#each EXPIRIES as [value, says] (value)}<option {value}>{says}</option>{/each}
-      </select>
-    </label>
-    <!-- Only a link that can write has anything to spend. -->
-    {#if role.id !== "reader"}
-      <label class="share-field panel-meta">Comments/hour
-        <input class="input share-input" type="number" min="0" step="1" aria-label="{role.label} link budget" bind:value={draft.budget} disabled={busy} />
-      </label>
-    {/if}
-    <div class="share-form-actions">
-      <button type="button" class="share-action" disabled={busy} onclick={() => (editing = null)}>Cancel</button>
-      <button type="button" class="btn btn-sm lp-control-brand" disabled={busy} onclick={commit}>{creating ? "Create link" : "Save"}</button>
+{#snippet messages()}
+  {#if error}
+    <p class="lp-text-error" role="alert">{error}</p>
+  {/if}
+  {#if copyFallback}
+    <textarea class="share-copy-fallback w-full" readonly rows="3" aria-label="Text to copy manually" value={copyFallback} onclick={(event) => event.currentTarget.select()}></textarea>
+  {/if}
+  {#if feedback}<p class="panel-meta" role="status">{feedback}</p>{/if}
+{/snippet}
+
+{#snippet list(kind)}
+  {@const active = activeOf(kind)}
+  {@const expired = expiredOf(kind)}
+  {#if editing?.mode === "create" && editing.kind === kind}
+    <ShareForm {kind} mode="create" bind:draft {busy} {allowed} onsubmit={commit} oncancel={cancelForm} />
+  {:else}
+    <div class="share-toolbar">
+      <span class="share-count">{countOf(kind)}</span>
+      <button type="button" class="share-new" data-share-new disabled={busy || editing !== null} onclick={() => startCreate(kind)}>
+        <Icon name="plus" size={14} />New
+      </button>
     </div>
+  {/if}
+  <div class="share-scroll">
+    {#if active.length === 0}
+      <p class="panel-meta">{kind === "link" ? "No sharing links yet." : "No agent tokens yet."}</p>
+    {:else}
+      <ul class="share-list" aria-label={kind === "link" ? "Share links" : "Agent tokens"}>
+        {#each active as item (item.id)}
+          {#if editing?.mode === "settings" && editing.id === item.id}
+            <li><ShareForm {kind} mode="settings" {item} bind:draft {busy} {allowed} onsubmit={commit} oncancel={cancelForm} /></li>
+          {:else}
+            <ShareRow {kind} {item} {busy} {copied} oncopy={copy} onaction={(value, row) => onaction(value, row, kind)} />
+          {/if}
+        {/each}
+      </ul>
+    {/if}
+    {#if expired.length}
+      <button type="button" class="share-disclosure" aria-expanded={showExpired} onclick={() => (showExpired = !showExpired)}>
+        <Icon name={showExpired ? "chevron-down" : "chevron-right"} size={14} />Expired ({expired.length})
+      </button>
+      {#if showExpired}
+        <ul class="share-list" aria-label="Expired {kind === 'link' ? 'links' : 'tokens'}">
+          {#each expired as item (item.id)}
+            <ShareRow {kind} {item} {busy} {copied} oncopy={copy} onaction={(value, row) => onaction(value, row, kind)} />
+          {/each}
+        </ul>
+      {/if}
+    {/if}
+    {@render messages()}
   </div>
 {/snippet}
 
 {#snippet content()}
-  <div class="share-panel">
-    {#if loading}
-      <p class="panel-muted" role="status">Loading sharing settings…</p>
-    {:else if sharing && canShare}
-      <div class="share-links" aria-label="Share links">
-        {#each ROLES as role (role.id)}
-          {@const link = linkOf(role.id)}
-          <section class="share-section" aria-labelledby="share-{role.id}-heading">
-            <h4 id="share-{role.id}-heading" class="panel-section-title">{role.label}</h4>
-            <p class="panel-meta">{role.says}</p>
-            {#if editing?.role === role.id}
-              {@render form(role)}
-            {:else if live(link)}
-              <p class="panel-meta">{metaOf(link)}</p>
-              <!-- The owner is given the URL whenever the server can read the
-                   key back, which is every link minted since it started
-                   keeping one. A link from before that has no URL to copy and
-                   is offered the one thing that produces one. -->
-              {@const url = link.url}
-              {#if !url}<p class="panel-meta">This link was made before its URL could be kept. Replace it to get a new URL.</p>{/if}
-              <div class="share-row">
-                {#if url}<button type="button" class="share-icon" disabled={busy} aria-label="Copy {role.label} link" title="Copy link" onclick={() => copy(fullUrl(url), role.label + " link copied.")}><Icon name={copied === fullUrl(url) ? "check" : "copy"} size={16} /></button>{/if}
-                <button type="button" class="share-icon" disabled={busy} aria-label="Edit {role.label} link settings" title="Edit settings" onclick={() => startSettings(role.id)}><Icon name="sliders" size={16} /></button>
-                <button type="button" class="share-icon" disabled={busy} aria-label="Replace {role.label} link" title="Replace link" onclick={() => askFirst(role.id, "replace")}><Icon name="refresh-cw" size={16} /></button>
-                <button type="button" class="share-icon share-destructive" disabled={busy} aria-label="Revoke {role.label} link" title="Revoke link" onclick={() => askFirst(role.id, "revoke")}><Icon name="trash" size={16} /></button>
-              </div>
-            {:else}
-              <!-- Only the lapse is worth saying. That there is no link is
-                   already said by the button offering to make one. -->
-              {#if link?.expired}<p class="panel-meta">Link expired</p>{/if}
-              <div class="share-row">
-                <button type="button" class="share-action" disabled={busy} aria-label="Create {role.label} link" onclick={() => startCreate(role.id)}>Create link</button>
-              </div>
-            {/if}
-          </section>
-        {/each}
-      </div>
-    {/if}
-    {#if error}
-      <p class="lp-text-error" role="alert">{error}</p>
-      {#if !sharing && !loading}<button class="btn btn-sm lp-control-tonal-brand" onclick={() => load(slug)}>Try again</button>{/if}
-    {/if}
-    {#if copyFallback}
-      <textarea class="share-copy-fallback w-full" readonly rows="3" aria-label="Link to copy manually" value={copyFallback} onclick={(event) => event.currentTarget.select()}></textarea>
-    {/if}
-    {#if feedback}<p class="panel-meta" role="status">{feedback}</p>{/if}
-  </div>
+  {#if reveal}
+    <div class="share-pad">
+      <TokenReveal token={reveal.token} {slug} oncopy={copy} ondone={done} />
+      {@render messages()}
+    </div>
+  {:else if loading}
+    <p class="panel-muted share-pad" role="status">Loading sharing settings…</p>
+  {:else if sharing && canShare}
+    <PanelTabs id="share" label="Sharing" tabs={TABS} value={tab} onchange={(value) => { tab = value; editing = null; }}>
+      <Tabs.Content value="links">{#if tab === "links"}{@render list("link")}{/if}</Tabs.Content>
+      <Tabs.Content value="tokens">{#if tab === "tokens"}{@render list("token")}{/if}</Tabs.Content>
+    </PanelTabs>
+  {:else}
+    <div class="share-pad">
+      {@render messages()}
+      {#if error && !sharing}<button class="btn btn-sm lp-control-tonal-brand" onclick={() => load(slug)}>Try again</button>{/if}
+    </div>
+  {/if}
 {/snippet}
 
-{#if inline}
-  <section class="panel share-sidebar" aria-label="Share document">
-    <PanelHeader title="Sharing" />
-    {@render content()}
-  </section>
-{:else}
-  <Modal bind:open title="Share document" onclose={onclose}
-         confirm={{ label: "Done", cancel: false, onclick: () => (open = false) }}>
-    {@render content()}
-  </Modal>
-{/if}
+<div bind:this={root} class="share-root">
+  {#if inline}
+    <section class="panel panel-tabbed share-sidebar" aria-label="Share document">
+      <PanelHeader title="Sharing" />
+      {@render content()}
+    </section>
+  {:else}
+    <Modal bind:open title="Share document" onclose={onclose}
+           confirm={{ label: "Done", cancel: false, onclick: () => (open = false) }}>
+      <div class="panel-tabbed share-modal-body">
+        {@render content()}
+      </div>
+    </Modal>
+  {/if}
+</div>
 
-{#if confirming}
-  {@const role = ROLES.find((entry) => entry.id === confirming.role)}
-  <Modal open title={confirming.kind === "replace" ? `Replace the ${role.label} link?` : `Revoke ${role.label} access?`}
-         onclose={() => (confirming = null)}
-         confirm={{ label: confirming.kind === "replace" ? "Replace link" : "Revoke link",
-                    tone: "error", oncancel: () => (confirming = null), onclick: confirmAction }}>
-    <p>{confirming.kind === "replace"
-      ? "The link is replaced by a new one. Anyone holding the current link loses access until you give them the new one."
-      : "The link stops working. Anyone holding it loses access, and you can create a new link later."}</p>
+{#if confirming && ask}
+  <Modal open title={ask[0]} onclose={() => (confirming = null)}
+         confirm={{ label: ask[2], tone: "error", oncancel: () => (confirming = null), onclick: confirmAction }}>
+    <p>{ask[1]}</p>
   </Modal>
 {/if}
 
 <style>
+  .share-root { display: contents; }
   .share-sidebar :global(select) { max-width: 100%; }
-  /* Whitespace and a hairline between permissions, not three cards: a card
-     apiece in a column this narrow reads as three panels. */
-  .share-section { padding-block: calc(var(--spacing) * 2.5); }
-  .share-section + .share-section { border-top: 1px solid var(--color-divider); }
-  .share-section > p { margin-block: calc(var(--spacing) * .5) 0; }
-  .share-row { display: flex; align-items: center; gap: calc(var(--spacing) * 1); margin-top: calc(var(--spacing) * .5); }
-  /* A link that exists carries no filled button: copying is the ordinary act,
-     and the accent is kept for creating access. */
-  .share-action { margin-inline-start: calc(var(--spacing) * -1); padding: .15rem .35rem; border: 0; border-radius: .25rem; background: none; color: var(--color-link); font: inherit; cursor: pointer; }
-  .share-action:hover:not(:disabled) { background: var(--color-row-hover); }
-  .share-action:disabled { opacity: .5; cursor: default; }
-  /* Everything a link offers is one flat row of icons under its expiry: four
-     verbs, none of them worth a word each in a column this narrow. */
-  .share-icon { display: grid; place-items: center; padding: .25rem; border: 0; border-radius: .25rem; background: none; color: var(--panel-muted); cursor: pointer; }
-  .share-icon:hover:not(:disabled) { background: var(--color-row-hover); color: var(--color-link); }
-  .share-icon:disabled { opacity: .5; cursor: default; }
-  .share-icon.share-destructive:hover:not(:disabled) { color: var(--color-error-text); }
-  .share-form { display: grid; gap: calc(var(--spacing) * 2); margin-top: calc(var(--spacing) * 2); }
-  .share-field { display: grid; gap: var(--spacing); }
-  .share-input, .share-select { width: 100%; min-width: 0; }
-  .share-select { border: 0; background-color: var(--color-row-hover); font: inherit; border-radius: var(--radius-base); }
-  .share-form-actions { display: flex; align-items: center; justify-content: flex-end; gap: calc(var(--spacing) * 2); }
+  .share-modal-body { height: min(30rem, 60vh); min-width: 0; }
+  .share-pad { padding: var(--panel-padding); overflow-y: auto; }
+  .share-toolbar { display: flex; align-items: center; justify-content: space-between; gap: calc(var(--spacing) * 2); padding-block: calc(var(--spacing) * 1.5); }
+  .share-count { color: var(--panel-muted); font-size: 12px; }
+  .share-new { display: inline-flex; align-items: center; gap: calc(var(--spacing) * 1); padding: .2rem .5rem; border: 0; border-radius: .25rem; background: none; color: var(--color-link); font: inherit; font-size: 13px; cursor: pointer; }
+  .share-new:hover:not(:disabled) { background: var(--color-row-hover); }
+  .share-new:disabled { opacity: .5; cursor: default; }
+  .share-scroll { flex: 1 1 0; min-height: 0; overflow-y: auto; overflow-x: hidden; }
+  .share-scroll > p { margin-block: calc(var(--spacing) * 1); }
+  .share-list { margin: 0; padding: 0; list-style: none; border-top: 1px solid var(--color-divider); }
+  .share-disclosure { display: flex; align-items: center; gap: calc(var(--spacing) * 1); width: 100%; margin-top: calc(var(--spacing) * 2); padding: .35rem 0; border: 0; border-top: 1px solid var(--color-divider); background: none; color: var(--panel-muted); font: inherit; font-size: 12px; text-align: left; cursor: pointer; }
   .share-copy-fallback { border: 0; background: transparent; resize: none; color: var(--color-text-muted); font-size: var(--panel-meta-size); }
 </style>
