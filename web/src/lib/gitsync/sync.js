@@ -38,6 +38,11 @@ function randomHex(bytes) {
 const operationId = () => `v2.${Date.now()}.${randomHex(16)}`;
 const refId = () => `op-${randomHex(8)}`;
 
+/**
+ * @param {string} status
+ * @param {Record<string, any>} [fields]
+ * @returns {{ status: string } & Record<string, any>}
+ */
 function result(status, fields = {}) {
   return { status, ...fields };
 }

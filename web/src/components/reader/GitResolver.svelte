@@ -5,7 +5,7 @@
   import Modal from "../Modal.svelte";
   import { applyResolution } from "../../lib/gitsync/sync.js";
 
-  let { open = $bindable(false), ctx, session = null, onresult, onclose } = $props();
+  let { open = $bindable(false), ctx, session = null, onresult, onclose = undefined } = $props();
 
   // Per path: { kind: "text" | "binary", base, ours, theirs (text or null), baseId, oursId, theirsId }.
   // "ours" is LibrePaper's copy and "theirs" the repository's.

@@ -116,8 +116,9 @@ export function createBridge(request = gitRequest) {
         if (typeof item.text === "string") {
           wire = { text: item.text };
         } else {
-          wire = { base64: item.base64 ?? bytesToBase64(item.bytes) };
-          if (item.sha256) wire.sha256 = item.sha256;
+          wire = item.sha256
+            ? { base64: item.base64 ?? bytesToBase64(item.bytes), sha256: item.sha256 }
+            : { base64: item.base64 ?? bytesToBase64(item.bytes) };
         }
         const cost = (wire.text ?? wire.base64).length;
         if (batch.length && weight + cost > PUT_BATCH_BYTES) await flush();
