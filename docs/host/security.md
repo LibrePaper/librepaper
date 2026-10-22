@@ -174,16 +174,17 @@ Backups are your way back from a takeover as well as from a failed disk. [Backup
 
 ## Upgrades
 
-Verify each release kit, then upgrade from that same file. Without `LIBREPAPER_KIT`, `./manage upgrade` downloads a second copy that nobody checked.
+`./manage upgrade` checks the downloaded kit's attestation with cosign before it runs anything from it, so a replaced download stops the upgrade. The installed helper does the checking, so this protects every upgrade after the first. To check the first download yourself, or a kit you pass with `LIBREPAPER_KIT`, run the same check:
 
 ```sh
-# in the librepaper/ directory on the server
-gh release download vX.Y.Z --repo LibrePaper/librepaper --pattern librepaper-deploy.tar.gz
-gh attestation verify librepaper-deploy.tar.gz --repo LibrePaper/librepaper \
-  --signer-workflow LibrePaper/librepaper/.github/workflows/publish-docker.yml
-LIBREPAPER_KIT=librepaper-deploy.tar.gz ./manage upgrade vX.Y.Z
+curl -fsSLO https://github.com/LibrePaper/librepaper/releases/download/vX.Y.Z/librepaper-deploy.tar.gz
+curl -fsSLO https://github.com/LibrePaper/librepaper/releases/download/vX.Y.Z/librepaper-deploy.tar.gz.sigstore.json
+docker run --rm --user "$(id -u):$(id -g)" --tmpfs /tmp -e HOME=/tmp -v "$PWD:/w:ro" -w /w ghcr.io/sigstore/cosign/cosign@sha256:b29487e48205d875c324c79583e2806d9d269c0fa299e0861bbec023d8430c8b \
+  verify-blob-attestation --bundle librepaper-deploy.tar.gz.sigstore.json --type https://slsa.dev/provenance/v1 \
+  --certificate-oidc-issuer https://token.actions.githubusercontent.com \
+  --certificate-identity https://github.com/LibrePaper/librepaper/.github/workflows/publish-docker.yml@refs/heads/main \
+  librepaper-deploy.tar.gz
 ```
 
-- Release kits carry a build provenance attestation from the release workflow.
 - `./manage upgrade` backs up first when backups are configured, and it stops when the backup fails. Do not skip the backup with `--no-backup`.
 - Never run `docker compose down -v` on the server. It deletes the database and data volumes.

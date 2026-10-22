@@ -8,6 +8,10 @@ cd "$(dirname "${BASH_SOURCE[0]}")"
 BACKUP_DIR=/var/backups/librepaper/current
 ARCHIVE=/librepaper-backup.tar
 RELEASES=https://github.com/LibrePaper/librepaper/releases
+# A downloaded kit must carry an attestation from this workflow on main.
+# cosign runs from a pinned image, so the host needs nothing but Docker.
+COSIGN_IMAGE=ghcr.io/sigstore/cosign/cosign@sha256:b29487e48205d875c324c79583e2806d9d269c0fa299e0861bbec023d8430c8b
+KIT_SIGNER='https://github.com/LibrePaper/librepaper/.github/workflows/publish-docker.yml@refs/heads/main'
 TMP=
 KIT_HELPER=
 
@@ -18,7 +22,7 @@ usage: ./manage <command>
   status                   services, version, /ready, disk
   check                    validate the app, backup and Caddy configs
   apply                    validate, install *.candidate configs, restart
-  upgrade [vX.Y.Z] [--no-backup]
+  upgrade [vX.Y.Z] [--no-backup] [--unverified]
                            back up, install a release kit, restart
   logs [service]           follow logs
   version                  print the pinned app version
@@ -235,12 +239,24 @@ cmd_apply() {
 	wait_ready
 }
 
+# verify_kit DIR checks DIR/kit.tar.gz against DIR/kit.sigstore.json. cosign
+# runs as the caller, because DIR is private, with a scratch home for its
+# trust root cache.
+verify_kit() {
+	docker run --rm --user "$(id -u):$(id -g)" --tmpfs /tmp -e HOME=/tmp \
+		-v "$1:/w:ro" -w /w "$COSIGN_IMAGE" verify-blob-attestation \
+		--bundle kit.sigstore.json --type https://slsa.dev/provenance/v1 \
+		--certificate-oidc-issuer https://token.actions.githubusercontent.com \
+		--certificate-identity "$KIT_SIGNER" kit.tar.gz >/dev/null 2>&1
+}
+
 cmd_upgrade() {
-	local tag= backup=1 arg kit old new f src dest rel
+	local tag= backup=1 verify=1 arg kit old new f src dest rel
 
 	for arg in "$@"; do
 		case "$arg" in
 		--no-backup) backup=0 ;;
+		--unverified) verify=0 ;;
 		v[0-9]*) tag=$arg ;;
 		*) die "unknown upgrade argument: $arg" ;;
 		esac
@@ -266,6 +282,14 @@ cmd_upgrade() {
 			src=$RELEASES/latest/download/librepaper-deploy.tar.gz
 		fi
 		curl -fsSL -o "$TMP/kit.tar.gz" "$src" || die "cannot download $src"
+		if [ "$verify" -eq 1 ]; then
+			curl -fsSL -o "$TMP/kit.sigstore.json" "$src.sigstore.json" ||
+				die "release has no attestation bundle at $src.sigstore.json; releases before verification have none. Verify the kit yourself and pass it with LIBREPAPER_KIT, or rerun with --unverified"
+			verify_kit "$TMP" || die "the downloaded kit failed its attestation check; nothing was changed"
+			echo "verified the kit's attestation"
+		else
+			echo "skipping the attestation check (--unverified)"
+		fi
 	fi
 	mkdir "$TMP/x"
 	tar -C "$TMP/x" -xzf "$TMP/kit.tar.gz" || die "cannot extract the release kit"
