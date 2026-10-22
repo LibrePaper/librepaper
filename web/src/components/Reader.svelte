@@ -13,6 +13,8 @@
   import * as history from "../lib/history.js";
   import { createHistorySource } from "../lib/reader/history-source.svelte.js";
   import HistoryWorkspace from "./reader/HistoryWorkspace.svelte";
+  import { createGitResolver } from "../lib/reader/git-resolver.svelte.js";
+  import GitConflictWorkspace from "./reader/GitConflictWorkspace.svelte";
   import { diagnosticContext } from "../lib/assistant-review.js";
   import { sourcePassage } from "../lib/assistant.js";
   import { candidateTree, capturePreviewTree, previewCandidate } from "../lib/assistant-preview.js";
@@ -1564,6 +1566,9 @@
   const historySelectedSha = $derived(historySource.selected);
   let historyLiveVersion = $state(0);
   $effect(() => () => historySource.dispose());
+  const gitResolver = createGitResolver();
+  const resolving = $derived(gitResolver.state.active);
+  $effect(() => () => gitResolver.dispose());
   $effect(() => {
     if (panel !== "history" || historySource.selected) return;
     void historyLiveVersion;
@@ -2598,8 +2603,12 @@
   let unit = $state(measure());
   const compact = $derived(width <= 760);
   const activeMobileView = $derived(panel === "history" && mobileView === "document" ? "source"
-    : mobileView === "source" && !editing && panel !== "history" ? "document"
+    : mobileView === "source" && !editing && panel !== "history" && !resolving ? "document"
     : mobileView === "sidebar" && !panel ? "document" : mobileView);
+  // A resolution takes the editor area, which on a phone is shown alone.
+  $effect(() => {
+    if (resolving && compact) mobileView = "source";
+  });
   const splitTight = $derived(width < px(ACTIVITY_WIDTH, unit) + px(PANES.editor.min, unit)
     + px(DOCUMENT_MIN, unit) + px(GRIP, unit)
     + (panel ? px(PANES.sidebar.min, unit) + px(GRIP, unit) : 0));
@@ -2608,7 +2617,7 @@
   // switch between the two faces in the bar; only the phone loses the rail
   // beside the column and needs the row along the bottom.
   const adapted = $derived(compact || (splitTight && layout === "split"));
-  const effectiveLayout = $derived(!compact && panel === "history"
+  const effectiveLayout = $derived(!compact && (resolving || panel === "history")
     ? "source"
     : compact
     ? (activeMobileView === "source" ? "source" : "document")
@@ -2621,7 +2630,7 @@
   const panes = $derived({
     layout: effectiveLayout,
     comments: Boolean(panel),
-    editing: editing || panel === "history",
+    editing: editing || panel === "history" || resolving,
     sourceSide,
     sizes,
     width,
@@ -2631,7 +2640,7 @@
     unit,
   });
   const shown = $derived(compact ? {
-    source: (editing || panel === "history") && activeMobileView === "source",
+    source: (editing || panel === "history" || resolving) && activeMobileView === "source",
     document: activeMobileView === "document",
     comments: activeMobileView === "sidebar",
   } : showing(panes));
@@ -3953,7 +3962,7 @@
 
   {#snippet gitPanel()}
     <Git open={panel === "git" && shown.comments} slug={SLUG} key={KEY} {session} {rules}
-      me={{ name: me.name, handle: me.handle }} />
+      me={{ name: me.name, handle: me.handle }} resolver={gitResolver} />
   {/snippet}
 
   {#snippet diagnosticsPanel()}
@@ -4013,14 +4022,16 @@
     {/snippet}
   </Sidebar>
 
-  {#if editing || panel === "history"}
+  {#if editing || panel === "history" || resolving}
     <!-- svelte-ignore a11y_no_static_element_interactions -->
     <section id="reader-source" class="editorpane" class:away={!shown.source}
              ondragover={(event) => event.preventDefault()} ondrop={dropped}>
       <!-- A figure has no editor. Choosing one shows it: an image as itself,
            a PDF through the browser's own viewer, which shows the first page
            without this application carrying a PDF renderer of its own. -->
-      {#if panel === "history"}
+      {#if resolving}
+        <GitConflictWorkspace resolver={gitResolver} />
+      {:else if panel === "history"}
         <HistoryWorkspace source={historySource} canEdit={mayEdit} onrestore={restoreLabel}
           ondownload={downloadArchive}
           downloading={downloadingSha === historySource.selected ? downloadingSha : ""}

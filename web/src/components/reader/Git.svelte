@@ -1,7 +1,6 @@
 <script>
   import PanelHeader from "../PanelHeader.svelte";
   import DesktopOnly from "../DesktopOnly.svelte";
-  import GitResolver from "./GitResolver.svelte";
   import { say } from "../../lib/toast.svelte.js";
   import { createBridge } from "../../lib/gitsync/bridge.js";
   import { syncApi } from "../../lib/gitsync/server.js";
@@ -9,7 +8,7 @@
     compare, connect, defaultMessage, disconnect, outgoing, pull, push, recover, status,
   } from "../../lib/gitsync/sync.js";
 
-  let { open = false, slug, key = "", session = null, rules = {}, me = {} } = $props();
+  let { open = false, slug, key = "", session = null, rules = {}, me = {}, resolver } = $props();
 
   const git = createBridge();
   const api = $derived(syncApi(slug, key));
@@ -42,7 +41,6 @@
   let message = $state("");
 
   let outcome = $state(null);
-  let resolverOpen = $state(false);
   let conflictSession = $state(null);
 
   const name = $derived(me?.name || me?.handle || "Someone");
@@ -92,7 +90,7 @@
     link = state.link;
     pending = state.pending || [];
     // A resolver that is open keeps the session it is working on.
-    if (!resolverOpen) conflictSession = state.conflict;
+    if (!resolver?.state.active) conflictSession = state.conflict;
   }
 
   async function load() {
@@ -205,7 +203,7 @@
       say(result.kind === "push" ? "Nothing to push" : "Nothing to pull", { kind: "note", id: "git:nothing" });
     } else if (result.status === "conflict") {
       conflictSession = result.session;
-      resolverOpen = true;
+      resolver?.open(context(), conflictSession, resolved);
     } else if (result.status === "refused" && result.kind === "auth") {
       error = { auth: true };
     } else if (result.status === "refused" && result.reconnect) {
@@ -255,7 +253,7 @@
 
   async function resume() {
     if (conflictSession && !pending.length) {
-      resolverOpen = true;
+      resolver?.open(context(), conflictSession, resolved);
       return;
     }
     await guard(async () => {
@@ -270,7 +268,7 @@
       await refresh();
       if (answer.conflict && !pending.length) {
         conflictSession = answer.conflict;
-        resolverOpen = true;
+        resolver?.open(context(), conflictSession, resolved);
       }
     });
   }
@@ -321,7 +319,9 @@
       <p><a href={DOCS} target="_blank" rel="noopener noreferrer">How to set up Git</a></p>
     </div>
   {:else}
-    {#if pending.length || conflictSession}
+    {#if resolver?.state.active}
+      <div class="gh-box" role="status"><p>Resolve the conflicts in the editor area, then apply.</p></div>
+    {:else if pending.length || conflictSession}
       <div class="gh-box" role="status">
         <p>{pending.length ? "A sync was interrupted." : "A conflict is saved."}</p>
         <button type="button" class="btn btn-sm lp-control-tonal-brand" disabled={busy} onclick={resume}>Resume</button>
@@ -467,8 +467,6 @@
   {/if}
   </DesktopOnly>
 </section>
-
-<GitResolver bind:open={resolverOpen} ctx={context()} session={conflictSession} onresult={resolved} />
 
 <style>
   .gh-panel :global(select) { max-width: 100%; }

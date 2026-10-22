@@ -80,7 +80,12 @@ git config user.email
 
 ## Conflicts
 
-Separate edits merge automatically. Edits to the same lines are a conflict. A conflict opens the resolver. It shows three versions of the text: the base, your copy in LibrePaper, and the repository's copy. The result is editable.
+Separate edits merge automatically. Edits to the same lines are a conflict. A conflict opens the resolver in the editor area, across the source and preview.
+
+- The repository's copy is on the left. The result is on the right and starts from your copy in LibrePaper.
+- Words that differ are highlighted. The arrow beside a difference copies the repository's version into the result.
+- You can type in the result, or pick "Use LibrePaper's" or "Use the repository's" for the whole file.
+- Close keeps your choices. Resume in the Git panel opens them again.
 
 Nothing changes in the project until you apply the resolution. Closing LibrePaper keeps a conflict you have not finished.
 

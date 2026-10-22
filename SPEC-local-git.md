@@ -278,8 +278,10 @@ addition.
 
 For each conflicted path the resolver offers:
 
-- text: a three-way view (base, LibrePaper, repository) with an editable
-  result, built on `@codemirror/merge`;
+- text: a side-by-side view built on `@codemirror/merge`, filling the editor
+  area: the repository's copy, read-only, beside an editable result that
+  starts from LibrePaper's copy, with changed words highlighted and an arrow
+  per difference that copies the repository's version into the result;
 - deleted on one side and changed on the other: keep the changed file or
   delete it;
 - binary: keep one side's bytes.
