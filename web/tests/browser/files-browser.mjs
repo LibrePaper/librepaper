@@ -354,7 +354,7 @@ window.shareSidebarCheck = async () => {
 window.panelTypographyCheck = async () => {
   const samples = [];
   const mounted = [];
-  for (const [component, props] of [[Files, {}], [Diagnostics, {}], [Share, { open: true, inline: true, slug: 'paper' }]]) {
+  for (const [component, props] of [[Files, {}], [Diagnostics, {}]]) {
     const host = document.createElement('div');
     host.style.cssText = 'display:flex;flex-direction:column;width:360px;height:500px';
     document.body.append(host);
@@ -376,11 +376,11 @@ window.panelTypographyCheck = async () => {
   // so that the strip is flush to the top of the panel and runs its full
   // width. The reader must not be able to tell the two arrangements apart:
   // what a pane holds has to sit exactly where a plain panel's contents sit.
-  for (const component of [Collaboration, History]) {
+  for (const [component, props] of [[Collaboration, {}], [History, {}], [Share, { open: true, inline: true, slug: 'paper', canShare: true }]]) {
     const host = document.createElement('div');
     host.style.cssText = 'display:flex;flex-direction:column;width:360px;height:500px';
     document.body.append(host);
-    const instance = createClassComponent({ component, target: host, props: {} });
+    const instance = createClassComponent({ component, target: host, props });
     mounted.push({ instance, host });
     await flush();
     const panel = host.querySelector('.panel.panel-tabbed');
