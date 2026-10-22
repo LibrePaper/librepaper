@@ -467,7 +467,7 @@ export async function compareFirst(ctx, link = ctx.link) {
 }
 
 /// The first push (or any push). Before the first sync the files on both
-/// sides are marked as not matching the repository, so they are overwritten,
+/// sides are marked with a hash no content has, so they are overwritten,
 /// and files only on GitHub are left alone.
 export async function firstPush(ctx, message) {
   const link = await requireLink(ctx);
@@ -480,7 +480,7 @@ export async function firstPush(ctx, message) {
   const project = await snapshot(ctx, listing.rules.isSynced);
   const map = {};
   for (const [path, listed] of classified.synced) {
-    if (project.has(path)) map[path] = { blob: listed.blob, hash: "" };
+    if (project.has(path)) map[path] = { blob: listed.blob, hash: "0".repeat(64) };
   }
   await ctx.api.putLink(linkBody(link, { synced_commit: head, synced_map: map }));
   return push(ctx, message);
