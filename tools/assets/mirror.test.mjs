@@ -424,7 +424,7 @@ test('AWS failure diagnostics expose safe service codes and actionable hints onl
 
 test('publisher validates prefixes and selects explicit browser metadata', () => {
   assert.deepEqual(metadataFor('wasm/' + 'a'.repeat(64) + '/markdown.wasm'), {
-    contentType: 'application/wasm', contentEncoding: 'gzip', cacheControl: 'public, max-age=31536000, immutable',
+    contentType: 'application/wasm', contentEncoding: 'br', cacheControl: 'public, max-age=31536000, immutable',
   });
   const releaseId = 'b'.repeat(64);
   assert.deepEqual(metadataFor(`latex/${releaseId}/release.json`), {
@@ -436,7 +436,7 @@ test('publisher validates prefixes and selects explicit browser metadata', () =>
   assert.equal(metadataFor('latex/engine.fmt').contentType, 'application/octet-stream');
   assert.equal(metadataFor('latex/engine.fmt').contentEncoding, 'gzip');
   assert.equal(metadataFor('latex/archive.tar').contentEncoding, 'gzip');
-  assert.equal(metadataFor('latex/engine.data').contentEncoding, 'gzip');
+  assert.equal(metadataFor('latex/engine.data').contentEncoding, 'br');
   assert.deepEqual(metadataFor('latex/receipt.pdf.gz'), {
     contentType: 'application/gzip', contentEncoding: undefined, cacheControl: 'public, max-age=3600',
   });
@@ -457,7 +457,7 @@ test('dry run lists large files without staging or gzip compression', async () =
     assert.equal(result.uploaded, 0);
     assert.equal(result.dryRun, true);
     assert.deepEqual(after, before);
-    assert.ok(lines.some((line) => /application\/wasm\tgzip\tpublic, max-age=3600/.test(line)));
+    assert.ok(lines.some((line) => /application\/wasm\tbr\tpublic, max-age=3600/.test(line)));
     assert.equal((await stat(large)).size, 11 * 1024 * 1024 * 1024);
   } finally {
     await rm(root, { recursive: true, force: true });
@@ -862,7 +862,7 @@ fs.writeFileSync(storePath,JSON.stringify(store));
 const fakeAwsProgram = `#!${process.execPath}
 const fs = require('node:fs');
 const path = require('node:path');
-const { gunzipSync } = require('node:zlib');
+const { brotliDecompressSync, gunzipSync } = require('node:zlib');
 const args = process.argv.slice(2);
 const value = (key) => { const index = args.indexOf(key); return index < 0 ? undefined : args[index + 1]; };
 const command = args.slice(0, 2).join(' ');
@@ -879,7 +879,8 @@ if (command === 's3 sync') {
     const key = destination + relative;
     const encoded = fs.readFileSync(path.join(source, relative));
     if (args.includes('--size-only') && store[key] && Buffer.from(store[key].encoded, 'base64').length === encoded.length) continue;
-    const decoded = value('--content-encoding') === 'gzip' ? gunzipSync(encoded) : encoded;
+    const encodingArg = value('--content-encoding');
+    const decoded = encodingArg === 'gzip' ? gunzipSync(encoded) : encodingArg === 'br' ? brotliDecompressSync(encoded) : encoded;
     store[key] = { encoded: encoded.toString('base64'), decoded: decoded.toString('base64'),
       contentType: value('--content-type'), contentEncoding: value('--content-encoding') || undefined,
       cacheControl: value('--cache-control'), acl: value('--acl') };
@@ -906,7 +907,7 @@ if (command === 's3 sync') {
 }
 `;
 
-test("successful S3 publishing gzips payloads, skips transport files, and uploads release.json last", async () => {
+test("successful S3 publishing compresses payloads, skips transport files, and uploads release.json last", async () => {
   const root = await mkdtemp(join(tmpdir(), "publish-mirror-success-"));
   const source = join(root, "mirror");
   const bin = join(root, "bin");
@@ -962,6 +963,8 @@ test("successful S3 publishing gzips payloads, skips transport files, and upload
     assert.equal(Buffer.from(at("engine.data").body, "base64").toString("hex"), "000102ff");
     assert.equal(at("engine.fmt").contentType, "application/octet-stream");
     assert.equal(at("engine.fmt").contentEncoding, "gzip");
+    assert.equal(at("engine.data").contentEncoding, "br");
+    assert.equal(at("engine.wasm").contentEncoding, "br");
     assert.equal(at("archive.tar").contentType, "application/x-tar");
     assert.equal(Buffer.from(at("icudt.dat.gz").body, "base64").toString("hex"), "1f8b080001");
     assert.equal(at("icudt.dat.gz").contentType, "application/gzip");
