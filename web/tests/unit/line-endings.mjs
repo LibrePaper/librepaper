@@ -64,3 +64,26 @@ test("a healed body keeps view and text offsets aligned", () => {
   doc.commit();
   assert.equal(text.toString(), "one\ntwo\n\nfour");
 });
+
+// The rewrite of CRLF only deletes, so two editors that rewrite the same body
+// at the same time converge on one line feed. A lone CR needs an insert, and
+// two peers inserting at the same place keep both; that case is left to a
+// single writer and is not covered here.
+test("two editors that rewrite CRLF at the same time converge on one line feed", () => {
+  const first = new LoroDoc();
+  first.setPeerId(1);
+  const text = first.getText("t");
+  text.insert(0, "a\r\nb\r\nc");
+  first.commit();
+  const second = new LoroDoc();
+  second.setPeerId(2);
+  second.import(first.export({ mode: "snapshot" }));
+  assert.equal(healLineEndings(text), true);
+  first.commit();
+  assert.equal(healLineEndings(second.getText("t")), true);
+  second.commit();
+  first.import(second.export({ mode: "update" }));
+  second.import(first.export({ mode: "update" }));
+  assert.equal(text.toString(), "a\nb\nc");
+  assert.equal(second.getText("t").toString(), "a\nb\nc");
+});
