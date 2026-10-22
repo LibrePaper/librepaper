@@ -1,6 +1,6 @@
 import { authHeaders } from "../api.js";
 
-// The server half of sync: the link row, the source-change route and the
+// The server half of sync: the link record, the source-change route and the
 // asset store, for one document. Every call carries the link key when the
 // reader arrived with one, so a share-link editor can sync.
 
@@ -17,8 +17,9 @@ async function parse(response) {
   return body;
 }
 
-/// The calls sync.js expects as `ctx.api`.
-export function forgeApi(slug, key) {
+/// The calls sync.js expects as `ctx.api`. Errors carry `status` and `body`,
+/// so a 409 can be read.
+export function syncApi(slug, key) {
   const base = `/api/documents/${slug}`;
   const send = (method, path, body) =>
     fetch(`${base}${path}`, {
@@ -28,10 +29,10 @@ export function forgeApi(slug, key) {
     }).then(parse);
 
   return {
-    getLink: () => fetch(`${base}/forge`, { headers: authHeaders(key) }).then(parse),
-    putLink: (body) => send("PUT", "/forge", body),
+    getLink: () => fetch(`${base}/sync`, { headers: authHeaders(key) }).then(parse),
+    putLink: (body) => send("PUT", "/sync", body),
     async deleteLink() {
-      const response = await fetch(`${base}/forge`, { method: "DELETE", headers: authHeaders(key) });
+      const response = await fetch(`${base}/sync`, { method: "DELETE", headers: authHeaders(key) });
       if (!response.ok) await parse(response);
     },
     sourceChange: (body) => send("POST", "/source-change", body),

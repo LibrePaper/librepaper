@@ -91,7 +91,7 @@ export function syncRules({ rules, folder, maxFileBytes, ignoreRoot, ignoreFolde
         path,
         project: normalisePath(inner),
         kind: checkPath(lenient, inner).kind,
-        blob: entry.sha,
+        blob: entry.id,
         size: entry.size,
       });
     }
