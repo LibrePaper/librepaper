@@ -545,7 +545,8 @@ async fn a_push_that_is_behind_the_remote_is_moved() {
     );
     let two = fx.commit(&[&one], &[("f.txt", "two")]).await;
     assert_eq!(
-        fx.ok("push", push_body(&two, Some(&one), CONNECTION_ID)).await["pushed"],
+        fx.ok("push", push_body(&two, Some(&one), CONNECTION_ID))
+            .await["pushed"],
         true
     );
     assert_eq!(
@@ -583,7 +584,8 @@ async fn a_push_with_a_stale_lease_is_moved() {
 
     // The right expected head succeeds.
     assert_eq!(
-        fx.ok("push", push_body(&two, Some(&one), CONNECTION_ID)).await["pushed"],
+        fx.ok("push", push_body(&two, Some(&one), CONNECTION_ID))
+            .await["pushed"],
         true
     );
     // Somebody pushed meanwhile: the lease names `one`, the remote is at `two`.

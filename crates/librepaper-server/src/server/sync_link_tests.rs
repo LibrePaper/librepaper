@@ -112,7 +112,9 @@ async fn get_link(d: &Deployment, headers: &HeaderMap) -> (u16, Value) {
 /// The `version` of a reply: standard base64 of a non-empty head vector.
 fn version_of(value: &Value) -> Vec<u8> {
     use base64::Engine as _;
-    let text = value["version"].as_str().expect("the reply names a version");
+    let text = value["version"]
+        .as_str()
+        .expect("the reply names a version");
     let bytes = base64::engine::general_purpose::STANDARD
         .decode(text)
         .expect("the version is standard base64");
