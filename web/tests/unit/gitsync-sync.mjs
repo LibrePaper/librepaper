@@ -1227,4 +1227,91 @@ const baseFiles = (repo) => {
   assert.ok(repo.refs.has("op-old/published"));
 }
 
+// A conflict resolution that was sent without a known answer keeps the saved
+// session, and a sent pull too large to journal stays pending until a pull ends.
+{
+  const { repo, session, api, ctx } = await connected({ "intro.qmd": "same\n" });
+  await session.setText("intro.qmd", "local\n");
+  repo.advance({ "intro.qmd": "remote\n" });
+  const conflict = await sync.pull(ctx);
+  const resolutions = { "intro.qmd": { text: "both\n" } };
+  await sync.saveResolutions(ctx, conflict.session, resolutions);
+  const original = api.sourceChange;
+  api.sourceChange = async () => {
+    throw httpError(503, { error: "down" });
+  };
+  await assert.rejects(sync.applyResolution(ctx, (await sync.status(ctx)).conflict));
+  api.sourceChange = original;
+  const kept = repo.journal.find((entry) => entry.kind === "conflict");
+  assert.deepEqual(kept.session.resolutions, resolutions);
+  assert.ok(repo.journal.some((entry) => entry.kind === "pull" && entry.phase === "sent"));
+}
+{
+  const { repo, session, api, ctx } = await connected({ "intro.qmd": "same\n" });
+  await session.setText("intro.qmd", "local\n");
+  repo.advance({ "intro.qmd": "remote\n" });
+  const conflict = await sync.pull(ctx);
+  const resolutions = { "intro.qmd": { text: "both\n" } };
+  await sync.saveResolutions(ctx, conflict.session, resolutions);
+  await ctx.git.journalUpsert({
+    id: "op-big",
+    kind: "pull",
+    phase: "sent",
+    revision: 1,
+    connection_id: api.state.link.connection_id,
+    checkpoint: null,
+    body: null,
+  });
+  await ctx.git.keep("op-big", { base: repo.head });
+  const settled = await sync.recover(ctx);
+  assert.deepEqual(settled.pending, ["op-big"]);
+  assert.deepEqual(settled.recovered, []);
+  assert.match(settled.reasons["op-big"], /Pull again/);
+  assert.ok(settled.conflict);
+  assert.equal(repo.journal.length, 2);
+  assert.ok(repo.refs.has("op-big/base"));
+  const done = await sync.applyResolution(ctx, (await sync.status(ctx)).conflict);
+  assert.equal(done.status, "pulled", JSON.stringify(done));
+  assert.deepEqual(repo.journal, []);
+  assert.ok(!repo.refs.has("op-big/base"));
+}
+
+// A file that starts with a byte order mark keeps it when its conflict is resolved.
+{
+  const bom = "\uFEFF";
+  const { repo, session, api, ctx } = await connected({ "intro.qmd": `${bom}same\n` });
+  await session.setText("intro.qmd", `${bom}local\n`);
+  repo.advance({ "intro.qmd": `${bom}remote\n` });
+  const conflict = await sync.pull(ctx);
+  assert.equal(conflict.status, "conflict");
+  const done = await sync.applyResolution(ctx, conflict.session, { "intro.qmd": { text: `${bom}both\n` } });
+  assert.equal(done.status, "pulled", JSON.stringify(done));
+  assert.equal(session.text("intro.qmd"), `${bom}both\n`);
+  const [dependency] = api.state.calls.at(-1).change.dependencies;
+  assert.equal(dependency.file_hash, await sha256HexOfText(`${bom}local\n`));
+}
+
+// Large non-ASCII texts are batched by serialized bytes and split when refused.
+{
+  const sizes = [];
+  const cjk = (count, fill) => fill.repeat(count);
+  const fake = (cap) => async (op, body) => {
+    const size = Buffer.byteLength(JSON.stringify(body));
+    sizes.push(size);
+    if (size > cap) throw httpError(413, { error: "too large" });
+    return { ids: body.blobs.map((item, i) => `id${sizes.length}-${i}`) };
+  };
+  const big = [0, 1, 2].map((i) => ({ text: cjk(4 * 1024 * 1024, String.fromCharCode(0x4e00 + i)) }));
+  const first = await createBridge(fake(32 * 1024 * 1024)).putBlobs(big);
+  assert.equal(first.length, 3);
+  assert.ok(sizes.every((size) => size <= 32 * 1024 * 1024));
+  sizes.length = 0;
+  const small = [0, 1, 2, 3, 4, 5].map((i) => ({ text: cjk(100_000, String.fromCharCode(0x4e00 + i)) }));
+  const ids = await createBridge(fake(1024 * 1024)).putBlobs(small);
+  assert.equal(ids.length, 6);
+  assert.ok(sizes.some((size) => size > 1024 * 1024));
+  assert.equal(sizes.filter((size) => size <= 1024 * 1024).length >= 2, true);
+  await assert.rejects(createBridge(fake(10)).putBlobs([{ text: "abc" }]));
+}
+
 console.log("gitsync sync ok");

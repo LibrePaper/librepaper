@@ -18,7 +18,7 @@
   let current = $state(null);
   let loaded = null;
 
-  const decoder = new TextDecoder("utf-8", { fatal: true });
+  const decoder = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true });
 
   /// The text of a blob, null for no blob, undefined for bytes that are not text.
   function decode(bytes) {

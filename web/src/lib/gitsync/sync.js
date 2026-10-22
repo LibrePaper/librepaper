@@ -33,6 +33,8 @@ const LFS_POINTER_MAX_BYTES = 1024;
 const IGNORE_FILE = ".librepaperignore";
 const GIT_KINDS = new Set(["auth", "network", "not-found"]);
 const decoder = new TextDecoder();
+/// File content keeps a leading byte order mark, as the project text does.
+const contentDecoder = new TextDecoder("utf-8", { ignoreBOM: true });
 const encoder = new TextEncoder();
 const NOT_CAUGHT_UP = "This page has not received every change yet. Try again in a moment.";
 const RECONNECT = "This computer is connected to a different repository for this project. Connect this computer again.";
@@ -417,7 +419,7 @@ async function buildChange(ctx, changes, kinds, known) {
     }
   }
   const blobs = await readBlobs(ctx, needed);
-  const lText = (item) => known?.texts?.get(item.path) ?? decoder.decode(blobs.get(item.from));
+  const lText = (item) => known?.texts?.get(item.path) ?? contentDecoder.decode(blobs.get(item.from));
   const lAsset = async (item) => known?.assets?.get(item.path) ?? sha256Hex(blobs.get(item.from));
 
   for (const item of [...changes].sort((a, b) => byPath(a.path, b.path))) {
@@ -588,6 +590,7 @@ async function complete(ctx, prepared, tree, op) {
     kind: "pull",
     phase: "sent",
     revision: link.revision,
+    connection_id: link.connection_id,
     checkpoint: remote,
     body: keepBody ? body : null,
   });
@@ -639,6 +642,7 @@ async function openConflict(ctx, prepared, op, carry) {
   const session = {
     id: op,
     revision: link.revision,
+    connection_id: link.connection_id,
     checkpoint: link.checkpoint,
     remote,
     base: base.commit,
@@ -731,7 +735,21 @@ async function runPull(ctx, options = {}) {
       }
       continue;
     }
+    if (step.result.status === "pulled" || step.result.status === "nothing") await clearStale(ctx, link);
     return step;
+  }
+}
+
+/// After a pull succeeded for a connection, an earlier pull request whose body
+/// was too large to journal is no longer in doubt (a pull is idempotent: if it
+/// applied, this merge found nothing to do), and a saved conflict session of
+/// the same connection has been consumed.
+async function clearStale(ctx, link) {
+  for (const entry of await journalRead(ctx)) {
+    const stale =
+      (entry.kind === "pull" && entry.phase === "sent" && !entry.body && entry.connection_id === link.connection_id) ||
+      (entry.kind === "conflict" && entry.session?.connection_id === link.connection_id);
+    if (stale) await finish(ctx, entry.id);
   }
 }
 
@@ -789,12 +807,15 @@ export async function applyResolution(ctx, session, resolutions = session.resolu
       base: { commit: session.base },
       filter: null,
     };
-    const step = await complete(ctx, prepared, tree, session.id);
+    // The request gets its own journal entry: the conflict session, with the
+    // saved resolutions, stays until the request is known to have applied.
+    const step = await complete(ctx, prepared, tree, refId());
     if (step.retry) {
       await finish(ctx, session.id);
       return (await runPull(ctx, { carry })).result;
     }
-    await journalDrop(ctx, session.id);
+    await finish(ctx, session.id);
+    await clearStale(ctx, link);
     return step.result;
   });
 }
@@ -1144,6 +1165,7 @@ export async function recover(ctx) {
   return guarded(async () => {
     const recovered = [];
     const pending = [];
+    const reasons = {};
     let conflict = null;
     for (const entry of await journalRead(ctx)) {
       if (entry.kind === "conflict") {
@@ -1151,7 +1173,12 @@ export async function recover(ctx) {
         continue;
       }
       try {
-        if (entry.phase === "planned" || entry.phase === "done" || (entry.kind === "pull" && !entry.body)) {
+        if (entry.kind === "pull" && entry.phase === "sent" && !entry.body) {
+          // The request was too large to journal, so it cannot be sent again
+          // and nobody knows whether it applied. The next pull settles it.
+          reasons[entry.id] = "run Pull again to finish an interrupted pull";
+          throw new Error(reasons[entry.id]);
+        } else if (entry.phase === "planned" || entry.phase === "done") {
           await finish(ctx, entry.id);
         } else if (entry.kind === "pull") {
           // Only an answer that says the request was not applied (or applied it)
@@ -1183,6 +1210,6 @@ export async function recover(ctx) {
         pending.push(entry.id);
       }
     }
-    return { recovered, pending, conflict };
+    return { recovered, pending, reasons, conflict };
   });
 }
