@@ -109,6 +109,17 @@ async fn get_link(d: &Deployment, headers: &HeaderMap) -> (u16, Value) {
     (status, value)
 }
 
+/// The `version` of a reply: standard base64 of a non-empty head vector.
+fn version_of(value: &Value) -> Vec<u8> {
+    use base64::Engine as _;
+    let text = value["version"].as_str().expect("the reply names a version");
+    let bytes = base64::engine::general_purpose::STANDARD
+        .decode(text)
+        .expect("the version is standard base64");
+    assert!(!bytes.is_empty(), "the version is empty");
+    bytes
+}
+
 fn operation() -> String {
     let now = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -307,9 +318,16 @@ async fn source_change_applies_and_writes_the_sync_block() {
     let owner = owner_bearer(&d);
     put_link(&d, &owner, &link_body(None, "main")).await;
 
+    let (status, before) = get_link(&d, &owner).await;
+    assert_eq!(status, 200, "{before}");
+    let before = version_of(&before);
+
     let body = edit_body(&operation(), 1, &sha(SOURCE));
     let (status, value) = source_change(&d, &owner, &body).await;
     assert_eq!(status, 200, "{value}");
+    assert_ne!(version_of(&value), before, "the apply moved the head");
+    let (_, after) = get_link(&d, &owner).await;
+    assert_eq!(version_of(&after), version_of(&value));
     assert_eq!(value["receipt"]["replay"], false);
     assert_eq!(value["link"]["revision"], 2);
     assert_eq!(value["link"]["checkpoint"], "d".repeat(40));
