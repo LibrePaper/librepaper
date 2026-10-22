@@ -455,6 +455,12 @@ impl Server {
         key.validate().map_err(failure)?;
         let digest = operation_digest(name, args);
         let current = self.mcp_recheck(slug, headers, arrival, actor).await?;
+        if !current.edits_source() && super::schema::SOURCE_WRITING_TOOLS.contains(&name) {
+            return Err(Failure::new(
+                "permission_changed",
+                "editor access is required to apply source",
+            ));
+        }
         self.mcp_refuse_if_admitted(slug, actor, who, &key, Some(&digest))
             .await?;
         self.mcp_admit(slug, actor, who, &key, name, args, &digest)

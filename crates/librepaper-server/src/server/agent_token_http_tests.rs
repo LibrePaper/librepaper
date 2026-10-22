@@ -305,7 +305,7 @@ async fn a_token_has_a_name_an_expiry_and_no_key_in_the_listing() {
         json!({"create": {"kind": "token", "role": "comment", "until": "1d"}}),
         json!({"create": {"kind": "token", "role": "comment", "name": "x", "until": "never"}}),
         json!({"create": {"kind": "token", "role": "comment", "name": "x"}}),
-        json!({"create": {"kind": "token", "role": "edit", "name": "x", "until": "1d"}}),
+        json!({"create": {"kind": "token", "role": "admin", "name": "x", "until": "1d"}}),
     ] {
         let (status, refused) = served.share(body.clone()).await;
         assert_eq!(status, 400, "{body} {refused}");
@@ -591,4 +591,154 @@ async fn a_token_with_a_budget_of_one_comments_once() {
         .await;
     assert_eq!(status, 200);
     assert_eq!(refused["error"]["code"], "rate_limited", "{refused}");
+}
+
+async fn stored_roles(served: &Served) -> Vec<(String, String)> {
+    sqlx::query_as(
+        "SELECT label,role FROM share_links
+         WHERE document_id=(SELECT id FROM documents WHERE slug=$1) AND kind='agent' ORDER BY label",
+    )
+    .bind(&served.slug)
+    .fetch_all(served.catalog.pool())
+    .await
+    .unwrap()
+}
+
+#[tokio::test]
+#[ignore = "requires LIBREPAPER_TEST_POSTGRES_URL"]
+async fn the_share_api_accepts_edit_and_answers_editor_beside_the_other_token_roles() {
+    let Some(served) = serve("token-edit-roles").await else {
+        return;
+    };
+    served.mint_token("edit", "editing").await;
+    served.mint_token("suggest", "suggesting").await;
+    served.mint_token("comment", "commenting").await;
+    let listing = served.sharing().await;
+    let role_of = |name: &str| {
+        listing["tokens"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|row| row["name"] == name)
+            .unwrap()["role"]
+            .clone()
+    };
+    assert_eq!(role_of("editing"), "editor");
+    assert_eq!(role_of("suggesting"), "suggester");
+    assert_eq!(role_of("commenting"), "commenter");
+    assert_eq!(
+        stored_roles(&served).await,
+        [
+            ("commenting".to_string(), "commenter".to_string()),
+            ("editing".to_string(), "editor".to_string()),
+            ("suggesting".to_string(), "suggester".to_string()),
+        ]
+    );
+}
+
+#[tokio::test]
+#[ignore = "requires LIBREPAPER_TEST_POSTGRES_URL"]
+async fn an_edit_token_applies_its_own_proposal_and_a_suggest_token_cannot() {
+    let Some(served) = serve("token-edit-apply").await else {
+        return;
+    };
+    let (edit, _) = served.mint_token("edit", "Editing bot").await;
+    let (suggest, _) = served.mint_token("suggest", "Suggesting bot").await;
+
+    let (_, tools) = served.tools(&edit).await;
+    assert!(tools.contains(&"document_apply".to_string()));
+    let (_, tools) = served.tools(&suggest).await;
+    assert!(!tools.contains(&"document_apply".to_string()));
+
+    let (view, epoch, range) = served.read(&edit, "interval covers").await;
+    let (status, read) = served
+        .call(
+            &edit,
+            "document_read",
+            json!({"queries": [{"kind": "source", "path": "paper.md", "start": 0, "end": 5}]}),
+        )
+        .await;
+    assert_eq!(status, 200, "{read}");
+    assert_eq!(read["result"]["permissions"]["apply"], true);
+
+    let (status, staged) = served
+        .call(
+            &edit,
+            "document_propose",
+            json!({
+                "view_id": view,
+                "operation": operation(&epoch),
+                "publish": "private",
+                "validation": "source",
+                "patches": [{"range_id": range, "replacement": "interval spans"}]
+            }),
+        )
+        .await;
+    assert_eq!(status, 200, "{staged}");
+    let candidate = staged["result"]["candidate_id"].as_str().unwrap().to_string();
+
+    let apply = json!({"candidate_id": candidate, "operation": operation(&epoch)});
+    let (status, refused) = served.call(&suggest, "document_apply", apply).await;
+    assert_eq!(status, 200);
+    assert_eq!(refused["error"]["code"], "permission_changed", "{refused}");
+
+    let apply = json!({"candidate_id": candidate, "operation": operation(&epoch)});
+    let (status, applied) = served.call(&edit, "document_apply", apply).await;
+    assert_eq!(status, 200, "{applied}");
+    assert!(applied["error"].is_null(), "{applied}");
+    let room = served
+        .server
+        .documents
+        .rooms
+        .get(&served.slug)
+        .await
+        .unwrap();
+    let snapshot = room.agent_query_snapshot().await.unwrap();
+    assert!(snapshot.texts()["paper.md"].contains("interval spans the mean"));
+}
+
+#[tokio::test]
+#[ignore = "requires LIBREPAPER_TEST_POSTGRES_URL"]
+async fn a_token_cannot_create_a_document() {
+    let Some(served) = serve("token-no-create").await else {
+        return;
+    };
+    for role in ["comment", "suggest", "edit"] {
+        let (token, _) = served.mint_token(role, role).await;
+        let response = reqwest::Client::new()
+            .post(format!("{}/api/documents", served.base))
+            .header("host", "paper.example")
+            .header("authorization", format!("Bearer {token}"))
+            .json(&json!({"slug": "from-a-token", "title": "x", "source": "x", "source_format": "markdown", "main": "x.md"}))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(response.status().as_u16(), 401, "{role}");
+    }
+}
+
+#[tokio::test]
+#[ignore = "requires LIBREPAPER_TEST_POSTGRES_URL"]
+async fn a_replayed_comment_operation_spends_the_budget_once() {
+    let Some(served) = serve("token-budget-replay").await else {
+        return;
+    };
+    let token = mint_budgeted_token(&served, 2).await;
+    let (_, epoch, _) = served.read(&token, "interval covers").await;
+    let first = json!({"action": "create", "body": "First remark", "operation": operation(&epoch)});
+    let (_, created) = served.call(&token, "document_comment", first.clone()).await;
+    assert!(created["result"]["comment_id"].is_string(), "{created}");
+    let (_, replayed) = served.call(&token, "document_comment", first).await;
+    assert!(replayed["error"].is_object(), "{replayed}");
+    let (_, second) = served
+        .call(
+            &token,
+            "document_comment",
+            json!({"action": "create", "body": "Second remark", "operation": operation(&epoch)}),
+        )
+        .await;
+    assert!(
+        second["result"]["comment_id"].is_string(),
+        "the replay cost nothing, so the second remark fits: {second}"
+    );
 }
