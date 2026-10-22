@@ -28,6 +28,7 @@ import { projectDirectory } from "./projection.js";
 import { formatOf } from "./formats.js";
 import { createGeneration } from "./reader/generation.js";
 import { AnchorIndex, MoveMemory } from "./anchors.js";
+import { toLf } from "./line-endings.js";
 
 /** @typedef {{ name?: string, color?: string, tab?: string, file?: string }} PresenceState */
 /** @typedef {{ type: string, [key: string]: unknown }} SessionMessage */
@@ -911,10 +912,12 @@ export function createProjectSession({
     },
 
     /// Makes a file. One transaction, so no peer ever sees a text without the
-    /// name it is known by.
+    /// name it is known by. The body is stored with LF line endings, see
+    /// lib/line-endings.js.
     /** @param {string} path @param {string} [body] */
     addText(path, body = "") {
       if (!mayEdit) throw new Error("This project is read-only.");
+      body = toLf(body);
       const id = mintId();
       const text = new LoroText();
       if (body) {

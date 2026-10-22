@@ -217,6 +217,7 @@
   import { DIRECTORY_ORIGIN } from "../lib/project-session.js";
   import { ANCHORS_ORIGIN, composeEdits, fragmentRangesFor } from "../lib/anchors.js";
   import { projectDirectory } from "../lib/projection.js";
+  import { toLf, healLineEndings, LINE_ENDINGS_ORIGIN } from "../lib/line-endings.js";
   import { attachEditorZoom } from "../lib/editor-zoom.js";
   import { start as startEditorType, onFont, onLineHeight, size, setSize, DEFAULT_SIZE } from "../lib/editor-type.js";
   import { snippetTemplate } from "../lib/snippet-template.js";
@@ -446,6 +447,7 @@
   /// committed before the records are written, so the commit that carries the
   /// text keeps its origin and stays in the undo history.
   function writeText(fileId, text, from, to, insert) {
+    insert = toLf(insert);
     const doc = session.doc;
     const before = text.toString();
     session.anchors.get(fileId);
@@ -1023,6 +1025,13 @@
   /// Builds the state for one file, bound to its own LoroText.
   function stateFor(id) {
     const text = getTextFromDoc(id);
+    // A body from before line endings were normalised can still hold carriage
+    // returns. CodeMirror drops them when the state is built below, and the
+    // binding copies view offsets into the text, so every edit on such a file
+    // would land early (gh#74). The text is rewritten to LF before the binding
+    // mounts, under an origin the undo manager below excludes, so that undo
+    // cannot bring the CRs back.
+    if (editable && healLineEndings(text)) session.doc.commit({ origin: LINE_ENDINGS_ORIGIN });
     const path = pathOfDoc(session.doc, id);
     // One per document, not per file: the undo manager is constructed from the
     // document and tracks the operations this peer made anywhere in it.
@@ -1037,8 +1046,9 @@
     const bound = session.doc;
     if (undoManagerDoc !== bound) {
       // The comment anchors are not undone either: their commits are labelled
-      // ANCHORS_ORIGIN and follow the text back as undo and redo move it.
-      undoManager = new UndoManager(bound, { excludeOriginPrefixes: [DIRECTORY_ORIGIN, ANCHORS_ORIGIN] });
+      // ANCHORS_ORIGIN and follow the text back as undo and redo move it. The
+      // line-ending heal is not undone either.
+      undoManager = new UndoManager(bound, { excludeOriginPrefixes: [DIRECTORY_ORIGIN, ANCHORS_ORIGIN, LINE_ENDINGS_ORIGIN] });
       undoManagerDoc = bound;
     }
     const manager = undoManager;
@@ -1297,7 +1307,7 @@
       id = existingMainId ? `${existingMainId}~${random}` : random;
     } while (files.get(id) !== undefined || paths.get(id) !== undefined);
     const text = new LoroText();
-    if (body) text.insert(0, body);
+    if (body) text.insert(0, toLf(body));
     files.setContainer(id, text);
     paths.set(id, path);
     doc.commit({ origin: DIRECTORY_ORIGIN });
