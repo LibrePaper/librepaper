@@ -29,6 +29,9 @@
   let grant = $state(null);
   let branches = $state([]);
   let branch = $state("");
+  let typedBranch = $state(false);
+  let discovered = "";
+  let reconnect = $state(false);
   let folder = $state("");
   let comparison = $state(null);
   let direction = $state("local");
@@ -126,6 +129,8 @@
     comparison = null;
     branches = [];
     branch = "";
+    typedBranch = false;
+    discovered = "";
     if (!haveRemote) return;
     await guard(async () => {
       const answer = await git.branches(remote);
@@ -133,6 +138,12 @@
       // A repository without commits lists no branch, only the one HEAD names.
       if (!branches.length && answer.default) branches = [answer.default];
       branch = branches.includes(answer.default) ? answer.default : branches[0] || "";
+      discovered = answer.label || "";
+      // Nothing to pick from: the branch is typed instead.
+      if (!branches.length) {
+        typedBranch = true;
+        branch = "main";
+      }
     });
   }
 
@@ -145,12 +156,16 @@
   }
 
   async function doCompare() {
-    if (!haveRemote || !branch) return;
+    if (!haveRemote || !branch.trim()) return;
     await guard(async () => {
-      draft = { remote, label: grant?.label || remoteText.trim(), branch, folder: cleanFolder(folder) };
+      // The label stays unset unless the sidecar gave one; sync.js fills it from the sidecar.
+      draft = { remote, branch: branch.trim(), folder: cleanFolder(folder) };
+      const known = discovered || grant?.label;
+      if (known) draft.label = known;
       const answer = await compare(context(), draft);
       if (answer.status === "refused") {
         if (answer.kind === "auth") error = { auth: true };
+        if (answer.reconnect) reconnect = true;
         comparison = { incoming: [], outgoing: [], differing: [], unsynced: [], folders: [], refusals: answer.refusals || [] };
       } else {
         comparison = answer;
@@ -172,6 +187,7 @@
   async function connectThisComputer() {
     await guard(async () => {
       await git.connect({ connection_id: link.connection_id, remote, branch: link.branch });
+      reconnect = false;
       await refresh();
     });
   }
@@ -193,6 +209,9 @@
       resolverOpen = true;
     } else if (result.status === "refused" && result.kind === "auth") {
       error = { auth: true };
+    } else if (result.status === "refused" && result.reconnect) {
+      reconnect = true;
+      outcome = null;
     } else {
       outcome = result;
     }
@@ -310,7 +329,7 @@
       </div>
     {/if}
 
-    {#if link && connectedHere}
+    {#if link && connectedHere && !reconnect}
       <dl class="gh-facts">
         <dt>Remote</dt><dd>{link.remote_label}</dd>
         <dt>Branch</dt><dd>{link.branch}</dd>
@@ -340,7 +359,7 @@
         <dt>Remote</dt><dd>{link.remote_label}</dd>
         <dt>Branch</dt><dd>{link.branch}</dd>
       </dl>
-      <p class="panel-meta">This project is connected to a repository, but not on this computer.</p>
+      <p class="panel-meta">{reconnect ? "This computer is connected to a different repository for this project. Connect this computer again." : "This project is connected to a repository, but not on this computer."}</p>
       {#if link.remote_kind === "local"}
         <div class="gh-row">
           <button type="button" class="btn btn-sm lp-control-brand" disabled={busy} onclick={async () => { await chooseLocal(); if (grant) await connectThisComputer(); }}>Choose the local repository</button>
@@ -365,18 +384,23 @@
         <button type="button" class="btn btn-sm lp-control-tonal-brand" disabled={busy} onclick={chooseLocal}>Choose a local repository</button>
         {#if grant}<span class="panel-meta">{grant.label}</span>{/if}
       </div>
-      {#if branches.length}
+      {#if branches.length || typedBranch}
         <label class="gh-field panel-meta">Branch
+          {#if typedBranch}
+            <input class="input gh-input" type="text" bind:value={branch} oninput={resetDraft} disabled={busy}
+              placeholder="main" />
+          {:else}
           <select class="select gh-select" bind:value={branch} onchange={resetDraft} disabled={busy}>
             {#each branches as option (option)}<option value={option}>{option}</option>{/each}
           </select>
+          {/if}
         </label>
         <label class="gh-field panel-meta">Folder (optional)
           <input class="input gh-input" type="text" bind:value={folder} oninput={resetDraft} disabled={busy}
             placeholder="Leave empty for the whole repository" />
         </label>
         <div class="gh-row">
-          <button type="button" class="btn btn-sm lp-control-brand" disabled={busy || !branch} onclick={doCompare}>Compare</button>
+          <button type="button" class="btn btn-sm lp-control-brand" disabled={busy || !branch.trim()} onclick={doCompare}>Compare</button>
         </div>
       {/if}
       {#if comparison}
