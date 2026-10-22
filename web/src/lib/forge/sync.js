@@ -1,6 +1,7 @@
 import { unsuggestedText } from "../track-changes.js";
 import { MovedError } from "./github.js";
-import { textHash, toLf } from "./hash.js";
+import { sha256Hex } from "../digest.js";
+import { decodeText, isLfsPointer, textHash, toLf } from "./hash.js";
 import { planPull, planPush } from "./plan.js";
 import { syncRules } from "./rules.js";
 import * as defaultStore from "./store.js";
@@ -385,4 +386,102 @@ export async function exportChanges(ctx) {
     }
   }
   throw new Error("The link kept changing while recording the export. Try again.");
+}
+
+/// Connects the project to a repository, with nothing recorded as synced.
+export async function connectLink(ctx, { repositoryId, repository, branch, folder }) {
+  const answer = await ctx.api.putLink({
+    revision: null,
+    provider: "github",
+    repository_id: repositoryId,
+    repository,
+    branch,
+    folder: folder || "",
+    synced_commit: null,
+    synced_map: {},
+    export: null,
+    pushed: false,
+  });
+  return answer.link;
+}
+
+/// The files GitHub has that the repository rules leave out, for the panel's
+/// list. `link` defaults to the stored link.
+export async function unsyncedFiles(ctx, link = null) {
+  const current = link || await requireLink(ctx);
+  const head = await ctx.github.head(current.repository, current.branch);
+  const listing = await inventory(ctx, current, head);
+  if (listing.truncated) throw new Error("The repository is too large to list.");
+  return listing.rules.classify(listing.entries).unsynced;
+}
+
+/// The first comparison, before anything is recorded. `link` is a link-like
+/// object { repository, branch, folder }; it defaults to `ctx.link`. Files on
+/// both sides are compared by content, which needs the GitHub blob.
+export async function compareFirst(ctx, link = ctx.link) {
+  const head = await ctx.github.head(link.repository, link.branch);
+  const listing = await inventory(ctx, link, head);
+  if (listing.truncated) throw new Error("The repository is too large to compare.");
+  const classified = listing.rules.classify(listing.entries);
+  const project = await snapshot(ctx, listing.rules.isSynced);
+  const unsynced = [...classified.unsynced];
+
+  const incoming = [];
+  const outgoing = [];
+  const both = [];
+  for (const path of classified.synced.keys()) {
+    if (project.has(path)) both.push(path);
+    else incoming.push(path);
+  }
+  for (const path of project.keys()) {
+    if (!classified.synced.has(path)) outgoing.push(path);
+  }
+
+  const differing = [];
+  const verdicts = await mapLimit(both, BLOB_PARALLEL, async (path) => {
+    const listed = classified.synced.get(path);
+    const mine = project.get(path);
+    const bytes = await ctx.github.blob(link.repository, listed.blob);
+    if (mine.kind === "asset") {
+      return listed.kind === "asset" && (await sha256Hex(bytes)) === mine.sha ? "same" : "differs";
+    }
+    if (listed.kind !== "text") return "differs";
+    if (isLfsPointer(bytes)) return "skip";
+    const decoded = decodeText(bytes);
+    if (!decoded) return "skip";
+    return (await textHash(decoded.text)) === mine.hash ? "same" : "differs";
+  });
+  both.forEach((path, index) => {
+    if (verdicts[index] === "differs") differing.push(path);
+    if (verdicts[index] === "skip") unsynced.push({ path, reason: "not readable as text" });
+  });
+
+  return {
+    incoming: incoming.sort(),
+    outgoing: outgoing.sort(),
+    differing: differing.sort(),
+    folders: [...classified.folders.entries()].sort(([a], [b]) => (a < b ? -1 : 1)),
+    unsynced,
+    refusals: classified.refusals,
+  };
+}
+
+/// The first push (or any push). Before the first sync the files on both
+/// sides are marked as not matching the repository, so they are overwritten,
+/// and files only on GitHub are left alone.
+export async function firstPush(ctx, message) {
+  const link = await requireLink(ctx);
+  if (link.synced_commit) return push(ctx, message);
+  const head = await ctx.github.head(link.repository, link.branch);
+  const listing = await inventory(ctx, link, head);
+  if (listing.truncated) return tooLarge();
+  const classified = listing.rules.classify(listing.entries);
+  if (classified.refusals.length) return result("refused", { refusals: classified.refusals, link });
+  const project = await snapshot(ctx, listing.rules.isSynced);
+  const map = {};
+  for (const [path, listed] of classified.synced) {
+    if (project.has(path)) map[path] = { blob: listed.blob, hash: "" };
+  }
+  await ctx.api.putLink(linkBody(link, { synced_commit: head, synced_map: map }));
+  return push(ctx, message);
 }
