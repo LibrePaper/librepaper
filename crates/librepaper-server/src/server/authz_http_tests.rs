@@ -242,6 +242,48 @@ async fn a_listing_cursor_cannot_probe_a_slug_the_caller_cannot_read() {
         .await;
     assert!(own.is_ok(), "the owner may page from their own project");
 
+    // A guest pinned through a live link sees the project in their listing, so
+    // it is a valid cursor for them.
+    let entry_id = Uuid::parse_str(&entry.storage_id).unwrap();
+    let guest_key = format!("reader-{}", Uuid::new_v4().simple());
+    let guest_hash: [u8; 32] = hex::decode(crate::server::sharing::hash_link_key(&guest_key))
+        .unwrap()
+        .try_into()
+        .unwrap();
+    deployment
+        .catalog
+        .create_share_link(
+            entry_id,
+            AccessRole::Reader,
+            guest_hash,
+            "authz reader".into(),
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+    let guest = deployment
+        .catalog
+        .create_account(NewAccount {
+            kind: "registered".into(),
+            provider: Some("test".into()),
+            provider_subject: Some("guest".into()),
+            handle: "guest".into(),
+            display_name: "Guest".into(),
+            email: None,
+        })
+        .await
+        .unwrap();
+    deployment
+        .catalog
+        .pin_link_guest(entry_id, guest.id, AccessRole::Reader, guest_hash)
+        .await
+        .unwrap();
+    let pinned = store
+        .visible_page_with_options(Some(&guest.id.to_string()), None, cursor, 10, false)
+        .await;
+    assert!(pinned.is_ok(), "a pinned guest may page from the shared project");
+
     let foreign = store
         .visible_page_with_options(Some(&stranger.id.to_string()), None, cursor, 10, false)
         .await;
