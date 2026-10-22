@@ -87,8 +87,9 @@
     if (!current) return;
     try {
       await saveResolutions(ctx, current, resolutions);
-    } catch {
+    } catch (failure) {
       // The choices stay on screen; the next change tries again.
+      error = `Could not save your choices: ${failure?.message || "unknown error"}`;
     }
   }
 
@@ -127,9 +128,22 @@
     if (busy || !resolved) return;
     busy = true;
     error = "";
-    cancelSave();
     try {
+      // A pending autosave is flushed, not dropped: what is applied is what is saved.
+      cancelSave();
+      try {
+        await saveResolutions(ctx, current, resolutions);
+      } catch (failure) {
+        error = `Could not save your choices: ${failure?.message || "unknown error"}`;
+        return;
+      }
       const result = await applyResolution(ctx, current, resolutions);
+      if (result.status === "refused") {
+        // The saved session and the choices stay, and so does this window.
+        if (result.session) current = result.session;
+        error = result.refusals?.map((item) => item.reason).join(" ") || "The resolution could not be applied.";
+        return;
+      }
       if (result.status === "conflict" && result.unresolved?.length) {
         error = `These files still need a choice: ${result.unresolved.join(", ")}`;
         return;
