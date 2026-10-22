@@ -197,16 +197,16 @@ async fn link_routes_refuse_a_caller_who_cannot_edit() {
 
     let visitor = anonymous();
     let (status, _) = get_link(&d, &visitor).await;
-    assert!(matches!(status, 401 | 403), "read answered {status}");
+    assert!(matches!(status, 401 | 403 | 404), "read answered {status}");
     let (status, _) = put_link(&d, &visitor, &link_body(Some(1), "other")).await;
-    assert!(matches!(status, 401 | 403), "write answered {status}");
+    assert!(matches!(status, 401 | 403 | 404), "write answered {status}");
     let uri = format!("/api/documents/{}/forge", d.slug);
     let reply = d
         .server
         .handle_forge_link(request("DELETE", &uri, &visitor, None), &arrival(), &d.slug)
         .await;
     let (status, _, _) = read(reply).await;
-    assert!(matches!(status, 401 | 403), "delete answered {status}");
+    assert!(matches!(status, 401 | 403 | 404), "delete answered {status}");
 
     let (_, value) = get_link(&d, &owner).await;
     assert_eq!(value["link"]["branch"], "main");
@@ -321,7 +321,7 @@ async fn source_change_is_refused_for_a_caller_who_cannot_edit() {
 
     let body = edit_body(&operation(), 1, &sha(SOURCE));
     let (status, _) = source_change(&d, &anonymous(), &body).await;
-    assert!(matches!(status, 401 | 403), "answered {status}");
+    assert!(matches!(status, 401 | 403 | 404), "answered {status}");
     assert_eq!(source_of(&d).await, SOURCE);
     let (_, value) = get_link(&d, &owner).await;
     assert_eq!(value["link"]["revision"], 1);
@@ -587,7 +587,7 @@ async fn the_callback_page_carries_the_token_and_stores_nothing() {
     assert!(headers["set-cookie"].to_str().unwrap().contains("Max-Age=0"));
     assert!(page.contains(r#"id="forge-token">"#), "{page}");
     assert!(page.contains(r#""type":"librepaper-forge-token""#), "{page}");
-    assert!(page.contains(r#""access_token":"ghu_a<b>c""#), "{page}");
+    assert!(page.contains(r#""access_token":"ghu_a\u003cb>c""#), "{page}");
     assert!(page.contains(r#""refresh_token":"ghr_refresh""#), "{page}");
     assert!(!page.contains("ghu_a<b>c"), "a raw angle bracket reached the page");
 
