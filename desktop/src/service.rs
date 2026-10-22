@@ -121,6 +121,17 @@ impl Service {
         let mut endpoint = self.current().await?;
         let mut retried = false;
         loop {
+            if needs_liveness_check(&request.method, request.body.len())
+                && !self.is_ours(&endpoint).await
+            {
+                *self.endpoint.lock().await = None;
+                endpoint = self.current().await?;
+                if !self.is_ours(&endpoint).await {
+                    return Err(
+                        "the local service did not answer as itself; it may have stopped".into(),
+                    );
+                }
+            }
             match self.send(&endpoint, &request).await {
                 Ok(res)
                     if res.status() == StatusCode::UNAUTHORIZED
@@ -343,14 +354,25 @@ fn binary() -> PathBuf {
 }
 
 // Only these headers reach the page. The service's other headers stay on
-// its side of the bridge. The preview poller reads the last two.
-const RELAYED: [&str; 5] = [
+// its side of the bridge. The preview poller reads the etag and rendering
+// headers. The last two keep a served file sandboxed and unsniffed, which the
+// page's own origin would otherwise lose in the relay.
+const RELAYED: [&str; 7] = [
     "content-type",
     "cache-control",
     "content-disposition",
     "etag",
     "x-librepaper-rendering",
+    "content-security-policy",
+    "x-content-type-options",
 ];
+
+// A request that can carry state or a body is sent only to a service that has
+// just answered as ours, because after the service dies another local process
+// may bind the old port and would receive the bearer, origin and body.
+fn needs_liveness_check(method: &Method, body_len: usize) -> bool {
+    !(matches!(*method, Method::GET | Method::HEAD) && body_len == 0)
+}
 
 async fn relay(res: reqwest::Response) -> Result<Response<Vec<u8>>, String> {
     let mut builder = Response::builder().status(res.status());
@@ -427,6 +449,21 @@ mod tests {
     fn relayed_headers_include_the_preview_poller_headers() {
         assert!(RELAYED.contains(&"etag"));
         assert!(RELAYED.contains(&"x-librepaper-rendering"));
+    }
+
+    #[test]
+    fn relayed_headers_include_the_sandbox_headers() {
+        assert!(RELAYED.contains(&"content-security-policy"));
+        assert!(RELAYED.contains(&"x-content-type-options"));
+    }
+
+    #[test]
+    fn only_bodyless_reads_skip_the_liveness_check() {
+        assert!(!needs_liveness_check(&Method::GET, 0));
+        assert!(!needs_liveness_check(&Method::HEAD, 0));
+        assert!(needs_liveness_check(&Method::GET, 1));
+        assert!(needs_liveness_check(&Method::POST, 0));
+        assert!(needs_liveness_check(&Method::PUT, 5));
     }
 
     #[test]

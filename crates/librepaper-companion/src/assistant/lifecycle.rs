@@ -253,12 +253,14 @@ fn valid_binding(value: &str) -> bool {
     value.len() == 48 && value.bytes().all(|byte| byte.is_ascii_hexdigit())
 }
 
-/// Hash of the private document identity, agent command and access level,
-/// used for idempotent start: a session already running with the same hash
-/// is left alone, one running with a different hash is replaced.
+/// Hash of the document URL, agent command and access level, used for
+/// idempotent start: a session already running with the same hash is left
+/// alone, one running with a different hash is replaced. The key is not part
+/// of it, so a rotated link on the same document is the same configuration;
+/// the grant is renewed separately.
 pub(crate) fn configuration_hash(link: &DocumentLink, agent: &[String], access: &str) -> String {
     let mut digest = Sha256::new();
-    digest.update(link.credential_url().as_bytes());
+    digest.update(link.document_url().as_bytes());
     digest.update([0]);
     digest.update(access.as_bytes());
     for part in agent {

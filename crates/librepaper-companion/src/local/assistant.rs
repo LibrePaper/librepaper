@@ -30,7 +30,8 @@ where
     let origin = origin.expect("authenticate requires an origin");
     let body = read_json_body::<T>(request).await.map_err(Box::new)?;
     let link = match crate::automation::peer::DocumentLink::parse(body.link(), "") {
-        Ok(link) => link,
+        // The sidebar runs on a scoped grant, so the key stops here.
+        Ok(link) => link.without_key(),
         Err(error) => return Err(Box::new(write_json(400, &json!({"error": error})))),
     };
     Ok((body, link, origin))
