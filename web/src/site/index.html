@@ -20,6 +20,20 @@
         color: var(--neutral-12);
       }
 
+      /* The bar stays at the top while the landing page scrolls. It needs the
+         page background, or the sections would show through it. */
+      #siteBar {
+        position: sticky;
+        top: 0;
+        z-index: 50;
+        background: var(--neutral-1);
+      }
+
+      /* In-page anchors land below the sticky bar, which is 3.5rem tall. */
+      html {
+        scroll-padding-top: 3.5rem;
+      }
+
       /* Unlayered rules beat Tailwind utilities; use only when necessary. */
 
       h1, h2, h3 {
@@ -100,18 +114,6 @@
 
       .hero-text .formats {
         margin-top: 1.5rem;
-      }
-
-      .hero-text .hero-action {
-        margin-top: 2rem;
-        display: flex;
-        flex-wrap: wrap;
-        gap: 0.75rem;
-      }
-
-      .hero-text .hero-action .btn {
-        font-size: 1.0625rem;
-        padding: 0.75rem 1.5rem;
       }
 
       .hero-photo {
@@ -604,10 +606,6 @@
             <span>Quarto</span>
             <span aria-hidden="true" class="dot">·</span>
             <span>Calepin</span>
-          </p>
-          <p class="hero-action">
-            <a class="btn lp-control-brand" href="https://app.librepaper.org/auth/login">Start writing</a>
-            <a class="btn lp-control-brand" href="/what.html">Documentation</a>
           </p>
         </div>
         <div class="hero-photo">
