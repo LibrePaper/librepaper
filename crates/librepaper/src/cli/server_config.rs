@@ -1309,10 +1309,16 @@ fn resolve_forge_github(
         raw.api,
         "https://api.github.com".to_string(),
     )?;
-    let web = r.value("forge.github.web", raw.web, "https://github.com".to_string())?;
+    let web = r.value(
+        "forge.github.web",
+        raw.web,
+        "https://github.com".to_string(),
+    )?;
     let require = |name: &str, value: Option<String>| match non_blank(value.as_deref()) {
         Some(value) => Ok(value.to_string()),
-        None => Err(format!("forge.github.{name} is required when [forge.github] is set")),
+        None => Err(format!(
+            "forge.github.{name} is required when [forge.github] is set"
+        )),
     };
     let app_slug = require("app_slug", app_slug)?;
     let client_id = require("client_id", client_id)?;

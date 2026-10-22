@@ -578,7 +578,11 @@ impl Server {
             // 30 MB mistake before it is sent rather than after.
             "/api/config" => Some(write_json(
                 200,
-                &config_body(&self.config, self.latex.as_deref(), self.forge_github.as_ref()),
+                &config_body(
+                    &self.config,
+                    self.latex.as_deref(),
+                    self.forge_github.as_ref(),
+                ),
             )),
             // The rest of the sign-in routes name their provider in the path.
             other => {
@@ -822,9 +826,8 @@ fn config_body(
         // The pinned release directory URL, not the mirror root.
         fields.insert("latexMirror".to_string(), json!(latex));
         // Whether project sync is set up, and the hosts the browser calls.
-        let github = forge.map(|forge| {
-            json!({"app_slug": forge.app_slug, "api": forge.api, "web": forge.web})
-        });
+        let github = forge
+            .map(|forge| json!({"app_slug": forge.app_slug, "api": forge.api, "web": forge.web}));
         fields.insert("forge".to_string(), json!({ "github": github }));
         // The server version, so a diagnostics report can name the build.
         fields.insert("version".to_string(), json!(env!("CARGO_PKG_VERSION")));

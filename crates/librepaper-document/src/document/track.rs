@@ -2358,11 +2358,7 @@ impl Unsuggested {
         if !self.text.is_char_boundary(start) || !self.text.is_char_boundary(end) {
             return Err("range is not on character boundaries".to_string());
         }
-        if let Some(m) = self
-            .marks
-            .iter()
-            .find(|m| start <= m.end && m.start <= end)
-        {
+        if let Some(m) = self.marks.iter().find(|m| start <= m.end && m.start <= end) {
             return Err(m.change.clone());
         }
         if self.marks.is_empty() {

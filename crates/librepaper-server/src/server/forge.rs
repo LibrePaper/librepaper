@@ -20,8 +20,7 @@ const FORGE_STATE_COOKIE: &str = "librepaper_forge_state";
 const FORGE_COOKIE_PATH: &str = "/api/forge/github";
 const FORGE_TOKEN_MESSAGE: &str = "librepaper-forge-token";
 /// The page's one data block, replaced whole with the message for the opener.
-const TOKEN_PLACEHOLDER: &str =
-    r#"<script type="application/json" id="forge-token">null</script>"#;
+const TOKEN_PLACEHOLDER: &str = r#"<script type="application/json" id="forge-token">null</script>"#;
 
 /// The GitHub App this deployment syncs through. The slug and the two hosts
 /// are public and reach the browser through `/api/config`; the secret does
@@ -287,6 +286,7 @@ impl Server {
         value
     }
 
+    #[allow(clippy::result_large_err)]
     async fn forge_current_link(&self, document_id: uuid::Uuid) -> Result<Option<Value>, Reply> {
         match self.store.catalog.forge_link(document_id).await {
             Ok(Some(link)) => Ok(Some(self.forge_link_json(&link).await)),
@@ -415,10 +415,7 @@ impl Server {
                     Ok(current) => current,
                     Err(response) => return response,
                 };
-                write_json(
-                    409,
-                    &json!({"error": "the link changed", "link": current}),
-                )
+                write_json(409, &json!({"error": "the link changed", "link": current}))
             }
             Err(error) => forge_storage_failure("save the link", &error),
         }
@@ -689,7 +686,9 @@ impl Server {
             forge_error_message("GitHub did not allow the connection.")
         } else {
             match query.get("code").filter(|code| !code.is_empty()) {
-                None => forge_error_message("GitHub sent no code. Close this window and try again."),
+                None => {
+                    forge_error_message("GitHub sent no code. Close this window and try again.")
+                }
                 Some(code) => match self
                     .github_token(
                         forge,
@@ -719,10 +718,7 @@ impl Server {
             }
         };
         let mut response = self.forge_callback_page(headers, &message);
-        add_cookie(
-            &mut response,
-            &clear_forge_state_cookie(arrival.is_https()),
-        );
+        add_cookie(&mut response, &clear_forge_state_cookie(arrival.is_https()));
         response
     }
 

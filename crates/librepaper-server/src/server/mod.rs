@@ -60,9 +60,9 @@ pub mod cost;
 mod detail_http_tests;
 mod documents;
 mod figures;
-mod forge;
 #[cfg(test)]
 mod figures_http_tests;
+mod forge;
 mod graphs;
 mod history;
 #[cfg(test)]

@@ -145,7 +145,7 @@ impl PostgresCatalog {
         write: &ForgeLinkWrite,
     ) -> Result<Option<ForgeLink>> {
         let mut tx = self.begin_metered().await?;
-        let link = Self::put_forge_link(&mut *tx, document_id, expected_revision, write).await?;
+        let link = Self::put_forge_link(&mut tx, document_id, expected_revision, write).await?;
         tx.commit().await?;
         Ok(link)
     }

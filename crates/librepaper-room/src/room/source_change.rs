@@ -898,7 +898,7 @@ impl Command for SourceChangeCommand<'_> {
                 PostgresCatalog::record_operation_outcome(tx, operation_receipt, &outcome).await?;
             }
             if let Some(hook) = self.hook.take() {
-                if let Err(why) = hook(&mut **tx).await {
+                if let Err(why) = hook(tx).await {
                     self.refusal = Some(AgentError::Hook(why.clone()));
                     return Err(CommandError::Conflict(why));
                 }

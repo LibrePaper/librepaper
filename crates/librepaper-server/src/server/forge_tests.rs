@@ -39,12 +39,7 @@ fn sha(text: &str) -> String {
     hex::encode(Sha256::digest(text.as_bytes()))
 }
 
-fn request(
-    method: &str,
-    uri: &str,
-    headers: &HeaderMap,
-    body: Option<&Value>,
-) -> Request<Body> {
+fn request(method: &str, uri: &str, headers: &HeaderMap, body: Option<&Value>) -> Request<Body> {
     let mut builder = Request::builder().method(method).uri(uri);
     for (name, value) in headers {
         builder = builder.header(name, value);
@@ -96,7 +91,11 @@ async fn put_link(d: &Deployment, headers: &HeaderMap, body: &Value) -> (u16, Va
     let uri = format!("/api/documents/{}/forge", d.slug);
     let reply = d
         .server
-        .handle_forge_link(request("PUT", &uri, headers, Some(body)), &arrival(), &d.slug)
+        .handle_forge_link(
+            request("PUT", &uri, headers, Some(body)),
+            &arrival(),
+            &d.slug,
+        )
         .await;
     let (status, value, _) = read(reply).await;
     (status, value)
@@ -152,7 +151,11 @@ async fn source_change(d: &Deployment, headers: &HeaderMap, body: &Value) -> (u1
     let uri = format!("/api/documents/{}/source-change", d.slug);
     let reply = d
         .server
-        .handle_source_change(request("POST", &uri, headers, Some(body)), &arrival(), &d.slug)
+        .handle_source_change(
+            request("POST", &uri, headers, Some(body)),
+            &arrival(),
+            &d.slug,
+        )
         .await;
     let (status, value, _) = read(reply).await;
     (status, value)
@@ -206,7 +209,10 @@ async fn link_routes_refuse_a_caller_who_cannot_edit() {
         .handle_forge_link(request("DELETE", &uri, &visitor, None), &arrival(), &d.slug)
         .await;
     let (status, _, _) = read(reply).await;
-    assert!(matches!(status, 401 | 403 | 404), "delete answered {status}");
+    assert!(
+        matches!(status, 401 | 403 | 404),
+        "delete answered {status}"
+    );
 
     let (_, value) = get_link(&d, &owner).await;
     assert_eq!(value["link"]["branch"], "main");
@@ -304,7 +310,10 @@ async fn source_change_applies_and_writes_the_sync_block() {
     assert_eq!(value["receipt"]["replay"], false);
     assert_eq!(value["link"]["revision"], 2);
     assert_eq!(value["link"]["synced_commit"], "d".repeat(40));
-    assert_eq!(value["link"]["synced_map"]["paper.md"]["blob"], "e".repeat(40));
+    assert_eq!(
+        value["link"]["synced_map"]["paper.md"]["blob"],
+        "e".repeat(40)
+    );
     assert!(value["link"]["last_pull_at"].is_string());
     assert!(source_of(&d).await.contains("New words here."));
     assert!(has_file(&d, "intro.md").await);
@@ -370,7 +379,10 @@ async fn source_change_lists_every_changed_file_and_applies_nothing() {
         .iter()
         .filter_map(Value::as_str)
         .collect();
-    assert!(files.contains(&"paper.md") && files.contains(&"second.md"), "{files:?}");
+    assert!(
+        files.contains(&"paper.md") && files.contains(&"second.md"),
+        "{files:?}"
+    );
     assert_eq!(source_of(&d).await, SOURCE);
     let (_, value) = get_link(&d, &owner).await;
     assert_eq!(value["link"]["revision"], 2);
@@ -488,13 +500,21 @@ async fn the_relay_answers_not_found_without_a_configured_app() {
     let owner = owner_bearer(&d);
     let reply = d
         .server
-        .handle_forge_authorize(request("GET", "/api/forge/github/authorize", &owner, None), &arrival())
+        .handle_forge_authorize(
+            request("GET", "/api/forge/github/authorize", &owner, None),
+            &arrival(),
+        )
         .await;
     assert_eq!(reply.status().as_u16(), 404);
     let reply = d
         .server
         .handle_forge_callback(
-            request("GET", "/api/forge/github/callback?code=x&state=y", &with_cookie("y"), None),
+            request(
+                "GET",
+                "/api/forge/github/callback?code=x&state=y",
+                &with_cookie("y"),
+                None,
+            ),
             &arrival(),
         )
         .await;
@@ -520,7 +540,12 @@ async fn authorize_needs_a_signed_in_account_and_sets_the_state_cookie() {
     let reply = d
         .server
         .handle_forge_authorize(
-            request("GET", "/api/forge/github/authorize", &HeaderMap::new(), None),
+            request(
+                "GET",
+                "/api/forge/github/authorize",
+                &HeaderMap::new(),
+                None,
+            ),
             &arrival(),
         )
         .await;
@@ -529,24 +554,41 @@ async fn authorize_needs_a_signed_in_account_and_sets_the_state_cookie() {
     let reply = d
         .server
         .handle_forge_authorize(
-            request("GET", "/api/forge/github/authorize", &owner_bearer(&d), None),
+            request(
+                "GET",
+                "/api/forge/github/authorize",
+                &owner_bearer(&d),
+                None,
+            ),
             &arrival(),
         )
         .await;
     assert_eq!(reply.status().as_u16(), 302);
     let location = reply.headers()["location"].to_str().unwrap().to_string();
-    assert!(location.starts_with("https://github.test/login/oauth/authorize?"), "{location}");
+    assert!(
+        location.starts_with("https://github.test/login/oauth/authorize?"),
+        "{location}"
+    );
     assert!(location.contains("client_id=Iv1.test"), "{location}");
-    assert!(location.contains("api%2Fforge%2Fgithub%2Fcallback"), "{location}");
+    assert!(
+        location.contains("api%2Fforge%2Fgithub%2Fcallback"),
+        "{location}"
+    );
     let cookie = reply.headers()["set-cookie"].to_str().unwrap().to_string();
     assert!(cookie.contains("Path=/api/forge/github"), "{cookie}");
-    assert!(cookie.contains("HttpOnly") && cookie.contains("SameSite=Lax"), "{cookie}");
+    assert!(
+        cookie.contains("HttpOnly") && cookie.contains("SameSite=Lax"),
+        "{cookie}"
+    );
     assert!(cookie.contains("Max-Age=600"), "{cookie}");
     let state = cookie
         .strip_prefix("librepaper_forge_state=")
         .and_then(|rest| rest.split(';').next())
         .unwrap();
-    assert!(!state.is_empty() && location.contains(&format!("state={state}")), "{location}");
+    assert!(
+        !state.is_empty() && location.contains(&format!("state={state}")),
+        "{location}"
+    );
 }
 
 #[tokio::test]
@@ -580,16 +622,33 @@ async fn the_callback_page_carries_the_token_and_stores_nothing() {
         )
         .await;
     let headers = reply.headers().clone();
-    let page = String::from_utf8(to_bytes(reply.into_body(), usize::MAX).await.unwrap().to_vec())
-        .unwrap();
+    let page = String::from_utf8(
+        to_bytes(reply.into_body(), usize::MAX)
+            .await
+            .unwrap()
+            .to_vec(),
+    )
+    .unwrap();
     assert_eq!(headers["cache-control"], "no-store");
     assert_eq!(headers["referrer-policy"], "no-referrer");
-    assert!(headers["set-cookie"].to_str().unwrap().contains("Max-Age=0"));
+    assert!(headers["set-cookie"]
+        .to_str()
+        .unwrap()
+        .contains("Max-Age=0"));
     assert!(page.contains(r#"id="forge-token">"#), "{page}");
-    assert!(page.contains(r#""type":"librepaper-forge-token""#), "{page}");
-    assert!(page.contains(r#""access_token":"ghu_a\u003cb>c""#), "{page}");
+    assert!(
+        page.contains(r#""type":"librepaper-forge-token""#),
+        "{page}"
+    );
+    assert!(
+        page.contains(r#""access_token":"ghu_a\u003cb>c""#),
+        "{page}"
+    );
     assert!(page.contains(r#""refresh_token":"ghr_refresh""#), "{page}");
-    assert!(!page.contains("ghu_a<b>c"), "a raw angle bracket reached the page");
+    assert!(
+        !page.contains("ghu_a<b>c"),
+        "a raw angle bracket reached the page"
+    );
 
     let entry = d.server.store.get_result(&d.slug).await.unwrap().unwrap();
     let document_id = uuid::Uuid::parse_str(&entry.storage_id).unwrap();
@@ -612,9 +671,17 @@ async fn the_callback_page_carries_the_token_and_stores_nothing() {
             &arrival(),
         )
         .await;
-    let page = String::from_utf8(to_bytes(reply.into_body(), usize::MAX).await.unwrap().to_vec())
-        .unwrap();
-    assert!(page.contains(r#""error":"#) && !page.contains("access_token"), "{page}");
+    let page = String::from_utf8(
+        to_bytes(reply.into_body(), usize::MAX)
+            .await
+            .unwrap()
+            .to_vec(),
+    )
+    .unwrap();
+    assert!(
+        page.contains(r#""error":"#) && !page.contains("access_token"),
+        "{page}"
+    );
     stub.abort();
 }
 
@@ -631,7 +698,12 @@ async fn refresh_relays_the_grant_for_a_signed_in_account() {
     let reply = d
         .server
         .handle_forge_refresh(
-            request("POST", "/api/forge/github/refresh", &anonymous(), Some(&body)),
+            request(
+                "POST",
+                "/api/forge/github/refresh",
+                &anonymous(),
+                Some(&body),
+            ),
             &arrival(),
         )
         .await;
@@ -640,7 +712,12 @@ async fn refresh_relays_the_grant_for_a_signed_in_account() {
     let reply = d
         .server
         .handle_forge_refresh(
-            request("POST", "/api/forge/github/refresh", &owner_bearer(&d), Some(&body)),
+            request(
+                "POST",
+                "/api/forge/github/refresh",
+                &owner_bearer(&d),
+                Some(&body),
+            ),
             &arrival(),
         )
         .await;
