@@ -1474,6 +1474,47 @@ const baseFiles = (repo) => {
   assert.equal(JSON.stringify(repo.journal), before);
 }
 
+// ---------------------------------------------------------------- names that collide in LibrePaper
+
+const SAME_NAME = "These files would have the same name in LibrePaper";
+
+// A clean pull that would create two names differing only in case is refused before anything is sent.
+{
+  const { repo, session, api, ctx } = await connected({ "intro.qmd": "i\n" });
+  await session.setText("Notes.md", "mine\n");
+  repo.advance({ "notes.md": "theirs\n" });
+  const calls = api.state.calls.length;
+  const answer = await sync.pull(ctx);
+  assert.equal(answer.status, "refused", JSON.stringify(answer));
+  assert.ok(answer.refusals[0].reason.startsWith(SAME_NAME), JSON.stringify(answer));
+  assert.deepEqual(answer.refusals[0].paths, ["Notes.md", "notes.md"]);
+  assert.equal(api.state.calls.length, calls);
+  assert.equal(session.text("Notes.md"), "mine\n");
+}
+
+// A case-only rename met by an edit of the old name: keeping the repository's file is refused, and the session survives.
+{
+  const { repo, session, api, ctx } = await connected({ "new-l6-0.md": "one\n" });
+  session.remove("new-l6-0.md");
+  await session.setText("New-l6-0.md", "one\n");
+  repo.advance({ "new-l6-0.md": "remote\n" });
+  const conflict = await sync.pull(ctx);
+  assert.equal(conflict.status, "conflict", JSON.stringify(conflict));
+  const calls = api.state.calls.length;
+
+  const refused = await sync.applyResolution(ctx, conflict.session, { "new-l6-0.md": { keep: "theirs" } });
+  assert.equal(refused.status, "refused", JSON.stringify(refused));
+  assert.ok(refused.refusals[0].reason.startsWith(SAME_NAME), JSON.stringify(refused));
+  assert.deepEqual(refused.refusals[0].paths, ["New-l6-0.md", "new-l6-0.md"]);
+  assert.ok(refused.session, "the refusal carries the session");
+  assert.equal(api.state.calls.length, calls);
+
+  const done = await sync.applyResolution(ctx, refused.session, { "new-l6-0.md": { delete: true } });
+  assert.ok(["pulled", "nothing"].includes(done.status), JSON.stringify(done));
+  assert.equal(session.text("New-l6-0.md"), "one\n");
+  assert.equal(session.has("new-l6-0.md"), false);
+}
+
 // ---------------------------------------------------------------- held entries and invalid names
 
 // A project file inside a remote path that the remote holds as a link is not written over it.
@@ -1547,6 +1588,17 @@ const baseFiles = (repo) => {
   });
   assert.equal(JSON.stringify(repo.journal), journal);
   assert.equal(JSON.stringify(api.state.link), record);
+}
+
+// A project file over an entry that only its content rules out, here an LFS
+// pointer, is not a local change: a push would leave it out too.
+{
+  const pointer = "version https://git-lfs.github.com/spec/v1\noid sha256:abc\nsize 123\n";
+  const { session, ctx } = await connected({ "intro.qmd": "i\n", "data/big.csv": pointer });
+  await session.setText("data/big.csv", "a project copy\n");
+  assert.deepEqual(await sync.localChanges(ctx), { status: "none", files: [] });
+  const planned = await sync.outgoing(ctx);
+  assert.notEqual(planned.status, "outgoing", JSON.stringify(planned));
 }
 
 console.log("gitsync sync ok");
