@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
-import { durableProjectPersistence, forgetProject, markShellReady, rememberProject } from "../../src/lib/offline-projects.js";
+import { forgetProject, markShellReady, rememberProject } from "../../src/lib/offline-projects.js";
+import { durableProjectPersistence } from "../../src/lib/offline-persistence.js";
 import { projectIdentity, projectIdentityKey } from "../../src/lib/project-identity.js";
 
 const blockedIndexedDB = {
