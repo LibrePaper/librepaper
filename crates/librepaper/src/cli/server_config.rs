@@ -8,6 +8,7 @@ use librepaper_base::{
     config::{Configuration, DEFAULT_LOG_QUOTA_BYTES, DEFAULT_PENDING_BYTES},
 };
 use librepaper_engine::storage::StorageOptions;
+use librepaper_server::server::ForgeGithub;
 use serde::{de::DeserializeOwned, Deserialize};
 use std::fmt;
 use std::{
@@ -67,6 +68,7 @@ pub(crate) struct ResolvedConfig {
     pub(crate) storage: StorageOptions,
     pub(crate) github_client_id: Option<String>,
     pub(crate) github_client_secret: Option<String>,
+    pub(crate) forge_github: Option<ForgeGithub>,
     pub(crate) oidc: Vec<OidcProvider>,
     pub(crate) session_lifetime: Option<std::time::Duration>,
     session_lifetime_text: Option<String>,
@@ -105,6 +107,7 @@ impl fmt::Debug for ResolvedConfig {
                 "github_client_secret",
                 &self.github_client_secret.as_ref().map(|_| "<redacted>"),
             )
+            .field("forge_github", &self.forge_github)
             .field("oidc_count", &self.oidc.len())
             .field(
                 "oidc_ids",
@@ -148,6 +151,7 @@ struct Raw {
     admin: Admin,
     storage: Storage,
     auth: Auth,
+    forge: Forge,
     access: Access,
     limits: Limits,
     retention: Retention,
@@ -206,6 +210,20 @@ struct Auth {
     orcid: Orcid,
     oidc: BTreeMap<String, Custom>,
     session_lifetime: Option<Input<String>>,
+}
+#[derive(Debug, Default, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+struct Forge {
+    github: ForgeGithubInput,
+}
+#[derive(Debug, Default, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+struct ForgeGithubInput {
+    app_slug: Option<Input<String>>,
+    client_id: Option<Input<String>>,
+    client_secret: Option<Input<String>>,
+    api: Option<Input<String>>,
+    web: Option<Input<String>>,
 }
 #[derive(Debug, Default, Deserialize)]
 #[serde(default, deny_unknown_fields)]
@@ -448,6 +466,7 @@ fn check_keys(v: &toml::Value) -> Result<(), String> {
             "admin",
             "storage",
             "auth",
+            "forge",
             "access",
             "limits",
             "retention",
@@ -547,6 +566,16 @@ fn check_keys(v: &toml::Value) -> Result<(), String> {
                     ],
                 )?;
             }
+        }
+    }
+    if let Some(x) = v.get("forge") {
+        table(x, "forge.", &["github"])?;
+        if let Some(y) = x.get("github") {
+            table(
+                y,
+                "forge.github.",
+                &["app_slug", "client_id", "client_secret", "api", "web"],
+            )?;
         }
     }
     section(v, "access", &["anonymous_comments"])?;
@@ -730,6 +759,7 @@ pub(crate) fn load_with_postgres_env(
     let github_client_id = r.optional("auth.github.client_id", raw.auth.github.client_id)?;
     let github_client_secret =
         r.optional("auth.github.client_secret", raw.auth.github.client_secret)?;
+    let forge_github = resolve_forge_github(raw.forge.github, &mut r)?;
     let anonymous_comments = r.value(
         "access.anonymous_comments",
         raw.access.anonymous_comments,
@@ -882,6 +912,7 @@ pub(crate) fn load_with_postgres_env(
         storage,
         github_client_id,
         github_client_secret,
+        forge_github,
         oidc,
         session_lifetime,
         session_lifetime_text,
@@ -1254,6 +1285,71 @@ fn validate_public_urls(
     validate_public_url("assets.mirror", Some(asset_mirror), true, false, false)
 }
 
+/// The `[forge.github]` table: the GitHub App the browser syncs through.
+/// Absent means sync is off. Present means the slug, client id and secret
+/// are all required; the two hosts default to github.com and may be pointed
+/// at a GitHub Enterprise server.
+fn resolve_forge_github(
+    raw: ForgeGithubInput,
+    r: &mut Resolver<'_>,
+) -> Result<Option<ForgeGithub>, String> {
+    let given = raw.app_slug.is_some()
+        || raw.client_id.is_some()
+        || raw.client_secret.is_some()
+        || raw.api.is_some()
+        || raw.web.is_some();
+    if !given {
+        return Ok(None);
+    }
+    let app_slug = r.optional("forge.github.app_slug", raw.app_slug)?;
+    let client_id = r.optional("forge.github.client_id", raw.client_id)?;
+    let client_secret = r.optional("forge.github.client_secret", raw.client_secret)?;
+    let api = r.value(
+        "forge.github.api",
+        raw.api,
+        "https://api.github.com".to_string(),
+    )?;
+    let web = r.value("forge.github.web", raw.web, "https://github.com".to_string())?;
+    let require = |name: &str, value: Option<String>| match non_blank(value.as_deref()) {
+        Some(value) => Ok(value.to_string()),
+        None => Err(format!("forge.github.{name} is required when [forge.github] is set")),
+    };
+    let app_slug = require("app_slug", app_slug)?;
+    let client_id = require("client_id", client_id)?;
+    let client_secret = require("client_secret", client_secret)?;
+    let host = |name: &str, value: String| {
+        let value = value.trim().trim_end_matches('/').to_string();
+        match url::Url::parse(&value) {
+            Ok(url)
+                if matches!(url.scheme(), "http" | "https")
+                    && url.host_str().is_some()
+                    && url.path() == "/"
+                    && url.query().is_none()
+                    && url.fragment().is_none() =>
+            {
+                Ok(value)
+            }
+            _ => Err(format!(
+                "forge.github.{name} must be an http or https origin without a path"
+            )),
+        }
+    };
+    let api = host("api", api)?;
+    let web = host("web", web)?;
+    if !app_slug
+        .bytes()
+        .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
+    {
+        return Err("forge.github.app_slug may hold only letters, digits, - and _".into());
+    }
+    Ok(Some(ForgeGithub {
+        app_slug,
+        client_id,
+        client_secret,
+        api,
+        web,
+    }))
+}
 fn non_blank(value: Option<&str>) -> Option<&str> {
     value.map(str::trim).filter(|value| !value.is_empty())
 }
@@ -1537,6 +1633,44 @@ pub(crate) fn show_resolved(c: &ResolvedConfig) -> String {
         c.github_client_secret.is_some(),
     );
     list_lines(&mut out, c, "auth.github", "github");
+    if let Some(forge) = &c.forge_github {
+        section(&mut out, "forge.github");
+        optional(
+            &mut out,
+            &c.sources,
+            "forge.github.app_slug",
+            "app_slug",
+            Some(forge.app_slug.as_str()),
+        );
+        optional(
+            &mut out,
+            &c.sources,
+            "forge.github.client_id",
+            "client_id",
+            Some(forge.client_id.as_str()),
+        );
+        redacted(
+            &mut out,
+            &c.sources,
+            "forge.github.client_secret",
+            "client_secret",
+            true,
+        );
+        optional(
+            &mut out,
+            &c.sources,
+            "forge.github.api",
+            "api",
+            Some(forge.api.as_str()),
+        );
+        optional(
+            &mut out,
+            &c.sources,
+            "forge.github.web",
+            "web",
+            Some(forge.web.as_str()),
+        );
+    }
     let google = c.oidc.iter().find(|provider| provider.id == "google");
     section(&mut out, "auth.google");
     optional(

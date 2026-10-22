@@ -455,6 +455,7 @@ fn serve_options(
         migrate: resolved.migrate,
         github_client_id: resolved.github_client_id,
         github_client_secret: resolved.github_client_secret,
+        forge_github: resolved.forge_github,
         oidc: resolved.oidc,
         session_lifetime: resolved.session_lifetime,
         publishers: resolved.publishers,
