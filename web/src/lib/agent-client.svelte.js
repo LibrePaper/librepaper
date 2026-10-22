@@ -2,6 +2,7 @@ import { SHELL_HEADERS, keyHeaders } from "./api.js";
 import { composeTaskMessage, checkContextSize, CONTEXT_LIMIT } from "./assistant.js";
 import { validPath } from "./assistant-preview.js";
 import { AGENT_SESSION_PREFIX } from "./storage.js";
+import { localDataForgotten } from "./signed-out.js";
 
 const REQUEST_TIMEOUT_MS = 15000;
 const ACK_TIMEOUT_MS = 10000;
@@ -42,6 +43,7 @@ function readSession(storage, key) {
 }
 
 function writeSession(storage, key, value) {
+  if (localDataForgotten()) return;
   try { storage?.setItem(key, JSON.stringify(value)); } catch { /* private browsing */ }
 }
 

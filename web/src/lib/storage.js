@@ -6,6 +6,8 @@
 // page that does not load at all. Every read has a fallback and every write
 // is allowed to fail.
 
+import { localDataForgotten } from "./signed-out.js";
+
 export function read(key, fallback) {
   try {
     const raw = localStorage.getItem(key);
@@ -90,9 +92,12 @@ export function takeKeyFromFragment(slug) {
     return keyFor(slug);
   }
   memoryKeys.set(slug, key);
-  const keys = read(KEYS, {});
-  keys[slug] = key;
-  write(KEYS, keys);
+  // After a sign-out the key serves this page only; it is not stored again.
+  if (!localDataForgotten()) {
+    const keys = read(KEYS, {});
+    keys[slug] = key;
+    write(KEYS, keys);
+  }
   history.replaceState(null, "", location.pathname + location.search);
   return key;
 }
@@ -117,6 +122,7 @@ export function linkFor(slug) {
 /// Notes that this document was opened just now, which is what the landing
 /// page sorts by.
 export function markViewed(slug) {
+  if (localDataForgotten()) return;
   const seen = read(VIEWED, {});
   seen[slug] = new Date().toISOString();
   write(VIEWED, seen);

@@ -2,6 +2,7 @@
 // last one edited. Projects and rendered pages are kept in this browser, so
 // signing out deletes both databases, and the secrets and chat transcripts
 // kept in localStorage. Habits such as the theme and keymap stay.
+import { localDataForgotten, markSignedOut } from "./signed-out.js";
 import { AGENT_SESSION_PREFIX, KEYS, LINKED, VIEWED } from "./storage.js";
 
 export const OFFLINE_DATABASE = "librepaper-offline-v2";
@@ -19,11 +20,9 @@ function safeLocalStorage() {
 
 const CHANNEL = "librepaper-local-data";
 
-// Set once this tab has signed out, or heard another tab do so. Writers check
-// it before opening a database, so a pending write cannot recreate the
-// previous account's data after the delete.
-let forgotten = false;
-export const localDataForgotten = () => forgotten;
+// Writers check this before opening a database or storing a secret, so a
+// pending write cannot recreate the previous account's data after the delete.
+export { localDataForgotten };
 
 const SECRET_KEYS = [KEYS, VIEWED, LINKED];
 
@@ -46,7 +45,7 @@ function forgetStorage(storage) {
 // browser completes it when that tab closes, so waiting longer than the
 // timeout gains nothing. It never rejects: a sign-out must still finish.
 export function forgetLocalData(indexedDB_ = globalThis.indexedDB, timeoutMs = 2000, storage = safeLocalStorage()) {
-  forgotten = true;
+  markSignedOut();
   if (storage) forgetStorage(storage);
   if (globalThis.BroadcastChannel) {
     const channel = new BroadcastChannel(CHANNEL);
@@ -80,8 +79,8 @@ export function listenForSignOut(onSignedOut) {
   // The tab that signed out hears its own message too. It is already
   // forgotten and navigates on its own terms, so only other tabs react.
   channel.onmessage = (event) => {
-    if (event.data?.type !== "signed-out" || forgotten) return;
-    forgotten = true;
+    if (event.data?.type !== "signed-out" || localDataForgotten()) return;
+    markSignedOut();
     onSignedOut();
   };
   return () => channel.close();

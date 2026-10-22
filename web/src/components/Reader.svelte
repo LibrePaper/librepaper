@@ -51,6 +51,7 @@
     takeKeyFromFragment,
     write,
   } from "../lib/storage.js";
+  import { localDataForgotten } from "../lib/signed-out.js";
   import { ACTIVITY_WIDTH, DOCUMENT_MIN, GRIP, PANES, RATIOS, clamp, measure, pixels, px, showing } from "../lib/panes.js";
   import { slotId, tabsFor } from "../lib/panels.js";
   import { APPLE, availability, commandFor, menuKeys } from "../lib/commands.js";
@@ -2409,7 +2410,7 @@
 
   function setLinked(on) {
     linked = on;
-    write(LINKED, on);
+    if (!localDataForgotten()) write(LINKED, on);
   }
 
   /* ------------------------------------------------------------------ panes */
