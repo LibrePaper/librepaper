@@ -1,6 +1,7 @@
-// The document page is a separate navigation, so its scripts and wasm start cold.
-// This fetches them into the HTTP cache while the user is on the project list, so opening a document skips the download.
-// The wasm still compiles when the document page loads.
+// The document page is a separate navigation, so its scripts and wasm start
+// cold. This fetches them into the HTTP cache while the user is on the
+// project list, so opening a document skips the download. The wasm still
+// compiles when the document page loads.
 import loroWasm from "loro-crdt/web/loro_wasm_bg.wasm?url";
 
 let started = false;
@@ -8,7 +9,9 @@ let started = false;
 export function warmReader() {
   if (started) return;
   started = true;
-  const connection = navigator.connection;
+  // Network Information is Chromium-only and absent from the DOM typings.
+  const connection = /** @type {{ saveData?: boolean, effectiveType?: string } | undefined} */ (
+    /** @type {any} */ (navigator).connection);
   if (connection?.saveData || connection?.effectiveType?.includes("2g")) return;
   const run = () => { void prefetch(); };
   if (typeof requestIdleCallback === "function") requestIdleCallback(run, { timeout: 5000 });
@@ -19,7 +22,6 @@ async function prefetch() {
   try {
     const response = await fetch("/reader.html");
     if (!response.ok) return;
-    // The same parse pattern as cacheCurrentShell in offline-shell.js.
     const markup = new DOMParser().parseFromString(await response.text(), "text/html");
     const urls = new Set();
     const add = (value) => {
