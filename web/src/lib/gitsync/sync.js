@@ -1,3 +1,4 @@
+import { checkPath } from "../paths.js";
 import { sha256Hex, sha256HexOfText } from "../digest.js";
 import { unsuggestedText } from "../track-changes.js";
 import { decodeText, isLfsPointer, textHash, toLf } from "./hash.js";
@@ -25,6 +26,8 @@ const DEFAULT_MAX_FILE_BYTES = 10 * 1024 * 1024;
 /// A sent request is kept in the journal only when it is small, because the
 /// journal file is limited. A larger one is rebuilt by a fresh pull.
 const JOURNAL_BODY_LIMIT = 256 * 1024;
+/// An asset this small can be a Git LFS pointer, so it is read to find out.
+const LFS_POINTER_MAX_BYTES = 1024;
 const IGNORE_FILE = ".librepaperignore";
 const GIT_KINDS = new Set(["auth", "network", "not-found"]);
 const decoder = new TextDecoder();
@@ -84,6 +87,18 @@ function authorOf(ctx) {
   return { name: ctx.me?.name || handle, email: `${handle}@users.noreply.${location.hostname}` };
 }
 
+/// Whether this computer's sidecar is connected to the repository the shared
+/// record names. Answers a refusal when it is not, else null.
+async function connectionRefusal(ctx, link) {
+  const status = await ctx.git.status();
+  if (status?.connection_id && status.connection_id === link.connection_id) return null;
+  return refused(
+    "This computer is connected to a different repository for this project. Connect this computer again.",
+    [],
+    { reconnect: true },
+  );
+}
+
 // ---------------------------------------------------------------- journal
 
 async function journalRead(ctx) {
@@ -91,14 +106,11 @@ async function journalRead(ctx) {
 }
 
 async function journalSet(ctx, entry) {
-  const entries = (await journalRead(ctx)).filter((item) => item.id !== entry.id);
-  entries.push(entry);
-  await ctx.git.writeJournal(entries);
+  await ctx.git.journalUpsert(entry);
 }
 
 async function journalDrop(ctx, id) {
-  const entries = await journalRead(ctx);
-  if (entries.some((item) => item.id === id)) await ctx.git.writeJournal(entries.filter((item) => item.id !== id));
+  await ctx.git.journalRemove(id);
 }
 
 /// Ends an operation: its commits are no longer kept and its entry is gone.
@@ -112,7 +124,8 @@ async function finish(ctx, id) {
 /// `F(commit)`: the classified tree of a commit under the link's folder and the
 /// ignore files found in that commit. Returns what `classify` returns plus
 /// `rules` (for path spelling and `isSynced`), `tree`, `commit` and `entries`,
-/// the blob entries by repository path.
+/// the blob entries by repository path, and `occupied`, every repository path
+/// the listing holds whatever its type.
 /// A `commit` of null is the empty remote of a branch without commits.
 export async function filterAt(ctx, link, commit) {
   const listing = commit ? await ctx.git.tree(commit) : { tree: null, entries: [] };
@@ -131,32 +144,39 @@ export async function filterAt(ctx, link, commit) {
     ignoreFolder: read(folderEntry),
   });
   const classified = rules.classify(listing.entries);
-  return { ...classified, rules, tree: listing.tree, commit, entries };
+  const occupied = new Set(listing.entries.map((entry) => entry.path));
+  return { ...classified, rules, tree: listing.tree, commit, entries, occupied };
 }
 
 // ---------------------------------------------------------------- snapshots
 
 /// What a commit holds at some project paths, read for normalization. Text is
 /// decoded and made LF; an asset is only named by its blob id. A text file
-/// that is not valid UTF-8 or is a Git LFS pointer is left out and listed in
-/// `skipped`. A text file whose bytes are already LF keeps its blob id.
-async function loadFiles(ctx, filter, entries, paths) {
+/// that is not valid UTF-8, and a text file or an asset that is a Git LFS
+/// pointer, is left out and listed in `skipped`. A text file whose bytes are
+/// already LF keeps its blob id. `items` maps a project path to
+/// `{ repoPath, kind }`.
+async function loadFiles(ctx, items, entries, paths) {
   const files = new Map();
   const skipped = [];
   const texts = [];
+  const probes = [];
   const sizes = new Map();
   for (const path of paths) {
-    const item = filter.synced.get(path);
+    const item = items.get(path);
     const entry = item && entries.get(item.repoPath);
     if (!entry) continue;
-    if (item.kind === "asset") {
-      files.set(path, { kind: "asset", id: entry.id });
-    } else {
-      texts.push({ path, entry });
-      sizes.set(entry.id, entry.size);
-    }
+    sizes.set(entry.id, entry.size);
+    if (item.kind !== "asset") texts.push({ path, entry });
+    else if (entry.size <= LFS_POINTER_MAX_BYTES) probes.push({ path, entry });
+    else files.set(path, { kind: "asset", id: entry.id });
   }
-  const blobs = texts.length ? await ctx.git.blobs(texts.map(({ entry }) => entry.id), sizes) : new Map();
+  const wanted = [...texts, ...probes].map(({ entry }) => entry.id);
+  const blobs = wanted.length ? await ctx.git.blobs(wanted, sizes) : new Map();
+  for (const { path, entry } of probes) {
+    if (isLfsPointer(blobs.get(entry.id))) skipped.push({ path, reason: "a Git LFS pointer" });
+    else files.set(path, { kind: "asset", id: entry.id });
+  }
   for (const { path, entry } of texts) {
     const bytes = blobs.get(entry.id);
     if (isLfsPointer(bytes)) {
@@ -200,22 +220,30 @@ async function commitFiles(ctx, files, parent) {
 }
 
 /// `N(X, P)`: the normalized commit of the files at project paths `paths` of
-/// commit `X`, whose blob entries are `entries`.
-export async function normalized(ctx, filter, entries, paths, parent) {
-  const loaded = await loadFiles(ctx, filter, entries, paths);
+/// commit `X`, whose blob entries are `entries`. `items` maps each project path
+/// to its `{ repoPath, kind }`.
+export async function normalized(ctx, items, entries, paths, parent) {
+  const loaded = await loadFiles(ctx, items, entries, paths);
   return { ...(await commitFiles(ctx, loaded.files, parent)), skipped: loaded.skipped };
 }
 
 /// `L`: the project's files that pass the filter, as a commit with `parent`.
-/// Also returns the texts and asset digests it was built from, and the kind of
+/// A project path whose repository path the remote holds but does not sync (a
+/// link, a submodule, an oversize or LFS file, invalid UTF-8) is left out, so
+/// that it is never sent over that entry. Also returns the texts and asset digests it was built from, and the kind of
 /// each file.
 export async function snapshot(ctx, filter, parent) {
   const files = new Map();
   const texts = new Map();
   const assets = new Map();
   const kinds = new Map();
+  const held = new Set([...filter.synced.values()].map((item) => item.repoPath));
+  const blocked = (path) => {
+    const repoPath = filter.rules.repoPath(path);
+    return filter.occupied.has(repoPath) && !held.has(repoPath);
+  };
   const listed = ctx.session.list()
-    .filter((file) => filter.rules.isSynced(file.path))
+    .filter((file) => filter.rules.isSynced(file.path) && !blocked(file.path))
     .sort((a, b) => byPath(a.path, b.path));
   const shas = [...new Set(listed.filter((file) => file.kind === "asset").map((file) => file.sha))];
   const known = shas.length ? await ctx.git.knownAssets(shas) : new Map();
@@ -366,7 +394,7 @@ async function prepare(ctx, link, op, options) {
   if (filter.refusals.length) return { refusal: result("refused", { refusals: filter.refusals }) };
   if (!remote) return { empty: true, link, filter, theirs: await commitFiles(ctx, new Map(), null) };
 
-  const incoming = await loadFiles(ctx, filter, filter.entries, [...filter.synced.keys()]);
+  const incoming = await loadFiles(ctx, filter.synced, filter.entries, [...filter.synced.keys()]);
   pruneSkipped(filter, incoming.skipped);
   const paths = [...filter.synced.keys()].sort(byPath);
 
@@ -374,9 +402,17 @@ async function prepare(ctx, link, op, options) {
   if (options.base) {
     base = { commit: options.base };
   } else if (link.checkpoint) {
+    // B' = N(C, S intersect F(R)): the paths last synced that the rules still
+    // select, whether or not R still holds them, so a file the remote deleted
+    // is a deletion and not an addition on the local side.
     const listing = await ctx.git.tree(link.checkpoint);
-    const was = new Set(link.synced_paths || []);
-    base = await normalized(ctx, filter, entryMap(listing.entries), paths.filter((path) => was.has(path)), null);
+    const items = new Map();
+    for (const path of link.synced_paths || []) {
+      if (!filter.rules.isSynced(path)) continue;
+      const kind = checkPath({ ...ctx.rules, max_path: Infinity }, path).kind;
+      if (kind) items.set(path, { repoPath: filter.rules.repoPath(path), kind });
+    }
+    base = await normalized(ctx, items, entryMap(listing.entries), [...items.keys()].sort(byPath), null);
   } else {
     base = await commitFiles(ctx, new Map(), null);
   }
@@ -405,7 +441,7 @@ async function complete(ctx, prepared, tree, op) {
   const body = {
     operation: operationId(),
     change: built.change,
-    sync: { revision: link.revision, checkpoint: remote, synced_paths: paths },
+    sync: { revision: link.revision, connection_id: link.connection_id, checkpoint: remote, synced_paths: paths },
   };
   const merged = await ctx.git.commitTree(tree, [local.commit, theirs.commit], "LibrePaper sync merge", null);
   await ctx.git.keep(op, { base: base.commit, local: local.commit, remote: theirs.commit, merged });
@@ -501,6 +537,8 @@ async function runPull(ctx, options = {}) {
   for (;;) {
     const link = (await ctx.api.getLink()).link;
     if (!link) return { result: refused("This project is not connected to a Git repository.") };
+    const mismatch = await connectionRefusal(ctx, link);
+    if (mismatch) return { result: mismatch };
     const op = refId();
     await journalSet(ctx, { id: op, kind: "pull", phase: "planned", revision: link.revision, checkpoint: link.checkpoint });
     let step;
@@ -552,14 +590,24 @@ export async function pull(ctx) {
   return guarded(async () => (await runPull(ctx)).result);
 }
 
+/// Saves the resolutions chosen so far on the conflict session in the journal,
+/// so that a restart restores them. Answers the saved session.
+export async function saveResolutions(ctx, session, resolutions) {
+  const saved = { ...session, resolutions };
+  await journalSet(ctx, { id: session.id, kind: "conflict", phase: "conflict", session: saved });
+  return saved;
+}
+
 /// Applies the user's resolutions to a saved conflict session. `resolutions`
 /// maps a path to `{ text }`, `{ keep: "ours" | "theirs" }` or `{ delete: true }`.
 /// If the checkpoint or the remote head moved, the merge is made again and the
 /// resolutions that still apply come back as `session.carried`.
-export async function applyResolution(ctx, session, resolutions) {
+export async function applyResolution(ctx, session, resolutions = session.resolutions || {}) {
   return guarded(async () => {
     const link = (await ctx.api.getLink()).link;
     if (!link) return refused("This project is not connected to a Git repository.");
+    const mismatch = await connectionRefusal(ctx, link);
+    if (mismatch) return mismatch;
     const fetched = await ctx.git.fetch(link.checkpoint ? [link.checkpoint] : []);
     const carry = { session, resolutions };
     if (link.checkpoint !== session.checkpoint || fetched.head !== session.remote) {
@@ -709,6 +757,12 @@ async function publish(ctx, plan, message) {
 export async function push(ctx, message = "", { confirmed = null } = {}) {
   return guarded(async () => {
     let plan = confirmed;
+    if (confirmed) {
+      const link = (await ctx.api.getLink()).link;
+      if (!link) return refused("This project is not connected to a Git repository.");
+      const mismatch = await connectionRefusal(ctx, link);
+      if (mismatch) return mismatch;
+    }
     for (let attempt = 0; ; attempt += 1) {
       if (!plan) {
         const planned = await outgoing(ctx);
@@ -739,25 +793,55 @@ function draftLink(draft) {
   };
 }
 
+const ALREADY_LINKED = "This project is already connected to a Git repository. Connect this computer from the Git panel instead.";
+
 /// Gives the draft a connection id if it lacks one and tells the sidecar about
-/// the remote. The panel passes the same draft to `compare` and `connect`.
+/// the remote, but only when the server holds no link yet. The label comes from
+/// the sidecar, which has removed any user info from the address. Answers a
+/// refusal when a link exists, else null. The panel passes the same draft to
+/// `compare` and `connect`.
 async function openDraft(ctx, draft) {
+  if ((await ctx.api.getLink()).link) return refused(ALREADY_LINKED);
   if (!draft.connection_id) draft.connection_id = crypto.randomUUID();
   const answer = await ctx.git.connect({ connection_id: draft.connection_id, remote: draft.remote, branch: draft.branch });
-  if (!draft.label && answer?.label) draft.label = answer.label;
+  if (answer?.label) draft.label = answer.label;
+  else if (!draft.label) draft.label = "";
+  return null;
+}
+
+/// Runs `work` after the draft is open. If it fails before the shared record
+/// exists, the sidecar forgets the draft, so it never keeps pointing at a
+/// remote that was not connected. `work` reports success of the record through
+/// `mark.recorded`.
+async function withDraft(ctx, draft, work) {
+  const refusal = await openDraft(ctx, draft);
+  if (refusal) return refusal;
+  const mark = { recorded: false };
+  try {
+    return await work(mark);
+  } catch (error) {
+    if (!mark.recorded) {
+      try {
+        await ctx.git.forget();
+      } catch {
+        // The first failure is the one to report.
+      }
+    }
+    throw error;
+  }
 }
 
 /// The first look at a remote branch against the project, before anything is
 /// recorded: `{ incoming, outgoing, differing, unsynced, folders, refusals }`.
-/// `draft` is { remote: { url } | { grant }, label, branch, folder }.
+/// `draft` is { remote: { url } | { grant }, label, branch, folder }. Answers a
+/// refusal when the project is already connected.
 export async function compare(ctx, draft) {
-  return guarded(async () => {
-    await openDraft(ctx, draft);
+  return guarded(() => withDraft(ctx, draft, async () => {
     const none = { incoming: [], outgoing: [], differing: [], unsynced: [], folders: [], refusals: [] };
     const fetched = await ctx.git.fetch([]);
     const filter = await filterAt(ctx, draftLink(draft), fetched.head || null);
     if (filter.refusals.length) return { ...none, refusals: filter.refusals };
-    const incoming = await loadFiles(ctx, filter, filter.entries, [...filter.synced.keys()]);
+    const incoming = await loadFiles(ctx, filter.synced, filter.entries, [...filter.synced.keys()]);
     pruneSkipped(filter, incoming.skipped);
     const theirs = await commitFiles(ctx, incoming.files, null);
     const local = await snapshot(ctx, filter, null);
@@ -771,43 +855,51 @@ export async function compare(ctx, draft) {
       folders: [...filter.folders],
       refusals: [],
     };
-  });
+  }));
 }
 
 /// Records the connection and runs the first pull, and for direction "local"
 /// the push after it. Files on both sides with different content take the
 /// side named: "local" keeps LibrePaper's copies, "remote" the repository's.
 /// The first pull runs against a synthetic base that holds, for each such
-/// file, the copy of the side not picked.
+/// file, the copy of the side not picked. Refuses when the project is already
+/// connected.
 export async function connect(ctx, draft, direction) {
   return guarded(async () => {
     if (direction !== "local" && direction !== "remote") throw new Error("Choose which side keeps the differing files.");
-    await openDraft(ctx, draft);
-    const fetched = await ctx.git.fetch([]);
-    const spec = draftLink(draft);
-    const filter = await filterAt(ctx, spec, fetched.head || null);
-    if (filter.refusals.length) return result("refused", { refusals: filter.refusals });
-    const incoming = await loadFiles(ctx, filter, filter.entries, [...filter.synced.keys()]);
-    pruneSkipped(filter, incoming.skipped);
-    const theirs = await commitFiles(ctx, incoming.files, null);
-    const local = await snapshot(ctx, filter, null);
-    const differing = (await ctx.git.diff(theirs.commit, local.commit)).filter((item) => item.status === "M");
-    const edits = differing.map((item) => ({ path: item.path, id: direction === "remote" ? item.to : item.from }));
-    const baseTree = await ctx.git.treeEdit(null, edits);
-    const base = await ctx.git.commitTree(baseTree, [], "LibrePaper first connection base", null);
+    return withDraft(ctx, draft, async (mark) => {
+      const fetched = await ctx.git.fetch([]);
+      const spec = draftLink(draft);
+      const filter = await filterAt(ctx, spec, fetched.head || null);
+      if (filter.refusals.length) {
+        await ctx.git.forget();
+        return result("refused", { refusals: filter.refusals });
+      }
+      const incoming = await loadFiles(ctx, filter.synced, filter.entries, [...filter.synced.keys()]);
+      pruneSkipped(filter, incoming.skipped);
+      const theirs = await commitFiles(ctx, incoming.files, null);
+      const local = await snapshot(ctx, filter, null);
+      const differing = (await ctx.git.diff(theirs.commit, local.commit)).filter((item) => item.status === "M");
+      const edits = differing.map((item) => ({ path: item.path, id: direction === "remote" ? item.to : item.from }));
+      const baseTree = await ctx.git.treeEdit(null, edits);
+      const base = await ctx.git.commitTree(baseTree, [], "LibrePaper first connection base", null);
 
-    const existing = (await ctx.api.getLink()).link;
-    if (existing && (existing.connection_id !== draft.connection_id || existing.checkpoint)) {
-      return refused("This project is already connected to a Git repository.");
-    }
-    if (!existing) {
-      await ctx.api.putLink({ ...spec, revision: null, checkpoint: null, synced_paths: [], pushed: false });
-    }
-    const pulled = await runPull(ctx, { base });
-    if (!pulled.state) return pulled.result;
-    if (direction === "remote") return pulled.result;
-    const pushed = await push(ctx);
-    return pushed.status === "nothing" ? { ...pulled.result } : { ...pushed, pulled: pulled.result };
+      try {
+        await ctx.api.putLink({ ...spec, revision: null, checkpoint: null, synced_paths: [], pushed: false });
+      } catch (error) {
+        if (error?.status === 409) {
+          await ctx.git.forget();
+          return refused(ALREADY_LINKED);
+        }
+        throw error;
+      }
+      mark.recorded = true;
+      const pulled = await runPull(ctx, { base });
+      if (!pulled.state) return pulled.result;
+      if (direction === "remote") return pulled.result;
+      const pushed = await push(ctx);
+      return pushed.status === "nothing" ? { ...pulled.result } : { ...pushed, pulled: pulled.result };
+    });
   });
 }
 
@@ -859,10 +951,14 @@ export async function recover(ctx) {
         if (entry.phase === "planned" || entry.phase === "done" || (entry.kind === "pull" && !entry.body)) {
           await finish(ctx, entry.id);
         } else if (entry.kind === "pull") {
+          // Only an answer that says the request was not applied (or applied it)
+          // settles the entry. A server error or a lost connection leaves it.
           try {
             await ctx.api.sourceChange(entry.body);
           } catch (error) {
-            if (!answered(error)) throw error;
+            const reason = error?.body?.reason;
+            const dropped = error?.status === 409 && ["stale", "changed", "suggestion"].includes(reason);
+            if (!dropped) throw error;
           }
           await finish(ctx, entry.id);
         } else if (entry.phase === "prepared") {
