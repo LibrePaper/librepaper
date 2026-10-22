@@ -123,9 +123,11 @@ impl Service {
         let mut endpoint = self.current().await?;
         let mut retried = false;
         loop {
-            if needs_liveness_check(&request.method, request.body.len())
-                && !self.is_ours(&endpoint).await
-            {
+            // Every request is verified first, whatever its method or body.
+            // The bearer is the control token, and a process that took over
+            // the old port would learn it from even a bodyless poll, then
+            // could answer every later challenge as the service.
+            if !self.is_ours(&endpoint).await {
                 *self.endpoint.lock().await = None;
                 endpoint = self.current().await?;
                 if !self.is_ours(&endpoint).await {
@@ -390,13 +392,6 @@ const RELAYED: [&str; 7] = [
     "x-content-type-options",
 ];
 
-// A request that can carry state or a body is sent only to a service that has
-// just answered as ours, because after the service dies another local process
-// may bind the old port and would receive the bearer, origin and body.
-fn needs_liveness_check(method: &Method, body_len: usize) -> bool {
-    !(matches!(*method, Method::GET | Method::HEAD) && body_len == 0)
-}
-
 async fn relay(res: reqwest::Response) -> Result<Response<Vec<u8>>, String> {
     let mut builder = Response::builder().status(res.status());
     for name in RELAYED {
@@ -410,10 +405,9 @@ async fn relay(res: reqwest::Response) -> Result<Response<Vec<u8>>, String> {
 
 #[cfg(test)]
 mod tests {
-    use super::{compatible, health_matches, needs_liveness_check, Endpoint, RELAYED};
+    use super::{compatible, health_matches, Endpoint, RELAYED};
     use hmac::{Hmac, Mac};
     use sha2::Sha256;
-    use tauri::http::Method;
     use tauri::http::HeaderName;
 
     #[test]
@@ -520,15 +514,6 @@ mod tests {
     fn relayed_headers_include_the_sandbox_headers() {
         assert!(RELAYED.contains(&"content-security-policy"));
         assert!(RELAYED.contains(&"x-content-type-options"));
-    }
-
-    #[test]
-    fn only_bodyless_reads_skip_the_liveness_check() {
-        assert!(!needs_liveness_check(&Method::GET, 0));
-        assert!(!needs_liveness_check(&Method::HEAD, 0));
-        assert!(needs_liveness_check(&Method::GET, 1));
-        assert!(needs_liveness_check(&Method::POST, 0));
-        assert!(needs_liveness_check(&Method::PUT, 5));
     }
 
     #[test]
