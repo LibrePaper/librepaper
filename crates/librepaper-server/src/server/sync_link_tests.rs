@@ -4,7 +4,7 @@
 //! Needs `LIBREPAPER_TEST_POSTGRES_URL` and is skipped without it, like the
 //! rest of the catalogue coverage.
 
-use axum::body::{to_bytes, Body, Bytes};
+use axum::body::{to_bytes, Body};
 use axum::http::{HeaderMap, Request};
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
@@ -312,7 +312,10 @@ async fn source_change_applies_and_writes_the_sync_block() {
     assert_eq!(value["receipt"]["replay"], false);
     assert_eq!(value["link"]["revision"], 2);
     assert_eq!(value["link"]["checkpoint"], "d".repeat(40));
-    assert_eq!(value["link"]["synced_paths"], json!(["paper.md", "intro.md"]));
+    assert_eq!(
+        value["link"]["synced_paths"],
+        json!(["paper.md", "intro.md"])
+    );
     assert_eq!(value["link"]["branch"], "main");
     assert!(value["link"]["last_pull_at"].is_string());
     assert_eq!(value["link"]["last_pull_by"]["id"], d.owner_id.to_string());

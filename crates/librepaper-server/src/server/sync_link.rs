@@ -32,22 +32,6 @@ fn is_relative_path(path: &str) -> bool {
             .all(|segment| !segment.is_empty() && segment != "." && segment != "..")
 }
 
-fn is_repository(name: &str) -> bool {
-    let Some((owner, repo)) = name.split_once('/') else {
-        return false;
-    };
-    let part = |part: &str| {
-        !part.is_empty()
-            && part != "."
-            && part != ".."
-            && part.len() <= 100
-            && part
-                .bytes()
-                .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'_' | b'-'))
-    };
-    part(owner) && part(repo)
-}
-
 fn is_branch(name: &str) -> bool {
     !name.is_empty() && name.len() <= 255 && !name.chars().any(char::is_control)
 }
