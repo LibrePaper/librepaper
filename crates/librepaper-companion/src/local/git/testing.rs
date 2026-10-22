@@ -539,9 +539,15 @@ async fn a_push_that_is_behind_the_remote_is_moved() {
     let fx = Fixture::new();
     fx.connect().await;
     let one = fx.commit(&[], &[("f.txt", "one")]).await;
-    assert_eq!(fx.ok("push", json!({"commit": one})).await["pushed"], true);
+    assert_eq!(
+        fx.ok("push", push_body(&one, None, CONNECTION_ID)).await["pushed"],
+        true
+    );
     let two = fx.commit(&[&one], &[("f.txt", "two")]).await;
-    assert_eq!(fx.ok("push", json!({"commit": two})).await["pushed"], true);
+    assert_eq!(
+        fx.ok("push", push_body(&two, Some(&one), CONNECTION_ID)).await["pushed"],
+        true
+    );
     assert_eq!(
         git_in(&fx.remote, &["rev-parse", "refs/heads/main"], ""),
         two
@@ -549,13 +555,112 @@ async fn a_push_that_is_behind_the_remote_is_moved() {
     let fetched = fx.ok("fetch", json!({"also": []})).await;
     assert_eq!(fetched["head"], json!(two));
 
-    let stale = fx.commit(&[], &[("f.txt", "unrelated")]).await;
-    let error = fx.call("push", json!({"commit": stale})).await.unwrap_err();
+    let stale = fx.commit(&[&one], &[("f.txt", "unrelated")]).await;
+    let error = fx
+        .call("push", push_body(&stale, Some(&one), CONNECTION_ID))
+        .await
+        .unwrap_err();
     assert_eq!(error.status, 409);
     assert_eq!(error.kind, Some("moved"));
     assert_eq!(
         git_in(&fx.remote, &["rev-parse", "refs/heads/main"], ""),
         two
+    );
+}
+
+fn push_body(commit: &str, expected: Option<&str>, connection_id: &str) -> Value {
+    json!({"commit": commit, "expected": expected, "connection_id": connection_id})
+}
+
+#[tokio::test]
+async fn a_push_with_a_stale_lease_is_moved() {
+    let fx = Fixture::new();
+    fx.connect().await;
+    let one = fx.commit(&[], &[("f.txt", "one")]).await;
+    fx.ok("push", push_body(&one, None, CONNECTION_ID)).await;
+    let two = fx.commit(&[&one], &[("f.txt", "two")]).await;
+    let three = fx.commit(&[&one], &[("f.txt", "three")]).await;
+
+    // The right expected head succeeds.
+    assert_eq!(
+        fx.ok("push", push_body(&two, Some(&one), CONNECTION_ID)).await["pushed"],
+        true
+    );
+    // Somebody pushed meanwhile: the lease names `one`, the remote is at `two`.
+    let error = fx
+        .call("push", push_body(&three, Some(&one), CONNECTION_ID))
+        .await
+        .unwrap_err();
+    assert_eq!((error.status, error.kind), (409, Some("moved")));
+    assert_eq!(
+        git_in(&fx.remote, &["rev-parse", "refs/heads/main"], ""),
+        two
+    );
+
+    // A null expected means the branch must not exist, and it does.
+    let error = fx
+        .call("push", push_body(&three, None, CONNECTION_ID))
+        .await
+        .unwrap_err();
+    assert_eq!((error.status, error.kind), (409, Some("moved")));
+}
+
+#[tokio::test]
+async fn a_push_does_not_recreate_a_deleted_branch() {
+    let fx = Fixture::new();
+    fx.connect().await;
+    let one = fx.commit(&[], &[("f.txt", "one")]).await;
+    fx.ok("push", push_body(&one, None, CONNECTION_ID)).await;
+    let two = fx.commit(&[&one], &[("f.txt", "two")]).await;
+    git_in(&fx.remote, &["update-ref", "-d", "refs/heads/main"], "");
+
+    let error = fx
+        .call("push", push_body(&two, Some(&one), CONNECTION_ID))
+        .await
+        .unwrap_err();
+    assert_eq!((error.status, error.kind), (409, Some("moved")));
+    let missing = git_cmd(&fx.remote)
+        .args(["rev-parse", "--verify", "--quiet", "refs/heads/main"])
+        .output()
+        .unwrap();
+    assert!(!missing.status.success(), "the branch was recreated");
+}
+
+#[tokio::test]
+async fn a_push_from_another_connection_is_stale() {
+    let fx = Fixture::new();
+    fx.connect().await;
+    let one = fx.commit(&[], &[("f.txt", "one")]).await;
+    let error = fx
+        .call(
+            "push",
+            push_body(&one, None, "1c1c1c1c-5d2e-4f3a-8c1d-2e3f4a5b6c7d"),
+        )
+        .await
+        .unwrap_err();
+    assert_eq!((error.status, error.kind), (409, Some("stale-connection")));
+    let missing = git_cmd(&fx.remote)
+        .args(["rev-parse", "--verify", "--quiet", "refs/heads/main"])
+        .output()
+        .unwrap();
+    assert!(!missing.status.success(), "the push went ahead");
+}
+
+#[tokio::test]
+async fn a_push_that_does_not_descend_from_expected_is_refused() {
+    let fx = Fixture::new();
+    fx.connect().await;
+    let one = fx.commit(&[], &[("f.txt", "one")]).await;
+    fx.ok("push", push_body(&one, None, CONNECTION_ID)).await;
+    let unrelated = fx.commit(&[], &[("f.txt", "unrelated")]).await;
+    let error = fx
+        .call("push", push_body(&unrelated, Some(&one), CONNECTION_ID))
+        .await
+        .unwrap_err();
+    assert_eq!(error.status, 400);
+    assert_eq!(
+        git_in(&fx.remote, &["rev-parse", "refs/heads/main"], ""),
+        one
     );
 }
 
@@ -698,7 +803,7 @@ async fn a_pre_push_hook_from_the_users_configuration_does_not_run() {
     fx.connect().await;
     let commit = fx.commit(&[], &[("f.txt", "one")]).await;
     assert_eq!(
-        fx.ok("push", json!({"commit": commit})).await["pushed"],
+        fx.ok("push", push_body(&commit, None, CONNECTION_ID)).await["pushed"],
         true
     );
     assert!(!marker.exists(), "the sidecar's push ran a user hook");

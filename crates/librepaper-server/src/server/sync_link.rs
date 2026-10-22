@@ -237,7 +237,14 @@ impl Server {
         };
         match method {
             Method::GET => match self.sync_current_link(document_id).await {
-                Ok(link) => write_json(200, &json!({"link": link})),
+                Ok(link) => {
+                    // Read after the link, so the version is at least as new.
+                    let version = match self.rooms.get(slug).await {
+                        Ok(room) => head_version(&room).await,
+                        Err(error) => return refused("open the room", &error),
+                    };
+                    write_json(200, &json!({"link": link, "version": version}))
+                }
                 Err(response) => response,
             },
             Method::DELETE => match self.store.catalog.delete_sync_link(document_id).await {
@@ -473,7 +480,11 @@ impl Server {
             Ok(link) => link,
             Err(response) => return response,
         };
-        write_json(200, &json!({"receipt": receipt, "link": link}))
+        let version = head_version(&room).await;
+        write_json(
+            200,
+            &json!({"receipt": receipt, "link": link, "version": version}),
+        )
     }
 
     async fn source_change_refusal(&self, document_id: uuid::Uuid, error: AgentError) -> Reply {
@@ -521,6 +532,14 @@ impl Server {
             }
         }
     }
+}
+
+/// The room's head version vector as standard base64, the page's proof of
+/// how much of the document a plan must have seen.
+async fn head_version(room: &librepaper_room::room::Room) -> String {
+    use base64::Engine as _;
+    let state = room.log().log_state().await;
+    base64::engine::general_purpose::STANDARD.encode(&state.head_vector)
 }
 
 /// A storage failure answers a retryable 503 and logs what failed, never

@@ -469,23 +469,75 @@ impl GitManager {
         #[derive(Deserialize)]
         struct Request {
             commit: String,
+            expected: Option<String>,
+            connection_id: String,
         }
         let request: Request = parse(body)?;
         let commit = require_id(&request.commit, "commit")?;
+        let expected = match &request.expected {
+            Some(id) => Some(require_id(id, "expected")?),
+            None => None,
+        };
+        if request.connection_id != record.connection_id {
+            return Err(GitError::new(
+                409,
+                Some("stale-connection"),
+                "The project is connected to another remote now. Reconnect and try again.",
+            ));
+        }
         if !self.has_commit(conn, commit).await? {
             return Err(GitError::refused(
                 "missing",
                 format!("The commit {commit} is not in the private repository."),
             ));
         }
+        if let Some(expected) = expected {
+            let output = self
+                .local_raw(
+                    conn,
+                    &["merge-base", "--is-ancestor", expected, commit],
+                    None,
+                    &[],
+                )
+                .await?;
+            match output.code {
+                0 => {}
+                1 => {
+                    return Err(GitError::bad(format!(
+                        "The commit {commit} does not descend from {expected}."
+                    )))
+                }
+                _ => {
+                    return Err(GitError::refused(
+                        "git",
+                        format!("Git failed: {}", super::validate::redact(&output.stderr)),
+                    ))
+                }
+            }
+        }
         let target = self.resolve(conn, &record.remote)?;
+        // The lease names the head the review saw. An empty value means the
+        // branch must not exist, so a branch that moved, was deleted or was
+        // reset since the review is refused.
+        let lease = format!(
+            "--force-with-lease=refs/heads/{}:{}",
+            record.branch,
+            expected.unwrap_or("")
+        );
         let refspec = format!("{commit}:refs/heads/{}", record.branch);
         let output = self
             .runtime
             .run(
                 GitEnv::Transport,
                 At::Repo(&conn.repo),
-                &["push", "--no-verify", "--", &target.location, &refspec],
+                &[
+                    "push",
+                    "--no-verify",
+                    &lease,
+                    "--",
+                    &target.location,
+                    &refspec,
+                ],
                 None,
                 &[],
             )
@@ -497,7 +549,10 @@ impl GitManager {
                 String::from_utf8_lossy(&output.stdout)
             );
             let lower = said.to_lowercase();
-            if lower.contains("non-fast-forward") || lower.contains("fetch first") {
+            if lower.contains("non-fast-forward")
+                || lower.contains("fetch first")
+                || lower.contains("stale info")
+            {
                 return Err(GitError::new(
                     409,
                     Some("moved"),
