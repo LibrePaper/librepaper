@@ -1,7 +1,8 @@
 //! Domain operations behind the five MCP tools. Transport ids never identify effects.
 use super::*;
-use librepaper_room::room::agent::{
-    self, AgentAuthority, OperationKey, Patch, PatchRequest, SourceFile, SourceTree,
+use librepaper_room::room::agent::{self, AgentAuthority, OperationKey};
+use librepaper_room::room::source_change::{
+    self, Origin, Patch, SourceChange, SourceFile, SourceTree,
 };
 
 #[derive(Clone, Default, Serialize, Deserialize)]
@@ -20,7 +21,7 @@ pub(super) struct Candidate {
     pub base_tree_digest: String,
     pub tree_digest: String,
     pub patches: Vec<Patch>,
-    pub dependencies: Vec<agent::Dependency>,
+    pub dependencies: Vec<source_change::Dependency>,
     pub operation: OperationKey,
     #[serde(default)]
     pub parent_request_id: String,
@@ -57,13 +58,25 @@ enum RefusalRecord {
     Recorded,
 }
 
-pub(super) fn failure(error: agent::AgentError) -> Failure {
+pub(super) fn failure(error: source_change::AgentError) -> Failure {
     let code = match error {
-        agent::AgentError::Invalid(_) => "invalid_params",
-        agent::AgentError::Conflict(_) => "conflict",
-        agent::AgentError::Storage(_) => "outcome_unknown",
+        source_change::AgentError::Invalid(_) => "invalid_params",
+        source_change::AgentError::Conflict(_)
+        | source_change::AgentError::Changed(_)
+        | source_change::AgentError::Suggestion { .. }
+        | source_change::AgentError::Hook(_) => "conflict",
+        source_change::AgentError::Storage(_) => "outcome_unknown",
     };
-    Failure::new(code, error.to_string())
+    let message = match &error {
+        source_change::AgentError::Changed(paths) => {
+            format!(
+                "these files changed: {}; read the document again",
+                paths.join(", ")
+            )
+        }
+        other => other.to_string(),
+    };
+    Failure::new(code, message)
 }
 
 /// What identifies "this operation, sent again": the tool and its arguments,
@@ -159,9 +172,16 @@ pub(super) fn tree_of_view(view: &View) -> Result<SourceTree<'_>, Failure> {
             )
         })
         .collect();
+    let assets = projection
+        .files
+        .iter()
+        .filter(|(_, entry)| entry.kind == "asset")
+        .map(|(path, entry)| (path.clone(), entry.digest.clone()))
+        .collect();
     Ok(SourceTree {
         main: projection.main.clone(),
         files,
+        assets,
         revision: view.snapshot.tree_digest.clone(),
     })
 }
@@ -574,7 +594,8 @@ impl Server {
                         .unwrap_or(json!("exact_tree")),
                 )
                 .map_err(|e| Failure::new("invalid_params", e.to_string()))?;
-                if candidate.validation == "compile" && consistency != agent::Consistency::ExactTree
+                if candidate.validation == "compile"
+                    && consistency != source_change::Consistency::ExactTree
                 {
                     return Err(Failure::new(
                         "conflict",
@@ -598,13 +619,14 @@ impl Server {
                         ));
                     }
                 }
-                let request = PatchRequest {
+                let request = SourceChange {
                     operation: key,
                     base_tree: candidate.base_tree_digest,
                     consistency,
                     dependencies: candidate.dependencies,
                     patches: candidate.patches,
                     request_digest: digest,
+                    ..Default::default()
                 };
                 let authority = AgentAuthority {
                     account_id: current.id.id.clone(),
@@ -628,12 +650,19 @@ impl Server {
                     room.document_id,
                 )?;
                 let receipt = room
-                    .apply_agent_request(request, authority, Some(operation_receipt), || async {
-                        self.mcp_recheck(slug, headers, arrival, actor)
-                            .await
-                            .map(|_| ())
-                            .map_err(|error| agent::AgentError::Conflict(error.message))
-                    })
+                    .apply_source_change(
+                        request,
+                        Origin::Agent,
+                        authority,
+                        Some(operation_receipt),
+                        || async {
+                            self.mcp_recheck(slug, headers, arrival, actor)
+                                .await
+                                .map(|_| ())
+                                .map_err(|error| source_change::AgentError::Conflict(error.message))
+                        },
+                        None,
+                    )
                     .await
                     .map_err(failure)?;
                 Ok(json!(receipt))
@@ -765,7 +794,7 @@ impl Server {
                 input["range_id"].as_str().unwrap_or_default(),
                 &self.key,
             )?;
-            dependencies.push(agent::Dependency {
+            dependencies.push(source_change::Dependency {
                 path: path.to_string(),
                 file_id: tree.files[path].file_id.to_string(),
                 file_hash: hex::encode(Sha256::digest(view.snapshot.texts()[path].as_bytes())),
@@ -814,7 +843,7 @@ impl Server {
                 handle.as_str().unwrap_or_default(),
                 &self.key,
             )?;
-            dependencies.push(agent::Dependency {
+            dependencies.push(source_change::Dependency {
                 path: path.to_string(),
                 file_id: tree.files[path].file_id.to_string(),
                 file_hash: hex::encode(Sha256::digest(view.snapshot.texts()[path].as_bytes())),
@@ -823,15 +852,23 @@ impl Server {
                 exact: view.snapshot.texts()[path][start..end].to_string(),
             });
         }
-        let request = PatchRequest {
+        let request = SourceChange {
             operation: key.clone(),
             base_tree: view.snapshot.tree_digest.clone(),
-            consistency: agent::Consistency::ExactTree,
+            consistency: source_change::Consistency::ExactTree,
             dependencies: Vec::new(),
             patches: patches.clone(),
             request_digest: digest.clone(),
+            ..Default::default()
         };
-        agent::validate_patches(&tree, &request).map_err(failure)?;
+        source_change::validate_source_change(
+            &tree,
+            &request,
+            &Origin::Agent,
+            &librepaper_document::document::paths::rules(&self.config),
+            self.config.max_files,
+        )
+        .map_err(failure)?;
         // Candidate/base digests name the complete document projection,
         // which `document_apply` checks against the head. Update the
         // captured projection's changed text entries and use its canonical

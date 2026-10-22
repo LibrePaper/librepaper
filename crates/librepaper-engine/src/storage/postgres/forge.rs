@@ -127,7 +127,12 @@ impl PostgresCatalog {
             .bind(write.pushed);
         let link = match expected_revision {
             None => query.fetch_optional(&mut *connection).await?,
-            Some(revision) => query.bind(revision).fetch_optional(&mut *connection).await?,
+            Some(revision) => {
+                query
+                    .bind(revision)
+                    .fetch_optional(&mut *connection)
+                    .await?
+            }
         };
         Ok(link)
     }
@@ -268,7 +273,10 @@ mod tests {
             .put_forge_link_now(doc, None, &write(None))
             .await
             .unwrap();
-        assert!(again.is_none(), "a second create finds the row and writes nothing");
+        assert!(
+            again.is_none(),
+            "a second create finds the row and writes nothing"
+        );
 
         let read = catalog.forge_link(doc).await.unwrap().unwrap();
         assert_eq!(read.revision, 1);
@@ -356,7 +364,10 @@ mod tests {
             .await
             .unwrap()
             .expect("pull");
-        assert!(after_pull.last_pull_at.is_some(), "a pull sets last_pull_at");
+        assert!(
+            after_pull.last_pull_at.is_some(),
+            "a pull sets last_pull_at"
+        );
         assert!(after_pull.last_push_at.is_none());
 
         let pull_time = after_pull.last_pull_at;
