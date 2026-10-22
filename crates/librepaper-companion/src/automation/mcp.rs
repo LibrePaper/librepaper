@@ -345,7 +345,10 @@ mod tests {
             missing_assistant_tools(["document_read", "document_result"]).is_empty(),
             "a reader's list is accepted"
         );
-        assert_eq!(missing_assistant_tools(["document_read"]), ["document_result"]);
+        assert_eq!(
+            missing_assistant_tools(["document_read"]),
+            ["document_result"]
+        );
     }
 
     #[test]

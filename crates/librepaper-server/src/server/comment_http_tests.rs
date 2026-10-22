@@ -1322,7 +1322,10 @@ async fn a_replayed_comment_leaves_the_remaining_allowance_alone() {
     let (retry, ok) = send(&deployment, &room, body, &who, &author).await;
     assert!(ok, "{retry}");
     let (second, ok) = send(&deployment, &room, comment_body(), &who, &author).await;
-    assert!(ok, "the replay cost nothing, so a second comment fits: {second}");
+    assert!(
+        ok,
+        "the replay cost nothing, so a second comment fits: {second}"
+    );
     let (third, ok) = send(&deployment, &room, comment_body(), &who, &author).await;
     assert!(!ok, "{third}");
     assert_eq!(third["status"], 429);

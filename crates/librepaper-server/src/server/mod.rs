@@ -1885,9 +1885,7 @@ impl Server {
 
         // With the budget spent, only the replay of a comment that already
         // committed is answered. Everything else is refused.
-        if let (Some(refusal), false) =
-            (&refusal, matches!(command, RoomCommand::Comment { .. }))
-        {
+        if let (Some(refusal), false) = (&refusal, matches!(command, RoomCommand::Comment { .. })) {
             return Err(refusal.clone());
         }
 
@@ -1970,8 +1968,11 @@ impl Server {
                     .map_err(command_error_value)?;
                 // `reply_author` is read and removed by `prepare_comment_event`,
                 // which is how the sender's own view marks the reply `mine`.
-                Ok((json!({"type": "reply", "comment_id": outcome.comment_id,
-                    "reply": outcome.reply, "reply_author": outcome.reply.author}), false))
+                Ok((
+                    json!({"type": "reply", "comment_id": outcome.comment_id,
+                    "reply": outcome.reply, "reply_author": outcome.reply.author}),
+                    false,
+                ))
             }
             RoomCommand::Resolve {
                 comment_id,
@@ -1989,8 +1990,11 @@ impl Server {
                     .command(authority, &mut resolve)
                     .await
                     .map_err(command_error_value)?;
-                Ok((json!({"type": "resolve", "comment_id": outcome.comment_id,
-                    "resolved": outcome.resolved, "resolved_at": outcome.resolved_at}), false))
+                Ok((
+                    json!({"type": "resolve", "comment_id": outcome.comment_id,
+                    "resolved": outcome.resolved, "resolved_at": outcome.resolved_at}),
+                    false,
+                ))
             }
             RoomCommand::Edit {
                 comment_id,
@@ -2012,9 +2016,12 @@ impl Server {
                     .command(authority, &mut edit)
                     .await
                     .map_err(command_error_value)?;
-                Ok((json!({"type": "edit", "comment_id": outcome.comment_id,
+                Ok((
+                    json!({"type": "edit", "comment_id": outcome.comment_id,
                     "reply_id": outcome.reply_id, "body": outcome.body,
-                    "edited": outcome.edited}), false))
+                    "edited": outcome.edited}),
+                    false,
+                ))
             }
             RoomCommand::Delete { comment_id, .. } => {
                 let parsed_id = comment_id;

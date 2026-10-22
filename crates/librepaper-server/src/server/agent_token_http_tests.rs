@@ -751,8 +751,11 @@ async fn a_comment_refused_for_its_budget_is_reported_as_refused_by_document_res
     };
     let token = mint_budgeted_token(&served, 0).await;
     let (_, epoch, _) = served.read(&token, "interval covers").await;
-    let comment = json!({"action": "create", "body": "Refused remark", "operation": operation(&epoch)});
-    let (_, refused) = served.call(&token, "document_comment", comment.clone()).await;
+    let comment =
+        json!({"action": "create", "body": "Refused remark", "operation": operation(&epoch)});
+    let (_, refused) = served
+        .call(&token, "document_comment", comment.clone())
+        .await;
     assert_eq!(refused["error"]["code"], "budget_exceeded", "{refused}");
     let (status, looked_up) = served
         .call(
@@ -764,7 +767,11 @@ async fn a_comment_refused_for_its_budget_is_reported_as_refused_by_document_res
         .await;
     assert_eq!(status, 200, "{looked_up}");
     assert_eq!(
-        looked_up["error"]["code"], "budget_exceeded",
+        looked_up["result"]["status"], "refused",
         "a budget refusal is a definite noncommit: {looked_up}"
+    );
+    assert_eq!(
+        looked_up["result"]["error"]["code"], "budget_exceeded",
+        "{looked_up}"
     );
 }
