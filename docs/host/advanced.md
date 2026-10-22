@@ -120,7 +120,7 @@ Notes:
 
 - The restic password is fixed for the life of the repository. Losing it loses every backup.
 - Keep the restic password in a password manager, separate from any file it is also rendered into.
-- If your secrets are encrypted with SOPS and a PGP key, keep an offline copy of the private key.
+- If your secrets are encrypted with SOPS, add a second recovery key as a recipient (for example an age key from `age-keygen`) and keep it in your password manager or on paper. Losing your everyday key then does not lock you out.
 - Keep the two-factor recovery codes in the same place.
 
 ### Bucket keys and versioning

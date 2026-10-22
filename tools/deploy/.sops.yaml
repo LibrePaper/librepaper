@@ -1,3 +1,8 @@
+# Recipients for the production secrets: the operator's personal age identity
+# (passphrase-protected, ~/.config/sops/age/identity.age) and an offline
+# recovery key kept in the operator's password manager.
 creation_rules:
-  - path_regex: (^|/)keys\.yaml$
-    pgp: B84CF1587A9E41A4C8B05990831F3F76EE332BF2
+  - path_regex: (^|/)(keys\.yaml|runbook\.enc)$
+    age: >-
+      age1zlp9lzrcszhrac3x8p5nmtnrkagqrsjvrkucglngafdecs9fs4eqnfcz4z,
+      age1tsqkxrcxanj3wxv8rvr3d3t7z84g7gswea2jrl0u4a6zd47qw9gqm67nk2
