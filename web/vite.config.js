@@ -86,7 +86,6 @@ export default defineConfig({
         notfound: resolve(import.meta.dirname, "pages/404.html"),
         signin: resolve(import.meta.dirname, "pages/signin.html"),
         device: resolve(import.meta.dirname, "pages/device.html"),
-        forgeCallback: resolve(import.meta.dirname, "pages/forge-callback.html"),
         // The PDF frame, served on the documents origin. It is a page of its
         // own rather than a mode of the reader because it is not the reader:
         // it lives with the document, behind the document's CSP, and the

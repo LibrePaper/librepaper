@@ -9,7 +9,7 @@ use std::sync::Arc;
 use tokio::net::TcpListener;
 
 use crate::server::origins::{Origins, DOCS_PREFIX};
-use crate::server::{ForgeGithub, Server};
+use crate::server::Server;
 use librepaper_base::auth::{
     session_key_file, trim_issuer, GithubApp, OidcProvider, Policy, PROVIDER_GITHUB,
     SESSION_MAX_AGE,
@@ -37,9 +37,6 @@ pub struct ServeOptions {
     /// GitHub OAuth app credentials resolved from the TOML configuration.
     pub github_client_id: Option<String>,
     pub github_client_secret: Option<String>,
-    /// The GitHub App the browser syncs projects through, or nothing, which
-    /// turns the relay and the sync panel off.
-    pub forge_github: Option<ForgeGithub>,
     /// The OpenID Connect providers (Google, Entra and custom entries), in the
     /// order the sign-in page offers them, with their credentials resolved
     /// from the TOML configuration. GitHub is not among them.
@@ -611,7 +608,6 @@ pub async fn serve(options: ServeOptions) {
     }
     instance.latex = Some(latex);
     instance.site = site;
-    instance.forge_github = options.forge_github;
     let instance = Arc::new(instance);
     // The sampler feeds the metrics page and the graphs, so either one is
     // reason enough to run it. Only the listener needs `[metrics] address`.
