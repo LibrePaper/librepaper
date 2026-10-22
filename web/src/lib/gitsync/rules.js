@@ -70,6 +70,11 @@ export function syncRules({ rules, folder, maxFileBytes, ignoreRoot, ignoreFolde
     const unsynced = [];
     for (const entry of entries) {
       const path = entry.path;
+      // A name that is not valid UTF-8 arrives as a lossy path, so it is never synced.
+      if (entry.invalid_name) {
+        unsynced.push({ path, reason: "a name that is not valid UTF-8" });
+        continue;
+      }
       if (entry.type !== "blob") continue;
       if (entry.mode === SYMLINK_MODE) {
         unsynced.push({ path, reason: "a symbolic link" });

@@ -70,6 +70,7 @@ class Repo {
   pushes = [];
   pushBodies = [];
   moveOnPush = 0;
+  invalidNames = new Set();
   connectionId = null;
   forgets = 0;
 
@@ -170,6 +171,7 @@ class Repo {
             type: "blob",
             id: entry.id,
             size: this.blobs.get(entry.id).length,
+            ...(this.invalidNames.has(path) ? { invalid_name: true } : {}),
           })),
         };
       }
@@ -1470,6 +1472,51 @@ const baseFiles = (repo) => {
   const other = await sync.recover(ctx);
   assert.equal(other.conflict, null, "another connection's session is not offered");
   assert.equal(JSON.stringify(repo.journal), before);
+}
+
+// ---------------------------------------------------------------- held entries and invalid names
+
+// A project file inside a remote path that the remote holds as a link is not written over it.
+{
+  const { repo, ctx } = await world({
+    remote: { "intro.qmd": "i\n", fig: { mode: "120000", content: "target.md" } },
+    project: { "intro.qmd": "i\n", "fig/notes.md": "notes\n" },
+  });
+  const filter = await sync.filterAt(ctx, { folder: "" }, repo.head);
+  assert.ok(filter.held.has("fig"));
+  const local = await sync.snapshot(ctx, filter, null);
+  assert.ok(!local.paths.includes("fig/notes.md"));
+  assert.ok(local.paths.includes("intro.qmd"));
+}
+
+// A remote folder that holds only synced files does not block a new file inside it.
+{
+  const { repo, ctx } = await world({
+    remote: { "fig/a.md": "a\n" },
+    project: { "fig/a.md": "a\n", "fig/notes.md": "notes\n" },
+  });
+  const filter = await sync.filterAt(ctx, { folder: "" }, repo.head);
+  assert.equal(filter.held.size, 0);
+  const local = await sync.snapshot(ctx, filter, null);
+  assert.ok(local.paths.includes("fig/notes.md"));
+  assert.ok(local.paths.includes("fig/a.md"));
+}
+
+// A remote name that is not valid UTF-8 is never synced, and a project file with its lossy name is left out.
+{
+  const lossy = "bad�.md";
+  const { repo, session, ctx } = await world({
+    remote: { "intro.qmd": "i\n", [lossy]: "raw\n" },
+    project: { "intro.qmd": "i\n", [lossy]: "local\n" },
+  });
+  repo.invalidNames.add(lossy);
+  const filter = await sync.filterAt(ctx, { folder: "" }, repo.head);
+  assert.ok(filter.unsynced.some((item) => item.path === lossy && item.reason === "a name that is not valid UTF-8"));
+  assert.ok(!filter.synced.has(lossy));
+  const local = await sync.snapshot(ctx, filter, null);
+  assert.ok(!local.paths.includes(lossy));
+  assert.ok(local.paths.includes("intro.qmd"));
+  assert.equal(session.text(lossy), "local\n");
 }
 
 console.log("gitsync sync ok");

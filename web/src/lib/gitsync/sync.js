@@ -182,8 +182,9 @@ async function finish(ctx, id) {
 /// `F(commit)`: the classified tree of a commit under the link's folder and the
 /// ignore files found in that commit. Returns what `classify` returns plus
 /// `rules` (for path spelling and `isSynced`), `tree`, `commit` and `entries`,
-/// the blob entries by repository path, and `occupied`, the normalized project
-/// path of every entry the listing holds under the folder, whatever its type.
+/// the blob entries by repository path, `occupied`, the normalized project path
+/// of every entry the listing holds under the folder, whatever its type, and
+/// `held`, the same for every such entry that is not a tree and is not synced.
 /// A `commit` of null is the empty remote of a branch without commits.
 export async function filterAt(ctx, link, commit) {
   const listing = commit ? await ctx.git.tree(commit) : { tree: null, entries: [] };
@@ -203,12 +204,15 @@ export async function filterAt(ctx, link, commit) {
   });
   const classified = rules.classify(listing.entries);
   const prefix = rules.repoPath("");
-  const occupied = new Set(
-    listing.entries
-      .filter((entry) => entry.path.startsWith(prefix))
-      .map((entry) => normalisePath(rules.projectPath(entry.path))),
+  const under = listing.entries.filter((entry) => entry.path.startsWith(prefix));
+  const occupied = new Set(under.map((entry) => normalisePath(rules.projectPath(entry.path))));
+  const held = new Set(
+    under
+      .filter((entry) => entry.type !== "tree")
+      .map((entry) => normalisePath(rules.projectPath(entry.path)))
+      .filter((key) => !classified.synced.has(key)),
   );
-  return { ...classified, rules, tree: listing.tree, commit, entries, occupied };
+  return { ...classified, rules, tree: listing.tree, commit, entries, occupied, held };
 }
 
 // ---------------------------------------------------------------- snapshots
@@ -290,13 +294,20 @@ export async function normalized(ctx, items, entries, paths, parent) {
   return { ...(await commitFiles(ctx, loaded.files, parent)), skipped: loaded.skipped };
 }
 
-/// Whether the remote holds an entry at a project path that it does not sync
-/// (a link, a submodule, an oversize or LFS file, invalid UTF-8). Paths are
-/// compared by their normalized project spelling, since the repository may
-/// spell a name differently from the project.
+/// Whether writing a file at a project path would replace something the remote
+/// holds and does not sync: an entry at the same path (a link, a submodule, an
+/// oversize or LFS file, invalid UTF-8, or a folder), or an entry other than a
+/// folder above it, which the file's folder would replace. Paths are compared
+/// by their normalized project spelling, since the repository may spell a name
+/// differently from the project.
 function blocked(filter, path) {
   const key = normalisePath(path);
-  return filter.occupied.has(key) && !filter.synced.has(key);
+  if (filter.occupied.has(key) && !filter.synced.has(key)) return true;
+  const parts = key.split("/");
+  for (let i = 1; i < parts.length; i += 1) {
+    if (filter.held.has(parts.slice(0, i).join("/"))) return true;
+  }
+  return false;
 }
 
 /// `L`: the project's files that pass the filter, as a commit with `parent`.

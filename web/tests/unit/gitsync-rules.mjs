@@ -154,4 +154,12 @@ function classify(entries, options = {}) {
   assert.equal(set.isSynced("analysis.qmd"), true);
 }
 
+// A name that is not valid UTF-8 is unsynced, and its lossy path is never synced.
+{
+  const lossy = "bad�.md";
+  const result = classify([{ ...blob(lossy), invalid_name: true }, blob("ok.md")]);
+  assert.deepEqual([...result.synced.keys()], ["ok.md"]);
+  assert.deepEqual(result.unsynced, [{ path: lossy, reason: "a name that is not valid UTF-8" }]);
+}
+
 console.log("gitsync rules ok");
