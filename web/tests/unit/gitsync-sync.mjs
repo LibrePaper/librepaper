@@ -1328,7 +1328,9 @@ const baseFiles = (repo) => {
   repo.journal.find((entry) => entry.kind === "conflict").session.connection_id = "someone-else";
   const before = JSON.stringify(repo.journal);
   const calls = api.state.calls.length;
-  const answer = await sync.applyResolution(ctx, (await sync.status(ctx)).conflict);
+  assert.equal((await sync.status(ctx)).conflict, null, "another connection's session is not offered");
+  const foreign = repo.journal.find((entry) => entry.kind === "conflict").session;
+  const answer = await sync.applyResolution(ctx, foreign);
   assert.equal(answer.status, "refused");
   assert.equal(answer.reconnect, true);
   assert.equal(JSON.stringify(repo.journal), before);

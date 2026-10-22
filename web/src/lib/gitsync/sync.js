@@ -708,7 +708,8 @@ async function openConflict(ctx, prepared, op, carry) {
   const packed = await packResolutions(ctx, session.carried);
   if (packed.commit) await ctx.git.keep(op, { carried: packed.commit });
   await journalSet(ctx, { id: op, kind: "conflict", phase: "conflict", session: { ...session, carried: packed.stored } });
-  for (const entry of older) await finish(ctx, entry.id);
+  // Sessions of another connection are kept for when that connection returns.
+  for (const entry of same) await finish(ctx, entry.id);
   return { result: result("conflict", { session, conflicts }) };
 }
 
@@ -869,6 +870,7 @@ export async function applyResolution(ctx, session, resolutions = undefined) {
     if (mismatch) return mismatch;
     // A session of another connection is not merged into this one, and stays
     // in the journal as it is.
+    if (!session) return refused("There is no saved conflict to resolve.");
     if (session.connection_id !== link.connection_id) return refused(RECONNECT, [], { reconnect: true });
     const restored = await restoreSession(ctx, session);
     const chosen = resolutions ? await unpackResolutions(ctx, resolutions) : restored.resolutions || {};
@@ -1239,7 +1241,11 @@ export async function status(ctx) {
     ctx.api.getLink(),
     safeJournal(ctx),
   ]);
-  const conflict = await restoreSession(ctx, entries.find((entry) => entry.kind === "conflict")?.session);
+  // The saved conflict shown is this connection's; another connection's stays
+  // in the journal untouched.
+  const id = answer.link?.connection_id;
+  const mine = entries.filter((entry) => entry.kind === "conflict" && entry.session?.connection_id === id);
+  const conflict = await restoreSession(ctx, mine.at(-1)?.session);
   const pending = entries.filter((entry) => entry.kind !== "conflict" && entry.phase !== "planned");
   return { git, link: answer.link, conflict, pending };
 }
