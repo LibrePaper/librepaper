@@ -2,7 +2,7 @@
 // cold. This fetches them into the HTTP cache while the user is on the
 // project list, so opening a document skips the download. The wasm still
 // compiles when the document page loads. Engines for the account's formats
-// are prefetched too, after the reader's own assets and one at a time.
+// are prefetched too, after the reader's own assets.
 import loroWasm from "loro-crdt/web/loro_wasm_bg.wasm?url";
 
 let started = false;
@@ -34,17 +34,9 @@ async function prefetch(formats, latexOutput) {
       add(element.getAttribute("src") || element.getAttribute("href"));
     }
     add(loroWasm);
-    const queue = [...urls];
-    const drain = async () => {
-      while (queue.length) {
-        const url = queue.shift();
-        await warm(url, true);
-      }
-    };
-    await Promise.all(Array.from({ length: Math.min(3, queue.length) }, drain));
+    await drain([...urls]);
 
-    // Engines are fetched after the reader's assets, one at a time. The
-    // Typst engine is tens of megabytes, so it must not run beside them.
+    // Engines come after the reader's assets, which every document needs.
     const engines = [];
     const addEngine = (href) => {
       if (!href || urls.has(href)) return;
@@ -58,8 +50,16 @@ async function prefetch(formats, latexOutput) {
       addEngine(new URL(modules.markdown, location.origin).href);
     }
     if (wanted.has("latex")) await addLatexEngines(latexOutput, addEngine);
-    for (const url of engines) await warm(url, false);
+    await drain(engines);
   } catch { /* best effort: the document page works without the warm cache */ }
+}
+
+// Three at a time: the mirror takes most of a second to answer even a small
+// file, so one at a time leaves a LaTeX engine's twenty files queued for long.
+function drain(queue) {
+  return Promise.all(Array.from({ length: Math.min(3, queue.length) }, async () => {
+    while (queue.length) await warm(queue.shift());
+  }));
 }
 
 // The reader page names its modules in a JSON script element, keyed by name.
@@ -90,9 +90,9 @@ async function addLatexEngines(latexOutput, addEngine) {
 }
 
 // Reads the body without keeping it, so a large engine never sits in memory.
-async function warm(url, lowPriority) {
+async function warm(url) {
   try {
-    const asset = await fetch(url, lowPriority ? { priority: "low" } : undefined);
+    const asset = await fetch(url, { priority: "low" });
     if (asset.ok) await asset.body?.pipeTo(new WritableStream());
   } catch { /* best effort: a failed asset is fetched again when the document opens */ }
 }
