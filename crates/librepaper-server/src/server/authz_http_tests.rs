@@ -282,7 +282,10 @@ async fn a_listing_cursor_cannot_probe_a_slug_the_caller_cannot_read() {
     let pinned = store
         .visible_page_with_options(Some(&guest.id.to_string()), None, cursor, 10, false)
         .await;
-    assert!(pinned.is_ok(), "a pinned guest may page from the shared project");
+    assert!(
+        pinned.is_ok(),
+        "a pinned guest may page from the shared project"
+    );
 
     let foreign = store
         .visible_page_with_options(Some(&stranger.id.to_string()), None, cursor, 10, false)
