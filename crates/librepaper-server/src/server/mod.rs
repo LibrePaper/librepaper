@@ -51,6 +51,8 @@ use librepaper_room::room::{
 #[cfg(test)]
 mod admin_http_tests;
 mod agent_auth;
+#[cfg(test)]
+mod agent_token_http_tests;
 mod assistant;
 #[cfg(test)]
 mod authz_http_tests;
