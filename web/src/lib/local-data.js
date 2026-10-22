@@ -1,10 +1,11 @@
 // On a shared computer the next person must not be able to open what the
 // last one edited. Projects and rendered pages are kept in this browser, so
-// signing out deletes both databases.
+// signing out deletes all of them. The forge database holds the GitHub tokens.
 export const OFFLINE_DATABASE = "librepaper-offline-v2";
 export const PREVIEW_DATABASE = "librepaper-preview-v1";
+export const FORGE_DATABASE = "librepaper-forge-v1";
 
-const DATABASES = [OFFLINE_DATABASE, PREVIEW_DATABASE];
+const DATABASES = [OFFLINE_DATABASE, PREVIEW_DATABASE, FORGE_DATABASE];
 const CHANNEL = "librepaper-local-data";
 
 // Set once this tab has signed out, or heard another tab do so. Writers check
@@ -13,7 +14,7 @@ const CHANNEL = "librepaper-local-data";
 let forgotten = false;
 export const localDataForgotten = () => forgotten;
 
-// Resolves once both deletes have finished, failed, or run out the timeout.
+// Resolves once the deletes have finished, failed, or run out the timeout.
 // A delete is blocked while another tab holds the database open, and the
 // browser completes it when that tab closes, so waiting longer than the
 // timeout gains nothing. It never rejects: a sign-out must still finish.
