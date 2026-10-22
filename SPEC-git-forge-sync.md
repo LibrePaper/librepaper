@@ -1,11 +1,8 @@
 # SPEC: Sync a project with a GitHub repository
 
-Status: rejected 2026-10-22 in favour of SPEC-local-git.md (desktop-local Git). Built on kata/vcfb-forge-sync and reworked there.
-started. This is the git work that goes ahead. SPEC-git.md, a remote
-helper on every machine, and a hosted-remote variant drafted the same day
-were both rejected; the first is kept on main with a rejection notice,
-the second was never merged. What survives from them is in "Rules carried
-over".
+Status: rejected 2026-10-22 in favour of SPEC-local-git.md, which syncs
+through system Git in the desktop app. It was built on
+`kata/vcfb-forge-sync` and reworked there.
 
 ## Summary
 
