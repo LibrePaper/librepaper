@@ -125,6 +125,7 @@ struct ChangeInput {
 #[serde(deny_unknown_fields)]
 struct SyncInput {
     revision: i64,
+    connection_id: uuid::Uuid,
     checkpoint: String,
     synced_paths: Vec<String>,
 }
@@ -319,7 +320,12 @@ impl Server {
         match self
             .store
             .catalog
-            .put_sync_link_now(document_id, input.revision, &write)
+            .put_sync_link_now(
+                document_id,
+                input.revision,
+                input.revision.map(|_| input.connection_id),
+                &write,
+            )
             .await
         {
             Ok(Some(link)) => write_json(200, &json!({"link": self.sync_link_json(&link).await})),
@@ -423,12 +429,14 @@ impl Server {
             pushed_by: None,
         };
         let revision = input.sync.revision;
+        let connection_id = input.sync.connection_id;
         let hook: TransactHook = Box::new(move |connection| {
             Box::pin(async move {
                 match PostgresCatalog::put_sync_link(
                     connection,
                     document_id,
                     Some(revision),
+                    Some(connection_id),
                     &write,
                 )
                 .await

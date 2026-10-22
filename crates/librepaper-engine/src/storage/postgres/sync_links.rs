@@ -86,11 +86,13 @@ impl PostgresCatalog {
     ///
     /// `expected_revision` of none creates the row and answers none if one
     /// already exists. `Some(n)` updates the row only while its revision is
-    /// n, moves the revision on, and answers none on a mismatch.
+    /// n and, when `expected_connection` is set, its connection is that
+    /// one; it moves the revision on and answers none on a mismatch.
     pub async fn put_sync_link(
         connection: &mut sqlx::PgConnection,
         document_id: Uuid,
         expected_revision: Option<i64>,
+        expected_connection: Option<Uuid>,
         write: &SyncLinkWrite,
     ) -> Result<Option<SyncLink>> {
         let sql = match expected_revision {
@@ -114,6 +116,7 @@ impl PostgresCatalog {
                  last_push_by=COALESCE($11, last_push_by), \
                  revision=revision + 1, updated_at=now() \
                  WHERE document_id=$1 AND revision=$12 \
+                 AND ($13::uuid IS NULL OR connection_id=$13) \
                  RETURNING {LINK_COLUMNS}"
             ),
         };
@@ -134,6 +137,7 @@ impl PostgresCatalog {
             Some(revision) => {
                 query
                     .bind(revision)
+                    .bind(expected_connection)
                     .fetch_optional(&mut *connection)
                     .await?
             }
@@ -146,10 +150,18 @@ impl PostgresCatalog {
         &self,
         document_id: Uuid,
         expected_revision: Option<i64>,
+        expected_connection: Option<Uuid>,
         write: &SyncLinkWrite,
     ) -> Result<Option<SyncLink>> {
         let mut tx = self.begin_metered().await?;
-        let link = Self::put_sync_link(&mut tx, document_id, expected_revision, write).await?;
+        let link = Self::put_sync_link(
+            &mut tx,
+            document_id,
+            expected_revision,
+            expected_connection,
+            write,
+        )
+        .await?;
         tx.commit().await?;
         Ok(link)
     }
@@ -237,7 +249,7 @@ mod tests {
 
         assert!(catalog.sync_link(doc).await.unwrap().is_none());
         let created = catalog
-            .put_sync_link_now(doc, None, &write(Some(owner)))
+            .put_sync_link_now(doc, None, None, &write(Some(owner)))
             .await
             .unwrap()
             .expect("the first create writes the row");
@@ -269,7 +281,7 @@ mod tests {
         first.checkpoint = None;
         first.synced_paths = Vec::new();
         let created = catalog
-            .put_sync_link_now(doc, None, &first)
+            .put_sync_link_now(doc, None, None, &first)
             .await
             .unwrap()
             .expect("create");
@@ -285,13 +297,16 @@ mod tests {
         let doc = document(&catalog, owner).await;
 
         catalog
-            .put_sync_link_now(doc, None, &write(Some(owner)))
+            .put_sync_link_now(doc, None, None, &write(Some(owner)))
             .await
             .unwrap()
             .expect("the first create writes the row");
         let mut other = write(None);
         other.branch = "other".into();
-        let again = catalog.put_sync_link_now(doc, None, &other).await.unwrap();
+        let again = catalog
+            .put_sync_link_now(doc, None, None, &other)
+            .await
+            .unwrap();
         assert!(
             again.is_none(),
             "a second create finds the row and writes nothing"
@@ -311,7 +326,7 @@ mod tests {
         let doc = document(&catalog, owner).await;
 
         catalog
-            .put_sync_link_now(doc, None, &write(Some(owner)))
+            .put_sync_link_now(doc, None, None, &write(Some(owner)))
             .await
             .unwrap()
             .expect("create");
@@ -320,7 +335,7 @@ mod tests {
         next.checkpoint = Some("d".repeat(40));
         next.synced_paths = vec!["paper.qmd".into()];
         let updated = catalog
-            .put_sync_link_now(doc, Some(1), &next)
+            .put_sync_link_now(doc, Some(1), None, &next)
             .await
             .unwrap()
             .expect("a matching revision updates the row");
@@ -342,12 +357,12 @@ mod tests {
         let doc = document(&catalog, owner).await;
 
         catalog
-            .put_sync_link_now(doc, None, &write(Some(owner)))
+            .put_sync_link_now(doc, None, None, &write(Some(owner)))
             .await
             .unwrap()
             .expect("create");
         catalog
-            .put_sync_link_now(doc, Some(1), &write(None))
+            .put_sync_link_now(doc, Some(1), None, &write(None))
             .await
             .unwrap()
             .expect("the first update at revision 1 lands");
@@ -355,7 +370,7 @@ mod tests {
         let mut stale = write(None);
         stale.checkpoint = Some("e".repeat(40));
         let refused = catalog
-            .put_sync_link_now(doc, Some(1), &stale)
+            .put_sync_link_now(doc, Some(1), None, &stale)
             .await
             .unwrap();
         assert!(refused.is_none(), "revision 1 is no longer stored");
@@ -367,13 +382,46 @@ mod tests {
 
     #[tokio::test]
     #[ignore = "requires LIBREPAPER_TEST_POSTGRES_URL"]
+    async fn update_with_another_connection_answers_none_and_changes_nothing() {
+        let catalog = test_catalog().await;
+        let owner = account(&catalog).await;
+        let doc = document(&catalog, owner).await;
+
+        let first = write(Some(owner));
+        catalog
+            .put_sync_link_now(doc, None, None, &first)
+            .await
+            .unwrap()
+            .expect("create");
+
+        let refused = catalog
+            .put_sync_link_now(doc, Some(1), Some(Uuid::now_v7()), &write(None))
+            .await
+            .unwrap();
+        assert!(refused.is_none(), "the stored connection is another one");
+        let read = catalog.sync_link(doc).await.unwrap().unwrap();
+        assert_eq!(read.revision, 1);
+        assert_eq!(read.connection_id, first.connection_id);
+
+        let mut same = write(None);
+        same.connection_id = first.connection_id;
+        let updated = catalog
+            .put_sync_link_now(doc, Some(1), Some(first.connection_id), &same)
+            .await
+            .unwrap()
+            .expect("the stored connection updates the row");
+        assert_eq!(updated.revision, 2);
+    }
+
+    #[tokio::test]
+    #[ignore = "requires LIBREPAPER_TEST_POSTGRES_URL"]
     async fn pull_and_push_stamp_only_their_own_time_and_account() {
         let catalog = test_catalog().await;
         let owner = account(&catalog).await;
         let doc = document(&catalog, owner).await;
 
         catalog
-            .put_sync_link_now(doc, None, &write(Some(owner)))
+            .put_sync_link_now(doc, None, None, &write(Some(owner)))
             .await
             .unwrap()
             .expect("create");
@@ -381,7 +429,7 @@ mod tests {
         let mut pulled = write(None);
         pulled.pulled_by = Some(owner);
         let after_pull = catalog
-            .put_sync_link_now(doc, Some(1), &pulled)
+            .put_sync_link_now(doc, Some(1), None, &pulled)
             .await
             .unwrap()
             .expect("pull");
@@ -397,7 +445,7 @@ mod tests {
         let mut pushed = write(None);
         pushed.pushed_by = Some(owner);
         let after_push = catalog
-            .put_sync_link_now(doc, Some(2), &pushed)
+            .put_sync_link_now(doc, Some(2), None, &pushed)
             .await
             .unwrap()
             .expect("push");
@@ -410,7 +458,7 @@ mod tests {
         assert_eq!(after_push.last_push_by, Some(owner));
 
         let after_plain = catalog
-            .put_sync_link_now(doc, Some(3), &write(None))
+            .put_sync_link_now(doc, Some(3), None, &write(None))
             .await
             .unwrap()
             .expect("plain update");
@@ -426,7 +474,7 @@ mod tests {
         let doc = document(&catalog, owner).await;
 
         catalog
-            .put_sync_link_now(doc, None, &write(Some(owner)))
+            .put_sync_link_now(doc, None, None, &write(Some(owner)))
             .await
             .unwrap()
             .expect("create");
@@ -443,7 +491,7 @@ mod tests {
         let doc = document(&catalog, owner).await;
 
         catalog
-            .put_sync_link_now(doc, None, &write(Some(owner)))
+            .put_sync_link_now(doc, None, None, &write(Some(owner)))
             .await
             .unwrap()
             .expect("create");
