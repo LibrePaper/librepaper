@@ -156,7 +156,7 @@ Set it up in your provider's console:
 2. Add a replication rule from the backups bucket to the replica. Turn on the option to replicate deletes, often called delete markers. A file deleted from the backups bucket then stays in the replica as an old version, which you can still restore.
 3. Copy the files that are already in the backups bucket. Replication only copies new files, and new snapshots depend on old ones. Most consoles have a one-time job for this, such as Batch Replication on AWS. Wait until it reports every file copied.
 4. Give the replica a lifecycle rule that removes old versions after 30 days. Without it, the replica keeps every file forever.
-5. Create a read-only key for the replica, under a different user from the one that owns the bucket. On some providers the owner can always delete, whatever its policy says. Keep that key on your own computer, never on the server. It needs the two version permissions, because a restore after an attack reads old versions.
+5. Create a read-only key for the replica, under a different user from the one that owns the bucket. On some providers the owner can always delete, whatever its policy says. Keep that key on your own computer, never on the server. It needs the two version permissions, because a restore after an attack reads old versions. Some providers reject `s3:GetObjectVersion` and let `s3:GetObject` read old versions instead. Leave it out there. A new policy can take a few minutes to apply.
 
 ```json
 {
