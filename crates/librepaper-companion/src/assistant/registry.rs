@@ -303,7 +303,7 @@ impl SessionRegistry {
         chat_token: &str,
     ) -> Result<(), String> {
         crate::local::connections::ConnectionStore::new(&self.state_home)
-            .put_runner(&link.credential_url(), origin, conversation, chat_token)
+            .put_runner(&link.document_url(), origin, conversation, chat_token)
             .map(|_| ())
     }
 
@@ -659,7 +659,7 @@ mod tests {
         let connections = crate::local::connections::ConnectionStore::new(dir.path());
         let connection_name = connections
             .put_runner(
-                &link.credential_url(),
+                &link.document_url(),
                 "https://owner.example",
                 conversation,
                 "owner-chat-token",

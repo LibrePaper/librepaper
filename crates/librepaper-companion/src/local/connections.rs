@@ -1,17 +1,17 @@
-//! Runner records: the indirection that keeps a document key out of an
-//! agent's configuration file.
+//! Runner records: the indirection between a sidebar runner's document
+//! bridge and the document it serves.
 //!
 //! An agent is used only from the browser sidebar. The sidebar assistant's
 //! own MCP subprocess names a runner record (`librepaper mcp
 //! --connection runner-<hash>`), never a link. This machine holds the
-//! mapping from that name to the protected document URL, in
+//! mapping from that name to the document URL, in
 //! `<state_home>/librepaper/local/connections.json` at mode 0600.
 //!
-//! Three things follow, and all three are the reason for the indirection:
-//! the key never reaches a config file a user might paste or commit; a
-//! rotated link is repaired in one place without the user editing any agent's
-//! configuration; and revoking an agent's access is deleting one row rather
-//! than hunting through the config of every tool that was ever connected.
+//! The record holds no secret. The URL carries no key, and the chat token is
+//! the sidebar's own. The only credential the bridge uses is the scoped grant
+//! file beside the record, and that lives for one run. The runner removes
+//! both when it ends, so an agent that reads this directory later finds
+//! nothing that opens a document.
 
 use std::collections::BTreeMap;
 use std::fs::OpenOptions;
@@ -22,11 +22,9 @@ use serde::{Deserialize, Serialize};
 use super::store::write_private_json;
 use librepaper_base::util::now_unix;
 
-/// How long a connection survives without being resolved. A connection is
-/// renewed on every successful resolve, so an agent in daily use never
-/// expires, and one wired up and forgotten does not keep a document key on
-/// disk indefinitely.
-pub const IDLE_TTL_SECONDS: i64 = 90 * 24 * 3600;
+/// How long a connection survives without being resolved. A runner removes
+/// its record when it ends, so this only sweeps what a crash left behind.
+pub const IDLE_TTL_SECONDS: i64 = 24 * 3600;
 
 /// The variable that names a sidebar runner's grant file (see
 /// [`ConnectionStore::grant_path`]) in its document bridge's environment, and
@@ -46,8 +44,8 @@ pub const STATE_HOME_VARIABLE: &str = "LIBREPAPER_BRIDGE_STATE_HOME";
 /// One document an agent on this computer may reach.
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 pub struct Connection {
-    /// The protected document URL, key fragment included. This is the secret
-    /// the whole module exists to keep out of agent configuration.
+    /// The document URL, with no key. Opening the document takes the runner's
+    /// scoped grant, which is never stored here.
     pub link: String,
     /// The browser origin that registered it.
     pub origin: String,
@@ -80,13 +78,13 @@ pub fn valid_name(name: &str) -> bool {
 }
 
 /// The private connection name a sidebar runner uses for one (document,
-/// conversation) pair. Deterministic in both credential URL and conversation,
-/// so the same runner rewrites the same record on every start instead of
-/// leaving old ones behind.
-pub fn runner_connection_name(credential_url: &str, conversation: &str) -> String {
+/// conversation) pair. Deterministic in both the key-free document URL and
+/// the conversation, so the same runner rewrites the same record on every
+/// start instead of leaving old ones behind.
+pub fn runner_connection_name(document_url: &str, conversation: &str) -> String {
     use sha2::Digest as _;
     let digest = hex::encode(sha2::Sha256::digest(
-        format!("{credential_url}\0{conversation}").as_bytes(),
+        format!("{document_url}\0{conversation}").as_bytes(),
     ));
     format!("runner-{}", &digest[..48])
 }
@@ -110,7 +108,8 @@ impl ConnectionStore {
     /// Where a sidebar runner publishes the scoped grant its document bridge
     /// authenticates with. Beside the connection record rather than in the
     /// runner's own directory, because that directory is the agent's working
-    /// directory and an agent reads its working directory freely.
+    /// directory and an agent reads its working directory freely. The runner
+    /// removes the grant and its record together when it ends.
     pub fn grant_path(&self, name: &str) -> PathBuf {
         self.dir.join(format!("{name}.grant"))
     }
@@ -157,23 +156,28 @@ impl ConnectionStore {
         Ok(result)
     }
 
-    /// Park the sidebar assistant's own credentials under
+    /// Park the sidebar assistant's chat credential under
     /// [`runner_connection_name`], recorded with the requesting origin.
-    /// Replaced on every runner start.
+    /// Replaced on every runner start. A key fragment on the URL is dropped
+    /// before anything is hashed or stored.
     pub fn put_runner(
         &self,
-        credential_url: &str,
+        document_url: &str,
         origin: &str,
         conversation: &str,
         chat_token: &str,
     ) -> Result<String, String> {
-        let name = runner_connection_name(credential_url, conversation);
+        let mut url = url::Url::parse(document_url)
+            .map_err(|error| format!("invalid document URL: {error}"))?;
+        url.set_fragment(None);
+        let document_url = url.to_string();
+        let name = runner_connection_name(&document_url, conversation);
         let now = now_unix();
         self.update(|all| {
             all.insert(
                 name.clone(),
                 Connection {
-                    link: credential_url.to_string(),
+                    link: document_url,
                     origin: origin.to_string(),
                     created: now,
                     used: now,
@@ -205,6 +209,18 @@ impl ConnectionStore {
     pub fn get(&self, name: &str) -> Option<Connection> {
         self.load().get(name).cloned()
     }
+
+    /// Delete a record only if it is still the one `seen` describes. A
+    /// restarted runner replaces its record before the old runner's teardown
+    /// runs, and that teardown must not delete the new runner's record.
+    pub fn remove_if_unchanged(&self, name: &str, seen: &Connection) -> Result<(), String> {
+        self.update(|all| {
+            if all.get(name).is_some_and(|now| now.created == seen.created) {
+                all.remove(name);
+            }
+            Ok(())
+        })
+    }
 }
 
 #[cfg(test)]
@@ -218,7 +234,7 @@ mod tests {
     }
 
     #[test]
-    fn a_runner_record_resolves_to_its_protected_link() {
+    fn a_runner_record_resolves_to_its_key_free_link() {
         let (_dir, store) = store();
         let name = store
             .put_runner(
@@ -230,10 +246,12 @@ mod tests {
             .unwrap();
         assert_eq!(
             name,
-            runner_connection_name("https://d.example/docs/a#k=secret", "conversation-1")
+            runner_connection_name("https://d.example/docs/a", "conversation-1")
         );
         let resolved = store.resolve(&name).unwrap();
-        assert_eq!(resolved.link, "https://d.example/docs/a#k=secret");
+        assert_eq!(resolved.link, "https://d.example/docs/a");
+        let on_disk = std::fs::read_to_string(store.path()).unwrap();
+        assert!(!on_disk.contains("secret"), "{on_disk}");
         assert_eq!(resolved.conversation.as_deref(), Some("conversation-1"));
         assert_eq!(resolved.chat_token.as_deref(), Some("token-1"));
     }
@@ -262,6 +280,24 @@ mod tests {
             store.get(&name).unwrap().chat_token.as_deref(),
             Some("token-2")
         );
+    }
+
+    #[test]
+    fn remove_if_unchanged_leaves_a_replaced_record() {
+        let (_dir, store) = store();
+        let name = store
+            .put_runner("https://d.example/docs/a", "o", "c1", "t1")
+            .unwrap();
+        let seen = store.get(&name).unwrap();
+        let mut all = store.load();
+        all.get_mut(&name).unwrap().created += 1;
+        store.save(&all).unwrap();
+        store.remove_if_unchanged(&name, &seen).unwrap();
+        assert!(store.get(&name).is_some());
+
+        let current = store.get(&name).unwrap();
+        store.remove_if_unchanged(&name, &current).unwrap();
+        assert!(store.get(&name).is_none());
     }
 
     #[test]
