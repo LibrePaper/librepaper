@@ -210,6 +210,18 @@ impl ConnectionStore {
         self.load().get(name).cloned()
     }
 
+    /// Mark a record as in use now and change nothing else. A running
+    /// runner calls this so its record outlives the idle sweep that exists
+    /// only for crash leftovers.
+    pub fn touch(&self, name: &str) -> Result<(), String> {
+        self.update(|all| {
+            if let Some(entry) = all.get_mut(name) {
+                entry.used = now_unix();
+            }
+            Ok(())
+        })
+    }
+
     #[cfg(test)]
     pub(crate) fn replace_for_test(&self, name: &str, entry: Connection) {
         let mut all = self.load();
@@ -308,6 +320,41 @@ mod tests {
         let current = store.get(&name).unwrap();
         store.remove_if_unchanged(&name, &current).unwrap();
         assert!(store.get(&name).is_none());
+    }
+
+    fn write_times(store: &ConnectionStore, name: &str, created: i64, used: i64) {
+        let mut all: BTreeMap<String, Connection> = {
+            let bytes = std::fs::read(store.path()).unwrap();
+            serde_json::from_slice(&bytes).unwrap()
+        };
+        let entry = all.get_mut(name).unwrap();
+        entry.created = created;
+        entry.used = used;
+        write_private_json(&store.path(), &all).unwrap();
+    }
+
+    #[test]
+    fn touching_a_record_keeps_it_past_the_idle_sweep() {
+        let (_dir, store) = store();
+        let name = store
+            .put_runner("https://d.example/docs/a", "o", "c1", "t1")
+            .unwrap();
+        let now = now_unix();
+        let old = now - IDLE_TTL_SECONDS - 1;
+
+        // Older than the TTL on both clocks: swept on load.
+        write_times(&store, &name, old, old);
+        assert!(store.get(&name).is_none());
+
+        // The same record, touched before it lapses, survives a sweep that
+        // would otherwise have dropped it, and keeps its identity.
+        write_times(&store, &name, old, now - IDLE_TTL_SECONDS + 60);
+        store.touch(&name).unwrap();
+        write_times(&store, &name, old, store.get(&name).unwrap().used);
+        let kept = store.get(&name).unwrap();
+        assert_eq!(kept.created, old);
+        assert!(kept.used >= now);
+        assert_eq!(kept.chat_token.as_deref(), Some("t1"));
     }
 
     #[test]
