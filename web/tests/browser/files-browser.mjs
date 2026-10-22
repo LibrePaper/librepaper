@@ -235,25 +235,27 @@ window.sharingSetup = async () => {
   let linkNumber = 0;
   let snapshot = { slug: 'paper', can_share: true, url: '/docs/paper',
     owner: { name: 'Alice', provider: 'github' },
-    links: { reader: null, commenter: null, editor: null } };
-  window.expireShareLink = (role) => { snapshot.links[role].expired = true; };
+    publishers: 'anyone', commenters_policy: 'anyone',
+    links: [], tokens: [] };
   window.fetch = async (_url, options = {}) => {
     if (options.method !== 'POST') return new Response(JSON.stringify(snapshot));
     const body = JSON.parse(options.body);
     window.shareRequests.push(body);
-    if (body.link) {
-      const token = body.link.role + "-token-" + (++linkNumber);
-      snapshot.links = { ...snapshot.links, [body.link.role]: {
-        key: token,
-        url: 'https://example.test/docs/paper#k=' + token,
-        until: body.link.until === 'never' ? null : '2027-03-05T00:00:00Z',
-        label: body.link.label || '',
-        budget: body.link.budget,
-        expired: false,
-      } };
+    let created;
+    if (body.create) {
+      const key = body.create.role + "-token-" + (++linkNumber);
+      const id = String(linkNumber).padStart(16, '0');
+      snapshot.links = [...snapshot.links, {
+        id, role: body.create.role, name: body.create.name, key,
+        url: 'https://example.test/docs/paper#k=' + key,
+        since: '2026-01-01T00:00:00Z',
+        until: body.create.until === 'never' ? '' : '2027-03-05T00:00:00Z',
+        budget: body.create.budget, expired: false,
+      }];
+      created = { id, kind: 'link', url: 'https://example.test/docs/paper#k=' + key };
     }
-    if (body.revoke) snapshot.links = { ...snapshot.links, [body.revoke]: null };
-    return new Response(JSON.stringify(snapshot));
+    if (body.revoke) snapshot.links = snapshot.links.filter((link) => link.id !== body.revoke.id);
+    return new Response(JSON.stringify({ ...snapshot, created }));
   };
   Object.defineProperty(navigator, 'clipboard', { configurable: true, value: { writeText: async (value) => { window.copiedLink = value; } } });
   const snippet = (html) => createRawSnippet(() => ({ render: () => html }));
@@ -268,11 +270,12 @@ window.sharingSetup = async () => {
   } });
   await flush();
 };
-// A word in the panel that is not an aria-label: the form's own commit
-// button says "Create link" or "Save" and belongs to whichever permission is
+// A word in the panel that is not an aria-label: the form's own submit
+// button says "Create link" or "Save" and belongs to whichever form is
 // open, which is the one thing the panel never has two of.
 const word = (says) => [...document.querySelectorAll('.share-form button')]
   .find((node) => node.textContent.trim() === says);
+const addLink = () => document.querySelector('[data-share-new]');
 
 window.sharingCheck = async () => {
   // The links are the whole of the sharing: there is no access setting beside
@@ -280,39 +283,36 @@ window.sharingCheck = async () => {
   // from the main page.
   check(!button('Copy your link'), 'the owner is not offered a link of their own');
   check(!document.querySelector('[aria-label="General access"]'), 'no general access setting');
+  check(document.body.textContent.includes('No sharing links yet.'), 'an empty list says so in one line');
   check(!button('Copy Read link'), 'a read link has to be created before it can be copied');
   check(!document.querySelector('input[readonly]'), 'raw URLs are hidden');
-  // A permission with no link is not a form: the fields arrive when one is
-  // asked for, and for that permission alone.
-  check(!button('Read link expiry'), 'no configuration until a link is asked for');
-  button('Create Read link').click(); await flush();
-  check(button('Read link expiry') && document.querySelectorAll('.share-form').length === 1,
-    'creating opens the form for that permission and no other');
+  check(!document.querySelector('.share-form'), 'no form until one is asked for');
+  addLink().click(); await flush();
+  check(document.querySelectorAll('.share-form').length === 1,
+    'creating opens one form');
   word('Create link').click(); await flush();
   check(!document.querySelector('.share-form'), 'and it collapses once the link exists');
+  check(window.shareRequests.at(-1).create.kind === 'link' && window.shareRequests.at(-1).create.role === 'reader',
+    'the new link is a read link by default');
   button('Copy Read link').click(); await flush();
   check(window.copiedLink.includes('#k=reader-token-'), 'a read link carries its key');
-  button('Create Edit link').click(); await flush();
-  // The budget is a field of the form rather than something behind a
-  // disclosure, so it is filled in the same breath as everything else.
-  const editBudget = button('Edit link budget');
+  addLink().click(); await flush();
+  const permission = document.querySelector('.share-form select');
+  permission.value = 'editor'; permission.dispatchEvent(new Event('change', { bubbles: true }));
+  await flush();
+  // The budget sits behind Advanced but is a field of the same form.
+  const editBudget = document.querySelector('.share-form input[type="number"]');
   editBudget.value = '8'; editBudget.dispatchEvent(new Event('input', { bubbles: true }));
   await flush();
   word('Create link').click(); await flush();
-  check(!('label' in window.shareRequests.at(-1).link), 'a link is not named');
-  check(window.shareRequests.at(-1).link.budget === 8, 'the link budget reaches the share change');
-  check(document.body.textContent.includes('8 comments/hour'),
+  check(window.shareRequests.at(-1).create.name === '', 'a link is not named unless asked');
+  check(window.shareRequests.at(-1).create.budget === 8, 'the link budget reaches the share change');
+  check(document.body.textContent.includes('Edit link') && document.body.textContent.includes('Edit ·'),
     'link metadata is shown on its row');
-  check(!button('Edit link expiry'), 'and nowhere else: the fields are gone with the form');
   check(button('Copy Edit link'), 'new edit link can be copied');
   button('Copy Edit link').click(); await flush();
   check(window.copiedLink.includes('#k='), 'copies access token link');
-  // Rotating and revoking are in the row like everything else now, each an
-  // icon of its own; that they ask before they act is share-panel-browser.mjs.
-  check(button('Replace Edit link') && button('Revoke Edit link'),
-    'rotation and revocation are icons in the row, not an overflow menu');
-  check(!document.querySelector('[aria-label="More Edit link options"]'), 'and there is no overflow left');
-  check(window.shareRequests.every((body) => !('visibility' in body)), 'the pane never sends a visibility');
+  check(button('More actions for Edit link'), 'rotation and revocation are in the row menu');
   window.testShare.$set({ open: false }); await flush();
   // The bar carries no status of its own any more: warnings go in the
   // Reader's status row under it, where they are readable, not squeezed
@@ -327,14 +327,13 @@ window.shareSidebarCheck = async () => {
   const panel = document.querySelector('.share-sidebar');
   check(panel && !panel.closest('[role="dialog"]'), 'sharing opens inside a panel');
   panel.style.width = '384px';
-  panel.style.height = '120px';
+  panel.style.height = '320px';
   await flush();
   check(panel.scrollWidth <= panel.clientWidth + 1, 'sharing controls fit the fixed sidebar width');
-  check(panel.scrollHeight > panel.clientHeight, 'a panel shorter than its permissions scrolls');
-  panel.style.width = '192px'; await flush();
-  check(panel.scrollWidth <= panel.clientWidth + 1, 'controls wrap when workspace is narrow');
+  panel.style.width = '260px'; await flush();
+  check(panel.scrollWidth <= panel.clientWidth + 1, 'controls fit when the workspace is narrow');
   // The form is the widest thing in here, so it is the one to measure.
-  button('Create Comment link').click(); await flush();
+  addLink().click(); await flush();
   check(panel.scrollWidth <= panel.clientWidth + 1, 'and so does the form when one is open');
   word('Cancel').click(); await flush();
   button('Copy Read link').click(); await flush();
@@ -344,10 +343,10 @@ window.shareSidebarCheck = async () => {
   const writeClipboard = navigator.clipboard.writeText;
   navigator.clipboard.writeText = async () => { throw new Error('blocked'); };
   button('Copy Read link').click(); await flush();
-  check(button('Link to copy manually')?.value.includes('#k=reader-token-'), 'blocked clipboard exposes selectable fallback');
+  check(button('Text to copy manually')?.value.includes('#k=reader-token-'), 'blocked clipboard exposes selectable fallback');
   navigator.clipboard.writeText = writeClipboard;
   button('Copy Read link').click(); await flush();
-  check(!button('Link to copy manually'), 'successful copy hides manual fallback');
+  check(!button('Text to copy manually'), 'successful copy hides manual fallback');
   check(!button('Close sharing'), 'sharing uses the activity rail to close like other sidebars');
   return true;
 };

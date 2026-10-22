@@ -156,7 +156,7 @@ try {
       title: "doc-rows test", created_at: "doc-rows-test", role: "owner", source_format: "html",
       docs_origin: `http://${request.headers.host}`, can_see_sharing: true, can_moderate: true,
     });
-    if (url.pathname === "/api/documents/paper/share") return json(response, { links: {} });
+    if (url.pathname === "/api/documents/paper/share") return json(response, { links: [], tokens: [] });
     if (url.pathname === "/api/documents/paper/comments") return json(response, { comments: [] });
     if (url.pathname.startsWith("/raw/")) { response.setHeader("content-type", "text/html"); return response.end("<!doctype html><body></body>"); }
     if (url.pathname === "/docs/paper") {

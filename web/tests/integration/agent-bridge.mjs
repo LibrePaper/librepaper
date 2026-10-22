@@ -32,9 +32,9 @@ try {
   const sharing = await fetch(`${deployment.base}/api/documents/${slug}/share`, {
     method: "POST",
     headers: { "content-type": "application/json", "x-librepaper-client": "1", cookie: deployment.cookie },
-    body: JSON.stringify({ link: { role: "editor", until: "1d", label: "Agent" } }),
+    body: JSON.stringify({ create: { kind: "link", role: "editor", until: "1d", name: "Agent" } }),
   }).then((response) => response.json());
-  const link = new URL(sharing.links.editor.url, deployment.base).href;
+  const link = new URL(sharing.created.url, deployment.base).href;
 
   // The record the desktop app writes before it starts a runner, under the
   // name the runner derives (`runner_connection_name`). It holds the document

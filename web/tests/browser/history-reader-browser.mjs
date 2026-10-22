@@ -85,7 +85,7 @@ try {
       title:"History test", created_at:"history-test", role:"owner", source_format:"html",
       docs_origin:`http://${request.headers.host}`, can_see_sharing:true, can_moderate:true,
     });
-    if (url.pathname === "/api/documents/paper/share") return json(response, {links:{}});
+    if (url.pathname === "/api/documents/paper/share") return json(response, {links:[],tokens:[]});
     if (url.pathname === "/api/documents/paper/history") {
       // The manifest wire is `document_labels` now: `label_wire` in
       // crates/librepaper-server/src/server/history.rs names each row
