@@ -26,7 +26,7 @@ use librepaper_engine::log::sequencer::{
 };
 use librepaper_engine::storage::postgres::Authority;
 
-use super::agent::client_seq_of;
+use super::source_change::client_seq_of;
 use super::comments::{self, COMMENT_PAGE_MAX};
 use super::{Room, WriteError};
 

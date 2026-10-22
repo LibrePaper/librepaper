@@ -50,7 +50,7 @@ use librepaper_engine::storage::postgres::{
     PostgresCatalog, ReplyRecord,
 };
 
-use super::agent::client_seq_of;
+use super::source_change::client_seq_of;
 use super::locate::{self, Quote};
 use super::{Room, WriteError};
 use librepaper_engine::storage::annotation::{
