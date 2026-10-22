@@ -1,3 +1,5 @@
+import { sha256Hex } from "./digest.js";
+
 // The engine ABI runs exclusively in the renderer worker.
 const loads = {};
 const REQUIRED_EXPORTS = [
@@ -39,17 +41,36 @@ export function validateExports(wasm, url = "renderer") {
   return /** @type {RendererWasm} */ (wasm);
 }
 
-async function instantiate(url) {
+/// The 64-hex digest the mirror puts in a module URL, as in
+/// `{mirror}wasm/{sha256}/{module}.wasm`: the path segment just before the
+/// last one. `null` when the URL has no such segment.
+export function digestInUrl(url) {
   try {
-    return (await WebAssembly.instantiateStreaming(fetch(url), {})).instance;
-  } catch (streamingError) {
-    // Some servers do not send application/wasm, which streaming requires.
-    // Falling back costs a copy of the module in memory, so it is a fallback
-    // rather than the path.
-    const response = await fetch(url);
-    if (!response.ok) throw streamingError;
-    return (await WebAssembly.instantiate(await response.arrayBuffer(), {})).instance;
+    const segments = new URL(url, globalThis.location?.href).pathname.split("/");
+    const candidate = segments.at(-2);
+    return candidate && /^[0-9a-f]{64}$/.test(candidate) ? candidate : null;
+  } catch {
+    return null;
   }
+}
+
+/// Fetches a module and returns its bytes only if they hash to the digest in
+/// the URL. The mirror is a third party to the page, and the module runs with
+/// the page's authority, so a swapped file must not get as far as compiling.
+export async function verifiedModuleBytes(url, fetchImpl = fetch) {
+  const expected = digestInUrl(url);
+  if (!expected) throw new Error(`renderer module ${url} failed digest verification: the URL names no digest`);
+  const response = await fetchImpl(url);
+  if (!response.ok) throw new Error(`renderer module ${url} could not be fetched (${response.status})`);
+  const buffer = await response.arrayBuffer();
+  if (await sha256Hex(new Uint8Array(buffer)) !== expected) {
+    throw new Error(`renderer module ${url} failed digest verification: the bytes do not match the digest in the URL`);
+  }
+  return buffer;
+}
+
+async function instantiate(url) {
+  return (await WebAssembly.instantiate(await verifiedModuleBytes(url), {})).instance;
 }
 
 export function load(url) {

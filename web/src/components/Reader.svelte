@@ -132,6 +132,7 @@
   /** @type {boolean} */
   let readerDisposed = false;
   let docsOrigin = $state(null);
+  const NO_DOCS_ORIGIN = "This server has no separate documents origin, so the preview cannot be shown.";
   let frameSrc = $state(null);
   // Non-editors render this allowlisted current-state projection. It has the
   // same shape as the editor adapter but contains no CRDT or history payload.
@@ -3401,13 +3402,26 @@
       onDocument: (found) => {
         doc = found;
         document.title = `${found.title} · LibrePaper`;
-        docsOrigin = found.docs_origin || location.origin;
+        // Without a separate documents origin the sandboxed frame would run
+        // with the app's own origin, so the preview stays off.
+        let separate = false;
+        try {
+          separate = Boolean(found.docs_origin)
+            && new URL(found.docs_origin, location.href).origin !== location.origin;
+        } catch {
+          separate = false;
+        }
+        docsOrigin = separate ? found.docs_origin : null;
         // The frame is an empty page with the agent in it, on the documents
         // origin. What goes into it is what this browser renders -- or, for a
         // LaTeX document, a PDF an editor's browser compiled, which needs a
         // frame that can draw one. Set after `prepare`, which is what settles
         // the format and so which frame this document wants.
         void prepare(found);
+        if (!separate) {
+          renderStatus.failed(NO_DOCS_ORIGIN);
+          say(NO_DOCS_ORIGIN, { kind: "problem", id: "reader:no-docs-origin" });
+        }
       },
       // A document answers a stranger exactly as a missing one does, which
       // tells a stranger nothing -- and tells an owner who has not signed in

@@ -81,7 +81,7 @@
     } catch {
       return false;
     }
-    if (!trusted || target.origin !== trusted) return false;
+    if (!trusted || trusted === location.origin || target.origin !== trusted) return false;
     frame.contentWindow.postMessage({ librepaper: true, ...message }, trusted, transfer);
     return true;
   }

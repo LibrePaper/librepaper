@@ -1,10 +1,10 @@
 import { SHELL_HEADERS, keyHeaders } from "./api.js";
 import { composeTaskMessage, checkContextSize, CONTEXT_LIMIT } from "./assistant.js";
 import { validPath } from "./assistant-preview.js";
+import { AGENT_SESSION_PREFIX } from "./storage.js";
 
 const REQUEST_TIMEOUT_MS = 15000;
 const ACK_TIMEOUT_MS = 10000;
-const STORAGE_PREFIX = "librepaper.agent.session.";
 const MAX_MESSAGES = 256;
 const MAX_TASKS = 128;
 const MAX_CANDIDATE_SOURCE_BYTES = 32 * 1024 * 1024;
@@ -25,7 +25,7 @@ export function documentKey(link) {
   } catch { return ""; }
 }
 
-function storageKey(origin, slug) { return `${STORAGE_PREFIX}${origin}:${slug}`; }
+function storageKey(origin, slug) { return `${AGENT_SESSION_PREFIX}${origin}:${slug}`; }
 
 function socketUrl(origin, slug, id, key) {
   const url = new URL(`/api/documents/${encodeURIComponent(slug)}/chat/${encodeURIComponent(id)}/socket`, origin);
