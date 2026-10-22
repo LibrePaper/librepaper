@@ -558,7 +558,7 @@ async fn a_token_with_a_zero_comment_budget_cannot_comment() {
         )
         .await;
     assert_eq!(status, 200);
-    assert_eq!(refused["error"]["code"], "rate_limited", "{refused}");
+    assert_eq!(refused["error"]["code"], "budget_exceeded", "{refused}");
     assert_eq!(
         refused["error"]["message"],
         "this token has used its comment budget for this hour"
@@ -590,7 +590,7 @@ async fn a_token_with_a_budget_of_one_comments_once() {
         )
         .await;
     assert_eq!(status, 200);
-    assert_eq!(refused["error"]["code"], "rate_limited", "{refused}");
+    assert_eq!(refused["error"]["code"], "budget_exceeded", "{refused}");
 }
 
 async fn stored_roles(served: &Served) -> Vec<(String, String)> {
@@ -753,7 +753,7 @@ async fn a_comment_refused_for_its_budget_is_reported_as_refused_by_document_res
     let (_, epoch, _) = served.read(&token, "interval covers").await;
     let comment = json!({"action": "create", "body": "Refused remark", "operation": operation(&epoch)});
     let (_, refused) = served.call(&token, "document_comment", comment.clone()).await;
-    assert_eq!(refused["error"]["code"], "rate_limited", "{refused}");
+    assert_eq!(refused["error"]["code"], "budget_exceeded", "{refused}");
     let (status, looked_up) = served
         .call(
             &token,
@@ -764,7 +764,7 @@ async fn a_comment_refused_for_its_budget_is_reported_as_refused_by_document_res
         .await;
     assert_eq!(status, 200, "{looked_up}");
     assert_eq!(
-        looked_up["error"]["code"], "rate_limited",
+        looked_up["error"]["code"], "budget_exceeded",
         "a budget refusal is a definite noncommit: {looked_up}"
     );
 }

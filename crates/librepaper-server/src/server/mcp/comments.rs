@@ -100,7 +100,7 @@ impl Server {
             None
         } else {
             self.spend_comment(who)
-                .map_err(|message| Failure::new("rate_limited", message))?
+                .map_err(|message| Failure::new("budget_exceeded", message))?
         };
         let result = self
             .mcp_comment_action(slug, actor, who, headers, arrival, args, key, digest)

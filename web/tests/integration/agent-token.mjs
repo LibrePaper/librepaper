@@ -75,7 +75,7 @@ try {
 
   const { slug } = await deployment.publish({
     title: "Token",
-    source: "# Token\n\nThe first paragraph.\n",
+    source: "# Token\n\nThe first paragraph.\n\nThe second paragraph.\n",
     source_format: "markdown",
   });
   const ownerHeaders = { "content-type": "application/json", "x-librepaper-client": "1", cookie: deployment.cookie };
@@ -96,8 +96,8 @@ try {
     const stored = await fetch(`${deployment.base}/api/documents/${slug}/comments`, { headers: ownerHeaders }).then((response) => response.json());
     return stored.comments || stored.items || stored;
   };
-  const readFirst = async (bridge) => {
-    const read = await bridge.call("document_read", { queries: [{ kind: "search", query: "first paragraph" }] });
+  const readFirst = async (bridge, query = "first paragraph") => {
+    const read = await bridge.call("document_read", { queries: [{ kind: "search", query }] });
     assert.notEqual(read.isError, true, `document_read failed: ${JSON.stringify(read)}`);
     const rangeId = read.structuredContent.results[0].matches?.[0]?.range_id;
     assert.ok(rangeId, `the search names a range: ${JSON.stringify(read.structuredContent.results[0])}`);
@@ -195,8 +195,9 @@ try {
   assert.equal(changes.length, 1, `one pending change: ${JSON.stringify(changes)}`);
   assert.equal(changes[0].inserted, "The suggested paragraph");
 
-  // The same edit token now stages privately, then applies.
-  const target = await readFirst(editor);
+  // The same edit token now stages privately, then applies. It edits the
+  // second paragraph, since the first carries the pending suggestion.
+  const target = await readFirst(editor, "second paragraph");
   const staged = await editor.call("document_propose", {
     view_id: target.viewId, publish: "private", validation: "source",
     patches: [{ range_id: target.rangeId, replacement: "The edited paragraph" }],
