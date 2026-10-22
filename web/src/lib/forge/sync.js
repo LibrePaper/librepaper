@@ -219,7 +219,33 @@ async function pullOnce(ctx, store) {
     throw error;
   }
   await store.settleOperation(ctx.slug);
-  return result("pulled", { files: changeFiles(plan.change), skipped: plan.skipped, link: answer.link });
+  const arrived = await untilArrived(ctx, listing.rules.isSynced, plan);
+  return result("pulled", { files: changeFiles(plan.change), skipped: plan.skipped, link: answer.link, arrived });
+}
+
+const ARRIVAL_MS = 15_000;
+
+// Waits until this tab's document shows what the server applied: every
+// written path holds the content the sync map records, and every deleted path
+// is gone. The change travels back over the socket like a coauthor's edit, so
+// it lands a moment after the server answers. Answers false after a bound,
+// which happens when someone types in a pulled file meanwhile.
+async function untilArrived(ctx, isSynced, plan) {
+  const written = [...plan.change.create, ...plan.change.patches, ...plan.change.put_binary].map((item) => item.path);
+  const deleted = plan.change.delete.map((item) => item.path);
+  if (!written.length && !deleted.length) return true;
+  const deadline = Date.now() + (ctx.arrivalMs ?? ARRIVAL_MS);
+  for (;;) {
+    const project = await snapshot(ctx, isSynced);
+    const landed = written.every((path) => {
+      const file = project.get(path);
+      const hash = file ? (file.kind === "text" ? file.hash : file.sha) : null;
+      return hash === plan.syncedMap[path]?.hash;
+    }) && deleted.every((path) => !project.has(path));
+    if (landed) return true;
+    if (Date.now() > deadline) return false;
+    await new Promise((done) => setTimeout(done, 100));
+  }
 }
 
 function authorOf(ctx) {
@@ -292,6 +318,14 @@ export async function push(ctx, message) {
     if (head !== link.synced_commit) {
       const pulled = await pull(ctx);
       if (pulled.status === "refused" || pulled.status === "conflict") return pulled;
+      // A push planned before the pull reached this tab would read the pulled
+      // files as deleted here and delete them on GitHub.
+      if (pulled.status === "pulled" && pulled.arrived === false) {
+        return result("refused", {
+          refusals: [{ reason: "the pulled changes have not reached this tab yet; push again", paths: [] }],
+          link: pulled.link,
+        });
+      }
       continue;
     }
 
