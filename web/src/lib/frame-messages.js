@@ -171,9 +171,6 @@ export function createFrameMessageReceiver({
     try {
       const target = new URL(src, globalThis.location?.href);
       const trusted = new URL(docsOrigin, globalThis.location?.href).origin;
-      // A frame on the app's own origin would share its storage and cookies,
-      // so it is never a trusted source of messages.
-      if (trusted === globalThis.location?.origin) return null;
       return target.origin === trusted ? { frame, window: frame.contentWindow, url: target.href, origin: target.origin } : null;
     } catch {
       return null;
