@@ -113,7 +113,7 @@ client_id = "replace"
 client_secret = { env = "GITHUB_APP_CLIENT_SECRET" }
 ```
 
-The secret can also be a `{ file = "..." }` reference. See [Secrets](advanced.html#secrets).
+The secret can also be a `{ file = "..." }` reference. See [Secrets](host/advanced.html#secrets).
 
 7. Restart the app with `docker compose up -d`.
 
