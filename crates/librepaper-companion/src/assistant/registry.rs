@@ -209,7 +209,10 @@ impl SessionRegistry {
         } else {
             self.validate_agent_token(link, agent_token).await?;
             let (owner, grant) = self.active_grant(&key)?;
-            self.publish_runner_connection(link, origin, conversation, chat_token)?;
+            // The running runner owns its connection record, and its teardown
+            // removes the record only while it is unchanged. Rewriting it here
+            // would orphan it, and the runner keeps the chat token it started
+            // with, so there is nothing for a rewrite to deliver.
             replace_agent_grant(owner.as_deref(), &requester, &grant, agent_token)?;
         }
         drop(gate);
