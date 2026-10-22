@@ -80,8 +80,34 @@ pub(crate) fn command_failure(error: librepaper_engine::log::sequencer::CommandE
 }
 
 impl Server {
+    /// Spends the caller's hourly comment budget, if it has one, around the
+    /// action. A refused or failed action costs nothing.
     #[allow(clippy::too_many_arguments)]
     pub(super) async fn mcp_comment(
+        &self,
+        slug: &str,
+        actor: &str,
+        who: &Viewer,
+        headers: &HeaderMap,
+        arrival: &Arrival,
+        args: &Value,
+        key: &OperationKey,
+        digest: &str,
+    ) -> Result<Value, Failure> {
+        let charge = self
+            .spend_comment(who)
+            .map_err(|message| Failure::new("rate_limited", message))?;
+        let result = self
+            .mcp_comment_action(slug, actor, who, headers, arrival, args, key, digest)
+            .await;
+        if result.is_err() {
+            self.refund_comment(charge);
+        }
+        result
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    async fn mcp_comment_action(
         &self,
         slug: &str,
         actor: &str,

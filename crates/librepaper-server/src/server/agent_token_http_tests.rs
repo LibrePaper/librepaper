@@ -532,3 +532,63 @@ async fn revoked_expired_and_stale_tokens_answer_401() {
         "a new owner session generation kills the token"
     );
 }
+
+async fn mint_budgeted_token(served: &Served, budget: i64) -> String {
+    let (status, body) = served
+        .share(json!({"create": {"kind": "token", "role": "comment", "name": "budgeted",
+            "until": "1d", "budget": budget}}))
+        .await;
+    assert_eq!(status, 200, "{body}");
+    body["created"]["token"].as_str().unwrap().to_string()
+}
+
+#[tokio::test]
+#[ignore = "requires LIBREPAPER_TEST_POSTGRES_URL"]
+async fn a_token_with_a_zero_comment_budget_cannot_comment() {
+    let Some(served) = serve("token-budget-zero").await else {
+        return;
+    };
+    let token = mint_budgeted_token(&served, 0).await;
+    let (_, epoch, _) = served.read(&token, "interval covers").await;
+    let (status, refused) = served
+        .call(
+            &token,
+            "document_comment",
+            json!({"action": "create", "body": "A remark", "operation": operation(&epoch)}),
+        )
+        .await;
+    assert_eq!(status, 200);
+    assert_eq!(refused["error"]["code"], "rate_limited", "{refused}");
+    assert_eq!(
+        refused["error"]["message"],
+        "this token has used its comment budget for this hour"
+    );
+}
+
+#[tokio::test]
+#[ignore = "requires LIBREPAPER_TEST_POSTGRES_URL"]
+async fn a_token_with_a_budget_of_one_comments_once() {
+    let Some(served) = serve("token-budget-one").await else {
+        return;
+    };
+    let token = mint_budgeted_token(&served, 1).await;
+    let (_, epoch, _) = served.read(&token, "interval covers").await;
+    let (status, created) = served
+        .call(
+            &token,
+            "document_comment",
+            json!({"action": "create", "body": "First remark", "operation": operation(&epoch)}),
+        )
+        .await;
+    assert_eq!(status, 200, "{created}");
+    assert!(created["result"]["comment_id"].is_string(), "{created}");
+    let (status, refused) = served
+        .call(
+            &token,
+            "document_comment",
+            json!({"action": "create", "body": "Second remark", "operation": operation(&epoch)}),
+        )
+        .await;
+    assert_eq!(status, 200);
+    assert_eq!(refused["error"]["code"], "rate_limited", "{refused}");
+}

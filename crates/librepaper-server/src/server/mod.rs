@@ -1825,9 +1825,25 @@ impl Server {
         let temp_id = command.temp_id().to_owned();
         let comment_id_field = command.comment_id().to_owned();
 
+        // A link or token with its own hourly budget spends one action per
+        // command, and a command that fails gives it back.
+        let charge = match self.spend_comment(who) {
+            Ok(charge) => charge,
+            Err(message) => {
+                return (
+                    json!({"type": "error", "message": message, "status": 429,
+                        "temp_id": temp_id, "request_id": request_id,
+                        "version": 1, "protocol": "librepaper.room.v1"}),
+                    false,
+                );
+            }
+        };
         let outcome = self
             .run_comment_command(room, command, &authority, &writer)
             .await;
+        if outcome.is_err() {
+            self.refund_comment(charge);
+        }
         // Comment rows are read live. Their immutable anchors must stay
         // cached so source edits keep updating comments already on screen.
         let (mut result, ok) = match outcome {
