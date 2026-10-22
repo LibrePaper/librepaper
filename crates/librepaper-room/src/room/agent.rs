@@ -1363,7 +1363,10 @@ mod tests {
     #[test]
     fn a_replacement_with_crlf_is_stored_with_line_feeds() {
         let tree = tree_with_files([("paper.md", "one two")]);
-        let request = request(&tree, vec![patch("paper.md", "one two", 0, 3, "ONE\r\nTWO")]);
+        let request = request(
+            &tree,
+            vec![patch("paper.md", "one two", 0, 3, "ONE\r\nTWO")],
+        );
         let doc = doc_with_files(&tree);
 
         apply_patch_edits(&doc, &tree, &request).expect("the patch fits its file");
