@@ -221,7 +221,7 @@
             </div>
             {#if item.ours != null && item.theirs != null}
               <label class="gr-pane panel-meta">Result
-                <textarea class="textarea gr-text" rows="8" value={resultText(item)}
+                <textarea class="textarea gr-text" rows="8" value={resultText(item)} disabled={busy}
                   oninput={(event) => edit(item.path, event.currentTarget.value)}></textarea>
               </label>
             {:else if resolutions[item.path]?.delete}
@@ -232,14 +232,14 @@
           {/if}
           <div class="gr-row">
             {#if deleteVsModify(item)}
-              <button type="button" class="btn btn-sm {picked(item.path, keepSide(item)) ? 'lp-control-brand' : 'lp-control-tonal-brand'}"
+              <button type="button" disabled={busy} class="btn btn-sm {picked(item.path, keepSide(item)) ? 'lp-control-brand' : 'lp-control-tonal-brand'}"
                 onclick={() => choose(item.path, { keep: keepSide(item) })}>Keep the file</button>
-              <button type="button" class="btn btn-sm {resolutions[item.path]?.delete ? 'lp-control-brand' : 'lp-control-tonal-brand'}"
+              <button type="button" disabled={busy} class="btn btn-sm {resolutions[item.path]?.delete ? 'lp-control-brand' : 'lp-control-tonal-brand'}"
                 onclick={() => choose(item.path, { delete: true })}>Delete the file</button>
             {:else}
-              <button type="button" class="btn btn-sm {picked(item.path, 'ours') ? 'lp-control-brand' : 'lp-control-tonal-brand'}"
+              <button type="button" disabled={busy} class="btn btn-sm {picked(item.path, 'ours') ? 'lp-control-brand' : 'lp-control-tonal-brand'}"
                 onclick={() => choose(item.path, { keep: "ours" })}>Use LibrePaper's</button>
-              <button type="button" class="btn btn-sm {picked(item.path, 'theirs') ? 'lp-control-brand' : 'lp-control-tonal-brand'}"
+              <button type="button" disabled={busy} class="btn btn-sm {picked(item.path, 'theirs') ? 'lp-control-brand' : 'lp-control-tonal-brand'}"
                 onclick={() => choose(item.path, { keep: "theirs" })}>Use the repository's</button>
             {/if}
           </div>

@@ -597,7 +597,7 @@ async function prepare(ctx, link, op, options) {
 /// Applies the merged tree: one source-change request, then the wait for it to
 /// reach the page. Returns `{ retry }` for a stale record or a refused
 /// dependency, else `{ result, state }`.
-async function complete(ctx, prepared, tree, op) {
+async function complete(ctx, prepared, tree, op, resolves = null) {
   const { link, remote, paths, kinds, local, theirs, base } = prepared;
   const changes = await ctx.git.diff(local.commit, tree);
   const built = await buildChange(ctx, changes, kinds, local);
@@ -622,6 +622,8 @@ async function complete(ctx, prepared, tree, op) {
     connection_id: link.connection_id,
     checkpoint: remote,
     body: keepBody ? body : null,
+    // The conflict session this request resolves, so recovery can finish it.
+    ...(resolves ? { resolves } : {}),
   });
 
   let answer;
@@ -913,7 +915,7 @@ export async function applyResolution(ctx, session, resolutions = undefined) {
     };
     // The request gets its own journal entry: the conflict session, with the
     // saved resolutions, stays until the request is known to have applied.
-    const step = await complete(ctx, prepared, tree, refId());
+    const step = await complete(ctx, prepared, tree, refId(), session.id);
     if (step.retry) return again();
     if (step.result.status !== "pulled" && step.result.status !== "nothing") {
       return { ...step.result, session: kept };
@@ -1283,9 +1285,14 @@ export async function recover(ctx) {
     } catch {
       connection = null;
     }
-    for (const entry of await journalRead(ctx)) {
+    const entries = await journalRead(ctx);
+    // Requests come first: one that applied finishes the conflict session it
+    // resolved, and that session is then not offered.
+    const ordered = [...entries.filter((entry) => entry.kind !== "conflict"), ...entries.filter((entry) => entry.kind === "conflict")];
+    const resolved = new Set();
+    for (const entry of ordered) {
       if (entry.kind === "conflict") {
-        if (connection != null && entry.session?.connection_id === connection) {
+        if (!resolved.has(entry.id) && connection != null && entry.session?.connection_id === connection) {
           conflict = await restoreSession(ctx, entry.session);
         }
         continue;
@@ -1303,8 +1310,14 @@ export async function recover(ctx) {
           // settles the entry. A server error or a lost connection leaves it.
           try {
             await ctx.api.sourceChange(entry.body);
+            // The request applied, so the conflict it resolved is over.
+            if (entry.resolves) {
+              await finish(ctx, entry.resolves);
+              resolved.add(entry.resolves);
+            }
           } catch (error) {
             if (!definitive(error)) throw error;
+            // Not applied: the conflict session stays and can be resumed.
           }
           await finish(ctx, entry.id);
         } else if (entry.phase === "prepared") {
