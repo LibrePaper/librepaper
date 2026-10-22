@@ -3,7 +3,7 @@
   // until every path is resolved and Apply succeeds. The session is kept by
   // sync.js, so closing this keeps it.
   import Modal from "../Modal.svelte";
-  import { applyResolution } from "../../lib/gitsync/sync.js";
+  import { applyResolution, saveResolutions } from "../../lib/gitsync/sync.js";
 
   let { open = $bindable(false), ctx, session = null, onresult, onclose = undefined } = $props();
 
@@ -53,7 +53,8 @@
           ours: texts[1],
           theirs: texts[2],
         });
-        if (saved.carried?.[item.path]) chosen[item.path] = saved.carried[item.path];
+        const kept = saved.resolutions?.[item.path] ?? saved.carried?.[item.path];
+        if (kept) chosen[item.path] = kept;
       }
       items = next;
       resolutions = chosen;
@@ -73,22 +74,53 @@
   });
 
   const deleteVsModify = (item) => (item.oursId == null) !== (item.theirsId == null);
-  const choose = (path, value) => (resolutions = { ...resolutions, [path]: value });
-  const edit = (path, text) => choose(path, { text });
+  let timer = null;
+
+  function cancelSave() {
+    if (timer) clearTimeout(timer);
+    timer = null;
+  }
+
+  /// Stores the choices on the saved session so a closed window or a restart keeps them.
+  async function persist() {
+    cancelSave();
+    if (!current) return;
+    try {
+      await saveResolutions(ctx, current, resolutions);
+    } catch {
+      // The choices stay on screen; the next change tries again.
+    }
+  }
+
+  const choose = (path, value) => {
+    resolutions = { ...resolutions, [path]: value };
+    persist();
+  };
+  const edit = (path, text) => {
+    resolutions = { ...resolutions, [path]: { text } };
+    cancelSave();
+    timer = setTimeout(persist, 500);
+  };
   const resultText = (item) => resolutions[item.path]?.text ?? item.ours ?? "";
   const picked = (path, side) => resolutions[path]?.keep === side;
   const keepSide = (item) => (item.oursId == null ? "theirs" : "ours");
   const resolved = $derived(items.length > 0 && items.every((item) => resolutions[item.path]));
 
+  function closed() {
+    if (timer) persist();
+    onclose?.();
+  }
+
   function close() {
     open = false;
-    onclose?.();
+    closed();
   }
 
   async function apply() {
     if (busy || !resolved) return;
     busy = true;
     error = "";
+    cancelSave();
     try {
       const result = await applyResolution(ctx, current, resolutions);
       if (result.status === "conflict" && result.unresolved?.length) {
@@ -113,7 +145,7 @@
   }
 </script>
 
-<Modal bind:open title="Resolve conflicts" wide wider cancelLabel="Close" onclose={onclose}
+<Modal bind:open title="Resolve conflicts" wide wider cancelLabel="Close" onclose={closed}
        confirm={{ label: busy ? "Applying…" : "Apply", disabled: !resolved || busy, onclick: apply, oncancel: close }}>
   {#if loading}
     <p class="panel-muted" role="status">Loading…</p>
