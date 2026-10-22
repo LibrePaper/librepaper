@@ -304,6 +304,107 @@ replica_restic() {
 	if command -v restic >/dev/null; then restic "$@"; else nix shell nixpkgs#restic --command restic "$@"; fi
 }
 
+# The counts backup-drill compares, in one row: accounts, documents, assets,
+# snapshots, archives, migration version, distinct referenced stored files.
+DRILL_QUERY="SELECT (SELECT count(*) FROM accounts), (SELECT count(*) FROM documents), (SELECT count(*) FROM document_assets), (SELECT count(*) FROM document_snapshots), (SELECT count(*) FROM document_archives), (SELECT max(version) FROM _sqlx_migrations WHERE success), (SELECT count(DISTINCT k) FROM (SELECT storage_key k FROM document_assets UNION ALL SELECT snapshot_key FROM document_snapshots UNION ALL SELECT storage_key FROM document_archives) x)"
+DRILL_DIR=
+
+# drill_cleanup removes the copy, its volumes and the copied restic profile,
+# whether the drill passed or not. Restored files belong to root, so a
+# leftover staging/ is emptied from inside a container first.
+drill_cleanup() {
+	[ -n "$DRILL_DIR" ] || return 0
+	if [ -d "$DRILL_DIR/librepaper" ]; then
+		(
+			cd "$DRILL_DIR/librepaper" || exit 0
+			if [ -d staging ]; then
+				docker compose run --rm --no-deps --user 0 -v ./staging:/restore --entrypoint sh librepaper -c 'rm -rf /restore/* /restore/.[!.]*' >/dev/null 2>&1 || true
+			fi
+			docker compose down -v >/dev/null 2>&1 || true
+		)
+	fi
+	rm -rf -- "$DRILL_DIR"
+}
+
+backup_drill() {
+	local version line snapshot when age copy prod files i names fails=0
+	command -v gh >/dev/null 2>&1 || die "gh is needed to verify the release kit: install the GitHub CLI from https://cli.github.com"
+
+	# The restic profile is copied from HOST, so make sure it is production.
+	check_ssh_target
+	step "Release on $HOST"
+	version=$(ssh "$HOST" 'cd librepaper && ./manage version')
+	validate_release_version "$version"
+	ok "$version"
+
+	DRILL_DIR=$(mktemp -d "${TMPDIR:-/tmp}/librepaper-drill.XXXXXX")
+	# Its own Compose project, so a kit running on this machine is never touched.
+	export COMPOSE_PROJECT_NAME="librepaper-drill-$$"
+	trap drill_cleanup EXIT
+
+	step "Kit $version, verified on this machine"
+	gh release download "$version" --repo LibrePaper/librepaper --pattern librepaper-deploy.tar.gz --dir "$DRILL_DIR" || die "could not download the kit for $version"
+	gh attestation verify "$DRILL_DIR/librepaper-deploy.tar.gz" --repo LibrePaper/librepaper --signer-workflow LibrePaper/librepaper/.github/workflows/publish-docker.yml || die "the kit for $version has no valid attestation from the release workflow and nothing was changed"
+	tar -C "$DRILL_DIR" -xzf "$DRILL_DIR/librepaper-deploy.tar.gz"
+	ok "kit unpacked in $DRILL_DIR"
+
+	step "Production's restic profile"
+	# Streamed into the private drill directory, never printed. The containers
+	# read it as another user, so the file stays readable and the 0700
+	# directory keeps it private.
+	ssh "$HOST" 'cat librepaper/resticprofile.toml' > "$DRILL_DIR/librepaper/resticprofile.toml"
+	chmod 444 "$DRILL_DIR/librepaper/resticprofile.toml"
+	# No host ports: the checks talk to the containers directly.
+	printf 'services:\n  caddy:\n    ports: !reset []\n' > "$DRILL_DIR/librepaper/compose.override.yaml"
+	ok "copied"
+
+	step "Newest snapshot"
+	line=$(cd "$DRILL_DIR/librepaper" && ./manage backup list | grep -E '^[0-9a-f]{8} ' | tail -1)
+	[ -n "$line" ] || die "the repository lists no snapshots"
+	read -r snapshot when _ <<<"$line"
+	when="$when $(awk '{print $3}' <<<"$line")"
+	age=$(( ($(date -u +%s) - $(date -u -d "$when UTC" +%s)) / 60 ))
+	[ "$age" -le 120 ] || die "FAIL: the newest snapshot $snapshot is $age minutes old"
+	ok "$snapshot from $when UTC ($age minutes old)"
+
+	step "Restore into a fresh copy"
+	(cd "$DRILL_DIR/librepaper" && ./manage backup restore "$snapshot") || die "FAIL: the restore did not finish"
+
+	step "The copy against production"
+	copy=$(cd "$DRILL_DIR/librepaper" && docker compose exec -T postgres psql -U postgres -d librepaper -XAt -F ' ' -c "$DRILL_QUERY")
+	prod=$(ssh "$HOST" "cd librepaper && docker compose exec -T postgres psql -U postgres -d librepaper -XAt -F ' ' -c \"$DRILL_QUERY\"")
+	files=$(cd "$DRILL_DIR/librepaper" && docker compose exec -T librepaper sh -c 'find /var/lib/librepaper/objects -type f | wc -l' | tr -dc 0-9)
+	read -ra copy <<<"$copy"
+	read -ra prod <<<"$prod"
+	names=(accounts documents assets snapshots archives migration)
+	printf '    %-12s %10s %12s\n' '' copy production
+	for i in 0 1 2 3 4 5; do
+		printf '    %-12s %10s %12s\n' "${names[$i]}" "${copy[$i]}" "${prod[$i]}"
+	done
+	for i in 0 1 2 3 4; do
+		if [ "${copy[$i]}" -gt "${prod[$i]}" ]; then
+			printf '    %sthe copy has more %s than production%s\n' "$red" "${names[$i]}" "$reset"
+			fails=$((fails + 1))
+		fi
+	done
+	if [ "${copy[5]}" != "${prod[5]}" ]; then
+		printf '    %sthe migration versions differ%s\n' "$red" "$reset"
+		fails=$((fails + 1))
+	fi
+	if [ "$files" = "${copy[6]}" ]; then
+		ok "$files stored files, every referenced one present"
+	else
+		printf '    %s%s stored files for %s referenced%s\n' "$red" "$files" "${copy[6]}" "$reset"
+		fails=$((fails + 1))
+	fi
+	(cd "$DRILL_DIR/librepaper" && docker compose exec -T librepaper wget -qO- http://127.0.0.1:8080/ready) >/dev/null || {
+		printf '    %sthe copy does not answer /ready%s\n' "$red" "$reset"
+		fails=$((fails + 1))
+	}
+	[ "$fails" -eq 0 ] || die "FAIL: $fails checks failed for snapshot $snapshot"
+	printf '\n%sPASS: snapshot %s restores (%ss). The copy is being removed.%s\n' "$green$bold" "$snapshot" "$SECONDS" "$reset"
+}
+
 RENDERED_KEYS=0
 # render FILE TARGET fills each @LIBREPAPER_NAME@ in FILE from the key of the
 # same name in keys.yaml and sets the global TARGET to the result. The value
@@ -367,6 +468,7 @@ usage: tools/deploy/production <command>
   logs               follow the container logs
   check-host         sshd, listening ports, upgrades, reboot, kit permissions, disk, admin console off the tailnet
   check-replica      replica: writes refused, old versions readable, newest snapshot age, restic check
+  backup-drill       restore the newest snapshot into a throwaway copy here, compare it with production, remove it
   help, -h, --help   show this message
 
 Environment:
@@ -569,6 +671,9 @@ case "${1:-help}" in
 		;;
 	check-replica)
 		check_replica
+		;;
+	backup-drill)
+		backup_drill
 		;;
 	help | -h | --help)
 		usage

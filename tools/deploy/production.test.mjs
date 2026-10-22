@@ -113,6 +113,11 @@ function fixture({
   replicaVersionsDenied = false,
   resticNewest = new Date(Date.now() - 10 * 60 * 1000).toISOString(),
   sopsAgeKeyCmd = '',
+  drillVersion = 'v0.0.49',
+  drillSnapshotTime = new Date(Date.now() - 20 * 60 * 1000).toISOString().slice(0, 19).replace('T', ' '),
+  drillCopyCounts = '284 1374 1601 14 1 9 1616',
+  drillProdCounts = '285 1375 1601 14 1 9 1616',
+  drillCopyFiles = 1616,
 } = {}) {
   const root = mkdtempSync(path.join(os.tmpdir(), 'librepaper-deploy-test-'));
   const bin = path.join(root, 'bin');
@@ -206,6 +211,32 @@ esac`);
   mockCommand(bin, 'tar', `
 set -eu
 printf 'tar\\t%s\\n' "$*" >> "$EVENTS_FILE"
+has_xzf=0
+dir=
+prev=
+for arg do
+  case "$arg" in -xzf) has_xzf=1 ;; esac
+  if [ "$prev" = -C ]; then dir="$arg"; fi
+  prev="$arg"
+done
+if [ "$has_xzf" = 1 ] && [ -n "$dir" ]; then
+  # The drill's kit: a stub manage that records its calls and answers the drill's two commands.
+  mkdir -p "$dir/librepaper"
+  cat > "$dir/librepaper/manage" <<'DRILLMANAGE'
+#!/bin/sh
+printf 'drill-manage\\t%s\\n' "$*" >> "$EVENTS_FILE"
+case "$1 $2" in
+  'backup list')
+    printf 'ID        Time                 Host        Tags        Paths                    Size\\n'
+    printf '450fafe1  %s  librepaper  librepaper  /librepaper-backup.tar  111.607 MiB\\n' "$DRILL_SNAPSHOT_TIME"
+    printf -- '--------\\n'
+    ;;
+  'backup restore') exit "$MANAGE_FAILURE" ;;
+esac
+DRILLMANAGE
+  chmod 755 "$dir/librepaper/manage"
+  exit 0
+fi
 cat > /dev/null
 cat <<'MANAGE'
 #!/bin/sh
@@ -232,7 +263,19 @@ exec bash -c "$command"`);
   mockCommand(bin, 'docker', `
 set -eu
 printf 'docker\\t%s\\n' "$*" >> "$EVENTS_FILE"
+if [ -n "\${COMPOSE_PROJECT_NAME:-}" ]; then printf '%s\\n' "$COMPOSE_PROJECT_NAME" >> "$DRILL_PROJECT_FILE"; fi
 case "$*" in
+  'compose exec -T postgres psql '*)
+    # The copy runs from its own directory; production's query runs from the fake home.
+    case "$(pwd)" in
+      "$FAKE_HOME"/*) printf '%s\\n' "$DRILL_PROD_COUNTS" ;;
+      *) printf '%s\\n' "$DRILL_COPY_COUNTS" ;;
+    esac
+    exit 0
+    ;;
+  'compose exec -T librepaper sh -c '*find*) printf '%s\\n' "$DRILL_COPY_FILES"; exit 0 ;;
+  'compose exec -T librepaper wget '*) echo ready; exit 0 ;;
+  'compose down -v'|'compose run '*) exit 0 ;;
   'image prune -f') ;;
   'compose logs --tail 50') ;;
   'compose exec -T caddy caddy reload --config /etc/caddy/Caddyfile --adapter caddyfile') ;;
@@ -369,6 +412,12 @@ esac`);
       REPLICA_WRITABLE: replicaWritable ? '1' : '0',
       REPLICA_VERSIONS_DENIED: replicaVersionsDenied ? '1' : '0',
       RESTIC_NEWEST: resticNewest,
+      DRILL_VERSION: drillVersion,
+      DRILL_SNAPSHOT_TIME: drillSnapshotTime,
+      DRILL_COPY_COUNTS: drillCopyCounts,
+      DRILL_PROD_COUNTS: drillProdCounts,
+      DRILL_COPY_FILES: String(drillCopyFiles),
+      DRILL_PROJECT_FILE: path.join(root, 'drill-projects'),
     },
     eventsFile,
     makeCalledFile,
@@ -1006,6 +1055,102 @@ test('check-replica unlocks the age identity once and hands it only to sops', ()
     for (const call of events(f).filter(([kind]) => kind === 'aws' || kind === 'restic')) {
       assert.ok(!call.join('\t').includes('AGE-SECRET-KEY'), `${call[0]} saw the identity`);
     }
+  } finally {
+    f.cleanup();
+  }
+});
+
+// The production host as backup-drill sees it: a manage that prints the release
+// version, and the restic profile the drill copies. Only drill tests write these,
+// because the other tests expect the remote directory to stay empty.
+function drillHost(f) {
+  writeFileSync(path.join(f.remote, 'manage'), '#!/bin/sh\nif [ "$1" = version ]; then echo "$DRILL_VERSION"; fi\n');
+  chmodSync(path.join(f.remote, 'manage'), 0o755);
+  writeFileSync(path.join(f.remote, 'resticprofile.toml'), '[resticprofile]\nrepository = "s3:example/restic"\n[resticprofile.env]\nRESTIC_PASSWORD = "restic-password"\n');
+}
+
+function drillCopies(f) {
+  return readdirSync(f.env.TMPDIR).filter((name) => name.startsWith('librepaper-drill.'));
+}
+
+test('backup-drill restores the newest snapshot into a separate project and removes it', () => {
+  const f = fixture();
+  try {
+    drillHost(f);
+    const result = run(f, 'backup-drill');
+    assert.equal(result.status, 0, result.stderr || result.stdout);
+    assert.match(result.stdout, /PASS: snapshot 450fafe1 restores/);
+    assert.ok(indexOfEvent(events(f), ['drill-manage', /^backup restore 450fafe1$/]) !== -1, 'the snapshot was not restored');
+    const projects = read(f.env.DRILL_PROJECT_FILE).trim().split('\n');
+    assert.ok(projects.length > 0, 'no compose project was recorded');
+    for (const project of projects) assert.match(project, /^librepaper-drill-\d+$/);
+    assert.ok(indexOfEvent(events(f), ['docker', /^compose down -v$/]) !== -1, 'the copy was not taken down');
+    assert.deepEqual(drillCopies(f), [], 'left the copy behind');
+  } finally {
+    f.cleanup();
+  }
+});
+
+test('backup-drill fails when a referenced stored file is missing, and still removes the copy', () => {
+  const f = fixture({ drillCopyFiles: 1615 });
+  try {
+    drillHost(f);
+    const result = run(f, 'backup-drill');
+    assert.notEqual(result.status, 0);
+    assert.match(result.stderr, /FAIL/);
+    assert.match(result.stdout, /1615 stored files for 1616 referenced/);
+    assert.ok(indexOfEvent(events(f), ['docker', /^compose down -v$/]) !== -1, 'the copy was not taken down');
+    assert.deepEqual(drillCopies(f), [], 'left the copy behind');
+  } finally {
+    f.cleanup();
+  }
+});
+
+test('backup-drill fails when the copy has more rows than production', () => {
+  const f = fixture({ drillCopyCounts: '300 1374 1601 14 1 9 1616' });
+  try {
+    drillHost(f);
+    const result = run(f, 'backup-drill');
+    assert.notEqual(result.status, 0);
+    assert.match(result.stdout, /more accounts than production/);
+    assert.deepEqual(drillCopies(f), [], 'left the copy behind');
+  } finally {
+    f.cleanup();
+  }
+});
+
+test('backup-drill fails when the newest snapshot is old, before restoring anything', () => {
+  const f = fixture({ drillSnapshotTime: new Date(Date.now() - 3 * 60 * 60 * 1000).toISOString().slice(0, 19).replace('T', ' ') });
+  try {
+    drillHost(f);
+    const result = run(f, 'backup-drill');
+    assert.notEqual(result.status, 0);
+    assert.match(result.stderr, /FAIL: the newest snapshot 450fafe1 is \d+ minutes old/);
+    assert.equal(indexOfEvent(events(f), ['drill-manage', /^backup restore /]), -1, 'restored an old snapshot');
+  } finally {
+    f.cleanup();
+  }
+});
+
+test('backup-drill refuses an unverified kit before copying the restic profile', () => {
+  const f = fixture({ attestationFailure: true });
+  try {
+    drillHost(f);
+    const result = run(f, 'backup-drill');
+    assert.notEqual(result.status, 0);
+    assert.ok(!events(f).some(([kind, ...rest]) => kind === 'ssh' && rest.join('\t').includes('resticprofile.toml')), 'copied the restic profile');
+  } finally {
+    f.cleanup();
+  }
+});
+
+test('backup-drill never puts the restic profile in a command argument', () => {
+  const f = fixture();
+  try {
+    drillHost(f);
+    const result = run(f, 'backup-drill');
+    assert.equal(result.status, 0, result.stderr || result.stdout);
+    for (const event of events(f)) assert.ok(!event.join('\t').includes('restic-password'), `${event[0]} carries the restic password`);
   } finally {
     f.cleanup();
   }
