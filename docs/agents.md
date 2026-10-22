@@ -124,6 +124,10 @@ curl -X POST -H "Authorization: Bearer lpt_..." -H "Content-Type: application/js
   -d '<arguments>' https://<host>/api/documents/<slug>/tools/<name>
 ```
 
+- Every write needs an `operation` object, which `librepaper mcp` adds for you. The writing tools are `document_comment`, `document_propose` and `document_apply`.
+  - `epoch` is the `operation_epoch` from your latest `document_read` result.
+  - `id` is a new key for each write, in the form `v2.<unix milliseconds>.<32 hex characters>`.
+  - When a write times out, call `document_result` with `{"kind": "operation", "target_operation": <the same operation object>}` to learn whether it landed. Do not send the write again first.
 - The token works only on these two routes, and only for its own document.
 - Comments and suggestions appear under the token's name. A person accepts or rejects each suggestion.
 - A Comment token gives comment access only. A Suggest token never applies changes, writes files, runs code or publishes.

@@ -284,6 +284,17 @@ window.sharePanelCheck = async () => {
   navigator.clipboard.writeText = clipboard;
   await press(button("Done"));
   check(!document.querySelector('textarea[aria-label="Text to copy manually"]') && !text().includes(rotated), "Done also clears the manual copy");
+  await pick("More actions for Codex", "Replace token");
+  await press([...document.querySelectorAll('[role="dialog"] button')].find((node) => node.textContent.trim() === "Replace token"));
+  const late = document.querySelector('input[aria-label="Agent token"]')?.value || "";
+  let refuse;
+  navigator.clipboard.writeText = () => new Promise((resolve, reject) => { refuse = reject; });
+  await press(button("Copy token"));
+  await press(button("Done"));
+  refuse(new Error("blocked"));
+  await flush();
+  navigator.clipboard.writeText = clipboard;
+  check(!document.querySelector('textarea[aria-label="Text to copy manually"]') && !text().includes(late), "a copy that fails after Done does not bring the token back");
   await pick("More actions for Codex", "Revoke token");
   check(text().includes("Revoke token?") && text().includes("The agent loses access at once."), "revoking a token asks first");
   await press([...document.querySelectorAll('[role="dialog"] button')].find((node) => node.textContent.trim() === "Revoke token"));

@@ -20,6 +20,9 @@
   let copied = $state("");
   let copyFallback = $state("");
   let copyTimer;
+  // Bumped whenever the reveal ends or the panel closes, so a copy that
+  // settles afterwards cannot put a dismissed token back on screen.
+  let copyGeneration = 0;
   onDestroy(() => clearTimeout(copyTimer));
   let tab = $state("links");
   let root = $state(null);
@@ -67,7 +70,7 @@
     const documentSlug = slug;
     if (open) {
       load(documentSlug);
-      return () => { generation += 1; editing = null; confirming = null; reveal = null; copyFallback = ""; };
+      return () => { generation += 1; editing = null; confirming = null; reveal = null; copyFallback = ""; copyGeneration += 1; };
     }
   });
 
@@ -163,19 +166,26 @@
     reveal = null;
     copyFallback = "";
     error = "";
+    copyGeneration += 1;
     focusBack("");
   }
 
   async function copy(value, label = "Link copied.") {
+    const attempt = copyGeneration;
     try {
       await navigator.clipboard.writeText(value);
+      if (attempt !== copyGeneration) return;
       copied = value;
       clearTimeout(copyTimer);
       copyTimer = setTimeout(() => (copied = ""), 1800);
       feedback = label;
       copyFallback = "";
       error = "";
-    } catch { copyFallback = value; error = "Copy was blocked. Select this text and copy it manually."; }
+    } catch {
+      if (attempt !== copyGeneration) return;
+      copyFallback = value;
+      error = "Copy was blocked. Select this text and copy it manually.";
+    }
   }
 
   const CONFIRM = {

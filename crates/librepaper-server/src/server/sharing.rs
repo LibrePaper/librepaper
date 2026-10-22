@@ -128,9 +128,13 @@ pub(super) fn link_expiry(asked: &str) -> Result<String, String> {
     if seconds <= 0 {
         return Err("an expiry is a duration such as 180d or 24h, or 'never'".to_string());
     }
-    Ok(librepaper_base::util::format_unix(
-        librepaper_base::util::now_unix() + seconds,
-    ))
+    // A day too far to write down would come back empty, which reads as no
+    // expiry at all, so it is refused rather than stored.
+    librepaper_base::util::now_unix()
+        .checked_add(seconds)
+        .map(librepaper_base::util::format_unix)
+        .filter(|until| !until.is_empty())
+        .ok_or_else(|| "that expiry is too far away".to_string())
 }
 
 /// A token's role word, as the stored role it maps to: a comment token is a
@@ -726,6 +730,16 @@ mod link_expiry_tests {
         let until = librepaper_base::util::parse_timestamp(&until).expect("expiry is a timestamp");
 
         assert!((before + 7 * 24 * 3600..=after + 7 * 24 * 3600).contains(&until));
+    }
+
+    /// A duration past what a timestamp can hold would format as empty, the
+    /// value that means no expiry, so a token could be made permanent by
+    /// asking for a very long one. Both kinds refuse it.
+    #[test]
+    fn an_expiry_too_far_away_is_refused_not_stored_as_none() {
+        assert!(link_expiry("1000000000d").is_err());
+        assert!(token_expiry("1000000000d").is_err());
+        assert!(token_expiry("180d").is_ok_and(|until| !until.is_empty()));
     }
 }
 
