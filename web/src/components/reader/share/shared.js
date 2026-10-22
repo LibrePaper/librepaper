@@ -7,6 +7,7 @@ export const LINK_ROLES = [
 export const TOKEN_ROLES = [
   { id: "commenter", label: "Comment" },
   { id: "suggester", label: "Suggest" },
+  { id: "editor", label: "Edit" },
 ];
 export const EXPIRIES = [["1d", "1 day"], ["7d", "7 days"], ["30d", "30 days"], ["180d", "6 months"], ["never", "Never"]];
 

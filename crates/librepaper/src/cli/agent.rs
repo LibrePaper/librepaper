@@ -48,6 +48,14 @@ pub(crate) struct McpArgs {
 pub(crate) async fn run_mcp(args: McpArgs) -> Result<(), String> {
     let Deployment { server, token } = args.deployment;
     if let Some(document) = args.document {
+        // The account token may come from LIBREPAPER_TOKEN exported for other
+        // commands, so it is not refused, only named as unused. Stdout is the
+        // MCP channel; the note goes to stderr.
+        if token.is_some() {
+            eprintln!(
+                "librepaper mcp: the account token (--token or LIBREPAPER_TOKEN) is not used with --document; the agent token comes from {AGENT_TOKEN_VARIABLE}"
+            );
+        }
         let agent_token = agent_token()?;
         let link = DocumentLink::parse(&document, "")?;
         let peer = AutomationPeer::open_agent_token(link, agent_token).await?;
