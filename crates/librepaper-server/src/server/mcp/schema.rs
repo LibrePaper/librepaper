@@ -31,21 +31,30 @@ pub(super) fn tools() -> &'static Vec<Value> {
 /// for a Commenter, so a Commenter is not offered them.
 const EDITOR_TOOLS: [&str; 2] = ["document_propose", "document_apply"];
 
+/// The tool that writes the source directly. A suggest-only caller proposes
+/// tracked changes and never applies, so it is not offered this one.
+const SOURCE_WRITE_TOOLS: [&str; 1] = ["document_apply"];
+
 /// The tools a caller may be offered: every served tool when `editor` is
 /// true, and every served tool except `EDITOR_TOOLS` when it is not. A
 /// Commenter gets read, comment and result only, and the comment tool without
-/// the `label` action, which the server also refuses below Editor.
-pub(super) fn served_tools(editor: bool) -> Vec<Value> {
+/// the `label` action, which the server also refuses below Editor. A
+/// `suggest_only` editor is offered propose but neither apply nor the
+/// `label` action.
+pub(super) fn served_tools(editor: bool, suggest_only: bool) -> Vec<Value> {
+    let full = editor && !suggest_only;
     all_served_tools()
         .iter()
         .filter(|tool| {
-            editor
-                || !tool["name"]
-                    .as_str()
-                    .is_some_and(|name| EDITOR_TOOLS.contains(&name))
+            let name = tool["name"].as_str().unwrap_or_default();
+            if !editor {
+                !EDITOR_TOOLS.contains(&name)
+            } else {
+                !(suggest_only && SOURCE_WRITE_TOOLS.contains(&name))
+            }
         })
         .map(|tool| {
-            if editor {
+            if full {
                 tool.clone()
             } else {
                 commenter_view(tool)
@@ -271,7 +280,7 @@ mod tests {
     /// it.
     #[test]
     fn served_tools_omit_the_operation_fields_the_bridge_now_injects() {
-        for tool in served_tools(true) {
+        for tool in served_tools(true, false) {
             let properties = &tool["inputSchema"]["properties"];
             assert!(properties.get("operation").is_none(), "{}", tool["name"]);
             assert!(
@@ -285,7 +294,7 @@ mod tests {
                 .unwrap_or_default();
             assert!(!required.iter().any(|name| name == "operation"));
         }
-        let served = served_tools(true);
+        let served = served_tools(true, false);
         let result = served
             .iter()
             .find(|t| t["name"] == "document_result")
@@ -307,11 +316,29 @@ mod tests {
         assert!(propose["properties"]["operation"].is_object());
     }
 
+    /// A suggest-only caller proposes but never applies, and its comment tool
+    /// has no `label` action.
+    #[test]
+    fn suggest_only_callers_are_offered_propose_but_not_apply_or_label() {
+        let tools = served_tools(true, true);
+        let names: Vec<&str> = tools.iter().filter_map(|tool| tool["name"].as_str()).collect();
+        assert!(names.contains(&"document_propose"));
+        assert!(!names.contains(&"document_apply"));
+        let comment = tools
+            .iter()
+            .find(|t| t["name"] == "document_comment")
+            .expect("document_comment");
+        let actions = comment["inputSchema"]["properties"]["action"]["enum"]
+            .as_array()
+            .expect("action enum");
+        assert!(!actions.contains(&json!("label")));
+    }
+
     /// A Commenter is offered only the tools it can use; an Editor is offered
     /// all of them.
     #[test]
     fn commenters_are_offered_no_editor_only_tools() {
-        let commenter_tools = served_tools(false);
+        let commenter_tools = served_tools(false, false);
         let commenter: Vec<&str> = commenter_tools
             .iter()
             .filter_map(|tool| tool["name"].as_str())
@@ -320,7 +347,7 @@ mod tests {
             commenter,
             ["document_read", "document_comment", "document_result"]
         );
-        let editor_tools = served_tools(true);
+        let editor_tools = served_tools(true, false);
         let editor: Vec<&str> = editor_tools
             .iter()
             .filter_map(|tool| tool["name"].as_str())
@@ -331,7 +358,7 @@ mod tests {
         // Labelling needs Editor: a Commenter's document_comment offers no
         // `label` action and its description does not mention labels.
         let comment_for = |editor: bool| {
-            served_tools(editor)
+            served_tools(editor, false)
                 .into_iter()
                 .find(|t| t["name"] == "document_comment")
                 .expect("document_comment")

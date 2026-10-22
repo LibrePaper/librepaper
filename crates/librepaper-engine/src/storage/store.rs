@@ -346,12 +346,6 @@ impl IndexEntry {
         before != self.links.len()
     }
 
-    /// Removes every agent token. Ownership changing hands calls this, since a
-    /// token acts for the owner who minted it.
-    pub fn drop_agents(&mut self) {
-        self.links.retain(|link| link.kind == LinkKind::Link);
-    }
-
     /// Drops every guest whose link no longer lives. Called whenever a link
     /// is rotated or revoked, since rotating replaces the row a guest's hash
     /// pointed at and revoking removes it outright -- either way, a guest

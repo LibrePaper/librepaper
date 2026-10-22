@@ -88,13 +88,3 @@ fn guests_of_a_dropped_link_are_pruned_and_agents_never_hold_guests() {
     assert_eq!(entry.guests.len(), 1);
     assert_eq!(entry.guests[0].id, "2");
 }
-
-#[test]
-fn dropping_agents_keeps_the_links() {
-    let mut entry = IndexEntry::default();
-    entry.add_link(grant('a', "reader", LinkKind::Link));
-    entry.add_link(grant('b', "commenter", LinkKind::Agent));
-    entry.drop_agents();
-    assert_eq!(entry.links.len(), 1);
-    assert_eq!(entry.links[0].kind, LinkKind::Link);
-}

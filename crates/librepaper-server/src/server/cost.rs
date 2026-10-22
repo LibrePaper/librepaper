@@ -360,6 +360,18 @@ async fn middleware_inner(
         }
         return super::graphs::routes::admin(&server, request).await;
     }
+    // An owner-issued agent token is refused everywhere by default. The two
+    // document tool routes for the token's own document are the only
+    // exception, so a new route or the socket answers 401 without anyone
+    // having to remember to list it.
+    if let Some(token) = agent_token_bearer(request.headers()) {
+        if !agent_token_path_allowed(&token, &path, &method) {
+            return write_json(
+                401,
+                &json!({"error": "an agent token works only on its document's tools"}),
+            );
+        }
+    }
     // Authenticate before request-budget admission so the budget can be
     // keyed on the authenticated principal rather than only the network.
     let authentication = server
@@ -433,6 +445,30 @@ async fn middleware_inner(
             Response::from_parts(parts, Body::from_stream(stream))
         }
         None => response,
+    }
+}
+
+/// Whether an `lpt_` token may be presented on this request: `GET
+/// /api/documents/{slug}/tools` or `POST /api/documents/{slug}/tools/{name}`,
+/// with the slug the token names.
+fn agent_token_path_allowed(token: &str, path: &str, method: &Method) -> bool {
+    let Some((slug, _)) = parse_agent_token(token) else {
+        return false;
+    };
+    let Some(rest) = path
+        .strip_prefix("/api/documents/")
+        .and_then(|rest| rest.strip_prefix(slug))
+    else {
+        return false;
+    };
+    match rest {
+        "/tools" => method == Method::GET,
+        _ => {
+            method == Method::POST
+                && rest
+                    .strip_prefix("/tools/")
+                    .is_some_and(|name| !name.is_empty() && !name.contains('/'))
+        }
     }
 }
 
