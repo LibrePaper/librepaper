@@ -120,6 +120,7 @@ fn operation() -> String {
 fn sync_block(revision: i64) -> Value {
     json!({
         "revision": revision,
+        "connection_id": CONNECTION,
         "checkpoint": "d".repeat(40),
         "synced_paths": ["paper.md", "intro.md"],
     })
@@ -476,4 +477,72 @@ async fn source_change_refuses_a_malformed_sync_block() {
     assert!(!has_file(&d, "late.md").await);
     let (_, value) = get_link(&d, &owner).await;
     assert_eq!(value["link"]["revision"], 1);
+}
+
+const OTHER_CONNECTION: &str = "0190b1c2-0000-7000-8000-000000000002";
+
+#[tokio::test]
+#[ignore = "requires LIBREPAPER_TEST_POSTGRES_URL"]
+async fn put_and_source_change_carrying_another_connection_are_stale() {
+    let Some(d) = deployment("sync-connection-stale").await else {
+        return;
+    };
+    let owner = owner_bearer(&d);
+    put_link(&d, &owner, &link_body(None, "main")).await;
+
+    let mut put = link_body(Some(1), "hijack");
+    put["connection_id"] = json!(OTHER_CONNECTION);
+    let (status, value) = put_link(&d, &owner, &put).await;
+    assert_eq!(status, 409, "{value}");
+    assert_eq!(value["link"]["revision"], 1);
+    assert_eq!(value["link"]["branch"], "main");
+    assert_eq!(value["link"]["connection_id"], CONNECTION);
+
+    let mut body = json!({
+        "operation": operation(),
+        "change": { "create": [ { "path": "late.md", "text": "Late.\n" } ] },
+        "sync": sync_block(1),
+    });
+    body["sync"]["connection_id"] = json!(OTHER_CONNECTION);
+    let (status, value) = source_change(&d, &owner, &body).await;
+    assert_eq!(status, 409, "{value}");
+    assert_eq!(value["reason"], "stale");
+    assert_eq!(value["link"]["revision"], 1);
+    assert!(!has_file(&d, "late.md").await);
+}
+
+#[tokio::test]
+#[ignore = "requires LIBREPAPER_TEST_POSTGRES_URL"]
+async fn a_request_from_before_a_reconnect_is_refused() {
+    let Some(d) = deployment("sync-connection-reconnect").await else {
+        return;
+    };
+    let owner = owner_bearer(&d);
+    put_link(&d, &owner, &link_body(None, "main")).await;
+    let uri = format!("/api/documents/{}/sync", d.slug);
+    let reply = d
+        .server
+        .handle_sync_link(request("DELETE", &uri, &owner, None), &arrival(), &d.slug)
+        .await;
+    assert_eq!(reply.status().as_u16(), 204);
+    let mut reconnect = link_body(None, "main");
+    reconnect["connection_id"] = json!(OTHER_CONNECTION);
+    let (status, value) = put_link(&d, &owner, &reconnect).await;
+    assert_eq!(status, 200, "{value}");
+    assert_eq!(value["link"]["revision"], 1);
+
+    let (status, value) = put_link(&d, &owner, &link_body(Some(1), "late")).await;
+    assert_eq!(status, 409, "{value}");
+    let body = json!({
+        "operation": operation(),
+        "change": { "create": [ { "path": "late.md", "text": "Late.\n" } ] },
+        "sync": sync_block(1),
+    });
+    let (status, value) = source_change(&d, &owner, &body).await;
+    assert_eq!(status, 409, "{value}");
+    assert_eq!(value["reason"], "stale");
+    assert!(!has_file(&d, "late.md").await);
+    let (_, value) = get_link(&d, &owner).await;
+    assert_eq!(value["link"]["revision"], 1);
+    assert_eq!(value["link"]["connection_id"], OTHER_CONNECTION);
 }

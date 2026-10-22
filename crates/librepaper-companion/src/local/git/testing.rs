@@ -466,7 +466,7 @@ async fn the_journal_round_trips_and_forget_keeps_the_repository() {
     assert_eq!(fx.ok("journal", json!({})).await["entries"], json!([]));
     fx.ok(
         "journal",
-        json!({"entries": [{"op": "x", "phase": "planned"}]}),
+        json!({"upsert": {"id": "a", "op": "x", "phase": "planned"}}),
     )
     .await;
     assert_eq!(
@@ -490,6 +490,48 @@ async fn the_journal_round_trips_and_forget_keeps_the_repository() {
             .status,
         404
     );
+}
+
+#[tokio::test]
+async fn journal_changes_are_atomic_per_entry() {
+    let fx = Fixture::new();
+    fx.connect().await;
+    let (one, two) = tokio::join!(
+        fx.ok("journal", json!({"upsert": {"id": "a", "phase": "one"}})),
+        fx.ok("journal", json!({"upsert": {"id": "b", "phase": "two"}})),
+    );
+    assert_eq!(one["ok"], true);
+    assert_eq!(two["ok"], true);
+    let entries = fx.ok("journal", json!({})).await["entries"].clone();
+    assert_eq!(entries.as_array().unwrap().len(), 2);
+
+    fx.ok("journal", json!({"upsert": {"id": "a", "phase": "done"}}))
+        .await;
+    let entries = fx.ok("journal", json!({})).await["entries"].clone();
+    assert_eq!(entries.as_array().unwrap().len(), 2);
+    let a = entries
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|entry| entry["id"] == "a")
+        .unwrap();
+    assert_eq!(a["phase"], "done");
+
+    fx.ok("journal", json!({"remove": "a"})).await;
+    fx.ok("journal", json!({"remove": "missing"})).await;
+    let entries = fx.ok("journal", json!({})).await["entries"].clone();
+    assert_eq!(entries, json!([{"id": "b", "phase": "two"}]));
+
+    for body in [
+        json!({"upsert": {"phase": "no id"}}),
+        json!({"upsert": {"id": "x".repeat(129)}}),
+        json!({"upsert": {"id": "a"}, "remove": "a"}),
+        json!({"entries": []}),
+    ] {
+        assert_eq!(fx.call("journal", body).await.unwrap_err().status, 400);
+    }
+    let huge = json!({"upsert": {"id": "big", "text": "x".repeat(1024 * 1024)}});
+    assert_eq!(fx.call("journal", huge).await.unwrap_err().status, 413);
 }
 
 #[tokio::test]

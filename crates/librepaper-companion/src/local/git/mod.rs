@@ -585,7 +585,7 @@ impl GitManager {
         let conn = storage::conn_for(&self.root, origin, &project);
         match op {
             "status" => return self.status(&conn).await,
-            "journal" => return self.journal(&conn, body),
+            "journal" => return self.journal(&conn, body).await,
             "branches" => return self.branches(&conn, body).await,
             _ => {}
         }

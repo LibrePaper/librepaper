@@ -188,21 +188,69 @@ impl GitManager {
         write_json_file(&conn.file("assets.json"), table, "Git asset table")
     }
 
-    /// The stored journal entries, `[]` when there are none.
-    pub(super) fn journal(&self, conn: &Conn, body: &[u8]) -> Result<Value, GitError> {
+    /// The journal. With no other field it answers the stored entries, `[]`
+    /// when there are none. `upsert` replaces the entry with the same `id` or
+    /// appends it, and `remove` drops the entry with that `id`. A change reads,
+    /// edits and rewrites the file under the connection's lock, so two windows
+    /// never overwrite each other's entries.
+    pub(super) async fn journal(&self, conn: &Conn, body: &[u8]) -> Result<Value, GitError> {
         #[derive(Deserialize)]
+        #[serde(deny_unknown_fields)]
         struct Request {
-            entries: Option<Vec<Value>>,
+            #[allow(dead_code)]
+            project: String,
+            upsert: Option<Value>,
+            remove: Option<String>,
         }
         let request: Request = parse(body)?;
         let path = conn.file("journal.json");
-        let Some(entries) = request.entries else {
-            let stored = std::fs::read(&path)
+        let read = || {
+            std::fs::read(&path)
                 .ok()
                 .and_then(|bytes| serde_json::from_slice::<Vec<Value>>(&bytes).ok())
-                .unwrap_or_default();
-            return Ok(json!({"entries": stored}));
+                .unwrap_or_default()
         };
+        let upsert = match (request.upsert, &request.remove) {
+            (None, None) => return Ok(json!({"entries": read()})),
+            (Some(_), Some(_)) => {
+                return Err(GitError::bad(
+                    "A journal request upserts or removes, not both.",
+                ))
+            }
+            (upsert, _) => upsert,
+        };
+        let entry_id = |entry: &Value| -> Option<String> {
+            entry.get("id").and_then(Value::as_str).map(str::to_string)
+        };
+        let upsert = match upsert {
+            Some(entry) => {
+                let valid = entry.is_object()
+                    && entry_id(&entry).is_some_and(|id| !id.is_empty() && id.len() <= 128);
+                if !valid {
+                    return Err(GitError::bad(
+                        "A journal entry is an object with an id of 1 to 128 characters.",
+                    ));
+                }
+                Some(entry)
+            }
+            None => None,
+        };
+        let lock = self.lock_for(&conn.key);
+        let _guard = lock.lock_owned().await;
+        let mut entries = read();
+        match upsert {
+            Some(entry) => {
+                let id = entry_id(&entry);
+                match entries.iter().position(|stored| entry_id(stored) == id) {
+                    Some(at) => entries[at] = entry,
+                    None => entries.push(entry),
+                }
+            }
+            None => {
+                let id = request.remove;
+                entries.retain(|stored| entry_id(stored) != id);
+            }
+        }
         let bytes = serde_json::to_vec(&entries).map_err(|error| {
             GitError::internal(format!("could not encode the journal: {error}"))
         })?;
