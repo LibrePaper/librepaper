@@ -44,6 +44,7 @@
   import { provide } from "../lib/support/providers.js";
   import * as localBridge from "../lib/desktop/client.js";
   import { createPreferences } from "../lib/reader/preferences.svelte.js";
+  import { warmReader } from "../lib/warm-reader.js";
 
   let { initialSettings = "" } = $props();
   const preferences = createPreferences();
@@ -738,6 +739,7 @@
   async function showLocalProjects() {
     try {
       const local = await localProjects();
+      if (local.length > 0) void warmReader();
       const bySlug = new Map(documents.map((document_) => [document_.slug, document_]));
       for (const record of local) {
         if (bySlug.has(record.identity.slug)) continue;
@@ -1136,6 +1138,7 @@
           return;
         }
         me = who;
+        if (who.provider) void warmReader();
         // Only a publisher's listing carries tags, so anybody else has no tag
         // to show and the address goes back to Projects.
         if (!who.can_publish && place === "tag") goTo("projects");
