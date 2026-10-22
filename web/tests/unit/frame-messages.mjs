@@ -231,3 +231,26 @@ advance(10_000);
 assert.ok(!received.some((message) => message.text?.startsWith("stale-") || message.text === "after-dispose"));
 
 console.log("frame-messages: schema boundaries, normalization, event authentication, rate limiting and refill passed");
+
+// A frame on the app's own origin is never trusted, even when the source and
+// the docs origin agree, because it would share the app's storage.
+{
+  const saved = Object.getOwnPropertyDescriptor(globalThis, "location");
+  Object.defineProperty(globalThis, "location", { value: new URL("https://app.example/"), configurable: true });
+  try {
+    const sameWindow = {};
+    const seen = [];
+    const sameOrigin = createFrameMessageReceiver({
+      getFrame: () => ({ contentWindow: sameWindow }),
+      getSrc: () => "https://app.example/raw/paper/",
+      getDocsOrigin: () => "https://app.example",
+      onmessage: (message) => seen.push(message),
+    });
+    sameOrigin.receive({ data: { librepaper: true, type: "ready", text: "x" }, source: sameWindow, origin: "https://app.example" });
+    assert.equal(seen.length, 0);
+    sameOrigin.dispose();
+  } finally {
+    if (saved) Object.defineProperty(globalThis, "location", saved);
+    else delete globalThis.location;
+  }
+}
