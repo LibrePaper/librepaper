@@ -225,17 +225,20 @@ method = "HEAD"
 }
 ```
 
-- Turn on versioning for the backups bucket. Add a lifecycle rule that expires noncurrent versions after 30 days, removes expired delete markers, and aborts incomplete uploads after 7 days.
+- Turn on versioning for the backups bucket. The bucket then keeps the old copy when a file is changed or deleted, which protects against mistakes. Add a lifecycle rule that removes those old copies after 30 days, so storage does not grow forever.
 
 ### A copy the server cannot delete
 
-Versioning alone does not stop someone with root on the server, because on some providers `s3:DeleteObject` also deletes old versions.
+The server needs a key that can write to the backups bucket, and that key can also delete from it. If someone takes over the server, they can erase your live data and your backups in one go. Bucket versioning keeps old copies of changed or deleted files, but on some providers the same key can delete those old copies too.
 
-- Replicate the backups bucket to a second bucket in your provider's object storage. The server's key has no rights on the replica, and it cannot change the replication rule.
-- Turn on versioning on both buckets, and replicate delete markers. A delete then reaches the replica only as a delete marker, and the file stays there as an old version.
-- Give the replica the same 30-day lifecycle rule. Without delete marker replication, the replica keeps every file forever.
-- Check who owns the replica. On some providers, a bucket's owner has full rights whatever its policy says. Keep the owning user without any access keys, and create the read key under a separate user.
-- Use a read-only key for checks and restores.
+The fix is a second copy that the server has no key for. Many object storage services, including AWS S3, OVHcloud and Backblaze B2, can copy every new file from one bucket to another bucket on their side. This is called replication. The server never talks to the second bucket, so it cannot damage it.
+
+Set it up in your provider's console:
+
+1. Create a second bucket, the replica, and turn on versioning in both buckets.
+2. Add a replication rule from the backups bucket to the replica. Turn on the option to replicate deletes, often called delete markers. A file deleted from the backups bucket then stays in the replica as an old version, which you can still restore.
+3. Give the replica a lifecycle rule that removes old versions after 30 days. Without it, the replica keeps every file forever.
+4. Create a read-only key for the replica, under a different user from the one that owns the bucket. On some providers the owner can always delete, whatever its policy says. Keep that key on your own computer, never on the server.
 
 ```json
 {
@@ -247,8 +250,7 @@ Versioning alone does not stop someone with root on the server, because on some 
 }
 ```
 
-- Replication is asynchronous, and nothing alerts when it stops. Check the replica now and then from your own machine with the read-only key.
-- Run these checks with `--no-lock`, because the read-only key cannot write lock files.
+Replication runs in the background, and nothing warns you if it stops. Check the replica from your own computer now and then. The `--no-lock` flag lets restic read without writing, which a read-only key cannot do.
 
 ```sh
 export RESTIC_REPOSITORY=s3:s3.provider.example/your-backups-replica/restic
@@ -257,9 +259,9 @@ restic snapshots --no-lock --latest 1   # the newest snapshot should be about an
 restic check --no-lock
 ```
 
-- To restore after damage, copy the replica as it was before the damage, for example with `rclone copy --s3-version-at`. Then restore from that copy.
-- An append-only backup key does not work with restic for long runs. Restic deletes its own lock files, and a run that cannot refresh its lock for about 22 minutes cancels itself.
-- A replica in the same provider account does not survive a takeover of that account. That is one more reason for the account security in [Accounts](#accounts).
+- **To restore after an attack,** first copy the replica as it was before the damage, for example with `rclone copy --s3-version-at`. Then restore from that copy.
+- **A key that can add but not delete does not work.** Restic must delete its own lock files, and it stops a backup that cannot do so for about 22 minutes.
+- **The replica sits in the same provider account.** Someone who takes over that account reaches both buckets, which is why [Accounts](#accounts) comes first.
 
 ### Practice a restore
 
