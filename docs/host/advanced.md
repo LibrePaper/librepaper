@@ -154,14 +154,15 @@ Set it up in your provider's console:
 
 1. Create a second bucket, the replica, and turn on versioning in both buckets.
 2. Add a replication rule from the backups bucket to the replica. Turn on the option to replicate deletes, often called delete markers. A file deleted from the backups bucket then stays in the replica as an old version, which you can still restore.
-3. Give the replica a lifecycle rule that removes old versions after 30 days. Without it, the replica keeps every file forever.
-4. Create a read-only key for the replica, under a different user from the one that owns the bucket. On some providers the owner can always delete, whatever its policy says. Keep that key on your own computer, never on the server.
+3. Copy the files that are already in the backups bucket. Replication only copies new files, and new snapshots depend on old ones. Most consoles have a one-time job for this, such as Batch Replication on AWS. Wait until it reports every file copied.
+4. Give the replica a lifecycle rule that removes old versions after 30 days. Without it, the replica keeps every file forever.
+5. Create a read-only key for the replica, under a different user from the one that owns the bucket. On some providers the owner can always delete, whatever its policy says. Keep that key on your own computer, never on the server. It needs the two version permissions, because a restore after an attack reads old versions.
 
 ```json
 {
   "Statement": [{
     "Effect": "Allow",
-    "Action": ["s3:GetObject", "s3:ListBucket", "s3:GetBucketLocation"],
+    "Action": ["s3:GetObject", "s3:GetObjectVersion", "s3:ListBucket", "s3:ListBucketVersions", "s3:GetBucketLocation"],
     "Resource": ["arn:aws:s3:::your-backups-replica", "arn:aws:s3:::your-backups-replica/*"]
   }]
 }
@@ -176,9 +177,16 @@ restic snapshots --no-lock --latest 1   # the newest snapshot should be about an
 restic check --no-lock
 ```
 
+Before you rely on the replica, restore the latest snapshot from it once with the same variables. It should finish without errors.
+
+```sh
+restic restore --no-lock latest --target /tmp/replica-test
+```
+
 - **To restore after an attack,** first copy the replica as it was before the damage, for example with `rclone copy --s3-version-at`. Then restore from that copy.
 - **A key that can add but not delete does not work.** Restic must delete its own lock files, and it stops a backup that cannot do so for about 22 minutes.
 - **The replica sits in the same provider account.** Someone who takes over that account reaches both buckets, which is why [Accounts](security.html#accounts) comes first.
+- **The replica gives you a window, not a permanent copy.** Deleted files stay for 30 days. Damage that goes unnoticed for longer cannot be undone from the replica.
 
 ### Inspect a backup
 

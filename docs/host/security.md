@@ -97,15 +97,17 @@ Only you need SSH and the admin console, so they do not have to be open to the w
 
 The setup takes seven steps.
 
-1. Tag the server in the tailnet policy. Let your own devices reach it on ports 22 and 443 only. The server reaches none of your devices.
+1. Tag the server in the tailnet policy. Let only your operators reach it, on ports 22 and 443. The server reaches none of your devices.
 
    ```json
-   "tagOwners": { "tag:server": ["autogroup:admin"] },
+   "groups": { "group:operators": ["you@example.com"] },
+   "tagOwners": { "tag:server": ["group:operators"] },
    "grants": [
-     { "src": ["autogroup:member"], "dst": ["autogroup:member"], "ip": ["*"] },
-     { "src": ["autogroup:member"], "dst": ["tag:server"], "ip": ["tcp:22", "tcp:443"] }
+     { "src": ["group:operators"], "dst": ["tag:server"], "ip": ["tcp:22", "tcp:443"] }
    ]
    ```
+
+   Keep your other rules, but make sure none of them lets `tag:server` reach anything. The default policy allows all traffic, including from the server to your devices.
 
 2. Install Tailscale on the server and join it with the tag. Use plain `tailscale up`, not `--ssh`, so OpenSSH keys keep governing login. Tagged machines do not expire.
 3. Turn off Tailscale's own netfilter rules. By default, Tailscale masquerades tailnet traffic that it forwards into a Docker container, so Caddy sees the Docker gateway address instead of the tailnet address.
@@ -143,6 +145,8 @@ The setup takes seven steps.
    docker compose exec -T caddy caddy reload --config /etc/caddy/Caddyfile --adapter caddyfile
    ```
 
+   If you run [your own Caddy](advanced.html#behind-your-own-caddy) in front of LibrePaper, put this block in that Caddy instead, with the upstream from that section. Its site block for LibrePaper must then leave out the admin name.
+
 6. On your own machines, point the admin name at the server's tailnet address. Add a line such as `100.64.0.10 admin.paper.example` to `/etc/hosts`. A browser that uses DNS over HTTPS may ignore `/etc/hosts` and get a 403 from the public address. In Firefox, add the name to `ExcludedDomains` in the `DNSOverHTTPS` policy.
 7. Once SSH works over the tailnet, remove the SSH rule from the provider firewall.
 
@@ -170,12 +174,14 @@ Backups are your way back from a takeover as well as from a failed disk. [Backup
 
 ## Upgrades
 
-Verify each release kit before you install it.
+Verify each release kit, then upgrade from that same file. Without `LIBREPAPER_KIT`, `./manage upgrade` downloads a second copy that nobody checked.
 
 ```sh
+# in the librepaper/ directory on the server
 gh release download vX.Y.Z --repo LibrePaper/librepaper --pattern librepaper-deploy.tar.gz
 gh attestation verify librepaper-deploy.tar.gz --repo LibrePaper/librepaper \
   --signer-workflow LibrePaper/librepaper/.github/workflows/publish-docker.yml
+LIBREPAPER_KIT=librepaper-deploy.tar.gz ./manage upgrade vX.Y.Z
 ```
 
 - Release kits carry a build provenance attestation from the release workflow.
