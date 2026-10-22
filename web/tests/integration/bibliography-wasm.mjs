@@ -58,7 +58,7 @@ let fetches = 0;
 const served = readFileSync(new URL("../../wasm/bibliography.wasm", import.meta.url));
 const retryUrl = `https://example.test/wasm/${await sha256Hex(served)}/bibliography.wasm`;
 globalThis.fetch = async () => {
-  if (++fetches <= 2) throw new Error("temporary failure");
+  if (++fetches <= 1) throw new Error("temporary failure");
   return new Response(served, { headers: { "Content-Type": "application/wasm" } });
 };
 try {

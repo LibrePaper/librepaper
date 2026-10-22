@@ -7,6 +7,7 @@
 //! `BASE_PATH`, and never reaches machine management.
 
 use super::*;
+use hmac::{Hmac, Mac};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
@@ -22,6 +23,7 @@ struct TokenFile {
 
 pub(super) struct ControlAuth {
     instance: String,
+    token: String,
     token_hash: String,
     origin: String,
 }
@@ -71,8 +73,19 @@ impl ControlAuth {
         Ok(Self {
             instance: instance.to_string(),
             token_hash: hex::encode(Sha256::digest(token.as_bytes())),
+            token,
             origin,
         })
+    }
+
+    /// The answer to a health challenge: the hex HMAC-SHA256 of the nonce
+    /// under the control token. Only a process that holds the token can give
+    /// it, so a process that merely took over the port cannot.
+    pub(super) fn prove(&self, nonce: &[u8]) -> String {
+        let mut mac = Hmac::<Sha256>::new_from_slice(self.token.as_bytes())
+            .expect("HMAC takes any key length");
+        mac.update(nonce);
+        hex::encode(mac.finalize().into_bytes())
     }
 
     #[cfg(test)]

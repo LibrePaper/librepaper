@@ -37,14 +37,18 @@ try {
   const link = new URL(sharing.links.editor.url, deployment.base).href;
 
   // The record the desktop app writes before it starts a runner, under the
-  // name the runner derives (`runner_connection_name`).
+  // name the runner derives (`runner_connection_name`). It holds the document
+  // URL without its key: the bridge authenticates with the grant alone and
+  // the server resolves the link from it.
+  const documentUrl = new URL(link);
+  documentUrl.hash = "";
   state = await mkdtemp(join(tmpdir(), "librepaper-agent-bridge-"));
   const conversation = "c".repeat(32);
-  const name = `runner-${createHash("sha256").update(`${link}\0${conversation}`).digest("hex").slice(0, 48)}`;
+  const name = `runner-${createHash("sha256").update(`${documentUrl.href}\0${conversation}`).digest("hex").slice(0, 48)}`;
   await mkdir(join(state, "librepaper", "local"), { recursive: true });
   const now = Math.floor(Date.now() / 1000);
   await writeFile(join(state, "librepaper", "local", "connections.json"),
-    JSON.stringify({ [name]: { link, origin: "http://127.0.0.1", created: now, used: now } }), { mode: 0o600 });
+    JSON.stringify({ [name]: { link: documentUrl.href, origin: "http://127.0.0.1", created: now, used: now } }), { mode: 0o600 });
 
   // What the sidebar runner hands its bridge: the scoped grant the signed-in
   // page mints, in a private file beside the connection record, named only in
