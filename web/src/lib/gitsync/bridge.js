@@ -139,7 +139,10 @@ export function createBridge(request = gitRequest) {
     keep: (operation, refs) => request("keep", { operation, refs }),
     release: (operation) => request("release", { operation }),
     journal: async () => (await request("journal", {})).entries,
-    writeJournal: (entries) => request("journal", { entries }),
+    /// An entry replaces the one with its id or is appended; neither call
+    /// rewrites the whole file, so another window's entries are never lost.
+    journalUpsert: (entry) => request("journal", { upsert: entry }),
+    journalRemove: (id) => request("journal", { remove: id }),
     forget: () => request("forget", {}),
   };
 }
