@@ -490,8 +490,8 @@ impl Server {
                 json!({"id": grant.id(), "kind": "link", "url": format!("/docs/{slug}#k={key}")})
             }
             "token" => {
-                let role = parse_token_role(&wanted.role)
-                    .ok_or("a token is 'comment' or 'suggest'")?;
+                let role =
+                    parse_token_role(&wanted.role).ok_or("a token is 'comment' or 'suggest'")?;
                 if name.is_empty() {
                     return Err("a token needs a name".to_string());
                 }
@@ -520,7 +520,11 @@ impl Server {
         let mut grant = existing.clone();
         grant.hash = hash_link_key(&key);
         grant.since = librepaper_base::util::timestamp();
-        if let Some(until) = wanted.until.as_deref().filter(|until| !until.trim().is_empty()) {
+        if let Some(until) = wanted
+            .until
+            .as_deref()
+            .filter(|until| !until.trim().is_empty())
+        {
             grant.until = match existing.kind {
                 LinkKind::Link => link_expiry(until)?,
                 LinkKind::Agent => token_expiry(until)?,
@@ -626,7 +630,13 @@ impl Server {
 /// Checks an `update` against the row it names, so a bad duration or a bad
 /// token field is answered with its reason before anything is written.
 fn check_update(kind: LinkKind, wanted: &UpdateRequest) -> Result<(), String> {
-    apply_update(&mut LinkGrant { kind, ..Default::default() }, wanted)
+    apply_update(
+        &mut LinkGrant {
+            kind,
+            ..Default::default()
+        },
+        wanted,
+    )
 }
 
 /// Applies an `update` to a row: only the fields it sends change, and the
@@ -642,7 +652,11 @@ fn apply_update(link: &mut LinkGrant, wanted: &UpdateRequest) -> Result<(), Stri
         }
         link.label = name;
     }
-    if let Some(until) = wanted.until.as_deref().filter(|until| !until.trim().is_empty()) {
+    if let Some(until) = wanted
+        .until
+        .as_deref()
+        .filter(|until| !until.trim().is_empty())
+    {
         link.until = match link.kind {
             LinkKind::Link => link_expiry(until)?,
             LinkKind::Agent => token_expiry(until)?,

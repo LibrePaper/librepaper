@@ -222,16 +222,15 @@ async fn the_share_route_creates_updates_replaces_and_revokes_by_id() {
         return;
     };
     let (status, first) = served
-        .share(json!({"create": {"kind": "link", "role": "reader", "name": "first", "until": "7d"}}))
+        .share(
+            json!({"create": {"kind": "link", "role": "reader", "name": "first", "until": "7d"}}),
+        )
         .await;
     assert_eq!(status, 200, "{first}");
     assert_eq!(first["created"]["kind"], "link");
     let first_id = first["created"]["id"].as_str().unwrap().to_string();
     assert_eq!(first_id.len(), 16);
-    assert!(first["created"]["url"]
-        .as_str()
-        .unwrap()
-        .contains("#k="));
+    assert!(first["created"]["url"].as_str().unwrap().contains("#k="));
 
     let (_, second) = served
         .share(json!({"create": {"kind": "link", "role": "reader", "until": "1d"}}))
@@ -321,7 +320,9 @@ async fn a_token_has_a_name_an_expiry_and_no_key_in_the_listing() {
     assert_eq!(row["name"], "Paul's assistant");
     assert!(row.get("key").is_none() && row.get("url").is_none());
     assert!(
-        !listing.to_string().contains(token.split_once('.').unwrap().1),
+        !listing
+            .to_string()
+            .contains(token.split_once('.').unwrap().1),
         "nothing keeps the token's key"
     );
     let (status, refused) = served
@@ -369,7 +370,13 @@ async fn a_token_key_opens_no_browser_link() {
     };
     let (token, _) = served.mint_token("comment", "reviewer").await;
     let key = token.split_once('.').unwrap().1;
-    let entry = served.server.store.get_result(&served.slug).await.unwrap().unwrap();
+    let entry = served
+        .server
+        .store
+        .get_result(&served.slug)
+        .await
+        .unwrap()
+        .unwrap();
     let hash = super::sharing::hash_link_key(key);
     let now = librepaper_base::util::now_unix();
     assert!(entry.live_link(&hash, now).is_none());
@@ -395,7 +402,11 @@ async fn a_suggest_token_proposes_but_cannot_apply_and_a_comment_token_cannot_pr
 
     let (view, epoch, range) = served.read(&suggest, "interval covers").await;
     let (status, read) = served
-        .call(&suggest, "document_read", json!({"queries": [{"kind": "source", "path": "paper.md", "start": 0, "end": 5}]}))
+        .call(
+            &suggest,
+            "document_read",
+            json!({"queries": [{"kind": "source", "path": "paper.md", "start": 0, "end": 5}]}),
+        )
         .await;
     assert_eq!(status, 200, "{read}");
     assert_eq!(read["result"]["permissions"]["apply"], false);
@@ -471,7 +482,13 @@ async fn a_comment_through_a_token_is_the_tokens_and_shows_its_name() {
         .await;
     assert_eq!(status, 200, "{created}");
     let comment_id = created["result"]["comment_id"].as_str().expect("{created}");
-    let room = served.server.documents.rooms.get(&served.slug).await.unwrap();
+    let room = served
+        .server
+        .documents
+        .rooms
+        .get(&served.slug)
+        .await
+        .unwrap();
     let comment = room.comment_by_id(comment_id).await.unwrap().unwrap();
     assert_eq!(comment.author, format!("token:{id}"));
     assert_eq!(comment.creator, "Reviewer bot");

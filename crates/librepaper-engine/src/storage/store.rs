@@ -295,9 +295,9 @@ impl IndexEntry {
         if link_hash.is_empty() {
             return None;
         }
-        self.links.iter().find(|link| {
-            link.kind == LinkKind::Link && link.hash == link_hash && link.live_at(now)
-        })
+        self.links
+            .iter()
+            .find(|link| link.kind == LinkKind::Link && link.hash == link_hash && link.live_at(now))
     }
 
     /// The live agent token row matching a presented digest.

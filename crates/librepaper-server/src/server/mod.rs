@@ -30,9 +30,8 @@ use librepaper_base::auth::{
     read_agent_grant, read_device, read_session, read_visitor, session_deadline, sign_device,
     sign_session, sign_visitor, Accounts, DeviceOutcome, GithubAccounts, GithubApp, Identity,
     OidcProvider, PendingCodes, Policy, TokenCache, AGENT_GRANT_PREFIX, AGENT_TOKEN_PREFIX,
-    DEVICE_POLL_INTERVAL,
-    DEVICE_TOKEN_MAX_AGE, DEVICE_TOKEN_PREFIX, PROVIDER_GITHUB, SESSION_COOKIE, SESSION_MAX_AGE,
-    STATE_COOKIE, VISITOR_COOKIE,
+    DEVICE_POLL_INTERVAL, DEVICE_TOKEN_MAX_AGE, DEVICE_TOKEN_PREFIX, PROVIDER_GITHUB,
+    SESSION_COOKIE, SESSION_MAX_AGE, STATE_COOKIE, VISITOR_COOKIE,
 };
 use librepaper_base::config::Configuration;
 use librepaper_base::shell::{renderers, ShellFile};
@@ -40,8 +39,7 @@ use librepaper_base::util::clean;
 use librepaper_document::document::render::{title_from_html, title_from_markdown};
 use librepaper_engine::storage::store::{
     random_suffix, slugify, Ceiling, DocumentInput, IndexEntry, LinkGrant, LinkKind, ModifyError,
-    PutError,
-    Role, Store,
+    PutError, Role, Store,
 };
 use librepaper_room::room::{
     decode_update, encode_update, Message as RoomMessage, Outgoing, Room, RoomCommand, Rooms,
@@ -1224,7 +1222,8 @@ impl Server {
             Ok(None) => return Err(AuthenticationFailure::Invalid),
             Err(_) => return Err(AuthenticationFailure::Unavailable),
         };
-        if account.status != "active" || account.session_generation.to_string() != row.owner_generation
+        if account.status != "active"
+            || account.session_generation.to_string() != row.owner_generation
         {
             return Err(AuthenticationFailure::Invalid);
         }

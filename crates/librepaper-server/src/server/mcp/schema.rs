@@ -321,7 +321,10 @@ mod tests {
     #[test]
     fn suggest_only_callers_are_offered_propose_but_not_apply_or_label() {
         let tools = served_tools(true, true);
-        let names: Vec<&str> = tools.iter().filter_map(|tool| tool["name"].as_str()).collect();
+        let names: Vec<&str> = tools
+            .iter()
+            .filter_map(|tool| tool["name"].as_str())
+            .collect();
         assert!(names.contains(&"document_propose"));
         assert!(!names.contains(&"document_apply"));
         let comment = tools
