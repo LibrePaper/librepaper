@@ -26,8 +26,8 @@ use librepaper_engine::log::sequencer::{
 };
 use librepaper_engine::storage::postgres::Authority;
 
-use super::source_change::client_seq_of;
 use super::comments::{self, COMMENT_PAGE_MAX};
+use super::source_change::client_seq_of;
 use super::{Room, WriteError};
 
 /// A comment's record, as the backfill found it missing: what the passage is,

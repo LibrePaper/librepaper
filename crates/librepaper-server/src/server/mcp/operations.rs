@@ -594,7 +594,8 @@ impl Server {
                         .unwrap_or(json!("exact_tree")),
                 )
                 .map_err(|e| Failure::new("invalid_params", e.to_string()))?;
-                if candidate.validation == "compile" && consistency != source_change::Consistency::ExactTree
+                if candidate.validation == "compile"
+                    && consistency != source_change::Consistency::ExactTree
                 {
                     return Err(Failure::new(
                         "conflict",
@@ -658,9 +659,7 @@ impl Server {
                             self.mcp_recheck(slug, headers, arrival, actor)
                                 .await
                                 .map(|_| ())
-                                .map_err(|error| {
-                                    source_change::AgentError::Conflict(error.message)
-                                })
+                                .map_err(|error| source_change::AgentError::Conflict(error.message))
                         },
                         None,
                     )

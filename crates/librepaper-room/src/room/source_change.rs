@@ -221,8 +221,7 @@ pub fn validate_source_change(
                 return Err(AgentError::Invalid("invalid base tree digest".into()));
             }
             let operations = change.create.len() + change.delete.len() + change.put_binary.len();
-            if change.is_empty() || change.patches.len() > MAX_PATCHES || operations > MAX_PATCHES
-            {
+            if change.is_empty() || change.patches.len() > MAX_PATCHES || operations > MAX_PATCHES {
                 return Err(AgentError::Invalid(
                     "patch count is outside the limit".into(),
                 ));
@@ -348,7 +347,11 @@ fn validate_file_operations(
         .iter()
         .map(|patch| patch.path.as_str())
         .collect();
-    let deleted: HashSet<&str> = change.delete.iter().map(|file| file.path.as_str()).collect();
+    let deleted: HashSet<&str> = change
+        .delete
+        .iter()
+        .map(|file| file.path.as_str())
+        .collect();
     for file in &change.delete {
         if patched.contains(file.path.as_str()) {
             return Err(AgentError::Invalid(format!(
@@ -473,6 +476,31 @@ fn validate_path(path: &str) -> Result<(), AgentError> {
     Ok(())
 }
 
+fn reject_overlaps(ranges: &mut [(&str, usize, usize)]) -> Result<(), AgentError> {
+    ranges
+        .sort_unstable_by(|left, right| (left.0, left.1, left.2).cmp(&(right.0, right.1, right.2)));
+    for pair in ranges.windows(2) {
+        let (path_a, start_a, end_a) = pair[0];
+        let (path_b, start_b, end_b) = pair[1];
+        if path_a != path_b {
+            continue;
+        }
+        let overlap = if start_a == end_a && start_b == end_b {
+            start_a == start_b
+        } else if start_a == end_a {
+            start_a > start_b && start_a < end_b
+        } else if start_b == end_b {
+            start_b > start_a && start_b < end_a
+        } else {
+            start_a < end_b && start_b < end_a
+        };
+        if overlap {
+            return Err(AgentError::Conflict("patch ranges overlap".into()));
+        }
+    }
+    Ok(())
+}
+
 fn range_matches(text: &str, start: usize, end: usize, exact: &str) -> bool {
     start <= end
         && end <= text.len()
@@ -480,7 +508,6 @@ fn range_matches(text: &str, start: usize, end: usize, exact: &str) -> bool {
         && text.is_char_boundary(end)
         && &text[start..end] == exact
 }
-
 
 /// Errors are intentionally structured so the MCP adapter can map conflicts
 /// to a fresh bounded read without parsing prose.
@@ -1111,7 +1138,6 @@ mod tests {
         }
     }
 
-
     fn with_rules<R>(run: impl FnOnce(&Rules<'_>) -> R) -> R {
         let text = vec![".md".to_string(), ".tex".to_string()];
         let asset = vec![".png".to_string()];
@@ -1641,5 +1667,4 @@ mod tests {
             anchors::Status::Deleted
         );
     }
-
 }

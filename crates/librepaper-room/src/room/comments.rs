@@ -50,8 +50,8 @@ use librepaper_engine::storage::postgres::{
     PostgresCatalog, ReplyRecord,
 };
 
-use super::source_change::client_seq_of;
 use super::locate::{self, Quote};
+use super::source_change::client_seq_of;
 use super::{Room, WriteError};
 use librepaper_engine::storage::annotation::{
     CommentTarget, DerivedAttachment, OriginalAnchor, PresentationContext, SourceTextTarget,

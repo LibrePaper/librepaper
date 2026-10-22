@@ -19,7 +19,8 @@ impl Room {
     /// and it is the projection's own content digest, computed once.
     pub async fn agent_query_snapshot(
         &self,
-    ) -> Result<crate::room::agent_query::QuerySnapshot, crate::room::source_change::AgentError> {
+    ) -> Result<crate::room::agent_query::QuerySnapshot, crate::room::source_change::AgentError>
+    {
         if let Some(why) = self.unreadable().await {
             return Err(crate::room::source_change::AgentError::Storage(why));
         }
@@ -57,7 +58,8 @@ impl Room {
         editor: bool,
         after: Option<comments::Position>,
         limit: usize,
-    ) -> Result<crate::room::agent_query::ThreadWindow, crate::room::source_change::AgentError> {
+    ) -> Result<crate::room::agent_query::ThreadWindow, crate::room::source_change::AgentError>
+    {
         let (views, page) = self
             .comment_page(after, limit, author, editor)
             .await
@@ -91,7 +93,8 @@ impl Room {
         editor: bool,
         after: Option<comments::Position>,
         limit: usize,
-    ) -> Result<crate::room::agent_query::ThreadWindow, crate::room::source_change::AgentError> {
+    ) -> Result<crate::room::agent_query::ThreadWindow, crate::room::source_change::AgentError>
+    {
         let missing = crate::room::agent_query::ThreadWindow {
             missing: true,
             complete: true,
