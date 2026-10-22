@@ -101,7 +101,14 @@
     cancelSave();
     timer = setTimeout(persist, 500);
   };
-  const resultText = (item) => resolutions[item.path]?.text ?? item.ours ?? "";
+  // The Result follows the choice: typed text, then the chosen side, then LibrePaper's copy before any choice.
+  const resultText = (item) => {
+    const chosen = resolutions[item.path];
+    if (chosen?.text !== undefined) return chosen.text;
+    if (chosen?.delete) return "";
+    if (chosen?.keep === "theirs") return item.theirs ?? "";
+    return item.ours ?? "";
+  };
   const picked = (path, side) => resolutions[path]?.keep === side;
   const keepSide = (item) => (item.oursId == null ? "theirs" : "ours");
   const resolved = $derived(items.length > 0 && items.every((item) => resolutions[item.path]));
@@ -173,6 +180,8 @@
                 <textarea class="textarea gr-text" rows="8" value={resultText(item)}
                   oninput={(event) => edit(item.path, event.currentTarget.value)}></textarea>
               </label>
+            {:else if resolutions[item.path]?.delete}
+              <p class="panel-meta">Nothing is kept. This file will be deleted.</p>
             {/if}
           {:else}
             <p class="panel-meta">This file is not text. Keep one side's copy.</p>
