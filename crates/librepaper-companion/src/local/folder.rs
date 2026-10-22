@@ -73,6 +73,13 @@ pub async fn choose_directory(origin: &str, project: &str) -> Result<PathBuf, St
     choose_directory_with_title(&title).await
 }
 
+/// The folder chooser for a local Git remote. The title names the page and
+/// project that will sync with the repository.
+pub async fn choose_git_directory(origin: &str, project: &str) -> Result<PathBuf, String> {
+    let title = format!("Allow {origin} to sync {project} with this Git repository");
+    choose_directory_with_title(&title).await
+}
+
 pub async fn choose_backup_directory(origin: &str) -> Result<PathBuf, String> {
     let title = format!("Choose where to save {origin} backups");
     choose_directory_with_title(&title).await
