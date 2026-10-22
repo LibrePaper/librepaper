@@ -628,44 +628,55 @@ impl Server {
                     request_digest: digest,
                     ..Default::default()
                 };
-                let authority = AgentAuthority {
-                    account_id: current.id.id.clone(),
-                    owner_key: current.key.clone(),
-                    session_generation: current.id.session_generation.clone(),
-                    link_hash: current.link.clone(),
-                    policy_editor: self.ceiling_for(&current.id).edit,
-                    policy_comment: self.ceiling_for(&current.id).comment,
-                    operation_scope: actor.to_string(),
+                self.mcp_commit_change(slug, actor, &current, headers, arrival, name, request)
+                    .await
+            }
+            "document_files" => {
+                if !current.at_least(Role::Editor) {
+                    return Err(Failure::new(
+                        "permission_changed",
+                        "editor access is required to create or delete files",
+                    ));
+                }
+                let consistency = serde_json::from_value(
+                    args.get("consistency")
+                        .cloned()
+                        .unwrap_or(json!("exact_tree")),
+                )
+                .map_err(|e| Failure::new("invalid_params", e.to_string()))?;
+                let create: Vec<source_change::CreateFile> = serde_json::from_value(
+                    args.get("create").cloned().unwrap_or(json!([])),
+                )
+                .map_err(|e| Failure::new("invalid_params", e.to_string()))?;
+                let delete: Vec<source_change::DeleteFile> = serde_json::from_value(
+                    args.get("delete").cloned().unwrap_or(json!([])),
+                )
+                .map_err(|e| Failure::new("invalid_params", e.to_string()))?;
+                // Without a digest the change applies to the document as it
+                // is now. Collisions and missing files are still refused.
+                let base_tree = match args["base_tree"].as_str() {
+                    Some(digest) => digest.to_string(),
+                    None => self
+                        .rooms
+                        .get(slug)
+                        .await
+                        .map_err(|e| Failure::new("unavailable", e.to_string()))?
+                        .agent_query_snapshot()
+                        .await
+                        .map_err(failure)?
+                        .tree_digest,
                 };
-                let room = self
-                    .rooms
-                    .get(slug)
+                let request = SourceChange {
+                    operation: key,
+                    base_tree,
+                    consistency,
+                    create,
+                    delete,
+                    request_digest: digest,
+                    ..Default::default()
+                };
+                self.mcp_commit_change(slug, actor, &current, headers, arrival, name, request)
                     .await
-                    .map_err(|e| Failure::new("unavailable", e.to_string()))?;
-                let operation_receipt = self.mcp_operation_receipt(
-                    actor,
-                    &request.operation,
-                    &request.request_digest,
-                    name,
-                    room.document_id,
-                )?;
-                let receipt = room
-                    .apply_source_change(
-                        request,
-                        Origin::Agent,
-                        authority,
-                        Some(operation_receipt),
-                        || async {
-                            self.mcp_recheck(slug, headers, arrival, actor)
-                                .await
-                                .map(|_| ())
-                                .map_err(|error| source_change::AgentError::Conflict(error.message))
-                        },
-                        None,
-                    )
-                    .await
-                    .map_err(failure)?;
-                Ok(json!(receipt))
             }
             "document_comment" => {
                 if args["action"] == "label" {
@@ -685,6 +696,59 @@ impl Server {
             }
             _ => Err(Failure::new("invalid_params", "unknown tool")),
         }
+    }
+
+    /// Runs a source change as the agent through the room's command path and
+    /// returns its receipt. Replays by operation id answer with the first one.
+    #[allow(clippy::too_many_arguments)]
+    async fn mcp_commit_change(
+        &self,
+        slug: &str,
+        actor: &str,
+        current: &Viewer,
+        headers: &HeaderMap,
+        arrival: &Arrival,
+        name: &str,
+        request: SourceChange,
+    ) -> Result<Value, Failure> {
+        let authority = AgentAuthority {
+            account_id: current.id.id.clone(),
+            owner_key: current.key.clone(),
+            session_generation: current.id.session_generation.clone(),
+            link_hash: current.link.clone(),
+            policy_editor: self.ceiling_for(&current.id).edit,
+            policy_comment: self.ceiling_for(&current.id).comment,
+            operation_scope: actor.to_string(),
+        };
+        let room = self
+            .rooms
+            .get(slug)
+            .await
+            .map_err(|e| Failure::new("unavailable", e.to_string()))?;
+        let operation_receipt = self.mcp_operation_receipt(
+            actor,
+            &request.operation,
+            &request.request_digest,
+            name,
+            room.document_id,
+        )?;
+        let receipt = room
+            .apply_source_change(
+                request,
+                Origin::Agent,
+                authority,
+                Some(operation_receipt),
+                || async {
+                    self.mcp_recheck(slug, headers, arrival, actor)
+                        .await
+                        .map(|_| ())
+                        .map_err(|error| source_change::AgentError::Conflict(error.message))
+                },
+                None,
+            )
+            .await
+            .map_err(failure)?;
+        Ok(json!(receipt))
     }
 
     async fn mcp_label(

@@ -6,6 +6,8 @@ Use the coding agent you already have: Claude Code, Codex, Pi, or opencode. Libr
 
 The [Agent Client Protocol](https://agentclientprotocol.com) (ACP) starts your agent and relays requests and permission requests. The [Model Context Protocol](https://modelcontextprotocol.io) (MCP) gives the agent tools to read, comment and make tracked changes. Editors accept or reject those changes.
 
+- An agent with Edit access can also create and delete text files with `document_files`. These changes are not tracked.
+
 ## Desktop app
 
 Agents run in the [desktop app](desktop-app.html). The app finds agents installed on your computer, starts the one you pick, and hands it the document tools.
