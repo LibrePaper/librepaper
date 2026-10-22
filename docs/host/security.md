@@ -10,7 +10,7 @@ Every account that controls part of the deployment is a way in.
 
 - Turn on two-factor authentication for your hosting provider, your domain registrar and DNS host, the mail provider for your contact address, and GitHub. Prefer a hardware key where the service offers one.
 - Turn on the registrar's transfer lock for every domain.
-- Keep recovery codes offline, next to the keys described in [Keys and passwords](#keys-and-passwords).
+- Keep recovery codes offline, next to the keys described in [Keys and passwords](advanced.html#keys-and-passwords).
 - If several people administer a GitHub organization, require two-factor authentication for all of its members.
 
 ## Mail and certificates
@@ -161,111 +161,12 @@ If Tailscale fails on the server, you can still get in through the public addres
 
 ## Backups
 
-The [backup setup](advanced.html#backups) covers the basics, and this section goes further.
+Backups are your way back from a takeover as well as from a failed disk. [Backups](advanced.html#backups) covers them in full. These parts matter most for security.
 
-### Keys and passwords
-
-- The restic password is fixed for the life of the repository. Losing it loses every backup.
-- Keep the restic password in a password manager, separate from any file it is also rendered into.
-- If your secrets are encrypted with SOPS and a PGP key, keep an offline copy of the private key.
-- Keep the two-factor recovery codes in the same place.
-
-### An example profile
-
-This `resticprofile.toml` runs hourly, alerts through Healthchecks, and refuses to create a new repository.
-
-```toml
-[resticprofile]
-repository = "s3:s3.provider.example/your-backups-bucket/restic"
-# Fail the run instead of starting an empty repository when the bucket or path is wrong.
-initialize = false
-
-[resticprofile.env]
-RESTIC_PASSWORD = "..."
-AWS_ACCESS_KEY_ID = "..."
-AWS_SECRET_ACCESS_KEY = "..."
-
-# A lost server costs at most an hour of edits.
-[resticprofile.backup]
-schedule = "hourly"
-
-[[resticprofile.backup.send-before]]
-url = "https://hc-ping.com/<uuid>/start"
-method = "HEAD"
-[[resticprofile.backup.send-after]]
-url = "https://hc-ping.com/<uuid>"
-method = "HEAD"
-[[resticprofile.backup.send-after-fail]]
-url = "https://hc-ping.com/<uuid>/fail"
-method = "HEAD"
-```
-
-- The image's defaults keep every snapshot from the last 48 hours, then one a day for 14 days and one a week for 11 weeks. The example does not change these defaults.
-- A weekly `restic check` reads 10% of the data.
-- With an hourly schedule, set the Healthchecks check to a 1 hour period and a 2 hour grace.
-- Every run reads all stored files. Revisit the hourly schedule once the data passes about 20 GiB.
-- A stored file that is missing from object storage does not stop the backup. The backup leaves that file out, prints a `WARNING` line in the backup container's log, and lists the file under `missing` in the manifest. Look for those lines now and then.
-
-### Bucket keys
-
-- Give the app and the backups separate buckets and separate keys.
-- Limit each key to its own bucket, with only the actions it needs.
-
-```json
-{
-  "Statement": [{
-    "Effect": "Allow",
-    "Action": [
-      "s3:GetObject", "s3:PutObject", "s3:DeleteObject",
-      "s3:ListBucket", "s3:GetBucketLocation",
-      "s3:ListBucketMultipartUploads", "s3:ListMultipartUploadParts", "s3:AbortMultipartUpload"
-    ],
-    "Resource": ["arn:aws:s3:::your-backups-bucket", "arn:aws:s3:::your-backups-bucket/*"]
-  }]
-}
-```
-
-- Turn on versioning for the backups bucket. The bucket then keeps the old copy when a file is changed or deleted, which protects against mistakes. Add a lifecycle rule that removes those old copies after 30 days, so storage does not grow forever.
-
-### A copy the server cannot delete
-
-The server needs a key that can write to the backups bucket, and that key can also delete from it. If someone takes over the server, they can erase your live data and your backups in one go. Bucket versioning keeps old copies of changed or deleted files, but on some providers the same key can delete those old copies too.
-
-The fix is a second copy that the server has no key for. Many object storage services, including AWS S3, OVHcloud and Backblaze B2, can copy every new file from one bucket to another bucket on their side. This is called replication. The server never talks to the second bucket, so it cannot damage it.
-
-Set it up in your provider's console:
-
-1. Create a second bucket, the replica, and turn on versioning in both buckets.
-2. Add a replication rule from the backups bucket to the replica. Turn on the option to replicate deletes, often called delete markers. A file deleted from the backups bucket then stays in the replica as an old version, which you can still restore.
-3. Give the replica a lifecycle rule that removes old versions after 30 days. Without it, the replica keeps every file forever.
-4. Create a read-only key for the replica, under a different user from the one that owns the bucket. On some providers the owner can always delete, whatever its policy says. Keep that key on your own computer, never on the server.
-
-```json
-{
-  "Statement": [{
-    "Effect": "Allow",
-    "Action": ["s3:GetObject", "s3:ListBucket", "s3:GetBucketLocation"],
-    "Resource": ["arn:aws:s3:::your-backups-replica", "arn:aws:s3:::your-backups-replica/*"]
-  }]
-}
-```
-
-Replication runs in the background, and nothing warns you if it stops. Check the replica from your own computer now and then. The `--no-lock` flag lets restic read without writing, which a read-only key cannot do.
-
-```sh
-export RESTIC_REPOSITORY=s3:s3.provider.example/your-backups-replica/restic
-export RESTIC_PASSWORD=... AWS_ACCESS_KEY_ID=... AWS_SECRET_ACCESS_KEY=...
-restic snapshots --no-lock --latest 1   # the newest snapshot should be about an hour old
-restic check --no-lock
-```
-
-- **To restore after an attack,** first copy the replica as it was before the damage, for example with `rclone copy --s3-version-at`. Then restore from that copy.
-- **A key that can add but not delete does not work.** Restic must delete its own lock files, and it stops a backup that cannot do so for about 22 minutes.
-- **The replica sits in the same provider account.** Someone who takes over that account reaches both buckets, which is why [Accounts](#accounts) comes first.
-
-### Practice a restore
-
-Run the [restore drill](advanced.html#restore-drill) on another machine at least once.
+- Keep a copy of the restic password and your encryption keys off the server, as described in [Keys and passwords](advanced.html#keys-and-passwords).
+- Give the app and the backups separate keys, each limited to its own bucket. See [Bucket keys and versioning](advanced.html#bucket-keys-and-versioning).
+- Keep a copy of the backups that the server cannot delete. See [A copy the server cannot delete](advanced.html#a-copy-the-server-cannot-delete).
+- Practice a restore on another machine at least once with the [restore drill](advanced.html#restore-drill).
 
 ## Upgrades
 

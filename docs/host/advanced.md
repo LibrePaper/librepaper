@@ -110,9 +110,75 @@ docker compose exec backup resticprofile -c /etc/resticprofile/profiles.toml -n 
 
 Notes:
 
-- The restic password is fixed for the life of the repository. Keep a copy off the VPS: losing it loses every backup.
 - A backup records the database's migration version, and `admin restore` refuses a backup whose version differs from the binary's. Take a fresh backup after upgrading to a release that changes the migration history.
 - Set up [backup alerts](#backup-alerts) so a failed backup emails you.
+- After the first backup has created the repository, add `initialize = false` under `[resticprofile]`. A mistyped bucket or path then fails the run and the alert, instead of quietly starting an empty repository.
+- For hourly backups, set `schedule = "hourly"` and give the Healthchecks check a 1 hour period and a 2 hour grace. Every run reads all stored files, so revisit an hourly schedule once the data passes about 20 GiB.
+- A stored file that is missing from object storage does not stop the backup. The backup leaves it out, prints a `WARNING` line in the backup container's log, and lists it under `missing` in the backup's manifest. Look for those lines now and then.
+
+### Keys and passwords
+
+- The restic password is fixed for the life of the repository. Losing it loses every backup.
+- Keep the restic password in a password manager, separate from any file it is also rendered into.
+- If your secrets are encrypted with SOPS and a PGP key, keep an offline copy of the private key.
+- Keep the two-factor recovery codes in the same place.
+
+### Bucket keys and versioning
+
+- Give the app and the backups separate buckets and separate keys.
+- Limit each key to its own bucket, with only the actions it needs.
+
+```json
+{
+  "Statement": [{
+    "Effect": "Allow",
+    "Action": [
+      "s3:GetObject", "s3:PutObject", "s3:DeleteObject",
+      "s3:ListBucket", "s3:GetBucketLocation",
+      "s3:ListBucketMultipartUploads", "s3:ListMultipartUploadParts", "s3:AbortMultipartUpload"
+    ],
+    "Resource": ["arn:aws:s3:::your-backups-bucket", "arn:aws:s3:::your-backups-bucket/*"]
+  }]
+}
+```
+
+- Turn on versioning for the backups bucket. The bucket then keeps the old copy when a file is changed or deleted, which protects against mistakes. Add a lifecycle rule that removes those old copies after 30 days, so storage does not grow forever.
+
+### A copy the server cannot delete
+
+The server needs a key that can write to the backups bucket, and that key can also delete from it. If someone takes over the server, they can erase your live data and your backups in one go. Bucket versioning keeps old copies of changed or deleted files, but on some providers the same key can delete those old copies too.
+
+The fix is a second copy that the server has no key for. Many object storage services, including AWS S3, OVHcloud and Backblaze B2, can copy every new file from one bucket to another bucket on their side. This is called replication. The server never talks to the second bucket, so it cannot damage it.
+
+Set it up in your provider's console:
+
+1. Create a second bucket, the replica, and turn on versioning in both buckets.
+2. Add a replication rule from the backups bucket to the replica. Turn on the option to replicate deletes, often called delete markers. A file deleted from the backups bucket then stays in the replica as an old version, which you can still restore.
+3. Give the replica a lifecycle rule that removes old versions after 30 days. Without it, the replica keeps every file forever.
+4. Create a read-only key for the replica, under a different user from the one that owns the bucket. On some providers the owner can always delete, whatever its policy says. Keep that key on your own computer, never on the server.
+
+```json
+{
+  "Statement": [{
+    "Effect": "Allow",
+    "Action": ["s3:GetObject", "s3:ListBucket", "s3:GetBucketLocation"],
+    "Resource": ["arn:aws:s3:::your-backups-replica", "arn:aws:s3:::your-backups-replica/*"]
+  }]
+}
+```
+
+Replication runs in the background, and nothing warns you if it stops. Check the replica from your own computer now and then. The `--no-lock` flag lets restic read without writing, which a read-only key cannot do.
+
+```sh
+export RESTIC_REPOSITORY=s3:s3.provider.example/your-backups-replica/restic
+export RESTIC_PASSWORD=... AWS_ACCESS_KEY_ID=... AWS_SECRET_ACCESS_KEY=...
+restic snapshots --no-lock --latest 1   # the newest snapshot should be about an hour old
+restic check --no-lock
+```
+
+- **To restore after an attack,** first copy the replica as it was before the damage, for example with `rclone copy --s3-version-at`. Then restore from that copy.
+- **A key that can add but not delete does not work.** Restic must delete its own lock files, and it stops a backup that cannot do so for about 22 minutes.
+- **The replica sits in the same provider account.** Someone who takes over that account reaches both buckets, which is why [Accounts](security.html#accounts) comes first.
 
 ### Inspect a backup
 
