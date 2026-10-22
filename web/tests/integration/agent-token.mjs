@@ -140,14 +140,29 @@ try {
   const list = await fetch(`${deployment.base}/api/list`, { headers: bearer });
   assert.equal(list.status, 401, "a token cannot list projects");
 
-  // Suggest token.
-  const suggestToken = await mint("suggest", "Remote suggester");
-  const suggester = startBridge(suggestToken.token, slug);
-  const suggestTools = await suggester.start();
-  assert.ok(suggestTools.includes("document_propose"), `a suggest token is served document_propose: ${suggestTools}`);
-  assert.ok(!suggestTools.includes("document_apply"), `a suggest token is not served document_apply: ${suggestTools}`);
-  const seen = await readFirst(suggester);
-  const proposed = await suggester.call("document_propose", {
+  // Read token.
+  const readToken = await mint("read", "Remote reader");
+  const reader = startBridge(readToken.token, slug);
+  const readerTools = await reader.start();
+  assert.ok(readerTools.includes("document_read"), `a read token is served document_read: ${readerTools}`);
+  for (const name of ["document_comment", "document_propose", "document_apply"]) {
+    assert.ok(!readerTools.includes(name), `a read token is not served ${name}: ${readerTools}`);
+  }
+  const looked = await readFirst(reader);
+  const refusedComment = await reader.call("document_comment", {
+    action: "create", body: "Not allowed.", view_id: looked.viewId, range_id: looked.rangeId,
+  });
+  assert.equal(refusedComment.isError, true, `a read token cannot comment: ${JSON.stringify(refusedComment)}`);
+  assert.ok(!(await commentsOf()).some((item) => item.body === "Not allowed."), "the refused comment is not stored");
+
+  // Edit token: propose tracked changes, then stage privately and apply.
+  const editToken = await mint("edit", "Remote editor");
+  const editor = startBridge(editToken.token, slug);
+  const editTools = await editor.start();
+  assert.ok(editTools.includes("document_propose"), `an edit token is served document_propose: ${editTools}`);
+  assert.ok(editTools.includes("document_apply"), `an edit token is served document_apply: ${editTools}`);
+  const seen = await readFirst(editor);
+  const proposed = await editor.call("document_propose", {
     view_id: seen.viewId, publish: "suggestions", validation: "source",
     patches: [{ range_id: seen.rangeId, replacement: "The suggested paragraph" }],
   });
@@ -180,11 +195,7 @@ try {
   assert.equal(changes.length, 1, `one pending change: ${JSON.stringify(changes)}`);
   assert.equal(changes[0].inserted, "The suggested paragraph");
 
-  // Edit token: stage privately, then apply.
-  const editToken = await mint("edit", "Remote editor");
-  const editor = startBridge(editToken.token, slug);
-  const editTools = await editor.start();
-  assert.ok(editTools.includes("document_apply"), `an edit token is served document_apply: ${editTools}`);
+  // The same edit token now stages privately, then applies.
   const target = await readFirst(editor);
   const staged = await editor.call("document_propose", {
     view_id: target.viewId, publish: "private", validation: "source",
@@ -212,7 +223,7 @@ try {
   }
   assert.ok(refused, "a revoked token neither starts a bridge nor reads");
 
-  console.log("agent-token: comment, suggest and edit tokens, budget, 401 elsewhere and revocation verified");
+  console.log("agent-token: read, comment and edit tokens, budget, 401 elsewhere and revocation verified");
 } finally {
   for (const child of bridges) child.kill();
   await deployment.stop();

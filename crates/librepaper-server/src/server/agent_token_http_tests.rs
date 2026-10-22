@@ -310,13 +310,13 @@ async fn a_token_has_a_name_an_expiry_and_no_key_in_the_listing() {
         let (status, refused) = served.share(body.clone()).await;
         assert_eq!(status, 400, "{body} {refused}");
     }
-    let (token, id) = served.mint_token("suggest", "Paul's assistant").await;
+    let (token, id) = served.mint_token("edit", "Paul's assistant").await;
     assert!(token.starts_with(&format!("lpt_{}.", served.slug)));
     let listing = served.sharing().await;
     assert_eq!(listing["links"].as_array().unwrap().len(), 0);
     let row = &listing["tokens"][0];
     assert_eq!(row["id"], id.as_str());
-    assert_eq!(row["role"], "suggester");
+    assert_eq!(row["role"], "editor");
     assert_eq!(row["name"], "Paul's assistant");
     assert!(row.get("key").is_none() && row.get("url").is_none());
     assert!(
@@ -386,35 +386,38 @@ async fn a_token_key_opens_no_browser_link() {
 
 #[tokio::test]
 #[ignore = "requires LIBREPAPER_TEST_POSTGRES_URL"]
-async fn a_suggest_token_proposes_but_cannot_apply_and_a_comment_token_cannot_propose() {
+async fn a_read_token_only_reads_and_a_comment_token_cannot_propose() {
     let Some(served) = serve("token-roles").await else {
         return;
     };
-    let (suggest, _) = served.mint_token("suggest", "Paul's assistant").await;
+    let (read_token, _) = served.mint_token("read", "Reading bot").await;
     let (comment, _) = served.mint_token("comment", "Reviewer bot").await;
 
-    let (_, tools) = served.tools(&suggest).await;
-    assert!(tools.contains(&"document_propose".to_string()));
-    assert!(!tools.contains(&"document_apply".to_string()));
+    let (status, tools) = served.tools(&read_token).await;
+    assert_eq!(status, 200);
+    assert_eq!(tools, ["document_read", "document_result"]);
     let (_, tools) = served.tools(&comment).await;
     assert!(!tools.contains(&"document_propose".to_string()));
     assert!(!tools.contains(&"document_apply".to_string()));
 
-    let (view, epoch, range) = served.read(&suggest, "interval covers").await;
+    let (view, epoch, range) = served.read(&read_token, "interval covers").await;
     let (status, read) = served
         .call(
-            &suggest,
+            &read_token,
             "document_read",
             json!({"queries": [{"kind": "source", "path": "paper.md", "start": 0, "end": 5}]}),
         )
         .await;
     assert_eq!(status, 200, "{read}");
+    assert_eq!(read["result"]["permissions"]["comment"], false);
+    assert_eq!(read["result"]["permissions"]["suggest"], false);
     assert_eq!(read["result"]["permissions"]["apply"], false);
-    assert_eq!(read["result"]["permissions"]["suggest"], true);
-
-    let (status, proposed) = served
-        .call(
-            &suggest,
+    for (tool, arguments) in [
+        (
+            "document_comment",
+            json!({"action": "create", "view_id": view, "range_id": range, "body": "x", "operation": operation(&epoch)}),
+        ),
+        (
             "document_propose",
             json!({
                 "view_id": view,
@@ -423,29 +426,16 @@ async fn a_suggest_token_proposes_but_cannot_apply_and_a_comment_token_cannot_pr
                 "validation": "source",
                 "patches": [{"range_id": range, "replacement": "interval spans"}]
             }),
-        )
-        .await;
-    assert_eq!(status, 200, "{proposed}");
-    assert_eq!(proposed["result"]["published"], true, "{proposed}");
-
-    let (status, applied) = served
-        .call(
-            &suggest,
+        ),
+        (
             "document_apply",
             json!({"candidate_id": "none", "operation": operation(&epoch)}),
-        )
-        .await;
-    assert_eq!(status, 200);
-    assert_eq!(applied["error"]["code"], "permission_changed", "{applied}");
-    let (status, labelled) = served
-        .call(
-            &suggest,
-            "document_comment",
-            json!({"action": "label", "view_id": view, "operation": operation(&epoch)}),
-        )
-        .await;
-    assert_eq!(status, 200);
-    assert!(labelled["error"].is_object(), "{labelled}");
+        ),
+    ] {
+        let (status, refused) = served.call(&read_token, tool, arguments).await;
+        assert_eq!(status, 200, "{tool}");
+        assert!(refused["error"].is_object(), "{tool} {refused}");
+    }
 
     let (view, epoch, range) = served.read(&comment, "interval covers").await;
     let (status, refused) = served
@@ -606,13 +596,17 @@ async fn stored_roles(served: &Served) -> Vec<(String, String)> {
 
 #[tokio::test]
 #[ignore = "requires LIBREPAPER_TEST_POSTGRES_URL"]
-async fn the_share_api_accepts_edit_and_answers_editor_beside_the_other_token_roles() {
+async fn the_share_api_accepts_read_comment_and_edit_and_refuses_suggest() {
     let Some(served) = serve("token-edit-roles").await else {
         return;
     };
     served.mint_token("edit", "editing").await;
-    served.mint_token("suggest", "suggesting").await;
+    served.mint_token("read", "reading").await;
     served.mint_token("comment", "commenting").await;
+    let (status, refused) = served
+        .share(json!({"create": {"kind": "token", "role": "suggest", "name": "suggesting", "until": "1d"}}))
+        .await;
+    assert_eq!(status, 400, "{refused}");
     let listing = served.sharing().await;
     let role_of = |name: &str| {
         listing["tokens"]
@@ -624,31 +618,29 @@ async fn the_share_api_accepts_edit_and_answers_editor_beside_the_other_token_ro
             .clone()
     };
     assert_eq!(role_of("editing"), "editor");
-    assert_eq!(role_of("suggesting"), "suggester");
+    assert_eq!(role_of("reading"), "reader");
     assert_eq!(role_of("commenting"), "commenter");
     assert_eq!(
         stored_roles(&served).await,
         [
             ("commenting".to_string(), "commenter".to_string()),
             ("editing".to_string(), "editor".to_string()),
-            ("suggesting".to_string(), "suggester".to_string()),
+            ("reading".to_string(), "reader".to_string()),
         ]
     );
 }
 
 #[tokio::test]
 #[ignore = "requires LIBREPAPER_TEST_POSTGRES_URL"]
-async fn an_edit_token_applies_its_own_proposal_and_a_suggest_token_cannot() {
+async fn an_edit_token_proposes_and_applies_its_own_proposal() {
     let Some(served) = serve("token-edit-apply").await else {
         return;
     };
     let (edit, _) = served.mint_token("edit", "Editing bot").await;
-    let (suggest, _) = served.mint_token("suggest", "Suggesting bot").await;
 
     let (_, tools) = served.tools(&edit).await;
     assert!(tools.contains(&"document_apply".to_string()));
-    let (_, tools) = served.tools(&suggest).await;
-    assert!(!tools.contains(&"document_apply".to_string()));
+    assert!(tools.contains(&"document_propose".to_string()));
 
     let (view, epoch, range) = served.read(&edit, "interval covers").await;
     let (status, read) = served
@@ -678,11 +670,6 @@ async fn an_edit_token_applies_its_own_proposal_and_a_suggest_token_cannot() {
     let candidate = staged["result"]["candidate_id"].as_str().unwrap().to_string();
 
     let apply = json!({"candidate_id": candidate, "operation": operation(&epoch)});
-    let (status, refused) = served.call(&suggest, "document_apply", apply).await;
-    assert_eq!(status, 200);
-    assert_eq!(refused["error"]["code"], "permission_changed", "{refused}");
-
-    let apply = json!({"candidate_id": candidate, "operation": operation(&epoch)});
     let (status, applied) = served.call(&edit, "document_apply", apply).await;
     assert_eq!(status, 200, "{applied}");
     assert!(applied["error"].is_null(), "{applied}");
@@ -703,7 +690,7 @@ async fn a_token_cannot_create_a_document() {
     let Some(served) = serve("token-no-create").await else {
         return;
     };
-    for role in ["comment", "suggest", "edit"] {
+    for role in ["read", "comment", "edit"] {
         let (token, _) = served.mint_token(role, role).await;
         let response = reqwest::Client::new()
             .post(format!("{}/api/documents", served.base))

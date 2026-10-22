@@ -6,11 +6,3 @@ ALTER TABLE share_links
     ADD COLUMN kind text NOT NULL DEFAULT 'link' CHECK (kind IN ('link','agent')),
     ADD COLUMN owner_generation text NOT NULL DEFAULT '';
 
--- A suggest token is an agent row that proposes and never writes source, so it
--- is stored apart from an edit token. No link may carry the word.
-ALTER TABLE share_links DROP CONSTRAINT share_links_role_check;
-ALTER TABLE share_links
-    ADD CONSTRAINT share_links_role_check CHECK (
-        role IN ('reader','commenter','editor')
-        OR (role = 'suggester' AND kind = 'agent')
-    );

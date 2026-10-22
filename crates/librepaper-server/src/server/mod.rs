@@ -495,20 +495,11 @@ pub struct Viewer {
     /// temporarily unavailable authoritative account lookup). Protected
     /// routes must answer 401/503 rather than silently downgrade it.
     pub auth_failed: bool,
-    /// Set for an owner-issued agent token whose role is Editor: it proposes
-    /// tracked changes and never writes source, labels, runs code or publishes.
-    pub suggest_only: bool,
     /// Set when the request authenticated with an `lpt_` token.
     pub token: Option<AgentToken>,
 }
 
 impl Viewer {
-    /// Whether this caller may write source directly: an editor that is not
-    /// held to suggestions.
-    pub fn edits_source(&self) -> bool {
-        self.at_least(Role::Editor) && !self.suggest_only
-    }
-
     pub fn at_least(&self, wanted: Role) -> bool {
         self.id.is_signed_in() && (!self.automation || self.bearer) && self.role.at_least(wanted)
     }
@@ -1494,7 +1485,6 @@ impl Server {
             automation,
             bearer: header_of(headers, "authorization").is_some(),
             auth_failed,
-            suggest_only: false,
             token: None,
         }
     }
@@ -1525,14 +1515,12 @@ impl Server {
                 automation: true,
                 bearer: true,
                 auth_failed: true,
-                suggest_only: false,
                 token: None,
             };
         };
         let ceiling = self.ceiling_for(&id);
         let role = clamp_to_ceiling(row.granted(), ceiling);
         Viewer {
-            suggest_only: row.suggest_only(),
             token: Some(AgentToken {
                 id: row.id().to_string(),
                 name: row.label.clone(),
@@ -2152,7 +2140,6 @@ mod automation_authority_tests {
             automation: false,
             bearer: false,
             auth_failed: false,
-            suggest_only: false,
             token: None,
         }
     }

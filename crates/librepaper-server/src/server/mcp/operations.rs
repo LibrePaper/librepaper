@@ -455,10 +455,10 @@ impl Server {
         key.validate().map_err(failure)?;
         let digest = operation_digest(name, args);
         let current = self.mcp_recheck(slug, headers, arrival, actor).await?;
-        if !current.edits_source() && super::schema::SOURCE_WRITING_TOOLS.contains(&name) {
+        if !current.at_least(Role::Commenter) {
             return Err(Failure::new(
                 "permission_changed",
-                "editor access is required to apply source",
+                "comment access is required",
             ));
         }
         self.mcp_refuse_if_admitted(slug, actor, who, &key, Some(&digest))
@@ -559,7 +559,7 @@ impl Server {
                 .await
             }
             "document_apply" => {
-                if !current.edits_source() {
+                if !current.at_least(Role::Editor) {
                     return Err(Failure::new(
                         "permission_changed",
                         "editor access is required to apply source",
@@ -673,7 +673,7 @@ impl Server {
         arrival: &Arrival,
         (args, key, digest): (&Value, &OperationKey, &str),
     ) -> Result<Value, Failure> {
-        if !who.edits_source() {
+        if !who.at_least(Role::Editor) {
             return Err(Failure::new(
                 "permission_changed",
                 "editor access is required to label",
