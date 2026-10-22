@@ -1712,6 +1712,10 @@ async fn handle_preview_page(
     set(&mut response, "etag", &etag);
     set(&mut response, "x-librepaper-rendering", rendering_header);
     set(&mut response, "x-librepaper-kind", kind_header);
+    // The page is untrusted rendered output framed by the reader, so it is
+    // sandboxed and never sniffed, as job files are.
+    set(&mut response, "content-security-policy", "sandbox");
+    set(&mut response, "x-content-type-options", "nosniff");
     response
 }
 
