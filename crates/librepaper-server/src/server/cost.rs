@@ -8,6 +8,67 @@ pub struct CostMeter {
     pub transfers: Arc<tokio::sync::Semaphore>,
     work: Arc<tokio::sync::Semaphore>,
     control_work: Arc<tokio::sync::Semaphore>,
+    /// Comment actions spent this clock hour by links and agent tokens that
+    /// carry their own hourly budget.
+    pub comments: CommentBudgets,
+}
+
+/// Most callers whose hourly comment count is tracked at once. Only links
+/// and tokens with a budget are ever counted, so this is far above any
+/// honest deployment; past it new callers are refused rather than tracked.
+const COMMENT_BUDGET_KEYS: usize = 65_536;
+
+/// Comment actions per clock hour, keyed by link digest or `token:<id>`. A
+/// fixed window: a key's count restarts when the hour changes. In memory
+/// only, so a restart forgives the hour, the same as the other limiters here.
+#[derive(Default)]
+pub struct CommentBudgets {
+    spent: std::sync::Mutex<HashMap<String, (i64, i64)>>,
+}
+
+impl CommentBudgets {
+    /// Spends one action from `key`'s budget for `hour`, or returns false
+    /// and spends nothing when `budget` actions are already used.
+    pub fn take(&self, key: &str, budget: i64, hour: i64) -> bool {
+        let mut spent = self.spent.lock().unwrap_or_else(|e| e.into_inner());
+        if !spent.contains_key(key) && spent.len() >= COMMENT_BUDGET_KEYS {
+            spent.retain(|_, (when, _)| *when >= hour);
+            if spent.len() >= COMMENT_BUDGET_KEYS {
+                return false;
+            }
+        }
+        let entry = spent.entry(key.to_string()).or_insert((hour, 0));
+        if entry.0 != hour {
+            *entry = (hour, 0);
+        }
+        if entry.1 >= budget {
+            return false;
+        }
+        entry.1 += 1;
+        true
+    }
+
+    /// Returns one action spent in `hour`, for a command that then failed.
+    pub fn refund(&self, key: &str, hour: i64) {
+        let mut spent = self.spent.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some((when, count)) = spent.get_mut(key) {
+            if *when == hour && *count > 0 {
+                *count -= 1;
+            }
+        }
+    }
+
+    /// Forgets the hours that have passed. Called from the one-second tick.
+    pub fn housekeep(&self, hour: i64) {
+        let mut spent = self.spent.lock().unwrap_or_else(|e| e.into_inner());
+        spent.retain(|_, (when, _)| *when >= hour);
+    }
+}
+
+/// One spent comment action, kept so a failed command can give it back.
+pub(super) struct CommentCharge {
+    key: String,
+    hour: i64,
 }
 
 impl CostMeter {
@@ -20,6 +81,7 @@ impl CostMeter {
             transfers: Arc::new(tokio::sync::Semaphore::new(config.cost.artifact_transfers)),
             work: Arc::new(tokio::sync::Semaphore::new(config.cost.work_concurrency)),
             control_work: Arc::new(tokio::sync::Semaphore::new(16)),
+            comments: CommentBudgets::default(),
             requests: std::num::NonZeroU32::new(
                 u32::try_from(config.cost.requests_per_principal_minute).unwrap_or(u32::MAX),
             )
@@ -48,10 +110,46 @@ impl CostMeter {
         if let Some(requests) = &self.requests {
             requests.retain_recent();
         }
+        self.comments
+            .housekeep(librepaper_base::util::now_unix() / 3600);
     }
 }
 
 impl Server {
+    /// Spends one comment action from the budget of the link or agent token
+    /// this viewer arrived on. `Ok(None)` means the viewer has no budget and
+    /// nothing was spent; `Ok(Some(charge))` must be handed back to
+    /// [`Server::refund_comment`] if the command then fails; `Err` carries
+    /// the refusal text and spent nothing.
+    pub(super) fn spend_comment(&self, who: &Viewer) -> Result<Option<CommentCharge>, String> {
+        let Some(budget) = who.comment_budget else {
+            return Ok(None);
+        };
+        let key = if who.token.is_some() {
+            who.principal_key()
+        } else {
+            who.link.clone()
+        };
+        if key.is_empty() {
+            return Ok(None);
+        }
+        let hour = librepaper_base::util::now_unix() / 3600;
+        if self.cost.comments.take(&key, budget, hour) {
+            Ok(Some(CommentCharge { key, hour }))
+        } else {
+            let what = if who.token.is_some() { "token" } else { "link" };
+            Err(format!(
+                "this {what} has used its comment budget for this hour"
+            ))
+        }
+    }
+
+    pub(super) fn refund_comment(&self, charge: Option<CommentCharge>) {
+        if let Some(charge) = charge {
+            self.cost.comments.refund(&charge.key, charge.hour);
+        }
+    }
+
     /// The host measurements, with the disk figures taken from the filesystem
     /// the deployment directory lives on when this server knows it.
     async fn host_snapshot(&self) -> Value {
@@ -781,5 +879,52 @@ mod writer_readiness_tests {
             "ordinary requests stop being admitted after lease loss"
         );
         serving.abort();
+    }
+}
+
+#[cfg(test)]
+mod comment_budget_tests {
+    use super::CommentBudgets;
+
+    #[test]
+    fn a_budget_of_zero_refuses_at_once() {
+        let budgets = CommentBudgets::default();
+        assert!(!budgets.take("link", 0, 10));
+    }
+
+    #[test]
+    fn a_budget_of_n_allows_exactly_n_in_an_hour() {
+        let budgets = CommentBudgets::default();
+        for _ in 0..3 {
+            assert!(budgets.take("link", 3, 10));
+        }
+        assert!(!budgets.take("link", 3, 10));
+        assert!(!budgets.take("link", 3, 10));
+    }
+
+    #[test]
+    fn a_new_hour_resets_the_count() {
+        let budgets = CommentBudgets::default();
+        assert!(budgets.take("link", 1, 10));
+        assert!(!budgets.take("link", 1, 10));
+        assert!(budgets.take("link", 1, 11));
+    }
+
+    #[test]
+    fn keys_are_independent() {
+        let budgets = CommentBudgets::default();
+        assert!(budgets.take("a", 1, 10));
+        assert!(!budgets.take("a", 1, 10));
+        assert!(budgets.take("b", 1, 10));
+    }
+
+    #[test]
+    fn a_refund_gives_one_action_back_and_housekeeping_drops_old_hours() {
+        let budgets = CommentBudgets::default();
+        assert!(budgets.take("a", 1, 10));
+        budgets.refund("a", 10);
+        assert!(budgets.take("a", 1, 10));
+        budgets.housekeep(11);
+        assert!(budgets.spent.lock().unwrap().is_empty());
     }
 }

@@ -1222,3 +1222,41 @@ async fn backup_listing_includes_shared_reader_without_granting_publishing_acces
     assert_eq!(anonymous.status(), 401);
     deployment.catalog.close().await;
 }
+
+#[tokio::test]
+#[ignore = "requires LIBREPAPER_TEST_POSTGRES_URL"]
+async fn a_link_with_a_comment_budget_is_refused_once_it_is_spent() {
+    let Some(deployment) = deployment("http-link-budget").await else {
+        return;
+    };
+    let room = deployment
+        .server
+        .documents
+        .rooms
+        .get(&deployment.slug)
+        .await
+        .unwrap();
+    let mut who = viewer(
+        deployment.commenter_id,
+        "commenter",
+        &deployment.commenter_session_generation,
+        Role::Commenter,
+    );
+    who.link = hex::encode([0x5au8; 32]);
+    who.comment_budget = Some(1);
+    let author = format!("account:{}", deployment.commenter_id);
+    let (first, ok) = send(&deployment, &room, comment_body(), &who, &author).await;
+    assert!(ok, "the first comment is inside the budget: {first}");
+    let (second, ok) = send(&deployment, &room, comment_body(), &who, &author).await;
+    assert!(!ok, "{second}");
+    assert_eq!(second["status"], 429);
+    assert_eq!(
+        second["message"],
+        "this link has used its comment budget for this hour"
+    );
+    // A caller with no budget on the same document is not limited.
+    who.comment_budget = None;
+    let (third, ok) = send(&deployment, &room, comment_body(), &who, &author).await;
+    assert!(ok, "{third}");
+    deployment.catalog.close().await;
+}
