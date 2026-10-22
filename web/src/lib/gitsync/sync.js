@@ -506,6 +506,7 @@ async function runPull(ctx, options = {}) {
         return { result: prepared.refusal };
       }
       if (prepared.empty) {
+        await finish(ctx, op);
         step = {
           result: result("nothing", { files: [], skipped: [], link, arrived: true }),
           state: { filter: prepared.filter, remote: null, theirs: prepared.theirs, link },
