@@ -703,7 +703,7 @@ test("8. a push whose record was never written is adopted by the next pull", TES
   const plan = planned.outgoing;
   const tree = await fx.git.treeEdit(plan.remoteTree, plan.edits);
   const commit = await fx.git.commitTree(tree, [plan.remote], "Dead desktop", { name: "Tester", email: "tester@example.invalid" });
-  await fx.git.push(commit);
+  await fx.git.push(commit, plan.remote, link.connection_id);
   assert.equal(fx.repo.headOf(), commit);
   assert.equal((await fx.link()).checkpoint, link.checkpoint, "the server never heard of the push");
 
