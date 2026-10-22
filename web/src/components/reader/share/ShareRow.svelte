@@ -3,6 +3,7 @@
   import Icon from "../../Icon.svelte";
   import IconButton from "../../IconButton.svelte";
   import ExplorerMenu from "../../ExplorerMenu.svelte";
+  import MenuIconButton from "../../MenuIconButton.svelte";
   import { displayName, metaOf } from "./shared.js";
 
   // One link or one agent token. Both are a name over a line of facts with the
@@ -24,9 +25,7 @@
                   disabled={busy} onclick={() => oncopy(full, "Link copied.")} />
     {/if}
     <Menu onSelect={({ value }) => onaction(value, item)}>
-      <Menu.Trigger class="btn-icon btn-icon-sm icon-control icon-plain" aria-label="More actions for {name}" data-row-menu={item.id} disabled={busy}>
-        <Icon name="more-horizontal" size={16} />
-      </Menu.Trigger>
+      <MenuIconButton icon="more-horizontal" label="More actions for {name}" size={16} data-row-menu={item.id} disabled={busy} />
       <ExplorerMenu>
         {#if !item.expired}<Menu.Item value="edit" class="menuitem">Edit settings</Menu.Item>{/if}
         <Menu.Item value="replace" class="menuitem">Replace {noun}</Menu.Item>
