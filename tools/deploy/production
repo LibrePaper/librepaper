@@ -89,6 +89,8 @@ fetch_kit() {
 	file="$dir/librepaper-deploy.tar.gz"
 	gh release download "$version" --repo LibrePaper/librepaper --pattern librepaper-deploy.tar.gz --dir "$dir" || die "could not download the kit for $version from release $version"
 	gh attestation verify "$file" --repo LibrePaper/librepaper --signer-workflow LibrePaper/librepaper/.github/workflows/publish-docker.yml || die "the kit for $version has no valid attestation from the release workflow and nothing was changed"
+	# Only a verified kit reaches the host, and only the production host gets it.
+	check_ssh_target
 	ssh "$HOST" 'umask 077; cd librepaper && cat > .kit.tar.gz.tmp && mv -f .kit.tar.gz.tmp .kit.tar.gz' < "$file"
 	ssh "$HOST" 'cd librepaper && tar xzOf .kit.tar.gz librepaper/manage > .manage.tmp && chmod 755 .manage.tmp && mv -f .manage.tmp manage'
 }
@@ -206,7 +208,6 @@ render() {
 
 prepare_local() {
 	check_production_dns
-	check_ssh_target
 
 	step "Secrets from tools/deploy/keys.yaml"
 	render tools/deploy/production.toml DEPLOY_CONFIG
