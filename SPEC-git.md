@@ -1,3 +1,9 @@
+**Rejected 2026-10-21.** This design, a git remote helper on every machine,
+was not built and will not be. The hosted-remote variant drafted the same
+day, SPEC-git-server.md, was rejected with it and never merged. The git
+work that goes ahead is SPEC-git-forge-sync.md. The text below is kept as
+the record of what was considered.
+
 # SPEC: LibrePaper as a git remote
 
 Status: proposed 2026-10-14, revised 2026-10-18, 2026-10-20 and
