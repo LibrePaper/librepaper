@@ -805,7 +805,15 @@ impl Store {
                 // list, so a private slug cannot be probed through it.
                 let entry = entry_from_document(catalog, &document).await?;
                 let caller = account_id.map(|id| id.to_string()).unwrap_or_default();
-                if !entry.readable_by(&caller, "", librepaper_base::util::now_unix()) {
+                // The listing also shows projects a signed-in guest was pinned
+                // to by a link, so that pin counts as the link they present.
+                let pinned = entry
+                    .guests
+                    .iter()
+                    .find(|guest| guest.id == caller)
+                    .map(|guest| guest.link.as_str())
+                    .unwrap_or_default();
+                if !entry.readable_by(&caller, pinned, librepaper_base::util::now_unix()) {
                     return Err(CatalogError::Invalid("invalid listing cursor".into()));
                 }
                 // The wire timestamp is second-precision. Use the row's exact
