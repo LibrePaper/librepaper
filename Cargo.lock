@@ -2742,6 +2742,7 @@ dependencies = [
  "etcetera",
  "futures-util",
  "hex",
+ "hmac",
  "html-escape",
  "http-body-util",
  "libc",

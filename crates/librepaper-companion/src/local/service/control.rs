@@ -7,8 +7,8 @@
 //! `BASE_PATH`, and never reaches machine management.
 
 use super::*;
-use serde::{Deserialize, Serialize};
 use hmac::{Hmac, Mac};
+use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
 const TOKEN_FILE: &str = "control-token.json";

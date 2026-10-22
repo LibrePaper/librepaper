@@ -1,24 +1,52 @@
 // On a shared computer the next person must not be able to open what the
 // last one edited. Projects and rendered pages are kept in this browser, so
-// signing out deletes both databases.
+// signing out deletes both databases, and the secrets and chat transcripts
+// kept in localStorage. Habits such as the theme and keymap stay.
+import { localDataForgotten, markSignedOut } from "./signed-out.js";
+import { AGENT_SESSION_PREFIX, KEYS, LINKED, VIEWED } from "./storage.js";
+
 export const OFFLINE_DATABASE = "librepaper-offline-v2";
 export const PREVIEW_DATABASE = "librepaper-preview-v1";
 
 const DATABASES = [OFFLINE_DATABASE, PREVIEW_DATABASE];
+// Reading localStorage can itself throw when storage is blocked.
+function safeLocalStorage() {
+  try {
+    return globalThis.localStorage;
+  } catch {
+    return undefined;
+  }
+}
+
 const CHANNEL = "librepaper-local-data";
 
-// Set once this tab has signed out, or heard another tab do so. Writers check
-// it before opening a database, so a pending write cannot recreate the
-// previous account's data after the delete.
-let forgotten = false;
-export const localDataForgotten = () => forgotten;
+// Writers check this before opening a database or storing a secret, so a
+// pending write cannot recreate the previous account's data after the delete.
+export { localDataForgotten };
+
+const SECRET_KEYS = [KEYS, VIEWED, LINKED];
+
+// Storage can be switched off or throw, and a sign-out must still finish.
+function forgetStorage(storage) {
+  try {
+    const prefixed = [];
+    for (let i = 0; i < storage.length; i++) {
+      const name = storage.key(i);
+      if (name?.startsWith(AGENT_SESSION_PREFIX)) prefixed.push(name);
+    }
+    for (const name of [...SECRET_KEYS, ...prefixed]) storage.removeItem(name);
+  } catch {
+    /* nothing more can be done about it */
+  }
+}
 
 // Resolves once both deletes have finished, failed, or run out the timeout.
 // A delete is blocked while another tab holds the database open, and the
 // browser completes it when that tab closes, so waiting longer than the
 // timeout gains nothing. It never rejects: a sign-out must still finish.
-export function forgetLocalData(indexedDB_ = globalThis.indexedDB, timeoutMs = 2000) {
-  forgotten = true;
+export function forgetLocalData(indexedDB_ = globalThis.indexedDB, timeoutMs = 2000, storage = safeLocalStorage()) {
+  markSignedOut();
+  if (storage) forgetStorage(storage);
   if (globalThis.BroadcastChannel) {
     const channel = new BroadcastChannel(CHANNEL);
     channel.postMessage({ type: "signed-out" });
@@ -51,8 +79,12 @@ export function listenForSignOut(onSignedOut) {
   // The tab that signed out hears its own message too. It is already
   // forgotten and navigates on its own terms, so only other tabs react.
   channel.onmessage = (event) => {
-    if (event.data?.type !== "signed-out" || forgotten) return;
-    forgotten = true;
+    if (event.data?.type !== "signed-out" || localDataForgotten()) return;
+    markSignedOut();
+    // This tab may have written a secret after the other tab cleared storage
+    // and before this message arrived.
+    const storage = safeLocalStorage();
+    if (storage) forgetStorage(storage);
     onSignedOut();
   };
   return () => channel.close();

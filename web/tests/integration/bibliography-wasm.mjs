@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { gzipSync } from "node:zlib";
 import { call, handOver, load } from "../../src/lib/renderer-wasm.js";
+import { sha256Hex } from "../../src/lib/digest.js";
 
 function module(name) {
   const bytes = readFileSync(new URL(`../../wasm/${name}.wasm`, import.meta.url));
@@ -54,13 +55,15 @@ assert.equal(JSON.parse(many.text).entries.length, 1000);
 console.log(`1000 bibliography entries: ${(performance.now() - started).toFixed(1)}ms; WASM memory ${bibliography.memory.buffer.byteLength} bytes`);
 const originalFetch = globalThis.fetch;
 let fetches = 0;
+const served = readFileSync(new URL("../../wasm/bibliography.wasm", import.meta.url));
+const retryUrl = `https://example.test/wasm/${await sha256Hex(served)}/bibliography.wasm`;
 globalThis.fetch = async () => {
-  if (++fetches <= 2) throw new Error("temporary failure");
-  return new Response(readFileSync(new URL("../../wasm/bibliography.wasm", import.meta.url)), { headers: { "Content-Type": "application/wasm" } });
+  if (++fetches <= 1) throw new Error("temporary failure");
+  return new Response(served, { headers: { "Content-Type": "application/wasm" } });
 };
 try {
-  await assert.rejects(load("https://example.test/retry.wasm"), /temporary failure/);
-  assert.ok((await load("https://example.test/retry.wasm")).bibliography);
+  await assert.rejects(load(retryUrl), /temporary failure/);
+  assert.ok((await load(retryUrl)).bibliography);
 } finally { globalThis.fetch = originalFetch; }
 console.log("bibliography WASM: parsing, rendering, diagnostics, source anchoring and fetch recovery passed");
 

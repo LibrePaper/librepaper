@@ -410,9 +410,10 @@ async fn relay(res: reqwest::Response) -> Result<Response<Vec<u8>>, String> {
 
 #[cfg(test)]
 mod tests {
-    use super::{compatible, health_matches, Endpoint, RELAYED};
+    use super::{compatible, health_matches, needs_liveness_check, Endpoint, RELAYED};
     use hmac::{Hmac, Mac};
     use sha2::Sha256;
+    use tauri::http::Method;
     use tauri::http::HeaderName;
 
     #[test]

@@ -1127,8 +1127,8 @@ fn handle_health(inner: &Inner, uri: &axum::http::Uri) -> Reply {
 
 fn health_challenge(uri: &axum::http::Uri) -> Option<Vec<u8>> {
     let query = uri.query()?;
-    let (_, challenge) = url::form_urlencoded::parse(query.as_bytes())
-        .find(|(name, _)| name == "challenge")?;
+    let (_, challenge) =
+        url::form_urlencoded::parse(query.as_bytes()).find(|(name, _)| name == "challenge")?;
     if challenge.len() != 64
         || !challenge
             .bytes()
@@ -2325,8 +2325,8 @@ mod settings_tests {
         let nonce = [7u8; 32];
         let body = health(format!("?challenge={}", hex::encode(nonce))).await;
         use hmac::Mac as _;
-        let mut mac = hmac::Hmac::<sha2::Sha256>::new_from_slice(credential(&inner).as_bytes())
-            .unwrap();
+        let mut mac =
+            hmac::Hmac::<sha2::Sha256>::new_from_slice(credential(&inner).as_bytes()).unwrap();
         mac.update(&nonce);
         assert_eq!(body["proof"], hex::encode(mac.finalize().into_bytes()));
 

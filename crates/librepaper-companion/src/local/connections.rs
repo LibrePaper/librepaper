@@ -234,7 +234,10 @@ impl ConnectionStore {
     /// runs, and that teardown must not delete the new runner's record.
     pub fn remove_if_unchanged(&self, name: &str, seen: &Connection) -> Result<(), String> {
         self.update(|all| {
-            if all.get(name).is_some_and(|now| now.created == seen.created) {
+            if all
+                .get(name)
+                .is_some_and(|now| now.created == seen.created && now.chat_token == seen.chat_token)
+            {
                 all.remove(name);
             }
             Ok(())
