@@ -50,6 +50,8 @@ use librepaper_room::room::{
 mod admin_http_tests;
 mod agent_auth;
 mod assistant;
+#[cfg(test)]
+mod authz_http_tests;
 mod chat;
 #[cfg(test)]
 mod chat_http_tests;
@@ -185,12 +187,16 @@ fn needs_sign_in(entry: &IndexEntry, who: &Viewer) -> bool {
             .is_some()
 }
 
+/// Whether a delegated grant applies to this document and this request. The
+/// grant already names the link it was minted from, so it stands in for the
+/// key: a request may omit the key, or repeat the grant's own, but may not
+/// present a different one.
 fn grant_matches_scope(
     grant: &librepaper_base::auth::AgentGrant,
     slug: &str,
-    link_hash: &str,
+    presented_link: &str,
 ) -> bool {
-    grant.slug == slug && grant.link_hash == link_hash
+    grant.slug == slug && (presented_link.is_empty() || presented_link == grant.link_hash)
 }
 
 fn grant_role_ceiling(role: u8) -> Role {
@@ -1333,6 +1339,8 @@ impl Server {
             .is_none_or(|grant| grant_matches_scope(grant, &entry.slug, &presented_link));
         if !grant_in_scope {
             presented_link.clear();
+        } else if let Some(grant) = grant.as_ref() {
+            presented_link = grant.link_hash.clone();
         }
         // A signed-in link holder is pinned after their first visit. On later
         // bare-URL opens, recover only the digest of the still-live link they
@@ -2160,15 +2168,46 @@ mod automation_authority_tests {
             expires_at: librepaper_base::util::now_unix() + 60,
         };
         assert!(grant_matches_scope(&grant, "paper", &"a".repeat(64)));
+        assert!(grant_matches_scope(&grant, "paper", ""));
         assert!(!grant_matches_scope(
             &grant,
             "another-paper",
             &"a".repeat(64)
         ));
+        assert!(!grant_matches_scope(&grant, "another-paper", ""));
         assert!(!grant_matches_scope(&grant, "paper", &"b".repeat(64)));
         assert_eq!(grant_role_ceiling(1), Role::Reader);
         assert_eq!(grant_role_ceiling(2), Role::Commenter);
         assert_eq!(grant_role_ceiling(3), Role::Editor);
+    }
+
+    #[test]
+    fn a_grant_alone_resolves_to_its_link_and_a_foreign_key_does_not() {
+        let entry = shared_document();
+        let now = librepaper_base::util::now_unix();
+        let grant = librepaper_base::auth::AgentGrant {
+            identity: Identity::default(),
+            slug: "paper".into(),
+            link_hash: "editor-hash".into(),
+            role: 2,
+            expires_at: now + 60,
+        };
+        // Without a key the grant names the link, and its own role ceiling
+        // still caps what the editor link would give.
+        assert!(grant_matches_scope(&grant, &entry.slug, ""));
+        let role = resolved_role(true, &entry, "", &grant.link_hash, ceiling(), now)
+            .min(grant_role_ceiling(grant.role));
+        assert_eq!(role, Role::Commenter);
+        assert!(entry.live_link(&grant.link_hash, now).is_some());
+        // A different key is out of scope, so no link is presented at all.
+        assert!(!grant_matches_scope(&grant, &entry.slug, "reader-hash"));
+        // A grant for another document never reaches this one.
+        let other = librepaper_base::auth::AgentGrant {
+            slug: "elsewhere".into(),
+            ..grant
+        };
+        assert!(!grant_matches_scope(&other, &entry.slug, ""));
+        assert!(!grant_matches_scope(&other, &entry.slug, "editor-hash"));
     }
 
     /// The property finding 6 depends on. The agent reads
