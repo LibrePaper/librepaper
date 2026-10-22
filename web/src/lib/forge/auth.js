@@ -13,7 +13,8 @@ function record(answer, now = Date.now()) {
   return {
     access_token: answer.access_token,
     refresh_token: answer.refresh_token ?? null,
-    expires_at: now + Number(answer.expires_in) * 1000,
+    // An app without expiring tokens sends no lifetime; the token then lasts.
+    expires_at: answer.expires_in == null ? null : now + Number(answer.expires_in) * 1000,
     refresh_expires_at: answer.refresh_token_expires_in == null
       ? null
       : now + Number(answer.refresh_token_expires_in) * 1000,
@@ -79,7 +80,7 @@ async function refresh(token) {
 export async function accessToken() {
   const token = await readToken(PROVIDER);
   if (!token?.access_token) return null;
-  if (token.expires_at - Date.now() > REFRESH_MARGIN_MS) return token.access_token;
+  if (token.expires_at == null || token.expires_at - Date.now() > REFRESH_MARGIN_MS) return token.access_token;
   if (!token.refresh_token || (token.refresh_expires_at && token.refresh_expires_at <= Date.now())) {
     await forgetToken(PROVIDER);
     return null;
