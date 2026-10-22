@@ -67,9 +67,14 @@ ssh-add -l
 
 ## Pull and push
 
+The Git panel shows the sync status at the top. It checks the remote when the panel opens. Retry checks again.
+
+- Local changes are the files that differ from the last sync. The list updates as you edit. The refresh button recounts it.
 - Pull fetches the branch, merges its changes with your edits since the last sync, and applies the result to the open project. Coauthors see the text change where it changed.
-- Push pulls first. Then it shows the outgoing files and a commit message. The default message names the changed files. Confirm to push one commit to the branch.
-- If the branch moved while you were working, Push pulls again and asks you to confirm again.
+- Commit & push pulls new commits first. Then it commits your changes and pushes them.
+- The commit message defaults to a message that names the changed files. Type your own to replace it.
+- If that pull changes the list of files, Commit & push stops. Check the list, then press Commit & push again. Only a list you have seen is pushed.
+- If the branch moved while you were working, Commit & push stops. Press it again.
 - The commit's author is you. Its committer is your Git identity. Check the identity Git uses.
 
 ```sh
@@ -144,6 +149,6 @@ A local repository folder must be chosen again on each computer. The folder's pa
 
 ## Disconnecting
 
-"Disconnect" forgets the shared connection record. The repository is not changed.
+Open the panel's "..." menu and choose "Disconnect…". It forgets the shared connection record. The repository is not changed. The same menu shows the connection details.
 
 The private copy stays on your computer. It keeps unpublished commits and saved conflict sessions.

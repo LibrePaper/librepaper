@@ -38,6 +38,11 @@ const contentDecoder = new TextDecoder("utf-8", { ignoreBOM: true });
 const encoder = new TextEncoder();
 const NOT_CAUGHT_UP = "This page has not received every change yet. Try again in a moment.";
 const RECONNECT = "This computer is connected to a different repository for this project. Connect this computer again.";
+const NOT_LINKED = "This project is not connected to a Git repository.";
+const NOT_SYNCED = "This computer has not synced this project yet.";
+const GONE_FROM_REMOTE = "The commit this project last synced with is no longer on the remote.";
+/// Error kinds that say a commit is not in the private repository.
+const MISSING_KINDS = new Set(["not-found", "missing"]);
 
 const answered = (error) => typeof error?.status === "number";
 
@@ -527,6 +532,31 @@ async function assetConflicts(ctx, merge, kinds, [base, ours, theirs]) {
   return { ...merge, clean: false, conflicts };
 }
 
+/// The base commit of a merge, B' = N(C, S intersect F(R)): the paths last
+/// synced that the rules still select, whether or not the remote still holds
+/// them, so a file the remote deleted is a deletion and not an addition on the
+/// local side. A link without a checkpoint has an empty base.
+async function lastSynced(ctx, link, filter, oversize) {
+  if (!link.checkpoint) return commitFiles(ctx, new Map(), null);
+  const listing = await ctx.git.tree(link.checkpoint);
+  // The checkpoint may spell a name differently from the project (a
+  // decomposed accent), so its own entries are looked up by normalized
+  // project path.
+  const prefix = filter.rules.repoPath("");
+  const spelled = new Map();
+  for (const entry of listing.entries) {
+    if (entry.type !== "blob" || !entry.path.startsWith(prefix)) continue;
+    spelled.set(normalisePath(filter.rules.projectPath(entry.path)), entry.path);
+  }
+  const items = new Map();
+  for (const path of link.synced_paths || []) {
+    if (!filter.rules.isSynced(path) || oversize.has(path) || blocked(filter, path)) continue;
+    const kind = checkPath({ ...ctx.rules, max_path: Infinity }, path).kind;
+    if (kind) items.set(path, { repoPath: spelled.get(normalisePath(path)) ?? filter.rules.repoPath(path), kind });
+  }
+  return normalized(ctx, items, entryMap(listing.entries), [...items.keys()].sort(byPath), null);
+}
+
 /// Everything a pull needs after fetching: the filter, the three inputs and
 /// the merge. Returns `{ refusal }` when the pull cannot start.
 async function prepare(ctx, link, op, options) {
@@ -562,33 +592,7 @@ async function prepare(ctx, link, op, options) {
   }
   const paths = [...filter.synced.keys()].sort(byPath);
 
-  let base;
-  if (options.base) {
-    base = { commit: options.base };
-  } else if (link.checkpoint) {
-    // B' = N(C, S intersect F(R)): the paths last synced that the rules still
-    // select, whether or not R still holds them, so a file the remote deleted
-    // is a deletion and not an addition on the local side.
-    const listing = await ctx.git.tree(link.checkpoint);
-    // The checkpoint may spell a name differently from the project (a
-    // decomposed accent), so its own entries are looked up by normalized
-    // project path.
-    const prefix = filter.rules.repoPath("");
-    const spelled = new Map();
-    for (const entry of listing.entries) {
-      if (entry.type !== "blob" || !entry.path.startsWith(prefix)) continue;
-      spelled.set(normalisePath(filter.rules.projectPath(entry.path)), entry.path);
-    }
-    const items = new Map();
-    for (const path of link.synced_paths || []) {
-      if (!filter.rules.isSynced(path) || oversize.has(path) || blocked(filter, path)) continue;
-      const kind = checkPath({ ...ctx.rules, max_path: Infinity }, path).kind;
-      if (kind) items.set(path, { repoPath: spelled.get(normalisePath(path)) ?? filter.rules.repoPath(path), kind });
-    }
-    base = await normalized(ctx, items, entryMap(listing.entries), [...items.keys()].sort(byPath), null);
-  } else {
-    base = await commitFiles(ctx, new Map(), null);
-  }
+  const base = options.base ? { commit: options.base } : await lastSynced(ctx, link, filter, oversize);
   const theirs = await commitFiles(ctx, incoming.files, base.commit);
   const local = await snapshot(ctx, filter, base.commit);
 
@@ -1268,6 +1272,56 @@ export async function status(ctx) {
   const conflict = await restoreSession(ctx, mine.at(-1)?.session);
   const pending = entries.filter((entry) => entry.kind !== "conflict" && entry.phase !== "planned");
   return { git, link: answer.link, conflict, pending };
+}
+
+/// The link to work from, or `{ answer }` when there is none this computer is
+/// connected to.
+async function connectedLink(ctx) {
+  const { link } = await ctx.api.getLink();
+  if (!link) return { answer: result("unknown", { reason: NOT_LINKED }) };
+  const refusal = await connectionRefusal(ctx, link);
+  if (refusal) return { answer: result("unknown", { reason: refusal.refusals[0].reason, reconnect: true }) };
+  return { link };
+}
+
+/// Fetches the branch and says whether the remote moved since the last sync:
+/// `{ status: "current" | "behind", head }`, or `"unknown"` with a reason. It
+/// changes nothing in the project, the journal or the shared record.
+export async function checkRemote(ctx) {
+  return guarded(async () => {
+    const { link, answer } = await connectedLink(ctx);
+    if (answer) return answer;
+    const fetched = await ctx.git.fetch(link.checkpoint ? [link.checkpoint] : []);
+    if (link.checkpoint && fetched.missing?.includes(link.checkpoint)) {
+      return result("unknown", { reason: GONE_FROM_REMOTE });
+    }
+    const head = fetched.head || null;
+    return result(head === (link.checkpoint || null) ? "current" : "behind", { head });
+  });
+}
+
+/// The project's synced files compared with the last synced state:
+/// `{ status: "changes" | "none", files }`, with each file's status "A", "M"
+/// or "D". It makes no call to the remote and changes nothing.
+export async function localChanges(ctx) {
+  return guarded(async () => {
+    const { link, answer } = await connectedLink(ctx);
+    if (answer) return answer;
+    try {
+      const filter = await filterAt(ctx, link, link.checkpoint || null);
+      if (filter.refusals.length) return result("unknown", { reason: filter.refusals[0].reason });
+      const oversize = new Set((await snapshot(ctx, filter, null)).oversize);
+      const base = await lastSynced(ctx, link, filter, oversize);
+      const local = await snapshot(ctx, filter, base.commit);
+      const changes = (await ctx.git.diff(base.commit, local.commit)).filter((item) => !oversize.has(item.path));
+      return result(changes.length ? "changes" : "none", {
+        files: changes.map(({ path, status }) => ({ path, status })),
+      });
+    } catch (error) {
+      if (link.checkpoint && MISSING_KINDS.has(kindOf(error) ?? error?.code)) return result("unknown", { reason: NOT_SYNCED });
+      throw error;
+    }
+  });
 }
 
 async function safeJournal(ctx) {
