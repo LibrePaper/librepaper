@@ -816,11 +816,22 @@ fn repository_with_worktree(scratch: &Path) -> (PathBuf, PathBuf) {
     let main = scratch.join("main-repo");
     std::fs::create_dir(&main).unwrap();
     git_in(&main, &["init", "--quiet", "--initial-branch=main"], "");
-    git_in(&main, &["commit", "--allow-empty", "--quiet", "-m", "one"], "");
+    git_in(
+        &main,
+        &["commit", "--allow-empty", "--quiet", "-m", "one"],
+        "",
+    );
     let linked = scratch.join("linked-tree");
     git_in(
         &main,
-        &["worktree", "add", "--quiet", "-b", "side", linked.to_str().unwrap()],
+        &[
+            "worktree",
+            "add",
+            "--quiet",
+            "-b",
+            "side",
+            linked.to_str().unwrap(),
+        ],
         "",
     );
     (main.canonicalize().unwrap(), linked.canonicalize().unwrap())
@@ -830,11 +841,7 @@ fn repository_with_worktree(scratch: &Path) -> (PathBuf, PathBuf) {
 async fn the_chooser_accepts_a_linked_worktree() {
     let fx = Fixture::new();
     let (main, linked) = repository_with_worktree(fx.scratch.path());
-    let answer = fx
-        .manager
-        .add_grant(ORIGIN, PROJECT, linked)
-        .await
-        .unwrap();
+    let answer = fx.manager.add_grant(ORIGIN, PROJECT, linked).await.unwrap();
     assert_eq!(answer["label"], "linked-tree");
     fx.manager.add_grant(ORIGIN, PROJECT, main).await.unwrap();
 }
