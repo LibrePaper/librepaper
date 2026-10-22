@@ -29,7 +29,9 @@ function ignorer(text) {
 ///
 /// Returns `classify(entries)` for a recursive tree listing, `projectPath` and
 /// `repoPath` to move between the two spellings of a path, and
-/// `isSynced(projectPath)` for the same filter on a project path.
+/// `isSynced(projectPath)` for the same filter on a project path. `maxFiles` is
+/// the most files a project may hold; the caller counts them once files with
+/// unreadable content are left out, so `classify` does not refuse on it.
 export function syncRules({ rules, folder, maxFileBytes, ignoreRoot, ignoreFolder }) {
   const prefix = folder ? `${folder}/` : "";
   const maxPath = rules?.max_path || 200;
@@ -121,12 +123,6 @@ export function syncRules({ rules, folder, maxFileBytes, ignoreRoot, ignoreFolde
     }
 
     const kept = found.filter((item) => !colliding.has(item) && !tooLong.includes(item));
-    if (kept.length > maxFiles) {
-      refusals.push({
-        reason: `the repository has ${kept.length} syncable files and a project may hold ${maxFiles}`,
-        paths: [],
-      });
-    }
 
     const synced = new Map();
     const folders = new Map();
@@ -144,5 +140,5 @@ export function syncRules({ rules, folder, maxFileBytes, ignoreRoot, ignoreFolde
     return { synced, unsynced, refusals, folders };
   }
 
-  return { classify, projectPath, repoPath, isSynced };
+  return { classify, projectPath, repoPath, isSynced, maxFiles };
 }

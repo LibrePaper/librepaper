@@ -68,6 +68,7 @@ class Repo {
   treeEdits = [];
   mergeCalls = [];
   pushes = [];
+  pushBodies = [];
   moveOnPush = 0;
   connectionId = null;
   forgets = 0;
@@ -225,6 +226,13 @@ class Repo {
         return { is_ancestor: this.ancestors(body.descendant).has(body.ancestor) };
       case "push": {
         this.pushes.push(body.commit);
+        this.pushBodies.push(body);
+        if (body.connection_id !== this.connectionId) {
+          throw httpError(409, { error: "Another connection.", kind: "stale-connection" }, { kind: "stale-connection" });
+        }
+        if ((body.expected ?? null) !== this.head) {
+          throw httpError(409, { error: "The branch moved.", kind: "moved" }, { kind: "moved", name: "Refused" });
+        }
         if (this.moveOnPush > 0) {
           this.moveOnPush -= 1;
           this.advance({ [`moved-${this.moveOnPush}.md`]: "moved\n" });
@@ -331,6 +339,10 @@ function makeSession() {
       const entry = entries.get(path);
       return entry?.kind === "text" ? unsuggestedText(doc, entry.id) : null;
     },
+    unsent: 0,
+    unacknowledgedCount() {
+      return this.unsent;
+    },
     has: (path) => entries.has(path),
     sha: (path) => entries.get(path)?.sha ?? null,
     paths: () => [...entries.keys()].sort(),
@@ -338,11 +350,11 @@ function makeSession() {
 }
 
 function makeApi(session) {
-  const state = { link: null, calls: [], beforeApply: null };
+  const state = { link: null, calls: [], beforeApply: null, version: null };
   const stale = () => httpError(409, { reason: "stale", error: "stale", link: state.link });
   const api = {
     state,
-    getLink: async () => ({ link: state.link ? structuredClone(state.link) : null }),
+    getLink: async () => ({ link: state.link ? structuredClone(state.link) : null, version: state.version }),
     async putLink(body) {
       if (state.link ? body.revision !== state.link.revision : body.revision !== null) throw stale();
       state.link = {
@@ -407,7 +419,7 @@ function makeApi(session) {
         synced_paths: body.sync.synced_paths,
         revision: state.link.revision + 1,
       };
-      return { receipt: {}, link: structuredClone(state.link) };
+      return { receipt: {}, link: structuredClone(state.link), version: state.version };
     },
   };
   return api;
@@ -779,6 +791,7 @@ const baseFiles = (repo) => {
     commit,
     parent: planned.outgoing.remote,
     paths: planned.outgoing.paths,
+    connection_id: api.state.link.connection_id,
   });
   const settled = await sync.recover(ctx);
   assert.deepEqual(settled.recovered, ["op-lost"]);
@@ -938,6 +951,173 @@ const baseFiles = (repo) => {
   assert.deepEqual(answer.skipped, [{ path: "fig/a.png", reason: "a Git LFS pointer" }]);
   assert.ok(!session.has("fig/a.png"));
   assert.equal(repo.read("fig/a.png"), pointer);
+}
+
+// ---------------------------------------------------------------- Roborev 1024 fixes
+
+// A page that has not received every server change refuses outgoing work.
+{
+  const { repo, session, api, ctx } = await connected({ "intro.qmd": "one\n" });
+  await session.setText("intro.qmd", "one edited\n");
+  const other = new LoroDoc();
+  other.getText("elsewhere").insert(0, "typed on another desktop");
+  other.commit();
+  api.state.version = Buffer.from(other.oplogVersion().encode()).toString("base64");
+  ctx.arrivalMs = 150;
+  const behind = await sync.outgoing(ctx);
+  assert.equal(behind.status, "refused", JSON.stringify(behind));
+  assert.equal(behind.refusals[0].reason, "This page has not received every change yet. Try again in a moment.");
+  const pushes = repo.pushes.length;
+  assert.equal((await sync.push(ctx, "x")).status, "refused");
+  assert.equal(repo.pushes.length, pushes);
+
+  // Unsent local updates refuse as well.
+  session.doc.import(other.export({ mode: "update" }));
+  session.unsent = 1;
+  assert.equal((await sync.outgoing(ctx)).status, "refused");
+  session.unsent = 0;
+  const ready = await sync.outgoing(ctx);
+  assert.equal(ready.status, "outgoing", JSON.stringify(ready));
+}
+
+// A confirmed push is bound to the connection it was reviewed against.
+{
+  const { repo, session, api, ctx } = await connected({ "intro.qmd": "one\n" });
+  await session.setText("intro.qmd", "one edited\n");
+  const planned = await sync.outgoing(ctx);
+  assert.equal(planned.outgoing.connection_id, api.state.link.connection_id);
+  api.state.link.connection_id = "second-connection";
+  repo.connectionId = "second-connection";
+  const pushes = repo.pushes.length;
+  const again = await sync.push(ctx, "x", { confirmed: planned.outgoing });
+  assert.equal(again.status, "moved", JSON.stringify(again));
+  assert.equal(again.outgoing.connection_id, "second-connection");
+  assert.equal(repo.pushes.length, pushes);
+  const sent = await sync.push(ctx, "x", { confirmed: again.outgoing });
+  assert.equal(sent.status, "pushed", JSON.stringify(sent));
+  assert.equal(repo.pushBodies.at(-1).expected, planned.outgoing.remote);
+  assert.equal(repo.pushBodies.at(-1).connection_id, "second-connection");
+
+  // The sidecar's own refusal of a changed connection is a reconnect refusal.
+  await session.setText("intro.qmd", "one edited twice\n");
+  const original = repo.request.bind(repo);
+  repo.request = async (op, body) => {
+    if (op === "push") throw httpError(409, { kind: "stale-connection" }, { kind: "stale-connection" });
+    return original(op, body);
+  };
+  const refusal = await sync.push(ctx, "x");
+  repo.request = original;
+  assert.equal(refusal.status, "refused");
+  assert.equal(refusal.reconnect, true);
+  assert.deepEqual(repo.journal, []);
+}
+
+// A journal entry is never reconciled into a link of another connection.
+{
+  const { repo, api, ctx } = await connected({ "intro.qmd": "one\n" });
+  const parent = repo.head;
+  const commit = repo.advance({ "intro.qmd": "two\n" });
+  await ctx.git.journalUpsert({
+    id: "op-other",
+    kind: "push",
+    phase: "pushed",
+    commit,
+    parent,
+    paths: ["intro.qmd"],
+    connection_id: "an-older-connection",
+  });
+  const checkpoint = api.state.link.checkpoint;
+  const settled = await sync.recover(ctx);
+  assert.deepEqual(settled.pending, ["op-other"]);
+  assert.deepEqual(settled.recovered, []);
+  assert.equal(api.state.link.checkpoint, checkpoint);
+  assert.equal(repo.journal.length, 1);
+}
+
+// A decomposed name in the repository is found when the baseline is rebuilt.
+{
+  const decomposed = "café.md";
+  const composed = "café.md";
+  const { repo, session, api, ctx } = await connected({ [composed]: "coffee\n", "intro.qmd": "i\n" });
+  // The repository spells the name in the decomposed form from the start.
+  repo.advance({ [composed]: null, [decomposed]: "coffee\n" });
+  const pulledFirst = await sync.pull(ctx);
+  assert.ok(["pulled", "nothing"].includes(pulledFirst.status), JSON.stringify(pulledFirst));
+  assert.deepEqual(repo.read(decomposed), "coffee\n");
+  await session.setText(composed, "coffee edited\n");
+  repo.advance({ [decomposed]: null });
+  const answer = await sync.pull(ctx);
+  // Edited locally, deleted remotely: a conflict, not a silent re-creation.
+  assert.equal(answer.status, "conflict", JSON.stringify(answer));
+  assert.equal(answer.conflicts[0].path, composed);
+  assert.equal(repo.text(answer.conflicts[0].base), "coffee\n");
+  assert.ok(api.state.link);
+}
+
+// An error that leaves the outcome unknown keeps the entry and its refs.
+{
+  const { repo, session, ctx } = await connected({ "intro.qmd": "one\n" });
+  await session.setText("intro.qmd", "one edited\n");
+  const original = repo.request.bind(repo);
+  repo.request = async (op, body) => {
+    if (op === "push") throw httpError(502, { error: "bad gateway" });
+    return original(op, body);
+  };
+  await assert.rejects(() => sync.push(ctx, "x"), /bad gateway/);
+  repo.request = original;
+  const [entry] = repo.journal;
+  assert.equal(entry.kind, "push");
+  assert.equal(entry.phase, "prepared");
+  assert.ok(repo.refs.has(`${entry.id}/published`));
+}
+{
+  const { repo, api, ctx } = await connected({ "intro.qmd": "one\n" });
+  repo.advance({ "intro.qmd": "two\n" });
+  api.sourceChange = async () => {
+    throw httpError(503, { error: "down" });
+  };
+  await assert.rejects(() => sync.pull(ctx), /down/);
+  assert.equal(repo.journal.filter((entry) => entry.kind === "pull" && entry.phase === "sent").length, 1);
+  assert.ok([...repo.refs.keys()].some((key) => key.endsWith("/merged")));
+}
+
+// A local file over the size limit is not sent, whatever its kind.
+{
+  const { repo, session, ctx } = await connected({ "intro.qmd": "one\n" });
+  ctx.maxFileBytes = 20;
+  await session.setText("big.md", "x".repeat(40));
+  await session.setAsset("fig.png", new Uint8Array(40).fill(7));
+  await session.setText("small.md", "small\n");
+  const look = await sync.outgoing(ctx);
+  assert.equal(look.status, "outgoing", JSON.stringify(look));
+  assert.deepEqual(look.files.map((file) => file.path), ["small.md"]);
+  const pushed = await sync.push(ctx, "x", { confirmed: look.outgoing });
+  assert.equal(pushed.status, "pushed", JSON.stringify(pushed));
+  assert.deepEqual(Object.keys(repo.files()).sort(), ["intro.qmd", "small.md"]);
+
+  const compared = await world({ project: { "big.md": "x".repeat(40), "ok.md": "ok\n" } });
+  compared.ctx.maxFileBytes = 20;
+  const result = await sync.compare(compared.ctx, draft());
+  assert.deepEqual(result.outgoing, ["ok.md"]);
+  assert.ok(result.unsynced.some((item) => item.path === "big.md" && item.reason === "over the file size limit"));
+}
+
+// Files left out for their content do not count against the file limit.
+{
+  const pointer = "version https://git-lfs.github.com/spec/v1\noid sha256:abc\nsize 123\n";
+  const remote = { "real-a.md": "a\n", "real-b.md": "b\n" };
+  for (let i = 0; i < 60; i += 1) remote[`lfs-${i}.md`] = pointer;
+  const { session, ctx } = await world({ remote, project: {} });
+  const answer = await sync.connect(ctx, draft(), "remote");
+  assert.ok(["pulled", "nothing"].includes(answer.status), JSON.stringify(answer));
+  assert.equal(session.text("real-a.md"), "a\n");
+
+  const many = {};
+  for (let i = 0; i < 60; i += 1) many[`f-${i}.md`] = "x\n";
+  const refused = await world({ remote: many, project: {} });
+  const answered = await sync.connect(refused.ctx, draft(), "remote");
+  assert.equal(answered.status, "refused");
+  assert.match(answered.refusals[0].reason, /60 syncable files/);
 }
 
 console.log("gitsync sync ok");
