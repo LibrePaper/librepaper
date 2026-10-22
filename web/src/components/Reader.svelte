@@ -3402,15 +3402,10 @@
       onDocument: (found) => {
         doc = found;
         document.title = `${found.title} · LibrePaper`;
-        // Without a separate documents origin the sandboxed frame would run
-        // with the app's own origin, so the preview stays off.
-        let separate = false;
-        try {
-          separate = Boolean(found.docs_origin)
-            && new URL(found.docs_origin, location.href).origin !== location.origin;
-        } catch {
-          separate = false;
-        }
+        // The server refuses a documents host equal to the app host, so the
+        // page only has to refuse to invent one: falling back to the app's own
+        // origin would hand the sandboxed frame that origin.
+        const separate = Boolean(found.docs_origin);
         docsOrigin = separate ? found.docs_origin : null;
         // The frame is an empty page with the agent in it, on the documents
         // origin. What goes into it is what this browser renders -- or, for a
