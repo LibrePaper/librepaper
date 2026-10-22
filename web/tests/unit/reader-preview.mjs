@@ -38,6 +38,7 @@ const readerSource = await readFile(new URL("../../src/components/Reader.svelte"
 const previewSource = await readFile(new URL("../../src/lib/reader/preview-render.js", import.meta.url), "utf8");
 const viteSource = await readFile(new URL("../../vite.config.js", import.meta.url), "utf8");
 const offlineSource = await readFile(new URL("../../src/lib/offline-projects.js", import.meta.url), "utf8");
+const persistenceSource = await readFile(new URL("../../src/lib/offline-persistence.js", import.meta.url), "utf8");
 const editorSource = await readFile(new URL("../../src/components/Editor.svelte", import.meta.url), "utf8");
 // Reader links receive renderer capability before their early prepare return,
 // and bind LaTeX to a stable owner across source refreshes.
@@ -52,7 +53,7 @@ assert.match(readerSource, /shownVerbs = \$derived\.by\(\(\) => pending && rende
 assert.match(readerSource, /current page is still rendering/);
 assert.match(viteSource, /let watchingBuild = false;[\s\S]*?configResolved\(config\) \{ watchingBuild = Boolean\(config\.build\.watch\); \}[\s\S]*?if \(watchingBuild\)/);
 assert.match(offlineSource, /request\.onblocked = \(\) => \{[\s\S]*?blocked = true;[\s\S]*?reject\(/);
-assert.match(offlineSource, /pendingFlush\.catch\(\(\) => \{\}\)\.finally/);
+assert.match(persistenceSource, /pendingFlush\.catch\(\(\) => \{\}\)\.finally/);
 assert.match(editorSource, /states = new WeakMap\(\);\s*undoManager = null;\s*undoManagerDoc = null/);
 assert.match(readerSource, /\["markdown", "quarto"\]\.includes\(displayedFormat\) && buildPreferences\.output === "pdf"[\s\S]*?\? "pdf"/);
 assert.match(readerSource, /const frameLoaded = \(\) => \{[\s\S]*?framePreview\.markReady\(\)[\s\S]*?replayPreview\(\)/);

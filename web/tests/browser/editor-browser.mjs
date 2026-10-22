@@ -54,7 +54,8 @@ import Editor from ${JSON.stringify(join(root, "web/src/components/Editor.svelte
 import Diagnostics from ${JSON.stringify(join(root, "web/src/components/reader/Diagnostics.svelte"))};
 import { join as joinSession } from ${JSON.stringify(join(root, "web/src/lib/collab.js"))};
 import { rejectMany, resolveChanges, trackedSplice } from ${JSON.stringify(join(root, "web/src/lib/track-changes.js"))};
-import { durableProjectPersistence, rememberProject, localProject } from ${JSON.stringify(join(root, "web/src/lib/offline-projects.js"))};
+import { rememberProject, localProject } from ${JSON.stringify(join(root, "web/src/lib/offline-projects.js"))};
+import { durableProjectPersistence } from ${JSON.stringify(join(root, "web/src/lib/offline-persistence.js"))};
 import { createClassComponent } from ${JSON.stringify(join(root, "web/node_modules/svelte/src/legacy/legacy-client.js"))};
 import { setSize, setFont, setLineHeight, start as startEditorType } from ${JSON.stringify(join(root, "web/src/lib/editor-type.js"))};
 
