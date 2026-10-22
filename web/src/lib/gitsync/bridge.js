@@ -135,7 +135,10 @@ export function createBridge(request = gitRequest) {
     merge: (ours, theirs) => request("merge", { ours, theirs }),
     diff: async (from, to) => (await request("diff", { from, to })).changes,
     ancestor: async (ancestor, descendant) => (await request("ancestor", { ancestor, descendant })).is_ancestor,
-    push: (commit) => request("push", { commit }),
+    /// `expected` is the remote head that was reviewed (null for a branch
+    /// without commits); the service refuses when the branch is elsewhere.
+    push: (commit, expected, connectionId) =>
+      request("push", { commit, expected: expected ?? null, connection_id: connectionId }),
     keep: (operation, refs) => request("keep", { operation, refs }),
     release: (operation) => request("release", { operation }),
     journal: async () => (await request("journal", {})).entries,

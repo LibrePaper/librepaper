@@ -1,4 +1,6 @@
-import { checkPath } from "../paths.js";
+import { VersionVector } from "loro-crdt";
+
+import { checkPath, normalisePath } from "../paths.js";
 import { sha256Hex, sha256HexOfText } from "../digest.js";
 import { unsuggestedText } from "../track-changes.js";
 import { decodeText, isLfsPointer, textHash, toLf } from "./hash.js";
@@ -31,6 +33,9 @@ const LFS_POINTER_MAX_BYTES = 1024;
 const IGNORE_FILE = ".librepaperignore";
 const GIT_KINDS = new Set(["auth", "network", "not-found"]);
 const decoder = new TextDecoder();
+const encoder = new TextEncoder();
+const NOT_CAUGHT_UP = "This page has not received every change yet. Try again in a moment.";
+const RECONNECT = "This computer is connected to a different repository for this project. Connect this computer again.";
 
 const answered = (error) => typeof error?.status === "number";
 
@@ -92,11 +97,62 @@ function authorOf(ctx) {
 async function connectionRefusal(ctx, link) {
   const status = await ctx.git.status();
   if (status?.connection_id && status.connection_id === link.connection_id) return null;
-  return refused(
-    "This computer is connected to a different repository for this project. Connect this computer again.",
-    [],
-    { reconnect: true },
-  );
+  return refused(RECONNECT, [], { reconnect: true });
+}
+
+/// Whether an error is a clear answer that a request was not applied: a 400,
+/// or a 409 whose reason or kind says the record, the files, the suggestions,
+/// the branch or the connection moved. Anything else (a 5xx, a 502, a lost
+/// connection) leaves the outcome unknown, so the journal entry and the refs
+/// stay for recovery.
+function definitive(error) {
+  if (!answered(error)) return false;
+  if (error.status === 400) return true;
+  if (error.status !== 409) return false;
+  const reason = error.body?.reason;
+  const kind = error.kind ?? error.body?.kind;
+  return ["stale", "changed", "suggestion"].includes(reason) || ["moved", "stale-connection"].includes(kind);
+}
+
+const kindOf = (error) => error?.kind ?? error?.body?.kind;
+
+// ---------------------------------------------------------------- version check
+
+/// Pages that timed out waiting for a pull to arrive, until a version check
+/// passes for them.
+const timedOut = new WeakSet();
+
+function decodeVersion(text) {
+  if (!text) return null;
+  const binary = atob(text);
+  const bytes = new Uint8Array(binary.length);
+  for (let i = 0; i < binary.length; i += 1) bytes[i] = binary.charCodeAt(i);
+  return VersionVector.decode(bytes);
+}
+
+/// Waits, bounded, until this page holds every change the server holds (the
+/// `version` the server answered) and has none left to send. A page that has
+/// not received a change would otherwise send back content that was already
+/// pulled. Answers false after the bound.
+async function caughtUp(ctx, version) {
+  const wanted = decodeVersion(version);
+  const deadline = Date.now() + (ctx.arrivalMs ?? ARRIVAL_MS);
+  for (;;) {
+    const relation = wanted ? ctx.session.doc.oplogVersion().compare(wanted) : 0;
+    const covered = relation === 0 || relation === 1;
+    const unsent = ctx.session.unacknowledgedCount?.() ?? 0;
+    if (covered && !unsent) {
+      timedOut.delete(ctx.session);
+      return true;
+    }
+    if (Date.now() > deadline) return false;
+    await new Promise((done) => setTimeout(done, 100));
+  }
+}
+
+/// The refusal for a page that is not caught up, or null once it is.
+async function catchUpRefusal(ctx, version) {
+  return (await caughtUp(ctx, version)) ? null : refused(NOT_CAUGHT_UP);
 }
 
 // ---------------------------------------------------------------- journal
@@ -230,8 +286,9 @@ export async function normalized(ctx, items, entries, paths, parent) {
 /// `L`: the project's files that pass the filter, as a commit with `parent`.
 /// A project path whose repository path the remote holds but does not sync (a
 /// link, a submodule, an oversize or LFS file, invalid UTF-8) is left out, so
-/// that it is never sent over that entry. Also returns the texts and asset digests it was built from, and the kind of
-/// each file.
+/// that it is never sent over that entry. A file over the size limit is left
+/// out and listed in `filter.unsynced`. Also returns the texts and asset
+/// digests it was built from, and the kind of each file.
 export async function snapshot(ctx, filter, parent) {
   const files = new Map();
   const texts = new Map();
@@ -242,6 +299,8 @@ export async function snapshot(ctx, filter, parent) {
     const repoPath = filter.rules.repoPath(path);
     return filter.occupied.has(repoPath) && !held.has(repoPath);
   };
+  const limit = ctx.maxFileBytes ?? DEFAULT_MAX_FILE_BYTES;
+  const oversize = [];
   const listed = ctx.session.list()
     .filter((file) => filter.rules.isSynced(file.path) && !blocked(file.path))
     .sort((a, b) => byPath(a.path, b.path));
@@ -262,11 +321,50 @@ export async function snapshot(ctx, filter, parent) {
     }
     const text = unsuggestedText(ctx.session.doc, file.id);
     if (text == null) continue;
+    if (encoder.encode(text).length > limit) {
+      oversize.push(file.path);
+      continue;
+    }
     files.set(file.path, { kind: "text", text, id: null });
     texts.set(file.path, text);
     kinds.set(file.path, "text");
   }
-  return { ...(await commitFiles(ctx, files, parent)), texts, assets, kinds, paths: [...files.keys()] };
+  let built = await commitFiles(ctx, files, parent);
+  if (assets.size) {
+    // An asset's size is known only from the tree, so the commit is listed and
+    // rebuilt without any file over the limit.
+    const big = (await ctx.git.tree(built.commit)).entries
+      .filter((entry) => entry.type === "blob" && entry.size > limit)
+      .map((entry) => entry.path);
+    if (big.length) {
+      for (const path of big) {
+        files.delete(path);
+        texts.delete(path);
+        assets.delete(path);
+        kinds.delete(path);
+        oversize.push(path);
+      }
+      built = await commitFiles(ctx, files, parent);
+    }
+  }
+  for (const path of oversize) {
+    const repoPath = filter.rules.repoPath(path);
+    if (!filter.unsynced.some((item) => item.path === repoPath)) {
+      filter.unsynced.push({ path: repoPath, reason: "over the file size limit" });
+    }
+  }
+  return { ...built, texts, assets, kinds, paths: [...files.keys()] };
+}
+
+/// The refusal for a remote that holds more project files than a project may,
+/// counted after files left out for their content are pruned, or null.
+function tooManyFiles(filter) {
+  const max = filter.rules.maxFiles;
+  if (filter.synced.size <= max) return null;
+  return {
+    reason: `the repository has ${filter.synced.size} syncable files and a project may hold ${max}`,
+    paths: [],
+  };
 }
 
 // ---------------------------------------------------------------- source change
@@ -396,6 +494,8 @@ async function prepare(ctx, link, op, options) {
 
   const incoming = await loadFiles(ctx, filter.synced, filter.entries, [...filter.synced.keys()]);
   pruneSkipped(filter, incoming.skipped);
+  const excess = tooManyFiles(filter);
+  if (excess) return { refusal: result("refused", { refusals: [excess] }) };
   const paths = [...filter.synced.keys()].sort(byPath);
 
   let base;
@@ -406,11 +506,20 @@ async function prepare(ctx, link, op, options) {
     // select, whether or not R still holds them, so a file the remote deleted
     // is a deletion and not an addition on the local side.
     const listing = await ctx.git.tree(link.checkpoint);
+    // The checkpoint may spell a name differently from the project (a
+    // decomposed accent), so its own entries are looked up by normalized
+    // project path.
+    const prefix = filter.rules.repoPath("");
+    const spelled = new Map();
+    for (const entry of listing.entries) {
+      if (entry.type !== "blob" || !entry.path.startsWith(prefix)) continue;
+      spelled.set(normalisePath(filter.rules.projectPath(entry.path)), entry.path);
+    }
     const items = new Map();
     for (const path of link.synced_paths || []) {
       if (!filter.rules.isSynced(path)) continue;
       const kind = checkPath({ ...ctx.rules, max_path: Infinity }, path).kind;
-      if (kind) items.set(path, { repoPath: filter.rules.repoPath(path), kind });
+      if (kind) items.set(path, { repoPath: spelled.get(normalisePath(path)) ?? filter.rules.repoPath(path), kind });
     }
     base = await normalized(ctx, items, entryMap(listing.entries), [...items.keys()].sort(byPath), null);
   } else {
@@ -445,6 +554,7 @@ async function complete(ctx, prepared, tree, op) {
   };
   const merged = await ctx.git.commitTree(tree, [local.commit, theirs.commit], "LibrePaper sync merge", null);
   await ctx.git.keep(op, { base: base.commit, local: local.commit, remote: theirs.commit, merged });
+  prepared.sent = true;
   const keepBody = JSON.stringify(body).length < JOURNAL_BODY_LIMIT;
   await journalSet(ctx, {
     id: op,
@@ -459,7 +569,7 @@ async function complete(ctx, prepared, tree, op) {
   try {
     answer = await ctx.api.sourceChange(body);
   } catch (error) {
-    if (!answered(error)) throw error;
+    if (!definitive(error)) throw error;
     await finish(ctx, op);
     const reason = error.body?.reason;
     if (error.status === 409 && reason === "stale") return { retry: "stale" };
@@ -484,7 +594,7 @@ async function complete(ctx, prepared, tree, op) {
       link: answer.link,
       arrived,
     }),
-    state: { filter: prepared.filter, remote, theirs, link: answer.link },
+    state: { filter: prepared.filter, remote, theirs, link: answer.link, version: answer.version },
   };
 }
 
@@ -535,15 +645,16 @@ async function runPull(ctx, options = {}) {
   let changedTries = 0;
   let staleTries = 0;
   for (;;) {
-    const link = (await ctx.api.getLink()).link;
+    const { link, version } = await ctx.api.getLink();
     if (!link) return { result: refused("This project is not connected to a Git repository.") };
     const mismatch = await connectionRefusal(ctx, link);
     if (mismatch) return { result: mismatch };
     const op = refId();
     await journalSet(ctx, { id: op, kind: "pull", phase: "planned", revision: link.revision, checkpoint: link.checkpoint });
     let step;
+    let prepared = null;
     try {
-      const prepared = await prepare(ctx, link, op, options);
+      prepared = await prepare(ctx, link, op, options);
       if (prepared.refusal) {
         await finish(ctx, op);
         return { result: prepared.refusal };
@@ -552,7 +663,7 @@ async function runPull(ctx, options = {}) {
         await finish(ctx, op);
         step = {
           result: result("nothing", { files: [], skipped: [], link, arrived: true }),
-          state: { filter: prepared.filter, remote: null, theirs: prepared.theirs, link },
+          state: { filter: prepared.filter, remote: null, theirs: prepared.theirs, link, version },
         };
       } else if (prepared.merge.clean) {
         step = await complete(ctx, prepared, prepared.merge.tree, op);
@@ -560,7 +671,9 @@ async function runPull(ctx, options = {}) {
         step = await openConflict(ctx, prepared, op, options.carry);
       }
     } catch (error) {
-      if (answered(error) || GIT_KINDS.has(error?.kind)) await finish(ctx, op);
+      // Once the request is sent its outcome may be unknown: only a clear
+      // rejection ends the entry. Before that nothing is in flight.
+      if (definitive(error) || !prepared?.sent) await finish(ctx, op);
       throw error;
     }
     if (step.retry === "stale") {
@@ -664,9 +777,11 @@ export async function outgoing(ctx) {
   return guarded(async () => {
     const pulled = await runPull(ctx);
     if (!pulled.state) return pulled.result;
-    if (pulled.result.arrived === false) {
-      return refused("The pulled changes have not reached this page yet. Try again in a moment.");
-    }
+    // An arrival timeout is remembered and refuses until the page has caught
+    // up with the server, which the version check decides.
+    if (pulled.result.arrived === false) timedOut.add(ctx.session);
+    const behind = await catchUpRefusal(ctx, pulled.state.version);
+    if (behind) return behind;
     const { filter, remote, theirs, link } = pulled.state;
     const local = await snapshot(ctx, filter, theirs.commit);
     const changes = await ctx.git.diff(theirs.commit, local.commit);
@@ -690,6 +805,7 @@ export async function outgoing(ctx) {
         local: local.commit,
         paths: local.paths,
         link,
+        connection_id: link.connection_id,
       },
     });
   });
@@ -698,9 +814,14 @@ export async function outgoing(ctx) {
 /// Records a push on the server, safely after a crash or a lost reply. Does
 /// nothing when the record already names the commit or a descendant, or when
 /// it names neither the commit nor its parent: the next pull adopts the push.
+/// Throws, leaving the entry for the person, when the record belongs to another
+/// connection than the push.
 async function recordPush(ctx, entry) {
   const link = (await ctx.api.getLink()).link;
   if (!link) return null;
+  if (link.connection_id !== entry.connection_id) {
+    throw Object.assign(new Error("The push belongs to another connection."), { otherConnection: true });
+  }
   if (link.checkpoint === entry.commit) return link;
   if (link.checkpoint !== entry.parent) {
     let descendant = false;
@@ -727,23 +848,41 @@ async function recordPush(ctx, entry) {
   }
 }
 
-/// Writes one commit on top of the remote head and pushes it.
+/// Writes one commit on top of the remote head and pushes it, naming the head
+/// that was reviewed and the connection it was reviewed against.
 async function publish(ctx, plan, message) {
   const tree = await ctx.git.treeEdit(plan.remoteTree, plan.edits);
   const commit = await ctx.git.commitTree(tree, plan.remote ? [plan.remote] : [], message?.trim() || defaultMessage(plan.files), authorOf(ctx));
   const op = refId();
-  const entry = { id: op, kind: "push", phase: "prepared", commit, parent: plan.remote, paths: plan.paths };
+  const entry = {
+    id: op,
+    kind: "push",
+    phase: "prepared",
+    commit,
+    parent: plan.remote,
+    paths: plan.paths,
+    connection_id: plan.connection_id,
+  };
   await journalSet(ctx, entry);
   await ctx.git.keep(op, { published: commit });
   try {
-    await ctx.git.push(commit);
+    await ctx.git.push(commit, plan.remote ?? null, plan.connection_id);
   } catch (error) {
-    if (answered(error)) await finish(ctx, op);
-    if (error?.kind === "moved") return { moved: true };
+    // Only a clear rejection ends the entry; a 502 or a lost connection may
+    // have pushed the commit, which recovery finds out.
+    if (definitive(error)) await finish(ctx, op);
+    if (kindOf(error) === "moved") return { moved: true };
+    if (kindOf(error) === "stale-connection") return { result: refused(RECONNECT, [], { reconnect: true }) };
     throw error;
   }
   await journalSet(ctx, { ...entry, phase: "pushed" });
-  const link = await recordPush(ctx, entry);
+  let link;
+  try {
+    link = await recordPush(ctx, entry);
+  } catch (error) {
+    if (error?.otherConnection) return { result: result("pushed", { files: plan.files, commit, link: null }) };
+    throw error;
+  }
   await finish(ctx, op);
   return { result: result("pushed", { files: plan.files, commit, link }) };
 }
@@ -758,10 +897,18 @@ export async function push(ctx, message = "", { confirmed = null } = {}) {
   return guarded(async () => {
     let plan = confirmed;
     if (confirmed) {
-      const link = (await ctx.api.getLink()).link;
+      const { link, version } = await ctx.api.getLink();
       if (!link) return refused("This project is not connected to a Git repository.");
       const mismatch = await connectionRefusal(ctx, link);
       if (mismatch) return mismatch;
+      const behind = await catchUpRefusal(ctx, version);
+      if (behind) return behind;
+      if (confirmed.connection_id !== link.connection_id) {
+        // The review was made against another connection: ask for a new one.
+        const again = await outgoing(ctx);
+        if (again.status !== "outgoing") return again;
+        return result("moved", { files: again.files, outgoing: again.outgoing });
+      }
     }
     for (let attempt = 0; ; attempt += 1) {
       if (!plan) {
@@ -843,6 +990,8 @@ export async function compare(ctx, draft) {
     if (filter.refusals.length) return { ...none, refusals: filter.refusals };
     const incoming = await loadFiles(ctx, filter.synced, filter.entries, [...filter.synced.keys()]);
     pruneSkipped(filter, incoming.skipped);
+    const excess = tooManyFiles(filter);
+    if (excess) return { ...none, refusals: [excess] };
     const theirs = await commitFiles(ctx, incoming.files, null);
     const local = await snapshot(ctx, filter, null);
     const changes = await ctx.git.diff(theirs.commit, local.commit);
@@ -877,6 +1026,18 @@ export async function connect(ctx, draft, direction) {
       }
       const incoming = await loadFiles(ctx, filter.synced, filter.entries, [...filter.synced.keys()]);
       pruneSkipped(filter, incoming.skipped);
+      const excess = tooManyFiles(filter);
+      if (excess) {
+        await ctx.git.forget();
+        return result("refused", { refusals: [excess] });
+      }
+      if (direction === "local") {
+        const behind = await catchUpRefusal(ctx, (await ctx.api.getLink()).version);
+        if (behind) {
+          await ctx.git.forget();
+          return behind;
+        }
+      }
       const theirs = await commitFiles(ctx, incoming.files, null);
       const local = await snapshot(ctx, filter, null);
       const differing = (await ctx.git.diff(theirs.commit, local.commit)).filter((item) => item.status === "M");
@@ -956,9 +1117,7 @@ export async function recover(ctx) {
           try {
             await ctx.api.sourceChange(entry.body);
           } catch (error) {
-            const reason = error?.body?.reason;
-            const dropped = error?.status === 409 && ["stale", "changed", "suggestion"].includes(reason);
-            if (!dropped) throw error;
+            if (!definitive(error)) throw error;
           }
           await finish(ctx, entry.id);
         } else if (entry.phase === "prepared") {

@@ -136,14 +136,14 @@ function classify(entries, options = {}) {
   assert.deepEqual(result.refusals[0].paths, [long]);
 }
 
-// More files than max_files refuses.
+// classify does not count files; the caller counts them after unreadable files are left out.
 {
   const names = ["a", "b", "c", "d", "e", "f"].map((name) => blob(`${name}.md`));
-  assert.equal(classify(names.slice(0, 5)).refusals.length, 0);
   const result = classify(names);
-  assert.equal(result.refusals.length, 1);
-  assert.deepEqual(result.refusals[0].paths, []);
-  assert.match(result.refusals[0].reason, /6 syncable files/);
+  assert.equal(result.refusals.length, 0);
+  assert.equal(result.synced.size, 6);
+  const set = syncRules({ rules, folder: "", maxFileBytes: 1000, ignoreRoot: null, ignoreFolder: null });
+  assert.equal(set.maxFiles, 5);
 }
 
 // An renv folder is an environment, whatever its files' extensions.
