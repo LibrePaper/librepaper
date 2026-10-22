@@ -34,4 +34,5 @@ env = { LIBREPAPER_AGENT_TOKEN = "${token}" }`);
   .share-config { resize: none; white-space: pre; overflow-x: auto; }
   .share-reveal > button { justify-self: start; }
   .share-form-actions { display: flex; justify-content: flex-end; }
+  .share-reveal a { color: var(--color-link); text-decoration: underline; }
 </style>
