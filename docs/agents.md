@@ -97,3 +97,34 @@ opencode auth login
 ```
 
 > **Warning:** An agent reading a shared document reads text anyone with edit access wrote, so treat it as acting on their instructions too.
+
+## Remote agents
+
+An agent on another machine, such as a home server or a chat bot, works on a document with an agent token. The token reaches that one document and nothing else.
+
+- The owner creates the token in the Sharing panel, on the Agent tokens tab. It takes a name, Comment or Suggest permission, and an expiry.
+- LibrePaper shows the token once. Copy it then.
+
+Install the [librepaper CLI](cli.html) on the agent's machine. Then add the document to the agent's MCP config. This Codex example sets the token in the environment:
+
+```toml
+[mcp_servers.librepaper]
+command = "librepaper"
+args = ["mcp", "--document", "https://<host>/docs/<slug>"]
+env = { LIBREPAPER_AGENT_TOKEN = "lpt_..." }
+```
+
+Agents without MCP call the document's tool routes over HTTP:
+
+```sh
+# List the tools this token may use
+curl -H "Authorization: Bearer lpt_..." https://<host>/api/documents/<slug>/tools
+# Call one tool; the body is its arguments as JSON
+curl -X POST -H "Authorization: Bearer lpt_..." -H "Content-Type: application/json" \
+  -d '<arguments>' https://<host>/api/documents/<slug>/tools/<name>
+```
+
+- The token works only on these two routes, and only for its own document.
+- Comments and suggestions appear under the token's name. A person accepts or rejects each suggestion.
+- A Comment token gives comment access only. A Suggest token never applies changes, writes files, runs code or publishes.
+- A token stops working at its expiry, when you revoke it, when you Replace it, when you sign out everywhere, and when the document changes owner. Replace issues a new token, and the old one stops at once.
