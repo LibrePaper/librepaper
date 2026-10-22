@@ -65,13 +65,10 @@ pub(super) fn api_router(server: Arc<Server>) -> Router {
             post(quarto_checkpoint),
         )
         .route(
-            "/api/documents/{slug}/forge",
-            get(forge_link).put(forge_link).delete(forge_link),
+            "/api/documents/{slug}/sync",
+            get(sync_link).put(sync_link).delete(sync_link),
         )
         .route("/api/documents/{slug}/source-change", post(source_change))
-        .route("/api/forge/github/authorize", get(forge_authorize))
-        .route("/api/forge/github/callback", get(forge_callback))
-        .route("/api/forge/github/refresh", post(forge_refresh))
         .route("/api/documents/{slug}/share", any(share))
         .route("/api/documents/{slug}/source", get(source))
         .route("/api/documents/{slug}/snapshot", get(snapshot))
@@ -519,13 +516,13 @@ async fn quarto_checkpoint(
         .await
 }
 
-async fn forge_link(
+async fn sync_link(
     State(server): State<Arc<Server>>,
     Extension(ctx): Extension<RequestContext>,
     Path(slug): Path<String>,
     request: Request<Body>,
 ) -> Reply {
-    server.handle_forge_link(request, &ctx.arrival, &slug).await
+    server.handle_sync_link(request, &ctx.arrival, &slug).await
 }
 
 async fn source_change(
@@ -537,30 +534,6 @@ async fn source_change(
     server
         .handle_source_change(request, &ctx.arrival, &slug)
         .await
-}
-
-async fn forge_authorize(
-    State(server): State<Arc<Server>>,
-    Extension(ctx): Extension<RequestContext>,
-    request: Request<Body>,
-) -> Reply {
-    server.handle_forge_authorize(request, &ctx.arrival).await
-}
-
-async fn forge_callback(
-    State(server): State<Arc<Server>>,
-    Extension(ctx): Extension<RequestContext>,
-    request: Request<Body>,
-) -> Reply {
-    server.handle_forge_callback(request, &ctx.arrival).await
-}
-
-async fn forge_refresh(
-    State(server): State<Arc<Server>>,
-    Extension(ctx): Extension<RequestContext>,
-    request: Request<Body>,
-) -> Reply {
-    server.handle_forge_refresh(request, &ctx.arrival).await
 }
 
 async fn share(

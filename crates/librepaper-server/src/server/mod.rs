@@ -62,7 +62,6 @@ mod documents;
 mod figures;
 #[cfg(test)]
 mod figures_http_tests;
-mod forge;
 mod graphs;
 mod history;
 #[cfg(test)]
@@ -92,13 +91,13 @@ mod signin;
 #[cfg(test)]
 mod signin_http_tests;
 mod socket;
+mod sync_link;
 pub use librepaper_base::config::socket_budget;
 #[cfg(test)]
 mod trim_http_tests;
 #[cfg(test)]
 mod visitor_http_tests;
 
-pub use forge::ForgeGithub;
 pub use reply::*;
 pub use routes::*;
 pub use sharing::*;
@@ -281,9 +280,6 @@ pub struct Server {
     /// has just signed out is a stranger again. Nothing here for a deployment
     /// that is its own front page.
     pub site: Option<String>,
-    /// The GitHub App project sync goes through, or nothing. The relay
-    /// routes answer not found without it.
-    pub forge_github: Option<ForgeGithub>,
     pub cost: Arc<cost::CostMeter>,
     /// Operational measurements exported only on the optional private listener.
     pub metrics: Arc<metrics::Metrics>,
@@ -911,7 +907,6 @@ impl Server {
             mcp_capacity,
             latex: None,
             site: None,
-            forge_github: None,
             cost,
             metrics: Arc::new(metrics::Metrics::new()),
             metrics_listener_slots: Arc::new(tokio::sync::Semaphore::new(

@@ -94,33 +94,3 @@ If you change a conflicting file after creating the branch, the next pull report
 "Disconnect" forgets the link and the record of what was synced. The repository is not changed.
 
 If your GitHub access ends, the next pull or push fails with "Reconnect with your account". Any editor can reconnect with their own consent. The link and the sync record are kept.
-
-## Self-hosting
-
-A self-hosted LibrePaper uses its own GitHub App. This is separate from the sign-in app under `[auth.github]`.
-
-1. Create a GitHub App at `https://github.com/settings/apps/new`, or under your organization.
-2. Under repository permissions, set Contents to read and write, and Metadata to read.
-3. Turn on "Expire user authorization tokens".
-4. Set the callback URL to `https://paper.example/api/forge/github/callback`. Replace `paper.example` with your app origin, the value of `origins.app`.
-5. Note the app's slug, which is the last part of its public URL, and its client ID. Generate a client secret.
-6. Add a `[forge.github]` table to `librepaper.toml`:
-
-```toml
-[forge.github]
-app_slug = "your-app-slug"
-client_id = "replace"
-client_secret = { env = "GITHUB_APP_CLIENT_SECRET" }
-```
-
-The secret can also be a `{ file = "..." }` reference. See [Secrets](host/advanced.html#secrets).
-
-7. Restart the app with `docker compose up -d`.
-
-For GitHub Enterprise Server, register the app on that instance. Then set the two hosts. `api` is the REST API address, and `web` is the address of the GitHub site:
-
-```toml
-[forge.github]
-api = "https://github.example.com/api/v3"
-web = "https://github.example.com"
-```

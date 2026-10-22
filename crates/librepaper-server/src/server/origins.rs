@@ -424,12 +424,6 @@ impl Arrival {
         format!("{}/auth/callback", self.here())
     }
 
-    /// Where GitHub sends a person back to after the project-sync consent
-    /// page, built from the validated origin like the sign-in callbacks.
-    pub fn forge_callback_url(&self) -> String {
-        format!("{}/api/forge/github/callback", self.here())
-    }
-
     /// An OpenID Connect provider's callback, named by its id. GitHub keeps
     /// the bare `/auth/callback` so that no OAuth app already registered
     /// against it has to be edited.

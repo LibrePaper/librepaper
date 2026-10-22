@@ -16,7 +16,7 @@ pub mod annotations;
 mod chat;
 mod commit;
 mod document_log;
-mod forge;
+mod sync_links;
 mod labels;
 mod marks;
 mod meter;
@@ -43,7 +43,7 @@ pub use chat::{
 };
 pub use commit::Authority;
 pub use document_log::{FlushRow, LogRow, NewSnapshot, PendingWorkCursor, RowCoverage};
-pub use forge::{ForgeLink, ForgeLinkWrite};
+pub use sync_links::{SyncLink, SyncLinkWrite};
 pub use labels::{ArchiveAttach, ArchiveObject, LabelRecord, NewLabel, TrimOutcome};
 pub use moderation::{
     AccountUsage, AuditEntry, BannedHandle, BlockOutcome, BlockedAccount, HiddenProject,
