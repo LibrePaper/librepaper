@@ -66,6 +66,8 @@ function changeFiles(change) {
  * @property {any} [link]
  * @property {boolean} [arrived]
  * @property {any} [commit]
+ * @property {string} [branch]
+ * @property {string} [url]
  * @property {string} [retry]
  */
 

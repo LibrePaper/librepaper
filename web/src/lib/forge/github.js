@@ -52,7 +52,7 @@ const encodePath = (path) => String(path).split("/").map(encodeURIComponent).joi
 
 /// A client for one token. `api` is the REST base from /api/config.
 /** @param {{ token: string, api?: string, fetch?: typeof fetch }} options */
-export function gitHub({ token, api = "https://api.github.com", fetch = globalThis.fetch } = {}) {
+export function gitHub({ token, api = "https://api.github.com", fetch = globalThis.fetch }) {
   const base = String(api).replace(/\/+$/, "");
 
   async function request(method, path, body, { allow = [] } = {}) {
