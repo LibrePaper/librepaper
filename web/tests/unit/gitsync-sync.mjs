@@ -350,7 +350,7 @@ function makeSession() {
 }
 
 function makeApi(session) {
-  const state = { link: null, calls: [], beforeApply: null, version: null };
+  const state = { link: null, calls: [], uploads: [], beforeApply: null, version: null };
   const stale = () => httpError(409, { reason: "stale", error: "stale", link: state.link });
   const api = {
     state,
@@ -373,8 +373,12 @@ function makeApi(session) {
       state.link = null;
     },
     async uploadAsset(bytes) {
+      state.uploads.push(await sha256Hex(bytes));
       session.assets.set(await sha256Hex(bytes), bytes);
       return {};
+    },
+    async hasAsset(sha) {
+      return session.assets.has(sha);
     },
     async assetBytes(sha) {
       return session.assets.get(sha);
@@ -1393,6 +1397,53 @@ const baseFiles = (repo) => {
   assert.ok(sizes.some((size) => size > 1024 * 1024));
   assert.equal(sizes.filter((size) => size <= 1024 * 1024).length >= 2, true);
   await assert.rejects(createBridge(fake(10)).putBlobs([{ text: "abc" }]));
+}
+
+// ---------------------------------------------------------------- Roborev 1028 fixes
+
+// A retried pull does not upload an asset the server already has.
+{
+  const { repo, session, api, ctx } = await connected({ "intro.qmd": "one\ntwo\nthree\n" });
+  repo.advance({ "intro.qmd": "one\ntwo\nthree!\n", "new.png": new Uint8Array([4, 5, 6]) });
+  api.state.beforeApply = () => session.setText("intro.qmd", "ONE\ntwo\nthree\n");
+  const calls = api.state.calls.length;
+  const answer = await sync.pull(ctx);
+  assert.equal(answer.status, "pulled", JSON.stringify(answer));
+  assert.equal(api.state.calls.length, calls + 2, "the change was built and sent twice");
+  assert.equal(api.state.uploads.length, 1, "the asset was uploaded once");
+  assert.ok(session.has("new.png"));
+}
+
+// A conflict session keeps its merged tree reachable through a merged commit.
+{
+  const { repo, session, ctx } = await connected({ "intro.qmd": "same\n" });
+  await session.setText("intro.qmd", "local\n");
+  repo.advance({ "intro.qmd": "remote\n" });
+  const answer = await sync.pull(ctx);
+  assert.equal(answer.status, "conflict", JSON.stringify(answer));
+  const { session: saved } = answer;
+  const commit = repo.refs.get(`${saved.id}/merged`);
+  assert.ok(commit, "the merged commit is kept");
+  assert.equal(saved.merged, commit);
+  assert.equal(repo.commits.get(commit).tree, saved.tree);
+  assert.deepEqual(repo.commits.get(commit).parents, [saved.local, saved.theirs]);
+  assert.equal((await sync.status(ctx)).conflict.merged, commit);
+}
+
+// Recovery offers only the current connection's conflict and leaves the others.
+{
+  const { repo, session, ctx } = await connected({ "intro.qmd": "same\n" });
+  await session.setText("intro.qmd", "local\n");
+  repo.advance({ "intro.qmd": "remote\n" });
+  const conflict = await sync.pull(ctx);
+  const entry = repo.journal.find((item) => item.kind === "conflict");
+  const mine = await sync.recover(ctx);
+  assert.equal(mine.conflict.id, conflict.session.id);
+  entry.session.connection_id = "someone-else";
+  const before = JSON.stringify(repo.journal);
+  const other = await sync.recover(ctx);
+  assert.equal(other.conflict, null, "another connection's session is not offered");
+  assert.equal(JSON.stringify(repo.journal), before);
 }
 
 console.log("gitsync sync ok");
