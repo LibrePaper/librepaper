@@ -193,7 +193,7 @@ fn mcp_document_takes_its_token_from_the_environment() {
 }
 
 #[test]
-fn mcp_document_refuses_a_deployment_token() {
+fn mcp_document_says_the_account_token_is_unused() {
     let output = Command::new(env!("CARGO_BIN_EXE_librepaper"))
         .args([
             "mcp",
@@ -205,10 +205,9 @@ fn mcp_document_refuses_a_deployment_token() {
         .env("LIBREPAPER_AGENT_TOKEN", "lpt_paper.abc")
         .output()
         .expect("CLI starts");
-    assert!(!output.status.success());
     assert!(
         String::from_utf8_lossy(&output.stderr)
-            .contains("--token is not used with --document"),
+            .contains("is not used with --document"),
         "{output:?}"
     );
 }
