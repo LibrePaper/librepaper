@@ -137,3 +137,11 @@ export const uploadAsset = (slug, file, key) =>
     headers: authHeaders(key),
     body: file,
   }).then(json);
+
+/// A document URL without its fragment, which is where the link key lives. The
+/// local service gets this form: it is given its own token, never the key.
+export function withoutKey(url) {
+  const parsed = new URL(url, globalThis.location?.href);
+  parsed.hash = "";
+  return parsed.href;
+}
