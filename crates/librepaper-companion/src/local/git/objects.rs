@@ -37,10 +37,11 @@ fn decode_utf8(bytes: &[u8]) -> String {
 }
 
 /// Splits `<meta>\t<path>` records separated by NUL, as `ls-tree -z` writes.
-fn records(bytes: &[u8]) -> impl Iterator<Item = (String, String)> + '_ {
+/// The path comes back as the raw bytes Git stored, which need not be UTF-8.
+fn records(bytes: &[u8]) -> impl Iterator<Item = (String, &[u8])> + '_ {
     bytes.split(|b| *b == 0).filter_map(|record| {
         let tab = record.iter().position(|b| *b == b'\t')?;
-        Some((decode_utf8(&record[..tab]), decode_utf8(&record[tab + 1..])))
+        Some((decode_utf8(&record[..tab]), &record[tab + 1..]))
     })
 }
 
@@ -109,7 +110,7 @@ impl GitManager {
             .local(conn, &["ls-tree", "-r", "-t", "-l", "-z", &tree], None)
             .await?;
         let mut entries = Vec::new();
-        for (meta, path) in records(&output.stdout) {
+        for (meta, raw) in records(&output.stdout) {
             let mut fields = meta.split_whitespace();
             let (Some(mode), Some(kind), Some(entry_id), Some(size)) =
                 (fields.next(), fields.next(), fields.next(), fields.next())
@@ -123,13 +124,19 @@ impl GitManager {
             } else {
                 None
             };
-            entries.push(json!({
-                "path": path,
+            let mut entry = json!({
+                "path": decode_utf8(raw),
                 "mode": mode,
                 "type": kind,
                 "id": entry_id,
                 "size": size,
-            }));
+            });
+            // A name that is not UTF-8 comes back lossy and flagged, so the
+            // page never treats the lossy form as the real name.
+            if std::str::from_utf8(raw).is_err() {
+                entry["invalid_name"] = json!(true);
+            }
+            entries.push(entry);
         }
         Ok(json!({"tree": tree, "entries": entries}))
     }
@@ -379,9 +386,14 @@ impl GitManager {
             let output = self
                 .local(conn, &["ls-tree", "-r", "-z", base], None)
                 .await?;
-            for (meta, path) in records(&output.stdout) {
+            for (meta, raw) in records(&output.stdout) {
+                // Edits name UTF-8 paths, so a path that is not UTF-8 has no
+                // mode to keep.
+                let Ok(path) = std::str::from_utf8(raw) else {
+                    continue;
+                };
                 if let Some(mode) = meta.split_whitespace().next() {
-                    existing.insert(path, mode.to_string());
+                    existing.insert(path.to_string(), mode.to_string());
                 }
             }
         }
@@ -699,6 +711,9 @@ impl GitManager {
             let Some(path) = parts.next() else {
                 break;
             };
+            let path = std::str::from_utf8(path).map_err(|_| {
+                GitError::internal("Git reported a changed path that is not UTF-8.")
+            })?;
             let meta = decode_utf8(meta);
             let mut fields = meta.trim_start_matches(':').split(' ');
             let (_, _, Some(from), Some(to), Some(status)) = (
@@ -719,7 +734,7 @@ impl GitManager {
             };
             let id = |id: &str| (id != NULL_ID).then(|| id.to_string());
             changes.push(json!({
-                "path": decode_utf8(path),
+                "path": path,
                 "status": status,
                 "from": id(from),
                 "to": id(to),

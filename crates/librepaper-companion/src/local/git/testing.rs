@@ -866,6 +866,111 @@ async fn a_pre_push_hook_from_the_users_configuration_does_not_run() {
     assert!(!marker.exists(), "the sidecar's push ran a user hook");
 }
 
+#[tokio::test]
+async fn the_users_global_attributes_do_not_change_a_private_merge() {
+    let mut dirs = (PathBuf::new(), PathBuf::new());
+    let fx = Fixture::build(|scratch| {
+        let xdg = scratch.join("xdg");
+        let home = scratch.join("home");
+        std::fs::create_dir_all(xdg.join("git")).unwrap();
+        std::fs::create_dir_all(&home).unwrap();
+        std::fs::write(xdg.join("git").join("attributes"), "* merge=union\n").unwrap();
+        dirs = (xdg.clone(), home.clone());
+        vec![
+            ("XDG_CONFIG_HOME".to_string(), xdg.into_os_string()),
+            ("HOME".to_string(), home.into_os_string()),
+        ]
+    });
+    fx.connect().await;
+    let base = fx.commit(&[], &[("f.txt", "a\nb\nc\n")]).await;
+    let ours = fx.commit(&[&base], &[("f.txt", "A\nb\nc\n")]).await;
+    let theirs = fx.commit(&[&base], &[("f.txt", "X\nb\nc\n")]).await;
+
+    // The control: plain Git reads the same attributes file and merges cleanly,
+    // so the file really does apply to merges.
+    let repo = super::storage::conn_for(&fx.manager.root, ORIGIN, PROJECT).repo;
+    let control = git_cmd(&repo)
+        .env("XDG_CONFIG_HOME", &dirs.0)
+        .env("HOME", &dirs.1)
+        .args(["merge-tree", "--write-tree", &ours, &theirs])
+        .output()
+        .unwrap();
+    assert_eq!(control.status.code(), Some(0), "the control should merge");
+
+    let merged = fx
+        .ok("merge", json!({"ours": ours, "theirs": theirs}))
+        .await;
+    assert_eq!(merged["clean"], false);
+    assert_eq!(merged["conflicts"][0]["path"], "f.txt");
+}
+
+#[test]
+fn the_private_config_is_rewritten_when_it_is_out_of_date() {
+    let state = tempfile::tempdir().unwrap();
+    let manager = GitManager::new(state.path());
+    std::fs::create_dir_all(&manager.root).unwrap();
+    let config = manager.root.join("private.gitconfig");
+    std::fs::write(&config, b"").unwrap();
+
+    let (written, hooks) = manager.runtime.support().unwrap();
+    assert_eq!(written, config);
+    assert!(hooks.is_dir());
+    let attributes = manager.root.join("empty.gitattributes");
+    assert_eq!(std::fs::read(&attributes).unwrap(), b"");
+    let text = std::fs::read_to_string(&config).unwrap();
+    assert_eq!(text, super::private_config(&attributes).unwrap());
+    assert!(text.contains("tree = 4b825dc642cb6eb9a060e54bf8d69288fbee4904"));
+}
+
+/// A tree whose paths are raw bytes, which the JSON edits cannot carry.
+fn raw_tree(repo: &Path, files: &[(&[u8], &str)]) -> String {
+    use std::io::Write;
+    let mut listing = Vec::new();
+    for (path, text) in files {
+        let id = git_in(repo, &["hash-object", "-w", "--stdin"], text);
+        listing.extend_from_slice(format!("100644 blob {id}\t").as_bytes());
+        listing.extend_from_slice(path);
+        listing.push(0);
+    }
+    let mut child = git_cmd(repo)
+        .args(["mktree", "-z"])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("git starts");
+    child
+        .stdin
+        .take()
+        .expect("stdin")
+        .write_all(&listing)
+        .expect("write stdin");
+    let output = child.wait_with_output().expect("git finishes");
+    assert!(
+        output.status.success(),
+        "mktree: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    String::from_utf8_lossy(&output.stdout).trim().to_string()
+}
+
+#[tokio::test]
+async fn a_path_that_is_not_utf8_is_flagged_in_the_listing() {
+    let fx = Fixture::new();
+    fx.connect().await;
+    let repo = super::storage::conn_for(&fx.manager.root, ORIGIN, PROJECT).repo;
+    let tree = raw_tree(&repo, &[(b"draft\xff.md", "x\n"), (b"good.md", "y\n")]);
+    let listing = fx.ok("tree", json!({"commit": tree})).await;
+    let entries = listing["entries"].as_array().unwrap();
+    let bad = entries
+        .iter()
+        .find(|e| e["path"] == "draft\u{FFFD}.md")
+        .unwrap();
+    assert_eq!(bad["invalid_name"], true);
+    let good = entries.iter().find(|e| e["path"] == "good.md").unwrap();
+    assert!(good.get("invalid_name").is_none(), "{good}");
+}
+
 /// A non-bare repository with one commit, plus a linked worktree of it.
 fn repository_with_worktree(scratch: &Path) -> (PathBuf, PathBuf) {
     let main = scratch.join("main-repo");

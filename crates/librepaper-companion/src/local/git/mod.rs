@@ -202,19 +202,18 @@ impl Runtime {
         }
     }
 
-    /// The empty global configuration file and the empty hooks directory,
-    /// created when missing.
+    /// The app-owned global configuration, the empty attributes file it names
+    /// and the empty hooks directory. Each is created, and the first two are
+    /// rewritten when their contents are out of date.
     fn support(&self) -> Result<(PathBuf, PathBuf), GitError> {
-        let config = self.root.join("empty.gitconfig");
+        let config = self.root.join("private.gitconfig");
+        let attributes = self.root.join("empty.gitattributes");
         let hooks = self.root.join("empty-hooks");
         std::fs::create_dir_all(&hooks).map_err(|error| {
             GitError::internal(format!("could not create {}: {error}", hooks.display()))
         })?;
-        if !config.exists() {
-            std::fs::write(&config, b"").map_err(|error| {
-                GitError::internal(format!("could not create {}: {error}", config.display()))
-            })?;
-        }
+        write_if_changed(&attributes, b"")?;
+        write_if_changed(&config, private_config(&attributes)?.as_bytes())?;
         Ok((config, hooks))
     }
 
@@ -489,6 +488,35 @@ async fn join_reader(task: Option<tokio::task::JoinHandle<(Vec<u8>, bool)>>) -> 
             (Vec::new(), false)
         }
     }
+}
+
+/// The empty tree, which `attr.tree` names so that a bare repository reads no
+/// `.gitattributes` from its `HEAD`.
+const EMPTY_TREE: &str = "4b825dc642cb6eb9a060e54bf8d69288fbee4904";
+
+/// The app-owned global configuration. It points `core.attributesFile` at an
+/// empty file, so Git never reads the user's attributes, and it sets the
+/// empty tree for `attr.tree`. Older Git ignores the second key.
+fn private_config(attributes: &Path) -> Result<String, GitError> {
+    let text = attributes.to_str().ok_or_else(|| {
+        GitError::internal(format!(
+            "{} is not a valid UTF-8 path.",
+            attributes.display()
+        ))
+    })?;
+    let quoted = text.replace('\\', "\\\\").replace('"', "\\\"");
+    Ok(format!(
+        "[core]\n\tattributesFile = \"{quoted}\"\n[attr]\n\ttree = {EMPTY_TREE}\n"
+    ))
+}
+
+/// Writes `bytes` to `path` unless the file already holds exactly them.
+fn write_if_changed(path: &Path, bytes: &[u8]) -> Result<(), GitError> {
+    if std::fs::read(path).ok().as_deref() == Some(bytes) {
+        return Ok(());
+    }
+    std::fs::write(path, bytes)
+        .map_err(|error| GitError::internal(format!("could not write {}: {error}", path.display())))
 }
 
 /// Parses a JSON request body into the typed request an operation expects.
