@@ -810,3 +810,59 @@ async fn a_pre_push_hook_from_the_users_configuration_does_not_run() {
     );
     assert!(!marker.exists(), "the sidecar's push ran a user hook");
 }
+
+/// A non-bare repository with one commit, plus a linked worktree of it.
+fn repository_with_worktree(scratch: &Path) -> (PathBuf, PathBuf) {
+    let main = scratch.join("main-repo");
+    std::fs::create_dir(&main).unwrap();
+    git_in(&main, &["init", "--quiet", "--initial-branch=main"], "");
+    git_in(&main, &["commit", "--allow-empty", "--quiet", "-m", "one"], "");
+    let linked = scratch.join("linked-tree");
+    git_in(
+        &main,
+        &["worktree", "add", "--quiet", "-b", "side", linked.to_str().unwrap()],
+        "",
+    );
+    (main.canonicalize().unwrap(), linked.canonicalize().unwrap())
+}
+
+#[tokio::test]
+async fn the_chooser_accepts_a_linked_worktree() {
+    let fx = Fixture::new();
+    let (main, linked) = repository_with_worktree(fx.scratch.path());
+    let answer = fx
+        .manager
+        .add_grant(ORIGIN, PROJECT, linked)
+        .await
+        .unwrap();
+    assert_eq!(answer["label"], "linked-tree");
+    fx.manager.add_grant(ORIGIN, PROJECT, main).await.unwrap();
+}
+
+#[tokio::test]
+async fn the_chooser_refuses_a_subfolder_of_a_working_tree() {
+    let fx = Fixture::new();
+    let (main, _) = repository_with_worktree(fx.scratch.path());
+    let sub = main.join("sub");
+    std::fs::create_dir(&sub).unwrap();
+    let error = fx
+        .manager
+        .add_grant(ORIGIN, PROJECT, sub)
+        .await
+        .unwrap_err();
+    assert_eq!(error.status, 400);
+}
+
+#[tokio::test]
+async fn the_chooser_accepts_a_bare_repository_and_a_git_folder() {
+    let fx = Fixture::new();
+    let (main, _) = repository_with_worktree(fx.scratch.path());
+    fx.manager
+        .add_grant(ORIGIN, PROJECT, fx.remote.clone())
+        .await
+        .unwrap();
+    fx.manager
+        .add_grant(ORIGIN, PROJECT, main.join(".git"))
+        .await
+        .unwrap();
+}

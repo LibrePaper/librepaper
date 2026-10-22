@@ -183,14 +183,30 @@ impl GitManager {
             .canonicalize()
             .ok()
             .map(strip_verbatim);
-        let toplevel = git_dir.as_deref() == Some(dir.as_path())
-            || dir
-                .join(".git")
-                .canonicalize()
-                .ok()
-                .map(strip_verbatim)
-                .is_some_and(|dot_git| git_dir.as_deref() == Some(dot_git.as_path()));
-        if !toplevel {
+        // A bare repository or a `.git` folder chosen directly is its own git
+        // dir. A working tree, linked worktrees included, is the folder Git
+        // reports as its top level. Any other folder inside a working tree is
+        // refused.
+        let mut accepted = git_dir.as_deref() == Some(dir.as_path());
+        if !accepted {
+            let top = self
+                .runtime
+                .run(
+                    GitEnv::Local,
+                    At::Dir(&dir),
+                    &["rev-parse", "--show-toplevel"],
+                    None,
+                    &[],
+                )
+                .await?;
+            accepted = top.code == 0
+                && Path::new(&top.text())
+                    .canonicalize()
+                    .ok()
+                    .map(strip_verbatim)
+                    .is_some_and(|top| top == dir);
+        }
+        if !accepted {
             return Err(not_repository());
         }
         self.require_sha1_folder(&dir).await?;
