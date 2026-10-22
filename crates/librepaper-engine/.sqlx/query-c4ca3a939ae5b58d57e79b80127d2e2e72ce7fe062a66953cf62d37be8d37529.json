@@ -1,0 +1,24 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT role FROM share_links WHERE document_id=$1 AND token_hash=$2 AND revoked_at IS NULL AND (kind='link' OR $3) AND (expires_at IS NULL OR expires_at>now())",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "role",
+        "type_info": "Text"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Bytea",
+        "Bool"
+      ]
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "c4ca3a939ae5b58d57e79b80127d2e2e72ce7fe062a66953cf62d37be8d37529"
+}
