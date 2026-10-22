@@ -1,7 +1,7 @@
 //! Snapshot-consistent PostgreSQL and immutable-object recovery points.
 
 use super::{
-    blob::BlobStore,
+    blob::{BlobError, BlobStore},
     maintenance::BlobLifecycleLock,
     postgres::{PostgresCatalog, PostgresOptions},
     StorageOptions,
@@ -31,6 +31,10 @@ struct Manifest {
     objects: String,
     references: Vec<Reference>,
     verified: bool,
+    /// Referenced keys the store did not have when the backup ran. They are
+    /// not in `references`, so a restore has the same gaps as the source.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    missing: Vec<String>,
 }
 fn now() -> Result<String, String> {
     time::OffsetDateTime::now_utc()
@@ -169,6 +173,7 @@ async fn create(options: StorageOptions, destination: &Path, id: String) -> Resu
         lifecycle_lock,
     } = start_backup(&options, &dump).await?;
     let blobs = super::open_storage(options).await?;
+    let (references, missing) = drop_missing(blobs.as_ref(), references).await?;
     let object_root = destination.join("objects");
     let mut verified_references = Vec::with_capacity(references.len());
     for reference in references {
@@ -201,13 +206,47 @@ async fn create(options: StorageOptions, destination: &Path, id: String) -> Resu
         migration_version,
         hash_file(&dump)?,
         &verified_references,
+        &missing,
     )?;
     write_private_file(
         &destination.join("manifest.json"),
         &serde_json::to_vec_pretty(&manifest).map_err(|e| e.to_string())?,
     )?;
-    println!("created verified backup {}", destination.display());
+    if missing.is_empty() {
+        println!("created verified backup {}", destination.display());
+    } else {
+        println!(
+            "created verified backup {} without {} missing objects",
+            destination.display(),
+            missing.len()
+        );
+    }
     Ok(())
+}
+
+/// Splits off the references whose object the store does not have. Only
+/// `NotFound` counts as missing; any other error still fails the backup. The
+/// lifecycle lock is held, so an object present here stays until it is copied.
+async fn drop_missing(
+    blobs: &dyn BlobStore,
+    references: Vec<Reference>,
+) -> Result<(Vec<Reference>, Vec<String>), String> {
+    let mut present = Vec::with_capacity(references.len());
+    let mut missing = Vec::new();
+    for reference in references {
+        match blobs.head(&reference.key).await {
+            Ok(_) => present.push(reference),
+            Err(BlobError::NotFound) => {
+                eprintln!(
+                    "WARNING: backup object {} is missing; the backup leaves it out",
+                    reference.key
+                );
+                missing.push(reference.key);
+            }
+            Err(e) => return Err(format!("backup object {}: {e}", reference.key)),
+        }
+    }
+    Ok((present, missing))
 }
 
 /// Streams the recovery point as one tar archive. Only the archive may reach
@@ -226,11 +265,12 @@ async fn create_archive(
     let StartedBackup {
         started_at,
         migration_version,
-        mut references,
+        references,
         catalog: _catalog,
         lifecycle_lock,
     } = start_backup(&options, dump.path()).await?;
     let blobs = super::open_storage(options).await?;
+    let (mut references, missing) = drop_missing(blobs.as_ref(), references).await?;
     // The manifest is written first, so any object the database left unmeasured
     // is read here to record its length and digest.
     for reference in &mut references {
@@ -249,6 +289,7 @@ async fn create_archive(
         migration_version,
         hash_file(dump.path())?,
         &references,
+        &missing,
     )?;
     let manifest_bytes = serde_json::to_vec_pretty(&manifest).map_err(|e| e.to_string())?;
     write_archive(
@@ -262,7 +303,15 @@ async fn create_archive(
         &files,
     )
     .await?;
-    eprintln!("created verified backup {}", manifest.id);
+    if missing.is_empty() {
+        eprintln!("created verified backup {}", manifest.id);
+    } else {
+        eprintln!(
+            "created verified backup {} without {} missing objects",
+            manifest.id,
+            missing.len()
+        );
+    }
     Ok(())
 }
 
@@ -431,6 +480,7 @@ fn build_manifest(
     migration_version: i64,
     database_sha256: String,
     references: &[Reference],
+    missing: &[String],
 ) -> Result<Manifest, String> {
     Ok(Manifest {
         format: "librepaper-postgres-backup-v1".into(),
@@ -447,6 +497,7 @@ fn build_manifest(
         objects: "objects".into(),
         references: references.to_vec(),
         verified: true,
+        missing: missing.to_vec(),
     })
 }
 
@@ -539,6 +590,11 @@ async fn restore(options: StorageOptions, backup: &Path, destination: &Path) -> 
     .map_err(|e| e.to_string())?;
     if restored != manifest.migration_version {
         return Err("restored migration version does not match backup".into());
+    }
+    for key in &manifest.missing {
+        eprintln!(
+            "WARNING: backup object {key} was missing when the backup ran; it is not restored"
+        );
     }
     println!("restored verified backup {}", manifest.id);
     Ok(())
@@ -789,7 +845,7 @@ mod connection_tests {
 
 #[cfg(test)]
 mod archive_tests {
-    use super::{expand_includes, validate_archive_prefix, write_archive, Reference};
+    use super::{drop_missing, expand_includes, validate_archive_prefix, write_archive, Reference};
     use crate::storage::blob::{BlobStore, FsStore};
     use sha2::{Digest, Sha256};
     use std::io::Read;
@@ -949,6 +1005,29 @@ mod archive_tests {
         references[1].sha256 = "0".repeat(64);
         let error = archive(&fixture, &references).await.unwrap_err();
         assert!(error.contains(&references[1].key), "{error}");
+    }
+
+    #[tokio::test]
+    async fn a_missing_object_is_left_out_not_fatal() {
+        let fixture = fixture().await;
+        let mut references = fixture.references.clone();
+        references.insert(
+            1,
+            reference(
+                "assets/0190c2f0-0000-7000-8000-000000000009/gone.png",
+                b"gone",
+            ),
+        );
+        let (present, missing) = drop_missing(&fixture.blobs, references).await.unwrap();
+        assert_eq!(
+            missing,
+            vec!["assets/0190c2f0-0000-7000-8000-000000000009/gone.png".to_string()]
+        );
+        assert_eq!(present.len(), fixture.references.len());
+        let bytes = archive(&fixture, &present).await.unwrap();
+        assert!(!entries(&bytes)
+            .iter()
+            .any(|(path, _, _)| path.ends_with("gone.png")));
     }
 
     #[test]
