@@ -131,13 +131,18 @@ mod astral_tests {
 
     #[test]
     fn replacing_a_body_with_crlf_stores_line_feeds() {
-        // The update path of put_text, then replace_text, which is what a
-        // command-line publish and a restore use.
+        // The update path of put_text, then replace_text on a document it
+        // seeds and on one it finds, which is what a command-line publish and
+        // a restore use. put_text sets no main marker, so replace_text gets
+        // its own document here rather than a second text named main.md.
         let doc = doc_with("a\nb");
         put_text(&doc, "main.md", "a\r\nb\r\nc");
         assert_eq!(body(&doc), "a\nb\nc");
-        replace_text(&doc, "x\r\ny", "main.md");
-        assert_eq!(body(&doc), "x\ny");
+        let published = new_doc();
+        replace_text(&published, "x\r\ny", "main.md");
+        assert_eq!(body(&published), "x\ny");
+        replace_text(&published, "x\r\ny\r\nz", "main.md");
+        assert_eq!(body(&published), "x\ny\nz");
     }
 
     #[test]
