@@ -24,6 +24,7 @@ export const nav = [
     ],
   },
   { path: "collaborate", label: "Collaborate" },
+  { path: "github", label: "GitHub" },
   { path: "agents", label: "Agents" },
   { path: "cli", label: "Command line" },
   {

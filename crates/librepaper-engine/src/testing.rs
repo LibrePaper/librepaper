@@ -29,7 +29,7 @@ use crate::storage::postgres::{PostgresCatalog, PostgresOptions};
 const SCHEMA_TABLES: &str =
     "moderation_audit,moderated_projects,pending_log_reservations,operation_outcomes,document_template_operations,document_templates,document_labels,\
      document_updates,document_snapshots,document_assets,replies,annotations,\
-     document_marks,share_links,grants,upload_admissions,account_upload_admissions,documents,accounts";
+     document_marks,forge_links,share_links,grants,upload_admissions,account_upload_admissions,documents,accounts";
 
 /// Empties the catalogue this process is pointed at.
 ///
