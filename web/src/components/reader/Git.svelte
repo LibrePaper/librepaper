@@ -488,6 +488,8 @@
 
   async function doDisconnect() {
     await guard(async () => {
+      // Automatic sync belongs to the connection, so it ends with it.
+      await auto?.setEnabled(false);
       await disconnect(context());
       link = null;
       outcome = null;
@@ -516,6 +518,7 @@
     const keep = { folder: link?.folder || "", label: link?.remote_label || "" };
     let left = false;
     await guard(async () => {
+      await auto?.setEnabled(false);
       await leaveBranch(context());
       left = true;
       link = null;

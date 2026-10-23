@@ -23,6 +23,9 @@ const realClock = {
 const MAX_ATTEMPTS = 3;
 const INTERRUPTED = "A sync was interrupted and could not be finished yet.";
 
+/**
+ * @param {{ ops: Record<string, () => Promise<any>>, clock?: typeof realClock, pace?: typeof PACE, onChange?: (state: object) => void }} options
+ */
 export function createAutoSync({ ops, clock = realClock, pace = PACE, onChange = () => {} }) {
   let mode = "off";
   let kind = "";
@@ -38,6 +41,9 @@ export function createAutoSync({ ops, clock = realClock, pace = PACE, onChange =
   let dirty = false;
   let lastEditAt = null;
   let firstEditAt = null;
+  // A push that did not land (the branch kept moving) waits a check interval
+  // before the next try, so a busy branch never makes a tight loop.
+  let retryAt = null;
 
   const snapshot = () => ({ mode, kind, reason, lastPullAt, lastPushAt, nextAt });
   const emit = () => onChange(snapshot());
@@ -48,7 +54,8 @@ export function createAutoSync({ ops, clock = realClock, pace = PACE, onChange =
     const quiet = lastEditAt == null ? -Infinity : lastEditAt + pace.quietMs;
     const gap = lastPushAt == null ? -Infinity : lastPushAt + pace.minPushGapMs;
     const first = firstEditAt == null ? clock.now() : firstEditAt;
-    return Math.min(Math.max(quiet, gap), first + pace.maxWaitMs);
+    const due = Math.min(Math.max(quiet, gap), first + pace.maxWaitMs);
+    return retryAt == null ? due : Math.max(due, retryAt);
   }
 
   function pushDue() {
@@ -63,7 +70,8 @@ export function createAutoSync({ ops, clock = realClock, pace = PACE, onChange =
       const steps = pace.backoffMs;
       return now + steps[Math.min(Math.max(failures - 1, 0), steps.length - 1)];
     }
-    const due = pushDueAt();
+    // A paused scheduler cannot push, so only its next check matters.
+    const due = mode === "paused" ? null : pushDueAt();
     return Math.max(now, due == null ? now + pace.checkMs : Math.min(now + pace.checkMs, due));
   }
 
@@ -130,6 +138,7 @@ export function createAutoSync({ ops, clock = realClock, pace = PACE, onChange =
       }
       if (answer.status === "pushed") {
         lastPushAt = clock.now();
+        retryAt = null;
         break;
       }
       if (answer.status === "behind") {
@@ -144,8 +153,10 @@ export function createAutoSync({ ops, clock = realClock, pace = PACE, onChange =
         restore(first);
         return refusal(answer);
       }
+      retryAt = null;
       break;
     }
+    if (pushDue()) retryAt = clock.now() + pace.checkMs;
     return { type: "idle" };
   }
 

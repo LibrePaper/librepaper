@@ -720,9 +720,9 @@ fn serve(app: &AppHandle, label: String, request: Request<Vec<u8>>, responder: U
     // A system notification from the page, such as automatic Git sync pausing.
     if request.method() == Method::POST && request.uri().path() == "/shell/notify" {
         let payload = serde_json::from_slice::<serde_json::Value>(request.body()).ok();
-        let fields = payload.as_ref().and_then(|body| {
-            Some((body["title"].as_str()?, body["body"].as_str()?))
-        });
+        let fields = payload
+            .as_ref()
+            .and_then(|body| Some((body["title"].as_str()?, body["body"].as_str()?)));
         let valid = fields.filter(|(title, text)| {
             !title.trim().is_empty() && title.chars().count() <= 120 && text.chars().count() <= 400
         });

@@ -185,6 +185,20 @@ const refused = (kind, reason) => ({ status: "refused", kind, refusals: [{ reaso
   await clock.settle();
   assert.equal(fake.count("push"), 3);
   assert.equal(sync.state.mode, "idle");
+  // The push that did not land waits a check interval, so a busy branch is no tight loop.
+  await clock.advance(PACE.checkMs - 1);
+  assert.equal(fake.count("push"), 3);
+  await clock.advance(1);
+  assert.equal(fake.count("push"), 4);
+  sync.stop();
+}
+{
+  const { clock, fake, sync } = setup({ push: [{ status: "moved" }, { status: "pushed" }] });
+  sync.start();
+  await clock.settle();
+  assert.equal(fake.count("push"), 1);
+  await clock.advance(PACE.checkMs);
+  assert.equal(fake.count("push"), 2);
   sync.stop();
 }
 
@@ -193,7 +207,7 @@ const refused = (kind, reason) => ({ status: "refused", kind, refusals: [{ reaso
   const conflict = { conflict: { paths: ["a.tex"] }, pending: [] };
   const { clock, fake, sync } = setup({
     check: { status: "behind" },
-    pull: { status: "conflict" },
+    pull: [{ status: "conflict" }, { status: "pulled" }],
     status: [DEFAULTS.status, conflict, conflict, DEFAULTS.status],
   });
   sync.start();
