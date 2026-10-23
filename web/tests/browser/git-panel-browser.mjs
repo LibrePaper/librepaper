@@ -22,7 +22,7 @@ const mocks = { sync: join(temporary, "sync.js"), bridge: join(temporary, "bridg
 writeFileSync(mocks.sync, `
 const scene = () => window.git;
 const record = (name, args) => { scene().calls.push([name, ...args]); };
-export async function status() { return { git: { supported: true, git: "2.47.0", connected: true, connection_id: "c1" }, link: scene().link, pending: [], conflict: null }; }
+export async function status() { return { git: { supported: true, git: "2.47.0", connected: true, connection_id: "c1", remote: scene().gitRemote ?? { url: "https://github.com/vincentarelbundock/a-repository-with-a-long-name.git" } }, link: scene().link, pending: [], conflict: scene().conflict ?? null }; }
 export async function checkRemote() { record("checkRemote", []); return scene().remote; }
 export async function localChanges() { record("localChanges", []); return scene().local; }
 export async function outgoing() { record("outgoing", []); return scene().outgoing; }
@@ -32,9 +32,18 @@ export async function recover() { return { status: "done", pending: [] }; }
 export async function compare() { return {}; }
 export async function connect() { return {}; }
 export async function disconnect() { record("disconnect", []); }
+export async function discardConflict(ctx, session) { record("discardConflict", [session?.id]); scene().conflict = null; return { status: "nothing" }; }
+export async function leaveBranch() { record("leaveBranch", []); scene().link = null; }
 export function defaultMessage(files) { return "Update " + files.map((file) => file.path).join(", "); }
 `);
-writeFileSync(mocks.bridge, "export function createBridge() { return {}; }\n");
+writeFileSync(mocks.bridge, `
+const scene = () => window.git;
+export function createBridge() {
+  return {
+    branches: async (remote) => { scene().calls.push(["branches", remote]); return { branches: ["main", "draft"], default: "main" }; },
+  };
+}
+`);
 writeFileSync(mocks.server, "export function syncApi() { return {}; }\n");
 
 writeFileSync(entry, `
@@ -49,7 +58,7 @@ window.mount = async (scene) => {
   window.git = { calls: [], ...scene };
   component = createClassComponent({ component: Git, target: document.getElementById("panel"), props: {
     open: true, slug: "paper", session: { onFiles: () => () => {}, list: () => [] }, rules: {}, me: { name: "Ada" },
-    resolver: { state: { active: false }, open() {} },
+    resolver: { state: { active: false }, open() {}, async discard() {} },
   } });
   await tick();
 };
@@ -190,6 +199,36 @@ try {
   await evaluate('window.git.remote = { status: "current", head: "h1" }');
   await evaluate('click("Try again")');
   await until("up to date again", () => evaluate('text().includes("Up to date") && !text().includes("gh auth setup-git")'), 5000);
+
+  // A conflicted pull offers Cancel, which discards the session and clears the
+  // line once the check passes again.
+  await evaluate(`mount(${JSON.stringify({ ...scene, conflict: { id: "s1", connection_id: "c1", conflicts: [] } })})`);
+  await until("conflict line", () => evaluate('text().includes("Conflicts need resolution")'), 5000);
+  assert.ok(await evaluate('button("Resolve") !== null'));
+  assert.ok(await evaluate('button("Cancel") !== null'));
+  await evaluate('click("Cancel")');
+  await until("conflict discarded", () => evaluate('git.calls.some((call) => call[0] === "discardConflict" && call[1] === "s1")'), 5000);
+  await until("conflict line cleared", () => evaluate('!text().includes("Conflicts need resolution") && text().includes("Up to date")'), 5000);
+
+  // Switch branch confirms first, then ends the connection, lists the branches
+  // of the same remote and fills the setup form with its URL.
+  await evaluate(`mount(${JSON.stringify(scene)})`);
+  await until("up to date for switch", () => evaluate('text().includes("Up to date")'), 5000);
+  await evaluate('document.querySelector(".gh-panel [aria-label=\'Connection details\']").click()');
+  await until("switch on screen", () => evaluate(`(() => { const node = ${item("Switch branch…")}; const box = node?.getBoundingClientRect(); return Boolean(box && box.width && box.top >= 0 && box.left >= 0); })()`), 5000);
+  const switchBox = await evaluate(`(() => { const r = ${item("Switch branch…")}.getBoundingClientRect(); return { x: r.x + r.width / 2, y: r.y + r.height / 2 }; })()`);
+  for (const type of ["mouseMoved", "mousePressed", "mouseReleased"]) {
+    await page.command("Input.dispatchMouseEvent", { type, x: switchBox.x, y: switchBox.y, button: "left", clickCount: 1 });
+  }
+  await until("switch confirmation", () => evaluate('document.body.innerText.includes("stops syncing with")'), 5000);
+  assert.equal(await evaluate('git.calls.some((call) => call[0] === "leaveBranch")'), false);
+  await evaluate('[...document.querySelectorAll("[role=dialog] button")].find((node) => node.textContent.trim() === "Switch").click()');
+  await until("left branch", () => evaluate('git.calls.some((call) => call[0] === "leaveBranch") && git.calls.some((call) => call[0] === "branches")'), 5000);
+  const listed = await evaluate('git.calls.find((call) => call[0] === "branches")[1]');
+  assert.deepEqual(listed, { url: "https://github.com/vincentarelbundock/a-repository-with-a-long-name.git" });
+  await until("branch options", () => evaluate('document.querySelector(".gh-panel select option[value=\'draft\']") !== null'), 5000);
+  assert.equal(await evaluate('document.querySelector(".gh-panel input.gh-input[placeholder=\'HTTPS or SSH URL\']").value'), "https://github.com/vincentarelbundock/a-repository-with-a-long-name.git");
+
   assert.deepEqual(await evaluate("window.testErrors"), []);
   console.log("git panel browser ok");
 } finally {
