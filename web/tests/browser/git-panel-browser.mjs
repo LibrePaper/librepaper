@@ -29,8 +29,7 @@ export async function outgoing() { record("outgoing", []); return scene().outgoi
 export async function push(ctx, message, options) { record("push", [message, options]); scene().local = { status: "none", files: [] }; return { status: "pushed", commit: "abcdef1234" }; }
 export async function pull() { record("pull", []); return { status: "nothing", files: [] }; }
 export async function recover() { return { status: "done", pending: [] }; }
-export async function compare() { return {}; }
-export async function connect() { return {}; }
+export async function connect(ctx, draft) { record("connect", [draft]); scene().link = scene().connectLink ?? scene().link; return { status: "connected", link: scene().link }; }
 export async function disconnect() { record("disconnect", []); }
 export async function discardConflict(ctx, session) { record("discardConflict", [session?.id]); scene().conflict = null; return { status: "nothing" }; }
 export async function leaveBranch() { record("leaveBranch", []); scene().link = null; }
@@ -59,6 +58,7 @@ window.mount = async (scene) => {
   component = createClassComponent({ component: Git, target: document.getElementById("panel"), props: {
     open: true, slug: "paper", session: { onFiles: () => () => {}, list: () => [] }, rules: {}, me: { name: "Ada" },
     resolver: { state: { active: false }, open() {}, async discard() {} },
+    differ: { state: { active: false }, open(ctx, options) { window.git.calls.push(["diffOpen", options]); } },
   } });
   await tick();
 };
@@ -233,6 +233,29 @@ try {
   assert.deepEqual(listed, { url: "https://github.com/vincentarelbundock/a-repository-with-a-long-name.git" });
   await until("branch options", () => evaluate('document.querySelector(".gh-panel select option[value=\'draft\']") !== null'), 5000);
   assert.equal(await evaluate('document.querySelector(".gh-panel input.gh-input[placeholder=\'HTTPS or SSH URL\']").value'), "https://github.com/vincentarelbundock/a-repository-with-a-long-name.git");
+
+  // Diff opens the comparison for the connected branch and remote.
+  await evaluate(`mount(${JSON.stringify(scene)})`);
+  await until("up to date for diff", () => evaluate('text().includes("Up to date")'), 5000);
+  await evaluate('click("Diff")');
+  await until("diff opened", () => evaluate('git.calls.some((call) => call[0] === "diffOpen")'), 5000);
+  assert.deepEqual(await evaluate('git.calls.find((call) => call[0] === "diffOpen")[1]'), { label: link.remote_label, branch: link.branch });
+
+  // Connect has no Compare step: a typed remote lists its branches, Connect
+  // records the draft once, and neither pull nor push runs.
+  await evaluate(`mount(${JSON.stringify({ link: null })})`);
+  await until("setup form", () => evaluate('text().includes("Sync this project with a Git repository.")'), 5000);
+  const typed = "https://github.com/vincentarelbundock/typed-repository.git";
+  await evaluate(`(() => { const input = document.querySelector(".gh-panel input.gh-input[placeholder='HTTPS or SSH URL']"); input.value = ${JSON.stringify(typed)}; input.dispatchEvent(new Event("input", { bubbles: true })); input.dispatchEvent(new Event("change", { bubbles: true })); })()`);
+  await until("branch options for typed remote", () => evaluate('document.querySelector(".gh-panel select option[value=\'draft\']") !== null'), 5000);
+  assert.equal(await evaluate('button("Compare")'), null);
+  await evaluate('click("Connect")');
+  await until("connected", () => evaluate('git.calls.some((call) => call[0] === "connect")'), 5000);
+  const connects = await evaluate('git.calls.filter((call) => call[0] === "connect")');
+  assert.equal(connects.length, 1);
+  assert.equal(connects[0][1].branch, "main");
+  assert.deepEqual(connects[0][1].remote, { url: typed });
+  assert.equal(await evaluate('git.calls.some((call) => call[0] === "push" || call[0] === "pull")'), false);
 
   assert.deepEqual(await evaluate("window.testErrors"), []);
   console.log("git panel browser ok");
