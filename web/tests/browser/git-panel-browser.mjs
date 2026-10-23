@@ -67,7 +67,6 @@ window.text = () => panel()?.innerText ?? "";
 window.button = (label) => [...panel().querySelectorAll("button")].find((node) => node.textContent.trim() === label) ?? null;
 window.click = (label) => window.button(label).click();
 window.overflows = () => { const node = panel(); return node.scrollWidth > node.clientWidth + 1; };
-window.repoLink = () => panel().querySelector("a[href^='https://']")?.getAttribute("href") ?? null;
 window.setMessage = (value) => { const input = panel().querySelector("input[type=text]"); input.value = value; input.dispatchEvent(new Event("input", { bubbles: true })); };
 window.ready = true;
 `);
@@ -125,14 +124,13 @@ try {
     }
     : async () => {};
 
-  // Up to date, with two local changes: the identity names owner/repo and
-  // links to it, the row says what was checked, and the files are listed.
+  // Up to date, with two local changes: the identity names owner/repo, the
+  // row says what was checked, and the files are listed.
   const scene = { link, remote: { status: "current", head: "h1" }, local: { status: "changes", files: changes },
     outgoing: { status: "outgoing", files: changes, outgoing: { files: changes } } };
   await evaluate(`mount(${JSON.stringify(scene)})`);
   await until("up to date", () => evaluate('text().includes("Up to date")'), 5000);
   await until("changes listed", () => evaluate('text().includes("rendering-notes-for-the-appendix.qmd")'), 5000);
-  assert.equal(await evaluate("repoLink()"), "https://github.com/vincentarelbundock/a-repository-with-a-long-name");
   assert.match(await evaluate("text()"), /vincentarelbundock\/a-repository-with-a-long-name/);
   assert.match(await evaluate("text()"), /Local changes/);
   assert.equal(await evaluate('button("Review push")'), null);
@@ -146,11 +144,17 @@ try {
   await shoot("panel-320-dark");
   await evaluate("delete document.documentElement.dataset.mode");
 
-  // The menu holds the connection details, and Disconnect asks first.
-  await evaluate('document.querySelector(".gh-panel [aria-label=\'Connection details\']").click()');
+  // The repository name opens its details and actions, and Disconnect asks first.
+  await evaluate('document.querySelector(".gh-panel [aria-label=\'Repository details and actions\']").click()');
   const item = (label) => `[...document.querySelectorAll("[role=menuitem]")].find((node) => node.textContent.trim() === ${JSON.stringify(label)})`;
   await until("menu on screen", () => evaluate(`(() => { const node = ${item("Disconnect…")}; const box = node?.getBoundingClientRect(); return Boolean(box && box.width && box.top >= 0 && box.left >= 0); })()`), 5000);
   assert.match(await evaluate('document.body.innerText'), /Last pull/);
+  await shoot("details-menu");
+  // A repository on a known host opens in the browser from the menu.
+  assert.ok(await evaluate(`Boolean(${item("Open in browser")})`), "a GitHub repository can be opened");
+  // The details hang below the branch line, not over it.
+  assert.equal(await evaluate('document.querySelector(".gh-details").getBoundingClientRect().top >= document.querySelector(".gh-panel .gh-branch").getBoundingClientRect().bottom'), true, "the menu leaves the branch visible");
+  assert.equal(await evaluate('Boolean(document.querySelector(".gh-panel [aria-label=\'Connection details\']"))'), false, "the ellipsis menu is gone");
   // Zag selects a menu item on a pointer release, so the click is a real one.
   const box = await evaluate(`(() => { const r = ${item("Disconnect…")}.getBoundingClientRect(); return { x: r.x + r.width / 2, y: r.y + r.height / 2 }; })()`);
   for (const type of ["mouseMoved", "mousePressed", "mouseReleased"]) {
@@ -219,7 +223,7 @@ try {
   // of the same remote and fills the setup form with its URL.
   await evaluate(`mount(${JSON.stringify(scene)})`);
   await until("up to date for switch", () => evaluate('text().includes("Up to date")'), 5000);
-  await evaluate('document.querySelector(".gh-panel [aria-label=\'Connection details\']").click()');
+  await evaluate('document.querySelector(".gh-panel [aria-label=\'Repository details and actions\']").click()');
   await until("switch on screen", () => evaluate(`(() => { const node = ${item("Switch branch…")}; const box = node?.getBoundingClientRect(); return Boolean(box && box.width && box.top >= 0 && box.left >= 0); })()`), 5000);
   const switchBox = await evaluate(`(() => { const r = ${item("Switch branch…")}.getBoundingClientRect(); return { x: r.x + r.width / 2, y: r.y + r.height / 2 }; })()`);
   for (const type of ["mouseMoved", "mousePressed", "mouseReleased"]) {

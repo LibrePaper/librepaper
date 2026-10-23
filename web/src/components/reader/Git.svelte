@@ -5,7 +5,6 @@
   import DesktopOnly from "../DesktopOnly.svelte";
   import Icon from "../Icon.svelte";
   import IconButton from "../IconButton.svelte";
-  import MenuIconButton from "../MenuIconButton.svelte";
   import ExplorerMenu from "../ExplorerMenu.svelte";
   import Modal from "../Modal.svelte";
   import { say } from "../../lib/toast.svelte.js";
@@ -56,13 +55,21 @@
   let note = $state(null);
   let confirmingDisconnect = $state(false);
   let confirmingSwitch = $state(false);
+  let identityLine = $state(null);
+  const detailsPlace = { placement: "bottom-start", getAnchorRect: () => identityLine?.getBoundingClientRect() ?? null };
 
   let outcome = $state(null);
   let conflictSession = $state(null);
 
   const name = $derived(me?.name || me?.handle || "Someone");
   const plural = (count) => `${count} ${count === 1 ? "file" : "files"}`;
-  const when = (iso, by) => (iso ? `${new Date(iso).toLocaleString()}${by ? ` by ${by}` : ""}` : "never");
+  const shortTime = (iso) => {
+    const at = new Date(iso);
+    return at.toDateString() === new Date().toDateString()
+      ? at.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })
+      : at.toLocaleDateString([], { month: "short", day: "numeric" });
+  };
+  const fullTime = (iso, by) => `${new Date(iso).toLocaleString()}${by ? ` by ${by}` : ""}`;
   const cleanFolder = (value) => value.trim().replace(/^\/+|\/+$/g, "");
   const label = (value) => value?.name || value?.handle || value || "";
 
@@ -452,9 +459,9 @@
   async function copyRemote() {
     try {
       await navigator.clipboard?.writeText(identity.full);
-      say("Copied the remote address", { kind: "done", id: "git:copy" });
+      say("Copied the remote URL", { kind: "done", id: "git:copy" });
     } catch {
-      error = { text: "Could not copy the remote address." };
+      error = { text: "Could not copy the remote URL." };
     }
   }
 
@@ -480,7 +487,8 @@
   }
 
   function menuChosen(item) {
-    if (item.value === "copy") copyRemote();
+    if (item.value === "open") window.open(identity.href, "_blank", "noopener");
+    else if (item.value === "copy") copyRemote();
     else if (item.value === "disconnect") confirmingDisconnect = true;
     else if (item.value === "switch") confirmingSwitch = true;
   }
@@ -584,29 +592,35 @@
     {/if}
 
     {#if connectedView}
-      <div class="gh-identity">
-        <div class="gh-identity-line">
-          {#if identity.href}
-            <a class="gh-name" href={identity.href} target="_blank" rel="noopener noreferrer" title={identity.full}>{identity.name}</a>
-          {:else}
-            <span class="gh-name" title={identity.full}>{identity.name}</span>
-          {/if}
-          <Menu onSelect={menuChosen} positioning={{ placement: "bottom-end" }}>
-            <MenuIconButton icon="more-horizontal" label="Connection details" size="1rem" />
-            <ExplorerMenu>
-              <div class="gh-menu-facts">
-                <p>Remote: {identity.full}</p>
-                <p>Connected by {label(link.connected_by) || "unknown"}</p>
-                <p>Last pull: {when(link.last_pull_at, label(link.last_pull_by))}</p>
-                <p>Last push: {when(link.last_push_at, label(link.last_push_by))}</p>
-              </div>
-              <Menu.Item value="copy" class="menuitem">Copy remote address</Menu.Item>
-              <Menu.Item value="switch" class="menuitem" disabled={resolving || savedConflict || interrupted}>Switch branch…</Menu.Item>
-              <hr class="hr my-1" />
-              <Menu.Item value="disconnect" class="menuitem">Disconnect…</Menu.Item>
-            </ExplorerMenu>
-          </Menu>
-        </div>
+      <!-- The details hang below the branch line, not over it. -->
+      <div class="gh-identity" bind:this={identityLine}>
+        <Menu onSelect={menuChosen} positioning={detailsPlace}>
+          <Menu.Trigger>
+            {#snippet element(attributes)}
+              <button {...attributes} type="button" class="gh-repo" aria-label="Repository details and actions" title={identity.full}>
+                <span class="gh-name">{identity.name}</span><Icon name="chevron-down" size="12px" />
+              </button>
+            {/snippet}
+          </Menu.Trigger>
+          <ExplorerMenu positioning={detailsPlace}>
+            <div class="gh-details">
+              <p class="gh-details-label">Repository</p>
+              <p class="gh-details-repo" title={identity.name}>{identity.name}</p>
+              <dl class="gh-details-facts">
+                <dt>Branch</dt><dd title={branchLine}>{link.branch}</dd>
+                {#if label(link.connected_by)}<dt>Connected by</dt><dd>{label(link.connected_by)}</dd>{/if}
+                {#if link.last_pull_at}<dt>Last pull</dt><dd title={fullTime(link.last_pull_at, label(link.last_pull_by))}>{shortTime(link.last_pull_at)}</dd>{/if}
+                {#if link.last_push_at}<dt>Last push</dt><dd title={fullTime(link.last_push_at, label(link.last_push_by))}>{shortTime(link.last_push_at)}</dd>{/if}
+              </dl>
+            </div>
+            <hr class="hr my-1" />
+            {#if identity.href}<Menu.Item value="open" class="menuitem">Open in browser</Menu.Item>{/if}
+            <Menu.Item value="copy" class="menuitem">Copy remote URL</Menu.Item>
+            <Menu.Item value="switch" class="menuitem" disabled={resolving || savedConflict || interrupted}>Switch branch…</Menu.Item>
+            <hr class="hr my-1" />
+            <Menu.Item value="disconnect" class="menuitem">Disconnect…</Menu.Item>
+          </ExplorerMenu>
+        </Menu>
         <p class="panel-meta gh-branch" title={branchLine}><Icon name="git-branch" size={14} /><span class="gh-branch-text">{branchLine}</span></p>
       </div>
 
@@ -737,7 +751,7 @@
   {#if confirmingDisconnect && identity}
     <Modal open title={`Disconnect this project from ${identity.name}?`} onclose={() => (confirmingDisconnect = false)}
       confirm={{ label: "Disconnect", tone: "error", oncancel: () => (confirmingDisconnect = false), onclick: confirmDisconnect }}>
-      <p>The repository and the project stay as they are. Sync stops until you connect again.</p>
+      <p>Sync stops until you connect again. Nothing is deleted: the project stays in LibrePaper, and the repository and its branches stay as they are.</p>
     </Modal>
   {/if}
   {#if confirmingSwitch && link}
@@ -766,14 +780,20 @@
   .gh-action:disabled { opacity: .5; cursor: default; }
 
   .gh-identity { margin-top: calc(var(--spacing) * 1); }
-  .gh-identity-line { display: flex; align-items: center; gap: calc(var(--spacing) * 2); min-width: 0; }
-  .gh-name { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: .9375rem; font-weight: 500; }
-  a.gh-name { color: var(--color-link); }
+  .gh-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: .9375rem; font-weight: 500; }
+  .gh-repo { display: inline-flex; align-items: center; gap: calc(var(--spacing) * 1); max-width: 100%; min-height: 1.75rem; margin-inline-start: calc(var(--spacing) * -1.5); padding: .15rem calc(var(--spacing) * 1.5); border: 0; border-radius: var(--radius-base); background: none; color: inherit; font: inherit; text-align: start; cursor: pointer; }
+  .gh-repo:hover, .gh-repo[data-state="open"] { background: var(--color-row-hover); }
+  .gh-repo :global(svg) { flex: none; color: var(--color-text-muted); transition: none; }
+  .gh-repo[data-state="open"] :global(svg) { transform: rotate(180deg); }
+  .gh-details { width: min(18rem, calc(100vw - 2rem)); padding: calc(var(--spacing) * 2) calc(var(--spacing) * 2.5); }
+  .gh-details-label { margin: 0; color: var(--color-text-muted); font-size: var(--panel-meta-size); }
+  .gh-details-repo { display: block; margin: 0 0 calc(var(--spacing) * 2); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 500; }
+  .gh-details-facts { display: grid; grid-template-columns: auto minmax(0, 1fr); gap: calc(var(--spacing) * .75) calc(var(--spacing) * 3); margin: 0; font-size: var(--panel-meta-size); }
+  .gh-details-facts dt { color: var(--color-text-muted); }
+  .gh-details-facts dd { margin: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; text-align: end; }
   .gh-branch { display: flex; align-items: center; gap: calc(var(--spacing) * 1); min-width: 0; margin: calc(var(--spacing) * .5) 0 0; color: var(--color-text-muted); }
   .gh-branch :global(svg) { flex: none; }
   .gh-branch-text { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  .gh-menu-facts { display: grid; gap: calc(var(--spacing) * .5); max-width: 20rem; padding: calc(var(--spacing) * 2); color: var(--color-text-muted); font-size: var(--panel-meta-size); overflow-wrap: anywhere; }
-  .gh-menu-facts p { margin: 0; }
 
   .gh-status { display: flex; align-items: start; gap: calc(var(--spacing) * 2); margin-top: calc(var(--spacing) * 4); }
   .gh-status-icon { display: flex; flex: none; align-items: center; height: 1.5em; }
