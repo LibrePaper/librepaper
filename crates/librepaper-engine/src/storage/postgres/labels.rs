@@ -192,11 +192,39 @@ impl PostgresCatalog {
         after: Option<i64>,
         limit: i64,
     ) -> Result<Vec<LabelRecord>> {
+        self.label_page_filtered(document_id, after, limit, false)
+            .await
+    }
+
+    /// One page of the named moments only (labels with a name), newest first.
+    pub async fn named_label_page(
+        &self,
+        document_id: Uuid,
+        after: Option<i64>,
+        limit: i64,
+    ) -> Result<Vec<LabelRecord>> {
+        self.label_page_filtered(document_id, after, limit, true)
+            .await
+    }
+
+    /// Shared body of `label_page` and `named_label_page`.
+    async fn label_page_filtered(
+        &self,
+        document_id: Uuid,
+        after: Option<i64>,
+        limit: i64,
+        named: bool,
+    ) -> Result<Vec<LabelRecord>> {
         if !(1..=200).contains(&limit) {
             return Err(Error::Invalid("label page limit must be 1..=200".into()));
         }
+        let named_only = if named {
+            " AND l.label IS NOT NULL"
+        } else {
+            ""
+        };
         sqlx::query_as::<_, LabelRecord>(&format!(
-            "{SELECT} WHERE l.document_id=$1 AND l.sequence < COALESCE($2,9223372036854775807) \
+            "{SELECT} WHERE l.document_id=$1 AND l.sequence < COALESCE($2,9223372036854775807){named_only} \
              ORDER BY l.sequence DESC LIMIT $3"
         ))
         .bind(document_id)

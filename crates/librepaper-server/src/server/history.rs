@@ -449,7 +449,8 @@ fn label_wire(row: &librepaper_engine::storage::postgres::LabelRecord) -> Value 
 }
 
 impl Server {
-    /// The document's manifest: every label, newest first.
+    /// The document's manifest: every label, newest first, or only the named
+    /// ones when `named=1` (or `named=true`) is in the query.
     ///
     /// Editor-only, as the manifest has always been: a label names a moment
     /// in the document's own past, which is information about the people
@@ -479,7 +480,7 @@ impl Server {
             Ok(room) => room,
             Err(error) => return refused("open the room", &error),
         };
-        let (after, limit) = query
+        let (after, limit, named) = query
             .map(|raw| {
                 let values: HashMap<_, _> = url::form_urlencoded::parse(raw.as_bytes())
                     .into_owned()
@@ -492,15 +493,22 @@ impl Server {
                     .and_then(|value| value.parse::<i64>().ok())
                     .unwrap_or(64)
                     .clamp(1, 200);
-                (after, limit)
+                let named = matches!(values.get("named").map(String::as_str), Some("1" | "true"));
+                (after, limit, named)
             })
-            .unwrap_or((None, 64));
-        let rows = match self
-            .store
-            .catalog
-            .label_page(room.document_id, after, limit)
-            .await
-        {
+            .unwrap_or((None, 64, false));
+        let page = if named {
+            self.store
+                .catalog
+                .named_label_page(room.document_id, after, limit)
+                .await
+        } else {
+            self.store
+                .catalog
+                .label_page(room.document_id, after, limit)
+                .await
+        };
+        let rows = match page {
             Ok(rows) => rows,
             Err(error) => return refused("read the catalogue", &error.into()),
         };
