@@ -8,6 +8,10 @@ scheduler = "crontab:-:/run/librepaper-backup/crontab"
 [resticprofile]
 initialize = true
 lock = "/run/librepaper-backup/lock"
+# A run killed mid-backup, as by a deploy that replaces this container, leaves its
+# repository lock behind. A live run refreshes its lock every five minutes, so a lock
+# older than an hour is dead, and the next run removes it instead of failing.
+force-inactive-lock = true
 cache-dir = "/var/backups/librepaper/cache"
 status-file = "/var/backups/librepaper/status.json"
 
