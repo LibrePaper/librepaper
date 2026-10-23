@@ -6,11 +6,12 @@
 use std::net::SocketAddr;
 use std::sync::Arc;
 
+use base64::Engine as _;
 use serde_json::{json, Value};
 use tokio::net::TcpListener;
 
 use super::http_test_support::{deployment as http_deployment, owner_bearer, Deployment};
-use super::Server;
+use super::{agent_token_string, Server};
 use crate::server::origins::Origins;
 use librepaper_engine::storage::postgres::{PostgresCatalog, WriterLease};
 use librepaper_engine::storage::store::DocumentInput;
@@ -311,7 +312,15 @@ async fn a_token_has_a_name_an_expiry_and_no_key_in_the_listing() {
         assert_eq!(status, 400, "{body} {refused}");
     }
     let (token, id) = served.mint_token("edit", "Paul's assistant").await;
-    assert!(token.starts_with(&format!("lpt_{}.", served.slug)));
+    let (origin, rest) = token.strip_prefix("lpt_").unwrap().split_once('.').unwrap();
+    assert_eq!(
+        base64::engine::general_purpose::URL_SAFE_NO_PAD
+            .decode(origin)
+            .unwrap(),
+        READER.as_bytes(),
+        "the token carries the app origin"
+    );
+    assert!(rest.starts_with(&format!("{}.", served.slug)));
     let listing = served.sharing().await;
     assert_eq!(listing["links"].as_array().unwrap().len(), 0);
     let row = &listing["tokens"][0];
@@ -322,7 +331,7 @@ async fn a_token_has_a_name_an_expiry_and_no_key_in_the_listing() {
     assert!(
         !listing
             .to_string()
-            .contains(token.split_once('.').unwrap().1),
+            .contains(token.rsplit_once('.').unwrap().1),
         "nothing keeps the token's key"
     );
     let (status, refused) = served
@@ -353,12 +362,12 @@ async fn a_token_works_only_on_its_documents_tools() {
     ] {
         assert_eq!(served.get(&path, &token).await, 401, "{path}");
     }
-    let (_, key) = token.split_once('.').unwrap();
-    let elsewhere = format!("lpt_other-slug.{key}");
+    let (_, key) = token.rsplit_once('.').unwrap();
+    let elsewhere = agent_token_string(READER, "other-slug", key);
     assert_eq!(served.tools(&elsewhere).await.0, 401);
     let (status, _) = served.call(&elsewhere, "document_read", json!({})).await;
     assert_eq!(status, 401);
-    let link_key_as_token = format!("lpt_{}.{}", served.slug, "0".repeat(64));
+    let link_key_as_token = agent_token_string(READER, &served.slug, &"0".repeat(64));
     assert_eq!(served.tools(&link_key_as_token).await.0, 401);
 }
 
@@ -369,7 +378,7 @@ async fn a_token_key_opens_no_browser_link() {
         return;
     };
     let (token, _) = served.mint_token("comment", "reviewer").await;
-    let key = token.split_once('.').unwrap().1;
+    let key = token.rsplit_once('.').unwrap().1;
     let entry = served
         .server
         .store

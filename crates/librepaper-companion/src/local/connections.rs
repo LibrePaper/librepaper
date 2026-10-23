@@ -37,7 +37,7 @@ pub const GRANT_FILE_VARIABLE: &str = "LIBREPAPER_RUNNER_GRANT_FILE";
 pub const CONNECTION_VARIABLE: &str = "LIBREPAPER_MCP_CONNECTION";
 
 /// The variable that carries an agent token (`lpt_...`) for
-/// `librepaper mcp --document`. It is read from the environment only, never
+/// `librepaper mcp`. It is read from the environment only, never
 /// from a flag, so the token stays out of process listings.
 pub const AGENT_TOKEN_VARIABLE: &str = "LIBREPAPER_AGENT_TOKEN";
 

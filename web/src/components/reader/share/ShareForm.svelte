@@ -1,11 +1,9 @@
 <script>
   import { onMount } from "svelte";
-  import { EXPIRIES, ROLES, fullDateOf } from "./shared.js";
+  import { EXPIRIES, ROLES } from "./shared.js";
 
-  // The new and the edit form for a link or a token. Permission is chosen
-  // when something is created and fixed afterwards.
-  let { kind, mode, draft = $bindable(), item = null, busy = false, allowed = () => true, onsubmit, oncancel } = $props();
-  const creating = $derived(mode === "create");
+  // The form for a new link or token.
+  let { kind, draft = $bindable(), busy = false, allowed = () => true, onsubmit, oncancel } = $props();
   const noun = $derived(kind === "link" ? "link" : "token");
   let first;
   onMount(() => first?.focus());
@@ -20,21 +18,18 @@
     <input class="input share-input" type="text" maxlength="80" required={needsName} bind:this={first} bind:value={draft.name} disabled={busy} />
     <span>{kind === "link" ? "A private name to help you remember who you shared this link with." : "Its comments and suggestions appear under this name."}</span>
   </label>
-  {#if creating}
-    <label class="share-field panel-meta">Permission
-      <select class="select share-select" bind:value={draft.role} disabled={busy} onchange={(event) => { if (kind === "token" && event.currentTarget.value === "editor" && draft.until === "7d") draft.until = "1d"; }}>
-        {#each ROLES as role (role.id)}
-          <option value={role.id} disabled={!allowed(role.id)}>{role.label}{allowed(role.id) ? "" : " (not allowed here)"}</option>
-        {/each}
-      </select>
-    </label>
-    {#if kind === "token" && draft.role === "editor"}
-      <p class="share-note panel-meta">Edit lets the agent change the project directly, without review.</p>
-    {/if}
+  <label class="share-field panel-meta">Permission
+    <select class="select share-select" bind:value={draft.role} disabled={busy} onchange={(event) => { if (kind === "token" && event.currentTarget.value === "editor" && draft.until === "7d") draft.until = "1d"; }}>
+      {#each ROLES as role (role.id)}
+        <option value={role.id} disabled={!allowed(role.id)}>{role.label}{allowed(role.id) ? "" : " (not allowed here)"}</option>
+      {/each}
+    </select>
+  </label>
+  {#if kind === "token" && draft.role === "editor"}
+    <p class="share-note panel-meta">Edit lets the agent change the project directly, without review.</p>
   {/if}
   <label class="share-field panel-meta">Expires
     <select class="select share-select" bind:value={draft.until} disabled={busy}>
-      {#if !creating && item?.until}<option value="">Unchanged ({fullDateOf(item.until)})</option>{/if}
       {#each expiries as [value, says] (value)}<option {value}>{says}</option>{/each}
     </select>
   </label>
@@ -49,7 +44,7 @@
   {/if}
   <div class="share-form-actions">
     <button type="button" class="share-action" disabled={busy} onclick={oncancel}>Cancel</button>
-    <button type="submit" class="btn btn-sm lp-control-brand" disabled={busy || !valid}>{creating ? `Create ${noun}` : "Save"}</button>
+    <button type="submit" class="btn btn-sm lp-control-brand" disabled={busy || !valid}>Create {noun}</button>
   </div>
 </form>
 

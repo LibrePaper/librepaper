@@ -102,46 +102,44 @@ opencode auth login
 
 ## Remote agents
 
-An agent on another machine, such as a home server or a chat bot, works on a document with an agent token. The token reaches that one document and nothing else.
+An agent on another machine, such as a home server or a chat bot, works on a project with an agent token. The token names its server and its project, and it reaches that one project and nothing else.
 
-- The owner creates the token in the Sharing panel, on the Agent tokens tab. It takes a name, a permission and an expiry.
-  - Read: the agent reads the document and nothing else.
+Create a token:
+
+- Open the project, then Sharing, then the Agent tokens tab, then New.
+- Give it a name. The agent's comments and suggestions appear under that name.
+- Pick a permission. These are the same three as share links.
+  - Read: the agent reads the project.
   - Comment: the agent reads and comments.
-  - Edit: the agent proposes tracked changes, edits the project directly, and creates and deletes text files. Edit tokens expire after 1 day by default.
-  - These are the same three permissions as share links.
+  - Edit: the agent also proposes tracked changes, edits the project directly, and creates and deletes text files. Edit tokens expire after 1 day by default.
 - LibrePaper shows the token once. Copy it then.
 
-Install the [librepaper CLI](cli.html#install) on the agent's machine. Then add the document to the agent's MCP config. This Codex example sets the token in the environment:
+Install the [librepaper CLI](cli.html#install) on the agent's machine, then register LibrePaper with Claude Code once, without a token. Claude Code passes its environment to the servers it starts, so the token is given when you launch Claude and is never written to a config file:
+
+```sh
+# Once: register LibrePaper for every folder
+claude mcp add librepaper --scope user -- librepaper mcp
+
+# Each session: paste the token when asked; nothing is echoed or kept in shell history
+read -rs LIBREPAPER_AGENT_TOKEN && export LIBREPAPER_AGENT_TOKEN
+claude
+
+# Headless: allow the LibrePaper tools up front, since nobody is there to approve them
+claude -p "Read the document and comment on the introduction" --allowedTools "mcp__librepaper"
+```
+
+- A different token in the same shell points the same registration at another project.
+- Codex keeps the token in its config file. Register it with `codex mcp add librepaper --env LIBREPAPER_AGENT_TOKEN="$LIBREPAPER_AGENT_TOKEN" -- librepaper mcp`, then run `codex exec "..."`.
+- Any other MCP client runs `librepaper mcp` with `LIBREPAPER_AGENT_TOKEN` in its environment. In a config file that looks like this:
 
 ```toml
 [mcp_servers.librepaper]
 command = "librepaper"
-args = ["mcp", "--document", "https://<host>/docs/<slug>"]
+args = ["mcp"]
 env = { LIBREPAPER_AGENT_TOKEN = "lpt_..." }
 ```
 
-From a terminal, register the document once with the agent's own command, then run the agent headless. The token is read into a variable first, so it stays out of your shell history:
-
-```sh
-# Paste the token when asked; nothing is echoed
-read -rs LIBREPAPER_AGENT_TOKEN
-
-# Claude Code
-claude mcp add librepaper -e LIBREPAPER_AGENT_TOKEN="$LIBREPAPER_AGENT_TOKEN" \
-  -- librepaper mcp --document https://<host>/docs/<slug>
-# Headless runs ask no questions, so allow the document tools up front
-claude -p "Read the document and comment on the introduction" --allowedTools "mcp__librepaper"
-
-# Codex
-codex mcp add librepaper --env LIBREPAPER_AGENT_TOKEN="$LIBREPAPER_AGENT_TOKEN" \
-  -- librepaper mcp --document https://<host>/docs/<slug>
-codex exec "Read the document and comment on the introduction"
-```
-
-- Both commands save the token in the agent's own config file (`~/.claude.json`, `~/.codex/config.toml`). Revoke the token in the Sharing panel when you are done with it.
-- An agent needs two things: the document URL and the token. The URL is not secret and goes in the command. The token is secret and goes only in the environment.
-
-Agents without MCP call the document's tool routes over HTTP:
+Agents without MCP call the project's tool routes over HTTP. The host and the slug are the ones in the project's address bar:
 
 ```sh
 # List the tools this token may use
@@ -151,11 +149,15 @@ curl -X POST -H "Authorization: Bearer lpt_..." -H "Content-Type: application/js
   -d '<arguments>' https://<host>/api/documents/<slug>/tools/<name>
 ```
 
-- Every write needs an `operation` object, which `librepaper mcp` adds for you. The writing tools are `document_comment`, `document_propose` and `document_apply`.
+- Every write needs an `operation` object, which `librepaper mcp` adds for you. The writing tools are `document_comment`, `document_propose`, `document_apply` and `document_files`.
   - `epoch` is the `operation_epoch` from your latest `document_read` result.
   - `id` is a new key for each write, in the form `v2.<unix milliseconds>.<32 hex characters>`.
   - When a write times out, call `document_result` with `{"kind": "operation", "target_operation": <the same operation object>}` to learn whether it landed. Do not send the write again first.
-- The token works only on these two routes, and only for its own document.
+- The token works only on these two routes, and only for its own project.
+
+What a token can and cannot do:
+
 - Comments and suggestions appear under the token's name. A person accepts or rejects each suggestion.
-- A Read token reads only. A Comment token also comments. An Edit token also proposes tracked changes, edits the project directly, and creates and deletes text files. No token uploads images, publishes, shares or runs code.
-- A token stops working at its expiry, when you revoke it, when you Replace it, when you sign out everywhere, and when the document changes owner. Replace issues a new token, and the old one stops at once.
+- No token uploads images, publishes, shares or runs code.
+- Each token has an hourly comment limit, set under Advanced when you create it.
+- A token stops working at its expiry, when you revoke it with the trash button in the Sharing panel, when you sign out everywhere, and when the project changes owner.

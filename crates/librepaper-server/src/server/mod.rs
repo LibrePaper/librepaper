@@ -15,6 +15,7 @@ use axum::extract::{DefaultBodyLimit, FromRequest, FromRequestParts, Multipart};
 use axum::http::{header, HeaderMap, HeaderValue, Method, Request, Response, StatusCode};
 use axum::response::IntoResponse;
 use axum::Router;
+use base64::Engine as _;
 use futures_util::{SinkExt, StreamExt};
 use http_body_util::Limited;
 use serde::Deserialize;
@@ -440,11 +441,29 @@ fn clamp_to_ceiling(granted: Role, ceiling: librepaper_engine::storage::store::C
     }
 }
 
-/// The key and slug inside an `lpt_<slug>.<key>` token, or nothing for a
-/// string that is not shaped like one.
+/// The slug and key inside an `lpt_<origin>.<slug>.<key>` token, or nothing
+/// for a string that is not shaped like one. The origin is base64url without
+/// padding and must decode to an http or https origin. It is checked for
+/// shape and never trusted: only the slug and key authorize.
 pub(super) fn parse_agent_token(token: &str) -> Option<(&str, &str)> {
-    let (slug, key) = token.strip_prefix(AGENT_TOKEN_PREFIX)?.rsplit_once('.')?;
-    (!slug.is_empty() && !key.is_empty()).then_some((slug, key))
+    let rest = token.strip_prefix(AGENT_TOKEN_PREFIX)?;
+    let (origin, rest) = rest.split_once('.')?;
+    let (slug, key) = rest.rsplit_once('.')?;
+    if origin.is_empty() || slug.is_empty() || key.is_empty() {
+        return None;
+    }
+    let decoded = base64::engine::general_purpose::URL_SAFE_NO_PAD
+        .decode(origin)
+        .ok()?;
+    let decoded = std::str::from_utf8(&decoded).ok()?;
+    (decoded.starts_with("http://") || decoded.starts_with("https://")).then_some((slug, key))
+}
+
+/// The bearer string for an agent token: the app origin a page on this
+/// deployment sees, the document slug and the link key.
+pub(super) fn agent_token_string(origin: &str, slug: &str, key: &str) -> String {
+    let origin = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(origin);
+    format!("{AGENT_TOKEN_PREFIX}{origin}.{slug}.{key}")
 }
 
 /// An agent token's id: the first 16 hex characters of its key's digest.
@@ -2484,5 +2503,65 @@ mod automation_authority_tests {
             automation_role(&entry, "editor-hash", comment_only, now),
             Role::Commenter
         );
+    }
+}
+
+#[cfg(test)]
+mod agent_token_parse_tests {
+    use super::{agent_token_string, parse_agent_token};
+
+    const KEY: &str = "0123456789abcdef0123456789abcdef";
+
+    #[test]
+    fn a_minted_token_parses_back_to_its_slug_and_key() {
+        let token = agent_token_string("http://localhost:8081", "paper", KEY);
+        assert!(token.starts_with("lpt_"));
+        assert_eq!(parse_agent_token(&token), Some(("paper", KEY)));
+    }
+
+    #[test]
+    fn a_slug_may_contain_a_dot() {
+        let token = agent_token_string("https://paper.example", "a.b.c", KEY);
+        assert_eq!(parse_agent_token(&token), Some(("a.b.c", KEY)));
+    }
+
+    #[test]
+    fn missing_parts_are_refused() {
+        let origin = agent_token_string("https://paper.example", "x", "y");
+        let origin = origin
+            .strip_prefix("lpt_")
+            .and_then(|rest| rest.split_once('.'))
+            .map(|(origin, _)| origin.to_string())
+            .unwrap();
+        for token in [
+            "lpt_".to_string(),
+            format!("lpt_{origin}"),
+            format!("lpt_{origin}.{KEY}"),
+            format!("lpt_{origin}..{KEY}"),
+            format!("lpt_{origin}.paper."),
+            format!("lpt_.paper.{KEY}"),
+            format!("{origin}.paper.{KEY}"),
+        ] {
+            assert_eq!(parse_agent_token(&token), None, "{token}");
+        }
+    }
+
+    #[test]
+    fn a_bad_or_non_http_origin_is_refused() {
+        let ftp = agent_token_string("ftp://paper.example", "paper", KEY);
+        let bare = agent_token_string("paper.example", "paper", KEY);
+        for token in [
+            format!("lpt_!!!.paper.{KEY}"),
+            format!("lpt_a=.paper.{KEY}"),
+            ftp,
+            bare,
+        ] {
+            assert_eq!(parse_agent_token(&token), None, "{token}");
+        }
+    }
+
+    #[test]
+    fn the_old_two_part_format_is_refused() {
+        assert_eq!(parse_agent_token(&format!("lpt_paper.{KEY}")), None);
     }
 }

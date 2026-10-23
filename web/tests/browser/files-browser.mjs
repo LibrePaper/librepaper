@@ -312,7 +312,7 @@ window.sharingCheck = async () => {
   check(button('Copy Edit link'), 'new edit link can be copied');
   button('Copy Edit link').click(); await flush();
   check(window.copiedLink.includes('#k='), 'copies access token link');
-  check(button('More actions for Edit link'), 'rotation and revocation are in the row menu');
+  check(button('Revoke Edit link') && !button('More actions for Edit link'), 'a row is revoked with its trash button, with no menu');
   window.testShare.$set({ open: false }); await flush();
   // The bar carries no status of its own any more: warnings go in the
   // Reader's status row under it, where they are readable, not squeezed

@@ -359,7 +359,7 @@ impl Server {
         let mut change: Option<(String, UpdateRequest)> = None;
         let mut remove: Option<String> = None;
         if let Some(wanted) = &asked.create {
-            match self.plan_create(slug, wanted, &current_who) {
+            match self.plan_create(slug, &arrival.reader_origin(), wanted, &current_who) {
                 Ok((grant, shown)) => {
                     created = Some(shown);
                     add = Some(grant);
@@ -380,7 +380,13 @@ impl Server {
             let Some(existing) = current_entry.link_by_id(&wanted.id) else {
                 return write_json(404, &json!({"error": "nothing is shared under that id"}));
             };
-            match self.plan_replace(slug, existing, wanted, &current_who) {
+            match self.plan_replace(
+                slug,
+                &arrival.reader_origin(),
+                existing,
+                wanted,
+                &current_who,
+            ) {
                 Ok((grant, shown)) => {
                     created = Some(shown);
                     swap = Some((wanted.id.clone(), grant));
@@ -470,6 +476,7 @@ impl Server {
     fn plan_create(
         &self,
         slug: &str,
+        origin: &str,
         wanted: &CreateRequest,
         owner: &Viewer,
     ) -> Result<(LinkGrant, Value), String> {
@@ -504,7 +511,7 @@ impl Server {
                 grant.until = token_expiry(&wanted.until)?;
                 grant.kind = LinkKind::Agent;
                 grant.owner_generation = owner.id.session_generation.clone();
-                json!({"id": grant.id(), "kind": "token", "token": format!("{AGENT_TOKEN_PREFIX}{slug}.{key}")})
+                json!({"id": grant.id(), "kind": "token", "token": agent_token_string(origin, slug, &key)})
             }
             _ => return Err("a share is a 'link' or a 'token'".to_string()),
         };
@@ -517,6 +524,7 @@ impl Server {
     fn plan_replace(
         &self,
         slug: &str,
+        origin: &str,
         existing: &LinkGrant,
         wanted: &ReplaceRequest,
         owner: &Viewer,
@@ -543,7 +551,7 @@ impl Server {
             LinkKind::Agent => {
                 grant.sealed = Vec::new();
                 grant.owner_generation = owner.id.session_generation.clone();
-                json!({"id": grant.id(), "kind": "token", "token": format!("{AGENT_TOKEN_PREFIX}{slug}.{key}")})
+                json!({"id": grant.id(), "kind": "token", "token": agent_token_string(origin, slug, &key)})
             }
         };
         Ok((grant, shown))
