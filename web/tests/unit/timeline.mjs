@@ -6,7 +6,7 @@
 // manifest is read through. How the order is then coarsened into what the
 // panel shows is checked in history-days.mjs.
 
-import { read, label, labelOrder, loadWithStatus } from "../../src/lib/history.js";
+import { read, label, labelOrder, loadPage } from "../../src/lib/history.js";
 import { createTimeline } from "../../src/lib/reader/timeline.svelte.js";
 
 let failures = 0;
@@ -78,15 +78,47 @@ const order = (points) => [...points].sort(labelOrder).map((point) => point.sha)
       : { slug: "paper", main: "main.md", labels: [rows[0]] } };
   };
   try {
-    const loaded = await loadWithStatus("paper");
-    check("history follows the server's page cursor", urls[1] === "/api/documents/paper/history?after=2");
-    check("the manifest comes back oldest first across all pages", loaded.labels.map(point => point.seq).join() === "1,2,3");
+    const first = await loadPage("paper");
+    const second = await loadPage("paper", {}, { after: first.next });
+    check("loadPage asks for the newest page first, with the default limit",
+      urls[0] === "/api/documents/paper/history?limit=200");
+    check("loadPage follows the server's page cursor", urls[1] === "/api/documents/paper/history?after=2&limit=200");
+    check("a page's rows stay newest first, as served", first.labels.map(point => point.seq).join() === "3,2");
+    check("the next cursor is the server's, and null at the end", first.next === 2 && second.next === null);
     check("the storage row's sequence is read as seq, the name this codebase's panel and calendar use",
-      loaded.labels[0].seq === 1);
+      first.labels[0].seq === 3);
     check("the storage row's reason is read as why, for the same reason",
-      loaded.labels.map(point => point.why).join() === "sync,cli,restore");
-    check("loadWithStatus no longer reports a durability field nothing on the wire ever fills",
-      !("durability" in loaded));
+      first.labels.concat(second.labels).map(point => point.why).join() === "restore,cli,sync");
+  } finally { globalThis.fetch = originalFetch; }
+}
+
+{
+  // The query carries `after` only when there is a cursor, and `named=1` only
+  // for saved labels. A cursor that does not move back, or is not a positive
+  // integer, is refused rather than followed.
+  const originalFetch = globalThis.fetch;
+  const urls = [];
+  let nextCursor = 5;
+  globalThis.fetch = async url => {
+    urls.push(url);
+    return { ok: true, json: async () => ({ labels: [], next_cursor: nextCursor }) };
+  };
+  const refused = async (run) => {
+    try { await run(); return false; } catch { return true; }
+  };
+  try {
+    await loadPage("paper", {}, { named: true, limit: 50 });
+    await loadPage("paper", {}, { after: 10 });
+    check("a named page asks for named=1 with its limit", urls[0] === "/api/documents/paper/history?limit=50&named=1");
+    check("a page after a cursor sends that cursor and no named flag", urls[1] === "/api/documents/paper/history?after=10&limit=200");
+    nextCursor = 10;
+    check("a cursor that does not move back is refused", await refused(() => loadPage("paper", {}, { after: 10 })));
+    nextCursor = 0;
+    check("a zero cursor is refused", await refused(() => loadPage("paper")));
+    nextCursor = 1.5;
+    check("a fractional cursor is refused", await refused(() => loadPage("paper")));
+    globalThis.fetch = async () => ({ ok: false, json: async () => ({}) });
+    check("an unreadable history is refused", await refused(() => loadPage("paper")));
   } finally { globalThis.fetch = originalFetch; }
 }
 
@@ -119,7 +151,7 @@ const order = (points) => [...points].sort(labelOrder).map((point) => point.sha)
   globalThis.$state ??= (value) => value;
   const calls = [];
   const history = {
-    loadWithStatus: async () => ({ labels: [] }),
+    loadPage: async () => ({ labels: [], next: null }),
     label: async (...args) => {
       calls.push(args);
       if (calls.length === 1) throw new Error("response lost");
@@ -152,6 +184,128 @@ const order = (points) => [...points].sort(labelOrder).map((point) => point.sha)
     check("label adapter adds the shell request marker",
       request.headers["X-LibrePaper-Client"] === "shell");
   } finally { globalThis.fetch = originalFetch; }
+}
+
+/* ------------------------------------------------------- the controller */
+
+/// Points `seq` minutes after nine, by one author, served the way the server
+/// serves them: newest first, `size` at a time, with a cursor while older
+/// rows remain. `named` filters to saved points, as `?named=1` does.
+function served(seqs, size = 3) {
+  const all = seqs.map((seq) => ({
+    sha: `sha-${seq}`.padEnd(64, "0"),
+    seq,
+    at: new Date(Date.UTC(2026, 8, 5, 9, seq)).toISOString(),
+    by: "anne",
+    why: "sync",
+    label: "",
+  }));
+  const history = {
+    calls: [],
+    fail: false,
+    loadPage: async (_slug, _headers, { after = null, named = false } = {}) => {
+      history.calls.push({ after, named });
+      if (history.fail) throw new Error("older page failed");
+      const pool = all
+        .filter((point) => (after === null || point.seq < after) && (!named || point.label))
+        .sort((left, right) => right.seq - left.seq);
+      const labels = pool.slice(0, size).map((point) => ({ ...point }));
+      return { labels, next: pool.length > size ? labels[labels.length - 1].seq : null };
+    },
+    label: async (_slug, sha, text) => {
+      const point = all.find((entry) => entry.sha === sha);
+      point.label = text.trim();
+      return {};
+    },
+    all,
+  };
+  return history;
+}
+
+const seqsOf = (points) => points.map((point) => point.seq).join();
+
+{
+  // The first load reads the newest page only, and a refresh reads no further
+  // than the rows it already had, so older pages are left for loadMore.
+  const history = served([1, 2, 3, 4, 5, 6, 7]);
+  const timeline = createTimeline({ slug: "paper", history });
+  await timeline.load();
+  check("the first load reads one page", history.calls.length === 1);
+  check("the first load keeps the newest rows, oldest first", seqsOf(timeline.state.labels) === "5,6,7");
+  check("and is not complete", timeline.state.loaded && !timeline.state.complete);
+
+  await timeline.loadMore();
+  check("loadMore appends the next older page", seqsOf(timeline.state.labels) === "2,3,4,5,6,7");
+  check("and sets complete when the page is the last", !timeline.state.complete);
+
+  history.all.push(...served([8]).all);
+  const before = history.calls.length;
+  await timeline.load();
+  check("a refresh reads newer pages until it reaches a known row", history.calls.length - before === 1);
+  check("a refresh adds the new row and keeps the older ones", seqsOf(timeline.state.labels) === "2,3,4,5,6,7,8");
+  check("a refresh does not change complete", !timeline.state.complete);
+
+  await timeline.loadMore();
+  check("loadMore reads the last page", seqsOf(timeline.state.labels) === "1,2,3,4,5,6,7,8");
+  check("and then the history is complete", timeline.state.complete);
+  await timeline.loadMore();
+  check("loadMore is a no-op once complete", history.calls.length === before + 2);
+}
+
+{
+  // A failed older page keeps the rows already shown and says why; the next
+  // successful page clears the message.
+  const history = served([1, 2, 3, 4, 5, 6, 7]);
+  const timeline = createTimeline({ slug: "paper", history });
+  await timeline.load();
+  history.fail = true;
+  await timeline.loadMore();
+  check("a failed older page keeps the rows", seqsOf(timeline.state.labels) === "5,6,7");
+  check("and says why", timeline.state.moreProblem === "older page failed");
+  check("and is not loading any more", !timeline.state.loadingMore);
+  history.fail = false;
+  await timeline.loadMore();
+  check("a successful older page clears the message", timeline.state.moreProblem === "");
+}
+
+{
+  // loadUntil reads back to the date and stops there, without reading the
+  // rest of the history.
+  const history = served([1, 2, 3, 4, 5, 6, 7, 8, 9]);
+  const timeline = createTimeline({ slug: "paper", history });
+  await timeline.load();
+  const until = new Date(Date.UTC(2026, 8, 5, 9, 4)).toISOString();
+  await timeline.loadUntil(until);
+  check("loadUntil stops once the oldest loaded point is at or before the date",
+    timeline.state.labels[0].seq === 4);
+  check("and has not read the rest of the history", !timeline.state.complete);
+}
+
+{
+  // loadSaved reads every page of named points, newest first.
+  const history = served([1, 2, 3, 4, 5, 6, 7]);
+  history.all[0].label = "first";
+  history.all[2].label = "third";
+  history.all[5].label = "sixth";
+  const timeline = createTimeline({ slug: "paper", history });
+  await timeline.load();
+  await timeline.loadSaved();
+  check("loadSaved collects every named page", seqsOf(timeline.state.saved) === "6,3,1");
+  check("and reports that it has loaded", timeline.state.savedLoaded && !timeline.state.savedLoading);
+  check("and reads its pages as named", history.calls[history.calls.length - 1].named);
+}
+
+{
+  // A rename patches the old row in place, so a refresh that does not read
+  // that row again still shows the new name.
+  const history = served([1, 2, 3, 4, 5, 6, 7]);
+  const timeline = createTimeline({ slug: "paper", history });
+  await timeline.load();
+  await timeline.loadMore();
+  await timeline.name(history.all[1].sha, "  Renamed   draft ");
+  const renamed = timeline.state.labels.find((point) => point.seq === 2);
+  check("name patches an old row locally, trimmed", renamed.label === "Renamed draft");
+  check("and the rest of the rows are kept", seqsOf(timeline.state.labels) === "2,3,4,5,6,7");
 }
 
 if (failures) process.exit(1);

@@ -19,6 +19,7 @@
 // read and hand over -- this module has no session to read one from.
 
 import * as defaultHistory from "../history.js";
+import { labelOrder } from "../history.js";
 import { authHeaders, keyHeaders } from "../api.js";
 import { createGeneration } from "./generation.js";
 
@@ -32,7 +33,20 @@ export function createTimeline({
   disposed = () => false,
 }) {
   const state = $state({
+    // Loaded points, oldest first.
     labels: [],
+    // True after the first successful read of the newest page.
+    loaded: false,
+    // True when no older page remains to be read.
+    complete: false,
+    loadingMore: false,
+    // Message from the last failed older-page read, "" otherwise.
+    moreProblem: "",
+    // Saved points, newest first, and how reading them went.
+    saved: [],
+    savedLoaded: false,
+    savedLoading: false,
+    savedProblem: "",
     problem: "",
     // The restore being put to the reader, if one is.
     restoring: false,
@@ -56,20 +70,134 @@ export function createTimeline({
   // its identity until a successful response so an explicit retry replays it.
   const pendingCurrentLabels = new Map();
 
-  /// Read the manifest. Only the newest read may write what it found: a
-  /// slower earlier one finishing later would otherwise replace it.
+  // The loaded points by sha. `state.labels` is always these, in `labelOrder`.
+  const rows = new Map();
+  // The cursor for the next older page, and whether any older page has been
+  // read. Until one has, the newest pages are the only evidence of where the
+  // loaded rows end, so a refresh may set the cursor.
+  let cursor = null;
+  let olderLoaded = false;
+  // The older page being read, shared by callers that ask while it runs.
+  let olderFetch = null;
+  const savedReads = createGeneration();
+
+  function publish() {
+    state.labels = [...rows.values()].sort(labelOrder);
+  }
+
+  function merge(points) {
+    for (const point of points) rows.set(point.sha, point);
+  }
+
+  function newestSeq() {
+    let newest = 0;
+    for (const point of rows.values()) if (point.seq > newest) newest = point.seq;
+    return newest;
+  }
+
+  /// Read the newest page. Later calls are refreshes: they read newer pages
+  /// until one holds a row already known, and replace rows by sha, so older
+  /// pages already loaded are kept. Only the newest read may write what it
+  /// found: a slower earlier one finishing later would otherwise replace it.
   async function load() {
     const stale = reads.begin();
+    const known = newestSeq();
+    const refresh = state.loaded;
     try {
-      const loaded = await history.loadWithStatus(slug, keyHeaders(key));
+      const pages = [];
+      let page = await history.loadPage(slug, keyHeaders(key));
       if (disposed() || stale()) return;
-      state.labels = loaded.labels;
+      pages.push(page);
+      while (refresh && page.next !== null && !page.labels.some((point) => point.seq <= known)) {
+        page = await history.loadPage(slug, keyHeaders(key), { after: page.next });
+        if (disposed() || stale()) return;
+        pages.push(page);
+      }
+      for (const found of pages) merge(found.labels);
+      if (!olderLoaded) {
+        cursor = page.next;
+        state.complete = page.next === null;
+      }
+      state.loaded = true;
       state.problem = "";
+      publish();
     } catch (error) {
       if (disposed() || stale()) return;
       // A failed refresh is not evidence that the previous save state still
       // applies; keep the old rows for selection.
       state.problem = error.message || "The version history could not be read.";
+    }
+  }
+
+  /// Read the next older page and add its rows. A no-op when everything is
+  /// loaded or nothing is loaded yet; while an older page is being read, the
+  /// same read is returned to the caller.
+  async function loadMore() {
+    if (olderFetch) return olderFetch;
+    if (state.complete || !state.loaded) return;
+    olderFetch = fetchOlder().finally(() => {
+      olderFetch = null;
+    });
+    return olderFetch;
+  }
+
+  async function fetchOlder() {
+    const from = cursor;
+    state.loadingMore = true;
+    try {
+      const page = await history.loadPage(slug, keyHeaders(key), { after: from });
+      if (disposed()) return;
+      merge(page.labels);
+      olderLoaded = true;
+      // A refresh may have moved the cursor while this page was read; its
+      // cursor then stands, and this page's rows are merged all the same.
+      if (cursor === from) {
+        cursor = page.next;
+        state.complete = page.next === null;
+      }
+      state.moreProblem = "";
+      publish();
+    } catch (error) {
+      if (disposed()) return;
+      // The rows already shown stay, and the reader can try again.
+      state.moreProblem = error.message || "Older versions could not be read.";
+    } finally {
+      state.loadingMore = false;
+    }
+  }
+
+  /// Read older pages until the oldest loaded point is at or before `iso`, or
+  /// nothing older remains, or a page fails.
+  async function loadUntil(iso) {
+    const until = Date.parse(iso);
+    while (state.loaded && !state.complete && !state.moreProblem && !disposed()) {
+      const oldest = state.labels[0];
+      if (!oldest || !(Date.parse(oldest.at) > until)) return;
+      await loadMore();
+    }
+  }
+
+  /// Read every page of saved points into `state.saved`, newest first.
+  async function loadSaved() {
+    const stale = savedReads.begin();
+    state.savedLoading = true;
+    try {
+      const saved = [];
+      let after = null;
+      do {
+        const page = await history.loadPage(slug, keyHeaders(key), { after, named: true });
+        if (disposed() || stale()) return;
+        saved.push(...page.labels);
+        after = page.next;
+      } while (after !== null);
+      state.saved = saved.sort((left, right) => labelOrder(right, left));
+      state.savedLoaded = true;
+      state.savedProblem = "";
+    } catch (error) {
+      if (disposed() || stale()) return;
+      state.savedProblem = error.message || "Saved versions could not be read.";
+    } finally {
+      if (!stale()) state.savedLoading = false;
     }
   }
 
@@ -156,14 +284,24 @@ export function createTimeline({
       return;
     }
     if (sha === "current") pendingCurrentLabels.delete(operationKey);
+    // A refresh only reads the newest pages, so an older row that was renamed
+    // is changed here as well, or it would keep its old name.
+    const renamed = rows.get(sha);
+    if (renamed) {
+      rows.set(sha, { ...renamed, label: normalizedLabel });
+      publish();
+    }
     await load();
+    if (state.savedLoaded) await loadSaved();
   }
 
   /// How a version is described when it is being restored.
   function describe(sha) {
     const point = state.labels.find((entry) => entry.sha === sha);
-    return point ? `${point.label ? `${point.label} · ` : ""}${new Date(point.at).toLocaleString()}` : "this version";
+    return point
+      ? `${point.label ? `${point.label} · ` : ""}${new Date(point.at).toLocaleString([], { dateStyle: "medium", timeStyle: "short" })}`
+      : "this version";
   }
 
-  return { state, load, ask, confirm, name, describe };
+  return { state, load, loadMore, loadUntil, loadSaved, ask, confirm, name, describe };
 }
