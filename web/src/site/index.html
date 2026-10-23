@@ -388,12 +388,6 @@
         box-shadow: 0 1px 2px rgb(0 0 0 / 0.05), 0 8px 24px -12px rgb(0 0 0 / 0.18);
       }
 
-      /* Two screenshots for one section, one above the other. */
-      .shot-stack {
-        display: grid;
-        gap: 1.5rem;
-      }
-
       /* A small screenshot, captured at twice its CSS size, stays near the
          size it was on screen, centred, rather than filling the column. */
       .shot-frame img.shot-small {
@@ -763,7 +757,7 @@
               <svg class="strip-item-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
                 <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/>
               </svg>
-              <a class="strip-link" href="#collaborate"><span class="strip-title">Review and comment</span> <span class="strip-sub">with track changes</span></a>
+              <a class="strip-link" href="#review"><span class="strip-title">Review and comment</span> <span class="strip-sub">with track changes</span></a>
             </li>
             <li class="strip-item">
               <svg class="strip-item-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
@@ -802,52 +796,64 @@
         <div class="container">
           <div class="feature reverse">
             <div class="feature-copy">
-              <h2>Collaborate and review</h2>
-              <p>Write together, discuss specific passages, and review changes without leaving your document. Keep track of revisions and give collaborators the access they need.</p>
+              <h2>Collaborate</h2>
+              <p>Write together in real time, with individual cursors and undo history. Discuss a passage where it sits in the text, or talk in the project chat.</p>
               <ul class="details">
-                <li>Edit together in real time, with individual cursors and undo history.</li>
                 <li>Comment on a passage and discuss it in a thread.</li>
-                <li>Record edits as tracked changes, then accept or reject each one.</li>
-                <li>Share a link that lets someone read, comment or edit.</li>
-                <li>Name versions, browse the history and restore an earlier version.</li>
                 <li>Talk with collaborators in the project chat.</li>
+                <li>Share a link that lets someone read, comment or edit.</li>
               </ul>
             </div>
-            <div class="shot-stack">
-              <figure class="shot-frame">
-                <picture>
-                  <source type="image/webp" srcset="/images/track-changes.webp">
-                  <img
-                    src="/images/track-changes.png"
-                    alt="The Changes panel in LibrePaper with one pending insertion, its author and file, and Reject and Accept buttons, beside the Typst source with the inserted line outlined."
-                    width="1171"
-                    height="678"
-                    loading="lazy"
-                    decoding="async"
-                  />
-                </picture>
-              </figure>
-              <figure class="shot-frame">
-                <picture>
-                  <source type="image/webp" srcset="/images/comment-thread.webp">
-                  <img
-                    class="shot-small"
-                    src="/images/comment-thread.png"
-                    alt="A comment thread in LibrePaper: three messages between two collaborators, with buttons to resolve, delete and reply."
-                    width="540"
-                    height="451"
-                    loading="lazy"
-                    decoding="async"
-                  />
-                </picture>
-              </figure>
+            <figure class="shot-frame">
+              <picture>
+                <source type="image/webp" srcset="/images/comment-thread.webp">
+                <img
+                  class="shot-small"
+                  src="/images/comment-thread.png"
+                  alt="A comment thread in LibrePaper: three messages between two collaborators, with buttons to resolve, delete and reply."
+                  width="540"
+                  height="451"
+                  loading="lazy"
+                  decoding="async"
+                />
+              </picture>
+            </figure>
+          </div>
+        </div>
+      </section>
+
+      <!-- ============================================================ review -->
+      <section class="section" id="review">
+        <div class="container">
+          <div class="feature">
+            <div class="feature-copy">
+              <h2>Review changes</h2>
+              <p>Record edits as tracked changes and decide on each one. Name versions as the work progresses, and restore an earlier version when you need it.</p>
+              <ul class="details">
+                <li>See who made each change and in which file.</li>
+                <li>Accept or reject changes one at a time.</li>
+                <li>Browse the full history of the project.</li>
+              </ul>
             </div>
+            <figure class="shot-frame">
+              <picture>
+                <source type="image/webp" srcset="/images/track-changes.webp">
+                <img
+                  src="/images/track-changes.png"
+                  alt="The Changes panel in LibrePaper with one pending insertion, its author and file, and Reject and Accept buttons, beside the Typst source with the inserted line outlined."
+                  width="1171"
+                  height="678"
+                  loading="lazy"
+                  decoding="async"
+                />
+              </picture>
+            </figure>
           </div>
         </div>
       </section>
 
       <!-- ============================================================ AI -->
-      <section class="section" id="ai">
+      <section class="section section-alt" id="ai">
         <div class="container">
           <div class="feature">
             <div class="feature-copy">
@@ -870,7 +876,7 @@
       </section>
 
       <!-- ============================================================ open -->
-      <section class="section section-alt" id="open">
+      <section class="section" id="open">
         <div class="container">
           <h2 class="section-title">Free and open source</h2>
           <div class="columns">
@@ -899,7 +905,7 @@
       </section>
 
       <!-- ========================================================== desktop -->
-      <section class="section" id="desktop">
+      <section class="section section-alt" id="desktop">
         <div class="container">
           <div class="feature desktop-feature">
             <div class="feature-copy">
@@ -1061,7 +1067,7 @@
       </section>
 
       <!-- ========================================================== closing -->
-      <section class="section section-alt closing" id="start">
+      <section class="section closing" id="start">
         <div class="container">
           <div class="feature">
             <div class="feature-copy">
