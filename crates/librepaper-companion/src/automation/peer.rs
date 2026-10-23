@@ -255,6 +255,27 @@ impl AutomationPeer {
         Self::open_with_token(link, token).await
     }
 
+    /// Open a document with an agent token (`lpt_...`) that the owner issued
+    /// for this document. The token is a fixed bearer: it is never renewed,
+    /// and it reaches only the document tools routes, so the open check is the
+    /// tools listing rather than the document itself.
+    pub async fn open_agent_token(link: DocumentLink, token: String) -> Result<Self, String> {
+        let peer = Self {
+            link,
+            token: Arc::new(RwLock::new(token)),
+            client: new_client()?,
+        };
+        let (status, body) = peer.tools().await?;
+        if status != 200 {
+            return Err(format!(
+                "could not open document ({}): {}",
+                status,
+                detail_of(&body)
+            ));
+        }
+        Ok(peer)
+    }
+
     async fn open_with_token(link: DocumentLink, token: String) -> Result<Self, String> {
         let scoped = token.starts_with(librepaper_base::auth::AGENT_GRANT_PREFIX);
         let client = new_client()?;

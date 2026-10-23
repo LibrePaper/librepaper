@@ -235,6 +235,21 @@
     return value?.exact ? JSON.stringify([value.exact, source.path, source.prefix, source.suffix, source.position]) : "";
   }
 
+  /// A drag reports its selection as it grows, so a range that overlaps or
+  /// touches the last one is the same gesture and replaces the attachment.
+  function continuesSelection(previous, next) {
+    const range = (value) => {
+      const source = value?.source || value;
+      const start = source?.position;
+      if (!Number.isInteger(start) || start < 0) return null;
+      return { path: source.path || "", start, end: start + (source.exact || value.exact || "").length };
+    };
+    const before = range(previous);
+    const after = range(next);
+    if (!before || !after || before.path !== after.path) return false;
+    return after.start <= before.end && before.start <= after.end;
+  }
+
   /// Mint the access link for `mode` and confirm it really grants that
   /// access. The local app is then told this link directly when the
   /// assistant starts, so no connection name or key sits in a config file,
@@ -242,11 +257,11 @@
   async function prepareAccessLink(mode) {
     if (canShare) {
       const endpoint = `/api/documents/${encodeURIComponent(slug)}/share`;
-      let sharing = await getPrivate(endpoint);
-      let accessLink = sharing.links?.[mode];
-      if (!accessLink?.key || accessLink.expired) {
-        sharing = await post(endpoint, { link: { role: mode, until: "7d", label: "Agent" } });
-        accessLink = sharing.links?.[mode];
+      const sharing = await getPrivate(endpoint);
+      let accessLink = sharing.links?.find((one) => one.role === mode && one.name === "Agent" && one.key);
+      if (!accessLink) {
+        const answer = await post(endpoint, { create: { kind: "link", role: mode, until: "7d", name: "Agent" } });
+        accessLink = answer.created;
       }
       if (!accessLink?.url) throw new Error("Could not create an agent access link.");
       agentLink = new URL(accessLink.url, location.origin).href;
@@ -639,7 +654,7 @@
     if (!selection?.exact) return;
     const same = selectionKey(lastSelection) === selectionKey(selection);
     if (selectionKey(selection) === suppressedSelection) return;
-    if (!attachment || (same && !attachment.revision && (selection.revision || revision))) {
+    if (!attachment || (same && !attachment.revision && (selection.revision || revision)) || (!same && continuesSelection(lastSelection, selection))) {
       attach(selection, selection.revision || revision);
     }
   });

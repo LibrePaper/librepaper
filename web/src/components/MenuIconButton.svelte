@@ -4,7 +4,7 @@
 
   // `pressed` marks a trigger whose menu lists the current place, the way a
   // rail place is marked; the rail's styling keys on aria-pressed.
-  let { icon, label, projectSlug = undefined, size = "1.25rem", pressed = null, class: className = "" } = $props();
+  let { icon, label, projectSlug = undefined, size = "1.25rem", pressed = null, class: className = "", ...rest } = $props();
 </script>
 
 <!-- The menu primitive owns the trigger's ARIA, keyboard, and open-state
@@ -14,6 +14,7 @@
   data-project-slug={projectSlug}
   aria-label={label}
   aria-pressed={pressed === null ? undefined : pressed}
+  {...rest}
 >
   <Icon name={icon} {size} />
 </Menu.Trigger>

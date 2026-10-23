@@ -1,0 +1,23 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT CASE WHEN g.source_link_hash IS NULL THEN g.role ELSE l.role END AS \"role!\"\n                     FROM grants g LEFT JOIN share_links l\n                       ON l.document_id=g.document_id AND l.token_hash=g.source_link_hash\n                      AND l.revoked_at IS NULL AND l.kind='link' AND (l.expires_at IS NULL OR l.expires_at>now())\n                     WHERE g.document_id=$1 AND g.account_id=$2\n                       AND (g.source_link_hash IS NULL OR l.token_hash IS NOT NULL)",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "role!",
+        "type_info": "Text"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      null
+    ]
+  },
+  "hash": "a26168af714fcb810b6051c775948587872a90b3121649e901254b0957818036"
+}

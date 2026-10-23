@@ -112,9 +112,13 @@ window.fetch = async (url, init) => {
     return new Response('x'.repeat(20000), {headers:{'content-type':'text/plain'}});
   }
   if (new URL(url, location.href).pathname.endsWith('/share')) {
-    if (init.method === 'POST') { window.createdAccess=JSON.parse(init.body); window.missingAccess=false; }
-    if (window.missingAccess) return Response.json({links:{}});
-    return Response.json({links:Object.fromEntries(['reader','commenter','editor'].map(role=>[role,{key:role,url:'/docs/paper#k='+role}]))});
+    if (init.method === 'POST') {
+      window.createdAccess=JSON.parse(init.body); window.missingAccess=false;
+      const role=window.createdAccess.create.role;
+      return Response.json({links:[],tokens:[],created:{id:role.padEnd(16,'0'),kind:'link',url:'/docs/paper#k='+role}});
+    }
+    if (window.missingAccess) return Response.json({links:[],tokens:[]});
+    return Response.json({tokens:[],links:['reader','commenter','editor'].map(role=>({id:role.padEnd(16,'0'),role,name:'Agent',key:role,url:'/docs/paper#k='+role,until:'2099-01-01T00:00:00Z'}))});
   }
   if (new URL(url, location.href).pathname.endsWith('/assistant/capabilities')) {
     if(window.capabilityFailure) return Response.json({error:'The access link has expired.'},{status:403});
@@ -505,6 +509,16 @@ try {
   assert.equal(explained.context.selection, undefined);
   assert.equal(explained.context.diagnostic.source, "old source");
 
+  // A drag reports its selection as it grows. The first word attaches, and
+  // the longer range that overlaps it replaces the attachment.
+  await page.evaluate("window.setProps({selection:{exact:'One',source:{path:'a.md',exact:'One',prefix:'',suffix:' two three',position:0}}})");
+  await until("first drag word attached", () => page.evaluate('document.querySelector(".context-summary")?.textContent.includes("Remove passage")'), 1000);
+  await page.evaluate("window.setProps({selection:{exact:'One two three',source:{path:'a.md',exact:'One two three',prefix:'',suffix:'',position:0}}})");
+  await page.evaluate("window.setProps({request:{id:'grown-selection',task:{kind:'tighten',scope:'selection'}}})");
+  await until("grown selection prepared", () => page.evaluate('document.querySelector(".task-prepare .attachment blockquote")?.textContent==="One two three"'), 1000);
+  await page.evaluate('Array.from(document.querySelectorAll(".task-prepare button")).find(b=>b.textContent==="Send to agent").click()');
+  await until("grown selection sent", () => page.evaluate("window.sockets[1].sent.some(frame=>frame.context?.selection?.exact==='One two three')"), 1000);
+
   // A real rendered quote has no source coordinates or source revision.
   await page.evaluate("window.setProps({request:{id:'rendered-quote',task:{kind:'tighten',scope:'selection'},selection:{exact:'Rendered passage',render_digest:'rendered-tree',position:null}}})");
   await until("rendered quote attached",()=>page.evaluate("document.querySelector('.task-prepare .task-title')?.textContent==='Tighten'"),1000);
@@ -573,7 +587,7 @@ try {
   await page.evaluate("window.missingAccess=true");
   await connectAs("editor");
   assert.equal(await linkFor("editor"), true);
-  assert.deepEqual(await page.evaluate("window.createdAccess"), {link:{role:"editor",until:"7d",label:"Agent"}});
+  assert.deepEqual(await page.evaluate("window.createdAccess"), {create:{kind:"link",role:"editor",until:"7d",name:"Agent"}});
   await page.evaluate('document.querySelector("#agent-tab-tasks").click()');
   assert.equal(await page.evaluate('document.querySelector("#agent-pane-chat").hidden'), true);
   await page.evaluate(`(()=>{const search=document.querySelector('.task-search');search.value='';search.dispatchEvent(new Event('input',{bubbles:true}));})()`);

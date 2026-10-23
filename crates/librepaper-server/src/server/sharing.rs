@@ -26,57 +26,82 @@ where
     Option::<i64>::deserialize(deserializer).map(Some)
 }
 
-/// What one call to the share route asks for. Every field is optional, and
-/// several may arrive together: a revoke and a mint in one round trip is a
-/// rotation asked for the long way.
+/// What one call to the share route asks for. Exactly one of the four fields
+/// is present: a request that names none, or several, is refused.
 #[derive(Deserialize, Default)]
+#[serde(deny_unknown_fields)]
 pub(super) struct ShareRequest {
-    /// A role word (`read`/`reader`, `comment`/`commenter`, `edit`/`editor`).
     #[serde(default)]
-    pub(super) revoke: Option<String>,
+    pub(super) create: Option<CreateRequest>,
+    /// Changes to a row's name, expiry or budget, leaving its key alone.
     #[serde(default)]
-    pub(super) link: Option<LinkRequest>,
-    /// Changes to the link a role already holds -- its memo, its expiry, its
-    /// comment budget -- leaving the key alone. Minting is what kills a link,
-    /// so an owner correcting a label is not made to hand out a new URL.
+    pub(super) update: Option<UpdateRequest>,
+    /// A new key for a row that keeps its kind, role, name, expiry and budget.
     #[serde(default)]
-    pub(super) settings: Option<LinkRequest>,
+    pub(super) replace: Option<ReplaceRequest>,
+    #[serde(default)]
+    pub(super) revoke: Option<RevokeRequest>,
 }
 
 #[derive(Deserialize, Default)]
-pub(super) struct LinkRequest {
+#[serde(deny_unknown_fields)]
+pub(super) struct CreateRequest {
+    /// `link` or `token`.
+    #[serde(default)]
+    pub(super) kind: String,
     #[serde(default)]
     pub(super) role: String,
-    /// A duration such as `7d` or `24h`, `never` for a link that does not
-    /// expire, or absent: absent keeps the expiry a link already has, and is
-    /// the default for a link that is new.
+    /// A memo for the owner. Required for a token, where it is the name the
+    /// token's work is shown under.
+    #[serde(default)]
+    pub(super) name: String,
+    /// A duration such as `7d` or `24h`. A link may also say `never`, and an
+    /// absent one gets the default. A token needs one and refuses `never`.
     #[serde(default)]
     pub(super) until: String,
-    /// A memo for the owner, not an identity or an additional grant. Omitted
-    /// on rotation preserves the current label; an empty string clears it.
+    /// Comment actions per clock hour; null or absent uses the deployment's
+    /// ordinary comment limit.
     #[serde(default)]
-    pub(super) label: Option<String>,
-    /// Comment actions per clock hour for this link. Omitted keeps the budget
-    /// the link already has; null returns it to the deployment's ordinary
-    /// comment limit; a number sets it.
+    pub(super) budget: Option<i64>,
+}
+
+#[derive(Deserialize, Default)]
+#[serde(deny_unknown_fields)]
+pub(super) struct UpdateRequest {
+    #[serde(default)]
+    pub(super) id: String,
+    #[serde(default)]
+    pub(super) name: Option<String>,
+    /// Absent or empty leaves the expiry where it is.
+    #[serde(default)]
+    pub(super) until: Option<String>,
+    /// Absent keeps the budget, null returns it to the deployment's ordinary
+    /// comment limit, a number sets it.
     #[serde(default, deserialize_with = "double_option")]
     pub(super) budget: Option<Option<i64>>,
 }
 
-/// A change to the link a role already holds, once the request's words have
-/// been read: the role it names, an expiry only where one was asked for, a memo
-/// only where one was sent, and a budget only where one was sent.
-struct LinkSettings {
-    role: Role,
-    until: Option<String>,
-    label: Option<String>,
-    budget: Option<Option<i64>>,
+#[derive(Deserialize, Default)]
+#[serde(deny_unknown_fields)]
+pub(super) struct ReplaceRequest {
+    #[serde(default)]
+    pub(super) id: String,
+    /// A fresh expiry, under the rules of create. Absent keeps the row's own.
+    #[serde(default)]
+    pub(super) until: Option<String>,
 }
 
-/// The word a link's role or a revoke may be spelled with. The document
-/// stores the long form, but the dialog and the command line offer the short
-/// verb too -- `read`, `comment`, `edit` -- because that is what somebody
-/// asking to share a document actually types.
+#[derive(Deserialize, Default)]
+#[serde(deny_unknown_fields)]
+pub(super) struct RevokeRequest {
+    #[serde(default)]
+    pub(super) id: String,
+}
+
+/// The words a link's role may be spelled with. The document stores the long
+/// form, but the panel and the command line offer the short verb too.
+/// `read`, `comment` and `edit` are what somebody asking to share a document
+/// actually types.
 pub(super) fn parse_role_word(value: &str) -> Option<Role> {
     match value.trim().to_ascii_lowercase().as_str() {
         "read" | "reader" => Some(Role::Reader),
@@ -103,9 +128,34 @@ pub(super) fn link_expiry(asked: &str) -> Result<String, String> {
     if seconds <= 0 {
         return Err("an expiry is a duration such as 180d or 24h, or 'never'".to_string());
     }
-    Ok(librepaper_base::util::format_unix(
-        librepaper_base::util::now_unix() + seconds,
-    ))
+    // A day too far to write down would come back empty, which reads as no
+    // expiry at all, so it is refused rather than stored.
+    librepaper_base::util::now_unix()
+        .checked_add(seconds)
+        .map(librepaper_base::util::format_unix)
+        .filter(|until| !until.is_empty())
+        .ok_or_else(|| "that expiry is too far away".to_string())
+}
+
+/// A token's role word, as the stored role it maps to: the same three words
+/// a share link takes.
+pub(super) fn parse_token_role(value: &str) -> Option<&'static str> {
+    match value.trim().to_ascii_lowercase().as_str() {
+        "read" | "reader" => Some("reader"),
+        "comment" | "commenter" => Some("commenter"),
+        "edit" | "editor" => Some("editor"),
+        _ => None,
+    }
+}
+
+/// When a new token stops working. A token must expire, so an absent expiry
+/// and `never` are both refused.
+pub(super) fn token_expiry(asked: &str) -> Result<String, String> {
+    let asked = asked.trim();
+    if asked.is_empty() || asked.eq_ignore_ascii_case("never") {
+        return Err("a token needs an expiry such as 1d, 7d, 30d or 180d".to_string());
+    }
+    link_expiry(asked)
 }
 
 /// The provider namespace of a catalog account identity.
@@ -178,9 +228,10 @@ pub fn open_link_key(session_key: &[u8], sealed: &[u8]) -> String {
 }
 
 impl Server {
-    /// Mints this document's read link, replacing any it had, and returns the
-    /// path to hand out. The key is generated before the write, as the share
-    /// route does, since the write is what commits it.
+    /// Mints a read link for this document and returns the path to hand out.
+    /// The key is generated before the write, as the share route does, since
+    /// the write is what commits it. The document's other links stay as they
+    /// are.
     pub(super) async fn mint_read_link(
         &self,
         slug: &str,
@@ -209,7 +260,7 @@ impl Server {
         };
         self.store
             .modify_as_owner(slug, &actor, |entry| {
-                entry.set_link(link.clone());
+                entry.add_link(link.clone());
                 Ok(())
             })
             .await?;
@@ -276,6 +327,18 @@ impl Server {
         let Ok(asked) = serde_json::from_slice::<ShareRequest>(&body) else {
             return write_json(400, &json!({"error": "bad request"}));
         };
+        let actions = [
+            asked.create.is_some(),
+            asked.update.is_some(),
+            asked.replace.is_some(),
+            asked.revoke.is_some(),
+        ];
+        if actions.iter().filter(|present| **present).count() != 1 {
+            return write_json(
+                400,
+                &json!({"error": "a share request is exactly one of create, update, replace or revoke"}),
+            );
+        }
         let current_entry = match self.checked_entry(slug).await {
             Ok(Some(entry)) => entry,
             Ok(None) => return write_json(404, &json!({"error": "not found"})),
@@ -286,88 +349,52 @@ impl Server {
             return write_json(403, &json!({"error": "ownership changed"}));
         }
 
-        // A new link's key is minted before the write, because the write is
-        // what commits it; whether it does anything for anybody is `role_of`'s
-        // business from here on, so minting is never itself refused. This is
-        // also the rotation: `set_link` below replaces whatever already
-        // carried this role, so minting again is how a leaked link is killed
-        // without losing the role it stood for.
-        let mut minted: Option<LinkGrant> = None;
-        if let Some(wanted) = &asked.link {
-            let Some(role) = parse_role_word(&wanted.role) else {
-                return write_json(
-                    400,
-                    &json!({"error": "a link is 'reader', 'commenter' or 'editor'"}),
-                );
-            };
-            let until = match link_expiry(&wanted.until) {
-                Ok(until) => until,
-                Err(message) => return write_json(400, &json!({"error": message})),
-            };
-            if matches!(wanted.budget, Some(Some(budget)) if budget < 0) {
-                return write_json(
-                    400,
-                    &json!({"error": "a link budget is a non-negative number of comments per hour"}),
-                );
-            }
-            let label = wanted
-                .label
-                .as_deref()
-                .map(|label| clean(label, MAX_LINK_LABEL).trim().to_string());
-            let key = mint_link_key();
-            minted = Some(LinkGrant {
-                hash: hash_link_key(&key),
-                role: role.as_str().to_string(),
-                sealed: seal_link_key(&self.key, &key),
-                since: librepaper_base::util::timestamp(),
-                until,
-                label: label.unwrap_or_default(),
-                budget: wanted.budget.unwrap_or(None),
-            });
-        }
-
-        // A settings change is the mint's opposite number: the same four
-        // fields, read the same way, applied to the row already there. It is
-        // checked out here, where a bad role or a bad duration can still be
-        // answered with the reason rather than a refused mutation.
-        let mut adjusted: Option<LinkSettings> = None;
-        if let Some(wanted) = &asked.settings {
-            let Some(role) = parse_role_word(&wanted.role) else {
-                return write_json(
-                    400,
-                    &json!({"error": "a link is 'reader', 'commenter' or 'editor'"}),
-                );
-            };
-            // An omitted duration leaves the expiry where it is, rather than
-            // taking the default a new link would get: a change of memo is not
-            // a request to start the clock again.
-            let until = if wanted.until.trim().is_empty() {
-                None
-            } else {
-                match link_expiry(&wanted.until) {
-                    Ok(until) => Some(until),
-                    Err(message) => return write_json(400, &json!({"error": message})),
+        // Everything a bad request can get wrong is answered here, with the
+        // reason, before the write. A new key is minted before the write too,
+        // because the write is what commits it; whether it does anything for
+        // anybody is `role_of`'s business from here on.
+        let mut created: Option<Value> = None;
+        let mut add: Option<LinkGrant> = None;
+        let mut swap: Option<(String, LinkGrant)> = None;
+        let mut change: Option<(String, UpdateRequest)> = None;
+        let mut remove: Option<String> = None;
+        if let Some(wanted) = &asked.create {
+            match self.plan_create(slug, wanted, &current_who) {
+                Ok((grant, shown)) => {
+                    created = Some(shown);
+                    add = Some(grant);
                 }
-            };
-            if matches!(wanted.budget, Some(Some(budget)) if budget < 0) {
-                return write_json(
-                    400,
-                    &json!({"error": "a link budget is a non-negative number of comments per hour"}),
-                );
+                Err(message) => return write_json(400, &json!({"error": message})),
             }
-            let label = wanted
-                .label
-                .as_deref()
-                .map(|label| clean(label, MAX_LINK_LABEL).trim().to_string());
-            adjusted = Some(LinkSettings {
-                role,
-                until,
-                label,
-                budget: wanted.budget,
-            });
+        }
+        if let Some(wanted) = asked.update {
+            let Some(existing) = current_entry.link_by_id(&wanted.id) else {
+                return write_json(404, &json!({"error": "nothing is shared under that id"}));
+            };
+            if let Err(message) = check_update(existing.kind, &wanted) {
+                return write_json(400, &json!({"error": message}));
+            }
+            change = Some((wanted.id.clone(), wanted));
+        }
+        if let Some(wanted) = &asked.replace {
+            let Some(existing) = current_entry.link_by_id(&wanted.id) else {
+                return write_json(404, &json!({"error": "nothing is shared under that id"}));
+            };
+            match self.plan_replace(slug, existing, wanted, &current_who) {
+                Ok((grant, shown)) => {
+                    created = Some(shown);
+                    swap = Some((wanted.id.clone(), grant));
+                }
+                Err(message) => return write_json(400, &json!({"error": message})),
+            }
+        }
+        if let Some(wanted) = &asked.revoke {
+            if current_entry.link_by_id(&wanted.id).is_none() {
+                return write_json(404, &json!({"error": "nothing is shared under that id"}));
+            }
+            remove = Some(wanted.id.clone());
         }
 
-        let revoke = asked.revoke.clone().unwrap_or_default();
         let now = librepaper_base::util::now_unix();
         let mutation_actor = librepaper_engine::storage::store::MutationActor {
             account_id: current_who.id.id.clone(),
@@ -382,71 +409,30 @@ impl Server {
         let updated = self
             .store
             .modify_as_owner(slug, &mutation_actor, |entry| {
-                let asked_revoke = revoke.trim();
-                if !asked_revoke.is_empty() {
-                    let went =
-                        parse_role_word(asked_revoke).is_some_and(|role| entry.drop_link(role));
-                    if !went {
-                        return Err(format!("nothing shared with {asked_revoke:?} to revoke"));
+                if let Some(link) = &add {
+                    entry.add_link(link.clone());
+                }
+                if let Some((id, link)) = &swap {
+                    if !entry.replace_link(id, link.clone()) {
+                        return Err("nothing is shared under that id".to_string());
                     }
+                    // The old key names nothing any more, so a guest recorded
+                    // against it is not a guest of this document's link either.
                     entry.prune_guests(now);
                 }
-                if let Some(link) = &minted {
-                    let mut link = link.clone();
-                    // CLI callers may rotate a key without repeating its
-                    // memo. An explicit empty label clears it; an omitted one
-                    // preserves it. An omitted budget keeps the link's budget;
-                    // null returns it to the deployment's ordinary limit.
-                    if let Some(existing) = entry.link_for(link.granted()) {
-                        if asked
-                            .link
-                            .as_ref()
-                            .is_some_and(|wanted| wanted.label.is_none())
-                        {
-                            link.label.clone_from(&existing.label);
-                        }
-                        // The same for the expiry: a rotation asked for
-                        // without a duration is a new key for the link that is
-                        // there, not a link that now runs to a different day.
-                        if asked
-                            .link
-                            .as_ref()
-                            .is_some_and(|wanted| wanted.until.trim().is_empty())
-                        {
-                            link.until.clone_from(&existing.until);
-                        }
-                        if asked
-                            .link
-                            .as_ref()
-                            .is_some_and(|wanted| wanted.budget.is_none())
-                        {
-                            link.budget = existing.budget;
-                        }
-                    }
-                    entry.set_link(link);
-                    // A rotated link's old hash names nothing any more, so a
-                    // guest recorded against it is not a guest of this
-                    // document's link any longer either.
-                    entry.prune_guests(now);
-                }
-                if let Some(settings) = &adjusted {
-                    let role = settings.role;
-                    let Some(existing) = entry.link_for(role) else {
-                        return Err(format!("nothing shared with {:?} to change", role.as_str()));
+                if let Some((id, wanted)) = &change {
+                    let Some(existing) = entry.link_by_id(id) else {
+                        return Err("nothing is shared under that id".to_string());
                     };
                     let mut link = existing.clone();
-                    if let Some(until) = &settings.until {
-                        link.until.clone_from(until);
+                    apply_update(&mut link, wanted)?;
+                    entry.replace_link(id, link);
+                }
+                if let Some(id) = &remove {
+                    if !entry.drop_link(id) {
+                        return Err("nothing is shared under that id".to_string());
                     }
-                    // An omitted label keeps the memo, the way rotation does;
-                    // an empty one clears it.
-                    if let Some(label) = &settings.label {
-                        link.label.clone_from(label);
-                    }
-                    if let Some(budget) = settings.budget {
-                        link.budget = budget;
-                    }
-                    entry.set_link(link);
+                    entry.prune_guests(now);
                 }
                 Ok(())
             })
@@ -467,52 +453,146 @@ impl Server {
                 return write_json(500, &json!({"error": "could not record the change"}));
             }
         };
-        // Rotations and revocations both land here: whatever just changed,
+        // Replacements and revocations both land here: whatever just changed,
         // any socket already open on this document may no longer be entitled
         // to what it is holding.
         self.reauthorize(slug).await;
-        // The minted key needs no special handling on the way out any more:
-        // it was sealed into the row that was just written, and `sharing_json`
-        // says the URL of every link it can open -- this one included.
-        write_json(200, &self.sharing_json(&entry))
+        let mut shown = self.sharing_json(&entry);
+        if let Some(created) = created {
+            shown["created"] = created;
+        }
+        write_json(200, &shown)
     }
 
-    /// Everything the share dialog draws: the owner's own link, the three
-    /// role links, and what this
-    /// deployment's switches will let the owner offer. Only the owner ever
-    /// asks for this now, so nothing here is held back from the caller.
+    /// The row a `create` asks for and the `created` object that tells the
+    /// owner its credential. The credential is shown once: a link's key is
+    /// also sealed into its row, a token's key is kept nowhere.
+    fn plan_create(
+        &self,
+        slug: &str,
+        wanted: &CreateRequest,
+        owner: &Viewer,
+    ) -> Result<(LinkGrant, Value), String> {
+        if matches!(wanted.budget, Some(budget) if budget < 0) {
+            return Err("a budget is a non-negative number of comments per hour".to_string());
+        }
+        let name = clean(&wanted.name, MAX_LINK_LABEL).trim().to_string();
+        let key = mint_link_key();
+        let mut grant = LinkGrant {
+            hash: hash_link_key(&key),
+            since: librepaper_base::util::timestamp(),
+            label: name.clone(),
+            budget: wanted.budget,
+            ..Default::default()
+        };
+        let shown = match wanted.kind.trim() {
+            "link" => {
+                let role = parse_role_word(&wanted.role)
+                    .ok_or("a link is 'reader', 'commenter' or 'editor'")?;
+                grant.role = role.as_str().to_string();
+                grant.until = link_expiry(&wanted.until)?;
+                grant.sealed = seal_link_key(&self.key, &key);
+                json!({"id": grant.id(), "kind": "link", "url": format!("/docs/{slug}#k={key}")})
+            }
+            "token" => {
+                let role = parse_token_role(&wanted.role)
+                    .ok_or("a token is 'read', 'comment' or 'edit'")?;
+                if name.is_empty() {
+                    return Err("a token needs a name".to_string());
+                }
+                grant.role = role.to_string();
+                grant.until = token_expiry(&wanted.until)?;
+                grant.kind = LinkKind::Agent;
+                grant.owner_generation = owner.id.session_generation.clone();
+                json!({"id": grant.id(), "kind": "token", "token": format!("{AGENT_TOKEN_PREFIX}{slug}.{key}")})
+            }
+            _ => return Err("a share is a 'link' or a 'token'".to_string()),
+        };
+        Ok((grant, shown))
+    }
+
+    /// The row that stands in for `existing` under a new key, and its
+    /// `created` object. Kind, role, name and budget carry over, and so does
+    /// the expiry unless the request gives a fresh one.
+    fn plan_replace(
+        &self,
+        slug: &str,
+        existing: &LinkGrant,
+        wanted: &ReplaceRequest,
+        owner: &Viewer,
+    ) -> Result<(LinkGrant, Value), String> {
+        let key = mint_link_key();
+        let mut grant = existing.clone();
+        grant.hash = hash_link_key(&key);
+        grant.since = librepaper_base::util::timestamp();
+        if let Some(until) = wanted
+            .until
+            .as_deref()
+            .filter(|until| !until.trim().is_empty())
+        {
+            grant.until = match existing.kind {
+                LinkKind::Link => link_expiry(until)?,
+                LinkKind::Agent => token_expiry(until)?,
+            };
+        }
+        let shown = match existing.kind {
+            LinkKind::Link => {
+                grant.sealed = seal_link_key(&self.key, &key);
+                json!({"id": grant.id(), "kind": "link", "url": format!("/docs/{slug}#k={key}")})
+            }
+            LinkKind::Agent => {
+                grant.sealed = Vec::new();
+                grant.owner_generation = owner.id.session_generation.clone();
+                json!({"id": grant.id(), "kind": "token", "token": format!("{AGENT_TOKEN_PREFIX}{slug}.{key}")})
+            }
+        };
+        Ok((grant, shown))
+    }
+
+    /// Everything the Sharing panel draws: the owner's own URL, every live
+    /// link and agent token, oldest first, and what this deployment's switches will let the owner offer.
+    /// Only the owner ever asks for this, so nothing here is held back from
+    /// the caller. A token never carries its key: nothing keeps it.
     pub(super) fn sharing_json(&self, entry: &IndexEntry) -> Value {
         let now = librepaper_base::util::now_unix();
-        // One row per role, or null where the document has never had one.
-        // `url` is built exactly the way `handle_publish` builds a document's
-        // own `url`: a path on this same origin, since that is what a dialog
-        // reading this response is already served from.
-        let link_json = |role: Role| -> Value {
-            let Some(link) = entry.link_for(role) else {
-                return Value::Null;
-            };
-            // The key itself, from the sealed copy the catalogue keeps. Only
-            // the owner is ever answered here, and this is the one thing they
-            // cannot get anywhere else: a link is its URL, and a link they
-            // cannot copy is one they cannot hand to anybody. Empty where the
-            // seal cannot be opened, which the dialog reads as "no URL to
-            // offer" and answers with the offer to replace the link.
-            let key = open_link_key(&self.key, &link.sealed);
-            let url = if key.is_empty() {
-                String::new()
-            } else {
-                format!("/docs/{}#k={key}", entry.slug)
-            };
-            json!({
-                "key": key,
-                "url": url,
-                "since": link.since,
-                "until": link.until,
-                "label": link.label,
-                "budget": link.budget,
-                "expired": !link.live_at(now),
-            })
-        };
+        let mut links = Vec::new();
+        let mut tokens = Vec::new();
+        // An expired row admits nobody, so the panel is not shown it.
+        for row in entry.links.iter().filter(|row| row.live_at(now)) {
+            match row.kind {
+                LinkKind::Link => {
+                    // The key itself, from the sealed copy the catalogue keeps.
+                    // It is the one thing the owner cannot get anywhere else: a
+                    // link is its URL. Empty where the seal cannot be opened,
+                    // which the panel reads as "no URL to offer" and answers
+                    // with the offer to replace the link.
+                    let key = open_link_key(&self.key, &row.sealed);
+                    let url = if key.is_empty() {
+                        String::new()
+                    } else {
+                        format!("/docs/{}#k={key}", entry.slug)
+                    };
+                    links.push(json!({
+                        "id": row.id(),
+                        "role": row.granted().as_str(),
+                        "name": row.label,
+                        "url": url,
+                        "key": key,
+                        "since": row.since,
+                        "until": row.until,
+                        "budget": row.budget,
+                    }));
+                }
+                LinkKind::Agent => tokens.push(json!({
+                    "id": row.id(),
+                    "role": row.role,
+                    "name": row.label,
+                    "since": row.since,
+                    "until": row.until,
+                    "budget": row.budget,
+                })),
+            }
+        }
         json!({
             "slug": entry.slug,
             // The owner's own way in: the bare URL, which opens for the owner
@@ -538,20 +618,56 @@ impl Server {
                 "id": entry.publisher_id,
                 "visitor": entry.publisher.starts_with(VISITOR_PREFIX),
             },
-            "links": {
-                "reader": link_json(Role::Reader),
-                "commenter": link_json(Role::Commenter),
-                "editor": link_json(Role::Editor),
-            },
+            "links": links,
+            "tokens": tokens,
             "can_share": true,
             // What the deployment's switches allow, so the dialog offers only
             // the choices that would actually be accepted.
             "publishers": self.publishers.public_description(),
             "commenters_policy": self.commenters.public_description(),
-            // Every link needs a signed-in account, see may_read in mod.rs, so
-            // there is nothing to flag per role.
         })
     }
+}
+
+/// Checks an `update` against the row it names, so a bad duration or a bad
+/// token field is answered with its reason before anything is written.
+fn check_update(kind: LinkKind, wanted: &UpdateRequest) -> Result<(), String> {
+    apply_update(
+        &mut LinkGrant {
+            kind,
+            ..Default::default()
+        },
+        wanted,
+    )
+}
+
+/// Applies an `update` to a row: only the fields it sends change, and the
+/// key never does.
+fn apply_update(link: &mut LinkGrant, wanted: &UpdateRequest) -> Result<(), String> {
+    if matches!(wanted.budget, Some(Some(budget)) if budget < 0) {
+        return Err("a budget is a non-negative number of comments per hour".to_string());
+    }
+    if let Some(name) = &wanted.name {
+        let name = clean(name, MAX_LINK_LABEL).trim().to_string();
+        if name.is_empty() && link.kind == LinkKind::Agent {
+            return Err("a token needs a name".to_string());
+        }
+        link.label = name;
+    }
+    if let Some(until) = wanted
+        .until
+        .as_deref()
+        .filter(|until| !until.trim().is_empty())
+    {
+        link.until = match link.kind {
+            LinkKind::Link => link_expiry(until)?,
+            LinkKind::Agent => token_expiry(until)?,
+        };
+    }
+    if let Some(budget) = wanted.budget {
+        link.budget = budget;
+    }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -613,6 +729,16 @@ mod link_expiry_tests {
 
         assert!((before + 7 * 24 * 3600..=after + 7 * 24 * 3600).contains(&until));
     }
+
+    /// A duration past what a timestamp can hold would format as empty, the
+    /// value that means no expiry, so a token could be made permanent by
+    /// asking for a very long one. Both kinds refuse it.
+    #[test]
+    fn an_expiry_too_far_away_is_refused_not_stored_as_none() {
+        assert!(link_expiry("1000000000d").is_err());
+        assert!(token_expiry("1000000000d").is_err());
+        assert!(token_expiry("180d").is_ok_and(|until| !until.is_empty()));
+    }
 }
 
 #[cfg(test)]
@@ -621,12 +747,57 @@ mod request_shape_tests {
 
     #[test]
     fn a_budget_is_omitted_null_or_a_number() {
-        let omitted: LinkRequest = serde_json::from_str(r#"{"role":"reader"}"#).unwrap();
+        let omitted: UpdateRequest = serde_json::from_str(r#"{"id":"a"}"#).unwrap();
         assert_eq!(omitted.budget, None);
-        let cleared: LinkRequest =
-            serde_json::from_str(r#"{"role":"reader","budget":null}"#).unwrap();
+        let cleared: UpdateRequest = serde_json::from_str(r#"{"id":"a","budget":null}"#).unwrap();
         assert_eq!(cleared.budget, Some(None));
-        let set: LinkRequest = serde_json::from_str(r#"{"role":"reader","budget":5}"#).unwrap();
+        let set: UpdateRequest = serde_json::from_str(r#"{"id":"a","budget":5}"#).unwrap();
         assert_eq!(set.budget, Some(Some(5)));
+    }
+
+    #[test]
+    fn the_old_request_shapes_are_not_requests() {
+        assert!(serde_json::from_str::<ShareRequest>(r#"{"link":{"role":"reader"}}"#).is_err());
+        assert!(serde_json::from_str::<ShareRequest>(r#"{"revoke":"reader"}"#).is_err());
+    }
+
+    #[test]
+    fn a_replace_may_carry_a_fresh_expiry() {
+        let replace: ReplaceRequest = serde_json::from_str(r#"{"id":"a","until":"7d"}"#).unwrap();
+        assert_eq!(replace.until.as_deref(), Some("7d"));
+        let bare: ReplaceRequest = serde_json::from_str(r#"{"id":"a"}"#).unwrap();
+        assert_eq!(bare.until, None);
+    }
+
+    #[test]
+    fn a_token_needs_a_real_expiry() {
+        assert!(token_expiry("").is_err());
+        assert!(token_expiry("never").is_err());
+        assert!(token_expiry("1d").is_ok());
+        assert!(token_expiry("180d").is_ok());
+    }
+
+    #[test]
+    fn an_update_never_empties_a_token_name_or_makes_it_permanent() {
+        let mut token = LinkGrant {
+            kind: LinkKind::Agent,
+            label: "assistant".into(),
+            ..Default::default()
+        };
+        let blank = UpdateRequest {
+            id: "a".into(),
+            name: Some(" ".into()),
+            ..Default::default()
+        };
+        assert!(apply_update(&mut token, &blank).is_err());
+        let forever = UpdateRequest {
+            id: "a".into(),
+            until: Some("never".into()),
+            ..Default::default()
+        };
+        assert!(apply_update(&mut token, &forever).is_err());
+        let mut link = LinkGrant::default();
+        assert!(apply_update(&mut link, &forever).is_ok());
+        assert!(link.until.is_empty());
     }
 }

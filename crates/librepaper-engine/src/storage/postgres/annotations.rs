@@ -405,7 +405,7 @@ impl PostgresCatalog {
                     "SELECT CASE WHEN g.source_link_hash IS NULL THEN g.role ELSE l.role END AS \"role!\"
                      FROM grants g LEFT JOIN share_links l
                        ON l.document_id=g.document_id AND l.token_hash=g.source_link_hash
-                      AND l.revoked_at IS NULL AND (l.expires_at IS NULL OR l.expires_at>now())
+                      AND l.revoked_at IS NULL AND l.kind='link' AND (l.expires_at IS NULL OR l.expires_at>now())
                      WHERE g.document_id=$1 AND g.account_id=$2
                        AND (g.source_link_hash IS NULL OR l.token_hash IS NOT NULL)",
                     document_id,
@@ -419,9 +419,10 @@ impl PostgresCatalog {
         let link: Option<String> = match actor.token_hash {
             Some(token_hash) => {
                 sqlx::query_scalar!(
-                    "SELECT role FROM share_links WHERE document_id=$1 AND token_hash=$2 AND revoked_at IS NULL AND (expires_at IS NULL OR expires_at>now())",
+                    "SELECT role FROM share_links WHERE document_id=$1 AND token_hash=$2 AND revoked_at IS NULL AND (kind='link' OR $3) AND (expires_at IS NULL OR expires_at>now())",
                     document_id,
-                    token_hash.as_slice()
+                    token_hash.as_slice(),
+                    actor.automation
                 )
                 .fetch_optional(&mut **tx)
                 .await?

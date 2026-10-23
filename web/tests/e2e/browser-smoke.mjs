@@ -665,9 +665,9 @@ async function run() {
       "x-librepaper-client": "1",
       cookie: deployment.cookie,
     },
-    body: JSON.stringify({ link: { role: "commenter", until: "180d" } }),
+    body: JSON.stringify({ create: { kind: "link", role: "commenter", until: "180d" } }),
   }).then((r) => r.json());
-  const mintedKey = minted.links?.commenter?.key;
+  const mintedKey = new URL(minted.created?.url ?? "", BASE).hash.replace("#k=", "");
   check("the share route mints a key", Boolean(mintedKey), JSON.stringify(minted).slice(0, 120));
 
   // A separately registered reviewer's browser, and the key in the fragment.

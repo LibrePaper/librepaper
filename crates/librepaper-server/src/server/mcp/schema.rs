@@ -4,6 +4,8 @@ use serde_json::Value;
 use std::collections::HashMap;
 use std::sync::OnceLock;
 
+use crate::server::Role;
+
 /// The checked-in file's own shape: one `operation`-object schema shared by
 /// every tool that needs it, referenced from each tool's `inputSchema` by
 /// `{"$ref":"#/$defs/NAME"}`.
@@ -31,18 +33,25 @@ pub(super) fn tools() -> &'static Vec<Value> {
 /// for a Commenter, so a Commenter is not offered them.
 const EDITOR_TOOLS: [&str; 2] = ["document_propose", "document_apply"];
 
-/// The tools a caller may be offered: every served tool when `editor` is
-/// true, and every served tool except `EDITOR_TOOLS` when it is not. A
-/// Commenter gets read, comment and result only, and the comment tool without
-/// the `label` action, which the server also refuses below Editor.
-pub(super) fn served_tools(editor: bool) -> Vec<Value> {
+/// The tools a Reader may call: read the source and fetch a result. Every
+/// other tool needs Commenter or better.
+const READER_TOOLS: [&str; 2] = ["document_read", "document_result"];
+
+/// The tools a caller may be offered for its role. An Editor gets every
+/// served tool. A Commenter gets read, comment and result, and the comment
+/// tool without the `label` action, which the server also refuses below
+/// Editor. A Reader gets `READER_TOOLS` only.
+pub(super) fn served_tools(role: Role) -> Vec<Value> {
+    let editor = role.at_least(Role::Editor);
     all_served_tools()
         .iter()
         .filter(|tool| {
-            editor
-                || !tool["name"]
-                    .as_str()
-                    .is_some_and(|name| EDITOR_TOOLS.contains(&name))
+            let name = tool["name"].as_str().unwrap_or_default();
+            if !role.at_least(Role::Commenter) {
+                READER_TOOLS.contains(&name)
+            } else {
+                editor || !EDITOR_TOOLS.contains(&name)
+            }
         })
         .map(|tool| {
             if editor {
@@ -271,7 +280,7 @@ mod tests {
     /// it.
     #[test]
     fn served_tools_omit_the_operation_fields_the_bridge_now_injects() {
-        for tool in served_tools(true) {
+        for tool in served_tools(Role::Editor) {
             let properties = &tool["inputSchema"]["properties"];
             assert!(properties.get("operation").is_none(), "{}", tool["name"]);
             assert!(
@@ -285,7 +294,7 @@ mod tests {
                 .unwrap_or_default();
             assert!(!required.iter().any(|name| name == "operation"));
         }
-        let served = served_tools(true);
+        let served = served_tools(Role::Editor);
         let result = served
             .iter()
             .find(|t| t["name"] == "document_result")
@@ -307,11 +316,22 @@ mod tests {
         assert!(propose["properties"]["operation"].is_object());
     }
 
+    /// A Reader is offered the read tools and nothing else.
+    #[test]
+    fn readers_are_offered_only_the_read_tools() {
+        let tools = served_tools(Role::Reader);
+        let names: Vec<&str> = tools
+            .iter()
+            .filter_map(|tool| tool["name"].as_str())
+            .collect();
+        assert_eq!(names, ["document_read", "document_result"]);
+    }
+
     /// A Commenter is offered only the tools it can use; an Editor is offered
     /// all of them.
     #[test]
     fn commenters_are_offered_no_editor_only_tools() {
-        let commenter_tools = served_tools(false);
+        let commenter_tools = served_tools(Role::Commenter);
         let commenter: Vec<&str> = commenter_tools
             .iter()
             .filter_map(|tool| tool["name"].as_str())
@@ -320,7 +340,7 @@ mod tests {
             commenter,
             ["document_read", "document_comment", "document_result"]
         );
-        let editor_tools = served_tools(true);
+        let editor_tools = served_tools(Role::Editor);
         let editor: Vec<&str> = editor_tools
             .iter()
             .filter_map(|tool| tool["name"].as_str())
@@ -330,13 +350,13 @@ mod tests {
         assert_eq!(editor.len(), 5);
         // Labelling needs Editor: a Commenter's document_comment offers no
         // `label` action and its description does not mention labels.
-        let comment_for = |editor: bool| {
-            served_tools(editor)
+        let comment_for = |role: Role| {
+            served_tools(role)
                 .into_iter()
                 .find(|t| t["name"] == "document_comment")
                 .expect("document_comment")
         };
-        let commenter_comment = comment_for(false);
+        let commenter_comment = comment_for(Role::Commenter);
         let commenter_actions = commenter_comment["inputSchema"]["properties"]["action"]["enum"]
             .as_array()
             .expect("commenter action enum");
@@ -345,7 +365,8 @@ mod tests {
             .as_str()
             .expect("commenter description");
         assert!(!description.contains("label"), "{description}");
-        let editor_actions = comment_for(true)["inputSchema"]["properties"]["action"]["enum"]
+        let editor_actions = comment_for(Role::Editor)["inputSchema"]["properties"]["action"]
+            ["enum"]
             .as_array()
             .cloned()
             .expect("editor action enum");

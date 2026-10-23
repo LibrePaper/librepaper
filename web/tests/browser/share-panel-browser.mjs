@@ -1,26 +1,12 @@
-// Browser regression check for the sharing panel: what it says at rest, and
-// what it takes to change any of it.
-//
-// The panel answers three questions -- which kinds of access are open, how the
-// link for one of them is copied, and how access is opened where it is not --
-// and everything else belongs behind something. So the checks below are mostly
-// about what is *not* on the screen: no form until one is asked for, never two
-// at once, no rotation or revocation without a confirmation, and no second
-// place that says when a link expires.
+// Browser regression check for the sharing panel: links and agent tokens as
+// two lists of two-line rows, the More menu, the confirmations, the one-time
+// token screen.
 //
 // The route is stubbed rather than run, because what is under test is the
-// panel's two presentation modes, not the server's writes -- but the stub
-// answers the way the route does, minting a fresh key for a `link` and leaving
-// the key alone for a `settings`, since telling those apart is the point of
-// the menu having both.
-//
-// The stub answers with a URL for every link whose key it holds, which is what
-// the catalogue can now do: alongside the digest that admits a caller it keeps
-// the key itself, sealed with the deployment's session key, so `sharing_json`
-// says the URL of any link the server can unseal -- not only the one this very
-// request minted. The Read link below is the exception on purpose: it stands
-// for a link from before the catalogue kept a key, which works, has a row, and
-// has no URL anybody can be given again.
+// panel, not the server's writes. The stub follows the share contract: every
+// live row comes back in `links` or `tokens`, expired rows never do,
+// and create and replace add a `created` object. One link has no URL on
+// purpose: it stands for a link made before keys were kept.
 import assert from "node:assert/strict";
 import { build } from "vite";
 import { svelte } from "@sveltejs/vite-plugin-svelte";
@@ -46,54 +32,63 @@ import Share from ${JSON.stringify(join(root, "web/src/components/reader/Share.s
 import { tick } from ${JSON.stringify(join(root, "web/node_modules/svelte/src/index-client.js"))};
 import { createClassComponent } from ${JSON.stringify(join(root, "web/node_modules/svelte/src/legacy/legacy-client.js"))};
 
-// Two links already handed out and one role never opened, which is the state
-// the panel is nearly always in. The Read link has no key: it was minted
-// before the catalogue kept one, so the server can say everything about it
-// except the one thing the owner wants, which is its URL.
+let counter = 0;
+const idOf = () => String(++counter).padStart(16, "0");
+const week = () => new Date(Date.now() + 7 * 86400000).toISOString();
 const state = {
-  reader: { key: "", label: "Reviewer", until: "2027-03-17T00:00:00Z", budget: null, since: "2026-01-01T00:00:00Z" },
-  commenter: { key: "commentkey", label: "Reviewer", until: "2027-03-17T00:00:00Z", budget: null, since: "2026-01-01T00:00:00Z" },
-  editor: null,
+  links: [
+    { id: "a000000000000001", role: "reader", name: "", key: "", url: "", since: "2026-01-01T00:00:00Z", until: "2027-03-17T00:00:00Z", budget: null },
+    { id: "a000000000000002", role: "commenter", name: "Reviewer", key: "commentkey", url: "/docs/paper#k=commentkey", since: "2026-01-02T00:00:00Z", until: "2027-03-17T00:00:00Z", budget: null },
+    { id: "a000000000000003", role: "commenter", name: "A very long name that has to be cut short with an ellipsis in a narrow column", key: "k3", url: "/docs/paper#k=k3", since: "2026-01-03T00:00:00Z", until: "", budget: 5 },
+  ],
+  tokens: [
+    { id: "b000000000000001", role: "commenter", name: "Paul's assistant", since: "2026-01-01T00:00:00Z", until: "2027-03-17T00:00:00Z", budget: null },
+  ],
 };
-let minting = 0;
 window.calls = [];
-const expiryOf = (until) => {
-  if (until === "never") return "";
-  if (!until) return null; // omitted: whatever the link already said
-  return new Date(Date.now() + Number(until.replace(/[a-z]/g, "")) * 86400000).toISOString();
-};
-const answer = () => ({
-  slug: "paper", url: "/docs/paper", can_share: true,
-  links: Object.fromEntries(Object.entries(state).map(([role, link]) => [role, link
-    ? { key: link.key, url: link.key ? "/docs/paper#k=" + link.key : "",
-        since: link.since, until: link.until,
-        label: link.label, budget: link.budget, expired: false }
-    : null])),
+const expiryOf = (until) => (until === "never" ? "" : week());
+const answer = (created) => ({
+  slug: "paper", url: "/docs/paper", can_share: true, publishers: "anyone", commenters_policy: "anyone",
+  links: state.links, tokens: state.tokens, ...(created ? { created } : {}),
 });
+const rowOf = (id) => [...state.links, ...state.tokens].find((row) => row.id === id);
 window.fetch = async (path, options) => {
   const body = options?.body ? JSON.parse(options.body) : null;
   window.calls.push([path, body]);
-  if (body?.revoke) state[body.revoke] = null;
-  if (body?.link) {
-    const was = state[body.link.role];
-    state[body.link.role] = {
-      key: "minted-" + window.calls.length,
-      label: body.link.label ?? was?.label ?? "",
-      until: expiryOf(body.link.until) ?? was?.until ?? "",
-      budget: body.link.budget ?? null,
-      // A mint is a new key at a new moment, which is what tells the link
-      // apart from the one it replaced.
-      since: new Date(Date.UTC(2026, 5, 1, 0, 0, ++minting)).toISOString(),
-    };
+  let created;
+  if (body?.create) {
+    const { kind, role, name, until, budget } = body.create;
+    const id = idOf();
+    const row = { id, role, name, since: new Date().toISOString(), until: expiryOf(until), budget };
+    if (kind === "link") {
+      state.links.push({ ...row, key: "minted" + id, url: "/docs/paper#k=minted" + id });
+      created = { id, kind, url: "/docs/paper#k=minted" + id };
+    } else {
+      state.tokens.push(row);
+      created = { id, kind, token: "lpt_paper.minted" + id };
+    }
   }
-  if (body?.settings) {
-    const was = state[body.settings.role];
-    state[body.settings.role] = { ...was,
-      label: body.settings.label ?? was.label,
-      until: expiryOf(body.settings.until) ?? was.until,
-      budget: body.settings.budget ?? null };
+  if (body?.update) {
+    const row = rowOf(body.update.id);
+    if (body.update.name !== undefined) row.name = body.update.name;
+    if (body.update.until) { row.until = expiryOf(body.update.until); }
+    row.budget = body.update.budget ?? null;
   }
-  return { ok: true, json: async () => answer() };
+  if (body?.replace) {
+    const row = rowOf(body.replace.id);
+    const id = idOf();
+    row.id = id;
+    if (body.replace.until) { row.until = expiryOf(body.replace.until); }
+    if (row.url !== undefined) {
+      row.key = "rotated" + id; row.url = "/docs/paper#k=rotated" + id;
+      created = { id, kind: "link", url: row.url };
+    } else created = { id, kind: "token", token: "lpt_paper.rotated" + id };
+  }
+  if (body?.revoke) {
+    state.links = state.links.filter((row) => row.id !== body.revoke.id);
+    state.tokens = state.tokens.filter((row) => row.id !== body.revoke.id);
+  }
+  return { ok: true, json: async () => answer(created) };
 };
 Object.defineProperty(navigator, "clipboard", {
   configurable: true, value: { writeText: async (value) => { window.copied = value; } },
@@ -103,111 +98,204 @@ const mount = () => createClassComponent({ component: Share, target: document.bo
   open: true, inline: true, slug: "paper", canShare: true,
 } });
 mount();
-const flush = async () => { await tick(); await new Promise((resolve) => setTimeout(resolve, 40)); await tick(); };
+const flush = async () => { await tick(); await new Promise((resolve) => setTimeout(resolve, 60)); await tick(); };
 const check = (condition, message) => { if (!condition) throw new Error(message); };
-const text = () => document.body.innerText.replace(/\\s+/g, " ").trim();
-const sections = () => [...document.querySelectorAll(".share-section")];
-const seen = (index) => sections()[index].innerText.replace(/\\s+/g, " ").trim();
+const squash = (node) => node.innerText.replace(/\\s+/g, " ").trim();
+const text = () => squash(document.body);
+const rows = () => [...document.querySelectorAll(".share-row")];
+const rowText = (index) => squash(rows()[index]);
 const button = (label) => [...document.querySelectorAll("button")]
   .find((node) => (node.getAttribute("aria-label") || node.textContent).trim() === label);
+const labelled = (label) => document.querySelector('[aria-label="' + label + '"]');
+const press = async (node) => {
+  check(node, "missing control");
+  node.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true, pointerType: "mouse" }));
+  node.click();
+  await flush();
+};
+const pick = async (trigger, says) => {
+  await press(labelled(trigger));
+  const item = [...document.querySelectorAll('[role="menuitem"]')]
+    .find((node) => node.textContent.trim() === says && node.getClientRects().length);
+  check(item, "missing menu item " + says + " in " + text());
+  item.dispatchEvent(new PointerEvent("pointermove", { bubbles: true, pointerType: "mouse" }));
+  item.click();
+  await flush();
+};
+const type = async (node, value) => { node.value = value; node.dispatchEvent(new Event("input", { bubbles: true })); node.dispatchEvent(new Event("change", { bubbles: true })); await flush(); };
+const tabButton = (label) => [...document.querySelectorAll('[role="tab"]')].find((node) => node.textContent.trim() === label);
 
-window.sharePanelReady = () => Boolean(document.querySelector(".share-section"));
-window.sharePanelSeen = seen;
+window.sharePanelReady = () => rows().length > 0;
 
 window.sharePanelCheck = async () => {
   await flush();
+  const panel = document.querySelector(".share-sidebar");
 
-  /* ------------------------------------------- what readers are served */
+  /* ------------------------------------------------ the links tab at rest */
 
-  // There is no publishing to approve and no version to choose: the shared
-  // rendering follows the draft, so a panel with nothing wrong to report says
-  // nothing at all about it and goes straight to the links.
-  check(!text().includes("Published version"), "nothing calls the rendering a published version");
-  check(!/up to date/i.test(text()), "a healthy shared view is not worth a line: " + text());
-  check(/^Sharing Read/i.test(text()),
-    "the panel opens straight on the access it hands out: " + text());
+  check([...document.querySelectorAll('[role="tab"]')].map((node) => node.textContent.trim()).join("|") === "Links|Agent tokens",
+    "two tabs: " + text());
+  check(text().includes("3 links"), "the count: " + text());
+  check(rows().length === 3 && !text().includes("Expired"), "three links and no expired section");
+  check(rowText(0).startsWith("Read link Read") && rowText(0).includes("Mar 17"),
+    "an unnamed link is called by what it grants, with its expiry: " + rowText(0));
+  check(rowText(1).includes("Reviewer") && rowText(1).includes("Comment \\u00b7 Mar 17"), "a named link: " + rowText(1));
+  check(rowText(2).includes("Comment \\u00b7 No expiry"), "a link without an end: " + rowText(2));
+  check(/[\\u2013\\u2014]/.test(text()) === false, "no dashes in the panel text");
+  check(rows().every((row) => row.getBoundingClientRect().height >= 40 && row.getBoundingClientRect().height <= 52), "rows are 44 to 48px tall: "
+    + rows().map((row) => Math.round(row.getBoundingClientRect().height)).join(","));
+  check(rows()[2].querySelector(".share-name").title.startsWith("A very long name"), "the full name is in a tooltip");
+  check(rows()[2].querySelector(".share-name").scrollWidth > rows()[2].querySelector(".share-name").clientWidth, "and it is cut with an ellipsis");
+  check(panel.scrollWidth <= panel.clientWidth + 1, "no horizontal scroll");
+  check(!labelled("Copy Read link"), "a link with no URL has nothing to copy");
+  check(Boolean(labelled("Copy Reviewer")), "a link with a URL can be copied");
+  check(!document.querySelector(".share-form"), "no form until one is asked for");
 
-  /* ------------------------------------- a permission is what it is, not a form */
+  await press(labelled("Copy Reviewer"));
+  check(window.copied === location.origin + "/docs/paper#k=commentkey", "copies the full URL: " + window.copied);
 
-  check(sections().length === 3, "read, comment and edit");
-  check(/^Read Signed-in users with this link can read the current source and see ongoing changes\\. Expires Mar 1[67], 2027 This link was made before its URL could be kept\\. Replace it to get a new URL\\.$/.test(seen(0)),
-    "a link that exists is its expiry and a row of icons that spell nothing: " + seen(0));
-  check(!seen(0).includes("•••"), "nothing is behind an overflow any more: " + seen(0));
-  // No copy among them: this one link's key predates the column that would
-  // hold it, so the row offers the three things it can still do rather than a
-  // button that would put an empty string on the clipboard.
-  check([...sections()[0].querySelectorAll(".share-icon")].map((node) => node.getAttribute("aria-label")).join("|")
-    === "Edit Read link settings|Replace Read link|Revoke Read link",
-    "the verbs are flat, in the order configure, replace, revoke: "
-      + [...sections()[0].querySelectorAll(".share-icon")].map((node) => node.getAttribute("aria-label")).join("|"));
-  check([...sections()[0].querySelectorAll(".share-icon svg")].length === 3,
-    "and each of them is drawn rather than written");
-  check(seen(1).startsWith("Comment Signed-in users with this link can read the current source, see ongoing changes, and comment."),
-    "each says what the link it hands out lets somebody do: " + seen(1));
-  check(seen(2) === "Edit Signed-in users with this link can edit. Create link",
-    "and a role with no link offers to open one rather than saying it has none: " + seen(2));
-  check(!text().includes("Unlabelled"), "a link without a memo says nothing about labels");
-  check(!document.querySelector(".share-section input, .share-section select"),
-    "no configuration is on the screen until it is asked for");
-  check(!document.querySelector(".share-section .preset-filled-primary-500"),
-    "and nothing about an existing link is loud enough to be the panel's main action");
+  /* ---------------------------------------------------------- the More menu */
 
-  check(!button("Copy Read link"),
-    "a link whose key the server cannot produce has nothing to copy");
-  check(Boolean(button("Copy Comment link")),
-    "a link this browser never minted is copyable all the same: the key is in "
-      + "the catalogue, sealed, and the owner is who is asking");
-
-  /* ------------------------------------------------- opening access */
-
-  button("Create Edit link").click(); await flush();
-  check(document.querySelectorAll(".share-form").length === 1
-    && sections()[2].querySelector(".share-form"),
-    "creating expands that permission, and only that one");
-  check(!seen(2).includes("Advanced settings") && seen(2).includes("Comments/hour"),
-    "with the rate limit in the form rather than behind a disclosure: " + seen(2));
-  const expiry = sections()[2].querySelector("select");
-  expiry.value = "30d"; expiry.dispatchEvent(new Event("change", { bubbles: true }));
+  await press(labelled("More actions for Read link"));
+  const items = [...document.querySelectorAll('[role="menuitem"]')].filter((node) => node.getClientRects().length).map((node) => node.textContent.trim());
+  check(items.join("|") === "Edit settings|Replace link|Revoke link", "the menu: " + items.join("|"));
+  const menu = document.querySelector('[role="menu"][data-state="open"]').getBoundingClientRect();
+  check(menu.left >= 0 && menu.right <= innerWidth && menu.bottom <= innerHeight, "the menu stays inside the viewport");
+  document.body.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
   await flush();
-  button("Create link").click(); await flush();
-  const minted = window.calls.at(-1)[1];
-  check(minted.link?.role === "editor" && minted.link.until === "30d" && !("label" in minted.link),
-    "creation mints the link that was described, and names it nothing: " + JSON.stringify(minted));
-  check(!document.querySelector(".share-form")
-    && sections()[2].querySelector('[aria-label="Copy Edit link"]'),
-    "and it collapses to the state it is now in, with its URL there to copy: "
-      + seen(2));
-  // The server answers a path; what is copied is a URL.
-  button("Copy Edit link").click(); await flush();
-  check(window.copied === location.origin + "/docs/paper#k=" + state.editor.key,
-    "copied: " + window.copied);
+
+  /* ------------------------------------------------------------ a new link */
+
+  await press(document.querySelector("[data-share-new]"));
+  check(document.querySelectorAll(".share-form").length === 1 && !document.querySelector("[data-share-new]"),
+    "the form stands in for the toolbar");
+  check(document.activeElement === document.querySelector(".share-form input"), "focus moves into the form");
+  check(text().includes("A private name to help you remember who you shared this link with."), "the helper line");
+  const form = document.querySelector(".share-form");
+  await type(form.querySelector("input[type=text]"), "For Ana");
+  const selects = form.querySelectorAll("select");
+  check(selects[1].value === "7d", "seven days is the default");
+  await type(selects[0], "editor");
+  await type(form.querySelector("input[type=number]"), "0");
+  await press(button("Create link"));
+  const made = window.calls.at(-1)[1].create;
+  check(made.kind === "link" && made.role === "editor" && made.name === "For Ana" && made.until === "7d" && made.budget === 0,
+    "the link that was described is created, with a budget of zero kept: " + JSON.stringify(made));
+  check(rows().length === 4 && text().includes("4 links"), "created without replacing another: " + text());
+  check(document.activeElement === document.querySelector("[data-share-new]") || document.activeElement === document.body,
+    "focus returns to the toolbar");
+
+  /* -------------------------------------------------------------- settings */
+
+  await pick("More actions for Reviewer", "Edit settings");
+  check(document.querySelectorAll(".share-form").length === 1 && document.querySelector("[data-share-new]"),
+    "the form stands in for the row, the toolbar stays");
+  check(!document.querySelector(".share-form select[disabled]") && document.querySelectorAll(".share-form select").length === 1,
+    "permission is fixed, only the expiry is chosen");
+  check(document.querySelector(".share-form select option").textContent.startsWith("Unchanged (Mar 17, 2027)"), "unchanged is offered first");
+  await press(document.querySelector("[data-share-new]"));
+  check(document.querySelectorAll(".share-form").length === 1, "only one form is open at a time");
+  await press(button("Cancel"));
+  check(!document.querySelector(".share-form"), "cancel closes it");
+
+  await pick("More actions for Reviewer", "Edit settings");
+  await type(document.querySelector(".share-form input[type=text]"), "Reviewer 2");
+  await press(button("Save"));
+  const updated = window.calls.at(-1)[1].update;
+  check(updated.id === "a000000000000002" && updated.name === "Reviewer 2" && updated.until === "",
+    "an update keeps the expiry and sends the name: " + JSON.stringify(updated));
+
+  /* ---------------------------------------------------------- confirmations */
+
+  await pick("More actions for Read link", "Replace link");
+  check(text().includes("Replace link?") && text().includes("The current link will stop working. Anyone using it will need the new link."), "replace asks first");
+  const before = window.calls.length;
+  await press(button("Cancel"));
+  check(window.calls.length === before, "cancelling sends nothing");
+  await pick("More actions for Read link", "Replace link");
+  await press([...document.querySelectorAll('[role="dialog"] button')].find((node) => node.textContent.trim() === "Replace link"));
+  check(Object.keys(window.calls.at(-1)[1]).join() === "replace", "replace is its own action");
+  await pick("More actions for For Ana", "Revoke link");
+  check(text().includes("Revoke link?") && text().includes("People who only have access through this link will lose access."), "revoke asks first");
+  await press([...document.querySelectorAll('[role="dialog"] button')].find((node) => node.textContent.trim() === "Revoke link"));
+  check(window.calls.at(-1)[1].revoke && rows().length === 3, "revoked: " + text());
+
+  /* ------------------------------------------------------------ agent tokens */
+
+  await press(tabButton("Agent tokens"));
+  check(text().includes("1 token") && !text().includes("1 tokens"), "one token: " + text());
+  check(rowText(0).includes("Paul's assistant") && rowText(0).includes("Comment \\u00b7 Mar 17"), "token row: " + rowText(0));
+  check(!document.querySelector('[aria-label^="Copy"]'), "a token has no copy button");
+  check(rows()[0].querySelector("svg"), "and an icon");
+  await press(document.querySelector("[data-share-new]"));
+  check(button("Create token").disabled, "a token needs a name");
+  check(![...document.querySelectorAll(".share-form option")].some((node) => node.textContent === "Never"), "and cannot be made to last forever");
+  check(text().includes("Its comments and suggestions appear under this name."), "the helper line");
+  const tokenForm = document.querySelector(".share-form");
+  check(tokenForm.closest(".share-scroll"), "the new form scrolls with the list, so a short panel reaches its buttons");
+  await type(tokenForm.querySelector("input[type=text]"), "Codex");
+  const roleSelect = tokenForm.querySelectorAll("select")[0];
+  const permissions = [...roleSelect.options].map((node) => node.textContent).join("|");
+  check(permissions === "Read|Comment|Edit", "the token permissions: " + permissions);
+  check(!text().includes("Edit lets the agent change the project directly, without review."), "no warning until Edit is chosen");
+  await type(roleSelect, "editor");
+  check(text().includes("Edit lets the agent change the project directly, without review."), "choosing Edit shows the warning: " + text());
+  check(tokenForm.querySelectorAll("select")[1].value === "1d", "choosing Edit moves the expiry to one day");
+  await press(button("Create token"));
+  const token = window.calls.at(-1)[1].create;
+  check(token.kind === "token" && token.role === "editor" && token.name === "Codex" && token.until === "1d", JSON.stringify(token));
+
+  /* ---------------------------------------------------------- token reveal */
+
+  const secret = document.querySelector('input[aria-label="Agent token"]');
+  check(secret && secret.readOnly && secret.value.startsWith("lpt_paper.minted"), "the token is shown: " + text());
+  check(text().includes("Copy this token now. You won't be able to view it again."), "with the warning");
+  const config = document.querySelector('textarea[aria-label="MCP configuration"]').value;
+  check(config.includes('args = ["mcp", "--document", "' + location.origin + '/docs/paper"]') && config.includes('LIBREPAPER_AGENT_TOKEN = "' + secret.value + '"'),
+    "the configuration is filled in: " + config);
+  check(text().includes("POST /api/documents/{slug}/tools/{name}"), "the plain HTTP route is mentioned");
+  check([...document.querySelectorAll("a")].some((node) => node.textContent === "Agent setup" && node.href.includes("agents.html")), "and the setup page is linked");
+  const shownToken = secret.value;
+  await press(button("Copy token"));
+  check(window.copied === shownToken, "copies the token");
+  await press(button("Copy configuration"));
+  check(window.copied === config, "copies the configuration");
+  const stored = JSON.stringify({ ...localStorage }) + JSON.stringify({ ...sessionStorage });
+  check(!stored.includes(shownToken), "the token is stored nowhere");
+  await press(button("Done"));
+  check(!document.querySelector('input[aria-label="Agent token"]') && !text().includes(shownToken), "Done clears it");
+  check(text().includes("Codex") && text().includes("2 tokens"), "and the token is in the list: " + text());
+
+  await pick("More actions for Codex", "Replace token");
+  check(text().includes("Replace token?") && text().includes("The agent will need the new token."), "replacing a token asks first");
+  await press([...document.querySelectorAll('[role="dialog"] button')].find((node) => node.textContent.trim() === "Replace token"));
+  const rotated = document.querySelector('input[aria-label="Agent token"]')?.value || "";
+  check(rotated.startsWith("lpt_paper.rotated"), "a replaced token is shown once too");
+  const clipboard = navigator.clipboard.writeText;
+  navigator.clipboard.writeText = async () => { throw new Error("blocked"); };
+  await press(button("Copy token"));
+  check(document.querySelector('textarea[aria-label="Text to copy manually"]')?.value === rotated, "a blocked copy offers the token to copy by hand");
+  navigator.clipboard.writeText = clipboard;
+  await press(button("Done"));
+  check(!document.querySelector('textarea[aria-label="Text to copy manually"]') && !text().includes(rotated), "Done also clears the manual copy");
+  await pick("More actions for Codex", "Replace token");
+  await press([...document.querySelectorAll('[role="dialog"] button')].find((node) => node.textContent.trim() === "Replace token"));
+  const late = document.querySelector('input[aria-label="Agent token"]')?.value || "";
+  let refuse;
+  navigator.clipboard.writeText = () => new Promise((resolve, reject) => { refuse = reject; });
+  await press(button("Copy token"));
+  await press(button("Done"));
+  refuse(new Error("blocked"));
+  await flush();
+  navigator.clipboard.writeText = clipboard;
+  check(!document.querySelector('textarea[aria-label="Text to copy manually"]') && !text().includes(late), "a copy that fails after Done does not bring the token back");
+  await pick("More actions for Codex", "Revoke token");
+  check(text().includes("Revoke token?") && text().includes("The agent loses access at once."), "revoking a token asks first");
+  await press([...document.querySelectorAll('[role="dialog"] button')].find((node) => node.textContent.trim() === "Revoke token"));
+  check(rows().length === 1, "revoked");
+  await press(tabButton("Links"));
+  check(!text().includes("No sharing links yet."), "links are still there");
   return true;
-};
-
-/* ------------------------------------------- a link outlives the session */
-
-// The panel, opened again from nothing, the way it opens tomorrow. Nothing
-// about it depends on this browser having been the one that minted anything:
-// the server answers with the URL of every link it can unseal.
-window.shareReopen = async () => {
-  document.body.innerHTML = "";
-  mount();
-  await flush();
-  return seen(2);
-};
-
-// A rotation this browser did not perform: somebody else's session replaced
-// the Edit link. The panel opened again must offer the key that is live now,
-// not the one it was showing before.
-window.shareEditorKey = () => state.editor?.key || "";
-
-window.shareRotateElsewhere = () => {
-  state.editor = { ...state.editor, key: "rotated-elsewhere", since: "2027-01-01T00:00:00Z" };
-};
-
-window.shareClickLabel = (label) => { button(label).click(); };
-window.shareClickWord = (says) => {
-  [...document.querySelectorAll("button")].find((node) => node.textContent.trim() === says).click();
 };
 `;
 
@@ -251,75 +339,7 @@ try {
   await tab.navigate(`http://127.0.0.1:${port}/`);
   await until("share panel component", () => tab.evaluate("Boolean(window.sharePanelReady && window.sharePanelReady())"));
   assert.equal(await tab.evaluate("window.sharePanelCheck()"), true);
-
-  /* ------------------------------------ the rest of it is the rest of the row */
-
-  // Editing settings is the one of the three that changes nothing about who
-  // can get in, so it is the one that opens straight away.
-  await tab.evaluate('window.shareClickLabel("Edit Read link settings")');
-  await pause(500);
-  assert.equal(await tab.evaluate("document.querySelectorAll('.share-form').length"), 1,
-    "editing settings opens that permission and no other");
-  await tab.evaluate(`(() => {
-    const field = document.querySelector('.share-section select');
-    field.value = '30d';
-    field.dispatchEvent(new Event('change', { bubbles: true }));
-  })()`);
-  await tab.evaluate('window.shareClickWord("Save")');
-  await pause(400);
-  const saved = JSON.parse(await tab.evaluate("JSON.stringify(window.calls.at(-1)[1])"));
-  assert.ok(saved.settings && !saved.link,
-    "a change of settings does not mint a key: " + JSON.stringify(saved));
-  assert.equal(saved.settings.until, "30d",
-    "and carries the expiry that was chosen: " + JSON.stringify(saved));
-  // The save mints nothing, so the row is the same link with a new expiry. A
-  // panel that read a link's existence off its key collapsed the row here and
-  // offered to create the link that was still sitting there.
-  const after = await tab.evaluate("window.sharePanelSeen(0)");
-  assert.ok(after.includes("Expires"),
-    "the collapsed state then says when it now runs out: " + after);
-  assert.ok(!after.includes("Create link"),
-    "and the link is still a link, not an offer to make one: " + after);
-
-  // The two that do invalidate a URL ask first.
-  await tab.evaluate('window.shareClickLabel("Revoke Comment link")');
-  await pause(600);
-  const asked = await tab.evaluate("document.body.innerText.replace(/\\\\s+/g, ' ')");
-  assert.ok(asked.includes("Revoke Comment access?"), "revoking asks first: " + asked);
-  await tab.evaluate('window.shareClickWord("Revoke link")');
-  await pause(500);
-  assert.ok((await tab.evaluate("window.sharePanelSeen(1)")).includes("Create link"),
-    "and answered, the permission is back to offering a link");
-
-  /* ------------------------------------------- a link outlives the session */
-
-  // The panel again from nothing, which is what tomorrow looks like. Every
-  // link the server holds a key for is copyable, whoever minted it and
-  // whenever; the Read link, whose key predates the column, is not.
-  const reopened = await tab.evaluate("window.shareReopen()");
-  assert.ok(reopened.includes("Copy") === false, "the row spells nothing: " + reopened);
-  assert.ok(await tab.evaluate(`Boolean(document.querySelector('[aria-label="Copy Edit link"]'))`),
-    "a link is still copyable in a later session: " + reopened);
-  assert.ok(!await tab.evaluate(`Boolean(document.querySelector('[aria-label="Copy Read link"]'))`),
-    "and one whose key was never kept is not");
-  await tab.evaluate(`window.copied = ""; document.querySelector('[aria-label="Copy Edit link"]').click()`);
-  await pause(300);
-  assert.equal(await tab.evaluate("window.copied"),
-    await tab.evaluate("location.origin + '/docs/paper#k=' + window.shareEditorKey()"),
-    "and it copies the URL it was handed, not a stale one");
-
-  // Replaced by somebody else's session. The panel opened again copies the key
-  // that is live now rather than the one it was showing a moment ago.
-  await tab.evaluate("window.shareRotateElsewhere()");
-  const rotated = await tab.evaluate("window.shareReopen()");
-  await tab.evaluate(`window.copied = ""; document.querySelector('[aria-label="Copy Edit link"]').click()`);
-  await pause(300);
-  assert.equal(await tab.evaluate("window.copied"),
-    await tab.evaluate("location.origin + '/docs/paper#k=rotated-elsewhere'"),
-    "a link replaced elsewhere is copied as it now stands: " + rotated);
-
-  console.log("share panel: access as a state, a flat row of icons per link, rotation and revocation confirmed, "
-    + "and every link the server holds a key for copyable from any session");
+  console.log("share panel: several links per role, names, the More menu, confirmations, tokens and the one-time reveal");
 } finally {
   await tab?.close(); server?.close(); removeTemporary(temporary);
 }
