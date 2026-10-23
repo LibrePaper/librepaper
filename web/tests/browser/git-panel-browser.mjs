@@ -193,6 +193,8 @@ try {
   await typeBranch("review/intro");
   await evaluate('document.getElementById("push-branch").requestSubmit()');
   await until("branch exists", () => evaluate('document.body.innerText.includes("already exists")'), 5000);
+  await shoot("push-branch-exists");
+  await until("push enabled again", () => evaluate('[...document.querySelectorAll("[role=dialog] button")].find((node) => node.textContent.trim() === "Push")?.disabled === false'), 5000);
   assert.equal(await evaluate('document.body.innerText.includes("Push to a new branch")'), true, "the dialog stays open");
   await evaluate('[...document.querySelectorAll("[role=dialog] button")].find((node) => node.textContent.trim() === "Cancel").click()');
   await until("branch dialog cancelled", () => evaluate('!document.body.innerText.includes("Push to a new branch")'), 5000);

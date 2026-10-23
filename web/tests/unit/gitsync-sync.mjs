@@ -1686,7 +1686,9 @@ const SAME_NAME = "These files would have the same name in LibrePaper";
   await session.setText("intro.qmd", "edited\n");
   const head = repo.head;
   const journal = JSON.stringify(repo.journal);
-  const record = JSON.stringify(api.state.link);
+  // The review before the push may write the record again; what it says stays.
+  const said = () => { const { revision, ...rest } = api.state.link; return JSON.stringify(rest); };
+  const record = said();
   const answer = await sync.pushToBranch(ctx, "review/intro", "Edit the intro");
   assert.equal(answer.status, "branched", JSON.stringify(answer));
   assert.equal(answer.branch, "review/intro");
@@ -1694,7 +1696,7 @@ const SAME_NAME = "These files would have the same name in LibrePaper";
   assert.equal(repo.branches.get("review/intro"), answer.commit);
   assert.equal(repo.head, head);
   assert.equal(JSON.stringify(repo.journal), journal);
-  assert.equal(JSON.stringify(api.state.link), record);
+  assert.equal(said(), record);
   assert.deepEqual(await sync.localChanges(ctx), { status: "changes", files: [{ path: "intro.qmd", status: "M" }] });
 
   const again = await sync.pushToBranch(ctx, "review/intro");
