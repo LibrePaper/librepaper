@@ -636,7 +636,10 @@ fn confirmed_effects(tool: &str, response: &Value) -> Vec<Value> {
         body["tool"]
             .as_str()
             .filter(|name| {
-                matches!(*name, "document_apply" | "document_files" | "document_comment")
+                matches!(
+                    *name,
+                    "document_apply" | "document_files" | "document_comment"
+                )
             })
             .unwrap_or(tool)
     } else {
