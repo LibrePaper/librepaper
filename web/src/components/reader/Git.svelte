@@ -14,10 +14,10 @@
   import { remoteIdentity } from "../../lib/gitsync/identity.js";
   import { currentPlatform, signInHelp } from "../../lib/gitsync/sign-in-help.js";
   import {
-    checkRemote, compare, connect, defaultMessage, disconnect, discardConflict, leaveBranch, localChanges, outgoing, pull, push, recover, status,
+    checkRemote, connect, defaultMessage, disconnect, discardConflict, leaveBranch, localChanges, outgoing, pull, push, recover, status,
   } from "../../lib/gitsync/sync.js";
 
-  let { open = false, slug, key = "", session = null, rules = {}, me = {}, resolver } = $props();
+  let { open = false, slug, key = "", session = null, rules = {}, me = {}, resolver, differ } = $props();
 
   const git = createBridge();
   const api = $derived(syncApi(slug, key));
@@ -41,9 +41,7 @@
   let discovered = "";
   let reconnect = $state(false);
   let folder = $state("");
-  let comparison = $state(null);
-  let direction = $state("local");
-  let draft = null;
+  let refusals = $state([]);
 
   // The connected view: the remote check, the local list and the commit message.
   let remoteState = $state(null);
@@ -218,13 +216,8 @@
     checkNow();
   }
 
-  function resetDraft() {
-    comparison = null;
-    draft = null;
-  }
-
   async function loadBranches() {
-    comparison = null;
+    refusals = [];
     branches = [];
     branch = "";
     typedBranch = false;
@@ -253,30 +246,21 @@
     if (grant) await loadBranches();
   }
 
-  async function doCompare() {
+  async function doConnect() {
     if (!haveRemote || !branch.trim()) return;
     await guard(async () => {
       // The label stays unset unless the sidecar gave one; sync.js fills it from the sidecar.
       const known = discovered || grant?.label;
-      draft = { remote, branch: branch.trim(), folder: cleanFolder(folder), ...(known ? { label: known } : {}) };
-      const answer = await compare(context(), draft);
+      const draft = { remote, branch: branch.trim(), folder: cleanFolder(folder), ...(known ? { label: known } : {}) };
+      const answer = await connect(context(), draft);
       if (answer.status === "refused") {
         if (answer.kind === "auth") error = { auth: true, remote: remoteForHelp };
         if (answer.reconnect) reconnect = true;
-        comparison = { incoming: [], outgoing: [], differing: [], unsynced: [], folders: [], refusals: answer.refusals || [] };
-      } else {
-        comparison = answer;
+        refusals = answer.refusals || [];
+        return;
       }
-      direction = "local";
-    });
-  }
-
-  async function doConnect() {
-    if (!draft) return;
-    await guard(async () => {
-      const result = await connect(context(), draft, direction);
-      resetDraft();
-      show(result);
+      refusals = [];
+      say(`Connected to ${answer.link.remote_label}`, { kind: "done", id: "git:connect" });
       await refresh();
     });
   }
@@ -412,7 +396,6 @@
       checkGeneration++;
       localGeneration++;
       checking = false;
-      resetDraft();
       await refresh();
     });
   }
@@ -423,7 +406,7 @@
   }
 
   // Ends the connection on this branch and opens the setup form on the same
-  // remote and folder, so another branch can be compared and connected.
+  // remote and folder, so another branch can be picked and connected.
   async function confirmSwitch() {
     confirmingSwitch = false;
     const spec = info?.remote;
@@ -440,7 +423,6 @@
       checkGeneration++;
       localGeneration++;
       checking = false;
-      resetDraft();
     });
     if (!left) return;
     folder = keep.folder;
@@ -525,15 +507,6 @@
   const gitVersion = $derived(info?.git ? `Git ${info.git}` : "no Git");
   const STATUS_LABELS = { A: "Added", M: "Modified", D: "Deleted" };
 </script>
-
-{#snippet files(title, paths)}
-  {#if paths?.length}
-    <h4 class="panel-section-title">{title} ({paths.length})</h4>
-    <ul class="gh-list">
-      {#each paths as path (path)}<li>{path}</li>{/each}
-    </ul>
-  {/if}
-{/snippet}
 
 {#snippet alerts()}
   {#if outcome?.status === "refused"}
@@ -651,6 +624,10 @@
           <button type="button" class="gh-action gh-status-action" disabled={busy || resolver?.state.busy} onclick={sync.cancel.onclick}>{sync.cancel.label}</button>
         {/if}
       </div>
+      <div class="gh-row">
+        <button type="button" class="btn btn-sm lp-control-tonal-brand" disabled={busy || resolving || !differ || differ.state.active}
+          onclick={() => differ.open(context(), { label: link.remote_label, branch: link.branch })}>{differ?.state.active ? "Diff open" : "Diff"}</button>
+      </div>
       {@render alerts()}
 
       {#if !resolving && !savedConflict && !interrupted}
@@ -718,7 +695,7 @@
       <label class="gh-field panel-meta">Remote
         <input class="input gh-input" type="text" bind:value={remoteText} disabled={busy}
           placeholder="HTTPS or SSH URL"
-          oninput={() => { grant = null; resetDraft(); }} onchange={loadBranches} />
+          oninput={() => { grant = null; refusals = []; }} onchange={loadBranches} />
       </label>
       <div class="gh-row">
         <button type="button" class="btn btn-sm lp-control-tonal-brand" disabled={busy} onclick={chooseLocal}>Choose a local repository</button>
@@ -727,58 +704,28 @@
       {#if branches.length || typedBranch}
         <label class="gh-field panel-meta">Branch
           {#if typedBranch}
-            <input class="input gh-input" type="text" bind:value={branch} oninput={resetDraft} disabled={busy}
+            <input class="input gh-input" type="text" bind:value={branch} oninput={() => (refusals = [])} disabled={busy}
               placeholder="main" />
           {:else}
-          <select class="select gh-select" bind:value={branch} onchange={resetDraft} disabled={busy}>
+          <select class="select gh-select" bind:value={branch} onchange={() => (refusals = [])} disabled={busy}>
             {#each branches as option (option)}<option value={option}>{option}</option>{/each}
           </select>
           {/if}
         </label>
         <label class="gh-field panel-meta">Folder (optional)
-          <input class="input gh-input" type="text" bind:value={folder} oninput={resetDraft} disabled={busy}
+          <input class="input gh-input" type="text" bind:value={folder} oninput={() => (refusals = [])} disabled={busy}
             placeholder="Leave empty for the whole repository" />
         </label>
         <div class="gh-row">
-          <button type="button" class="btn btn-sm lp-control-brand" disabled={busy || !branch.trim()} onclick={doCompare}>Compare</button>
+          <button type="button" class="btn btn-sm lp-control-brand" disabled={busy || !branch.trim()} onclick={doConnect}>Connect</button>
         </div>
       {/if}
-      {#if comparison}
-        {#if comparison.refusals?.length}
-          <div class="gh-box" role="alert">
-            {#each comparison.refusals as item}
-              <p>{item.reason}</p>
-              {#if item.paths?.length}<ul class="gh-list">{#each item.paths as path}<li>{path}</li>{/each}</ul>{/if}
-            {/each}
-          </div>
-        {/if}
-        {@render files("Will come in", comparison.incoming)}
-        {@render files("Will go out", comparison.outgoing)}
-        {@render files("Differ on both sides", comparison.differing)}
-        {#if comparison.folders?.length}
-          <h4 class="panel-section-title">Synced folders</h4>
-          <ul class="gh-list">
-            {#each comparison.folders as [folderName, count] (folderName)}<li>{folderName}: {plural(count)}</li>{/each}
-          </ul>
-        {/if}
-        {#if comparison.unsynced?.length}
-          <h4 class="panel-section-title">Not synced ({comparison.unsynced.length})</h4>
-          <ul class="gh-list">
-            {#each comparison.unsynced as item (item.path)}<li>{item.path} <span class="panel-meta">{item.reason}</span></li>{/each}
-          </ul>
-        {/if}
-        {#if comparison.differing?.length}
-          <fieldset class="gh-choice">
-            <legend class="panel-meta">{plural(comparison.differing.length)} differ. Which copies do you keep?</legend>
-            <label><input type="radio" name="git-direction" value="local" bind:group={direction} />
-              Keep LibrePaper's copies. The repository gets them on the first push.</label>
-            <label><input type="radio" name="git-direction" value="remote" bind:group={direction} />
-              Keep the repository's copies. LibrePaper takes them now.</label>
-          </fieldset>
-        {/if}
-        <div class="gh-row">
-          <button type="button" class="btn btn-sm lp-control-brand" disabled={busy || comparison.refusals?.length > 0} onclick={doConnect}>Connect</button>
-          <button type="button" class="gh-action" disabled={busy} onclick={resetDraft}>Cancel</button>
+      {#if refusals.length}
+        <div class="gh-box" role="alert">
+          {#each refusals as item}
+            <p>{item.reason}</p>
+            {#if item.paths?.length}<ul class="gh-list">{#each item.paths as path}<li>{path}</li>{/each}</ul>{/if}
+          {/each}
         </div>
       {/if}
     {/if}
@@ -796,7 +743,7 @@
   {#if confirmingSwitch && link}
     <Modal open title="Switch branch" onclose={() => (confirmingSwitch = false)}
       confirm={{ label: "Switch", oncancel: () => (confirmingSwitch = false), onclick: confirmSwitch }}>
-      <p>This project stops syncing with {link.branch}. Pick another branch of the same repository, compare, and connect. Files stay as they are in LibrePaper.</p>
+      <p>This project stops syncing with {link.branch}. Pick another branch of the same repository and connect. Files stay as they are in LibrePaper.</p>
     </Modal>
   {/if}
 </section>
@@ -817,7 +764,6 @@
   .gh-action { padding: .15rem .35rem; border: 0; border-radius: .25rem; background: none; color: var(--color-link); font: inherit; cursor: pointer; }
   .gh-action:hover:not(:disabled) { background: var(--color-row-hover); }
   .gh-action:disabled { opacity: .5; cursor: default; }
-  .gh-choice { display: grid; gap: calc(var(--spacing) * 1.5); margin: calc(var(--spacing) * 2) 0 0; padding: 0; border: 0; }
 
   .gh-identity { margin-top: calc(var(--spacing) * 1); }
   .gh-identity-line { display: flex; align-items: center; gap: calc(var(--spacing) * 2); min-width: 0; }
