@@ -5,22 +5,27 @@
   // no application behind it to ask, so the button always reads "Start
   // writing" and sends you to the application to find out. New visitors look
   // for a way to sign up, and signing in is how an account is created, so the
-  // button names what they came to do. Every page, the landing page included,
-  // shows the mark.
+  // button names what they came to do. The landing page drops the mark: its
+  // headline already says where you are, and the docs pages need it as the
+  // way home.
   import Logo from "../components/Logo.svelte";
   import Icon from "../components/Icon.svelte";
 
   // Replaced at build time by vite.site.config.js: the published site points
   // at the deployment, a local build at whatever `make demo` started.
   const app = __APP_ORIGIN__;
+
+  let { mark = true } = $props();
 </script>
 
 <nav class="site-bar">
   <div class="site-bar-inner">
-    <a class="flex items-center gap-2" href="/" aria-label="LibrePaper home">
-      <Logo />
-      <span class="max-sm:hidden">LibrePaper</span>
-    </a>
+    {#if mark}
+      <a class="flex items-center gap-2" href="/" aria-label="LibrePaper home">
+        <Logo />
+        <span class="max-sm:hidden">LibrePaper</span>
+      </a>
+    {/if}
     <div class="flex items-center gap-3 sm:gap-4 ml-auto">
       <a class="lp-text-secondary lp-hover-brand max-sm:hidden" href="/#features">Features</a>
       <a class="lp-text-secondary lp-hover-brand" href="/what.html">Documentation</a>
