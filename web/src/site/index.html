@@ -123,8 +123,15 @@
         max-width: 46rem;
       }
 
+      .hero-logo {
+        display: block;
+        width: min(100%, 20rem);
+        height: auto;
+        margin-bottom: 1.5rem;
+      }
+
       .hero h1 {
-        font-size: clamp(2.25rem, 4.6vw, 3.5rem);
+        font-size: clamp(2.25rem, 3.6vw, 2.75rem);
         font-weight: 400;
         line-height: 1.08;
         letter-spacing: -0.01em;
@@ -694,6 +701,7 @@
       <section class="hero">
         <div class="container">
           <div class="hero-text">
+            <img class="hero-logo" src="/assets/librepaper-logo.svg" alt="LibrePaper" width="6221" height="908" />
             <h1>Write and review together.</h1>
             <p class="hero-sub">A full-featured collaborative writing platform with support for multiple file formats. LibrePaper is open source. You can use it for free at librepaper.org or host your own.</p>
             <p class="formats">
