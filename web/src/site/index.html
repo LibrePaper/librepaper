@@ -233,8 +233,10 @@
         display: block;
       }
 
-      .strip-list {
-        grid-template-columns: repeat(2, 1fr);
+      @media (min-width: 480px) {
+        .strip-list {
+          grid-template-columns: repeat(2, 1fr);
+        }
       }
 
       @media (min-width: 600px) {
@@ -749,13 +751,13 @@
               <svg class="strip-item-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
                 <path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M22 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/>
               </svg>
-              <a class="strip-link" href="#collaborate"><span class="strip-title">Collaboration</span> <span class="strip-sub">in real time</span></a>
+              <a class="strip-link" href="#collaborate"><span class="strip-title">Collaborate and chat</span> <span class="strip-sub">in real time</span></a>
             </li>
             <li class="strip-item">
               <svg class="strip-item-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
                 <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/>
               </svg>
-              <a class="strip-link" href="#collaborate"><span class="strip-title">Review</span> <span class="strip-sub">comment and track changes</span></a>
+              <a class="strip-link" href="#collaborate"><span class="strip-title">Review and comment</span> <span class="strip-sub">with track changes</span></a>
             </li>
             <li class="strip-item">
               <svg class="strip-item-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
