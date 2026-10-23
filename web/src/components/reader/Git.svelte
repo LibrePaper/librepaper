@@ -315,6 +315,7 @@
   }
 
   async function doPull() {
+    note = null;
     await guard(async () => {
       pulling = true;
       try {
@@ -326,7 +327,7 @@
     });
   }
 
-  // Pulls first, then commits and pushes only the list the user has seen.
+  // Commits and pushes only the list the user has seen. It never pulls.
   async function commitAndPush() {
     note = null;
     await guard(async () => {
@@ -334,6 +335,12 @@
       try {
         const shown = local?.status === "changes" ? local.files : [];
         const result = await outgoing(context());
+        if (result.status === "behind") {
+          note = result.reason;
+          remoteState = { status: "behind", head: result.head };
+          await refresh();
+          return;
+        }
         if (result.status !== "outgoing") {
           show(result.status === "nothing" ? { ...result, kind: "push" } : result);
           await refreshAll();
@@ -342,15 +349,20 @@
         const key = (file) => `${file.status}:${file.path}`;
         const before = shown.map(key).sort().join("\n");
         const after = result.files.map(key).sort().join("\n");
-        if (result.pulled?.status === "pulled" || before !== after) {
-          if (result.pulled?.status === "pulled") show(result.pulled);
+        if (before !== after) {
           local = result.files.length ? { status: "changes", files: result.files } : { status: "none", files: [] };
-          note = "The list changed after pulling. Check it and press Commit & push again.";
+          note = "The list changed. Check it and press Commit & push again.";
           await refresh();
           checkNow();
           return;
         }
         const pushed = await push(context(), message.trim(), { confirmed: result.outgoing });
+        if (pushed.status === "behind") {
+          note = pushed.reason;
+          remoteState = { status: "behind", head: pushed.head };
+          await refresh();
+          return;
+        }
         if (pushed.status === "moved") {
           note = "The repository changed. Press Commit & push again.";
         } else {
@@ -673,9 +685,13 @@
                 placeholder={defaultMessage(local.files)} />
             </label>
             <div class="gh-row">
-              <button type="button" class="btn btn-sm lp-control-brand" disabled={busy} onclick={commitAndPush}>{committing ? "Committing…" : "Commit & push"}</button>
+              <button type="button" class="btn btn-sm lp-control-brand" disabled={busy || remoteState?.status === "behind"} onclick={commitAndPush}>{committing ? "Committing…" : "Commit & push"}</button>
             </div>
-            <p class="gh-muted gh-hint">Pulls new commits first, then commits your changes and pushes them.</p>
+            {#if remoteState?.status === "behind"}
+              <p class="gh-muted gh-hint">The remote has new commits. Pull first, then push.</p>
+            {:else}
+              <p class="gh-muted gh-hint">Commits your changes and pushes them. When the remote has new commits, pull first.</p>
+            {/if}
           {/if}
         </div>
       {/if}

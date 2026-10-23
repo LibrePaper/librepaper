@@ -171,14 +171,19 @@ try {
   await until("nothing left", () => evaluate('text().includes("No local changes")'), 5000);
   assert.equal(await evaluate('button("Commit & push")'), null);
 
-  // A pull inside Commit & push that changes the list stops before pushing.
-  const moved = [...changes, { path: "references.bib", status: "M" }];
-  await evaluate(`mount(${JSON.stringify({ ...scene, outgoing: { status: "outgoing", files: moved, outgoing: { files: moved }, pulled: { status: "pulled", files: ["intro.md"] } } })})`);
-  await until("listed again", () => evaluate('text().includes("rendering-notes-for-the-appendix.qmd")'), 5000);
+  // Commit & push stops when the remote has new commits, before pushing, and
+  // offers Pull.
+  await evaluate(`mount(${JSON.stringify({ ...scene, outgoing: { status: "behind", head: "h2", reason: "The remote has new commits. Pull first, then push." } })})`);
+  await until("changes listed", () => evaluate('text().includes("rendering-notes-for-the-appendix.qmd")'), 5000);
   await evaluate('click("Commit & push")');
-  await until("stopped", () => evaluate('text().includes("Commit & push again")'), 5000);
+  await until("pull first", () => evaluate('text().includes("Pull first, then push")'), 5000);
   assert.equal(await evaluate('git.calls.some((call) => call[0] === "push")'), false);
-  assert.match(await evaluate("text()"), /references\.bib/);
+  assert.ok(await evaluate('button("Pull") !== null'));
+
+  // A remote with new commits disables Commit & push while local changes wait.
+  await evaluate(`mount(${JSON.stringify({ ...scene, remote: { status: "behind", head: "h2" } })})`);
+  await until("changes listed again", () => evaluate('text().includes("rendering-notes-for-the-appendix.qmd")'), 5000);
+  assert.equal(await evaluate('button("Commit & push").disabled'), true);
 
   // New commits on the remote offer Pull; a failed check offers Retry.
   await evaluate(`mount(${JSON.stringify({ ...scene, remote: { status: "behind", head: "h2" }, local: { status: "none", files: [] } })})`);
