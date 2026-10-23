@@ -378,7 +378,7 @@ async fn a_token_key_opens_no_browser_link() {
         return;
     };
     let (token, _) = served.mint_token("comment", "reviewer").await;
-    let key = token.split_once('.').unwrap().1;
+    let key = token.rsplit_once('.').unwrap().1;
     let entry = served
         .server
         .store
