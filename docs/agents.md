@@ -162,4 +162,5 @@ What a token can and cannot do:
 - Comments and suggestions appear under the token's name. A person accepts or rejects each suggestion.
 - No token uploads images, publishes, shares or runs code.
 - Each token has an hourly comment limit, set under Advanced when you create it.
-- A token stops working at its expiry, when you revoke it with the trash button in the Sharing panel, when you sign out everywhere, and when the project changes owner.
+- A token stops working at its expiry, when you revoke it with the trash button in the Sharing panel, when the project changes owner, and when your account is blocked or erased.
+- Signing out does not stop a token. The agent keeps working while you are signed out or LibrePaper is closed.
