@@ -1153,6 +1153,46 @@ export async function push(ctx, message = "", { confirmed = null } = {}) {
   });
 }
 
+/// Pushes the outgoing changes as one commit to a new branch of the connected
+/// remote, for a pull request. The commit sits on the remote head the project
+/// last synced with, as an ordinary push would. Nothing else changes: not the
+/// connection, its checkpoint, the journal or the shared record, so the same
+/// files stay local changes. With `confirmed`, the reviewed `outgoing` value,
+/// exactly that set is pushed. Answers `{ status: "branched", branch, commit,
+/// files }`, a refusal when the branch exists, or whatever outgoing answers
+/// when there is nothing to push or the remote is ahead.
+export async function pushToBranch(ctx, branch, message = "", { confirmed = null } = {}) {
+  return guarded(async () => {
+    const name = String(branch || "").trim();
+    if (!name) return refused("Name the branch to push to.");
+    let plan = confirmed;
+    if (!plan) {
+      const planned = await outgoing(ctx);
+      if (planned.status !== "outgoing") return planned;
+      plan = planned.outgoing;
+    } else {
+      const { link } = await ctx.api.getLink();
+      if (!link || link.connection_id !== plan.connection_id) {
+        const again = await outgoing(ctx);
+        if (again.status !== "outgoing") return again;
+        return result("moved", { files: again.files, outgoing: again.outgoing });
+      }
+    }
+    const tree = await ctx.git.treeEdit(plan.remoteTree, plan.edits);
+    const commit = await ctx.git.commitTree(tree, plan.remote ? [plan.remote] : [], message?.trim() || defaultMessage(plan.files), authorOf(ctx));
+    try {
+      await ctx.git.pushBranch(commit, name, plan.connection_id);
+    } catch (error) {
+      if (kindOf(error) === "exists") return refused(`A branch named ${name} already exists on the remote. Choose another name.`, [], { exists: true });
+      if (kindOf(error) === "stale-connection") return refused(RECONNECT, [], { reconnect: true });
+      // A name the service cannot use: invalid, or the connected branch.
+      if (error?.status === 400) return refused(error.body?.error || error.message || "That branch name cannot be used.");
+      throw error;
+    }
+    return result("branched", { branch: name, commit, files: plan.files });
+  });
+}
+
 // ---------------------------------------------------------------- connecting
 
 function draftLink(draft) {
