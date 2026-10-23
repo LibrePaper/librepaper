@@ -93,5 +93,5 @@ until answers; do
   fi
   sleep 2
 done
-echo "demo-desktop: the demo is up on $URL; closing the app stops it"
+echo "demo-desktop: the demo is up on $URL; quitting the app stops it"
 LIBREPAPER_SERVER="$URL" "$APP"
