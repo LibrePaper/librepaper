@@ -1,15 +1,12 @@
 <script>
-  import { Menu } from "@skeletonlabs/skeleton-svelte";
   import Icon from "../../Icon.svelte";
   import IconButton from "../../IconButton.svelte";
-  import ExplorerMenu from "../../ExplorerMenu.svelte";
-  import MenuIconButton from "../../MenuIconButton.svelte";
   import { displayName, metaOf } from "./shared.js";
 
   // One link or one agent token. Both are a name over a line of facts with the
-  // actions at the right, so they are one component; a token has no URL and
-  // so never offers a copy button.
-  let { kind, item, busy = false, copied = "", oncopy, onaction } = $props();
+  // actions at the right. A token's secret is shown once and never kept, so
+  // only a link with a URL offers a copy button. Trash revokes.
+  let { kind, item, busy = false, copied = "", oncopy, onrevoke } = $props();
   const noun = $derived(kind === "link" ? "link" : "token");
   const name = $derived(displayName(kind, item));
   const full = $derived(item.url ? new URL(item.url, location.origin).href : "");
@@ -22,16 +19,12 @@
   <div class="share-actions">
     {#if full}
       <IconButton icon={copied === full ? "check" : "copy"} label="Copy {name}" title="Copy link" tone="plain" size="btn-icon-sm"
-                  disabled={busy} onclick={() => oncopy(full, "Link copied.")} />
+                  disabled={busy} onclick={() => oncopy(full)} />
     {/if}
-    <Menu onSelect={({ value }) => onaction(value, item)}>
-      <MenuIconButton icon="more-horizontal" label="More actions for {name}" size="1rem" data-row-menu={item.id} disabled={busy} />
-      <ExplorerMenu>
-        <Menu.Item value="edit" class="menuitem">Edit settings</Menu.Item>
-        <Menu.Item value="replace" class="menuitem">Replace {noun}</Menu.Item>
-        <Menu.Item value="revoke" class="menuitem lp-text-error">Revoke {noun}</Menu.Item>
-      </ExplorerMenu>
-    </Menu>
+    <span class="share-revoke">
+      <IconButton icon="trash" label="Revoke {name}" title="Revoke {noun}" tone="plain" size="btn-icon-sm"
+                  disabled={busy} onclick={onrevoke} />
+    </span>
   </div>
 </li>
 
@@ -51,4 +44,6 @@
   .share-name { grid-area: name; overflow: hidden; font-size: 13px; font-weight: 500; line-height: 1.3; text-overflow: ellipsis; white-space: nowrap; }
   .share-meta { grid-area: meta; overflow: hidden; color: var(--panel-muted); font-size: 11.5px; line-height: 1.3; text-overflow: ellipsis; white-space: nowrap; }
   .share-actions { grid-area: actions; display: flex; flex-wrap: nowrap; align-items: center; gap: calc(var(--spacing) * .5); }
+  .share-revoke { display: contents; }
+  .share-revoke :global(button:hover:not(:disabled)), .share-revoke :global(button:focus-visible) { color: var(--color-error-text); }
 </style>

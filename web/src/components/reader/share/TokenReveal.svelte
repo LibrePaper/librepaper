@@ -14,11 +14,11 @@ env = { LIBREPAPER_AGENT_TOKEN = "${token}" }`);
   <label class="share-field panel-meta">Token
     <input class="input share-input" type="text" readonly aria-label="Agent token" value={token} onclick={select} />
   </label>
-  <button type="button" class="btn btn-sm lp-control-tonal-brand" onclick={() => oncopy(token, "Token copied.")}>Copy token</button>
+  <button type="button" class="btn btn-sm lp-control-tonal-brand" onclick={() => oncopy(token)}>Copy token</button>
   <label class="share-field panel-meta">Configuration
     <textarea class="input share-input share-config" readonly rows="5" aria-label="MCP configuration" value={config} onclick={select}></textarea>
   </label>
-  <button type="button" class="btn btn-sm lp-control-tonal-brand" onclick={() => oncopy(config, "Configuration copied.")}>Copy configuration</button>
+  <button type="button" class="btn btn-sm lp-control-tonal-brand" onclick={() => oncopy(config)}>Copy configuration</button>
   <p class="panel-meta">Agents without MCP can call POST /api/documents/{"{slug}"}/tools/{"{name}"} with the token as a Bearer header.</p>
   <p class="panel-meta"><a href="https://librepaper.org/agents.html#remote-agents" target="_blank" rel="noreferrer">Agent setup</a></p>
   <div class="share-form-actions">
