@@ -146,7 +146,7 @@
         margin-top: 2rem;
       }
 
-      .hero-shot {
+      .shot-frame.hero-shot {
         margin-top: 3rem;
       }
 
@@ -239,7 +239,7 @@
         }
       }
 
-      @media (min-width: 600px) and (max-width: 959px) {
+      @media (max-width: 959px) {
         .strip-list {
           grid-template-columns: repeat(2, 1fr);
         }
@@ -264,17 +264,18 @@
       }
 
       @media (max-width: 599px) {
-        .strip-list {
-          grid-template-columns: 1fr;
-        }
-
         .strip-item {
-          border-left: none;
-          border-top: 1px solid var(--color-divider);
+          padding: 0.875rem 0.75rem;
+          gap: 0.5rem;
         }
 
-        .strip-item:first-child {
-          border-top: none;
+        .strip-link {
+          font-size: 0.9375rem;
+        }
+
+        .strip-item-icon {
+          width: 20px;
+          height: 20px;
         }
       }
 
@@ -363,6 +364,10 @@
         mask: url('data:image/svg+xml;utf8,<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="black" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6 9 17l-5-5"/></svg>') center / contain no-repeat;
       }
 
+      .feature-aside .details {
+        margin-top: 0;
+      }
+
       @media (min-width: 960px) {
         .feature {
           grid-template-columns: 5fr 7fr;
@@ -376,6 +381,19 @@
 
         .feature.reverse .feature-copy {
           order: 2;
+        }
+
+        .feature:has(> .feature-aside) {
+          align-items: start;
+        }
+
+        /* Holds a section's list beside its copy when the section has no screenshot. */
+        .feature-aside {
+          padding-top: 3.25rem;
+        }
+
+        .closing .feature {
+          grid-template-columns: 1fr 1fr;
         }
       }
 
@@ -563,10 +581,14 @@
           padding-top: 2.5rem;
         }
 
+        .shot-frame.hero-shot {
+          margin-top: 2rem;
+        }
+
         .hero-shot img {
-          min-height: 14rem;
+          aspect-ratio: 4 / 3;
           object-fit: cover;
-          object-position: left top;
+          object-position: 20% top;
         }
       }
 
@@ -703,7 +725,7 @@
       <!-- ============================================================ write -->
       <section class="section" id="features">
         <div class="container">
-          <div class="feature feature-solo" id="write">
+          <div class="feature" id="write">
             <div class="feature-copy">
               <h2>Write and preview</h2>
               <p>Write in the format that works for you. Edit LaTeX, Typst, Markdown, Quarto and HTML source with a live preview beside it.</p>
@@ -721,6 +743,8 @@
                 <span aria-hidden="true" class="dot">·</span>
                 <span>Calepin</span>
               </p>
+            </div>
+            <div class="feature-aside">
               <ul class="details">
                 <li>Projects hold many files, figures and fonts.</li>
                 <li>Bibliographies come from BibTeX files.</li>
@@ -768,18 +792,20 @@
       <!-- ============================================================ AI -->
       <section class="section" id="ai">
         <div class="container">
-          <div class="feature feature-solo">
+          <div class="feature">
             <div class="feature-copy">
               <h2>Work with AI</h2>
               <p>Bring your own AI agent into your writing. The desktop app starts the coding agent you already use, such as Claude Code, Codex, Pi or opencode, and gives it tools to read your document, comment on it and propose tracked changes.</p>
               <p>Your API keys stay with you, not on LibrePaper's servers. No model runs on the LibrePaper server, and you need no additional subscription.</p>
+              <p class="links"><a href="/agents.html">Set up an agent</a></p>
+            </div>
+            <div class="feature-aside">
               <ul class="details">
                 <li>Select a passage to run a writing or review task.</li>
                 <li>Ask for changes in the sidebar chat.</li>
                 <li>Decide whether an agent may read, comment or edit.</li>
                 <li>Accept or reject every change an agent proposes.</li>
               </ul>
-              <p class="links"><a href="/agents.html">Set up an agent</a></p>
             </div>
             <!-- shot needed: the agent sidebar in the desktop app -->
           </div>
