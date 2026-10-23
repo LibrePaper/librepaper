@@ -512,7 +512,7 @@ try {
   // A drag reports its selection as it grows. The first word attaches, and
   // the longer range that overlaps it replaces the attachment.
   await page.evaluate("window.setProps({selection:{exact:'One',source:{path:'a.md',exact:'One',prefix:'',suffix:' two three',position:0}}})");
-  await until("first drag word attached", () => page.evaluate('document.querySelector(".context-summary")?.textContent.includes("a.md")'), 1000);
+  await until("first drag word attached", () => page.evaluate('document.querySelector(".context-summary")?.textContent.includes("Remove passage")'), 1000);
   await page.evaluate("window.setProps({selection:{exact:'One two three',source:{path:'a.md',exact:'One two three',prefix:'',suffix:'',position:0}}})");
   await page.evaluate("window.setProps({request:{id:'grown-selection',task:{kind:'tighten',scope:'selection'}}})");
   await until("grown selection prepared", () => page.evaluate('document.querySelector(".task-prepare .attachment blockquote")?.textContent==="One two three"'), 1000);
