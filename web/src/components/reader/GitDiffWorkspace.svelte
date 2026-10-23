@@ -102,9 +102,9 @@
           {#if item.kind !== "text"}
             <p class="panel-meta">This file is not text.</p>
           {:else if item.ours != null && item.theirs != null}
-            <p class="panel-meta git-diff-caption">Left: the remote. Right: LibrePaper.</p>
             {#if GitMergeView}
-              <GitMergeView path={item.path} theirs={item.theirs} result={item.ours} revision={0} editable={false} />
+              <GitMergeView path={item.path} theirs={item.theirs} result={item.ours} revision={0} editable={false}
+                labels={{ left: `The remote (${differ.state.branch})`, right: "LibrePaper", rightName: "LibrePaper" }} />
             {:else if mergeFailed}
               <p role="alert">Could not load the comparison.</p>
             {:else}
