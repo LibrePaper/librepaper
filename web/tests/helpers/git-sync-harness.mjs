@@ -186,7 +186,9 @@ function addGrant(slug, path) {
 /// found by its record rather than by recomputing the directory name.
 function privateRepository(connectionId) {
   const gitRoot = join(localState, "git");
-  for (const hash of readdirSync(gitRoot)) {
+  // The root also holds files, such as the empty attributes file merges use.
+  const hashes = readdirSync(gitRoot, { withFileTypes: true }).filter((entry) => entry.isDirectory()).map((entry) => entry.name);
+  for (const hash of hashes) {
     for (const name of readdirSync(join(gitRoot, hash))) {
       const record = join(gitRoot, hash, name, "connection.json");
       if (existsSync(record) && JSON.parse(readFileSync(record, "utf8")).connection_id === connectionId) {
