@@ -120,26 +120,22 @@ args = ["mcp"]
 env = { LIBREPAPER_AGENT_TOKEN = "lpt_..." }
 ```
 
-From a terminal, register the server once with the agent's own command, then run the agent headless. The token is read into a variable first, so it stays out of your shell history:
+From a terminal, register LibrePaper once, without a token. Claude Code passes its own environment to the servers it starts, so you give the token when you launch Claude, and it is never written to a config file:
 
 ```sh
-# Paste the token when asked; nothing is echoed
-read -rs LIBREPAPER_AGENT_TOKEN
+# Once: register the server for every folder
+claude mcp add librepaper --scope user -- librepaper mcp
 
-# Claude Code
-claude mcp add librepaper -e LIBREPAPER_AGENT_TOKEN="$LIBREPAPER_AGENT_TOKEN" \
-  -- librepaper mcp
-# Headless runs ask no questions, so allow the document tools up front
+# Each session: paste the token when asked; nothing is echoed or kept in shell history
+read -rs LIBREPAPER_AGENT_TOKEN && export LIBREPAPER_AGENT_TOKEN
+claude
+# or headless, allowing the document tools up front because nobody is there to approve them
 claude -p "Read the document and comment on the introduction" --allowedTools "mcp__librepaper"
-
-# Codex
-codex mcp add librepaper --env LIBREPAPER_AGENT_TOKEN="$LIBREPAPER_AGENT_TOKEN" \
-  -- librepaper mcp
-codex exec "Read the document and comment on the introduction"
 ```
 
-- Both commands save the token in the agent's own config file (`~/.claude.json`, `~/.codex/config.toml`). Revoke the token in the Sharing panel when you are done with it.
-- The token names the server and the project, so an agent needs nothing else. It is secret and goes only in the environment. For plain HTTP calls, the host and the slug are the ones in the project's address bar.
+- The token names the server and the project, so a different token in the same shell points the same registration at another project.
+- Codex keeps the token in its config file: `codex mcp add librepaper --env LIBREPAPER_AGENT_TOKEN="$LIBREPAPER_AGENT_TOKEN" -- librepaper mcp`, then `codex exec "..."`.
+- Revoke a token in the Sharing panel when you are done with it. For plain HTTP calls, the host and the slug are the ones in the project's address bar.
 
 Agents without MCP call the document's tool routes over HTTP:
 
