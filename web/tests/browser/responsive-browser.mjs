@@ -415,7 +415,8 @@ try {
   }
 
   await click('.sidebar-activity [aria-label="Changes"]');
-  assert.equal(await b.evaluate('document.querySelector(".sidebar").innerText.includes("Track changes")'), true);
+  // The Changes panel is open: its header holds the Track switch.
+  assert.equal(await b.evaluate('Boolean(document.querySelector(".sidebar .changes-header .tracking-toggle"))'), true);
   await click('.sidebar-activity [aria-label="Files"]');
   assert.equal(await b.evaluate('document.querySelector(".explorer-scroll").scrollTop'), filesTop);
   assert.equal(await b.evaluate('document.querySelector(".filelist .panel-actions").getBoundingClientRect().bottom <= document.querySelector(".explorer-scroll").getBoundingClientRect().top'), true);
