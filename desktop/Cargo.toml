@@ -13,7 +13,7 @@ name = "librepaper-desktop"
 path = "src/main.rs"
 
 [dependencies]
-tauri = { version = "2", features = [] }
+tauri = { version = "2", features = ["tray-icon"] }
 tauri-plugin-single-instance = { version = "2", features = ["deep-link"] }
 tauri-plugin-deep-link = "2"
 tauri-plugin-dialog = "2"
@@ -57,6 +57,7 @@ objc2-foundation = "0.3"
 # tao draws the Linux title bar through GTK, so the shell reads the same settings.
 [target.'cfg(target_os = "linux")'.dependencies]
 gtk = "0.18"
+libloading = "0.8"
 
 # Windows keeps the light or dark choice in the registry.
 [target.'cfg(windows)'.dependencies]
