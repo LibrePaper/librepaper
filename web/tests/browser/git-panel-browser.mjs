@@ -194,8 +194,9 @@ try {
   assert.equal(await evaluate('button("Commit & push").disabled'), true);
 
   // New commits on the remote offer Pull; a failed check offers Retry.
-  await evaluate(`mount(${JSON.stringify({ ...scene, remote: { status: "behind", head: "h2" }, local: { status: "none", files: [] } })})`);
-  await until("behind", () => evaluate('text().includes("New commits on the remote")'), 5000);
+  await evaluate(`mount(${JSON.stringify({ ...scene, remote: { status: "behind", head: "h2" }, local: { status: "none", files: [] },
+    incoming: { status: "changes", head: "h2", files: [{ path: "librepaper.md", status: "M" }, { path: "references.bib", status: "M" }] } })})`);
+  await until("behind", () => evaluate('text().includes("New commits on the remote") && text().includes("references.bib")'), 5000);
   assert.ok(await evaluate('button("Pull") !== null'));
   await shoot("panel-behind");
   await evaluate(`mount(${JSON.stringify({ ...scene, remote: { status: "refused", refusals: [{ reason: "Git could not reach the remote." }] } })})`);

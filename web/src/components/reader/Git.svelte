@@ -867,12 +867,13 @@
   .gh-remote, .gh-local { margin-top: calc(var(--spacing) * 5); padding-top: calc(var(--spacing) * 4); border-top: 1px solid var(--color-divider); }
   .gh-local-head { display: flex; align-items: center; gap: calc(var(--spacing) * 2); min-height: 2rem; }
   .gh-local-head .panel-section-title { margin: 0; margin-inline-end: auto; }
-  .gh-local-head .panel-section-title :global(svg) { vertical-align: -2px; margin-inline-end: calc(var(--spacing) * 1); }
+  .gh-local-head .panel-section-title { display: inline-flex; align-items: center; gap: calc(var(--spacing) * 1.5); }
+  .gh-local-head .panel-section-title :global(svg) { flex: none; color: var(--color-text-muted); }
   .gh-count { font-size: var(--panel-meta-size); }
   .gh-changes { margin: calc(var(--spacing) * 1) 0 0; padding: 0; list-style: none; }
   .gh-changes-long { max-height: 16rem; overflow-y: auto; }
   .gh-change { min-width: 0; }
-  .gh-change-open { display: flex; align-items: center; gap: calc(var(--spacing) * 1.5); width: 100%; min-width: 0; min-height: 2rem; padding: 0 calc(var(--spacing) * 1); margin-inline: calc(var(--spacing) * -1); border: 0; border-radius: var(--radius-base); background: none; color: inherit; font: inherit; text-align: start; cursor: pointer; }
+  .gh-change-open { display: flex; align-items: center; gap: calc(var(--spacing) * 1.5); width: calc(100% + var(--spacing) * 2); min-width: 0; min-height: 2rem; padding: 0 calc(var(--spacing) * 1); margin-inline: calc(var(--spacing) * -1); border: 0; border-radius: var(--radius-base); background: none; color: inherit; font: inherit; text-align: start; cursor: pointer; }
   .gh-change-open:hover:not(:disabled), .gh-change-open[aria-current="true"] { background: var(--color-row-hover); }
   .gh-change-open:disabled { cursor: default; }
   .gh-change-open > :global(svg) { flex: none; }

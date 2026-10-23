@@ -278,6 +278,7 @@
     square: [["rect", { width: 18, height: 18, x: 3, y: 3, rx: 2 }]],
     // Lucide's arrow-down, for jumping to the newest message.
     "arrow-down": [["path", "M12 5v14"], ["path", "m19 12-7 7-7-7"]],
+    "arrow-up": [["path", "M12 19V5"], ["path", "m5 12 7-7 7 7"]],
     // Stops a running agent.
   };
 
