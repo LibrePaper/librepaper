@@ -197,7 +197,14 @@ pub const HOST_COOKIE_PREFIX: &str = "__Host-";
 /// All provider exchanges and profile lookups share one small admission pool.
 /// A provider outage must not turn a burst of sign-in callbacks or owner
 /// mutations into an unbounded set of waiting HTTP requests.
+#[cfg(not(test))]
 const PROVIDER_REQUEST_CONCURRENCY: usize = 16;
+// `cargo test` runs this crate's tests as threads of one process, so the pool
+// is shared by every provider test at once and a machine with more than 16
+// cores sees Busy. No test here exercises the limit; the server crate's test
+// that drains it builds this crate without cfg(test) and sees 16.
+#[cfg(test)]
+const PROVIDER_REQUEST_CONCURRENCY: usize = 1024;
 static PROVIDER_REQUESTS: Semaphore = Semaphore::const_new(PROVIDER_REQUEST_CONCURRENCY);
 
 pub fn try_provider_request() -> Option<SemaphorePermit<'static>> {
