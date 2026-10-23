@@ -652,6 +652,66 @@ fn push_body(commit: &str, expected: Option<&str>, connection_id: &str) -> Value
     json!({"commit": commit, "expected": expected, "connection_id": connection_id})
 }
 
+fn push_branch_body(commit: &str, branch: &str, connection_id: &str) -> Value {
+    json!({"commit": commit, "expected": null, "connection_id": connection_id, "branch": branch})
+}
+
+#[tokio::test]
+async fn a_push_to_another_branch_creates_it_and_leaves_main() {
+    let fx = Fixture::new();
+    fx.connect().await;
+    let one = fx.commit(&[], &[("f.txt", "one")]).await;
+    assert_eq!(
+        fx.ok("push", push_body(&one, None, CONNECTION_ID)).await["pushed"],
+        true
+    );
+    let two = fx.commit(&[&one], &[("f.txt", "two")]).await;
+    let pushed = fx
+        .ok("push", push_branch_body(&two, "review/intro", CONNECTION_ID))
+        .await;
+    assert_eq!(pushed["pushed"], true);
+    assert_eq!(pushed["branch"], "review/intro");
+    assert_eq!(
+        git_in(&fx.remote, &["rev-parse", "refs/heads/review/intro"], ""),
+        two
+    );
+    assert_eq!(
+        git_in(&fx.remote, &["rev-parse", "refs/heads/main"], ""),
+        one
+    );
+    // The tracking ref still names the connected branch's head.
+    assert_eq!(fx.fetched_head().await, one);
+
+    // The same commit again changes nothing, so a retry after a lost reply
+    // succeeds; another commit never replaces the branch.
+    assert_eq!(
+        fx.ok("push", push_branch_body(&two, "review/intro", CONNECTION_ID))
+            .await["pushed"],
+        true
+    );
+    let other = fx.commit(&[&one], &[("f.txt", "other")]).await;
+    let error = fx
+        .call("push", push_branch_body(&other, "review/intro", CONNECTION_ID))
+        .await
+        .unwrap_err();
+    assert_eq!(error.status, 409);
+    assert_eq!(error.kind, Some("exists"));
+    assert_eq!(
+        git_in(&fx.remote, &["rev-parse", "refs/heads/review/intro"], ""),
+        two
+    );
+    let error = fx
+        .call("push", push_branch_body(&two, "main", CONNECTION_ID))
+        .await
+        .unwrap_err();
+    assert_eq!(error.status, 400);
+    let error = fx
+        .call("push", push_branch_body(&two, "bad..name", CONNECTION_ID))
+        .await
+        .unwrap_err();
+    assert_eq!(error.status, 400);
+}
+
 /// An ordinary repository in `scratch` with `a.txt` committed on main.
 fn ordinary_folder(scratch: &Path, name: &str, text: &str) -> PathBuf {
     let folder = scratch.join(name);
