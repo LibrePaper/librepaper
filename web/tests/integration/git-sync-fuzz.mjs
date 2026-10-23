@@ -440,9 +440,11 @@ async function walk(seed, fx) {
 
   // ------------------------------------------------------------ connecting
 
-  const connected = await limit("connect", connect(ctx, fx.draft, "remote"));
-  assert.ok(["pulled", "nothing"].includes(connected.status), fail(`connect ended as ${connected.status}: ${JSON.stringify(connected)}`));
-  log.push(`connect ${connected.status}`);
+  const recorded = await limit("connect", connect(ctx, fx.draft));
+  assert.equal(recorded.status, "connected", fail(`connect ended as ${recorded.status}: ${JSON.stringify(recorded)}`));
+  const connected = await limit("pull", pull(ctx));
+  assert.ok(["pulled", "nothing"].includes(connected.status), fail(`the first pull ended as ${connected.status}: ${JSON.stringify(connected)}`));
+  log.push(`connect, first pull ${connected.status}`);
   await eventually(converged);
   await checkConverged("the first connection");
   checkMarkers("the first connection");

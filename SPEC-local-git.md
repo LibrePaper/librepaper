@@ -61,16 +61,20 @@ The Git panel of the desktop app opens from the Git tab in the side rail, or fro
    system folder chooser.
 2. They pick a branch and, optionally, a folder inside it. The folder is
    where the project's files live; everything outside it is never touched.
-3. The panel shows the first comparison: files that will come in, files that
-   will go out, files present on both sides with different content, files
-   that will not sync and why, and the top-level folders with how many files
-   each would sync.
-4. When files differ on both sides, the user picks which side supplies them:
-   "Keep LibrePaper's copies" or "Keep the repository's copies". The choice
-   decides only those files. Files present on one side only always flow to
-   the other side (see "First connection").
-5. "Connect" records the connection and runs the first pull or push. Cancel
-   changes nothing on either side.
+3. "Connect" checks that the branch can be synced (the rules, the file limit)
+   and records the connection. It pulls nothing, pushes nothing and changes
+   no file on either side. Cancel records nothing.
+
+The first Pull after connecting has no checkpoint, so it merges with an empty
+base. Files with identical content merge cleanly, files on one side only are
+kept, and files present on both sides with different content go to the
+resolver as add/add conflicts with no base. The project does not change until
+the user resolves them. A Push on an empty branch sends every file as the
+first commit; on a branch with commits it asks for a Pull first.
+
+A Diff view compares the project with the remote head at any time. It lists
+files that differ, files only in LibrePaper, files only on the remote and
+files that will not sync and why, and changes nothing.
 
 A local repository is reached through a filesystem grant held by the desktop.
 The server stores only a label (the folder's name) and an opaque connection
@@ -398,26 +402,24 @@ Anything that cannot be reconciled stays in the panel with its refs intact.
 Each example has a project folder `paper`, the deployment's default rules,
 and a checkpoint `C` unless it says otherwise.
 
-### 1. First connection, both directions
+### 1. First connection
 
 The repository has `paper/intro.qmd` and `paper/refs.bib`. The project has
 `intro.qmd` (different text) and `notes.md`. There is no checkpoint.
 
-The comparison lists `refs.bib` incoming, `notes.md` outgoing and `intro.qmd`
-differing. The app builds a synthetic base for this one operation: for each
-path present on both sides with different content, the base holds the copy
-of the side the user did not pick; paths on one side only are absent.
+"Connect" records the link and stops. The project and the repository are as
+they were, and the Diff view lists `intro.qmd` as different, `notes.md` as
+only in LibrePaper and `refs.bib` as only on the remote.
 
-- "Keep the repository's copies": the base holds LibrePaper's `intro.qmd`.
-  The merge sees the repository change it, so the pull replaces the
-  project's text with the repository's, creates `refs.bib`, and leaves
-  `notes.md` as outgoing. The checkpoint becomes R; synced paths become
-  `intro.qmd`, `refs.bib`.
-- "Keep LibrePaper's copies": the base holds the repository's `intro.qmd`.
-  The pull creates `refs.bib` and leaves `intro.qmd` alone; the push that
-  follows writes `intro.qmd` and `notes.md`.
+The first Pull merges with an empty base. `refs.bib` is kept and `notes.md`
+is kept. `intro.qmd` is an add/add conflict with no base, and the resolver
+opens. The user keeps LibrePaper's text, the repository's text or an edited
+text; the project then gets `refs.bib` and the chosen `intro.qmd`. The
+checkpoint becomes R; synced paths become `intro.qmd`, `refs.bib`.
 
-Both cases run the ordinary merge; only the base is special.
+A Push then writes `notes.md`, and `intro.qmd` if the user kept LibrePaper's
+copy. Had the two `intro.qmd` files been identical, the first Pull would have
+been clean and no conflict would have opened.
 
 ### 2. Independent edits merge
 
@@ -548,7 +550,7 @@ record and branch flow, the GitHub panel, the fake GitHub and
    local grants, the configuration split, the journal and recovery refs.
 4. **Merge.** Snapshots, normalized commits, `merge-tree`, the tree diff into
    a source change, the push tree.
-5. **Panel and resolver.** Connect, first comparison, pull, push, the
+5. **Panel and resolver.** Connect, Diff view, pull, push, the
    resolver, recovery state, disconnect.
 6. **Docs.** Connecting each kind of remote, what syncs, the ignore file,
    conflicts, the minimum Git version and credential setup.

@@ -26,7 +26,7 @@ import { after } from "node:test";
 import { promisify } from "node:util";
 import { createProjectSession } from "../../src/lib/project-session.js";
 import { createBridge } from "../../src/lib/gitsync/bridge.js";
-import { connect } from "../../src/lib/gitsync/sync.js";
+import { connect, pull } from "../../src/lib/gitsync/sync.js";
 import { deploymentBinary, startDeployment } from "./deployment.mjs";
 
 const run = promisify(execFile);
@@ -442,10 +442,12 @@ async function withFixture(options, action) {
   }
 }
 
-/// Connects a fixture whose project already matches the repository and checks
-/// that nothing changed.
+/// Connects a fixture whose project already matches the repository, runs the
+/// first pull and checks that nothing changed.
 async function linked(fx) {
-  const result = await limit("connect", connect(fx.ctx, fx.draft, "remote"));
+  const connected = await limit("connect", connect(fx.ctx, fx.draft));
+  assert.equal(connected.status, "connected", JSON.stringify(connected));
+  const result = await limit("pull", pull(fx.ctx));
   assert.ok(["pulled", "nothing"].includes(result.status), JSON.stringify(result));
   const link = await fx.link();
   assert.equal(link.checkpoint, fx.repo.headOf(), "the link records the head it synced with");
