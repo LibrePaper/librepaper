@@ -48,7 +48,7 @@
     <span class="nav-account flex items-center">
       {#if me.name}
         {@const shown = me.provider === "github" ? `@${me.name}` : me.name}
-        <Menu onSelect={(chosen) => { if (chosen.value === "signout") void signOut(me.site); }}>
+        <Menu onSelect={(chosen) => { if (chosen.value === "signout") void signOut(); }}>
           <Menu.Trigger class="account icon-control" aria-label={`Account menu, signed in as ${shown}`} title={shown}>
             <Avatar name={me.name} key={me.handle || me.name} size={7} title="" />
           </Menu.Trigger>

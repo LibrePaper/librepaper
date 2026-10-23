@@ -86,32 +86,26 @@ export const config = () => get("/api/config");
 /// sign-in at all.
 export const me = () => get("/api/me").catch(() => ({}));
 
-/// Where a signed-out reader lands. `site` is what `/api/me` answered with:
-/// the marketing site in front of this deployment, when there is one. A
-/// deployment that is its own front page answers with nothing, and the
-/// signed-out reader lands there instead.
-export function signedOutHref(site = "") {
-  // The desktop app stays on its server and lands on its sign-in page, marked
-  // as signed out so a single provider is not followed straight back in. Any
-  // other page that sends a desktop window to "/" must use this too, or the
-  // window is signed straight back in.
-  return globalThis.window?.__LIBREPAPER_DESKTOP__ ? "/auth/login?signed_out=1" : site || "/";
-}
+/// Where a signed-out reader lands: the sign-in page, marked as signed out so
+/// a single provider is not followed straight back in. Any page that would
+/// send a signed-out reader to "/" must use this too, or "/" sends them to
+/// sign-in unmarked and they are signed straight back in.
+export const signedOutHref = () => "/auth/login?signed_out=1";
 
 /// Signs out and leaves.
-export async function signOut(site = "") {
+export async function signOut() {
   // A GET can be forced onto a signed-in reader cross-site, so signing out is
   // a POST carrying the same header every other state change does.
   const response = await fetch("/auth/logout", { method: "POST", headers: SHELL_HEADERS }).catch(() => null);
   // Only a confirmed sign-out clears what this browser kept. If the request
   // failed, the session cookie survives and so must the local copies.
   if (response?.ok) await forgetLocalData();
-  // The landing page, not this one. Reloading left you wherever you happened
+  // The sign-in page, not this one. Reloading left you wherever you happened
   // to be signing out from -- a project you can no longer open, a panel with
   // nothing in it -- and somebody who has just signed out is a stranger
   // again, so they get what a stranger gets. `replace`, so Back does not
   // return to a page that is now somebody else's.
-  location.replace(signedOutHref(site));
+  location.replace(signedOutHref());
 }
 
 /// Asks the server to erase the signed-in account: what it owns is queued for

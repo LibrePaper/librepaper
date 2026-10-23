@@ -86,7 +86,7 @@
       const trigger = document.querySelector(".compact-panels-trigger");
       setTimeout(() => onmenu?.(id, trigger), 0);
     }
-    else if (chosen.value === "signout") void signOut(me.site);
+    else if (chosen.value === "signout") void signOut();
   }}
   positioning={PANEL_POSITIONING}
 >

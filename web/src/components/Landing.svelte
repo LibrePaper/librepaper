@@ -25,7 +25,6 @@
   import TagSwatches from "./TagSwatches.svelte";
   import NewProject from "./NewProject.svelte";
   import SettingsDialog from "./settings/SettingsDialog.svelte";
-  import Hero from "./Hero.svelte";
   import Toasts from "./Toasts.svelte";
   import Sidebar from "./layout/Sidebar.svelte";
   import CompactPanelMenu from "./layout/CompactPanelMenu.svelte";
@@ -1142,8 +1141,10 @@
         return {};
       })
       .then(async (who) => {
-        // The desktop app has no front page: a stranger is sent straight to sign-in.
-        if (localBridge.desktop() && reachedServer && !who.name && who.providers?.length) {
+        // There is no front page: a stranger is sent straight to sign-in,
+        // even on a server with no way in, where the desktop app's sign-in
+        // page still offers to change servers.
+        if (reachedServer && !who.name) {
           location.replace(signInHref("/"));
           return;
         }
@@ -1577,7 +1578,8 @@
   </main>
   {/if}
 {:else}
-  <!-- The other page: what this is, and a way in. -->
+  <!-- Signed out: only seen offline, or for the moment before sign-in
+       replaces it, so it says why it cannot show the projects. -->
   <Nav {me}>
     {#snippet tools()}
       <button type="button" class="btn btn-sm lp-control-tonal-brand" onclick={() => openSettings()}>Settings</button>
@@ -1585,12 +1587,6 @@
   </Nav>
   <Page width="measure">
     <Stack gap={8}>
-      <header>
-        <Hero />
-        <p class="lp-text-secondary text-center">
-          Start a project, write it with whoever you like, and share its link to collect comments.
-        </p>
-      </header>
       {#if !reachedServer}
         <aside class="card lp-tone-warning p-4">
           {#if documents.length}

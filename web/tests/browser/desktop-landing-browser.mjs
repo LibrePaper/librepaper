@@ -1,6 +1,6 @@
-// The desktop app has no front page. A signed-out visitor goes straight to
-// sign-in, and signing out stays on the server instead of opening the
-// marketing site. A browser keeps the signed-out landing page.
+// There is no front page. A signed-out visitor, in a browser or the desktop
+// app, goes straight to sign-in, and signing out lands on the sign-in page
+// marked as signed out instead of opening the marketing site.
 import assert from "node:assert/strict";
 import { build } from "vite";
 import { svelte } from "@sveltejs/vite-plugin-svelte";
@@ -23,9 +23,10 @@ try {
     import { signOut } from ${JSON.stringify(join(root, "web/src/lib/api.js"))};
     import { mount } from ${JSON.stringify(join(root, "web/node_modules/svelte/src/index-client.js"))};
     const signedIn = new URLSearchParams(location.search).has("in");
+    const providers = new URLSearchParams(location.search).has("none") ? [] : [{ id: 'github', kind: 'github', label: 'GitHub' }];
     globalThis.fetch = async (url) => {
       const path = String(url);
-      if (path === '/api/me') return Response.json(signedIn ? { name: 'Tester', can_publish: true, providers: [{ id: 'github', kind: 'github', label: 'GitHub' }] } : { providers: [{ id: 'github', kind: 'github', label: 'GitHub' }] });
+      if (path === '/api/me') return Response.json(signedIn ? { name: 'Tester', can_publish: true, providers } : { providers });
       if (path.startsWith('/api/list')) return Response.json({ documents: [] });
       return Response.json({});
     };
@@ -50,11 +51,10 @@ try {
   tab = await browser("chromium", join(temp, "profile"), port);
   const at = () => tab.evaluate("location.pathname + location.search");
 
-  // A browser keeps the signed-out landing page.
-  await tab.navigate(`${origin}/`);
-  await until("signed-out landing", () => tab.evaluate("Boolean(document.querySelector('a[href^=\"/auth/login\"]'))"));
-  assert.equal(await at(), "/", "a browser stays on the landing page");
-  assert.equal(await tab.evaluate("Boolean(document.querySelector('.open-link'))"), false, "a browser has no link field");
+  // A browser sends a stranger to sign-in too.
+  await tab.command("Page.navigate", { url: `${origin}/` });
+  await until("sign-in page from a browser", () => tab.evaluate("location.pathname === '/auth/login'"));
+  assert.equal(await at(), "/auth/login?next=%2F", "a browser opens sign-in");
 
   // The desktop app sends a stranger to sign-in, and back to the projects after.
   // The page replaces itself before it finishes loading, so no load event
@@ -62,6 +62,11 @@ try {
   await tab.command("Page.navigate", { url: `${origin}/desktop/` });
   await until("sign-in page", () => tab.evaluate("location.pathname === '/auth/login'"));
   assert.equal(await at(), "/auth/login?next=%2F", "the desktop app opens sign-in");
+
+  // Even on a server with no sign-in, where the sign-in page can still change servers.
+  await tab.command("Page.navigate", { url: `${origin}/desktop/?none` });
+  await until("sign-in page without providers", () => tab.evaluate("location.pathname === '/auth/login'"));
+  assert.equal(await at(), "/auth/login?next=%2F", "the desktop app opens sign-in without providers");
 
   // Signed in, the desktop app shows the project browser.
   await tab.navigate(`${origin}/desktop/?in`);
@@ -85,8 +90,8 @@ try {
   await until("pasted link opened", () => tab.evaluate("location.search === '?in&opened' && location.hash === '#k=abc'"));
   await until("project browser again", () => tab.evaluate("typeof window.signOut === 'function' && Boolean(document.querySelector('.projects'))"));
 
-  // Signing out in the desktop app stays on the server, not the marketing site.
-  await tab.evaluate("window.signOut('https://example.invalid/')");
+  // Signing out stays on the server, not the marketing site.
+  await tab.evaluate("window.signOut()");
   await until("back at the sign-in page, marked as signed out", () => tab.evaluate("location.origin + location.pathname + location.search").then((here) => here === `${origin}/auth/login?signed_out=1`));
 } finally {
   await tab?.close();
