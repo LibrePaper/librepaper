@@ -336,7 +336,6 @@
         const shown = local?.status === "changes" ? local.files : [];
         const result = await outgoing(context());
         if (result.status === "behind") {
-          note = result.reason;
           remoteState = { status: "behind", head: result.head };
           await refresh();
           return;
@@ -358,7 +357,6 @@
         }
         const pushed = await push(context(), message.trim(), { confirmed: result.outgoing });
         if (pushed.status === "behind") {
-          note = pushed.reason;
           remoteState = { status: "behind", head: pushed.head };
           await refresh();
           return;
