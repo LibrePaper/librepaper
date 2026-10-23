@@ -17,6 +17,7 @@ pub mod discovery;
 pub mod engine_adapter;
 pub mod environment;
 pub mod folder;
+pub(crate) mod git;
 pub mod integrations;
 pub mod lifecycle;
 pub mod native;

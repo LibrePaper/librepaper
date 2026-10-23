@@ -53,6 +53,7 @@ use crate::local::quarto::{
 
 mod backups;
 mod control;
+mod git;
 
 pub(crate) fn control_token_for_instance(state_home: &Path, instance: &str) -> Option<String> {
     control::token_for_instance(state_home, instance)
@@ -423,6 +424,8 @@ pub(super) struct Inner {
     pub(super) state_home: PathBuf,
     folder_dialog: Mutex<()>,
     backups: Arc<backups::BackupManager>,
+    /// The private Git repositories behind desktop Git sync.
+    git: crate::local::git::GitManager,
     instance: String,
     port: u16,
     quarto_bindings: BindingStore,
@@ -488,6 +491,7 @@ impl LocalService {
             state_home: state_home.to_path_buf(),
             folder_dialog: Mutex::new(()),
             backups: Arc::new(backups::BackupManager::new(state_home)),
+            git: crate::local::git::GitManager::new(state_home),
             instance,
             port,
             quarto_bindings,
@@ -969,6 +973,9 @@ async fn dispatch(
         }
         ["backups", "authorize", "complete"] if *method == Method::POST => {
             backups::handle_authorize_complete(inner, headers, origin, request).await
+        }
+        ["git", op] if *method == Method::POST => {
+            git::handle(inner, headers, origin, op, request).await
         }
         ["bindings", id] if *method == Method::DELETE => {
             handle_binding_revoke(inner, headers, origin, id).await
@@ -1498,22 +1505,7 @@ fn host_allowed(headers: &HeaderMap, port: u16) -> bool {
 pub(super) async fn read_json_body<T: for<'de> serde::Deserialize<'de>>(
     request: Request<Body>,
 ) -> Result<T, Reply> {
-    let content_type = header_str(request.headers(), "content-type").unwrap_or_default();
-    if !content_type.contains("application/json") {
-        return Err(write_json(
-            400,
-            &json!({"error": "expected application/json"}),
-        ));
-    }
-    let bytes = match axum::body::to_bytes(request.into_body(), MAX_JSON_BYTES).await {
-        Ok(bytes) => bytes,
-        Err(_) => {
-            return Err(write_json(
-                413,
-                &json!({"error": "that request body is too large"}),
-            ))
-        }
-    };
+    let bytes = read_json_bytes(request, MAX_JSON_BYTES).await?;
     // The parse error names the field that was wrong, which a bare "bad JSON
     // body" does not. This service is loopback-only and answers the same user
     // who sent the request, so there is nothing to withhold from them, and
@@ -1521,6 +1513,24 @@ pub(super) async fn read_json_body<T: for<'de> serde::Deserialize<'de>>(
     // got wrong.
     serde_json::from_slice(&bytes)
         .map_err(|error| write_json(400, &json!({"error": format!("bad JSON body: {error}")})))
+}
+
+/// The body of a JSON request, at most `limit` bytes.
+#[allow(clippy::result_large_err)] // as `server.rs`'s `read_upload`: the error is a response
+pub(super) async fn read_json_bytes(
+    request: Request<Body>,
+    limit: usize,
+) -> Result<axum::body::Bytes, Reply> {
+    let content_type = header_str(request.headers(), "content-type").unwrap_or_default();
+    if !content_type.contains("application/json") {
+        return Err(write_json(
+            400,
+            &json!({"error": "expected application/json"}),
+        ));
+    }
+    axum::body::to_bytes(request.into_body(), limit)
+        .await
+        .map_err(|_| write_json(413, &json!({"error": "that request body is too large"})))
 }
 
 fn header_str<'a>(headers: &'a HeaderMap, name: &str) -> Option<&'a str> {
@@ -2109,6 +2119,7 @@ pub(super) mod test_support {
             state_home: state_home.to_path_buf(),
             folder_dialog: Mutex::new(()),
             backups: Arc::new(backups::BackupManager::new(state_home)),
+            git: crate::local::git::GitManager::new(state_home),
             control: control::ControlAuth::create(state_home, &instance).unwrap(),
             instance,
             port: PORT,

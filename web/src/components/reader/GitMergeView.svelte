@@ -1,0 +1,115 @@
+<script>
+  // The side by side comparison of a conflicted text file. The repository's
+  // copy is read-only on the left. The Result on the right starts from
+  // LibrePaper's copy, and typing reports back through onedit.
+  import { untrack } from "svelte";
+  import { EditorState, Annotation } from "@codemirror/state";
+  import { EditorView, lineNumbers, keymap } from "@codemirror/view";
+  import { defaultKeymap, indentWithTab } from "@codemirror/commands";
+  import { MergeView } from "@codemirror/merge";
+  import { sourceLanguage } from "../../lib/source-language.js";
+  import { sourceHighlighting } from "../../lib/source-highlight.js";
+
+  let { path = "", theirs = "", result = "", revision = 0, editable = true, onedit = undefined } = $props();
+
+  // Marks a transaction that loads the Result from the workspace, so the
+  // update listener does not report it as a typed edit.
+  const programmatic = Annotation.define();
+
+  let host = $state(null);
+  let merge = null;
+  // The revision the Result was last built or reloaded at.
+  let shownRevision = null;
+
+  function extensions(label, readOnly, sourcePath) {
+    return [
+      EditorView.contentAttributes.of({ "aria-label": label }),
+      lineNumbers(),
+      keymap.of([indentWithTab, ...defaultKeymap]),
+      EditorView.lineWrapping,
+      sourceHighlighting,
+      sourceLanguage(sourcePath),
+      ...(readOnly ? [EditorState.readOnly.of(true), EditorView.editable.of(false)] : []),
+    ];
+  }
+
+  // Built per file. It is rebuilt when the file or whether the Result can be
+  // edited changes, since the revert arrows exist only while it can be edited.
+  // The Result's own text changes in place (see the revision effect below).
+  $effect(() => {
+    if (!host) return;
+    const file = path;
+    const canEdit = editable;
+    untrack(() => {
+      shownRevision = revision;
+      merge = new MergeView({
+        a: { doc: String(theirs || ""), extensions: extensions("The repository's copy", true, file) },
+        b: {
+          doc: String(result || ""),
+          extensions: [
+            ...extensions("Result", !canEdit, file),
+            EditorView.updateListener.of((update) => {
+              if (!update.docChanged) return;
+              if (update.transactions.some((transaction) => transaction.annotation(programmatic))) return;
+              onedit?.(update.state.doc.toString());
+            }),
+          ],
+        },
+        orientation: "a-b",
+        ...(canEdit ? { revertControls: "a-to-b" } : {}),
+        highlightChanges: true,
+        gutter: true,
+        collapseUnchanged: { margin: 3, minSize: 4 },
+        parent: host,
+      });
+    });
+    return () => {
+      merge?.destroy();
+      merge = null;
+    };
+  });
+
+  // A whole-file choice changes the Result from outside the editor, so its
+  // text is replaced in one transaction. Typing never bumps the revision, so
+  // it does not reset the view.
+  $effect(() => {
+    const next = revision;
+    untrack(() => {
+      if (!merge || shownRevision === next) return;
+      shownRevision = next;
+      const view = merge.b;
+      view.dispatch({
+        changes: { from: 0, to: view.state.doc.length, insert: String(result || "") },
+        annotations: programmatic.of(true),
+      });
+    });
+  });
+</script>
+
+<section class="git-merge merge-editor" aria-label="Compare the repository's copy with the Result">
+  <div class="git-merge-labels panel-meta">
+    <span>The repository's copy</span>
+    <span>Result (starts from LibrePaper's copy)</span>
+  </div>
+  <div class="git-merge-host" bind:this={host}></div>
+</section>
+
+<style>
+  .git-merge { display: flex; flex-direction: column; flex: 1; min-height: 0; min-width: 0; }
+  .git-merge-labels { display: grid; grid-template-columns: 1fr 1fr; gap: 0.5rem; padding: 0.25rem 0.5rem; border-bottom: 1px solid var(--color-divider); }
+  .git-merge-host { flex: 1; min-height: 12rem; overflow: auto; }
+  :global(.git-merge .cm-mergeView) { min-height: 100%; }
+  :global(.git-merge .cm-editor) { min-height: 100%; }
+  /* The host is the one scroller, as in MergeEditor. */
+  :global(.git-merge .cm-scroller) { overflow: visible; }
+  /* The merge-editor class brings the palette History uses. A conflict is
+     about a few words, so they also get a tint, not only the underline. */
+  :global(.git-merge.merge-editor .cm-mergeView .cm-editor.cm-merge-a .cm-changedText) {
+    background: linear-gradient(var(--color-error-solid), var(--color-error-solid)) bottom / 100% 2px no-repeat,
+      color-mix(in srgb, var(--color-error-solid) 22%, transparent);
+  }
+  :global(.git-merge.merge-editor .cm-mergeView .cm-editor.cm-merge-b .cm-changedText) {
+    background: linear-gradient(var(--color-success-solid), var(--color-success-solid)) bottom / 100% 2px no-repeat,
+      color-mix(in srgb, var(--color-success-solid) 22%, transparent);
+  }
+</style>

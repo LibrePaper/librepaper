@@ -19,14 +19,15 @@ impl Room {
     /// and it is the projection's own content digest, computed once.
     pub async fn agent_query_snapshot(
         &self,
-    ) -> Result<crate::room::agent_query::QuerySnapshot, crate::room::agent::AgentError> {
+    ) -> Result<crate::room::agent_query::QuerySnapshot, crate::room::source_change::AgentError>
+    {
         if let Some(why) = self.unreadable().await {
-            return Err(crate::room::agent::AgentError::Storage(why));
+            return Err(crate::room::source_change::AgentError::Storage(why));
         }
         let projected = self
             .projection()
             .await
-            .map_err(|error| crate::room::agent::AgentError::Storage(error.to_string()))?;
+            .map_err(|error| crate::room::source_change::AgentError::Storage(error.to_string()))?;
         Ok(crate::room::agent_query::QuerySnapshot {
             tree_digest: projected.projection.digest(),
             projected,
@@ -57,11 +58,12 @@ impl Room {
         editor: bool,
         after: Option<comments::Position>,
         limit: usize,
-    ) -> Result<crate::room::agent_query::ThreadWindow, crate::room::agent::AgentError> {
+    ) -> Result<crate::room::agent_query::ThreadWindow, crate::room::source_change::AgentError>
+    {
         let (views, page) = self
             .comment_page(after, limit, author, editor)
             .await
-            .map_err(crate::room::agent::AgentError::from)?;
+            .map_err(crate::room::source_change::AgentError::from)?;
         let items = views
             .into_iter()
             .zip(page.comments.iter())
@@ -91,7 +93,8 @@ impl Room {
         editor: bool,
         after: Option<comments::Position>,
         limit: usize,
-    ) -> Result<crate::room::agent_query::ThreadWindow, crate::room::agent::AgentError> {
+    ) -> Result<crate::room::agent_query::ThreadWindow, crate::room::source_change::AgentError>
+    {
         let missing = crate::room::agent_query::ThreadWindow {
             missing: true,
             complete: true,
@@ -100,14 +103,14 @@ impl Room {
         let Some(comment) = self
             .comment_by_id(&comment_id.to_string())
             .await
-            .map_err(crate::room::agent::AgentError::from)?
+            .map_err(crate::room::source_change::AgentError::from)?
         else {
             return Ok(missing);
         };
         let Some(page) = self
             .reply_page(comment_id, after, limit)
             .await
-            .map_err(crate::room::agent::AgentError::from)?
+            .map_err(crate::room::source_change::AgentError::from)?
         else {
             return Ok(missing);
         };

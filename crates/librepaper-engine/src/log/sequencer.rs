@@ -259,6 +259,16 @@ impl Head<'_> {
         self.projection.projection.digest()
     }
 
+    /// The path rules of this deployment.
+    pub fn rules(&self) -> librepaper_document::document::projection::paths::Rules<'_> {
+        librepaper_document::document::paths::rules(self.rules_owner)
+    }
+
+    /// The most files a document may hold in this deployment.
+    pub fn max_files(&self) -> usize {
+        self.rules_owner.max_files
+    }
+
     /// §7.3: a command that produces source prepares it on a fork, so a
     /// failed transaction cannot have changed the document anybody is
     /// looking at. The edit runs against `draft`; what comes back is the

@@ -349,7 +349,9 @@ fn accepts_encoding(headers: &HeaderMap, wanted: &str) -> bool {
 ///   page to phish against, since the reader carries a session cookie.
 const SHELL_POLICY: &str = "script-src 'self' 'wasm-unsafe-eval'; worker-src 'self'; object-src 'self' blob:; base-uri 'none'; frame-ancestors 'none'";
 
-/// Serves one shell file, cached for a year if its bytes never change.
+/// Serves one shell file, cached for a year if its bytes never change. HTML
+/// pages are revalidated on every load, so a browser never reuses one without
+/// asking the server.
 pub(super) fn write_asset(asset: &ShellFile, headers: &HeaderMap) -> Reply {
     let encoded = asset.brotli.is_some() && accepts_encoding(headers, "br");
     let body = if encoded {
@@ -378,6 +380,9 @@ pub(super) fn write_asset(asset: &ShellFile, headers: &HeaderMap) -> Reply {
             "cache-control",
             "public, max-age=31536000, immutable",
         );
+    } else if asset.kind.starts_with("text/html") {
+        // The page names the hashed bundles, so a stale page loads old code.
+        set(&mut response, "cache-control", "no-cache");
     } else {
         set(&mut response, "cache-control", "public, max-age=300");
     }
@@ -480,6 +485,40 @@ mod asset_tests {
             .headers()
             .get("content-security-policy")
             .is_none());
+    }
+
+    fn cache_control(file: &ShellFile) -> String {
+        write_asset(file, &HeaderMap::new())
+            .headers()
+            .get("cache-control")
+            .expect("every shell file names its cache policy")
+            .to_str()
+            .unwrap()
+            .to_string()
+    }
+
+    #[test]
+    fn cache_policy_follows_what_the_file_names() {
+        let page = ShellFile {
+            kind: "text/html; charset=utf-8",
+            body: axum::body::Bytes::from_static(b"<!doctype html>"),
+            brotli: None,
+            immutable: false,
+        };
+        assert_eq!(cache_control(&page), "no-cache");
+
+        let icon = ShellFile {
+            kind: "image/svg+xml",
+            body: axum::body::Bytes::from_static(b"<svg/>"),
+            brotli: None,
+            immutable: false,
+        };
+        assert_eq!(cache_control(&icon), "public, max-age=300");
+
+        assert_eq!(
+            cache_control(&bundle()),
+            "public, max-age=31536000, immutable"
+        );
     }
 }
 

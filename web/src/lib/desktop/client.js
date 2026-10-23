@@ -209,19 +209,24 @@ async function sha256hex(bytes) {
 // Shared by `send()` and `localPreviewPage()`. The shell answers 502 when the
 // local service cannot be reached, which is `Unreachable`; any other non-2xx
 // is `Refused`, carrying the service's own JSON `error` message when it gave
-// one. A caller that must recognise a 404 specially (`localPreviewPage`'s
-// "not rendered yet") checks that before calling this, since a 404 would
+// one, plus its `status`, its `kind` and the parsed `body`. A caller that
+// must recognise a 404 specially (`localPreviewPage`'s "not rendered yet")
+// checks that before calling this, since a 404 would
 // otherwise land in `Refused`.
 async function throwOnFailure(response) {
-  if (response.status === 502) throw unavailable();
-  if (!response.ok) {
-    let message = `The LibrePaper desktop app refused the request (${response.status})`;
-    try {
-      const data = await response.clone().json();
-      if (data && typeof data.error === "string") message = data.error;
-    } catch { /* not a JSON body; keep the generic message */ }
-    throw named("Refused", message, { status: response.status });
-  }
+  if (response.ok) return;
+  let data = null;
+  try {
+    data = await response.clone().json();
+  } catch { /* not a JSON body; keep the generic message */ }
+  const kind = typeof data?.kind === "string" ? data.kind : "";
+  // A 502 with a `kind` is Git failing to reach its remote, which the service
+  // reports itself. Without one the shell could not reach the service.
+  if (response.status === 502 && !kind) throw unavailable();
+  const message = typeof data?.error === "string"
+    ? data.error
+    : `The LibrePaper desktop app refused the request (${response.status})`;
+  throw named("Refused", message, { status: response.status, kind, body: data || {} });
 }
 
 /// The one place a feature request is sent to the desktop app. A network
@@ -359,6 +364,14 @@ export async function chooseFolderBinding({ entrypoint = "" } = {}) {
   const data = await response.json();
   if (data?.id) setBindingId(data.id);
   return data;
+}
+
+/// One typed Git operation of the desktop app's local service, for the
+/// current project. The answer is the parsed JSON. A refusal carries `status`,
+/// `kind` and `body`, so callers can tell a moved branch from a failed login.
+export async function gitRequest(op, body = {}) {
+  const response = await send("POST", `git/${op}`, { jsonBody: { ...body, project: current.project } });
+  return response.json();
 }
 
 // -------------------------------------------------------------- multipart job bodies
