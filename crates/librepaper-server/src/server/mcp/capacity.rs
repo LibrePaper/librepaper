@@ -19,7 +19,7 @@ impl Principal {
     fn of(who: &Viewer) -> Self {
         // Account IDs are catalogue identities. Do not include the document,
         // session, operation, attribution, or caller-controlled execution epoch.
-        if who.id.is_signed_in() {
+        if who.token.is_none() && who.id.is_signed_in() {
             Self::Account(who.id.id.clone())
         } else {
             // Viewer contains only a verified live link's digest. Anonymous
@@ -113,6 +113,7 @@ mod tests {
             automation: true,
             bearer: true,
             auth_failed: false,
+            token: None,
         }
     }
 

@@ -966,6 +966,7 @@ mod revocation {
         /// the second editor's only route to Editor, and so the one thing
         /// revoking takes away.
         pub edit_key: String,
+        pub edit_id: String,
         pub document_id: Uuid,
     }
 
@@ -1096,14 +1097,20 @@ mod revocation {
         let minted = http
             .post(format!("{base}/api/documents/{slug}/share"))
             .header("authorization", format!("Bearer {bearer}"))
-            .json(&json!({"link": {"role": "edit"}}))
+            .json(&json!({"create": {"kind": "link", "role": "edit", "until": "7d"}}))
             .send()
             .await
             .expect("POST the share route to mint an edit link");
         assert_eq!(minted.status(), 200, "minting an edit link must succeed");
         let minted: Value = minted.json().await.expect("the share route answers JSON");
-        let edit_key = minted["links"]["editor"]["key"]
+        let edit_id = minted["created"]["id"]
             .as_str()
+            .expect("a created link names its id")
+            .to_string();
+        let edit_key = minted["links"]
+            .as_array()
+            .and_then(|links| links.iter().find(|link| link["id"] == edit_id.as_str()))
+            .and_then(|link| link["key"].as_str())
             .expect("a minted edit link carries its own key back to its owner")
             .to_string();
         assert!(!edit_key.is_empty());
@@ -1117,6 +1124,7 @@ mod revocation {
             owner_bearer: bearer,
             second_editor_bearer,
             edit_key,
+            edit_id,
             document_id,
         }
     }
@@ -1160,6 +1168,7 @@ mod revocation {
             owner_bearer: bearer,
             second_editor_bearer,
             edit_key,
+            edit_id,
             document_id,
             ..
         } = deploy(&url, slug, "deployment-revoke").await;
@@ -1237,7 +1246,7 @@ mod revocation {
         let revoked = http
             .post(format!("{base}/api/documents/{slug}/share"))
             .header("authorization", format!("Bearer {bearer}"))
-            .json(&json!({"revoke": "edit"}))
+            .json(&json!({"revoke": {"id": edit_id}}))
             .send()
             .await
             .expect("POST the share route to revoke the edit link");

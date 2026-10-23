@@ -242,11 +242,11 @@
   async function prepareAccessLink(mode) {
     if (canShare) {
       const endpoint = `/api/documents/${encodeURIComponent(slug)}/share`;
-      let sharing = await getPrivate(endpoint);
-      let accessLink = sharing.links?.[mode];
-      if (!accessLink?.key || accessLink.expired) {
-        sharing = await post(endpoint, { link: { role: mode, until: "7d", label: "Agent" } });
-        accessLink = sharing.links?.[mode];
+      const sharing = await getPrivate(endpoint);
+      let accessLink = sharing.links?.find((one) => one.role === mode && one.name === "Agent" && one.key);
+      if (!accessLink) {
+        const answer = await post(endpoint, { create: { kind: "link", role: mode, until: "7d", name: "Agent" } });
+        accessLink = answer.created;
       }
       if (!accessLink?.url) throw new Error("Could not create an agent access link.");
       agentLink = new URL(accessLink.url, location.origin).href;

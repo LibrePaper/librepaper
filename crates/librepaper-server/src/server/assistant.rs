@@ -134,6 +134,7 @@ mod capability_tests {
             automation: false,
             bearer: false,
             auth_failed: false,
+            token: None,
         };
         let ceiling = librepaper_engine::storage::store::Ceiling {
             comment: true,

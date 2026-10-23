@@ -179,6 +179,7 @@ fn viewer(account_id: Uuid, handle: &str, session_generation: &str, role: Role) 
         automation: false,
         bearer: false,
         auth_failed: false,
+        token: None,
     }
 }
 
@@ -1218,5 +1219,115 @@ async fn backup_listing_includes_shared_reader_without_granting_publishing_acces
         .handle_backup_projects(&headers, &anonymous_context, None)
         .await;
     assert_eq!(anonymous.status(), 401);
+    deployment.catalog.close().await;
+}
+
+#[tokio::test]
+#[ignore = "requires LIBREPAPER_TEST_POSTGRES_URL"]
+async fn a_link_with_a_comment_budget_is_refused_once_it_is_spent() {
+    let Some(deployment) = deployment("http-link-budget").await else {
+        return;
+    };
+    let room = deployment
+        .server
+        .documents
+        .rooms
+        .get(&deployment.slug)
+        .await
+        .unwrap();
+    let mut who = viewer(
+        deployment.commenter_id,
+        "commenter",
+        &deployment.commenter_session_generation,
+        Role::Commenter,
+    );
+    who.link = hex::encode([0x5au8; 32]);
+    who.comment_budget = Some(1);
+    let author = format!("account:{}", deployment.commenter_id);
+    let (first, ok) = send(&deployment, &room, comment_body(), &who, &author).await;
+    assert!(ok, "the first comment is inside the budget: {first}");
+    let (second, ok) = send(&deployment, &room, comment_body(), &who, &author).await;
+    assert!(!ok, "{second}");
+    assert_eq!(second["status"], 429);
+    assert_eq!(
+        second["message"],
+        "this link has used its comment budget for this hour"
+    );
+    // A caller with no budget on the same document is not limited.
+    who.comment_budget = None;
+    let (third, ok) = send(&deployment, &room, comment_body(), &who, &author).await;
+    assert!(ok, "{third}");
+    deployment.catalog.close().await;
+}
+
+#[tokio::test]
+#[ignore = "requires LIBREPAPER_TEST_POSTGRES_URL"]
+async fn a_retried_comment_is_answered_as_a_replay_after_the_budget_is_spent() {
+    let Some(deployment) = deployment("http-link-budget-replay").await else {
+        return;
+    };
+    let room = deployment
+        .server
+        .documents
+        .rooms
+        .get(&deployment.slug)
+        .await
+        .unwrap();
+    let mut who = viewer(
+        deployment.commenter_id,
+        "commenter",
+        &deployment.commenter_session_generation,
+        Role::Commenter,
+    );
+    who.link = hex::encode([0x6bu8; 32]);
+    who.comment_budget = Some(1);
+    let author = format!("account:{}", deployment.commenter_id);
+    let body = comment_body();
+    let (first, ok) = send(&deployment, &room, body.clone(), &who, &author).await;
+    assert!(ok, "the first comment is inside the budget: {first}");
+    let (retry, ok) = send(&deployment, &room, body, &who, &author).await;
+    assert!(ok, "the retry is a replay and spends nothing: {retry}");
+    assert_eq!(retry["comment"]["id"], first["comment"]["id"]);
+    let (other, ok) = send(&deployment, &room, comment_body(), &who, &author).await;
+    assert!(!ok, "{other}");
+    assert_eq!(other["status"], 429);
+    deployment.catalog.close().await;
+}
+
+#[tokio::test]
+#[ignore = "requires LIBREPAPER_TEST_POSTGRES_URL"]
+async fn a_replayed_comment_leaves_the_remaining_allowance_alone() {
+    let Some(deployment) = deployment("http-link-budget-replay-spare").await else {
+        return;
+    };
+    let room = deployment
+        .server
+        .documents
+        .rooms
+        .get(&deployment.slug)
+        .await
+        .unwrap();
+    let mut who = viewer(
+        deployment.commenter_id,
+        "commenter",
+        &deployment.commenter_session_generation,
+        Role::Commenter,
+    );
+    who.link = hex::encode([0x6cu8; 32]);
+    who.comment_budget = Some(2);
+    let author = format!("account:{}", deployment.commenter_id);
+    let body = comment_body();
+    let (first, ok) = send(&deployment, &room, body.clone(), &who, &author).await;
+    assert!(ok, "{first}");
+    let (retry, ok) = send(&deployment, &room, body, &who, &author).await;
+    assert!(ok, "{retry}");
+    let (second, ok) = send(&deployment, &room, comment_body(), &who, &author).await;
+    assert!(
+        ok,
+        "the replay cost nothing, so a second comment fits: {second}"
+    );
+    let (third, ok) = send(&deployment, &room, comment_body(), &who, &author).await;
+    assert!(!ok, "{third}");
+    assert_eq!(third["status"], 429);
     deployment.catalog.close().await;
 }
