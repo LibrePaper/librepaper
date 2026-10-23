@@ -31,13 +31,14 @@ window.rejectManyCalls = [];
 window.revealed = [];
 window.tracked = [];
 
-// Three changes over two files. The first two are one agent run.
+// Three changes over two files. The first two are one agent run. Each change
+// starts on the line given in its row.
 const rows = [
-  { id: 'c1', file_id: 'f1', path: 'paper.md', author: 'Ada', who: 'agent:ada', run: 'run-aaaa1111',
+  { id: 'c1', file_id: 'f1', path: 'paper.md', author: 'Ada', who: 'agent:ada', run: 'run-aaaa1111', line: 2,
     at: 3, position: 4, before: 'cat', after: 'tabby' },
-  { id: 'c2', file_id: 'f2', path: 'notes.md', author: 'Ada', who: 'agent:ada', run: 'run-aaaa1111',
+  { id: 'c2', file_id: 'f2', path: 'notes.md', author: 'Ada', who: 'agent:ada', run: 'run-aaaa1111', line: 1,
     at: 2, position: 0, before: '', after: 'A new line.\\n' },
-  { id: 'c3', file_id: 'f1', path: 'paper.md', author: 'Grace', who: 'acct-grace', run: '',
+  { id: 'c3', file_id: 'f1', path: 'paper.md', author: 'Grace', who: 'acct-grace', run: '', line: 5,
     at: 1, position: 40, before: 'old', after: '' },
 ];
 const files = [{ id: 'f1', path: 'paper.md' }, { id: 'f2', path: 'notes.md' }];
@@ -63,12 +64,16 @@ window.rowsData = rows;
 
 window.rows = () => [...document.querySelectorAll('.change-row')].map((row) => ({
   id: row.querySelector('.row-main')?.id?.replace('change-', '') || '',
-  removed: row.querySelector('.deletion')?.textContent?.trim() || '',
-  added: row.querySelector('.insertion')?.textContent?.trim() || '',
+  kind: row.querySelector('.row-kind')?.textContent?.trim() || '',
+  author: row.querySelector('.row-author')?.textContent?.trim() || '',
+  location: row.querySelector('.row-location')?.textContent?.trim() || '',
+  removed: row.querySelector('.deletion .change-text')?.textContent?.trim() || '',
+  added: row.querySelector('.insertion .change-text')?.textContent?.trim() || '',
   meta: row.querySelector('.row-meta')?.textContent?.trim() || '',
   active: row.classList.contains('active'),
+  picked: row.classList.contains('picked'),
 }));
-window.count = () => document.querySelector('.changes-meta')?.textContent || '';
+window.count = () => document.querySelector('.changes-toolbar .filter-label, .changes-toolbar .changes-count')?.textContent?.trim() || '';
 window.feedback = () => document.querySelector('.panel-status')?.textContent || '';
 const press = (node) => {
   for (const type of ['pointerdown', 'pointerup', 'click']) {
@@ -81,12 +86,10 @@ const mainOf = (id) => {
   if (!node) throw new Error('no row ' + id);
   return node;
 };
-// Only the change being looked at offers an answer, so reaching one means
-// selecting its row first, which is what a reviewer does with the click that
-// opens it.
+// Clicking a row reveals the change it holds. Every row carries its own pair
+// of answers, so acting on a row does not need it looked at first.
 window.look = async (id) => { mainOf(id).click(); await settle(); };
 window.act = async (id, action) => {
-  await window.look(id);
   mainOf(id).closest('.change-row').querySelector('.row-action.' + action).click();
 };
 window.actionCount = () => document.querySelectorAll('.row-action').length;
@@ -98,15 +101,15 @@ window.key = (key) => {
 // own items in the page whether or not anybody has opened it.
 const openItems = () => [...document.querySelectorAll('[data-part="content"][data-state="open"] [data-part="item"]')];
 window.menuItems = async () => {
-  const trigger = document.querySelector('.changes-menu');
+  const trigger = document.querySelector('.bulk-trigger');
   if (!trigger) return [];
   press(trigger);
   await settle();
-  return openItems().map((node) => node.textContent.trim());
+  return openItems().map((node) => ({ text: node.textContent.trim(), disabled: node.hasAttribute('data-disabled') }));
 };
 window.menu = async (label) => {
-  const trigger = document.querySelector('.changes-menu');
-  if (!trigger) throw new Error('change menu is unavailable');
+  const trigger = document.querySelector('.bulk-trigger');
+  if (!trigger) throw new Error('bulk actions are unavailable');
   press(trigger);
   await settle();
   const item = openItems().find((node) => node.textContent.trim() === label);
@@ -135,13 +138,16 @@ window.filter = async (label) => {
   await settle();
 };
 window.pick = (id) => {
-  mainOf(id).closest('.row-head').querySelector('.row-pick').click();
+  mainOf(id).closest('.change-row').querySelector('.row-pick').click();
 };
 window.barButton = (word) => [...document.querySelectorAll('.select-bar .bar-action')]
   .find((node) => node.textContent.trim().startsWith(word)) || null;
+window.confirmButton = () => document.querySelector('.confirm-bar .bar-action.confirm');
+window.confirmText = () => document.querySelector('.confirm-bar .confirm-text')?.textContent?.trim() || '';
 window.selectedCount = () => document.querySelector('.select-bar .select-count')?.textContent?.trim() || '';
 window.picks = () => document.querySelectorAll('.row-pick').length;
-window.empty = () => document.querySelector('.changes-empty')?.textContent?.trim() || '';
+window.empty = () => document.querySelector('.changes-empty-title')?.textContent?.trim() || '';
+window.emptyNote = () => document.querySelector('.changes-empty-note')?.textContent?.trim() || '';
 window.ready = true;
 await window.show();
 `);
@@ -169,21 +175,30 @@ try {
   const waitFor = (label, code) => until(label, async () => Boolean(await ev(code)), 4000);
 
   // One row per change, in the order the paper is read: file order, then
-  // offset within the file. The words on both sides of a change stay readable.
+  // offset within the file. The words on both sides of a change stay readable,
+  // each under its own kind, author and place.
   const rows = await ev("window.rows()");
   assert.deepEqual(rows.map((row) => row.id), ["c1", "c3", "c2"], "rows follow the reading order of the paper");
-  assert.equal(rows[0].removed, "− cat", "the words a change takes out stay readable");
-  assert.equal(rows[0].added, "+ tabby", "beside the ones it puts in");
+  assert.equal(rows[0].removed, "cat", "the words a change takes out stay readable");
+  assert.equal(rows[0].added, "tabby", "beside the ones it puts in");
+  assert.equal(rows[0].kind, "Replacement", "a change that does both is a replacement");
+  assert.equal(rows.find((row) => row.id === "c2").kind, "Addition", "an insertion is an addition");
+  assert.equal(rows.find((row) => row.id === "c3").kind, "Deletion", "a removal is a deletion");
   assert.equal(rows.find((row) => row.id === "c2").removed, "", "a pure insertion shows nothing struck through");
   assert.equal(rows.find((row) => row.id === "c3").added, "", "a pure deletion shows nothing inserted");
-  assert.match(await ev("window.count()"), /3 pending/);
-  assert.match(rows[0].meta, /Ada/, "the author is named under the change");
+  assert.equal(await ev("window.count()"), "3 pending");
+  assert.equal(rows[0].author, "Ada", "the author is named under the change");
+  assert.equal(rows.find((row) => row.id === "c3").author, "You", "the reader's own change is marked");
   assert.match(rows[0].meta, /Run run-aaaa/, "a change that belongs to a run says so");
-  assert.match(rows.find((row) => row.id === "c3").meta, /Grace \(you\)/, "the reader's own change is marked");
+  assert.equal(rows[0].location, "paper.md:2", "with two files under review the location names the file and line");
 
-  // Clicking a row reveals it, and the verbs belong to the change being looked
-  // at and to no other.
-  assert.equal(await ev("window.actionCount()"), 2, "only the selected change carries a pair of buttons");
+  // With one file under review the location names only the line.
+  await ev("window.show({ changes: window.rowsData.filter((row) => row.file_id === 'f1'), files: [{ id: 'f1', path: 'paper.md' }] })");
+  assert.equal((await ev("window.rows()")).find((row) => row.id === "c1").location, "Line 2", "one file, so the line alone");
+  await ev("window.show()");
+
+  // Clicking a row reveals it, and every row offers its pair of answers.
+  assert.equal(await ev("window.actionCount()"), 6, "three rows, and each carries a pair of buttons");
   await ev('window.look("c3")');
   assert.deepEqual(await ev("window.revealed.slice(-1)"), ["c3"], "clicking a row reveals it");
 
@@ -194,7 +209,7 @@ try {
   await ev('window.filter("notes.md")');
   await waitFor("file filtered", "window.rows().length === 1");
   assert.deepEqual((await ev("window.rows()")).map((row) => row.id), ["c2"]);
-  assert.match(await ev("window.count()"), /3 pending · 1 shown/);
+  assert.match(await ev("window.count()"), /1 of 3 pending/);
   await ev('window.filter("Every file")');
   await ev('window.filter("Grace (you)")');
   await waitFor("author filtered", "window.rows().length === 1");
@@ -205,6 +220,7 @@ try {
   assert.deepEqual((await ev("window.rows()")).map((row) => row.id), ["c1", "c2"], "the run filter keeps the pass together");
   await ev('window.filter("Every run")');
   await waitFor("filters cleared", "window.rows().length === 3");
+  assert.equal(await ev("window.count()"), "3 pending", "with no filter the count is the plain total");
 
   // Without any run there is no run filter.
   await ev("window.show({ changes: window.rowsData.map((row) => ({ ...row, run: '' })) })");
@@ -219,6 +235,16 @@ try {
   await ev("document.querySelector('.show-all').click()");
   await waitFor("ids cleared", "window.rows().length === 3");
   assert.equal(await ev("!!document.querySelector('.ids-bar')"), false, "Show all removes the ids filter");
+
+  // Filters narrow what is shown, and a filter that hides every change says so
+  // and offers a way back.
+  await ev("window.show()");
+  await ev('window.filter("Grace (you)")');
+  await ev('window.filter("notes.md")');
+  await waitFor("nothing matches", "document.querySelector('.changes-empty-title')?.textContent?.includes('No changes match this filter')");
+  assert.equal(await ev("window.empty()"), "No changes match this filter");
+  await ev("document.querySelector('.clear-filters').click()");
+  await waitFor("filters restored", "window.rows().length === 3");
   await ev("window.show()");
 
   // Answering a change calls back with the row, and the queue moves on to the
@@ -248,29 +274,63 @@ try {
   await ev('window.key("ArrowDown")');
   await waitFor("arrow down", 'window.rows().some((row) => row.id === "c2" && row.active)');
 
-  // The tracking switch reports what was asked of it.
+  // The tracking switch is labelled as the verb it is, and reports what was
+  // asked of it.
+  await ev("window.show()");
+  const toggle = await ev("document.querySelector('.tracking-toggle')?.textContent || ''");
+  assert.match(toggle, /Track/);
+  assert.doesNotMatch(toggle, /Track changes/, "the switch says Track and nothing longer");
   await ev("document.querySelector('.tracking-toggle').click()");
   await waitFor("tracking asked", "window.tracked.length > 0");
+
+  // The bulk menu holds the three verbs in order, and none of them is shut.
+  await ev("window.show()");
+  const items = await ev("window.menuItems()");
+  assert.deepEqual(items.map((item) => item.text), ["Select multiple", "Accept all", "Reject all"], "the bulk menu offers select, accept all and reject all");
+  assert.ok(items.every((item) => item.disabled === false), "and none of them is disabled while changes are pending");
+  await ev("window.show()");
 
   // Ticking rows, and the verbs that go with it, are a mode entered from the
   // menu, so an ordinary review is a queue of changes rather than a queue of
   // changes wearing checkboxes.
-  await ev("window.show()");
   assert.equal(await ev("window.picks()"), 0, "no checkboxes until selection is asked for");
   assert.equal(await ev("!!window.barButton('Accept')"), false, "and no bulk verbs standing above the queue");
   await ev("window.menu('Select multiple')");
   await waitFor("selecting", "window.picks() === 3");
+  assert.equal(await ev("!!document.querySelector('.bulk-trigger')"), false, "the bulk trigger gives way to the selection bar");
   assert.equal(await ev("window.selectedCount()"), "0 selected");
   assert.equal(await ev("window.barButton('Accept').disabled"), true, "with nothing ticked there is nothing to answer for");
   await ev('window.pick("c1")');
   await ev('window.pick("c2")');
   await waitFor("two ticked", 'window.selectedCount() === "2 selected"');
+  assert.deepEqual((await ev("window.rows()")).filter((row) => row.picked).map((row) => row.id).sort(), ["c1", "c2"], "the ticked rows are marked");
   await ev("window.barButton('Reject').click()");
+  assert.match(await ev("window.confirmText()"), /Reject 2 selected changes\?/, "two ticks are confirmed before they are answered");
+  assert.equal(await ev("window.rejected.length"), 0, "nothing is rejected until the confirmation is given");
+  await ev("window.confirmButton().click()");
   await waitFor("bulk rejected", "window.rejected.length === 2");
   assert.deepEqual((await ev("window.rejected")).sort(), ["c1", "c2"]);
   assert.deepEqual((await ev("window.rejectManyCalls")).map((ids) => [...ids].sort()), [["c1", "c2"]], "one call carries both ids");
   assert.match(await ev("window.feedback()"), /2 changes rejected/);
   assert.equal(await ev("window.picks()"), 0, "the ticks are spent and the mode closes behind them");
+
+  // A single ticked row is answered at once, with no confirmation in the way.
+  await ev("window.show()");
+  await ev("window.menu('Select multiple')");
+  await ev('window.pick("c3")');
+  await waitFor("one ticked", 'window.selectedCount() === "1 selected"');
+  await ev("window.barButton('Accept').click()");
+  await waitFor("single accepted", "window.accepted.length === 1");
+  assert.deepEqual(await ev("window.accepted"), ["c3"]);
+  assert.equal(await ev("!!document.querySelector('.confirm-bar')"), false, "one tick needs no confirmation");
+
+  // Select all ticks only the rows the filter leaves in view.
+  await ev("window.show()");
+  await ev('window.filter("paper.md")');
+  await ev("window.menu('Select multiple')");
+  await ev("window.barButton('Select all').click()");
+  await waitFor("selected all in view", 'window.selectedCount() === "2 selected"');
+  assert.equal(await ev("window.barButton('Select all').disabled"), true, "and offers nothing more to tick");
 
   // Hiding a ticked change clears its tick, so the count and the eventual
   // bulk verb continue to name the same rows.
@@ -282,20 +342,24 @@ try {
   await waitFor("hidden tick cleared", 'window.selectedCount() === "0 selected"');
 
   // The whole queue at once, from the menu, and only after being asked twice.
+  // The scope ignores the filter: a filter to one file still answers all three.
   await ev("window.show()");
-  await ev("window.menu('Accept all pending changes')");
-  await waitFor("asked to confirm", "/Accept all 3\\?/.test(document.querySelector('.confirm-bar .select-count')?.textContent || '')");
+  await ev('window.filter("notes.md")');
+  await ev("window.menu('Accept all')");
+  await waitFor("asked to confirm", "/Accept all 3 pending changes in this project\\?/.test(document.querySelector('.confirm-bar .confirm-text')?.textContent || '')");
+  assert.match(await ev("window.confirmText()"), /Accept all 3 pending changes in this project\?/, "the whole project is named, not the filtered view");
   assert.deepEqual(await ev("window.accepted"), [], "nothing is answered by opening the menu item");
-  await ev("[...document.querySelectorAll('.confirm-bar .bar-action')].find((node) => node.textContent.trim() === 'Accept all').click()");
+  await ev("window.confirmButton().click()");
   await waitFor("all accepted", "window.accepted.length === 3");
   assert.match(await ev("window.feedback()"), /3 changes accepted/);
   await ev("window.show()");
-  await ev("window.menu('Reject all pending changes')");
-  await ev("[...document.querySelectorAll('.confirm-bar .bar-action')].find((node) => node.textContent.trim() === 'Reject all').click()");
+  await ev("window.menu('Reject all')");
+  await ev("window.confirmButton().click()");
   await waitFor("all rejected", "window.rejected.length === 3");
+  assert.deepEqual((await ev("window.rejectManyCalls")).map((ids) => [...ids].sort()), [["c1", "c2", "c3"]], "reject all is one call with every id");
   // Escape closes the confirmation without answering anything.
   await ev("window.show()");
-  await ev("window.menu('Reject all pending changes')");
+  await ev("window.menu('Reject all')");
   await ev('window.key("Escape")');
   await waitFor("confirmation closed", "!document.querySelector('.confirm-bar')");
   assert.deepEqual(await ev("window.rejected"), []);
@@ -306,25 +370,34 @@ try {
   await waitFor("refusal shown", "/read-only/.test(window.feedback())");
   assert.equal(await ev("window.rows().length"), 3);
 
+  // A long change is clamped, and its button opens the whole of it again.
+  await ev("window.show({ changes: [{ ...window.rowsData[0], after: 'x\\n'.repeat(10) }] })");
+  assert.equal(await ev("!!document.querySelector('.row-diff.clamped')"), true, "a change over six lines is clamped");
+  assert.equal(await ev("document.querySelector('.row-more')?.textContent?.trim()"), "Show more");
+  await ev("document.querySelector('.row-more').click()");
+  await waitFor("expanded", "document.querySelector('.row-more')?.textContent?.trim() === 'Show less'");
+  assert.equal(await ev("!!document.querySelector('.row-diff.clamped')"), false, "and the whole change is shown");
+
   // Without the right to review the queue is readable and inert: no verbs, no
   // mode, no menu.
   await ev("window.show({ canReview: false })");
   assert.equal((await ev("window.rows()")).length, 3, "a reader still sees every change");
-  await ev('window.look("c1")');
   assert.equal(await ev("window.actionCount()"), 0, "and is offered no button to answer one");
+  assert.equal(await ev("!!document.querySelector('.bulk-trigger')"), false, "and no bulk actions to open");
   await ev('window.key("a")');
   await ev('window.key("r")');
   assert.deepEqual(await ev("[window.accepted, window.rejected]"), [[], []], "the keys answer nothing for a reader");
-  assert.equal(await ev("window.picks()"), 0);
+  assert.equal(await ev("window.picks()"), 0, "and no checkboxes appear");
   assert.deepEqual(await ev("window.menuItems()"), [], "a reader is offered no verb and no mode they cannot use");
 
   // Nothing left to answer: a sentence, and no verb standing over nothing.
   await ev("window.show({ changes: [] })");
-  assert.match(await ev("window.empty()"), /No pending changes/);
+  assert.equal(await ev("window.empty()"), "No pending changes");
+  assert.equal(await ev("window.emptyNote()"), "Changes to review will appear here.");
   assert.equal(await ev("window.actionCount()"), 0);
   assert.equal((await ev("window.rows()")).length, 0, "and no rows remain");
 
-  console.log("changes-browser: rows, filters by author, file and run, keyboard, bulk confirmation and read-only readers passed");
+  console.log("changes-browser: rows with kinds, authors and locations, filters, keyboard, bulk selection and confirmation, long changes and read-only readers passed");
 } finally {
   await page?.close();
   server?.close();
