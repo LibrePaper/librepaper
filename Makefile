@@ -216,12 +216,14 @@ wipe:  ## Delete the local deployment -- database and data directory -- and star
 # TOML file.
 DEMO_KEYS ?= tools/dev/keys.yaml
 DEMO_REF ?= main
-# Paths given here are relative to this checkout, so the demo worktree gets
-# them as absolute paths on its command line, where they also override
-# MAKEFLAGS. A mirror URL passes through unchanged. An unsupplied CONFIG is
-# dropped from the environment, where `export` put its default.
-DEMO_MIRROR := $(if $(filter http://% https://%,$(MIRROR)),$(MIRROR),$(abspath $(or $(MIRROR),../wasm-latex/mirror)))
-DEMO_ARGS   := MIRROR="$(DEMO_MIRROR)" CARGO_PROFILE=demo $(if $(CONFIG_WAS_SUPPLIED),CONFIG="$(abspath $(CONFIG))")
+# The demo checks the LaTeX release on the public asset mirror, which is the
+# one it serves; MIRROR= checks a local mirror or another URL instead (see
+# tools/dev/demo/mirror-check). Paths given here are relative to this checkout,
+# so the demo worktree gets them as absolute paths on its command line, where
+# they also override MAKEFLAGS. A mirror URL passes through unchanged. An
+# unsupplied CONFIG is dropped from the environment, where `export` put its default.
+DEMO_MIRROR := $(if $(filter http://% https://%,$(MIRROR)),$(MIRROR),$(abspath $(MIRROR)))
+DEMO_ARGS   := $(if $(MIRROR),MIRROR="$(DEMO_MIRROR)") CARGO_PROFILE=demo $(if $(CONFIG_WAS_SUPPLIED),CONFIG="$(abspath $(CONFIG))")
 demo:  ## Run a local Docker deployment of main (DEMO_REF= picks another commit)
 	@tree=$$(tools/dev/demo/worktree "$(DEMO_REF)") && echo "demo: $(DEMO_REF) at $$(git -C "$$tree" rev-parse --short HEAD) in $$tree" && \
 		env -u CONFIG $(MAKE) -C "$$tree" --no-print-directory web $(DEMO_ARGS) && \

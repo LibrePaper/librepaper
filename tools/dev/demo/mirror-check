@@ -8,9 +8,13 @@
 # files to compare, so only the path and the lock decide for it.
 #
 # Run from the repo root with MIRROR in the environment, as tools/assets/mirror reads it.
+# Without MIRROR it checks the pinned LaTeX release on the public asset mirror
+# (DEFAULT_ASSET_MIRROR in crates/librepaper-base/src/config/mod.rs), which is
+# what the demo serves.
 set -euo pipefail
 
-MIRROR="${MIRROR:-../wasm-latex/mirror}"
+latex_pin="$(awk '$1 == "latex" { print $4 }' assets.lock)"
+export MIRROR="${MIRROR:-https://librepaper-mirror-0001.s3.bhs.io.cloud.ovh.net/latex/$latex_pin/}"
 STAMP="target/demo-mirror-checked"
 lock_sum="$(sha256sum assets.lock | cut -d ' ' -f 1)"
 
