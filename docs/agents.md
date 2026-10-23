@@ -118,6 +118,27 @@ args = ["mcp", "--document", "https://<host>/docs/<slug>"]
 env = { LIBREPAPER_AGENT_TOKEN = "lpt_..." }
 ```
 
+From a terminal, register the document once with the agent's own command, then run the agent headless. The token is read into a variable first, so it stays out of your shell history:
+
+```sh
+# Paste the token when asked; nothing is echoed
+read -rs LIBREPAPER_AGENT_TOKEN
+
+# Claude Code
+claude mcp add librepaper -e LIBREPAPER_AGENT_TOKEN="$LIBREPAPER_AGENT_TOKEN" \
+  -- librepaper mcp --document https://<host>/docs/<slug>
+# Headless runs ask no questions, so allow the document tools up front
+claude -p "Read the document and comment on the introduction" --allowedTools "mcp__librepaper"
+
+# Codex
+codex mcp add librepaper --env LIBREPAPER_AGENT_TOKEN="$LIBREPAPER_AGENT_TOKEN" \
+  -- librepaper mcp --document https://<host>/docs/<slug>
+codex exec "Read the document and comment on the introduction"
+```
+
+- Both commands save the token in the agent's own config file (`~/.claude.json`, `~/.codex/config.toml`). Revoke the token in the Sharing panel when you are done with it.
+- An agent needs two things: the document URL and the token. The URL is not secret and goes in the command. The token is secret and goes only in the environment.
+
 Agents without MCP call the document's tool routes over HTTP:
 
 ```sh
