@@ -487,6 +487,8 @@ impl GitManager {
             commit: String,
             expected: Option<String>,
             connection_id: String,
+            #[serde(default)]
+            branch: Option<String>,
         }
         let request: Request = parse(body)?;
         let commit = require_id(&request.commit, "commit")?;
@@ -501,6 +503,21 @@ impl GitManager {
                 "The project is connected to another remote now. Reconnect and try again.",
             ));
         }
+        let other = match &request.branch {
+            Some(name) => {
+                if !valid_branch(name) {
+                    return Err(GitError::bad(format!("{name} is not a valid branch name.")));
+                }
+                if *name == record.branch {
+                    return Err(GitError::bad(
+                        "That is the connected branch. Push to it with an ordinary push.",
+                    ));
+                }
+                Some(name.as_str())
+            }
+            None => None,
+        };
+        let branch = other.unwrap_or(record.branch.as_str());
         if !self.has_commit(conn, commit).await? {
             return Err(GitError::refused(
                 "missing",
@@ -534,13 +551,14 @@ impl GitManager {
         let target = self.resolve(conn, &record.remote)?;
         // The lease names the head the review saw. An empty value means the
         // branch must not exist, so a branch that moved, was deleted or was
-        // reset since the review is refused.
+        // reset since the review is refused. A push to another branch names no
+        // reviewed head, so it creates the branch and never replaces one.
         let lease = format!(
             "--force-with-lease=refs/heads/{}:{}",
-            record.branch,
-            expected.unwrap_or("")
+            branch,
+            if other.is_some() { "" } else { expected.unwrap_or("") }
         );
-        let refspec = format!("{commit}:refs/heads/{}", record.branch);
+        let refspec = format!("{commit}:refs/heads/{branch}");
         // A chosen folder is usually an ordinary repository with the branch
         // checked out. With updateInstead, Git updates that folder's files when
         // the folder is clean and refuses the push when it is not. URL remotes
@@ -567,6 +585,15 @@ impl GitManager {
                 || lower.contains("fetch first")
                 || lower.contains("stale info")
             {
+                if other.is_some() {
+                    return Err(GitError::new(
+                        409,
+                        Some("exists"),
+                        format!(
+                            "A branch named {branch} already exists on the remote. Choose another name."
+                        ),
+                    ));
+                }
                 return Err(GitError::new(
                     409,
                     Some("moved"),
@@ -603,12 +630,15 @@ impl GitManager {
             }
             return Err(remote_error(&said));
         }
-        self.local(
-            conn,
-            &["update-ref", "refs/librepaper/remote", commit],
-            None,
-        )
-        .await?;
-        Ok(json!({"pushed": true}))
+        // refs/librepaper/remote tracks the connected branch only.
+        if other.is_none() {
+            self.local(
+                conn,
+                &["update-ref", "refs/librepaper/remote", commit],
+                None,
+            )
+            .await?;
+        }
+        Ok(json!({"pushed": true, "branch": branch}))
     }
 }
