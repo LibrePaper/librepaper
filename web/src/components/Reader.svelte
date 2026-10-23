@@ -982,6 +982,18 @@
   // reader there.
   let changesIds = $state([]);
 
+  // The 1-based line a character offset falls on. Counting newlines with
+  // indexOf avoids building an array of lines for every change.
+  function lineAt(text, offset) {
+    let line = 1;
+    let at = text.indexOf("\n");
+    while (at !== -1 && at < offset) {
+      line += 1;
+      at = text.indexOf("\n", at + 1);
+    }
+    return line;
+  }
+
   function recomputeChanges() {
     if (!session) {
       // A reader or commenter has no live document; their rows come with the
@@ -989,18 +1001,26 @@
       if (mayEdit) changeRows = [];
       return;
     }
-    changeRows = listChanges(session.doc).map((change) => ({
-      id: change.id,
-      file_id: change.file,
-      path: session.paths?.get(change.file) || "",
-      author: change.author,
-      who: change.who,
-      run: change.run || "",
-      at: change.at,
-      position: change.from,
-      before: change.deleted,
-      after: change.inserted,
-    }));
+    // Several changes can sit in one file, so each file's text is read once.
+    const texts = new Map();
+    changeRows = listChanges(session.doc).map((change) => {
+      if (!texts.has(change.file)) texts.set(change.file, session.textOf(change.file)?.toString() ?? null);
+      const text = texts.get(change.file);
+      const line = text !== null && Number.isFinite(change.from) ? lineAt(text, change.from) : undefined;
+      return {
+        id: change.id,
+        file_id: change.file,
+        path: session.paths?.get(change.file) || "",
+        author: change.author,
+        who: change.who,
+        run: change.run || "",
+        at: change.at,
+        position: change.from,
+        line,
+        before: change.deleted,
+        after: change.inserted,
+      };
+    });
     if (selectedChange && !changeRows.some((row) => row.id === selectedChange)) selectedChange = null;
   }
 
@@ -1016,6 +1036,7 @@
       run: change.run || "",
       at: change.at,
       position: change.from,
+      line: change.line,
       before: change.deleted,
       after: change.inserted,
     }));
