@@ -229,6 +229,17 @@ class Repo {
       case "push": {
         this.pushes.push(body.commit);
         this.pushBodies.push(body);
+        if (body.branch) {
+          this.branches ??= new Map();
+          if (body.connection_id !== this.connectionId) {
+            throw httpError(409, { error: "Another connection.", kind: "stale-connection" }, { kind: "stale-connection" });
+          }
+          if (this.branches.has(body.branch)) {
+            throw httpError(409, { error: "The branch exists.", kind: "exists" }, { kind: "exists" });
+          }
+          this.branches.set(body.branch, body.commit);
+          return { pushed: true, branch: body.branch };
+        }
         if (body.connection_id !== this.connectionId) {
           throw httpError(409, { error: "Another connection.", kind: "stale-connection" }, { kind: "stale-connection" });
         }
@@ -1663,6 +1674,34 @@ const SAME_NAME = "These files would have the same name in LibrePaper";
   assert.ok(!local.paths.includes(lossy));
   assert.ok(local.paths.includes("intro.qmd"));
   assert.equal(session.text(lossy), "local\n");
+}
+
+// ---------------------------------------------------------------- push to a branch
+
+// A push to another branch creates it from the outgoing changes and changes
+// nothing else: the connected branch, the checkpoint, the journal and the
+// shared record stay, so the files are still local changes.
+{
+  const { repo, session, api, ctx } = await connected({ "intro.qmd": "i\n" });
+  await session.setText("intro.qmd", "edited\n");
+  const head = repo.head;
+  const journal = JSON.stringify(repo.journal);
+  const record = JSON.stringify(api.state.link);
+  const answer = await sync.pushToBranch(ctx, "review/intro", "Edit the intro");
+  assert.equal(answer.status, "branched", JSON.stringify(answer));
+  assert.equal(answer.branch, "review/intro");
+  assert.deepEqual(answer.files, [{ path: "intro.qmd", status: "M" }]);
+  assert.equal(repo.branches.get("review/intro"), answer.commit);
+  assert.equal(repo.head, head);
+  assert.equal(JSON.stringify(repo.journal), journal);
+  assert.equal(JSON.stringify(api.state.link), record);
+  assert.deepEqual(await sync.localChanges(ctx), { status: "changes", files: [{ path: "intro.qmd", status: "M" }] });
+
+  const again = await sync.pushToBranch(ctx, "review/intro");
+  assert.equal(again.status, "refused", JSON.stringify(again));
+  assert.match(again.refusals[0].reason, /already exists/);
+
+  assert.equal((await sync.pushToBranch(ctx, "  ")).status, "refused");
 }
 
 // ---------------------------------------------------------------- panel checks

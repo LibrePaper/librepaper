@@ -158,6 +158,10 @@ export function createBridge(request = gitRequest) {
     /// without commits); the service refuses when the branch is elsewhere.
     push: (commit, expected, connectionId) =>
       request("push", { commit, expected: expected ?? null, connection_id: connectionId }),
+    /// Pushes `commit` to a new branch of the connected remote. The service
+    /// refuses a branch that exists, so nothing is ever replaced.
+    pushBranch: (commit, branch, connectionId) =>
+      request("push", { commit, expected: null, connection_id: connectionId, branch }),
     keep: (operation, refs) => request("keep", { operation, refs }),
     release: (operation) => request("release", { operation }),
     journal: async () => (await request("journal", {})).entries,
