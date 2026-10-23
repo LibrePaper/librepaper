@@ -6,6 +6,8 @@
 // page that does not load at all. Every read has a fallback and every write
 // is allowed to fail.
 
+import { localDataForgotten } from "./signed-out.js";
+
 export function read(key, fallback) {
   try {
     const raw = localStorage.getItem(key);
@@ -23,6 +25,8 @@ export function write(key, value) {
   }
 }
 
+// Every agent chat transcript is kept under this prefix, one key per document.
+export const AGENT_SESSION_PREFIX = "librepaper.agent.session.";
 export const VIEWED = "librepaper-viewed";
 export const LINKED = "librepaper-linked";
 // Whether PDF pages are drawn inverted while the application is dark. A habit
@@ -33,7 +37,7 @@ export const PDF_INVERT = "librepaper-pdf-invert";
 export const SOURCE_SIDE = "librepaper-source-side";
 // The link keys this browser has been given, by slug. A key is a secret, and
 // this is the right place for one: it is per browser, so opening the link on a
-// phone means pasting it again, and it is cleared with everything else.
+// phone means pasting it again, and forgetLocalData removes it on sign-out.
 export const KEYS = "librepaper-keys";
 // Which keys the editor answers to: "default", "vim" or "emacs". A habit of the
 // person typing rather than of the document, so it lives here rather than on
@@ -88,9 +92,12 @@ export function takeKeyFromFragment(slug) {
     return keyFor(slug);
   }
   memoryKeys.set(slug, key);
-  const keys = read(KEYS, {});
-  keys[slug] = key;
-  write(KEYS, keys);
+  // After a sign-out the key serves this page only; it is not stored again.
+  if (!localDataForgotten()) {
+    const keys = read(KEYS, {});
+    keys[slug] = key;
+    write(KEYS, keys);
+  }
   history.replaceState(null, "", location.pathname + location.search);
   return key;
 }
@@ -115,6 +122,7 @@ export function linkFor(slug) {
 /// Notes that this document was opened just now, which is what the landing
 /// page sorts by.
 export function markViewed(slug) {
+  if (localDataForgotten()) return;
   const seen = read(VIEWED, {});
   seen[slug] = new Date().toISOString();
   write(VIEWED, seen);

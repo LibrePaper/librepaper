@@ -23,6 +23,8 @@ const mockCredentials = {
   LIBREPAPER_RESTIC_PASSWORD: 'restic-password',
   LIBREPAPER_BACKUPS_S3_ACCESS_KEY_ID: 'backup-key-id',
   LIBREPAPER_BACKUPS_S3_SECRET_ACCESS_KEY: 'backup-secret',
+  LIBREPAPER_REPLICA_READONLY_S3_ACCESS_KEY_ID: 'replica-key-id',
+  LIBREPAPER_REPLICA_READONLY_S3_SECRET_ACCESS_KEY: 'replica-secret',
   LIBREPAPER_HEALTHCHECK_BACKUP_URL: 'https://hc-ping.example/backup-uuid',
   LIBREPAPER_HEALTHCHECK_CHECK_URL: 'https://hc-ping.example/check-uuid',
 };
@@ -69,6 +71,23 @@ function defaultDnsRecords() {
   return deployNames.map((name) => `${name} A ${productionAddress}`);
 }
 
+const defaultSshdT = [
+  'passwordauthentication no',
+  'kbdinteractiveauthentication no',
+  'pubkeyauthentication yes',
+  'permitrootlogin prohibit-password',
+];
+const defaultListeners = [
+  'tcp LISTEN 0 4096 0.0.0.0:22 0.0.0.0:*',
+  'tcp LISTEN 0 4096 0.0.0.0:443 0.0.0.0:*',
+  'tcp LISTEN 0 4096 [::]:443 [::]:*',
+  'tcp LISTEN 0 4096 0.0.0.0:80 0.0.0.0:*',
+  'tcp LISTEN 0 4096 127.0.0.53%lo:53 0.0.0.0:*',
+  'udp UNCONN 0 0 [::]:41641 [::]:*',
+  'udp UNCONN 0 0 203.0.113.10%ens3:68 0.0.0.0:*',
+  'tcp LISTEN 0 4096 [fd7a:115c:a1e0::1]%tailscale0:34572 [::]:*',
+];
+
 function fixture({
   dnsRecords = null,
   githubClientSecret = 'github-secret',
@@ -85,6 +104,20 @@ function fixture({
   manageFailure = false,
   attestationFailure = false,
   hostAddress = productionAddress,
+  sshdT = defaultSshdT,
+  listeners = defaultListeners,
+  unattended = 'enabled',
+  diskUsed = 15,
+  publicAdminStatus = 403,
+  replicaWritable = false,
+  replicaVersionsDenied = false,
+  resticNewest = new Date(Date.now() - 10 * 60 * 1000).toISOString(),
+  sopsAgeKeyCmd = '',
+  drillVersion = 'v0.0.49',
+  drillSnapshotTime = new Date(Date.now() - 20 * 60 * 1000).toISOString().slice(0, 19).replace('T', ' '),
+  drillCopyCounts = '284 1374 1601 14 1 9 1616',
+  drillProdCounts = '285 1375 1601 14 1 9 1616',
+  drillCopyFiles = 1616,
 } = {}) {
   const root = mkdtempSync(path.join(os.tmpdir(), 'librepaper-deploy-test-'));
   const bin = path.join(root, 'bin');
@@ -93,6 +126,7 @@ function fixture({
   const temp = path.join(root, 'tmp');
   mkdirSync(bin);
   mkdirSync(remote, { recursive: true });
+  chmodSync(remote, 0o700);
   mkdirSync(temp);
   const makeCalledFile = path.join(root, 'make-called');
   const oauthCallsFile = path.join(root, 'oauth-calls');
@@ -101,6 +135,11 @@ function fixture({
   const dnsFile = path.join(root, 'dns');
   const zone = dnsRecords ?? defaultDnsRecords().filter((line) => !(adminDnsMissing && line.startsWith('admin.librepaper.org ')));
   writeFileSync(dnsFile, zone.map((line) => `${line}\n`).join(''));
+
+  const sshdFile = path.join(root, 'sshd-t');
+  const ssFile = path.join(root, 'ss');
+  writeFileSync(sshdFile, sshdT.map((line) => `${line}\n`).join(''));
+  writeFileSync(ssFile, listeners.map((line) => `${line}\n`).join(''));
 
   mockCommand(bin, 'make', 'printf "make\\n" >> "$EVENTS_FILE"; printf called >> "$MAKE_CALLED_FILE"; exit 0');
   mockCommand(bin, 'dig', `
@@ -148,6 +187,8 @@ for arg do
     *LIBREPAPER_ADMIN_GITHUB_IDS*) printf '987057\\n'; exit ;;
     *LIBREPAPER_BACKUPS_S3_ACCESS_KEY_ID*) printf 'backup-key-id\\n'; exit ;;
     *LIBREPAPER_BACKUPS_S3_SECRET_ACCESS_KEY*) printf 'backup-secret\\n'; exit ;;
+    *LIBREPAPER_REPLICA_READONLY_S3_ACCESS_KEY_ID*) printf 'replica-key-id\\n'; exit ;;
+    *LIBREPAPER_REPLICA_READONLY_S3_SECRET_ACCESS_KEY*) printf 'replica-secret\\n'; exit ;;
     *LIBREPAPER_OBJECTS_S3_ACCESS_KEY_ID*) printf 'objects-key-id\\n'; exit ;;
     *LIBREPAPER_OBJECTS_S3_SECRET_ACCESS_KEY*) printf 'objects-secret\\n'; exit ;;
   esac
@@ -170,6 +211,32 @@ esac`);
   mockCommand(bin, 'tar', `
 set -eu
 printf 'tar\\t%s\\n' "$*" >> "$EVENTS_FILE"
+has_xzf=0
+dir=
+prev=
+for arg do
+  case "$arg" in -xzf) has_xzf=1 ;; esac
+  if [ "$prev" = -C ]; then dir="$arg"; fi
+  prev="$arg"
+done
+if [ "$has_xzf" = 1 ] && [ -n "$dir" ]; then
+  # The drill's kit: a stub manage that records its calls and answers the drill's two commands.
+  mkdir -p "$dir/librepaper"
+  cat > "$dir/librepaper/manage" <<'DRILLMANAGE'
+#!/bin/sh
+printf 'drill-manage\\t%s\\n' "$*" >> "$EVENTS_FILE"
+case "$1 $2" in
+  'backup list')
+    printf 'ID        Time                 Host        Tags        Paths                    Size\\n'
+    printf '450fafe1  %s  librepaper  librepaper  /librepaper-backup.tar  111.607 MiB\\n' "$DRILL_SNAPSHOT_TIME"
+    printf -- '--------\\n'
+    ;;
+  'backup restore') exit "$MANAGE_FAILURE" ;;
+esac
+DRILLMANAGE
+  chmod 755 "$dir/librepaper/manage"
+  exit 0
+fi
 cat > /dev/null
 cat <<'MANAGE'
 #!/bin/sh
@@ -196,7 +263,19 @@ exec bash -c "$command"`);
   mockCommand(bin, 'docker', `
 set -eu
 printf 'docker\\t%s\\n' "$*" >> "$EVENTS_FILE"
+if [ -n "\${COMPOSE_PROJECT_NAME:-}" ]; then printf '%s\\n' "$COMPOSE_PROJECT_NAME" >> "$DRILL_PROJECT_FILE"; fi
 case "$*" in
+  'compose exec -T postgres psql '*)
+    # The copy runs from its own directory; production's query runs from the fake home.
+    case "$(pwd)" in
+      "$FAKE_HOME"/*) printf '%s\\n' "$DRILL_PROD_COUNTS" ;;
+      *) printf '%s\\n' "$DRILL_COPY_COUNTS" ;;
+    esac
+    exit 0
+    ;;
+  'compose exec -T librepaper sh -c '*find*) printf '%s\\n' "$DRILL_COPY_FILES"; exit 0 ;;
+  'compose exec -T librepaper wget '*) echo ready; exit 0 ;;
+  'compose down -v'|'compose run '*) exit 0 ;;
   'image prune -f') ;;
   'compose logs --tail 50') ;;
   'compose exec -T caddy caddy reload --config /etc/caddy/Caddyfile --adapter caddyfile') ;;
@@ -220,7 +299,7 @@ case "$1 $2" in
 esac`);
   mockCommand(bin, 'curl', `
 set -eu
-out= format= url= followed=no connect_timeout= max_time=
+out= format= url= followed=no connect_timeout= max_time= resolved=
 for arg do case "$arg" in *github-secret*|*google-id*|*google-secret*) exit 92 ;; esac; done
 while [ "$#" -gt 0 ]; do
   case "$1" in
@@ -229,6 +308,7 @@ while [ "$#" -gt 0 ]; do
     -o) out="$2"; shift 2 ;;
     -w) format="$2"; shift 2 ;;
     -L|--location) followed=yes; shift ;;
+    --resolve) resolved="$2"; shift 2 ;;
     -*) shift ;;
     *) url="$1"; shift ;;
   esac
@@ -253,6 +333,7 @@ case "$url" in
   https://docs.librepaper.org/) code=200 ;;
   https://librepaper.com) printf 'HTTP/2 301\\r\\nlocation: https://librepaper.org/\\r\\n\\r\\n'; exit 0 ;;
 esac
+if [ -n "$resolved" ] && [ "$url" = https://admin.librepaper.org/ ]; then code="$PUBLIC_ADMIN_STATUS"; fi
 if [ -n "$out" ] && [ "$out" != /dev/null ]; then printf '%s' "$body" > "$out"; fi
 if [ -n "$provider" ]; then printf '%s\\t%s\\n' "$provider" "$followed" >> "$OAUTH_CALLS_FILE"; fi
 if [ -n "$format" ]; then
@@ -264,6 +345,33 @@ if [ -n "$format" ]; then
   esac
 fi`);
   mockCommand(bin, 'sleep', 'exit 0');
+  mockCommand(bin, 'sudo', `if [ "$*" = '-n sshd -T' ]; then cat "$SSHD_T_FILE"; else exit 1; fi`);
+  mockCommand(bin, 'ss', 'cat "$SS_FILE"');
+  mockCommand(bin, 'systemctl', 'echo "$UNATTENDED_STATE"');
+  mockCommand(bin, 'df', `echo 'Use%'
+echo "$DISK_USED%"`);
+  mockCommand(bin, 'aws', `
+printf 'aws\\t%s\\n' "$*" >> "$EVENTS_FILE"
+case "$*" in
+  *' cp '*)
+    if [ "$REPLICA_WRITABLE" = 1 ]; then exit 0; fi
+    echo 'upload failed: An error occurred (AccessDenied) when calling the PutObject operation: Access Denied' >&2
+    exit 1
+    ;;
+  *list-object-versions*)
+    if [ "$REPLICA_VERSIONS_DENIED" = 1 ]; then
+      echo 'An error occurred (AccessDenied) when calling the ListObjectVersions operation: Access Denied' >&2
+      exit 254
+    fi
+    ;;
+esac
+exit 0`);
+  mockCommand(bin, 'restic', `
+printf 'restic\\t%s\\n' "$*" >> "$EVENTS_FILE"
+case "$1" in
+  snapshots) printf '[{"time":"%s"}]\\n' "$RESTIC_NEWEST" ;;
+  check) exit 0 ;;
+esac`);
 
   return {
     root,
@@ -292,9 +400,24 @@ fi`);
       GOOGLE_HTTP_STATUS: String(googleHttpStatus),
       GOOGLE_LOCATION: googleLocation,
       SOPS_FAILURE_KEY: sopsFailureKey,
+      SOPS_AGE_KEY_CMD: sopsAgeKeyCmd,
       GITHUB_CLIENT_SECRET: String(githubClientSecret),
       ADMIN_ROOT_STATUS: String(adminRootStatus),
       ADMIN_ROOT_LOCATION: adminRootLocation,
+      SSHD_T_FILE: sshdFile,
+      SS_FILE: ssFile,
+      UNATTENDED_STATE: String(unattended),
+      DISK_USED: String(diskUsed),
+      PUBLIC_ADMIN_STATUS: String(publicAdminStatus),
+      REPLICA_WRITABLE: replicaWritable ? '1' : '0',
+      REPLICA_VERSIONS_DENIED: replicaVersionsDenied ? '1' : '0',
+      RESTIC_NEWEST: resticNewest,
+      DRILL_VERSION: drillVersion,
+      DRILL_SNAPSHOT_TIME: drillSnapshotTime,
+      DRILL_COPY_COUNTS: drillCopyCounts,
+      DRILL_PROD_COUNTS: drillProdCounts,
+      DRILL_COPY_FILES: String(drillCopyFiles),
+      DRILL_PROJECT_FILE: path.join(root, 'drill-projects'),
     },
     eventsFile,
     makeCalledFile,
@@ -792,5 +915,243 @@ test('verify fails when the admin console does not redirect to GitHub sign-in fo
     } finally {
       f.cleanup();
     }
+  }
+});
+
+test('check-host passes on a host with only the expected listeners and settings', () => {
+  const f = fixture();
+  try {
+    const result = run(f, 'check-host');
+    assert.equal(result.status, 0, result.stderr || result.stdout);
+    assert.match(result.stdout, /only SSH on IPv4/);
+    assert.match(result.stdout, /answers 403 off the tailnet/);
+  } finally {
+    f.cleanup();
+  }
+});
+
+test('check-host fails on SSH over IPv6 or a stray published port', () => {
+  const f = fixture({
+    listeners: [...defaultListeners, 'tcp LISTEN 0 4096 [::]:22 [::]:*', 'tcp LISTEN 0 4096 0.0.0.0:8000 0.0.0.0:*'],
+  });
+  try {
+    const result = run(f, 'check-host');
+    assert.notEqual(result.status, 0);
+    const output = `${result.stdout}${result.stderr}`;
+    assert.match(output, /unexpected listeners: .*\[::\]:22/);
+    assert.match(output, /0\.0\.0\.0:8000/);
+  } finally {
+    f.cleanup();
+  }
+});
+
+test('check-host fails when password login is on or the kit directory is open', () => {
+  const f = fixture({
+    sshdT: ['passwordauthentication yes', 'kbdinteractiveauthentication no', 'pubkeyauthentication yes', 'permitrootlogin prohibit-password'],
+  });
+  try {
+    chmodSync(f.remote, 0o755);
+    const result = run(f, 'check-host');
+    assert.notEqual(result.status, 0);
+    const output = `${result.stdout}${result.stderr}`;
+    assert.match(output, /expected passwordauthentication no/);
+    assert.match(output, /is 755, expected 700/);
+  } finally {
+    f.cleanup();
+  }
+});
+
+test('check-host fails when the admin console answers off the tailnet', () => {
+  const f = fixture({ publicAdminStatus: 302 });
+  try {
+    const result = run(f, 'check-host');
+    assert.notEqual(result.status, 0);
+    assert.match(`${result.stdout}${result.stderr}`, /answers 302 off the tailnet/);
+  } finally {
+    f.cleanup();
+  }
+});
+
+test('check-replica passes when the key reads but cannot write', () => {
+  const f = fixture();
+  try {
+    const result = run(f, 'check-replica');
+    assert.equal(result.status, 0, result.stderr || result.stdout);
+    assert.match(result.stdout, /write refused/);
+    assert.match(result.stdout, /old versions listed/);
+    assert.match(result.stdout, /minutes old/);
+    assert.match(result.stdout, /check passed/);
+    assert.ok(indexOfEvent(events(f), ['restic', /^check --no-lock$/]) !== -1, 'restic check did not run');
+  } finally {
+    f.cleanup();
+  }
+});
+
+test('check-replica fails when the read-only key can write', () => {
+  const f = fixture({ replicaWritable: true });
+  try {
+    const result = run(f, 'check-replica');
+    assert.notEqual(result.status, 0);
+    assert.match(result.stderr, /wrote to librepaper-backups-replica-0001/);
+  } finally {
+    f.cleanup();
+  }
+});
+
+test('check-replica fails when the key cannot list old versions', () => {
+  const f = fixture({ replicaVersionsDenied: true });
+  try {
+    const result = run(f, 'check-replica');
+    assert.notEqual(result.status, 0);
+    assert.match(result.stderr, /s3:ListBucketVersions/);
+  } finally {
+    f.cleanup();
+  }
+});
+
+test('check-replica fails when the newest snapshot is old', () => {
+  const f = fixture({ resticNewest: new Date(Date.now() - 3 * 60 * 60 * 1000).toISOString() });
+  try {
+    const result = run(f, 'check-replica');
+    assert.notEqual(result.status, 0);
+    assert.match(result.stderr, /minutes old: replication may have stopped/);
+  } finally {
+    f.cleanup();
+  }
+});
+
+test('check-replica never puts a credential in a command argument', () => {
+  const f = fixture();
+  try {
+    const result = run(f, 'check-replica');
+    assert.equal(result.status, 0, result.stderr || result.stdout);
+    const calls = events(f).filter(([kind]) => kind === 'aws' || kind === 'restic');
+    assert.ok(calls.length > 0, 'no aws or restic calls were recorded');
+    for (const call of calls) {
+      for (const secret of ['replica-key-id', 'replica-secret', 'restic-password']) {
+        assert.ok(!call.join('\t').includes(secret), `${call[0]} carries a credential`);
+      }
+    }
+  } finally {
+    f.cleanup();
+  }
+});
+
+test('check-replica unlocks the age identity once and hands it only to sops', () => {
+  const f = fixture();
+  const counter = path.join(f.root, 'unlocks');
+  const sopsSeen = path.join(f.root, 'sops-age');
+  // The real SOPS_AGE_KEY_CMD asks for a passphrase each time it runs.
+  f.env.SOPS_AGE_KEY_CMD = `printf x >> ${counter}; printf 'AGE-SECRET-KEY-1TEST'`;
+  const sops = path.join(f.root, 'bin', 'sops');
+  writeFileSync(sops, readFileSync(sops, 'utf8').replace('#!/bin/sh\n', `#!/bin/sh\nprintf '%s|%s\\n' "\${SOPS_AGE_KEY:-}" "\${SOPS_AGE_KEY_CMD:-}" >> ${sopsSeen}\n`));
+  try {
+    const result = run(f, 'check-replica');
+    assert.equal(result.status, 0, result.stderr || result.stdout);
+    assert.equal(read(counter), 'x', 'the identity was unlocked more than once');
+    const seen = read(sopsSeen).trim().split('\n');
+    assert.ok(seen.length > 1);
+    for (const line of seen) assert.equal(line, 'AGE-SECRET-KEY-1TEST|', 'sops did not get the unlocked identity alone');
+    for (const call of events(f).filter(([kind]) => kind === 'aws' || kind === 'restic')) {
+      assert.ok(!call.join('\t').includes('AGE-SECRET-KEY'), `${call[0]} saw the identity`);
+    }
+  } finally {
+    f.cleanup();
+  }
+});
+
+// The production host as backup-drill sees it: a manage that prints the release
+// version, and the restic profile the drill copies. Only drill tests write these,
+// because the other tests expect the remote directory to stay empty.
+function drillHost(f) {
+  writeFileSync(path.join(f.remote, 'manage'), '#!/bin/sh\nif [ "$1" = version ]; then echo "$DRILL_VERSION"; fi\n');
+  chmodSync(path.join(f.remote, 'manage'), 0o755);
+  writeFileSync(path.join(f.remote, 'resticprofile.toml'), '[resticprofile]\nrepository = "s3:example/restic"\n[resticprofile.env]\nRESTIC_PASSWORD = "restic-password"\n');
+}
+
+function drillCopies(f) {
+  return readdirSync(f.env.TMPDIR).filter((name) => name.startsWith('librepaper-drill.'));
+}
+
+test('backup-drill restores the newest snapshot into a separate project and removes it', () => {
+  const f = fixture();
+  try {
+    drillHost(f);
+    const result = run(f, 'backup-drill');
+    assert.equal(result.status, 0, result.stderr || result.stdout);
+    assert.match(result.stdout, /PASS: snapshot 450fafe1 restores/);
+    assert.ok(indexOfEvent(events(f), ['drill-manage', /^backup restore 450fafe1$/]) !== -1, 'the snapshot was not restored');
+    const projects = read(f.env.DRILL_PROJECT_FILE).trim().split('\n');
+    assert.ok(projects.length > 0, 'no compose project was recorded');
+    for (const project of projects) assert.match(project, /^librepaper-drill-\d+$/);
+    assert.ok(indexOfEvent(events(f), ['docker', /^compose down -v$/]) !== -1, 'the copy was not taken down');
+    assert.deepEqual(drillCopies(f), [], 'left the copy behind');
+  } finally {
+    f.cleanup();
+  }
+});
+
+test('backup-drill fails when a referenced stored file is missing, and still removes the copy', () => {
+  const f = fixture({ drillCopyFiles: 1615 });
+  try {
+    drillHost(f);
+    const result = run(f, 'backup-drill');
+    assert.notEqual(result.status, 0);
+    assert.match(result.stderr, /FAIL/);
+    assert.match(result.stdout, /1615 stored files for 1616 referenced/);
+    assert.ok(indexOfEvent(events(f), ['docker', /^compose down -v$/]) !== -1, 'the copy was not taken down');
+    assert.deepEqual(drillCopies(f), [], 'left the copy behind');
+  } finally {
+    f.cleanup();
+  }
+});
+
+test('backup-drill fails when the copy has more rows than production', () => {
+  const f = fixture({ drillCopyCounts: '300 1374 1601 14 1 9 1616' });
+  try {
+    drillHost(f);
+    const result = run(f, 'backup-drill');
+    assert.notEqual(result.status, 0);
+    assert.match(result.stdout, /more accounts than production/);
+    assert.deepEqual(drillCopies(f), [], 'left the copy behind');
+  } finally {
+    f.cleanup();
+  }
+});
+
+test('backup-drill fails when the newest snapshot is old, before restoring anything', () => {
+  const f = fixture({ drillSnapshotTime: new Date(Date.now() - 3 * 60 * 60 * 1000).toISOString().slice(0, 19).replace('T', ' ') });
+  try {
+    drillHost(f);
+    const result = run(f, 'backup-drill');
+    assert.notEqual(result.status, 0);
+    assert.match(result.stderr, /FAIL: the newest snapshot 450fafe1 is \d+ minutes old/);
+    assert.equal(indexOfEvent(events(f), ['drill-manage', /^backup restore /]), -1, 'restored an old snapshot');
+  } finally {
+    f.cleanup();
+  }
+});
+
+test('backup-drill refuses an unverified kit before copying the restic profile', () => {
+  const f = fixture({ attestationFailure: true });
+  try {
+    drillHost(f);
+    const result = run(f, 'backup-drill');
+    assert.notEqual(result.status, 0);
+    assert.ok(!events(f).some(([kind, ...rest]) => kind === 'ssh' && rest.join('\t').includes('resticprofile.toml')), 'copied the restic profile');
+  } finally {
+    f.cleanup();
+  }
+});
+
+test('backup-drill never puts the restic profile in a command argument', () => {
+  const f = fixture();
+  try {
+    drillHost(f);
+    const result = run(f, 'backup-drill');
+    assert.equal(result.status, 0, result.stderr || result.stdout);
+    for (const event of events(f)) assert.ok(!event.join('\t').includes('restic-password'), `${event[0]} carries the restic password`);
+  } finally {
+    f.cleanup();
   }
 });

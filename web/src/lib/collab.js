@@ -2,7 +2,7 @@
 // this compatibility API; editor integrations supply their own persistence,
 // reference fetcher, and presence identity to project-session.js.
 import { authHeaders } from "./api.js";
-import { durableProjectPersistence } from "./offline-projects.js";
+import { durableProjectPersistence } from "./offline-persistence.js";
 import { projectIdentity } from "./project-identity.js";
 import { presenceColour } from "./presence-colour.js";
 import { createProjectSession, randomPresenceId } from "./project-session.js";

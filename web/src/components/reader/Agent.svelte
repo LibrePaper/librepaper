@@ -1,7 +1,7 @@
 <script>
   import { onMount, tick } from "svelte";
   import { Tabs } from "@skeletonlabs/skeleton-svelte";
-  import { getPrivate, post, SHELL_HEADERS, keyHeaders } from "../../lib/api.js";
+  import { getPrivate, post, SHELL_HEADERS, keyHeaders, withoutKey } from "../../lib/api.js";
   import PanelHeader from "../PanelHeader.svelte";
   import PanelTabs from "../PanelTabs.svelte";
   import IconButton from "../IconButton.svelte";
@@ -297,7 +297,7 @@
     const renew = async () => {
       try {
         const agentToken = await mintAgentGrant(target);
-        if (!stopped) await local.renewAssistant({ link: target, conversation: conversationId, agentToken });
+        if (!stopped) await local.renewAssistant({ link: withoutKey(target), conversation: conversationId, agentToken });
       } catch (error) {
         if (!stopped) problem = error?.message || String(error);
       }
@@ -314,13 +314,13 @@
     // one would leave the first holding the link it was started with, so a
     // change of agent or access replaces it rather than racing it.
     if (assistant.running) {
-      await local.stopAssistant({ link: agentLink || link, conversation: connection.id });
+      await local.stopAssistant({ link: withoutKey(agentLink || link), conversation: connection.id });
       assistant = { running: false, agent: "", access: "" };
     }
     await prepareAccessLink(mode);
     const agentToken = await mintAgentGrant(agentLink || link);
     const answer = await local.startAssistant({
-      link: agentLink || link, conversation: connection.id,
+      link: withoutKey(agentLink || link), conversation: connection.id,
       chatToken: connection.token, agentToken, agent: chosenAgent, access: mode,
     });
     if (!answer?.running) throw new Error(answer?.error || "The assistant did not start.");
@@ -363,7 +363,7 @@
       // persisting the link key in its agent-session record.
       if (savedAccess) await prepareAccessLink(savedAccess);
       if (!isCurrent()) return true;
-      const answer = await local.assistantStatus({ link: agentLink || link, conversation: conversationId });
+      const answer = await local.assistantStatus({ link: withoutKey(agentLink || link), conversation: conversationId });
       if (!isCurrent()) return true;
       // A successful status response saying the runner is stopped is terminal
       // for this restore. Network or server errors below remain retryable.
@@ -602,7 +602,7 @@
 
   async function newConversation() {
     await act(async () => {
-      if (assistant.running) await local.stopAssistant({ link: agentLink || link, conversation: connection.id });
+      if (assistant.running) await local.stopAssistant({ link: withoutKey(agentLink || link), conversation: connection.id });
       assistant = { running: false, agent: "", access: "" };
       await client.end(); await client.create();
       draft = ""; task = null; attachment = null; commentContext = null;

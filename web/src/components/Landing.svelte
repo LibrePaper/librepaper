@@ -44,6 +44,8 @@
   import { provide } from "../lib/support/providers.js";
   import * as localBridge from "../lib/desktop/client.js";
   import { createPreferences } from "../lib/reader/preferences.svelte.js";
+  import { readDefaultPreview } from "../lib/build-preferences.js";
+  import { warmReader } from "../lib/warm-reader.js";
 
   let { initialSettings = "" } = $props();
   const preferences = createPreferences();
@@ -705,6 +707,7 @@
       } while (cursor?.after_updated && cursor?.after_slug);
 
       documents = [...bySlug.values()];
+      if (documents.length) warmDocuments();
       tags = sortTags(latestTags);
       // A tag in the address that the account does not have is not a place,
       // so the page shows Projects instead of an empty list under a name that
@@ -735,6 +738,14 @@
     }
   }
 
+  // Warms the document page for the formats in the account, local copies included.
+  function warmDocuments() {
+    void warmReader({
+      formats: [...new Set(documents.map((doc) => doc?.source_format).filter(Boolean))],
+      latexOutput: readDefaultPreview({ origin: location.origin, user: me.id }, "latex"),
+    });
+  }
+
   async function showLocalProjects() {
     try {
       const local = await localProjects();
@@ -748,6 +759,7 @@
         });
       }
       documents = [...bySlug.values()];
+      if (local.length > 0) warmDocuments();
     } catch { /* the online project list remains useful without local storage */ }
   }
 

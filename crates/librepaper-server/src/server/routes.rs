@@ -1448,6 +1448,12 @@ impl Server {
         context: &RequestContext,
         query: Option<&str>,
     ) -> Reply {
+        if Self::is_automation(headers) {
+            return write_json(
+                403,
+                &json!({"error": "automation mode cannot list projects"}),
+            );
+        }
         let arrival = &context.arrival;
         if cross_site_refused(headers, arrival) {
             return write_json(403, &cross_site_refusal());

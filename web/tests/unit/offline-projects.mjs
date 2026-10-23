@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
-import { durableProjectPersistence, forgetProject, markShellReady, rememberProject } from "../../src/lib/offline-projects.js";
+import { forgetProject, markShellReady, rememberProject } from "../../src/lib/offline-projects.js";
+import { durableProjectPersistence } from "../../src/lib/offline-persistence.js";
 import { projectIdentity, projectIdentityKey } from "../../src/lib/project-identity.js";
 
 const blockedIndexedDB = {
@@ -188,4 +189,24 @@ function readStore(database, store, method, ...args) {
   await markShellReady(identity, indexedDB_);
   assert.equal((await rememberProject(metadata, indexedDB_)).shellReady, true);
   assert.equal((await readStore(database, "projects", "get", key)).shellReady, true);
+}
+
+// The documents origin is remembered with the project, so a cached open can
+// show the preview. Metadata without one stores none.
+{
+  const indexedDB_ = fakeIndexedDB();
+  const server = "https://example.test";
+  const metadata = { server, document_id: "44444444-4444-4444-8444-444444444444", slug: "origin", created_at: "" };
+  const key = projectIdentityKey(projectIdentity({ server, documentId: metadata.document_id, slug: "origin", createdAt: "" }));
+  const database = await openFake(indexedDB_);
+  const seeding = database.transaction(["states"], "readwrite");
+  const seeded = new Promise((resolve) => { seeding.oncomplete = resolve; });
+  seeding.objectStore("states").put({ version: 3 }, key);
+  await seeded;
+
+  const without = await rememberProject(metadata, indexedDB_);
+  assert.equal("docs_origin" in without.document, false);
+  const withOrigin = await rememberProject({ ...metadata, docs_origin: "https://docs.example.test" }, indexedDB_);
+  assert.equal(withOrigin.document.docs_origin, "https://docs.example.test");
+  assert.equal((await readStore(database, "projects", "get", key)).document.docs_origin, "https://docs.example.test");
 }

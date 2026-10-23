@@ -2156,6 +2156,12 @@ impl Server {
     /// so the publisher policy does not apply to it.
     #[allow(clippy::result_large_err)]
     async fn tag_caller(&self, headers: &HeaderMap, arrival: &Arrival) -> Result<String, Reply> {
+        if Server::is_automation(headers) {
+            return Err(write_json(
+                403,
+                &json!({"error": "automation mode cannot manage tags"}),
+            ));
+        }
         if cross_site_refused(headers, arrival) {
             return Err(write_json(403, &cross_site_refusal()));
         }

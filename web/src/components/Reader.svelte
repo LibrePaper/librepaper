@@ -53,6 +53,7 @@
     takeKeyFromFragment,
     write,
   } from "../lib/storage.js";
+  import { localDataForgotten } from "../lib/signed-out.js";
   import { ACTIVITY_WIDTH, DOCUMENT_MIN, GRIP, PANES, RATIOS, clamp, measure, pixels, px, showing } from "../lib/panes.js";
   import { slotId, tabsFor } from "../lib/panels.js";
   import { APPLE, availability, commandFor, menuKeys } from "../lib/commands.js";
@@ -135,6 +136,7 @@
   /** @type {boolean} */
   let readerDisposed = false;
   let docsOrigin = $state(null);
+  const NO_DOCS_ORIGIN = "This server has no separate documents origin, so the preview cannot be shown.";
   let frameSrc = $state(null);
   // Non-editors render this allowlisted current-state projection. It has the
   // same shape as the editor adapter but contains no CRDT or history payload.
@@ -2414,7 +2416,7 @@
 
   function setLinked(on) {
     linked = on;
-    write(LINKED, on);
+    if (!localDataForgotten()) write(LINKED, on);
   }
 
   /* ------------------------------------------------------------------ panes */
@@ -3411,13 +3413,21 @@
       onDocument: (found) => {
         doc = found;
         document.title = `${found.title} · LibrePaper`;
-        docsOrigin = found.docs_origin || location.origin;
+        // The server refuses a documents host equal to the app host, so the
+        // page only has to refuse to invent one: falling back to the app's own
+        // origin would hand the sandboxed frame that origin.
+        const separate = Boolean(found.docs_origin);
+        docsOrigin = separate ? found.docs_origin : null;
         // The frame is an empty page with the agent in it, on the documents
         // origin. What goes into it is what this browser renders -- or, for a
         // LaTeX document, a PDF an editor's browser compiled, which needs a
         // frame that can draw one. Set after `prepare`, which is what settles
         // the format and so which frame this document wants.
         void prepare(found);
+        if (!separate) {
+          renderStatus.failed(NO_DOCS_ORIGIN);
+          say(NO_DOCS_ORIGIN, { kind: "problem", id: "reader:no-docs-origin" });
+        }
       },
       // A document answers a stranger exactly as a missing one does, which
       // tells a stranger nothing -- and tells an owner who has not signed in

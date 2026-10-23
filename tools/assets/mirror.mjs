@@ -13,7 +13,7 @@ import { tmpdir } from "node:os";
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { promisify } from "node:util";
 import { Transform } from "node:stream";
-import { createGzip } from "node:zlib";
+import { constants, createBrotliCompress, createGzip } from "node:zlib";
 import { pipeline } from "node:stream/promises";
 import { fileURLToPath } from "node:url";
 import { statSync } from "node:fs";
@@ -134,6 +134,9 @@ export async function checkMirror(base) {
 
 const HASH = /(?:^|[./_-])[a-f0-9]{64}(?=$|[./_-])/i;
 const COMPRESSIBLE = new Set([".css", ".data", ".fmt", ".html", ".js", ".json", ".mjs", ".svg", ".tar", ".txt", ".wasm", ".xml"]);
+// The large engine payloads. Brotli is about a third smaller than gzip on them,
+// and every browser decodes it.
+const BROTLI = new Set([".wasm", ".data"]);
 const MIME = new Map([
   [".css", "text/css; charset=utf-8"],
   [".html", "text/html; charset=utf-8"], [".js", "text/javascript; charset=utf-8"],
@@ -194,8 +197,8 @@ export function metadataFor(key) {
   const cacheControl = /(^|\/)(licen[cs]e|copying|notice)(\.|\/|$)/i.test(key) || /(^|\/)licenses\//i.test(key)
       ? "public, max-age=86400" : HASH.test(key)
         ? "public, max-age=31536000, immutable" : "public, max-age=3600";
-  const gzip = COMPRESSIBLE.has(extension);
-  return { contentType, cacheControl, contentEncoding: gzip ? "gzip" : undefined };
+  const contentEncoding = BROTLI.has(extension) ? "br" : COMPRESSIBLE.has(extension) ? "gzip" : undefined;
+  return { contentType, cacheControl, contentEncoding };
 }
 
 async function listFiles(root, directory = root, found = []) {
@@ -393,7 +396,7 @@ async function aws(args, env) {
   }
 }
 
-async function stageSource(source, destination, expected, compress) {
+async function stageSource(source, destination, expected, encoding) {
   const hash = createHash("sha256");
   let size = 0;
   const measure = new Transform({
@@ -404,7 +407,14 @@ async function stageSource(source, destination, expected, compress) {
     },
   });
   await mkdir(dirname(destination), { recursive: true });
-  await pipeline(createReadStream(source), measure, ...(compress ? [createGzip({ level: 6 })] : []), createWriteStream(destination));
+  const compressor = encoding === "br"
+    ? [createBrotliCompress({ params: {
+      [constants.BROTLI_PARAM_QUALITY]: 11,
+      [constants.BROTLI_PARAM_LGWIN]: 24,
+      [constants.BROTLI_PARAM_SIZE_HINT]: expected.size,
+    } })]
+    : encoding === "gzip" ? [createGzip({ level: 6 })] : [];
+  await pipeline(createReadStream(source), measure, ...compressor, createWriteStream(destination));
   if (size !== expected.size || hash.digest("hex") !== expected.sha256) {
     await rm(destination, { force: true });
     throw new Error(`mirror file changed after preflight: ${source}`);
@@ -506,7 +516,7 @@ export async function publish({ dir, prefix, dryRun = false, configureCors = fal
       const started = Date.now();
       staging = await mkdtemp(join(tmpdir(), "librepaper-mirror-"));
       const groups = groupFiles(prefix, files);
-      // Each group is staged in its own subtree, gzipped where its metadata says so,
+      // Each group is staged in its own subtree, compressed where its metadata says so,
       // so one sync of that subtree uploads exactly the group with one set of headers.
       // Compressing gigabytes takes minutes, so say how far along it is: a
       // redrawn line on a terminal, a line every ten seconds otherwise.
@@ -528,7 +538,7 @@ export async function publish({ dir, prefix, dryRun = false, configureCors = fal
         async ({ group, index, file }) => {
           const body = join(staging, "groups", String(index), ...file.relative.split("/"));
           const expected = preflight.expected.get(file.relative);
-          await stageSource(file.absolute, body, expected, group.metadata.contentEncoding === "gzip");
+          await stageSource(file.absolute, body, expected, group.metadata.contentEncoding);
           file.stagedSize = (await stat(body)).size;
           staged += 1;
           stagedBytes += expected.size;
