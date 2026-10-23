@@ -479,17 +479,13 @@
         overflow-x: auto;
       }
 
-      /* The table is far taller than its copy, so on a wide window the copy
-         stays in view beside it while the table scrolls. */
-      @media (min-width: 960px) {
-        .desktop-feature {
-          align-items: start;
-        }
+      .features-title {
+        text-align: center;
+      }
 
-        .desktop-feature .feature-copy {
-          position: sticky;
-          top: 5.5rem;
-        }
+      #features .compare-wrap {
+        max-width: 48rem;
+        margin: 0 auto;
       }
 
       .compare {
@@ -889,9 +885,9 @@
       <!-- ========================================================== desktop -->
       <section class="section section-alt" id="desktop">
         <div class="container">
-          <div class="feature desktop-feature">
+          <div class="feature">
             <div class="feature-copy">
-              <h2>Features: In the browser or on your desktop</h2>
+              <h2>In the browser or on your desktop</h2>
               <p>Writing, previews, collaboration and review all work in any modern web browser.</p>
               <p>The desktop app uses the same account and the same projects. It adds what a browser cannot do on its own, such as running code, starting your AI agent, reading your Zotero library and backing up projects to your disk.</p>
               <p>The desktop app runs on macOS, Windows and Linux.</p>
@@ -899,156 +895,171 @@
                 <a href="/desktop-app.html#install-the-desktop-app">Install the desktop app</a>
               </p>
             </div>
-            <div class="compare-wrap" id="features">
-              <table class="compare">
-                <caption class="sr-only">What works in the browser and in the desktop app</caption>
-                <thead>
-                  <tr>
-                    <th scope="col">Feature</th>
-                    <th scope="col">Browser</th>
-                    <th scope="col">Desktop</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  <tr class="compare-group"><th scope="rowgroup" colspan="3">Writing</th></tr>
-                  <tr>
-                    <th scope="row">Formats: LaTeX, Markdown, Typst</th>
-                    <td class="yes"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20 6 9 17l-5-5"/></svg><span class="sr-only">Yes</span></td>
-                    <td class="yes"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20 6 9 17l-5-5"/></svg><span class="sr-only">Yes</span></td>
-                  </tr>
-                  <tr>
-                    <th scope="row">Computational notebooks: Quarto, Calepin</th>
-                    <td class="no"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M18 6 6 18"/><path d="m6 6 12 12"/></svg><span class="sr-only">No</span></td>
-                    <td class="yes"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20 6 9 17l-5-5"/></svg><span class="sr-only">Yes</span></td>
-                  </tr>
-                  <tr>
-                    <th scope="row">Multi-file projects</th>
-                    <td class="yes"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20 6 9 17l-5-5"/></svg><span class="sr-only">Yes</span></td>
-                    <td class="yes"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20 6 9 17l-5-5"/></svg><span class="sr-only">Yes</span></td>
-                  </tr>
-                  <tr>
-                    <th scope="row">Templates</th>
-                    <td class="yes"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20 6 9 17l-5-5"/></svg><span class="sr-only">Yes</span></td>
-                    <td class="yes"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20 6 9 17l-5-5"/></svg><span class="sr-only">Yes</span></td>
-                  </tr>
-                  <tr>
-                    <th scope="row">Autocompletion</th>
-                    <td class="yes"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20 6 9 17l-5-5"/></svg><span class="sr-only">Yes</span></td>
-                    <td class="yes"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20 6 9 17l-5-5"/></svg><span class="sr-only">Yes</span></td>
-                  </tr>
-                  <tr>
-                    <th scope="row">Symbol and math palettes</th>
-                    <td class="yes"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20 6 9 17l-5-5"/></svg><span class="sr-only">Yes</span></td>
-                    <td class="yes"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20 6 9 17l-5-5"/></svg><span class="sr-only">Yes</span></td>
-                  </tr>
-                  <tr>
-                    <th scope="row">Vim and Emacs keybindings</th>
-                    <td class="yes"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20 6 9 17l-5-5"/></svg><span class="sr-only">Yes</span></td>
-                    <td class="yes"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20 6 9 17l-5-5"/></svg><span class="sr-only">Yes</span></td>
-                  </tr>
-                  <tr>
-                    <th scope="row">Themes and dark mode</th>
-                    <td class="yes"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20 6 9 17l-5-5"/></svg><span class="sr-only">Yes</span></td>
-                    <td class="yes"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20 6 9 17l-5-5"/></svg><span class="sr-only">Yes</span></td>
-                  </tr>
-                  <tr>
-                    <th scope="row">BibTeX</th>
-                    <td class="yes"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20 6 9 17l-5-5"/></svg><span class="sr-only">Yes</span></td>
-                    <td class="yes"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20 6 9 17l-5-5"/></svg><span class="sr-only">Yes</span></td>
-                  </tr>
-                  <tr>
-                    <th scope="row">Zotero</th>
-                    <td class="no"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M18 6 6 18"/><path d="m6 6 12 12"/></svg><span class="sr-only">No</span></td>
-                    <td class="yes"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20 6 9 17l-5-5"/></svg><span class="sr-only">Yes</span></td>
-                  </tr>
-                  <tr>
-                    <th scope="row">DOCX from Markdown with Pandoc</th>
-                    <td class="no"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M18 6 6 18"/><path d="m6 6 12 12"/></svg><span class="sr-only">No</span></td>
-                    <td class="yes"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20 6 9 17l-5-5"/></svg><span class="sr-only">Yes</span></td>
-                  </tr>
-                </tbody>
-                <tbody>
-                  <tr class="compare-group"><th scope="rowgroup" colspan="3">Collaboration and review</th></tr>
-                  <tr>
-                    <th scope="row">Several people editing at once</th>
-                    <td class="yes"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20 6 9 17l-5-5"/></svg><span class="sr-only">Yes</span></td>
-                    <td class="yes"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20 6 9 17l-5-5"/></svg><span class="sr-only">Yes</span></td>
-                  </tr>
-                  <tr>
-                    <th scope="row">Comment threads</th>
-                    <td class="yes"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20 6 9 17l-5-5"/></svg><span class="sr-only">Yes</span></td>
-                    <td class="yes"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20 6 9 17l-5-5"/></svg><span class="sr-only">Yes</span></td>
-                  </tr>
-                  <tr>
-                    <th scope="row">Track changes</th>
-                    <td class="yes"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20 6 9 17l-5-5"/></svg><span class="sr-only">Yes</span></td>
-                    <td class="yes"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20 6 9 17l-5-5"/></svg><span class="sr-only">Yes</span></td>
-                  </tr>
-                  <tr>
-                    <th scope="row">Chat</th>
-                    <td class="yes"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20 6 9 17l-5-5"/></svg><span class="sr-only">Yes</span></td>
-                    <td class="yes"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20 6 9 17l-5-5"/></svg><span class="sr-only">Yes</span></td>
-                  </tr>
-                  <tr>
-                    <th scope="row">Share links</th>
-                    <td class="yes"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20 6 9 17l-5-5"/></svg><span class="sr-only">Yes</span></td>
-                    <td class="yes"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20 6 9 17l-5-5"/></svg><span class="sr-only">Yes</span></td>
-                  </tr>
-                  <tr>
-                    <th scope="row">Version history</th>
-                    <td class="yes"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20 6 9 17l-5-5"/></svg><span class="sr-only">Yes</span></td>
-                    <td class="yes"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20 6 9 17l-5-5"/></svg><span class="sr-only">Yes</span></td>
-                  </tr>
-                  <tr>
-                    <th scope="row">Tags and favorites</th>
-                    <td class="yes"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20 6 9 17l-5-5"/></svg><span class="sr-only">Yes</span></td>
-                    <td class="yes"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20 6 9 17l-5-5"/></svg><span class="sr-only">Yes</span></td>
-                  </tr>
-                </tbody>
-                <tbody>
-                  <tr class="compare-group"><th scope="rowgroup" colspan="3">AI agents</th></tr>
-                  <tr>
-                    <th scope="row">Claude Code, Codex, Pi, opencode</th>
-                    <td class="no"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M18 6 6 18"/><path d="m6 6 12 12"/></svg><span class="sr-only">No</span></td>
-                    <td class="yes"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20 6 9 17l-5-5"/></svg><span class="sr-only">Yes</span></td>
-                  </tr>
-                  <tr>
-                    <th scope="row">Agent comments and tracked changes</th>
-                    <td class="no"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M18 6 6 18"/><path d="m6 6 12 12"/></svg><span class="sr-only">No</span></td>
-                    <td class="yes"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20 6 9 17l-5-5"/></svg><span class="sr-only">Yes</span></td>
-                  </tr>
-                </tbody>
-                <tbody>
-                  <tr class="compare-group"><th scope="rowgroup" colspan="3">Files and backups</th></tr>
-                  <tr>
-                    <th scope="row">Download projects</th>
-                    <td class="yes"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20 6 9 17l-5-5"/></svg><span class="sr-only">Yes</span></td>
-                    <td class="yes"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20 6 9 17l-5-5"/></svg><span class="sr-only">Yes</span></td>
-                  </tr>
-                  <tr>
-                    <th scope="row">Git sync</th>
-                    <td class="no"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M18 6 6 18"/><path d="m6 6 12 12"/></svg><span class="sr-only">No</span></td>
-                    <td class="yes"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20 6 9 17l-5-5"/></svg><span class="sr-only">Yes</span></td>
-                  </tr>
-                  <tr>
-                    <th scope="row">Project folder on disk</th>
-                    <td class="no"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M18 6 6 18"/><path d="m6 6 12 12"/></svg><span class="sr-only">No</span></td>
-                    <td class="yes"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20 6 9 17l-5-5"/></svg><span class="sr-only">Yes</span></td>
-                  </tr>
-                  <tr>
-                    <th scope="row">Local backups</th>
-                    <td class="no"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M18 6 6 18"/><path d="m6 6 12 12"/></svg><span class="sr-only">No</span></td>
-                    <td class="yes"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20 6 9 17l-5-5"/></svg><span class="sr-only">Yes</span></td>
-                  </tr>
-                </tbody>
-              </table>
+            <div class="feature-aside">
+              <ul class="details">
+                <li>Runs R, Python and Julia code in Quarto and Calepin notebooks.</li>
+                <li>Starts the AI agent you already use.</li>
+                <li>Reads your Zotero library.</li>
+                <li>Backs up every project to your disk.</li>
+              </ul>
             </div>
           </div>
         </div>
       </section>
 
+      <!-- ========================================================= features -->
+      <section class="section" id="features">
+        <div class="container">
+          <h2 class="section-title features-title">Features</h2>
+          <div class="compare-wrap">
+            <table class="compare">
+              <caption class="sr-only">What works in the browser and in the desktop app</caption>
+              <thead>
+                <tr>
+                  <th scope="col">Feature</th>
+                  <th scope="col">Browser</th>
+                  <th scope="col">Desktop</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr class="compare-group"><th scope="rowgroup" colspan="3">Writing</th></tr>
+                <tr>
+                  <th scope="row">Formats: LaTeX, Markdown, Typst</th>
+                  <td class="yes"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20 6 9 17l-5-5"/></svg><span class="sr-only">Yes</span></td>
+                  <td class="yes"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20 6 9 17l-5-5"/></svg><span class="sr-only">Yes</span></td>
+                </tr>
+                <tr>
+                  <th scope="row">Computational notebooks: Quarto, Calepin</th>
+                  <td class="no"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M18 6 6 18"/><path d="m6 6 12 12"/></svg><span class="sr-only">No</span></td>
+                  <td class="yes"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20 6 9 17l-5-5"/></svg><span class="sr-only">Yes</span></td>
+                </tr>
+                <tr>
+                  <th scope="row">Multi-file projects</th>
+                  <td class="yes"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20 6 9 17l-5-5"/></svg><span class="sr-only">Yes</span></td>
+                  <td class="yes"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20 6 9 17l-5-5"/></svg><span class="sr-only">Yes</span></td>
+                </tr>
+                <tr>
+                  <th scope="row">Templates</th>
+                  <td class="yes"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20 6 9 17l-5-5"/></svg><span class="sr-only">Yes</span></td>
+                  <td class="yes"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20 6 9 17l-5-5"/></svg><span class="sr-only">Yes</span></td>
+                </tr>
+                <tr>
+                  <th scope="row">Autocompletion</th>
+                  <td class="yes"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20 6 9 17l-5-5"/></svg><span class="sr-only">Yes</span></td>
+                  <td class="yes"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20 6 9 17l-5-5"/></svg><span class="sr-only">Yes</span></td>
+                </tr>
+                <tr>
+                  <th scope="row">Symbol and math palettes</th>
+                  <td class="yes"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20 6 9 17l-5-5"/></svg><span class="sr-only">Yes</span></td>
+                  <td class="yes"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20 6 9 17l-5-5"/></svg><span class="sr-only">Yes</span></td>
+                </tr>
+                <tr>
+                  <th scope="row">Vim and Emacs keybindings</th>
+                  <td class="yes"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20 6 9 17l-5-5"/></svg><span class="sr-only">Yes</span></td>
+                  <td class="yes"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20 6 9 17l-5-5"/></svg><span class="sr-only">Yes</span></td>
+                </tr>
+                <tr>
+                  <th scope="row">Themes and dark mode</th>
+                  <td class="yes"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20 6 9 17l-5-5"/></svg><span class="sr-only">Yes</span></td>
+                  <td class="yes"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20 6 9 17l-5-5"/></svg><span class="sr-only">Yes</span></td>
+                </tr>
+                <tr>
+                  <th scope="row">BibTeX</th>
+                  <td class="yes"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20 6 9 17l-5-5"/></svg><span class="sr-only">Yes</span></td>
+                  <td class="yes"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20 6 9 17l-5-5"/></svg><span class="sr-only">Yes</span></td>
+                </tr>
+                <tr>
+                  <th scope="row">Zotero</th>
+                  <td class="no"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M18 6 6 18"/><path d="m6 6 12 12"/></svg><span class="sr-only">No</span></td>
+                  <td class="yes"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20 6 9 17l-5-5"/></svg><span class="sr-only">Yes</span></td>
+                </tr>
+                <tr>
+                  <th scope="row">DOCX from Markdown with Pandoc</th>
+                  <td class="no"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M18 6 6 18"/><path d="m6 6 12 12"/></svg><span class="sr-only">No</span></td>
+                  <td class="yes"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20 6 9 17l-5-5"/></svg><span class="sr-only">Yes</span></td>
+                </tr>
+              </tbody>
+              <tbody>
+                <tr class="compare-group"><th scope="rowgroup" colspan="3">Collaboration and review</th></tr>
+                <tr>
+                  <th scope="row">Several people editing at once</th>
+                  <td class="yes"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20 6 9 17l-5-5"/></svg><span class="sr-only">Yes</span></td>
+                  <td class="yes"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20 6 9 17l-5-5"/></svg><span class="sr-only">Yes</span></td>
+                </tr>
+                <tr>
+                  <th scope="row">Comment threads</th>
+                  <td class="yes"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20 6 9 17l-5-5"/></svg><span class="sr-only">Yes</span></td>
+                  <td class="yes"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20 6 9 17l-5-5"/></svg><span class="sr-only">Yes</span></td>
+                </tr>
+                <tr>
+                  <th scope="row">Track changes</th>
+                  <td class="yes"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20 6 9 17l-5-5"/></svg><span class="sr-only">Yes</span></td>
+                  <td class="yes"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20 6 9 17l-5-5"/></svg><span class="sr-only">Yes</span></td>
+                </tr>
+                <tr>
+                  <th scope="row">Chat</th>
+                  <td class="yes"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20 6 9 17l-5-5"/></svg><span class="sr-only">Yes</span></td>
+                  <td class="yes"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20 6 9 17l-5-5"/></svg><span class="sr-only">Yes</span></td>
+                </tr>
+                <tr>
+                  <th scope="row">Share links</th>
+                  <td class="yes"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20 6 9 17l-5-5"/></svg><span class="sr-only">Yes</span></td>
+                  <td class="yes"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20 6 9 17l-5-5"/></svg><span class="sr-only">Yes</span></td>
+                </tr>
+                <tr>
+                  <th scope="row">Version history</th>
+                  <td class="yes"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20 6 9 17l-5-5"/></svg><span class="sr-only">Yes</span></td>
+                  <td class="yes"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20 6 9 17l-5-5"/></svg><span class="sr-only">Yes</span></td>
+                </tr>
+                <tr>
+                  <th scope="row">Tags and favorites</th>
+                  <td class="yes"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20 6 9 17l-5-5"/></svg><span class="sr-only">Yes</span></td>
+                  <td class="yes"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20 6 9 17l-5-5"/></svg><span class="sr-only">Yes</span></td>
+                </tr>
+              </tbody>
+              <tbody>
+                <tr class="compare-group"><th scope="rowgroup" colspan="3">AI agents</th></tr>
+                <tr>
+                  <th scope="row">Claude Code, Codex, Pi, opencode</th>
+                  <td class="no"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M18 6 6 18"/><path d="m6 6 12 12"/></svg><span class="sr-only">No</span></td>
+                  <td class="yes"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20 6 9 17l-5-5"/></svg><span class="sr-only">Yes</span></td>
+                </tr>
+                <tr>
+                  <th scope="row">Agent comments and tracked changes</th>
+                  <td class="no"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M18 6 6 18"/><path d="m6 6 12 12"/></svg><span class="sr-only">No</span></td>
+                  <td class="yes"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20 6 9 17l-5-5"/></svg><span class="sr-only">Yes</span></td>
+                </tr>
+              </tbody>
+              <tbody>
+                <tr class="compare-group"><th scope="rowgroup" colspan="3">Files and backups</th></tr>
+                <tr>
+                  <th scope="row">Download projects</th>
+                  <td class="yes"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20 6 9 17l-5-5"/></svg><span class="sr-only">Yes</span></td>
+                  <td class="yes"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20 6 9 17l-5-5"/></svg><span class="sr-only">Yes</span></td>
+                </tr>
+                <tr>
+                  <th scope="row">Git sync</th>
+                  <td class="no"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M18 6 6 18"/><path d="m6 6 12 12"/></svg><span class="sr-only">No</span></td>
+                  <td class="yes"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20 6 9 17l-5-5"/></svg><span class="sr-only">Yes</span></td>
+                </tr>
+                <tr>
+                  <th scope="row">Project folder on disk</th>
+                  <td class="no"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M18 6 6 18"/><path d="m6 6 12 12"/></svg><span class="sr-only">No</span></td>
+                  <td class="yes"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20 6 9 17l-5-5"/></svg><span class="sr-only">Yes</span></td>
+                </tr>
+                <tr>
+                  <th scope="row">Local backups</th>
+                  <td class="no"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M18 6 6 18"/><path d="m6 6 12 12"/></svg><span class="sr-only">No</span></td>
+                  <td class="yes"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20 6 9 17l-5-5"/></svg><span class="sr-only">Yes</span></td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
+      </section>
+
       <!-- ========================================================== closing -->
-      <section class="section closing" id="start">
+      <section class="section section-alt closing" id="start">
         <div class="container">
           <div class="feature">
             <div class="feature-copy">
