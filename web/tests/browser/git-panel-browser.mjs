@@ -24,6 +24,7 @@ const scene = () => window.git;
 const record = (name, args) => { scene().calls.push([name, ...args]); };
 export async function status() { return { git: { supported: true, git: "2.47.0", connected: true, connection_id: "c1", remote: scene().gitRemote ?? { url: "https://github.com/vincentarelbundock/a-repository-with-a-long-name.git" } }, link: scene().link, pending: [], conflict: scene().conflict ?? null }; }
 export async function checkRemote() { record("checkRemote", []); return scene().remote; }
+export async function remoteChanges() { record("remoteChanges", []); return scene().incoming ?? { status: "none", head: null, files: [] }; }
 export async function localChanges() { record("localChanges", []); return scene().local; }
 export async function outgoing() { record("outgoing", []); return scene().outgoing; }
 export async function push(ctx, message, options) { record("push", [message, options]); scene().local = { status: "none", files: [] }; return { status: "pushed", commit: "abcdef1234" }; }
@@ -58,7 +59,7 @@ window.mount = async (scene) => {
   component = createClassComponent({ component: Git, target: document.getElementById("panel"), props: {
     open: true, slug: "paper", session: { onFiles: () => () => {}, list: () => [] }, rules: {}, me: { name: "Ada" },
     resolver: { state: { active: false }, open() {}, async discard() {} },
-    differ: { state: { active: false }, open(ctx, options) { window.git.calls.push(["diffOpen", options]); } },
+    differ: { state: { active: false, selected: "" }, show(ctx, meta, path) { window.git.calls.push(["show", path]); } },
   } });
   await tick();
 };
@@ -180,13 +181,16 @@ try {
   await evaluate(`mount(${JSON.stringify({ ...scene, outgoing: { status: "behind", head: "h2", reason: "The remote has new commits. Pull first, then push." } })})`);
   await until("changes listed", () => evaluate('text().includes("rendering-notes-for-the-appendix.qmd")'), 5000);
   await evaluate('click("Commit & push")');
-  await until("pull first", () => evaluate('text().includes("Pull first, then push")'), 5000);
+  await until("pull first", () => evaluate('text().includes("Pull before pushing")'), 5000);
   assert.equal(await evaluate('git.calls.some((call) => call[0] === "push")'), false);
   assert.ok(await evaluate('button("Pull") !== null'));
 
   // A remote with new commits disables Commit & push while local changes wait.
-  await evaluate(`mount(${JSON.stringify({ ...scene, remote: { status: "behind", head: "h2" } })})`);
+  await evaluate(`mount(${JSON.stringify({ ...scene, remote: { status: "behind", head: "h2" }, incoming: { status: "changes", head: "h2", files: [{ path: "librepaper.md", status: "M" }, { path: "references.bib", status: "M" }] } })})`);
   await until("changes listed again", () => evaluate('text().includes("rendering-notes-for-the-appendix.qmd")'), 5000);
+  await until("remote changes listed", () => evaluate('text().includes("references.bib")'), 5000);
+  assert.match(await evaluate("text()"), /Remote changes/);
+  assert.ok(await evaluate('button("Pull") !== null'));
   assert.equal(await evaluate('button("Commit & push").disabled'), true);
 
   // New commits on the remote offer Pull; a failed check offers Retry.
@@ -238,12 +242,13 @@ try {
   await until("branch options", () => evaluate('document.querySelector(".gh-panel select option[value=\'draft\']") !== null'), 5000);
   assert.equal(await evaluate('document.querySelector(".gh-panel input.gh-input[placeholder=\'HTTPS or SSH URL\']").value'), "https://github.com/vincentarelbundock/a-repository-with-a-long-name.git");
 
-  // Diff opens the comparison for the connected branch and remote.
+  // There is no Diff button. Clicking a local change opens its diff for that file.
   await evaluate(`mount(${JSON.stringify(scene)})`);
   await until("up to date for diff", () => evaluate('text().includes("Up to date")'), 5000);
-  await evaluate('click("Diff")');
-  await until("diff opened", () => evaluate('git.calls.some((call) => call[0] === "diffOpen")'), 5000);
-  assert.deepEqual(await evaluate('git.calls.find((call) => call[0] === "diffOpen")[1]'), { label: link.remote_label, branch: link.branch });
+  assert.equal(await evaluate('button("Diff")'), null);
+  await evaluate(`document.querySelector(".gh-panel .gh-change-open[title='${changes[0].path}']").click()`);
+  await until("file shown", () => evaluate('git.calls.some((call) => call[0] === "show")'), 5000);
+  assert.equal(await evaluate('git.calls.find((call) => call[0] === "show")[1]'), changes[0].path);
 
   // Connect has no Compare step: a typed remote lists its branches, Connect
   // records the draft once, and neither pull nor push runs.

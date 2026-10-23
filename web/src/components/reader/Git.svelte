@@ -13,7 +13,7 @@
   import { remoteIdentity } from "../../lib/gitsync/identity.js";
   import { currentPlatform, signInHelp } from "../../lib/gitsync/sign-in-help.js";
   import {
-    checkRemote, connect, defaultMessage, disconnect, discardConflict, leaveBranch, localChanges, outgoing, pull, push, recover, status,
+    checkRemote, connect, defaultMessage, disconnect, discardConflict, leaveBranch, localChanges, outgoing, pull, push, recover, remoteChanges, status,
   } from "../../lib/gitsync/sync.js";
 
   let { open = false, slug, key = "", session = null, rules = {}, me = {}, resolver, differ } = $props();
@@ -47,6 +47,9 @@
   let checking = $state(false);
   let checkedAt = $state(null);
   let checkGeneration = 0;
+  // The files the remote has that this computer does not, while it is behind.
+  let incoming = $state(null);
+  let incomingGeneration = 0;
   let local = $state(null);
   let localGeneration = 0;
   let pulling = $state(false);
@@ -156,13 +159,30 @@
       remoteState = answer;
       checkedAt = answer.status === "unknown" ? null : new Date();
       if (answer.reconnect) reconnect = true;
+      loadIncoming();
     } catch (failure) {
       if (request !== checkGeneration) return;
       remoteState = { status: "unknown", reason: failure?.message || "Could not check the remote." };
       checkedAt = null;
+      loadIncoming();
       if (failure?.kind === "auth") fail(failure);
     } finally {
       if (request === checkGeneration) checking = false;
+    }
+  }
+
+  // Lists what the remote has while it is behind. Any other state clears the list.
+  async function loadIncoming() {
+    const request = ++incomingGeneration;
+    if (remoteState?.status !== "behind") {
+      incoming = null;
+      return;
+    }
+    try {
+      const answer = await remoteChanges(context());
+      if (request === incomingGeneration) incoming = answer;
+    } catch (failure) {
+      if (request === incomingGeneration) incoming = { status: "unknown", reason: failure?.message || "Could not list the remote changes." };
     }
   }
 
@@ -318,6 +338,11 @@
     });
   }
 
+  // A changed file opens its diff in the editor area; the panel stays.
+  function openDiff(path) {
+    differ?.show(context(), { label: link.remote_label, branch: link.branch }, path);
+  }
+
   // Commits and pushes only the list the user has seen. It never pulls.
   async function commitAndPush() {
     note = null;
@@ -328,6 +353,7 @@
         const result = await outgoing(context());
         if (result.status === "behind") {
           remoteState = { status: "behind", head: result.head };
+          loadIncoming();
           await refresh();
           return;
         }
@@ -349,6 +375,7 @@
         const pushed = await push(context(), message.trim(), { confirmed: result.outgoing });
         if (pushed.status === "behind") {
           remoteState = { status: "behind", head: pushed.head };
+          loadIncoming();
           await refresh();
           return;
         }
@@ -399,6 +426,8 @@
       outcome = null;
       note = null;
       remoteState = null;
+      incoming = null;
+      incomingGeneration++;
       local = null;
       checkGeneration++;
       localGeneration++;
@@ -426,6 +455,8 @@
       outcome = null;
       note = null;
       remoteState = null;
+      incoming = null;
+      incomingGeneration++;
       local = null;
       checkGeneration++;
       localGeneration++;
@@ -500,7 +531,7 @@
     if (savedConflict) return { icon: "triangle-alert", text: "Conflicts need resolution", action: { label: "Resolve", onclick: resume, tone: "tonal" }, cancel: { label: "Cancel", onclick: cancelConflict } };
     if (interrupted) return { icon: "triangle-alert", text: "A sync was interrupted", action: { label: "Resume", onclick: resume, tone: "tonal" } };
     if (checking || remoteState === null) return { icon: "spinner", text: "Checking the remote…" };
-    if (remoteState.status === "behind") return { icon: "arrow-down", text: "New commits on the remote", action: { label: "Pull", onclick: doPull, tone: "tonal" } };
+    if (remoteState.status === "behind") return { icon: "arrow-down", text: "New commits on the remote" };
     if (remoteState.status === "current") return { icon: "check", text: "Up to date", checked: checkedAt?.toLocaleTimeString() || "", action: { label: "Pull", onclick: doPull, tone: "quiet" } };
     // The sign-in help below carries its own Try again.
     if (error?.auth) return { icon: "triangle-alert", text: "Git could not sign in." };
@@ -564,6 +595,20 @@
       <button type="button" class="gh-action" onclick={() => (error = null)}>Dismiss</button>
     </div>
   {/if}
+{/snippet}
+
+{#snippet changeRow(file)}
+  {@const slash = file.path.lastIndexOf("/")}
+  <li class="gh-change">
+    <button type="button" class="gh-change-open" title={file.path}
+      aria-current={differ?.state.active && differ.state.selected === file.path ? "true" : undefined}
+      disabled={!differ || resolving} onclick={() => openDiff(file.path)}>
+      <Icon name="file-text" size={14} />
+      <span class="gh-change-name">{file.path.slice(slash + 1)}</span>
+      {#if slash > 0}<span class="gh-change-folder gh-muted">{file.path.slice(0, slash)}</span>{/if}
+      <span class="gh-mark" aria-label={STATUS_LABELS[file.status] || file.status}>{file.status}</span>
+    </button>
+  </li>
 {/snippet}
 
 <section class="panel gh-panel" aria-label="Git">
@@ -638,16 +683,31 @@
           <button type="button" class="gh-action gh-status-action" disabled={busy || resolver?.state.busy} onclick={sync.cancel.onclick}>{sync.cancel.label}</button>
         {/if}
       </div>
-      <div class="gh-row">
-        <button type="button" class="btn btn-sm lp-control-tonal-brand" disabled={busy || resolving || !differ || differ.state.active}
-          onclick={() => differ.open(context(), { label: link.remote_label, branch: link.branch })}>{differ?.state.active ? "Diff open" : "Diff"}</button>
-      </div>
       {@render alerts()}
+
+      {#if remoteState?.status === "behind" && !resolving && !savedConflict && !interrupted}
+        <div class="gh-remote">
+          <div class="gh-local-head">
+            <h4 class="panel-section-title"><Icon name="arrow-down" size={14} /> Remote changes</h4>
+            {#if incoming?.status === "changes"}<span class="gh-count gh-muted">{plural(incoming.files.length)}</span>{/if}
+            <button type="button" class="btn btn-sm lp-control-tonal-brand" disabled={busy || checking} onclick={doPull}>Pull</button>
+          </div>
+          {#if incoming?.status === "changes"}
+            <ul class="gh-changes" class:gh-changes-long={incoming.files.length > 8}>
+              {#each incoming.files as file (file.status + file.path)}
+                {@render changeRow(file)}
+              {/each}
+            </ul>
+          {:else if incoming?.status === "unknown"}
+            <p class="panel-meta">{incoming.reason}</p>
+          {/if}
+        </div>
+      {/if}
 
       {#if !resolving && !savedConflict && !interrupted}
         <div class="gh-local">
           <div class="gh-local-head">
-            <h4 class="panel-section-title">Local changes</h4>
+            <h4 class="panel-section-title"><Icon name="arrow-up" size={14} /> Local changes</h4>
             {#if local?.status === "changes"}<span class="gh-count gh-muted">{plural(local.files.length)}</span>{/if}
             <IconButton icon="refresh-cw" label="Refresh local changes" tone="plain" size="btn-icon-sm" disabled={busy} onclick={refreshLocal} />
           </div>
@@ -660,13 +720,7 @@
           {:else if local.status === "changes"}
             <ul class="gh-changes" class:gh-changes-long={local.files.length > 8}>
               {#each local.files as file (file.status + file.path)}
-                {@const slash = file.path.lastIndexOf("/")}
-                <li class="gh-change" title={file.path}>
-                  <Icon name="file-text" size={14} />
-                  <span class="gh-change-name">{file.path.slice(slash + 1)}</span>
-                  {#if slash > 0}<span class="gh-change-folder gh-muted">{file.path.slice(0, slash)}</span>{/if}
-                  <span class="gh-mark" aria-label={STATUS_LABELS[file.status] || file.status}>{file.status}</span>
-                </li>
+                {@render changeRow(file)}
               {/each}
             </ul>
             <label class="gh-field panel-meta">Commit message
@@ -677,9 +731,7 @@
               <button type="button" class="btn btn-sm lp-control-brand" disabled={busy || remoteState?.status === "behind"} onclick={commitAndPush}>{committing ? "Committing…" : "Commit & push"}</button>
             </div>
             {#if remoteState?.status === "behind"}
-              <p class="gh-muted gh-hint">The remote has new commits. Pull first, then push.</p>
-            {:else}
-              <p class="gh-muted gh-hint">Commits your changes and pushes them. When the remote has new commits, pull first.</p>
+              <p class="gh-muted gh-hint">Pull before pushing</p>
             {/if}
           {/if}
         </div>
@@ -812,14 +864,18 @@
   .gh-help-actions { flex-wrap: wrap; margin-top: calc(var(--spacing) * 1); }
   .gh-help-link { color: var(--color-link); }
 
-  .gh-local { margin-top: calc(var(--spacing) * 5); padding-top: calc(var(--spacing) * 4); border-top: 1px solid var(--color-divider); }
+  .gh-remote, .gh-local { margin-top: calc(var(--spacing) * 5); padding-top: calc(var(--spacing) * 4); border-top: 1px solid var(--color-divider); }
   .gh-local-head { display: flex; align-items: center; gap: calc(var(--spacing) * 2); min-height: 2rem; }
   .gh-local-head .panel-section-title { margin: 0; margin-inline-end: auto; }
+  .gh-local-head .panel-section-title :global(svg) { vertical-align: -2px; margin-inline-end: calc(var(--spacing) * 1); }
   .gh-count { font-size: var(--panel-meta-size); }
   .gh-changes { margin: calc(var(--spacing) * 1) 0 0; padding: 0; list-style: none; }
   .gh-changes-long { max-height: 16rem; overflow-y: auto; }
-  .gh-change { display: flex; align-items: center; gap: calc(var(--spacing) * 1.5); min-width: 0; min-height: 2rem; }
-  .gh-change > :global(svg) { flex: none; }
+  .gh-change { min-width: 0; }
+  .gh-change-open { display: flex; align-items: center; gap: calc(var(--spacing) * 1.5); width: 100%; min-width: 0; min-height: 2rem; padding: 0 calc(var(--spacing) * 1); margin-inline: calc(var(--spacing) * -1); border: 0; border-radius: var(--radius-base); background: none; color: inherit; font: inherit; text-align: start; cursor: pointer; }
+  .gh-change-open:hover:not(:disabled), .gh-change-open[aria-current="true"] { background: var(--color-row-hover); }
+  .gh-change-open:disabled { cursor: default; }
+  .gh-change-open > :global(svg) { flex: none; }
   .gh-change-name { flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .gh-change-folder { flex: 1 1 0; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: var(--panel-meta-size); }
   .gh-mark { flex: none; margin-inline-start: auto; font-weight: 600; font-variant-numeric: tabular-nums; }
