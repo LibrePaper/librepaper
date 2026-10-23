@@ -173,6 +173,21 @@ export function createGitResolver() {
     state.active = false;
   }
 
+  // Closes the workspace without saving the choices. The caller drops the saved session.
+  function discard() {
+    if (state.busy) return;
+    cancelSave();
+    wanted = false;
+    held = true;
+    current = null;
+    loaded = null;
+    state.active = false;
+    state.items = [];
+    state.resolutions = {};
+    state.selected = "";
+    state.error = "";
+  }
+
   async function apply() {
     if (state.busy || !allResolved()) return;
     state.busy = true;
@@ -223,5 +238,5 @@ export function createGitResolver() {
     cancelSave();
   }
 
-  return { state, open, select, choose, edit, apply, close, dispose, resultText, deleteVsModify, keepSide, allResolved };
+  return { state, open, select, choose, edit, apply, close, discard, dispose, resultText, deleteVsModify, keepSide, allResolved };
 }

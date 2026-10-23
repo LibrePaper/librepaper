@@ -969,6 +969,15 @@ export async function applyResolution(ctx, session, resolutions = undefined) {
   });
 }
 
+/// Drops a saved conflict session and its chosen resolutions. The pull it came
+/// from is abandoned: the project and the link stay as they were before it.
+export async function discardConflict(ctx, session) {
+  return guarded(async () => {
+    if (session) await finish(ctx, session.id);
+    return result("nothing");
+  });
+}
+
 // ---------------------------------------------------------------- push
 
 export function defaultMessage(files) {
@@ -1281,6 +1290,12 @@ export async function connect(ctx, draft, direction) {
 export async function disconnect(ctx) {
   await ctx.api.deleteLink();
   await ctx.git.forget();
+}
+
+/// Forgets the shared record but keeps this computer's connection, so the same
+/// remote can be connected again on another branch. A local folder's grant stays.
+export async function leaveBranch(ctx) {
+  await ctx.api.deleteLink();
 }
 
 // ---------------------------------------------------------------- state
