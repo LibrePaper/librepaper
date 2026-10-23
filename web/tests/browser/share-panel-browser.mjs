@@ -204,6 +204,9 @@ window.sharePanelCheck = async () => {
   const secret = document.querySelector('input[aria-label="Agent token"]');
   check(secret && secret.readOnly && secret.value.startsWith("lpt_" + originPart + ".paper.minted"), "the token is shown: " + text());
   check(text().includes("Copy this token now. You won't be able to view it again."), "with the warning");
+  const commands = document.querySelector('textarea[aria-label="Claude Code commands"]').value;
+  check(commands === "claude mcp add librepaper --scope user -- librepaper mcp\\nLIBREPAPER_AGENT_TOKEN=" + secret.value + " claude",
+    "the Claude Code commands register once and launch with the token: " + commands);
   const config = document.querySelector('textarea[aria-label="MCP configuration"]').value;
   check(config.includes('args = ["mcp"]') && config.includes('LIBREPAPER_AGENT_TOKEN = "' + secret.value + '"'),
     "the configuration is filled in: " + config);
@@ -212,6 +215,8 @@ window.sharePanelCheck = async () => {
   const shownToken = secret.value;
   await press(button("Copy token"));
   check(window.copied === shownToken, "copies the token");
+  await press(button("Copy commands"));
+  check(window.copied === commands, "copies the commands");
   await press(button("Copy configuration"));
   check(window.copied === config, "copies the configuration");
   const stored = JSON.stringify({ ...localStorage }) + JSON.stringify({ ...sessionStorage });
