@@ -888,7 +888,7 @@ impl Command for SourceChangeCommand<'_> {
             };
             if let Some(operation_receipt) = &self.operation_receipt {
                 let outcome = serde_json::json!({
-                    "tool": "document_apply",
+                    "tool": operation_receipt.tool,
                     "operation": receipt.operation,
                     "status": receipt.status,
                     "tree_digest_before": receipt.tree_digest_before,
