@@ -129,11 +129,19 @@ Two rules apply to every method.
 ## Connect a project
 
 1. Open the Git panel from the Git tab in the side rail, or from "Git..." in the file menu.
-2. Enter an HTTPS or SSH URL, or choose a local repository folder.
-3. Pick a branch. Optionally pick a folder inside the repository. That folder holds the project's files. Everything outside it is never touched.
-4. Read the first comparison. It lists the files that will come in, the files that will go out, and the files that differ on both sides. It also lists the files that will not sync, and the number of syncable files in each top-level folder.
-5. If files differ on both sides, choose which side keeps them. Choose "Keep LibrePaper's copies" or "Keep the repository's copies". The choice covers only those files. Files that exist on one side only move to the other side.
-6. Click "Connect" to record the connection and run the first sync. Click "Cancel" to change nothing on either side.
+2. Enter an HTTPS or SSH URL, or press "Choose a local repository".
+3. Pick a branch. Optionally enter a folder inside the repository. That folder holds the project's files. Everything outside it is never touched. Leave it empty for the whole repository.
+4. Click "Connect". This records the connection and nothing else. No file changes on either side.
+5. Press "Pull" to run the first sync.
+
+Until the first sync, LibrePaper has no earlier state to compare with. Remote changes lists every file on the branch, and Local changes lists every file in the project, even files that are the same on both sides. The first pull sorts them out.
+
+- Files that are the same on both sides match. Nothing changes.
+- A file only on the branch comes into the project.
+- A file only in the project stays. It is a local change, which you can push.
+- A file that differs on both sides opens the resolver. See [Conflicts](#conflicts).
+
+After the first sync, the two lists show only real changes.
 
 Link the folder that holds the project's files. A repository often holds code next to the paper. Link the repository root only when the project is the whole repository.
 
@@ -141,26 +149,45 @@ Link the folder that holds the project's files. A repository often holds code ne
 
 ### The Git panel
 
-The panel has three parts.
+The panel has four parts.
 
-- The repository line shows the branch and the folder that the project syncs. The "..." menu opens the connection details, where you can copy the remote address or disconnect.
+- The repository header shows the repository's name and, below it, the branch and the folder that the project syncs. Click the name to open the repository menu. See [The repository menu](#the-repository-menu).
 - The status row says where sync stands. The panel checks the remote when it opens. "Retry" checks again.
-- The local changes list shows the files that differ from the last sync. The list updates as you edit. The refresh button recounts it.
+- **Remote changes** lists the files that changed on the branch since the last sync, with a "Pull" button. It appears only when the remote has new commits.
+- **Local changes** lists the files that differ from the last sync. The list updates as you edit. The refresh button recounts it.
+
+Click a file in either list to see its changes. See [Compare a file](#compare-a-file).
 
 The status row can show these states.
 
 - **Checking the remote.** The panel is reading the remote.
 - **Up to date.** The remote has no new commits. The panel shows the time of the check.
-- **New commits on the remote.** Press "Pull" to bring them in.
+- **New commits on the remote.** Press "Pull" in Remote changes to bring them in.
 - **Pulling.** A pull is running.
 - **Conflicts need resolution.** A conflict was saved. Press "Resolve" to open it.
 - **A sync was interrupted.** Press "Resume" to finish it.
 - **Git could not sign in.** See [When sign-in fails](#when-sign-in-fails).
 - **Resolve the conflicts in the editor area.** The resolver is open.
 
-The connection details show the remote address, who connected the project, and when it last pulled and pushed.
+### The repository menu
 
-Disconnecting asks for confirmation first. See [Disconnecting](#disconnecting).
+Click the repository's name to open the menu. It shows the branch, who connected the project, and when it last pulled and pushed. Hover over a time to see the full date and who did it. It also offers these actions.
+
+- **Open in browser.** Opens the repository on GitHub, GitLab, Codeberg, Bitbucket or SourceHut.
+- **Copy remote URL.** Copies the repository's address.
+- **Switch branch...** Stops syncing with this branch, then lets you connect another branch of the same repository. Files stay as they are in LibrePaper.
+- **Push to branch...** Pushes your local changes to a new branch. See [Push to a branch](#push-to-a-branch).
+- **Disconnect...** Asks for confirmation first. See [Disconnecting](#disconnecting).
+
+### Compare a file
+
+Click a file in Remote changes or Local changes. Its diff opens in the editor area, and the Git panel stays open beside it.
+
+- The diff compares LibrePaper's copy with the latest commit on the branch.
+- Lines marked − are the repository's version. Lines marked + are LibrePaper's version.
+- Click another file in the panel to compare it instead. "Refresh" compares again. "Close" returns to the editor.
+
+The comparison only reads. It changes nothing in the project or in the repository.
 
 ### Pull
 
@@ -168,18 +195,14 @@ Pull fetches the branch. It merges the branch's changes with your edits since th
 
 ### Commit and push
 
-Commit & push does three things in order.
-
-1. It pulls new commits from the branch.
-2. It commits your local changes.
-3. It pushes that commit.
+Commit & push commits your local changes as one commit and pushes it to the branch. It never pulls. When the remote has new commits, the button is off and the panel says "Pull before pushing". Pull first, then push.
 
 The commit message defaults to a message that names the changed files. Type your own message to replace it.
 
 Commit & push stops in two cases.
 
-- The pull changed the list of files. Check the list, then press Commit & push again. Only a list that you have seen is pushed.
-- The branch moved while you were working. Press Commit & push again.
+- The list of files changed since you last saw it. Check the list, then press Commit & push again. Only a list that you have seen is pushed.
+- The branch moved while you were working. Press Commit & push again. If the remote now has new commits, pull first.
 
 The commit's author is you. Its committer is the Git identity on your computer. To see the identity that Git uses, run these commands.
 
@@ -190,6 +213,23 @@ git config user.name
 # Print the email address that Git uses for commits
 git config user.email
 ```
+
+### Push to a branch
+
+Push to branch sends your local changes to a new branch of the repository, for example to open a pull request. The project stays on its own branch.
+
+1. Click the repository's name and choose "Push to branch...". It is available when you have local changes and the remote has no new commits.
+2. Type a name for the new branch, for example `review/intro`.
+3. Press "Push". LibrePaper commits your local changes as one commit, with the commit message from the panel if you typed one, and pushes it to the new branch.
+4. On GitHub, the confirmation has an "Open pull request" button.
+
+After the push, the project is still connected to its own branch. Your edits still show as local changes, because that branch does not have them yet. When the pull request is merged, pull. The edits then match the branch and leave the list.
+
+Push to branch only creates a branch. It never replaces one.
+
+- If a branch with that name exists on the remote, the push stops and asks for another name.
+- To push more changes later, push to another new branch, or merge the pull request and push to your branch as usual.
+- To keep working on the new branch, use "Switch branch..." and connect to it.
 
 ## Conflicts
 
@@ -265,7 +305,7 @@ A local repository folder must be chosen again on each computer. The folder's pa
 
 ## Disconnecting
 
-Open the panel's "..." menu and choose "Disconnect". The panel asks you to confirm. Disconnecting forgets the shared connection record. The repository is not changed. Sync stops until you connect again.
+Click the repository's name and choose "Disconnect...". The panel asks you to confirm. Disconnecting forgets the shared connection record. The repository is not changed. Sync stops until you connect again.
 
 The private copy stays on your computer. It keeps unpublished commits and any saved conflict sessions.
 
@@ -274,6 +314,7 @@ The private copy stays on your computer. It keeps unpublished commits and any sa
 These rules protect your repository.
 
 - A push is fast-forward only. It adds one commit on top of the remote head that LibrePaper last saw. If the remote has moved, the push stops.
+- Push to branch only creates a new branch. It never moves or replaces a branch that exists.
 - The list of changes that you saw is the list that gets pushed.
 - Files that LibrePaper does not sync are never touched.
 - Your Git hooks do not run on LibrePaper's pushes. Checks such as secret scanning in a `pre-push` hook are skipped. Run those checks in your continuous integration instead.
@@ -314,6 +355,6 @@ The status row says "A sync was interrupted". Press "Resume" to finish it. If Re
 
 LibrePaper ignores case and accents in file names, so `Notes.md` and `notes.md` are the same file to it. Git can hold both. When a pull or a conflict resolution would leave both in the project, LibrePaper stops and changes nothing. Rename one of the files, in LibrePaper or in the repository, then try again. In the resolver, another choice for that file also works.
 
-### The list changed after pulling
+### The list changed
 
-The pull changed the list of files, so Commit & push stopped. Check the list. Then press Commit & push again.
+The list of files changed since you last saw it, so Commit & push stopped. Check the list. Then press Commit & push again.
