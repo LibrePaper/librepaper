@@ -6,7 +6,7 @@
 // versions, and the order the manifest is read in.
 //
 // The reading of it -- which day a label fell on, which month the panel
-// is showing -- lives next door in `history-calendar.js`.
+// is showing -- lives next door in `history-days.js`.
 
 import { SHELL_HEADERS } from "./api.js";
 import * as renderers from "./renderers.js";
