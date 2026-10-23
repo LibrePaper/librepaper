@@ -111,16 +111,16 @@ An agent on another machine, such as a home server or a chat bot, works on a doc
   - These are the same three permissions as share links.
 - LibrePaper shows the token once. Copy it then.
 
-Install the [librepaper CLI](cli.html#install) on the agent's machine. Then add the document to the agent's MCP config. This Codex example sets the token in the environment:
+Install the [librepaper CLI](cli.html#install) on the agent's machine. Then add the token to the agent's MCP config. This Codex example sets the token in the environment:
 
 ```toml
 [mcp_servers.librepaper]
 command = "librepaper"
-args = ["mcp", "--document", "https://<host>/docs/<slug>"]
+args = ["mcp"]
 env = { LIBREPAPER_AGENT_TOKEN = "lpt_..." }
 ```
 
-From a terminal, register the document once with the agent's own command, then run the agent headless. The token is read into a variable first, so it stays out of your shell history:
+From a terminal, register the server once with the agent's own command, then run the agent headless. The token is read into a variable first, so it stays out of your shell history:
 
 ```sh
 # Paste the token when asked; nothing is echoed
@@ -128,18 +128,18 @@ read -rs LIBREPAPER_AGENT_TOKEN
 
 # Claude Code
 claude mcp add librepaper -e LIBREPAPER_AGENT_TOKEN="$LIBREPAPER_AGENT_TOKEN" \
-  -- librepaper mcp --document https://<host>/docs/<slug>
+  -- librepaper mcp
 # Headless runs ask no questions, so allow the document tools up front
 claude -p "Read the document and comment on the introduction" --allowedTools "mcp__librepaper"
 
 # Codex
 codex mcp add librepaper --env LIBREPAPER_AGENT_TOKEN="$LIBREPAPER_AGENT_TOKEN" \
-  -- librepaper mcp --document https://<host>/docs/<slug>
+  -- librepaper mcp
 codex exec "Read the document and comment on the introduction"
 ```
 
 - Both commands save the token in the agent's own config file (`~/.claude.json`, `~/.codex/config.toml`). Revoke the token in the Sharing panel when you are done with it.
-- An agent needs two things: the document URL and the token. The URL is not secret and goes in the command. The token is secret and goes only in the environment.
+- The token names the server and the project, so an agent needs nothing else. It is secret and goes only in the environment. For plain HTTP calls, the host and the slug are the ones in the project's address bar.
 
 Agents without MCP call the document's tool routes over HTTP:
 

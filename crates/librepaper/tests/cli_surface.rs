@@ -163,50 +163,49 @@ fn mcp_requires_a_connection_and_rejects_a_bare_link() {
     );
 }
 
-/// `librepaper mcp --document URL` takes its token from the environment only.
-/// It cannot be combined with `--connection`, and without the variable it
-/// fails and names it.
+/// `librepaper mcp` with no connection and no agent token fails and names
+/// all three ways to give it one.
 #[test]
-fn mcp_document_takes_its_token_from_the_environment() {
-    assert!(
-        !cli(&[
-            "mcp",
-            "--document",
-            "https://example.test/docs/a",
-            "--connection",
-            "x"
-        ])
-        .status
-        .success(),
-        "mcp --document with --connection should fail to parse"
-    );
+fn mcp_without_a_connection_or_token_names_the_agent_token() {
     let output = Command::new(env!("CARGO_BIN_EXE_librepaper"))
-        .args(["mcp", "--document", "https://example.test/docs/a"])
+        .args(["mcp"])
+        .env_remove("LIBREPAPER_MCP_CONNECTION")
         .env_remove("LIBREPAPER_AGENT_TOKEN")
         .output()
         .expect("CLI starts");
     assert!(!output.status.success());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("LIBREPAPER_AGENT_TOKEN"), "{output:?}");
+    assert!(stderr.contains("--connection"), "{output:?}");
+}
+
+#[test]
+fn mcp_refuses_a_malformed_agent_token() {
+    let output = Command::new(env!("CARGO_BIN_EXE_librepaper"))
+        .args(["mcp"])
+        .env_remove("LIBREPAPER_MCP_CONNECTION")
+        .env("LIBREPAPER_AGENT_TOKEN", "lpt_paper.abc")
+        .output()
+        .expect("CLI starts");
+    assert!(!output.status.success());
     assert!(
-        String::from_utf8_lossy(&output.stderr).contains("LIBREPAPER_AGENT_TOKEN"),
+        String::from_utf8_lossy(&output.stderr).contains("does not hold an agent token"),
         "{output:?}"
     );
 }
 
 #[test]
-fn mcp_document_says_the_account_token_is_unused() {
+fn mcp_says_the_account_token_is_unused_with_an_agent_token() {
+    // base64url of http://127.0.0.1:9, a port nothing listens on, so the
+    // command fails fast after it prints the note.
     let output = Command::new(env!("CARGO_BIN_EXE_librepaper"))
-        .args([
-            "mcp",
-            "--document",
-            "https://example.test/docs/a",
-            "--token",
-            "lpt_paper.abc",
-        ])
-        .env("LIBREPAPER_AGENT_TOKEN", "lpt_paper.abc")
+        .args(["mcp", "--token", "lp_account"])
+        .env_remove("LIBREPAPER_MCP_CONNECTION")
+        .env("LIBREPAPER_AGENT_TOKEN", "lpt_aHR0cDovLzEyNy4wLjAuMTo5.paper.abc")
         .output()
         .expect("CLI starts");
     assert!(
-        String::from_utf8_lossy(&output.stderr).contains("is not used with --document"),
+        String::from_utf8_lossy(&output.stderr).contains("is not used with an agent token"),
         "{output:?}"
     );
 }

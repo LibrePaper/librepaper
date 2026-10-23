@@ -1,5 +1,5 @@
 // A remote agent's path, end to end: an owner-issued agent token handed to a
-// real `librepaper mcp --document` on stdio, talking to a real deployment.
+// real `librepaper mcp` on stdio, talking to a real deployment.
 // The token is the bridge's only credential, so each role shows exactly what
 // that token can do, and the same token is refused on every other route.
 // Requires a built librepaper binary and LIBREPAPER_TEST_POSTGRES_URL.
@@ -24,8 +24,8 @@ let home;
 
 // A bridge with a fresh home and no login of any kind, so the token is the
 // only credential it can possibly use.
-function startBridge(token, slug) {
-  const child = spawn(deploymentBinary(), ["mcp", "--document", `${deployment.base}/docs/${slug}`], {
+function startBridge(token) {
+  const child = spawn(deploymentBinary(), ["mcp"], {
     stdio: ["pipe", "pipe", "pipe"],
     env: {
       PATH: process.env.PATH,
@@ -106,7 +106,7 @@ try {
 
   // Comment token with a budget of one.
   const commentToken = await mint("comment", "Remote reviewer", 1);
-  const commenter = startBridge(commentToken.token, slug);
+  const commenter = startBridge(commentToken.token);
   const commentTools = await commenter.start();
   for (const name of ["document_read", "document_comment", "document_result"]) {
     assert.ok(commentTools.includes(name), `a comment token is served ${name}: ${commentTools}`);
@@ -142,7 +142,7 @@ try {
 
   // Read token.
   const readToken = await mint("read", "Remote reader");
-  const reader = startBridge(readToken.token, slug);
+  const reader = startBridge(readToken.token);
   const readerTools = await reader.start();
   assert.ok(readerTools.includes("document_read"), `a read token is served document_read: ${readerTools}`);
   for (const name of ["document_comment", "document_propose", "document_apply", "document_files"]) {
@@ -157,7 +157,7 @@ try {
 
   // Edit token: propose tracked changes, then stage privately and apply.
   const editToken = await mint("edit", "Remote editor");
-  const editor = startBridge(editToken.token, slug);
+  const editor = startBridge(editToken.token);
   const editTools = await editor.start();
   assert.ok(editTools.includes("document_propose"), `an edit token is served document_propose: ${editTools}`);
   assert.ok(editTools.includes("document_apply"), `an edit token is served document_apply: ${editTools}`);
@@ -220,7 +220,7 @@ try {
 
   // Revoking the comment token stops a fresh bridge.
   await share({ revoke: { id: commentToken.id } });
-  const revoked = startBridge(commentToken.token, slug);
+  const revoked = startBridge(commentToken.token);
   let refused = false;
   try {
     await revoked.start();
