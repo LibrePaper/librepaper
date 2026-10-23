@@ -667,21 +667,22 @@ for (const invalidate of [null, "navigation", "main"]) {
 }
 
 // The Changes rows come from the document's own pending changes, with the
-// file path from the session, and a selection that no longer exists is let go.
+// file path and the starting line from the session, and a selection that no
+// longer exists is let go.
 {
   const listed = [
     { id: "a", file: "f1", who: "acct-1", author: "Ada", run: null, at: 5, from: 4, to: 9, deleted: "cat", inserted: "tabby" },
     { id: "b", file: "f2", who: "agent:x", author: "X", run: "run-1", at: 6, from: 0, to: 0, deleted: "gone", inserted: "" },
   ];
   const ctx = context({
-    session: { doc: {}, paths: new Map([["f1", "paper.md"]]) },
+    session: { doc: {}, paths: new Map([["f1", "paper.md"]]), textOf: (id) => (id === "f1" ? "the\ncat sat" : null) },
     changeRows: [], selectedChange: "old",
     listChanges: () => listed,
   });
-  vm.runInContext(body("  function recomputeChanges()", "  // Recomputing reads every change"), ctx);
+  vm.runInContext(body("  function lineAt(", "  // Recomputing reads every change"), ctx);
   vm.runInContext("recomputeChanges()", ctx);
   assert.deepEqual(JSON.parse(JSON.stringify(ctx.changeRows)), [
-    { id: "a", file_id: "f1", path: "paper.md", author: "Ada", who: "acct-1", run: "", at: 5, position: 4, before: "cat", after: "tabby" },
+    { id: "a", file_id: "f1", path: "paper.md", author: "Ada", who: "acct-1", run: "", at: 5, position: 4, line: 2, before: "cat", after: "tabby" },
     { id: "b", file_id: "f2", path: "", author: "X", who: "agent:x", run: "run-1", at: 6, position: 0, before: "gone", after: "" },
   ], "each pending change becomes one row");
   assert.equal(ctx.selectedChange, null, "a selected change that is gone is let go");
