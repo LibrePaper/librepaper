@@ -9,7 +9,7 @@
   // opens a version.
   let MergeEditor = $state(null);
   let mergeFailed = $state(false);
-  let { source, canEdit = false, onrestore, ondownload, downloading = "", downloadProblem = "" } = $props();
+  let { source, heading = "", canEdit = false, onrestore, ondownload, downloading = "", downloadProblem = "" } = $props();
   const result = $derived(source.result);
   const path = $derived(source.path);
   const oldText = $derived(result?.oldTree.texts?.[path]);
@@ -55,6 +55,11 @@
     </div>
   {:else if result}
     <div class="history-source-bar">
+      {#if !result.against && source.selected && heading}
+        <!-- Says which past version is on screen, so the reader never has to
+             work it out from the list. -->
+        <span class="history-source-title"><span class="history-source-name">{heading}</span><span class="panel-meta"> · Historical version</span></span>
+      {/if}
       {#if result.against}
         <!-- The base is the old side and the selected version the new one, so
              the line names them in that order. -->
@@ -112,7 +117,7 @@
       {/if}
     {/if}
   {:else}
-    <p role="status">Select a version to compare it with the current source. Shift-click another version to compare the two.</p>
+    <p role="status">Select a version to see how it differs from the current source. Shift-click another version to compare the two.</p>
   {/if}
 </section>
 
@@ -120,7 +125,8 @@
   .history-workspace { height: 100%; min-width: 0; display: flex; flex-direction: column; overflow: hidden; }
   .history-workspace > p, .history-workspace > div[role="alert"] { padding: 1rem; }
   .history-source-bar { display: flex; align-items: center; flex-wrap: wrap; gap: 0.5rem; padding: 0.5rem; }
-  .history-source-ends { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .history-source-ends, .history-source-title { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .history-source-name { font-weight: 500; }
   .history-source-file { display: flex; align-items: center; gap: 0.5rem; }
   .history-source-file select { width: auto; min-width: 12rem; }
   .history-source-actions { display: flex; align-items: center; gap: 0.5rem; margin-left: auto; }

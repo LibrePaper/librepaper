@@ -1589,6 +1589,7 @@
     },
   });
   const historySelectedSha = $derived(historySource.selected);
+  const historyHeading = $derived(historySelectedSha ? timeline.describe(historySelectedSha) : "");
   let historyLiveVersion = $state(0);
   $effect(() => () => historySource.dispose());
   const gitResolver = createGitResolver();
@@ -4020,9 +4021,16 @@
 
   {#snippet historyPanel()}
     <History {labels} viewing={historySelectedSha} against={historySource.against} canEdit={mayEdit}
-      problem={historyProblem} onview={viewPoint}
+      problem={historyProblem} loaded={timeline.state.loaded} complete={timeline.state.complete}
+      loadingMore={timeline.state.loadingMore} moreProblem={timeline.state.moreProblem}
+      saved={timeline.state.saved} savedLoaded={timeline.state.savedLoaded}
+      savedLoading={timeline.state.savedLoading} savedProblem={timeline.state.savedProblem}
+      onview={viewPoint}
       oncompare={(sha) => historySource.compareWith(sha)}
-      onname={nameLabel} />
+      onname={nameLabel} onretry={loadHistory}
+      onloadmore={() => timeline.loadMore()}
+      onloaduntil={(iso) => timeline.loadUntil(iso)}
+      onloadsaved={() => timeline.loadSaved()} />
   {/snippet}
 
   <!-- Annotations the server has not acknowledged, offered back wherever
@@ -4075,7 +4083,7 @@
       {:else if diffing}
         <GitDiffWorkspace differ={gitDiff} />
       {:else if panel === "history"}
-        <HistoryWorkspace source={historySource} canEdit={mayEdit} onrestore={restoreLabel}
+        <HistoryWorkspace source={historySource} heading={historyHeading} canEdit={mayEdit} onrestore={restoreLabel}
           ondownload={downloadArchive}
           downloading={downloadingSha === historySource.selected ? downloadingSha : ""}
           downloadProblem={downloadingSha === historySource.selected ? downloadProblem : ""} />
