@@ -8,9 +8,13 @@ The [Agent Client Protocol](https://agentclientprotocol.com) (ACP) starts your a
 
 - An agent with Edit access can also create and delete text files with `document_files`. These changes are not tracked.
 
+There are two ways to connect an agent. The [desktop app](#desktop-app) starts an agent installed on your computer and hands it the document tools. An [agent token](#agent-tokens) lets an agent you start yourself, on any machine, work on one project.
+
+> **Warning:** An agent reading a shared document reads text anyone with edit access wrote, so treat it as acting on their instructions too.
+
 ## Desktop app
 
-Agents run in the [desktop app](desktop-app.html). The app finds agents installed on your computer, starts the one you pick, and hands it the document tools.
+The [desktop app](desktop-app.html) finds agents installed on your computer, starts the one you pick, and hands it the document tools.
 
 To offer another ACP agent in the app, add it in Settings.
 
@@ -98,11 +102,9 @@ Add this entry to `~/.config/mcp/mcp.json`:
 opencode auth login
 ```
 
-> **Warning:** An agent reading a shared document reads text anyone with edit access wrote, so treat it as acting on their instructions too.
+## Agent tokens
 
-## Remote agents
-
-An agent on another machine, such as a home server or a chat bot, works on a project with an agent token. The token names its server and its project, and it reaches that one project and nothing else.
+An agent you start yourself works on a project with an agent token. It can run anywhere: in a terminal on your own computer, on a home server, in CI, or behind a chat bot. It does not need the desktop app. The token names its server and its project, and it reaches that one project and nothing else.
 
 Create a token:
 

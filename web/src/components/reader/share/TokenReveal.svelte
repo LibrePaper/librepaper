@@ -30,7 +30,7 @@ env = { LIBREPAPER_AGENT_TOKEN = "${token}" }`);
   </label>
   <button type="button" class="btn btn-sm lp-control-tonal-brand" onclick={() => oncopy(config)}>Copy configuration</button>
   <p class="panel-meta">Agents without MCP can call POST /api/documents/{"{slug}"}/tools/{"{name}"} with the token as a Bearer header.</p>
-  <p class="panel-meta"><a href="https://librepaper.org/agents.html#remote-agents" target="_blank" rel="noreferrer">Agent setup</a></p>
+  <p class="panel-meta"><a href="https://librepaper.org/agents.html#agent-tokens" target="_blank" rel="noreferrer">Agent setup</a></p>
   <div class="share-form-actions">
     <button type="button" class="btn btn-sm lp-control-brand" onclick={ondone}>Done</button>
   </div>

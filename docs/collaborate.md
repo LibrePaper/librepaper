@@ -15,7 +15,7 @@ Share with links, not people. The owner mints a read, comment or edit link in th
 - The key is in the link's fragment, so it reaches no server log and no `Referer` header.
 - A document can have several links for each role. Give each a name. Only the owner sees the names.
 - The Links tab lists every live link. Copy puts its URL on the clipboard. The trash button revokes it after you confirm, and the link stops working at once. Expired links are not listed.
-- For an agent on another machine, use an agent token instead. See [Remote agents](agents.html#remote-agents).
+- For an agent you start yourself, on any machine, use an agent token instead. See [Agent tokens](agents.html#agent-tokens).
 - Moving a file does not rewrite the references inside source files.
 - Copying a checkpoint link keeps your share key. Restore records the current version before applying the earlier one.
 - Typst's HTML preview does not reproduce all PDF formatting. Choose PDF from the View menu. The first load fetches the renderer. Typst needs about 13 MB, and LaTeX needs about 6 MB plus the packages a document asks for.
