@@ -396,6 +396,13 @@
         margin-inline: auto;
       }
 
+      /* A screenshot that carries its own macOS window frame and shadow. */
+      .shot-frame img.shot-window {
+        border: none;
+        border-radius: 0;
+        box-shadow: none;
+      }
+
       .closing .shot-frame img {
         aspect-ratio: 16 / 10;
         object-fit: cover;
@@ -891,18 +898,30 @@
               <p>Writing, previews, collaboration and review all work in any modern web browser.</p>
               <p>The desktop app uses the same account and the same projects. It adds what a browser cannot do on its own, such as running code, starting your AI agent, reading your Zotero library and backing up projects to your disk.</p>
               <p>The desktop app runs on macOS, Windows and Linux.</p>
-              <p class="links">
-                <a href="/desktop-app.html#install-the-desktop-app">Install the desktop app</a>
-              </p>
-            </div>
-            <div class="feature-aside">
               <ul class="details">
                 <li>Runs R, Python and Julia code in Quarto and Calepin notebooks.</li>
                 <li>Starts the AI agent you already use.</li>
                 <li>Reads your Zotero library.</li>
                 <li>Backs up every project to your disk.</li>
               </ul>
+              <p class="links">
+                <a href="/desktop-app.html#install-the-desktop-app">Install the desktop app</a>
+              </p>
             </div>
+            <figure class="shot-frame">
+              <picture>
+                <source type="image/webp" srcset="/images/desktop-app-960.webp 960w, /images/desktop-app-1600.webp 1600w, /images/desktop-app-2784.webp 2784w" sizes="(min-width: 960px) 42rem, calc(100vw - 2rem)">
+                <img
+                  class="shot-window"
+                  src="/images/desktop-app.png"
+                  alt="The LibrePaper desktop app on macOS, showing the list of projects."
+                  width="2784"
+                  height="1944"
+                  loading="lazy"
+                  decoding="async"
+                />
+              </picture>
+            </figure>
           </div>
         </div>
       </section>
