@@ -79,7 +79,7 @@ export function createGitDiff() {
     }
   }
 
-  async function refresh() {
+  async function refresh(preferred = state.selected) {
     if (!ctx) return;
     generation += 1;
     state.loading = true;
@@ -102,7 +102,7 @@ export function createGitDiff() {
       state.unsynced = result.unsynced;
       const first = result.files.find((file) => file.change === "different") ?? result.files[0];
       state.loading = false;
-      await select(first?.path ?? "");
+      await select(preferred || first?.path || "");
     } catch (failure) {
       state.error = failure?.message || "The project could not be compared.";
     } finally {
@@ -115,7 +115,22 @@ export function createGitDiff() {
     state.active = true;
     state.label = label;
     state.branch = branch;
-    await refresh();
+    await refresh("");
+  }
+
+  /// Shows one file. Opens the comparison first when it is closed or was for
+  /// another remote or branch; otherwise only the file changes.
+  async function show(nextCtx, { label, branch }, path) {
+    if (!state.active || state.label !== label || state.branch !== branch) {
+      ctx = nextCtx;
+      state.active = true;
+      state.label = label;
+      state.branch = branch;
+      await refresh(path);
+      return;
+    }
+    ctx = nextCtx;
+    await select(path);
   }
 
   function close() {
@@ -125,5 +140,5 @@ export function createGitDiff() {
     state.itemLoading = false;
   }
 
-  return { state, open, select, close, refresh };
+  return { state, open, select, close, refresh, show };
 }

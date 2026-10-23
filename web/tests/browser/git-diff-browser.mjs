@@ -1,7 +1,8 @@
-// The Git diff workspace over the real comparison: the summary counts each
-// kind of file, the first different file opens side by side with both texts,
-// the one-sided files show their captions, and the workspace fits 1200px and
-// 600px panels. sync.js is replaced, so nothing here talks to Git.
+// The Git diff workspace over the real comparison: one file at a time, shown as
+// a unified diff, chosen through the differ (select and show) as the Git panel
+// does. It also checks the captions for one-sided files, the same-copy notice,
+// refresh and errors, and that the workspace fits 1200px and 600px panels.
+// sync.js is replaced, so nothing here talks to Git.
 import assert from "node:assert/strict";
 import { build } from "vite";
 import { svelte } from "@sveltejs/vite-plugin-svelte";
@@ -30,6 +31,8 @@ const blobs = {
   t1: "---\ntitle: Introduction\n---\n\n# Introduction\n\nThe remote says this instead.\n\nThe second paragraph is shared.\n",
   o2: "A chapter that only LibrePaper has.\n",
   t3: "@article{smith2020,\n  title = {A remote-only reference},\n  year = {2020}\n}\n",
+  b1: "PNG\u0000\u0001binary",
+  b2: "GIF\u0000\u0002binary",
 };
 
 const scene = {
@@ -37,6 +40,7 @@ const scene = {
     { path: "intro.qmd", change: "different", ours: "o1", theirs: "t1" },
     { path: "chapters/methods.qmd", change: "local", ours: "o2", theirs: null },
     { path: "refs.bib", change: "remote", ours: null, theirs: "t3" },
+    { path: "figs/plot.bin", change: "different", ours: "b1", theirs: "b2" },
   ],
   same: 5,
   unsynced: [{ path: "data/big.csv", reason: "Over the size limit." }],
@@ -51,15 +55,19 @@ import { createGitDiff } from ${imp("src/lib/reader/git-diff.svelte.js")};
 window.testErrors=[];addEventListener("error",e=>window.testErrors.push(e.message));addEventListener("unhandledrejection",e=>window.testErrors.push(String(e.reason)));
 window.blobs = ${JSON.stringify(blobs)};
 const ctx = { git: { blobs: async (ids) => new Map(ids.map((id) => [id, new TextEncoder().encode(window.blobs[id])])) } };
+const meta = { label: "owner/paper", branch: "main" };
 const differ = createGitDiff();
 window.differ = differ;
 createClassComponent({ component: GitDiffWorkspace, target: document.getElementById("panel"), props: { differ } });
-window.openDiff = async () => { await differ.open(ctx, { label: "owner/paper", branch: "main" }); await tick(); };
-window.row = (path) => [...document.querySelectorAll(".git-diff-row")].find((node) => node.title === path) ?? null;
+window.openDiff = async () => { await differ.open(ctx, meta); await tick(); };
+// The Git panel calls these; they are not awaited by the page.
+window.pick = (path) => { differ.select(path); };
+window.reveal = (path) => { differ.show(ctx, meta, path); };
 window.button = (label) => [...document.querySelectorAll(".git-diff button")].find((node) => node.textContent.trim() === label) ?? null;
 window.click = (label) => window.button(label).click();
 window.text = () => document.querySelector(".git-diff")?.textContent ?? "";
-window.merged = () => document.querySelector(".cm-mergeView")?.textContent ?? "";
+window.merged = () => document.querySelector(".git-merge")?.textContent ?? "";
+window.fileName = () => document.querySelector(".git-diff-file")?.textContent ?? "";
 window.caption = () => document.querySelector(".git-diff-caption")?.textContent.trim() ?? "";
 window.side = () => document.querySelector(".git-diff-side")?.textContent ?? "";
 window.overflows = () => { const node = document.querySelector(".git-diff"); return node.scrollWidth > node.clientWidth + 1; };
@@ -109,38 +117,65 @@ try {
     }
     : async () => {};
 
-  // Opening compares the scene: the summary counts each kind of file, and
-  // intro.qmd, the first different file, is selected with both texts shown.
+  // The file list is gone: no list, no summary. Opening shows the first
+  // different file, intro.qmd, as one unified diff with both texts.
   await evaluate(`window.diffScene = ${JSON.stringify(scene)}`);
   await evaluate("openDiff()");
-  await until("merge view", () => evaluate('document.querySelector(".cm-mergeView") !== null'), 10000);
-  const summary = await evaluate('document.querySelector(".git-diff-summary").textContent');
-  for (const part of ["1 different", "1 only in LibrePaper", "1 only on the remote", "5 the same"]) {
-    assert.ok(summary.includes(part), `summary has "${part}": ${summary}`);
-  }
+  await until("merge view", () => evaluate('document.querySelector(".git-merge .cm-editor") !== null'), 10000);
+  assert.equal(await evaluate('document.querySelector(".git-diff-files") === null'), true, "no file list");
+  assert.equal(await evaluate('document.querySelector(".git-diff-summary") === null'), true, "no summary");
   assert.equal(await evaluate("differ.state.selected"), "intro.qmd");
+  assert.equal(await evaluate("fileName()"), "intro.qmd");
+  await until("unified legend", () => evaluate('document.querySelector(".git-merge-legend") !== null'), 5000);
+  assert.equal(await evaluate('document.querySelectorAll(".git-merge .cm-editor").length'), 1, "one editor");
+  assert.equal(await evaluate('document.querySelector(".git-merge .cm-changedLine, .git-merge .cm-deletedChunk") !== null'), true, "changes are marked");
   await until("both texts", () => evaluate('merged().includes("keeps the draft here") && merged().includes("says this instead")'), 5000);
 
   // A local-only file shows its text and the LibrePaper caption; a remote-only
   // file shows its text and the remote caption.
-  await evaluate('row("chapters/methods.qmd").click()');
+  await evaluate('pick("chapters/methods.qmd")');
   await until("local caption", () => evaluate('caption() === "Only in LibrePaper."'), 5000);
   assert.match(await evaluate("side()"), /chapter that only LibrePaper has/);
-  await evaluate('row("refs.bib").click()');
+  await evaluate('pick("refs.bib")');
   await until("remote caption", () => evaluate('caption() === "Only on the remote."'), 5000);
   assert.match(await evaluate("side()"), /remote-only reference/);
 
-  // The one unsynced file sits under a closed details element.
-  assert.equal(await evaluate('document.querySelector("details.git-diff-unsynced") !== null'), true);
-  assert.equal(await evaluate('document.querySelector("details.git-diff-unsynced summary").textContent.trim()'), "Not synced (1)");
+  // A binary file says so instead of showing a diff.
+  await evaluate('pick("figs/plot.bin")');
+  await until("binary notice", () => evaluate('text().includes("This file is not text.")'), 5000);
 
-  // Close ends the comparison.
+  // A path that is not in the comparison is the same copy on both sides.
+  await evaluate('pick("same.qmd")');
+  await until("same copy", () => evaluate('text().includes("LibrePaper and the remote have the same copy of this file.")'), 5000);
+  assert.equal(await evaluate("fileName()"), "same.qmd");
+
+  // show() on the open comparison only changes the file.
+  await evaluate('reveal("chapters/methods.qmd")');
+  await until("show local file", () => evaluate('differ.state.selected === "chapters/methods.qmd" && caption() === "Only in LibrePaper."'), 5000);
+
+  // Refresh keeps the file that is shown.
+  await evaluate('reveal("refs.bib")');
+  await until("show remote file", () => evaluate('differ.state.selected === "refs.bib"'), 5000);
+  await evaluate('click("Refresh")');
+  await until("refresh keeps file", () => evaluate('!differ.state.loading && differ.state.selected === "refs.bib" && caption() === "Only on the remote."'), 5000);
+
+  // A refused comparison shows its reason.
+  await evaluate('window.diffScene = { status: "refused", refusals: [{ reason: "The repository is locked." }] }');
+  await evaluate('click("Refresh")');
+  await until("refusal shown", () => evaluate('text().includes("The repository is locked.")'), 5000);
+  await evaluate(`window.diffScene = ${JSON.stringify(scene)}`);
+  await evaluate('click("Refresh")');
+  // A refused comparison leaves no file selected, so Refresh picks the first different file again.
+  await until("comparison back", () => evaluate('differ.state.selected === "intro.qmd" && document.querySelector(".git-merge-legend") !== null'), 5000);
+
+  // Close ends the comparison; show() opens it again for the file it is given.
   await evaluate('click("Close")');
   assert.equal(await evaluate("differ.state.active"), false);
+  await evaluate('reveal("intro.qmd")');
+  await until("reopened by show", () => evaluate('differ.state.active && document.querySelector(".git-merge .cm-editor") !== null'), 10000);
+  assert.equal(await evaluate("fileName()"), "intro.qmd");
 
   // The workspace fits 1200px and 600px panels, in light and dark.
-  await evaluate("openDiff()");
-  await until("merge view again", () => evaluate('document.querySelector(".cm-mergeView") !== null'), 10000);
   await evaluate("setWidth(1200)");
   assert.equal(await evaluate("overflows()"), false, "no horizontal overflow at 1200px");
   await shoot("diff-1200");

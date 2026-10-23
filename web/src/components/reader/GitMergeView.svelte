@@ -6,13 +6,13 @@
   import { EditorState, Annotation } from "@codemirror/state";
   import { EditorView, lineNumbers, keymap } from "@codemirror/view";
   import { defaultKeymap, indentWithTab } from "@codemirror/commands";
-  import { MergeView } from "@codemirror/merge";
+  import { MergeView, unifiedMergeView } from "@codemirror/merge";
   import { sourceLanguage } from "../../lib/source-language.js";
   import { sourceHighlighting } from "../../lib/source-highlight.js";
 
   // The resolver's pane names. The diff view passes its own.
   const RESOLVER_LABELS = { left: "The repository's copy", right: "Result (starts from LibrePaper's copy)", rightName: "Result" };
-  let { path = "", theirs = "", result = "", revision = 0, editable = true, onedit = undefined, labels = RESOLVER_LABELS } = $props();
+  let { path = "", theirs = "", result = "", revision = 0, editable = true, unified = false, onedit = undefined, labels = RESOLVER_LABELS } = $props();
 
   // Marks a transaction that loads the Result from the workspace, so the
   // update listener does not report it as a typed edit.
@@ -42,8 +42,28 @@
     if (!host) return;
     const file = path;
     const canEdit = editable;
+    const flat = unified;
     untrack(() => {
       shownRevision = revision;
+      if (flat) {
+        // One read-only editor: the remote's text is the original, LibrePaper's copy is the document.
+        merge = {
+          view: new EditorView({
+            state: EditorState.create({
+              doc: String(result || ""),
+              extensions: [
+                ...extensions(labels.rightName, true, file),
+                unifiedMergeView({ original: String(theirs || ""), mergeControls: false, highlightChanges: true, gutter: true, collapseUnchanged: { margin: 3, minSize: 4 } }),
+              ],
+            }),
+            parent: host,
+          }),
+          destroy() {
+            this.view.destroy();
+          },
+        };
+        return;
+      }
       merge = new MergeView({
         a: { doc: String(theirs || ""), extensions: extensions(labels.left, true, file) },
         b: {
@@ -77,7 +97,7 @@
   $effect(() => {
     const next = revision;
     untrack(() => {
-      if (!merge || shownRevision === next) return;
+      if (!merge || !merge.b || shownRevision === next) return;
       shownRevision = next;
       const view = merge.b;
       view.dispatch({
@@ -89,16 +109,24 @@
 </script>
 
 <section class="git-merge merge-editor" aria-label={`Compare ${labels.left} with ${labels.rightName}`}>
-  <div class="git-merge-labels panel-meta">
-    <span>{labels.left}</span>
-    <span>{labels.right}</span>
-  </div>
+  {#if unified}
+    <div class="git-merge-labels git-merge-legend panel-meta">
+      <span>− {labels.left}</span>
+      <span>+ {labels.right}</span>
+    </div>
+  {:else}
+    <div class="git-merge-labels panel-meta">
+      <span>{labels.left}</span>
+      <span>{labels.right}</span>
+    </div>
+  {/if}
   <div class="git-merge-host" bind:this={host}></div>
 </section>
 
 <style>
   .git-merge { display: flex; flex-direction: column; flex: 1; min-height: 0; min-width: 0; }
   .git-merge-labels { display: grid; grid-template-columns: 1fr 1fr; gap: 0.5rem; padding: 0.25rem 0.5rem; border-bottom: 1px solid var(--color-divider); }
+  .git-merge-legend { display: flex; gap: 1rem; }
   .git-merge-host { flex: 1; min-height: 12rem; overflow: auto; }
   :global(.git-merge .cm-mergeView) { min-height: 100%; }
   :global(.git-merge .cm-editor) { min-height: 100%; }
@@ -114,4 +142,7 @@
     background: linear-gradient(var(--color-success-solid), var(--color-success-solid)) bottom / 100% 2px no-repeat,
       color-mix(in srgb, var(--color-success-solid) 22%, transparent);
   }
+  /* The unified view: removed text from the remote, added or changed lines in LibrePaper's copy. */
+  :global(.git-merge.merge-editor .cm-deletedChunk .cm-deletedText) { background: color-mix(in srgb, var(--color-error-solid) 22%, transparent); }
+  :global(.git-merge.merge-editor .cm-changedLine .cm-changedText) { background: color-mix(in srgb, var(--color-success-solid) 22%, transparent); }
 </style>
