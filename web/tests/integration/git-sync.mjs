@@ -291,7 +291,7 @@ test("8. a push whose record was never written is adopted by the next pull", TES
 
 // ---------------------------------------------------------------- 9. push moved
 
-test("9. a branch that moves after the review asks again, then both land", TEST, () => withFixture({
+test("9. a branch that moves after the review answers behind, then a pull and push land both", TEST, () => withFixture({
   remote: { "intro.qmd": TWO_PARAGRAPHS },
   project: { "intro.qmd": TWO_PARAGRAPHS },
 }, async (fx) => {
@@ -301,13 +301,15 @@ test("9. a branch that moves after the review asks again, then both land", TEST,
   assert.equal(reviewed.status, "outgoing", JSON.stringify(reviewed));
 
   const theirs = fx.repo.commit({ "intro.qmd": "# Intro\n\nFirst paragraph.\n\nSecond paragraph, edited there.\n" });
-  const moved = await limit("push", push(fx.ctx, "Reviewed", { confirmed: reviewed.outgoing }));
-  assert.equal(moved.status, "moved", JSON.stringify(moved));
+  const behind = await limit("push", push(fx.ctx, "Reviewed", { confirmed: reviewed.outgoing }));
+  assert.equal(behind.status, "behind", JSON.stringify(behind));
   assert.equal(fx.repo.headOf(), theirs, "nothing was pushed");
 
   const both = "# Intro\n\nFirst paragraph, edited here.\n\nSecond paragraph, edited there.\n";
+  const pulled = await limit("pull", pull(fx.ctx));
+  assert.equal(pulled.status, "pulled", JSON.stringify(pulled));
   await wait("the pulled edit", () => textAt(fx.client, "intro.qmd") === both);
-  const landed = await limit("push", push(fx.ctx, "Both", { confirmed: moved.outgoing }));
+  const landed = await limit("push", push(fx.ctx, "Both"));
   assert.equal(landed.status, "pushed", JSON.stringify(landed));
   assert.equal(fx.repo.read("intro.qmd"), both);
   assert.deepEqual(fx.repo.parents(fx.repo.headOf()), [theirs]);

@@ -14,7 +14,7 @@
   import { remoteIdentity } from "../../lib/gitsync/identity.js";
   import { currentPlatform, signInHelp } from "../../lib/gitsync/sign-in-help.js";
   import {
-    checkRemote, compare, connect, defaultMessage, disconnect, localChanges, outgoing, pull, push, recover, status,
+    checkRemote, compare, connect, defaultMessage, disconnect, discardConflict, leaveBranch, localChanges, outgoing, pull, push, recover, status,
   } from "../../lib/gitsync/sync.js";
 
   let { open = false, slug, key = "", session = null, rules = {}, me = {}, resolver } = $props();
@@ -57,6 +57,7 @@
   let message = $state("");
   let note = $state(null);
   let confirmingDisconnect = $state(false);
+  let confirmingSwitch = $state(false);
 
   let outcome = $state(null);
   let conflictSession = $state(null);
@@ -314,6 +315,7 @@
   }
 
   async function doPull() {
+    note = null;
     await guard(async () => {
       pulling = true;
       try {
@@ -325,7 +327,7 @@
     });
   }
 
-  // Pulls first, then commits and pushes only the list the user has seen.
+  // Commits and pushes only the list the user has seen. It never pulls.
   async function commitAndPush() {
     note = null;
     await guard(async () => {
@@ -333,6 +335,11 @@
       try {
         const shown = local?.status === "changes" ? local.files : [];
         const result = await outgoing(context());
+        if (result.status === "behind") {
+          remoteState = { status: "behind", head: result.head };
+          await refresh();
+          return;
+        }
         if (result.status !== "outgoing") {
           show(result.status === "nothing" ? { ...result, kind: "push" } : result);
           await refreshAll();
@@ -341,15 +348,19 @@
         const key = (file) => `${file.status}:${file.path}`;
         const before = shown.map(key).sort().join("\n");
         const after = result.files.map(key).sort().join("\n");
-        if (result.pulled?.status === "pulled" || before !== after) {
-          if (result.pulled?.status === "pulled") show(result.pulled);
+        if (before !== after) {
           local = result.files.length ? { status: "changes", files: result.files } : { status: "none", files: [] };
-          note = "The list changed after pulling. Check it and press Commit & push again.";
+          note = "The list changed. Check it and press Commit & push again.";
           await refresh();
           checkNow();
           return;
         }
         const pushed = await push(context(), message.trim(), { confirmed: result.outgoing });
+        if (pushed.status === "behind") {
+          remoteState = { status: "behind", head: pushed.head };
+          await refresh();
+          return;
+        }
         if (pushed.status === "moved") {
           note = "The repository changed. Press Commit & push again.";
         } else {
@@ -411,6 +422,51 @@
     await doDisconnect();
   }
 
+  // Ends the connection on this branch and opens the setup form on the same
+  // remote and folder, so another branch can be compared and connected.
+  async function confirmSwitch() {
+    confirmingSwitch = false;
+    const spec = info?.remote;
+    const keep = { folder: link?.folder || "", label: link?.remote_label || "" };
+    let left = false;
+    await guard(async () => {
+      await leaveBranch(context());
+      left = true;
+      link = null;
+      outcome = null;
+      note = null;
+      remoteState = null;
+      local = null;
+      checkGeneration++;
+      localGeneration++;
+      checking = false;
+      resetDraft();
+    });
+    if (!left) return;
+    folder = keep.folder;
+    if (spec?.grant) {
+      grant = { grant: spec.grant, label: keep.label };
+      remoteText = "";
+    } else {
+      grant = null;
+      remoteText = spec?.url || "";
+    }
+    await loadBranches();
+    await refresh();
+  }
+
+  // Abandons the conflicted pull and returns the panel to its usual view.
+  async function cancelConflict() {
+    const saved = conflictSession;
+    await resolver?.discard();
+    await guard(async () => {
+      await discardConflict(context(), saved);
+      conflictSession = null;
+      say("Cancelled the pull", { kind: "note", id: "git:cancel" });
+      await refreshAll();
+    });
+  }
+
   async function copyRemote() {
     try {
       await navigator.clipboard?.writeText(identity.full);
@@ -444,13 +500,14 @@
   function menuChosen(item) {
     if (item.value === "copy") copyRemote();
     else if (item.value === "disconnect") confirmingDisconnect = true;
+    else if (item.value === "switch") confirmingSwitch = true;
   }
 
   // The one line that says where sync stands. It is derived from real state only.
   const sync = $derived.by(() => {
     if (pulling) return { icon: "spinner", text: "Pulling…" };
-    if (resolving) return { icon: "triangle-alert", text: "Resolve the conflicts in the editor area." };
-    if (savedConflict) return { icon: "triangle-alert", text: "Conflicts need resolution", action: { label: "Resolve", onclick: resume, tone: "tonal" } };
+    if (resolving) return { icon: "triangle-alert", text: "Resolve the conflicts in the editor area.", cancel: { label: "Cancel", onclick: cancelConflict } };
+    if (savedConflict) return { icon: "triangle-alert", text: "Conflicts need resolution", action: { label: "Resolve", onclick: resume, tone: "tonal" }, cancel: { label: "Cancel", onclick: cancelConflict } };
     if (interrupted) return { icon: "triangle-alert", text: "A sync was interrupted", action: { label: "Resume", onclick: resume, tone: "tonal" } };
     if (checking || remoteState === null) return { icon: "spinner", text: "Checking the remote…" };
     if (remoteState.status === "behind") return { icon: "arrow-down", text: "New commits on the remote", action: { label: "Pull", onclick: doPull, tone: "tonal" } };
@@ -546,6 +603,9 @@
         <div class="gh-box" role="status">
           <p>{pending.length ? "A sync was interrupted." : "A conflict is saved."}</p>
           <button type="button" class="btn btn-sm lp-control-tonal-brand" disabled={busy} onclick={resume}>Resume</button>
+          {#if !pending.length && conflictSession}
+            <button type="button" class="btn btn-sm lp-control-tonal-brand" disabled={busy} onclick={cancelConflict}>Cancel</button>
+          {/if}
         </div>
       {/if}
     {/if}
@@ -568,6 +628,7 @@
                 <p>Last push: {when(link.last_push_at, label(link.last_push_by))}</p>
               </div>
               <Menu.Item value="copy" class="menuitem">Copy remote address</Menu.Item>
+              <Menu.Item value="switch" class="menuitem" disabled={resolving || savedConflict || interrupted}>Switch branch…</Menu.Item>
               <hr class="hr my-1" />
               <Menu.Item value="disconnect" class="menuitem">Disconnect…</Menu.Item>
             </ExplorerMenu>
@@ -585,6 +646,9 @@
           <button type="button"
             class={sync.action.tone === "tonal" ? "btn btn-sm lp-control-tonal-brand gh-status-action" : "gh-action gh-status-action"}
             disabled={busy || checking} onclick={sync.action.onclick}>{sync.action.label}</button>
+        {/if}
+        {#if sync.cancel}
+          <button type="button" class="gh-action gh-status-action" disabled={busy || resolver?.state.busy} onclick={sync.cancel.onclick}>{sync.cancel.label}</button>
         {/if}
       </div>
       {@render alerts()}
@@ -619,9 +683,13 @@
                 placeholder={defaultMessage(local.files)} />
             </label>
             <div class="gh-row">
-              <button type="button" class="btn btn-sm lp-control-brand" disabled={busy} onclick={commitAndPush}>{committing ? "Committing…" : "Commit & push"}</button>
+              <button type="button" class="btn btn-sm lp-control-brand" disabled={busy || remoteState?.status === "behind"} onclick={commitAndPush}>{committing ? "Committing…" : "Commit & push"}</button>
             </div>
-            <p class="gh-muted gh-hint">Pulls new commits first, then commits your changes and pushes them.</p>
+            {#if remoteState?.status === "behind"}
+              <p class="gh-muted gh-hint">The remote has new commits. Pull first, then push.</p>
+            {:else}
+              <p class="gh-muted gh-hint">Commits your changes and pushes them. When the remote has new commits, pull first.</p>
+            {/if}
           {/if}
         </div>
       {/if}
@@ -723,6 +791,12 @@
     <Modal open title={`Disconnect this project from ${identity.name}?`} onclose={() => (confirmingDisconnect = false)}
       confirm={{ label: "Disconnect", tone: "error", oncancel: () => (confirmingDisconnect = false), onclick: confirmDisconnect }}>
       <p>The repository and the project stay as they are. Sync stops until you connect again.</p>
+    </Modal>
+  {/if}
+  {#if confirmingSwitch && link}
+    <Modal open title="Switch branch" onclose={() => (confirmingSwitch = false)}
+      confirm={{ label: "Switch", oncancel: () => (confirmingSwitch = false), onclick: confirmSwitch }}>
+      <p>This project stops syncing with {link.branch}. Pick another branch of the same repository, compare, and connect. Files stay as they are in LibrePaper.</p>
     </Modal>
   {/if}
 </section>

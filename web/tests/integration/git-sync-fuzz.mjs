@@ -1096,17 +1096,27 @@ async function walk(seed, fx) {
     assert.ok(!isColliding(answer) && (tolerated(answer) || ["pulled", "nothing"].includes(answer.status)), fail(`${label} ended as ${answer.status}: ${JSON.stringify(answer)}`));
   }
 
-  /// One outgoing check and push, pushed again once when the remote moved. A
-  /// collision found by the pull inside either call is recovered once, by a
-  /// fresh check, and then the step runs again.
+  /// A push that answers behind, because the remote has commits the checkpoint
+  /// lacks, is a legitimate outcome: the step pulls, then pushes once more. A
+  /// second behind answer is left to the settling steps of the round.
+  async function behindStep(retried) {
+    log.push(`r${round} behind the remote, pulled`);
+    await pullStep("the pull after a behind answer");
+    if (!retried) await pushStep(false, true);
+  }
+
+  /// One outgoing check and push. A remote that moved during the push is
+  /// planned again once. A collision found by the pull inside either call is
+  /// recovered once, by a fresh check, and then the step runs again.
   async function pushStep(concurrent, retried = false) {
     const planned = await step("outgoing", () => outgoing(ctx));
     if (isColliding(planned) && !retried) {
       await dropLocalCopies(planned);
       return pushStep(false, true);
     }
+    if (planned.status === "behind") return behindStep(retried);
     if (planned.status !== "outgoing") {
-      assert.ok(!isColliding(planned) && (tolerated(planned) || ["nothing", "pulled"].includes(planned.status)), fail(`the outgoing check ended as ${planned.status}: ${JSON.stringify(planned)}`));
+      assert.ok(!isColliding(planned) && (tolerated(planned) || planned.status === "nothing"), fail(`the outgoing check ended as ${planned.status}: ${JSON.stringify(planned)}`));
       return;
     }
     log.push(`r${round} outgoing [${(planned.files || []).map((file) => file.path).join(", ")}]`);
@@ -1117,13 +1127,14 @@ async function walk(seed, fx) {
       if (replanned.status === "outgoing") {
         pushed = await runOp("push", () => push(ctx, `Fuzz r${round}`, { confirmed: replanned.outgoing }), concurrent);
       } else {
-        pushed = isColliding(replanned) ? replanned : null;
+        pushed = isColliding(replanned) || replanned.status === "behind" ? replanned : null;
       }
     }
     if (isColliding(pushed) && !retried) {
       await dropLocalCopies(pushed);
       return pushStep(false, true);
     }
+    if (pushed?.status === "behind") return behindStep(retried);
     if (pushed) assert.ok(!isColliding(pushed) && (pushed.status === "pushed" || tolerated(pushed)), fail(`the push ended as ${pushed.status}: ${JSON.stringify(pushed)}`));
     log.push(`r${round} push done`);
   }

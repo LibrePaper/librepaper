@@ -754,30 +754,68 @@ const baseFiles = (repo) => {
   assert.deepEqual(planned.files, [{ path: "intro.qmd", status: "M" }]);
   assert.equal(repo.pushes.length, 0);
 
-  // The reviewed set is what goes out, even when the remote moved elsewhere.
+  // The remote moved elsewhere: the reviewed set is refused as behind, and
+  // nothing in the project changes until the person pulls.
   repo.advance({ "other.md": "other\n" });
-  const pushed = await sync.push(ctx, "reviewed", { confirmed: planned.outgoing });
+  const behind = await sync.push(ctx, "reviewed", { confirmed: planned.outgoing });
+  assert.equal(behind.status, "behind", JSON.stringify(behind));
+  assert.equal(repo.read("intro.qmd"), "one\n");
+  assert.ok(!session.has("other.md"));
+  assert.equal(session.text("intro.qmd"), "one edited\n");
+
+  const pulled = await sync.pull(ctx);
+  assert.equal(pulled.status, "pulled", JSON.stringify(pulled));
+  assert.equal(session.text("other.md"), "other\n");
+  const again = await sync.outgoing(ctx);
+  assert.equal(again.status, "outgoing", JSON.stringify(again));
+  const pushed = await sync.push(ctx, "reviewed", { confirmed: again.outgoing });
   assert.equal(pushed.status, "pushed", JSON.stringify(pushed));
   assert.equal(repo.read("intro.qmd"), "one edited\n");
   assert.equal(repo.read("other.md"), "other\n");
-  assert.equal(session.text("other.md"), "other\n");
   assert.equal(api.state.link.checkpoint, repo.head);
+}
 
-  // Moved twice in a row: the panel is asked again and nothing is pushed.
-  await session.setText("intro.qmd", "one edited twice\n");
-  repo.moveOnPush = 2;
+// A push answers behind when the remote has commits the checkpoint lacks, and
+// pulls nothing itself.
+{
+  const { repo, session, api, ctx } = await connected({ "intro.qmd": "one\n" });
+  await session.setText("intro.qmd", "one edited\n");
+  repo.advance({ "other.md": "other\n" });
+  const pushes = repo.pushes.length;
+  const behind = await sync.push(ctx, "x");
+  assert.equal(behind.status, "behind", JSON.stringify(behind));
+  assert.equal(behind.reason, "The remote has new commits. Pull first, then push.");
+  assert.equal(repo.pushes.length, pushes);
+  assert.ok(!session.has("other.md"));
+  assert.equal(session.text("intro.qmd"), "one edited\n");
+  assert.equal(repo.read("intro.qmd"), "one\n");
+
+  assert.equal((await sync.pull(ctx)).status, "pulled");
+  const pushed = await sync.push(ctx, "x");
+  assert.equal(pushed.status, "pushed", JSON.stringify(pushed));
+  assert.equal(repo.read("intro.qmd"), "one edited\n");
+  assert.equal(api.state.link.checkpoint, repo.head);
+}
+
+// A push the remote refuses as non-fast-forward answers behind, and a pull
+// followed by a push goes through.
+{
+  const { repo, session, api, ctx } = await connected({ "intro.qmd": "one\n" });
+  await session.setText("intro.qmd", "one edited\n");
+  repo.moveOnPush = 1;
   const head = repo.head;
   const moved = await sync.push(ctx, "again");
-  assert.equal(moved.status, "moved", JSON.stringify(moved));
-  assert.deepEqual(moved.files, [{ path: "intro.qmd", status: "M" }]);
-  assert.equal(repo.read("intro.qmd"), "one edited\n");
+  assert.equal(moved.status, "behind", JSON.stringify(moved));
+  assert.equal(moved.reason, "The remote has new commits. Pull first, then push.");
   assert.notEqual(repo.head, head);
+  assert.equal(repo.read("intro.qmd"), "one\n");
   assert.equal(repo.refs.size, 0);
 
-  // The panel asks again and the push goes through.
-  const final = await sync.push(ctx, "again", { confirmed: moved.outgoing });
+  assert.equal((await sync.pull(ctx)).status, "pulled");
+  const final = await sync.push(ctx, "again");
   assert.equal(final.status, "pushed", JSON.stringify(final));
-  assert.equal(repo.read("intro.qmd"), "one edited twice\n");
+  assert.equal(repo.read("intro.qmd"), "one edited\n");
+  assert.equal(api.state.link.checkpoint, repo.head);
 }
 
 // ---------------------------------------------------------------- recovery
@@ -1180,7 +1218,7 @@ const baseFiles = (repo) => {
   };
   const look = await sync.outgoing(ctx);
   repo.request = original;
-  assert.ok(look.status === "nothing" || look.status === "pulled", JSON.stringify(look));
+  assert.equal(look.status, "nothing", JSON.stringify(look));
   assert.ok(!uploaded.includes(sha));
   assert.ok(!repo.known.has(sha));
 }

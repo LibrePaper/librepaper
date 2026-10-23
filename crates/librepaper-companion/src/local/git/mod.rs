@@ -656,7 +656,8 @@ impl GitManager {
         }
     }
 
-    /// Git's version and whether this project is connected.
+    /// Git's version, whether this project is connected, and the connection's
+    /// remote. The page uses the remote to reconnect to another branch.
     async fn status(&self, conn: &Conn) -> Result<Value, GitError> {
         let version = match Runtime::find() {
             Some(exe) => self.runtime.probe(&exe).await,
@@ -670,6 +671,7 @@ impl GitManager {
         if let Some(record) = self.read_record(conn) {
             answer["connected"] = json!(true);
             answer["connection_id"] = json!(record.connection_id);
+            answer["remote"] = json!(record.remote);
             answer["remote_label"] = json!(record.label);
             answer["branch"] = json!(record.branch);
         }

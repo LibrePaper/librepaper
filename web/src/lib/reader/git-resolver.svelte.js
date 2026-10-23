@@ -165,13 +165,29 @@ export function createGitResolver() {
   };
   const deleteVsModify = (item) => (item.oursId == null) !== (item.theirsId == null);
   const keepSide = (item) => (item.oursId == null ? "theirs" : "ours");
-  const isResolved = (path) => Boolean(state.resolutions[path]);
   const allResolved = () => state.items.length > 0 && state.items.every((item) => state.resolutions[item.path]);
 
   // Flushes a pending save, so closing keeps the latest typing.
   function close() {
     if (timer) persist();
     state.active = false;
+  }
+
+  // Closes the workspace without saving the choices. It resolves once no save
+  // is outstanding, so the caller can drop the saved session for good.
+  async function discard() {
+    if (state.busy) return;
+    cancelSave();
+    wanted = false;
+    held = true;
+    current = null;
+    loaded = null;
+    state.active = false;
+    state.items = [];
+    state.resolutions = {};
+    state.selected = "";
+    state.error = "";
+    await inflight;
   }
 
   async function apply() {
@@ -224,5 +240,5 @@ export function createGitResolver() {
     cancelSave();
   }
 
-  return { state, open, select, choose, edit, apply, close, dispose, resultText, deleteVsModify, keepSide, isResolved, allResolved };
+  return { state, open, select, choose, edit, apply, close, discard, dispose, resultText, deleteVsModify, keepSide, allResolved };
 }
