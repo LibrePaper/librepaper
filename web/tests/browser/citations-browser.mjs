@@ -5,6 +5,7 @@ import { createServer } from "node:http";
 import { spawn } from "node:child_process";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { createHash } from "node:crypto";
 import { existsSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { requireChromiumExecutable } from "../helpers/browser-executable.mjs";
@@ -14,6 +15,9 @@ const root = dirname(dirname(dirname(dirname(fileURLToPath(import.meta.url)))));
 const temporary = mkdtempSync(join(tmpdir(), "librepaper-citations-check-"));
 const output = join(temporary, "build"), profile = join(temporary, "chrome"), entry = join(temporary, "entry.js");
 const port = 22000 + Math.floor(Math.random() * 1000);
+// The renderer checks a module against the digest in its URL, as the mirror lays it out.
+const bibliographyBytes = readFileSync(join(root, "web/wasm/bibliography.wasm"));
+const bibliographyUrl = `/wasm/${createHash("sha256").update(bibliographyBytes).digest("hex")}/bibliography.wasm`;
 const imports = (path) => JSON.stringify(join(root, path));
 writeFileSync(entry, [
   "import { tick } from " + imports("web/node_modules/svelte/src/index-client.js") + ";",
@@ -25,7 +29,7 @@ writeFileSync(entry, [
   "import { projectDirectory } from " + imports("web/src/lib/projection.js") + ";",
   "import { configure as configureDesktop } from " + imports("web/src/lib/desktop/client.js") + ";",
   "import Editor from " + imports("web/src/components/Editor.svelte") + ";",
-  "globalThis.LIBREPAPER_MODULES = { bibliography: '/bibliography.wasm' };",
+  `globalThis.LIBREPAPER_MODULES = { bibliography: ${JSON.stringify(bibliographyUrl)} };`,
   "const session = joinSession({ send: () => {}, mayEdit: true });",
   "const main = session.addText('paper.md', '---\\nbibliography: refs.bib\\n---\\n\\nSee ');",
   "session.addText('refs.bib', '@article{smith2020, author={Jane Smith}, title={A Study of Rivers}, year={2020}, journal={Nature}}');",
@@ -116,7 +120,7 @@ let server, browser, socket;
 try {
   await build({ configFile: false, root: join(root, "web"), plugins: [svelte()], logLevel: "error", build: { outDir: output, emptyOutDir: true, lib: { entry, formats: ["es"], fileName: () => "citations-check.js" } } });
   server = createServer((request, response) => {
-    if (request.url === "/bibliography.wasm") { response.setHeader("Content-Type", "application/wasm"); response.end(readFileSync(join(root, "web/wasm/bibliography.wasm"))); return; }
+    if (request.url === bibliographyUrl) { response.setHeader("Content-Type", "application/wasm"); response.end(bibliographyBytes); return; }
     const file = join(output, request.url.slice(1));
     if (request.url !== "/" && existsSync(file)) { response.setHeader("Content-Type", "text/javascript"); response.end(readFileSync(file)); }
     else { response.setHeader("Content-Type", "text/html"); response.end("<body><script type=\"module\" src=\"/citations-check.js\"></script></body>"); }

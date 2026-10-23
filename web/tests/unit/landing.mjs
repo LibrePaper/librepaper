@@ -37,6 +37,11 @@ const context = (values) => vm.createContext({
   // in the order the rail shows them. No case here is about tags.
   tags: [],
   sortTags: (list) => list,
+  // A loaded listing warms the document page. No case here is about that.
+  warmReader: () => {},
+  readDefaultPreview: () => "html",
+  location: { origin: "https://example.test" },
+  me: {},
   ...values,
 });
 

@@ -53,6 +53,10 @@ pub struct ShareLinkRecord {
     pub created_at: OffsetDateTime,
     pub expires_at: Option<OffsetDateTime>,
     pub revoked_at: Option<OffsetDateTime>,
+    /// `link` for a browser link, `agent` for an owner-issued agent token.
+    pub kind: String,
+    /// For an agent token, the owner's session generation at mint.
+    pub owner_generation: String,
 }
 
 impl PostgresCatalog {
@@ -114,6 +118,8 @@ impl PostgresCatalog {
             String,
             Option<OffsetDateTime>,
             Option<i64>,
+            String,
+            String,
         )],
     ) -> Result<()> {
         let mut tx = self.begin_document_admin(document_id).await?;
@@ -136,6 +142,8 @@ impl PostgresCatalog {
             String,
             Option<OffsetDateTime>,
             Option<i64>,
+            String,
+            String,
         )],
     ) -> Result<()> {
         let found = sqlx::query_scalar!(
@@ -159,7 +167,7 @@ impl PostgresCatalog {
         )
         .execute(&mut **tx)
         .await?;
-        for (role, hash, sealed, label, expires, budget) in links {
+        for (role, hash, sealed, label, expires, budget, kind, generation) in links {
             // Scoped to this document, so a token that somehow belongs to
             // another one is not quietly moved: nothing is updated, and the
             // insert below refuses it by the unique constraint.
@@ -171,6 +179,7 @@ impl PostgresCatalog {
             // cost the owner the URL of a link that is working.
             let kept = sqlx::query!(
                 "UPDATE share_links SET role=$3,label=$5,expires_at=$6,comment_budget=$7,
+                        kind=$8,owner_generation=$9,
                         sealed_token=COALESCE(NULLIF($4,''::bytea),sealed_token),
                         revoked_at=NULL
                  WHERE document_id=$1 AND token_hash=$2",
@@ -181,14 +190,16 @@ impl PostgresCatalog {
                 label,
                 *expires,
                 *budget,
+                kind,
+                generation,
             )
             .execute(&mut **tx)
             .await?
             .rows_affected();
             if kept == 0 {
                 sqlx::query!(
-                    "INSERT INTO share_links(id,document_id,role,token_hash,sealed_token,label,expires_at,comment_budget)
-                     VALUES($1,$2,$3,$4,$5,$6,$7,$8)",
+                    "INSERT INTO share_links(id,document_id,role,token_hash,sealed_token,label,expires_at,comment_budget,kind,owner_generation)
+                     VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)",
                     new_id(),
                     document_id,
                     role,
@@ -197,6 +208,8 @@ impl PostgresCatalog {
                     label,
                     *expires,
                     *budget,
+                    kind,
+                    generation,
                 )
                 .execute(&mut **tx)
                 .await?;
@@ -286,7 +299,7 @@ impl PostgresCatalog {
             "INSERT INTO grants(document_id,account_id,role,source_link_hash)
              SELECT $1,$2,NULL,$3 FROM share_links l
              WHERE l.document_id=$1 AND l.token_hash=$3 AND l.revoked_at IS NULL
-               AND (l.expires_at IS NULL OR l.expires_at>now())
+               AND l.kind='link' AND (l.expires_at IS NULL OR l.expires_at>now())
              ON CONFLICT(document_id,account_id) DO UPDATE SET
                role=NULL,source_link_hash=excluded.source_link_hash
              WHERE grants.source_link_hash IS NOT NULL",
@@ -365,7 +378,7 @@ impl PostgresCatalog {
             "INSERT INTO share_links(id,document_id,role,token_hash,label,expires_at,comment_budget)
              VALUES($1,$2,$3,$4,$5,$6,$7)
              RETURNING id,document_id,role,token_hash,sealed_token,label,comment_budget,
-                       created_at,expires_at,revoked_at",
+                       created_at,expires_at,revoked_at,kind,owner_generation",
             new_id(),
             document_id,
             role,
@@ -392,7 +405,7 @@ impl PostgresCatalog {
         sqlx::query_as!(
             ShareLinkRecord,
             "SELECT id,document_id,role,token_hash,sealed_token,label,comment_budget,
-                    created_at,expires_at,revoked_at
+                    created_at,expires_at,revoked_at,kind,owner_generation
              FROM share_links WHERE document_id=ANY($1) AND revoked_at IS NULL
              ORDER BY document_id,created_at,id",
             document_ids,
@@ -406,7 +419,7 @@ impl PostgresCatalog {
         sqlx::query_as!(
             ShareLinkRecord,
             "SELECT id,document_id,role,token_hash,sealed_token,label,comment_budget,
-                    created_at,expires_at,revoked_at
+                    created_at,expires_at,revoked_at,kind,owner_generation
              FROM share_links WHERE document_id=$1 AND revoked_at IS NULL ORDER BY created_at,id",
             document_id,
         )
@@ -443,11 +456,11 @@ impl PostgresCatalog {
                 (SELECT CASE WHEN g.source_link_hash IS NULL THEN g.role ELSE gl.role END
                    FROM grants g LEFT JOIN share_links gl
                      ON gl.document_id=g.document_id AND gl.token_hash=g.source_link_hash
-                    AND gl.revoked_at IS NULL AND (gl.expires_at IS NULL OR gl.expires_at>$4)
+                    AND gl.revoked_at IS NULL AND gl.kind='link' AND (gl.expires_at IS NULL OR gl.expires_at>$4)
                    WHERE g.document_id=d.id AND g.account_id=$2
                      AND (g.source_link_hash IS NULL OR gl.token_hash IS NOT NULL)) AS grant_role,
                 (SELECT role FROM share_links l WHERE l.document_id=d.id AND l.token_hash=$3
-                    AND l.revoked_at IS NULL AND (l.expires_at IS NULL OR l.expires_at>$4)) AS link_role
+                    AND l.revoked_at IS NULL AND l.kind='link' AND (l.expires_at IS NULL OR l.expires_at>$4)) AS link_role
              FROM documents d WHERE d.id=$1 AND d.status='active'
                AND NOT EXISTS (SELECT 1 FROM moderated_projects m WHERE m.document_id=d.id)"#,
         )

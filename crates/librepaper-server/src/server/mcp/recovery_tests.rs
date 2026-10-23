@@ -661,6 +661,78 @@ async fn a_pass_with_nearby_replacements_applies_all_of_them() {
     deployment.catalog.close().await;
 }
 
+/// A replacement with CRLF line endings is normalised when the patch is
+/// parsed, so the candidate digest the proposal returns is the digest of the
+/// tree `document_apply` commits, and the file body holds no carriage return.
+#[tokio::test]
+#[ignore = "requires LIBREPAPER_TEST_POSTGRES_URL"]
+async fn a_crlf_replacement_proposes_and_applies_the_same_bytes() {
+    let Some(deployment) = deployment("mcp-crlf-replacement").await else {
+        return;
+    };
+    let owner = bearer(
+        deployment.owner_id,
+        "owner",
+        &deployment.owner_generation,
+        &deployment.owner_link_key,
+    );
+    let (view, epoch, ranges) = read_ranges(&deployment, &owner, &["for company"]).await;
+    let (status, staged) = call(
+        &deployment,
+        &owner,
+        "document_propose",
+        json!({
+            "view_id":view,
+            "operation":operation(&epoch),
+            "publish":"private",
+            "validation":"source",
+            "patches":[{"range_id":ranges[0],"replacement":"ONE\r\nTWO"}]
+        }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{staged}");
+    let candidate_id = recovered(&staged)["candidate_id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let candidate_digest = recovered(&staged)["tree_digest"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let apply_arguments = json!({"candidate_id":candidate_id,"operation":operation(&epoch)});
+    let (status, _applied) = call(
+        &deployment,
+        &owner,
+        "document_apply",
+        apply_arguments.clone(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let (status, response) = call(
+        &deployment,
+        &owner,
+        "document_result",
+        json!({"operation":operation(&epoch),"kind":"operation","target_operation":apply_arguments["operation"]}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{response}");
+    let outcome = recovered(&response);
+    assert_eq!(outcome["status"], "committed", "{response}");
+    assert_eq!(outcome["tree_digest_after"], candidate_digest.as_str());
+    let room = deployment
+        .server
+        .documents
+        .rooms
+        .get(&deployment.slug)
+        .await
+        .unwrap();
+    let current = room.agent_query_snapshot().await.unwrap();
+    let text = &current.texts()["paper.md"];
+    assert!(text.contains("ONE\nTWO"), "{text}");
+    assert!(!text.contains('\r'), "{text:?}");
+    deployment.catalog.close().await;
+}
+
 /// Reads the manifest and returns the epoch a mutation needs plus the raw
 /// response, so a test can look for a path in it.
 async fn read_manifest(deployment: &Deployment, headers: &HeaderMap) -> (String, Value) {

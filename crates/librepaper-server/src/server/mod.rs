@@ -29,17 +29,17 @@ use librepaper_base::auth::{
     cookie_name, device_deadline, normalized, now_unix, pkce_verifier, random_token,
     read_agent_grant, read_device, read_session, read_visitor, session_deadline, sign_device,
     sign_session, sign_visitor, Accounts, DeviceOutcome, GithubAccounts, GithubApp, Identity,
-    OidcProvider, PendingCodes, Policy, TokenCache, AGENT_GRANT_PREFIX, DEVICE_POLL_INTERVAL,
-    DEVICE_TOKEN_MAX_AGE, DEVICE_TOKEN_PREFIX, PROVIDER_GITHUB, SESSION_COOKIE, SESSION_MAX_AGE,
-    STATE_COOKIE, VISITOR_COOKIE,
+    OidcProvider, PendingCodes, Policy, TokenCache, AGENT_GRANT_PREFIX, AGENT_TOKEN_PREFIX,
+    DEVICE_POLL_INTERVAL, DEVICE_TOKEN_MAX_AGE, DEVICE_TOKEN_PREFIX, PROVIDER_GITHUB,
+    SESSION_COOKIE, SESSION_MAX_AGE, STATE_COOKIE, VISITOR_COOKIE,
 };
 use librepaper_base::config::Configuration;
 use librepaper_base::shell::{renderers, ShellFile};
 use librepaper_base::util::clean;
 use librepaper_document::document::render::{title_from_html, title_from_markdown};
 use librepaper_engine::storage::store::{
-    random_suffix, slugify, Ceiling, DocumentInput, IndexEntry, LinkGrant, ModifyError, PutError,
-    Role, Store,
+    random_suffix, slugify, Ceiling, DocumentInput, IndexEntry, LinkGrant, LinkKind, ModifyError,
+    PutError, Role, Store,
 };
 use librepaper_room::room::{
     decode_update, encode_update, Message as RoomMessage, Outgoing, Room, RoomCommand, Rooms,
@@ -49,7 +49,11 @@ use librepaper_room::room::{
 #[cfg(test)]
 mod admin_http_tests;
 mod agent_auth;
+#[cfg(test)]
+mod agent_token_http_tests;
 mod assistant;
+#[cfg(test)]
+mod authz_http_tests;
 mod chat;
 #[cfg(test)]
 mod chat_http_tests;
@@ -167,11 +171,11 @@ fn may_read(entry: &IndexEntry, who: &Viewer) -> bool {
         return false;
     }
     if who.automation {
+        let now = librepaper_base::util::now_unix();
         return who.bearer
             && !who.link.is_empty()
-            && entry
-                .link_role(&who.link, librepaper_base::util::now_unix())
-                .is_some();
+            && (entry.link_role(&who.link, now).is_some()
+                || (who.token.is_some() && entry.live_agent(&who.link, now).is_some()));
     }
     entry.readable_by(&who.id.id, &who.link, librepaper_base::util::now_unix())
 }
@@ -186,12 +190,16 @@ fn needs_sign_in(entry: &IndexEntry, who: &Viewer) -> bool {
             .is_some()
 }
 
+/// Whether a delegated grant applies to this document and this request. The
+/// grant already names the link it was minted from, so it stands in for the
+/// key: a request may omit the key, or repeat the grant's own, but may not
+/// present a different one.
 fn grant_matches_scope(
     grant: &librepaper_base::auth::AgentGrant,
     slug: &str,
-    link_hash: &str,
+    presented_link: &str,
 ) -> bool {
-    grant.slug == slug && grant.link_hash == link_hash
+    grant.slug == slug && (presented_link.is_empty() || presented_link == grant.link_hash)
 }
 
 fn grant_role_ceiling(role: u8) -> Role {
@@ -416,12 +424,49 @@ fn automation_role(
     now: i64,
 ) -> Role {
     match entry.link_role(presented_link, now) {
-        Some(Role::Editor) if ceiling.edit => Role::Editor,
-        Some(Role::Editor | Role::Commenter) if ceiling.comment => Role::Commenter,
-        Some(Role::Editor | Role::Commenter | Role::Reader) => Role::Reader,
+        Some(granted) => clamp_to_ceiling(granted, ceiling),
         None => Role::Reader,
-        Some(Role::Owner) => Role::Reader,
     }
+}
+
+/// What a granted role comes to under the deployment's switches, for a caller
+/// that is bounded by a row alone: an editor row edits under the publish
+/// switch, comments under the comment switch and otherwise reads.
+fn clamp_to_ceiling(granted: Role, ceiling: librepaper_engine::storage::store::Ceiling) -> Role {
+    match granted {
+        Role::Editor if ceiling.edit => Role::Editor,
+        Role::Editor | Role::Commenter if ceiling.comment => Role::Commenter,
+        _ => Role::Reader,
+    }
+}
+
+/// The key and slug inside an `lpt_<slug>.<key>` token, or nothing for a
+/// string that is not shaped like one.
+pub(super) fn parse_agent_token(token: &str) -> Option<(&str, &str)> {
+    let (slug, key) = token.strip_prefix(AGENT_TOKEN_PREFIX)?.rsplit_once('.')?;
+    (!slug.is_empty() && !key.is_empty()).then_some((slug, key))
+}
+
+/// An agent token's id: the first 16 hex characters of its key's digest.
+pub(super) fn agent_token_id(key: &str) -> String {
+    let hash = hash_link_key(key);
+    hash[..hash.len().min(16)].to_string()
+}
+
+/// The `lpt_` bearer a request carries, if it carries one.
+pub(super) fn agent_token_bearer(headers: &HeaderMap) -> Option<String> {
+    header_of(headers, "authorization")
+        .as_deref()
+        .and_then(|value| value.strip_prefix("Bearer "))
+        .filter(|token| token.starts_with(AGENT_TOKEN_PREFIX))
+        .map(str::to_owned)
+}
+
+/// The agent token behind a request: its id and the name the owner gave it.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct AgentToken {
+    pub id: String,
+    pub name: String,
 }
 
 /// Everything a request says about who is asking, resolved once: the account,
@@ -451,6 +496,8 @@ pub struct Viewer {
     /// temporarily unavailable authoritative account lookup). Protected
     /// routes must answer 401/503 rather than silently downgrade it.
     pub auth_failed: bool,
+    /// Set when the request authenticated with an `lpt_` token.
+    pub token: Option<AgentToken>,
 }
 
 impl Viewer {
@@ -476,6 +523,9 @@ impl Viewer {
     /// `visitor:<token>`, so prefixing one again would name a principal no
     /// other path names -- this is the one place that decides.
     pub fn principal_key(&self) -> String {
+        if let Some(token) = &self.token {
+            return format!("token:{}", token.id);
+        }
         if let Some(id) = self.account_id() {
             return id.to_string();
         }
@@ -1058,6 +1108,9 @@ impl Server {
             let Some(token) = bearer else {
                 return Err(AuthenticationFailure::Invalid);
             };
+            if token.starts_with(AGENT_TOKEN_PREFIX) {
+                return self.agent_token_identity(&token).await;
+            }
             if token.starts_with(AGENT_GRANT_PREFIX) {
                 let Some(grant) = read_agent_grant(&self.key, &token) else {
                     return Err(AuthenticationFailure::Invalid);
@@ -1135,6 +1188,47 @@ impl Server {
         }
     }
 
+    /// The owner's account behind an `lpt_` token, or a refusal. The token
+    /// names its document, so the row is found from the document's own list:
+    /// a revoked, expired or replaced token has no row, and a token minted
+    /// before the owner's session generation moved on no longer matches it.
+    /// This says who the request acts as. What it may do comes from the row
+    /// alone, in `viewer_as`, and which routes accept it is decided at the
+    /// admission boundary.
+    async fn agent_token_identity(&self, token: &str) -> Result<Identity, AuthenticationFailure> {
+        let Some((slug, key)) = parse_agent_token(token) else {
+            return Err(AuthenticationFailure::Invalid);
+        };
+        let entry = self
+            .store
+            .get_result(slug)
+            .await
+            .map_err(|_| AuthenticationFailure::Unavailable)?
+            .ok_or(AuthenticationFailure::Invalid)?;
+        let now = librepaper_base::util::now_unix();
+        let row = entry
+            .live_agent(&hash_link_key(key), now)
+            .ok_or(AuthenticationFailure::Invalid)?;
+        let account = match account_row(&self.store.catalog, &entry.publisher_id).await {
+            Ok(Some(account)) => account,
+            Ok(None) => return Err(AuthenticationFailure::Invalid),
+            Err(_) => return Err(AuthenticationFailure::Unavailable),
+        };
+        if account.status != "active"
+            || account.session_generation.to_string() != row.owner_generation
+        {
+            return Err(AuthenticationFailure::Invalid);
+        }
+        Ok(Identity {
+            provider: account.provider.unwrap_or_default(),
+            id: account.id.to_string(),
+            handle: account.handle,
+            name: account.display_name,
+            picture: String::new(),
+            session_generation: account.session_generation.to_string(),
+        })
+    }
+
     /// The key a caller's uploads belong to. A signed-in caller is their
     /// handle. Where publishing needs no account there is still someone on the
     /// other end, so an anonymous caller is named by the visitor cookie the
@@ -1160,6 +1254,13 @@ impl Server {
     /// comment without turning the raw cookie -- which also names the caller's
     /// uploads -- into something a comment payload carries around.
     pub fn comment_author(&self, headers: &HeaderMap, arrival: &Arrival, id: &Identity) -> String {
+        // A token's work is the token's, not the owner's whose account it
+        // acts through.
+        if let Some(token) = agent_token_bearer(headers) {
+            if let Some((_, key)) = parse_agent_token(&token) {
+                return format!("token:{}", agent_token_id(key));
+            }
+        }
         // A link-only automation peer has no visitor cookie to key its
         // pseudonym on. Use the link digest instead, which is already the
         // server-side attribution boundary and never exposes the credential.
@@ -1317,6 +1418,9 @@ impl Server {
         // ceilings, while preventing the cached owner session from widening
         // the link's authority.
         let authorization = header_of(headers, "authorization");
+        if let Some(token) = agent_token_bearer(headers) {
+            return self.token_viewer(entry, id, &token);
+        }
         let grant = authorization
             .as_deref()
             .and_then(|value| value.strip_prefix("Bearer "))
@@ -1334,6 +1438,8 @@ impl Server {
             .is_none_or(|grant| grant_matches_scope(grant, &entry.slug, &presented_link));
         if !grant_in_scope {
             presented_link.clear();
+        } else if let Some(grant) = grant.as_ref() {
+            presented_link = grant.link_hash.clone();
         }
         // A signed-in link holder is pinned after their first visit. On later
         // bare-URL opens, recover only the digest of the still-live link they
@@ -1380,6 +1486,54 @@ impl Server {
             automation,
             bearer: header_of(headers, "authorization").is_some(),
             auth_failed,
+            token: None,
+        }
+    }
+
+    /// The viewer an `lpt_` token makes. The identity is the owner's account,
+    /// for policy ceilings and attribution of storage, and nothing else about
+    /// the owner carries over: the role comes from the token's row alone. A
+    /// token for another document, or one whose row is gone, whose owner is
+    /// no longer this document's owner or whose generation moved on, is a
+    /// failed authentication.
+    fn token_viewer(&self, entry: &IndexEntry, id: Identity, token: &str) -> Viewer {
+        let now = librepaper_base::util::now_unix();
+        let row = parse_agent_token(token)
+            .filter(|(slug, _)| *slug == entry.slug)
+            .and_then(|(_, key)| entry.live_agent(&hash_link_key(key), now))
+            .filter(|row| {
+                id.is_signed_in()
+                    && entry.owned_by(&id.id)
+                    && id.session_generation == row.owner_generation
+            });
+        let Some(row) = row else {
+            return Viewer {
+                id: Identity::anonymous(),
+                key: String::new(),
+                link: String::new(),
+                comment_budget: None,
+                role: Role::Reader,
+                automation: true,
+                bearer: true,
+                auth_failed: true,
+                token: None,
+            };
+        };
+        let ceiling = self.ceiling_for(&id);
+        let role = clamp_to_ceiling(row.granted(), ceiling);
+        Viewer {
+            token: Some(AgentToken {
+                id: row.id().to_string(),
+                name: row.label.clone(),
+            }),
+            comment_budget: row.budget,
+            link: row.hash.clone(),
+            key: String::new(),
+            role,
+            automation: true,
+            bearer: true,
+            auth_failed: false,
+            id,
         }
     }
 
@@ -1660,9 +1814,34 @@ impl Server {
         let temp_id = command.temp_id().to_owned();
         let comment_id_field = command.comment_id().to_owned();
 
+        // A link or token with its own hourly budget spends one action per
+        // command, and a command that fails gives it back. A retry of a
+        // comment that already committed writes nothing, so it spends
+        // nothing and is answered even when the budget is gone.
+        let refusal = |message: &str| {
+            json!({"type": "error", "message": message, "status": 429,
+                "temp_id": temp_id, "request_id": request_id,
+                "version": 1, "protocol": "librepaper.room.v1"})
+        };
+        let (charge, refused) = match self.spend_comment(who) {
+            Ok(charge) => (charge, None),
+            Err(message) => (None, Some(refusal(&message))),
+        };
         let outcome = self
-            .run_comment_command(room, command, &authority, &writer)
+            .run_comment_command(room, command, &authority, &writer, refused)
             .await;
+        let outcome = match outcome {
+            Ok((value, replayed)) => {
+                if replayed {
+                    self.refund_comment(charge);
+                }
+                Ok(value)
+            }
+            Err(response) => {
+                self.refund_comment(charge);
+                Err(response)
+            }
+        };
         // Comment rows are read live. Their immutable anchors must stay
         // cached so source edits keep updating comments already on screen.
         let (mut result, ok) = match outcome {
@@ -1699,10 +1878,17 @@ impl Server {
         command: RoomCommand,
         authority: &librepaper_engine::storage::postgres::Authority,
         author: &librepaper_room::room::CommentAuthor,
-    ) -> Result<Value, Value> {
+        refusal: Option<Value>,
+    ) -> Result<(Value, bool), Value> {
         let catalog = self.store.catalog.clone();
         let config = &self.config;
         let document_id = room.document_id;
+
+        // With the budget spent, only the replay of a comment that already
+        // committed is answered. Everything else is refused.
+        if let (Some(refusal), false) = (&refusal, matches!(command, RoomCommand::Comment { .. })) {
+            return Err(refusal.clone());
+        }
 
         match command {
             RoomCommand::Comment {
@@ -1742,11 +1928,21 @@ impl Server {
                     expected_render_digest,
                 )
                 .map_err(|error| json!({"type": "error", "message": error}))?;
-                let comment = room
-                    .command(authority, &mut new_comment)
+                if let Some(refusal) = refusal {
+                    let recorded = room
+                        .recorded_result(&mut new_comment)
+                        .await
+                        .map_err(command_error_value)?;
+                    return match recorded {
+                        Some(comment) => Ok((json!({"type": "comment", "comment": comment}), true)),
+                        None => Err(refusal),
+                    };
+                }
+                let (comment, replayed) = room
+                    .command_reporting_replay(authority, &mut new_comment)
                     .await
                     .map_err(command_error_value)?;
-                Ok(json!({"type": "comment", "comment": comment}))
+                Ok((json!({"type": "comment", "comment": comment}), replayed))
             }
             RoomCommand::Reply {
                 comment_id,
@@ -1773,8 +1969,11 @@ impl Server {
                     .map_err(command_error_value)?;
                 // `reply_author` is read and removed by `prepare_comment_event`,
                 // which is how the sender's own view marks the reply `mine`.
-                Ok(json!({"type": "reply", "comment_id": outcome.comment_id,
-                    "reply": outcome.reply, "reply_author": outcome.reply.author}))
+                Ok((
+                    json!({"type": "reply", "comment_id": outcome.comment_id,
+                    "reply": outcome.reply, "reply_author": outcome.reply.author}),
+                    false,
+                ))
             }
             RoomCommand::Resolve {
                 comment_id,
@@ -1792,8 +1991,11 @@ impl Server {
                     .command(authority, &mut resolve)
                     .await
                     .map_err(command_error_value)?;
-                Ok(json!({"type": "resolve", "comment_id": outcome.comment_id,
-                    "resolved": outcome.resolved, "resolved_at": outcome.resolved_at}))
+                Ok((
+                    json!({"type": "resolve", "comment_id": outcome.comment_id,
+                    "resolved": outcome.resolved, "resolved_at": outcome.resolved_at}),
+                    false,
+                ))
             }
             RoomCommand::Edit {
                 comment_id,
@@ -1815,9 +2017,12 @@ impl Server {
                     .command(authority, &mut edit)
                     .await
                     .map_err(command_error_value)?;
-                Ok(json!({"type": "edit", "comment_id": outcome.comment_id,
+                Ok((
+                    json!({"type": "edit", "comment_id": outcome.comment_id,
                     "reply_id": outcome.reply_id, "body": outcome.body,
-                    "edited": outcome.edited}))
+                    "edited": outcome.edited}),
+                    false,
+                ))
             }
             RoomCommand::Delete { comment_id, .. } => {
                 let parsed_id = comment_id;
@@ -1830,7 +2035,7 @@ impl Server {
                 room.command(authority, &mut delete)
                     .await
                     .map_err(command_error_value)?;
-                Ok(json!({"type": "delete", "comment_id": comment_id}))
+                Ok((json!({"type": "delete", "comment_id": comment_id}), false))
             }
         }
     }
@@ -1971,6 +2176,7 @@ mod automation_authority_tests {
             automation: false,
             bearer: false,
             auth_failed: false,
+            token: None,
         }
     }
 
@@ -2161,15 +2367,46 @@ mod automation_authority_tests {
             expires_at: librepaper_base::util::now_unix() + 60,
         };
         assert!(grant_matches_scope(&grant, "paper", &"a".repeat(64)));
+        assert!(grant_matches_scope(&grant, "paper", ""));
         assert!(!grant_matches_scope(
             &grant,
             "another-paper",
             &"a".repeat(64)
         ));
+        assert!(!grant_matches_scope(&grant, "another-paper", ""));
         assert!(!grant_matches_scope(&grant, "paper", &"b".repeat(64)));
         assert_eq!(grant_role_ceiling(1), Role::Reader);
         assert_eq!(grant_role_ceiling(2), Role::Commenter);
         assert_eq!(grant_role_ceiling(3), Role::Editor);
+    }
+
+    #[test]
+    fn a_grant_alone_resolves_to_its_link_and_a_foreign_key_does_not() {
+        let entry = shared_document();
+        let now = librepaper_base::util::now_unix();
+        let grant = librepaper_base::auth::AgentGrant {
+            identity: Identity::default(),
+            slug: "paper".into(),
+            link_hash: "editor-hash".into(),
+            role: 2,
+            expires_at: now + 60,
+        };
+        // Without a key the grant names the link, and its own role ceiling
+        // still caps what the editor link would give.
+        assert!(grant_matches_scope(&grant, &entry.slug, ""));
+        let role = resolved_role(true, &entry, "", &grant.link_hash, ceiling(), now)
+            .min(grant_role_ceiling(grant.role));
+        assert_eq!(role, Role::Commenter);
+        assert!(entry.live_link(&grant.link_hash, now).is_some());
+        // A different key is out of scope, so no link is presented at all.
+        assert!(!grant_matches_scope(&grant, &entry.slug, "reader-hash"));
+        // A grant for another document never reaches this one.
+        let other = librepaper_base::auth::AgentGrant {
+            slug: "elsewhere".into(),
+            ..grant
+        };
+        assert!(!grant_matches_scope(&other, &entry.slug, ""));
+        assert!(!grant_matches_scope(&other, &entry.slug, "editor-hash"));
     }
 
     /// The property finding 6 depends on. The agent reads

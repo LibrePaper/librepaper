@@ -54,7 +54,8 @@ import Editor from ${JSON.stringify(join(root, "web/src/components/Editor.svelte
 import Diagnostics from ${JSON.stringify(join(root, "web/src/components/reader/Diagnostics.svelte"))};
 import { join as joinSession } from ${JSON.stringify(join(root, "web/src/lib/collab.js"))};
 import { rejectMany, resolveChanges, trackedSplice } from ${JSON.stringify(join(root, "web/src/lib/track-changes.js"))};
-import { durableProjectPersistence, rememberProject, localProject } from ${JSON.stringify(join(root, "web/src/lib/offline-projects.js"))};
+import { rememberProject, localProject } from ${JSON.stringify(join(root, "web/src/lib/offline-projects.js"))};
+import { durableProjectPersistence } from ${JSON.stringify(join(root, "web/src/lib/offline-persistence.js"))};
 import { createClassComponent } from ${JSON.stringify(join(root, "web/node_modules/svelte/src/legacy/legacy-client.js"))};
 import { setSize, setFont, setLineHeight, start as startEditorType } from ${JSON.stringify(join(root, "web/src/lib/editor-type.js"))};
 
@@ -159,6 +160,52 @@ window.projectedMainFallbackCheck = async () => {
     value.leave();
   }
   return outcomes;
+};
+// A body that still holds carriage returns is rewritten to line feeds when
+// the editor binds it, so the view and the text agree on every offset, and
+// undo leaves that rewrite alone (gh#74).
+window.lineEndingsCheck = async () => {
+  const value = joinSession({ send: () => {}, mayEdit: true });
+  const textId = value.addText("crlf.md", "one\\ntwo\\nthree\\nfour");
+  const text = value.textOf(textId);
+  value.setMain(textId);
+  // addText normalises, so the carriage returns come from a peer, the way an
+  // old document holds them. The offsets descend so the earlier ones stay valid.
+  fromAPeer(value.doc, (peer) => {
+    const t = peer.getMap("files").get(textId);
+    t.insert(13, "\\r");
+    t.insert(7, "\\r");
+    t.insert(3, "\\r");
+  });
+  const seeded = text.toString();
+  const host = document.createElement("section");
+  document.body.append(host);
+  const component = createClassComponent({
+    component: Editor,
+    target: host,
+    props: { session: value, format: "markdown", file: textId },
+  });
+  await tick();
+  const view = EditorView.findFromDOM(host.querySelector(".cm-editor"));
+  const healed = text.toString();
+  const aligned = view.state.doc.length === text.length;
+  const line = view.state.doc.line(3);
+  view.dispatch({ changes: { from: line.from, to: line.to } });
+  await tick();
+  const afterDelete = text.toString();
+  view.focus();
+  const press = (key, options = {}) => view.contentDOM.dispatchEvent(new KeyboardEvent("keydown", {
+    key, code: "Key" + key.toUpperCase(), bubbles: true, cancelable: true, ...options,
+  }));
+  press("z", { ctrlKey: true });
+  await tick();
+  const undone = text.toString();
+  press("z", { ctrlKey: true });
+  await tick();
+  const undoneAgain = text.toString();
+  component.$destroy();
+  value.leave();
+  return { seeded, healed, aligned, afterDelete, undone, undoneAgain };
 };
 window.remoteUndoCheck = async () => {
   const value = joinSession({ send: () => {}, mayEdit: true });
@@ -1168,6 +1215,14 @@ try {
   assert.equal(remoteUndo.localUndone, "REMOTE alpha");
   assert.equal(remoteUndo.localRedone, "REMOTE alphaLOCAL");
   console.log("editor-browser: remote changes stay out of undo, local undo and redo work");
+  const lineEndings = await evaluate("lineEndingsCheck()");
+  assert.equal(lineEndings.seeded, "one\r\ntwo\r\nthree\r\nfour", "the peer did not seed carriage returns");
+  assert.equal(lineEndings.healed, "one\ntwo\nthree\nfour", "binding the file did not rewrite its carriage returns");
+  assert.equal(lineEndings.aligned, true, "the view and the text disagree about the length after the rewrite");
+  assert.equal(lineEndings.afterDelete, "one\ntwo\n\nfour", "deleting the third line in the view landed elsewhere in the text");
+  assert.equal(lineEndings.undone, "one\ntwo\nthree\nfour", "undo did not take back the deletion");
+  assert.equal(lineEndings.undoneAgain, "one\ntwo\nthree\nfour", "a second undo brought the carriage returns back or took more");
+  console.log("editor-browser: a body with carriage returns is rewritten when the editor binds it, and undo leaves the rewrite alone");
   assert.equal(remoteUndo.menuUndone, "REMOTE alpha");
   assert.equal(remoteUndo.menuRedone, "REMOTE alphaLOCAL");
   assert.equal(remoteUndo.selected, remoteUndo.menuRedone);

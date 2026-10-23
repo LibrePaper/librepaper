@@ -1859,6 +1859,17 @@ impl Sequencer {
             .map(|(output, _)| output)
     }
 
+    /// The recorded result of a command that already happened, or `None`.
+    /// It runs only the command's step 0 and commits nothing, so a caller can
+    /// answer a retry without admitting new work.
+    pub async fn recorded_result<C: Command>(
+        &self,
+        command: &mut C,
+    ) -> std::result::Result<Option<C::Output>, CommandError> {
+        let _transaction = self.transaction.lock().await;
+        command.replay().await
+    }
+
     /// [`Self::command`], and also whether §7.2's retry record answered it
     /// instead of a fresh commit.
     ///

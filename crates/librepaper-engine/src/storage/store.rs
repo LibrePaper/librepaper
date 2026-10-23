@@ -82,8 +82,9 @@ pub struct IndexEntry {
     /// file such a document has.
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub main: String,
-    /// The links that carry a role: at most one per role, since minting a
-    /// role's link again rotates it rather than adding a second one.
+    /// The links that carry a role, and the agent tokens beside them. A
+    /// document may hold several links of one role. Each row is addressed by
+    /// `LinkGrant::id`.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub links: Vec<LinkGrant>,
     /// Accounts that opened this document through a link while signed in. A
@@ -141,9 +142,56 @@ pub struct LinkGrant {
     pub since: String,
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub until: String,
+    /// Whether this row admits a browser (`Link`) or an agent bearer (`Agent`).
+    /// An agent row is invisible to every lookup a link key reaches.
+    #[serde(default, skip_serializing_if = "LinkKind::is_link")]
+    pub kind: LinkKind,
+    /// For an agent row, the owner's session generation at mint. Empty for a
+    /// link.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub owner_generation: String,
+}
+
+/// What a share row admits.
+#[derive(Clone, Copy, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum LinkKind {
+    #[default]
+    Link,
+    Agent,
+}
+
+impl LinkKind {
+    pub fn is_link(&self) -> bool {
+        *self == LinkKind::Link
+    }
+
+    /// The value the `kind` column holds.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            LinkKind::Link => "link",
+            LinkKind::Agent => "agent",
+        }
+    }
+
+    /// The kind a stored column value names. Anything else reads as a link,
+    /// which the column's check constraint keeps from happening.
+    pub fn from_column(value: &str) -> Self {
+        if value == "agent" {
+            LinkKind::Agent
+        } else {
+            LinkKind::Link
+        }
+    }
 }
 
 impl LinkGrant {
+    /// The id the owner addresses this row by: the first 16 hex characters of
+    /// its digest. Replacing the credential gives the row a new id.
+    pub fn id(&self) -> &str {
+        &self.hash[..self.hash.len().min(16)]
+    }
+
     /// Whether this link still stands. An `until` that is not a timestamp is
     /// treated as expired rather than as absent: a date nothing here can read
     /// is not a reason to keep answering.
@@ -240,39 +288,61 @@ impl IndexEntry {
         self.live_link(link_hash, now).map(LinkGrant::granted)
     }
 
-    /// The live link matching a presented digest. Keeping this lookup beside
-    /// `link_role` makes link metadata such as its rate budget come from the
-    /// same row that grants access.
+    /// The live browser link matching a presented digest. Keeping this lookup
+    /// beside `link_role` makes link metadata such as its rate budget come from
+    /// the same row that grants access. Agent rows never match.
     pub fn live_link(&self, link_hash: &str, now: i64) -> Option<&LinkGrant> {
         if link_hash.is_empty() {
             return None;
         }
         self.links
             .iter()
-            .find(|link| link.hash == link_hash && link.live_at(now))
+            .find(|link| link.kind == LinkKind::Link && link.hash == link_hash && link.live_at(now))
     }
 
-    /// The link that carries a role, live or not. The dead one still matters
-    /// because it lets the dialog report that the link expired.
-    pub fn link_for(&self, role: Role) -> Option<&LinkGrant> {
-        self.links.iter().find(|link| link.granted() == role)
+    /// The live agent token row matching a presented digest.
+    pub fn live_agent(&self, token_hash: &str, now: i64) -> Option<&LinkGrant> {
+        if token_hash.is_empty() {
+            return None;
+        }
+        self.links.iter().find(|link| {
+            link.kind == LinkKind::Agent && link.hash == token_hash && link.live_at(now)
+        })
     }
 
-    /// Replaces whatever link already carries this role. A document holds at
-    /// most one link per role, so minting a role that already has one is a
-    /// rotation: the old key stops meaning anything the moment this returns,
-    /// because its hash is no longer on the document at all.
-    pub fn set_link(&mut self, link: LinkGrant) {
-        let role = link.granted();
-        self.links.retain(|existing| existing.granted() != role);
+    /// The row with this id, live or not and of either kind. The dead one
+    /// still matters because it lets the dialog report that it expired.
+    pub fn link_by_id(&self, id: &str) -> Option<&LinkGrant> {
+        if id.is_empty() {
+            return None;
+        }
+        self.links.iter().find(|link| link.id() == id)
+    }
+
+    /// Adds a row. Creating never replaces another row, so two links of one
+    /// role live side by side.
+    pub fn add_link(&mut self, link: LinkGrant) {
         self.links.push(link);
     }
 
-    /// Removes the link carrying this role, if there is one. Returns whether
-    /// a row actually went so a revoke that matched nothing can say so.
-    pub fn drop_link(&mut self, role: Role) -> bool {
+    /// Swaps the row with this id for `link`, keeping its place in the list.
+    /// The old key stops meaning anything the moment this returns, because
+    /// its hash is no longer on the document. Returns whether a row matched.
+    pub fn replace_link(&mut self, id: &str, link: LinkGrant) -> bool {
+        match self.links.iter_mut().find(|existing| existing.id() == id) {
+            Some(slot) => {
+                *slot = link;
+                true
+            }
+            None => false,
+        }
+    }
+
+    /// Removes the row with this id, live or expired. Returns whether a row
+    /// actually went so a revoke that matched nothing can say so.
+    pub fn drop_link(&mut self, id: &str) -> bool {
         let before = self.links.len();
-        self.links.retain(|link| link.granted() != role);
+        self.links.retain(|link| link.id() != id);
         before != self.links.len()
     }
 
@@ -285,7 +355,7 @@ impl IndexEntry {
         let live: std::collections::HashSet<String> = self
             .links
             .iter()
-            .filter(|link| link.live_at(now))
+            .filter(|link| link.kind == LinkKind::Link && link.live_at(now))
             .map(|link| link.hash.clone())
             .collect();
         self.guests.retain(|guest| live.contains(&guest.link));
@@ -743,6 +813,11 @@ impl Store {
         let Some(document) = catalog.document_by_slug(slug).await? else {
             return Ok(None);
         };
+        // A trashed or purging document keeps its catalogue row until the
+        // sweep removes it, but no route may resolve it in the meantime.
+        if document.status != "active" {
+            return Ok(None);
+        }
         // Hidden projects remain active catalogue rows so restoration is
         // lossless, but no public or authenticated route may resolve them.
         if catalog.project_is_hidden(document.id).await? {
@@ -796,6 +871,21 @@ impl Store {
                     .document_by_slug(slug)
                     .await?
                     .ok_or_else(|| CatalogError::Invalid("invalid listing cursor".into()))?;
+                // A cursor may only name a project the caller could already
+                // list, so a private slug cannot be probed through it.
+                let entry = entry_from_document(catalog, &document).await?;
+                let caller = account_id.map(|id| id.to_string()).unwrap_or_default();
+                // The listing also shows projects a signed-in guest was pinned
+                // to by a link, so that pin counts as the link they present.
+                let pinned = entry
+                    .guests
+                    .iter()
+                    .find(|guest| guest.id == caller)
+                    .map(|guest| guest.link.as_str())
+                    .unwrap_or_default();
+                if !entry.readable_by(&caller, pinned, librepaper_base::util::now_unix()) {
+                    return Err(CatalogError::Invalid("invalid listing cursor".into()));
+                }
                 // The wire timestamp is second-precision. Use the row's exact
                 // value so documents updated within the same second are not
                 // skipped between pages.
@@ -1601,6 +1691,8 @@ impl Store {
                     link.label.clone(),
                     expiry,
                     link.budget,
+                    link.kind.as_str().to_string(),
+                    link.owner_generation.clone(),
                 ))
             })
             .collect::<Result<Vec<_>, ModifyError>>()?;
@@ -1628,6 +1720,10 @@ impl Store {
 #[cfg(test)]
 #[path = "store_import_tests.rs"]
 mod import_tests;
+
+#[cfg(test)]
+#[path = "store_link_tests.rs"]
+mod link_tests;
 
 async fn entry_from_document(
     catalog: &Catalog,
@@ -1716,6 +1812,8 @@ async fn entries_from_documents(
                         .expires_at
                         .map(|at| librepaper_base::util::format_unix(at.unix_timestamp()))
                         .unwrap_or_default(),
+                    kind: LinkKind::from_column(&link.kind),
+                    owner_generation: link.owner_generation,
                 })
                 .collect();
             let mut guests = Vec::new();

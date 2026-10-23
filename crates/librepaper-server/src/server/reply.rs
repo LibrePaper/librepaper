@@ -33,6 +33,11 @@ pub fn local_path(next: &str) -> String {
     if parsed.host_str() != Some("librepaper.invalid") || next.contains('\\') {
         return "/".to_string();
     }
+    // Dot-segment normalisation turns "/.//host" into "//host", which a
+    // browser reads as a scheme-relative URL.
+    if parsed.path().starts_with("//") {
+        return "/".to_string();
+    }
     let mut target = parsed.path().to_string();
     if let Some(query) = parsed.query() {
         target.push('?');
@@ -199,6 +204,18 @@ mod proxy_tests {
         assert_eq!(local_path("/docs/x?a=1#version=3"), "/docs/x?a=1#version=3");
         assert_eq!(without_link_key("k=abc"), "");
         assert_eq!(without_link_key("a=1&k=abc&b=2"), "a=1&b=2");
+    }
+
+    #[test]
+    fn a_return_path_cannot_normalise_into_a_scheme_relative_url() {
+        for next in [
+            "/.//evil.example",
+            "/..//evil.example",
+            "/a/..//evil.example",
+        ] {
+            assert_eq!(local_path(next), "/", "{next}");
+        }
+        assert_eq!(local_path("/docs/x?a=1"), "/docs/x?a=1");
     }
 }
 

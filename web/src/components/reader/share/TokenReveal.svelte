@@ -1,0 +1,38 @@
+<script>
+  // The one time a token is shown. It lives in the parent's component state
+  // and nowhere else; nothing here writes it to storage.
+  let { token, slug, oncopy, ondone } = $props();
+  const config = $derived(`[mcp_servers.librepaper]
+command = "librepaper"
+args = ["mcp", "--document", "${location.origin}/docs/${slug}"]
+env = { LIBREPAPER_AGENT_TOKEN = "${token}" }`);
+  const select = (event) => event.currentTarget.select();
+</script>
+
+<div class="share-reveal">
+  <p class="share-warning" role="alert">Copy this token now. You won't be able to view it again.</p>
+  <label class="share-field panel-meta">Token
+    <input class="input share-input" type="text" readonly aria-label="Agent token" value={token} onclick={select} />
+  </label>
+  <button type="button" class="btn btn-sm lp-control-tonal-brand" onclick={() => oncopy(token, "Token copied.")}>Copy token</button>
+  <label class="share-field panel-meta">Configuration
+    <textarea class="input share-input share-config" readonly rows="5" aria-label="MCP configuration" value={config} onclick={select}></textarea>
+  </label>
+  <button type="button" class="btn btn-sm lp-control-tonal-brand" onclick={() => oncopy(config, "Configuration copied.")}>Copy configuration</button>
+  <p class="panel-meta">Agents without MCP can call POST /api/documents/{"{slug}"}/tools/{"{name}"} with the token as a Bearer header.</p>
+  <p class="panel-meta"><a href="https://librepaper.org/agents.html#remote-agents" target="_blank" rel="noreferrer">Agent setup</a></p>
+  <div class="share-form-actions">
+    <button type="button" class="btn btn-sm lp-control-brand" onclick={ondone}>Done</button>
+  </div>
+</div>
+
+<style>
+  .share-reveal { display: grid; gap: calc(var(--spacing) * 2); padding-block: calc(var(--spacing) * 2); }
+  .share-warning { margin: 0; font-size: 13px; font-weight: 500; }
+  .share-field { display: grid; gap: var(--spacing); }
+  .share-input { width: 100%; min-width: 0; max-width: 100%; font-family: var(--font-mono, monospace); font-size: 12px; }
+  .share-config { resize: none; white-space: pre; overflow-x: auto; }
+  .share-reveal > button { justify-self: start; }
+  .share-form-actions { display: flex; justify-content: flex-end; }
+  .share-reveal a { color: var(--color-link); text-decoration: underline; }
+</style>

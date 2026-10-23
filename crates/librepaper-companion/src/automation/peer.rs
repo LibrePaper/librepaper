@@ -131,10 +131,10 @@ impl DocumentLink {
         &self.path
     }
 
-    /// Return the credential-bearing document URL for the local assistant
-    /// process. This value is passed only through its environment, never
-    /// included in chat output or runner state.
-    pub(crate) fn credential_url(&self) -> String {
+    /// The document URL with its file selection and no key. This is what the
+    /// companion records for a sidebar runner, so nothing it stores can be
+    /// used to open the document.
+    pub(crate) fn document_url(&self) -> String {
         let Ok(mut url) = url::Url::parse(&self.server) else {
             return self.server.clone();
         };
@@ -146,13 +146,19 @@ impl DocumentLink {
             segments.clear().push("docs").push(&self.slug);
         }
         url.set_query(None);
+        url.set_fragment(None);
         if !self.path.is_empty() {
             url.query_pairs_mut().append_pair("file", &self.path);
         }
-        if !self.key.is_empty() {
-            url.set_fragment(Some(&format!("k={}", self.key)));
-        }
         url.to_string()
+    }
+
+    /// The same link with the key dropped. The sidebar assistant authenticates
+    /// with a scoped grant, so the key has no business past the point where
+    /// the browser's link is parsed.
+    pub(crate) fn without_key(mut self) -> Self {
+        self.key.clear();
+        self
     }
 }
 
@@ -247,6 +253,27 @@ impl AutomationPeer {
             return Err("the browser did not provide a scoped assistant authorization".into());
         }
         Self::open_with_token(link, token).await
+    }
+
+    /// Open a document with an agent token (`lpt_...`) that the owner issued
+    /// for this document. The token is a fixed bearer: it is never renewed,
+    /// and it reaches only the document tools routes, so the open check is the
+    /// tools listing rather than the document itself.
+    pub async fn open_agent_token(link: DocumentLink, token: String) -> Result<Self, String> {
+        let peer = Self {
+            link,
+            token: Arc::new(RwLock::new(token)),
+            client: new_client()?,
+        };
+        let (status, body) = peer.tools().await?;
+        if status != 200 {
+            return Err(format!(
+                "could not open document ({}): {}",
+                status,
+                detail_of(&body)
+            ));
+        }
+        Ok(peer)
     }
 
     async fn open_with_token(link: DocumentLink, token: String) -> Result<Self, String> {
@@ -505,15 +532,19 @@ mod tests {
     }
 
     #[test]
-    fn credential_url_reconstructs_document_scope() {
+    fn document_url_keeps_the_file_and_drops_the_key() {
         let link = DocumentLink::parse(
             "https://docs.example/raw/paper?file=chapters%2Fintro.md#k=secret",
             "",
         )
         .expect("link");
-        let credential = link.credential_url();
-        assert!(credential
-            .starts_with("https://docs.example/docs/paper?file=chapters%2Fintro.md#k=secret"));
+        assert_eq!(
+            link.document_url(),
+            "https://docs.example/docs/paper?file=chapters%2Fintro.md"
+        );
+        let bare = link.without_key();
+        assert!(!bare.has_key());
+        assert!(!bare.document_url().contains("secret"));
     }
 
     #[test]

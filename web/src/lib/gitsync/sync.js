@@ -1,6 +1,6 @@
 import { VersionVector } from "loro-crdt";
 
-import { checkPath, normalisePath } from "../paths.js";
+import { checkPath, collisionKey, normalisePath } from "../paths.js";
 import { sha256Hex, sha256HexOfText } from "../digest.js";
 import { unsuggestedText } from "../track-changes.js";
 import { decodeText, isLfsPointer, textHash, toLf } from "./hash.js";
@@ -41,6 +41,7 @@ const RECONNECT = "This computer is connected to a different repository for this
 const NOT_LINKED = "This project is not connected to a Git repository.";
 const NOT_SYNCED = "This computer has not synced this project yet.";
 const GONE_FROM_REMOTE = "The commit this project last synced with is no longer on the remote.";
+const COLLIDING = "These files would have the same name in LibrePaper, which ignores case and accents in names. Rename one of them, in LibrePaper or in the repository, then try again.";
 /// Error kinds that say a commit is not in the private repository.
 const MISSING_KINDS = new Set(["not-found", "missing"]);
 
@@ -417,11 +418,37 @@ async function readBlobs(ctx, ids) {
   return found;
 }
 
+/// The paths of the blobs in `commit`, which for L are project paths.
+async function blobPaths(ctx, commit) {
+  return (await ctx.git.tree(commit)).entries.filter((entry) => entry.type === "blob").map((entry) => entry.path);
+}
+
+/// The refusal for a change that would leave two project paths with the same
+/// collision key, or null. `held` lists the project paths of L and `changes`
+/// is `diff(L, merged)`. Both sides are compared by collision key, so a
+/// spelling that differs only in case or accents is caught too.
+function colliding(held, changes) {
+  const after = new Set(held);
+  for (const item of changes) {
+    if (item.status === "D") after.delete(item.path);
+    else after.add(item.path);
+  }
+  const groups = new Map();
+  for (const path of after) {
+    const key = collisionKey(path);
+    groups.set(key, [...(groups.get(key) || []), path]);
+  }
+  const paths = [...groups.values()].filter((group) => group.length > 1).flat().sort(byPath);
+  return paths.length ? { reason: COLLIDING, paths } : null;
+}
+
 /// The source change that turns L into the merged tree, from `changes`
 /// (`diff(L, merged)`). `known` may hold `texts` and `assets` of L by path, so
 /// that they are not read back. Uploads assets as it goes. Returns
 /// `{ change, files, expect }` or `{ refusal }`.
 async function buildChange(ctx, changes, kinds, known) {
+  const clash = colliding(known?.paths ?? [], changes);
+  if (clash) return { refusal: clash };
   const change = { dependencies: [], patches: [], create: [], delete: [], put_binary: [] };
   const expect = { texts: new Map(), assets: new Map(), deleted: new Set() };
   const files = [];
@@ -923,7 +950,8 @@ export async function applyResolution(ctx, session, resolutions = undefined) {
       remote: session.remote,
       paths: session.paths,
       kinds: new Map(Object.entries(session.kinds)),
-      local: { commit: session.local },
+      // The project paths of L, read from its commit, for the name collision check.
+      local: { commit: session.local, paths: await blobPaths(ctx, session.local) },
       theirs: { commit: session.theirs },
       base: { commit: session.base },
       filter: null,
@@ -1274,6 +1302,20 @@ export async function status(ctx) {
   return { git, link: answer.link, conflict, pending };
 }
 
+/// The synced entries of the checkpoint that only their content rules out (an
+/// LFS pointer, bytes that are not UTF-8), as a pull finds them, so that a
+/// project file over one is not listed as a change. They depend only on the
+/// checkpoint, so they are read once per connection and checkpoint.
+const skippedCache = new Map();
+async function skippedAt(ctx, link, filter) {
+  const key = `${link.connection_id}:${link.checkpoint || ""}`;
+  if (!skippedCache.has(key)) {
+    const loaded = await loadFiles(ctx, filter.synced, filter.entries, [...filter.synced.keys()]);
+    skippedCache.set(key, loaded.skipped);
+  }
+  return skippedCache.get(key);
+}
+
 /// The link to work from, or `{ answer }` when there is none this computer is
 /// connected to.
 async function connectedLink(ctx) {
@@ -1310,6 +1352,7 @@ export async function localChanges(ctx) {
     try {
       const filter = await filterAt(ctx, link, link.checkpoint || null);
       if (filter.refusals.length) return result("unknown", { reason: filter.refusals[0].reason });
+      pruneSkipped(filter, await skippedAt(ctx, link, filter));
       const oversize = new Set((await snapshot(ctx, filter, null)).oversize);
       const base = await lastSynced(ctx, link, filter, oversize);
       const local = await snapshot(ctx, filter, base.commit);

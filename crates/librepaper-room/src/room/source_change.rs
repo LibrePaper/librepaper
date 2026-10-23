@@ -618,7 +618,7 @@ fn apply_patch_edits(
             .map(|patch| session::Edit {
                 at: byte_to_utf16(original.text, patch.start),
                 delete: byte_to_utf16(&original.text[patch.start..], patch.end - patch.start),
-                insert: patch.replacement.clone(),
+                insert: session::line_feeds(&patch.replacement).into_owned(),
             })
             .collect();
         files.push((
@@ -1513,6 +1513,22 @@ mod tests {
 
         assert_eq!(session::texts_of(&doc)["paper.md"], "ONE TWO three");
         assert_eq!(session::texts_of(&doc)["notes.md"], "red green");
+    }
+
+    #[test]
+    fn a_replacement_with_crlf_is_stored_with_line_feeds() {
+        let tree = tree_with_files([("paper.md", "one two")]);
+        let request = request(
+            &tree,
+            vec![patch("paper.md", "one two", 0, 3, "ONE\r\nTWO")],
+        );
+        let doc = doc_with_files(&tree);
+
+        apply_patch_edits(&doc, &tree, &request).expect("the patch fits its file");
+
+        let text = &session::texts_of(&doc)["paper.md"];
+        assert_eq!(text, "ONE\nTWO two");
+        assert!(!text.contains('\r'));
     }
 
     #[test]

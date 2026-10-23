@@ -310,6 +310,15 @@ impl Room {
         self.log.command(authority, command).await
     }
 
+    /// The recorded result of a command that already happened, without
+    /// committing anything. `None` means the command would be new work.
+    pub async fn recorded_result<C: Command>(
+        &self,
+        command: &mut C,
+    ) -> Result<Option<C::Output>, CommandError> {
+        self.log.recorded_result(command).await
+    }
+
     /// [`Self::command`], and also whether §7.2's retry record answered it
     /// rather than a fresh commit. What a request/response caller reports
     /// back to its client as `replay`.

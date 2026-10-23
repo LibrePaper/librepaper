@@ -496,7 +496,7 @@ impl AgentTrackedCommand {
                         .push(session::Edit {
                             at: text[..start].encode_utf16().count(),
                             delete: edit.exact.encode_utf16().count(),
-                            insert: edit.replacement.clone(),
+                            insert: session::line_feeds(&edit.replacement).into_owned(),
                         });
                 }
             }
@@ -528,7 +528,7 @@ impl AgentTrackedCommand {
                         .push(session::Edit {
                             at: text[..patch.start].encode_utf16().count(),
                             delete: patch.exact.encode_utf16().count(),
-                            insert: patch.replacement.clone(),
+                            insert: session::line_feeds(&patch.replacement).into_owned(),
                         });
                 }
             }

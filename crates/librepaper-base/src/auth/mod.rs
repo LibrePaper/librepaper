@@ -91,6 +91,10 @@ pub struct AgentGrant {
 pub const AGENT_GRANT_MAX_AGE: Duration = Duration::from_secs(5 * 60);
 pub const AGENT_GRANT_PREFIX: &str = "lpa_";
 
+/// Owner-issued agent tokens: `lpt_<slug>.<key>`. Unlike a delegated grant a
+/// token is not signed. The key is looked up by digest on the document's row.
+pub const AGENT_TOKEN_PREFIX: &str = "lpt_";
+
 #[derive(Serialize, Deserialize)]
 struct AgentGrantPayload {
     provider: String,

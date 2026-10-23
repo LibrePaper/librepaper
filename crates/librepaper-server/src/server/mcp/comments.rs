@@ -80,8 +80,61 @@ pub(crate) fn command_failure(error: librepaper_engine::log::sequencer::CommandE
 }
 
 impl Server {
+    /// Spends the caller's hourly comment budget, if it has one, around the
+    /// action. A refused or failed action costs nothing.
     #[allow(clippy::too_many_arguments)]
     pub(super) async fn mcp_comment(
+        &self,
+        slug: &str,
+        actor: &str,
+        who: &Viewer,
+        headers: &HeaderMap,
+        arrival: &Arrival,
+        args: &Value,
+        key: &OperationKey,
+        digest: &str,
+    ) -> Result<Value, Failure> {
+        // A retry of an operation that already committed replays its stored
+        // outcome and writes nothing, so it spends nothing.
+        let charge = if self.mcp_comment_replays(slug, actor, key, digest).await? {
+            None
+        } else {
+            self.spend_comment(who)
+                .map_err(|message| Failure::new("budget_exceeded", message))?
+        };
+        let result = self
+            .mcp_comment_action(slug, actor, who, headers, arrival, args, key, digest)
+            .await;
+        if result.is_err() {
+            self.refund_comment(charge);
+        }
+        result
+    }
+
+    /// Whether this key already has a committed outcome for this same call.
+    async fn mcp_comment_replays(
+        &self,
+        slug: &str,
+        actor: &str,
+        key: &OperationKey,
+        digest: &str,
+    ) -> Result<bool, Failure> {
+        let room = self
+            .rooms
+            .get(slug)
+            .await
+            .map_err(|error| Failure::new("unavailable", error.to_string()))?;
+        let stored = room
+            .catalog()
+            .operation_outcome(room.document_id, actor, &key.scoped_request_id(actor))
+            .await
+            .map_err(|error| Failure::new("unavailable", error.to_string()))?;
+        Ok(stored
+            .is_some_and(|stored| stored.tool == "document_comment" && stored.digest == digest))
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    async fn mcp_comment_action(
         &self,
         slug: &str,
         actor: &str,

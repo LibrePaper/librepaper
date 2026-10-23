@@ -2,9 +2,14 @@
 // its WASM request; loading must not require a mirror manifest or font files.
 import assert from "node:assert/strict";
 import { load } from "../../src/lib/renderer-wasm.js";
+import { sha256Hex } from "../../src/lib/digest.js";
 
 const fetched = [];
-const originalStreaming = WebAssembly.instantiateStreaming;
+// WebAssembly.instantiate is faked below, so any fixed bytes will do. Their
+// digest goes in the URL, as the mirror would put it.
+const body = Uint8Array.of(0, 97, 115, 109, 1, 0, 0, 0);
+const sha = await sha256Hex(body);
+const originalInstantiate = WebAssembly.instantiate;
 const originalFetch = globalThis.fetch;
 const memory = new WebAssembly.Memory({ initial: 1 });
 let date;
@@ -17,27 +22,24 @@ const wasm = {
   default_fonts_required() { return 0; },
 };
 
-WebAssembly.instantiateStreaming = async (response) => {
-  await response;
-  return { instance: { exports: wasm } };
-};
+WebAssembly.instantiate = async () => ({ instance: { exports: wasm } });
 globalThis.fetch = async (url) => {
   fetched.push(String(url));
-  return new Response(new Uint8Array());
+  return new Response(body);
 };
 
 try {
-  const url = "https://app.example/wasm/typst.embedded.wasm";
+  const url = `https://app.example/wasm/${sha}/typst.embedded.wasm`;
   assert.equal(await load(url), wasm);
   assert.deepEqual(fetched, [url]);
   assert.equal(date.length, 3);
 
   wasm.default_fonts_required = () => 1;
-  const oldExternalModule = "https://app.example/wasm/typst.old-external-font-build.wasm";
+  const oldExternalModule = `https://app.example/wasm/${sha}/typst.old-external-font-build.wasm`;
   await assert.rejects(load(oldExternalModule), /external fonts are unsupported/);
   assert.deepEqual(fetched, [url, oldExternalModule]);
 } finally {
-  WebAssembly.instantiateStreaming = originalStreaming;
+  WebAssembly.instantiate = originalInstantiate;
   globalThis.fetch = originalFetch;
 }
 

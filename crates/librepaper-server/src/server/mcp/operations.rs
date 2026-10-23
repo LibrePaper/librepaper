@@ -475,6 +475,12 @@ impl Server {
         key.validate().map_err(failure)?;
         let digest = operation_digest(name, args);
         let current = self.mcp_recheck(slug, headers, arrival, actor).await?;
+        if !current.at_least(Role::Commenter) {
+            return Err(Failure::new(
+                "permission_changed",
+                "comment access is required",
+            ));
+        }
         self.mcp_refuse_if_admitted(slug, actor, who, &key, Some(&digest))
             .await?;
         self.mcp_admit(slug, actor, who, &key, name, args, &digest)
@@ -894,10 +900,11 @@ impl Server {
                 start,
                 end,
                 exact: view.snapshot.texts()[path][start..end].to_string(),
-                replacement: input["replacement"]
-                    .as_str()
-                    .unwrap_or_default()
-                    .to_string(),
+                // The replacement is normalised here so the candidate digest, the render and the applied text agree on line endings.
+                replacement: librepaper_document::document::session::line_feeds(
+                    input["replacement"].as_str().unwrap_or_default(),
+                )
+                .into_owned(),
             });
         }
         for handle in args["dependencies"].as_array().into_iter().flatten() {

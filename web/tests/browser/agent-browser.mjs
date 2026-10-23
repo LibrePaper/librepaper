@@ -112,9 +112,13 @@ window.fetch = async (url, init) => {
     return new Response('x'.repeat(20000), {headers:{'content-type':'text/plain'}});
   }
   if (new URL(url, location.href).pathname.endsWith('/share')) {
-    if (init.method === 'POST') { window.createdAccess=JSON.parse(init.body); window.missingAccess=false; }
-    if (window.missingAccess) return Response.json({links:{}});
-    return Response.json({links:Object.fromEntries(['reader','commenter','editor'].map(role=>[role,{key:role,url:'/docs/paper#k='+role}]))});
+    if (init.method === 'POST') {
+      window.createdAccess=JSON.parse(init.body); window.missingAccess=false;
+      const role=window.createdAccess.create.role;
+      return Response.json({links:[],tokens:[],created:{id:role.padEnd(16,'0'),kind:'link',url:'/docs/paper#k='+role}});
+    }
+    if (window.missingAccess) return Response.json({links:[],tokens:[]});
+    return Response.json({tokens:[],links:['reader','commenter','editor'].map(role=>({id:role.padEnd(16,'0'),role,name:'Agent',key:role,url:'/docs/paper#k='+role,until:'2099-01-01T00:00:00Z'}))});
   }
   if (new URL(url, location.href).pathname.endsWith('/assistant/capabilities')) {
     if(window.capabilityFailure) return Response.json({error:'The access link has expired.'},{status:403});
@@ -396,9 +400,11 @@ try {
     "the grant is minted with the selected document access key");
   assert.equal(started.body.access, "editor", "the assistant call names the access the link was minted for");
   assert.equal(started.body.connection, undefined, "the assistant call carries no separate connection name");
-  // The link crosses loopback exactly once, in the assistant call itself.
-  // Everything afterwards refers to the document by conversation and link.
-  assert.match(started.body.link, /#k=editor/);
+  // The key never crosses loopback: the desktop app gets the document URL and
+  // the grant. Everything afterwards refers to the document by conversation
+  // and that URL.
+  assert.doesNotMatch(started.body.link, /#k=/);
+  assert.match(started.body.link, /\/docs\/paper$/);
   // There is no separate route to register a connection; the sidebar never
   // calls one.
   assert.equal(await page.evaluate("window.localCalls.some(call=>call.route==='connections')"), false);
@@ -517,9 +523,9 @@ try {
   await until("session boundary visible",()=>page.evaluate("document.querySelector('[role=log]').textContent.includes('does not remember earlier messages')"),1000);
 
   // Every role starts with a real bounded link, and reuses existing share
-  // links. The link itself carries the access, so getting the key right in
-  // the `assistant` call body is what actually bounds the agent.
-  const linkFor = (role) => page.evaluate(`window.localCalls.filter(call=>call.route==='assistant').at(-1).body.link.includes('#k=${role}')`);
+  // links. The local service never sees the key, so the access is bounded by
+  // the key the grant was minted with, which the server call carries.
+  const linkFor = (role) => page.evaluate(`window.agentTokenCalls.at(-1).headers['X-LibrePaper-Key'] === '${role}'`);
   const connectAs = async (role) => {
     await page.evaluate('document.querySelector("#agent-tab-chat").click()');
     // Changing the agent or access while one is running restarts it, so the
@@ -571,7 +577,7 @@ try {
   await page.evaluate("window.missingAccess=true");
   await connectAs("editor");
   assert.equal(await linkFor("editor"), true);
-  assert.deepEqual(await page.evaluate("window.createdAccess"), {link:{role:"editor",until:"7d",label:"Agent"}});
+  assert.deepEqual(await page.evaluate("window.createdAccess"), {create:{kind:"link",role:"editor",until:"7d",name:"Agent"}});
   await page.evaluate('document.querySelector("#agent-tab-tasks").click()');
   assert.equal(await page.evaluate('document.querySelector("#agent-pane-chat").hidden'), true);
   await page.evaluate(`(()=>{const search=document.querySelector('.task-search');search.value='';search.dispatchEvent(new Event('input',{bubbles:true}));})()`);
