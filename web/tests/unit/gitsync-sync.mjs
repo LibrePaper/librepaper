@@ -1667,20 +1667,23 @@ const SAME_NAME = "These files would have the same name in LibrePaper";
 
 // ---------------------------------------------------------------- panel checks
 
-// The remote check and the local changes read only: no journal entry and no change to the shared record.
+// The remote check, the remote changes and the local changes read only: no journal entry and no change to the shared record.
 {
   const unlinked = await world({ remote: { "intro.qmd": "i\n" }, project: { "intro.qmd": "i\n" } });
   assert.equal((await sync.checkRemote(unlinked.ctx)).status, "unknown");
+  assert.equal((await sync.remoteChanges(unlinked.ctx)).status, "unknown");
   assert.equal((await sync.localChanges(unlinked.ctx)).status, "unknown");
 
   const { repo, session, api, ctx } = await connected({ "intro.qmd": "i\n" });
   const journal = JSON.stringify(repo.journal);
   const record = JSON.stringify(api.state.link);
   assert.deepEqual(await sync.checkRemote(ctx), { status: "current", head: repo.head });
+  assert.deepEqual(await sync.remoteChanges(ctx), { status: "none", head: repo.head, files: [] });
   assert.deepEqual(await sync.localChanges(ctx), { status: "none", files: [] });
 
   repo.advance({ "intro.qmd": "remote\n" });
   assert.deepEqual(await sync.checkRemote(ctx), { status: "behind", head: repo.head });
+  assert.deepEqual(await sync.remoteChanges(ctx), { status: "changes", head: repo.head, files: [{ path: "intro.qmd", status: "M" }] });
 
   await session.setText("intro.qmd", "edited\n");
   await session.setText("new.md", "added\n");
