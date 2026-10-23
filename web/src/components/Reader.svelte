@@ -15,6 +15,8 @@
   import HistoryWorkspace from "./reader/HistoryWorkspace.svelte";
   import { createGitResolver } from "../lib/reader/git-resolver.svelte.js";
   import GitConflictWorkspace from "./reader/GitConflictWorkspace.svelte";
+  import { createGitDiff } from "../lib/reader/git-diff.svelte.js";
+  import GitDiffWorkspace from "./reader/GitDiffWorkspace.svelte";
   import { diagnosticContext } from "../lib/assistant-review.js";
   import { sourcePassage } from "../lib/assistant.js";
   import { candidateTree, capturePreviewTree, previewCandidate } from "../lib/assistant-preview.js";
@@ -1592,6 +1594,14 @@
   const gitResolver = createGitResolver();
   const resolving = $derived(gitResolver.state.active);
   $effect(() => () => gitResolver.dispose());
+  const gitDiff = createGitDiff();
+  // The diff steps aside while a resolution is open.
+  const diffing = $derived(gitDiff.state.active && !gitResolver.state.active);
+  // A Git workspace fills the editor area.
+  const gitWorkspace = $derived(resolving || diffing);
+  $effect(() => {
+    if (gitResolver.state.active) gitDiff.close();
+  });
   $effect(() => {
     if (panel !== "history" || historySource.selected) return;
     void historyLiveVersion;
@@ -2626,11 +2636,11 @@
   let unit = $state(measure());
   const compact = $derived(width <= 760);
   const activeMobileView = $derived(panel === "history" && mobileView === "document" ? "source"
-    : mobileView === "source" && !editing && panel !== "history" && !resolving ? "document"
+    : mobileView === "source" && !editing && panel !== "history" && !gitWorkspace ? "document"
     : mobileView === "sidebar" && !panel ? "document" : mobileView);
   // A resolution takes the editor area, which on a phone is shown alone.
   $effect(() => {
-    if (resolving && compact) mobileView = "source";
+    if (gitWorkspace && compact) mobileView = "source";
   });
   const splitTight = $derived(width < px(ACTIVITY_WIDTH, unit) + px(PANES.editor.min, unit)
     + px(DOCUMENT_MIN, unit) + px(GRIP, unit)
@@ -2640,7 +2650,7 @@
   // switch between the two faces in the bar; only the phone loses the rail
   // beside the column and needs the row along the bottom.
   const adapted = $derived(compact || (splitTight && layout === "split"));
-  const effectiveLayout = $derived(!compact && (resolving || panel === "history")
+  const effectiveLayout = $derived(!compact && (gitWorkspace || panel === "history")
     ? "source"
     : compact
     ? (activeMobileView === "source" ? "source" : "document")
@@ -2653,7 +2663,7 @@
   const panes = $derived({
     layout: effectiveLayout,
     comments: Boolean(panel),
-    editing: editing || panel === "history" || resolving,
+    editing: editing || panel === "history" || gitWorkspace,
     sourceSide,
     sizes,
     width,
@@ -2663,7 +2673,7 @@
     unit,
   });
   const shown = $derived(compact ? {
-    source: (editing || panel === "history" || resolving) && activeMobileView === "source",
+    source: (editing || panel === "history" || gitWorkspace) && activeMobileView === "source",
     document: activeMobileView === "document",
     comments: activeMobileView === "sidebar",
   } : showing(panes));
@@ -3993,7 +4003,7 @@
 
   {#snippet gitPanel()}
     <Git open={panel === "git" && shown.comments} slug={SLUG} key={KEY} {session} {rules}
-      me={{ name: me.name, handle: me.handle }} resolver={gitResolver} />
+      me={{ name: me.name, handle: me.handle }} resolver={gitResolver} differ={gitDiff} />
   {/snippet}
 
   {#snippet diagnosticsPanel()}
@@ -4053,7 +4063,7 @@
     {/snippet}
   </Sidebar>
 
-  {#if editing || panel === "history" || resolving}
+  {#if editing || panel === "history" || gitWorkspace}
     <!-- svelte-ignore a11y_no_static_element_interactions -->
     <section id="reader-source" class="editorpane" class:away={!shown.source}
              ondragover={(event) => event.preventDefault()} ondrop={dropped}>
@@ -4062,6 +4072,8 @@
            without this application carrying a PDF renderer of its own. -->
       {#if resolving}
         <GitConflictWorkspace resolver={gitResolver} />
+      {:else if diffing}
+        <GitDiffWorkspace differ={gitDiff} />
       {:else if panel === "history"}
         <HistoryWorkspace source={historySource} canEdit={mayEdit} onrestore={restoreLabel}
           ondownload={downloadArchive}
