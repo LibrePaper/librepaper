@@ -62,7 +62,7 @@
   let newBranch = $state("");
   let branchError = $state("");
   let identityLine = $state(null);
-  const detailsPlace = { placement: "bottom-start", getAnchorRect: () => identityLine?.getBoundingClientRect() ?? null };
+  const detailsPlace = { placement: /** @type {const} */ ("bottom-start"), getAnchorRect: () => identityLine?.getBoundingClientRect() ?? null };
 
   let outcome = $state(null);
   let conflictSession = $state(null);
