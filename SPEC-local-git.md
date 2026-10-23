@@ -82,10 +82,10 @@ for the same connection.
 - **Pull** fetches the branch, merges it with what changed in LibrePaper
   since the checkpoint, and applies the result to the live document. The
   editor shows `<name> pulled 3 files from <remote label>`.
-- **Push** pulls first, then shows the outgoing files and a commit message
-  field (the default names the changed files), and pushes one commit on top
-  of the remote head after the user confirms. If the remote moved before the
-  push, it pulls again and asks for a new confirmation.
+- **Push** shows the outgoing files and a commit message field (the default
+  names the changed files), and pushes one commit on top of the commit the
+  project last synced with after the user confirms. It never pulls. When the
+  remote has new commits, it refuses and says to pull first.
 - **Conflicts** open the resolver. The project does not change until every
   conflict is resolved and the result applies.
 - **Disconnect** forgets the shared record. It does not delete the private
@@ -303,8 +303,8 @@ recognized later on the remote.
 
 ## Push
 
-1. Run a pull. If it refused or opened the resolver, stop. If it applied
-   changes, its step 9 has already waited for them to reach the page.
+1. Fetch. If the remote head is not the checkpoint, refuse with "pull
+   first" and stop. Push never applies changes to the project.
 2. Build L2 from the project, restricted to `F(R)`, with parent R′. If its
    tree equals R′'s, there is nothing to push.
 3. Build the push tree: R's raw tree, with each synced path whose content
@@ -316,8 +316,7 @@ recognized later on the remote.
    <handle@users.noreply.<site>>`; committer: the machine's Git identity)
    and record it in the journal as prepared.
 5. `git push <remote> <commit>:refs/heads/<branch>`, never with force. A
-   non-fast-forward refusal fetches, goes back to step 1 and asks for a new
-   confirmation.
+   non-fast-forward refusal answers "pull first".
 6. Record the push: a write of the record naming the revision the pull in
    step 1 left, with checkpoint = the pushed commit and synced paths = the
    pushed commit's synced paths. Mark the journal entry done.

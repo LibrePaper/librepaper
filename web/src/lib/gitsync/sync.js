@@ -41,6 +41,7 @@ const RECONNECT = "This computer is connected to a different repository for this
 const NOT_LINKED = "This project is not connected to a Git repository.";
 const NOT_SYNCED = "This computer has not synced this project yet.";
 const GONE_FROM_REMOTE = "The commit this project last synced with is no longer on the remote.";
+const PULL_FIRST = "The remote has new commits. Pull first, then push.";
 const COLLIDING = "These files would have the same name in LibrePaper, which ignores case and accents in names. Rename one of them, in LibrePaper or in the repository, then try again.";
 /// Error kinds that say a commit is not in the private repository.
 const MISSING_KINDS = new Set(["not-found", "missing"]);
@@ -585,7 +586,8 @@ async function lastSynced(ctx, link, filter, oversize) {
 }
 
 /// Everything a pull needs after fetching: the filter, the three inputs and
-/// the merge. Returns `{ refusal }` when the pull cannot start.
+/// the merge. Returns `{ refusal }` when the pull cannot start, or when
+/// `options.current` is set and the remote has commits the checkpoint lacks.
 async function prepare(ctx, link, op, options) {
   const fetched = await ctx.git.fetch(link.checkpoint ? [link.checkpoint] : []);
   if (link.checkpoint && fetched.missing?.includes(link.checkpoint)) {
@@ -602,6 +604,9 @@ async function prepare(ctx, link, op, options) {
   }
   // A branch without commits has nothing to bring in and nothing to record.
   const remote = fetched.head || null;
+  if (options.current && remote !== (link.checkpoint || null)) {
+    return { refusal: result("behind", { head: remote, reason: PULL_FIRST }) };
+  }
   const filter = await filterAt(ctx, link, remote);
   if (filter.refusals.length) return { refusal: result("refused", { refusals: filter.refusals }) };
   if (!remote) return { empty: true, link, filter, theirs: await commitFiles(ctx, new Map(), null) };
@@ -986,14 +991,14 @@ export function defaultMessage(files) {
   return `Update ${names.join(", ")}${more}`;
 }
 
-/// Pulls, then works out what a push would send. Resolves with
+/// Works out what a push would send, without pulling. Resolves with
 /// `{ status: "outgoing", files, outgoing }`, where `outgoing` is the prepared
-/// push to hand back to `push` as `confirmed`; with `{ status: "nothing" }`
-/// (or `"pulled"` when the pull applied files); or with the pull's own
-/// conflict or refusal.
+/// push to hand back to `push` as `confirmed`; with `{ status: "nothing" }`;
+/// or with `{ status: "behind", head, reason }` when the remote has commits
+/// the link's checkpoint does not have, which the person clears by pulling.
 export async function outgoing(ctx) {
   return guarded(async () => {
-    const pulled = await runPull(ctx);
+    const pulled = await runPull(ctx, { current: true });
     if (!pulled.state) return pulled.result;
     // An arrival timeout is remembered and refuses until the page has caught
     // up with the server, which the version check decides.
@@ -1006,9 +1011,7 @@ export async function outgoing(ctx) {
     // L is not a deletion to push.
     const skip = new Set(local.oversize);
     const changes = (await ctx.git.diff(theirs.commit, local.commit)).filter((item) => !skip.has(item.path));
-    if (!changes.length) {
-      return result(pulled.result.status, { files: pulled.result.files, link });
-    }
+    if (!changes.length) return result("nothing", { files: [], link });
     const files = changes.map(({ path, status }) => ({ path, status }));
     const edits = changes.map((item) => {
       const path = filter.synced.get(item.path)?.repoPath ?? filter.rules.repoPath(item.path);
@@ -1016,7 +1019,6 @@ export async function outgoing(ctx) {
     });
     return result("outgoing", {
       files,
-      pulled: pulled.result,
       outgoing: {
         files,
         signature: changes.map((item) => `${item.status}:${item.path}:${item.to || ""}`).join("\n"),
@@ -1108,11 +1110,13 @@ async function publish(ctx, plan, message) {
   return { result: result("pushed", { files: plan.files, commit, link }) };
 }
 
-/// Pulls, then pushes one commit on top of the remote head. With `confirmed`,
-/// the `outgoing` value the person reviewed, exactly that set is pushed.
-/// Without it, the outgoing set is worked out here. When the remote moved, the
-/// pull and the plan are made again once; if it moved again, or the person
-/// reviewed a set that is no longer the outgoing one, the answer is
+/// Pushes one commit on top of the remote head the project last synced with.
+/// It never pulls: when the remote has commits the checkpoint lacks, the answer
+/// is `{ status: "behind" }` and the person pulls first. With `confirmed`, the
+/// `outgoing` value the person reviewed, exactly that set is pushed. Without
+/// it, the outgoing set is worked out here. When the remote moved during the
+/// push, the plan is made again once; if it moved again, or the person reviewed
+/// a set that is no longer the outgoing one, the answer is
 /// `{ status: "moved", outgoing }` and the panel asks again.
 export async function push(ctx, message = "", { confirmed = null } = {}) {
   return guarded(async () => {
