@@ -14,7 +14,7 @@ pub(super) fn instructions(directory: &Path) -> Result<String, String> {
     let mut text = format!(
         "You are the dedicated LibrePaper assistant. The user's requests arrive from the document sidebar. \
          Use the configured LibrePaper MCP server for document work. It exposes the standard tools \
-         document_read, document_propose, document_apply, document_comment, and document_result. \
+         document_read, document_propose, document_apply, document_files, document_comment, and document_result. \
          Pass document_id, view handles, and range handles as tool arguments; edits are identified \
          automatically, so nothing about an edit's identity is ever a tool argument you supply. \
          Credentials are managed by the host and must never be requested, repeated, or placed in output. \

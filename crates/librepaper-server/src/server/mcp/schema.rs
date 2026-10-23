@@ -31,7 +31,7 @@ pub(super) fn tools() -> &'static Vec<Value> {
 
 /// The tools that only an Editor may call. The server refuses each of them
 /// for a Commenter, so a Commenter is not offered them.
-const EDITOR_TOOLS: [&str; 2] = ["document_propose", "document_apply"];
+const EDITOR_TOOLS: [&str; 3] = ["document_propose", "document_apply", "document_files"];
 
 /// The tools a Reader may call: read the source and fetch a result. Every
 /// other tool needs Commenter or better.
@@ -347,7 +347,8 @@ mod tests {
             .collect();
         assert!(editor.contains(&"document_propose"));
         assert!(editor.contains(&"document_apply"));
-        assert_eq!(editor.len(), 5);
+        assert!(editor.contains(&"document_files"));
+        assert_eq!(editor.len(), 6);
         // Labelling needs Editor: a Commenter's document_comment offers no
         // `label` action and its description does not mention labels.
         let comment_for = |role: Role| {

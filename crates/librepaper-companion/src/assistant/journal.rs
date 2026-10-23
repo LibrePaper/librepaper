@@ -520,7 +520,10 @@ impl Journal {
                 task == task_id
                     && matches!(
                         tool.as_str(),
-                        "document_propose" | "document_apply" | "document_comment"
+                        "document_propose"
+                            | "document_apply"
+                            | "document_files"
+                            | "document_comment"
                     )
             })
             .count();
@@ -610,7 +613,9 @@ fn confirmed_effects(tool: &str, response: &Value) -> Vec<Value> {
             && value.get("error").is_none()
         {
             match tool {
-                "document_apply" => out.push(serde_json::json!({"kind":"application"})),
+                "document_apply" | "document_files" => {
+                    out.push(serde_json::json!({"kind":"application"}))
+                }
                 "document_comment" => {
                     if let Some(action) = field(value, "action") {
                         out.push(serde_json::json!({"kind":"comment","action":action}));
@@ -630,7 +635,12 @@ fn confirmed_effects(tool: &str, response: &Value) -> Vec<Value> {
     let effect_tool = if tool == "document_result" {
         body["tool"]
             .as_str()
-            .filter(|name| matches!(*name, "document_apply" | "document_comment"))
+            .filter(|name| {
+                matches!(
+                    *name,
+                    "document_apply" | "document_files" | "document_comment"
+                )
+            })
             .unwrap_or(tool)
     } else {
         tool
@@ -694,7 +704,11 @@ pub(crate) fn record_tool_call(
 fn changes_document(tool: &str) -> bool {
     matches!(
         tool,
-        "document_propose" | "document_apply" | "document_comment" | "document_result"
+        "document_propose"
+            | "document_apply"
+            | "document_files"
+            | "document_comment"
+            | "document_result"
     )
 }
 

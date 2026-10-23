@@ -365,6 +365,85 @@
       }
     },
     {
+      "name": "document_files",
+      "description": "Create or delete text files, at least one of either. A created file appears in the next document_read, and an earlier read does not show it. Binary files cannot be added.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "document_id": {
+            "type": "string",
+            "maxLength": 128,
+            "description": "Omit this. The endpoint already serves exactly one document, and supplying a different value is refused. Pass it only to echo back the document_id a previous document_read returned; a file name is not a document identifier."
+          },
+          "operation": { "$ref": "#/$defs/OperationKey" },
+          "base_tree": {
+            "type": "string",
+            "maxLength": 128,
+            "description": "Optional. The tree digest the change was planned against. Omit it to apply to the document as it is now."
+          },
+          "consistency": {
+            "type": "string",
+            "enum": [
+              "exact_tree",
+              "unchanged_dependencies"
+            ]
+          },
+          "create": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "path": {
+                  "type": "string",
+                  "maxLength": 1024
+                },
+                "text": {
+                  "type": "string",
+                  "maxLength": 262144
+                }
+              },
+              "required": [
+                "path",
+                "text"
+              ],
+              "additionalProperties": false
+            },
+            "maxItems": 100
+          },
+          "delete": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "path": {
+                  "type": "string",
+                  "maxLength": 1024
+                }
+              },
+              "required": [
+                "path"
+              ],
+              "additionalProperties": false
+            },
+            "maxItems": 100
+          }
+        },
+        "required": [
+          "operation"
+        ],
+        "additionalProperties": false
+      },
+      "outputSchema": {
+        "type": "object"
+      },
+      "annotations": {
+        "readOnlyHint": false,
+        "destructiveHint": true,
+        "idempotentHint": false,
+        "openWorldHint": false
+      }
+    },
+    {
       "name": "document_comment",
       "description": "Create or reply to comments, resolve threads and label versions, conditional on their captured version.",
       "inputSchema": {

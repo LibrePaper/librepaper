@@ -732,3 +732,150 @@ async fn a_crlf_replacement_proposes_and_applies_the_same_bytes() {
     assert!(!text.contains('\r'), "{text:?}");
     deployment.catalog.close().await;
 }
+
+/// Reads the manifest and returns the epoch a mutation needs plus the raw
+/// response, so a test can look for a path in it.
+async fn read_manifest(deployment: &Deployment, headers: &HeaderMap) -> (String, Value) {
+    let (status, response) = call(
+        deployment,
+        headers,
+        "document_read",
+        json!({"queries":[{"kind":"manifest"}]}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{response}");
+    let epoch = recovered(&response)["operation_epoch"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    (epoch, response)
+}
+
+#[tokio::test]
+#[ignore = "requires LIBREPAPER_TEST_POSTGRES_URL"]
+async fn an_editor_creates_and_deletes_text_files() {
+    let Some(deployment) = deployment("mcp-document-files").await else {
+        return;
+    };
+    let owner = bearer(
+        deployment.owner_id,
+        "owner",
+        &deployment.owner_generation,
+        &deployment.owner_link_key,
+    );
+    let (epoch, before) = read_manifest(&deployment, &owner).await;
+    assert!(!before.to_string().contains("notes/extra.md"));
+
+    let create = json!({
+        "operation":operation(&epoch),
+        "create":[{"path":"notes/extra.md","text":"# Extra\n"}]
+    });
+    let (status, response) = call(&deployment, &owner, "document_files", create.clone()).await;
+    assert_eq!(status, StatusCode::OK, "{response}");
+    let receipt = recovered(&response);
+    assert_eq!(receipt["status"], "committed", "{response}");
+    assert_ne!(receipt["tree_digest_before"], receipt["tree_digest_after"]);
+
+    // The next read lists the file.
+    let (epoch, after) = read_manifest(&deployment, &owner).await;
+    assert!(after.to_string().contains("notes/extra.md"), "{after}");
+
+    // The same operation key is refused as already used, and the lost
+    // receipt is recovered with document_result.
+    let (status, retry) = call(&deployment, &owner, "document_files", create.clone()).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(recovered(&retry)["error"]["code"], "outcome_unknown");
+    let (status, response) = call(
+        &deployment,
+        &owner,
+        "document_result",
+        json!({"operation":operation(&epoch),"kind":"operation","target_operation":create["operation"]}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{response}");
+    let first = recovered(&response);
+    assert_eq!(first["tool"], "document_files");
+    assert_eq!(first["status"], "committed", "{response}");
+    assert_eq!(first["tree_digest_after"], receipt["tree_digest_after"]);
+
+    // Creating a path that exists is a conflict.
+    let (status, response) = call(
+        &deployment,
+        &owner,
+        "document_files",
+        json!({
+            "operation":operation(&epoch),
+            "create":[{"path":"notes/extra.md","text":"again"}]
+        }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{response}");
+    assert_eq!(response["error"]["code"], "conflict", "{response}");
+
+    // Deleting removes the file; deleting it again conflicts.
+    let delete = json!({
+        "operation":operation(&epoch),
+        "delete":[{"path":"notes/extra.md"}]
+    });
+    let (status, response) = call(&deployment, &owner, "document_files", delete).await;
+    assert_eq!(status, StatusCode::OK, "{response}");
+    assert_eq!(recovered(&response)["status"], "committed", "{response}");
+    let room = deployment
+        .server
+        .documents
+        .rooms
+        .get(&deployment.slug)
+        .await
+        .unwrap();
+    let current = room.agent_query_snapshot().await.unwrap();
+    assert!(!current.texts().contains_key("notes/extra.md"));
+    let (status, response) = call(
+        &deployment,
+        &owner,
+        "document_files",
+        json!({
+            "operation":operation(&epoch),
+            "delete":[{"path":"notes/extra.md"}]
+        }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{response}");
+    assert_eq!(response["error"]["code"], "conflict", "{response}");
+    deployment.catalog.close().await;
+}
+
+#[tokio::test]
+#[ignore = "requires LIBREPAPER_TEST_POSTGRES_URL"]
+async fn a_commenter_cannot_create_files() {
+    let Some(deployment) = deployment("mcp-document-files-commenter").await else {
+        return;
+    };
+    let commenter = bearer(
+        deployment.commenter_id,
+        "commenter",
+        &deployment.commenter_generation,
+        &deployment.commenter_link_key,
+    );
+    let (epoch, _) = read_manifest(&deployment, &commenter).await;
+    let (_, response) = call(
+        &deployment,
+        &commenter,
+        "document_files",
+        json!({
+            "operation":operation(&epoch),
+            "create":[{"path":"notes/extra.md","text":"# Extra\n"}]
+        }),
+    )
+    .await;
+    assert!(response.get("error").is_some(), "{response}");
+    let room = deployment
+        .server
+        .documents
+        .rooms
+        .get(&deployment.slug)
+        .await
+        .unwrap();
+    let current = room.agent_query_snapshot().await.unwrap();
+    assert!(!current.texts().contains_key("notes/extra.md"));
+    deployment.catalog.close().await;
+}

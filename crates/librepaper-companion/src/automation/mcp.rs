@@ -30,13 +30,18 @@ use crate::assistant::journal as runner_journal;
 use crate::automation::peer::AutomationPeer;
 
 /// The tools every assistant session needs. A Reader is served only these; a
-/// Commenter also gets `document_comment`, and an Editor `document_propose`
-/// and `document_apply`.
+/// Commenter also gets `document_comment`, and an Editor `document_propose`,
+/// `document_apply` and `document_files`.
 const REQUIRED_ASSISTANT_TOOLS: [&str; 2] = ["document_read", "document_result"];
 
 /// The tools whose arguments need an operation identity injected. The served
 /// schemas omit `operation` entirely, so a model never sees or mints one.
-const MUTATING_TOOLS: [&str; 3] = ["document_propose", "document_apply", "document_comment"];
+const MUTATING_TOOLS: [&str; 4] = [
+    "document_propose",
+    "document_apply",
+    "document_files",
+    "document_comment",
+];
 
 fn missing_assistant_tools<'a>(names: impl IntoIterator<Item = &'a str>) -> Vec<&'static str> {
     let names = names.into_iter().collect::<std::collections::HashSet<_>>();
