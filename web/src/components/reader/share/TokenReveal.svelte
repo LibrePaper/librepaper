@@ -3,9 +3,10 @@
   // and nowhere else; nothing here writes it to storage.
   let { token, oncopy, ondone } = $props();
   // Claude Code passes its environment to the servers it starts, so the
-  // server is registered once and the token is given at launch.
-  const commands = $derived(`claude mcp add librepaper --scope user -- librepaper mcp
-LIBREPAPER_AGENT_TOKEN=${token} claude`);
+  // server is registered once and the token is given at launch. The token is
+  // read silently rather than written into the command, so it never lands in
+  // shell history.
+  const commands = "claude mcp add librepaper --scope user -- librepaper mcp\nread -rs LIBREPAPER_AGENT_TOKEN && export LIBREPAPER_AGENT_TOKEN && claude";
   const config = $derived(`[mcp_servers.librepaper]
 command = "librepaper"
 args = ["mcp"]
@@ -21,7 +22,7 @@ env = { LIBREPAPER_AGENT_TOKEN = "${token}" }`);
   <button type="button" class="btn btn-sm lp-control-tonal-brand" onclick={() => oncopy(token)}>Copy token</button>
   <label class="share-field panel-meta">Claude Code
     <textarea class="input share-input share-config" readonly rows="2" aria-label="Claude Code commands" value={commands} onclick={select}></textarea>
-    <span>Run the first line once. The second starts Claude with this token.</span>
+    <span>Run the first line once. The second asks for the token: paste it, press Enter, and Claude starts.</span>
   </label>
   <button type="button" class="btn btn-sm lp-control-tonal-brand" onclick={() => oncopy(commands)}>Copy commands</button>
   <label class="share-field panel-meta">Other MCP clients

@@ -205,8 +205,9 @@ window.sharePanelCheck = async () => {
   check(secret && secret.readOnly && secret.value.startsWith("lpt_" + originPart + ".paper.minted"), "the token is shown: " + text());
   check(text().includes("Copy this token now. You won't be able to view it again."), "with the warning");
   const commands = document.querySelector('textarea[aria-label="Claude Code commands"]').value;
-  check(commands === "claude mcp add librepaper --scope user -- librepaper mcp\\nLIBREPAPER_AGENT_TOKEN=" + secret.value + " claude",
-    "the Claude Code commands register once and launch with the token: " + commands);
+  check(commands === "claude mcp add librepaper --scope user -- librepaper mcp\\nread -rs LIBREPAPER_AGENT_TOKEN && export LIBREPAPER_AGENT_TOKEN && claude",
+    "the Claude Code commands register once and read the token silently: " + commands);
+  check(!commands.includes(secret.value), "the commands never contain the token");
   const config = document.querySelector('textarea[aria-label="MCP configuration"]').value;
   check(config.includes('args = ["mcp"]') && config.includes('LIBREPAPER_AGENT_TOKEN = "' + secret.value + '"'),
     "the configuration is filled in: " + config);
