@@ -1371,6 +1371,37 @@ export async function localChanges(ctx) {
   });
 }
 
+/// The files the remote branch changed since the last sync:
+/// `{ status: "changes" | "none", head, files }`, with each file's status "A",
+/// "M" or "D". It changes nothing in the project, the journal or the shared
+/// record.
+export async function remoteChanges(ctx) {
+  return guarded(async () => {
+    const { link, answer } = await connectedLink(ctx);
+    if (answer) return answer;
+    const fetched = await ctx.git.fetch(link.checkpoint ? [link.checkpoint] : []);
+    if (link.checkpoint && fetched.missing?.includes(link.checkpoint)) {
+      return result("unknown", { reason: GONE_FROM_REMOTE });
+    }
+    const head = fetched.head || null;
+    if (head === (link.checkpoint || null)) return result("none", { head, files: [] });
+    const filter = await filterAt(ctx, link, head);
+    if (filter.refusals.length) return result("unknown", { reason: filter.refusals[0].reason });
+    const incoming = await loadFiles(ctx, filter.synced, filter.entries, [...filter.synced.keys()]);
+    pruneSkipped(filter, incoming.skipped);
+    // A file over the size limit is unsynced in both directions, as in a pull.
+    const oversize = new Set((await snapshot(ctx, filter, null)).oversize);
+    for (const path of oversize) incoming.files.delete(path);
+    const base = await lastSynced(ctx, link, filter, oversize);
+    const theirs = await commitFiles(ctx, incoming.files, base.commit);
+    const changes = (await ctx.git.diff(base.commit, theirs.commit)).filter((item) => !oversize.has(item.path));
+    return result(changes.length ? "changes" : "none", {
+      head,
+      files: changes.map(({ path, status }) => ({ path, status })).sort((a, b) => byPath(a.path, b.path)),
+    });
+  });
+}
+
 async function safeJournal(ctx) {
   try {
     return await journalRead(ctx);
