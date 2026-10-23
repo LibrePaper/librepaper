@@ -366,6 +366,12 @@ window.historyPanelCheck = async () => {
   check(marks().join() === 'Submitted draft,Earlier draft',
     'the bookmarks are the one way in that is not a date: ' + marks().join());
   check(!runs().length, 'and no run is among them: a bookmark is a version of its own');
+  // A day of bookmarks folds like any other day.
+  head('2026-09-09').click(); await flush();
+  check(!isOpen('2026-09-09') && marks().join() === 'Submitted draft',
+    'a day of bookmarks folds on a click: ' + marks().join());
+  head('2026-09-09').click(); await flush();
+  check(isOpen('2026-09-09') && marks().length === 2, 'and opens again');
   const markRow = (name) => [...document.querySelectorAll('.mark-row')]
     .find((node) => node.querySelector('.mark-name')?.textContent === name);
   // Rename and remove live here, on the row, and nowhere else.

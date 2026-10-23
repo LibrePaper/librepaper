@@ -84,17 +84,20 @@
   // base it is compared with, is open whether or not anybody opened it: the
   // alternative is a selection nobody can see. The filter opens every day
   // that holds a bookmark. Otherwise the newest day starts open and the rest
-  // start folded, and a click flips a day from where it started.
+  // start folded, and a click flips a day from where it started. The filter
+  // keeps its own record, so folding a day of bookmarks leaves the full list
+  // as it was.
   let toggled = $state(new Set());
+  let folded = $state(new Set());
   const isOpen = (group) =>
-    onlyMarked
-    || group.points.some((point) => point.sha === viewing || point.sha === against)
-    || toggled.has(group.day) !== (group.day === latest);
+    group.points.some((point) => point.sha === viewing || point.sha === against)
+    || (onlyMarked ? !folded.has(group.day) : toggled.has(group.day) !== (group.day === latest));
   function toggleDay(value) {
-    const next = new Set(toggled);
+    const next = new Set(onlyMarked ? folded : toggled);
     if (next.has(value)) next.delete(value);
     else next.add(value);
-    toggled = next;
+    if (onlyMarked) folded = next;
+    else toggled = next;
   }
 
   // Which runs are open. A run holding the version being compared, or the
@@ -317,6 +320,7 @@
         {@const expanded = isOpen(group)}
         <li class="day-group" data-day={group.day}>
           <button type="button" class="day-head" aria-expanded={expanded} onclick={() => toggleDay(group.day)}>
+            <span class="run-caret" aria-hidden="true">{expanded ? "▾" : "▸"}</span>
             <span class="day-name">{dayName(group.day)}</span>
             <span class="day-meta panel-meta">{dayMeta(group)}</span>
           </button>
@@ -535,7 +539,7 @@
     display: flex;
     align-items: baseline;
     gap: calc(var(--spacing) * 2);
-    width: 100%;
+    width: calc(100% + var(--panel-padding) * 2);
     margin-inline: calc(var(--panel-padding) * -1);
     padding: calc(var(--spacing) * 2) var(--panel-padding) calc(var(--spacing) * 0.5);
     background: var(--color-sidebar);
