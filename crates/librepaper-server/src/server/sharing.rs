@@ -380,7 +380,13 @@ impl Server {
             let Some(existing) = current_entry.link_by_id(&wanted.id) else {
                 return write_json(404, &json!({"error": "nothing is shared under that id"}));
             };
-            match self.plan_replace(slug, &arrival.reader_origin(), existing, wanted, &current_who) {
+            match self.plan_replace(
+                slug,
+                &arrival.reader_origin(),
+                existing,
+                wanted,
+                &current_who,
+            ) {
                 Ok((grant, shown)) => {
                     created = Some(shown);
                     swap = Some((wanted.id.clone(), grant));

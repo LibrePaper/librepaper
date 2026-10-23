@@ -201,7 +201,10 @@ fn mcp_says_the_account_token_is_unused_with_an_agent_token() {
     let output = Command::new(env!("CARGO_BIN_EXE_librepaper"))
         .args(["mcp", "--token", "lp_account"])
         .env_remove("LIBREPAPER_MCP_CONNECTION")
-        .env("LIBREPAPER_AGENT_TOKEN", "lpt_aHR0cDovLzEyNy4wLjAuMTo5.paper.abc")
+        .env(
+            "LIBREPAPER_AGENT_TOKEN",
+            "lpt_aHR0cDovLzEyNy4wLjAuMTo5.paper.abc",
+        )
         .output()
         .expect("CLI starts");
     assert!(
