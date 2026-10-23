@@ -22,3 +22,7 @@ export function importOnce(load) {
 export const loadMergeEditor = importOnce(() =>
   import("../components/MergeEditor.svelte").then((module) => module.default),
 );
+
+export const loadGitMergeView = importOnce(() =>
+  import("../components/reader/GitMergeView.svelte").then((module) => module.default),
+);

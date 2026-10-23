@@ -64,6 +64,11 @@ pub(super) fn api_router(server: Arc<Server>) -> Router {
             "/api/documents/{slug}/quarto/checkpoint",
             post(quarto_checkpoint),
         )
+        .route(
+            "/api/documents/{slug}/sync",
+            get(sync_link).put(sync_link).delete(sync_link),
+        )
+        .route("/api/documents/{slug}/source-change", post(source_change))
         .route("/api/documents/{slug}/share", any(share))
         .route("/api/documents/{slug}/source", get(source))
         .route("/api/documents/{slug}/snapshot", get(snapshot))
@@ -511,6 +516,26 @@ async fn quarto_checkpoint(
         .await
 }
 
+async fn sync_link(
+    State(server): State<Arc<Server>>,
+    Extension(ctx): Extension<RequestContext>,
+    Path(slug): Path<String>,
+    request: Request<Body>,
+) -> Reply {
+    server.handle_sync_link(request, &ctx.arrival, &slug).await
+}
+
+async fn source_change(
+    State(server): State<Arc<Server>>,
+    Extension(ctx): Extension<RequestContext>,
+    Path(slug): Path<String>,
+    request: Request<Body>,
+) -> Reply {
+    server
+        .handle_source_change(request, &ctx.arrival, &slug)
+        .await
+}
+
 async fn share(
     State(server): State<Arc<Server>>,
     Extension(ctx): Extension<RequestContext>,
@@ -665,7 +690,8 @@ pub(super) async fn dispatch(
                 let mut response = Response::new(Body::from(asset.body.clone()));
                 set(&mut response, "content-type", asset.kind);
                 privacy_headers(&mut response);
-                set(&mut response, "cache-control", "public, max-age=300");
+                // Unhashed, so it must be revalidated to match this deployment.
+                set(&mut response, "cache-control", "no-cache");
                 return response;
             }
         }

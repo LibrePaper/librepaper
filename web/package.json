@@ -70,6 +70,7 @@
     "@skeletonlabs/skeleton": "5",
     "@skeletonlabs/skeleton-svelte": "5",
     "@tailwindcss/vite": "4",
+    "ignore": "^7.0.5",
     "katex": "^0.18.7",
     "loro-crdt": "1.16.1",
     "pdfjs-dist": "5.4.149",

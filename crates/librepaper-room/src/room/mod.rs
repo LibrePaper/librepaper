@@ -64,6 +64,7 @@ mod message;
 pub(crate) use librepaper_engine::storage::outgoing;
 #[cfg(test)]
 mod recovery_tests;
+pub mod source_change;
 pub(crate) mod text;
 
 pub use annotation::OriginalAnchor;
