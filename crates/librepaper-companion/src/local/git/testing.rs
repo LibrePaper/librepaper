@@ -557,6 +557,21 @@ async fn the_journal_round_trips_and_forget_keeps_the_repository() {
 }
 
 #[tokio::test]
+async fn status_names_the_connections_remote() {
+    let fx = Fixture::new();
+    let grant = fx
+        .manager
+        .insert_grant_for_test(ORIGIN, PROJECT, &fx.remote);
+    fx.ok(
+        "connect",
+        json!({"connection_id": CONNECTION_ID, "remote": {"grant": grant}, "branch": "main"}),
+    )
+    .await;
+    let status = fx.ok("status", json!({})).await;
+    assert_eq!(status["remote"], json!({"grant": grant}));
+}
+
+#[tokio::test]
 async fn journal_changes_are_atomic_per_entry() {
     let fx = Fixture::new();
     fx.connect().await;
