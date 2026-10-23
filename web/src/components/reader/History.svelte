@@ -1,14 +1,15 @@
 <script>
-  // The document's past, in three views: the day's versions, a month to pick
-  // another day, and the marks somebody left on the versions worth finding
-  // again.
+  // The document's past, as one list: a heading for each day that has
+  // versions, newest day first. The newest day is open, so the latest work is
+  // the first thing shown. Every other day folds to its heading, which says
+  // how many versions it holds and which files they changed, and opens on a
+  // click. Bookmarks are a filter on the same list, not a view of their own.
   //
-  // This panel had a great deal more in it, and all of it went. A day was an
-  // axis of clock time, then a feed of sittings with sparklines, then an
-  // event timeline with a spine, activity bars and the silences written out.
-  // Each of those was defensible on its own, and together they made a sidebar
-  // holding four versions look like a dashboard. Almost none of it was what
-  // anybody had opened the panel to find.
+  // The day is said where the versions are read. A list of times with the
+  // date kept somewhere else meant a reader could not see which day they were
+  // looking at, and a calendar in a second tab was the only way to find out.
+  // A day that is folded costs one line, so a long history stays cheap to
+  // draw, and no version is drawn until its day is opened.
   //
   // What is left is what the panel is for: a list of times, a word beside the
   // few that have one, and the details of the one being looked at. A version
@@ -26,23 +27,19 @@
   // list. They were, as one folded line at the end, and every one of them read
   // "10:42 · 37": a clock time cannot say which minute is the one wanted, so
   // reaching them meant clicking minutes until the document looked right. The
-  // operation history is still kept and still read -- the calendar marks a day
-  // written on with nothing saved, and a comment anchors to a frontier -- but
-  // it is not enumerated here.
+  // operation history is still kept and still read -- a comment anchors to a
+  // frontier -- but it is not enumerated here.
   //
   // Presentation only: the shared source controller owns selection, and this
   // reports outwards.
   import { day as dayOf } from "../../lib/dates.js";
   import { shortSha } from "../../lib/history.js";
   import {
-    dayEntries, deliberate, monthGrid, monthOf, monthSpan, shiftDay,
-    shiftMonth, versionDays,
-  } from "../../lib/history-calendar.js";
-  import { Tabs } from "@skeletonlabs/skeleton-svelte";
+    changedAcross, dayEntries, deliberate, shiftDay, versionDays,
+  } from "../../lib/history-days.js";
   import Icon from "../Icon.svelte";
   import IconButton from "../IconButton.svelte";
   import PanelHeader from "../PanelHeader.svelte";
-  import PanelTabs from "../PanelTabs.svelte";
 
   let {
     labels = [],
@@ -65,46 +62,44 @@
   let draft = $state("");
   let field = $state(null);
 
-  // Three views of the same past, and the panel opens on the one somebody
-  // opening a version history almost always wants: the day they were last
-  // working on. The month is a tab away rather than a step above, and the
-  // marks somebody left are a tab away rather than a list under the month.
-  const TABS = [
-    { id: "timeline", label: "Timeline" },
-    { id: "calendar", label: "Calendar" },
-    { id: "bookmarks", label: "Bookmarks" },
-  ];
-  let tab = $state("timeline");
-  let pickedDay = $state("");
-  let pickedMonth = $state("");
-
-  const byDay = $derived(versionDays(labels, timezone));
-  const span = $derived(monthSpan(byDay, today));
-  const latest = $derived([...byDay.keys()].sort().pop() || today);
-  // The day the selection is on, so that opening a version from the
-  // bookmarks brings its own day with it.
-  const viewingDay = $derived.by(() => {
-    if (viewing) {
-      const point = labels.find((one) => one.sha === viewing);
-      if (point) return dayOf(point.at, timezone);
-    }
-    return "";
-  });
-  const day = $derived(pickedDay || viewingDay || latest);
-  const month = $derived(pickedMonth || monthOf(day));
-  const grid = $derived(monthGrid(month, byDay, { today }));
   // A bookmark is a version somebody put a name on. Nothing else writes a
   // label, so the two are the same thing said twice.
-  const bookmarks = $derived(
-    labels.filter((point) => point.label).sort((a, b) => (a.at < b.at ? 1 : -1)),
-  );
   const bookmarked = (point) => Boolean(point?.label);
-  // What a row's title says it is compared with: the base, when there is one
-  // and this row is not it, and the current source otherwise.
-  const compareTo = (point) => (against && against !== point.sha ? "comparison base" : "current source");
   const anything = $derived(labels.length > 0);
+  const anyBookmarks = $derived(labels.some(bookmarked));
 
-  const entries = $derived(dayEntries(labels, day, timezone));
+  // The filter shows only the bookmarked versions, grouped by day. It is off
+  // when the panel opens, so the whole history is the first thing read.
+  let onlyMarked = $state(false);
+
+  // Every day that has versions, newest first. The days are ISO strings, so
+  // they sort as text.
+  const days = $derived(
+    [...versionDays(labels, timezone).values()].sort((a, b) => (a.day < b.day ? 1 : -1)),
+  );
+  const latest = $derived(days[0]?.day ?? "");
+  const shown = $derived(onlyMarked ? days.filter((group) => group.named) : days);
+
+  // Which days are open. A day holding the version being compared, or the
+  // base it is compared with, is open whether or not anybody opened it: the
+  // alternative is a selection nobody can see. The filter opens every day
+  // that holds a bookmark. Otherwise the newest day starts open and the rest
+  // start folded, and a click flips a day from where it started. The filter
+  // keeps its own record, so folding a day of bookmarks leaves the full list
+  // as it was.
+  let toggled = $state(new Set());
+  let folded = $state(new Set());
+  const isOpen = (group) =>
+    group.points.some((point) => point.sha === viewing || point.sha === against)
+    || (onlyMarked ? !folded.has(group.day) : toggled.has(group.day) !== (group.day === latest));
+  function toggleDay(value) {
+    const next = new Set(onlyMarked ? folded : toggled);
+    if (next.has(value)) next.delete(value);
+    else next.add(value);
+    if (onlyMarked) folded = next;
+    else toggled = next;
+  }
+
   // Which runs are open. A run holding the version being compared, or the
   // base it is compared with, is open whether or not anybody opened it: the
   // alternative is a selection nobody can see.
@@ -118,78 +113,29 @@
     else next.add(entry.key);
     unrolled = next;
   }
-  const WEEKDAYS = ["S", "M", "T", "W", "T", "F", "S"];
   const versions = (n) => `${n} version${n === 1 ? "" : "s"}`;
 
-  // Choosing a day anywhere -- on the month, or by opening a bookmark -- is
-  // asking to see that day's versions, so it answers on the timeline.
-  function open(value) {
-    pickedDay = value;
-    pickedMonth = monthOf(value);
-    tab = "timeline";
-  }
+  // What a day's heading says it holds: how many versions, and which files
+  // they changed when the manifest can say.
+  const dayMeta = (group) =>
+    [versions(group.count), files(changedAcross(group.points))].filter(Boolean).join(" · ");
 
-  function step(months) {
-    const next = shiftMonth(month, months);
-    pickedMonth = next < span.first ? span.first : next > span.last ? span.last : next;
-  }
-
-  const monthLabel = $derived.by(() => {
-    const when = new Date(`${month}-01T12:00:00Z`);
-    return Number.isNaN(when.getTime())
-      ? month
-      : when.toLocaleDateString([], { year: "numeric", month: "long", timeZone: "UTC" });
-  });
-
-  // Only ever spoken, never shown: what a calendar cell tells a reader who
-  // stops on it, so it says the day in full.
-  function dayLabel(value) {
-    if (!value) return "";
+  // The day as its heading reads it: a word for today and yesterday, and
+  // otherwise the weekday and the date, with the year only when it is not
+  // this year.
+  function dayName(value) {
     if (value === today) return "Today";
     if (value === shiftDay(today, -1)) return "Yesterday";
     const when = new Date(`${value}T12:00:00Z`);
     if (Number.isNaN(when.getTime())) return value;
     return when.toLocaleDateString([], {
-      weekday: "long",
-      month: "long",
+      weekday: "short",
+      month: "short",
       day: "numeric",
+      ...(value.slice(0, 4) !== today.slice(0, 4) ? { year: "numeric" } : {}),
       timeZone: "UTC",
     });
   }
-
-  // What a cell says when a reader stops on it.
-  function says(cell) {
-    const when = dayLabel(cell.day);
-    if (cell.count) return `${when}: ${versions(cell.count)}${cell.named ? ", one of them bookmarked" : ""}`;
-    return `${when}: nothing`;
-  }
-
-  /// Arrows move a day at a time sideways and a week at a time up and down,
-  /// which is how a grid reads; page keys move a month. Walking off the end
-  /// of the month carries the calendar into the next one, because the reader
-  /// asked for the day, not for the page it happens to be drawn on.
-  function acrossCalendar(event) {
-    const days = { ArrowLeft: -1, ArrowRight: 1, ArrowUp: -7, ArrowDown: 7 };
-    const months = { PageUp: -1, PageDown: 1 };
-    if (event.key in days) {
-      const next = shiftDay(day, days[event.key]);
-      if (monthOf(next) < span.first || monthOf(next) > span.last) return;
-      event.preventDefault();
-      pickedDay = next;
-      pickedMonth = monthOf(next);
-      queueMicrotask(() => {
-        const cell = document.querySelector(`[data-history-day="${next}"]`);
-        if (cell instanceof HTMLElement) cell.focus({ preventScroll: true });
-      });
-      return;
-    }
-    if (event.key in months) {
-      event.preventDefault();
-      step(months[event.key]);
-    }
-  }
-
-  /* ------------------------------------------------------------- the clock */
 
   // Minutes from midnight, turned back into something a person reads.
   const ran = (entry) => {
@@ -279,6 +225,10 @@
     return `${paths.length} files changed`;
   };
 
+  // What a row's title says it is compared with: the base, when there is one
+  // and this row is not it, and the current source otherwise.
+  const compareTo = (point) => (against && against !== point.sha ? "comparison base" : "current source");
+
   // What a new bookmark is called before anybody calls it anything.
   //
   // A bookmark is looked for later, in a list, by somebody who remembers
@@ -317,39 +267,9 @@
   }
 </script>
 
-<!-- One of the column's panels: the column itself, with the tabs that choose
-     between them, is the reader's. The three inside it are this panel's own,
-     and they are the strip every tabbed panel wears. -->
-<div class="panel panel-tabbed timeline">
-  <PanelHeader title="Version history" />
-  <PanelTabs id="history" label="Version history views" listClass="history-tabs"
-             tabs={TABS} value={tab} onchange={(value) => (tab = value)}>
-    <!-- Only the view being read is built. A hidden pane holding a busy day's
-         ninety rows, or a whole month of cells, is work nobody asked for and
-         a second set of rows for anything counting them to find. -->
-    <Tabs.Content value="timeline">
-      {#if tab === "timeline"}
-        {@render notices()}
-        {#if anything}{@render dayStep()}{/if}
-      {/if}
-    </Tabs.Content>
-    <Tabs.Content value="calendar">
-      {#if tab === "calendar"}
-        {@render notices()}
-        {#if anything}{@render monthStep()}{/if}
-      {/if}
-    </Tabs.Content>
-    <Tabs.Content value="bookmarks">
-      {#if tab === "bookmarks"}
-        {@render notices()}
-        {@render bookmarkList()}
-      {/if}
-    </Tabs.Content>
-  </PanelTabs>
-</div>
-
-<!-- What the panel has to say before any of its views can say anything. -->
-{#snippet notices()}
+<div class="panel timeline">
+  <PanelHeader title="Version history" actions={anything ? filterControl : undefined} />
+  <!-- What the panel has to say before its list can say anything. -->
   {#if problem}
     <p class="lp-text-error" role="status">{problem}</p>
   {:else if !anything}
@@ -358,173 +278,140 @@
       editor leaves, and whenever the document is published to.
     </p>
   {/if}
-{/snippet}
-
-<!-- Which day. The month has one job and no other furniture. -->
-{#snippet monthStep()}
-  <div class="cal">
-    <div class="cal-head">
-      <IconButton icon="chevron-left" tone="plain" size="btn-icon-sm" label="Previous month"
-                  disabled={month <= span.first} onclick={() => step(-1)} />
-      <button type="button" class="cal-month" title="Go to the last day anything happened"
-              onclick={() => open(latest)}>{monthLabel}</button>
-      <IconButton icon="chevron-right" tone="plain" size="btn-icon-sm" label="Next month"
-                  disabled={month >= span.last} onclick={() => step(1)} />
-    </div>
-    <!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
-    <div class="cal-grid" role="group" aria-label="Days with versions" onkeydown={acrossCalendar}>
-      <ol class="cal-week cal-weekdays" aria-hidden="true">
-        {#each WEEKDAYS as name, index (index)}<li>{name}</li>{/each}
-      </ol>
-      {#each grid.weeks as week (week[0].day)}
-        <ol class="cal-week">
-          {#each week as cell (cell.day)}
-            <li>
-              <button
-                type="button"
-                class="cal-cell"
-                data-history-day={cell.day}
-                data-level={cell.level}
-                class:cal-outside={!cell.inMonth}
-                class:cal-quiet={!cell.count}
-                class:cal-today={cell.today}
-                class:cal-shown={cell.day === day}
-                aria-pressed={cell.day === day}
-                tabindex={cell.day === day ? 0 : -1}
-                title={says(cell)}
-                aria-label={says(cell)}
-                onclick={() => open(cell.day)}
-              >
-                <span class="cal-date">{cell.date}</span>
-                {#if cell.count}<span class="cal-count">{cell.count}</span>{/if}
-              </button>
-            </li>
-          {/each}
-        </ol>
-      {/each}
-    </div>
-  </div>
-{/snippet}
-
-<!-- The marks somebody left. The one way into the past that is not a date:
-     these names were written down precisely so that nobody would have to
-     remember when. The row is the timeline's row, because a bookmark is a
-     version and reading one should not be a different act here; what changes
-     is what can be done with it, which is rename it and take the mark off. -->
-{#snippet bookmarkList()}
-  <div class="marks">
-    {#if bookmarks.length}
-      <ol>
-        {#each bookmarks as point (point.sha)}
-          <li class="mark-row" data-sha={point.sha}>
-            {#if naming === point.sha}
-              {@render nameField("Name this bookmark")}
-            {:else}
-              <button type="button" class="timeline-point mark-point"
-                      class:timeline-here={viewing === point.sha}
-                      class:timeline-against={against === point.sha}
-                      aria-current={viewing === point.sha ? "true" : undefined}
-                      title="Compare {point.label} from {stamp(point.at) || shortSha(point.sha)} with the {compareTo(point)}"
-                      onclick={(event) => {
-                        open(dayOf(point.at, timezone));
-                        if (event.shiftKey) oncompare?.(point.sha);
-                        else onview?.(point.sha);
-                      }}>
-                <span class="mark-name">{point.label}</span>
-                <span class="mark-when panel-meta">{stamp(point.at)}</span>
-                {#if against === point.sha}<span class="sr-only">Comparison base</span>{/if}
-              </button>
-              {#if canEdit || viewing !== point.sha}
-                <span class="day-tools" class:on={against === point.sha}>
-                  {#if canEdit}
-                    <IconButton icon="pencil" tone="plain" size="btn-icon-sm"
-                                label="Rename this bookmark" onclick={() => startNaming(point)} />
-                    <IconButton icon="trash" tone="plain" size="btn-icon-sm"
-                                label="Remove this bookmark" onclick={() => unbookmark(point)} />
-                  {/if}
-                  {@render compareTool(point)}
-                </span>
-              {/if}
-            {/if}
-          </li>
-        {/each}
-      </ol>
-    {:else if anything}
-      <p class="panel-muted">
-        No bookmarks yet. Bookmark a version on the timeline to find it again
-        by name rather than by the day it happened on.
-      </p>
-    {/if}
-  </div>
-{/snippet}
-
-<!-- Which version. A list of times, and a word beside the few that have one. -->
-{#snippet dayStep()}
-  <div class="day">
-    <ol>
+  {#if anything && onlyMarked && !anyBookmarks}
+    <p class="panel-muted">No bookmarks yet. Bookmark a version to find it again by name.</p>
+  {:else if anything}
+    <ol class="history-list">
       <!-- The live document. It is not a label, but it is what every
            label is compared against and the only way back from one, so
            it belongs at the head of the list rather than in a banner above
-           the month: the list runs newest first, and nothing is newer. -->
-      <li class="day-row day-now">
-        {#if naming === "current"}
-          {@render nameField("Name this bookmark")}
-        {:else}
-          <!-- Not an event, so not shaped like one: a label at the left and
-               what it points at at the right, rather than a time and a word
-               in the columns every version below it uses. -->
-          <button
-            type="button"
-            class="timeline-point now-point"
-            class:timeline-here={!viewing}
-            aria-current={!viewing ? "true" : undefined}
-            aria-label="Show the current source"
-            onclick={() => onview?.("")}
-          >
-            <span class="now-label">Now</span>
-            <span class="now-what">{currentLabel || "Current version"}</span>
-          </button>
-          {#if canEdit && !viewing}
-            <span class="day-tools" class:on={Boolean(currentLabel)}>
-              <IconButton icon="bookmark" tone="plain" size="btn-icon-sm" filled={Boolean(currentLabel)}
-                          label={currentLabel ? "Rename this bookmark" : "Bookmark the current version"}
-                          onclick={() => startNaming({ sha: "current", label: currentLabel })} />
-            </span>
-          {/if}
-        {/if}
-      </li>
-      {#each entries as entry (entry.key)}
-        {#if entry.kind === "run"}
-          <!-- The autosaves between two things somebody asked for. One entry
-               that says what the whole run changed, and opens into the times
-               in it -- in place, because replacing the view to show four more
-               rows is a step nobody asked to take. -->
-          <li class="day-run" data-run={entry.key}>
-            <button type="button" class="run-head" aria-expanded={showing(entry)}
-                    onclick={() => unroll(entry)}>
-              <span class="run-caret" aria-hidden="true">{showing(entry) ? "▾" : "▸"}</span>
-              <span class="run-when">{ran(entry)}</span>
-              <span class="run-what panel-meta">
-                {[saves(entry.points.length), files(entry.changed)].filter(Boolean).join(" · ")}
-              </span>
+           the days: the list runs newest first, and nothing is newer. The
+           filter leaves it out, since it is not a bookmark. -->
+      {#if !onlyMarked}
+        <li class="day-row day-now">
+          {#if naming === "current"}
+            {@render nameField("Name this bookmark")}
+          {:else}
+            <!-- Not an event, so not shaped like one: a label at the left and
+                 what it points at at the right, rather than a time and a word
+                 in the columns every version below it uses. -->
+            <button
+              type="button"
+              class="timeline-point now-point"
+              class:timeline-here={!viewing}
+              aria-current={!viewing ? "true" : undefined}
+              aria-label="Show the current source"
+              onclick={() => onview?.("")}
+            >
+              <span class="now-label">Now</span>
+              <span class="now-what">{currentLabel || "Current version"}</span>
             </button>
-            {#if showing(entry)}
-              <ol class="run-rows">
-                {#each entry.points as point (point.sha)}
-                  {@render version(point)}
+            {#if canEdit && !viewing}
+              <span class="day-tools" class:on={Boolean(currentLabel)}>
+                <IconButton icon="bookmark" tone="plain" size="btn-icon-sm" filled={Boolean(currentLabel)}
+                            label={currentLabel ? "Rename this bookmark" : "Bookmark the current version"}
+                            onclick={() => startNaming({ sha: "current", label: currentLabel })} />
+              </span>
+            {/if}
+          {/if}
+        </li>
+      {/if}
+      {#each shown as group (group.day)}
+        {@const expanded = isOpen(group)}
+        <li class="day-group" data-day={group.day}>
+          <button type="button" class="day-head" aria-expanded={expanded} onclick={() => toggleDay(group.day)}>
+            <span class="run-caret" aria-hidden="true">{expanded ? "▾" : "▸"}</span>
+            <span class="day-name">{dayName(group.day)}</span>
+            <span class="day-meta panel-meta">{dayMeta(group)}</span>
+          </button>
+          {#if expanded}
+            {#if onlyMarked}
+              <ol class="day-rows">
+                {#each group.points.filter(bookmarked).reverse() as point (point.sha)}
+                  {@render markRow(point)}
+                {/each}
+              </ol>
+            {:else}
+              {@const entries = dayEntries(labels, group.day, timezone)}
+              <ol class="day-rows">
+                {#each entries as entry (entry.key)}
+                  {#if entry.kind === "run"}
+                    <!-- The autosaves between two things somebody asked for. One entry
+                         that says what the whole run changed, and opens into the times
+                         in it -- in place, because replacing the view to show four more
+                         rows is a step nobody asked to take. -->
+                    <li class="day-run" data-run={entry.key}>
+                      <button type="button" class="run-head" aria-expanded={showing(entry)}
+                              onclick={() => unroll(entry)}>
+                        <span class="run-caret" aria-hidden="true">{showing(entry) ? "▾" : "▸"}</span>
+                        <span class="run-when">{ran(entry)}</span>
+                        <span class="run-what panel-meta">
+                          {[saves(entry.points.length), files(entry.changed)].filter(Boolean).join(" · ")}
+                        </span>
+                      </button>
+                      {#if showing(entry)}
+                        <ol class="run-rows">
+                          {#each entry.points as point (point.sha)}
+                            {@render version(point)}
+                          {/each}
+                        </ol>
+                      {/if}
+                    </li>
+                  {:else}
+                    {@render version(entry.points[0])}
+                  {/if}
                 {/each}
               </ol>
             {/if}
-          </li>
-        {:else}
-          {@render version(entry.points[0])}
-        {/if}
+          {/if}
+        </li>
       {/each}
-      {#if !entries.length}
-        <li><p class="panel-muted">Nothing was written on this day.</p></li>
-      {/if}
     </ol>
-  </div>
+  {/if}
+</div>
+
+<!-- The one control in the header: show only the bookmarked versions. The
+     icon button reports its state through `pressed`, which it renders as
+     aria-pressed. -->
+{#snippet filterControl()}
+  <span class="history-filter">
+    <IconButton icon="bookmark" tone="plain" size="btn-icon-sm" filled={onlyMarked}
+                pressed={onlyMarked} label="Show only bookmarked versions"
+                onclick={() => (onlyMarked = !onlyMarked)} />
+  </span>
+{/snippet}
+
+<!-- A bookmark in the filtered list. It is the version's row, with the same
+     controls as anywhere else. The day is in the heading above it, so the
+     row says only the time. -->
+{#snippet markRow(point)}
+  <li class="mark-row" data-sha={point.sha}>
+    {#if naming === point.sha}
+      {@render nameField("Name this bookmark")}
+    {:else}
+      <button type="button" class="timeline-point mark-point"
+              class:timeline-here={viewing === point.sha}
+              class:timeline-against={against === point.sha}
+              aria-current={viewing === point.sha ? "true" : undefined}
+              title="Compare {point.label} from {stamp(point.at) || shortSha(point.sha)} with the {compareTo(point)}"
+              onclick={(event) => (event.shiftKey ? oncompare?.(point.sha) : onview?.(point.sha))}>
+        <span class="mark-name">{point.label}</span>
+        <span class="mark-when panel-meta">{clock(point.at)}</span>
+        {#if against === point.sha}<span class="sr-only">Comparison base</span>{/if}
+      </button>
+      {#if canEdit || viewing !== point.sha}
+        <span class="day-tools" class:on={against === point.sha}>
+          {#if canEdit}
+            <IconButton icon="pencil" tone="plain" size="btn-icon-sm"
+                        label="Rename this bookmark" onclick={() => startNaming(point)} />
+            <IconButton icon="trash" tone="plain" size="btn-icon-sm"
+                        label="Remove this bookmark" onclick={() => unbookmark(point)} />
+          {/if}
+          {@render compareTool(point)}
+        </span>
+      {/if}
+    {/if}
+  </li>
 {/snippet}
 
 <!-- One version: the time it was taken, and a word only where there is one.
@@ -563,7 +450,7 @@
           {#if about}<span class="day-about">{about}</span>{/if}
         {/if}
       </button>
-      <!-- The one thing that can be done to a version from the timeline: mark
+      <!-- The one thing that can be done to a version from the list: mark
            it, so that it can be found again by name. It is on every row, since
            a row has to be markable before it is the one being read; but a
            control on every line of a list is noise, so it is drawn only under
@@ -620,87 +507,62 @@
      lines of text, and the only colour in it says which line is being looked
      at. */
 
-  /* --------------------------------------------------------------- the month */
+  /* The panel is a column: the header and the notices sit at the top, and the
+     list takes what is left and scrolls on its own. */
+  .timeline { display: flex; flex-direction: column; overflow: hidden; }
+  .timeline :global(.panel-actions) { justify-content: flex-end; }
 
-  .cal { flex: none; }
-  /* The two arrows sit against the month rather than at the ends of the
-     panel: they belong to the word they step, and a control at each margin
-     reads as a pair of unrelated buttons. */
-  .cal-head {
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    gap: calc(var(--spacing) * 0.5);
+  /* ----------------------------------------------------------- the list */
+
+  /* The list runs the full width of the panel, so that a day's heading can
+     hold the sidebar ground across the whole of it while the days under it
+     scroll. The gutter is given back as padding inside the list, so the rows
+     still start at the panel's own edge. */
+  .history-list {
+    flex: 1 1 auto;
+    min-height: 0;
+    overflow-y: auto;
+    overflow-x: hidden;
+    margin-inline: calc(var(--panel-padding) * -1);
+    padding-inline: var(--panel-padding);
+    padding-bottom: var(--panel-padding);
   }
-  .cal-month {
-    min-width: 9.5rem;
-    padding: var(--spacing);
-    border-radius: var(--radius-container);
+  .day-group { display: block; }
+
+  /* A day's heading. It is the only thing a folded day shows, and it stays
+     at the top of the list while its own versions scroll past under it. The
+     heading takes the panel's ground, so the rows do not show through it. */
+  .day-head {
+    position: sticky;
+    top: 0;
+    z-index: 1;
+    display: flex;
+    align-items: baseline;
+    gap: calc(var(--spacing) * 2);
+    width: calc(100% + var(--panel-padding) * 2);
+    margin-inline: calc(var(--panel-padding) * -1);
+    padding: calc(var(--spacing) * 2) var(--panel-padding) calc(var(--spacing) * 0.5);
+    background: var(--color-sidebar);
+    text-align: left;
+    cursor: pointer;
+  }
+  .day-head:hover .day-name { text-decoration: underline; }
+  .day-name {
+    flex: none;
     font-size: var(--panel-font-size);
     font-weight: 500;
-    text-align: center;
-    cursor: pointer;
+    white-space: nowrap;
   }
-  .cal-month:hover { background: var(--color-row-hover); }
-  .cal-grid { display: flex; flex-direction: column; margin-top: var(--spacing); }
-  .cal-week { display: grid; grid-template-columns: repeat(7, 1fr); }
-  .cal-weekdays {
-    padding-bottom: var(--spacing);
-    font-size: var(--text-xs);
-    color: var(--color-text-muted);
-    text-align: center;
+  .day-meta {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
   }
-  /* A cell is a date on the panel's own ground, not a button on a grid of
-     buttons. Its height is given over to whitespace around the number. */
-  .cal-cell {
-    position: relative;
-    display: grid;
-    place-items: center;
-    width: 100%;
-    aspect-ratio: 1;
-    border-radius: var(--radius-container);
-    font-size: var(--text-xs);
-    line-height: 1;
-    cursor: pointer;
-  }
-  .cal-cell:hover { background: var(--color-row-hover); }
-  .cal-date {
-    display: grid;
-    place-items: center;
-    width: 20px;
-    height: 20px;
-    border-radius: 50%;
-    font-variant-numeric: tabular-nums;
-  }
-  /* A day nobody opened recedes; a day outside the month recedes further. It
-     is still drawn, so the weeks stay whole and the month can be counted
-     across. */
-  .cal-quiet .cal-date { color: var(--color-text-muted); }
-  .cal-outside { opacity: 0.45; }
-  .cal-today .cal-date { color: var(--color-link); font-weight: 600; }
-  /* The day being read: a filled circle on the date itself, not a filled
-     cell. The cell is forty pixels of ground, and colouring all of it says
-     nothing more than colouring the number does. */
-  .cal-shown .cal-date {
-    background: var(--color-brand);
-    color: var(--color-on-brand);
-    font-weight: 500;
-  }
-  .cal-cell:focus-visible { outline: 2px solid var(--color-focus); outline-offset: -2px; }
-  /* How many versions landed on the day -- the only thing the month has to
-     say beyond the date itself. */
-  .cal-count {
-    position: absolute;
-    top: 2px;
-    right: 3px;
-    font-size: 0.5625rem;
-    line-height: 1;
-    font-weight: 600;
-    color: var(--color-link);
-  }
+  .day-rows { padding-bottom: calc(var(--spacing) * 2); }
+
   /* ----------------------------------------------------------- the marks */
 
-  .marks { flex: 1 1 auto; min-height: 0; overflow-y: auto; overflow-x: hidden; }
   /* The name and what can be done to it, at the two ends of the row. The
      controls do not wait to be hovered here: this view is about the marks
      themselves, so the two things that can be done to one are simply on it. */
@@ -710,7 +572,7 @@
     align-items: center;
   }
   /* The name is the row's subject and the date is its metadata, which is the
-     reverse of the timeline, where the time is how a version is found. */
+     reverse of the list's versions, where the time is how a version is found. */
   .mark-point {
     display: flex;
     flex-direction: column;
@@ -744,18 +606,10 @@
 
   /* ----------------------------------------------------------------- the day */
 
-  .day {
-    flex: 0 1 auto;
-    min-height: 0;
-    overflow-y: auto;
-    overflow-x: hidden;
-    padding-top: calc(var(--spacing) * 2);
-    border-top: 1px solid var(--color-divider);
-  }
   /* A revision log, not a column of controls. A row has no border, no pill,
      no icon and no ground of its own; the only rows that are drawn at all are
      the one under the pointer and the one being read.
-  
+
      Three columns, the same three on every row: when, what, who. The time is
      a fixed width so that the words start at one x down the whole day, and is
      set in tabular numerals so the digits line up within it. */
@@ -819,7 +673,7 @@
     white-space: nowrap;
   }
   /* The controls, at the right of the row they belong to. A control offering
-     itself on every line of a list is noise, so on the timeline it waits for
+     itself on every line of a list is noise, so on the list it waits for
      the pointer, for the keyboard, or for the row to be the one being read.
      A mark already set is not an offer and does not hide. */
   .day-tools {

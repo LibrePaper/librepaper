@@ -1,16 +1,13 @@
-// What is left of the activity module once its work-volume half is gone:
-// the five-shade scale the version calendar shades a day's version count
-// with. See src/lib/activity.js for why `withWork` is not here any more.
-
+// The activity module is now only `minutesIn`, the minute a version falls at
+// in its day, which places a version on its day's axis.
 import assert from "node:assert/strict";
-import { level } from "../../src/lib/activity.js";
+import { minutesIn } from "../../src/lib/activity.js";
 
-// --- five shades, zero reserved ---------------------------------------------
-
-assert.equal(level(0, 100), 0, "nothing happened is its own shade");
-assert.equal(level(1, 100), 1, "one version is not nothing");
-assert.equal(level(100, 100), 4);
-assert.equal(level(51, 100), 3);
-assert.equal(level(5, 0), 1, "a count with nothing to compare against still shows");
-
-console.log("activity: five shades passed");
+assert.equal(minutesIn("2026-09-10T09:05:00Z", "UTC"), 545);
+// The reader's own timezone decides the minute, and the day it falls in.
+assert.equal(minutesIn("2026-09-10T09:05:00Z", "America/Toronto"), 305);
+assert.equal(minutesIn("2026-09-10T23:30:00Z", "Asia/Tokyo"), 510);
+// Midnight is hour zero, not hour twenty-four.
+assert.equal(minutesIn("2026-09-10T00:00:00Z", "UTC"), 0);
+assert.equal(minutesIn("not a time", "UTC"), -1);
+console.log("activity: a version's minute in the reader's own day");

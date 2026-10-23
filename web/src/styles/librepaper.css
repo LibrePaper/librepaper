@@ -464,10 +464,9 @@ input:not([type="checkbox"], [type="radio"], [type="range"], [type="color"], [ty
 
 /* ---------------------------------------------------------------- timeline */
 
-/* The history, in the column the comments otherwise have. The panel wears the
-   shared strip (`panel-tabbed`) and its three views -- the day, the month, the
-   bookmarks -- are its own, in its own file. What is left here is the one
-   thing every selectable moment in it shares: which one is being looked at. */
+/* The history, in the column the comments otherwise have. Its list of days
+   lives in its own file. What is left here is the one thing every selectable
+   moment in it shares: which one is being looked at. */
 /* The moment being looked at. A tinted ground and nothing else: the row was
    also carrying a left stripe, which is a second way of saying the one thing
    the background already says, and in a list of revisions two devices for

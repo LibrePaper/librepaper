@@ -1,17 +1,14 @@
-// A month of the document's life, and the versions on one of its days.
+// The version panel is one continuous list of days, newest first. Each day
+// opens into its versions, in order.
 //
-// The version panel asks two questions. *Which day?* -- a month laid out as a
-// grid, each cell knowing how many versions landed on it. *Which version?* --
-// that day's versions, in order.
-//
-// A day used to answer a third thing: whether anybody wrote on it at all,
+// A day used to answer whether anybody wrote on it at all,
 // even when nothing was saved. That came from `/activity`, a row per minute
 // a write landed, which the server-is-a-log cutover deleted along with the
 // table behind it. There is no longer a
 // signal for a day worked on and not saved from, so a day is now exactly
 // what its versions say it is -- something, or nothing.
 //
-// The second answer has to survive the volume. Nothing writes a version on a
+// The listing has to survive the volume. Nothing writes a version on a
 // timer any more, but the command line asks for one on every save, so a day
 // spent editing a paper locally is still dozens of them. Listing them all is
 // the one thing the panel must not do.
@@ -41,26 +38,13 @@
 // divide anyway: the finest thing that can be opened is a minute of the
 // operation history, which is the one folded line at the end.
 //
-// Both are pure, because the arithmetic -- which week a day falls in, which
-// minute a timestamp is at once the reader's own timezone is applied -- is
+// Both are pure, because the arithmetic -- which day a timestamp falls on,
+// which minute of it the reader's own timezone is applied to -- is
 // the part worth checking without a browser.
 
-import { level, minutesIn } from "./activity.js";
+import { minutesIn } from "./activity.js";
 import { labelOrder } from "./history.js";
 import { day as isoDay } from "./dates.js";
-
-/// The month a day belongs to, which is what the grid is keyed by.
-export const monthOf = (day) => String(day || "").slice(0, 7);
-
-/// A day string moved by whole months, staying a day string, and staying
-/// inside the month it lands in: a January 31st moved forward one month is
-/// the end of February, not the third of March.
-export function shiftMonth(month, months) {
-  const match = /^(\d{4})-(\d{2})/.exec(month || "");
-  if (!match) return month;
-  const at = new Date(Date.UTC(Number(match[1]), Number(match[2]) - 1 + months, 1, 12));
-  return Number.isNaN(at.getTime()) ? month : at.toISOString().slice(0, 7);
-}
 
 /// A day string moved by whole days. Done at noon UTC so a daylight-saving
 /// boundary cannot land it on the day before.
@@ -73,10 +57,7 @@ export function shiftDay(day, days) {
 
 /// One entry per day the document has a version on: how many landed on it,
 /// whether any of them was given a name, and the versions themselves oldest
-/// first.
-///
-/// The shading is the version count, because that is what a reader is looking
-/// for when they open a history.
+/// first. The count is what the day's row says about it.
 ///
 /// A day is the reader's own day, because a history is read as "Tuesday" and
 /// Tuesday is where the reader is.
@@ -96,55 +77,6 @@ export function versionDays(labels, timeZone) {
     found.points.push(point);
   }
   return byDay;
-}
-
-/// A month as whole Sunday-to-Saturday weeks.
-///
-/// The days either side of the month are drawn in place rather than left
-/// blank: a reader counts across a calendar, and a grid with holes in its
-/// corners is a grid they have to count around. They carry their own counts
-/// and are `inMonth: false`, so the panel can dim them and still open them.
-///
-/// The shading scale is the month's own busiest day, not the document's, so
-/// a quiet month is legible instead of uniformly pale.
-export function monthGrid(month, byDay, { today = "" } = {}) {
-  const match = /^(\d{4})-(\d{2})$/.exec(month || "");
-  if (!match) return { weeks: [], most: 0 };
-  const year = Number(match[1]);
-  const index = Number(match[2]) - 1;
-  const first = `${month}-01`;
-  const length = new Date(Date.UTC(year, index + 1, 0, 12)).getUTCDate();
-  const last = `${month}-${String(length).padStart(2, "0")}`;
-  const most = Math.max(0, ...[...byDay.values()]
-    .filter((entry) => monthOf(entry.day) === month)
-    .map((entry) => entry.count));
-  const cells = [];
-  const start = shiftDay(first, -new Date(`${first}T12:00:00Z`).getUTCDay());
-  for (let at = start; at <= last || cells.length % 7; at = shiftDay(at, 1)) {
-    const found = byDay.get(at);
-    cells.push({
-      day: at,
-      date: Number(at.slice(8, 10)),
-      inMonth: monthOf(at) === month,
-      count: found?.count || 0,
-      named: Boolean(found?.named),
-      level: level(found?.count || 0, most),
-      today: at === today,
-    });
-  }
-  const weeks = [];
-  for (let at = 0; at < cells.length; at += 7) weeks.push(cells.slice(at, at + 7));
-  return { weeks, most };
-}
-
-/// The months the panel can walk between: the first one anybody worked in
-/// and the one today is in, whichever way round the two sets run.
-export function monthSpan(byDay, today) {
-  const days = [...byDay.keys()].sort();
-  const here = monthOf(today);
-  const first = days.length ? monthOf(days[0]) : here;
-  const last = days.length ? monthOf(days[days.length - 1]) : here;
-  return { first: first < here ? first : here, last: last > here ? last : here };
 }
 
 /// The versions saved on one day, oldest first, each placed on the day's own
@@ -317,7 +249,7 @@ function divide(items, most) {
 // What a run of versions changed, all told. `null` when any of them could not
 // answer: a run that cannot account for itself should not claim to, and one
 // version's silence makes the union a guess rather than a total.
-function changedAcross(points) {
+export function changedAcross(points) {
   const paths = new Set();
   for (const point of points) {
     if (!Array.isArray(point.changed)) return null;

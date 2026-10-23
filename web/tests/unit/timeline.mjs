@@ -4,7 +4,7 @@
 // still render, and the history would just be wrong about when things
 // happened -- so that is what is checked here, along with the paging the
 // manifest is read through. How the order is then coarsened into what the
-// panel shows is checked in history-calendar.mjs.
+// panel shows is checked in history-days.mjs.
 
 import { read, label, labelOrder, loadWithStatus } from "../../src/lib/history.js";
 import { createTimeline } from "../../src/lib/reader/timeline.svelte.js";
