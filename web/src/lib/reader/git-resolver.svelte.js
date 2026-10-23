@@ -165,7 +165,6 @@ export function createGitResolver() {
   };
   const deleteVsModify = (item) => (item.oursId == null) !== (item.theirsId == null);
   const keepSide = (item) => (item.oursId == null ? "theirs" : "ours");
-  const isResolved = (path) => Boolean(state.resolutions[path]);
   const allResolved = () => state.items.length > 0 && state.items.every((item) => state.resolutions[item.path]);
 
   // Flushes a pending save, so closing keeps the latest typing.
@@ -224,5 +223,5 @@ export function createGitResolver() {
     cancelSave();
   }
 
-  return { state, open, select, choose, edit, apply, close, dispose, resultText, deleteVsModify, keepSide, isResolved, allResolved };
+  return { state, open, select, choose, edit, apply, close, dispose, resultText, deleteVsModify, keepSide, allResolved };
 }

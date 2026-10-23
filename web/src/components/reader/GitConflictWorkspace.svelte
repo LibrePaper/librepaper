@@ -29,7 +29,7 @@
     <label class="git-conflicts-file">File
       <select class="select" value={resolver.state.selected} onchange={(event) => resolver.select(event.currentTarget.value)}>
         {#each resolver.state.items as entry (entry.path)}
-          <option value={entry.path}>{entry.path} · {resolver.isResolved(entry.path) ? "resolved" : "needs a choice"}</option>
+          <option value={entry.path}>{entry.path}</option>
         {/each}
       </select>
     </label>
