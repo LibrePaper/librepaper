@@ -1932,9 +1932,8 @@ mod tests {
         assert_eq!(two.label, None);
         assert_eq!(four.label, None);
 
-        let sequences = |rows: Vec<LabelRecord>| {
-            rows.iter().map(|row| row.sequence).collect::<Vec<_>>()
-        };
+        let sequences =
+            |rows: Vec<LabelRecord>| rows.iter().map(|row| row.sequence).collect::<Vec<_>>();
         let named = catalog
             .named_label_page(document.id, None, 10)
             .await
@@ -1945,12 +1944,7 @@ mod tests {
             "only the two named labels, newest first"
         );
         assert_eq!(
-            sequences(
-                catalog
-                    .label_page(document.id, None, 10)
-                    .await
-                    .unwrap()
-            ),
+            sequences(catalog.label_page(document.id, None, 10).await.unwrap()),
             vec![4, 3, 2, 1],
             "the unfiltered timeline still has every label"
         );

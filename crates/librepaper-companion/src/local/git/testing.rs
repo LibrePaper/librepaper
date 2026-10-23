@@ -667,7 +667,10 @@ async fn a_push_to_another_branch_creates_it_and_leaves_main() {
     );
     let two = fx.commit(&[&one], &[("f.txt", "two")]).await;
     let pushed = fx
-        .ok("push", push_branch_body(&two, "review/intro", CONNECTION_ID))
+        .ok(
+            "push",
+            push_branch_body(&two, "review/intro", CONNECTION_ID),
+        )
         .await;
     assert_eq!(pushed["pushed"], true);
     assert_eq!(pushed["branch"], "review/intro");
@@ -685,13 +688,19 @@ async fn a_push_to_another_branch_creates_it_and_leaves_main() {
     // The same commit again changes nothing, so a retry after a lost reply
     // succeeds; another commit never replaces the branch.
     assert_eq!(
-        fx.ok("push", push_branch_body(&two, "review/intro", CONNECTION_ID))
-            .await["pushed"],
+        fx.ok(
+            "push",
+            push_branch_body(&two, "review/intro", CONNECTION_ID)
+        )
+        .await["pushed"],
         true
     );
     let other = fx.commit(&[&one], &[("f.txt", "other")]).await;
     let error = fx
-        .call("push", push_branch_body(&other, "review/intro", CONNECTION_ID))
+        .call(
+            "push",
+            push_branch_body(&other, "review/intro", CONNECTION_ID),
+        )
         .await
         .unwrap_err();
     assert_eq!(error.status, 409);

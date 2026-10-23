@@ -556,7 +556,11 @@ impl GitManager {
         let lease = format!(
             "--force-with-lease=refs/heads/{}:{}",
             branch,
-            if other.is_some() { "" } else { expected.unwrap_or("") }
+            if other.is_some() {
+                ""
+            } else {
+                expected.unwrap_or("")
+            }
         );
         let refspec = format!("{commit}:refs/heads/{branch}");
         // A chosen folder is usually an ordinary repository with the branch
