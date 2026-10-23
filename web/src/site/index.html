@@ -388,6 +388,12 @@
         box-shadow: 0 1px 2px rgb(0 0 0 / 0.05), 0 8px 24px -12px rgb(0 0 0 / 0.18);
       }
 
+      /* Two screenshots for one section, one above the other. */
+      .shot-stack {
+        display: grid;
+        gap: 1.5rem;
+      }
+
       /* A small screenshot, captured at twice its CSS size, stays near the
          size it was on screen, centred, rather than filling the column. */
       .shot-frame img.shot-small {
@@ -807,19 +813,35 @@
                 <li>Talk with collaborators in the project chat.</li>
               </ul>
             </div>
-            <figure class="shot-frame">
-              <picture>
-                <source type="image/webp" srcset="/images/track-changes.webp">
-                <img
-                  src="/images/track-changes.png"
-                  alt="The Changes panel in LibrePaper with one pending insertion, its author and file, and Reject and Accept buttons, beside the Typst source with the inserted line outlined."
-                  width="1171"
-                  height="678"
-                  loading="lazy"
-                  decoding="async"
-                />
-              </picture>
-            </figure>
+            <div class="shot-stack">
+              <figure class="shot-frame">
+                <picture>
+                  <source type="image/webp" srcset="/images/track-changes.webp">
+                  <img
+                    src="/images/track-changes.png"
+                    alt="The Changes panel in LibrePaper with one pending insertion, its author and file, and Reject and Accept buttons, beside the Typst source with the inserted line outlined."
+                    width="1171"
+                    height="678"
+                    loading="lazy"
+                    decoding="async"
+                  />
+                </picture>
+              </figure>
+              <figure class="shot-frame">
+                <picture>
+                  <source type="image/webp" srcset="/images/comment-thread.webp">
+                  <img
+                    class="shot-small"
+                    src="/images/comment-thread.png"
+                    alt="A comment thread in LibrePaper: three messages between two collaborators, with buttons to resolve, delete and reply."
+                    width="540"
+                    height="451"
+                    loading="lazy"
+                    decoding="async"
+                  />
+                </picture>
+              </figure>
+            </div>
           </div>
         </div>
       </section>
