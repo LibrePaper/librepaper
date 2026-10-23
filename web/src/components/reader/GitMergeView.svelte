@@ -10,7 +10,9 @@
   import { sourceLanguage } from "../../lib/source-language.js";
   import { sourceHighlighting } from "../../lib/source-highlight.js";
 
-  let { path = "", theirs = "", result = "", revision = 0, editable = true, onedit = undefined } = $props();
+  // The resolver's pane names. The diff view passes its own.
+  const RESOLVER_LABELS = { left: "The repository's copy", right: "Result (starts from LibrePaper's copy)", rightName: "Result" };
+  let { path = "", theirs = "", result = "", revision = 0, editable = true, onedit = undefined, labels = RESOLVER_LABELS } = $props();
 
   // Marks a transaction that loads the Result from the workspace, so the
   // update listener does not report it as a typed edit.
@@ -43,11 +45,11 @@
     untrack(() => {
       shownRevision = revision;
       merge = new MergeView({
-        a: { doc: String(theirs || ""), extensions: extensions("The repository's copy", true, file) },
+        a: { doc: String(theirs || ""), extensions: extensions(labels.left, true, file) },
         b: {
           doc: String(result || ""),
           extensions: [
-            ...extensions("Result", !canEdit, file),
+            ...extensions(labels.rightName, !canEdit, file),
             EditorView.updateListener.of((update) => {
               if (!update.docChanged) return;
               if (update.transactions.some((transaction) => transaction.annotation(programmatic))) return;
@@ -86,10 +88,10 @@
   });
 </script>
 
-<section class="git-merge merge-editor" aria-label="Compare the repository's copy with the Result">
+<section class="git-merge merge-editor" aria-label={`Compare ${labels.left} with ${labels.rightName}`}>
   <div class="git-merge-labels panel-meta">
-    <span>The repository's copy</span>
-    <span>Result (starts from LibrePaper's copy)</span>
+    <span>{labels.left}</span>
+    <span>{labels.right}</span>
   </div>
   <div class="git-merge-host" bind:this={host}></div>
 </section>

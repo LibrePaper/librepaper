@@ -624,7 +624,7 @@ async function prepare(ctx, link, op, options) {
   }
   const paths = [...filter.synced.keys()].sort(byPath);
 
-  const base = options.base ? { commit: options.base } : await lastSynced(ctx, link, filter, oversize);
+  const base = await lastSynced(ctx, link, filter, oversize);
   const theirs = await commitFiles(ctx, incoming.files, base.commit);
   const local = await snapshot(ctx, filter, base.commit);
 
@@ -1170,8 +1170,7 @@ const ALREADY_LINKED = "This project is already connected to a Git repository. C
 /// Gives the draft a connection id if it lacks one and tells the sidecar about
 /// the remote, but only when the server holds no link yet. The label comes from
 /// the sidecar, which has removed any user info from the address. Answers a
-/// refusal when a link exists, else null. The panel passes the same draft to
-/// `compare` and `connect`.
+/// refusal when a link exists, else null.
 async function openDraft(ctx, draft) {
   if ((await ctx.api.getLink()).link) return refused(ALREADY_LINKED);
   if (!draft.connection_id) draft.connection_id = crypto.randomUUID();
@@ -1203,89 +1202,75 @@ async function withDraft(ctx, draft, work) {
   }
 }
 
-/// The first look at a remote branch against the project, before anything is
-/// recorded: `{ incoming, outgoing, differing, unsynced, folders, refusals }`.
-/// `draft` is { remote: { url } | { grant }, label, branch, folder }. Answers a
-/// refusal when the project is already connected.
-export async function compare(ctx, draft) {
-  return guarded(() => withDraft(ctx, draft, async () => {
-    const none = { incoming: [], outgoing: [], differing: [], unsynced: [], folders: [], refusals: [] };
+/// Records the connection and nothing else: no pull, no push, no change to the
+/// project. The link has no checkpoint, so the first pull merges against an
+/// empty base: identical files merge cleanly, one-sided files are kept and
+/// files that differ go to the resolver. Refuses when the branch cannot be
+/// synced, or when the project is already connected.
+export async function connect(ctx, draft) {
+  return guarded(() => withDraft(ctx, draft, async (mark) => {
     const fetched = await ctx.git.fetch([]);
-    const filter = await filterAt(ctx, draftLink(draft), fetched.head || null);
-    if (filter.refusals.length) return { ...none, refusals: filter.refusals };
+    const spec = draftLink(draft);
+    const filter = await filterAt(ctx, spec, fetched.head || null);
+    if (filter.refusals.length) {
+      await ctx.git.forget();
+      return result("refused", { refusals: filter.refusals });
+    }
     const incoming = await loadFiles(ctx, filter.synced, filter.entries, [...filter.synced.keys()]);
     pruneSkipped(filter, incoming.skipped);
     const excess = tooManyFiles(filter);
-    if (excess) return { ...none, refusals: [excess] };
-    const theirs = await commitFiles(ctx, incoming.files, null);
-    const local = await snapshot(ctx, filter, null);
-    const changes = await ctx.git.diff(theirs.commit, local.commit);
-    const pick = (status) => changes.filter((item) => item.status === status).map((item) => item.path);
-    return {
-      incoming: pick("D"),
-      outgoing: pick("A"),
-      differing: pick("M"),
-      unsynced: filter.unsynced,
-      folders: [...filter.folders],
-      refusals: [],
-    };
+    if (excess) {
+      await ctx.git.forget();
+      return result("refused", { refusals: [excess] });
+    }
+    try {
+      await ctx.api.putLink({ ...spec, revision: null, checkpoint: null, synced_paths: [], pushed: false });
+    } catch (error) {
+      if (error?.status === 409) {
+        await ctx.git.forget();
+        return refused(ALREADY_LINKED);
+      }
+      throw error;
+    }
+    mark.recorded = true;
+    return result("connected", { link: (await ctx.api.getLink()).link ?? { ...spec, checkpoint: null } });
   }));
 }
 
-/// Records the connection and runs the first pull, and for direction "local"
-/// the push after it. Files on both sides with different content take the
-/// side named: "local" keeps LibrePaper's copies, "remote" the repository's.
-/// The first pull runs against a synthetic base that holds, for each such
-/// file, the copy of the side not picked. Refuses when the project is already
-/// connected.
-export async function connect(ctx, draft, direction) {
+/// The project's synced files compared with the remote branch head, whatever
+/// was synced before: `{ status: "compared", head, branch, files, same,
+/// unsynced }`. Each file is { path, change, ours, theirs } with change
+/// "different", "local" (only in LibrePaper) or "remote" (only on the remote),
+/// and `ours` and `theirs` the blob ids of LibrePaper's and the remote's copy,
+/// null where absent. `same` counts the synced files equal on both sides. It
+/// changes nothing in the project, the journal or the shared record.
+export async function compareRemote(ctx) {
   return guarded(async () => {
-    if (direction !== "local" && direction !== "remote") throw new Error("Choose which side keeps the differing files.");
-    return withDraft(ctx, draft, async (mark) => {
-      const fetched = await ctx.git.fetch([]);
-      const spec = draftLink(draft);
-      const filter = await filterAt(ctx, spec, fetched.head || null);
-      if (filter.refusals.length) {
-        await ctx.git.forget();
-        return result("refused", { refusals: filter.refusals });
-      }
-      const incoming = await loadFiles(ctx, filter.synced, filter.entries, [...filter.synced.keys()]);
-      pruneSkipped(filter, incoming.skipped);
-      const excess = tooManyFiles(filter);
-      if (excess) {
-        await ctx.git.forget();
-        return result("refused", { refusals: [excess] });
-      }
-      if (direction === "local") {
-        const behind = await catchUpRefusal(ctx, (await ctx.api.getLink()).version);
-        if (behind) {
-          await ctx.git.forget();
-          return behind;
-        }
-      }
-      const theirs = await commitFiles(ctx, incoming.files, null);
-      const local = await snapshot(ctx, filter, null);
-      const differing = (await ctx.git.diff(theirs.commit, local.commit)).filter((item) => item.status === "M");
-      const edits = differing.map((item) => ({ path: item.path, id: direction === "remote" ? item.to : item.from }));
-      const baseTree = await ctx.git.treeEdit(null, edits);
-      const base = await ctx.git.commitTree(baseTree, [], "LibrePaper first connection base", null);
-
-      try {
-        await ctx.api.putLink({ ...spec, revision: null, checkpoint: null, synced_paths: [], pushed: false });
-      } catch (error) {
-        if (error?.status === 409) {
-          await ctx.git.forget();
-          return refused(ALREADY_LINKED);
-        }
-        throw error;
-      }
-      mark.recorded = true;
-      const pulled = await runPull(ctx, { base });
-      if (!pulled.state) return pulled.result;
-      if (direction === "remote") return pulled.result;
-      const pushed = await push(ctx);
-      return pushed.status === "nothing" ? { ...pulled.result } : { ...pushed, pulled: pulled.result };
-    });
+    const { link, answer } = await connectedLink(ctx);
+    if (answer) return answer;
+    const fetched = await ctx.git.fetch(link.checkpoint ? [link.checkpoint] : []);
+    const head = fetched.head || null;
+    const filter = await filterAt(ctx, link, head);
+    if (filter.refusals.length) return result("refused", { refusals: filter.refusals });
+    const incoming = await loadFiles(ctx, filter.synced, filter.entries, [...filter.synced.keys()]);
+    pruneSkipped(filter, incoming.skipped);
+    const excess = tooManyFiles(filter);
+    if (excess) return result("refused", { refusals: [excess] });
+    // A file over the size limit is unsynced in both directions.
+    const local = await snapshot(ctx, filter, null);
+    const oversize = new Set(local.oversize);
+    for (const path of oversize) incoming.files.delete(path);
+    const theirs = await commitFiles(ctx, incoming.files, null);
+    const changes = (await ctx.git.diff(theirs.commit, local.commit)).filter((item) => !oversize.has(item.path));
+    const files = changes
+      .map((item) => {
+        if (item.status === "A") return { path: item.path, change: "local", ours: item.to, theirs: null };
+        if (item.status === "D") return { path: item.path, change: "remote", ours: null, theirs: item.from };
+        return { path: item.path, change: "different", ours: item.to, theirs: item.from };
+      })
+      .sort((a, b) => byPath(a.path, b.path));
+    const same = incoming.files.size - files.filter((file) => file.change !== "local").length;
+    return result("compared", { head, branch: link.branch, files, same, unsynced: filter.unsynced });
   });
 }
 

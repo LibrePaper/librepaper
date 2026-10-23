@@ -465,19 +465,21 @@ const draft = (folder = "") => ({
   folder,
 });
 
+/// Records the connection, then runs the first pull. Answers the pull.
+async function connectThenPull(ctx, spec) {
+  const recorded = await sync.connect(ctx, spec);
+  assert.equal(recorded.status, "connected", JSON.stringify(recorded));
+  return sync.pull(ctx);
+}
+
 /// A connected world: the project and the remote hold the same files.
 async function connected(files, folder = "") {
   const prefixed = Object.fromEntries(Object.entries(files).map(([path, text]) => [folder ? `${folder}/${path}` : path, text]));
   const made = await world({ remote: prefixed, project: files });
-  const answer = await sync.connect(made.ctx, draft(folder), "remote");
+  const answer = await connectThenPull(made.ctx, draft(folder));
   assert.ok(["pulled", "nothing"].includes(answer.status), JSON.stringify(answer));
   return made;
 }
-
-const baseFiles = (repo) => {
-  const call = repo.commitCalls.find((item) => item.message === "LibrePaper first connection base");
-  return Object.fromEntries(Object.entries(call.files).map(([path, id]) => [path, repo.text(id)]));
-};
 
 // ---------------------------------------------------------------- 1. first connection
 
@@ -487,61 +489,116 @@ const baseFiles = (repo) => {
       remote: {
         "paper/intro.qmd": "repo intro\n",
         "paper/refs.bib": "@a\n",
+        "paper/same.md": "same\n",
         "paper/fig/a.png": new Uint8Array([1, 2, 3]),
         "README.md": "outside\n",
       },
-      project: { "intro.qmd": "lp intro\n", "notes.md": "notes\n" },
+      project: { "intro.qmd": "lp intro\n", "notes.md": "notes\n", "same.md": "same\n" },
       assets: { "logo.png": new Uint8Array([9, 9]) },
     });
     return made;
   };
 
-  const compared = await fresh();
-  const look = await sync.compare(compared.ctx, draft("paper"));
-  assert.deepEqual(look.incoming, ["fig/a.png", "refs.bib"]);
-  assert.deepEqual(look.outgoing, ["logo.png", "notes.md"]);
-  assert.deepEqual(look.differing, ["intro.qmd"]);
-  assert.ok(look.unsynced.some((item) => item.path === "README.md"));
-  assert.deepEqual(look.refusals, []);
-  assert.equal(compared.api.state.link, null);
-
-  // Keep the repository's copies.
-  const remoteSide = await fresh();
-  const pulled = await sync.connect(remoteSide.ctx, draft("paper"), "remote");
-  assert.equal(pulled.status, "pulled");
-  assert.deepEqual(baseFiles(remoteSide.repo), { "intro.qmd": "lp intro\n" });
-  const [ours, theirs] = [remoteSide.repo.mergeCalls[0].ours, remoteSide.repo.mergeCalls[0].theirs];
-  const parentOf = (id) => remoteSide.repo.commits.get(id).parents[0];
-  assert.equal(parentOf(ours), parentOf(theirs));
-  assert.equal(remoteSide.repo.commits.get(parentOf(ours)).message, "LibrePaper first connection base");
-  assert.equal(remoteSide.session.text("intro.qmd"), "repo intro\n");
-  assert.equal(remoteSide.session.text("refs.bib"), "@a\n");
-  assert.deepEqual(remoteSide.session.assets.get(remoteSide.session.sha("fig/a.png")), new Uint8Array([1, 2, 3]));
-  assert.equal(remoteSide.session.text("notes.md"), "notes\n");
-  const link = remoteSide.api.state.link;
-  assert.equal(link.checkpoint, remoteSide.repo.head);
-  assert.deepEqual(link.synced_paths, ["fig/a.png", "intro.qmd", "refs.bib"]);
+  // Connecting records the link and nothing else.
+  const recorded = await fresh();
+  const head = recorded.repo.head;
+  const answer = await sync.connect(recorded.ctx, draft("paper"));
+  assert.equal(answer.status, "connected", JSON.stringify(answer));
+  assert.equal(answer.link.folder, "paper");
+  const link = recorded.api.state.link;
+  assert.equal(link.checkpoint, null);
+  assert.deepEqual(link.synced_paths, []);
   assert.equal(link.folder, "paper");
-  assert.equal(remoteSide.repo.pushes.length, 0);
+  assert.equal(recorded.repo.pushes.length, 0);
+  assert.equal(recorded.repo.head, head);
+  assert.equal(recorded.api.state.calls.length, 0);
+  assert.deepEqual(recorded.session.paths(), ["intro.qmd", "logo.png", "notes.md", "same.md"]);
+  assert.equal(recorded.session.text("intro.qmd"), "lp intro\n");
+  assert.equal(recorded.repo.mergeCalls.length, 0);
+  assert.equal(recorded.repo.forgets, 0);
 
-  // Keep LibrePaper's copies, and push them.
-  const localSide = await fresh();
-  const before = localSide.repo.head;
-  const pushed = await sync.connect(localSide.ctx, draft("paper"), "local");
+  // The diff view classifies every file and changes nothing.
+  const journal = recorded.repo.journal.length;
+  const refs = recorded.repo.refs.size;
+  const look = await sync.compareRemote(recorded.ctx);
+  assert.equal(look.status, "compared", JSON.stringify(look));
+  assert.equal(look.head, head);
+  assert.equal(look.branch, "main");
+  assert.equal(look.same, 1);
+  assert.deepEqual(look.files, [
+    { path: "fig/a.png", change: "remote", ours: null, theirs: recorded.repo.idOf("paper/fig/a.png") },
+    { path: "intro.qmd", change: "different", ours: look.files[1].ours, theirs: recorded.repo.idOf("paper/intro.qmd") },
+    { path: "logo.png", change: "local", ours: look.files[2].ours, theirs: null },
+    { path: "notes.md", change: "local", ours: look.files[3].ours, theirs: null },
+    { path: "refs.bib", change: "remote", ours: null, theirs: recorded.repo.idOf("paper/refs.bib") },
+  ]);
+  assert.equal(recorded.repo.text(look.files[1].ours), "lp intro\n");
+  assert.equal(recorded.repo.text(look.files[1].theirs), "repo intro\n");
+  assert.equal(recorded.repo.text(look.files[3].ours), "notes\n");
+  assert.ok(look.unsynced.some((item) => item.path === "README.md"));
+  assert.equal(recorded.api.state.link.checkpoint, null);
+  assert.equal(recorded.api.state.link.revision, link.revision);
+  assert.equal(recorded.api.state.calls.length, 0);
+  assert.equal(recorded.repo.pushes.length, 0);
+  assert.equal(recorded.repo.journal.length, journal);
+  assert.equal(recorded.repo.refs.size, refs);
+  assert.deepEqual(recorded.session.paths(), ["intro.qmd", "logo.png", "notes.md", "same.md"]);
+
+  // The first pull merges unrelated histories: the differing file goes to the
+  // resolver, with no base, and nothing is applied.
+  const conflicted = await sync.pull(recorded.ctx);
+  assert.equal(conflicted.status, "conflict", JSON.stringify(conflicted));
+  assert.deepEqual(conflicted.conflicts.map((item) => item.path), ["intro.qmd"]);
+  assert.equal(conflicted.conflicts[0].base, null);
+  assert.equal(recorded.repo.text(conflicted.conflicts[0].ours), "lp intro\n");
+  assert.equal(recorded.repo.text(conflicted.conflicts[0].theirs), "repo intro\n");
+  assert.equal(recorded.session.text("intro.qmd"), "lp intro\n");
+  assert.ok(!recorded.session.has("refs.bib"));
+  assert.equal(recorded.api.state.link.checkpoint, null);
+
+  // Keeping LibrePaper's copy applies the rest, and a push sends the project.
+  const applied = await sync.applyResolution(recorded.ctx, conflicted.session, { "intro.qmd": { keep: "ours" } });
+  assert.equal(applied.status, "pulled", JSON.stringify(applied));
+  assert.equal(recorded.session.text("intro.qmd"), "lp intro\n");
+  assert.equal(recorded.session.text("refs.bib"), "@a\n");
+  assert.deepEqual(recorded.session.assets.get(recorded.session.sha("fig/a.png")), new Uint8Array([1, 2, 3]));
+  assert.equal(recorded.session.text("notes.md"), "notes\n");
+  assert.equal(recorded.api.state.link.checkpoint, head);
+  assert.deepEqual(recorded.api.state.link.synced_paths, ["fig/a.png", "intro.qmd", "refs.bib", "same.md"]);
+  assert.equal(recorded.repo.pushes.length, 0);
+  const pushed = await sync.push(recorded.ctx, "First sync");
   assert.equal(pushed.status, "pushed", JSON.stringify(pushed));
-  assert.deepEqual(baseFiles(localSide.repo), { "intro.qmd": "repo intro\n" });
-  assert.equal(localSide.session.text("intro.qmd"), "lp intro\n");
-  const files = localSide.repo.files();
+  const files = recorded.repo.files();
   assert.equal(files["paper/intro.qmd"], "lp intro\n");
   assert.equal(files["paper/notes.md"], "notes\n");
   assert.equal(files["paper/refs.bib"], "@a\n");
   assert.equal(files["README.md"], "outside\n");
   assert.ok(files["paper/logo.png"] !== undefined);
-  assert.equal(localSide.repo.commits.get(localSide.repo.head).parents[0], before);
-  assert.equal(localSide.repo.commits.get(localSide.repo.head).author.email, "ann@users.noreply.example.test");
-  assert.equal(localSide.api.state.link.checkpoint, localSide.repo.head);
-  assert.deepEqual(localSide.repo.journal, []);
-  assert.equal(localSide.repo.refs.size, 0);
+  assert.equal(recorded.repo.commits.get(recorded.repo.head).parents[0], head);
+  assert.equal(recorded.api.state.link.checkpoint, recorded.repo.head);
+  assert.deepEqual(recorded.repo.journal, []);
+  assert.equal(recorded.repo.refs.size, 0);
+
+  // Keeping the repository's copy of the differing file.
+  const theirsSide = await fresh();
+  const first = await connectThenPull(theirsSide.ctx, draft("paper"));
+  assert.equal(first.status, "conflict", JSON.stringify(first));
+  const taken = await sync.applyResolution(theirsSide.ctx, first.session, { "intro.qmd": { keep: "theirs" } });
+  assert.equal(taken.status, "pulled", JSON.stringify(taken));
+  assert.equal(theirsSide.session.text("intro.qmd"), "repo intro\n");
+  assert.equal(theirsSide.repo.pushes.length, 0);
+
+  // Identical files alone merge cleanly on the first pull.
+  const agreeing = await world({
+    remote: { "intro.qmd": "same\n", "refs.bib": "@a\n" },
+    project: { "intro.qmd": "same\n", "notes.md": "notes\n" },
+  });
+  const clean = await connectThenPull(agreeing.ctx, draft());
+  assert.equal(clean.status, "pulled", JSON.stringify(clean));
+  assert.equal(agreeing.session.text("refs.bib"), "@a\n");
+  assert.equal(agreeing.session.text("notes.md"), "notes\n");
+  assert.equal(agreeing.api.state.link.checkpoint, agreeing.repo.head);
+  assert.equal(agreeing.repo.pushes.length, 0);
 }
 
 // ---------------------------------------------------------------- 1b. a branch without commits
@@ -549,39 +606,41 @@ const baseFiles = (repo) => {
 {
   const fresh = () => world({ project: { "intro.qmd": "hello\n", "notes.md": "notes\n" } });
 
+  // The diff view of an empty branch calls every project file local.
   const compared = await fresh();
-  const look = await sync.compare(compared.ctx, draft("paper"));
-  assert.deepEqual(look.refusals, []);
-  assert.deepEqual(look.incoming, []);
-  assert.deepEqual(look.differing, []);
-  assert.deepEqual(look.outgoing, ["intro.qmd", "notes.md"]);
+  assert.equal((await sync.connect(compared.ctx, draft("paper"))).status, "connected");
+  const look = await sync.compareRemote(compared.ctx);
+  assert.equal(look.status, "compared", JSON.stringify(look));
+  assert.equal(look.head, null);
+  assert.deepEqual(look.files.map((file) => [file.path, file.change, file.theirs]), [
+    ["intro.qmd", "local", null],
+    ["notes.md", "local", null],
+  ]);
+  assert.equal(look.same, 0);
 
+  // Connecting sends nothing; the push then sends every file.
   const { repo, api, ctx } = await fresh();
-  const pushed = await sync.connect(ctx, draft("paper"), "local");
+  const answer = await sync.connect(ctx, draft("paper"));
+  assert.equal(answer.status, "connected", JSON.stringify(answer));
+  assert.equal(api.state.link.checkpoint, null);
+  assert.equal(repo.pushes.length, 0);
+  assert.equal((await sync.pull(ctx)).status, "nothing");
+  assert.equal(api.state.link.checkpoint, null);
+  const review = await sync.outgoing(ctx);
+  assert.equal(review.status, "outgoing");
+  assert.deepEqual(review.files.map((file) => file.path), ["intro.qmd", "notes.md"]);
+  assert.equal(review.outgoing.remote, null);
+  const pushed = await sync.push(ctx, "First", { confirmed: review.outgoing });
   assert.equal(pushed.status, "pushed", JSON.stringify(pushed));
   assert.equal(repo.pushes.length, 1);
   assert.deepEqual(repo.commits.get(repo.head).parents, []);
+  assert.equal(repo.commits.get(repo.head).message, "First");
   assert.deepEqual(repo.files(), { "paper/intro.qmd": "hello\n", "paper/notes.md": "notes\n" });
   assert.equal(api.state.link.checkpoint, repo.head);
   assert.deepEqual(api.state.link.synced_paths, ["intro.qmd", "notes.md"]);
   assert.equal((await sync.pull(ctx)).status, "nothing");
   assert.deepEqual(repo.journal, []);
   assert.equal(repo.refs.size, 0);
-
-  // Keeping the repository's copies records the link and sends nothing.
-  const kept = await fresh();
-  const answer = await sync.connect(kept.ctx, draft("paper"), "remote");
-  assert.equal(answer.status, "nothing", JSON.stringify(answer));
-  assert.equal(kept.api.state.link.checkpoint, null);
-  assert.equal(kept.repo.pushes.length, 0);
-  const review = await sync.outgoing(kept.ctx);
-  assert.equal(review.status, "outgoing");
-  assert.deepEqual(review.files.map((file) => file.path), ["intro.qmd", "notes.md"]);
-  assert.equal(review.outgoing.remote, null);
-  const second = await sync.push(kept.ctx, "First", { confirmed: review.outgoing });
-  assert.equal(second.status, "pushed", JSON.stringify(second));
-  assert.equal(kept.repo.commits.get(kept.repo.head).message, "First");
-  assert.equal(kept.api.state.link.checkpoint, kept.repo.head);
 }
 
 // ---------------------------------------------------------------- 2. independent edits merge
@@ -686,7 +745,7 @@ const baseFiles = (repo) => {
     project: { "intro.qmd": "intro\n", "refs.bib": "@a\n", "data/a.csv": "x\n" },
   });
   const { repo, session, api, ctx } = made;
-  const first = await sync.connect(ctx, draft(), "remote");
+  const first = await connectThenPull(ctx, draft());
   assert.equal(first.status, "nothing", JSON.stringify(first));
   assert.deepEqual(api.state.link.synced_paths, ["data/a.csv", "intro.qmd", "refs.bib"]);
   assert.ok(!session.has("analysis.jl"));
@@ -724,7 +783,7 @@ const baseFiles = (repo) => {
     project: { "refs.bib": "a\nb\n", "intro.qmd": "x\n" },
   });
   const { repo, session, ctx } = made;
-  const connectedAnswer = await sync.connect(ctx, draft(), "remote");
+  const connectedAnswer = await connectThenPull(ctx, draft());
   assert.equal(connectedAnswer.status, "nothing", JSON.stringify(connectedAnswer));
   const crlfId = repo.idOf("refs.bib");
 
@@ -868,7 +927,7 @@ const baseFiles = (repo) => {
     remote: { "intro.qmd": "intro\n", "notes.md": symlink },
     project: { "intro.qmd": "intro\n", "notes.md": "local notes\n" },
   }).then(async (made) => {
-    const answer = await sync.connect(made.ctx, draft(), "remote");
+    const answer = await connectThenPull(made.ctx, draft());
     assert.ok(["pulled", "nothing"].includes(answer.status), JSON.stringify(answer));
     return made;
   });
@@ -887,23 +946,27 @@ const baseFiles = (repo) => {
     project: { "notes.md": "local\n", "intro.qmd": "i\n" },
   });
   big.ctx.maxFileBytes = 10;
-  const first = await sync.connect(big.ctx, draft(), "local");
-  assert.ok(["pushed", "nothing", "pulled"].includes(first.status), JSON.stringify(first));
+  const first = await connectThenPull(big.ctx, draft());
+  assert.ok(["nothing", "pulled"].includes(first.status), JSON.stringify(first));
+  const sent = await sync.push(big.ctx, "x");
+  assert.equal(sent.status, "pushed", JSON.stringify(sent));
   assert.equal(big.repo.read("notes.md"), "x".repeat(40));
   assert.equal(big.repo.read("intro.qmd"), "i\n");
 }
 
-// compare and connect refuse when the server already holds a link, and leave the sidecar alone.
+// connect refuses when the server already holds a link, and leaves the sidecar alone. compareRemote
+// answers unknown for a project that is not connected.
 {
   const { repo, ctx } = await connected({ "intro.qmd": "one\n" });
   const forgets = repo.forgets;
   const connections = repo.connectionId;
-  const look = await sync.compare(ctx, draft());
-  assert.equal(look.status, "refused");
-  const again = await sync.connect(ctx, draft(), "remote");
+  const again = await sync.connect(ctx, draft());
   assert.equal(again.status, "refused");
   assert.equal(repo.connectionId, connections);
   assert.equal(repo.forgets, forgets);
+
+  const loose = await world({ remote: { "intro.qmd": "one\n" }, project: {} });
+  assert.equal((await sync.compareRemote(loose.ctx)).status, "unknown");
 }
 
 // A failure after the draft is connected forgets the draft; the label comes from the sidecar.
@@ -914,12 +977,12 @@ const baseFiles = (repo) => {
     if (op === "fetch") throw new Error("boom");
     return original(op, body);
   };
-  await assert.rejects(() => sync.compare(ctx, { ...draft(), label: "https://user:secret@example.test/r.git" }), /boom/);
+  await assert.rejects(() => sync.connect(ctx, { ...draft(), label: "https://user:secret@example.test/r.git" }), /boom/);
   assert.equal(repo.connectionId, null);
   assert.equal(repo.forgets, 1);
   repo.request = original;
-  const answer = await sync.connect(ctx, { ...draft(), label: "https://raw.example/url" }, "remote");
-  assert.ok(["pulled", "nothing"].includes(answer.status), JSON.stringify(answer));
+  const answer = await sync.connect(ctx, { ...draft(), label: "https://raw.example/url" });
+  assert.equal(answer.status, "connected", JSON.stringify(answer));
   assert.equal(api.state.link.remote_label, "example.test/r.git");
 }
 
@@ -988,10 +1051,11 @@ const baseFiles = (repo) => {
     remote: { "intro.qmd": "intro\n", "fig/a.png": pointer },
     project: { "intro.qmd": "intro\n" },
   });
-  const look = await sync.compare(ctx, draft());
-  assert.deepEqual(look.incoming, []);
-  const answer = await sync.connect(ctx, draft(), "remote");
+  const answer = await connectThenPull(ctx, draft());
   assert.ok(["pulled", "nothing"].includes(answer.status), JSON.stringify(answer));
+  const look = await sync.compareRemote(ctx);
+  assert.deepEqual(look.files, []);
+  assert.equal(look.same, 1);
   assert.deepEqual(answer.skipped, [{ path: "fig/a.png", reason: "a Git LFS pointer" }]);
   assert.ok(!session.has("fig/a.png"));
   assert.equal(repo.read("fig/a.png"), pointer);
@@ -1141,8 +1205,9 @@ const baseFiles = (repo) => {
 
   const compared = await world({ project: { "big.md": "x".repeat(40), "ok.md": "ok\n" } });
   compared.ctx.maxFileBytes = 20;
-  const result = await sync.compare(compared.ctx, draft());
-  assert.deepEqual(result.outgoing, ["ok.md"]);
+  assert.equal((await sync.connect(compared.ctx, draft())).status, "connected");
+  const result = await sync.compareRemote(compared.ctx);
+  assert.deepEqual(result.files.map((file) => file.path), ["ok.md"]);
   assert.ok(result.unsynced.some((item) => item.path === "big.md" && item.reason === "over the file size limit"));
 }
 
@@ -1152,15 +1217,17 @@ const baseFiles = (repo) => {
   const remote = { "real-a.md": "a\n", "real-b.md": "b\n" };
   for (let i = 0; i < 60; i += 1) remote[`lfs-${i}.md`] = pointer;
   const { session, ctx } = await world({ remote, project: {} });
-  const answer = await sync.connect(ctx, draft(), "remote");
+  const answer = await connectThenPull(ctx, draft());
   assert.ok(["pulled", "nothing"].includes(answer.status), JSON.stringify(answer));
   assert.equal(session.text("real-a.md"), "a\n");
 
   const many = {};
   for (let i = 0; i < 60; i += 1) many[`f-${i}.md`] = "x\n";
   const refused = await world({ remote: many, project: {} });
-  const answered = await sync.connect(refused.ctx, draft(), "remote");
+  const answered = await sync.connect(refused.ctx, draft());
   assert.equal(answered.status, "refused");
+  assert.equal(refused.api.state.link, null);
+  assert.equal(refused.repo.connectionId, null);
   assert.match(answered.refusals[0].reason, /60 syncable files/);
 }
 
@@ -1372,7 +1439,7 @@ const baseFiles = (repo) => {
     assets: { "fig.png": bytes("a\nb\nc\n") },
   });
   const { repo, session, api, ctx } = made;
-  assert.ok(["pulled", "nothing"].includes((await sync.connect(ctx, draft(), "remote")).status));
+  assert.ok(["pulled", "nothing"].includes((await connectThenPull(ctx, draft())).status));
   await session.setAsset("fig.png", bytes("A\nb\nc\n"));
   repo.advance({ "fig.png": bytes("a\nb\nC\n") });
   const calls = api.state.calls.length;

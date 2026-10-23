@@ -10,7 +10,7 @@ import assert from "node:assert/strict";
 import { rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { test } from "node:test";
-import { applyResolution, compare, connect, outgoing, pull, push } from "../../src/lib/gitsync/sync.js";
+import { applyResolution, compareRemote, connect, outgoing, pull, push } from "../../src/lib/gitsync/sync.js";
 import { TEST, git, limit, linked, privateRepository, replaceIn, sorted, textAt, wait, withFixture } from "../helpers/git-sync-harness.mjs";
 
 // ---------------------------------------------------------------- 1. first connection
@@ -26,49 +26,69 @@ const firstConnection = () => ({
   folder: "paper",
 });
 
-test("1a. first connection keeping the repository's copies", TEST, () => withFixture(firstConnection(), async (fx) => {
+test("1a. connecting records the link and changes nothing", TEST, () => withFixture(firstConnection(), async (fx) => {
   const head = fx.repo.headOf();
-  const looked = await limit("compare", compare(fx.ctx, fx.draft));
-  assert.deepEqual(looked.refusals, []);
-  assert.deepEqual(looked.incoming, ["refs.bib"], JSON.stringify(looked));
-  assert.deepEqual(looked.outgoing, ["notes.md"], JSON.stringify(looked));
-  assert.deepEqual(looked.differing, ["intro.qmd"], JSON.stringify(looked));
-  assert.equal(await fx.link(), null, "comparing records nothing");
-
-  const result = await limit("connect", connect(fx.ctx, fx.draft, "remote"));
-  assert.equal(result.status, "pulled", JSON.stringify(result));
-  await wait("the repository's files", () => textAt(fx.client, "intro.qmd") === INTRO_REMOTE && textAt(fx.client, "refs.bib") === BIB);
-  assert.equal(textAt(fx.client, "notes.md"), NOTES, "the file only LibrePaper has stays");
+  const result = await limit("connect", connect(fx.ctx, fx.draft));
+  assert.equal(result.status, "connected", JSON.stringify(result));
   const link = await fx.link();
-  assert.equal(link.checkpoint, head);
-  assert.deepEqual(sorted(link.synced_paths), ["intro.qmd", "refs.bib"]);
+  assert.equal(link.checkpoint, null, "no commit is synced yet");
+  assert.deepEqual(link.synced_paths, []);
   assert.equal(link.folder, "paper");
-  assert.equal(fx.repo.headOf(), head, "connecting in this direction pushes nothing");
+  assert.equal(fx.repo.headOf(), head, "connecting pushes nothing");
+  assert.equal(textAt(fx.client, "intro.qmd"), INTRO_LOCAL, "the project is unchanged");
+  assert.equal(textAt(fx.client, "refs.bib"), null);
 }));
 
-test("1b. first connection keeping LibrePaper's copies", TEST, () => withFixture(firstConnection(), async (fx) => {
+test("1b. the diff view compares the project with the remote and changes nothing", TEST, () => withFixture(firstConnection(), async (fx) => {
   const head = fx.repo.headOf();
-  const result = await limit("connect", connect(fx.ctx, fx.draft, "local"));
-  assert.equal(result.status, "pushed", JSON.stringify(result));
+  await limit("connect", connect(fx.ctx, fx.draft));
+  const looked = await limit("compare", compareRemote(fx.ctx));
+  assert.equal(looked.status, "compared", JSON.stringify(looked));
+  assert.equal(looked.head, head);
+  assert.deepEqual(looked.files.map(({ path, change }) => [path, change]), [
+    ["intro.qmd", "different"],
+    ["notes.md", "local"],
+    ["refs.bib", "remote"],
+  ], JSON.stringify(looked));
+  assert.equal(looked.same, 0);
+  assert.equal((await fx.link()).checkpoint, null, "comparing records nothing");
+  assert.equal(fx.repo.headOf(), head);
+  assert.equal(textAt(fx.client, "intro.qmd"), INTRO_LOCAL);
+}));
+
+test("1c. the first pull sends a differing file to the resolver, and the resolved project is pushed", TEST, () => withFixture(firstConnection(), async (fx) => {
+  const head = fx.repo.headOf();
+  await limit("connect", connect(fx.ctx, fx.draft));
+  const conflicted = await limit("pull", pull(fx.ctx));
+  assert.equal(conflicted.status, "conflict", JSON.stringify(conflicted));
+  assert.deepEqual(conflicted.conflicts.map((item) => item.path), ["intro.qmd"]);
+  assert.equal(conflicted.conflicts[0].base, null, "the first merge has no base");
+  assert.equal(textAt(fx.client, "intro.qmd"), INTRO_LOCAL, "a conflicting pull changes nothing");
+
+  const applied = await limit("apply", applyResolution(fx.ctx, conflicted.session, { "intro.qmd": { keep: "ours" } }));
+  assert.equal(applied.status, "pulled", JSON.stringify(applied));
   await wait("the repository's bibliography", () => textAt(fx.client, "refs.bib") === BIB);
   assert.equal(textAt(fx.client, "intro.qmd"), INTRO_LOCAL, "LibrePaper's text is kept");
+  assert.equal(textAt(fx.client, "notes.md"), NOTES, "the file only LibrePaper has stays");
+  assert.equal((await fx.link()).checkpoint, head);
 
-  const pushed = fx.repo.headOf();
-  assert.notEqual(pushed, head);
-  assert.deepEqual(fx.repo.parents(pushed), [head], "the push sits on the original head");
+  const pushed = await limit("push", push(fx.ctx, "First sync"));
+  assert.equal(pushed.status, "pushed", JSON.stringify(pushed));
+  assert.deepEqual(fx.repo.parents(fx.repo.headOf()), [head], "the push sits on the original head");
   assert.equal(fx.repo.read("paper/intro.qmd"), INTRO_LOCAL);
   assert.equal(fx.repo.read("paper/notes.md"), NOTES);
   assert.equal(fx.repo.read("paper/refs.bib"), BIB);
   assert.equal(fx.repo.read("README.md"), "# Repository\n", "files outside the folder are untouched");
-  assert.equal((await fx.link()).checkpoint, pushed);
 }));
 
-test("1c. first connection to an empty branch pushes the project as the first commit", TEST, () => withFixture({
+test("1d. an empty branch takes the project as the first commit on a push", TEST, () => withFixture({
   project: { "intro.qmd": INTRO_LOCAL, "notes.md": NOTES },
   folder: "paper",
 }, async (fx) => {
   assert.equal(fx.repo.headOf(), null, "the branch has no commits");
-  const result = await limit("connect", connect(fx.ctx, fx.draft, "local"));
+  const connected = await limit("connect", connect(fx.ctx, fx.draft));
+  assert.equal(connected.status, "connected", JSON.stringify(connected));
+  const result = await limit("push", push(fx.ctx, "First commit"));
   assert.equal(result.status, "pushed", JSON.stringify(result));
   const first = fx.repo.headOf();
   assert.ok(first, "the branch now has a commit");
@@ -207,7 +227,9 @@ test("6. a CRLF file keeps its endings until LibrePaper edits it", TEST, () => {
     remote: { "intro.qmd": "# Intro\n\nHello.\n", "refs.bib": crlf },
     project: { "intro.qmd": "# Intro\n\nHello.\n" },
   }, async (fx) => {
-    const result = await limit("connect", connect(fx.ctx, fx.draft, "remote"));
+    const connected = await limit("connect", connect(fx.ctx, fx.draft));
+    assert.equal(connected.status, "connected", JSON.stringify(connected));
+    const result = await limit("pull", pull(fx.ctx));
     assert.equal(result.status, "pulled", JSON.stringify(result));
     await wait("the bibliography", () => textAt(fx.client, "refs.bib") === "@book{a,\n  title={A}\n}\n");
 
