@@ -107,7 +107,7 @@ An agent on another machine, such as a home server or a chat bot, works on a doc
 - The owner creates the token in the Sharing panel, on the Agent tokens tab. It takes a name, a permission and an expiry.
   - Read: the agent reads the document and nothing else.
   - Comment: the agent reads and comments.
-  - Edit: the agent proposes tracked changes and edits the project directly. Edit tokens expire after 1 day by default.
+  - Edit: the agent proposes tracked changes, edits the project directly, and creates and deletes text files. Edit tokens expire after 1 day by default.
   - These are the same three permissions as share links.
 - LibrePaper shows the token once. Copy it then.
 
@@ -157,5 +157,5 @@ curl -X POST -H "Authorization: Bearer lpt_..." -H "Content-Type: application/js
   - When a write times out, call `document_result` with `{"kind": "operation", "target_operation": <the same operation object>}` to learn whether it landed. Do not send the write again first.
 - The token works only on these two routes, and only for its own document.
 - Comments and suggestions appear under the token's name. A person accepts or rejects each suggestion.
-- A Read token reads only. A Comment token also comments. An Edit token also proposes tracked changes and edits the project directly. No token publishes, shares or runs code.
+- A Read token reads only. A Comment token also comments. An Edit token also proposes tracked changes, edits the project directly, and creates and deletes text files. No token uploads images, publishes, shares or runs code.
 - A token stops working at its expiry, when you revoke it, when you Replace it, when you sign out everywhere, and when the document changes owner. Replace issues a new token, and the old one stops at once.
