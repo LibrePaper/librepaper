@@ -85,6 +85,24 @@ pub(crate) async fn version_line(path: &Path, probe: Probe) -> Option<String> {
     (!value.is_empty()).then(|| value.lines().next().unwrap_or(value).to_string())
 }
 
+/// Starts the command, trying again briefly when the executable is busy. A
+/// file that was just written (a tool being installed or updated) can be held
+/// open for writing by a child process that another thread forked before it
+/// closed the file, until that child execs; running it meanwhile fails with
+/// ETXTBSY.
+async fn spawn_unless_busy(command: &mut Command) -> std::io::Result<tokio::process::Child> {
+    let mut attempts = 0;
+    loop {
+        match command.spawn() {
+            Err(error) if error.kind() == std::io::ErrorKind::ExecutableFileBusy && attempts < 5 => {
+                attempts += 1;
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
+            result => return result,
+        }
+    }
+}
+
 /// The raw streams, bounded and with the child cleaned up however it ends.
 pub(crate) async fn version_output(path: &Path, probe: Probe) -> Option<(String, String)> {
     version_output_with_path(path, probe, std::env::var_os("PATH")).await
@@ -121,7 +139,7 @@ async fn version_output_with_path(
     #[cfg(unix)]
     command.process_group(0);
 
-    let mut child = command.spawn().ok()?;
+    let mut child = spawn_unless_busy(&mut command).await.ok()?;
     let pid = child.id();
     let stdout = child
         .stdout

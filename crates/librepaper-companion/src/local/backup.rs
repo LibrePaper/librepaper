@@ -345,7 +345,7 @@ async fn archive_is_owned(
     root: &Path,
     archive: &str,
     slug: &str,
-    lock: &Arc<File>,
+    lock: &Arc<BackupLock>,
 ) -> Result<bool, String> {
     let check_root = root.to_path_buf();
     let check_archive = archive.to_string();
@@ -363,7 +363,7 @@ async fn cleanup_archives(
     root: &Path,
     slug: &str,
     current: &str,
-    lock: &Arc<File>,
+    lock: &Arc<BackupLock>,
 ) -> Result<(), String> {
     let cleanup_root = root.to_path_buf();
     let cleanup_slug = slug.to_string();
@@ -384,7 +384,7 @@ async fn keep_archive(
     manifest_path: &Path,
     root: &Path,
     listing_sha: Option<String>,
-    lock: &Arc<File>,
+    lock: &Arc<BackupLock>,
 ) -> Result<(), String> {
     let mut updated_record = record.clone();
     updated_record.sha = listing_sha;
@@ -1015,7 +1015,19 @@ fn pause_backup_writer(root: &Path) -> Option<tokio::sync::oneshot::Sender<()>> 
     Some(finished)
 }
 
-fn acquire_backup_lock(path: &Path) -> Result<File, String> {
+/// The namespace lock. It is released explicitly when dropped: a child process
+/// started elsewhere in the companion can briefly share the open file between
+/// fork and exec, and closing the file alone would leave the lock held by that
+/// copy, so the next backup would find it "already running".
+struct BackupLock(File);
+
+impl Drop for BackupLock {
+    fn drop(&mut self) {
+        let _ = self.0.unlock();
+    }
+}
+
+fn acquire_backup_lock(path: &Path) -> Result<BackupLock, String> {
     let mut create = OpenOptions::new();
     create.read(true).write(true).create_new(true);
     #[cfg(unix)]
@@ -1059,7 +1071,7 @@ fn acquire_backup_lock(path: &Path) -> Result<File, String> {
         }
         std::fs::TryLockError::Error(error) => format!("could not acquire backup lock: {error}"),
     })?;
-    Ok(file)
+    Ok(BackupLock(file))
 }
 
 fn checked_child(root: &Path, filename: &str) -> Result<PathBuf, String> {
