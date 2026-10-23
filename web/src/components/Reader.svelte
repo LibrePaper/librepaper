@@ -4061,6 +4061,7 @@
            the same place, which is why this is a plain link and not a
            gesture: the page changes, the furniture does not. -->
       <IconButton icon="home" label="All projects" href="/" />
+      <IconButton icon="help" label="What is LibrePaper?" href="https://librepaper.org/what.html" external />
       {#if editing}
         <IconButton icon={ARRANGEMENTS[layout].icon}
           label={`Layout: ${ARRANGEMENTS[layout].says}. Switch to ${ARRANGEMENTS[ARRANGEMENTS[layout].next].says}`}
