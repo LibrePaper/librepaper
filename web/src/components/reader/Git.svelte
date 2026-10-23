@@ -448,7 +448,7 @@
   // Abandons the conflicted pull and returns the panel to its usual view.
   async function cancelConflict() {
     const saved = conflictSession;
-    resolver?.discard();
+    await resolver?.discard();
     await guard(async () => {
       await discardConflict(context(), saved);
       conflictSession = null;

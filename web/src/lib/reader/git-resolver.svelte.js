@@ -173,8 +173,9 @@ export function createGitResolver() {
     state.active = false;
   }
 
-  // Closes the workspace without saving the choices. The caller drops the saved session.
-  function discard() {
+  // Closes the workspace without saving the choices. It resolves once no save
+  // is outstanding, so the caller can drop the saved session for good.
+  async function discard() {
     if (state.busy) return;
     cancelSave();
     wanted = false;
@@ -186,6 +187,7 @@ export function createGitResolver() {
     state.resolutions = {};
     state.selected = "";
     state.error = "";
+    await inflight;
   }
 
   async function apply() {
