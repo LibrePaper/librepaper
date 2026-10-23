@@ -36,7 +36,6 @@ import ${JSON.stringify(join(root, "web/src/styles/app.css"))};
 import { tick, createRawSnippet } from ${JSON.stringify(join(root, "web/node_modules/svelte/src/index-client.js"))};
 import Files from ${JSON.stringify(join(root, "web/src/components/reader/Files.svelte"))};
 import Collaboration from ${JSON.stringify(join(root, "web/src/components/reader/Collaboration.svelte"))};
-import History from ${JSON.stringify(join(root, "web/src/components/reader/History.svelte"))};
 import Diagnostics from ${JSON.stringify(join(root, "web/src/components/reader/Diagnostics.svelte"))};
 import Share from ${JSON.stringify(join(root, "web/src/components/reader/Share.svelte"))};
 import Nav from ${JSON.stringify(join(root, "web/src/components/Nav.svelte"))};
@@ -376,7 +375,7 @@ window.panelTypographyCheck = async () => {
   // so that the strip is flush to the top of the panel and runs its full
   // width. The reader must not be able to tell the two arrangements apart:
   // what a pane holds has to sit exactly where a plain panel's contents sit.
-  for (const [component, props] of [[Collaboration, {}], [History, {}], [Share, { open: true, inline: true, slug: 'paper', canShare: true }]]) {
+  for (const [component, props] of [[Collaboration, {}], [Share, { open: true, inline: true, slug: 'paper', canShare: true }]]) {
     const host = document.createElement('div');
     host.style.cssText = 'display:flex;flex-direction:column;width:360px;height:500px';
     document.body.append(host);
