@@ -2250,6 +2250,7 @@ dependencies = [
  "gtk",
  "hex",
  "hmac",
+ "libloading",
  "objc2",
  "objc2-foundation",
  "rand",

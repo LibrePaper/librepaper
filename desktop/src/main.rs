@@ -88,6 +88,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         })
         .setup(setup)
         .build(tauri::generate_context!())?;
+    #[cfg_attr(not(target_os = "macos"), allow(unused_variables))]
     app.run(|app, event| match event {
         RunEvent::Exit => service::stop(),
         // The Dock icon brings the app back when every window is hidden.

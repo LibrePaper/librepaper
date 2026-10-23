@@ -30,7 +30,7 @@ The demo serves operator graphs at `http://admin.localhost:8081/` with the passw
 
 The default container-ready configs are `tools/dev/demo/config.toml` and `tools/dev/demo/config-oauth.toml`. GitHub sign-in comes from `tools/dev/keys.yaml` when `sops` can decrypt it, or from inherited GitHub client credentials. Otherwise the demo starts without sign-in. That file holds only the development OAuth app, so the demo never loads production secrets. `CONFIG=path/to/config.toml` selects a config mounted unchanged into the app container, so custom files must use container paths and bind the app to `0.0.0.0:8080`. The LaTeX mirror check runs at `MIRROR=` (default: the pinned release on the public asset mirror the demo serves; a local directory such as `../wasm-latex/mirror` also works) and is skipped while the mirror and `assets.lock` are unchanged since the last passing check.
 
-`make demo-desktop` builds the desktop app from the same worktree and opens it against the demo. When no demo answers on the demo port, it starts one. The log goes to `target/demo-desktop.log` in the worktree. Closing the app stops the demo it started. If a demo already answers, the app opens against it and the demo keeps running.
+`make demo-desktop` builds the desktop app from the same worktree and opens it against the demo. When no demo answers on the demo port, it starts one. The log goes to `target/demo-desktop.log` in the worktree. Quitting the app stops the demo it started. If a demo already answers, the app opens against it and the demo keeps running.
 
 ## Workspace
 

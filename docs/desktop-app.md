@@ -104,7 +104,7 @@ On macOS and with the Windows installer, the app checks for a new version when i
 - Ctrl+N (Cmd+N on macOS) opens another window.
 - Ctrl+W (Cmd+W on macOS) closes the window.
 - Ctrl+, (Cmd+, on macOS) opens Settings.
-- Starting the app again opens another window in the running app.
+- Starting the app again shows the windows hidden in the tray, or opens another window when one is already showing.
 - A link to your server that opens in a new tab opens in a new window. Other links open in your browser.
 - Closing the last window keeps the app running in the system tray (the menu bar on macOS).
 - The tray menu shows the window again, opens a new window or quits the app.
