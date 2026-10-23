@@ -14,6 +14,7 @@
   import { createHistorySource } from "../lib/reader/history-source.svelte.js";
   import HistoryWorkspace from "./reader/HistoryWorkspace.svelte";
   import { createGitResolver } from "../lib/reader/git-resolver.svelte.js";
+  import { createGitAuto } from "../lib/reader/git-auto.svelte.js";
   import GitConflictWorkspace from "./reader/GitConflictWorkspace.svelte";
   import { createGitDiff } from "../lib/reader/git-diff.svelte.js";
   import GitDiffWorkspace from "./reader/GitDiffWorkspace.svelte";
@@ -1595,6 +1596,12 @@
   const gitResolver = createGitResolver();
   const resolving = $derived(gitResolver.state.active);
   $effect(() => () => gitResolver.dispose());
+  const gitAuto = createGitAuto(() => ({ slug: SLUG, key: KEY, session, rules, me: { name: me.name, handle: me.handle }, title: doc.title }));
+  $effect(() => () => gitAuto.dispose());
+  $effect(() => {
+    const active = session;
+    if (active) untrack(() => gitAuto.attach(active));
+  });
   const gitDiff = createGitDiff();
   // The diff steps aside while a resolution is open.
   const diffing = $derived(gitDiff.state.active && !gitResolver.state.active);
@@ -4004,7 +4011,7 @@
 
   {#snippet gitPanel()}
     <Git open={panel === "git" && shown.comments} slug={SLUG} key={KEY} {session} {rules}
-      me={{ name: me.name, handle: me.handle }} resolver={gitResolver} differ={gitDiff} />
+      me={{ name: me.name, handle: me.handle }} resolver={gitResolver} differ={gitDiff} auto={gitAuto} />
   {/snippet}
 
   {#snippet diagnosticsPanel()}
