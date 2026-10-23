@@ -62,7 +62,9 @@ echo "demo-desktop: starting the demo (log: $LOG)"
 demo_key=()
 if [ -z "${DEV_GITHUB_CLIENT_ID:-}" ] && [ -z "${SOPS_AGE_KEY:-}" ] && [ -n "${SOPS_AGE_KEY_CMD:-}" ]; then
   if identity=$(eval "$SOPS_AGE_KEY_CMD"); then
-    demo_key=(SOPS_AGE_KEY="$identity" SOPS_AGE_KEY_CMD=)
+    # Unset the command rather than empty it: sops runs SOPS_AGE_KEY_CMD whenever
+    # it is set, and an empty one crashes the decrypt.
+    demo_key=(-u SOPS_AGE_KEY_CMD SOPS_AGE_KEY="$identity")
   else
     echo "demo-desktop: could not unlock the age identity; starting the demo without sign-in" >&2
   fi
