@@ -1,38 +1,27 @@
-// The two steps the version panel is: a month of days, and one of those days
-// laid out on a vertical axis of time.
+// The version panel is one list of days, and each day opens into its
+// versions on a vertical axis of time.
 //
-// The arithmetic is the part worth checking without a browser. Which week a
-// day falls in, which month a day either side of the grid belongs to, which
-// minute of the day a timestamp is at once the reader's own timezone is
-// applied -- get any of those wrong and the panel still draws, it is just
-// wrong about when things happened.
+// The arithmetic is the part worth checking without a browser. Which day a
+// timestamp falls on, which minute of the day it is at once the reader's own
+// timezone is applied -- get any of those wrong and the panel still draws, it
+// is just wrong about when things happened.
 
 import assert from "node:assert/strict";
 import {
-  dayEntries, dayVersions, deliberate, monthGrid, monthOf, monthSpan,
-  shiftDay, shiftMonth, versionDays,
-} from "../../src/lib/history-calendar.js";
+  changedAcross, dayEntries, dayVersions, deliberate, shiftDay, versionDays,
+} from "../../src/lib/history-days.js";
 
 const mark = (at, extra = {}) => ({
   sha: String(at).replace(/\D/g, "").padEnd(64, "0"), at, by: "Vincent", why: "sync", label: "", ...extra,
 });
 
-// --- day and month arithmetic -----------------------------------------------
+// --- day arithmetic -----------------------------------------------
 
 assert.equal(shiftDay("2026-03-01", -1), "2026-02-28");
 assert.equal(shiftDay("2026-12-31", 1), "2027-01-01");
 // A spring-forward day: the arithmetic is done at noon UTC, so the answer is
 // the next day rather than the same one again.
 assert.equal(shiftDay("2026-03-08", 1), "2026-03-09");
-
-assert.equal(shiftMonth("2026-09", 1), "2026-10");
-assert.equal(shiftMonth("2026-12", 1), "2027-01");
-assert.equal(shiftMonth("2026-01", -1), "2025-12");
-assert.equal(shiftMonth("2026-09", 12), "2027-09");
-// A month has no thirty-first, so a month step is counted in months and not
-// in days: January stepped forward is February, never the third of March.
-assert.equal(shiftMonth("2026-01", 1), "2026-02");
-assert.equal(monthOf("2026-09-16"), "2026-09");
 
 // --- the days a document has ------------------------------------------------
 
@@ -58,52 +47,6 @@ assert.equal(monthOf("2026-09-16"), "2026-09");
   // so that version belongs to the second there.
   const tokyo = versionDays([mark("2026-09-01T17:30:00Z")], "Asia/Tokyo");
   assert.deepEqual([...tokyo.keys()], ["2026-09-02"]);
-}
-
-// --- the month grid ---------------------------------------------------------
-
-{
-  const byDay = versionDays(
-    [
-      mark("2026-09-01T09:00:00Z"), mark("2026-09-01T10:00:00Z"),
-      mark("2026-09-01T11:00:00Z"), mark("2026-09-01T12:00:00Z"),
-      mark("2026-09-10T11:00:00Z", { label: "Draft" }),
-    ],
-    "UTC",
-  );
-  const { weeks, most } = monthGrid("2026-09", byDay, { today: "2026-09-16" });
-  assert.equal(most, 4, "the busiest day of this month sets the shading scale");
-  assert.ok(weeks.every((week) => week.length === 7), "every row is a whole week");
-  const cells = weeks.flat();
-  assert.equal(new Date(`${cells[0].day}T12:00:00Z`).getUTCDay(), 0, "the grid starts on a Sunday");
-  assert.equal(new Date(`${cells[cells.length - 1].day}T12:00:00Z`).getUTCDay(), 6,
-    "and ends on a Saturday, so the grid is rectangular");
-  // September 2026 starts on a Tuesday, so the first two cells are August's.
-  assert.equal(cells[0].day, "2026-08-30");
-  assert.equal(cells[0].inMonth, false, "a day either side of the month is drawn, and says so");
-  assert.equal(cells[2].day, "2026-09-01");
-  assert.equal(cells[2].date, 1, "a cell carries its own date, because a month is counted across");
-  assert.equal(cells[2].count, 4);
-  assert.equal(cells[2].level, 4, "the busiest day takes the strongest shade");
-  const find = (day) => cells.find((cell) => cell.day === day);
-  assert.equal(find("2026-09-10").count, 1);
-  assert.equal(find("2026-09-10").level, 1, "one version is the faintest shade, never nothing");
-  assert.equal(find("2026-09-10").named, true);
-  assert.equal(find("2026-09-05").level, 0, "a day nothing was saved on takes no shade");
-  assert.equal(find("2026-09-16").today, true);
-  assert.ok(cells.some((cell) => cell.day.startsWith("2026-10")),
-    "the run-on into October is drawn rather than left as holes in the corner");
-  assert.equal(monthGrid("nonsense", byDay).weeks.length, 0, "a month that is not one draws nothing");
-}
-
-// --- how far the panel can walk ---------------------------------------------
-
-{
-  const byDay = versionDays([mark("2025-11-03T09:00:00Z"), mark("2026-02-01T09:00:00Z")], "UTC");
-  assert.deepEqual(monthSpan(byDay, "2026-09-16"), { first: "2025-11", last: "2026-09" },
-    "from the first month worked to the month today is in");
-  assert.deepEqual(monthSpan(new Map(), "2026-09-16"), { first: "2026-09", last: "2026-09" },
-    "a document with no past is still somewhere");
 }
 
 // --- one day's versions -----------------------------------------------------
@@ -325,4 +268,24 @@ const coarse = (points, options = {}) =>
   assert.equal(deliberate({ why: "left" }), false);
 }
 
-console.log("history calendar: whole weeks either side of the month, and a day coarsened by significance");
+// --- what a day's versions changed -------------------------------------------
+
+{
+  // A run says what the whole of it changed: the union of the paths its
+  // versions touched, sorted.
+  const touched = [
+    mark("2026-09-14T09:00:00Z", { changed: ["main.tex", "refs.bib"] }),
+    mark("2026-09-14T09:01:00Z", { changed: ["main.tex"] }),
+    mark("2026-09-14T09:02:00Z", { changed: ["appendix.tex"] }),
+  ];
+  assert.deepEqual(changedAcross(touched), ["appendix.tex", "main.tex", "refs.bib"]);
+  assert.deepEqual(changedAcross([
+    mark("2026-09-14T09:00:00Z", { changed: [] }),
+    mark("2026-09-14T09:01:00Z", { changed: [] }),
+  ]), [], "versions that changed nothing changed nothing");
+  // One version that cannot say what it changed makes the whole unknown.
+  assert.equal(changedAcross([...touched, mark("2026-09-14T09:03:00Z")]), null);
+  assert.equal(changedAcross([mark("2026-09-14T09:00:00Z", { changed: null })]), null);
+}
+
+console.log("history days: the days a document has, a day coarsened by significance, and what it changed");
