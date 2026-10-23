@@ -2,7 +2,7 @@
 title: "Git"
 ---
 
-Git sync keeps a project in LibrePaper and in one branch of a Git repository. The project can sync with the whole repository, or with one folder inside it. Pull and push are buttons that you press. Nothing syncs on its own. Coauthors who work in the browser see the changes that a desktop app pulls in.
+Git sync keeps a project in LibrePaper and in one branch of a Git repository. The project can sync with the whole repository, or with one folder inside it. Pull and push are buttons that you press, unless you turn on [automatic sync](#automatic-sync) on one computer. Coauthors who work in the browser see the changes that a desktop app pulls in.
 
 ## How it works
 
@@ -169,6 +169,8 @@ The status row can show these states.
 - **Git could not sign in.** See [When sign-in fails](#when-sign-in-fails).
 - **Resolve the conflicts in the editor area.** The resolver is open.
 
+With automatic sync on, a line under the status row says when the project last pulled and pushed, or why it paused.
+
 ### The repository menu
 
 Click the repository's name to open the menu. It shows the branch, who connected the project, and when it last pulled and pushed. Hover over a time to see the full date and who did it. It also offers these actions.
@@ -230,6 +232,25 @@ Push to branch only creates a branch. It never replaces one.
 - If a branch with that name exists on the remote, the push stops and asks for another name.
 - To push more changes later, push to another new branch, or merge the pull request and push to your branch as usual.
 - To keep working on the new branch, use "Switch branch..." and connect to it.
+
+### Automatic sync
+
+Automatic sync keeps the project in step with the branch while its window is open. Turn it on with the switch "Sync automatically while this window is open" in the Git panel. The switch is remembered on that computer only, for that connection. Disconnecting or switching branch turns it off.
+
+While the switch is on, the app does the following.
+
+- Checks the remote every two minutes. It also checks when the window comes back into focus, or when the network comes back.
+- Pulls new commits on the branch at once.
+- Pushes edits made in LibrePaper, by anyone, as one commit. It waits until nobody has typed for three minutes. It pushes at most once every ten minutes, and always within thirty minutes of the first edit that is not pushed yet.
+- Never force-pushes. If the branch has moved, it pulls first and then pushes.
+
+If a conflict stops the sync, it changes nothing. The system shows a notification, "Git sync paused". The Git panel shows "Conflicts need resolution" with a "Resolve" button. After you resolve the conflict, automatic sync continues on its own.
+
+If Git cannot sign in, or another problem stops the sync, it pauses and shows the reason with a "Retry" button. A network failure makes the app try again later, and each retry waits longer than the last.
+
+Automatic sync runs while the project's window is open. It also runs while the window is hidden in the tray after you close it. Quitting LibrePaper stops it, and it starts again when the project opens. On a Linux desktop without tray support, closing the window quits the app.
+
+If you work in Git, push to the branch from your own clone as usual. Browser coauthors see the change after the next check.
 
 ## Conflicts
 
@@ -299,7 +320,7 @@ You can sync with a local repository folder instead of a remote URL. Pushing to 
 
 ## Several computers
 
-Each computer connects to the same repository with its own Git setup.
+Each computer connects to the same repository with its own Git setup. Turn on automatic sync on one computer only.
 
 A local repository folder must be chosen again on each computer. The folder's path is stored only on the computer that chose it.
 
