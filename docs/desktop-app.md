@@ -8,27 +8,12 @@ Web browsers run every page in a sandbox, so a website cannot run code or use fi
 
 ## What works where
 
-| Feature | Web browser | Desktop app |
-| --- | --- | --- |
-| Write and edit projects | ✅ | ✅ |
-| Live preview: LaTeX and Typst to PDF, Markdown and Quarto to HTML | ✅ | ✅ |
-| Real-time collaboration with other editors, comments and track changes ([Collaborate](collaborate.html)) | ✅ | ✅ |
-| Share links for readers, commenters and editors | ✅ | ✅ |
-| Version history | ✅ | ✅ |
-| Download the project or the rendered document | ✅ | ✅ |
-| BibTeX bibliographies | ✅ | ✅ |
-| Run R, Python or Julia code in [Quarto](notebooks/quarto.html) and [Calepin](notebooks/calepin.html) | ❌ | ✅ |
-| PDF, DOCX and slides from Markdown and Quarto | ❌ | ✅ |
-| [AI agents](agents.html) in the sidebar | ❌ | ✅ |
-| Cite from your [Zotero](https://www.zotero.org) library (read-only) | ❌ | ✅ |
-| [Local backups](backups.html) of every project | ❌ | ✅ |
-| A project folder on your disk for code and data | ❌ | ✅ |
+Writing, previews, collaboration and review work in any web browser. The desktop app adds running code, [AI agents](agents.html), citations from [Zotero](https://www.zotero.org), [Git sync](git.html), [local backups](backups.html) and a project folder on your disk. The [feature table](index.html#features) lists each feature.
 
 - In a browser, the desktop-only features say they need the desktop app and offer to open it.
 - Nothing runs unasked. Folders are granted one at a time through your system's own chooser. Running a document's code is off whenever a document opens, and you turn it on with the Run code switch.
 - On a shared project, editors can change the code that runs, so it is their code too.
 - The desktop app uses the tools installed on your computer, such as R, Python, Quarto and your coding agent.
-- The window's title bar follows the same Theme setting (Settings > Appearance), and System follows the operating system.
 
 The server you connect to decides what the desktop app runs. A document's code runs only when you turn on Run code, and the app still trusts its server. A compromised server could run code on your computer through the same tools. Connect the app only to a server you trust.
 

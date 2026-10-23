@@ -757,7 +757,7 @@
               <svg class="strip-item-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
                 <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/>
               </svg>
-              <a class="strip-link" href="#collaborate"><span class="strip-title">Review and comment</span> <span class="strip-sub">with track changes</span></a>
+              <a class="strip-link" href="#review"><span class="strip-title">Review and comment</span> <span class="strip-sub">with track changes</span></a>
             </li>
             <li class="strip-item">
               <svg class="strip-item-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
@@ -796,15 +796,47 @@
         <div class="container">
           <div class="feature reverse">
             <div class="feature-copy">
-              <h2>Collaborate and review</h2>
-              <p>Write together, discuss specific passages, and review changes without leaving your document. Keep track of revisions and give collaborators the access they need.</p>
+              <h2>Collaborate</h2>
+              <p>Write together in real time, with individual cursors and undo history. Discuss a passage where it sits in the text, or talk in the project chat.</p>
               <ul class="details">
-                <li>Edit together in real time, with individual cursors and undo history.</li>
                 <li>Comment on a passage and discuss it in a thread.</li>
-                <li>Record edits as tracked changes, then accept or reject each one.</li>
-                <li>Share a link that lets someone read, comment or edit.</li>
-                <li>Name versions, browse the history and restore an earlier version.</li>
                 <li>Talk with collaborators in the project chat.</li>
+                <li>Share a link that lets someone read, comment or edit.</li>
+              </ul>
+            </div>
+            <figure class="shot-frame">
+              <picture>
+                <source type="image/webp" srcset="/images/comment-thread.webp">
+                <img
+                  class="shot-small"
+                  src="/images/comment-thread.png"
+                  alt="A comment thread in LibrePaper: three messages between two collaborators, with buttons to resolve, delete and reply."
+                  width="540"
+                  height="451"
+                  loading="lazy"
+                  decoding="async"
+                />
+              </picture>
+            </figure>
+          </div>
+        </div>
+      </section>
+
+      <!-- ============================================================ review -->
+      <section class="section" id="review">
+        <div class="container">
+          <div class="feature">
+            <div class="feature-copy">
+              <h2>Review changes and history</h2>
+              <p>Record edits as tracked changes and decide on each one.</p>
+              <p>LibrePaper keeps the history of every project. Pick a day on the calendar, open any saved version, compare it with another, and restore it if you need to. Name the versions that matter so you can find them again.</p>
+              <ul class="details">
+                <li>See who made each change and in which file.</li>
+                <li>Accept or reject changes one at a time.</li>
+                <li>Compare versions to see what changed.</li>
+                <li>Restore an earlier version. The current text is saved first.</li>
+                <li>Download a version, or copy a link to it.</li>
+                <li>Open the text as it was when a comment was written.</li>
               </ul>
             </div>
             <figure class="shot-frame">
@@ -825,7 +857,7 @@
       </section>
 
       <!-- ============================================================ AI -->
-      <section class="section" id="ai">
+      <section class="section section-alt" id="ai">
         <div class="container">
           <div class="feature">
             <div class="feature-copy">
@@ -848,7 +880,7 @@
       </section>
 
       <!-- ============================================================ open -->
-      <section class="section section-alt" id="open">
+      <section class="section" id="open">
         <div class="container">
           <h2 class="section-title">Free and open source</h2>
           <div class="columns">
@@ -877,7 +909,7 @@
       </section>
 
       <!-- ========================================================== desktop -->
-      <section class="section" id="desktop">
+      <section class="section section-alt" id="desktop">
         <div class="container">
           <div class="feature desktop-feature">
             <div class="feature-copy">
@@ -886,8 +918,7 @@
               <p>The desktop app uses the same account and the same projects. It adds what a browser cannot do on its own, such as running code, starting your AI agent, reading your Zotero library and backing up projects to your disk.</p>
               <p>The desktop app runs on macOS, Windows and Linux.</p>
               <p class="links">
-                <a href="https://github.com/LibrePaper/librepaper/releases/latest">Download the desktop app</a>
-                <a href="/desktop-app.html">Installation guide</a>
+                <a href="/desktop-app.html#install-the-desktop-app">Install the desktop app</a>
               </p>
             </div>
             <div class="compare-wrap" id="features">
@@ -1039,7 +1070,7 @@
       </section>
 
       <!-- ========================================================== closing -->
-      <section class="section section-alt closing" id="start">
+      <section class="section closing" id="start">
         <div class="container">
           <div class="feature">
             <div class="feature-copy">
@@ -1047,7 +1078,7 @@
               <p>Sign in and create your first project. It costs nothing.</p>
               <div class="hero-actions">
                 <a class="btn-primary" href="https://app.librepaper.org/auth/login">Start writing</a>
-                <a class="btn-secondary" href="https://github.com/LibrePaper/librepaper/releases/latest">Download desktop app</a>
+                <a class="btn-secondary" href="/desktop-app.html#install-the-desktop-app">Install the desktop app</a>
               </div>
             </div>
             <figure class="shot-frame">
@@ -1067,7 +1098,7 @@
           <ul class="footer-links">
             <li><a href="https://github.com/LibrePaper/librepaper">GitHub</a></li>
             <li><a href="/what.html">Documentation</a></li>
-            <li><a href="https://github.com/LibrePaper/librepaper/releases/latest">Download</a></li>
+            <li><a href="/desktop-app.html#install-the-desktop-app">Desktop app</a></li>
             <li><a href="https://github.com/LibrePaper/librepaper/issues">Report an issue</a></li>
             <li><a href="/host/simple.html">Self-hosting</a></li>
             <li><a href="/privacy.html">Privacy</a></li>

@@ -10,57 +10,17 @@ agent to comment and edit.
 
 ## Features
 
-Most features work in any web browser. Running code, agents, Zotero and local backups need the [desktop app](desktop-app.html).
+The [feature table](index.html#features) lists what LibrePaper does in a web browser and in the [desktop app](desktop-app.html).
 
-Writing:
+## Free and open
 
-- Live preview of Markdown, HTML, Typst and LaTeX
-- Computational notebooks with Quarto and Calepin
-- Templates, tools and multi-file projects
-- Bibliographies from BibTeX and Zotero
-- Track changes: accept or reject each edit
+- Every feature is free.
+- The public service at librepaper.org gives each account 50 MB of storage and 30 uploads per hour.
+- You can self-host with one static binary and a PostgreSQL database, on a laptop or a small server. See [Simple deployment](host/simple.html).
+- The [command line](cli.html) exports project source and assets as ordinary files.
+- The desktop app can [back up](backups.html) every project in an account to local ZIP files.
 
-Working with people:
+## Chat and history
 
-- Simultaneous editors, with named carets and personal undo
-- Highlights and threaded comments, live for everyone
-- Share with readers, commenters or editors, signed in with GitHub or Google
-- Chat with collaborators and AI agents
 - Project chat is kept with the project. The owner can clear it from the chat menu or the command palette.
-- Named versions and track changes. Owners can permanently trim older history, and an owner's trim also deletes chat.
-
-LLM agents:
-
-- Bring your own agent: no new subscription
-- Ask for changes in the sidebar chat
-- Pre-specified tasks on a selected passage
-- Reader, commenter or editor permissions
-- LibrePaper never sees your keys or tokens
-- Any commercial model or local weights, over MCP
-
-Free and open:
-
-- Everything is free: no gated features
-- Open source server, reader and renderers
-- Public host at librepaper.org: 50 MB of storage per user and 30 uploads per hour
-- Self-host with one static binary and a Postgres database, on a laptop or a small server
-- Export project source and assets as ordinary files from the CLI
-- Back up every project in an account to local ZIP files with the desktop app
-
-## Your own fonts
-
-- Upload `.otf` or `.ttf` files into the project. A `fonts/` folder keeps them out of the way.
-- Typst: name the family. Font files anywhere in the project are found.
-
-  ```typst
-  #set text(font: "Fira Sans")
-  ```
-
-- LaTeX: use `fontspec` and name the file. `fontspec` switches the project to XeLaTeX. Fonts are found by file name only, not by family name.
-
-  ```latex
-  \setmainfont{FiraSans-Regular.otf}[Path=fonts/, BoldFont=FiraSans-Bold.otf]
-  ```
-
-- `.woff` and `.woff2` files are for HTML. Typst and LaTeX cannot read them.
-- Everyone who can open the project, read links included, downloads the font files. Check that the font licence allows that.
+- Owners can permanently trim older history. An owner's trim also deletes chat.
