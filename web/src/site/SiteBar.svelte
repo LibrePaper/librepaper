@@ -5,12 +5,10 @@
   // no application behind it to ask, so the button always reads "Start
   // writing" and sends you to the application to find out. New visitors look
   // for a way to sign up, and signing in is how an account is created, so the
-  // button names what they came to do. The landing page drops the mark
-  // because its hero already shows it.
+  // button names what they came to do. Every page, the landing page included,
+  // shows the mark.
   import Logo from "../components/Logo.svelte";
   import Icon from "../components/Icon.svelte";
-
-  let { mark = true } = $props();
 
   // Replaced at build time by vite.site.config.js: the published site points
   // at the deployment, a local build at whatever `make demo` started.
@@ -19,30 +17,23 @@
 
 <nav class="site-bar">
   <div class="site-bar-inner">
-    {#if mark}
-      <a class="flex items-center gap-2" href="/" aria-label="LibrePaper home">
-        <Logo />
-        <span class="max-sm:hidden">LibrePaper</span>
-      </a>
-    {/if}
-    <div class="flex items-center gap-3 ml-auto">
+    <a class="flex items-center gap-2" href="/" aria-label="LibrePaper home">
+      <Logo />
+      <span class="max-sm:hidden">LibrePaper</span>
+    </a>
+    <div class="flex items-center gap-3 sm:gap-4 ml-auto">
+      <a class="lp-text-secondary lp-hover-brand max-sm:hidden" href="/#features">Features</a>
+      <a class="lp-text-secondary lp-hover-brand" href="/what.html">Documentation</a>
       <a
-        class="lp-text-secondary lp-hover-brand flex items-center"
+        class="lp-text-secondary lp-hover-brand flex items-center gap-1.5"
         href="https://github.com/LibrePaper/librepaper"
-        aria-label="LibrePaper on GitHub"
+        aria-label="GitHub"
         title="GitHub"
       >
-        <Icon name="github" size={18} />
+        <Icon name="github" size={16} />
+        <span class="max-sm:hidden">GitHub</span>
       </a>
-      <a class="btn btn-sm lp-control-brand" href="/what.html">
-        Documentation
-      </a>
-      <a
-        class="btn btn-sm lp-control-brand"
-        href={`${app}/auth/login`}
-      >
-        Start writing
-      </a>
+      <a class="btn btn-sm lp-control-brand" href={`${app}/auth/login`}>Start writing</a>
     </div>
   </div>
 </nav>
