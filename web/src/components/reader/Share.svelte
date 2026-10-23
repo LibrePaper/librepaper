@@ -241,7 +241,7 @@
 {#snippet content()}
   {#if reveal}
     <div class="share-pad">
-      <TokenReveal token={reveal.token} {slug} oncopy={copy} ondone={done} />
+      <TokenReveal token={reveal.token} oncopy={copy} ondone={done} />
       {@render messages()}
     </div>
   {:else if loading}

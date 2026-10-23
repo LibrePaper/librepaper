@@ -35,6 +35,8 @@ import { createClassComponent } from ${JSON.stringify(join(root, "web/node_modul
 let counter = 0;
 const idOf = () => String(++counter).padStart(16, "0");
 const week = () => new Date(Date.now() + 7 * 86400000).toISOString();
+const originPart = btoa(location.origin).split("+").join("-").split("/").join("_").split("=").join("");
+
 const state = {
   links: [
     { id: "a000000000000001", role: "reader", name: "", key: "", url: "", since: "2026-01-01T00:00:00Z", until: "2027-03-17T00:00:00Z", budget: null },
@@ -65,7 +67,7 @@ window.fetch = async (path, options) => {
       created = { id, kind, url: "/docs/paper#k=minted" + id };
     } else {
       state.tokens.push(row);
-      created = { id, kind, token: "lpt_paper.minted" + id };
+      created = { id, kind, token: "lpt_" + originPart + ".paper.minted" + id };
     }
   }
   if (body?.update) {
@@ -82,7 +84,7 @@ window.fetch = async (path, options) => {
     if (row.url !== undefined) {
       row.key = "rotated" + id; row.url = "/docs/paper#k=rotated" + id;
       created = { id, kind: "link", url: row.url };
-    } else created = { id, kind: "token", token: "lpt_paper.rotated" + id };
+    } else created = { id, kind: "token", token: "lpt_" + originPart + ".paper.rotated" + id };
   }
   if (body?.revoke) {
     state.links = state.links.filter((row) => row.id !== body.revoke.id);
@@ -248,10 +250,10 @@ window.sharePanelCheck = async () => {
   /* ---------------------------------------------------------- token reveal */
 
   const secret = document.querySelector('input[aria-label="Agent token"]');
-  check(secret && secret.readOnly && secret.value.startsWith("lpt_paper.minted"), "the token is shown: " + text());
+  check(secret && secret.readOnly && secret.value.startsWith("lpt_" + originPart + ".paper.minted"), "the token is shown: " + text());
   check(text().includes("Copy this token now. You won't be able to view it again."), "with the warning");
   const config = document.querySelector('textarea[aria-label="MCP configuration"]').value;
-  check(config.includes('args = ["mcp", "--document", "' + location.origin + '/docs/paper"]') && config.includes('LIBREPAPER_AGENT_TOKEN = "' + secret.value + '"'),
+  check(config.includes('args = ["mcp"]') && config.includes('LIBREPAPER_AGENT_TOKEN = "' + secret.value + '"'),
     "the configuration is filled in: " + config);
   check(text().includes("POST /api/documents/{slug}/tools/{name}"), "the plain HTTP route is mentioned");
   check([...document.querySelectorAll("a")].some((node) => node.textContent === "Agent setup" && node.href.includes("agents.html")), "and the setup page is linked");
@@ -270,7 +272,7 @@ window.sharePanelCheck = async () => {
   check(text().includes("Replace token?") && text().includes("The agent will need the new token."), "replacing a token asks first");
   await press([...document.querySelectorAll('[role="dialog"] button')].find((node) => node.textContent.trim() === "Replace token"));
   const rotated = document.querySelector('input[aria-label="Agent token"]')?.value || "";
-  check(rotated.startsWith("lpt_paper.rotated"), "a replaced token is shown once too");
+  check(rotated.startsWith("lpt_" + originPart + ".paper.rotated"), "a replaced token is shown once too");
   const clipboard = navigator.clipboard.writeText;
   navigator.clipboard.writeText = async () => { throw new Error("blocked"); };
   await press(button("Copy token"));

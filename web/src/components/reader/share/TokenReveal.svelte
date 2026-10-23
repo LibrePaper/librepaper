@@ -1,10 +1,10 @@
 <script>
   // The one time a token is shown. It lives in the parent's component state
   // and nowhere else; nothing here writes it to storage.
-  let { token, slug, oncopy, ondone } = $props();
+  let { token, oncopy, ondone } = $props();
   const config = $derived(`[mcp_servers.librepaper]
 command = "librepaper"
-args = ["mcp", "--document", "${location.origin}/docs/${slug}"]
+args = ["mcp"]
 env = { LIBREPAPER_AGENT_TOKEN = "${token}" }`);
   const select = (event) => event.currentTarget.select();
 </script>
