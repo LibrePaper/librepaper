@@ -1,6 +1,7 @@
 // There is no front page. A signed-out visitor, in a browser or the desktop
-// app, goes straight to sign-in, and signing out lands on the sign-in page
-// marked as signed out instead of opening the marketing site.
+// app, goes straight to sign-in, unless the server has no sign-in, and signing
+// out lands on the sign-in page marked as signed out instead of opening the
+// marketing site.
 import assert from "node:assert/strict";
 import { build } from "vite";
 import { svelte } from "@sveltejs/vite-plugin-svelte";
@@ -63,10 +64,10 @@ try {
   await until("sign-in page", () => tab.evaluate("location.pathname === '/auth/login'"));
   assert.equal(await at(), "/auth/login?next=%2F", "the desktop app opens sign-in");
 
-  // Even on a server with no sign-in, where the sign-in page can still change servers.
-  await tab.command("Page.navigate", { url: `${origin}/desktop/?none` });
-  await until("sign-in page without providers", () => tab.evaluate("location.pathname === '/auth/login'"));
-  assert.equal(await at(), "/auth/login?next=%2F", "the desktop app opens sign-in without providers");
+  // A server with no sign-in has no sign-in page, so the app stays and says why.
+  await tab.navigate(`${origin}/desktop/?none`);
+  await until("no sign-in notice", () => tab.evaluate("document.body.innerText.includes('This server has no sign-in')"));
+  assert.equal(await at(), "/desktop/?none", "the desktop app stays without providers");
 
   // Signed in, the desktop app shows the project browser.
   await tab.navigate(`${origin}/desktop/?in`);

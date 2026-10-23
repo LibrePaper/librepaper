@@ -1141,10 +1141,9 @@
         return {};
       })
       .then(async (who) => {
-        // There is no front page: a stranger is sent straight to sign-in,
-        // even on a server with no way in, where the desktop app's sign-in
-        // page still offers to change servers.
-        if (reachedServer && !who.name) {
+        // There is no front page: a stranger is sent straight to sign-in. A
+        // server with no providers has no sign-in page to send them to.
+        if (reachedServer && !who.name && who.providers?.length) {
           location.replace(signInHref("/"));
           return;
         }
@@ -1578,8 +1577,9 @@
   </main>
   {/if}
 {:else}
-  <!-- Signed out: only seen offline, or for the moment before sign-in
-       replaces it, so it says why it cannot show the projects. -->
+  <!-- Signed out: only seen offline, on a server with no sign-in, or for the
+       moment before sign-in replaces it, so it says why it cannot show the
+       projects. -->
   <Nav {me}>
     {#snippet tools()}
       <button type="button" class="btn btn-sm lp-control-tonal-brand" onclick={() => openSettings()}>Settings</button>
@@ -1587,6 +1587,12 @@
   </Nav>
   <Page width="measure">
     <Stack gap={8}>
+      {#if reachedServer && me.providers && !me.providers.length}
+        <aside class="card p-4">
+          This server has no sign-in, so it has no projects to show. A project
+          shared with you opens from its link.
+        </aside>
+      {/if}
       {#if !reachedServer}
         <aside class="card lp-tone-warning p-4">
           {#if documents.length}
