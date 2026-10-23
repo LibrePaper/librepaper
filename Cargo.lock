@@ -2661,7 +2661,7 @@ dependencies = [
 
 [[package]]
 name = "librepaper"
-version = "0.0.49"
+version = "0.0.50"
 dependencies = [
  "axum",
  "base64 0.22.1",
@@ -2698,7 +2698,7 @@ dependencies = [
 
 [[package]]
 name = "librepaper-base"
-version = "0.0.49"
+version = "0.0.50"
 dependencies = [
  "async-trait",
  "axum",
@@ -2730,7 +2730,7 @@ dependencies = [
 
 [[package]]
 name = "librepaper-companion"
-version = "0.0.49"
+version = "0.0.50"
 dependencies = [
  "agent-client-protocol",
  "ashpd",
@@ -2777,7 +2777,7 @@ dependencies = [
 
 [[package]]
 name = "librepaper-document"
-version = "0.0.49"
+version = "0.0.50"
 dependencies = [
  "hex",
  "html-escape",
@@ -2792,7 +2792,7 @@ dependencies = [
 
 [[package]]
 name = "librepaper-engine"
-version = "0.0.49"
+version = "0.0.50"
 dependencies = [
  "async-trait",
  "axum",
@@ -2824,7 +2824,7 @@ dependencies = [
 
 [[package]]
 name = "librepaper-room"
-version = "0.0.49"
+version = "0.0.50"
 dependencies = [
  "base64 0.22.1",
  "comrak",
@@ -2852,7 +2852,7 @@ dependencies = [
 
 [[package]]
 name = "librepaper-server"
-version = "0.0.49"
+version = "0.0.50"
 dependencies = [
  "axum",
  "base64 0.22.1",
@@ -2891,7 +2891,7 @@ dependencies = [
 
 [[package]]
 name = "librepaper-shell"
-version = "0.0.49"
+version = "0.0.50"
 dependencies = [
  "axum",
  "include_dir",
