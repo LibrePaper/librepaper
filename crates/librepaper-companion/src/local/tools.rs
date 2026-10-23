@@ -94,7 +94,9 @@ async fn spawn_unless_busy(command: &mut Command) -> std::io::Result<tokio::proc
     let mut attempts = 0;
     loop {
         match command.spawn() {
-            Err(error) if error.kind() == std::io::ErrorKind::ExecutableFileBusy && attempts < 5 => {
+            Err(error)
+                if error.kind() == std::io::ErrorKind::ExecutableFileBusy && attempts < 5 =>
+            {
                 attempts += 1;
                 tokio::time::sleep(Duration::from_millis(20)).await;
             }
