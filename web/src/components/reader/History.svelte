@@ -513,9 +513,10 @@
             class="hx-main"
             data-nav
             class:timeline-here={viewing === first.sha}
+            class:hx-base={against === first.sha}
             aria-current={viewing === first.sha ? "true" : undefined}
             title={`${titleOf(event)}, ${soloLine(event)}`}
-            aria-label={`${titleOf(event)}, ${soloLine(event)}`}
+            aria-label={`${titleOf(event)}, ${soloLine(event)}${against === first.sha ? ", comparison base" : ""}`}
             onclick={(click) => pick(click, first.sha)}
           >
             {@render eventBody(event, soloLine(event))}
