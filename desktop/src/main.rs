@@ -9,6 +9,7 @@ mod servers;
 mod service;
 mod shell_log;
 mod theme;
+mod tray;
 #[cfg(any(target_os = "macos", windows))]
 mod updater;
 mod zoom;
@@ -55,7 +56,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         // Registered first, so a second launch is forwarded before anything else runs.
         .plugin(tauri_plugin_single_instance::init(|app, argv, _cwd| {
             if !has_action(&argv) {
-                if let Some(url) = first_server(app) {
+                // Hidden windows come back to the front instead of a new one.
+                if tray::all_hidden(app) {
+                    tray::reveal(app);
+                } else if let Some(url) = first_server(app) {
                     show(app, Target::NewWindow, url);
                 }
             }
@@ -77,12 +81,22 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             let label = ctx.webview_label().to_string();
             serve(ctx.app_handle(), label, request, responder)
         })
+        .on_window_event(|window, event| {
+            if let tauri::WindowEvent::CloseRequested { api, .. } = event {
+                tray::close_requested(window, api);
+            }
+        })
         .setup(setup)
         .build(tauri::generate_context!())?;
-    app.run(|_, event| {
-        if let RunEvent::Exit = event {
-            service::stop();
-        }
+    #[cfg_attr(not(target_os = "macos"), allow(unused_variables))]
+    app.run(|app, event| match event {
+        RunEvent::Exit => service::stop(),
+        // The Dock icon brings the app back when every window is hidden.
+        #[cfg(target_os = "macos")]
+        RunEvent::Reopen {
+            has_visible_windows: false,
+        } => tray::show_windows(app),
+        _ => {}
     });
     Ok(())
 }
@@ -105,6 +119,7 @@ fn setup(app: &mut App) -> Result<(), Box<dyn std::error::Error>> {
     theme::watch_system(app.handle());
     #[cfg(target_os = "linux")]
     app.manage(drop::Dropped::default());
+    tray::build(app.handle());
 
     // Starts the local service before the page asks for it.
     let warm = app.handle().clone();
@@ -355,8 +370,13 @@ fn show(app: &AppHandle, target: Target, url: Url) {
                 }
                 return;
             };
-            if let Err(err) = window.navigate(url) {
-                shell_log::write(&format!("navigation failed: {err}"));
+            match window.navigate(url) {
+                Ok(()) => {
+                    // The window may be hidden in the tray.
+                    let _ = window.show();
+                    let _ = window.set_focus();
+                }
+                Err(err) => shell_log::write(&format!("navigation failed: {err}")),
             }
         }
         Target::NewWindow => match open_window(app, url) {

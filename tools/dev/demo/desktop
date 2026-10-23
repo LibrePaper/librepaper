@@ -7,7 +7,7 @@
 # rebuilt. When a server on PORT that is not the demo answers, the app uses it as
 # is. When nothing answers, this script starts the demo, waits for it, and opens
 # the app.
-# Closing the app, or pressing Ctrl-C, kills the demo's process group. That lets
+# Quitting the app, or pressing Ctrl-C, kills the demo's process group. That lets
 # tools/dev/demo/compose run its cleanup and take the containers down.
 set -euo pipefail
 
@@ -93,5 +93,5 @@ until answers; do
   fi
   sleep 2
 done
-echo "demo-desktop: the demo is up on $URL; closing the app stops it"
+echo "demo-desktop: the demo is up on $URL; quitting the app stops it"
 LIBREPAPER_SERVER="$URL" "$APP"

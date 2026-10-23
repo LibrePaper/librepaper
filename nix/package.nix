@@ -17,6 +17,7 @@
   atk,
   dbus,
   openssl,
+  libayatana-appindicator,
   ...
 }:
 
@@ -53,6 +54,9 @@ stdenv.mkDerivation {
     openssl
     stdenv.cc.cc.lib
   ];
+
+  # The tray loads AppIndicator with dlopen, so autoPatchelf adds it to the run path.
+  runtimeDependencies = [ libayatana-appindicator ];
 
   dontConfigure = true;
   dontBuild = true;
