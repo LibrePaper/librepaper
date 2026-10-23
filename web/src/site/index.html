@@ -1,13 +1,19 @@
 <!doctype html>
-<html data-theme="librepaper">
+<html lang="en" data-theme="librepaper">
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width,initial-scale=1" />
-    <title>LibrePaper</title>
+    <title>LibrePaper: collaborative writing for researchers and technical teams</title>
     <meta
       name="description"
-      content="A free platform to read, write, and review together."
+      content="A free open-source platform to write and review together."
     />
+    <link rel="canonical" href="https://librepaper.org/" />
+    <meta property="og:title" content="LibrePaper" />
+    <meta property="og:type" content="website" />
+    <meta property="og:url" content="https://librepaper.org/" />
+    <meta property="og:description" content="A free open-source platform to write and review together." />
+    <meta property="og:image" content="https://librepaper.org/images/editor-latex.png" />
     <link rel="icon" type="image/svg+xml" href="/assets/librepaper-icon.svg" />
     <!-- The formats line and display font, both unlayered rules to beat Tailwind utilities. -->
     <style>
@@ -18,6 +24,10 @@
       body {
         background: var(--neutral-1);
         color: var(--neutral-12);
+      }
+
+      img {
+        max-width: 100%;
       }
 
       /* The bar stays at the top while the landing page scrolls. It needs the
@@ -32,6 +42,19 @@
       /* In-page anchors land below the sticky bar, which is 3.5rem tall. */
       html {
         scroll-padding-top: 3.5rem;
+      }
+
+      @media (prefers-reduced-motion: no-preference) {
+        html {
+          scroll-behavior: smooth;
+        }
+      }
+
+      @media (prefers-reduced-motion: reduce) {
+        * {
+          transition: none !important;
+          scroll-behavior: auto !important;
+        }
       }
 
       /* Unlayered rules beat Tailwind utilities; use only when necessary. */
@@ -75,115 +98,94 @@
         margin-right: -0.06em;
       }
 
-      /* Hero section grid layout. */
+      .container {
+        max-width: 80rem;
+        margin: 0 auto;
+        padding-inline: 1.5rem;
+      }
+
+      /* Every section shares this one pattern. .section-alt is the only variant. */
+      .section {
+        padding: 4rem 0;
+        border-top: 1px solid var(--color-divider);
+      }
+
+      .section-alt {
+        background: var(--neutral-2);
+      }
+
+      /* Hero. */
       .hero {
-        display: grid;
-        gap: 0;
-        min-height: 360px;
-        padding: 0;
+        padding: 4rem 0 3rem;
       }
 
       .hero-text {
-        padding-left: max(1.5rem, calc((100vw - 80rem) / 2 + 1.5rem));
-        padding-right: 3rem;
-        padding-top: 0;
-        padding-bottom: 0;
-        display: flex;
-        flex-direction: column;
-        justify-content: center;
-        background: var(--neutral-1);
+        max-width: 46rem;
       }
 
-      .hero-text h1 {
-        font-size: clamp(2rem, 3.4vw, 3.125rem);
-        line-height: 1.02;
-        color: var(--neutral-12);
-        max-width: 12em;
-        letter-spacing: -0.01em;
+      .hero h1 {
+        font-size: clamp(2.25rem, 4.6vw, 3.5rem);
         font-weight: 400;
+        line-height: 1.08;
+        letter-spacing: -0.01em;
+        margin: 0;
       }
 
-      /* The name above the slogan. Sized by width, because the wordmark is
-         nearly seven times as wide as it is tall. */
-      .hero-text .hero-logo {
-        display: block;
-        width: min(100%, 24rem);
-        height: auto;
-        margin-bottom: 1.75rem;
+      .hero-sub {
+        font-size: clamp(1.125rem, 1.6vw, 1.3125rem);
+        line-height: 1.5;
+        color: var(--neutral-11);
+        max-width: 38rem;
+        margin: 1.25rem 0 0;
       }
 
-      .hero-text .formats {
-        margin-top: 1.5rem;
+      .hero-actions {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 0.75rem;
+        margin-top: 2rem;
       }
 
-      .hero-photo {
-        position: relative;
-        overflow: hidden;
-        background: var(--neutral-1);
+      .shot-frame.hero-shot {
+        margin-top: 3rem;
       }
 
-      .hero-photo img {
-        width: 100%;
-        height: 100%;
-        object-fit: cover;
-        object-position: 50% 0%;
-        display: block;
+      /* Buttons. One primary button per place it appears. */
+      .btn-primary,
+      .btn-secondary {
+        display: inline-flex;
+        align-items: center;
+        min-height: 2.75rem;
+        padding: 0 1.25rem;
+        border-radius: 4px;
+        font-weight: 500;
+        text-decoration: none;
       }
 
-      .hero-photo::before {
-        content: '';
-        position: absolute;
-        left: 0;
-        top: 0;
-        bottom: 0;
-        width: 120px;
-        background: linear-gradient(to right, var(--neutral-1), transparent);
-        z-index: 1;
+      .btn-primary {
+        background: var(--color-brand);
+        color: var(--color-on-brand);
+        border: 1px solid transparent;
       }
 
-      /* On a wide window the photograph fills whatever height the text
-         needs rather than setting it: in flow, its own ratio made the hero
-         as tall as a 1920x1198 picture at half the page width. */
-      @media (min-width: 960px) {
-        .hero-photo img {
-          position: absolute;
-          inset: 0;
-        }
-
-        .hero {
-          grid-template-columns: 52fr 48fr;
-        }
+      .btn-primary:hover {
+        background: var(--color-brand-hover);
       }
 
-      @media (max-width: 959px) {
-        .hero {
-          display: flex;
-          flex-direction: column;
-        }
+      .btn-secondary {
+        background: transparent;
+        color: var(--neutral-12);
+        border: 1px solid var(--neutral-7);
+      }
 
-        .hero-text {
-          padding-left: 1.25rem;
-          padding-right: 1.25rem;
-          padding-top: 3rem;
-          padding-bottom: 2.5rem;
-          order: -1;
-        }
+      .btn-secondary:hover {
+        border-color: var(--neutral-9);
+      }
 
-        .hero-text h1 {
-          font-size: clamp(2rem, 7vw, 2.625rem);
-        }
-
-        .hero-photo {
-          aspect-ratio: 16 / 8;
-          min-height: 0;
-        }
-
-        .hero-photo::before {
-          width: 100%;
-          height: 64px;
-          bottom: auto;
-          background: linear-gradient(to bottom, var(--neutral-1), transparent);
-        }
+      .btn-primary:focus-visible,
+      .btn-secondary:focus-visible {
+        outline: 2px solid var(--color-brand);
+        outline-offset: 2px;
       }
 
       /* Feature strip. */
@@ -192,25 +194,20 @@
         border-bottom: 1px solid var(--color-divider);
       }
 
-      .strip-inner {
-        max-width: 80rem;
-        margin: 0 auto;
-        padding: 0 1.5rem;
+      .strip-list {
+        list-style: none;
+        padding: 0;
+        margin: 0;
         display: grid;
         gap: 0;
       }
 
       .strip-item {
-        padding: 1.25rem 2rem;
+        padding: 1.25rem 1rem;
         display: flex;
         flex-direction: row;
         align-items: center;
         gap: 0.75rem;
-        border-left: 1px solid var(--color-divider);
-      }
-
-      .strip-item:first-child {
-        border-left: none;
       }
 
       .strip-item-icon {
@@ -220,153 +217,176 @@
         flex-shrink: 0;
       }
 
-      .strip-item h3 {
-        font-size: 1.375rem;
+      .strip-link {
+        font-size: 1rem;
         font-weight: 500;
-        margin: 0;
-        padding: 0;
-      }
-
-      .strip-item h3 a {
-        color: inherit;
+        color: var(--neutral-12);
         text-decoration: none;
       }
 
-      .strip-item h3 a:hover {
+      .strip-link:hover {
         color: var(--color-brand);
       }
 
-      @media (min-width: 960px) {
-        .strip-inner {
-          grid-template-columns: repeat(4, 1fr);
+      .strip-title,
+      .strip-sub {
+        display: block;
+      }
+
+      @media (min-width: 480px) {
+        .strip-list {
+          grid-template-columns: repeat(2, 1fr);
         }
       }
 
-      @media (min-width: 600px) and (max-width: 959px) {
-        .strip-inner {
-          grid-template-columns: repeat(2, 1fr);
-        }
-
-        .strip-item:nth-child(odd) {
-          border-left: none;
-        }
-
-        .strip-item:nth-child(even) {
-          border-left: 1px solid var(--color-divider);
-        }
-
-        .strip-item:nth-child(1),
-        .strip-item:nth-child(2) {
-          border-top: none;
-        }
-
-        .strip-item:nth-child(3),
-        .strip-item:nth-child(4) {
-          border-top: 1px solid var(--color-divider);
+      @media (min-width: 600px) {
+        .strip-list {
+          grid-template-columns: repeat(3, 1fr);
         }
       }
 
       @media (max-width: 599px) {
-        .strip-inner {
-          grid-template-columns: 1fr;
-        }
-
         .strip-item {
-          border-left: none;
-          border-top: 1px solid var(--color-divider);
+          padding: 0.875rem 0.5rem;
+          gap: 0.5rem;
         }
 
-        .strip-item:first-child {
-          border-top: none;
+        .strip-link {
+          font-size: 0.9375rem;
+        }
+
+        .strip-item-icon {
+          width: 20px;
+          height: 20px;
         }
       }
 
-      /* Narrative sections. */
-      .story {
-        padding: 2.5rem 0;
-      }
-
-      .story-inner {
-        max-width: 78rem;
-        margin: 0 auto;
-        padding: 0 1.5rem;
-      }
-
-      .story h2 {
-        font-size: clamp(2.25rem, 4vw, 3.125rem);
-        font-weight: 400;
-        line-height: 1.05;
-        color: var(--neutral-12);
-        margin: 0 0 0.5rem 0;
-      }
-
-      .story.write {
-        background: var(--neutral-1);
-      }
-
-      .story.free {
-        background: var(--neutral-2);
-      }
-
-      .story.collaborate {
-        background: var(--neutral-1);
-      }
-
-      .story.agents {
-        background: var(--neutral-2);
-      }
-
-      .story + .story {
-        border-top: 1px solid var(--color-divider);
-      }
-
-      /* Credits and copyright, small and out of the way. */
-      .site-footer {
-        border-top: 1px solid var(--color-divider);
-        padding: 1.5rem 0;
-        font-size: 0.875rem;
-        color: var(--neutral-11);
-      }
-
-      .site-footer p {
-        margin: 0;
-      }
-
-      .site-footer a {
-        color: inherit;
-        text-decoration: underline;
-      }
-
-      .site-footer-name {
-        white-space: nowrap;
-      }
-
-      /* Screenshot sections. The copy comes first in the source, so a
-         stacked layout reads heading, list, picture; on a wide window
-         Write puts its picture on the left by ordering, not by markup. */
-      .story-layout-shot {
+      /* Feature sections. Copy comes first in the source at every width;
+         .reverse only moves the figure to the left on a wide window. */
+      .feature {
         display: grid;
-        gap: 3rem;
-        align-items: center;
+        gap: 2.5rem;
       }
 
+      .feature > * {
+        min-width: 0;
+      }
+
+      .feature-copy h2,
+      .section-title {
+        font-size: clamp(1.75rem, 3vw, 2.375rem);
+        font-weight: 400;
+        line-height: 1.1;
+        margin: 0 0 1rem;
+        color: var(--neutral-12);
+      }
+
+      .feature-copy p {
+        font-size: 1.0625rem;
+        line-height: 1.6;
+        color: var(--neutral-11);
+        max-width: 36rem;
+        margin: 0 0 1rem;
+      }
+
+      .hero .formats {
+        margin: 1.5rem 0 0;
+        font-size: 1.125rem;
+      }
+
+      .feature-copy .links {
+        margin: 1.5rem 0 0;
+      }
+
+      .links {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 0.5rem 1.5rem;
+      }
+
+      .links a {
+        color: var(--color-brand);
+        text-decoration: underline;
+        text-underline-offset: 0.2em;
+      }
+
+      .details {
+        list-style: none;
+        padding: 0;
+        margin: 1.25rem 0 0;
+      }
+
+      .details li {
+        font-size: 1rem;
+        line-height: 1.5;
+        color: var(--neutral-11);
+        padding: 0.5rem 0 0.5rem 1.5rem;
+        position: relative;
+        border-top: 1px solid var(--color-divider);
+      }
+
+      .details li:first-child {
+        border-top: none;
+      }
+
+      .details li::before {
+        content: '';
+        position: absolute;
+        left: 0;
+        top: 50%;
+        transform: translateY(-50%);
+        width: 12px;
+        height: 12px;
+        background: var(--color-brand);
+        mask: url('data:image/svg+xml;utf8,<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="black" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6 9 17l-5-5"/></svg>') center / contain no-repeat;
+      }
+
+      .feature-aside .details {
+        margin-top: 0;
+      }
+
+      @media (min-width: 960px) {
+        .feature {
+          grid-template-columns: 5fr 7fr;
+          gap: 3.5rem;
+          align-items: center;
+        }
+
+        .feature.reverse {
+          grid-template-columns: 7fr 5fr;
+        }
+
+        .feature.reverse .feature-copy {
+          order: 2;
+        }
+
+        .feature:has(> .feature-aside) {
+          align-items: start;
+        }
+
+        /* Holds a section's list beside its copy when the section has no screenshot. */
+        .feature-aside {
+          padding-top: 3.25rem;
+        }
+
+        .closing .feature {
+          grid-template-columns: 1fr 1fr;
+        }
+      }
+
+      /* Figures. */
       .shot-frame {
         margin: 0;
-        background: var(--neutral-3);
-        padding: 1.5rem;
-        border-radius: 6px;
       }
 
       .shot-frame img {
         width: 100%;
         height: auto;
         display: block;
-        border-radius: 4px;
+        border-radius: 6px;
         border: 1px solid var(--neutral-6);
         box-shadow: 0 1px 2px rgb(0 0 0 / 0.05), 0 8px 24px -12px rgb(0 0 0 / 0.18);
       }
-
-      .shot-frame .shot { width: 100%; }
 
       /* A small screenshot, captured at twice its CSS size, stays near the
          size it was on screen, centred, rather than filling the column. */
@@ -376,110 +396,13 @@
         margin-inline: auto;
       }
 
-      @media (min-width: 960px) {
-        .story-layout-shot {
-          grid-template-columns: 45fr 55fr;
-          gap: 3rem;
-        }
-
-        .story-layout-shot.visual-first {
-          grid-template-columns: 55fr 45fr;
-        }
-
-        .story-layout-shot.visual-first .story-copy {
-          order: 2;
-        }
+      .closing .shot-frame img {
+        aspect-ratio: 16 / 10;
+        object-fit: cover;
+        border: none;
       }
 
-      /* A section with no screenshot yet shows its strip icon, large, in
-         the place a screenshot would have, on the section's own background. A thinner
-         stroke keeps it a
-         line drawing at this size. */
-      .icon-frame {
-        background: none;
-        display: grid;
-        place-items: center;
-        color: var(--color-brand);
-      }
-
-      .icon-frame svg {
-        width: 8rem;
-        height: auto;
-      }
-
-      /* Two-column list layout. */
-      .story-layout-list {
-        display: grid;
-        gap: 0;
-      }
-
-      @media (min-width: 960px) {
-        .story-layout-list {
-          grid-template-columns: 5fr 7fr;
-          gap: 3rem;
-        }
-      }
-
-      /* Checks list. */
-      .checks {
-        list-style: none;
-        padding: 0;
-        margin: 1.25rem 0 0 0;
-      }
-
-      .checks li {
-        font-size: 1.0625rem;
-        line-height: 1.5;
-        color: var(--neutral-11);
-        padding: 0.5rem 0 0.5rem 1.75rem;
-        position: relative;
-        border-top: 1px solid var(--color-divider);
-      }
-
-      .checks li:first-child {
-        border-top: none;
-      }
-
-      .checks strong {
-        color: var(--neutral-12);
-        font-weight: 600;
-      }
-
-      .checks li::before {
-        content: '';
-        position: absolute;
-        left: 0;
-        top: 50%;
-        transform: translateY(-50%);
-        width: 12px;
-        height: 12px;
-        background-image: url('data:image/svg+xml;utf8,<svg viewBox="0 0 24 24" fill="none" stroke="%232b5748" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6 9 17l-5-5"/></svg>');
-        background-size: contain;
-        background-repeat: no-repeat;
-        background-position: center;
-      }
-
-      @media (max-width: 959px) {
-        .story-layout-list {
-          grid-template-columns: 1fr;
-        }
-      }
-
-      @media (max-width: 599px) {
-        .story {
-          padding: 2rem 0;
-        }
-
-        .story-inner {
-          padding: 0 1.25rem;
-        }
-
-        .shot-frame {
-          padding: 1rem;
-        }
-      }
-
-      /* Existing lightbox styles, preserved. */
+      /* Screenshot link and its Expand badge. */
       .shot {
         position: relative;
         display: block;
@@ -487,13 +410,7 @@
         margin-inline: auto;
         overflow: hidden;
         cursor: zoom-in;
-        border-radius: 4px;
-      }
-
-      .shot img {
-        display: block;
-        width: 100%;
-        height: auto;
+        border-radius: 6px;
       }
 
       .shot-badge {
@@ -521,6 +438,187 @@
         height: 0.875rem;
       }
 
+      /* Short side-by-side columns, each a heading over a paragraph. */
+      .columns {
+        display: grid;
+        gap: 2rem;
+        margin-top: 2rem;
+      }
+
+      .columns h3 {
+        font-size: 1.25rem;
+        font-weight: 500;
+        margin: 0 0 0.5rem;
+        color: var(--neutral-12);
+      }
+
+      .columns p {
+        color: var(--neutral-11);
+        line-height: 1.6;
+        margin: 0;
+      }
+
+      .columns .links {
+        margin-top: 0.75rem;
+      }
+
+      @media (min-width: 600px) {
+        .columns {
+          grid-template-columns: repeat(2, 1fr);
+        }
+      }
+
+      @media (min-width: 960px) {
+        .columns {
+          grid-template-columns: repeat(4, 1fr);
+        }
+      }
+
+      /* Browser and desktop comparison. */
+      .compare-wrap {
+        overflow-x: auto;
+      }
+
+      /* The table is far taller than its copy, so on a wide window the copy
+         stays in view beside it while the table scrolls. */
+      @media (min-width: 960px) {
+        .desktop-feature {
+          align-items: start;
+        }
+
+        .desktop-feature .feature-copy {
+          position: sticky;
+          top: 5.5rem;
+        }
+      }
+
+      .compare {
+        width: 100%;
+        border-collapse: collapse;
+        font-size: 0.9375rem;
+      }
+
+      .compare th,
+      .compare td {
+        padding: 0.625rem 0.75rem;
+        border-bottom: 1px solid var(--color-divider);
+        text-align: left;
+      }
+
+      .compare thead th:not(:first-child),
+      .compare td {
+        text-align: center;
+        width: 6rem;
+      }
+
+      .compare thead th {
+        color: var(--neutral-11);
+        font-weight: 500;
+      }
+
+      .compare tbody th {
+        color: var(--neutral-12);
+        font-weight: 400;
+      }
+
+      .compare td svg {
+        width: 1.125rem;
+        height: 1.125rem;
+        display: inline-block;
+        vertical-align: middle;
+      }
+
+      .compare .yes {
+        color: var(--color-success-solid);
+      }
+
+      .compare .no {
+        color: var(--color-error-solid);
+      }
+
+      .compare .compare-group th {
+        padding-top: 1.5rem;
+        font-family: var(--font-display);
+        font-size: 1.125rem;
+        font-weight: 500;
+        color: var(--neutral-12);
+        text-align: left;
+      }
+
+      .sr-only {
+        position: absolute;
+        width: 1px;
+        height: 1px;
+        overflow: hidden;
+        clip: rect(0 0 0 0);
+        white-space: nowrap;
+      }
+
+      /* Credits and copyright, small and out of the way. */
+      .site-footer {
+        border-top: 1px solid var(--color-divider);
+        padding: 1.5rem 0;
+        font-size: 0.875rem;
+        color: var(--neutral-11);
+      }
+
+      .site-footer p {
+        margin: 0;
+      }
+
+      .site-footer a {
+        color: inherit;
+        text-decoration: underline;
+      }
+
+      .site-footer-name {
+        white-space: nowrap;
+      }
+
+      .footer-links {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 0.5rem 1.25rem;
+        list-style: none;
+        padding: 0;
+        margin: 0 0 0.75rem;
+      }
+
+      @media (max-width: 599px) {
+        .container {
+          padding-inline: 1rem;
+        }
+
+        .section {
+          padding: 2.75rem 0;
+        }
+
+        .hero {
+          padding-top: 2.5rem;
+        }
+
+        .shot-frame.hero-shot {
+          margin-top: 2rem;
+        }
+
+        .compare th,
+        .compare td {
+          padding-inline: 0.5rem;
+        }
+
+        .compare thead th:not(:first-child),
+        .compare td {
+          width: 4.25rem;
+        }
+
+        .hero-shot img {
+          aspect-ratio: 4 / 3;
+          object-fit: cover;
+          object-position: 20% top;
+        }
+      }
+
+      /* The lightbox: a :target overlay, opened by a link to its id. */
       .lightbox {
         display: none;
       }
@@ -591,176 +689,392 @@
     <main>
       <!-- ============================================================ hero -->
       <section class="hero">
-        <div class="hero-text">
-          <img class="hero-logo" src="/assets/librepaper-logo.svg" alt="LibrePaper" width="6221" height="908" />
-          <h1>A free platform to read, write, and review together.</h1>
-          <p class="formats">
-            <span>HTML</span>
-            <span aria-hidden="true" class="dot">·</span>
-            <span class="latex">L<span class="latex-a">a</span>T<span class="latex-e">e</span>X</span>
-            <span aria-hidden="true" class="dot">·</span>
-            <span>Typst</span>
-            <span aria-hidden="true" class="dot">·</span>
-            <span>Markdown</span>
-            <span aria-hidden="true" class="dot">·</span>
-            <span>Quarto</span>
-            <span aria-hidden="true" class="dot">·</span>
-            <span>Calepin</span>
-          </p>
-        </div>
-        <div class="hero-photo">
-          <img src="/images/typewriter.jpg" alt="A blue Olivetti typewriter, a plant and a notebook on a wooden desk. Photograph by Annie Spratt, from Pixabay." width="1920" height="1198" />
+        <div class="container">
+          <div class="hero-text">
+            <h1>Collaborative writing for researchers and technical teams.</h1>
+            <p class="hero-sub">A free open-source platform to write and review together.</p>
+            <p class="formats">
+              <span>HTML</span>
+              <span aria-hidden="true" class="dot">·</span>
+              <span class="latex">L<span class="latex-a">a</span>T<span class="latex-e">e</span>X</span>
+              <span aria-hidden="true" class="dot">·</span>
+              <span>Typst</span>
+              <span aria-hidden="true" class="dot">·</span>
+              <span>Markdown</span>
+              <span aria-hidden="true" class="dot">·</span>
+              <span>Quarto</span>
+              <span aria-hidden="true" class="dot">·</span>
+              <span>Calepin</span>
+            </p>
+          </div>
+          <figure class="shot-frame hero-shot">
+            <a class="shot" href="#editor" aria-label="See the editor larger">
+              <picture>
+                <source type="image/webp" srcset="/images/editor-latex-960.webp 960w, /images/editor-latex-1600.webp 1600w, /images/editor-latex-2852.webp 2852w" sizes="(min-width: 80rem) 77rem, calc(100vw - 2rem)">
+                <img src="/images/editor-latex.png" width="2852" height="1487" fetchpriority="high" alt="The LibrePaper editor with LaTeX source on the left and the compiled paper, with its figure, equation and table, on the right." />
+              </picture>
+              <span class="shot-badge" aria-hidden="true">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                  <path d="M9 3H3v6" /><path d="m3 3 7 7" /><path d="M15 21h6v-6" /><path d="m21 21-7-7" />
+                </svg>
+                Expand
+              </span>
+            </a>
+          </figure>
         </div>
       </section>
 
       <!-- ========================================================== strip -->
-      <section class="strip">
-        <!-- The icons are the application's own Lucide shapes, copied from
-             components/Icon.svelte (pencil, users, bot), and
-             Lucide gift for Free, which the application has no use for: this page
-             is static HTML and cannot mount that component. -->
-        <div class="strip-inner">
-          <div class="strip-item">
-            <svg class="strip-item-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-              <path d="M21.174 6.812a1 1 0 0 0-3.986-3.987L3.842 16.174a2 2 0 0 0-.5.83l-1.321 4.352a.5.5 0 0 0 .623.622l4.353-1.32a2 2 0 0 0 .83-.497z"/><path d="m15 5 4 4"/>
-            </svg>
-            <h3><a href="#write">Write</a></h3>
-          </div>
-          <div class="strip-item">
-            <svg class="strip-item-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-              <rect x="3" y="8" width="18" height="4" rx="1"/><path d="M12 8v13"/><path d="M19 12v7a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2v-7"/><path d="M7.5 8a2.5 2.5 0 0 1 0-5A4.8 8 0 0 1 12 8a4.8 8 0 0 1 4.5-5 2.5 2.5 0 0 1 0 5"/>
-            </svg>
-            <h3><a href="#free">Free</a></h3>
-          </div>
-          <div class="strip-item">
-            <svg class="strip-item-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-              <path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M22 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/>
-            </svg>
-            <h3><a href="#collaborate">People</a></h3>
-          </div>
-          <div class="strip-item">
-            <svg class="strip-item-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-              <path d="M12 8V4H8"/><rect width="16" height="12" x="4" y="8" rx="2"/><path d="M2 14h2"/><path d="M20 14h2"/><path d="M15 13v2"/><path d="M9 13v2"/>
-            </svg>
-            <h3><a href="#agents">Agents</a></h3>
-          </div>
-        </div>
-      </section>
-
-      <!-- ============================================================ Write -->
-      <section class="story write" id="write">
-        <div class="story-inner">
-          <div class="story-layout-shot visual-first">
-            <div class="story-copy">
-              <h2>Write</h2>
-              <ul class="checks">
-                <li><strong>Live preview</strong> renders Markdown, HTML, Typst and LaTeX.</li>
-                <li><strong>Computational notebooks</strong> include Quarto and Calepin.</li>
-                <li><strong>Authoring</strong> includes templates, tools, and multi-file projects.</li>
-                <li><strong>Bibliographies</strong> work with BibTeX and Zotero.</li>
-                <li><strong>Track changes</strong> lets you accept or reject each edit.</li>
-              </ul>
-            </div>
-            <figure class="shot-frame">
-              <a class="shot" href="#editor" aria-label="See the editor larger">
-                <img
-                  src="/images/editor-latex.png"
-                  alt="The LibrePaper editor: LaTeX source on the left, the compiled paper with its figure, equation and table on the right."
-                  width="2852"
-                  height="1487"
-                />
-                <span class="shot-badge" aria-hidden="true">
-                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-                    <path d="M9 3H3v6" /><path d="m3 3 7 7" /><path d="M15 21h6v-6" /><path d="m21 21-7-7" />
-                  </svg>
-                  Expand
-                </span>
-              </a>
-            </figure>
-          </div>
-          <!-- shot: source on the left, a compiled page with equations on the right -->
-        </div>
-      </section>
-
-      <!-- ============================================================== Free -->
-      <section class="story free" id="free">
-        <div class="story-inner">
-          <div class="story-layout-shot">
-            <div class="story-copy">
-              <h2>Free</h2>
-              <ul class="checks">
-                <li><strong>Everything is free</strong>. No feature is gated.</li>
-                <li><strong>Open source</strong> covers the server, reader and renderers.</li>
-                <li><strong>Public host</strong> at librepaper.org allows only 50&nbsp;MB of storage per user and 30 uploads per hour.</li>
-                <li><strong>Self-host</strong> needs one binary and a Postgres DB.</li>
-                <li><strong>Export</strong> saves projects and comments as ordinary files.</li>
-              </ul>
-            </div>
-            <figure class="shot-frame icon-frame">
-              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+      <section class="strip" aria-label="Highlights">
+        <!-- The icons are Lucide shapes, drawn inline because this page is static HTML. -->
+        <div class="container">
+          <ul class="strip-list">
+            <li class="strip-item">
+              <svg class="strip-item-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
                 <rect x="3" y="8" width="18" height="4" rx="1"/><path d="M12 8v13"/><path d="M19 12v7a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2v-7"/><path d="M7.5 8a2.5 2.5 0 0 1 0-5A4.8 8 0 0 1 12 8a4.8 8 0 0 1 4.5-5 2.5 2.5 0 0 1 0 5"/>
               </svg>
-            </figure>
-          </div>
-          <!-- shot: the terminal running `librepaper admin serve`, and the page it puts up -->
+              <a class="strip-link" href="#open"><span class="strip-title">Free to use</span> <span class="strip-sub">at librepaper.org</span></a>
+            </li>
+            <li class="strip-item">
+              <svg class="strip-item-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                <rect width="20" height="8" x="2" y="2" rx="2" ry="2"/><rect width="20" height="8" x="2" y="14" rx="2" ry="2"/><line x1="6" x2="6.01" y1="6" y2="6"/><line x1="6" x2="6.01" y1="18" y2="18"/>
+              </svg>
+              <a class="strip-link" href="/host/simple.html"><span class="strip-title">Open source</span> <span class="strip-sub">and self-hostable</span></a>
+            </li>
+            <li class="strip-item">
+              <svg class="strip-item-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                <path d="M15 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7Z"/><path d="M14 2v4a2 2 0 0 0 2 2h4"/><path d="M10 9H8"/><path d="M16 13H8"/><path d="M16 17H8"/>
+              </svg>
+              <a class="strip-link" href="#write"><span class="strip-title">Multiple formats</span> <span class="strip-sub">.tex .typ .md .qmd .html</span></a>
+            </li>
+            <li class="strip-item">
+              <svg class="strip-item-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                <path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M22 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/>
+              </svg>
+              <a class="strip-link" href="#collaborate"><span class="strip-title">Collaborate and chat</span> <span class="strip-sub">in real time</span></a>
+            </li>
+            <li class="strip-item">
+              <svg class="strip-item-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/>
+              </svg>
+              <a class="strip-link" href="#collaborate"><span class="strip-title">Review and comment</span> <span class="strip-sub">with track changes</span></a>
+            </li>
+            <li class="strip-item">
+              <svg class="strip-item-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                <path d="M12 8V4H8"/><rect width="16" height="12" x="4" y="8" rx="2"/><path d="M2 14h2"/><path d="M20 14h2"/><path d="M15 13v2"/><path d="M9 13v2"/>
+              </svg>
+              <a class="strip-link" href="#ai"><span class="strip-title">Bring your own AI</span> <span class="strip-sub">no new subscription</span></a>
+            </li>
+          </ul>
         </div>
       </section>
 
-      <!-- ======================================================== Collaborate -->
-      <section class="story collaborate" id="collaborate">
-        <div class="story-inner">
-          <div class="story-layout-shot visual-first">
-            <div class="story-copy">
-              <h2>People</h2>
-              <ul class="checks">
-                <li><strong>Simultaneous editors</strong> get named carets and personal undo.</li>
-                <li><strong>Annotate</strong> adds highlights and threaded comments.</li>
-                <li><strong>Share</strong> with readers, commenters or editors.</li>
-                <li><strong>Chat</strong> works with collaborators and AI agents.</li>
-                <li><strong>History</strong> is granular and infinite.</li>
+      <!-- ============================================================ write -->
+      <section class="section">
+        <div class="container">
+          <div class="feature" id="write">
+            <div class="feature-copy">
+              <h2>Write and preview</h2>
+              <p>Write in the format that works for you. Edit LaTeX, Typst, Markdown, Quarto and HTML source with a live preview beside it.</p>
+              <p>LaTeX and Typst compile to PDF right in the browser, so there is nothing to install.</p>
+            </div>
+            <div class="feature-aside">
+              <ul class="details">
+                <li>Projects hold many files, figures and fonts.</li>
+                <li>Bibliographies with BibTeX, or with Zotero in the desktop app.</li>
+                <li>Quarto and Calepin notebooks run R, Python and Julia code in the desktop app.</li>
+                <li>Templates give a new project a starting point.</li>
+              </ul>
+            </div>
+            <!-- shot needed: a Typst or Markdown project, source and preview side by side -->
+          </div>
+        </div>
+      </section>
+
+      <!-- ======================================================== collaborate -->
+      <section class="section section-alt" id="collaborate">
+        <div class="container">
+          <div class="feature reverse">
+            <div class="feature-copy">
+              <h2>Collaborate and review</h2>
+              <p>Write together, discuss specific passages, and review changes without leaving your document. Keep track of revisions and give collaborators the access they need.</p>
+              <ul class="details">
+                <li>Edit together in real time, with individual cursors and undo history.</li>
+                <li>Comment on a passage and discuss it in a thread.</li>
+                <li>Record edits as tracked changes, then accept or reject each one.</li>
+                <li>Share a link that lets someone read, comment or edit.</li>
+                <li>Name versions, browse the history and restore an earlier version.</li>
+                <li>Talk with collaborators in the project chat.</li>
               </ul>
             </div>
             <figure class="shot-frame">
-              <img
-                class="shot-small"
-                src="/images/comment-thread.png"
-                alt="A comment thread in LibrePaper: three messages between two collaborators, with buttons to resolve, delete and reply."
-                width="540"
-                height="451"
-              />
+              <picture>
+                <source type="image/webp" srcset="/images/track-changes.webp">
+                <img
+                  src="/images/track-changes.png"
+                  alt="The Changes panel in LibrePaper with one pending insertion, its author and file, and Reject and Accept buttons, beside the Typst source with the inserted line outlined."
+                  width="1171"
+                  height="678"
+                  loading="lazy"
+                  decoding="async"
+                />
+              </picture>
             </figure>
           </div>
-          <!-- shot: two named carets in one paragraph, with its comment thread open -->
         </div>
       </section>
 
-      <!-- ========================================================= AI agents -->
-      <section class="story agents" id="agents">
-        <div class="story-inner">
-          <div class="story-layout-list">
-            <div>
-              <h2>Agents</h2>
+      <!-- ============================================================ AI -->
+      <section class="section" id="ai">
+        <div class="container">
+          <div class="feature">
+            <div class="feature-copy">
+              <h2>Work with AI</h2>
+              <p>Bring your own AI agent into your writing. The desktop app starts the coding agent you already use, such as Claude Code, Codex, Pi or opencode, and gives it tools to read your document, comment on it and propose tracked changes.</p>
+              <p>Your API keys stay with you, not on LibrePaper's servers. No model runs on the LibrePaper server, and you need no additional subscription.</p>
+              <p class="links"><a href="/agents.html">Set up an agent</a></p>
             </div>
-            <div>
-              <ul class="checks">
-                <li><strong>Bring your own agent</strong> needs no new subscription.</li>
-                <li><strong>Chat interface</strong> lets you ask for changes in the sidebar.</li>
-                <li><strong>Pre-specified tasks</strong>: pick one with a passage selected</li>
-                <li><strong>Permissions</strong> are reader, commenter, or editor.</li>
-                <li><strong>Private</strong>: LibrePaper doesn't need your keys or tokens</li>
-                <li><strong>MCP</strong> works with any commercial model or local weights.</li>
+            <div class="feature-aside">
+              <ul class="details">
+                <li>Select a passage to run a writing or review task.</li>
+                <li>Ask for changes in the sidebar chat.</li>
+                <li>Decide whether an agent may read, comment or edit.</li>
+                <li>Accept or reject every change an agent proposes.</li>
               </ul>
             </div>
+            <!-- shot needed: the agent sidebar in the desktop app -->
           </div>
-          <!-- shot: an agent's tracked change awaiting review -->
+        </div>
+      </section>
+
+      <!-- ============================================================ open -->
+      <section class="section section-alt" id="open">
+        <div class="container">
+          <h2 class="section-title">Free and open source</h2>
+          <div class="columns">
+            <div>
+              <h3>Free to use</h3>
+              <p>Every feature of LibrePaper is free. The public service at librepaper.org gives each account a fixed amount of storage.</p>
+              <p class="links"><a href="/what.html">Limits of the public service</a></p>
+            </div>
+            <div>
+              <h3>Open source</h3>
+              <p>The source code is released under the MIT License. Anyone can read it, change it and run it.</p>
+              <p class="links"><a href="https://github.com/LibrePaper/librepaper">Source code on GitHub</a></p>
+            </div>
+            <div>
+              <h3>Self-hosting</h3>
+              <p>Run your own server with one program and a PostgreSQL database.</p>
+              <p class="links"><a href="/host/simple.html">Host your own server</a></p>
+            </div>
+            <div>
+              <h3>Your files</h3>
+              <p>Download any project as ordinary files. The desktop app can back up every project to your disk.</p>
+              <p class="links"><a href="/backups.html">Local backups</a></p>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- ========================================================== desktop -->
+      <section class="section" id="desktop">
+        <div class="container">
+          <div class="feature desktop-feature">
+            <div class="feature-copy">
+              <h2>Features: In the browser or on your desktop</h2>
+              <p>Writing, previews, collaboration and review all work in any modern web browser.</p>
+              <p>The desktop app uses the same account and the same projects. It adds what a browser cannot do on its own, such as running code, starting your AI agent, reading your Zotero library and backing up projects to your disk.</p>
+              <p>The desktop app runs on macOS, Windows and Linux.</p>
+              <p class="links">
+                <a href="https://github.com/LibrePaper/librepaper/releases/latest">Download the desktop app</a>
+                <a href="/desktop-app.html">Installation guide</a>
+              </p>
+            </div>
+            <div class="compare-wrap" id="features">
+              <table class="compare">
+                <caption class="sr-only">What works in the browser and in the desktop app</caption>
+                <thead>
+                  <tr>
+                    <th scope="col">Feature</th>
+                    <th scope="col">Browser</th>
+                    <th scope="col">Desktop</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  <tr class="compare-group"><th scope="rowgroup" colspan="3">Writing</th></tr>
+                  <tr>
+                    <th scope="row">Formats: LaTeX, Markdown, Typst</th>
+                    <td class="yes"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20 6 9 17l-5-5"/></svg><span class="sr-only">Yes</span></td>
+                    <td class="yes"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20 6 9 17l-5-5"/></svg><span class="sr-only">Yes</span></td>
+                  </tr>
+                  <tr>
+                    <th scope="row">Computational notebooks: Quarto, Calepin</th>
+                    <td class="no"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M18 6 6 18"/><path d="m6 6 12 12"/></svg><span class="sr-only">No</span></td>
+                    <td class="yes"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20 6 9 17l-5-5"/></svg><span class="sr-only">Yes</span></td>
+                  </tr>
+                  <tr>
+                    <th scope="row">Multi-file projects</th>
+                    <td class="yes"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20 6 9 17l-5-5"/></svg><span class="sr-only">Yes</span></td>
+                    <td class="yes"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20 6 9 17l-5-5"/></svg><span class="sr-only">Yes</span></td>
+                  </tr>
+                  <tr>
+                    <th scope="row">Templates</th>
+                    <td class="yes"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20 6 9 17l-5-5"/></svg><span class="sr-only">Yes</span></td>
+                    <td class="yes"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20 6 9 17l-5-5"/></svg><span class="sr-only">Yes</span></td>
+                  </tr>
+                  <tr>
+                    <th scope="row">Autocompletion</th>
+                    <td class="yes"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20 6 9 17l-5-5"/></svg><span class="sr-only">Yes</span></td>
+                    <td class="yes"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20 6 9 17l-5-5"/></svg><span class="sr-only">Yes</span></td>
+                  </tr>
+                  <tr>
+                    <th scope="row">Symbol and math palettes</th>
+                    <td class="yes"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20 6 9 17l-5-5"/></svg><span class="sr-only">Yes</span></td>
+                    <td class="yes"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20 6 9 17l-5-5"/></svg><span class="sr-only">Yes</span></td>
+                  </tr>
+                  <tr>
+                    <th scope="row">Vim and Emacs keybindings</th>
+                    <td class="yes"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20 6 9 17l-5-5"/></svg><span class="sr-only">Yes</span></td>
+                    <td class="yes"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20 6 9 17l-5-5"/></svg><span class="sr-only">Yes</span></td>
+                  </tr>
+                  <tr>
+                    <th scope="row">Themes and dark mode</th>
+                    <td class="yes"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20 6 9 17l-5-5"/></svg><span class="sr-only">Yes</span></td>
+                    <td class="yes"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20 6 9 17l-5-5"/></svg><span class="sr-only">Yes</span></td>
+                  </tr>
+                  <tr>
+                    <th scope="row">BibTeX</th>
+                    <td class="yes"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20 6 9 17l-5-5"/></svg><span class="sr-only">Yes</span></td>
+                    <td class="yes"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20 6 9 17l-5-5"/></svg><span class="sr-only">Yes</span></td>
+                  </tr>
+                  <tr>
+                    <th scope="row">Zotero</th>
+                    <td class="no"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M18 6 6 18"/><path d="m6 6 12 12"/></svg><span class="sr-only">No</span></td>
+                    <td class="yes"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20 6 9 17l-5-5"/></svg><span class="sr-only">Yes</span></td>
+                  </tr>
+                  <tr>
+                    <th scope="row">DOCX from Markdown with Pandoc</th>
+                    <td class="no"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M18 6 6 18"/><path d="m6 6 12 12"/></svg><span class="sr-only">No</span></td>
+                    <td class="yes"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20 6 9 17l-5-5"/></svg><span class="sr-only">Yes</span></td>
+                  </tr>
+                </tbody>
+                <tbody>
+                  <tr class="compare-group"><th scope="rowgroup" colspan="3">Collaboration and review</th></tr>
+                  <tr>
+                    <th scope="row">Several people editing at once</th>
+                    <td class="yes"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20 6 9 17l-5-5"/></svg><span class="sr-only">Yes</span></td>
+                    <td class="yes"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20 6 9 17l-5-5"/></svg><span class="sr-only">Yes</span></td>
+                  </tr>
+                  <tr>
+                    <th scope="row">Comment threads</th>
+                    <td class="yes"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20 6 9 17l-5-5"/></svg><span class="sr-only">Yes</span></td>
+                    <td class="yes"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20 6 9 17l-5-5"/></svg><span class="sr-only">Yes</span></td>
+                  </tr>
+                  <tr>
+                    <th scope="row">Track changes</th>
+                    <td class="yes"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20 6 9 17l-5-5"/></svg><span class="sr-only">Yes</span></td>
+                    <td class="yes"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20 6 9 17l-5-5"/></svg><span class="sr-only">Yes</span></td>
+                  </tr>
+                  <tr>
+                    <th scope="row">Chat</th>
+                    <td class="yes"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20 6 9 17l-5-5"/></svg><span class="sr-only">Yes</span></td>
+                    <td class="yes"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20 6 9 17l-5-5"/></svg><span class="sr-only">Yes</span></td>
+                  </tr>
+                  <tr>
+                    <th scope="row">Share links</th>
+                    <td class="yes"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20 6 9 17l-5-5"/></svg><span class="sr-only">Yes</span></td>
+                    <td class="yes"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20 6 9 17l-5-5"/></svg><span class="sr-only">Yes</span></td>
+                  </tr>
+                  <tr>
+                    <th scope="row">Version history</th>
+                    <td class="yes"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20 6 9 17l-5-5"/></svg><span class="sr-only">Yes</span></td>
+                    <td class="yes"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20 6 9 17l-5-5"/></svg><span class="sr-only">Yes</span></td>
+                  </tr>
+                  <tr>
+                    <th scope="row">Tags and favorites</th>
+                    <td class="yes"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20 6 9 17l-5-5"/></svg><span class="sr-only">Yes</span></td>
+                    <td class="yes"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20 6 9 17l-5-5"/></svg><span class="sr-only">Yes</span></td>
+                  </tr>
+                </tbody>
+                <tbody>
+                  <tr class="compare-group"><th scope="rowgroup" colspan="3">AI agents</th></tr>
+                  <tr>
+                    <th scope="row">Claude Code, Codex, Pi, opencode</th>
+                    <td class="no"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M18 6 6 18"/><path d="m6 6 12 12"/></svg><span class="sr-only">No</span></td>
+                    <td class="yes"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20 6 9 17l-5-5"/></svg><span class="sr-only">Yes</span></td>
+                  </tr>
+                  <tr>
+                    <th scope="row">Agent comments and tracked changes</th>
+                    <td class="no"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M18 6 6 18"/><path d="m6 6 12 12"/></svg><span class="sr-only">No</span></td>
+                    <td class="yes"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20 6 9 17l-5-5"/></svg><span class="sr-only">Yes</span></td>
+                  </tr>
+                </tbody>
+                <tbody>
+                  <tr class="compare-group"><th scope="rowgroup" colspan="3">Files and backups</th></tr>
+                  <tr>
+                    <th scope="row">Download projects</th>
+                    <td class="yes"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20 6 9 17l-5-5"/></svg><span class="sr-only">Yes</span></td>
+                    <td class="yes"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20 6 9 17l-5-5"/></svg><span class="sr-only">Yes</span></td>
+                  </tr>
+                  <tr>
+                    <th scope="row">Git sync</th>
+                    <td class="no"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M18 6 6 18"/><path d="m6 6 12 12"/></svg><span class="sr-only">No</span></td>
+                    <td class="yes"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20 6 9 17l-5-5"/></svg><span class="sr-only">Yes</span></td>
+                  </tr>
+                  <tr>
+                    <th scope="row">Project folder on disk</th>
+                    <td class="no"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M18 6 6 18"/><path d="m6 6 12 12"/></svg><span class="sr-only">No</span></td>
+                    <td class="yes"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20 6 9 17l-5-5"/></svg><span class="sr-only">Yes</span></td>
+                  </tr>
+                  <tr>
+                    <th scope="row">Local backups</th>
+                    <td class="no"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M18 6 6 18"/><path d="m6 6 12 12"/></svg><span class="sr-only">No</span></td>
+                    <td class="yes"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20 6 9 17l-5-5"/></svg><span class="sr-only">Yes</span></td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- ========================================================== closing -->
+      <section class="section section-alt closing" id="start">
+        <div class="container">
+          <div class="feature">
+            <div class="feature-copy">
+              <h2>Start writing</h2>
+              <p>Sign in and create your first project. It costs nothing.</p>
+              <div class="hero-actions">
+                <a class="btn-primary" href="https://app.librepaper.org/auth/login">Start writing</a>
+                <a class="btn-secondary" href="https://github.com/LibrePaper/librepaper/releases/latest">Download desktop app</a>
+              </div>
+            </div>
+            <figure class="shot-frame">
+              <picture>
+                <source type="image/webp" srcset="/images/typewriter-1200.webp">
+                <img src="/images/typewriter.jpg" width="1920" height="1198" loading="lazy" decoding="async" alt="A blue Olivetti typewriter, a plant and a notebook on a wooden desk." />
+              </picture>
+            </figure>
+          </div>
         </div>
       </section>
     </main>
 
     <footer class="site-footer">
-      <div class="story-inner">
-        <p>Thanks to Annie Spratt for the typewriter photograph, from <a href="https://pixabay.com/">Pixabay</a>. Website © 2026 <span class="site-footer-name">Vincent Arel-Bundock</span>.</p>
-        <p><a href="/contact.html">Contact</a> · <a href="/privacy.html">Privacy</a></p>
+      <div class="container">
+        <nav aria-label="Footer">
+          <ul class="footer-links">
+            <li><a href="https://github.com/LibrePaper/librepaper">GitHub</a></li>
+            <li><a href="/what.html">Documentation</a></li>
+            <li><a href="https://github.com/LibrePaper/librepaper/releases/latest">Download</a></li>
+            <li><a href="https://github.com/LibrePaper/librepaper/issues">Report an issue</a></li>
+            <li><a href="/host/simple.html">Self-hosting</a></li>
+            <li><a href="/privacy.html">Privacy</a></li>
+            <li><a href="/contact.html">Contact</a></li>
+          </ul>
+        </nav>
+        <p>LibrePaper is free software under the <a href="https://github.com/LibrePaper/librepaper/blob/main/LICENSE">MIT License</a>. Thanks to Annie Spratt for the typewriter photograph, from <a href="https://pixabay.com/">Pixabay</a>. Website © 2026 <span class="site-footer-name">Vincent Arel-Bundock</span>.</p>
       </div>
     </footer>
 
@@ -773,15 +1087,13 @@
           <path d="M18 6 6 18" /><path d="m6 6 12 12" />
         </svg>
       </a>
-      <img
-        src="/images/editor-latex.png"
-        alt="The LibrePaper editor: LaTeX source on the left, the compiled paper with its figure, equation and table on the right."
-        width="2852"
-        height="1487"
-      />
+      <picture>
+        <source type="image/webp" srcset="/images/editor-latex-960.webp 960w, /images/editor-latex-1600.webp 1600w, /images/editor-latex-2852.webp 2852w" sizes="96vw">
+        <img src="/images/editor-latex.png" width="2852" height="1487" loading="lazy" alt="The LibrePaper editor with LaTeX source on the left and the compiled paper, with its figure, equation and table, on the right." />
+      </picture>
     </div>
 
-    <!-- Escape closes the larger view. The overlay itself is CSS, so it opens
+    <!-- Escape closes any larger view. The overlay itself is CSS, so it opens
          and closes without this; what a script adds is the key a reader
          expects, and nothing else depends on it. Closing is a step back
          through history when this page opened the view, which is the same
@@ -792,10 +1104,10 @@
       (function () {
         var opened = false;
         document.addEventListener("click", function (event) {
-          if (event.target.closest && event.target.closest('a[href="#editor"]')) opened = true;
+          if (event.target.closest && event.target.closest("a.shot")) opened = true;
         });
         document.addEventListener("keydown", function (event) {
-          if (event.key !== "Escape" || location.hash !== "#editor") return;
+          if (event.key !== "Escape" || !document.querySelector(".lightbox:target")) return;
           if (opened) {
             opened = false;
             history.back();
