@@ -1881,6 +1881,108 @@ mod tests {
         catalog.close().await;
     }
 
+    /// `named_label_page` returns only the labels that have a name, newest
+    /// first, with the same paging as `label_page`. Renaming a label back to
+    /// `None` takes it out of the named timeline again.
+    #[tokio::test]
+    #[ignore = "requires LIBREPAPER_TEST_POSTGRES_URL"]
+    async fn named_label_page_returns_only_named_labels_newest_first() {
+        let url = std::env::var("LIBREPAPER_TEST_POSTGRES_URL")
+            .expect("set LIBREPAPER_TEST_POSTGRES_URL to run the PostgreSQL contract");
+        let catalog = PostgresCatalog::connect(PostgresOptions::new(url))
+            .await
+            .unwrap();
+        catalog.migrate().await.unwrap();
+        let _writer = catalog.claim_writer().await.unwrap();
+        let tag = new_id().simple().to_string();
+        let account = seed_account(&catalog, &format!("named-{tag}")).await;
+        let document = seed_document(&catalog, account.id, &format!("named-{tag}")).await;
+
+        let label = |sequence: i64| NewLabel {
+            id: new_id(),
+            document_id: document.id,
+            source_sequence: sequence,
+            vector: format!("vector-{sequence}").into_bytes(),
+            frontier: format!("frontier-{sequence}").into_bytes(),
+            tree_digest: None,
+            label: None,
+            reason: "restore".into(),
+            request_id: None,
+            author_account_id: Some(account.id),
+            author_label: "Owner".into(),
+        };
+        let (one, two, three, four) = {
+            let mut tx = catalog.pool().begin().await.unwrap();
+            let one = catalog.insert_label(&mut tx, &label(1)).await.unwrap();
+            let two = catalog.insert_label(&mut tx, &label(2)).await.unwrap();
+            let three = catalog.insert_label(&mut tx, &label(3)).await.unwrap();
+            let four = catalog.insert_label(&mut tx, &label(4)).await.unwrap();
+            tx.commit().await.unwrap();
+            (one, two, three, four)
+        };
+        assert!(catalog
+            .rename_label(document.id, one.id, Some("first"))
+            .await
+            .unwrap());
+        assert!(catalog
+            .rename_label(document.id, three.id, Some("third"))
+            .await
+            .unwrap());
+        // Two unnamed labels exist alongside the named ones.
+        assert_eq!(two.label, None);
+        assert_eq!(four.label, None);
+
+        let sequences = |rows: Vec<LabelRecord>| {
+            rows.iter().map(|row| row.sequence).collect::<Vec<_>>()
+        };
+        let named = catalog
+            .named_label_page(document.id, None, 10)
+            .await
+            .unwrap();
+        assert_eq!(
+            sequences(named),
+            vec![3, 1],
+            "only the two named labels, newest first"
+        );
+        assert_eq!(
+            sequences(
+                catalog
+                    .label_page(document.id, None, 10)
+                    .await
+                    .unwrap()
+            ),
+            vec![4, 3, 2, 1],
+            "the unfiltered timeline still has every label"
+        );
+        assert_eq!(
+            sequences(
+                catalog
+                    .named_label_page(document.id, Some(3), 10)
+                    .await
+                    .unwrap()
+            ),
+            vec![1],
+            "after pages past the newer named label"
+        );
+
+        assert!(catalog
+            .rename_label(document.id, three.id, None)
+            .await
+            .unwrap());
+        assert_eq!(
+            sequences(
+                catalog
+                    .named_label_page(document.id, None, 10)
+                    .await
+                    .unwrap()
+            ),
+            vec![1],
+            "a label renamed back to None disappears from the named timeline"
+        );
+
+        catalog.close().await;
+    }
+
     /// Two labels naming one object are charged once. The object remains
     /// catalogued and charged after labels are removed, until document purge.
     #[tokio::test]
