@@ -28,6 +28,7 @@ export async function remoteChanges() { record("remoteChanges", []); return scen
 export async function localChanges() { record("localChanges", []); return scene().local; }
 export async function outgoing() { record("outgoing", []); return scene().outgoing; }
 export async function push(ctx, message, options) { record("push", [message, options]); scene().local = { status: "none", files: [] }; return { status: "pushed", commit: "abcdef1234" }; }
+export async function pushToBranch(ctx, branch, message) { record("pushToBranch", [branch, message]); return scene().branched ?? { status: "branched", branch, commit: "c9", files: [{ path: "librepaper.md", status: "M" }] }; }
 export async function pull() { record("pull", []); return { status: "nothing", files: [] }; }
 export async function recover() { return { status: "done", pending: [] }; }
 export async function connect(ctx, draft) { record("connect", [draft]); scene().link = scene().connectLink ?? scene().link; return { status: "connected", link: scene().link }; }
@@ -165,6 +166,36 @@ try {
   assert.equal(await evaluate('git.calls.some((call) => call[0] === "disconnect")'), false);
   await evaluate('[...document.querySelectorAll("[role=dialog] button")].find((node) => node.textContent.trim() === "Cancel").click()');
   await until("confirmation closed", () => evaluate('!document.body.innerText.includes("Sync stops until you connect again")'), 5000);
+
+  // Push to branch asks for a name, sends the local changes as one commit to
+  // that new branch and closes. A name the remote already has keeps the dialog
+  // open and says so.
+  const openPushToBranch = async () => {
+    await evaluate('document.querySelector(".gh-panel [aria-label=\'Repository details and actions\']").click()');
+    await until("push to branch on screen", () => evaluate(`(() => { const node = ${item("Push to branch…")}; const box = node?.getBoundingClientRect(); return Boolean(box && box.width && box.top >= 0 && box.left >= 0); })()`), 5000);
+    const pushBox = await evaluate(`(() => { const r = ${item("Push to branch…")}.getBoundingClientRect(); return { x: r.x + r.width / 2, y: r.y + r.height / 2 }; })()`);
+    for (const type of ["mouseMoved", "mousePressed", "mouseReleased"]) {
+      await page.command("Input.dispatchMouseEvent", { type, x: pushBox.x, y: pushBox.y, button: "left", clickCount: 1 });
+    }
+    await until("push to branch dialog", () => evaluate('document.body.innerText.includes("Push to a new branch")'), 5000);
+  };
+  const typeBranch = (name) => evaluate(`(() => { const input = document.querySelector("#push-branch input"); input.value = ${JSON.stringify(name)}; input.dispatchEvent(new Event("input", { bubbles: true })); })()`);
+  await openPushToBranch();
+  await typeBranch("review/intro");
+  await evaluate('document.getElementById("push-branch").requestSubmit()');
+  await until("branch pushed", () => evaluate('git.calls.some((call) => call[0] === "pushToBranch")'), 5000);
+  assert.deepEqual(await evaluate('git.calls.find((call) => call[0] === "pushToBranch")'), ["pushToBranch", "review/intro", ""]);
+  await until("branch dialog closed", () => evaluate('!document.body.innerText.includes("Push to a new branch")'), 5000);
+
+  // A branch name the remote already has is refused: the dialog stays and says why.
+  await evaluate('window.git.branched = { status: "refused", exists: true, refusals: [{ reason: "A branch named review/intro already exists on the remote. Choose another name." }] }');
+  await openPushToBranch();
+  await typeBranch("review/intro");
+  await evaluate('document.getElementById("push-branch").requestSubmit()');
+  await until("branch exists", () => evaluate('document.body.innerText.includes("already exists")'), 5000);
+  assert.equal(await evaluate('document.body.innerText.includes("Push to a new branch")'), true, "the dialog stays open");
+  await evaluate('[...document.querySelectorAll("[role=dialog] button")].find((node) => node.textContent.trim() === "Cancel").click()');
+  await until("branch dialog cancelled", () => evaluate('!document.body.innerText.includes("Push to a new branch")'), 5000);
 
   // Commit & push with the list unchanged pushes the typed message once and
   // then shows that nothing is left.

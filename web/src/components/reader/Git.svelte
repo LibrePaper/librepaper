@@ -13,7 +13,7 @@
   import { remoteIdentity } from "../../lib/gitsync/identity.js";
   import { currentPlatform, signInHelp } from "../../lib/gitsync/sign-in-help.js";
   import {
-    checkRemote, connect, defaultMessage, disconnect, discardConflict, leaveBranch, localChanges, outgoing, pull, push, recover, remoteChanges, status,
+    checkRemote, connect, defaultMessage, disconnect, discardConflict, leaveBranch, localChanges, outgoing, pull, push, pushToBranch, recover, remoteChanges, status,
   } from "../../lib/gitsync/sync.js";
 
   let { open = false, slug, key = "", session = null, rules = {}, me = {}, resolver, differ } = $props();
@@ -58,6 +58,9 @@
   let note = $state(null);
   let confirmingDisconnect = $state(false);
   let confirmingSwitch = $state(false);
+  let branching = $state(false);
+  let newBranch = $state("");
+  let branchError = $state("");
   let identityLine = $state(null);
   const detailsPlace = { placement: "bottom-start", getAnchorRect: () => identityLine?.getBoundingClientRect() ?? null };
 
@@ -392,6 +395,42 @@
     });
   }
 
+  // Pushes the local changes to a new branch for a pull request. The project
+  // stays on its branch, so the files remain local changes.
+  async function doPushToBranch(event) {
+    event?.preventDefault();
+    const name = newBranch.trim();
+    if (!name || busy) return;
+    branchError = "";
+    await guard(async () => {
+      const answer = await pushToBranch(context(), name, message.trim());
+      if (answer.status === "branched") {
+        branching = false;
+        const href = pullRequestUrl(answer.branch);
+        say(`Pushed ${plural(answer.files.length)} to ${answer.branch}`, { kind: "done", id: "git:branch", ...(href ? { action: { label: "Open pull request", onClick: () => window.open(href, "_blank", "noopener") } } : {}) });
+        return;
+      }
+      if (answer.status === "refused") {
+        if (answer.reconnect) reconnect = true;
+        branchError = answer.refusals?.[0]?.reason || "The branch could not be pushed.";
+        return;
+      }
+      if (answer.status === "behind") {
+        branching = false;
+        remoteState = { status: "behind", head: answer.head };
+        loadIncoming();
+        return;
+      }
+      branchError = answer.reason || "There is nothing to push.";
+    });
+  }
+
+  // GitHub opens a pull request for a pushed branch at /pull/new/<branch>.
+  function pullRequestUrl(name) {
+    if (!identity?.href?.startsWith("https://github.com/")) return null;
+    return `${identity.href}/pull/new/${name.split("/").map(encodeURIComponent).join("/")}`;
+  }
+
   async function resume() {
     if (conflictSession && !pending.length) {
       resolver?.open(context(), conflictSession, resolved);
@@ -522,6 +561,7 @@
     else if (item.value === "copy") copyRemote();
     else if (item.value === "disconnect") confirmingDisconnect = true;
     else if (item.value === "switch") confirmingSwitch = true;
+    else if (item.value === "branch") { newBranch = ""; branchError = ""; branching = true; }
   }
 
   // The one line that says where sync stands. It is derived from real state only.
@@ -662,6 +702,7 @@
             {#if identity.href}<Menu.Item value="open" class="menuitem">Open in browser</Menu.Item>{/if}
             <Menu.Item value="copy" class="menuitem">Copy remote URL</Menu.Item>
             <Menu.Item value="switch" class="menuitem" disabled={resolving || savedConflict || interrupted}>Switch branch…</Menu.Item>
+            <Menu.Item value="branch" class="menuitem" disabled={resolving || savedConflict || interrupted || local?.status !== "changes" || remoteState?.status === "behind"}>Push to branch…</Menu.Item>
             <hr class="hr my-1" />
             <Menu.Item value="disconnect" class="menuitem">Disconnect…</Menu.Item>
           </ExplorerMenu>
@@ -810,6 +851,20 @@
     <Modal open title="Switch branch" onclose={() => (confirmingSwitch = false)}
       confirm={{ label: "Switch", oncancel: () => (confirmingSwitch = false), onclick: confirmSwitch }}>
       <p>This project stops syncing with {link.branch}. Pick another branch of the same repository and connect. Files stay as they are in LibrePaper.</p>
+    </Modal>
+  {/if}
+  {#if branching && link}
+    <Modal open title="Push to a new branch" onclose={() => (branching = false)}
+      confirm={{ form: "push-branch", label: busy ? "Pushing…" : "Push", disabled: busy || !newBranch.trim(), oncancel: () => (branching = false) }}>
+      <form id="push-branch" onsubmit={doPushToBranch}>
+        <p>Your local changes go to a new branch of {identity.name} as one commit, ready for a pull request. This project stays on {link.branch}.</p>
+        <label class="label gh-field">
+          <span class="label-text">Branch name</span>
+          <!-- svelte-ignore a11y_autofocus -- the dialog exists to ask this one thing -->
+          <input class="input" autofocus bind:value={newBranch} placeholder="my-changes" autocomplete="off" spellcheck="false" />
+        </label>
+        {#if branchError}<p class="lp-text-error text-sm" role="alert">{branchError}</p>{/if}
+      </form>
     </Modal>
   {/if}
 </section>
