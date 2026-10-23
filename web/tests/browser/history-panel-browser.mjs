@@ -1,10 +1,11 @@
-// Browser regression check for the real history panel: three views of one
-// past -- the day's versions, a month that chooses another day, and the
-// bookmarks somebody left. A day is coarsened by significance: a version
-// somebody asked for is always its own row, the autosaves between two of
-// those are one row that says what the run of them changed, and either opens
-// where it stands. Details belong to the chosen version and to no other, and
-// what was written and never saved is folded away behind a single line.
+// Browser regression check for the real history panel: one list of days,
+// newest first, with each day's versions folded away until somebody opens it.
+// A day is coarsened by significance: a version somebody asked for is always
+// its own row, the autosaves between two of those are one row that says what
+// the run of them changed, and either opens where it stands. Details belong to
+// the chosen version and to no other, and what was written and never saved is
+// not listed. Bookmarks are a filter on the same list rather than a list of
+// their own.
 //
 // The volume is the point of all of it: the server saves a version after
 // thirty seconds of quiet, so the fixtures here are small but the arrangement
@@ -62,10 +63,9 @@ const movedPoints = [
     changed: ["main.md"] },
 ];
 
-// A version three months before the rest, used to check that the calendar can
-// be walked back to it and stops there. It is set on the panel partway through
-// rather than mounted with it, so the months either side of the document are
-// tested without depending on what today happens to be.
+// A version three months before the rest, set on the panel partway through
+// rather than mounted with it. It gives the list a day well before the others,
+// which has to sit last and folded, whatever today's date happens to be.
 const earlier = {
   sha: "d".repeat(64), at: "2026-06-15T12:00:00Z", by: "Vincent", why: "quiet", label: "",
 };
@@ -121,16 +121,23 @@ const flush = async () => { await tick(); await new Promise((resolve) => setTime
 const check = (condition, message) => { if (!condition) throw new Error(message); };
 window.historyPanelCheck = async () => {
   await flush();
-  // The three views, and the one control that chooses between them.
-  const strip = () => [...document.querySelectorAll('.history-tabs [role="tab"]')];
-  const show = async (name) => { document.querySelector('#history-tab-' + name).click(); await flush(); };
-  const showing = () => document.querySelector('.history-tabs [aria-selected="true"]')?.textContent.trim();
-  const cells = () => [...document.querySelectorAll('[data-history-day]')];
-  const cell = (day) => cells().find((node) => node.dataset.historyDay === day);
+  // The list is one column of days, and the filter that narrows it to the
+  // bookmarks is the one control above it.
+  const toggle = () => document.querySelector('[aria-label="Show only bookmarked versions"]');
+  const filter = () => toggle()?.getAttribute('aria-pressed');
+  const groups = () => [...document.querySelectorAll('ol.history-list > .day-group')];
+  const days = () => groups().map((node) => node.dataset.day).join();
+  const group = (day) => document.querySelector('.day-group[data-day="' + day + '"]');
+  const head = (day) => group(day)?.querySelector('.day-head');
+  const isOpen = (day) => head(day)?.getAttribute('aria-expanded') === 'true';
+  const clickHead = async (day) => { head(day).click(); await flush(); };
+  const rowsOf = (day) => [...(group(day)?.querySelectorAll('.day-row:not(.day-now)') ?? [])];
   const list = () => [...document.querySelectorAll('.day-row:not(.day-now)')];
   const nowRow = () => document.querySelector('.day-row.day-now');
   const runs = () => [...document.querySelectorAll('.day-run')];
   const text = (node) => node?.textContent.replace(/\\s+/g, ' ').trim() ?? null;
+  const paragraph = (start) =>
+    [...document.querySelectorAll('.panel-muted')].some((node) => text(node).startsWith(start));
   // What a row puts in front of the eye, which is not all a row says: the
   // word an autosave withholds from the page it still owes a screen reader.
   const seen = (node) =>
@@ -139,17 +146,28 @@ window.historyPanelCheck = async () => {
 
   /* ----------------------------------- a day that fits is a day that is listed */
 
-  // The panel opens on a day, with the month behind its own tab rather than
-  // a grid beside it or a line above it. Five versions is a day anybody can
-  // read, so every one of them is a row -- and this is the regression guard: coarsening a day of five
-  // into one entry standing for them saved nobody anything and left a panel
-  // whose only row could not be chosen, which is the one thing it is for.
-  check(strip().map((node) => node.textContent.trim()).join() === 'Timeline,Calendar,Bookmarks',
-    'three views, in the strip every tabbed panel wears');
-  check(showing() === 'Timeline', 'and it opens on the day, which is what a version history is opened for');
-  check(!cells().length, 'the month must not be drawn beside the day');
-  check(!document.querySelector('.crumb, .crumb-day, .crumb-back'),
-    'and no line above it naming the day: the Calendar tab is where a day is chosen');
+  // The panel opens on the latest day, with every other day folded away
+  // beneath it. There is no month beside the list and no tab strip above it:
+  // a version history is read from its newest day down.
+  check(!document.querySelector('.history-tabs, [role="tab"], [data-history-day], .cal-grid'),
+    'one list: no tabs, no month, no grid beside the days');
+  check(toggle() && filter() === 'false',
+    'the bookmarks are a filter on the list, and the list opens unfiltered');
+  check(days() === '2026-09-11,2026-09-10,2026-09-09',
+    'one group per day, newest first: ' + days());
+  check(isOpen('2026-09-11') && !isOpen('2026-09-10') && !isOpen('2026-09-09'),
+    'only the newest day starts open');
+  check(!rowsOf('2026-09-10').length && !group('2026-09-10').querySelector('.day-run')
+    && !rowsOf('2026-09-09').length && !group('2026-09-09').querySelector('.day-run'),
+    'and a folded day holds no rows at all');
+  check(text(group('2026-09-10').querySelector('.day-meta')) === '4 versions · main.md',
+    'a folded day still says what it holds: ' + text(group('2026-09-10').querySelector('.day-meta')));
+  const newest = text(head('2026-09-11').querySelector('.day-name'));
+  check(newest.includes('Sep') && newest.includes('11'), 'and names its day: ' + newest);
+
+  // Five versions is a day anybody can read, so every one of them is a row.
+  // Coarsening a day of five into one entry standing for them saved nobody
+  // anything and left a panel whose only row could not be chosen.
   check(list().length === 5 && !runs().length,
     'a day that fits is listed, never gathered: '
     + list().length + ' rows, ' + runs().length + ' runs');
@@ -160,10 +178,11 @@ window.historyPanelCheck = async () => {
   // somebody did is what they nearly always came back for.
   check(said.join('|') === '10:03 AM|10:02 AM|10:00 AM|10:00 AM|9:00 AM',
     'each of them its time and nothing more, latest first: ' + said.join('|'));
-  // The live document is the head of that list rather than a banner above the
-  // month: it is what every version is compared against, and nothing is newer.
-  check(nowRow() && document.querySelector('.day-row') === nowRow(),
-    'the current version is the first row of the list');
+  // The live document is the head of that list rather than a banner above it:
+  // it is what every version is compared against, and nothing is newer.
+  check(nowRow() && document.querySelector('.day-row') === nowRow()
+    && document.querySelector('ol.history-list').firstElementChild === nowRow(),
+    'the current version is the first row of the list, and the first item in it');
   // Its own shape, though: a label and what it points at, at the two ends of
   // the row. It is not an event, and giving it the columns the events use
   // said it was one.
@@ -203,7 +222,7 @@ window.historyPanelCheck = async () => {
     'with none of them dropped: ' + stands.join());
   check(text(heads()[0].querySelector('.run-what')).endsWith('· main.tex'),
     'a run says what the whole of it changed: ' + text(heads()[0].querySelector('.run-what')));
-  check(/\\d.*–.*\\d/.test(text(heads()[0].querySelector('.run-when'))),
+  check(/\\d.*\\u2013.*\\d/.test(text(heads()[0].querySelector('.run-when'))),
     'and when it ran: ' + text(heads()[0].querySelector('.run-when')));
 
   // Opened, a run is the versions in it -- where it stands, with the rest of
@@ -296,53 +315,57 @@ window.historyPanelCheck = async () => {
   check(!document.querySelector(".unsaved, .unsaved-more, .unsaved-row"),
     "what was never saved is not on the timeline");
 
-  /* ------------------------------------------------ over to the month */
+  /* ------------------------------------------------ folding whole days */
 
-  await show('calendar');
-  check(showing() === 'Calendar', 'the month is where a reader looking for another day goes');
-  check(!list().length && !runs().length, 'the day stands down when the month comes up');
-  check(cells().length % 7 === 0 && cells().length > 28, 'the month is whole weeks');
-  check(cell('2026-09-01') && cell('2026-09-30'), 'and the whole month');
-  // September 2026 begins on a Tuesday, so the grid runs on into August and
-  // October rather than leaving holes in its corners.
-  check(cell('2026-08-30') && cell('2026-10-03'), 'running on into the months either side');
-  check(cell('2026-08-30').classList.contains('cal-outside'));
-  check(cell('2026-09-16').querySelector('.cal-date').textContent === '16',
-    'a cell carries its own date, because a month is counted across by date');
-  const count = (day) => cell(day)?.querySelector('.cal-count')?.textContent ?? null;
-  check(count('2026-09-09') === '1' && count('2026-09-10') === '4' && count('2026-09-11') === '5',
-    'and the number of versions that landed on it');
-  check(count('2026-09-08') === null, 'a day nothing happened on carries no number');
-  check(cell('2026-09-11').getAttribute('aria-pressed') === 'true',
-    'the day that was open is the day the month opens on');
+  // A day opens on its own head, and its versions come with it while the
+  // others stay as they were.
+  await clickHead('2026-09-10');
+  check(isOpen('2026-09-10') && rowsOf('2026-09-10').length === 4,
+    'a folded day opens to its versions: ' + rowsOf('2026-09-10').length);
+  check(isOpen('2026-09-11') && rowsOf('2026-09-11').length === 5,
+    'and the newest day stays open beside it');
+  await clickHead('2026-09-10');
+  check(!isOpen('2026-09-10') && !rowsOf('2026-09-10').length,
+    'and folds again, taking its rows with it');
+  // The newest day folds like any other, and reopens the same way.
+  await clickHead('2026-09-11');
+  check(!isOpen('2026-09-11') && list().length === 0,
+    'the newest day can be folded too, leaving no version rows: ' + list().length);
+  await clickHead('2026-09-11');
+  check(isOpen('2026-09-11') && rowsOf('2026-09-11').length === 5,
+    'and it opens again');
 
-  // Two arrows, and no more: the month steps, and stops at the ends of the
-  // document rather than wandering into years nothing happened in.
-  check(document.querySelectorAll('.cal-head button').length === 3,
-    'the month header is two arrows and the month itself');
-  const prev = () => document.querySelector('[aria-label="Previous month"]');
-  check(prev().disabled, 'September is the first month this document has');
+  // A version chosen from a folded day opens that day, so its row is on the
+  // screen and not somewhere below a closed head.
+  component.$set({ viewing: points[2].sha }); await flush();
+  check(isOpen('2026-09-10') && document.querySelector('[data-sha="' + points[2].sha + '"]'),
+    'a version chosen from a folded day opens the day and shows its row');
+  component.$set({ viewing: '' }); await flush();
+
+  // A version from months back gets a day of its own at the end of the list,
+  // folded like the rest, and nothing is drawn between it and the others.
   component.$set({ labels: [earlier, ...all] }); await flush();
-  check(!prev().disabled, 'a version in June is a June to walk back to');
-  prev().click(); await flush();
-  check(document.querySelector('.cal-month').textContent.trim() === 'August 2026',
-    'the arrow steps a month back');
-  prev().click(); prev().click(); await flush();
-  check(document.querySelector('.cal-month').textContent.trim() === 'June 2026'
-    && count('2026-06-15') === '1', 'and keeps stepping, to the month the earliest version is in');
-  check(prev().disabled, 'where it stops');
-  document.querySelector('[aria-label="Next month"]').click(); await flush();
-  check(document.querySelector('.cal-month').textContent.trim() === 'July 2026');
+  check(days() === '2026-09-11,2026-09-10,2026-09-09,2026-06-15',
+    'a version from June is the last day of the list: ' + days());
+  check(!isOpen('2026-06-15') && text(head('2026-06-15').querySelector('.day-name')).includes('Jun'),
+    'folded, and named for its month: ' + text(head('2026-06-15').querySelector('.day-name')));
+  component.$set({ labels: all }); await flush();
 
-  /* ----------------------------------------------------- the bookmarks */
+  /* ------------------------------------------- bookmarks as a filter */
 
-  await show('bookmarks');
-  check(!document.querySelector('.cal-grid') && !list().length,
-    'a view at a time: the month and the day stand down for the marks');
+  // The filter keeps only the days that hold a bookmark, opens them all, and
+  // shows each bookmark as a row of its own. Runs are not part of it.
+  toggle().click(); await flush();
+  check(filter() === 'true', 'the toggle is pressed while the filter is on');
+  check(!nowRow(), 'and the live document is not a bookmark, so it goes');
+  check(days() === '2026-09-10,2026-09-09',
+    'only the days holding a bookmark are listed: ' + days());
+  check(groups().every((node) => isOpen(node.dataset.day)), 'and every one of them is open');
   const marks = () => [...document.querySelectorAll('.mark-name')].map((node) => node.textContent);
   // Latest first, as every list in this panel is.
   check(marks().join() === 'Submitted draft,Earlier draft',
     'the bookmarks are the one way in that is not a date: ' + marks().join());
+  check(!runs().length, 'and no run is among them: a bookmark is a version of its own');
   const markRow = (name) => [...document.querySelectorAll('.mark-row')]
     .find((node) => node.querySelector('.mark-name')?.textContent === name);
   // Rename and remove live here, on the row, and nowhere else.
@@ -361,17 +384,24 @@ window.historyPanelCheck = async () => {
   check(events.some((event) => event[0] === 'name' && event[1] === points[0].sha && event[2] === ''),
     'removing a bookmark takes the name off the version, and does not touch the version');
   document.querySelector('.mark-point').click(); await flush();
-  check(showing() === 'Timeline' && (list().length || runs().length),
-    'opening one drills straight into its day');
   check(events.some((event) => event[0] === 'view' && event[1] === points[4].sha),
-    'and asks for its comparison');
-  await show('calendar');
-  check(cell('2026-09-10').getAttribute('aria-pressed') === 'true',
-    'and the day it drilled into is that version’s own day');
+    'clicking a bookmark asks for its comparison');
+
+  // A filter with bookmarks in none of the versions it is given says so in a
+  // sentence, rather than showing an empty list and leaving it at that.
+  component.$set({ labels: busyDay }); await flush();
+  check(filter() === 'true' && !document.querySelector('.mark-row') && paragraph('No bookmarks yet'),
+    'with versions and no bookmarks, the filter says there are none yet');
+  component.$set({ labels: all }); await flush();
+  toggle().click(); await flush();
+  check(filter() === 'false' && nowRow(),
+    'the toggle takes the whole list back, and the present is at its head');
 
   /* ------------------------------------------------- marking a version */
 
-  await show('timeline');
+  // The day of the bookmarked version is folded at the moment, so open it
+  // before looking for the row inside it.
+  if (!isOpen('2026-09-10')) await clickHead('2026-09-10');
   component.$set({ viewing: '' }); await flush();
   const unmarked = list().find((node) => node.querySelector('[aria-label="Bookmark this version"]'));
   check(unmarked, 'an unmarked version offers the mark');
@@ -401,13 +431,8 @@ window.historyPanelCheck = async () => {
   /* -------------------------------------------------------- the present */
 
   component.$set({ viewing: '' }); await flush();
-  await show('calendar');
-  // The live document is a row in the day, so the month -- which is a day
-  // picker and nothing else -- does not carry it.
-  check(!nowRow(), 'the month is days, and the present is not one of them');
-  cell('2026-09-11').click(); await flush();
-  check(showing() === 'Timeline' && nowRow(),
-    'and it is back at the head of the list the moment a day is open');
+  check(nowRow() && nowRow().querySelector('.now-point'),
+    'the live document heads the list while the list is unfiltered');
   const currentName = document.querySelector('[aria-label="Bookmark the current version"]');
   check(currentName, 'the current version can be bookmarked like any other'); currentName.click(); await flush();
   const input = document.querySelector('[aria-label="Name this bookmark"]');
@@ -461,7 +486,7 @@ try {
   await tab.navigate(`http://127.0.0.1:${port}/`);
   await until("history panel component", () => tab.evaluate("Boolean(window.historyPanelCheck)"));
   assert.equal(await tab.evaluate("window.historyPanelCheck()"), true);
-  console.log("history panel: three views, a day coarsened by significance, and bookmarks");
+  console.log("history panel: one list of days, coarsened by significance, bookmarks as a filter");
 } finally {
   await tab?.close(); server?.close(); removeTemporary(temporary);
 }
