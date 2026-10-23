@@ -108,7 +108,7 @@ assert.equal(HISTORY_DEFAULTS.openYesterdayEvents, 6);
 
 {
   // A long afternoon: one point every twenty minutes never reaches the gap.
-  const long = run("2026-10-22T06:00:00Z", 60, 20);
+  const long = run("2026-10-22T03:00:00Z", 60, 15);
   const events = buildEvents(long, "UTC");
   assert.equal(events.length, 1, "a long session is still one event");
   assert.equal(events[0].points.length, 60);
@@ -296,16 +296,18 @@ assert.equal(HISTORY_DEFAULTS.openYesterdayEvents, 6);
 
 // Today, yesterday, inside the last seven days, earlier this month, previous
 // months, and previous years, each with one event.
+// Built oldest first so each point's seq follows its time, as the server's
+// does, then listed newest first.
 const spread = [
-  point("2026-10-23T09:00:00Z"),
-  point("2026-10-22T09:00:00Z"),
-  point("2026-10-18T09:00:00Z"),
-  point("2026-10-16T09:00:00Z"),
-  point("2026-09-03T09:00:00Z"),
-  point("2026-08-10T09:00:00Z"),
-  point("2025-12-31T09:00:00Z"),
-  point("2024-03-01T09:00:00Z"),
-];
+  "2024-03-01T09:00:00Z",
+  "2025-12-31T09:00:00Z",
+  "2026-08-10T09:00:00Z",
+  "2026-09-03T09:00:00Z",
+  "2026-10-16T09:00:00Z",
+  "2026-10-18T09:00:00Z",
+  "2026-10-22T09:00:00Z",
+  "2026-10-23T09:00:00Z",
+].map((at) => point(at)).reverse();
 
 {
   const periods = buildPeriods(spread, { timeZone: "UTC", today: TODAY });
@@ -458,8 +460,10 @@ const sessions = (day, count) => Array.from(
 {
   const periods = buildPeriods(spread, { timeZone: "UTC", today: TODAY });
   assert.deepEqual(nearestPeriod(periods, "2026-09"), { key: "month:2026-09", exact: true });
-  assert.deepEqual(nearestPeriod(periods, "2025-06"), { key: "year:2025", exact: true },
-    "a year stands in for a month it has no month for");
+  assert.deepEqual(nearestPeriod(periods, "2025-12"), { key: "year:2025", exact: true },
+    "a year that lists its events directly answers for a month one of them is in");
+  assert.deepEqual(nearestPeriod(periods, "2025-06"), { key: "year:2025", exact: false },
+    "and only for such a month: June 2025 has no versions");
 }
 
 {

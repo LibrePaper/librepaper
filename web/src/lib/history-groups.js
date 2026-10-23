@@ -250,7 +250,10 @@ export function nearestPeriod(periods, month) {
   if (best) return { key: best.period.key, exact: true };
 
   const year = month.slice(0, 4);
-  const yearPeriod = all.find(({ period }) => period.kind === "year" && period.value === year);
+  // A year that lists its events directly answers for a month only when one
+  // of those events falls in it.
+  const yearPeriod = all.find(({ period }) => period.kind === "year" && period.value === year
+    && period.events?.some((event) => event.day.startsWith(`${month}-`)));
   if (yearPeriod) return { key: yearPeriod.period.key, exact: true };
 
   // Distance is measured from the middle of the month to the nearest edge of
@@ -283,6 +286,7 @@ export function periodTitle(period, today) {
   if (kind === "day") {
     if (value === today) return "Today";
     if (value === shiftDay(today, -1)) return "Yesterday";
+    /** @type {Intl.DateTimeFormatOptions} */
     const options = { weekday: "short", month: "short", day: "numeric", timeZone: "UTC" };
     if (value.slice(0, 4) !== today.slice(0, 4)) options.year = "numeric";
     return new Date(`${value}T12:00:00Z`).toLocaleDateString([], options);

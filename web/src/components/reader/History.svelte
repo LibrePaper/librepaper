@@ -58,7 +58,6 @@
 
   // Elements the script needs to reach.
   let listEl = $state(null);
-  let sentinel = $state(null);
   let dateWrap = $state(null);
   let monthField = $state(null);
 
@@ -90,6 +89,7 @@
     return next;
   };
   function setPeriod(key, want) {
+    note = "";
     if (openNow(key) !== want) toggled = flipped(toggled, key);
   }
   function setEvent(key, want) {
@@ -307,12 +307,9 @@
     listEl?.querySelector(`[data-period="${hit.key}"]`)?.scrollIntoView({ block: "start" });
   }
 
-  function onRootKey(event) {
-    note = "";
-    if (event.key === "Escape" && dateOpen) {
-      dateOpen = false;
-      dateWrap?.querySelector("button")?.focus();
-    }
+  function closeDate() {
+    dateOpen = false;
+    dateWrap?.querySelector("button")?.focus();
   }
 
   // Arrow keys move between the buttons of the list in document order.
@@ -340,22 +337,9 @@
     }
   }
 
-  // Load older pages when the end of the list comes into view. The observer
-  // is replaced whenever the state it depends on changes, and removed on
-  // destroy.
-  $effect(() => {
-    const el = sentinel;
-    const root = listEl;
-    if (!el || !root || complete || loadingMore || moreProblem) return;
-    const observer = new IntersectionObserver((entries) => {
-      if (entries.some((entry) => entry.isIntersecting)) onloadmore?.();
-    }, { root, rootMargin: "160px" });
-    observer.observe(el);
-    return () => observer.disconnect();
-  });
 </script>
 
-<div class="panel timeline" onpointerdown={() => (note = "")} onkeydown={onRootKey}>
+<div class="panel timeline">
   <PanelHeader title="History" actions={mode === "all" ? dateAction : undefined} />
 
   {#if dateOpen && mode === "all"}
@@ -368,6 +352,7 @@
         bind:this={monthField}
         onkeydown={(event) => {
           if (event.key === "Enter") goTo();
+          if (event.key === "Escape") closeDate();
         }}
       />
       <button type="button" class="btn btn-sm" disabled={!month} onclick={goTo}>Go</button>
@@ -381,6 +366,8 @@
 
   {#if note}<p class="panel-meta hx-note" role="status">{note}</p>{/if}
 
+  <!-- The handler only moves focus between the buttons inside the list. -->
+  <!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
   <ol class="hx-list" bind:this={listEl} onkeydown={navigate}>
     {#if mode === "all"}
       <!-- The live document. It is what every bookmark is compared against,
@@ -428,8 +415,11 @@
         {/each}
       {/if}
 
-      {#if !complete || loadingMore || moreProblem}
-        <li class="hx-older" bind:this={sentinel}>
+      <!-- Older pages load when asked for, here or by the date control. An
+           observer at the end of the list would page through everything,
+           because with the months folded the end is nearly always in view. -->
+      {#if loaded && (!complete || loadingMore || moreProblem)}
+        <li class="hx-older">
           {#if loadingMore}
             <span class="panel-muted">Loading older history…</span>
           {:else if moreProblem}
@@ -619,8 +609,8 @@
   </li>
 {/snippet}
 
-<!-- A saved version, in the saved view. Renaming is always offered; removing
-     the name needs the right to change the document. -->
+<!-- A saved version, in the saved view. Renaming it and removing its name
+     need the right to change the document. -->
 {#snippet savedRow(point)}
   <li class="hx-saved" data-sha={point.sha}>
     {#if naming === point.sha}
@@ -643,9 +633,9 @@
           </span>
         </button>
         <span class="hx-tools">
-          <IconButton icon="pencil" tone="plain" size="btn-icon-sm" label="Rename"
-                      onclick={() => startNaming(point)} />
           {#if canEdit}
+            <IconButton icon="pencil" tone="plain" size="btn-icon-sm" label="Rename"
+                        onclick={() => startNaming(point)} />
             <IconButton icon="trash" tone="plain" size="btn-icon-sm" label="Remove from saved versions"
                         onclick={() => unbookmark(point)} />
           {/if}
