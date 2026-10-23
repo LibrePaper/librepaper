@@ -30,7 +30,8 @@ http_request() {
 }
 # keys.yaml is encrypted to age. SOPS_AGE_KEY_CMD would ask for the identity's
 # passphrase on every key, so unlock_identity asks once and keeps the identity
-# in a shell variable that is never exported: only sops receives it.
+# in a shell variable that is never exported: only sops receives it. sops gets
+# SOPS_AGE_KEY_CMD unset, not empty: sops 3.13 panics on an empty one.
 AGE_IDENTITY=
 unlock_identity() {
 	[ -z "$AGE_IDENTITY" ] && [ -n "${SOPS_AGE_KEY_CMD:-}" ] || return 0
@@ -38,7 +39,7 @@ unlock_identity() {
 }
 key() {
 	if [ -n "$AGE_IDENTITY" ]; then
-		SOPS_AGE_KEY="$AGE_IDENTITY" SOPS_AGE_KEY_CMD= sops --decrypt --extract "[\"$1\"]" tools/deploy/keys.yaml
+		env -u SOPS_AGE_KEY_CMD SOPS_AGE_KEY="$AGE_IDENTITY" sops --decrypt --extract "[\"$1\"]" tools/deploy/keys.yaml
 	else
 		sops --decrypt --extract "[\"$1\"]" tools/deploy/keys.yaml
 	fi
