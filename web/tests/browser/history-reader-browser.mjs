@@ -131,22 +131,28 @@ try {
   await until("initial current source", () => tab.evaluate(`document.querySelector('.cm-content')?.textContent.includes('current purple')`), 10000);
   await tab.evaluate(`document.querySelector('.sidebar-activity [aria-label="History"]').click()`);
   await until("label timeline", () => tab.evaluate(`Boolean(document.querySelector('[data-sha="${points[1].sha}"]'))`), 10000);
+  // The first page holds every version but the oldest. The rest is read when
+  // somebody asks for it.
+  assert.equal(await tab.evaluate(`Boolean(document.querySelector('[data-sha="${points[0].sha}"]'))`), false, 'older pages wait to be asked for');
+  await tab.evaluate(`document.querySelector('.hx-older button').click()`);
+  await until("older page", () => tab.evaluate(`Boolean(document.querySelector('[data-sha="${points[0].sha}"]'))`), 10000);
+  const row = (sha) => `document.querySelector('[data-sha="${sha}"] button[data-nav]')`;
   const select = async index => {
     const sha = points[index].sha;
     const position = await tab.evaluate(`(() => {
-      const row = document.querySelector('[data-sha="${sha}"] .timeline-point');
+      const row = ${row(sha)};
       row.scrollIntoView({block:'nearest'});
       const box = row.getBoundingClientRect(), x = box.left + box.width / 2, y = box.top + box.height / 2;
-      if (document.elementFromPoint(x,y)?.closest('.timeline-point') !== row) throw new Error('Label row is obscured');
+      if (document.elementFromPoint(x,y)?.closest('button') !== row) throw new Error('Label row is obscured');
       return {x,y};
     })()`);
     if (tab.command) {
       await tab.command('Input.dispatchMouseEvent', {type:'mousePressed',...position,button:'left',clickCount:1});
       await tab.command('Input.dispatchMouseEvent', {type:'mouseReleased',...position,button:'left',clickCount:1});
     } else {
-      await tab.evaluate(`document.elementFromPoint(${position.x},${position.y}).closest('.timeline-point').click()`);
+      await tab.evaluate(`document.elementFromPoint(${position.x},${position.y}).closest('button').click()`);
     }
-    await until(`selected ${points[index].label}`, () => tab.evaluate(`document.querySelector('[data-sha="${sha}"] .timeline-point')?.getAttribute('aria-current') === 'true'`), 3000);
+    await until(`selected ${points[index].label}`, () => tab.evaluate(`${row(sha)}?.getAttribute('aria-current') === 'true'`), 3000);
   };
   const expectDiff = async (left, right) => {
     await until("expected source comparison", () => tab.evaluate(`(() => {
@@ -162,21 +168,21 @@ try {
   await select(2); await expectDiff(sources[2], current);
   await select(0); await expectDiff(sources[0], current);
   console.log("history reader: repeated label selection updates both source endpoints");
-  await tab.evaluate(`document.querySelector('.day-now .timeline-point').click()`);
+  await tab.evaluate(`document.querySelector('.hx-current button').click()`);
   await until('current source alone', () => tab.evaluate(`document.querySelectorAll('.cm-content').length === 1 && document.querySelector('.cm-content').textContent === ${JSON.stringify(current)}`), 4000);
   await select(1); await expectDiff(sources[1], current);
   console.log('history reader: the current row, and a version against it');
-  // A base: the compare button on another row, Swap, a shift-click that
-  // moves the base, and back to the current source.
-  const sha = index => JSON.stringify(points[index].sha);
-  await tab.evaluate(`document.querySelector('[data-sha=${sha(0)}] [aria-label="Compare with this version"]').click()`);
+  // A base: a shift-click on another row, Swap, a shift-click that moves the
+  // base, and back to the current source.
+  const shiftClick = index => tab.evaluate(`${row(points[index].sha)}.dispatchEvent(new MouseEvent("click", {bubbles: true, shiftKey: true}))`);
+  await shiftClick(0);
   await expectDiff(sources[0], sources[1]);
   assert.match(await tab.evaluate(`document.querySelector(".history-source-ends")?.textContent || ""`), /\u2192/);
   await tab.evaluate(`[...document.querySelectorAll(".history-source-bar button")].find(b => b.textContent.trim() === "Swap").click()`);
   await expectDiff(sources[1], sources[0]);
-  await tab.evaluate(`document.querySelector('[data-sha=${sha(2)}] .timeline-point').dispatchEvent(new MouseEvent("click", {bubbles: true, shiftKey: true}))`);
+  await shiftClick(2);
   await expectDiff(sources[2], sources[0]);
-  assert.equal(await tab.evaluate(`document.querySelector('[data-sha=${sha(2)}] .timeline-point').classList.contains("timeline-against")`), true);
+  assert.equal(await tab.evaluate(`${row(points[2].sha)}.classList.contains("hx-base")`), true);
   await tab.evaluate(`[...document.querySelectorAll(".history-source-bar button")].find(b => b.textContent.trim() === "Compare with current").click()`);
   await expectDiff(sources[0], current);
   console.log("history reader: two versions against each other");
@@ -184,9 +190,9 @@ try {
   await tab.evaluate(`document.querySelector('.sidebar-activity [aria-label="History"]').click()`);
   await until('reopening history starts at the current source', () => tab.evaluate(`document.querySelectorAll('.cm-content').length === 1 && document.querySelector('.cm-content').textContent === ${JSON.stringify(current)}`), 4000);
   // The last three of these are autosaves in a row, which the panel gathers
-  // into one entry; opening it is how the rest of them are reached. That
-  // coarsening is the panel's own and is checked in history-panel-browser.mjs.
-  await tab.evaluate(`document.querySelector('.run-head')?.click()`);
+  // into one editing session. Opening it is how the rest of them are reached.
+  // That grouping is the panel's own and is checked in history-panel-browser.mjs.
+  await tab.evaluate(`document.querySelector('[data-type="editing"] button[aria-expanded="false"]')?.click()`);
   await select(5);
   await expectDiff(sources[5], current);
   console.log('history reader: every version is reachable, gathered or not');

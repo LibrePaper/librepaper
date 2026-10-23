@@ -1,12 +1,12 @@
 // The timeline: what the document used to say, and when.
 //
-// The server writes a manifest at every label and serves it whole. This
-// module is the reader's side of it: fetching the manifest and one
-// label's files, naming a label, the word-level diff between two
-// versions, and the order the manifest is read in.
+// The server writes a manifest at every label and serves it in pages, newest
+// first. This module is the reader's side of it: fetching a page of the
+// manifest and one label's files, naming a label, the word-level diff between
+// two versions, and the order the manifest is read in.
 //
 // The reading of it -- which day a label fell on, which month the panel
-// is showing -- lives next door in `history-days.js`.
+// is showing -- lives next door in `history-groups.js`.
 
 import { SHELL_HEADERS } from "./api.js";
 import * as renderers from "./renderers.js";
@@ -37,36 +37,25 @@ function fromWire(row) {
   };
 }
 
-/// The history manifest, oldest first.
-export async function loadWithStatus(slug, headers = {}) {
-  const points = new Map();
-  let cursor = null;
-  do {
-    const response = await fetch(`/api/documents/${slug}/history${cursor === null ? "" : `?after=${encodeURIComponent(cursor)}`}`, {
-      headers: asked(headers),
-      cache: "no-store",
-    });
-    if (!response.ok) throw new Error("this document's history is not readable");
-    const payload = await response.json();
-    for (const row of payload.labels || []) points.set(row.sha, fromWire(row));
-    const next = payload.next_cursor ?? null;
-    if (next !== null && (!Number.isSafeInteger(next) || next <= 0 || (cursor !== null && next >= cursor))) {
-      throw new Error("The history server returned an invalid page cursor.");
-    }
-    cursor = next;
-  } while (cursor !== null);
-  return {
-    // Controllers and provenance read oldest first. The paged endpoint reads
-    // newest first; normalize once at the boundary, including timestamp ties.
-    labels: [...points.values()].sort(labelOrder),
-  };
-}
-
-/// Every label of a document, oldest first, as the manifest holds them.
-/// Kept as a list-returning adapter for small integrations that only need
-/// the timeline rows.
-export async function load(slug, headers = {}) {
-  return (await loadWithStatus(slug, headers)).labels;
+/// One page of the history manifest, newest first, and the cursor for the next
+/// older page (null at the end). `after` is the cursor the previous page gave,
+/// and `named` asks for saved labels only.
+export async function loadPage(slug, headers = {}, { after = null, limit = 200, named = false } = {}) {
+  const query = new URLSearchParams();
+  if (after !== null) query.set("after", String(after));
+  query.set("limit", String(limit));
+  if (named) query.set("named", "1");
+  const response = await fetch(`/api/documents/${slug}/history?${query}`, {
+    headers: asked(headers),
+    cache: "no-store",
+  });
+  if (!response.ok) throw new Error("this document's history is not readable");
+  const payload = await response.json();
+  const next = payload.next_cursor ?? null;
+  if (next !== null && (!Number.isSafeInteger(next) || next <= 0 || (after !== null && next >= after))) {
+    throw new Error("The history server returned an invalid page cursor.");
+  }
+  return { labels: (payload.labels || []).map(fromWire), next };
 }
 
 /// What the document said at one label: which file was the document, the

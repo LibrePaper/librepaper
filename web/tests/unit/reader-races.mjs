@@ -1185,7 +1185,7 @@ console.log('reader-races: View menu exposes explicit preview controls at every 
   const timeline = createTimeline({
     slug: "doc",
     key: "",
-    history: { loadWithStatus: async () => ({ labels: [] }) },
+    history: { loadPage: async () => ({ labels: [], next: null }) },
     fetcher: async (url, options) => {
       posted.push({ url, body: options.body });
       return { ok: true, json: async () => ({}) };
