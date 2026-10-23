@@ -170,7 +170,10 @@
   // once the bar is drawn, so Enter answers it and Escape walks away.
   function askBulk(action, rows, scope) {
     confirming = { action, rows: [...rows], scope };
-    requestAnimationFrame(() => document.querySelector(".confirm-bar .confirm")?.focus());
+    requestAnimationFrame(() => {
+      const button = document.querySelector(".confirm-bar .confirm");
+      if (button instanceof HTMLElement) button.focus();
+    });
   }
   const verbOf = (action) => (action === "accept" ? "Accept" : "Reject");
   const confirmText = ({ action, rows, scope }) => {
@@ -186,10 +189,9 @@
     else bulk(action, selectedRows);
   }
   function clearFilters() { authorFilter = ""; fileFilter = ""; runFilter = ""; idsFilter = []; }
-  // The menu is where the infrequent things live: the two verbs that answer
-  // for everything on show, and the mode that lets a reviewer choose a set.
-  // Neither belongs in the panel itself, where they would stand above every
-  // review as controls nobody presses.
+  // Bulk actions holds what acts on many changes at once: the mode that lets a
+  // reviewer choose a set, and the two verbs that answer for every pending
+  // change whatever the filter shows.
   function chooseMenuItem(value) {
     if (value === "select") startSelecting();
     else if (value === "accept-all") askBulk("accept", orderedRows, "all");
@@ -219,7 +221,7 @@
 
 {#snippet rowMain(item, isActive)}
   <button id={`change-${item.id}`} type="button" class="row-main" aria-current={isActive ? "true" : undefined} onclick={() => reveal(item)}>
-    <span class="row-meta"><span class="row-kind">{kindOf(item)}</span><span class="row-author">{whoLabel(item)}</span>{#if item.run}<span class="row-run">{runLabel(item.run)}</span>{/if}</span>
+    <span class="row-meta"><span class="row-kind">{kindOf(item)}</span><span class="row-who"><span class="row-author">{whoLabel(item)}</span>{#if item.run}<span class="row-run">{runLabel(item.run)}</span>{/if}</span></span>
     {#if locationOf(item)}<span class="row-location">{locationOf(item)}</span>{/if}
     <span class="row-diff" class:clamped={isLong(item) && !expandedText.has(item.id)}>{#if item.before}<span class="deletion"><span class="sign" aria-hidden="true">−</span><del class="change-text">{item.before}</del></span>{/if}{#if item.after}<span class="insertion"><span class="sign" aria-hidden="true">+</span><ins class="change-text">{item.after}</ins></span>{/if}</span>
   </button>
@@ -308,7 +310,7 @@
     <button type="button" class="bar-action select-all" disabled={filteredRows.every((item) => checked.has(item.id))} onclick={() => checked = new Set(filteredRows.map((item) => item.id))}>Select all</button>
     {#if canReview}<button type="button" class="bar-action reject" disabled={!selectedRows.length || busy} onclick={() => answerSelected("reject")}>Reject</button>
     <button type="button" class="bar-action accept" disabled={!selectedRows.length || busy} onclick={() => answerSelected("accept")}>Accept</button>{/if}
-    <button type="button" class="bar-action" onclick={stopSelecting}>Cancel</button>
+    <button type="button" class="bar-action cancel" onclick={stopSelecting}>Cancel</button>
   </div>{/if}
   {#if confirming}<div class="confirm-bar" role="alertdialog" aria-labelledby="changes-confirm-text">
     <span class="confirm-text" id="changes-confirm-text">{confirmText(confirming)}</span>
@@ -396,16 +398,16 @@
   .row-main:focus-visible { outline: 2px solid var(--color-focus); outline-offset: 2px; border-radius: .2rem; }
   .row-meta { display: flex; gap: .5rem; overflow: hidden; color: var(--panel-muted); font-size: var(--panel-meta-size); white-space: nowrap; }
   .row-kind { flex: 0 0 auto; font-weight: 500; }
-  .row-author { min-width: 0; margin-left: auto; overflow: hidden; text-overflow: ellipsis; }
-  .row-run::before { content: " · "; }
+  .row-who { min-width: 0; margin-left: auto; overflow: hidden; text-overflow: ellipsis; }
+  .row-run::before { content: "\00b7"; margin-inline: .3rem; }
   .row-location { display: block; margin-top: .1rem; overflow: hidden; color: var(--panel-muted); font-size: var(--panel-meta-size); text-overflow: ellipsis; white-space: nowrap; }
   /* The diff quotes the source, so it wears the source's monospace at the
      panel's own size rather than a hand-set one. */
   .row-diff { display: block; margin-top: .35rem; font-family: var(--font-editor); font-size: var(--panel-font-size); line-height: var(--panel-line-height); white-space: pre-wrap; overflow-wrap: anywhere; }
   .insertion, .deletion { display: block; padding: .1rem .35rem; border-radius: .2rem; }
   .deletion + .insertion { margin-top: .15rem; }
-  .insertion { color: var(--color-success-text); background: color-mix(in srgb, var(--color-success-solid) 10%, transparent); }
-  .deletion { color: var(--color-error-text); background: color-mix(in srgb, var(--color-error-solid) 8%, transparent); }
+  .insertion { color: var(--color-success-text); background: color-mix(in srgb, var(--color-success-solid) 8%, transparent); }
+  .deletion { color: var(--color-error-text); background: color-mix(in srgb, var(--color-error-solid) 7%, transparent); }
   del.change-text { text-decoration: line-through; text-decoration-color: color-mix(in srgb, currentColor 55%, transparent); }
   ins.change-text { text-decoration: none; }
   .sign { margin-right: .35rem; font-weight: 600; user-select: none; }
