@@ -174,7 +174,7 @@ async function runChecks() {
   const eventsOf = (type) => all(`li.hx-event[data-type="${type}"]`);
   const versionsOf = (node) => all("li.hx-version", node);
   const statusText = () => all("li.hx-status").map(text).join(" | ");
-  const choose = (label) => all(".hx-segment button").find((node) => text(node) === label);
+  const choose = (label) => all(".hx-segment button").find((node) => node.getAttribute("aria-label") === label);
   const click = (node, init = {}) =>
     node.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true, ...init }));
   const press = (node, name) => {

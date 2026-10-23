@@ -187,7 +187,11 @@
   const range = (event) => {
     const from = clock(event.start);
     const to = clock(event.end);
-    return from === to ? from : `${from}\u2013${to}`;
+    if (from === to) return from;
+    // "9:00\u20139:03 AM" rather than saying AM twice.
+    const suffix = to.match(/\s\D+$/)?.[0] || "";
+    const start = suffix && from.endsWith(suffix) ? from.slice(0, -suffix.length) : from;
+    return `${start}\u2013${to}`;
   };
   const eventMeta = (event) =>
     [
@@ -340,28 +344,43 @@
 </script>
 
 <div class="panel timeline">
-  <PanelHeader title="History" actions={mode === "all" ? dateAction : undefined} />
+  <PanelHeader title="History" />
 
-  {#if dateOpen && mode === "all"}
-    <div class="hx-popover" id="hx-date" role="group" aria-label="Go to a month">
-      <input
-        type="month"
-        class="input"
-        aria-label="Month"
-        bind:value={month}
-        bind:this={monthField}
-        onkeydown={(event) => {
-          if (event.key === "Enter") goTo();
-          if (event.key === "Escape") closeDate();
-        }}
-      />
-      <button type="button" class="btn btn-sm" disabled={!month} onclick={goTo}>Go</button>
+  <!-- The filter and the date control share one row: the panel's title is
+       for screen readers only, so a header row would hold a lone icon. -->
+  <div class="hx-bar">
+    <div class="hx-segment" role="group" aria-label="Filter history">
+      <!-- A narrow panel shows the short words. The long ones stay the
+           buttons' names, so a screen reader hears the same thing at any width. -->
+      <button type="button" aria-pressed={mode === "all"} aria-label="All history" onclick={showAll}>
+        <span class="hx-long">All history</span><span class="hx-short" aria-hidden="true">All</span>
+      </button>
+      <button type="button" aria-pressed={mode === "saved"} aria-label="Saved versions" onclick={showSaved}>
+        <span class="hx-long">Saved versions</span><span class="hx-short" aria-hidden="true">Saved</span>
+      </button>
     </div>
-  {/if}
-
-  <div class="hx-segment" role="group" aria-label="Filter history">
-    <button type="button" aria-pressed={mode === "all"} onclick={showAll}>All history</button>
-    <button type="button" aria-pressed={mode === "saved"} onclick={showSaved}>Saved versions</button>
+    {#if mode === "all"}
+      <span class="hx-date-wrap" bind:this={dateWrap}>
+        <IconButton icon="calendar" tone="plain" size="btn-icon-sm" label="Go to a date"
+                    expanded={dateOpen} controls="hx-date" onclick={toggleDate} />
+      </span>
+    {/if}
+    {#if dateOpen && mode === "all"}
+      <div class="hx-popover" id="hx-date" role="group" aria-label="Go to a month">
+        <input
+          type="month"
+          class="input"
+          aria-label="Month"
+          bind:value={month}
+          bind:this={monthField}
+          onkeydown={(event) => {
+            if (event.key === "Enter") goTo();
+            if (event.key === "Escape") closeDate();
+          }}
+        />
+        <button type="button" class="btn btn-sm" disabled={!month} onclick={goTo}>Go</button>
+      </div>
+    {/if}
   </div>
 
   {#if note}<p class="panel-meta hx-note" role="status">{note}</p>{/if}
@@ -447,13 +466,6 @@
     {/if}
   </ol>
 </div>
-
-<!-- The date control in the header. It is not shown in the saved view. -->
-{#snippet dateAction()}
-  <span class="hx-date-wrap" bind:this={dateWrap}>
-    <IconButton icon="calendar" label="Go to a date" expanded={dateOpen} controls="hx-date" onclick={toggleDate} />
-  </span>
-{/snippet}
 
 <!-- A period: a day, the rest of a month, a month or a year. Its children are
      periods, or its events when it lists them directly. -->
@@ -679,15 +691,23 @@
   /* One column, two levels of type, and no boxes. The only colour says which
      row is being read. */
 
-  .timeline { position: relative; display: flex; flex-direction: column; overflow: hidden; }
+  .timeline { position: relative; display: flex; flex-direction: column; overflow: hidden; container-type: inline-size; }
   .timeline :global(.panel-actions) { justify-content: flex-end; }
   .timeline :is(button):focus-visible { outline: 2px solid var(--color-brand); outline-offset: -2px; }
 
   /* The date popover is a small box under the header, not a calendar. */
+  .hx-bar {
+    position: relative;
+    display: flex;
+    flex: none;
+    align-items: center;
+    gap: var(--spacing);
+    margin: 0 var(--panel-padding) calc(var(--spacing) * 2);
+  }
   .hx-popover {
     position: absolute;
-    top: 2.5rem;
-    right: var(--panel-padding);
+    top: calc(100% + var(--spacing));
+    right: 0;
     z-index: 20;
     display: flex;
     align-items: center;
@@ -702,8 +722,8 @@
   /* The filter: two halves of one control, the pressed half tinted. */
   .hx-segment {
     display: flex;
-    flex: none;
-    margin: 0 var(--panel-padding) calc(var(--spacing) * 2);
+    flex: 1 1 auto;
+    min-width: 0;
     border: 1px solid var(--color-divider);
     border-radius: 4px;
     overflow: hidden;
@@ -711,13 +731,18 @@
   .hx-segment button {
     flex: 1 1 0;
     min-width: 0;
-    padding: var(--spacing) calc(var(--spacing) * 2);
+    padding: var(--spacing);
     font-size: var(--panel-meta-size);
     color: var(--panel-muted);
     text-align: center;
     white-space: nowrap;
     overflow: hidden;
     text-overflow: ellipsis;
+  }
+  .hx-short { display: none; }
+  @container (max-width: 280px) {
+    .hx-long { display: none; }
+    .hx-short { display: inline; }
   }
   .hx-segment button + button { border-left: 1px solid var(--color-divider); }
   .hx-segment button[aria-pressed="true"] { background: var(--color-row-selected); color: inherit; font-weight: 500; }
@@ -859,15 +884,16 @@
   }
 
   /* Bookmark controls: on hover, on keyboard focus, or on the row being read. */
+  /* Hidden tools take no room, so a narrow panel gives the whole row to the
+     name. */
   .hx-tools {
     flex: none;
-    display: flex;
+    display: none;
     align-items: center;
-    opacity: 0;
   }
   .hx-row:hover .hx-tools,
   .hx-row:focus-within .hx-tools,
-  .hx-row.hx-here .hx-tools { opacity: 1; }
+  .hx-row.hx-here .hx-tools { display: flex; }
   .hx-mark {
     flex: none;
     display: inline-flex;
