@@ -340,4 +340,31 @@ const refused = (kind, reason) => ({ status: "refused", kind, refusals: [{ reaso
   sync.stop();
 }
 
+// 15. An interrupted pull that only a fresh pull can settle makes the round pull, then carry on.
+{
+  const { clock, fake, sync } = setup({
+    status: { conflict: null, pending: ["op"] },
+    recover: { pending: ["op"], needsPull: true, conflict: null },
+  });
+  sync.start();
+  await clock.advance(0);
+  assert.deepEqual(fake.names(), ["status", "recover", "pull", "check", "push"]);
+  assert.equal(sync.state.mode, "idle");
+  assert.equal(sync.state.lastPullAt, T0);
+  sync.stop();
+}
+
+// 16. Leftover entries that a pull cannot settle keep the scheduler waiting, with no pull.
+{
+  const { clock, fake, sync } = setup({
+    status: { conflict: null, pending: ["op"] },
+    recover: { pending: ["op"], needsPull: false, conflict: null },
+  });
+  sync.start();
+  await clock.advance(0);
+  assert.equal(sync.state.mode, "waiting");
+  assert.equal(fake.count("pull"), 0);
+  sync.stop();
+}
+
 console.log("gitsync auto ok");
