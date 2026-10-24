@@ -78,6 +78,26 @@ async function guarded(work) {
   }
 }
 
+// The manual Git panel and automatic sync share one journal, one project and
+// one shared record. One operation at a time per project keeps recovery from
+// settling a journal entry whose push or pull is still in flight. The lock is
+// not reentrant: a function that runs under it must not call another one.
+const tails = new Map();
+
+/// Runs `work` once the earlier operations on the same project have finished,
+/// whether they succeeded or not, and releases the lock even when `work` throws.
+async function exclusive(ctx, work) {
+  const previous = tails.get(ctx.slug) || Promise.resolve();
+  const turn = previous.catch(() => {}).then(work);
+  const tail = turn.catch(() => {});
+  tails.set(ctx.slug, tail);
+  try {
+    return await turn;
+  } finally {
+    if (tails.get(ctx.slug) === tail) tails.delete(ctx.slug);
+  }
+}
+
 function byPath(a, b) {
   return a < b ? -1 : a > b ? 1 : 0;
 }
@@ -844,7 +864,7 @@ async function clearStale(ctx, link) {
 /// `{ status: "pulled" | "nothing" }` (and `files`), `{ status: "conflict",
 /// session }` or `{ status: "refused", refusals }`.
 export async function pull(ctx) {
-  return guarded(async () => (await runPull(ctx)).result);
+  return exclusive(ctx, () => guarded(async () => (await runPull(ctx)).result));
 }
 
 /// Stores the typed texts of `resolutions` as the blobs of one unparented
@@ -898,6 +918,10 @@ async function restoreSession(ctx, session) {
 /// so that a restart restores them. Answers the saved session. Throws when
 /// they could not be saved.
 export async function saveResolutions(ctx, session, resolutions) {
+  return exclusive(ctx, () => saveResolutionsUnlocked(ctx, session, resolutions));
+}
+
+async function saveResolutionsUnlocked(ctx, session, resolutions) {
   const chosen = await packResolutions(ctx, resolutions);
   const carried = await packResolutions(ctx, session.carried);
   const refs = {};
@@ -919,7 +943,7 @@ export async function saveResolutions(ctx, session, resolutions) {
 /// resolutions that still apply come back as `session.carried`. A refusal
 /// leaves the session and its resolutions saved and comes back with `session`.
 export async function applyResolution(ctx, session, resolutions = undefined) {
-  return guarded(async () => {
+  return exclusive(ctx, () => guarded(async () => {
     const link = (await ctx.api.getLink()).link;
     if (!link) return refused("This project is not connected to a Git repository.");
     const mismatch = await connectionRefusal(ctx, link);
@@ -971,16 +995,16 @@ export async function applyResolution(ctx, session, resolutions = undefined) {
     await finish(ctx, session.id);
     await clearStale(ctx, link);
     return step.result;
-  });
+  }));
 }
 
 /// Drops a saved conflict session and its chosen resolutions. The pull it came
 /// from is abandoned: the project and the link stay as they were before it.
 export async function discardConflict(ctx, session) {
-  return guarded(async () => {
+  return exclusive(ctx, () => guarded(async () => {
     if (session) await finish(ctx, session.id);
     return result("nothing");
-  });
+  }));
 }
 
 // ---------------------------------------------------------------- push
@@ -1119,7 +1143,7 @@ async function publish(ctx, plan, message) {
 /// a set that is no longer the outgoing one, the answer is
 /// `{ status: "moved", outgoing }` and the panel asks again.
 export async function push(ctx, message = "", { confirmed = null } = {}) {
-  return guarded(async () => {
+  return exclusive(ctx, () => guarded(async () => {
     let plan = confirmed;
     if (confirmed) {
       const { link, version } = await ctx.api.getLink();
@@ -1150,7 +1174,7 @@ export async function push(ctx, message = "", { confirmed = null } = {}) {
       }
       plan = again.outgoing;
     }
-  });
+  }));
 }
 
 /// Pushes the outgoing changes as one commit to a new branch of the connected
@@ -1162,7 +1186,7 @@ export async function push(ctx, message = "", { confirmed = null } = {}) {
 /// files }`, a refusal when the branch exists, or whatever outgoing answers
 /// when there is nothing to push or the remote is ahead.
 export async function pushToBranch(ctx, branch, message = "", { confirmed = null } = {}) {
-  return guarded(async () => {
+  return exclusive(ctx, () => guarded(async () => {
     const name = String(branch || "").trim();
     if (!name) return refused("Name the branch to push to.");
     let plan = confirmed;
@@ -1190,7 +1214,7 @@ export async function pushToBranch(ctx, branch, message = "", { confirmed = null
       throw error;
     }
     return result("branched", { branch: name, commit, files: plan.files });
-  });
+  }));
 }
 
 // ---------------------------------------------------------------- connecting
@@ -1248,7 +1272,7 @@ async function withDraft(ctx, draft, work) {
 /// files that differ go to the resolver. Refuses when the branch cannot be
 /// synced, or when the project is already connected.
 export async function connect(ctx, draft) {
-  return guarded(() => withDraft(ctx, draft, async (mark) => {
+  return exclusive(ctx, () => guarded(() => withDraft(ctx, draft, async (mark) => {
     const fetched = await ctx.git.fetch([]);
     const spec = draftLink(draft);
     const filter = await filterAt(ctx, spec, fetched.head || null);
@@ -1274,7 +1298,7 @@ export async function connect(ctx, draft) {
     }
     mark.recorded = true;
     return result("connected", { link: (await ctx.api.getLink()).link ?? { ...spec, checkpoint: null } });
-  }));
+  })));
 }
 
 /// The project's synced files compared with the remote branch head, whatever
@@ -1317,14 +1341,18 @@ export async function compareRemote(ctx) {
 /// Forgets the shared record and the sidecar's connection. The private
 /// repository, its commits and the journal stay.
 export async function disconnect(ctx) {
-  await ctx.api.deleteLink();
-  await ctx.git.forget();
+  return exclusive(ctx, async () => {
+    await ctx.api.deleteLink();
+    await ctx.git.forget();
+  });
 }
 
 /// Forgets the shared record but keeps this computer's connection, so the same
 /// remote can be connected again on another branch. A local folder's grant stays.
 export async function leaveBranch(ctx) {
-  await ctx.api.deleteLink();
+  return exclusive(ctx, async () => {
+    await ctx.api.deleteLink();
+  });
 }
 
 // ---------------------------------------------------------------- state
@@ -1455,7 +1483,7 @@ async function safeJournal(ctx) {
 /// remote. Returns `{ recovered, pending, conflict }`: the ids settled, the
 /// entries that could not be settled yet, and a saved conflict session.
 export async function recover(ctx) {
-  return guarded(async () => {
+  return exclusive(ctx, () => guarded(async () => {
     const recovered = [];
     const pending = [];
     const reasons = {};
@@ -1525,5 +1553,5 @@ export async function recover(ctx) {
       }
     }
     return { recovered, pending, reasons, conflict };
-  });
+  }));
 }
