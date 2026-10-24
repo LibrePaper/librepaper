@@ -446,7 +446,7 @@ console.log("reader-races: all checks passed");
     // of that read: re-pointing the preview at the file that is open, which is
     // a rendering question rather than a directory one.
     files: [], sourceFormat: "markdown",
-    openTextPath: "paper.tex", lockedPath: "", aloneSet: new Set(),
+    openTextPath: "paper.tex", lockedPath: "", aloneSet: new Set(), visitorFile: "",
     liveTreeNow: () => ({ texts: { "paper.tex": "\\documentclass{article}" }, digests: {} }),
     previewTarget, rendersAlone, openingFile, includersOf, readerProjectOwner: {},
     restoreLastPreview: () => {},
@@ -1102,7 +1102,7 @@ for (const latest of [
   let cleared = 0, painted = 0;
   const ctx = context({
     session: { paths: new Map(files.map(f => [f.id, f.path])) },
-    files, openFile: 'thesis.tex', sourceFormat: '', aloneSet: new Set(),
+    files, openFile: 'thesis.tex', sourceFormat: '', aloneSet: new Set(), visitorFile: '',
     compact: false, layout: 'source', showMobileView: () => {},
     viewing: null, editing: true, editor: { text: () => null },
     liveTreeNow: () => ({ texts, digests: {} }),
@@ -1121,9 +1121,12 @@ for (const latest of [
     navigateFrame: () => {}, readQuartoBinding: () => {},
     tick: async () => {}, paintPreview: () => painted++,
   });
-  // `lockedPath` and `openTextPath` are derived in the page; here they are
-  // read from the same two ids.
+  // `lockedPath`, `openTextPath` and the visitor-aware `filesShown` and
+  // `shownOpenId` are derived in the page; here they are read from the same
+  // two ids, as an editor with a session sees them.
   vm.runInContext(`
+    Object.defineProperty(globalThis, 'filesShown', { get() { return files; } });
+    Object.defineProperty(globalThis, 'shownOpenId', { get() { return openFile; } });
     Object.defineProperty(globalThis, 'lockedPath', { get() { return files.find((f) => f.id === lockedFile)?.path || ''; } });
     Object.defineProperty(globalThis, 'openTextPath', { get() { return files.find((f) => f.id === openFile && f.kind === 'text')?.path || ''; } });
   `, ctx);

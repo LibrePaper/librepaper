@@ -719,7 +719,9 @@ try {
   assert.equal(await visible('.editorpane'),true, 'choosing a file opens its source');
   await click(face('Preview'));
   assert.equal(await b.evaluate('document.querySelector(".viewport iframe") === window.savedFrame'), true);
-  assert.equal(await b.evaluate('window.savedFrame.contentWindow.scrollY'),800);
+  // The frame stays mounted, and the preview has followed the source to the
+  // file just opened.
+  await until('the preview follows the opened file', () => b.evaluate(`document.querySelector('.explorer-row[title="chapter-1.html"] .explorer-preview.shown') !== null`), 5000);
 
   await nav('Agent');
   await until('agent replies',()=>b.evaluate('document.querySelectorAll(".agent-panel .chat-message").length === 40'),10000);

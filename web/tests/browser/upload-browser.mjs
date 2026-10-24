@@ -243,7 +243,7 @@ try {
   assert.equal(single.find((one) => one.name === "file").filename, "paper.tex");
   assert.equal(single.find((one) => one.name === "file").bytes, "\\documentclass{article}");
   assert.equal(single.find((one) => one.name === "title").bytes, "paper");
-  assert.equal(single.find((one) => one.name === "main").bytes, "paper.tex");
+  assert.ok(!single.some((one) => one.name === "main"), "an upload names no main file");
 
   // g. A ZIP with a top folder loses it; the folders inside stay.
   await openNew();
@@ -261,7 +261,7 @@ try {
   await until("the project opens", () => q("location.pathname === '/docs/uploaded'"));
   const archive = posted[0];
   assert.deepEqual(archive.filter((one) => one.name === "file").map((one) => one.filename).sort(), ["chapters/one.tex", "figures/plot.png", "main.tex"]);
-  assert.equal(archive.find((one) => one.name === "main").bytes, "main.tex");
+  assert.ok(!archive.some((one) => one.name === "main"), "an upload names no main file");
   assert.equal(archive.find((one) => one.name === "title").bytes, "thesis");
 
   // h. A second paper.tex is a conflict the person settles.

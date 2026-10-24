@@ -885,7 +885,7 @@ window.diagnosticsCheck = async () => {
   // The transcript itself: what a compile that stopped for a reason the
   // parser has no line for leaves a person to read.
   component.$set({
-    main: "librepaper.tex",
+    entry: "librepaper.tex",
     diagnostics: [{ severity: "error", message: "Emergency stop.", line: 0 }],
     log: "This is pdfTeX\\n! Emergency stop.\\n<*> &pdflatex librepaper.tex\\nTranscript written on librepaper.log.",
   });

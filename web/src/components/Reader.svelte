@@ -3190,7 +3190,10 @@
     everPainted = false;
     everPaintedShown = false;
     renderStatus.resetFailure();
-    if (docsOrigin) navigateFrame(true);
+    // The frame is reloaded only when the kind of page changes. Moving between
+    // two files of the same kind keeps it, so switching files in the list does
+    // not pay for a frame load before the cached page can be shown.
+    if (docsOrigin) navigateFrame();
     // The page this file last drew stands in until the render replaces it.
     void restoreLastPreview(path);
     void tick().then(() => {
@@ -3560,10 +3563,11 @@
       forgetProject({ server: location.origin, documentId: document_.document_id, slug: SLUG, createdAt: document_.created_at })
         .catch(() => {});
     }
-    // The column opens on the files, which a link-holder is not offered; and
-    // a panel this visit has already moved to may not be theirs either. A
-    // phone keeps the view it opened on.
-    if (panel && !tabs.some((tab) => tab.id === panel)) {
+    // The column opens on the files for an editor. A link-holder opens on
+    // their own home instead, even though the files are offered to them to
+    // switch the preview with, and a panel this visit has already moved to may
+    // not be theirs either. A phone keeps the view it opened on.
+    if (panel && (!mayEdit || !tabs.some((tab) => tab.id === panel))) {
       const view = mobileView;
       showPanel(home);
       mobileView = view;

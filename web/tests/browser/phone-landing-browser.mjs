@@ -79,7 +79,7 @@ const MAIN_TEXT = '<h1>Shared</h1><p>Read-only projection</p>';
 globalThis.fetch = async (url, init = {}) => {
   const path = String(url);
   if (path.endsWith('/me')) return Response.json({name:'Phone Tester',handle:'phone-tester',provider:'github',providers:[]});
-  if (path.endsWith('/config')) return Response.json({ extensions: ['.html', '.md'], text_extensions: ['.html', '.md'], asset_extensions: ['.png'], derived_extensions: [] });
+  if (path.endsWith('/config')) return Response.json({ extensions: ['.html', '.md', '.bib'], text_extensions: ['.html', '.md', '.bib'], asset_extensions: ['.png'], derived_extensions: [] });
   if (path === '/api/documents/' + location.pathname.split('/').pop()) return Response.json({
     title:'Phone landing paper', created_at:'test', role: editorCase ? 'editor' : caseName,
     source_format: ['empty', 'bibonly'].includes(caseName) ? '' : 'html', docs_origin: location.origin,
@@ -163,9 +163,9 @@ try {
   await openCase('bibonly?case=bibonly', 390, 844);
   await until('bib-only landing', () => b.evaluate(phoneDocument), 10000);
   await until('bib-only card in the preview', () => b.evaluate(nothingToPreview), 10000);
-  assert.equal(
-    await b.evaluate("[...document.querySelectorAll('section.latexpane .notyet p')].some(node => node.textContent.trim() === 'refs.bib has no preview of its own.')"),
-    true, 'the card names the file and says it has no preview of its own');
+  const cardText = await b.evaluate("[...document.querySelectorAll('section.latexpane .notyet p')].map(node => node.textContent.trim())");
+  assert.ok(cardText.includes('refs.bib has no preview of its own.'),
+    `the card names the file and says it has no preview of its own: ${JSON.stringify(cardText)}`);
   assert.equal(
     await b.evaluate("[...document.querySelectorAll('section.latexpane .notyet p')].some(node => node.textContent.includes('Lock the preview on a file with the eye in Files'))"),
     true, 'and says how to keep a page here');
