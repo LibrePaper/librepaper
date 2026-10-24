@@ -921,10 +921,11 @@ impl Server {
             Ok(room) => room,
             Err(error) => return refused("open the room", &error),
         };
-        // A link may have been revoked, or the account's rights changed,
-        // while the request body was being read.
+        // A link may have been revoked, the session ended, or the account's
+        // rights changed while the request body was being read, so the caller
+        // is authenticated again rather than taken from the request context.
         let (_current_entry, current_who) = match self
-            .entry_at_least_in(slug, context, &headers, None, Role::Editor)
+            .entry_at_least(slug, &headers, &context.arrival, None, Role::Editor)
             .await
         {
             Ok(result) => result,
@@ -1020,10 +1021,11 @@ impl Server {
             Ok(room) => room,
             Err(error) => return refused("open the room", &error),
         };
-        // A link may have been revoked, or the account's rights changed,
-        // while the request body was being read.
+        // A link may have been revoked, the session ended, or the account's
+        // rights changed while the request body was being read, so the caller
+        // is authenticated again rather than taken from the request context.
         let (_, current_who) = match self
-            .entry_at_least_in(slug, context, &headers, None, Role::Editor)
+            .entry_at_least(slug, &headers, &context.arrival, None, Role::Editor)
             .await
         {
             Ok(result) => result,
