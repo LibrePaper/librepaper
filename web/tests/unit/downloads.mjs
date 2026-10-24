@@ -120,7 +120,7 @@ await assert.rejects(
 // roles for which Reader sets `mayEdit`.
 assert.match(
   reader,
-  /\{#if mayEdit\}(?:(?!\{#if|\{\/if\})[\s\S])*<Menu\.Item value="download" class="menuitem"><span class="menuitem-label">Source \(\.zip\)<\/span><\/Menu\.Item>[\s\S]*?\{\/if\}/,
+  /\{#if mayEdit\}(?:(?!\{#if|\{\/if\})[\s\S])*<Menu\.Item value="download" class="menuitem"><span class="menuitem-label">Project<\/span><\/Menu\.Item>[\s\S]*?\{\/if\}/,
   "the File menu only offers the project archive to editors and owners",
 );
 

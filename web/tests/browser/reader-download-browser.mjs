@@ -170,7 +170,7 @@ try {
   // 1. The submenu: its entries, in order, none disabled.
   await openDownload();
   const entries = await tab.evaluate(`(() => {
-    const labels = ["Source (.zip)", "PDF", "HTML", "DOCX"];
+    const labels = ["Project", "HTML", "PDF", "DOCX", "Source"];
     const found = [...document.querySelectorAll('[role="menuitem"]')]
       .filter(n => n.getBoundingClientRect().width > 1 && labels.includes(n.querySelector('.menuitem-label')?.textContent.trim()));
     return found.map(n => ({
@@ -179,9 +179,9 @@ try {
     }));
   })()`);
   entries.sort((a, b) => a.top - b.top);
-  assert.deepEqual(entries.map((e) => e.label), ["Source (.zip)", "PDF", "HTML", "DOCX"], "the Download submenu lists the four downloads in order");
+  assert.deepEqual(entries.map((e) => e.label), ["Project", "HTML", "PDF", "DOCX", "Source"], "the Download submenu lists the five downloads in order");
   assert.deepEqual(entries.filter((e) => e.disabled), [], "no download is disabled");
-  console.log("reader-download: the Download submenu lists Source, PDF, HTML and DOCX, all enabled");
+  console.log("reader-download: the Download submenu lists Project, HTML, PDF, DOCX and Source, all enabled");
 
   const taken = async (count) => {
     await until(`download ${count}`, () => tab.evaluate(`window.downloads.length >= ${count}`), 120000);
@@ -212,6 +212,15 @@ try {
   assert.equal(pdf.name, `${SLUG}.pdf`);
   assert.equal(pdf.head, "%PDF", "the PDF starts with %PDF");
   console.log("reader-download: PDF saved");
+
+  // 5b. Source: the file open in the editor, as written.
+  await closeMenus(); await pause(300);
+  await openDownload();
+  await choose("Source");
+  const sourceFile = await taken(4);
+  assert.equal(sourceFile.name, "main.md");
+  assert.ok(sourceFile.text.includes("Download check"), "the source holds the heading");
+  console.log("reader-download: Source saved");
 
   // 6. View > PDF previews in the browser. The harness serves no real PDF
   // viewer, so only the frame path and the absence of an error are checked.

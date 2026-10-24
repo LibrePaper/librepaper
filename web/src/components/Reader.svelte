@@ -2778,6 +2778,7 @@
     if (value === "project-folder") return void (projectFolderOpen = true);
     if (value === "compile") return compileNow();
     if (value === "download") return downloadTree();
+    if (value === "download-source") return downloadSource();
     if (value === "download-pdf" || value === "download-html" || value === "download-docx") return downloadAs(value.slice(9));
     if (value === "share" || value === "history" || value === "git") return openPanel(value);
     if (value === "save-template") return openSaveTemplateModal();
@@ -3185,6 +3186,12 @@
       const chosen = await entryDownload({ entry, tree: liveTreeNow(), folders: [...folders], gather: gatherFigures });
       saveBlob(chosen.files ? await archive(chosen.files) : new Blob([chosen.bytes]), chosen.name);
     } catch (error) { say(error.message || "That file could not be downloaded.", { kind: "problem", id: "reader:download-entry" }); }
+  }
+
+  // The file open in the editor, as written, not the project archive.
+  function downloadSource() {
+    if (!toolbarPath) return;
+    return downloadEntry({ kind: "file", path: toolbarPath });
   }
 
   // Dropping a file on the source pane does what the controls in the list do:
@@ -3614,6 +3621,7 @@
       pdf: exportable.pdf.ok,
       html: exportable.html.ok,
       docx: exportable.docx.ok,
+      source: Boolean(toolbarPath),
     },
     edit: editAvailability,
     canClearChat: chatState.canClear,
@@ -3776,10 +3784,16 @@
       <span class="menuitem-chevron" aria-hidden="true"><Icon name="chevron-right" size="1rem" /></span>
     </Menu.TriggerItem>
     <ExplorerMenu>
-      {#if mayEdit}<Menu.Item value="download" class="menuitem"><span class="menuitem-label">Source (.zip)</span></Menu.Item>{/if}
-      {@render exportItem("download-pdf", "PDF", "pdf")}
+      {#if mayEdit}<Menu.Item value="download" class="menuitem"><span class="menuitem-label">Project</span></Menu.Item>{/if}
       {@render exportItem("download-html", "HTML", "html")}
+      {@render exportItem("download-pdf", "PDF", "pdf")}
       {@render exportItem("download-docx", "DOCX", "docx")}
+      {#if mayEdit}
+        <Menu.Item value="download-source" class="menuitem" disabled={!toolbarPath}>
+          <span class="menuitem-label">Source</span>
+          {#if !toolbarPath}<span class="export-reason">Open a file to download its source.</span>{/if}
+        </Menu.Item>
+      {/if}
     </ExplorerMenu>
   </Menu>
 {/snippet}
