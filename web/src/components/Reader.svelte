@@ -2832,7 +2832,15 @@
     const id = "reader:export";
     say(`Preparing the ${target.toUpperCase()}.`, { id });
     try {
+      // Everything that names the document is read before the first await, so
+      // a file switched to while figures load cannot pair one source with
+      // another format.
       const tree = capturePreviewTree(treeNow());
+      const format = displayedFormat;
+      const preview = framePreview.preview();
+      const localQuarto = format === "quarto" && localExecution && hasDesktop && mayEdit
+        ? { profile: buildPreferences.profile || null, parameters: buildPreferences.parameters || null }
+        : null;
       if (Object.keys(tree.digests || {}).length) {
         const { held, missing } = await gatherFigures(tree.digests);
         if (target !== "html" && missing.length) {
@@ -2841,24 +2849,21 @@
         tree.assets = held.assets;
         tree.urls = { ...(tree.urls || {}), ...held.urls };
       }
-      const localQuarto = displayedFormat === "quarto" && localExecution && hasDesktop && mayEdit
-        ? { profile: buildPreferences.profile || null, parameters: buildPreferences.parameters || null }
-        : null;
       const file = await exportFile({
         target,
-        format: displayedFormat,
+        format,
         tree,
         title: await headingOf(tree),
         slug: SLUG,
         project: SLUG,
-        preview: framePreview.preview(),
+        preview,
         previewCurrent: Boolean(renderedIdentity) && renderedIdentity === await renderers.snapshotDigest(tree),
         render: renderers.render,
         run: pandoc,
         localQuarto,
       });
       saveBlob(file.blob, file.name);
-      if (!localQuarto && unrunCells(displayedFormat, tree) > 0) {
+      if (!localQuarto && unrunCells(format, tree) > 0) {
         say("Code cells were not run. Turn on Run code in the LibrePaper desktop app to include their results.", { id });
       } else {
         toaster.dismiss(id);
@@ -2896,7 +2901,13 @@
       const unheld = loaded.filter((item) => !held.has(String(item.id))).map((item) => ({ ...item }));
       // Without the page text there is nothing to place them against, as for
       // the sidebar: they stay unplaced rather than read as detached.
-      if (docText !== null) anchorComments(unheld);
+      if (docText !== null) {
+        if (mayEdit && session) {
+          const bodies = new Map();
+          for (const item of unheld) item.attachment = deriveAttachment(session.doc, session.anchors, item, bodies);
+        }
+        anchorComments(unheld);
+      }
       for (const item of unheld) held.set(String(item.id), item);
       const threads = loaded.map((item) => {
         const seen = held.get(String(item.id));
