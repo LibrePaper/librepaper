@@ -287,6 +287,11 @@
               "compile"
             ]
           },
+          "path": {
+            "type": "string",
+            "maxLength": 1024,
+            "description": "Path of the file to render."
+          },
           "batch": {
             "type": "string",
             "enum": [

@@ -1684,7 +1684,6 @@ impl Server {
                 body["files"] = json!(files);
             }
             body["source_format"] = json!(entry.source_format);
-            body["main"] = json!(entry.main);
         }
         write_json(200, &body)
     }

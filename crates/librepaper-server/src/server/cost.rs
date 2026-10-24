@@ -787,7 +787,6 @@ mod writer_readiness_tests {
                 title: "Writer readiness".into(),
                 source: "# Writer readiness\n".into(),
                 source_format: "markdown".into(),
-                main: "paper.md".into(),
             },
             vec![],
             librepaper_base::auth::Policy::allowing("github", &["owner"]),

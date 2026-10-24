@@ -182,7 +182,6 @@ async fn deployment_mode_with_policy(
                 title: "Moderation fixture".into(),
                 source: SOURCE.into(),
                 source_format: "markdown".into(),
-                main: "paper.md".into(),
             },
             vec![("figure.png".into(), asset_bytes)],
             actor.clone(),
@@ -839,7 +838,6 @@ async fn quota_rejected_replacement_keeps_its_hourly_upload_admission() {
             reqwest::multipart::Form::new()
                 .text("title", "Replacement fixture")
                 .text("slug", deployment.slug.clone())
-                .text("main", "paper.md")
                 .part(
                     "file",
                     reqwest::multipart::Part::bytes(b"# Replacement\n\nQuota test.\n".to_vec())
@@ -893,7 +891,6 @@ async fn quota_rejected_replacement_keeps_its_hourly_upload_admission() {
             reqwest::multipart::Form::new()
                 .text("title", "Replacement fixture")
                 .text("slug", deployment.slug.clone())
-                .text("main", "paper.md")
                 .part(
                     "file",
                     reqwest::multipart::Part::bytes(b"# Replacement\n\nQuota test.\n".to_vec())

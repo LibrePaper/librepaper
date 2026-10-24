@@ -124,7 +124,6 @@ pub struct PutBinary {
 /// retry's precondition has to agree with.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct SourceTree<'a> {
-    pub main: String,
     pub files: BTreeMap<String, SourceFile<'a>>,
     /// Binary files by path, each with the digest of its bytes.
     pub assets: BTreeMap<String, String>,
@@ -581,7 +580,6 @@ fn tree_from_head<'a>(head: &'a Head<'_>) -> SourceTree<'a> {
         .map(|(path, entry)| (path.clone(), entry.digest.clone()))
         .collect();
     SourceTree {
-        main: projection.main.clone(),
         files,
         assets,
         revision: head.digest(),
@@ -590,7 +588,7 @@ fn tree_from_head<'a>(head: &'a Head<'_>) -> SourceTree<'a> {
 
 /// Applies the change to `doc`: the patches of every file it touches in one
 /// Loro commit, so a change that edits several files shares the same conflict
-/// rules a main-file-only edit does, and then the file operations. The comment
+/// rules a one-file edit does, and then the file operations. The comment
 /// anchors move with their text in the same pass.
 fn apply_patch_edits(
     doc: &LoroDoc,
@@ -1055,7 +1053,6 @@ mod tests {
         .collect::<BTreeMap<_, _>>();
         let revision = "fixed-test-revision".to_string();
         SourceTree {
-            main: "paper.md".into(),
             files,
             assets: BTreeMap::new(),
             revision,
@@ -1078,7 +1075,6 @@ mod tests {
 
     fn tree_with_files<'a>(files: impl IntoIterator<Item = (&'a str, &'a str)>) -> SourceTree<'a> {
         SourceTree {
-            main: "paper.md".into(),
             files: files
                 .into_iter()
                 .map(|(path, text)| {

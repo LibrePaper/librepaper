@@ -11,24 +11,31 @@ pub(super) struct Upload {
     /// here: nothing derived is stored.
     pub(super) source: String,
     pub(super) source_format: String,
-    /// What the main file is called. A publish of one file is a directory of
-    /// one file, and this is its name in it.
-    pub(super) main: String,
-    /// The rest of the directory, when a whole one was published: every file
-    /// but the main one, by path. Texts are UTF-8 and go into the shared
-    /// document; the rest are figures and go to the store under their digest.
+    /// Every file the upload carried, by path. Texts are UTF-8 and go into
+    /// the shared document; the rest are figures and go to the store under
+    /// their digest. A JSON upload carries none, and `source` stands for its
+    /// one file.
     pub(super) files: Vec<(String, Vec<u8>)>,
+    /// The upload sent several files and so claims to be the whole project.
+    /// A single file or a JSON source replaces only the file it names and
+    /// leaves the rest of an existing project alone.
+    pub(super) whole: bool,
     /// A multipart upload that carried a title and no files: a new project
     /// with nothing in it. It never replaces a project, since there is no
     /// directory it could claim to be.
     pub(super) empty: bool,
 }
 
-#[allow(clippy::result_large_err)] // the invalid-source response is an HTTP reply
-fn main_source(path: &str, bytes: &[u8]) -> Result<String, Reply> {
-    std::str::from_utf8(bytes)
-        .map(str::to_owned)
-        .map_err(|_| write_json(400, &json!({"error": format!("{path} is not valid UTF-8")})))
+/// What a lone JSON or one-format source is called when nothing names it.
+fn default_path(format: &str) -> &'static str {
+    match format {
+        "typst" => "document.typ",
+        "markdown" => "document.md",
+        "quarto" => "document.qmd",
+        "html" => "document.html",
+        "latex" => "document.tex",
+        _ => "document.txt",
+    }
 }
 
 #[derive(serde::Serialize)]
@@ -38,12 +45,9 @@ struct SnapshotResponse<C> {
     slug: String,
     title: String,
     format: String,
-    main: String,
     #[serde(flatten)]
     project: librepaper_document::document::projection::ProjectSnapshot,
     files: std::collections::BTreeMap<String, librepaper_document::document::projection::Entry>,
-    source: String,
-    source_sha: String,
     comments: C,
     comment_state: Value,
     role: String,
@@ -581,38 +585,52 @@ impl Server {
             }
         };
 
-        // What the main file is called, and the rest of the directory to
-        // publish alongside it. A directory upload names both; a one-file
-        // upload over a document that already has one keeps its existing
-        // path (unless the format changed) and carries the rest of the
-        // directory forward unchanged, because that upload never claimed to
-        // be the whole document -- only `put_directory_as_actor`'s
-        // whole-project replacement (§7) does, and it always takes the
-        // complete file set.
-        let (main, mut files) = if parsed.empty {
-            (String::new(), Vec::new())
-        } else if !parsed.main.is_empty() {
-            (parsed.main.clone(), parsed.files.clone())
-        } else if let Some(existing) = existing.as_ref().filter(|_| mine) {
-            let main = if !parsed.source_format.is_empty()
-                && librepaper_room::room::format_from_path(&existing.main) != parsed.source_format
-            {
-                librepaper_room::room::main_path_for("", &parsed.source_format)
+        // The files to publish. A one-file or JSON upload over a project of
+        // the caller's own carries the rest of that project forward
+        // unchanged, because it never claimed to be the whole project; only
+        // `put_directory_as_actor`'s whole-project replacement (§7) does, and
+        // it always takes the complete file set.
+        let mut files = parsed.files.clone();
+        if files.is_empty() && !parsed.empty {
+            let carried = if mine {
+                match self.store.project_files(&key).await {
+                    Ok(carried) => carried.unwrap_or_default(),
+                    Err(error) => {
+                        tracing::warn!("could not read {key} before republishing it: {error}");
+                        Vec::new()
+                    }
+                }
             } else {
-                existing.main.clone()
+                Vec::new()
             };
-            (main, Vec::new())
-        } else {
-            (
-                librepaper_room::room::main_path_for("", &parsed.source_format),
-                Vec::new(),
-            )
-        };
-        if parsed.main.is_empty() && mine {
+            // A JSON source replaces the file the project opens on when that
+            // file is in the same format, and is a new file otherwise.
+            let texts: std::collections::BTreeMap<String, String> = carried
+                .iter()
+                .filter_map(|(path, bytes)| {
+                    std::str::from_utf8(bytes)
+                        .ok()
+                        .map(|text| (path.clone(), text.to_string()))
+                })
+                .collect();
+            let path = librepaper_document::document::opening::opening_file(&texts)
+                .filter(|path| {
+                    librepaper_room::room::format_from_path(path) == parsed.source_format
+                })
+                .unwrap_or_else(|| default_path(&parsed.source_format).to_string());
+            files.push((path, parsed.source.clone().into_bytes()));
+            if !parsed.whole {
+                for (path, bytes) in carried {
+                    if !files.iter().any(|(kept, _)| *kept == path) {
+                        files.push((path, bytes));
+                    }
+                }
+            }
+        } else if mine && !parsed.whole && !parsed.empty {
             match self.store.project_files(&key).await {
                 Ok(Some(carried)) => {
                     for (path, bytes) in carried {
-                        if path != main {
+                        if !files.iter().any(|(kept, _)| *kept == path) {
                             files.push((path, bytes));
                         }
                     }
@@ -646,7 +664,6 @@ impl Server {
                     title: parsed.title.clone(),
                     source: parsed.source.clone(),
                     source_format: parsed.source_format.clone(),
-                    main: main.clone(),
                 },
                 parsed.files.clone(),
                 actor.clone(),
@@ -724,10 +741,10 @@ impl Server {
     pub(super) async fn read_upload(&self, request: Request<Body>) -> Result<Upload, Reply> {
         let content_type = header_of(request.headers(), "content-type").unwrap_or_default();
         let (mut title, mut slug, mut html) = (String::new(), String::new(), String::new());
-        // A whole directory: the main file's name, and every other file in it.
-        // Both stay empty for the one-file publish this route has always taken.
-        let mut main = String::new();
+        // The files of a multipart upload, checked and normalised as they
+        // arrive. A JSON upload sends none.
         let mut sent: Vec<(String, Vec<u8>)> = Vec::new();
+        let mut whole = false;
         let (mut source, mut source_format) = (String::new(), String::new());
         let mut requested_engine: Option<String> = None;
         let mut requested_draft_format: Option<String> = None;
@@ -751,7 +768,6 @@ impl Server {
                 Ok(multipart) => multipart,
                 Err(_) => return Err(write_json(400, &json!({"error": "bad upload"}))),
             };
-            let mut filename = String::new();
             loop {
                 let field = match multipart.next_field().await {
                     Ok(Some(field)) => field,
@@ -762,9 +778,6 @@ impl Server {
                 match name.as_str() {
                     "title" => title = field.text().await.unwrap_or_default(),
                     "slug" => slug = field.text().await.unwrap_or_default(),
-                    // Which file is the document. A directory sends it; a
-                    // single file does not, and is named by its own filename.
-                    "main" => main = field.text().await.unwrap_or_default(),
                     "execution_engine" => {
                         requested_engine = Some(field.text().await.unwrap_or_default())
                     }
@@ -785,63 +798,80 @@ impl Server {
                     _ => {}
                 }
             }
-            empty = sent.is_empty() && main.is_empty();
-            // Which of them is the document, and what the rest are. A single
-            // part is what this route has always taken and keeps its meaning;
-            // several is a directory, and one of them has to be named.
-            if sent.len() == 1 && main.is_empty() {
-                let (at, bytes) = &sent[0];
-                filename = at.clone();
-                html = main_source(at, bytes)?;
-                sent.clear();
-            } else if !sent.is_empty() {
-                let wanted = if main.is_empty() {
-                    sent[0].0.clone()
-                } else {
-                    main.clone()
+            empty = sent.is_empty();
+            whole = sent.len() > 1;
+            // Every path is checked before any of it is stored. The command
+            // line refuses these first so the reason arrives on the laptop;
+            // this is the enforcement, and it is the same rule.
+            let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
+            let mut texts: std::collections::BTreeMap<String, String> =
+                std::collections::BTreeMap::new();
+            for (path, bytes) in std::mem::take(&mut sent) {
+                let kind = match librepaper_document::document::paths::check(
+                    &librepaper_document::document::paths::rules(&self.config),
+                    &path,
+                ) {
+                    Ok(kind) => kind,
+                    Err(why) => return Err(write_json(400, &json!({"error": why}))),
                 };
-                let Some(at) = sent.iter().position(|(path, _)| *path == wanted) else {
+                if !seen.insert(librepaper_document::document::paths::collision_key(&path)) {
                     return Err(write_json(
                         400,
-                        &json!({"error": format!("the main file {wanted} is not among the files sent")}),
+                        &json!({"error": format!("{path}: two files cannot share one name")}),
                     ));
-                };
-                let (path, bytes) = sent.remove(at);
-                main = path.clone();
-                filename = path;
-                html = main_source(&filename, &bytes)?;
-            }
-            // Markdown dropped on the page is stored as markdown. It is not
-            // rendered here and never was worth rendering here: the browser
-            // showing it renders it, with the same module the editor previews
-            // with.
-            //
-            // What the file is called is the whole of the question, and
-            // `document_format` is the one place it is answered. The command
-            // line asks it too, and a directory whose main file this route
-            // named differently from the way `publish` named it would be a
-            // document that opened in the wrong editor depending on how it
-            // arrived. Typst and LaTeX reach here from `publish <directory>`
-            // rather than from the upload form, which takes what a browser can
-            // drop; a paper is the ordinary case either way.
-            if let Some(format) = librepaper_document::document::render::document_format(&filename)
-            {
-                if title.trim().is_empty() {
-                    title = match format {
-                        "typst" => librepaper_document::document::render::title_from_typst(&html),
-                        "markdown" => title_from_markdown(&html),
-                        "quarto" => librepaper_document::document::render::title_from_quarto(&html),
-                        // There is no TeX here to ask, so the `\title` is
-                        // scanned for; see `render::title_from_latex`.
-                        "latex" => librepaper_document::document::render::title_from_latex(&html),
-                        // An HTML document's source is its own bytes, through
-                        // the identity renderer, so it opens in the editor like
-                        // the others.
-                        _ => title_from_html(&html),
-                    };
                 }
-                source = html.clone();
-                source_format = format.to_string();
+                let path = librepaper_document::document::paths::normalise(&path);
+                if kind == librepaper_document::document::paths::Kind::Text {
+                    let Ok(text) = std::str::from_utf8(&bytes) else {
+                        return Err(write_json(
+                            400,
+                            &json!({"error": format!("{path} is not valid UTF-8")}),
+                        ));
+                    };
+                    texts.insert(path.clone(), text.to_string());
+                }
+                sent.push((path, bytes));
+            }
+            if sent.len() > self.config.max_files {
+                return Err(write_json(
+                    413,
+                    &json!({"error": format!("a document may hold {} files", self.config.max_files)}),
+                ));
+            }
+            // The opening file picks the format and the title. What the file
+            // is called is the whole of the question, and `document_format`
+            // is the one place it is answered; the command line asks it too.
+            // Markdown dropped on the page is stored as markdown and not
+            // rendered here: the browser showing it renders it, with the same
+            // module the editor previews with.
+            if let Some(opening) = librepaper_document::document::opening::opening_file(&texts) {
+                if let Some(format) =
+                    librepaper_document::document::render::document_format(&opening)
+                {
+                    let text = texts.get(&opening).cloned().unwrap_or_default();
+                    if title.trim().is_empty() {
+                        title = match format {
+                            "typst" => {
+                                librepaper_document::document::render::title_from_typst(&text)
+                            }
+                            "markdown" => title_from_markdown(&text),
+                            "quarto" => {
+                                librepaper_document::document::render::title_from_quarto(&text)
+                            }
+                            // There is no TeX here to ask, so the `\title` is
+                            // scanned for; see `render::title_from_latex`.
+                            "latex" => {
+                                librepaper_document::document::render::title_from_latex(&text)
+                            }
+                            // An HTML document's source is its own bytes,
+                            // through the identity renderer, so it opens in
+                            // the editor like the others.
+                            _ => title_from_html(&text),
+                        };
+                    }
+                    source = text;
+                    source_format = format.to_string();
+                }
             }
         } else {
             // The middleware declares the content length.
@@ -944,64 +974,13 @@ impl Server {
         if title.chars().count() > self.config.max_title {
             return Err(write_json(400, &json!({"error": "title too long"})));
         }
-        // Every path a directory sent, checked before any of it is stored. The
-        // command line refuses these first so the reason arrives on the
-        // laptop; this is the enforcement, and it is the same rule.
-        let mut kept = Vec::new();
-        let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
-        if !main.is_empty() {
-            match librepaper_document::document::paths::check(
-                &librepaper_document::document::paths::rules(&self.config),
-                &main,
-            ) {
-                Ok(librepaper_document::document::paths::Kind::Text) => {}
-                Ok(librepaper_document::document::paths::Kind::Asset) => {
-                    return Err(write_json(
-                        400,
-                        &json!({"error": format!("{main} cannot be the main file; it is a figure")}),
-                    ))
-                }
-                Err(why) => return Err(write_json(400, &json!({"error": why}))),
-            }
-            seen.insert(librepaper_document::document::paths::collision_key(&main));
-        }
-        for (path, bytes) in sent {
-            let kind = match librepaper_document::document::paths::check(
-                &librepaper_document::document::paths::rules(&self.config),
-                &path,
-            ) {
-                Ok(kind) => kind,
-                Err(why) => return Err(write_json(400, &json!({"error": why}))),
-            };
-            if !seen.insert(librepaper_document::document::paths::collision_key(&path)) {
-                return Err(write_json(
-                    400,
-                    &json!({"error": format!("{path}: two files cannot share one name")}),
-                ));
-            }
-            kept.push((
-                librepaper_document::document::paths::normalise(&path),
-                kind,
-                bytes,
-            ));
-        }
-        if seen.len() > self.config.max_files {
-            return Err(write_json(
-                413,
-                &json!({"error": format!("a document may hold {} files", self.config.max_files)}),
-            ));
-        }
-
         Ok(Upload {
             title,
             slug,
             source,
             source_format,
-            main,
-            files: kept
-                .into_iter()
-                .map(|(path, _, bytes)| (path, bytes))
-                .collect(),
+            files: sent,
+            whole,
             empty,
         })
     }
@@ -1011,8 +990,6 @@ impl Server {
     /// directory, so it is admitted whole or refused whole, naming the file
     /// and the rule it broke -- never accepted with the eleventh file silently
     /// missing because it was the one that turned out to be invalid.
-    ///
-    /// `main_path` is where the upload's main file will live.
     #[allow(clippy::result_large_err)] // as read_upload: the error is a response
     pub(super) fn preflight_directory(&self, parsed: &Upload) -> Result<(), Reply> {
         for (path, bytes) in &parsed.files {
@@ -1134,8 +1111,8 @@ impl Server {
             Ok(room) => room,
             Err(error) => return refused("open the room", &error),
         };
-        let source = match room.source().await {
-            Ok(source) => source,
+        let (path, source) = match room.source().await {
+            Ok(opening) => opening.unwrap_or_default(),
             Err(error) => return sequencer_reply(&error),
         };
         let format = match room.format(&entry.source_format).await {
@@ -1146,7 +1123,7 @@ impl Server {
             200,
             &json!({
                 "slug": entry.slug, "title": entry.title, "sha": entry.sha,
-                "format": format, "source": source,
+                "format": format, "path": path, "source": source,
             }),
         )
     }
@@ -1229,7 +1206,6 @@ impl Server {
                 "slug": entry.slug,
                 "title": entry.title,
                 "format": format,
-                "main": projected.projection.main,
                 "tree": projected.projection,
                 "texts": projected.texts,
                 "changes": changes,
@@ -1280,11 +1256,6 @@ impl Server {
             Ok(format) => format,
             Err(error) => return sequencer_reply(&error),
         };
-        let source = projected
-            .texts
-            .get(&projected.projection.main)
-            .cloned()
-            .unwrap_or_default();
         // The first page, not the collection. `librepaper.snapshot.v1`
         // always carried a `comments` array and still does; what changed is
         // that it is a bounded page with `comment_state` beside it saying
@@ -1312,7 +1283,6 @@ impl Server {
             .next
             .map(|at| librepaper_room::room::comments::encode_cursor(room.document_id, None, at)));
         let tree_sha = projected.projection.digest();
-        let main = projected.projection.main.clone();
         let files = projected.projection.files.clone();
         let snapshot = librepaper_document::document::projection::ProjectSnapshot {
             sha: tree_sha,
@@ -1325,11 +1295,8 @@ impl Server {
             slug: entry.slug,
             title: entry.title,
             format,
-            main,
             project: snapshot,
             files,
-            source_sha: librepaper_engine::storage::store::digest_of(&source),
-            source,
             comments,
             comment_state,
             role: who.role.as_str().to_string(),
@@ -1622,7 +1589,7 @@ impl Server {
         } else {
             None
         };
-        let files = match self.store.project_files(slug).await {
+        let mut files = match self.store.project_files(slug).await {
             Ok(Some(files)) => files,
             Ok(None) => {
                 if let Some(admission) = upload_admission {
@@ -1670,22 +1637,25 @@ impl Server {
         if let Some(operation) = &template_operation {
             base = operation.target.slug.clone();
         }
-        let source = files
+        files.sort_by(|a, b| a.0.cmp(&b.0));
+        let texts: std::collections::BTreeMap<String, String> = files
             .iter()
-            .find(|(path, _)| path == &entry.main)
-            .and_then(|(_, bytes)| String::from_utf8(bytes.clone()).ok())
-            .unwrap_or_default();
-        let rest: Vec<(String, Vec<u8>)> = files
-            .into_iter()
-            .filter(|(path, _)| path != &entry.main)
+            .filter_map(|(path, bytes)| {
+                std::str::from_utf8(bytes)
+                    .ok()
+                    .map(|text| (path.clone(), text.to_string()))
+            })
             .collect();
+        let source = librepaper_document::document::opening::opening_file(&texts)
+            .and_then(|path| texts.get(&path).cloned())
+            .unwrap_or_default();
         if let Err(response) = self.preflight_directory(&Upload {
             title: title.clone(),
             slug: String::new(),
             source: source.clone(),
             source_format: entry.source_format.clone(),
-            main: entry.main.clone(),
-            files: rest.clone(),
+            files: files.clone(),
+            whole: true,
             empty: false,
         }) {
             if let Some(admission) = upload_admission {
@@ -1709,7 +1679,6 @@ impl Server {
                         ownership_mode: "owned".into(),
                         title: title.clone(),
                         source_format: entry.source_format.clone(),
-                        main_path: entry.main.clone(),
                     },
                 )
                 .await
@@ -1764,20 +1733,19 @@ impl Server {
             title: title.clone(),
             source,
             source_format: entry.source_format.clone(),
-            main: entry.main.clone(),
         };
         let saved = if let Some(operation) = &template_operation {
             self.store
                 .put_template_directory_as_actor(
                     input,
-                    rest,
+                    files,
                     actor,
                     template_request_id.expect("template request id was checked above"),
                     operation.target.id,
                 )
                 .await
         } else {
-            self.store.put_directory_as_actor(input, rest, actor).await
+            self.store.put_directory_as_actor(input, files, actor).await
         };
         match saved {
             Ok(made) => write_json(

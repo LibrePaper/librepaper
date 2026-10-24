@@ -28,7 +28,6 @@ async fn deployment(slug: &str) -> Option<Deployment> {
             title: "Detail Test".into(),
             source: PAPER.into(),
             source_format: "markdown".into(),
-            main: "paper.md".into(),
         },
         Vec::new(),
         librepaper_base::auth::Policy::allowing("github", &["owner"]),

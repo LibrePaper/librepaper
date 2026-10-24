@@ -41,7 +41,6 @@ async fn serve(slug: &str) -> Option<Served> {
             title: "Token paper".into(),
             source: PAPER.into(),
             source_format: "markdown".into(),
-            main: "paper.md".into(),
         },
         Vec::new(),
         librepaper_base::auth::Policy::allowing("github", &["owner"]),
@@ -725,7 +724,7 @@ async fn a_token_cannot_create_a_document() {
             .post(format!("{}/api/documents", served.base))
             .header("host", "paper.example")
             .header("authorization", format!("Bearer {token}"))
-            .json(&json!({"slug": "from-a-token", "title": "x", "source": "x", "source_format": "markdown", "main": "x.md"}))
+            .json(&json!({"slug": "from-a-token", "title": "x", "source": "x", "source_format": "markdown"}))
             .send()
             .await
             .unwrap();

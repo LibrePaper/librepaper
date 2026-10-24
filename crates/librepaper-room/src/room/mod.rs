@@ -153,24 +153,26 @@ impl Room {
         self.log.projection().await
     }
 
-    /// The main file's text as it stands, which is what a one-file document
-    /// has always meant by "the source".
-    pub async fn source(&self) -> Result<String, SequencerError> {
+    /// The opening file's path and text as they stand, or nothing for a
+    /// project with no text file.
+    pub async fn source(&self) -> Result<Option<(String, String)>, SequencerError> {
         let projected = self.projection().await?;
-        Ok(projected
-            .texts
-            .get(&projected.projection.main)
-            .cloned()
-            .unwrap_or_default())
+        Ok(
+            librepaper_document::document::opening::opening_file(&projected.texts).map(|path| {
+                let text = projected.texts.get(&path).cloned().unwrap_or_default();
+                (path, text)
+            }),
+        )
     }
 
-    /// What the source is written in, derived from the main file's own
-    /// extension rather than remembered separately. The main file is shared
-    /// CRDT metadata that any editor can change, so a format kept beside it
-    /// would go stale the moment somebody did (§4.4 step 6).
+    /// What the source is written in, derived from the opening file's own
+    /// extension rather than remembered separately, so it cannot go stale
+    /// when somebody adds or renames files (§4.4 step 6).
     pub async fn format(&self, fallback: &str) -> Result<String, SequencerError> {
         let projected = self.projection().await?;
-        let derived = format_from_path(&projected.projection.main);
+        let derived = librepaper_document::document::opening::opening_file(&projected.texts)
+            .map(|path| format_from_path(&path))
+            .unwrap_or_default();
         Ok(if derived.is_empty() {
             if fallback.is_empty() {
                 "html".to_string()
@@ -618,14 +620,7 @@ impl Rooms {
     }
 }
 
-/// What to call the one file a document turns out to have. The index entry's
-/// own `main` if it has one; otherwise the name its format implies.
-pub fn main_path_for(named: &str, format: &str) -> String {
-    librepaper_document::document::render::main_path_for(named, format)
-}
-
-/// The format a main file's own extension implies, the inverse of
-/// `main_path_for`. Empty for an extension none of the formats claim, which
+/// The format a file's own extension implies. Empty for an extension none of the formats claim, which
 /// the caller reads as "keep what was there".
 pub fn format_from_path(path: &str) -> String {
     librepaper_document::document::render::document_format(path)
