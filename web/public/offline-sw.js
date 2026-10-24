@@ -2,7 +2,7 @@
 // than a migration. Old caches are deleted on activate: without that, every
 // deployment's digest-named assets accumulate forever in a browser that never
 // asked to keep them, and nothing ever removes the ones no page can reach.
-const CACHE = "librepaper-shell-v2";
+const CACHE = "librepaper-shell-v3";
 const CORE = ["/", "/reader.html", "/assets/librepaper-icon.svg"];
 
 self.addEventListener("install", (event) => {
