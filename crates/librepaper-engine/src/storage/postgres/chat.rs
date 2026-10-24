@@ -490,7 +490,6 @@ mod tests {
                 ownership_mode: "owned".into(),
                 title: "Chat test".into(),
                 source_format: "markdown".into(),
-                main_path: "main.md".into(),
             })
             .await
             .unwrap()

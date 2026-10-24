@@ -66,7 +66,6 @@ async fn compaction_retires_snapshots_atomically_and_cleanup_keeps_current_and_g
             ownership_mode: "owned".into(),
             title: "Snapshots".into(),
             source_format: "markdown".into(),
-            main_path: "main.md".into(),
         })
         .await
         .unwrap();
@@ -98,7 +97,6 @@ async fn compaction_retires_snapshots_atomically_and_cleanup_keeps_current_and_g
                     update_bytes: &framed,
                     vector: &vector,
                     source_format: None,
-                    main_path: None,
                 },
             )
             .await

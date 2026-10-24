@@ -78,7 +78,6 @@ async fn document(catalog: &PostgresCatalog, owner: uuid::Uuid, slug: String) ->
             ownership_mode: "owned".into(),
             title: "Throughput benchmark".into(),
             source_format: "markdown".into(),
-            main_path: "paper.md".into(),
         })
         .await
         .expect("benchmark document")
@@ -2437,8 +2436,8 @@ async fn active_document_capacity_benchmark() {
     if stored > 0 {
         sqlx::query(
             "INSERT INTO documents(id,slug,owner_id,ownership_mode,title,source_format,\
-             main_path,status)
-             SELECT gen_random_uuid(),'stored-'||n,$1,'owned','Stored','markdown','paper.md',\
+             status)
+             SELECT gen_random_uuid(),'stored-'||n,$1,'owned','Stored','markdown',\
              'active' FROM generate_series(1,$2) AS n",
         )
         .bind(owner.id)

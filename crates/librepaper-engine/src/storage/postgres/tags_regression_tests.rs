@@ -39,7 +39,6 @@ async fn document(catalog: &PostgresCatalog, owner_id: Uuid) -> Uuid {
             ownership_mode: "owned".into(),
             title: "Tags test".into(),
             source_format: "markdown".into(),
-            main_path: "main.md".into(),
         })
         .await
         .unwrap()

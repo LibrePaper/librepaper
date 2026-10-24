@@ -483,7 +483,6 @@ async fn frugal_mixed_workload_benchmark() {
                 ownership_mode: "owned".into(),
                 title: "Mixed benchmark".into(),
                 source_format: "markdown".into(),
-                main_path: "paper.md".into(),
             })
             .await
             .expect("create doc");

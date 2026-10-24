@@ -55,7 +55,6 @@ fn document(owner_id: Uuid, slug: String, generation: Option<i64>) -> NewDocumen
         ownership_mode: "owned".into(),
         title: "Lifecycle test".into(),
         source_format: "markdown".into(),
-        main_path: "main.md".into(),
     }
 }
 
@@ -307,7 +306,6 @@ async fn source_rows_on_different_owners_serialize_the_deployment_quota() {
                 update_bytes: &first_bytes,
                 vector: &[],
                 source_format: None,
-                main_path: None,
             },
         ),
         catalog.flush_log_row(
@@ -317,7 +315,6 @@ async fn source_rows_on_different_owners_serialize_the_deployment_quota() {
                 update_bytes: &second_bytes,
                 vector: &[],
                 source_format: None,
-                main_path: None,
             },
         ),
     );
@@ -373,7 +370,6 @@ async fn source_and_asset_admissions_serialize_the_same_owner_quota() {
                 update_bytes: &source_bytes,
                 vector: &[],
                 source_format: None,
-                main_path: None,
             },
         ),
         catalog.complete_asset(asset),
@@ -413,7 +409,6 @@ async fn compaction_can_shrink_over_quota_storage_but_cannot_grow_it() {
                 update_bytes: &row_bytes,
                 vector: &[],
                 source_format: None,
-                main_path: None,
             },
         )
         .await
@@ -500,7 +495,6 @@ async fn already_admitted_log_rows_can_flush_after_a_project_is_hidden() {
                 update_bytes: &row_bytes,
                 vector: &[],
                 source_format: None,
-                main_path: None,
             },
         )
         .await
@@ -569,7 +563,6 @@ async fn quota_rejected_new_project_keeps_its_upload_admission() {
                 update_bytes: &rejected_bytes,
                 vector: &[],
                 source_format: None,
-                main_path: None,
             },
         )
         .await

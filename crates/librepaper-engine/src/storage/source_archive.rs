@@ -64,7 +64,6 @@ impl SourceFile {
 #[derive(Clone, Debug)]
 pub struct SourceArchive {
     pub source_format: String,
-    pub main_path: String,
     pub files: Vec<SourceFile>,
 }
 
@@ -89,7 +88,6 @@ pub enum ArchiveError {
 struct Manifest {
     version: u32,
     source_format: String,
-    main_path: String,
     files: Vec<ManifestFile>,
 }
 
@@ -123,11 +121,6 @@ pub fn encode(
     limits: ArchiveLimits,
 ) -> Result<EncodedArchive, ArchiveError> {
     validate_format(&archive.source_format)?;
-    // A project with no files has no main file either; a project with files
-    // must name one of them.
-    if !archive.files.is_empty() || !archive.main_path.is_empty() {
-        validate_path(&archive.main_path)?;
-    }
     if archive.files.len() > limits.files {
         return Err(ArchiveError::Invalid(format!(
             "source archive has {} files; expected 0..={}",
@@ -199,20 +192,10 @@ pub fn encode(
             limits.source_bytes
         )));
     }
-    if !(manifest_files.is_empty() && archive.main_path.is_empty())
-        && !manifest_files
-            .iter()
-            .any(|file| file.path() == archive.main_path)
-    {
-        return Err(ArchiveError::Invalid(
-            "main path is absent from source archive".into(),
-        ));
-    }
 
     let manifest = Manifest {
         version: ARCHIVE_FORMAT_VERSION,
         source_format: archive.source_format,
-        main_path: archive.main_path,
         files: manifest_files,
     };
     let manifest_bytes = serde_json::to_vec(&manifest)?;
@@ -308,9 +291,6 @@ pub fn decode(bytes: &[u8], limits: ArchiveLimits) -> Result<SourceArchive, Arch
         )));
     }
     validate_format(&manifest.source_format)?;
-    if !manifest.files.is_empty() || !manifest.main_path.is_empty() {
-        validate_path(&manifest.main_path)?;
-    }
     if manifest.files.len() > limits.files {
         return Err(ArchiveError::Invalid(
             "source archive file count is outside limits".into(),
@@ -373,16 +353,8 @@ pub fn decode(bytes: &[u8], limits: ArchiveLimits) -> Result<SourceArchive, Arch
     if inline_total > limits.source_bytes as u64 {
         return Err(ArchiveError::Invalid("inline source exceeds limit".into()));
     }
-    if !(files.is_empty() && manifest.main_path.is_empty())
-        && !files.iter().any(|file| file.path() == manifest.main_path)
-    {
-        return Err(ArchiveError::Invalid(
-            "main path is absent from source archive".into(),
-        ));
-    }
     Ok(SourceArchive {
         source_format: manifest.source_format,
-        main_path: manifest.main_path,
         files,
     })
 }
@@ -487,7 +459,6 @@ mod tests {
     fn fixture() -> SourceArchive {
         SourceArchive {
             source_format: "quarto".into(),
-            main_path: "paper.qmd".into(),
             files: vec![
                 SourceFile::Asset {
                     path: "fig/plot.png".into(),
@@ -523,19 +494,11 @@ mod tests {
     fn an_empty_project_round_trips() {
         let archive = SourceArchive {
             source_format: "markdown".into(),
-            main_path: String::new(),
             files: Vec::new(),
         };
         let encoded = encode(archive, ArchiveLimits::default()).unwrap();
         let decoded = decode(&encoded.bytes, ArchiveLimits::default()).unwrap();
         assert!(decoded.files.is_empty());
-        assert!(decoded.main_path.is_empty());
-        let named_but_absent = SourceArchive {
-            source_format: "markdown".into(),
-            main_path: "paper.md".into(),
-            files: Vec::new(),
-        };
-        assert!(encode(named_but_absent, ArchiveLimits::default()).is_err());
     }
 
     #[test]
@@ -557,7 +520,7 @@ mod tests {
 
     #[test]
     fn round_trips_every_source_format() {
-        for (format, main_path) in [
+        for (format, path) in [
             ("markdown", "paper.md"),
             ("html", "index.html"),
             ("typst", "paper.typ"),
@@ -566,16 +529,14 @@ mod tests {
         ] {
             let archive = SourceArchive {
                 source_format: format.into(),
-                main_path: main_path.into(),
                 files: vec![SourceFile::Inline {
-                    path: main_path.into(),
+                    path: path.into(),
                     bytes: b"source".to_vec(),
                 }],
             };
             let encoded = encode(archive.clone(), ArchiveLimits::default()).unwrap();
             let decoded = decode(&encoded.bytes, ArchiveLimits::default()).unwrap();
             assert_eq!(decoded.source_format, archive.source_format);
-            assert_eq!(decoded.main_path, archive.main_path);
             assert_eq!(decoded.files, archive.files);
         }
     }

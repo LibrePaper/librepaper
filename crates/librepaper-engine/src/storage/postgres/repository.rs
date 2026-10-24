@@ -44,7 +44,6 @@ pub struct NewDocument {
     pub ownership_mode: String,
     pub title: String,
     pub source_format: String,
-    pub main_path: String,
 }
 
 #[derive(Clone, Debug, sqlx::FromRow)]
@@ -56,7 +55,6 @@ pub struct DocumentRecord {
     pub title: String,
     pub status: String,
     pub source_format: String,
-    pub main_path: String,
     pub update_sequence: i64,
     pub created_at: OffsetDateTime,
     pub updated_at: OffsetDateTime,
@@ -562,14 +560,14 @@ impl PostgresCatalog {
         let id = new_id();
         sqlx::query_as::<_, DocumentRecord>(
             "INSERT INTO documents
-             (id,slug,owner_id,ownership_mode,title,status,source_format,main_path)
-             SELECT $1,$2,a.id,$4,$5,'active',$6,$7
+             (id,slug,owner_id,ownership_mode,title,status,source_format)
+             SELECT $1,$2,a.id,$4,$5,'active',$6
              FROM accounts a
              WHERE a.id=$3 AND a.status='active'
-               AND ($8::bigint IS NULL OR a.session_generation=$8)
+               AND ($7::bigint IS NULL OR a.session_generation=$7)
              FOR SHARE
              RETURNING id,slug,owner_id,ownership_mode,title,status,source_format,
-                       main_path,update_sequence,created_at,updated_at,deleted_at",
+                       update_sequence,created_at,updated_at,deleted_at",
         )
         .bind(id)
         .bind(input.slug)
@@ -577,7 +575,6 @@ impl PostgresCatalog {
         .bind(input.ownership_mode)
         .bind(input.title)
         .bind(input.source_format)
-        .bind(input.main_path)
         .bind(input.owner_session_generation)
         .fetch_optional(&self.pool)
         .await
@@ -621,7 +618,7 @@ impl PostgresCatalog {
         };
         let target = sqlx::query_as::<_, DocumentRecord>(
             "SELECT id,slug,owner_id,ownership_mode,title,status,source_format,
-                    main_path,update_sequence,created_at,updated_at,deleted_at
+                    update_sequence,created_at,updated_at,deleted_at
              FROM documents WHERE id=$1",
         )
         .bind(row.target_document_id)
@@ -686,7 +683,7 @@ impl PostgresCatalog {
             }
             let target = sqlx::query_as::<_, DocumentRecord>(
                 "SELECT id,slug,owner_id,ownership_mode,title,status,source_format,
-                        main_path,update_sequence,created_at,updated_at,deleted_at
+                        update_sequence,created_at,updated_at,deleted_at
                  FROM documents WHERE id=$1",
             )
             .bind(row.target_document_id)
@@ -713,17 +710,16 @@ impl PostgresCatalog {
         let target_id = new_id();
         let target = sqlx::query_as::<_, DocumentRecord>(
             "INSERT INTO documents
-             (id,slug,owner_id,ownership_mode,title,status,source_format,main_path)
-             VALUES($1,$2,$3,'owned',$4,'active',$5,$6)
+             (id,slug,owner_id,ownership_mode,title,status,source_format)
+             VALUES($1,$2,$3,'owned',$4,'active',$5)
              RETURNING id,slug,owner_id,ownership_mode,title,status,source_format,
-                       main_path,update_sequence,created_at,updated_at,deleted_at",
+                       update_sequence,created_at,updated_at,deleted_at",
         )
         .bind(target_id)
         .bind(&input.slug)
         .bind(input.owner_id)
         .bind(&input.title)
         .bind(&input.source_format)
-        .bind(&input.main_path)
         .fetch_one(&mut *tx)
         .await?;
         sqlx::query("INSERT INTO document_templates(document_id) VALUES($1)")
@@ -816,7 +812,7 @@ impl PostgresCatalog {
         sqlx::query_as!(
             DocumentRecord,
             "SELECT id,slug,owner_id,ownership_mode,title,status,source_format,
-                    main_path,update_sequence,
+                    update_sequence,
                        created_at,updated_at,deleted_at
              FROM documents WHERE slug=$1",
             slug,
@@ -830,7 +826,7 @@ impl PostgresCatalog {
         sqlx::query_as!(
             DocumentRecord,
             "SELECT id,slug,owner_id,ownership_mode,title,status,source_format,
-                    main_path,update_sequence,
+                    update_sequence,
                        created_at,updated_at,deleted_at
              FROM documents WHERE id=$1",
             id,
@@ -850,7 +846,7 @@ impl PostgresCatalog {
         }
         sqlx::query_as::<_, DocumentRecord>(
             "SELECT id,slug,owner_id,ownership_mode,title,status,source_format,
-                    main_path,update_sequence,created_at,updated_at,deleted_at
+                    update_sequence,created_at,updated_at,deleted_at
              FROM documents
              WHERE status='active'
                AND NOT EXISTS (SELECT 1 FROM moderated_projects m WHERE m.document_id=documents.id)
@@ -879,7 +875,7 @@ impl PostgresCatalog {
         }
         sqlx::query_as::<_, DocumentRecord>(
             "SELECT id,slug,owner_id,ownership_mode,title,status,source_format,
-                    main_path,update_sequence,created_at,updated_at,deleted_at
+                    update_sequence,created_at,updated_at,deleted_at
              FROM documents
              WHERE status='active'
                AND (updated_at,id) < (COALESCE($1::timestamptz,'infinity'),
@@ -944,7 +940,7 @@ impl PostgresCatalog {
                  ORDER BY d.updated_at DESC,d.id DESC LIMIT $4)
              )
              SELECT d.id,d.slug,d.owner_id,d.ownership_mode,d.title,d.status,
-                    d.source_format,d.main_path,d.update_sequence,
+                    d.source_format,d.update_sequence,
                     d.created_at,
                     d.updated_at,d.deleted_at
              FROM documents d
@@ -987,7 +983,7 @@ impl PostgresCatalog {
         sqlx::query_as!(
             DocumentRecord,
             "SELECT d.id,d.slug,d.owner_id,d.ownership_mode,d.title,d.status,
-                    d.source_format,d.main_path,d.update_sequence,
+                    d.source_format,d.update_sequence,
                     d.created_at,
                     d.updated_at,d.deleted_at
              FROM documents d
@@ -1424,7 +1420,7 @@ impl PostgresCatalog {
         sqlx::query_as!(
             DocumentRecord,
             "SELECT d.id,d.slug,d.owner_id,d.ownership_mode,d.title,d.status,
-                    d.source_format,d.main_path,d.update_sequence,
+                    d.source_format,d.update_sequence,
                     d.created_at,
                     d.updated_at,d.deleted_at
              FROM documents d

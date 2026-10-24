@@ -942,21 +942,22 @@ impl Worker {
                 }
             }
         }
-        let main = if projected.projection.main.is_empty() {
-            files
-                .first()
-                .map(|file| file.path().to_string())
-                .unwrap_or_default()
-        } else {
-            projected.projection.main.clone()
-        };
-        let format = librepaper_document::document::render::document_format(&main)
+        let texts: std::collections::BTreeMap<String, String> = files
+            .iter()
+            .filter_map(|file| match file {
+                super::source_archive::SourceFile::Inline { path, bytes } => {
+                    Some((path.clone(), String::from_utf8_lossy(bytes).into_owned()))
+                }
+                super::source_archive::SourceFile::Asset { .. } => None,
+            })
+            .collect();
+        let format = librepaper_document::document::opening::opening_file(&texts)
+            .and_then(|path| librepaper_document::document::render::document_format(&path))
             .map(str::to_string)
             .unwrap_or_else(|| document.source_format.clone());
         let encoded = super::source_archive::encode(
             super::source_archive::SourceArchive {
                 source_format: format,
-                main_path: main,
                 files,
             },
             super::source_archive::ArchiveLimits {
@@ -1724,7 +1725,6 @@ mod tests {
                 ownership_mode: "owned".into(),
                 title: "Erase me".into(),
                 source_format: "markdown".into(),
-                main_path: "document.md".into(),
             })
             .await
             .unwrap();

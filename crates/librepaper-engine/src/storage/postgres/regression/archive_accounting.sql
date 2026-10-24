@@ -9,13 +9,13 @@ VALUES ('00000000-0000-0000-0000-000000000001', 'system',
         'archive-accounting-test', 'Archive accounting test', 'active');
 
 INSERT INTO documents (id, slug, owner_id, ownership_mode, title, status,
-                       source_format, main_path)
+                       source_format)
 VALUES ('00000000-0000-0000-0000-000000000101', 'archive-accounting-source',
         '00000000-0000-0000-0000-000000000001', 'owned', 'Source', 'active',
-        'markdown', 'README.md'),
+        'markdown'),
        ('00000000-0000-0000-0000-000000000102', 'archive-accounting-survivor',
         '00000000-0000-0000-0000-000000000001', 'owned', 'Survivor', 'active',
-        'markdown', 'README.md');
+        'markdown');
 
 INSERT INTO document_assets (id, document_id, storage_key, digest, byte_length,
                              media_type)

@@ -54,7 +54,6 @@ struct Input {
     valid_format: u8,
     /// Every format, so that the four the rules refuse are reached too.
     format: String,
-    main_path: String,
     files: Vec<File>,
     damage: Vec<Damage>,
     /// The ceilings, small so that the limit paths are reached often.
@@ -66,7 +65,7 @@ struct Input {
 
 fuzz_target!(|input: Input| {
     let (limits, archive) = if input.valid_archive {
-        let (source_format, main_path, body) = match input.valid_format % 5 {
+        let (source_format, path, body) = match input.valid_format % 5 {
             0 => ("markdown", "main.md", "# Fuzz seed\n"),
             1 => ("html", "index.html", "<!doctype html><title>Fuzz seed</title>"),
             2 => ("typst", "main.typ", "= Fuzz seed\n"),
@@ -90,10 +89,9 @@ fuzz_target!(|input: Input| {
             },
             SourceArchive {
                 source_format: source_format.to_owned(),
-                main_path: main_path.to_owned(),
                 files: vec![
                     SourceFile::Inline {
-                        path: main_path.to_owned(),
+                        path: path.to_owned(),
                         bytes: body.as_bytes().to_vec(),
                     },
                     SourceFile::Inline {
@@ -112,7 +110,6 @@ fuzz_target!(|input: Input| {
         };
         let archive = SourceArchive {
             source_format: input.format.clone(),
-            main_path: input.main_path.clone(),
             files: input
                 .files
                 .iter()
@@ -159,7 +156,6 @@ fuzz_target!(|input: Input| {
     let again = encode(
         SourceArchive {
             source_format: decoded.source_format.clone(),
-            main_path: decoded.main_path.clone(),
             files: decoded.files.clone(),
         },
         limits,
@@ -225,10 +221,6 @@ fn check(archive: &SourceArchive, limits: ArchiveLimits) {
     assert!(
         inline_total <= limits.source_bytes as u64,
         "a decoded archive carries more inline source than the ceiling allows"
-    );
-    assert!(
-        seen.contains(archive.main_path.as_str()),
-        "a decoded archive's main file is not in it"
     );
     assert!(
         matches!(

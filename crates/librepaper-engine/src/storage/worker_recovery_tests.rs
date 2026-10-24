@@ -144,7 +144,6 @@ impl Deployment {
                 ownership_mode: "owned".into(),
                 title: "Trash".into(),
                 source_format: "markdown".into(),
-                main_path: "paper.md".into(),
             })
             .await
             .expect("create the document row");

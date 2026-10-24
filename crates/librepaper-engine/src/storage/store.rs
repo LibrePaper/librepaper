@@ -73,15 +73,6 @@ pub struct IndexEntry {
     /// Empty means there is no source to reopen.
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub source_format: String,
-    /// The path of the document's main file: the one a renderer is run on, and
-    /// the one `source_format` is derived from. A document is a directory, and
-    /// which of its files is the document is declared rather than discovered --
-    /// `\include` and `#import` are not parsed, because TeX cannot be resolved
-    /// statically and a guess that is wrong is worse than a list. Empty on an
-    /// entry written before there were directories, which reads as the one
-    /// file such a document has.
-    #[serde(default, skip_serializing_if = "String::is_empty")]
-    pub main: String,
     /// The links that carry a role, and the agent tokens beside them. A
     /// document may hold several links of one role. Each row is addressed by
     /// `LinkGrant::id`.
@@ -451,13 +442,7 @@ pub struct Store {
 pub struct DocumentInput {
     pub slug: String,
     pub title: String,
-    /// The document itself. A document written as HTML has HTML for its
-    /// source and the identity for its renderer.
-    pub source: String,
     pub source_format: String,
-    /// The path of the main file. A document of one file is a directory of
-    /// one file, and this is what it is called in it.
-    pub main: String,
 }
 
 /// What `put` returns when a storage rule refuses an upload: the HTTP status
@@ -585,7 +570,6 @@ struct ReplaceProject {
     texts: Vec<(String, String)>,
     assets: Vec<(String, String)>,
     staged_assets: Vec<NewAsset>,
-    main: String,
     author_account_id: Option<Uuid>,
     author_label: String,
 }
@@ -615,7 +599,6 @@ impl Command for ReplaceProject {
     ) -> std::result::Result<Option<PreparedSource>, CommandError> {
         let texts = &self.texts;
         let assets = &self.assets;
-        let main = self.main.as_str();
         let client_seq = client_seq_of(self.request_id);
         head.prepare(client_seq, move |draft| {
             let wanted_texts: std::collections::HashSet<&str> =
@@ -632,18 +615,11 @@ impl Command for ReplaceProject {
                     librepaper_document::document::session::remove_asset(draft, &path);
                 }
             }
-            let mut main_id = String::new();
             for (path, body) in texts {
-                let id = librepaper_document::document::session::put_text(draft, path, body);
-                if path == main {
-                    main_id = id;
-                }
+                librepaper_document::document::session::put_text(draft, path, body);
             }
             for (path, digest) in assets {
                 librepaper_document::document::session::put_asset(draft, path, digest);
-            }
-            if !main_id.is_empty() {
-                librepaper_document::document::session::set_main(draft, &main_id);
             }
             Ok(())
         })
@@ -1350,7 +1326,6 @@ impl Store {
                         ownership_mode: "owned".into(),
                         title: value.title.clone(),
                         source_format: value.source_format.clone(),
-                        main_path: value.main.clone(),
                     })
                     .await
                     .map_err(source_put_error)?,
@@ -1365,15 +1340,11 @@ impl Store {
         }
 
         let write_project = async {
-            // The main file is always text -- it is what a renderer runs on,
-            // and a renderer runs on source, not on an asset's bytes. Every
-            // other file is sorted and staged by `sort_and_stage_assets`.
+            // Texts and assets are sorted and staged by
+            // `sort_and_stage_assets`; a project created empty has neither.
             let (mut texts, assets, staged_assets) =
                 self.sort_and_stage_assets(document.id, files).await?;
-            // A project created empty has no main file to insert.
-            if !value.main.is_empty() {
-                texts.insert(0, (value.main.clone(), value.source));
-            }
+            texts.sort_by(|a, b| a.0.cmp(&b.0));
 
             // The name, not the id. `actor.account_id` is the catalogue uuid,
             // and a timeline signed with it can only say "Unknown editor".
@@ -1396,7 +1367,6 @@ impl Store {
                 texts,
                 assets,
                 staged_assets,
-                main: value.main.clone(),
                 author_account_id: Some(account_id),
                 author_label,
             };
@@ -1763,7 +1733,6 @@ async fn entries_from_documents(
                 publisher_name: owner.map(|a| a.display_name.clone()).unwrap_or_default(),
                 size: 0,
                 source_format: document.source_format.clone(),
-                main: document.main_path.clone(),
                 links,
                 guests,
                 account_grants,

@@ -1538,8 +1538,7 @@ impl Sequencer {
                     expected_update_sequence: expected,
                     update_bytes: &encoded,
                     vector: &vector.encode(),
-                    source_format: identity.as_ref().map(|(format, _)| format.as_str()),
-                    main_path: identity.as_ref().map(|(_, main)| main.as_str()),
+                    source_format: identity.as_deref(),
                 },
                 &reserved_keys,
                 reserved_bytes,
@@ -1661,17 +1660,15 @@ impl Sequencer {
         }
     }
 
-    /// The format and main path this flush stamps on the document row, when a
-    /// warm cache can say them without a build. A cold document leaves them
-    /// alone: the row still holds what the last projection said.
-    fn identity_of(&self, inner: &Inner) -> Option<(String, String)> {
-        let projection = inner.projection.as_ref()?;
-        let main = projection.projection.main.clone();
-        if main.is_empty() {
-            return None;
-        }
-        let format = librepaper_document::document::render::document_format(&main)?;
-        Some((format.to_string(), main))
+    /// The format this flush stamps on the document row, taken from the file
+    /// the project opens on, when a warm cache can say it without a build. A
+    /// cold document leaves it alone: the row still holds what the last
+    /// flush said.
+    fn identity_of(&self, inner: &Inner) -> Option<String> {
+        let cache = inner.cache.as_ref()?;
+        let opening = librepaper_document::document::session::opening_path(&cache.doc)?;
+        let format = librepaper_document::document::render::document_format(&opening)?;
+        Some(format.to_string())
     }
 
     // -- section 6: join -------------------------------------------------
@@ -2047,8 +2044,7 @@ impl Sequencer {
                         expected_update_sequence: expected,
                         update_bytes: &encoded,
                         vector: &vector.encode(),
-                        source_format: identity.as_ref().map(|(format, _)| format.as_str()),
-                        main_path: identity.as_ref().map(|(_, main)| main.as_str()),
+                        source_format: identity.as_deref(),
                     },
                     &reserved_keys,
                     reserved_bytes,

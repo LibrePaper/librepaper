@@ -1134,7 +1134,6 @@ mod tests {
                 ownership_mode: "owned".into(),
                 title: "A Paper".into(),
                 source_format: "markdown".into(),
-                main_path: "paper.md".into(),
             })
             .await
             .unwrap()
@@ -1165,7 +1164,6 @@ mod tests {
                         update_bytes: b"1234",
                         vector: b"v1",
                         source_format: None,
-                        main_path: None,
                     },
                 )
                 .await
@@ -1185,7 +1183,6 @@ mod tests {
                         update_bytes: b"5678",
                         vector: b"v1",
                         source_format: None,
-                        main_path: None,
                     },
                 )
                 .await
@@ -1235,7 +1232,6 @@ mod tests {
                         update_bytes: b"x",
                         vector: b"v2",
                         source_format: None,
-                        main_path: None,
                     },
                 )
                 .await,
@@ -1257,7 +1253,6 @@ mod tests {
                         update_bytes: b"x",
                         vector: b"v1",
                         source_format: None,
-                        main_path: None,
                     },
                 )
                 .await,
@@ -1327,7 +1322,6 @@ mod tests {
                 ownership_mode: "owned".into(),
                 title: "Same title".into(),
                 source_format: "quarto".into(),
-                main_path: "paper.qmd".into(),
             })
             .await
             .unwrap();
@@ -1502,7 +1496,6 @@ mod tests {
                     update_bytes: b"framed-batch-one",
                     vector: b"vector-one",
                     source_format: Some("quarto"),
-                    main_path: Some("paper.qmd"),
                 },
             )
             .await
@@ -1510,8 +1503,8 @@ mod tests {
         assert_eq!(sequence, 1);
         assert_eq!(catalog.log_sequence(first.id).await.unwrap(), 1);
         assert_eq!(
-            catalog.document(first.id).await.unwrap().unwrap().main_path,
-            "paper.qmd",
+            catalog.document(first.id).await.unwrap().unwrap().source_format,
+            "quarto",
             "a flush that names an identity stamps it on the document row"
         );
 
@@ -1742,7 +1735,6 @@ mod tests {
                 ownership_mode: "owned".into(),
                 title: "Erase document".into(),
                 source_format: "markdown".into(),
-                main_path: "document.md".into(),
             })
             .await
             .unwrap();
@@ -2690,7 +2682,6 @@ mod tests {
                     update_bytes: b"batch-one",
                     vector: b"vector-one",
                     source_format: Some("markdown"),
-                    main_path: Some("paper.md"),
                 },
             )
             .await
@@ -2713,7 +2704,6 @@ mod tests {
                     update_bytes: b"batch-one",
                     vector: b"vector-one",
                     source_format: None,
-                    main_path: None,
                 },
             )
             .await;
@@ -2737,7 +2727,6 @@ mod tests {
                     update_bytes: b"batch-two",
                     vector: b"vector-two",
                     source_format: None,
-                    main_path: None,
                 },
             )
             .await
@@ -2798,7 +2787,6 @@ mod tests {
                     update_bytes: &framed,
                     vector: &real_vector,
                     source_format: Some("markdown"),
-                    main_path: Some("paper.md"),
                 },
             )
             .await
@@ -2931,7 +2919,6 @@ mod tests {
                         update_bytes: &bytes,
                         vector: &vector,
                         source_format: Some("markdown"),
-                        main_path: Some("paper.md"),
                     },
                 )
                 .await
@@ -3140,7 +3127,6 @@ mod tests {
                     update_bytes: &row1,
                     vector: &v1.encode(),
                     source_format: Some("markdown"),
-                    main_path: Some("paper.md"),
                 },
             )
             .await
@@ -3153,7 +3139,6 @@ mod tests {
                     update_bytes: &row2,
                     vector: &v2.encode(),
                     source_format: None,
-                    main_path: None,
                 },
             )
             .await
@@ -3166,7 +3151,6 @@ mod tests {
                     update_bytes: &row3,
                     vector: &v3.encode(),
                     source_format: None,
-                    main_path: None,
                 },
             )
             .await

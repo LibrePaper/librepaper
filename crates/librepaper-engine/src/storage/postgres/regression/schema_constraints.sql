@@ -9,10 +9,10 @@ VALUES ('00000000-0000-0000-0000-000000000001', 'anonymous',
         'schema-test', 'Schema test', 'active');
 
 INSERT INTO documents (id, slug, owner_id, ownership_mode, title, status,
-                       source_format, main_path)
+                       source_format)
 VALUES ('00000000-0000-0000-0000-000000000002', 'schema-constraints-test',
         '00000000-0000-0000-0000-000000000001', 'owned',
-        'Schema constraints test', 'active', 'markdown', 'main.md');
+        'Schema constraints test', 'active', 'markdown');
 
 -- Both target forms remain valid when their required evidence is present.
 INSERT INTO annotations (

@@ -150,7 +150,6 @@ async fn seed_document(catalog: &PostgresCatalog, owner_id: Uuid, slug: &str) {
             ownership_mode: "owned".into(),
             title: "A Paper".into(),
             source_format: "markdown".into(),
-            main_path: "paper.md".into(),
         })
         .await
         .expect("create document");
