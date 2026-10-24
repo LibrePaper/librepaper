@@ -257,7 +257,7 @@ impl Server {
                 Ok(())
             })
             .await?;
-        Ok(format!("/docs/{slug}#k={key}"))
+        Ok(format!("/docs/{slug}/{key}"))
     }
 
     /// Who a document is shared with, and -- for its owner -- the changes to
@@ -490,7 +490,7 @@ impl Server {
                 grant.role = role.as_str().to_string();
                 grant.until = link_expiry(&wanted.until)?;
                 grant.sealed = seal_link_key(&self.key, &key);
-                json!({"id": grant.id(), "kind": "link", "url": format!("/docs/{slug}#k={key}")})
+                json!({"id": grant.id(), "kind": "link", "url": format!("/docs/{slug}/{key}")})
             }
             "token" => {
                 let role = parse_token_role(&wanted.role)
@@ -537,7 +537,7 @@ impl Server {
         let shown = match existing.kind {
             LinkKind::Link => {
                 grant.sealed = seal_link_key(&self.key, &key);
-                json!({"id": grant.id(), "kind": "link", "url": format!("/docs/{slug}#k={key}")})
+                json!({"id": grant.id(), "kind": "link", "url": format!("/docs/{slug}/{key}")})
             }
             LinkKind::Agent => {
                 grant.sealed = Vec::new();
@@ -569,7 +569,7 @@ impl Server {
                     let url = if key.is_empty() {
                         String::new()
                     } else {
-                        format!("/docs/{}#k={key}", entry.slug)
+                        format!("/docs/{}/{key}", entry.slug)
                     };
                     links.push(json!({
                         "id": row.id(),

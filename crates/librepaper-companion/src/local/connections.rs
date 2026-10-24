@@ -163,8 +163,9 @@ impl ConnectionStore {
 
     /// Park the sidebar assistant's chat credential under
     /// [`runner_connection_name`], recorded with the requesting origin.
-    /// Replaced on every runner start. A key fragment on the URL is dropped
-    /// before anything is hashed or stored.
+    /// Replaced on every runner start. A key fragment, or a key in a
+    /// `/docs/<slug>/<key>` path, is dropped before anything is hashed or
+    /// stored.
     pub fn put_runner(
         &self,
         document_url: &str,
@@ -174,6 +175,15 @@ impl ConnectionStore {
     ) -> Result<String, String> {
         let mut url = url::Url::parse(document_url)
             .map_err(|error| format!("invalid document URL: {error}"))?;
+        let segments: Vec<String> = url
+            .path_segments()
+            .map(|parts| parts.map(str::to_string).collect())
+            .unwrap_or_default();
+        if let [prefix, slug, _] = segments.as_slice() {
+            if prefix == "docs" {
+                url.set_path(&format!("/docs/{slug}"));
+            }
+        }
         url.set_fragment(None);
         let document_url = url.to_string();
         let name = runner_connection_name(&document_url, conversation);
@@ -281,6 +291,35 @@ mod tests {
         assert!(!on_disk.contains("secret"), "{on_disk}");
         assert_eq!(resolved.conversation.as_deref(), Some("conversation-1"));
         assert_eq!(resolved.chat_token.as_deref(), Some("token-1"));
+    }
+
+    #[test]
+    fn a_path_key_and_a_fragment_key_store_the_same_link() {
+        let (_dir, store) = store();
+        let by_path = store
+            .put_runner(
+                "https://d.example/docs/a/path-secret",
+                "https://origin.example",
+                "conversation-1",
+                "token-1",
+            )
+            .unwrap();
+        let by_fragment = store
+            .put_runner(
+                "https://d.example/docs/a#k=fragment-secret",
+                "https://origin.example",
+                "conversation-1",
+                "token-1",
+            )
+            .unwrap();
+        assert_eq!(by_path, by_fragment);
+        assert_eq!(
+            store.resolve(&by_path).unwrap().link,
+            "https://d.example/docs/a"
+        );
+        let on_disk = std::fs::read_to_string(store.path()).unwrap();
+        assert!(!on_disk.contains("path-secret"), "{on_disk}");
+        assert!(!on_disk.contains("fragment-secret"), "{on_disk}");
     }
 
     #[test]

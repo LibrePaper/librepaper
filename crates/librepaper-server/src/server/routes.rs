@@ -622,6 +622,14 @@ pub(super) fn segments(path: &str) -> Vec<&str> {
     path.trim_start_matches('/').split('/').collect()
 }
 
+/// A link key carried in the path: 1 to 128 ASCII letters, digits, `-` or `_`.
+fn valid_path_link_key(key: &str) -> bool {
+    (1..=128).contains(&key.len())
+        && key
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-' || byte == b'_')
+}
+
 pub(super) fn bundled_documentation(path: &str) -> Option<&'static str> {
     match path {
         "/docs/protocol/room.md" => Some(include_str!(concat!(
@@ -795,10 +803,18 @@ pub(super) async fn dispatch(
 
     // --- the shell -------------------------------------------------------
     let mut page = path.clone();
+    let mut keyed = false;
     if !server.shell.contains_key(&page) {
-        if let ["docs", slug] = parts[..] {
-            // A fragment-carried link cannot be checked on this navigation.
-            // Serve the same shell for every valid slug; the API resolves access.
+        keyed = matches!(parts[..], ["docs", _, _]);
+        let docs_slug = match parts[..] {
+            ["docs", slug] => Some(slug),
+            ["docs", slug, key] if valid_path_link_key(key) => Some(slug),
+            _ => None,
+        };
+        if let Some(slug) = docs_slug {
+            // A link cannot be checked on this navigation, whether its key is in
+            // the path or the fragment. Serve the same shell for every valid slug;
+            // the API resolves access.
             if !server.valid_slug(slug) {
                 return server.not_found(request.headers());
             }
@@ -809,6 +825,10 @@ pub(super) async fn dispatch(
     }
     if let Some(asset) = server.shell.get(&page) {
         let mut response = write_asset(asset, request.headers());
+        // The URL carries a link key, and a browser's HTTP cache outlives sign-out.
+        if keyed {
+            set(&mut response, "cache-control", "private, no-store");
+        }
         server.issue_visitor(request.headers(), &arrival, asset, &mut response);
         return response;
     }

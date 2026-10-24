@@ -1045,7 +1045,7 @@ impl std::fmt::Debug for AssistantRenewal {
 /// Start, inspect or stop the sidebar assistant for one conversation.
 #[derive(Clone, Serialize, Deserialize, PartialEq)]
 pub struct AssistantRequest {
-    /// The protected document URL, key fragment included.
+    /// The protected document URL. The key may be in the path or the fragment.
     pub link: String,
     /// The private sidebar conversation the runner attaches to.
     pub conversation: String,

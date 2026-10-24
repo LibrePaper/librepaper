@@ -39,6 +39,12 @@ pub fn local_path(next: &str) -> String {
         return "/".to_string();
     }
     let mut target = parsed.path().to_string();
+    // A link key carried in the path goes the same way as one in the fragment.
+    if let Some(rest) = target.strip_prefix("/docs/") {
+        if let Some((slug, _)) = rest.split_once('/') {
+            target = format!("/docs/{slug}");
+        }
+    }
     if let Some(query) = parsed.query() {
         target.push('?');
         target.push_str(query);
@@ -204,6 +210,17 @@ mod proxy_tests {
         assert_eq!(local_path("/docs/x?a=1#version=3"), "/docs/x?a=1#version=3");
         assert_eq!(without_link_key("k=abc"), "");
         assert_eq!(without_link_key("a=1&k=abc&b=2"), "a=1&b=2");
+    }
+
+    #[test]
+    fn a_return_path_drops_a_link_key_from_its_path() {
+        assert_eq!(local_path("/docs/x/abc"), "/docs/x");
+        assert_eq!(local_path("/docs/x/abc?file=a.md"), "/docs/x?file=a.md");
+        assert_eq!(
+            local_path("/docs/x/abc#settings=local"),
+            "/docs/x#settings=local"
+        );
+        assert_eq!(local_path("/docs/x/"), "/docs/x");
     }
 
     #[test]

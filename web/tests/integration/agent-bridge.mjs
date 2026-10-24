@@ -42,6 +42,7 @@ try {
   // the server resolves the link from it.
   const documentUrl = new URL(link);
   documentUrl.hash = "";
+  documentUrl.pathname = `/docs/${slug}`;
   state = await mkdtemp(join(tmpdir(), "librepaper-agent-bridge-"));
   const conversation = "c".repeat(32);
   const name = `runner-${createHash("sha256").update(`${documentUrl.href}\0${conversation}`).digest("hex").slice(0, 48)}`;
@@ -58,7 +59,7 @@ try {
     method: "POST",
     headers: {
       origin: deployment.base, cookie: deployment.cookie, "x-librepaper-client": "shell",
-      "x-librepaper-key": new URL(link).hash.replace(/^#k=/, ""),
+      "x-librepaper-key": decodeURIComponent(new URL(link).pathname.split("/").pop()),
     },
   }).then((response) => response.json());
   assert.match(minted.token || "", /^lpa_/, `agent-token refused: ${JSON.stringify(minted)}`);
