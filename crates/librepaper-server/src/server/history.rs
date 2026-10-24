@@ -819,7 +819,9 @@ impl Server {
             Ok(room) => room,
             Err(error) => return refused("open the room", &error),
         };
-        let authority = who.document_authority(self.ceiling_for(&who.id));
+        let Ok(authority) = who.authority(self.ceiling_for(&who.id)) else {
+            return write_json(403, &json!({"error": "access changed"}));
+        };
         if current {
             // `Room::take_label` rather than a second label command of this
             // module's own: that one had no §7.2 replay lookup, so a retry
@@ -953,7 +955,9 @@ impl Server {
                 assets.push((path.clone(), file.digest.clone()));
             }
         }
-        let authority = current_who.document_authority(self.ceiling_for(&current_who.id));
+        let Ok(authority) = current_who.authority(self.ceiling_for(&current_who.id)) else {
+            return write_json(403, &json!({"error": "access changed"}));
+        };
         let author_account_id = uuid::Uuid::parse_str(&current_who.id.id).ok();
         let mut command = Restore {
             request_id: uuid::Uuid::new_v4(),
@@ -1032,7 +1036,9 @@ impl Server {
                 &json!({"error": "another editor has this document open; ask them to close it first"}),
             );
         }
-        let authority = current_who.document_authority(self.ceiling_for(&current_who.id));
+        let Ok(authority) = current_who.authority(self.ceiling_for(&current_who.id)) else {
+            return write_json(403, &json!({"error": "access changed"}));
+        };
         // A shallow snapshot keeps no history before the trim point, so a comment
         // on a passage deleted there could not be resolved again. Each attempt
         // heals the comment anchors to the text as it stands, and the healing

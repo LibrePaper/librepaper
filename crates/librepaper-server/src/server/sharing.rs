@@ -248,16 +248,9 @@ impl Server {
             ),
             ..Default::default()
         };
-        let actor = librepaper_engine::storage::store::MutationActor {
-            account_id: caller.id.clone(),
-            owner_key: caller.key.clone(),
-            session_generation: caller.session_generation.clone(),
-            link_hash: String::new(),
-            policy_editor: true,
-            policy_comment: true,
-            automation: false,
-            unowned_publisher: caller.id.is_empty(),
-        };
+        let actor = caller
+            .authority(true)
+            .map_err(|InvalidCredential| ModifyError::Refused("invalid account".into()))?;
         self.store
             .modify_as_owner(slug, &actor, |entry| {
                 entry.add_link(link.clone());
@@ -402,15 +395,11 @@ impl Server {
         }
 
         let now = librepaper_base::util::now_unix();
-        let mutation_actor = librepaper_engine::storage::store::MutationActor {
-            account_id: current_who.id.id.clone(),
-            owner_key: current_who.key.clone(),
-            session_generation: current_who.id.session_generation.clone(),
-            link_hash: current_who.link.clone(),
-            policy_editor: self.publishers.allows(&current_who.id),
-            policy_comment: self.commenters.allows(&current_who.id),
-            automation: current_who.automation,
-            unowned_publisher: false,
+        let Ok(mutation_actor) = current_who.authority(librepaper_engine::storage::store::Ceiling {
+            comment: self.commenters.allows(&current_who.id),
+            edit: self.publishers.allows(&current_who.id),
+        }) else {
+            return write_json(401, &json!({"error": "invalid account"}));
         };
         let updated = self
             .store

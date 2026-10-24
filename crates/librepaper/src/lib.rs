@@ -106,7 +106,7 @@ pub mod source_archive {
 /// The catalogue the deployment-shaped tests stand a server on.
 pub mod postgres {
     pub use librepaper_engine::storage::postgres::{
-        AccountRecord, Authority, Error, MutationAuthorization, NewAccount, NewAnnotation,
+        AccountRecord, Authority, Error, NewAccount, NewAnnotation,
         NewDocument, NewReply, PostgresCatalog, PostgresOptions, StoragePolicy, WriterLease,
     };
 }

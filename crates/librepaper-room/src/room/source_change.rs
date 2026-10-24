@@ -980,43 +980,19 @@ impl Room {
         Fut: std::future::Future<Output = Result<(), AgentError>>,
     {
         change.operation.validate()?;
-        if !authority.policy_editor
-            && authority.account_id.is_empty()
-            && authority.link_hash.is_empty()
+        let authority_identity = &authority.authority;
+        if !authority_identity.policy_edit
+            && authority_identity.account_id.is_none()
+            && authority_identity.link_hash.is_none()
         {
             return Err(AgentError::Conflict("edit access changed".into()));
         }
         recheck().await?;
 
         let catalog = self.catalog().clone();
-        let actor = librepaper_engine::storage::store::MutationActor {
-            account_id: authority.account_id.clone(),
-            owner_key: authority.owner_key.clone(),
-            session_generation: authority.session_generation.clone(),
-            link_hash: authority.link_hash.clone(),
-            policy_editor: authority.policy_editor,
-            policy_comment: authority.policy_comment,
-            automation: matches!(origin, Origin::Agent),
-            unowned_publisher: false,
-        };
-        let authorization = super::catalog::mutation_authorization(&actor)
-            .map_err(|error| AgentError::Conflict(error.to_string()))?;
-        catalog
-            .authorize_document_mutation(self.document_id, &authorization, true)
-            .await
-            .map_err(|error| AgentError::Conflict(error.to_string()))?;
         let document_authority = librepaper_engine::storage::postgres::Authority {
-            principal_key: if authority.account_id.is_empty() {
-                authority.owner_key.clone()
-            } else {
-                authority.account_id.clone()
-            },
-            account_id: authorization.account_id,
-            link_hash: authorization.token_hash.map(Vec::from),
-            session_generation: authorization.session_generation,
-            policy_edit: authorization.policy_edit,
-            policy_comment: authorization.policy_comment,
-            automation: authorization.automation,
+            automation: matches!(origin, Origin::Agent),
+            ..authority.authority.clone()
         };
 
         let request_id = {
@@ -1038,7 +1014,7 @@ impl Room {
             catalog: catalog.clone(),
             document_id: self.document_id,
             author_account_id: document_authority.account_id,
-            author_label: authority.owner_key.clone(),
+            author_label: authority.authority.principal_key.clone(),
             operation_receipt,
             hook,
             refusal: None,
@@ -1053,7 +1029,13 @@ impl Room {
         // sequencer's own lock.
         match self.command(&document_authority, &mut command).await {
             Ok(receipt) => Ok(receipt),
-            Err(error) => Err(command.refusal.take().unwrap_or_else(|| error.into())),
+            Err(error) => Err(command.refusal.take().unwrap_or_else(|| match error {
+                CommandError::Storage(
+                    refused @ (librepaper_engine::storage::postgres::Error::Conflict(_)
+                    | librepaper_engine::storage::postgres::Error::NotFound),
+                ) => AgentError::Conflict(refused.to_string()),
+                other => other.into(),
+            })),
         }
     }
 }

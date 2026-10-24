@@ -7,7 +7,7 @@
 
 use super::*;
 use librepaper_engine::storage::postgres::{PostgresCatalog, SyncLink, SyncLinkWrite};
-use librepaper_room::room::agent::{AgentAuthority, OperationKey};
+use librepaper_room::room::agent::OperationKey;
 use librepaper_room::room::source_change::{
     AgentError, Consistency, CreateFile, DeleteFile, Dependency, Origin, Patch, PutBinary,
     SourceChange, TransactHook,
@@ -414,14 +414,17 @@ impl Server {
             request_digest: hex::encode(Sha256::digest(&body)),
         };
         let ceiling = self.ceiling_for(&who.id);
-        let authority = AgentAuthority {
-            account_id: who.id.id.clone(),
-            owner_key: who.key.clone(),
-            session_generation: who.id.session_generation.clone(),
-            link_hash: who.link.clone(),
-            policy_editor: ceiling.edit,
-            policy_comment: ceiling.comment,
-            operation_scope: format!("sync:{document_id}:{principal}"),
+        let authority = match who.agent_authority(ceiling, format!("sync:{document_id}:{principal}"))
+        {
+            Ok(authority) => authority,
+            Err(InvalidCredential) => {
+                return self
+                    .source_change_refusal(
+                        document_id,
+                        AgentError::Conflict("document access changed".into()),
+                    )
+                    .await
+            }
         };
         let write = SyncLinkWrite {
             remote_kind: row.remote_kind.clone(),

@@ -16,7 +16,7 @@ use super::*;
 use librepaper_engine::log::Registry;
 use librepaper_engine::storage::blob::FsStore;
 use librepaper_engine::storage::postgres::Authority;
-use librepaper_engine::storage::store::{DocumentInput, MutationActor, Store};
+use librepaper_engine::storage::store::{DocumentInput, Store};
 
 const PAPER: &str = "# Interval estimates\n\nThe *interval* covers the mean of the posterior.\n";
 
@@ -58,15 +58,14 @@ pub(super) async fn deployment(slug: &str) -> Option<Deployment> {
         catalog.clone(),
         registry.clone(),
     ));
-    let actor = MutationActor {
-        account_id: account.id.to_string(),
-        owner_key: "owner".into(),
-        session_generation: account.session_generation.to_string(),
-        link_hash: String::new(),
-        policy_editor: true,
+    let actor = Authority {
+        account_id: Some(account.id),
+        principal_key: "owner".into(),
+        session_generation: Some(account.session_generation),
+        link_hash: None,
+        policy_edit: true,
         policy_comment: true,
         automation: false,
-        unowned_publisher: false,
     };
     store
         .put_directory_as_actor(

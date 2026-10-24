@@ -111,15 +111,16 @@ impl Server {
                 return plain(error.status(), &error.client_message());
             }
         };
-        let mutation_actor = librepaper_engine::storage::store::MutationActor {
-            account_id: who.id.id.clone(),
-            owner_key: who.key.clone(),
-            session_generation: who.id.session_generation.clone(),
-            link_hash: who.link.clone(),
-            policy_editor: self.publishers.allows(&who.id),
-            policy_comment: self.commenters.allows(&who.id),
-            automation: who.automation,
-            unowned_publisher: false,
+        let Ok(mutation_actor) = who.authority(librepaper_engine::storage::store::Ceiling {
+            comment: self.commenters.allows(&who.id),
+            edit: self.publishers.allows(&who.id),
+        }) else {
+            let _ = self
+                .store
+                .catalog
+                .cancel_upload_admission(upload_admission)
+                .await;
+            return write_json(401, &json!({"error": "invalid account"}));
         };
         let stored = room
             .put_asset_authorized(body.to_vec(), &mutation_actor)

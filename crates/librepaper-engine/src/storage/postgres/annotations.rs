@@ -29,7 +29,7 @@ use crate::storage::annotation::{
     SourceTextTarget,
 };
 
-use super::{Error, PostgresCatalog, Result};
+use super::{Authority, Error, PostgresCatalog, Result};
 
 /// The largest page [`PostgresCatalog::annotations`] returns, and so the most
 /// annotation ids [`PostgresCatalog::replies`] accepts in one call. A page
@@ -117,17 +117,6 @@ const ANNOTATION_COLUMNS: &str =
      start_utf16,end_utf16,start_side,end_side,exact,prefix,suffix,\
      rendered_exact,rendered_prefix,rendered_suffix,rendered_position_utf16,\
      resolved_at,created_at,edited_at";
-
-#[derive(Clone, Debug)]
-pub struct MutationAuthorization {
-    pub principal_key: String,
-    pub account_id: Option<Uuid>,
-    pub session_generation: Option<i64>,
-    pub token_hash: Option<[u8; 32]>,
-    pub policy_edit: bool,
-    pub policy_comment: bool,
-    pub automation: bool,
-}
 
 #[derive(Clone, Debug)]
 pub struct NewAnnotation {
@@ -338,11 +327,11 @@ impl PostgresCatalog {
     /// checks and locks the account session, then the active document,
     /// before resolving the live grant and link rows. The writer fence is
     /// taken by the caller: `check_document_command` checks the writer epoch
-    /// before it calls this, and `authorize_document_mutation` does not.
+    /// before it calls this.
     pub async fn authorize_mutation(
         tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
         document_id: Uuid,
-        actor: &MutationAuthorization,
+        actor: &Authority,
         require_editor: bool,
     ) -> Result<()> {
         // Match account erasure's lock order: erasure owns the account row
@@ -407,12 +396,12 @@ impl PostgresCatalog {
             }
             _ => None,
         };
-        let link: Option<String> = match actor.token_hash {
-            Some(token_hash) => {
+        let link: Option<String> = match actor.link_hash {
+            Some(link_hash) => {
                 sqlx::query_scalar!(
                     "SELECT role FROM share_links WHERE document_id=$1 AND token_hash=$2 AND revoked_at IS NULL AND (kind='link' OR $3) AND (expires_at IS NULL OR expires_at>now())",
                     document_id,
-                    token_hash.as_slice(),
+                    link_hash.as_slice(),
                     actor.automation
                 )
                 .fetch_optional(&mut **tx)
@@ -437,30 +426,12 @@ impl PostgresCatalog {
         Ok(())
     }
 
-    /// A standalone probe of the same check, for a caller that wants to know
-    /// whether an actor could write before it has anything to write. It
-    /// opens and rolls back its own transaction, which is fine here because
-    /// nothing about this check needs to share a transaction with a write:
-    /// unlike a mutation, its answer is not itself evidence that has to be
-    /// committed atomically with anything else.
-    pub async fn authorize_document_mutation(
-        &self,
-        document_id: Uuid,
-        actor: &MutationAuthorization,
-        require_editor: bool,
-    ) -> Result<()> {
-        let mut tx = self.begin_metered().await?;
-        Self::authorize_mutation(&mut tx, document_id, actor, require_editor).await?;
-        tx.rollback().await?;
-        Ok(())
-    }
-
     pub async fn put_annotation_authorized(
         &self,
         tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
         id: Uuid,
         input: NewAnnotation,
-        actor: &MutationAuthorization,
+        actor: &Authority,
         require_editor: bool,
     ) -> Result<AnnotationRecord> {
         validate(&input)?;
@@ -479,7 +450,7 @@ impl PostgresCatalog {
         document_id: Uuid,
         id: Uuid,
         resolved: bool,
-        actor: &MutationAuthorization,
+        actor: &Authority,
     ) -> Result<Option<OffsetDateTime>> {
         Self::authorize_mutation(tx, document_id, actor, false).await?;
         let resolved_at: Option<OffsetDateTime> = sqlx::query_scalar(
@@ -506,7 +477,7 @@ impl PostgresCatalog {
         tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
         document_id: Uuid,
         id: Uuid,
-        actor: &MutationAuthorization,
+        actor: &Authority,
     ) -> Result<bool> {
         Self::authorize_mutation(tx, document_id, actor, false).await?;
         let deleted = sqlx::query!(
@@ -534,7 +505,7 @@ impl PostgresCatalog {
         document_id: Uuid,
         id: Uuid,
         body: &str,
-        actor: &MutationAuthorization,
+        actor: &Authority,
     ) -> Result<OffsetDateTime> {
         Self::authorize_mutation(tx, document_id, actor, false).await?;
         sqlx::query_scalar(
@@ -559,7 +530,7 @@ impl PostgresCatalog {
         annotation_id: Uuid,
         reply_id: Uuid,
         body: &str,
-        actor: &MutationAuthorization,
+        actor: &Authority,
     ) -> Result<OffsetDateTime> {
         Self::authorize_mutation(tx, document_id, actor, false).await?;
         sqlx::query_scalar(
@@ -603,7 +574,7 @@ impl PostgresCatalog {
         tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
         document_id: Uuid,
         input: NewReply,
-        actor: &MutationAuthorization,
+        actor: &Authority,
     ) -> Result<ReplyRecord> {
         if input.body.is_empty() || input.author_key.is_empty() || input.author_label.is_empty() {
             return Err(Error::Invalid("invalid reply".into()));

@@ -120,17 +120,13 @@ impl Room {
     pub async fn put_asset_authorized(
         &self,
         body: Vec<u8>,
-        actor: &librepaper_engine::storage::store::MutationActor,
+        authority: &Authority,
     ) -> Result<(String, i64), WriteError> {
         let size = body.len() as i64;
         if size == 0 {
             return Err(WriteError::Invalid("that file is empty".into()));
         }
         librepaper_document::document::formats::check_asset(&body).map_err(WriteError::Invalid)?;
-        // Validate the actor before writing a blob. Once `put_new` has been
-        // attempted, an error can leave an uncatalogued immutable object and
-        // callers must treat the upload admission as spent.
-        let authorization = super::catalog::mutation_authorization(actor)?;
         let sha = librepaper_engine::storage::store::digest_of_bytes(&body);
         let digest: [u8; 32] = Sha256::digest(&body).into();
 
@@ -185,15 +181,6 @@ impl Room {
             return Err(error);
         }
 
-        let authority = Authority {
-            principal_key: authorization.principal_key.clone(),
-            account_id: authorization.account_id,
-            link_hash: authorization.token_hash.map(|hash| hash.to_vec()),
-            session_generation: authorization.session_generation,
-            policy_edit: authorization.policy_edit,
-            policy_comment: authorization.policy_comment,
-            automation: authorization.automation,
-        };
         let mut attach = AttachAsset {
             input: NewAsset {
                 document_id: self.document_id,
@@ -205,7 +192,7 @@ impl Room {
             },
             catalog: self.catalog().clone(),
         };
-        let result = self.command(&authority, &mut attach).await;
+        let result = self.command(authority, &mut attach).await;
         upload.release();
         let (asset, _inserted) = result.map_err(WriteError::from)?;
         Ok((sha, asset.byte_length))

@@ -449,31 +449,23 @@ mod tests {
     async fn authorize_for_test(
         catalog: &PostgresCatalog,
         document_id: uuid::Uuid,
-        actor: &MutationAuthorization,
+        actor: &Authority,
         require_editor: bool,
         annotation_path: bool,
     ) -> Result<()> {
         if annotation_path {
-            catalog
-                .authorize_document_mutation(document_id, actor, require_editor)
-                .await
+            let mut tx = catalog.begin_metered().await?;
+            PostgresCatalog::authorize_mutation(&mut tx, document_id, actor, require_editor)
+                .await?;
+            tx.rollback().await.map_err(Error::from)
         } else {
-            let authority = Authority {
-                principal_key: actor.principal_key.clone(),
-                account_id: actor.account_id,
-                link_hash: actor.token_hash.map(|hash| hash.to_vec()),
-                session_generation: actor.session_generation,
-                policy_edit: actor.policy_edit,
-                policy_comment: actor.policy_comment,
-                automation: actor.automation,
-            };
             let rung = if require_editor {
                 crate::log::sequencer::Rung::Editor
             } else {
                 crate::log::sequencer::Rung::Commenter
             };
             match catalog
-                .begin_document_command(document_id, &authority, rung)
+                .begin_document_command(document_id, actor, rung)
                 .await
             {
                 Ok(tx) => tx.rollback().await.map_err(Error::from),
@@ -500,16 +492,16 @@ mod tests {
         let document = seed_document(&catalog, owner.id, "auth-document").await;
         let make_actor = |account_id: Option<uuid::Uuid>,
                           generation,
-                          token_hash,
+                          link_hash,
                           policy_edit,
                           policy_comment,
                           automation| {
-            MutationAuthorization {
+            Authority {
                 principal_key: account_id
                     .map_or_else(|| "visitor:test".into(), |id| id.to_string()),
                 account_id,
                 session_generation: generation,
-                token_hash,
+                link_hash,
                 policy_edit,
                 policy_comment,
                 automation,
@@ -932,15 +924,7 @@ mod tests {
             true,
             false,
         );
-        let owner_authority = Authority {
-            principal_key: owner_actor.principal_key.clone(),
-            account_id: owner_actor.account_id,
-            link_hash: None,
-            session_generation: owner_actor.session_generation,
-            policy_edit: owner_actor.policy_edit,
-            policy_comment: owner_actor.policy_comment,
-            automation: owner_actor.automation,
-        };
+        let owner_authority = owner_actor.clone();
         let command_tx = catalog
             .begin_document_command(
                 document.id,
@@ -971,6 +955,74 @@ mod tests {
                 .unwrap()
                 .rows_affected();
         assert_eq!(changed, 1);
+    }
+
+    #[tokio::test]
+    #[ignore = "requires LIBREPAPER_TEST_POSTGRES_URL"]
+    async fn mutation_authorization_refuses_an_account_being_erased() {
+        let url = std::env::var("LIBREPAPER_TEST_POSTGRES_URL")
+            .expect("set LIBREPAPER_TEST_POSTGRES_URL to run the PostgreSQL contract");
+        let catalog = PostgresCatalog::connect(PostgresOptions::new(url))
+            .await
+            .unwrap();
+        catalog.migrate().await.unwrap();
+        let _writer = catalog.claim_writer().await.unwrap();
+        truncate(&catalog).await;
+
+        let owner = seed_account(&catalog, "erase-owner").await;
+        let grantee = seed_account(&catalog, "erase-grantee").await;
+        let document = seed_document(&catalog, owner.id, "erase-document").await;
+        catalog
+            .set_grant(document.id, grantee.id, access::AccessRole::Editor)
+            .await
+            .unwrap();
+        let actor = |account: &AccountRecord| Authority {
+            principal_key: account.id.to_string(),
+            account_id: Some(account.id),
+            session_generation: Some(account.session_generation),
+            link_hash: None,
+            policy_edit: true,
+            policy_comment: true,
+            automation: false,
+        };
+        let granted = actor(&grantee);
+        assert!(
+            authorize_for_test(&catalog, document.id, &granted, true, true)
+                .await
+                .is_ok()
+        );
+
+        assert!(catalog
+            .begin_account_erasure(grantee.id, time::Duration::ZERO)
+            .await
+            .unwrap());
+        for annotation_path in [true, false] {
+            assert!(
+                authorize_for_test(&catalog, document.id, &granted, true, annotation_path)
+                    .await
+                    .is_err(),
+                "an erased account keeps no grant on someone else's document"
+            );
+        }
+
+        let owner_actor = actor(&owner);
+        assert!(
+            authorize_for_test(&catalog, document.id, &owner_actor, true, true)
+                .await
+                .is_ok()
+        );
+        assert!(catalog
+            .begin_account_erasure(owner.id, time::Duration::ZERO)
+            .await
+            .unwrap());
+        for annotation_path in [true, false] {
+            assert!(
+                authorize_for_test(&catalog, document.id, &owner_actor, true, annotation_path)
+                    .await
+                    .is_err(),
+                "an erased account keeps no authority over a document it owned"
+            );
+        }
     }
 
     #[tokio::test]
@@ -1465,11 +1517,11 @@ mod tests {
         // Annotations and replies. Authorization is checked at the write, and
         // a retry with the same id returns the row a previous attempt wrote.
         let anchor = document_anchor(sequence, b"frontier-bytes".to_vec());
-        let unauthorized = MutationAuthorization {
+        let unauthorized = Authority {
             principal_key: collaborator.id.to_string(),
             account_id: Some(collaborator.id),
             session_generation: Some(collaborator.session_generation),
-            token_hash: None,
+            link_hash: None,
             policy_edit: false,
             policy_comment: true,
             automation: false,
@@ -1563,11 +1615,11 @@ mod tests {
             author_label: "Owner".into(),
             body: "Done".into(),
         };
-        let owner_actor = MutationAuthorization {
+        let owner_actor = Authority {
             principal_key: account.id.to_string(),
             account_id: Some(account.id),
             session_generation: Some(account.session_generation),
-            token_hash: None,
+            link_hash: None,
             policy_edit: true,
             policy_comment: true,
             automation: false,
@@ -3391,5 +3443,5 @@ mod tests {
 pub use access::AccessRole;
 pub use annotations::{
     original_anchor_from_record, presentation_from_record, AnnotationRecord, AnnotationState,
-    MutationAuthorization, NewAnnotation, NewReply, ReplyRecord, SizedReply,
+    NewAnnotation, NewReply, ReplyRecord, SizedReply,
 };

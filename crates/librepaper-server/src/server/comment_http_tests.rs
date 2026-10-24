@@ -23,8 +23,8 @@ use librepaper_base::config::Configuration;
 use librepaper_engine::log::Registry;
 use librepaper_engine::storage::blob::FsStore;
 use librepaper_engine::storage::postgres::PostgresCatalog;
-use librepaper_engine::storage::postgres::{AccessRole, NewAccount};
-use librepaper_engine::storage::store::{DocumentInput, MutationActor, Role, Store};
+use librepaper_engine::storage::postgres::{AccessRole, Authority, NewAccount};
+use librepaper_engine::storage::store::{DocumentInput, Role, Store};
 use librepaper_room::room::{Message as RoomMessage, Rooms};
 
 use super::{Server, Viewer};
@@ -102,15 +102,14 @@ async fn deployment(slug: &str) -> Option<Deployment> {
         catalog.clone(),
         registry.clone(),
     );
-    let actor = MutationActor {
-        account_id: owner.id.to_string(),
-        owner_key: "owner".into(),
-        session_generation: owner.session_generation.to_string(),
-        link_hash: String::new(),
-        policy_editor: true,
+    let actor = Authority {
+        account_id: Some(owner.id),
+        principal_key: "owner".into(),
+        session_generation: Some(owner.session_generation),
+        link_hash: None,
+        policy_edit: true,
         policy_comment: true,
         automation: false,
-        unowned_publisher: false,
     };
     store
         .put_directory_as_actor(
@@ -441,7 +440,7 @@ async fn the_wire_sees_every_comment_past_the_first_page_and_can_resolve_one() {
     let through_the_wire = first["comment"]["id"].as_str().unwrap().to_string();
 
     let page = librepaper_engine::storage::postgres::annotations::ANNOTATION_PAGE_MAX as usize;
-    let actor = librepaper_engine::storage::postgres::MutationAuthorization {
+    let actor = librepaper_engine::storage::postgres::Authority {
         principal_key: deployment.commenter_id.to_string(),
         account_id: Some(deployment.commenter_id),
         session_generation: Some(
@@ -450,7 +449,7 @@ async fn the_wire_sees_every_comment_past_the_first_page_and_can_resolve_one() {
                 .parse()
                 .expect("seeded account generation is numeric"),
         ),
-        token_hash: None,
+        link_hash: None,
         policy_edit: false,
         policy_comment: true,
         automation: false,
@@ -1112,15 +1111,14 @@ async fn a_titled_upload_with_no_files_creates_an_empty_project() {
         .await;
     assert!(missing_main.is_err());
 
-    let actor = MutationActor {
-        account_id: deployment.owner_id.to_string(),
-        owner_key: "owner".into(),
-        session_generation: deployment.owner_session_generation.clone(),
-        link_hash: String::new(),
-        policy_editor: true,
+    let actor = Authority {
+        account_id: Some(deployment.owner_id),
+        principal_key: "owner".into(),
+        session_generation: Some(deployment.owner_session_generation.parse().unwrap()),
+        link_hash: None,
+        policy_edit: true,
         policy_comment: true,
         automation: false,
-        unowned_publisher: false,
     };
     deployment
         .server

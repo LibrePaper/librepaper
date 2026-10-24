@@ -20,7 +20,7 @@ use librepaper_document::document::{anchors, session};
 use librepaper_engine::log::Ingested;
 use librepaper_engine::storage::annotation::AnchorStatus;
 use librepaper_engine::storage::postgres::Authority;
-use librepaper_engine::storage::store::{DocumentInput, MutationActor, Role};
+use librepaper_engine::storage::store::{DocumentInput, Role};
 use librepaper_room::room::{Message as RoomMessage, Room};
 
 use super::history_frontier_tests::viewer;
@@ -113,15 +113,14 @@ async fn a_trim_deletes_every_version_and_every_unused_figure() {
 
     // Step 3: replace project so figure-a becomes unreferenced, and add figure-b (named).
     // We'll also add figure-c (unreferenced, fresh).
-    let actor = MutationActor {
-        account_id: deployment.owner_id.to_string(),
-        owner_key: "owner".into(),
-        session_generation: deployment.owner_session_generation.clone(),
-        link_hash: String::new(),
-        policy_editor: true,
+    let actor = Authority {
+        account_id: Some(deployment.owner_id),
+        principal_key: "owner".into(),
+        session_generation: Some(deployment.owner_session_generation.parse().unwrap()),
+        link_hash: None,
+        policy_edit: true,
         policy_comment: true,
         automation: false,
-        unowned_publisher: false,
     };
     deployment
         .server

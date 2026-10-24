@@ -792,21 +792,21 @@ mod tests {
                 .unwrap(),
             None
         );
-        let actor = crate::storage::postgres::annotations::MutationAuthorization {
+        let actor = crate::storage::postgres::Authority {
             principal_key: format!("moderation-owner-{owner}"),
             account_id: Some(owner),
             session_generation: Some(1),
-            token_hash: None,
+            link_hash: None,
             policy_edit: true,
             policy_comment: true,
             automation: false,
         };
+        let mut tx = catalog.pool().begin().await.unwrap();
         assert!(matches!(
-            catalog
-                .authorize_document_mutation(document, &actor, true)
-                .await,
+            PostgresCatalog::authorize_mutation(&mut tx, document, &actor, true).await,
             Err(Error::NotFound)
         ));
+        tx.rollback().await.unwrap();
 
         catalog
             .moderate_project(&slug, false, "operator", "appeal upheld")

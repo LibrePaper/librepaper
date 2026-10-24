@@ -234,7 +234,6 @@ async fn a_listing_cursor_cannot_probe_a_slug_the_caller_cannot_read() {
     let own = store
         .visible_page_with_options(
             Some(&deployment.owner_id.to_string()),
-            None,
             cursor,
             10,
             false,
@@ -280,7 +279,7 @@ async fn a_listing_cursor_cannot_probe_a_slug_the_caller_cannot_read() {
         .await
         .unwrap();
     let pinned = store
-        .visible_page_with_options(Some(&guest.id.to_string()), None, cursor, 10, false)
+        .visible_page_with_options(Some(&guest.id.to_string()), cursor, 10, false)
         .await;
     assert!(
         pinned.is_ok(),
@@ -288,12 +287,11 @@ async fn a_listing_cursor_cannot_probe_a_slug_the_caller_cannot_read() {
     );
 
     let foreign = store
-        .visible_page_with_options(Some(&stranger.id.to_string()), None, cursor, 10, false)
+        .visible_page_with_options(Some(&stranger.id.to_string()), cursor, 10, false)
         .await;
     let unknown = store
         .visible_page_with_options(
             Some(&stranger.id.to_string()),
-            None,
             Some((entry.updated_at.as_str(), "no-such-slug")),
             10,
             false,

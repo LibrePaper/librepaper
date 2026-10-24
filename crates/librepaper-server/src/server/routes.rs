@@ -1379,7 +1379,6 @@ impl Server {
             .store
             .visible_page_with_options(
                 (!who.id.is_empty()).then_some(who.id.as_str()),
-                (!who.key.is_empty()).then_some(who.key.as_str()),
                 listing_cursor,
                 listing_limit,
                 false,
@@ -1481,7 +1480,7 @@ impl Server {
             .map(|(updated, slug)| (updated.as_str(), slug.as_str()));
         let entries = match self
             .store
-            .visible_page_with_options(Some(&account_id), None, listing_cursor, listing_limit, true)
+            .visible_page_with_options(Some(&account_id), listing_cursor, listing_limit, true)
             .await
         {
             Ok(entries) => entries,
