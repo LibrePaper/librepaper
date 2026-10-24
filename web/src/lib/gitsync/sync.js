@@ -37,6 +37,7 @@ const decoder = new TextDecoder();
 const contentDecoder = new TextDecoder("utf-8", { ignoreBOM: true });
 const encoder = new TextEncoder();
 const NOT_CAUGHT_UP = "This page has not received every change yet. Try again in a moment.";
+const RULES_LOADING = "This page has not loaded the server's file rules yet. Try again in a moment.";
 const RECONNECT = "This computer is connected to a different repository for this project. Connect this computer again.";
 const NOT_LINKED = "This project is not connected to a Git repository.";
 const NOT_SYNCED = "This computer has not synced this project yet.";
@@ -183,6 +184,13 @@ async function caughtUp(ctx, version, { unsent: counted = true } = {}) {
     if (Date.now() > deadline) return false;
     await new Promise((done) => setTimeout(done, 100));
   }
+}
+
+/// The refusal for a page without the server's file rules, or null once it has
+/// them. Without them no path has a kind, so every synced file would read as
+/// gone from both sides.
+function rulesRefusal(ctx) {
+  return ctx.rules?.text_extensions ? null : refused(RULES_LOADING, [], { kind: "catching-up" });
 }
 
 /// The refusal for a page that is not caught up, or null once it is.
@@ -808,7 +816,7 @@ async function runPull(ctx, options = {}) {
     // A page still loading the document would read its missing files as
     // local deletions, so the snapshot waits until the page holds the
     // server's version.
-    const loading = await catchUpRefusal(ctx, version, { unsent: false });
+    const loading = rulesRefusal(ctx) ?? await catchUpRefusal(ctx, version, { unsent: false });
     if (loading) return { result: loading };
     const op = refId();
     await journalSet(ctx, { id: op, kind: "pull", phase: "planned", revision: link.revision, checkpoint: link.checkpoint });
@@ -1287,6 +1295,8 @@ async function withDraft(ctx, draft, work) {
 /// files that differ go to the resolver. Refuses when the branch cannot be
 /// synced, or when the project is already connected.
 export async function connect(ctx, draft) {
+  const loading = rulesRefusal(ctx);
+  if (loading) return loading;
   return exclusive(ctx, () => guarded(() => withDraft(ctx, draft, async (mark) => {
     const fetched = await ctx.git.fetch([]);
     const spec = draftLink(draft);

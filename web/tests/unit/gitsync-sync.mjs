@@ -1401,6 +1401,21 @@ async function connected(files, folder = "") {
   assert.ok(!repo.refs.has("op-big/base"));
 }
 
+// A page without the server's file rules refuses to pull, and nothing changes.
+{
+  const { repo, api, ctx } = await connected({ "intro.qmd": "one\n" });
+  repo.advance({ "intro.qmd": "two\n" });
+  const checkpoint = api.state.link.checkpoint;
+  const loaded = ctx.rules;
+  ctx.rules = {};
+  const answer = await sync.pull(ctx);
+  ctx.rules = loaded;
+  assert.equal(answer.status, "refused");
+  assert.equal(answer.kind, "catching-up");
+  assert.equal(api.state.link.checkpoint, checkpoint);
+  assert.deepEqual(await ctx.git.journal(), []);
+}
+
 // recover says when only a fresh pull can settle what is left.
 {
   const { repo, api, ctx } = await connected({ "intro.qmd": "one\n" });
