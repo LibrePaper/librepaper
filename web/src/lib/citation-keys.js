@@ -123,7 +123,7 @@ export function typstLabels(texts) {
  * @param {{ text: string, format: string, entries: Array<{ key: string }> | null | undefined, labels?: Set<string> }} request
  * @returns {Array<{ key: string, from: number, to: number }>}
  */
-export function unknownCitations({ text, format, entries, labels } = {}) {
+export function unknownCitations({ text, format, entries, labels }) {
   if (entries == null) return [];
   const known = new Set(entries.map((entry) => entry?.key));
   return citedKeys(text, format, { labels }).filter((cite) => !known.has(cite.key));
