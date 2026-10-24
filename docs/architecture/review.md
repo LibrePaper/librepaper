@@ -37,6 +37,10 @@ document's source anchors. The CLI's `librepaper export DOCUMENT DIRECTORY`
 command exports a project snapshot of source and assets, not annotations. The
 current CLI has no comments-to-Markdown or JSON-LD export.
 
+File > Download > Comments saves every thread of the project as Markdown, with
+its quoted passage, its replies and a note for resolved comments and for
+passages that are no longer in the document.
+
 ## Track changes
 
 Track changes are part of the shared document. A tracked edit goes into the text at once, like any other edit. The document also records it as a pending change. The editor, read links, agents and exports all show the text with every pending change in it.
