@@ -6,8 +6,6 @@ import { FORMATS, formatNamed, matchTemplates } from "./starter.js";
 import { checkDirectoryPath, checkPath, collisionKey, normalisePath } from "./paths.js";
 import { basename, copyPath, inside, parentPath } from "./file-manager.js";
 
-const MAIN_ORDER = ["tex", "typ", "qmd", "md"];
-
 /// Built-in templates and the caller's own, as one list. The Blank tab is not
 /// a template; the built-in empty document is one of the templates.
 export function catalog(builtIn, customRows = []) {
@@ -142,34 +140,6 @@ export function finalPaths(staged, strip) {
   return staged.map((entry) => (wrapper ? entry.path.slice(wrapper.length + 1) : entry.path));
 }
 
-/// The paths that could be the main document: those ending in one of the
-/// rules' renderable extensions, A to Z.
-export function mainCandidates(paths, rules) {
-  const extensions = (rules?.extensions || []).map((ext) => ext.toLowerCase());
-  return paths
-    .filter((path) => extensions.some((ext) => path.toLowerCase().endsWith(ext)))
-    .sort((a, b) => a.localeCompare(b));
-}
-
-const rankOf = (path) => {
-  const index = MAIN_ORDER.indexOf(path.slice(path.lastIndexOf(".") + 1).toLowerCase());
-  return index === -1 ? MAIN_ORDER.length : index;
-};
-
-/// A sensible first document, or "" when it is ambiguous.
-export function guessMain(candidates) {
-  const root = candidates.filter((path) => !path.includes("/"));
-  const mains = root
-    .filter((path) => /^main\./i.test(path))
-    .sort((a, b) => rankOf(a) - rankOf(b) || a.localeCompare(b));
-  if (mains.length) return mains[0];
-  const index = root.find((path) => /^index\.qmd$/i.test(path)) ?? root.find((path) => /^index\.md$/i.test(path));
-  if (index) return index;
-  if (root.length === 1) return root[0];
-  if (candidates.length === 1) return candidates[0];
-  return "";
-}
-
 /// A nested tree for display: folders first, then files, each A to Z. Folders
 /// carry their children and the number of files below them.
 export function tree(entries) {
@@ -195,7 +165,7 @@ export function tree(entries) {
 }
 
 /// A suggested project name: the ZIP's name, else the wrapper folder, else the
-/// main document's stem.
+/// stem of the first file staged.
 export function suggestName(staged, { archives = [] } = {}) {
   for (const archive of archives) {
     const name = archive.replace(/\.zip$/i, "").trim();
@@ -203,8 +173,8 @@ export function suggestName(staged, { archives = [] } = {}) {
   }
   const wrapper = wrapperOf(staged);
   if (wrapper) return wrapper;
-  const main = guessMain(staged.map((entry) => entry.path));
-  return main ? basename(main).replace(/\.[^.]*$/, "") : "";
+  const first = staged[0]?.path;
+  return first ? basename(first).replace(/\.[^.]*$/, "") : "";
 }
 
 /// A size for a person to read: "512 B", "1.2 KB", "3.4 MB", "1.1 GB".

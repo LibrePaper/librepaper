@@ -21,7 +21,7 @@
   import { unzip } from "../lib/zip.js";
   import {
     catalog, browse, formatSummary, pickFormat, uniqueName,
-    stage, settle, unstage, wrapperOf, finalPaths, mainCandidates, guessMain,
+    stage, settle, unstage, wrapperOf, finalPaths,
     tree, suggestName, bytes,
   } from "../lib/new-project.js";
 
@@ -159,7 +159,6 @@
   let notes = $state.raw([]);
   let reading = $state(false);
   let strip = $state(true);
-  let mainChoice = $state("");
   let progress = $state({ loaded: 0, total: 0 });
   let filesInput = $state(null);
   let folderInput = $state(null);
@@ -168,8 +167,7 @@
   const archives = $derived([...new Set(staged.map((entry) => entry.source).filter(Boolean))]);
   const wrapper = $derived(wrapperOf(staged));
   const paths = $derived(finalPaths(staged, strip && wrapper !== ""));
-  const candidates = $derived(mainCandidates(paths, rules));
-  const mainPath = $derived(candidates.includes(mainChoice) ? mainChoice : guessMain(candidates) || candidates[0] || "");
+  const hasDocument = $derived(paths.some((path) => (rules?.extensions || []).some((ext) => path.toLowerCase().endsWith(ext.toLowerCase()))));
   const totalSize = $derived(staged.reduce((sum, entry) => sum + entry.file.size, 0));
   const stagedTree = $derived(tree(staged.map((entry, index) => ({ path: paths[index], size: entry.file.size }))));
   const stagedPath = $derived(new Map(paths.map((path, index) => [path, staged[index].path])));
@@ -184,7 +182,6 @@
     problems = [];
     notes = [];
     strip = true;
-    mainChoice = "";
   }
 
   // Zip files become the files inside them, labelled with the archive's name;
@@ -272,13 +269,12 @@
   }
 
   // The same multipart publish a directory uses. The server names the format
-  // from the main file's extension, and `main` says which file that is.
+  // from the opening file's extension.
   async function publishBuiltIn(id, format, title) {
     const files = fillTemplate(await templateFiles(id, format), format, { title, author: me.name });
     const form = new FormData();
     for (const file of files) form.append("file", new Blob([file.text], { type: "text/plain" }), file.path);
     form.append("title", title);
-    form.append("main", `main.${formatNamed(format).extension}`);
     return upload(form);
   }
 
@@ -288,7 +284,7 @@
     const title = name.trim();
     if (!title) return refuse("Give the project a name.", "new-project-name");
     if (tab === "template" && !selected) return refuse("Choose a template.");
-    if (tab === "upload" && !mainPath) return refuse("Add at least one document (.tex, .typ, .qmd, .md or .html).");
+    if (tab === "upload" && !hasDocument) return refuse("Add at least one document (.tex, .typ, .qmd, .md or .html).");
     busy = true;
     error = "";
     let navigated = false;
@@ -313,7 +309,6 @@
         const form = new FormData();
         staged.forEach((entry, index) => form.append("file", entry.file, paths[index]));
         form.append("title", title);
-        form.append("main", mainPath);
         progress = { loaded: 0, total: 0 };
         response = await upload(form, { onprogress: (loaded, total) => (progress = { loaded, total }) });
       }
@@ -620,14 +615,6 @@
     <form id="new-project-form" class="np-preview" onsubmit={create}>
       <div class="np-form">
         {@render nameField()}
-        {#if candidates.length > 1}
-          <label class="np-field" for="upload-main">
-            <span class="np-label">Open first</span>
-            <select id="upload-main" class="select" value={mainPath} onchange={(event) => (mainChoice = event.currentTarget.value)}>
-              {#each candidates as path}<option value={path}>{path}</option>{/each}
-            </select>
-          </label>
-        {/if}
       </div>
 
       <p class="np-muted">
@@ -650,7 +637,7 @@
         {#each stagedTree as node (node.path)}<li>{@render treeNode(node)}</li>{/each}
       </ul>
 
-      {#if !candidates.length}
+      {#if !hasDocument}
         <p class="new-project-error lp-text-error text-sm" role="alert">Add at least one document (.tex, .typ, .qmd, .md or .html).</p>
       {/if}
       {@render problem()}
@@ -663,7 +650,7 @@
       {/if}
 
       <div class="np-actions">
-        <button type="submit" class="btn btn-sm new-project-create lp-control-brand" disabled={busy || !candidates.length}>{busy ? "Creating…" : "Create project"}</button>
+        <button type="submit" class="btn btn-sm new-project-create lp-control-brand" disabled={busy || !hasDocument}>{busy ? "Creating…" : "Create project"}</button>
       </div>
     </form>
   {/if}

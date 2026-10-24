@@ -21,8 +21,8 @@ if (!binary || !databaseUrl || !dataDirectory) {
   process.exit(2);
 }
 
-// The main file of each tutorial is `librepaper.<ext>`; everything else in the
-// directory, subdirectories included, is sent beside it.
+// Each tutorial's own file is `librepaper.<ext>`, the one a revision changes;
+// everything else in the directory, subdirectories included, is sent beside it.
 const TUTORIALS = { markdown: "Markdown", typst: "Typst", latex: "LaTeX", html: "HTML", quarto: "Quarto" };
 const REVISION_COMMENT = {
   markdown: (n) => `\n\n<!-- Recovery drill revision ${n} -->\n`,
@@ -59,7 +59,6 @@ async function publishProject(format, name, cookie, { slug = "", revision = 0 } 
   const main = paths.find((path) => /^librepaper\.[a-z]+$/.test(path) && !path.endsWith(".png"));
   if (!main) throw new Error(`no main source file found for ${format}`);
   const form = new FormData();
-  form.append("main", main);
   form.append("title", `Learn LibrePaper with ${name}`);
   if (slug) form.append("slug", slug);
   for (const path of paths) {

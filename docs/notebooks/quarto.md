@@ -47,7 +47,7 @@ You can render with a folder on your computer. This is how you use private data,
 
 - Open the desktop app.
 - Choose **File → Project folder…**.
-- Check the main file name.
+- Check the name of the file you preview.
 - Click **Choose folder…** and approve.
 
 Before each render, LibrePaper writes the project's files into that folder. The folder always matches the editor.
