@@ -78,3 +78,23 @@ const markdownTarget = planZoteroImport({ source: "# Notes\n", targetPath: "note
 assert.deepEqual(markdownTarget.registration, { from: 0, to: 0, insert: "---\nbibliography: references.bib\n---\n\n" });
 const subfolderTarget = planZoteroImport({ source: "# Chapter\n", targetPath: "chapters/one.md", texts: { "references.bib": "" }, item: { zotero_item: "MD2", citation_key: "Doe2025", bibtex: "@article{Doe2025,\n  x-librepaper-zotero-item = {MD2}\n}\n" } });
 assert.equal(subfolderTarget.registration.insert, "---\nbibliography: ../references.bib\n---\n\n");
+const biblatexSource = "\\documentclass{article}\n\\usepackage[style=authoryear]{biblatex}\n\\begin{document}\nHi\n\\end{document}\n";
+assert.deepEqual(bibliographyRegistration(biblatexSource, "refs.bib", "latex"), { from: biblatexSource.indexOf("\n\\begin{document}"), to: biblatexSource.indexOf("\n\\begin{document}"), insert: "\n\\addbibresource{refs.bib}" });
+assert.equal(bibliographyRegistration("\\usepackage{foo,biblatex}\n", "refs.bib", "latex").insert, "\n\\addbibresource{refs.bib}");
+const bibtexSource = "\\begin{document}\nHi\n\\end{document}\n";
+assert.deepEqual(bibliographyRegistration(bibtexSource, "refs.bib", "latex"), { from: bibtexSource.indexOf("\\end{document}"), to: bibtexSource.indexOf("\\end{document}"), insert: "\\bibliographystyle{plain}\n\\bibliography{refs}\n" });
+const styledSource = "\\bibliographystyle{alpha}\n\\begin{document}\n\\end{document}\n";
+assert.equal(bibliographyRegistration(styledSource, "refs.bib", "latex").insert, "\\bibliography{refs}\n");
+assert.deepEqual(bibliographyRegistration("Hello\n", "refs.bib", "latex"), { from: 6, to: 6, insert: "\\bibliographystyle{plain}\n\\bibliography{refs}\n" });
+assert.deepEqual(bibliographyRegistration("Hello", "refs.bib", "tex"), { from: 5, to: 5, insert: "\n\\bibliographystyle{plain}\n\\bibliography{refs}\n" });
+assert.equal(bibliographyRegistration("\\usepackage{biblatex}\n\\addbibresource{refs.bib}\n", "refs.bib", "latex"), null);
+assert.equal(bibliographyRegistration("\\begin{document}\n\\bibliography{refs}\n\\end{document}\n", "refs.bib", "latex"), null);
+const latexPlanned = planZoteroImport({
+  source: "\\bibliography{refs}\n\\end{document}\n", targetPath: "main.tex", texts: { "main.tex": "", "refs.bib": "" }, format: "latex",
+  item: { zotero_item: "L1", citation_key: "Doe2025", bibtex: "@article{Doe2025,\n  x-librepaper-zotero-item = {L1}\n}\n" },
+});
+assert.equal(latexPlanned.path, "refs.bib");
+assert.equal(latexPlanned.registration, null);
+assert.deepEqual(bibliographyRegistration("= Paper\n", "refs.bib", "typst"), { from: 8, to: 8, insert: '#bibliography("refs.bib")\n' });
+assert.deepEqual(bibliographyRegistration("= Paper", "refs.bib", "typst"), { from: 7, to: 7, insert: '\n#bibliography("refs.bib")\n' });
+assert.equal(bibliographyRegistration('#bibliography("refs.bib")\n', "refs.bib", "typst"), null);

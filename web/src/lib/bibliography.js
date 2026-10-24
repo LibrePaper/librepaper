@@ -184,8 +184,37 @@ export function replaceBibtexKey(entry, key) {
   return string(entry).replace(/^\s*(@[A-Za-z]+\s*\{\s*)[^,\s]+(\s*,)/, `$1${key}$2`).trim() + "\n";
 }
 
-export function bibliographyRegistration(source, path = "references.bib") {
+function bibliographyRegistrationLatex(source, path) {
+  const name = path.replace(/\.bib$/i, "");
+  const usepackage = /\\usepackage(?:\[[^\]]*\])?\{([^}]*)\}/g;
+  for (const match of source.matchAll(usepackage)) {
+    if (!match[1].split(",").map((item) => item.trim()).includes("biblatex")) continue;
+    const end = source.indexOf("\n", match.index);
+    const at = end === -1 ? source.length : end;
+    return { from: at, to: at, insert: `\n\\addbibresource{${path}}` };
+  }
+  const style = /\\bibliographystyle\b/.test(source) ? "" : "\\bibliographystyle{plain}\n";
+  const block = `${style}\\bibliography{${name}}\n`;
+  const end = /\\end\{document\}/.exec(source);
+  if (end) {
+    const at = source.lastIndexOf("\n", end.index) + 1;
+    return { from: at, to: at, insert: block };
+  }
+  const lead = source.endsWith("\n") ? "" : "\n";
+  return { from: source.length, to: source.length, insert: lead + block };
+}
+
+export function bibliographyRegistration(source, path = "references.bib", format = "markdown") {
   source = string(source);
+  if (format === "latex" || format === "tex") {
+    if (selectedBibliographyFiles(source, format).length) return null;
+    return bibliographyRegistrationLatex(source, path);
+  }
+  if (format === "typst") {
+    if (selectedBibliographyFiles(source, format).length) return null;
+    const lead = source.endsWith("\n") ? "" : "\n";
+    return { from: source.length, to: source.length, insert: `${lead}#bibliography("${path}")\n` };
+  }
   if (selectedBibliographyFiles(source, "markdown").length) return null;
   const line = `bibliography: ${path}\n`;
   if (/^---\s*\r?\n/.test(source)) {
@@ -209,9 +238,10 @@ function projectBibliographyPath(filePath, reference) {
   return parts.join("/");
 }
 
-export function planZoteroImport({ source, targetPath, texts, item }) {
-  const configured = selectedBibliographyFiles(source, "markdown");
-  const configuredPaths = configured.map((path) => projectBibliographyPath(targetPath, path)).filter(Boolean);
+export function planZoteroImport({ source, targetPath, texts, item, format = "markdown" }) {
+  const configured = selectedBibliographyFiles(source, format);
+  const configuredPaths = configured.map((path) => projectBibliographyPath(targetPath, path)).filter(Boolean)
+    .map((path) => (format === "latex" || format === "tex") && !/\.bib$/i.test(path) ? `${path}.bib` : path);
   const existing = bibliographyFiles({ texts });
   const path = configuredPaths.find((name) => Object.hasOwn(texts, name)) || configuredPaths[0] || existing[0] || "references.bib";
   const previous = string(texts[path]);
@@ -222,7 +252,7 @@ export function planZoteroImport({ source, targetPath, texts, item }) {
   let registration = null;
   if (!configured.length) {
     const depth = String(targetPath || "").split("/").slice(0, -1).length;
-    registration = bibliographyRegistration(source, "../".repeat(depth) + path);
+    registration = bibliographyRegistration(source, "../".repeat(depth) + path, format);
   }
   return { key, path, bibtex, addition, create: !Object.hasOwn(texts, path), registration, already };
 }
