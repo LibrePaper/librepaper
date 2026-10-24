@@ -3135,6 +3135,9 @@
   // texts. A target that has not changed costs a comparison and nothing else.
   function updatePreviewTarget() {
     if (readerDisposed || (!session && !currentProject)) return;
+    // A link holder reading a file in place of the preview keeps the preview
+    // as it was underneath, so going back to it shows the same page at once.
+    if (!mayEdit && viewing) return;
     const texts = liveTreeNow().texts;
     if (lockedFile && !lockedPath) lockedFile = "";
     // With a figure open there is no open text, so the preview stays on the
