@@ -40,7 +40,7 @@
  * onRendered?: (identity: string, projectDigest: string) => void, onEmpty?: () => void,
  * facts: () => PreviewFacts, tree: () => PreviewTree,
  * gather: (digests: Record<string, string>) => Promise<{ held: { assets: Record<string, Uint8Array>, urls: Record<string, string> }, missing: string[] }>,
- * heading: (tree: PreviewTree) => Promise<string>, takeManual?: () => boolean,
+ * heading: (tree: PreviewTree) => Promise<string>, takeManual?: () => boolean, manualPending?: () => boolean,
  * onsynctex?: (map: unknown | null) => void, send?: (message: { type: string, html?: string }) => void,
  * clearDebounce?: () => void, refreshFrame?: () => void, debug?: (message: string, ...details: unknown[]) => void,
  * }} options
@@ -75,6 +75,9 @@ export function createPreviewRenderer({
   /// at the one call site that reaches the compiler and cleared immediately,
   /// so it cannot linger onto an edit's ordinary debounced compile.
   takeManual = () => false,
+  /// Whether a manual compile is waiting, without taking it: a render that is
+  /// superseded before it compiles must leave the request for the next one.
+  manualPending = () => false,
   /// The parsed SyncTeX map for the PDF just published, or null to drop the
   /// one being held.
   onsynctex = () => {},
@@ -172,12 +175,12 @@ export function createPreviewRenderer({
     };
     try {
       // A manual render is the reader forcing a recompile, so it never takes
-      // the shortcut below. Read once here and handed on to the options.
-      const manual = takeManual();
+      // the shortcut below. It is only looked at here; the compile takes it.
+      const manualWaiting = manualPending();
       /** @param {string} id */
       const keyOf = (id) => JSON.stringify([id, format, htmlPreview, markdownPdf, start.buildPreferences, start.localExecution]);
       const held = finished.get(source.main);
-      if (held && !manual) {
+      if (held && !manualWaiting) {
         // The identity depends on the texts, their digests and the main path,
         // not on the bytes of any figure, so taking it before the figures are
         // gathered gives the value the compile would have taken.
@@ -245,6 +248,7 @@ export function createPreviewRenderer({
       identity = await snapshotDigest(source);
       debug("preview: rendering", format, identity);
       if (facts().disposed) return;
+      const manual = takeManual();
       let rendered;
       const title = await heading(source);
       if (facts().disposed) return;

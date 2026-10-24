@@ -2271,6 +2271,7 @@
       manualCompile = false;
       return manual;
     },
+    manualPending: () => manualCompile,
     onsynctex: (parsed) => { activeSynctex = parsed; },
     send: (message) => tell(message),
     clearDebounce: () => {

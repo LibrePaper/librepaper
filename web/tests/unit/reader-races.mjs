@@ -293,10 +293,11 @@ const preview = (values = {}) => {
     slug: "doc",
     coordinator: harness.coordinator,
     status,
-    framePreview: { publish: (payload) => harness.published.push(payload) },
+    // A delivered page is a painted pane, as Reader's onDelivered records it.
+    framePreview: { publish: (payload) => { facts.everPainted = true; harness.published.push(payload); } },
     diagnostics: { rendered: (value) => harness.diagnostics.push(value) },
     renderers: values.renderers,
-    snapshotDigest: values.snapshotDigest || (async () => "test-render-digest"),
+    snapshotDigest: values.snapshotDigest || (async (tree) => `test-render-digest:${JSON.stringify([tree?.main, tree?.texts])}`),
     diagnosticContext,
     parseSynctex: values.parseSynctex,
     facts: () => facts,
@@ -304,6 +305,7 @@ const preview = (values = {}) => {
     gather: values.gather || (async () => ({ held: { assets: {}, urls: {} }, missing: [] })),
     heading: values.heading || (async () => "Title"),
     takeManual: values.takeManual,
+    manualPending: values.manualPending,
     onsynctex: (parsed) => harness.synctex.push(parsed),
     send: (message) => harness.sent.push(message),
     refreshFrame: () => harness.refreshed++,
@@ -803,7 +805,7 @@ for (const invalidate of [null, "navigation", "main"]) {
   const harness = preview({
     facts: { format: "typst" },
     tree: () => ({ main: "main.typ", texts: { "main.typ": text }, digests: {} }),
-    snapshotDigest: async () => "digest-typst",
+    snapshotDigest: async (tree) => `digest-typst:${tree.texts["main.typ"]}`,
     renderers: {
       formatOf: () => "typst",
       previewFormatOf: () => "typst",
@@ -846,7 +848,7 @@ for (const invalidate of [null, "navigation", "main"]) {
   const harness = preview({
     facts: { format: "typst" },
     tree: () => tree(),
-    snapshotDigest: async () => "digest-typst",
+    snapshotDigest: async (tree) => `digest-typst:${JSON.stringify(tree.texts)}`,
     renderers,
   });
   harness.tree = () => tree();
@@ -1296,6 +1298,7 @@ console.log('reader-races: a restore is confirmed against the project it will re
     tree: () => ({ main: trees.current, texts: { ...texts }, digests: {} }),
     snapshotDigest: async (tree) => `digest:${tree.main}:${tree.texts[tree.main]}`,
     takeManual: () => { const was = manual; manual = false; return was; },
+    manualPending: () => manual,
     renderers: {
       formatOf: () => "typst", previewFormatOf: () => "typst",
       producesPdf: () => true,
