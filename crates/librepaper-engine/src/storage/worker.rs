@@ -1805,6 +1805,7 @@ mod tests {
             account: orphan.id,
             after: Uuid::nil(),
         };
+        drop(_writer);
         catalog.close().await;
         assert!(
             worker.erase_account(orphan.id, Uuid::nil()).await.is_err(),

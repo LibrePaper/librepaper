@@ -1273,6 +1273,7 @@ mod tests {
             .unwrap()
             .is_none());
 
+        drop(_writer);
         catalog.close().await;
     }
 
@@ -1775,6 +1776,7 @@ mod tests {
         assert!(catalog.finish_account_erasure(erased.id).await.unwrap());
         assert!(catalog.account(erased.id).await.unwrap().is_none());
 
+        drop(_writer);
         catalog.close().await;
     }
 
@@ -1919,6 +1921,7 @@ mod tests {
             "a retry writes no row"
         );
 
+        drop(_writer);
         catalog.close().await;
     }
 
@@ -2015,6 +2018,7 @@ mod tests {
             "a label renamed back to None disappears from the named timeline"
         );
 
+        drop(_writer);
         catalog.close().await;
     }
 
@@ -2446,6 +2450,7 @@ mod tests {
             "and no longer to the old one",
         );
 
+        drop(_writer);
         catalog.close().await;
     }
 
@@ -2492,6 +2497,7 @@ mod tests {
             .unwrap();
         assert!(role.is_none(), "a token key is not a browser link");
 
+        drop(_writer);
         catalog.close().await;
     }
 
@@ -2648,6 +2654,7 @@ mod tests {
             "there is nothing to restore once it is no longer in the trash",
         );
 
+        drop(_writer);
         catalog.close().await;
     }
 
@@ -2738,6 +2745,7 @@ mod tests {
         assert_eq!(second, 2);
         assert_eq!(catalog.log_coverage(document.id).await.unwrap().len(), 2);
 
+        drop(_writer);
         catalog.close().await;
     }
 
@@ -2846,6 +2854,7 @@ mod tests {
             "and no base was ever activated over it",
         );
 
+        drop(_writer);
         catalog.close().await;
     }
 
@@ -3061,6 +3070,7 @@ mod tests {
             "and the live base was not swept with it",
         );
 
+        drop(_writer);
         catalog.close().await;
     }
 
@@ -3250,6 +3260,7 @@ mod tests {
         // document (§6.2's own text: "neither step needs a document").
         assert!(!sequencer.is_warm().await, "a join must not build a cache");
 
+        drop(_writer);
         catalog.close().await;
     }
 
@@ -3436,6 +3447,7 @@ mod tests {
             "an idempotent retry writes no second row",
         );
 
+        drop(_writer);
         catalog.close().await;
     }
 }

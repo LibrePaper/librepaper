@@ -1367,6 +1367,7 @@ async fn opening_more_documents_than_the_budget_holds_evicts_a_subscribed_entry_
         }
     }
 
+    drop(_writer);
     catalog.close().await;
 }
 
