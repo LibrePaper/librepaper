@@ -151,11 +151,11 @@ pub(super) async fn handle_jobs_post(
         Ok(job) => job,
         Err(_) => return write_json(400, &json!({"error": "bad job description"})),
     };
-    // The version is refused here, at the wire, and nowhere else. There used
-    // to be a second decode below for anything that was not protocol 2,
-    // producing a `JobRequest` whose required fields were absent and which
-    // every consumer then had to treat as optional -- for a version
-    // `PROTOCOL_VERSIONS` has not advertised since v2 landed.
+    // The version is refused here, at the wire, before the request is decoded;
+    // `BuildRequestV2::validate_shape` checks it again on the decoded request.
+    // There used to be a second decode below for anything that was not
+    // protocol 2, producing a `JobRequest` whose required fields were absent
+    // and which every consumer then had to treat as optional.
     if raw_job.get("protocol").and_then(Value::as_u64) != Some(2) {
         return write_json(400, &json!({"error": "unsupported protocol version"}));
     }
@@ -199,7 +199,6 @@ pub(super) async fn handle_jobs_post(
                 }
             };
             protocol::BuildInputs::Quarto {
-                overrides: request.options.clone(),
                 options: protocol::QuartoJobOptions {
                     binding_id,
                     main: request.entrypoint.clone(),
@@ -309,7 +308,7 @@ pub(super) async fn handle_jobs_post(
     {
         // Shape, size and safety of `builder`, `entrypoint`, `output` and
         // `workspace` were settled by `BuildRequestV2::validate_shape` above,
-        // which is the one validation this protocol has. What is left here is
+        // which also repeats the protocol version check. What is left here is
         // what that check cannot reach: whether *this* caller holds the
         // binding a bound snapshot names, and what its files actually are.
         let builder = job.builder.as_str();
@@ -382,15 +381,6 @@ pub(super) async fn handle_jobs_post(
             }
         }
         debug_assert_eq!(job.kind == "quarto", builder == "quarto");
-    }
-    if store::normalize_origin(&job.origin) != store::normalize_origin(&origin) {
-        return write_json(
-            403,
-            &json!({"error": "origin does not match the request origin"}),
-        );
-    }
-    if let Err(response) = validate_manifest_shape(&job.manifest) {
-        return response;
     }
     let preview_conflict = {
         let previews = inner.previews.lock().await;

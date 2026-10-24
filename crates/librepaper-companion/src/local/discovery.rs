@@ -367,9 +367,8 @@ pub async fn discover(refresh: bool) -> Capabilities {
 }
 
 /// The resolved tool paths for `native.rs`, from the same cache `discover`
-/// maintains. Never rescans on its own -- call `discover(true)`
-/// first if a fresh scan is wanted -- so a job never pays a rescan's cost
-/// mid-run.
+/// maintains. It reads the cache and rescans only when `tools.json` is
+/// missing or stale, never because a caller asked for a refresh.
 pub async fn tool_paths() -> ToolPaths {
     tool_paths_from(&discover_cache(false).await)
 }

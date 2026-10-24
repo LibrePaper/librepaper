@@ -401,13 +401,11 @@ where
         #[derive(serde::Deserialize)]
         struct LegacyInputs {
             quarto: protocol::QuartoJobOptions,
-            builder_options: Option<BTreeMap<String, Value>>,
         }
         let legacy: LegacyInputs =
             serde_json::from_value(request.clone()).map_err(D::Error::custom)?;
         request["inputs"] = serde_json::to_value(protocol::BuildInputs::Quarto {
             options: legacy.quarto,
-            overrides: legacy.builder_options.unwrap_or_default(),
         })
         .map_err(D::Error::custom)?;
     }
@@ -1766,7 +1764,6 @@ mod recovery_tests {
                 "entrypoint": "paper.qmd", "output": "html", "manifest": [],
                 "quarto": {"binding_id": "b", "main": "paper.qmd", "format": "html",
                     "idempotency_key": "saved-request", "profile": "review"},
-                "builder_options": {"profile": "review"},
                 "options": {"deadline_seconds": 300, "max_passes": 8}
             },
             "status": {"id": "job", "kind": "quarto", "status": status,
@@ -1798,16 +1795,9 @@ mod recovery_tests {
                 .get("job")
                 .expect("a valid legacy job survives upgrade");
             assert!(!job.is_pending());
-            assert_eq!(job.request.inputs.options()["profile"], "review");
-            assert_eq!(
-                job.request
-                    .inputs
-                    .quarto()
-                    .unwrap()
-                    .idempotency_key
-                    .as_deref(),
-                Some("saved-request")
-            );
+            let quarto = job.request.inputs.quarto().unwrap();
+            assert_eq!(quarto.profile.as_deref(), Some("review"));
+            assert_eq!(quarto.idempotency_key.as_deref(), Some("saved-request"));
             if status == "done" {
                 assert_eq!(job.status.status, "done");
                 assert_eq!(job.files["html"], bytes);

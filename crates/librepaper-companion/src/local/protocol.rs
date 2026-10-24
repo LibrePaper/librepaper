@@ -238,9 +238,6 @@ impl Default for JobOptions {
 pub enum BuildInputs {
     Quarto {
         options: QuartoJobOptions,
-        /// The request's own typed options, kept verbatim.
-        #[serde(default)]
-        overrides: BTreeMap<String, serde_json::Value>,
     },
     Native {
         #[serde(default)]
@@ -263,11 +260,11 @@ impl BuildInputs {
         }
     }
 
-    /// The typed options the request carried, whichever builder it named.
-    pub fn options(&self) -> &BTreeMap<String, serde_json::Value> {
+    /// The typed options a native builder request carried.
+    pub fn native_options(&self) -> Option<&BTreeMap<String, serde_json::Value>> {
         match self {
-            Self::Native { options } => options,
-            Self::Quarto { overrides, .. } => overrides,
+            Self::Native { options } => Some(options),
+            Self::Quarto { .. } => None,
         }
     }
 }
