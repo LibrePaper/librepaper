@@ -2971,14 +2971,21 @@
   const editorFormat = $derived(toolbarPath ? renderers.formatOf(toolbarPath) : sourceFormat);
   const canPreviewFile = $derived(files.some((file) =>
     file.id === openFile && file.kind === "text" && Boolean(renderers.previewFormatOf(file.path))));
-  loadConfig()
-    .then((answer) => {
-      workspace.setRules(answer || {});
-      if (typeof answer?.latexMirror === "string") latex.at(answer.latexMirror);
-    })
-    .catch(() => {
-      /* the server checks every path again; this only explains it sooner */
-    });
+  // The server checks every path again, but Git sync refuses to run without
+  // the rules, so a failed load is tried again until it lands.
+  let configRetry = null;
+  function loadRules() {
+    loadConfig()
+      .then((answer) => {
+        workspace.setRules(answer || {});
+        if (typeof answer?.latexMirror === "string") latex.at(answer.latexMirror);
+      })
+      .catch(() => {
+        configRetry = setTimeout(loadRules, 30_000);
+      });
+  }
+  loadRules();
+  $effect(() => () => clearTimeout(configRetry));
 
   // Reading the directory into the list is the workspace's; what is left
   // here is the preview target, which is a rendering question rather than a

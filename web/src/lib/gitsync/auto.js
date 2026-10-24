@@ -129,7 +129,9 @@ export function createAutoSync({ ops, clock = realClock, pace = PACE, onChange =
       if (c.status === "behind") {
         const p = await ops.pull();
         if (!alive()) return ABORTED;
-        if (p.status === "pulled") {
+        // A pull that changed no file can still move the checkpoint, so it
+        // counts as a pull and the panel reloads.
+        if (p.status === "pulled" || p.status === "nothing") {
           lastPullAt = clock.now();
           emit();
         } else if (p.status === "conflict") {
@@ -195,7 +197,7 @@ export function createAutoSync({ ops, clock = realClock, pace = PACE, onChange =
         if (!alive()) return ABORTED;
         if (p.status === "conflict") return conflicted();
         if (p.status === "refused") return refusal(p);
-        if (p.status === "pulled") {
+        if (p.status === "pulled" || p.status === "nothing") {
           lastPullAt = clock.now();
           emit();
         }

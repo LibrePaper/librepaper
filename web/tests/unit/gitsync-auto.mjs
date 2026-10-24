@@ -417,4 +417,13 @@ const refused = (kind, reason) => ({ status: "refused", kind, refusals: [{ reaso
   sync.stop();
 }
 
+// 20. A pull that changed no file still counts as a pull.
+{
+  const { clock, sync } = setup({ check: { status: "behind" }, pull: { status: "nothing" } });
+  sync.start();
+  await clock.advance(0);
+  assert.equal(sync.state.lastPullAt, T0);
+  sync.stop();
+}
+
 console.log("gitsync auto ok");
