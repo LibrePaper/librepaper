@@ -136,10 +136,9 @@ async fn fixture_full(
         DocumentInput {
             slug: SLUG.into(),
             title: "Admin origin fixture".into(),
-            source: "# Admin origin fixture\n".into(),
             source_format: "markdown".into(),
         },
-        vec![],
+        vec![("paper.md".into(), "# Admin origin fixture\n".as_bytes().to_vec())],
         librepaper_base::auth::Policy::allowing("github", &["owner"]),
         librepaper_base::auth::Policy::default(),
     )

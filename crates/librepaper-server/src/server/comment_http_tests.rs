@@ -116,10 +116,9 @@ async fn deployment(slug: &str) -> Option<Deployment> {
             DocumentInput {
                 slug: slug.into(),
                 title: "A Paper".into(),
-                source: PAPER.into(),
                 source_format: "markdown".into(),
             },
-            Vec::new(),
+            vec![("paper.md".into(), PAPER.as_bytes().to_vec())],
             actor,
         )
         .await
@@ -1116,7 +1115,6 @@ async fn a_titled_upload_with_no_files_creates_an_empty_project() {
             DocumentInput {
                 slug: "blank-project".into(),
                 title: parsed.title.clone(),
-                source: parsed.source.clone(),
                 source_format: parsed.source_format.clone(),
             },
             parsed.files.clone(),

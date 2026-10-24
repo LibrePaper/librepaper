@@ -48,10 +48,9 @@ async fn deployment(slug: &str) -> Option<Deployment> {
         DocumentInput {
             slug: slug.into(),
             title: "Figure reads".into(),
-            source: PAPER.into(),
             source_format: "markdown".into(),
         },
-        vec![("figure-a.png".into(), figure(1))],
+        vec![("paper.md".into(), PAPER.as_bytes().to_vec()), ("figure-a.png".into(), figure(1))],
         librepaper_base::auth::Policy::allowing("github", &["owner"]),
         librepaper_base::auth::Policy::default(),
     )
@@ -79,10 +78,9 @@ async fn put_directory(deployment: &Deployment, slug: &str, figures: Vec<(String
             DocumentInput {
                 slug: slug.into(),
                 title: "Figure reads".into(),
-                source: PAPER.into(),
                 source_format: "markdown".into(),
             },
-            figures,
+            std::iter::once(("paper.md".into(), PAPER.as_bytes().to_vec())).chain(figures).collect(),
             actor,
         )
         .await

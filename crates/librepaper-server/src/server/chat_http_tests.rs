@@ -60,10 +60,9 @@ async fn fixture(slug: &str) -> Option<Fixture> {
         DocumentInput {
             slug: slug.into(),
             title: "Chat".into(),
-            source: PAPER.into(),
             source_format: "markdown".into(),
         },
-        Vec::new(),
+        vec![("paper.md".into(), PAPER.as_bytes().to_vec())],
         librepaper_base::auth::Policy::allowing("github", &["owner"]),
         librepaper_base::auth::Policy::allowing("github", &["*"]),
     )
