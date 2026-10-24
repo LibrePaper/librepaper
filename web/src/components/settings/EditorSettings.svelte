@@ -10,6 +10,8 @@
     oncompletion,
     brackets = true,
     onbrackets,
+    spellcheck = true,
+    onspellcheck,
     check = true,
     oncheck,
     commands = {},
@@ -38,6 +40,14 @@
   <button type="button" role="switch" class="switch" aria-checked={brackets} aria-label="Close brackets"
           data-state={brackets ? "checked" : "unchecked"} onclick={() => onbrackets?.(!brackets)}>
     <span class="switch-thumb" data-state={brackets ? "checked" : "unchecked"}></span>
+  </button>
+</SettingRow>
+
+<SettingRow id="editor-spellcheck" title="Spellcheck"
+            description="Underline misspelled words in prose, skipping commands, code, math and citation keys. The browser's language and dictionary decide what counts as a word.">
+  <button type="button" role="switch" class="switch" aria-checked={spellcheck} aria-label="Spellcheck"
+          data-state={spellcheck ? "checked" : "unchecked"} onclick={() => onspellcheck?.(!spellcheck)}>
+    <span class="switch-thumb" data-state={spellcheck ? "checked" : "unchecked"}></span>
   </button>
 </SettingRow>
 

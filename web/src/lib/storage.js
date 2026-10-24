@@ -55,6 +55,8 @@ export const EDITOR_LINE_HEIGHT = "librepaper-editor-line-height";
 export const EDITOR_COMPLETION = "librepaper-editor-completion";
 // Whether typing an opening bracket adds the closing one.
 export const EDITOR_BRACKETS = "librepaper-editor-brackets";
+// Whether the browser underlines misspelled words in the source. Prose files only.
+export const EDITOR_SPELLCHECK = "librepaper-editor-spellcheck";
 // Whether compiler messages are drawn in the source: underlines and gutter
 // marks. The list of messages stays available either way.
 export const EDITOR_CHECK = "librepaper-editor-check";

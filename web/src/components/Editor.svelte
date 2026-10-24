@@ -32,6 +32,7 @@
   // brought into line with the setting when it is activated.
   const completionCompartment = new Compartment();
   const bracketsCompartment = new Compartment();
+  const spellcheckCompartment = new Compartment();
   const checkCompartment = new Compartment();
   // The bracket keymap goes with auto-closing brackets. Its Backspace deletes an
   // empty pair even without closeBrackets, so leaving it in the main keymap
@@ -39,6 +40,10 @@
   const completionOn = (on) => (on ? autocompletion({ activateOnTyping: true }) : []);
   const bracketsOn = (on) => (on ? [closeBrackets(), keymap.of(closeBracketsKeymap)] : []);
   const checkOn = (on) => (on ? lintGutter() : []);
+  // The browser's spellcheck, on for prose and off for code and data files,
+  // where every identifier would be underlined. Markup inside a prose file is
+  // skipped too, by spellcheckExtension.
+  const spellcheckOn = (on, prose) => (on && prose ? spellcheckExtension(prose) : EditorView.contentAttributes.of({ spellcheck: "false" }));
 
   // Loro merges nearby commits by default. A handled Vim key starts a new
   // command boundary; the first local edit after it consumes that boundary
@@ -222,6 +227,7 @@
   import { start as startEditorType, onFont, onLineHeight, size, setSize, DEFAULT_SIZE } from "../lib/editor-type.js";
   import { snippetTemplate } from "../lib/snippet-template.js";
   import { formatOf as documentFormat } from "../lib/formats.js";
+  import { spellcheckExtension } from "../lib/spellcheck/extension.js";
   import { untrack } from "svelte";
 
   // Whether what is typed here is recorded as a tracked change is not a prop
@@ -233,7 +239,7 @@
   // is the id of the change the reviewer is looking at.
   /** @type {{ me?: { who: string, author: string }, [key: string]: any }} */
   let { session, format = "", file = "", keys = "default", editable = true,
-    completion = true, brackets = true, check = true,
+    completion = true, brackets = true, spellcheck = true, check = true,
     tracking = false, me = { who: "", author: "" }, selectedChange = null,
     analyze = analyzeBibliography,
     onchange, oncaret, onfilechange, onbibliography, onsave, onquit,
@@ -1072,6 +1078,7 @@
       extensions: [
         EditorView.editable.of(Boolean(editable)),
         EditorView.contentAttributes.of({ "aria-label": path ? `Source of ${path}` : "Source" }),
+        spellcheckCompartment.of(spellcheckOn(untrack(() => spellcheck), proseFormat(id))),
         // Vim, when the setting says so, and always first: an earlier
         // extension has precedence, and Vim has to see a key before the
         // default keymap does, or `j` inserts a letter instead of moving.
@@ -1214,19 +1221,27 @@
     });
   }
 
-  /// Reconfigures the live view's completion, bracket and check switches to
-  /// match their props, in one transaction. Like `syncKeys`, it reads the
-  /// props without tracking, so the effect at the end of the script is the one
-  /// that follows them.
-  function syncFeatures(target) {
+  /// Reconfigures the live view's completion, bracket, spellcheck and check
+  /// switches to match their props, in one transaction. `id` is the file the
+  /// view shows, which decides whether spellcheck applies. Like `syncKeys`, it
+  /// reads the props without tracking, so the effect at the end of the script
+  /// is the one that follows them.
+  function syncFeatures(target, id = showing) {
     if (!target) return;
     target.dispatch({
       effects: [
         completionCompartment.reconfigure(completionOn(untrack(() => completion))),
         bracketsCompartment.reconfigure(bracketsOn(untrack(() => brackets))),
+        spellcheckCompartment.reconfigure(spellcheckOn(untrack(() => spellcheck), proseFormat(id))),
         checkCompartment.reconfigure(checkOn(untrack(() => check))),
       ],
     });
+  }
+
+  // The prose format of a file, or empty for code and data files, which spellcheck leaves alone.
+  function proseFormat(id) {
+    const path = pathOfDoc(session.doc, id);
+    return documentFormat(path) || (!path ? format : "");
   }
 
   // Get the text for a file from the room's document.
@@ -1372,7 +1387,7 @@
     view.setState(documentStates.get(id));
     activeDocument = document_;
     syncKeys(view);
-    syncFeatures(view);
+    syncFeatures(view, id);
     syncTheme(view);
     showing = id;
     // A file this browser has open is where its caret is, which is what the
@@ -1419,7 +1434,7 @@
       });
       untrack(() => viewCallbacks.set(view, { onsave, onquit }));
       syncKeys(view);
-      syncFeatures(view);
+      syncFeatures(view, initial.first);
       const unsubscribeMode = onMode(() => syncTheme(view));
       // The font and line height are the person's, and a change in the settings row lands here.
       startEditorType();
@@ -1504,10 +1519,11 @@
     if (view) syncKeys(view);
   });
 
-  // The completion and bracket switches work the same way.
+  // The completion, bracket and spellcheck switches work the same way.
   $effect(() => {
     void completion;
     void brackets;
+    void spellcheck;
     if (view) syncFeatures(view);
   });
 

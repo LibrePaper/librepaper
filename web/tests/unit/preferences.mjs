@@ -33,6 +33,7 @@ const got = (key) => JSON.parse(store.get(key));
   assert.equal(prefs.state.keys, "default");
   assert.equal(prefs.state.completion, true);
   assert.equal(prefs.state.brackets, true);
+  assert.equal(prefs.state.spellcheck, true);
   assert.equal(prefs.state.check, true);
   assert.equal(store.size, 0, "reading remembers nothing");
 }
@@ -43,10 +44,12 @@ const got = (key) => JSON.parse(store.get(key));
   store.clear();
   put("librepaper-editor-completion", false);
   put("librepaper-editor-brackets", false);
+  put("librepaper-editor-spellcheck", false);
   put("librepaper-editor-check", "no");
   const prefs = createPreferences();
   assert.equal(prefs.state.completion, false);
   assert.equal(prefs.state.brackets, false);
+  assert.equal(prefs.state.spellcheck, false);
   assert.equal(prefs.state.check, true);
 }
 
@@ -85,6 +88,10 @@ const got = (key) => JSON.parse(store.get(key));
   prefs.setBrackets(false);
   assert.equal(prefs.state.brackets, false);
   assert.equal(got("librepaper-editor-brackets"), false);
+
+  prefs.setSpellcheck(false);
+  assert.equal(prefs.state.spellcheck, false);
+  assert.equal(got("librepaper-editor-spellcheck"), false);
 
   prefs.setCheck(false);
   assert.equal(prefs.state.check, false);

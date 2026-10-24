@@ -16,7 +16,7 @@
 // this one does not, so every one of them is checked against what is on
 // offer now rather than trusted.
 
-import { EDITOR_BRACKETS, EDITOR_CHECK, EDITOR_COMPLETION, KEYMAP, SOURCE_SIDE, read, write } from "../storage.js";
+import { EDITOR_BRACKETS, EDITOR_CHECK, EDITOR_COMPLETION, EDITOR_SPELLCHECK, KEYMAP, SOURCE_SIDE, read, write } from "../storage.js";
 import { PANES, remember, stored } from "../panes.js";
 
 const KEYMAPS = ["vim", "emacs"];
@@ -30,6 +30,7 @@ export function createPreferences() {
     // On unless a stored false says otherwise, so a first visit gets all three.
     completion: read(EDITOR_COMPLETION, true) !== false,
     brackets: read(EDITOR_BRACKETS, true) !== false,
+    spellcheck: read(EDITOR_SPELLCHECK, true) !== false,
     check: read(EDITOR_CHECK, true) !== false,
     // The source and the document are kept as a share of what they have
     // between them; the comment column is kept in pixels. Two units because
@@ -59,6 +60,10 @@ export function createPreferences() {
     setBrackets(on) {
       state.brackets = Boolean(on);
       write(EDITOR_BRACKETS, Boolean(on));
+    },
+    setSpellcheck(on) {
+      state.spellcheck = Boolean(on);
+      write(EDITOR_SPELLCHECK, Boolean(on));
     },
     setCheck(on) {
       state.check = Boolean(on);
