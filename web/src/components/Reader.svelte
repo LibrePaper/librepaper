@@ -3854,13 +3854,7 @@
       {@render exportItem("download-html", "HTML", "html")}
       {@render exportItem("download-pdf", "PDF", "pdf")}
       {@render exportItem("download-docx", "DOCX", "docx")}
-      {#if canExportComments}
-        {@const none = annotations.state.page.total === 0}
-        <Menu.Item value="download-comments" class="menuitem" disabled={none}>
-          <span class="menuitem-label">Comments</span>
-          {#if none}<span class="export-reason">No comments yet.</span>{/if}
-        </Menu.Item>
-      {/if}
+      {#if canExportComments}<Menu.Item value="download-comments" class="menuitem"><span class="menuitem-label">Comments</span></Menu.Item>{/if}
       {#if mayEdit}
         <Menu.Item value="download-source" class="menuitem" disabled={!toolbarPath}>
           <span class="menuitem-label">Source</span>
