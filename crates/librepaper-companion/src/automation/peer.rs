@@ -15,8 +15,12 @@ use tokio_tungstenite::tungstenite::client::IntoClientRequest;
 use librepaper_base::http::{detail_of, KEY_HEADER};
 
 /// Extract a share key from either a literal key or a pasted document URL.
+/// A key in a `/docs/<slug>/<key>` path wins over the `#k=` fragment.
 pub fn link_key(flag: &str) -> String {
     let flag = flag.trim();
+    if let Some(key) = path_key(flag) {
+        return key;
+    }
     let Some((_, fragment)) = flag.split_once('#') else {
         return if flag.contains("://") {
             String::new()
@@ -33,6 +37,27 @@ pub fn link_key(flag: &str) -> String {
                 .map(|(_, value)| value.into_owned())
         })
         .unwrap_or_default()
+}
+
+/// The key in a `/docs/<slug>/<key>` path, percent-decoded. `None` for any
+/// other URL.
+fn path_key(input: &str) -> Option<String> {
+    let url = url::Url::parse(input).ok()?;
+    if !matches!(url.scheme(), "http" | "https") {
+        return None;
+    }
+    let segments: Vec<&str> = url.path_segments()?.collect();
+    match segments.as_slice() {
+        ["docs", _, key] if !key.is_empty() => decoded_key(key),
+        _ => None,
+    }
+}
+
+fn decoded_key(segment: &str) -> Option<String> {
+    percent_encoding::percent_decode_str(segment)
+        .decode_utf8()
+        .ok()
+        .map(|key| key.into_owned())
 }
 
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
@@ -61,8 +86,10 @@ impl std::fmt::Debug for DocumentLink {
 }
 
 impl DocumentLink {
-    /// Parse a pasted `/docs/<slug>#k=...` or `/raw/<slug>#k=...` link.
-    /// Bare slugs are accepted when `default_server` is supplied.
+    /// Parse a pasted `/docs/<slug>#k=...`, `/docs/<slug>/<key>` or
+    /// `/raw/<slug>#k=...` link. A key in the path wins over one in the
+    /// fragment or query. Bare slugs are accepted when `default_server` is
+    /// supplied.
     pub fn parse(input: &str, default_server: &str) -> Result<Self, String> {
         let input = input.trim();
         if input.is_empty() {
@@ -80,9 +107,16 @@ impl DocumentLink {
                 .path_segments()
                 .map(|parts| parts.collect())
                 .unwrap_or_default();
-            let slug = match segments.as_slice() {
-                [prefix, slug] if matches!(*prefix, "docs" | "raw" | "document") => *slug,
-                [slug] => *slug,
+            let (slug, path_key) = match segments.as_slice() {
+                [prefix, slug] if matches!(*prefix, "docs" | "raw" | "document") => (*slug, None),
+                ["docs", slug, key] if !key.is_empty() => (
+                    *slug,
+                    Some(
+                        decoded_key(key)
+                            .ok_or("the document link key is not valid UTF-8")?,
+                    ),
+                ),
+                [slug] => (*slug, None),
                 _ => return Err("the document link must identify one document".into()),
             };
             if slug.is_empty() {
@@ -93,7 +127,7 @@ impl DocumentLink {
                 .find_map(|(name, value)| (name == "file").then_some(value.into_owned()))
                 .unwrap_or_default();
             validate_file_path(&path)?;
-            let key = key_from_url(&url);
+            let key = path_key.unwrap_or_else(|| key_from_url(&url));
             (server, slug.to_string(), path, key)
         } else {
             let server = default_server.trim().trim_end_matches('/');
@@ -529,6 +563,43 @@ mod tests {
         assert_eq!(link.slug(), "abc");
         assert!(link.has_key());
         assert!(!format!("{link:?}").contains("secret"));
+    }
+
+    #[test]
+    fn parses_path_key_link() {
+        let link = DocumentLink::parse("https://docs.example/docs/abc/s%2Bkey", "").unwrap();
+        assert_eq!(link.server(), "https://docs.example");
+        assert_eq!(link.slug(), "abc");
+        assert_eq!(link.key, "s+key");
+        assert!(!format!("{link:?}").contains("s+key"));
+    }
+
+    #[test]
+    fn fragment_key_link_still_parses() {
+        let link = DocumentLink::parse("https://docs.example/docs/abc#k=secret", "").unwrap();
+        assert_eq!(link.slug(), "abc");
+        assert_eq!(link.key, "secret");
+    }
+
+    #[test]
+    fn path_key_wins_over_fragment_key() {
+        let link =
+            DocumentLink::parse("https://docs.example/docs/abc/from-path#k=from-fragment", "")
+                .unwrap();
+        assert_eq!(link.key, "from-path");
+    }
+
+    #[test]
+    fn four_segment_document_link_is_refused() {
+        assert!(DocumentLink::parse("https://docs.example/docs/a/b/c", "").is_err());
+    }
+
+    #[test]
+    fn link_key_reads_the_path_key() {
+        assert_eq!(link_key("https://docs.example/docs/abc/s%2Bkey"), "s+key");
+        assert_eq!(link_key("https://docs.example/docs/abc#k=frag"), "frag");
+        assert_eq!(link_key("https://docs.example/docs/abc"), "");
+        assert_eq!(link_key("literal-key"), "literal-key");
     }
 
     #[test]
