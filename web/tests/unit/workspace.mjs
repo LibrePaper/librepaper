@@ -142,17 +142,17 @@ function build(extra = {}) {
   const entries = [{ id: "id:main.md", path: "main.md", kind: "text" }, { id: "id:ch.md", path: "ch.md", kind: "text" }];
   const reader = build({ arrivedFile: "ch.md" });
   reader.workspace.state.canEdit = false;
-  const project = { main: "main.md", tree: { main: "main.md", main_id: "id:main.md", files: {
+  const project = { tree: { files: {
     "main.md": { kind: "text", id: "id:main.md", digest: "a" },
     "ch.md": { kind: "text", id: "id:ch.md", digest: "b" },
     "fig.png": { kind: "asset", digest: "c" },
-  } } };
+  } }, texts: { "main.md": "# Main\n{{< include ch.md >}}\n", "ch.md": "Chapter\n" } };
   reader.workspace.fromProject(project);
   reader.workspace.fromProject(project);
   assert.deepEqual(reader.events.arrived, ["ch.md"], "a link holder opens it, once");
-  assert.deepEqual(reader.workspace.state.files.map((file) => file.path), ["main.md", "ch.md", "fig.png"], "main first, then by path");
+  assert.deepEqual(reader.workspace.state.files.map((file) => file.path), ["ch.md", "fig.png", "main.md"], "by path");
   assert.equal(reader.workspace.state.files.find((file) => file.path === "fig.png").id, "fig.png", "a figure is keyed by its path");
-  assert.equal(reader.workspace.state.openFile, "id:main.md", "the main file is open");
+  assert.equal(reader.workspace.state.openFile, "id:main.md", "the file the project opens on is open");
 
   const editor = build({ arrivedFile: "ch.md" });
   editor.workspace.attach(fakeSession([...entries]));
