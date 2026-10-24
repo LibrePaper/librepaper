@@ -528,6 +528,45 @@ main.reader.source-right .latexpane {
   order: 1;
 }
 
+/* A file shown read only where the document would be, for somebody who has no
+   source pane: its path and the way back to the preview over its text or its
+   figure. The text wraps and scrolls inside the pane. */
+.latexpane.fileview {
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+.fileview-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: --spacing(3);
+  padding: --spacing(2) --spacing(3);
+  border-bottom: 1px solid var(--color-border);
+}
+.fileview-path {
+  min-width: 0;
+  overflow: hidden;
+  font-family: var(--font-mono, monospace);
+  font-size: var(--text-sm);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.fileview-text {
+  flex: 1 1 auto;
+  min-height: 0;
+  margin: 0;
+  padding: --spacing(3);
+  overflow: auto;
+  font-family: var(--font-mono, monospace);
+  font-size: var(--text-sm);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.fileview .figureview {
+  flex: 1 1 auto;
+}
+
 /* A compile is the one thing in this application that takes seconds, so it is
    the one thing with a spinner. */
 .spinner {

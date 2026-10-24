@@ -306,7 +306,7 @@
     onFocusChange={(event) => { focused = event.focusedValue; }}
     onSelectionChange={(event) => {
       selected = event.selectedValue;
-      if (selected.length === 1 && mayEdit) {
+      if (selected.length === 1) {
         const entry = entries.find((entry) => nodeKey(entry) === selected[0]);
         if (entry && entry.kind !== "folder") onopen?.(entry);
       }

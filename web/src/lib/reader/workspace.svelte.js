@@ -26,8 +26,8 @@ export function createWorkspace({
   slug,
   key = "",
   // The file named by the link this reader arrived on, if any. Opened once,
-  // the first time the directory is read and the reader turns out to be able
-  // to edit -- a reader has no source pane to open it in.
+  // the first time the directory is read. An editor's source pane opens on it;
+  // a link holder's document pane shows it in place of the preview.
   arrivedFile = "",
   /// Said when a move has a consequence the file list cannot show: nothing on
   /// screen looks wrong, and the break is in the source files that named the
@@ -106,15 +106,45 @@ export function createWorkspace({
       state.figure = current || null;
       if (current && state.openFile === previousFigure.id) state.openFile = current.id;
     }
+    settle(session.mainId());
+  }
+
+  /// The directory of a link holder, who has no session: the list is the
+  /// project the server last sent, in the shape the session would give. A
+  /// text is keyed by the id the server names it by and a figure by its path,
+  /// as in a session, and the main file comes first. Folders are left to the
+  /// list, which derives them from the paths.
+  /** @param {{ tree?: { main?: string, main_id?: string, files?: Record<string, { kind: string, id?: string, digest?: string }> }, main?: string }} project */
+  function fromProject(project) {
+    const tree = project?.tree || {};
+    const main = project?.main || tree.main || "";
+    state.files = Object.entries(tree.files || {}).map(([path, file]) => ({
+      id: file.kind === "asset" ? path : file.id || path,
+      path,
+      ...(file.kind === "asset" ? { sha: file.digest } : {}),
+      kind: file.kind,
+      main: file.kind === "text" && (tree.main_id ? file.id === tree.main_id : path === main),
+    })).sort((a, b) => {
+      if (a.main !== b.main) return a.main ? -1 : 1;
+      return a.path.localeCompare(b.path);
+    });
+    state.folders = [];
+    if (state.figure && !state.files.some((file) => file.kind === "asset" && file.id === state.figure.id)) state.figure = null;
+    settle(state.files.find((file) => file.main)?.id || "");
+  }
+
+  /// What both ways of reading the directory do once the list is in place:
+  /// keep the open file one that exists, and open the file the link named.
+  /** @param {string} mainId */
+  function settle(mainId) {
     // A file that went away under this browser -- somebody else deleted it --
-    // leaves the editor showing something that is not there any more, so it
+    // leaves the pane showing something that is not there any more, so it
     // falls back to the document itself.
     if (state.openFile && !state.files.some((file) => file.id === state.openFile)) state.openFile = "";
-    if (!state.openFile) state.openFile = session.mainId();
-    // The file the link named, if the project has one by that name. An
-    // editor's source pane opens on it; a reader has no pane to open it in
-    // and no list to mark it in, so for them the link is to the document.
-    if (arrivedFile && state.canEdit && !arrivedOpened && state.files.length) {
+    if (!state.openFile) state.openFile = mainId;
+    // The file the link named, if the project has one by that name. It is
+    // opened once, through the same function a click on the list uses.
+    if (arrivedFile && !arrivedOpened && state.files.length) {
       arrivedOpened = true;
       const named = state.files.find((file) => file.path === arrivedFile);
       if (named) onarrived(named);
@@ -263,6 +293,7 @@ export function createWorkspace({
     attach,
     setRules,
     refresh,
+    fromProject,
     refreshPeers,
     show,
     addText,

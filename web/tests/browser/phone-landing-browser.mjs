@@ -71,6 +71,7 @@ globalThis.WebSocket = class {
 const caseName = new URLSearchParams(location.search).get('case') || 'editor';
 const editorCase = caseName === 'editor' || caseName === 'empty';
 const MAIN_TEXT = '<h1>Shared</h1><p>Read-only projection</p>';
+const NOTES_TEXT = 'key = value';
 globalThis.fetch = async (url, init = {}) => {
   const path = String(url);
   if (path.endsWith('/me')) return Response.json({name:'Phone Tester',handle:'phone-tester',provider:'github',providers:[]});
@@ -81,8 +82,8 @@ globalThis.fetch = async (url, init = {}) => {
     can_moderate:false, can_see_sharing:false });
   if (path.endsWith('/project')) return Response.json({
     format:'html', main:'main.html',
-    tree:{ main:'main.html', files:{ 'main.html':{ path:'main.html', kind:'text' } } },
-    texts:{ 'main.html': MAIN_TEXT }, changes:[], project_digest:'digest-1' });
+    tree:{ main:'main.html', files:{ 'main.html':{ path:'main.html', kind:'text' }, 'notes.ini':{ path:'notes.ini', kind:'text' } } },
+    texts:{ 'main.html': MAIN_TEXT, 'notes.ini': NOTES_TEXT }, changes:[], project_digest:'digest-1' });
   if (path.endsWith('/frame')) return Response.json({token:'frame-token',until:9999999999});
   if (path.includes('/comments')) return Response.json({comments:[]});
   return { ok:false, status:404, json: async () => ({}) };
@@ -153,8 +154,8 @@ try {
   assert.equal(await visible('.sidebar'), true, 'Open Files shows the files column');
   assert.deepEqual(await b.evaluate('window.testErrors'), [], 'the empty project case reports no page errors');
 
-  // Case 3: a commenter link opens on the preview, and the comments column
-  // takes the collaboration panel once the window is wide enough.
+  // Case 3: a commenter link opens on the preview, and the column opens on
+  // the files once the window is wide enough.
   await openCase('commenter?case=commenter#k=commentkey', 390, 844);
   await landOnPreview('commenter');
   assert.equal(await b.evaluate(phoneDocument), true, 'a commenter phone opens on the preview');
@@ -163,19 +164,33 @@ try {
   await b.resize(1280, 900); await flush();
   await until('commenter comments column', () => visible('.sidebar:not(.collapsed)'), 5000);
   assert.equal(await visible('.sidebar:not(.collapsed)'), true, 'a commenter window shows the comments column');
-  assert.equal(await visible('.sidebar section.collaboration'), true, 'the comments column holds the collaboration panel rather than an empty column');
+  assert.equal(await visible('.sidebar .explorer'), true, 'the commenter column holds the files rather than an empty column');
   assert.deepEqual(await b.evaluate('window.testErrors'), [], 'the commenter case reports no page errors');
 
-  // Case 4: a reader link opens on the preview, and has no column at desktop width.
+  // Case 4: a reader link opens on the preview on a phone, and at desktop
+  // width the column opens on the project's files, read only.
   await openCase('reader?case=reader#k=readerkey', 390, 844);
   await landOnPreview('reader');
   assert.equal(await b.evaluate(phoneDocument), true, 'a reader phone opens on the preview');
   assert.equal(await visible('.sidebar'), false, 'a reader phone does not open on the files column');
   assert.equal(await visible('.editorpane'), false, 'a reader phone does not open on the source');
   await b.resize(1280, 900); await flush();
-  // The rail stays; the column beside it is collapsed.
-  assert.equal(await visible('.sidebar:not(.collapsed)'), false, 'a reader window has no open column at desktop width');
+  await until('reader files column', () => visible('.sidebar:not(.collapsed) .explorer'), 5000);
+  assert.equal(await b.evaluate(`Boolean(document.querySelector('.sidebar-activity [aria-label="Files"]'))`), true, 'a reader is offered the Files panel');
+  assert.deepEqual(await b.evaluate(`[...document.querySelectorAll('.explorer-row')].map((node) => node.getAttribute('title'))`), ['main.html', 'notes.ini'], 'the reader sees every file of the project');
+  assert.equal(await b.evaluate(`Boolean(document.querySelector('.explorer [aria-label="New file"], .explorer [aria-label="New folder"], .explorer [aria-label="Upload files"], .explorer input[type="file"]'))`), false, 'the reader list has no add or upload controls');
+  // A text that does not render is shown as text, where the preview was, and
+  // the editor is never loaded for it.
+  await b.evaluate(`document.querySelector('.explorer-row[title="notes.ini"]').click()`);
+  await until('reader file text', () => visible('.fileview-text'), 5000);
+  assert.equal(await b.evaluate(`document.querySelector('.fileview-text').textContent`), 'key = value', 'the reader sees the file text read only');
+  assert.equal(await visible('.viewport'), false, 'the preview is hidden while the file is shown');
+  assert.equal(await b.evaluate(`Boolean(document.querySelector('.cm-editor, #reader-source'))`), false, 'no editor is loaded for a reader');
+  const backToPreview = `[...document.querySelectorAll('.fileview button')].find((node) => node.textContent.trim() === 'Back to preview')`;
+  await b.evaluate(`${backToPreview}.click()`);
+  await until('reader preview returns', () => visible('.viewport'), 5000);
+  assert.equal(await b.evaluate(`Boolean(document.querySelector('.fileview'))`), false, 'the back button returns to the preview');
   assert.deepEqual(await b.evaluate('window.testErrors'), [], 'the reader case reports no page errors');
 
-  console.log('phone-landing-browser: editors, empty projects, commenter and reader links open on the preview passed');
+  console.log('phone-landing-browser: editors, empty projects, commenter and reader links open on the preview passed; link holders list the files and read any of them');
 } finally { await b?.close(); serverHttp?.close(); removeTemporary(temp); }
