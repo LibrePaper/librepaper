@@ -16,23 +16,23 @@ const offered = (who) => tabsFor(who).map((tab) => tab.id);
 // workspace they do not have.
 assert.deepEqual(
   offered({ role: "reader", mayEdit: false, editing: false, canSeeSharing: false, canPublish: false }),
-  ["changes"],
-  "a read link is offered the changes, read only",
+  ["files", "changes"],
+  "a read link is offered the files and the changes, read only",
 );
 
 // A comment link is the comments and the changes, and only those: not the
 // agent, not the history, none of which the link can touch.
 assert.deepEqual(
   offered({ role: "commenter", mayEdit: false, editing: false, canSeeSharing: false, canPublish: false }),
-  ["collaboration", "changes"],
-  "a comment link is offered the comments and the changes",
+  ["files", "collaboration", "changes"],
+  "a comment link is offered the files, the comments and the changes",
 );
 
 // Neither of them is offered the source, which is the same statement: the
 // panels that stand beside a source pane are not on their list.
 for (const role of ["reader", "commenter"]) {
   const list = offered({ role, mayEdit: false, editing: false, canSeeSharing: false, canPublish: false });
-  for (const forbidden of ["files", "outline", "agent", "history", "diagnostics", "share"]) {
+  for (const forbidden of ["outline", "agent", "history", "diagnostics", "share"]) {
     assert.ok(!list.includes(forbidden), `${role} is not offered ${forbidden}`);
   }
 }

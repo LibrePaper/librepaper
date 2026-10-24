@@ -24,7 +24,8 @@ const encode = b => btoa(String.fromCharCode(...b));
 const server = new LoroDoc();
 const files = server.getMap("files"), paths = server.getMap("paths");
 const id = "main"; const text = new LoroText(); text.insert(0, Array.from({length: 180}, (_, i) => "line " + i + " source content").join("\\n"));
-files.setContainer(id, text); paths.set(id, "main.html");
+// The project opens on the first file by name, so the long one sorts first.
+files.setContainer(id, text); paths.set(id, "a-main.html");
 for (let i = 0; i < 70; i++) { const file = new LoroText(); file.insert(0, 'chapter ' + i); files.setContainer('chapter-' + i, file); paths.set('chapter-' + i, 'chapter-' + i + '.html'); }
 server.commit();
 const update = encode(server.export({ mode: "update" }));

@@ -29,19 +29,20 @@ export const TABS = [
 ];
 
 // What a role is offered, where that is less than what the conditions above
-// would otherwise allow. Somebody holding a read link is given the document
-// and the pending changes in it, read only: there is no other panel they can
-// act in, and a rail of icons opening columns that only report on work they
-// cannot do is a workspace pretending they have one. A commenter is given
-// the comments and the same read-only changes, and nothing else -- not the
-// agent, not the history, none of which a comment link can touch.
+// would otherwise allow. Somebody holding a read link is given the document,
+// its file list to switch the preview with, and the pending changes in it,
+// read only: there is no other panel they can act in, and a rail of icons
+// opening columns that only report on work they cannot do is a workspace
+// pretending they have one. A commenter is given the same and the comments,
+// and nothing else -- not the agent, not the history, none of which a comment
+// link can touch.
 //
 // An editor and an owner are not named here: what they are offered is the
 // `when` rules alone. Neither is a role nobody has answered with yet -- the
 // document always says which one this caller holds, so no role means the
 // document has not answered, and a rail drawn then is one audience's
 // furniture put up and taken down again as soon as the reply lands.
-const ROLE_PANELS = { reader: ["changes"], commenter: ["collaboration", "changes"], "": [] };
+const ROLE_PANELS = { reader: ["files", "changes"], commenter: ["files", "collaboration", "changes"], "": [] };
 
 // Every panel this browser is offered, in rail order.
 export const tabsFor = (who) => {

@@ -275,7 +275,7 @@
         {#if mayEdit}
           <IconButton icon="upload" label="Upload files" tone="plain" size="btn-icon-sm" disabled={busy} onclick={() => choose()} />
         {/if}
-        <IconButton icon="download" label="Download project" tone="plain" size="btn-icon-sm" onclick={() => ondownload?.()} />
+        {#if mayEdit}<IconButton icon="download" label="Download project" tone="plain" size="btn-icon-sm" onclick={() => ondownload?.()} />{/if}
       </div>
       {#if mayEdit}<input class="chooser" type="file" multiple bind:this={chooser} aria-label="Choose files to upload"
         accept={allowedExtensions.join(",")}
@@ -305,7 +305,7 @@
     onFocusChange={(event) => { focused = event.focusedValue; }}
     onSelectionChange={(event) => {
       selected = event.selectedValue;
-      if (selected.length === 1 && mayEdit) {
+      if (selected.length === 1) {
         const entry = entries.find((entry) => nodeKey(entry) === selected[0]);
         if (entry && entry.kind !== "folder") onopen?.(entry);
       }
@@ -340,7 +340,7 @@
   {/if}
   <!-- The eye is the lock. The locked file shows it solid, and pressing it
        unlocks. The file the preview is showing without a lock shows it solid
-       too, as a marker. Any other file that renders on its own offers the
+       too, and pressing it locks the preview there. Any other file that renders on its own offers the
        faint eye, which locks the preview there without opening the file. -->
   {#if node.kind !== "folder" && locked && node.path === locked}
     <button type="button" class="explorer-preview shown" aria-label="Unlock the preview" title="Unlock the preview"
@@ -348,7 +348,10 @@
       ondblclick={(event) => event.stopPropagation()}
       onkeydown={(event) => event.stopPropagation()}><Icon name="eye" /></button>
   {:else if node.kind !== "folder" && node.path === preview}
-    <span class="explorer-preview shown" role="img" aria-label="Shown in the preview"><Icon name="eye" /></span>
+    <button type="button" class="explorer-preview shown" aria-label="Lock preview on {node.name}" title="Lock the preview on this file"
+      onclick={(event) => { event.stopPropagation(); const entry = entryOf(node); if (entry) onlock?.(entry); }}
+      ondblclick={(event) => event.stopPropagation()}
+      onkeydown={(event) => event.stopPropagation()}><Icon name="eye" /></button>
   {:else if node.kind === "text" && previewable(node.path)}
     <button type="button" class="explorer-preview" aria-label="Lock preview on {node.name}" title="Lock the preview on this file"
       onclick={(event) => { event.stopPropagation(); const entry = entryOf(node); if (entry) onlock?.(entry); }}

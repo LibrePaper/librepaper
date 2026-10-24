@@ -110,7 +110,7 @@ try {
   const row = (path) => `.explorer-row[title=${JSON.stringify(path)}]`;
   const exists = (selector) => b.evaluate(`Boolean(document.querySelector(${JSON.stringify(selector)}))`);
   const chip = () => b.evaluate(`document.querySelector('.notice-chip')?.textContent.replace(/\\s+/g, ' ').trim() || ''`);
-  const shownRow = () => b.evaluate(`document.querySelector('.explorer-row [aria-label="Shown in the preview"]')?.closest('.explorer-row')?.getAttribute('title') || ''`);
+  const shownRow = () => b.evaluate(`document.querySelector('.explorer-row .explorer-preview.shown')?.closest('.explorer-row')?.getAttribute('title') || ''`);
   const cardText = () => b.evaluate(`[...document.querySelectorAll('section.latexpane .notyet p')].map(node => node.textContent.replace(/\\s+/g, ' ').trim()).join(' | ')`);
   const openFile = async (path) => {
     await until(`file ${path}`, () => exists(row(path)), 10000);

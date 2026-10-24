@@ -133,8 +133,8 @@ window.peerChangeCheck = async () => {
 };
 window.openingFileCheck = async () => {
   const value = joinSession({ send: () => {}, mayEdit: true });
-  value.addText("chapters/intro.tex", "\\section{Intro}");
-  const thesisId = value.addText("thesis.tex", "\\documentclass{book}\n\\begin{document}\\input{chapters/intro}\\end{document}");
+  value.addText("chapters/intro.tex", "\\\\section{Intro}");
+  const thesisId = value.addText("thesis.tex", "\\\\documentclass{book}\\n\\\\begin{document}\\\\input{chapters/intro}\\\\end{document}");
   const host = document.createElement("section");
   document.body.append(host);
   const openingEditor = createClassComponent({

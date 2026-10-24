@@ -3046,15 +3046,31 @@
   // The file the preview is locked on, by identity so a rename keeps the lock.
   // It lasts for this visit: nothing stores it and nobody else sees it.
   let lockedFile = $state("");
-  const lockedPath = $derived(files.find((file) => file.id === lockedFile)?.path || "");
+  // A link visitor has no session and no source pane. The list they see is cut
+  // from the project they were handed, a file is named by its path, and the
+  // file they last chose stands in for the open file until the project stops
+  // having it.
+  let visitorOpen = $state("");
+  const visitorFiles = $derived.by(() => {
+    const entries = currentProject?.tree?.files;
+    if (entries) return Object.entries(entries).map(([path, file]) => ({ id: path, path, kind: file?.kind === "asset" ? "asset" : "text" }));
+    return Object.keys(currentProject?.texts || {}).map((path) => ({ id: path, path, kind: "text" }));
+  });
+  const visitorFile = $derived.by(() => {
+    const texts = currentProject?.texts || {};
+    return visitorOpen && Object.hasOwn(texts, visitorOpen) ? visitorOpen : openingFile(texts) || "";
+  });
+  const filesShown = $derived(session ? files : visitorFiles);
+  const shownOpenId = $derived(session ? openFile : visitorFile);
+  const lockedPath = $derived(filesShown.find((file) => file.id === lockedFile)?.path || "");
   // The paths that render on their own, which is what the eye in Files offers
   // to lock. Worked out with the target, from the same texts.
   let aloneSet = $state.raw(new Set());
-  const toolbarPath = $derived(files.find((file) => file.id === openFile)?.path || "");
-  const openTextPath = $derived(files.find((file) => file.id === openFile && file.kind === "text")?.path || "");
+  const toolbarPath = $derived(filesShown.find((file) => file.id === shownOpenId)?.path || "");
+  const openTextPath = $derived(filesShown.find((file) => file.id === shownOpenId && file.kind === "text")?.path || "");
   const previewNoteItems = $derived(previewNotes({
     openPath: toolbarPath,
-    openIsText: files.find((file) => file.id === openFile)?.kind === "text",
+    openIsText: filesShown.find((file) => file.id === shownOpenId)?.kind === "text",
     target: { path: previewPath, reason: previewReason },
   }));
   const editorFormat = $derived(toolbarPath ? renderers.formatOf(toolbarPath) : sourceFormat);
@@ -3065,13 +3081,13 @@
   const previewCard = $derived.by(() => {
     if (previewReason !== "none" || projectEmpty || !openTextPath) return "";
     const name = basename(openTextPath);
-    const format = renderers.previewFormatOf(openTextPath);
+    const format = renderers.formatOf(openTextPath);
     if (!format) return `${name} has no preview of its own.`;
     return format === "latex"
       ? `${name} has no \\documentclass, so it is part of a larger document.`
       : `${name} is part of a larger document.`;
   });
-  const canLockPreview = $derived(Boolean(openTextPath && aloneSet.has(openTextPath) && lockedFile !== openFile));
+  const canLockPreview = $derived(Boolean(openTextPath && aloneSet.has(openTextPath) && lockedFile !== shownOpenId));
   // The server checks every path again, but Git sync refuses to run without
   // the rules, so a failed load is tried again until it lands.
   let configRetry = null;
@@ -3133,13 +3149,12 @@
   // texts. A target that has not changed costs a comparison and nothing else.
   function updatePreviewTarget() {
     if (readerDisposed || (!session && !currentProject)) return;
-    // A figure is open in the source pane: the preview stays where it is.
-    if (session && !openTextPath && previewPath) return;
     const texts = liveTreeNow().texts;
-    if (lockedFile && session && !lockedPath) lockedFile = "";
-    // A reader with no session has no files to switch between and opens on the
-    // file the project opens on.
-    const open = (session ? openTextPath : "") || openingFile(texts) || "";
+    if (lockedFile && !lockedPath) lockedFile = "";
+    // With a figure open in the source pane there is no open text, so the
+    // preview stays on the file it has. A visitor has the file they chose, or
+    // else the file the project opens on.
+    const open = (session ? openTextPath || (openFile ? previewPath : "") : visitorFile) || openingFile(texts) || "";
     const target = previewTarget({ open, locked: lockedPath, texts });
     const includers = includersOf(texts);
     const alone = Object.keys(texts).filter((path) => rendersAlone(path, texts, includers)).sort();
@@ -3187,6 +3202,7 @@
   $effect(() => {
     void openFile;
     void lockedFile;
+    void visitorFile;
     untrack(updatePreviewTarget);
   });
 
@@ -3200,7 +3216,7 @@
   }
 
   function lockPreview(id) {
-    const file = files.find((entry) => entry.id === id);
+    const file = filesShown.find((entry) => entry.id === id);
     if (!file || file.kind !== "text" || !aloneSet.has(file.path)) return;
     lockPreviewOn(id);
   }
@@ -3242,6 +3258,15 @@
   }
 
   function openTheFile(file) {
+    // A visitor has no source pane: choosing a file moves the preview, and a
+    // phone shows the preview it moved.
+    if (!mayEdit) {
+      if (file.kind !== "text") return;
+      visitorOpen = file.path;
+      updatePreviewTarget();
+      if (compact) showMobileView("document");
+      return;
+    }
     if (openFile !== file.id) outlineActiveFrom = null;
     workspace.show(file);
     // Choosing a file is asking to see it, so an arrangement with no source
@@ -4136,7 +4161,7 @@
        of these its rail has selected; none of it travels through the column
        as props, so a panel can grow a field without the column hearing of it. -->
   {#snippet filesPanel()}
-    <Files bind:this={fileList} {files} {folders} open={openFile} preview={previewPath} locked={lockedPath}
+    <Files bind:this={fileList} files={filesShown} {folders} open={shownOpenId} preview={previewPath} locked={lockedPath}
       {mayEdit} {rules} onopen={openTheFile} onadd={addFile}
       onmkdir={(path) => workspace.addFolder(path)} onrelocate={relocateFiles}
       ondelete={deleteFiles} onduplicate={(entry, path) => workspace.duplicate(entry, path)}
@@ -4371,7 +4396,7 @@
           <p class="lp-text-secondary text-sm">It is included by:</p>
           <div class="notyet-actions">
             {#each previewIncluders as includer (includer)}
-              <button class="btn btn-sm lp-control-tonal-brand" onclick={() => lockPreviewOn(session?.idOf?.(includer) || "")}>Lock preview on {includer}</button>
+              <button class="btn btn-sm lp-control-tonal-brand" onclick={() => lockPreviewOn(session ? session.idOf(includer) || "" : includer)}>Lock preview on {includer}</button>
             {/each}
           </div>
         {:else}

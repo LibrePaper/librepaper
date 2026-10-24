@@ -2,7 +2,7 @@
 //
 // The Reader is real. Only its room and HTTP shell are local test doubles: the
 // room is backed by Loro, so file changes take the same path as a collaborator's
-// update. Opening on an HTML file lets this check exercise Markdown,
+// update. The project opens on the first file by name, so the HTML file is named to sort first; it lets this check exercise Markdown,
 // Quarto, Typst and LaTeX source files without requiring five compilers.
 import assert from "node:assert/strict";
 import { build } from "vite";
@@ -35,7 +35,7 @@ const rooms = new Map();
 
 const long = (lines, body) => [...Array.from({length: 55}, (_, i) => "preamble line " + i), ...lines, body].join("\\n");
 const initial = {
-  "main.html": ["<!doctype html>", "<html><body>", ...Array.from({length: 55}, (_, i) => "<!-- preamble " + i + " -->"), "<h1>HTML heading</h1>", "<h2>HTML child</h2>", "<h1>HTML next</h1>", "<p>Rendered main document.</p>", "</body></html>"].join("\\n"),
+  "a-main.html": ["<!doctype html>", "<html><body>", ...Array.from({length: 55}, (_, i) => "<!-- preamble " + i + " -->"), "<h1>HTML heading</h1>", "<h2>HTML child</h2>", "<h1>HTML next</h1>", "<p>Rendered main document.</p>", "</body></html>"].join("\\n"),
   "notes.md": long(["# Markdown heading", "", "## Markdown subsection", "", "# Markdown next"], "Markdown source."),
   "chapter.qmd": long(["# Quarto heading", "", "## Quarto subsection", "", "# Quarto next"], "Quarto source."),
   "paper.typ": long(["= Typst heading", "", "== Typst subsection", "", "= Typst next"], "Typst source."),
@@ -48,7 +48,7 @@ function makeRoom(slug) {
   const files = doc.getMap("files");
   const paths = doc.getMap("paths");
   for (const [path, value] of Object.entries(initial)) {
-    const id = path === "main.html" ? "main" : path;
+    const id = path === "a-main.html" ? "main" : path;
     const text = new LoroText();
     text.insert(0, value);
     files.setContainer(id, text);
@@ -225,7 +225,7 @@ try {
     await openFiles();
     await until(`file ${path}`, () => tab.evaluate(`Boolean(document.querySelector('.explorer-row[title=${JSON.stringify(path)}]'))`), 5000);
     await click(`.explorer-row[title=${JSON.stringify(path)}]`);
-    const marker = {"main.html":"HTML", "notes.md":"Markdown", "chapter.qmd":"Quarto", "paper.typ":"Typst", "paper.tex":"LaTeX", "refs.bib":"No outline here"}[path];
+    const marker = {"a-main.html":"HTML", "notes.md":"Markdown", "chapter.qmd":"Quarto", "paper.typ":"Typst", "paper.tex":"LaTeX", "refs.bib":"No outline here"}[path];
     await until(`source ${path}`, () => tab.evaluate(`window.editorState().text.includes(${JSON.stringify(marker)})`), 5000);
   };
   const clickHeading = async (title) => {
@@ -300,7 +300,7 @@ try {
 
   // A document-only desktop layout still exposes the outline and a heading
   // jump brings the source back when a person asks to inspect it.
-  await openFile("main.html");
+  await openFile("a-main.html");
   await tab.evaluate(`(() => {
     const button = document.querySelector('button[aria-label^="Layout"]');
     if (!button) throw new Error("no Layout control");
@@ -323,7 +323,7 @@ try {
   assert.equal(await tab.evaluate(`window.editorState().text.includes("Typst")`), false, "the eye does not open paper.typ in the source");
   assert.equal(await tab.evaluate(`Boolean(document.querySelector('.explorer-row[title="paper.typ"] button[aria-label="Unlock the preview"]'))`), true, "the eye is solid on the locked file and unlocks");
   // The source moves and the lock stays.
-  await openFile("main.html");
+  await openFile("a-main.html");
   assert.equal(await tab.evaluate(`document.querySelector('.notice-chip')?.textContent.includes("Locked: paper.typ") === true`), true, "opening another file leaves the lock where it is");
   await click('.explorer-row[title="paper.typ"] button[aria-label="Unlock the preview"]');
   await until("the lock is released", () => tab.evaluate(`!document.querySelector('.notice-chip')`), 5000);

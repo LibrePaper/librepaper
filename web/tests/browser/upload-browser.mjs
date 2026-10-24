@@ -226,7 +226,6 @@ try {
   const fromTemplate = await sent();
   const templatePaths = fromTemplate.filter((one) => one.name === "file").map((one) => one.filename);
   assert.ok(templatePaths.includes("main.tex") && templatePaths.includes("references.bib"), `article files: ${templatePaths}`);
-  assert.equal(fromTemplate.find((one) => one.name === "main").bytes, "main.tex");
   assert.deepEqual(await wentWrong(), []);
 
   // f. One file is a project named for it, sent through the real request.
