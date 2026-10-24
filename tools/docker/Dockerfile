@@ -9,14 +9,17 @@
 # build uses the repository root as its context. For `SOURCE=checkout`, run
 # `make web` first so `web/dist` is ready to embed; BuildKit skips unused stages.
 # CARGO_PROFILE picks the cargo profile for SOURCE=checkout. It defaults to
-# release, and the demo passes demo, which skips LTO.
+# release, and the demo passes demo, which skips LTO and optimises only the
+# dependencies.
+# SOURCE=checkout builds on a glibc Rust image and cross-compiles to musl: musl-gcc
+# compiles the bundled C, and mold links. The output is still one static binary.
 #
 #   docker build -f tools/docker/Dockerfile --build-arg LIBREPAPER_VERSION=<compatible-tag> -t librepaper .
 #   docker build -f tools/docker/Dockerfile --build-arg SOURCE=local -t librepaper .
 #   make web
 #   docker build -f tools/docker/Dockerfile --build-arg SOURCE=checkout -t librepaper .
 ARG SOURCE=release
-ARG RUST_BUILDER_IMAGE=rust:1-alpine
+ARG RUST_BUILDER_IMAGE=rust:1-bookworm
 
 FROM alpine:3.21 AS base
 
@@ -61,11 +64,15 @@ ARG LIBREPAPER_BINARY=librepaper
 COPY ${LIBREPAPER_BINARY} /usr/local/bin/librepaper
 RUN chmod 0755 /usr/local/bin/librepaper
 
+# The builder is glibc Rust because a musl-hosted rustc compiles markedly slower.
+# The output is still one static musl executable: cargo cross-compiles to the
+# musl target, musl-gcc compiles the bundled C, and mold links.
 FROM ${RUST_BUILDER_IMAGE} AS checkout-build
 ARG TARGETARCH
 ARG CARGO_PROFILE=release
 WORKDIR /src
-RUN apk add --no-cache build-base cmake musl-dev perl
+RUN apt-get update && apt-get install -y --no-install-recommends musl-tools cmake perl mold \
+	&& rm -rf /var/lib/apt/lists/*
 COPY Cargo.toml Cargo.lock README.md assets.lock ./
 COPY .cargo ./.cargo
 COPY crates ./crates
@@ -74,13 +81,16 @@ COPY docs/dev/protocol ./docs/dev/protocol
 COPY web/dist ./web/dist
 RUN --mount=type=cache,target=/usr/local/cargo/registry \
 	--mount=type=cache,target=/usr/local/cargo/git \
-	--mount=type=cache,target=/src/target \
+	--mount=type=cache,id=librepaper-checkout-target-bookworm,target=/src/target \
 	set -eu; \
 	case "$TARGETARCH" in \
 		amd64) target="x86_64-unknown-linux-musl" ;; \
 		arm64) target="aarch64-unknown-linux-musl" ;; \
 		*) echo "build: checkout source does not support $TARGETARCH" >&2; exit 1 ;; \
 	esac; \
+	env_target=$(echo "$target" | tr - _); \
+	upper=$(echo "$env_target" | tr a-z A-Z); \
+	export "CC_${env_target}=musl-gcc" "CARGO_TARGET_${upper}_RUSTFLAGS=-C link-arg=-fuse-ld=mold"; \
 	rustup target add "$target"; \
 	cargo build --locked --profile "$CARGO_PROFILE" --target "$target" -p librepaper --bin librepaper; \
 	mkdir -p /out; \
