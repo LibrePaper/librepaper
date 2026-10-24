@@ -10,26 +10,26 @@ import { tabsFor, TABS } from "../../src/lib/panels.js";
 
 const offered = (who) => tabsFor(who).map((tab) => tab.id);
 
-// The two roles that arrive by a link. A read link is a document and the
-// pending changes in it, read only: no other panel is one they could act in,
-// and a rail of icons opening columns that report on work they cannot do is a
-// workspace they do not have.
+// The two roles that arrive by a link. A read link is the project's files and
+// the pending changes in it, read only: link holders already hold every source
+// file, so the explorer hides nothing, and no other panel is one they could act
+// in.
 assert.deepEqual(
   offered({ role: "reader", mayEdit: false, editing: false, canSeeSharing: false, canPublish: false }),
   ["files", "changes"],
   "a read link is offered the files and the changes, read only",
 );
 
-// A comment link is the comments and the changes, and only those: not the
-// agent, not the history, none of which the link can touch.
+// A comment link is the files, the comments and the changes, and only those:
+// not the agent, not the history, none of which the link can touch.
 assert.deepEqual(
   offered({ role: "commenter", mayEdit: false, editing: false, canSeeSharing: false, canPublish: false }),
   ["files", "collaboration", "changes"],
   "a comment link is offered the files, the comments and the changes",
 );
 
-// Neither of them is offered the source, which is the same statement: the
-// panels that stand beside a source pane are not on their list.
+// Neither of them is offered the outline or the panels that act on a source
+// pane: those stand beside a source pane, which a link holder does not have.
 for (const role of ["reader", "commenter"]) {
   const list = offered({ role, mayEdit: false, editing: false, canSeeSharing: false, canPublish: false });
   for (const forbidden of ["outline", "agent", "history", "diagnostics", "share"]) {
@@ -82,4 +82,4 @@ assert.ok(
   "no palette is a panel",
 );
 
-console.log("panels: a read link gets the changes, a comment link gets the comments and changes, an editor gets the workspace");
+console.log("panels: a read link gets the files and changes, a comment link gets the files, comments and changes, an editor gets the workspace");

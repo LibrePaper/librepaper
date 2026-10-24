@@ -11,6 +11,11 @@
   const needsName = $derived(kind === "token");
   const valid = $derived(!needsName || draft.name.trim() !== "");
   const spends = $derived(draft.role !== "reader");
+  const reach = {
+    reader: "They can open every file and read the comments.",
+    commenter: "They can open every file, comment and reply.",
+    editor: "They can change any file.",
+  };
 </script>
 
 <form class="share-form" onsubmit={(event) => { event.preventDefault(); if (valid && !busy) onsubmit(); }}>
@@ -24,6 +29,7 @@
         <option value={role.id} disabled={!allowed(role.id)}>{role.label}{allowed(role.id) ? "" : " (not allowed here)"}</option>
       {/each}
     </select>
+    {#if kind === "link"}<span class="share-note">{reach[draft.role]}</span>{/if}
   </label>
   {#if kind === "token" && draft.role === "editor"}
     <p class="share-note panel-meta">Edit lets the agent change the project directly, without review.</p>

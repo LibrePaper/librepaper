@@ -459,6 +459,7 @@ console.log("reader-races: all checks passed");
     renderers: { formatOf: () => "latex", previewFormatOf: () => "latex", warm: () => {} },
     readQuartoBinding: () => {},
     configureLatex: () => configured++,
+    mayEdit: true, mainPathNow: () => "paper.tex",
   });
   vm.runInContext(body("  function updatePreviewTarget()", "  // The preview follows the open file"), ctx);
   vm.runInContext("updatePreviewTarget()", ctx);

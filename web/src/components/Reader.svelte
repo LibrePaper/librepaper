@@ -2542,10 +2542,11 @@
   // desktop app, so in a browser they say so rather than disappear.
   const agentOffered = $derived(tabs.some((tab) => tab.id === "agent"));
   // Where the column goes back to when what it showed is taken away: the
-  // files for an editor, the comments for a commenter, and for a reader no
-  // column at all -- there is nothing they are offered to go back to.
+  // files, for every role that is offered them, which is every role that has
+  // opened a project. Before the document has answered nobody is offered
+  // anything, and the column is not drawn.
   const home = $derived(
-    mayEdit ? "files"
+    tabs.some((tab) => tab.id === "files") ? "files"
     : tabs.some((tab) => tab.id === "collaboration") ? "collaboration"
     : "",
   );
@@ -2763,7 +2764,7 @@
     }
     if (value === "preview-latex-pdf") return void setLatexOutput("pdf");
     if (value === "preview-latex-html") return void setLatexOutput("html");
-    if (value === "lock-preview") return lockPreview(shownOpenId);
+    if (value === "lock-preview") return lockPreview(openFile);
     if (value === "unlock-preview") return unlockPreview();
     if (value === "preview-typst-pdf") return void setTypstOutput("pdf");
     if (value === "preview-typst-html") return void setTypstOutput("html");
@@ -3047,31 +3048,15 @@
   // The file the preview is locked on, by identity so a rename keeps the lock.
   // It lasts for this visit: nothing stores it and nobody else sees it.
   let lockedFile = $state("");
-  // A link visitor has no session and no source pane. The list they see is cut
-  // from the project they were handed, a file is named by its path, and the
-  // file they last chose stands in for the open file until the project stops
-  // having it.
-  let visitorOpen = $state("");
-  const visitorFiles = $derived.by(() => {
-    const entries = currentProject?.tree?.files;
-    if (entries) return Object.entries(entries).map(([path, file]) => ({ id: path, path, kind: file?.kind === "asset" ? "asset" : "text" }));
-    return Object.keys(currentProject?.texts || {}).map((path) => ({ id: path, path, kind: "text" }));
-  });
-  const visitorFile = $derived.by(() => {
-    const texts = currentProject?.texts || {};
-    return visitorOpen && Object.hasOwn(texts, visitorOpen) ? visitorOpen : openingFile(texts) || "";
-  });
-  const filesShown = $derived(session ? files : visitorFiles);
-  const shownOpenId = $derived(session ? openFile : visitorFile);
-  const lockedPath = $derived(filesShown.find((file) => file.id === lockedFile)?.path || "");
+  const lockedPath = $derived(files.find((file) => file.id === lockedFile)?.path || "");
   // The paths that render on their own, which is what the eye in Files offers
   // to lock. Worked out with the target, from the same texts.
   let aloneSet = $state.raw(new Set());
-  const toolbarPath = $derived(filesShown.find((file) => file.id === shownOpenId)?.path || "");
-  const openTextPath = $derived(filesShown.find((file) => file.id === shownOpenId && file.kind === "text")?.path || "");
+  const toolbarPath = $derived(files.find((file) => file.id === openFile)?.path || "");
+  const openTextPath = $derived(files.find((file) => file.id === openFile && file.kind === "text")?.path || "");
   const previewNoteItems = $derived(previewNotes({
     openPath: toolbarPath,
-    openIsText: filesShown.find((file) => file.id === shownOpenId)?.kind === "text",
+    openIsText: files.find((file) => file.id === openFile)?.kind === "text",
     target: { path: previewPath, reason: previewReason },
   }));
   const editorFormat = $derived(toolbarPath ? renderers.formatOf(toolbarPath) : sourceFormat);
@@ -3088,7 +3073,7 @@
       ? `${name} has no \\documentclass, so it is part of a larger document.`
       : `${name} is part of a larger document.`;
   });
-  const canLockPreview = $derived(Boolean(openTextPath && aloneSet.has(openTextPath) && lockedFile !== shownOpenId));
+  const canLockPreview = $derived(Boolean(openTextPath && aloneSet.has(openTextPath) && lockedFile !== openFile));
   // The server checks every path again, but Git sync refuses to run without
   // the rules, so a failed load is tried again until it lands.
   let configRetry = null;
@@ -3152,10 +3137,9 @@
     if (readerDisposed || (!session && !currentProject)) return;
     const texts = liveTreeNow().texts;
     if (lockedFile && !lockedPath) lockedFile = "";
-    // With a figure open in the source pane there is no open text, so the
-    // preview stays on the file it has. A visitor has the file they chose, or
-    // else the file the project opens on.
-    const open = (session ? openTextPath || (openFile ? previewPath : "") : visitorFile) || openingFile(texts) || "";
+    // With a figure open there is no open text, so the preview stays on the
+    // file it has. Nothing open at all means the file the project opens on.
+    const open = openTextPath || (openFile ? previewPath : "") || openingFile(texts) || "";
     const target = previewTarget({ open, locked: lockedPath, texts });
     const includers = includersOf(texts);
     const alone = Object.keys(texts).filter((path) => rendersAlone(path, texts, includers)).sort();
@@ -3177,7 +3161,7 @@
     sourceFormat = format;
     configureLatex(format, session || readerProjectOwner);
     renderers.warm(format);
-    if (["quarto", "typst", "markdown"].includes(format)) readQuartoBinding();
+    if (mayEdit && ["quarto", "typst", "markdown"].includes(format)) readQuartoBinding();
     if (!previous) {
       void restoreLastPreview(path);
       return;
@@ -3208,7 +3192,6 @@
   $effect(() => {
     void openFile;
     void lockedFile;
-    void visitorFile;
     untrack(updatePreviewTarget);
   });
 
@@ -3216,13 +3199,14 @@
   // none of them opens the file. A phone shows the preview it just moved.
   function lockPreviewOn(id) {
     lockedFile = id;
+    viewing = false;
     updatePreviewTarget();
     if (!compact && layout === "source") layout = "split";
     if (compact) showMobileView("document");
   }
 
   function lockPreview(id) {
-    const file = filesShown.find((entry) => entry.id === id);
+    const file = files.find((entry) => entry.id === id);
     if (!file || file.kind !== "text" || !aloneSet.has(file.path)) return;
     lockPreviewOn(id);
   }
@@ -3263,14 +3247,34 @@
     participants = ws.participants;
   }
 
+  // Whether the document pane is showing the open file in place of the
+  // preview. Only somebody with no source pane ever does: for them a file
+  // that cannot be previewed has nowhere else to be shown.
+  let viewing = $state(false);
+  const heldFile = $derived(!mayEdit && viewing ? files.find((file) => file.id === openFile) || null : null);
+
+  // Somebody who cannot edit has no source pane. Choosing a file opens it as
+  // it does for an editor, and the preview follows it there or into the file
+  // that includes it. A figure, or a text with no preview anywhere, is shown
+  // read only in place of the preview until the reader goes back to it.
+  function viewTheFile(file) {
+    if (openFile !== file.id) outlineActiveFrom = null;
+    workspace.show(file);
+    const texts = currentProject?.texts || {};
+    viewing = file.kind !== "text" || previewTarget({ open: file.path, locked: lockedPath, texts }).reason === "none";
+    if (compact) showMobileView("document");
+  }
+
+  function backToPreview() {
+    viewing = false;
+    ws.figure = null;
+    const previewed = files.find((file) => file.kind === "text" && file.path === previewPath);
+    if (previewed) ws.openFile = previewed.id;
+  }
+
   function openTheFile(file) {
-    // A visitor has no source pane: choosing a file moves the preview, and a
-    // phone shows the preview it moved.
     if (!mayEdit) {
-      if (file.kind !== "text") return;
-      visitorOpen = file.path;
-      updatePreviewTarget();
-      if (compact) showMobileView("document");
+      viewTheFile(file);
       return;
     }
     if (openFile !== file.id) outlineActiveFrom = null;
@@ -3337,10 +3341,6 @@
   /// asking the server to assemble what is already here would be a round trip
   /// to be told what we know.
   async function downloadTree() {
-    if (!mayEdit) {
-      say("Downloading the whole project is an editor's. A reader can download the rendered document instead.", { kind: "problem", id: "reader:download-project" });
-      return;
-    }
     if (projectEmpty) {
       say("This project has no files to download.", { kind: "problem", id: "reader:download-project" });
       return;
@@ -3497,6 +3497,7 @@
       if (readerDisposed || mayEdit) return;
       projectEtag = response.headers.get("etag") || `"${next.project_digest}"`;
       currentProject = next;
+      workspace.fromProject(next);
       changeRows = readerChangeRows(next.changes);
       if (selectedChange && !changeRows.some((row) => row.id === selectedChange)) selectedChange = null;
       projectUnreadable = "";
@@ -3566,11 +3567,9 @@
       forgetProject({ server: location.origin, documentId: document_.document_id, slug: SLUG, createdAt: document_.created_at })
         .catch(() => {});
     }
-    // The column opens on the files for an editor. A link-holder opens on
-    // their own home instead, even though the files are offered to them to
-    // switch the preview with, and a panel this visit has already moved to may
-    // not be theirs either. A phone keeps the view it opened on.
-    if (panel && (!mayEdit || !tabs.some((tab) => tab.id === panel))) {
+    // A panel this visit has already moved to may not be one this role is
+    // offered. A phone keeps the view it opened on.
+    if (panel && !tabs.some((tab) => tab.id === panel)) {
       const view = mobileView;
       showPanel(home);
       mobileView = view;
@@ -4168,13 +4167,32 @@
        of these its rail has selected; none of it travels through the column
        as props, so a panel can grow a field without the column hearing of it. -->
   {#snippet filesPanel()}
-    <Files bind:this={fileList} files={filesShown} {folders} open={shownOpenId} preview={previewPath} locked={lockedPath}
+    <Files bind:this={fileList} {files} {folders} open={openFile} preview={previewPath} locked={lockedPath}
       {mayEdit} {rules} onopen={openTheFile} onadd={addFile}
       onmkdir={(path) => workspace.addFolder(path)} onrelocate={relocateFiles}
       ondelete={deleteFiles} onduplicate={(entry, path) => workspace.duplicate(entry, path)}
       onfigure={addFigure} ontext={addDroppedText}
       ondownload={downloadTree} ondownloaditem={downloadEntry}
       previewable={(path) => aloneSet.has(path)} onlock={(entry) => lockPreview(entry.id)} onunlock={unlockPreview} />
+  {/snippet}
+
+  <!-- The figure being looked at: wherever it is shown, it is shown this way. -->
+  {#snippet figureBody()}
+    <div class="figureview">
+      {#if !isDisplayableImage(shownFigure.path) && !shownFigure.path.toLowerCase().endsWith(".pdf")}
+        <div class="notyet">
+          <p class="lp-text-secondary text-sm">{basename(shownFigure.path)} can't be displayed here.</p>
+        </div>
+      {:else if !figureUrl}
+        <p>Fetching {shownFigure.path}…</p>
+      {:else if shownFigure.path.toLowerCase().endsWith(".pdf")}
+        <object data={figureUrl} type="application/pdf" title={shownFigure.path}>
+          <p>{shownFigure.path}</p>
+        </object>
+      {:else}
+        <img src={figureUrl} alt={shownFigure.path} />
+      {/if}
+    </div>
   {/snippet}
 
   {#snippet outlinePanel()}
@@ -4309,21 +4327,7 @@
           downloading={downloadingSha === historySource.selected ? downloadingSha : ""}
           downloadProblem={downloadingSha === historySource.selected ? downloadProblem : ""} />
       {:else if shownFigure}
-        <div class="figureview">
-          {#if !isDisplayableImage(shownFigure.path) && !shownFigure.path.toLowerCase().endsWith(".pdf")}
-            <div class="notyet">
-              <p class="lp-text-secondary text-sm">{basename(shownFigure.path)} can't be displayed here.</p>
-            </div>
-          {:else if !figureUrl}
-            <p>Fetching {shownFigure.path}…</p>
-          {:else if shownFigure.path.toLowerCase().endsWith(".pdf")}
-            <object data={figureUrl} type="application/pdf" title={shownFigure.path}>
-              <p>{shownFigure.path}</p>
-            </object>
-          {:else}
-            <img src={figureUrl} alt={shownFigure.path} />
-          {/if}
-        </div>
+        {@render figureBody()}
       {:else if Editor && sourceBound}
         <Editor bind:this={editor} {session} format={editorFormat} file={openFile} entry={previewPath} {keys} {completion} {brackets} {spellcheck} {check} {rules} {tracking} me={trackingMe} {selectedChange} editable={mayEdit}
                   onbibliography={bibliographyAnalyzed} onchange={outlineTextChanged} oncaret={outlineCaretChanged} onsave={reportPersistence} onquit={showDocumentAlone}
@@ -4350,7 +4354,22 @@
        the engine on its own, automatically, and the Preview header carries
        loading and failure states. Every paged format
        renders from source on demand; generated output remains transient. -->
-  {#if documentNeedsSignIn}
+  {#if heldFile}
+    <!-- A reader has no source pane, so a file that is not the preview is
+         shown here, read only, where the preview would be. The frame below is
+         only hidden, which is why going back does not render it again. -->
+    <section class="latexpane fileview" aria-label={heldFile.path}>
+      <div class="fileview-head">
+        <span class="fileview-path">{heldFile.path}</span>
+        <button class="btn btn-sm lp-control-tonal-brand" onclick={backToPreview}>Back to preview</button>
+      </div>
+      {#if heldFile.kind === "asset" && shownFigure}
+        {@render figureBody()}
+      {:else}
+        <pre class="fileview-text">{currentProject?.texts?.[heldFile.path] ?? ""}</pre>
+      {/if}
+    </section>
+  {:else if documentNeedsSignIn}
     <section class="latexpane">
       <div class="notyet">
         <h2 class="h4">Sign in to open this document</h2>
@@ -4502,7 +4521,7 @@
            notice={previewChip ? previewNotice : undefined}
            busy={previewBusy}
            progress={sourceFormat === "latex" && !latexHtmlPreview && latexState.progress?.total ? latexState.progress : null}
-           away={documentNeedsSignIn || !shown.document || unrendered || failedBeforeRender || Boolean(projectUnreadable) || Boolean(previewCard)} />
+           away={documentNeedsSignIn || Boolean(heldFile) || !shown.document || unrendered || failedBeforeRender || Boolean(projectUnreadable) || Boolean(previewCard)} />
 
   <!-- Shown only while a separator is dragged: a line that follows the pointer
        so the split can be seen moving without the iframe reflowing on every
