@@ -30,6 +30,19 @@ assert.deepEqual(
   keys("See @smith. #cite(<jones>) and @sec-intro // @ignored\n`@raw` @fine", "typst", { labels }),
   ["smith", "jones", "fine"],
 );
+// A label used as a citation argument is not a declaration.
+const missingSource = "#cite(<missing>)\n@smith";
+const missingLabels = typstLabels({ "main.typ": missingSource });
+assert.equal(missingLabels.has("missing"), false);
+assert.deepEqual(
+  unknownCitations({ text: missingSource, format: "typst", entries: [{ key: "smith" }], labels: missingLabels }).map((cite) => cite.key),
+  ["missing"],
+);
+// A heading label still suppresses the matching @key.
+assert.deepEqual(keys("= Intro <intro>\n@intro", "typst", { labels: typstLabels({ "a.typ": "= Intro <intro>\n@intro" }) }), []);
+// A multiline raw block is masked, so @example does not count.
+const fenced = "```\n@example\n```\nSee @smith";
+assert.deepEqual(citedKeys(fenced, "typst"), [{ key: "smith", from: fenced.indexOf("@smith") + 1, to: fenced.indexOf("@smith") + 6 }]);
 
 // Unknown citations need a parsed bibliography.
 assert.deepEqual(unknownCitations({ text: "@smith @jones", format: "markdown", entries: null }), []);

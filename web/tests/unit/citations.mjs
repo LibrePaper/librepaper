@@ -88,6 +88,13 @@ assert.equal(bibliographyRegistration(styledSource, "refs.bib", "latex").insert,
 assert.deepEqual(bibliographyRegistration("Hello\n", "refs.bib", "latex"), { from: 6, to: 6, insert: "\\bibliographystyle{plain}\n\\bibliography{refs}\n" });
 assert.deepEqual(bibliographyRegistration("Hello", "refs.bib", "tex"), { from: 5, to: 5, insert: "\n\\bibliographystyle{plain}\n\\bibliography{refs}\n" });
 assert.equal(bibliographyRegistration("\\usepackage{biblatex}\n\\addbibresource{refs.bib}\n", "refs.bib", "latex"), null);
+const natbibSource = "\\usepackage[numbers]{natbib}\n\\begin{document}\n\\end{document}\n";
+assert.equal(bibliographyRegistration(natbibSource, "refs.bib", "latex").insert, "\\bibliographystyle{plainnat}\n\\bibliography{refs}\n");
+const commentedBiblatex = "% \\usepackage{biblatex}\n\\begin{document}\n\\end{document}\n";
+assert.deepEqual(bibliographyRegistration(commentedBiblatex, "refs.bib", "latex"), { from: commentedBiblatex.indexOf("\\end{document}"), to: commentedBiblatex.indexOf("\\end{document}"), insert: "\\bibliographystyle{plain}\n\\bibliography{refs}\n" });
+const commentedStyle = "% \\bibliographystyle{abbrv}\n\\begin{document}\n\\end{document}\n";
+assert.equal(bibliographyRegistration(commentedStyle, "refs.bib", "latex").insert, "\\bibliographystyle{plain}\n\\bibliography{refs}\n");
+assert.notEqual(bibliographyRegistration("\\begin{document}\n% \\bibliography{old}\n\\end{document}\n", "refs.bib", "latex"), null);
 assert.equal(bibliographyRegistration("\\begin{document}\n\\bibliography{refs}\n\\end{document}\n", "refs.bib", "latex"), null);
 const latexPlanned = planZoteroImport({
   source: "\\bibliography{refs}\n\\end{document}\n", targetPath: "main.tex", texts: { "main.tex": "", "refs.bib": "" }, format: "latex",

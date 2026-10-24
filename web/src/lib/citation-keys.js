@@ -5,13 +5,15 @@ const LATEX_CITE = /\\(?:(?:no|paren|text|auto|foot|smart|super|Paren|Text|Auto|
 const MARKDOWN_AT = /@[-\p{L}\p{N}_:.+]+/gu;
 const TYPST_AT = /@[-\p{L}\p{N}_:.]+/gu;
 const TYPST_CITE = /#cite\(\s*<([-\p{L}\p{N}_:.]+)>/gu;
-const LABEL = /<([\p{L}\p{N}_\-:.]+)>/gu;
+// A label declaration, not a label used as an argument such as #cite(<key>).
+const LABEL = /(?<![(,]\s*)<([\p{L}\p{N}_\-:.]+)>/gu;
 const INLINE_CODE = /(`+)(?!`)[\s\S]*?(?<!`)\1(?!`)/g;
-const TYPST_RAW = INLINE_CODE;
-const TYPST_COMMENT = /(?<!:)\/\/.*$/;
+const TYPST_FENCED = /(`{3,})[\s\S]*?\1/g;
+const TYPST_COMMENT = /(?<!:)\/\/[^\n]*/g;
 const CROSS_REF = /^(fig|tbl|sec|eq|lst|thm|lem|cor|prp|cnj|def|exm|exr|sol|rem|tip|nte|wrn|imp|cau)[-:]/;
 
-const blankLine = (line) => " ".repeat(line.length);
+// Replaces everything but line breaks, so offsets and line numbers stay valid.
+const blank = (match) => match.replace(/[^\n]/g, " ");
 
 function latexKeys(text) {
   const found = [];
@@ -60,21 +62,22 @@ function markdownMasked(text) {
   const rows = text.split("\n");
   let fence = null, frontMatter = false;
   return rows.map((line, index) => {
-    if (index === 0 && /^---\s*$/.test(line)) { frontMatter = true; return blankLine(line); }
-    if (frontMatter) { if (/^(---|\.\.\.)\s*$/.test(line)) frontMatter = false; return blankLine(line); }
+    if (index === 0 && /^---\s*$/.test(line)) { frontMatter = true; return blank(line); }
+    if (frontMatter) { if (/^(---|\.\.\.)\s*$/.test(line)) frontMatter = false; return blank(line); }
     const match = line.match(/^ {0,3}(`{3,}|~{3,})(.*)$/);
     if (fence) {
       if (match && match[1][0] === fence.marker && match[1].length >= fence.length && !match[2].trim()) fence = null;
-      return blankLine(line);
+      return blank(line);
     }
-    if (match) { fence = { marker: match[1][0], length: match[1].length }; return blankLine(line); }
-    return line.replace(INLINE_CODE, blankLine);
+    if (match) { fence = { marker: match[1][0], length: match[1].length }; return blank(line); }
+    return line.replace(INLINE_CODE, blank);
   }).join("\n");
 }
 
-// The typst source with raw spans and line comments blanked.
+// The typst source with raw blocks, raw spans and line comments blanked. It runs
+// on the whole text so that multiline raw blocks are masked too.
 function typstMasked(text) {
-  return text.split("\n").map((line) => line.replace(TYPST_RAW, blankLine).replace(TYPST_COMMENT, blankLine)).join("\n");
+  return text.replace(TYPST_FENCED, blank).replace(INLINE_CODE, blank).replace(TYPST_COMMENT, blank);
 }
 
 /**
@@ -112,7 +115,7 @@ export function typstLabels(texts) {
   const labels = new Set();
   for (const [path, source] of Object.entries(texts || {})) {
     if (!/\.typ$/i.test(path)) continue;
-    for (const match of String(source ?? "").matchAll(LABEL)) labels.add(match[1]);
+    for (const match of typstMasked(String(source ?? "")).matchAll(LABEL)) labels.add(match[1]);
   }
   return labels;
 }

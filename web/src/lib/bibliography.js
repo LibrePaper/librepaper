@@ -184,10 +184,18 @@ export function replaceBibtexKey(entry, key) {
   return string(entry).replace(/^\s*(@[A-Za-z]+\s*\{\s*)[^,\s]+(\s*,)/, `$1${key}$2`).trim() + "\n";
 }
 
+// The latex source with every unescaped % comment blanked. Lengths and line
+// breaks are kept, so offsets found in the copy are valid in the source.
+function latexMasked(source) {
+  return source.replace(/(^|[^\\])%[^\n]*/g, (match, lead) => lead + " ".repeat(match.length - lead.length));
+}
+
 function bibliographyRegistrationLatex(source, path) {
   const name = path.replace(/\.bib$/i, "");
+  const masked = latexMasked(source);
   const usepackage = /\\usepackage(?:\[[^\]]*\])?\{([^}]*)\}/g;
-  for (const match of source.matchAll(usepackage)) {
+  const natbib = [...masked.matchAll(usepackage)].some((match) => match[1].split(",").map((item) => item.trim()).includes("natbib"));
+  for (const match of masked.matchAll(usepackage)) {
     if (!match[1].split(",").map((item) => item.trim()).includes("biblatex")) continue;
     const end = source.indexOf("\n", match.index);
     if (end === -1) return { from: source.length, to: source.length, insert: `\n\\addbibresource{${path}}` };
@@ -195,9 +203,9 @@ function bibliographyRegistrationLatex(source, path) {
     const eol = source[end - 1] === "\r" ? "\r\n" : "\n";
     return { from: end + 1, to: end + 1, insert: `\\addbibresource{${path}}${eol}` };
   }
-  const style = /\\bibliographystyle\b/.test(source) ? "" : "\\bibliographystyle{plain}\n";
+  const style = /\\bibliographystyle\b/.test(masked) ? "" : `\\bibliographystyle{${natbib ? "plainnat" : "plain"}}\n`;
   const block = `${style}\\bibliography{${name}}\n`;
-  const end = /\\end\{document\}/.exec(source);
+  const end = /\\end\{document\}/.exec(masked);
   if (end) {
     const at = source.lastIndexOf("\n", end.index) + 1;
     return { from: at, to: at, insert: block };
@@ -209,7 +217,7 @@ function bibliographyRegistrationLatex(source, path) {
 export function bibliographyRegistration(source, path = "references.bib", format = "markdown") {
   source = string(source);
   if (format === "latex" || format === "tex") {
-    if (selectedBibliographyFiles(source, format).length) return null;
+    if (selectedBibliographyFiles(latexMasked(source), format).length) return null;
     return bibliographyRegistrationLatex(source, path);
   }
   if (format === "typst") {
