@@ -18,8 +18,11 @@ use uuid::Uuid;
 /// refuses the next command rather than the next login.
 #[derive(Clone, Debug)]
 pub struct Authority {
-    /// A stable name for this writer, used as the peer key on the batches it
-    /// produces so an acknowledgement can find its way back.
+    /// A stable name for this writer. It is copied into the
+    /// `MutationAuthorization` built from this authority, and the
+    /// commit-boundary check does not read it. It is not the peer key on
+    /// batches: that key names the connection and reaches the sequencer
+    /// separately.
     pub principal_key: String,
     pub account_id: Option<Uuid>,
     pub link_hash: Option<Vec<u8>>,
@@ -34,22 +37,6 @@ pub struct Authority {
 }
 
 impl Authority {
-    /// An authority with no account and no link: the deployment itself,
-    /// writing source of its own (§7.3). It is refused by the authorization
-    /// check, which is correct -- nothing the deployment does on its own
-    /// behalf goes through a document command.
-    pub fn deployment(peer_key: impl Into<String>) -> Self {
-        Self {
-            principal_key: peer_key.into(),
-            account_id: None,
-            link_hash: None,
-            session_generation: None,
-            policy_edit: false,
-            policy_comment: false,
-            automation: false,
-        }
-    }
-
     pub fn mutation_authorization(&self) -> super::annotations::MutationAuthorization {
         super::annotations::MutationAuthorization {
             principal_key: self.principal_key.clone(),
