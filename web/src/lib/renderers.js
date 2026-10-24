@@ -1,6 +1,7 @@
 import { needsBibliography } from "./bibliography-engine.js";
 import { formatOf, previewFormatOf } from "./formats.js";
 import { textPage } from "./text-page.js";
+import { typstTree } from "./pandoc/typst.js";
 // The renderers, loaded into the editor.
 //
 // The modules come from the same pinned renderer releases as the native
@@ -251,50 +252,69 @@ export async function render(tree, title, { manual = false, format: requestedFor
   const quartoTree = format === "quarto" ? await quarto.virtualTree(tree, {
     expandIncludes: tree.texts || {},
   }) : tree;
-  const module = (format === "markdown" || format === "quarto") && needsBibliography({ source }) ? "citations" : format === "quarto" ? "markdown" : format;
   const capturedSettings = configuration && Object.prototype.hasOwnProperty.call(configuration, "settings")
     ? configuration.settings : quartoTree.settings;
+  // Markdown and Quarto reach a PDF through Pandoc and Typst: Pandoc writes
+  // a Typst source beside the document and the Typst renderer compiles it.
+  // Quarto's own diagnostics describe the HTML path and are not mapped here.
+  if ((format === "markdown" || format === "quarto") && buildPreferences?.output === "pdf") {
+    const typstSource = await typstTree(quartoTree, { from: "markdown" });
+    return renderTypst(typstSource, title, "pdf", capturedModules, capturedSettings);
+  }
+  const module = (format === "markdown" || format === "quarto") && needsBibliography({ source }) ? "citations" : format === "quarto" ? "markdown" : format;
+  if (format === "typst") return renderTypst(quartoTree, title, requestedFormat, capturedModules, capturedSettings);
   return request(module, "render", {
-    tree: {
-      main: quartoTree.main,
-      texts: { ...quartoTree.texts },
-      assets: { ...quartoTree.assets },
-      urls: { ...quartoTree.urls },
-      // Captured settings travel with historical trees. Current WASM modules
-      // may ignore this field, while release-aware adapters can resolve it
-      // without changing the worker ABI.
-      settings: capturedSettings ? { ...capturedSettings } : {},
-    },
+    tree: renderTree(quartoTree, capturedSettings),
     title,
-    // Typst has two compiler entry points. Keep the requested output explicit
-    // all the way through the worker so dependency retries use the same one.
-    format: format === "typst" ? requestedFormat : undefined,
   }, capturedModules).then((result) => {
     if (format === "quarto" && result) {
       return { ...result, diagnostics: quarto.mapQuartoDiagnostics(result.diagnostics || [], quartoTree) };
     }
-    // The binary worker returns `{pdf, diagnostics}` for Typst. Normalize the
-    // owned bytes here so Reader never decodes a PDF through TextDecoder.
-    if (format === "typst") {
-      const html = result?.html;
-      const pdf = result?.pdf;
-      if (requestedFormat === "html") {
-        return {
-          ...result,
-          html: html == null ? null : String(html),
-          pdf: null,
-          diagnostics: result?.diagnostics || [],
-        };
-      }
-      return {
-        ...result,
-        html: null,
-        pdf: pdf == null ? null : pdf instanceof Uint8Array ? pdf : new Uint8Array(pdf),
-        diagnostics: result?.diagnostics || [],
-      };
-    }
     return result;
   });
+}
+
+// Labels may be Svelte proxies, which cannot cross a worker boundary.
+// Send only the compiler inputs, copied into ordinary maps.
+function renderTree(tree, settings) {
+  return {
+    main: tree.main,
+    texts: { ...tree.texts },
+    assets: { ...tree.assets },
+    urls: { ...tree.urls },
+    // Captured settings travel with historical trees. Current WASM modules
+    // may ignore this field, while release-aware adapters can resolve it
+    // without changing the worker ABI.
+    settings: settings ? { ...settings } : {},
+  };
+}
+
+// Typst has two compiler entry points. Keep the requested output explicit
+// all the way through the worker so dependency retries use the same one.
+// The binary worker returns `{pdf, diagnostics}`; normalize the owned bytes
+// here so Reader never decodes a PDF through TextDecoder.
+async function renderTypst(tree, title, requestedFormat, moduleUrls, settings) {
+  const result = await request("typst", "render", {
+    tree: renderTree(tree, settings),
+    title,
+    format: requestedFormat,
+  }, moduleUrls);
+  if (requestedFormat === "html") {
+    const html = result?.html;
+    return {
+      ...result,
+      html: html == null ? null : String(html),
+      pdf: null,
+      diagnostics: result?.diagnostics || [],
+    };
+  }
+  const pdf = result?.pdf;
+  return {
+    ...result,
+    html: null,
+    pdf: pdf == null ? null : pdf instanceof Uint8Array ? pdf : new Uint8Array(pdf),
+    diagnostics: result?.diagnostics || [],
+  };
 }
 
 /// The page to show where a flow document would be when compilation fails.

@@ -1,0 +1,153 @@
+import assert from "node:assert/strict";
+import { EXPORT_TARGETS, exportAvailability, exportFile } from "../../src/lib/reader/exports.js";
+
+const all = (...formats) => (format) => formats.includes(format);
+
+// Availability: every format against every target.
+{
+  const rich = { pandoc: true, compiler: all("latex", "typst", "markdown", "quarto") };
+  for (const format of ["latex", "typst", "markdown", "quarto", "html"]) {
+    for (const target of EXPORT_TARGETS) {
+      assert.deepEqual(exportAvailability(format, target, rich), { ok: true }, `${format} to ${target}`);
+    }
+  }
+  for (const format of ["text", ""]) {
+    for (const target of EXPORT_TARGETS) assert.equal(exportAvailability(format, target, rich).ok, false);
+  }
+  const noPandoc = { pandoc: false, compiler: all("latex", "typst", "markdown", "quarto") };
+  assert.equal(exportAvailability("latex", "pdf", noPandoc).ok, true);
+  assert.equal(exportAvailability("latex", "docx", noPandoc).ok, false);
+  assert.equal(exportAvailability("typst", "html", noPandoc).ok, true);
+  assert.equal(exportAvailability("typst", "docx", noPandoc).ok, false);
+  assert.equal(exportAvailability("markdown", "html", noPandoc).ok, true);
+  assert.equal(exportAvailability("markdown", "pdf", noPandoc).ok, false);
+  assert.equal(exportAvailability("html", "html", noPandoc).ok, true);
+  assert.equal(exportAvailability("html", "pdf", noPandoc).ok, false);
+  assert.equal(exportAvailability("html", "docx", noPandoc).ok, false);
+  const noLatex = { pandoc: true, compiler: all("typst", "markdown", "quarto") };
+  for (const target of EXPORT_TARGETS) assert.equal(exportAvailability("latex", target, noLatex).ok, false);
+  assert.equal(exportAvailability("typst", "pdf", noLatex).ok, true);
+  // Markdown to PDF needs the Typst renderer, not the Markdown one.
+  const onlyMarkdown = { pandoc: true, compiler: all("markdown") };
+  assert.equal(exportAvailability("markdown", "pdf", onlyMarkdown).ok, false);
+  assert.equal(exportAvailability("markdown", "docx", onlyMarkdown).ok, true);
+  const reason = exportAvailability("typst", "pdf", { pandoc: true, compiler: all() }).reason;
+  assert.equal(typeof reason, "string");
+  assert.equal(exportAvailability("latex", "rtf", rich).ok, false);
+}
+
+const pdfBytes = Uint8Array.of(37, 80, 68, 70);
+const docxBytes = Uint8Array.of(80, 75);
+const makeRun = () => {
+  const calls = [];
+  const run = async (options, files) => {
+    calls.push({ options, files });
+    const output = options.to === "docx" ? docxBytes : new TextEncoder().encode("#set page()\n");
+    return { output, warnings: [], stderr: "" };
+  };
+  run.calls = calls;
+  return run;
+};
+const makeRender = (result) => {
+  const calls = [];
+  const render = async (tree, title, options) => {
+    calls.push({ tree, title, options });
+    return typeof result === "function" ? result(tree, options) : result;
+  };
+  render.calls = calls;
+  return render;
+};
+const base = { title: "Paper", slug: "paper", preview: null, previewCurrent: false };
+const mdTree = { main: "doc/main.md", texts: { "doc/main.md": "x" }, assets: { "doc/f.png": Uint8Array.of(1) } };
+
+// A current preview of the right kind is reused without rendering.
+{
+  const render = makeRender({});
+  const file = await exportFile({ ...base, target: "pdf", format: "typst", tree: mdTree, preview: { kind: "pdf", bytes: pdfBytes }, previewCurrent: true, render, run: makeRun() });
+  assert.equal(file.name, "paper.pdf");
+  assert.equal(file.blob.type, "application/pdf");
+  assert.equal(render.calls.length, 0);
+  const html = await exportFile({ ...base, target: "html", format: "markdown", tree: mdTree, preview: { kind: "html", html: "<p>x</p>" }, previewCurrent: true, render, run: makeRun() });
+  assert.equal(html.name, "paper.html");
+  assert.equal(await html.blob.text(), "<p>x</p>");
+  assert.equal(render.calls.length, 0);
+  // A stale preview is not reused.
+  const stale = makeRender({ pdf: pdfBytes, diagnostics: [] });
+  await exportFile({ ...base, target: "pdf", format: "latex", tree: mdTree, preview: { kind: "pdf", bytes: Uint8Array.of(9) }, previewCurrent: false, render: stale, run: makeRun() });
+  assert.equal(stale.calls.length, 1);
+}
+
+// PDF routes.
+{
+  const render = makeRender({ pdf: pdfBytes, diagnostics: [] });
+  await exportFile({ ...base, target: "pdf", format: "latex", tree: mdTree, render, run: makeRun() });
+  assert.deepEqual(render.calls[0].options, { format: "pdf" });
+  await exportFile({ ...base, target: "pdf", format: "quarto", tree: mdTree, render, run: makeRun() });
+  assert.deepEqual(render.calls[1].options, { format: "pdf", buildPreferences: { selection: "tool", backend: "browser", tool: "markdown", output: "pdf" } });
+  // Authored HTML goes through Pandoc to Typst, and the Typst tree is rendered.
+  const run = makeRun();
+  const htmlTree = { main: "site/index.html", texts: { "site/index.html": "<p>x</p>" }, assets: {} };
+  const file = await exportFile({ ...base, target: "pdf", format: "html", tree: htmlTree, render, run });
+  assert.equal(run.calls[0].options.from, "html");
+  assert.equal(render.calls[2].tree.main, "site/index.pandoc.typ");
+  assert.equal(file.name, "paper.pdf");
+}
+
+// HTML routes.
+{
+  const render = makeRender({ html: "<p>made</p>", diagnostics: [] });
+  const typst = await exportFile({ ...base, target: "html", format: "typst", tree: mdTree, render, run: makeRun() });
+  assert.deepEqual(render.calls[0].options, { format: "html" });
+  assert.equal(await typst.blob.text(), "<p>made</p>");
+  await exportFile({ ...base, target: "html", format: "markdown", tree: mdTree, render, run: makeRun() });
+  assert.equal(render.calls[1].options.buildPreferences.output, "html");
+  // Authored HTML is exported verbatim, with nothing rendered.
+  const untouched = makeRender({});
+  const authored = await exportFile({
+    ...base, target: "html", format: "html",
+    tree: { main: "a.html", texts: { "a.html": "<h1>source</h1>" }, assets: {} },
+    preview: { kind: "html", html: "<p>painted</p>" }, previewCurrent: true, render: untouched, run: makeRun(),
+  });
+  assert.equal(await authored.blob.text(), "<h1>source</h1>");
+  assert.equal(untouched.calls.length, 0);
+}
+
+// DOCX: math spans are rewritten and the HTML is written beside main.
+{
+  const html = '<p>a <span data-math-style="inline">x &lt; y</span></p><span data-math-style="display">\\frac{1}{2}</span>';
+  const render = makeRender({ html, diagnostics: [] });
+  const run = makeRun();
+  const file = await exportFile({ ...base, target: "docx", format: "markdown", tree: mdTree, render, run });
+  assert.equal(file.name, "paper.docx");
+  assert.match(file.blob.type, /wordprocessingml/);
+  const { options, files } = run.calls[0];
+  assert.equal(options.from, "html");
+  assert.equal(options.to, "docx");
+  assert.deepEqual(options["input-files"], ["doc/main.pandoc.html"]);
+  assert.deepEqual(options["resource-path"], ["doc"]);
+  assert.equal(files["doc/main.pandoc.html"],
+    '<p>a <span class="math inline">\\(x &lt; y\\)</span></p><span class="math display">\\[\\frac{1}{2}\\]</span>');
+  assert.equal(files["doc/main.md"], "x");
+  assert.deepEqual(files["doc/f.png"], Uint8Array.of(1));
+  // Authored HTML is converted from its own source.
+  const authoredRun = makeRun();
+  await exportFile({ ...base, target: "docx", format: "html", tree: { main: "a.html", texts: { "a.html": "<p>hi</p>" }, assets: {} }, render: makeRender({}), run: authoredRun });
+  assert.equal(authoredRun.calls[0].files["a.pandoc.html"], "<p>hi</p>");
+}
+
+// A failed render rejects with a sentence.
+{
+  const render = makeRender({ html: null, pdf: null, diagnostics: [{ severity: "error", message: "unknown variable" }, { message: "later" }] });
+  await assert.rejects(
+    exportFile({ ...base, target: "pdf", format: "typst", tree: mdTree, render, run: makeRun() }),
+    { message: "The PDF could not be made: unknown variable" },
+  );
+  await assert.rejects(
+    exportFile({ ...base, target: "html", format: "latex", tree: mdTree, render, run: makeRun() }),
+    /^Error: The HTML page could not be made: unknown variable$/,
+  );
+  await assert.rejects(
+    exportFile({ ...base, target: "pdf", format: "typst", tree: mdTree, render: makeRender({ pdf: null }), run: makeRun() }),
+    { message: "The PDF could not be made." },
+  );
+}
