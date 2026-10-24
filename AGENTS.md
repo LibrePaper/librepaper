@@ -17,6 +17,11 @@ The main agent plans, delegates, reviews and verifies. It does not write the fir
 5. **Delegate fixes.** Problems found in review or checks go back to cheap subagents with a specific brief, again in parallel where possible. Repeat review and checks.
 6. **Fix it yourself only at the very end.** The main agent edits code directly only for the last small corrections, once delegation has stopped paying off.
 
+
+## Edge cases and over-engineering
+
+Before adding complexity for a speculative or vanishingly unlikely race or security edge case, explain the concrete failure mode, likelihood, and complexity cost to the user and get their buy-in. Do not silently expand scope for theoretical robustness.
+
 ## Subagents do not run tests or checks
 
 Subagents must not run tests, builds, linters, type checkers, formatters that rewrite other files, or any other verification command. They write code and report what they changed. Say so explicitly in every subagent brief. All verification belongs to the main agent after review.
