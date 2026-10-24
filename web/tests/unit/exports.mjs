@@ -126,7 +126,8 @@ const mdTree = { main: "doc/main.md", texts: { "doc/main.md": "x" }, assets: { "
   assert.deepEqual(options["input-files"], ["doc/main.pandoc.html"]);
   assert.deepEqual(options["resource-path"], ["doc"]);
   assert.equal(files["doc/main.pandoc.html"],
-    '<p>a <span class="math inline">\\(x &lt; y\\)</span></p><span class="math display">\\[\\frac{1}{2}\\]</span>');
+    '<p>a <math xmlns="http://www.w3.org/1998/Math/MathML"><semantics><mrow></mrow><annotation encoding="application/x-tex">x &lt; y</annotation></semantics></math></p>' +
+    '<math xmlns="http://www.w3.org/1998/Math/MathML" display="block"><semantics><mrow></mrow><annotation encoding="application/x-tex">\\frac{1}{2}</annotation></semantics></math>');
   assert.equal(files["doc/main.md"], "x");
   assert.deepEqual(files["doc/f.png"], Uint8Array.of(1));
   // Authored HTML is converted from its own source.

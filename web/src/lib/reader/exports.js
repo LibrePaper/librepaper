@@ -24,10 +24,10 @@ const NAMES = { pdf: "PDF", html: "HTML page", docx: "Word file" };
 const MARKDOWN_PDF = { selection: "tool", backend: "browser", tool: "markdown", output: "pdf" };
 const MARKDOWN_HTML = { selection: "tool", backend: "browser", tool: "markdown", output: "html" };
 
-/// How many executable code cells the main file holds, which a browser export
-/// of a Quarto or Markdown document leaves unrun.
+/// How many executable code cells a Quarto main file holds, which a browser
+/// export leaves unrun.
 export function unrunCells(format, tree) {
-  if (format !== "quarto" && format !== "markdown") return 0;
+  if (format !== "quarto") return 0;
   const source = tree.texts?.[tree.main];
   if (typeof source !== "string") return 0;
   return parseQuarto(source, { path: tree.main }).cells.length;
@@ -71,15 +71,15 @@ function failure(result, target) {
   return new Error(message ? `The ${NAMES[target]} could not be made: ${message}` : `The ${NAMES[target]} could not be made.`);
 }
 
-/// Pandoc reads inline and display math from `math` spans carrying the TeX
-/// between `\(` `\)` or `\[` `\]`; the Markdown renderer marks it with data
-/// attributes instead.
+/// Pandoc's HTML reader takes equations only from MathML, and from a MathML
+/// element it reads the TeX annotation. The Markdown renderer carries math as
+/// TeX in data-attributed spans, so each becomes a MathML shell around its TeX,
+/// which Pandoc writes into Word as a native equation.
 export function pandocMath(html) {
   return html.replace(
     /<span\b[^>]*?\bdata-math-style="(inline|display)"[^>]*>([\s\S]*?)<\/span>/g,
-    (_whole, style, tex) => (style === "inline"
-      ? `<span class="math inline">\\(${tex}\\)</span>`
-      : `<span class="math display">\\[${tex}\\]</span>`),
+    (_whole, style, tex) => `<math xmlns="http://www.w3.org/1998/Math/MathML"${style === "display" ? ' display="block"' : ""}>` +
+      `<semantics><mrow></mrow><annotation encoding="application/x-tex">${tex}</annotation></semantics></math>`,
   );
 }
 
@@ -98,8 +98,8 @@ export function pandocMath(html) {
 export async function exportFile({ target, format, tree, title, slug, preview, previewCurrent, render, run, localQuarto = null }) {
   const reused = previewCurrent && preview?.kind === target ? preview : null;
 
-  // The desktop app builds the target itself, with no Pandoc step. A PDF the
-  // frame already holds is its own build and is reused.
+  // The desktop app builds the target itself, with no Pandoc step. The frame
+  // is not reused: its page may predate Run code and lack the cells' results.
   async function localBuild() {
     const { profile, parameters } = localQuarto;
     const result = await render(tree, title, {
@@ -115,7 +115,6 @@ export async function exportFile({ target, format, tree, title, slug, preview, p
   }
 
   async function localFile() {
-    if (reused && target === "pdf") return { blob: new Blob([reused.bytes], { type: "application/pdf" }), name: `${slug}.pdf` };
     const result = await localBuild();
     if (target === "pdf") {
       if (!result?.pdf) throw failure(result, target);
@@ -123,7 +122,7 @@ export async function exportFile({ target, format, tree, title, slug, preview, p
     }
     if (target === "html") {
       if (typeof result?.html !== "string") throw failure(result, target);
-      return { blob: new Blob([inlineBlobUrls(result.html)], { type: "text/html" }), name: `${slug}.html` };
+      return { blob: new Blob([await inlineBlobUrls(result.html)], { type: "text/html" }), name: `${slug}.html` };
     }
     if (result?.artifactKind !== "docx" || !result.artifact) throw failure(result, target);
     return docxFile(result.artifact, slug);
