@@ -524,7 +524,7 @@ impl Worker {
     pub async fn run(mut self) {
         self.handle.ask(Task::Scan(PendingWorkCursor::default()));
         self.handle.ask(Task::SweepOrphans);
-        // Scan work stays local to the worker. A page is at most 3 * PAGE
+        // Scan work stays local to the worker. A page is at most 4 * PAGE
         // tasks, and its continuation is one more task, so startup cannot
         // fill the channel or lose its cursor when live wake-ups saturate it.
         let mut local = VecDeque::new();
