@@ -27,6 +27,7 @@ use tauri::{
 use tauri_plugin_clipboard_manager::ClipboardExt;
 use tauri_plugin_deep_link::DeepLinkExt;
 use tauri_plugin_dialog::{DialogExt, MessageDialogButtons, MessageDialogKind};
+use tauri_plugin_notification::NotificationExt;
 use tauri_plugin_opener::OpenerExt;
 use url::Url;
 
@@ -69,7 +70,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_window_state::Builder::default().build())
         .plugin(tauri_plugin_opener::init())
-        .plugin(tauri_plugin_clipboard_manager::init());
+        .plugin(tauri_plugin_clipboard_manager::init())
+        .plugin(tauri_plugin_notification::init());
     #[cfg(any(target_os = "macos", windows))]
     let builder = builder.plugin(tauri_plugin_updater::Builder::new().build());
     #[cfg(target_os = "macos")]
@@ -712,6 +714,33 @@ fn serve(app: &AppHandle, label: String, request: Request<Vec<u8>>, responder: U
             app.run_on_main_thread(move || main.state::<theme::Theme>().set(&main, choice))
         {
             shell_log::write(&format!("could not set the theme: {err}"));
+        }
+        return responder.respond(with_origin(no_content(), &origin));
+    }
+    // A system notification from the page, such as automatic Git sync pausing.
+    if request.method() == Method::POST && request.uri().path() == "/shell/notify" {
+        let payload = serde_json::from_slice::<serde_json::Value>(request.body()).ok();
+        let fields = payload
+            .as_ref()
+            .and_then(|body| Some((body["title"].as_str()?, body["body"].as_str()?)));
+        let valid = fields.filter(|(title, text)| {
+            !title.trim().is_empty() && title.chars().count() <= 120 && text.chars().count() <= 400
+        });
+        let Some((title, text)) = valid else {
+            let res = json_error(
+                StatusCode::BAD_REQUEST,
+                "A notification needs a title of at most 120 characters and a body of at most 400.",
+            );
+            return responder.respond(with_origin(res, &origin));
+        };
+        let (title, text) = (title.to_string(), text.to_string());
+        let main = app.clone();
+        if let Err(err) = app.run_on_main_thread(move || {
+            if let Err(err) = main.notification().builder().title(title).body(text).show() {
+                shell_log::write(&format!("could not show a notification: {err}"));
+            }
+        }) {
+            shell_log::write(&format!("could not show a notification: {err}"));
         }
         return responder.respond(with_origin(no_content(), &origin));
     }

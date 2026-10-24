@@ -112,6 +112,11 @@ export async function shellAction(name, body) {
   throw new Error(message || `The desktop app could not do that (${response.status}).`);
 }
 
+// Shows a system notification from the desktop app. The browser has none.
+export async function notify(title, body) {
+  await shellAction("notify", { title, body });
+}
+
 // The desktop app's own part of the diagnostics report, as text.
 export async function desktopReport() {
   const shell = desktop();
