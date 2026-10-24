@@ -34,6 +34,9 @@ export function createGitAuto(input) {
   // that awaited across such a change knows not to start sync afterwards.
   let generation = 0;
   let disposed = false;
+  // The connection the running scheduler was enabled for.
+  let boundId = "";
+  let retryTimer = null;
 
   function stored() {
     try {
@@ -115,11 +118,25 @@ export function createGitAuto(input) {
     };
   }
 
-  function begin() {
+  // Another window of this project changed the switch, so this one follows it.
+  function onStorage(event) {
+    if (event.key === storageKey(input().slug) && event.newValue !== boundId) end();
+  }
+
+  function begin(id) {
+    boundId = id;
     scheduler = createAutoSync({
       ops: {
         status: async () => {
           const s = await status(ctx());
+          const link = s.link;
+          const live = link && s.git?.connected && s.git.connection_id === link.connection_id;
+          if (!live || link.connection_id !== boundId) {
+            // The connection this switch was enabled for is gone or replaced.
+            store("");
+            end();
+            return { conflict: null, pending: [] };
+          }
           return { conflict: s.conflict, pending: s.pending || [] };
         },
         recover: () => recover(ctx()),
@@ -132,25 +149,60 @@ export function createGitAuto(input) {
     unsubscribe = watch(session);
     window.addEventListener("focus", poke);
     window.addEventListener("online", poke);
+    window.addEventListener("storage", onStorage);
     document.addEventListener("visibilitychange", onVisible);
     scheduler.start();
     state.enabled = true;
   }
 
+  function cancelRetry() {
+    clearTimeout(retryTimer);
+    retryTimer = null;
+    window.removeEventListener("online", retryStartup);
+  }
+
+  function retryStartup() {
+    cancelRetry();
+    startup();
+  }
+
   function end() {
     generation += 1;
+    cancelRetry();
+    boundId = "";
     scheduler?.stop();
     scheduler = null;
     unsubscribe?.();
     unsubscribe = null;
     window.removeEventListener("focus", poke);
     window.removeEventListener("online", poke);
+    window.removeEventListener("storage", onStorage);
     document.removeEventListener("visibilitychange", onVisible);
     state.enabled = false;
     state.mode = "off";
     state.kind = "";
     state.reason = "";
     state.nextAt = null;
+  }
+
+  // Starts sync from the remembered switch when this computer is still connected.
+  async function startup() {
+    if (scheduler || disposed) return;
+    const id = stored();
+    if (!state.available || !id) return;
+    cancelRetry();
+    const seen = generation;
+    try {
+      const link = await connection();
+      if (scheduler || disposed || seen !== generation) return;
+      if (link && link.connection_id === id) begin(id);
+      else store("");
+    } catch {
+      // The check failed, so the switch stays and the check runs again later.
+      if (disposed || seen !== generation) return;
+      retryTimer = setTimeout(retryStartup, 60000);
+      window.addEventListener("online", retryStartup);
+    }
   }
 
   async function attach(next) {
@@ -161,22 +213,13 @@ export function createGitAuto(input) {
       unsubscribe = watch(session);
       return;
     }
-    const id = stored();
-    if (!state.available || !id) return;
-    const seen = generation;
-    try {
-      const link = await connection();
-      if (scheduler || disposed || seen !== generation) return;
-      if (link && link.connection_id === id) begin();
-      else store("");
-    } catch {
-      // Automatic sync stays off.
-    }
+    await startup();
   }
 
   async function setEnabled(on) {
     if (disposed) return false;
     generation += 1;
+    cancelRetry();
     const seen = generation;
     state.error = "";
     if (!on) {
@@ -196,7 +239,7 @@ export function createGitAuto(input) {
       return false;
     }
     store(link.connection_id);
-    if (!scheduler) begin();
+    if (!scheduler) begin(link.connection_id);
     return true;
   }
 
