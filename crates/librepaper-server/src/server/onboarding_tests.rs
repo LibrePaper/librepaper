@@ -30,10 +30,9 @@ async fn a_new_account_receives_one_project_holding_every_tutorial() {
         DocumentInput {
             slug: "onboarding-fixture".into(),
             title: "Fixture".into(),
-            source: "# Fixture\n".into(),
             source_format: "markdown".into(),
         },
-        Vec::new(),
+        vec![("fixture.md".into(), "# Fixture\n".as_bytes().to_vec())],
         librepaper_base::auth::Policy::allowing("github", &["*"]),
         librepaper_base::auth::Policy::anonymous(),
     )

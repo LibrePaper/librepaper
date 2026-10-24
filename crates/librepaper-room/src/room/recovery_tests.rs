@@ -870,10 +870,9 @@ async fn deployment_with_document(slug: &str) -> Option<Deployment> {
             DocumentInput {
                 slug: slug.into(),
                 title: "A Paper".into(),
-                source: PAPER.into(),
                 source_format: "markdown".into(),
             },
-            Vec::new(),
+            vec![(MAIN.into(), PAPER.as_bytes().to_vec())],
             actor,
         )
         .await

@@ -45,10 +45,9 @@ async fn deployment(slug: &str) -> Option<super::http_test_support::Deployment> 
         DocumentInput {
             slug: slug.into(),
             title: "Figure Test".into(),
-            source: PAPER.into(),
             source_format: "markdown".into(),
         },
-        vec![("figure-a.png".into(), figure(1))],
+        vec![("paper.md".into(), PAPER.as_bytes().to_vec()), ("figure-a.png".into(), figure(1))],
         librepaper_base::auth::Policy::allowing("github", &["owner"]),
         librepaper_base::auth::Policy::default(),
     )
@@ -129,10 +128,9 @@ async fn a_trim_deletes_every_version_and_every_unused_figure() {
             DocumentInput {
                 slug: deployment.slug.clone(),
                 title: "Figure Test".into(),
-                source: PAPER.into(),
                 source_format: "markdown".into(),
             },
-            vec![("figure-b.png".into(), figure(2))],
+            vec![("paper.md".into(), PAPER.as_bytes().to_vec()), ("figure-b.png".into(), figure(2))],
             actor,
         )
         .await
@@ -530,10 +528,9 @@ async fn essay_deployment(slug: &str) -> Option<super::http_test_support::Deploy
         DocumentInput {
             slug: slug.into(),
             title: "A Paper".into(),
-            source: ESSAY.into(),
             source_format: "markdown".into(),
         },
-        Vec::new(),
+        vec![("paper.md".into(), ESSAY.as_bytes().to_vec())],
         librepaper_base::auth::Policy::allowing("github", &["owner"]),
         librepaper_base::auth::Policy::allowing("github", &["*"]),
     )

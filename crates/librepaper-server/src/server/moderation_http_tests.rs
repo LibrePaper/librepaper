@@ -180,10 +180,9 @@ async fn deployment_mode_with_policy(
             DocumentInput {
                 slug: slug.into(),
                 title: "Moderation fixture".into(),
-                source: SOURCE.into(),
                 source_format: "markdown".into(),
             },
-            vec![("figure.png".into(), asset_bytes)],
+            vec![("paper.md".into(), SOURCE.as_bytes().to_vec()), ("figure.png".into(), asset_bytes)],
             actor.clone(),
         )
         .await

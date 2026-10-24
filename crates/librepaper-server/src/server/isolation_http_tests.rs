@@ -83,10 +83,9 @@ async fn deployment(slug: &str) -> Option<Deployment> {
             DocumentInput {
                 slug: slug.into(),
                 title: "Isolation check".into(),
-                source: SOURCE.into(),
                 source_format: "markdown".into(),
             },
-            Vec::new(),
+            vec![("paper.md".into(), SOURCE.as_bytes().to_vec())],
             Authority {
                 account_id: Some(account.id),
                 principal_key: "isolation-owner".into(),

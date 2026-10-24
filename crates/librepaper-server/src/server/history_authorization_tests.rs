@@ -46,10 +46,9 @@ async fn restore_rechecks_editor_access_after_the_body_is_read() {
         DocumentInput {
             slug: "history-restore-auth-revoked".into(),
             title: "A Paper".into(),
-            source: SOURCE.into(),
             source_format: "markdown".into(),
         },
-        Vec::new(),
+        vec![("paper.md".into(), SOURCE.as_bytes().to_vec())],
         librepaper_base::auth::Policy::allowing("github", &["owner"]),
         librepaper_base::auth::Policy::default(),
     )
@@ -102,10 +101,9 @@ async fn trim_rechecks_editor_access_after_the_body_is_read() {
         DocumentInput {
             slug: "history-trim-auth-revoked".into(),
             title: "A Paper".into(),
-            source: SOURCE.into(),
             source_format: "markdown".into(),
         },
-        Vec::new(),
+        vec![("paper.md".into(), SOURCE.as_bytes().to_vec())],
         librepaper_base::auth::Policy::allowing("github", &["owner"]),
         librepaper_base::auth::Policy::default(),
     )
@@ -155,10 +153,9 @@ async fn restore_and_trim_reject_a_caller_without_editor_access() {
             DocumentInput {
                 slug: slug.into(),
                 title: "A Paper".into(),
-                source: SOURCE.into(),
                 source_format: "markdown".into(),
             },
-            Vec::new(),
+            vec![("paper.md".into(), SOURCE.as_bytes().to_vec())],
             librepaper_base::auth::Policy::default(),
             librepaper_base::auth::Policy::default(),
         )

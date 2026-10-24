@@ -25,10 +25,9 @@ async fn visitor_response(
         DocumentInput {
             slug: SLUG.into(),
             title: "Visitor cookie fixture".into(),
-            source: "# Visitor cookie fixture\n".into(),
             source_format: "markdown".into(),
         },
-        vec![],
+        vec![("paper.md".into(), "# Visitor cookie fixture\n".as_bytes().to_vec())],
         librepaper_base::auth::Policy::allowing("github", &["*"]),
         commenters,
     )

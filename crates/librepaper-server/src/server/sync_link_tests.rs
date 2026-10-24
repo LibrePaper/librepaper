@@ -21,10 +21,9 @@ async fn deployment(slug: &str) -> Option<Deployment> {
         DocumentInput {
             slug: slug.into(),
             title: "Sync".into(),
-            source: SOURCE.into(),
             source_format: "markdown".into(),
         },
-        Vec::new(),
+        vec![("paper.md".into(), SOURCE.as_bytes().to_vec())],
         librepaper_base::auth::Policy::allowing("github", &["owner"]),
         librepaper_base::auth::Policy::default(),
     )
@@ -180,6 +179,8 @@ async fn source_of(d: &Deployment) -> String {
         .source()
         .await
         .unwrap()
+        .map(|(_, text)| text)
+        .unwrap_or_default()
 }
 
 async fn has_file(d: &Deployment, path: &str) -> bool {
