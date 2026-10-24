@@ -216,7 +216,10 @@ mod proxy_tests {
     fn a_return_path_drops_a_link_key_from_its_path() {
         assert_eq!(local_path("/docs/x/abc"), "/docs/x");
         assert_eq!(local_path("/docs/x/abc?file=a.md"), "/docs/x?file=a.md");
-        assert_eq!(local_path("/docs/x/abc#settings=local"), "/docs/x#settings=local");
+        assert_eq!(
+            local_path("/docs/x/abc#settings=local"),
+            "/docs/x#settings=local"
+        );
         assert_eq!(local_path("/docs/x/"), "/docs/x");
     }
 

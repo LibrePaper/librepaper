@@ -111,10 +111,7 @@ impl DocumentLink {
                 [prefix, slug] if matches!(*prefix, "docs" | "raw" | "document") => (*slug, None),
                 ["docs", slug, key] if !key.is_empty() => (
                     *slug,
-                    Some(
-                        decoded_key(key)
-                            .ok_or("the document link key is not valid UTF-8")?,
-                    ),
+                    Some(decoded_key(key).ok_or("the document link key is not valid UTF-8")?),
                 ),
                 [slug] => (*slug, None),
                 _ => return Err("the document link must identify one document".into()),
@@ -583,9 +580,11 @@ mod tests {
 
     #[test]
     fn path_key_wins_over_fragment_key() {
-        let link =
-            DocumentLink::parse("https://docs.example/docs/abc/from-path#k=from-fragment", "")
-                .unwrap();
+        let link = DocumentLink::parse(
+            "https://docs.example/docs/abc/from-path#k=from-fragment",
+            "",
+        )
+        .unwrap();
         assert_eq!(link.key, "from-path");
     }
 
