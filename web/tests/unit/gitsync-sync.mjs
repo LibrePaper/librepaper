@@ -1399,6 +1399,41 @@ async function connected(files, folder = "") {
   assert.ok(!repo.refs.has("op-big/base"));
 }
 
+// recover says when only a fresh pull can settle what is left.
+{
+  const { repo, api, ctx } = await connected({ "intro.qmd": "one\n" });
+  await ctx.git.journalUpsert({
+    id: "op-big",
+    kind: "pull",
+    phase: "sent",
+    revision: 1,
+    connection_id: api.state.link.connection_id,
+    checkpoint: null,
+    body: null,
+  });
+  const alone = await sync.recover(ctx);
+  assert.deepEqual(alone.pending, ["op-big"]);
+  assert.equal(alone.needsPull, true);
+
+  await ctx.git.journalUpsert({
+    id: "op-push",
+    kind: "push",
+    phase: "prepared",
+    commit: repo.head,
+    parent: repo.head,
+    paths: [],
+    connection_id: api.state.link.connection_id,
+  });
+  const fetch = ctx.git.fetch;
+  ctx.git.fetch = async () => {
+    throw new TypeError("network error");
+  };
+  const mixed = await sync.recover(ctx);
+  ctx.git.fetch = fetch;
+  assert.deepEqual([...mixed.pending].sort(), ["op-big", "op-push"]);
+  assert.equal(mixed.needsPull, false);
+}
+
 // A resolution whose answer was lost, then applied on the server, finishes its
 // conflict session when recovery sends it again.
 {

@@ -80,13 +80,17 @@ async function guarded(work) {
 
 // The manual Git panel and automatic sync share one journal, one project and
 // one shared record. One operation at a time per project keeps recovery from
-// settling a journal entry whose push or pull is still in flight. The lock is
-// not reentrant: a function that runs under it must not call another one.
+// settling a journal entry whose push or pull is still in flight. Where the Web
+// Locks API exists the lock spans every window of the same origin, so two
+// windows on one project take turns. Elsewhere it covers this window only. The
+// lock is not reentrant: a function that runs under it must not call another one.
 const tails = new Map();
 
 /// Runs `work` once the earlier operations on the same project have finished,
 /// whether they succeeded or not, and releases the lock even when `work` throws.
 async function exclusive(ctx, work) {
+  const locks = globalThis.navigator?.locks;
+  if (locks?.request) return locks.request(`librepaper:git:${ctx.slug}`, work);
   const previous = tails.get(ctx.slug) || Promise.resolve();
   const turn = previous.catch(() => {}).then(work);
   const tail = turn.catch(() => {});
@@ -1478,13 +1482,16 @@ async function safeJournal(ctx) {
 
 /// Reconciles the journal after a restart. A pull that was sent is sent again
 /// with the same operation id; a push that was prepared is checked against the
-/// remote. Returns `{ recovered, pending, conflict }`: the ids settled, the
-/// entries that could not be settled yet, and a saved conflict session.
+/// remote. Returns `{ recovered, pending, reasons, conflict, needsPull }`: the
+/// ids settled, the entries that could not be settled yet, why, a saved
+/// conflict session, and whether only a fresh pull can settle what is left
+/// (every pending entry is an interrupted pull too large to send again).
 export async function recover(ctx) {
   return exclusive(ctx, () => guarded(async () => {
     const recovered = [];
     const pending = [];
     const reasons = {};
+    const oversized = new Set();
     let conflict = null;
     // Only this connection's conflict is offered; another connection's stays
     // in the journal untouched.
@@ -1510,6 +1517,7 @@ export async function recover(ctx) {
         if (entry.kind === "pull" && entry.phase === "sent" && !entry.body) {
           // The request was too large to journal, so it cannot be sent again
           // and nobody knows whether it applied. The next pull settles it.
+          oversized.add(entry.id);
           reasons[entry.id] = "run Pull again to finish an interrupted pull";
           throw new Error(reasons[entry.id]);
         } else if (entry.phase === "planned" || entry.phase === "done") {
@@ -1550,6 +1558,7 @@ export async function recover(ctx) {
         pending.push(entry.id);
       }
     }
-    return { recovered, pending, reasons, conflict };
+    const needsPull = pending.length > 0 && pending.every((id) => oversized.has(id));
+    return { recovered, pending, reasons, conflict, needsPull };
   }));
 }
