@@ -44,7 +44,9 @@ impl Server {
         };
         let input: Input = match serde_json::from_slice(&bytes) {
             Ok(input) => input,
-            Err(_) => return write_json(400, &json!({"error":"tree_sha256 and path are required"})),
+            Err(_) => {
+                return write_json(400, &json!({"error":"tree_sha256 and path are required"}))
+            }
         };
         if !is_sha(&input.tree_sha256) {
             return write_json(400, &json!({"error":"invalid tree_sha256"}));

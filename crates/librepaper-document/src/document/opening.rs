@@ -40,9 +40,7 @@ pub fn renders_alone(
 ) -> bool {
     let included = includers.get(path).is_some_and(|from| !from.is_empty());
     match document_format(path) {
-        Some("latex") => texts
-            .get(path)
-            .is_some_and(|body| has_document_class(body)),
+        Some("latex") => texts.get(path).is_some_and(|body| has_document_class(body)),
         Some("typst") => !included,
         Some("quarto") | Some("markdown") => !base_name(path).starts_with('_') && !included,
         Some("html") => true,

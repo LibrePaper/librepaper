@@ -787,7 +787,10 @@ mod writer_readiness_tests {
                 title: "Writer readiness".into(),
                 source_format: "markdown".into(),
             },
-            vec![("paper.md".into(), "# Writer readiness\n".as_bytes().to_vec())],
+            vec![(
+                "paper.md".into(),
+                "# Writer readiness\n".as_bytes().to_vec(),
+            )],
             librepaper_base::auth::Policy::allowing("github", &["owner"]),
             librepaper_base::auth::Policy::default(),
         )

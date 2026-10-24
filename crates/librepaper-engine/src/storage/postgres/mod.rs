@@ -1503,7 +1503,12 @@ mod tests {
         assert_eq!(sequence, 1);
         assert_eq!(catalog.log_sequence(first.id).await.unwrap(), 1);
         assert_eq!(
-            catalog.document(first.id).await.unwrap().unwrap().source_format,
+            catalog
+                .document(first.id)
+                .await
+                .unwrap()
+                .unwrap()
+                .source_format,
             "quarto",
             "a flush that names an identity stamps it on the document row"
         );

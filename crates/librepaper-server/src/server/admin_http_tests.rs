@@ -138,7 +138,10 @@ async fn fixture_full(
             title: "Admin origin fixture".into(),
             source_format: "markdown".into(),
         },
-        vec![("paper.md".into(), "# Admin origin fixture\n".as_bytes().to_vec())],
+        vec![(
+            "paper.md".into(),
+            "# Admin origin fixture\n".as_bytes().to_vec(),
+        )],
         librepaper_base::auth::Policy::allowing("github", &["owner"]),
         librepaper_base::auth::Policy::default(),
     )

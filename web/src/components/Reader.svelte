@@ -93,7 +93,7 @@
   import { extractOutline } from "../lib/outline.js";
   import { createFramePreview } from "../lib/reader/frame-preview.js";
   import { rememberPreview, lastPreview, flushAll } from "../lib/reader/preview-cache.js";
-  import { previewTarget, rendersAlone, openingFile } from "../lib/opening.js";
+  import { previewTarget, rendersAlone, openingFile, includersOf } from "../lib/opening.js";
   import { createFrameOverlays } from "../lib/reader/frame-overlays.js";
   import { createRenderDiagnostics } from "../lib/reader/render-diagnostics.js";
   import { createRenderCoordinator } from "../lib/reader/render-coordinator.js";
@@ -3141,7 +3141,8 @@
     // file the project opens on.
     const open = (session ? openTextPath : "") || openingFile(texts) || "";
     const target = previewTarget({ open, locked: lockedPath, texts });
-    const alone = Object.keys(texts).filter((path) => rendersAlone(path, texts)).sort();
+    const includers = includersOf(texts);
+    const alone = Object.keys(texts).filter((path) => rendersAlone(path, texts, includers)).sort();
     if (alone.length !== aloneSet.size || alone.some((path) => !aloneSet.has(path))) aloneSet = new Set(alone);
     if (target.reason !== previewReason) previewReason = target.reason;
     if (target.includers.join("\n") !== previewIncluders.join("\n")) previewIncluders = target.includers;

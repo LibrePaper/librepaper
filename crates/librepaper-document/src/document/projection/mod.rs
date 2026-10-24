@@ -92,9 +92,9 @@ impl Diagnostic {
 
     fn sort_key(&self) -> (&'static str, String, String) {
         let (first, second) = match self {
-            Self::NotAText { id }
-            | Self::Unnamed { id }
-            | Self::Dangling { id } => (id.clone(), String::new()),
+            Self::NotAText { id } | Self::Unnamed { id } | Self::Dangling { id } => {
+                (id.clone(), String::new())
+            }
             Self::NotADigest { path } => (path.clone(), String::new()),
             Self::InvalidPath { id, path, .. } => (id.clone(), path.clone()),
             Self::Moved { id, from, .. } => (id.clone(), from.clone()),

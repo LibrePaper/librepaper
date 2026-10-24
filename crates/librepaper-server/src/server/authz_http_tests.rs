@@ -38,7 +38,10 @@ async fn deployment(slug: &str) -> Option<Deployment> {
             title: "Authz Test".into(),
             source_format: "markdown".into(),
         },
-        vec![("paper.md".into(), PAPER.as_bytes().to_vec()), ("figure-a.png".into(), figure(1))],
+        vec![
+            ("paper.md".into(), PAPER.as_bytes().to_vec()),
+            ("figure-a.png".into(), figure(1)),
+        ],
         librepaper_base::auth::Policy::allowing("github", &["owner"]),
         librepaper_base::auth::Policy::default(),
     )

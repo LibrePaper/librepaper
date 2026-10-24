@@ -27,7 +27,10 @@ async fn visitor_response(
             title: "Visitor cookie fixture".into(),
             source_format: "markdown".into(),
         },
-        vec![("paper.md".into(), "# Visitor cookie fixture\n".as_bytes().to_vec())],
+        vec![(
+            "paper.md".into(),
+            "# Visitor cookie fixture\n".as_bytes().to_vec(),
+        )],
         librepaper_base::auth::Policy::allowing("github", &["*"]),
         commenters,
     )
