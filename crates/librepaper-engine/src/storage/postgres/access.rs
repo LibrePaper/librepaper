@@ -218,17 +218,6 @@ impl PostgresCatalog {
         Ok(())
     }
 
-    pub async fn prune_link_grants(
-        &self,
-        document_id: Uuid,
-        live_hashes: &[Vec<u8>],
-    ) -> Result<()> {
-        let mut tx = self.begin_document_admin(document_id).await?;
-        Self::prune_link_grants_tx(&mut tx, document_id, live_hashes).await?;
-        tx.commit().await?;
-        Ok(())
-    }
-
     pub async fn prune_link_grants_tx(
         tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
         document_id: Uuid,

@@ -129,17 +129,6 @@ pub struct MutationAuthorization {
     pub automation: bool,
 }
 
-/// Shared commit-boundary authorization check for document commands and
-/// catalogue mutations. It uses the same transaction as the rows it guards.
-pub async fn authorize_mutation(
-    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
-    document_id: Uuid,
-    actor: &MutationAuthorization,
-    require_editor: bool,
-) -> Result<()> {
-    PostgresCatalog::authorize_mutation(tx, document_id, actor, require_editor).await
-}
-
 #[derive(Clone, Debug)]
 pub struct NewAnnotation {
     pub document_id: Uuid,
@@ -345,9 +334,11 @@ async fn put_reply(
 
 impl PostgresCatalog {
     /// The in-transaction authorization check shared by document commands
-    /// and catalogue mutations. The caller takes the writer fence first;
-    /// this checks and locks the account session, then the active document,
-    /// before resolving the live grant and link rows.
+    /// and catalogue mutations. It runs in the caller's transaction and
+    /// checks and locks the account session, then the active document,
+    /// before resolving the live grant and link rows. The writer fence is
+    /// taken by the caller: `check_document_command` checks the writer epoch
+    /// before it calls this, and `authorize_document_mutation` does not.
     pub async fn authorize_mutation(
         tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
         document_id: Uuid,
@@ -446,15 +437,6 @@ impl PostgresCatalog {
         Ok(())
     }
 
-    pub(super) async fn authorize_annotation_mutation(
-        tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
-        document_id: Uuid,
-        actor: &MutationAuthorization,
-        require_editor: bool,
-    ) -> Result<()> {
-        Self::authorize_mutation(tx, document_id, actor, require_editor).await
-    }
-
     /// A standalone probe of the same check, for a caller that wants to know
     /// whether an actor could write before it has anything to write. It
     /// opens and rolls back its own transaction, which is fine here because
@@ -468,7 +450,7 @@ impl PostgresCatalog {
         require_editor: bool,
     ) -> Result<()> {
         let mut tx = self.begin_metered().await?;
-        Self::authorize_annotation_mutation(&mut tx, document_id, actor, require_editor).await?;
+        Self::authorize_mutation(&mut tx, document_id, actor, require_editor).await?;
         tx.rollback().await?;
         Ok(())
     }
@@ -482,64 +464,15 @@ impl PostgresCatalog {
         require_editor: bool,
     ) -> Result<AnnotationRecord> {
         validate(&input)?;
-        Self::authorize_annotation_mutation(tx, input.document_id, actor, require_editor).await?;
+        Self::authorize_mutation(tx, input.document_id, actor, require_editor).await?;
         let (row, _inserted) = put_annotation(tx, id, &input).await?;
         Ok(row)
     }
 
-    /// Rewrites the parts of an annotation that can change: its words, its
-    /// kind, and whether it is resolved.
-    ///
-    /// Not its anchor. An update that arrives with a different one is refused
-    /// rather than applied, which is the invariant this whole design exists
-    /// for, enforced at the only place that could break it.
-    pub async fn replace_annotation_authorized(
-        &self,
-        tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
-        id: Uuid,
-        input: NewAnnotation,
-        resolved: bool,
-        actor: &MutationAuthorization,
-    ) -> Result<bool> {
-        validate(&input)?;
-        Self::authorize_annotation_mutation(tx, input.document_id, actor, false).await?;
-        let existing = annotation_by_id(tx, id).await?.ok_or(Error::NotFound)?;
-        if existing.document_id != input.document_id
-            || !same_anchor(&existing, &input.original_anchor)?
-        {
-            return Err(Error::Conflict(
-                "annotation original anchor is immutable".into(),
-            ));
-        }
-        sqlx::query(
-            "UPDATE annotations SET kind=$2,body=$3,author_account_id=$4,author_key=$5,author_label=$6,
-                                    color=$7,
-                                    resolved_at=CASE WHEN $8 THEN COALESCE(resolved_at,now()) ELSE NULL END,
-                                    updated_at=now()
-             WHERE id=$1",
-        )
-        .bind(id)
-        .bind(&input.kind)
-        .bind(&input.body)
-        .bind(input.author_account_id)
-        .bind(&input.author_key)
-        .bind(&input.author_label)
-        .bind(&input.color)
-        .bind(resolved)
-        .execute(&mut **tx)
-        .await?;
-        Ok(true)
-    }
-
     /// Resolves or reopens one annotation, and says when it became resolved.
     ///
-    /// Resolving is one column. It used to go through
-    /// `replace_annotation_authorized`: read the row, decode its immutable
-    /// anchor, rebuild the whole `NewAnnotation` from it, write every column
-    /// back, have the anchor re-encoded and compared against itself for
-    /// immutability, and read the row a second time for the timestamp. Every
-    /// one of those steps was a chance for a round trip to lose a field that
-    /// nothing was trying to change.
+    /// Resolving writes one column and returns the `resolved_at` it stamped,
+    /// in the same statement. The rest of the row is not read or rewritten.
     pub async fn set_annotation_resolved_authorized(
         &self,
         tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
@@ -548,7 +481,7 @@ impl PostgresCatalog {
         resolved: bool,
         actor: &MutationAuthorization,
     ) -> Result<Option<OffsetDateTime>> {
-        Self::authorize_annotation_mutation(tx, document_id, actor, false).await?;
+        Self::authorize_mutation(tx, document_id, actor, false).await?;
         let resolved_at: Option<OffsetDateTime> = sqlx::query_scalar(
             "UPDATE annotations
              SET resolved_at=CASE WHEN $3 THEN COALESCE(resolved_at,now()) ELSE NULL END,
@@ -575,7 +508,7 @@ impl PostgresCatalog {
         id: Uuid,
         actor: &MutationAuthorization,
     ) -> Result<bool> {
-        Self::authorize_annotation_mutation(tx, document_id, actor, false).await?;
+        Self::authorize_mutation(tx, document_id, actor, false).await?;
         let deleted = sqlx::query!(
             "DELETE FROM annotations WHERE id=$1 AND document_id=$2",
             id,
@@ -603,7 +536,7 @@ impl PostgresCatalog {
         body: &str,
         actor: &MutationAuthorization,
     ) -> Result<OffsetDateTime> {
-        Self::authorize_annotation_mutation(tx, document_id, actor, false).await?;
+        Self::authorize_mutation(tx, document_id, actor, false).await?;
         sqlx::query_scalar(
             "UPDATE annotations SET body=$3,edited_at=now(),updated_at=now()
              WHERE id=$1 AND document_id=$2
@@ -628,7 +561,7 @@ impl PostgresCatalog {
         body: &str,
         actor: &MutationAuthorization,
     ) -> Result<OffsetDateTime> {
-        Self::authorize_annotation_mutation(tx, document_id, actor, false).await?;
+        Self::authorize_mutation(tx, document_id, actor, false).await?;
         sqlx::query_scalar(
             "UPDATE replies r SET body=$4,edited_at=now(),updated_at=now()
              FROM annotations a
@@ -675,7 +608,7 @@ impl PostgresCatalog {
         if input.body.is_empty() || input.author_key.is_empty() || input.author_label.is_empty() {
             return Err(Error::Invalid("invalid reply".into()));
         }
-        Self::authorize_annotation_mutation(tx, document_id, actor, false).await?;
+        Self::authorize_mutation(tx, document_id, actor, false).await?;
         let parent: Option<Uuid> =
             sqlx::query_scalar("SELECT document_id FROM annotations WHERE id=$1")
                 .bind(input.annotation_id)

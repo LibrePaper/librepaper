@@ -1221,17 +1221,6 @@ mod tests {
             .unwrap()
             .is_none());
 
-        // Admissions persist per account: once the account has used two
-        // uploads, a third is refused, while another account starts fresh.
-        catalog.admit_account_upload(owner.id).await.unwrap();
-        catalog.admit_account_upload(owner.id).await.unwrap();
-        assert!(matches!(
-            catalog.admit_account_upload(owner.id).await,
-            Err(Error::Conflict(message)) if message == "account upload rate exceeded"
-        ));
-        let other = seed_account(&catalog, "upload-cap-other").await;
-        catalog.admit_account_upload(other.id).await.unwrap();
-
         catalog.close().await;
     }
 

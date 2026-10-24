@@ -313,7 +313,7 @@ impl PostgresCatalog {
             return Err(Error::Invalid("invalid document metadata".into()));
         }
         let mut tx = self.begin_writer_transaction().await?;
-        super::annotations::authorize_mutation(&mut tx, id, actor, true).await?;
+        PostgresCatalog::authorize_mutation(&mut tx, id, actor, true).await?;
         let expected_owner_id = Self::require_document_owner(&mut tx, id, actor).await?;
         let changed = sqlx::query(
             "UPDATE documents SET title=$3,updated_at=now()
@@ -351,7 +351,7 @@ impl PostgresCatalog {
         live_hashes: &[Vec<u8>],
     ) -> Result<()> {
         let mut tx = self.begin_writer_transaction().await?;
-        super::annotations::authorize_mutation(&mut tx, document_id, actor, true).await?;
+        PostgresCatalog::authorize_mutation(&mut tx, document_id, actor, true).await?;
         Self::require_document_owner(&mut tx, document_id, actor).await?;
         Self::replace_share_links_tx(&mut tx, document_id, links).await?;
         Self::prune_link_grants_tx(&mut tx, document_id, live_hashes).await?;
@@ -533,42 +533,6 @@ impl PostgresCatalog {
         .fetch_optional(&self.pool)
         .await
         .map_err(Error::from)
-    }
-
-    /// Admit one account upload request under the deployment's rolling-hour
-    /// limit. The account row serializes checks across processes, and the
-    /// admission row is durable across browser sessions and restarts.
-    pub async fn admit_account_upload(&self, account_id: Uuid) -> Result<()> {
-        let mut tx = self.begin_writer_transaction().await?;
-        let active: Option<Uuid> = sqlx::query_scalar(
-            "SELECT id FROM accounts WHERE id=$1 AND status='active' FOR UPDATE",
-        )
-        .bind(account_id)
-        .fetch_optional(&mut *tx)
-        .await?;
-        if active.is_none() {
-            return Err(Error::Conflict("account is inactive".into()));
-        }
-        let recent: i64 = sqlx::query_scalar(
-            "SELECT count(*) FROM account_upload_admissions WHERE account_id=$1 AND created_at >= now()-interval '1 hour'",
-        )
-        .bind(account_id)
-        .fetch_one(&mut *tx)
-        .await?;
-        if recent >= self.policy.asset_uploads_per_hour {
-            return Err(Error::Conflict("account upload rate exceeded".into()));
-        }
-        sqlx::query("INSERT INTO account_upload_admissions(account_id) VALUES($1)")
-            .bind(account_id)
-            .execute(&mut *tx)
-            .await?;
-        sqlx::query(
-            "DELETE FROM account_upload_admissions WHERE created_at < now()-interval '2 days'",
-        )
-        .execute(&mut *tx)
-        .await?;
-        tx.commit().await?;
-        Ok(())
     }
 
     /// The name a version written by this account is signed with.
@@ -1160,7 +1124,7 @@ impl PostgresCatalog {
         let document_id = inputs.first().map(|input| input.document_id);
         let mut tx = self.begin_writer_transaction().await?;
         if let (Some(document_id), Some(actor)) = (document_id, actor) {
-            super::annotations::authorize_mutation(&mut tx, document_id, actor, true).await?;
+            PostgresCatalog::authorize_mutation(&mut tx, document_id, actor, true).await?;
         }
         let completed = self
             .complete_assets_in_transaction(&mut tx, &inputs)
