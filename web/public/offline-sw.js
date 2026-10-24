@@ -26,7 +26,11 @@ self.addEventListener("activate", (event) => event.waitUntil((async () => {
 async function cacheResponse(request, event) {
   const response = await fetch(request);
   const shellResource = request.mode === "navigate" || ["script", "style", "worker", "font"].includes(request.destination);
-  if (response.ok && shellResource && request.method === "GET" && new URL(request.url).origin === self.location.origin) {
+  // A link key in the path would become a cache key that sign-out never clears,
+  // so navigations to /docs/<slug>/<key> are not stored. The offline fallback
+  // serves the reader for them instead.
+  const keyedPath = request.mode === "navigate" && /^\/docs\/[^/]+\/./.test(new URL(request.url).pathname);
+  if (response.ok && shellResource && !keyedPath && request.method === "GET" && new URL(request.url).origin === self.location.origin) {
     // Kept, but not waited for. Awaiting the write put a cache round trip in
     // front of every script, stylesheet and font the page was already
     // blocked on -- paying, on the critical path, for a copy that only

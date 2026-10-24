@@ -81,9 +81,8 @@ const memoryKeys = new Map();
 /// bar. A link carries its key in one of two places. The current form puts it
 /// in the path, as /docs/<slug>/<key>, so it survives apps that drop the
 /// fragment when they open a link. The older form puts it in the fragment, as
-/// /docs/<slug>#k=<key>. A fragment is never sent to a server, so the key lands
-/// in nobody's access log and on no Referer header. Once it is here, the
-/// visible URL has no reason to keep carrying it, and "Copy link" puts it back.
+/// /docs/<slug>#k=<key>. Once it is here, the visible URL has no reason to keep
+/// carrying it, and "Copy link" puts it back.
 export function takeLinkKey(slug) {
   const parts = location.pathname.split("/");
   const inPath = parts.length === 4 && parts[1] === "docs" && parts[2] === slug && parts[3] !== "";
