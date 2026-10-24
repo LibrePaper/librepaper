@@ -99,6 +99,13 @@ async fn a_restore_keeps_what_it_replaced() {
 
     let headers = owner_bearer(&deployment);
     let arrival = Origins::loopback_only().resolve("localhost").unwrap();
+    let context = crate::server::RequestContext::resolved(
+        &deployment.server,
+        &headers,
+        arrival.clone(),
+        "127.0.0.1:0".parse().unwrap(),
+    )
+    .await;
 
     // Step 3: restore to the named label, with the precondition
     // `handle_restore` decodes: base64 of the current head frontier.
@@ -126,7 +133,7 @@ async fn a_restore_keeps_what_it_replaced() {
         .unwrap();
     let response = deployment
         .server
-        .handle_restore(request, &arrival, &deployment.slug)
+        .handle_restore(request, &context, &deployment.slug)
         .await;
     assert_eq!(
         response.status(),
@@ -214,7 +221,7 @@ async fn a_restore_keeps_what_it_replaced() {
         .unwrap();
     let response_again = deployment
         .server
-        .handle_restore(request_again, &arrival, &deployment.slug)
+        .handle_restore(request_again, &context, &deployment.slug)
         .await;
     assert_eq!(
         response_again.status(),

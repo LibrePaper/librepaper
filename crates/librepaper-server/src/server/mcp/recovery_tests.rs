@@ -219,9 +219,12 @@ async fn call(
     let request = Request::from_parts(parts, body);
     let arrival = Origins::loopback_only().resolve("127.0.0.1:8080").unwrap();
     let peer = "127.0.0.1:4321".parse().unwrap();
+    let context =
+        crate::server::RequestContext::resolved(&deployment.server, request.headers(), arrival, peer)
+            .await;
     let response = deployment
         .server
-        .handle_tool_call(request, peer, &arrival, &deployment.slug, tool)
+        .handle_tool_call(request, &context, &deployment.slug, tool)
         .await;
     let status = response.status();
     let bytes = axum::body::to_bytes(response.into_body(), 64 * 1024)

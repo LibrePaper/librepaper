@@ -839,10 +839,12 @@ impl Server {
     /// The same, resolving the caller from the request context the
     /// middleware already filled in rather than authenticating again.
     ///
-    /// Safe because `api_guard` refuses a request whose credential did not
-    /// validate before any router handler runs: by this point the context's
-    /// identity is the answer a fresh lookup would give, and the 401/503
-    /// that a failure would have produced has already been sent.
+    /// Safe because a request whose credential did not validate is refused
+    /// before the handler runs: `api_guard` refuses it for the routes of
+    /// `api_router`, and the fallback dispatch refuses it for the `/api/` and
+    /// `/ws/` paths it serves. By this point the context's identity is the
+    /// answer a fresh lookup would give, and the 401/503 that a failure
+    /// would have produced has already been sent.
     // The error is a whole response, for the same reason `entry_viewer`'s is.
     #[allow(clippy::result_large_err)]
     pub(super) async fn entry_viewer_in(
