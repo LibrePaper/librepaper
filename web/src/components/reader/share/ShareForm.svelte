@@ -14,7 +14,7 @@
   const reach = {
     reader: "They can open every file and read the comments.",
     commenter: "They can open every file, comment and reply.",
-    editor: "They can change any file, the same as you.",
+    editor: "They can change any file.",
   };
 </script>
 
