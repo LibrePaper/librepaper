@@ -259,7 +259,7 @@ export const COMMANDS = [
   { id: "download-pdf", label: "Download PDF", category: "Project", scope: "workspace", menu: "file", keys: [], available: (c) => Boolean(c.downloads?.pdf) },
   { id: "download-html", label: "Download HTML", category: "Project", scope: "workspace", menu: "file", keys: [], available: (c) => Boolean(c.downloads?.html) },
   { id: "download-docx", label: "Download DOCX", category: "Project", scope: "workspace", menu: "file", keys: [], available: (c) => Boolean(c.downloads?.docx) },
-  { id: "download", label: "Download project", category: "Project", scope: "workspace", menu: "file", keys: [], available: (c) => Boolean(c.mayEdit) },
+  { id: "download", label: "Download source", category: "Project", scope: "workspace", menu: "file", keys: [], available: (c) => Boolean(c.mayEdit) },
   { id: "share", label: "Share", category: "Project", scope: "workspace", menu: "file", keys: [], available: panel("share") },
   { id: "chat-clear", label: "Clear chat history", category: "Project", scope: "workspace", keys: [], available: (c) => Boolean(c.canClearChat) },
   { id: "history", label: "History", category: "Project", scope: "workspace", menu: "file", keys: [], available: panel("history") },

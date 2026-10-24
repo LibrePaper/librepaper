@@ -137,7 +137,8 @@ export function createPreviewRenderer({
     // the default output, and a reader is shown what an author is shown.
     const htmlPreview = (format === "typst" && start.typstOutput === "html")
       || (format === "latex" && start.latexOutput === "html");
-    const paged = renderers.producesPdf(format) && !htmlPreview;
+    const markdownPdf = ["markdown", "quarto"].includes(format) && start.buildPreferences.output === "pdf";
+    const paged = (renderers.producesPdf(format) && !htmlPreview) || markdownPdf;
     const slow = format === "latex";
     // Shared by both guard points so asset fetching and compilation reject
     // against the same captured navigation, source policy, and main path.
@@ -201,7 +202,7 @@ export function createPreviewRenderer({
       const build = executes && !current.localExecution
         ? (format === "typst"
             ? { selection: "tool", backend: "browser", tool: "typst", output: current.buildPreferences.output }
-            : { selection: "tool", backend: "browser", tool: "markdown", output: "html" })
+            : { selection: "tool", backend: "browser", tool: "markdown", output: current.buildPreferences.output === "pdf" ? "pdf" : "html" })
         : current.buildPreferences;
       rendered = await renderers.render(source, title, { ...options, buildPreferences: build, project: slug });
       debug("preview: result", Boolean(rendered?.pdf), rendered?.ok, rendered?.failure?.message || "");
