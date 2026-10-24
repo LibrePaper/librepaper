@@ -312,6 +312,7 @@ function sourceLog() {
   const offlineSource = createProjectSession({ send: () => {}, onState: () => {} });
   offlineSource.doc.import(base);
   const fromBase = offlineSource.doc.oplogVersion();
+  const offlinePath = offlineSource.list()[0].path;
   offlineSource.textOf(offlineSource.list()[0].id).insert(5, " OFFLINE");
   offlineSource.doc.commit();
   const offlineEdit = offlineSource.doc.export({ mode: "update", from: fromBase });
@@ -376,7 +377,7 @@ function sourceLog() {
     verify.doc.import(row1);
     verify.doc.import(row2);
     for (const frame of sent) verify.doc.import(decode(frame.update));
-    assert.ok(verify.textOf(verify.list()[0].id).toString().includes("OFFLINE"),
+    assert.ok(verify.textOf(verify.idOf(offlinePath)).toString().includes("OFFLINE"),
       "the catch-up export carries the offline edit hydration imported, not a snapshot taken before it landed");
     assert.ok(verify.list().some((file) => file.path === "during.md"),
       "the edit made while hydration was in flight reaches the catch-up");

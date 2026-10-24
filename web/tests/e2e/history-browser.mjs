@@ -75,7 +75,7 @@ async function main() {
   }
   await until("edited source reached the server", async () => {
     const snapshot = await request(`/api/documents/${slug}/snapshot`);
-    return snapshot.texts?.[snapshot.main] === revised || snapshot.source === revised;
+    return snapshot.texts?.["main.md"] === revised;
   });
   const second = await request(`${historyPath}/current`, "PATCH", {
     label: "Revised draft", request_id: randomUUID(),
@@ -124,7 +124,7 @@ async function main() {
   await owner.insert(revised.replace("blue fox", "green fox"), true);
   await until("newer edit is durable", async () => {
     const snapshot = await request(`/api/documents/${slug}/snapshot`);
-    return snapshot.texts?.[snapshot.main] === revised.replace("blue fox", "green fox");
+    return snapshot.texts?.["main.md"] === revised.replace("blue fox", "green fox");
   });
   await until("newer edit reached the comparison tab", async () => (await comparisonOwner.text()).includes("green fox"));
   assert.ok(await comparisonOwner.evaluate(`document.querySelector('.cm-merge-b .cm-content')?.textContent.includes('blue fox')`),
@@ -144,9 +144,9 @@ async function main() {
   assert.ok(restored);
   assert.notEqual(restored.sha, first.sha);
   const restoredTree = await request(`${historyPath}/${restored.sha}`);
-  assert.equal(restoredTree.texts[restoredTree.main], original);
+  assert.equal(restoredTree.texts["main.md"], original);
   const live = await request(`/api/documents/${slug}/snapshot`);
-  assert.equal(live.texts[live.main], original, "the live document holds the restored source");
+  assert.equal(live.texts["main.md"], original, "the live document holds the restored source");
   console.log("history e2e: reader role, owner comparison refresh, restore, and durable source passed");
 }
 

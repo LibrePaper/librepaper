@@ -13,7 +13,7 @@ import { createPreviewRenderer } from "../../src/lib/reader/preview-render.js";
 import { createRenderCoordinator } from "../../src/lib/reader/render-coordinator.js";
 import { loadRunes } from "../helpers/runes.mjs";
 import { needsSourceRefresh } from "../../src/lib/reader/source-events.js";
-import { openingFile, previewTarget, rendersAlone } from "../../src/lib/opening.js";
+import { openingFile, previewTarget, rendersAlone, includersOf } from "../../src/lib/opening.js";
 
 const { createBuildSettings } = await loadRunes(new URL("../../src/lib/reader/build-settings.svelte.js", import.meta.url));
 const { createTimeline } = await loadRunes(new URL("../../src/lib/reader/timeline.svelte.js", import.meta.url));
@@ -448,7 +448,7 @@ console.log("reader-races: all checks passed");
     files: [], sourceFormat: "markdown",
     openTextPath: "paper.tex", lockedPath: "", aloneSet: new Set(),
     liveTreeNow: () => ({ texts: { "paper.tex": "\\documentclass{article}" }, digests: {} }),
-    previewTarget, rendersAlone, openingFile, readerProjectOwner: {},
+    previewTarget, rendersAlone, openingFile, includersOf, readerProjectOwner: {},
     restoreLastPreview: () => {},
     tick: async () => ({ then: () => {} }), paintPreview: () => {},
     navigationGeneration: 0, everPainted: false, everPaintedShown: false,
@@ -1106,7 +1106,7 @@ for (const latest of [
     compact: false, layout: 'source', showMobileView: () => {},
     viewing: null, editing: true, editor: { text: () => null },
     liveTreeNow: () => ({ texts, digests: {} }),
-    previewTarget, rendersAlone, openingFile, readerProjectOwner: {},
+    previewTarget, rendersAlone, openingFile, includersOf, readerProjectOwner: {},
     restoreLastPreview: () => {},
     renderers: { formatOf: p => p.endsWith('.tex') ? 'latex' : '', previewFormatOf: p => p.endsWith('.tex') ? 'latex' : '', warm: () => {} },
     configureLatex: f => configured.push(f),

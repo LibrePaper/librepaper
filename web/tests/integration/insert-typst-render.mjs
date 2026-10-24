@@ -22,7 +22,7 @@ try {
   await writeFile(join(dir, "x.svg"), "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"10\" height=\"10\"><rect width=\"10\" height=\"10\"/></svg>");
   await writeFile(join(dir, "references.bib"), "@article{smith2020, author={Smith, Ada}, title={A Test}, year={2020}}\n");
   const context = {
-    format: "typst", path: "main.typ", text: "= Existing\n", mainPath: "main.typ",
+    format: "typst", path: "main.typ", text: "= Existing\n", entryPath: "main.typ",
     mainText: "= Existing\n", selection: { from: 0, to: 0, text: "" },
     files: [{ path: "x.svg", text: "" }, { path: "references.bib", text: "" }],
     bibliography: [{ key: "smith2020", author: "Smith, Ada", title: "A Test", year: 2020 }],

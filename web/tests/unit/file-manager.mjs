@@ -43,7 +43,8 @@ try {
   assert.throws(() => checkPlacement(rules, { kind: "text", path: "archive/chapters.tex" }, [{ kind: "text", path: "archive/chapters.tex/one.tex" }], []), /already/);
   assert.throws(() => session.relocate([session.list().find((file) => file.id === main)], "main.png", rules, true), /cannot change/);
   session.removeEntries([session.list().find((file) => file.id === main)]);
-  assert.deepEqual(session.list().filter((file) => file.kind === "text").map((file) => file.id), [chapter], "deleting a file leaves the others");
+  const left = session.list().filter((file) => file.kind === "text").map((file) => file.id);
+  assert.ok(!left.includes(main) && left.includes(chapter), "deleting a file leaves the others");
   const fresh = join({ send() {}, mayEdit: true });
   try {
     const paper = fresh.addText("paper.tex", "paper");

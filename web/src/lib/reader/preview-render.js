@@ -21,7 +21,7 @@
 // context that declared some of those names and not others. They are
 // arguments now, and the guards are gone with them.
 
-/** @typedef {ReturnType<ReturnType<typeof import("../project-session.js").createProjectSession>["tree"]> & { assets?: Record<string, Uint8Array>, urls?: Record<string, string> }} PreviewTree */
+/** @typedef {ReturnType<ReturnType<typeof import("../project-session.js").createProjectSession>["tree"]> & { main?: string, assets?: Record<string, Uint8Array>, urls?: Record<string, string> }} PreviewTree */
 /** @typedef {{ disposed: boolean, navigation: number, source: number, everPainted: boolean, format: string, hasSession: boolean, paintsTheFrame: boolean, latexOutput: string, typstOutput: string, buildPreferences: { selection?: string, backend?: string, tool?: string, output?: string, [key: string]: unknown }, localExecution: boolean, projectDigest?: string, livePreviewOwnsPane: boolean }} PreviewFacts */
 /** @typedef {Awaited<ReturnType<typeof import("../renderers.js").render>>} PreviewResult */
 /** @typedef {ReturnType<typeof import("./render-status.svelte.js").createRenderStatus>} PreviewStatus */

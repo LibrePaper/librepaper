@@ -51,13 +51,15 @@ const collaboration = createReaderCollaboration({
     else if (message.type === "error") errors.push(message.message);
   },
 });
-const text = () => session?.textOf(session.mainId())?.toString() || "";
+// The project holds one text, so it is the first file in the list.
+const body = () => session?.textOf(session.list().find((file) => file.kind === "text")?.id);
+const text = () => body()?.toString() || "";
 let flood;
 window.recovery = {
   snapshot: () => ({ ...state, text: text(), joined: Boolean(session?.joined), presenceFrames, closes, opens, errors, refusals }),
   async type(words) {
-    const body = session.textOf(session.mainId());
-    body.insert(body.length, words);
+    const target = body();
+    target.insert(target.length, words);
     session.doc.commit();
     await session.persist();
   },

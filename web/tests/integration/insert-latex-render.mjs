@@ -30,7 +30,7 @@ try {
     ["theorem", {}], ["lemma", {}], ["proposition", {}], ["definition", {}], ["proof", {}], ["example", {}], ["remark", {}], ["page-break", {}], ["horizontal-rule", {}], ["columns", { columns: 2, gap: "12pt" }], ["custom-environment", { environment: "customenv", arguments:["Title"] }],
   ];
   for (const [id, options] of snippets) {
-    const context = { format: "latex", path: "main.tex", mainPath: "main.tex", text: source, mainText: source, selection: { from: source.length, to: source.length, text: "" }, bibliography: [{ key: "smith2020" }] };
+    const context = { format: "latex", path: "main.tex", entryPath: "main.tex", text: source, entryText: source, selection: { from: source.length, to: source.length, text: "" }, bibliography: [{ key: "smith2020" }] };
     const built = buildInsertion(id, options, context);
     assert.ok(built.text, `${id} generated no text`);
     for (const edit of [...built.additionalEdits].sort((a, b) => b.from - a.from)) {

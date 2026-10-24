@@ -1344,9 +1344,6 @@
   // are compared to this by identity. A deep proxy would never be equal to it.
   let session = $state.raw(null);
   let editing = $state(false);
-  // Whether there is a text to edit yet. The directory arrives after the
-  // session joins, and the editor has nothing to bind to before then.
-  const sourceBound = $derived(Boolean(session && persistence.joined && files.some((file) => file.kind === "text")));
   let mayEdit = $state(false);
   let sourceFormat = $state("");
 
@@ -3015,6 +3012,9 @@
   });
   const ws = workspace.state;
   const files = $derived(ws.files);
+  // Whether there is a text to edit yet. The directory arrives after the
+  // session joins, and the editor has nothing to bind to before then.
+  const sourceBound = $derived(Boolean(session && persistence.joined && files.some((file) => file.kind === "text")));
   const folders = $derived(ws.folders);
   const openFile = $derived(ws.openFile);
   const rules = $derived(ws.rules);
