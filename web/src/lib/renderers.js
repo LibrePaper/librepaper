@@ -258,7 +258,8 @@ export async function render(tree, title, { manual = false, format: requestedFor
   // a Typst source beside the document and the Typst renderer compiles it.
   // Quarto's own diagnostics describe the HTML path and are not mapped here.
   if ((format === "markdown" || format === "quarto") && buildPreferences?.output === "pdf") {
-    const typstSource = await typstTree(quartoTree, { from: "markdown" });
+    const pandocInput = format === "quarto" ? quarto.pandocDraft(quartoTree, source) : quartoTree;
+    const typstSource = await typstTree(pandocInput, { from: "markdown" });
     return renderTypst(typstSource, title, "pdf", capturedModules, capturedSettings);
   }
   const module = (format === "markdown" || format === "quarto") && needsBibliography({ source }) ? "citations" : format === "quarto" ? "markdown" : format;
