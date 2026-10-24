@@ -1911,7 +1911,10 @@ fn tag_modify_error(error: CatalogError) -> ModifyError {
 /// The listed documents' slugs by storage id, and those ids.
 fn slugs_by_id(
     entries: &[IndexEntry],
-) -> (std::collections::HashMap<uuid::Uuid, String>, Vec<uuid::Uuid>) {
+) -> (
+    std::collections::HashMap<uuid::Uuid, String>,
+    Vec<uuid::Uuid>,
+) {
     let mut by_id = std::collections::HashMap::new();
     for entry in entries {
         if let Ok(id) = uuid::Uuid::parse_str(&entry.storage_id) {

@@ -174,7 +174,13 @@ mod tests {
             crate::local::quarto::supported_policies(Some("Quarto 1.2.9")),
             vec!["project-defaults"]
         );
-        assert!(crate::local::quarto::supported_policies(Some("Quarto 1.3.0")).contains(&"frozen".into()));
-        assert_eq!(crate::local::quarto::supported_policies(None), vec!["project-defaults"]);
+        assert!(
+            crate::local::quarto::supported_policies(Some("Quarto 1.3.0"))
+                .contains(&"frozen".into())
+        );
+        assert_eq!(
+            crate::local::quarto::supported_policies(None),
+            vec!["project-defaults"]
+        );
     }
 }

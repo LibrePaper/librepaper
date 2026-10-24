@@ -265,7 +265,6 @@ impl GithubApp {
 #[cfg(test)]
 mod tests {
     use axum::http::StatusCode;
-    use axum::response::IntoResponse;
     use axum::routing::post;
     use axum::{Json, Router};
     use serde_json::json;

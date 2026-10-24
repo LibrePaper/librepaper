@@ -29,10 +29,10 @@ use librepaper_base::auth::pseudonym::pseudonym_for;
 use librepaper_base::auth::{
     cookie_name, device_deadline, normalized, now_unix, pkce_verifier, random_token,
     read_agent_grant, read_device, read_session, read_visitor, session_deadline, sign_device,
-    sign_session, sign_visitor, DeviceOutcome, GithubApp, Identity,
-    OidcProvider, PendingCodes, Policy, TokenCache, AGENT_GRANT_PREFIX, AGENT_TOKEN_PREFIX,
-    DEVICE_POLL_INTERVAL, DEVICE_TOKEN_MAX_AGE, DEVICE_TOKEN_PREFIX, PROVIDER_GITHUB,
-    SESSION_COOKIE, SESSION_MAX_AGE, STATE_COOKIE, VISITOR_COOKIE,
+    sign_session, sign_visitor, DeviceOutcome, GithubApp, Identity, OidcProvider, PendingCodes,
+    Policy, TokenCache, AGENT_GRANT_PREFIX, AGENT_TOKEN_PREFIX, DEVICE_POLL_INTERVAL,
+    DEVICE_TOKEN_MAX_AGE, DEVICE_TOKEN_PREFIX, PROVIDER_GITHUB, SESSION_COOKIE, SESSION_MAX_AGE,
+    STATE_COOKIE, VISITOR_COOKIE,
 };
 use librepaper_base::config::Configuration;
 use librepaper_base::shell::{renderers, ShellFile};

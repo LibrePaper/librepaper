@@ -869,7 +869,12 @@ pub async fn run_job_with_bindings(
         }
     };
     if options.render_scope != protocol::QuartoRenderScope::Project && cell_manifest.is_file() {
-        match crate::local::quarto_capture::collect(&cell_manifest, main_name, &source_before, &project) {
+        match crate::local::quarto_capture::collect(
+            &cell_manifest,
+            main_name,
+            &source_before,
+            &project,
+        ) {
             Ok(capture) => {
                 let capture_had_diagnostics = !capture.diagnostics.is_empty();
                 bundle.cells = capture.cells.into_iter().map(local_cell).collect();

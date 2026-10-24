@@ -1,13 +1,11 @@
 //! An immutable query capture, with no duplicate main source or file inventory.
 //!
 //! The source is read from the sequencer's projection rather than from a
-//! resident `LoroDoc` the room held
-//! itself, and there is no fence to check first: the projection's own
-//! `readable()` check is the one "cannot serve this" signal now. It refuses a
-//! fenced document and one whose cache could not be built. No earlier agent
-//! transaction leaves the room in a state nobody had reconciled -- that apparatus no longer exists, because a
-//! command's source is prepared on a fork and only ever imported after its
-//! transaction commits.
+//! resident `LoroDoc` the room held itself. The projection's own `readable()`
+//! check is the one "cannot serve this" signal: it refuses a fenced document
+//! and one whose cache could not be built. A command's source is prepared on a
+//! fork and only imported after its transaction commits, so no earlier agent
+//! transaction can leave the room unreconciled.
 use serde_json::json;
 
 use super::*;
