@@ -76,6 +76,7 @@
   import Toasts from "./Toasts.svelte";
   import { say, toaster } from "../lib/toast.svelte.js";
   import { archive, docxFile, entryDownload, projectFiles, saveBlob } from "../lib/reader/downloads.js";
+  import { commentsMarkdown, loadAllComments } from "../lib/reader/comments-export.js";
   import { exportAvailability, exportFile, unrunCells } from "../lib/reader/exports.js";
   import { pandoc } from "../lib/pandoc/client.js";
   import Preview from "./Preview.svelte";
@@ -2779,6 +2780,7 @@
     if (value === "compile") return compileNow();
     if (value === "download") return downloadTree();
     if (value === "download-source") return downloadSource();
+    if (value === "download-comments") return downloadComments();
     if (value === "download-pdf" || value === "download-html" || value === "download-docx") return downloadAs(value.slice(9));
     if (value === "share" || value === "history" || value === "git") return openPanel(value);
     if (value === "save-template") return openSaveTemplateModal();
@@ -2853,6 +2855,57 @@
       }
     } catch (error) {
       say(error.message || `The ${target.toUpperCase()} could not be made.`, { kind: "problem", id });
+    } finally {
+      exporting = false;
+    }
+  }
+
+  // Every thread of the project as Markdown. The server pages comments, so
+  // this reads the same pages the sidebar does, to the end, and then adds what
+  // only this browser knows: whether a passage is still in the document and
+  // where it sits.
+  async function downloadComments() {
+    if (exporting) return;
+    exporting = true;
+    const id = "reader:export";
+    say("Preparing the comments.", { id });
+    try {
+      const read = async (path) => {
+        const response = await fetch(`/api/documents/${SLUG}/comments${path}`, { headers: authHeaders(KEY) });
+        const body = await response.json().catch(() => ({}));
+        if (!response.ok) throw new Error(body.error || `Comments could not be read (${response.status}).`);
+        return body;
+      };
+      const loaded = await loadAllComments({
+        fetchPage: (cursor) => read(cursor ? `?cursor=${encodeURIComponent(cursor)}` : ""),
+        fetchReplies: (comment, cursor) => read(`/${comment.id}/replies?cursor=${encodeURIComponent(cursor)}`),
+      });
+      const held = new Map(comments.map((item) => [String(item.id), item]));
+      const threads = loaded.map((item) => {
+        const seen = held.get(String(item.id));
+        return {
+          id: item.id,
+          creator: item.creator,
+          created: item.created,
+          body: item.body,
+          resolved: Boolean(item.resolved),
+          replies: item.replies,
+          whole: aboutWholeDocument(item),
+          quote: shownSelector(item).exact,
+          orphaned: Boolean(seen?.orphaned),
+          position: seen?.start ?? null,
+        };
+      });
+      const markdown = commentsMarkdown({
+        title: await headingOf(capturePreviewTree(treeNow())),
+        url: `${location.origin}/docs/${SLUG}`,
+        exportedAt: new Date(),
+        comments: threads,
+      });
+      saveBlob(new Blob([markdown], { type: "text/markdown" }), `${SLUG}-comments.md`);
+      toaster.dismiss(id);
+    } catch (error) {
+      say(error.message || "The comments could not be exported.", { kind: "problem", id });
     } finally {
       exporting = false;
     }
@@ -3619,6 +3672,10 @@
   // What the workspace can currently offer, as facts rather than rules. The
   // rules are in lib/commands.js, which decides from these whether a command
   // can be asked for; this is the only place that knows both.
+  // Anyone offered the collaboration panel can see the comments, so the same
+  // test decides who is offered their export.
+  const canExportComments = $derived(tabs.some((tab) => tab.id === "collaboration"));
+
   const commandContext = $derived({
     mayEdit, editing, compact,
     panels: tabs.map((tab) => tab.id),
@@ -3629,6 +3686,7 @@
       pdf: exportable.pdf.ok,
       html: exportable.html.ok,
       docx: exportable.docx.ok,
+      comments: canExportComments,
       source: Boolean(toolbarPath),
     },
     edit: editAvailability,
@@ -3796,6 +3854,13 @@
       {@render exportItem("download-html", "HTML", "html")}
       {@render exportItem("download-pdf", "PDF", "pdf")}
       {@render exportItem("download-docx", "DOCX", "docx")}
+      {#if canExportComments}
+        {@const none = annotations.state.page.total === 0}
+        <Menu.Item value="download-comments" class="menuitem" disabled={none}>
+          <span class="menuitem-label">Comments</span>
+          {#if none}<span class="export-reason">No comments yet.</span>{/if}
+        </Menu.Item>
+      {/if}
       {#if mayEdit}
         <Menu.Item value="download-source" class="menuitem" disabled={!toolbarPath}>
           <span class="menuitem-label">Source</span>

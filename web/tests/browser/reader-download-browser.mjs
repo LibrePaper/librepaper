@@ -107,6 +107,17 @@ try {
       title: "Download test", created_at: "download-test", role: "owner", source_format: "markdown",
       docs_origin: `http://${request.headers.host}`,
     });
+    if (url.pathname === `/api/documents/${SLUG}/comments`) return json(response, {
+      version: 1, protocol: "librepaper.comments.v1", complete: true, next_cursor: null, oversize: false,
+      state: { total: 1, open: 1, replies: 1, revision: "r1" },
+      comments: [{
+        id: "c1", seq: 1, creator: "Reviewer", created: "2026-10-01T10:00:00Z", resolved: false, resolved_at: null,
+        motivation: "commenting", body: "Please justify the claim.",
+        presentation: { rendered_exact: "A paragraph", rendered_prefix: "", rendered_suffix: " with inline", rendered_position_utf16: 0 },
+        replies: [{ id: "r1", creator: "Editor", created: "2026-10-02T09:00:00Z", body: "Done in the next draft." }],
+        reply_total: 1, reply_cursor: null,
+      }],
+    });
     if (url.pathname.startsWith("/raw/") || url.pathname.startsWith("/pdf/")) { response.setHeader("content-type", "text/html"); return response.end("<!doctype html><body></body>"); }
     if (url.pathname === `/docs/${SLUG}`) {
       response.setHeader("content-type", "text/html");
@@ -170,7 +181,7 @@ try {
   // 1. The submenu: its entries, in order, none disabled.
   await openDownload();
   const entries = await tab.evaluate(`(() => {
-    const labels = ["Project", "HTML", "PDF", "DOCX", "Source"];
+    const labels = ["Project", "HTML", "PDF", "DOCX", "Comments", "Source"];
     const found = [...document.querySelectorAll('[role="menuitem"]')]
       .filter(n => n.getBoundingClientRect().width > 1 && labels.includes(n.querySelector('.menuitem-label')?.textContent.trim()));
     return found.map(n => ({
@@ -179,9 +190,9 @@ try {
     }));
   })()`);
   entries.sort((a, b) => a.top - b.top);
-  assert.deepEqual(entries.map((e) => e.label), ["Project", "HTML", "PDF", "DOCX", "Source"], "the Download submenu lists the five downloads in order");
+  assert.deepEqual(entries.map((e) => e.label), ["Project", "HTML", "PDF", "DOCX", "Comments", "Source"], "the Download submenu lists the six downloads in order");
   assert.deepEqual(entries.filter((e) => e.disabled), [], "no download is disabled");
-  console.log("reader-download: the Download submenu lists Project, HTML, PDF, DOCX and Source, all enabled");
+  console.log("reader-download: the Download submenu lists Project, HTML, PDF, DOCX, Comments and Source, all enabled");
 
   const taken = async (count) => {
     await until(`download ${count}`, () => tab.evaluate(`window.downloads.length >= ${count}`), 120000);
@@ -221,6 +232,16 @@ try {
   assert.equal(sourceFile.name, "main.md");
   assert.ok(sourceFile.text.includes("Download check"), "the source holds the heading");
   console.log("reader-download: Source saved");
+
+  // 5c. Comments: every thread, as Markdown.
+  await closeMenus(); await pause(300);
+  await openDownload();
+  await choose("Comments");
+  const commentsFile = await taken(5);
+  assert.equal(commentsFile.name, `${SLUG}-comments.md`);
+  assert.ok(commentsFile.text.includes("Please justify the claim."), "the export holds the comment");
+  assert.ok(commentsFile.text.includes("Done in the next draft."), "the export holds the reply");
+  console.log("reader-download: Comments saved");
 
   // 6. View > PDF previews in the browser. The harness serves no real PDF
   // viewer, so only the frame path and the absence of an error are checked.

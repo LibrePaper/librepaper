@@ -259,6 +259,7 @@ export const COMMANDS = [
   { id: "download-pdf", label: "Download PDF", category: "Project", scope: "workspace", menu: "file", keys: [], available: (c) => Boolean(c.downloads?.pdf) },
   { id: "download-html", label: "Download HTML", category: "Project", scope: "workspace", menu: "file", keys: [], available: (c) => Boolean(c.downloads?.html) },
   { id: "download-docx", label: "Download DOCX", category: "Project", scope: "workspace", menu: "file", keys: [], available: (c) => Boolean(c.downloads?.docx) },
+  { id: "download-comments", label: "Download comments", category: "Project", scope: "workspace", menu: "file", keys: [], available: (c) => Boolean(c.downloads?.comments) },
   { id: "download", label: "Download project", category: "Project", scope: "workspace", menu: "file", keys: [], available: (c) => Boolean(c.mayEdit) },
   { id: "download-source", label: "Download source file", category: "Project", scope: "workspace", menu: "file", keys: [], available: (c) => Boolean(c.mayEdit && c.downloads?.source) },
   { id: "share", label: "Share", category: "Project", scope: "workspace", menu: "file", keys: [], available: panel("share") },
