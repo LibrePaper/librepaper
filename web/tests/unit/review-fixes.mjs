@@ -4,7 +4,7 @@ import { zip } from "../../src/lib/zip.js";
 import { gather, release } from "../../src/lib/figures.js";
 import { join } from "../../src/lib/collab.js";
 import { openRoom } from "../../src/lib/room.js";
-import { keyFor, linkFor, takeKeyFromFragment } from "../../src/lib/storage.js";
+import { keyFor, linkFor, takeLinkKey } from "../../src/lib/storage.js";
 
 // #25: malformed HTML entities are input to a best-effort matcher, never an
 // exception that escapes caret synchronization.
@@ -38,15 +38,33 @@ globalThis.localStorage = {
   setItem() { throw new Error("storage denied"); },
 };
 try {
-  assert.equal(takeKeyFromFragment("slug"), "private-key");
+  assert.equal(takeLinkKey("slug"), "private-key");
   assert.equal(keyFor("slug"), "private-key");
-  assert.match(linkFor("slug"), /#k=private-key$/);
+  assert.equal(linkFor("slug"), "https://example.test/docs/slug/private-key");
   let replaced = "";
   globalThis.location.hash = "#k=%";
   globalThis.history.replaceState = (_state, _title, url) => { replaced = url; };
-  assert.equal(takeKeyFromFragment("malformed-fragment"), "");
+  assert.equal(takeLinkKey("malformed-fragment"), "");
   assert.equal(keyFor("malformed-fragment"), "", "the malformed value is not remembered");
   assert.equal(replaced, "/docs/slug", "the invalid fragment is removed from the address bar");
+
+  // The path form: the key is the segment after the slug, and the address
+  // becomes the bare document URL with the query kept.
+  globalThis.location = { hash: "", pathname: "/docs/path-slug/path-key", search: "?v=1", origin: "https://example.test" };
+  assert.equal(takeLinkKey("path-slug"), "path-key");
+  assert.equal(keyFor("path-slug"), "path-key");
+  assert.equal(replaced, "/docs/path-slug?v=1", "the path key is replaced out of the address");
+  assert.equal(linkFor("path-slug"), "https://example.test/docs/path-slug/path-key");
+
+  // The path form keeps the fragment, and a key with an escape is decoded.
+  globalThis.location = { hash: "#section", pathname: "/docs/esc-slug/a%2Fb", search: "", origin: "https://example.test" };
+  assert.equal(takeLinkKey("esc-slug"), "a/b");
+  assert.equal(replaced, "/docs/esc-slug#section", "the fragment stays with the path form");
+
+  // A malformed escape in the path is cleaned like one in the fragment.
+  globalThis.location = { hash: "", pathname: "/docs/bad-slug/%", search: "", origin: "https://example.test" };
+  assert.equal(takeLinkKey("bad-slug"), "");
+  assert.equal(replaced, "/docs/bad-slug", "the malformed path key is removed from the address bar");
 } finally {
   globalThis.location = savedLocation;
   globalThis.history = savedHistory;

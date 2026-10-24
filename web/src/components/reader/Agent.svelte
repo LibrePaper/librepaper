@@ -222,8 +222,8 @@
 
   function validDocumentLink() {
     try {
-      const chosen = new URL(agentLink || link, location.href);
-      const page = new URL(link, location.href);
+      const chosen = new URL(withoutKey(agentLink || link), location.href);
+      const page = new URL(withoutKey(link), location.href);
       return ["http:", "https:"].includes(chosen.protocol)
         && !chosen.username && !chosen.password
         && chosen.origin === page.origin && chosen.pathname === page.pathname;

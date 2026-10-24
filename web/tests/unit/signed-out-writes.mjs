@@ -5,7 +5,7 @@
 import assert from "node:assert/strict";
 import { loadRunes } from "../helpers/runes.mjs";
 import { forgetLocalData } from "../../src/lib/local-data.js";
-import { KEYS, VIEWED, markViewed, takeKeyFromFragment } from "../../src/lib/storage.js";
+import { KEYS, VIEWED, markViewed, takeLinkKey } from "../../src/lib/storage.js";
 
 const { createAgentClient } = await loadRunes(
   new URL("../../src/lib/agent-client.svelte.js", import.meta.url),
@@ -48,7 +48,7 @@ const first = make(before);
 await first.create();
 assert.equal(before.length, 1, "the transcript is stored while signed in");
 first.dispose();
-takeKeyFromFragment("paper");
+takeLinkKey("paper");
 markViewed("paper");
 assert.ok(local.getItem(KEYS) && local.getItem(VIEWED));
 
@@ -61,6 +61,6 @@ const second = make(after);
 await second.create();
 second.dispose();
 assert.equal(after.length, 0, "the agent client writes nothing after sign-out");
-takeKeyFromFragment("other");
+takeLinkKey("other");
 markViewed("other");
 assert.equal(local.length, 0, "key and viewed stores write nothing after sign-out");
