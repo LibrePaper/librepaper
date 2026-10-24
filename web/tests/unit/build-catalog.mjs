@@ -17,9 +17,9 @@ test("a builder advertises only the operations it reports", () => {
 });
 
 test("an unreported builder has no capability and no operations", () => {
-  assert.equal(capabilityFor(caps, "pandoc"), null);
-  assert.deepEqual(operationsFor(caps, "pandoc"), []);
-  assert.equal(supportsOperation(caps, "pandoc", "build", "snapshot"), false);
+  assert.equal(capabilityFor(caps, "calepin"), null);
+  assert.deepEqual(operationsFor(caps, "calepin"), []);
+  assert.equal(supportsOperation(caps, "calepin", "build", "snapshot"), false);
   // Tool-specific fields must not be read as builder capabilities.
   assert.equal(capabilityFor({ quarto: { tool: { available: true } } }, "quarto"), null);
 });
@@ -38,6 +38,6 @@ test("LaTeX is a browser format and offers no local builder", () => {
 
 test("the formats with a local builder offer one", () => {
   assert.deepEqual(buildersFor("typst").map((entry) => entry.id), ["typst", "calepin"]);
-  assert.deepEqual(buildersFor("markdown").map((entry) => entry.id), ["markdown", "pandoc", "quarto"]);
+  assert.deepEqual(buildersFor("markdown").map((entry) => entry.id), ["markdown", "quarto"]);
   assert.deepEqual(buildersFor("quarto").map((entry) => entry.id), ["markdown", "quarto"]);
 });
