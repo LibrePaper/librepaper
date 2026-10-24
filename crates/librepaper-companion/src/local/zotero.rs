@@ -516,8 +516,7 @@ mod tests {
 
     #[test]
     fn null_citation_key_is_empty_string() {
-        let item: ItemData =
-            serde_json::from_str(r#"{"citationKey":null,"extra":null}"#).unwrap();
+        let item: ItemData = serde_json::from_str(r#"{"citationKey":null,"extra":null}"#).unwrap();
         assert_eq!(item.citation_key, "");
         assert_eq!(item.extra, "");
     }
