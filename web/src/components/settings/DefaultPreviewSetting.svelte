@@ -10,8 +10,8 @@
   const DESCRIPTIONS = {
     latex: "Every LaTeX document opens on this preview. View > HTML and View > PDF switch it until you leave the project.",
     typst: "Every Typst document opens on this preview. View > HTML and View > PDF switch it until you leave the project.",
-    markdown: "Every Markdown document opens on this preview. View > HTML and View > PDF switch it until you leave the project. A PDF needs Pandoc or Quarto as the renderer.",
-    quarto: "Every Quarto document opens on this preview. View > HTML and View > PDF switch it until you leave the project. A PDF needs Run code to be on.",
+    markdown: "Every Markdown document opens on this preview. View > HTML and View > PDF switch it until you leave the project.",
+    quarto: "Every Quarto document opens on this preview. View > HTML and View > PDF switch it until you leave the project.",
   };
 
   const name = $derived(NAMES[format]);

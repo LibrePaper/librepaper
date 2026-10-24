@@ -97,6 +97,25 @@ test("quarto options are shared between markdown and quarto, not stored in per-f
   } finally { globalThis.localStorage = previous; }
 });
 
+test("a stored local pandoc preference reads back as the default", () => {
+  const previous = globalThis.localStorage;
+  globalThis.localStorage = store();
+  try {
+    const scope = { origin: "https://a.test", user: "alice", document: "paper" };
+    // Pandoc left the desktop app, so an old stored choice is no longer offered.
+    const key = `librepaper-build-v3:${JSON.stringify(["https://a.test", "alice", "markdown"])}`;
+    globalThis.localStorage.setItem(key, JSON.stringify({
+      selection: "tool",
+      backend: "local",
+      tool: "pandoc",
+    }));
+    const preference = read(scope, "markdown");
+    assert.equal(preference.selection, "automatic");
+    assert.equal(preference.backend, "auto");
+    assert.equal(preference.tool, undefined);
+  } finally { globalThis.localStorage = previous; }
+});
+
 test("local typst preference reads back as browser typst", () => {
   const previous = globalThis.localStorage;
   globalThis.localStorage = store();

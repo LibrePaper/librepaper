@@ -59,7 +59,7 @@ assert.doesNotMatch(build, /desktop\/client/);
 assert.match(build, /id: "render-latex-engine"/);
 assert.deepEqual([...build.matchAll(/value: "(\w+)", says/g)].map((match) => match[1]), [
   "automatic", "pdflatex", "xelatex",
-  "browser", "pandoc", "quarto",
+  "browser", "quarto",
 ]);
 assert.doesNotMatch(build, /lualatex/i);
 for (const format of ["latex", "markdown"]) assert.match(dialog, new RegExp(`<BuildSettings format="${format}"`));

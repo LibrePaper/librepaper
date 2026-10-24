@@ -154,7 +154,7 @@ impl QuartoInvocationPlan {
             // Forced rather than defaulted. An author who sets
             // `embed-resources: false` is asking for output this deployment
             // cannot serve intact, so honoring it would only produce a broken
-            // paper. The pandoc builder already does the same thing.
+            // paper.
             command.arg("--standalone").arg("--embed-resources");
         }
         match self.policy {

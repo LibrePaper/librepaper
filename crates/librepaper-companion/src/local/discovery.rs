@@ -1,4 +1,4 @@
-//! Local tool discovery: find `typst`, `pandoc` and `calepin` as explicit
+//! Local tool discovery: find `typst` and `calepin` as explicit
 //! absolute paths, and report each individually.
 //!
 //! An installed LibrePaper app does not imply an installed builder. This
@@ -29,7 +29,7 @@ use super::protocol::{
 };
 
 /// The tool names this module discovers, in the order `Tools` lists them.
-const TOOL_NAMES: &[&str] = &["typst", "pandoc", "calepin"];
+const TOOL_NAMES: &[&str] = &["typst", "calepin"];
 
 /// How long a `--version` probe is allowed to run. A hung or misbehaving
 /// binary must not hang discovery.
@@ -258,36 +258,20 @@ fn capabilities_from(cache: &Cache) -> Capabilities {
     let available = |name: &str| get(name).available;
     let version = |name: &str| get(name).version;
     let snapshot = || vec!["snapshot".to_string()];
-    let builders = vec![
-        BuilderCapability {
-            id: "typst".into(),
-            available: available("typst"),
-            version: version("typst"),
-            source_formats: vec!["typst".into()],
-            outputs: vec!["pdf".into()],
-            engines: Vec::new(),
-            operations: vec![BuilderOperation {
-                kind: "build".into(),
-                workspace_modes: snapshot(),
-            }],
-            preview: false,
-            note: String::new(),
-        },
-        BuilderCapability {
-            id: "pandoc".into(),
-            available: available("pandoc"),
-            version: version("pandoc"),
-            source_formats: vec!["markdown".into()],
-            outputs: vec!["html".into(), "docx".into()],
-            engines: Vec::new(),
-            operations: vec![BuilderOperation {
-                kind: "build".into(),
-                workspace_modes: snapshot(),
-            }],
-            preview: false,
-            note: String::new(),
-        },
-    ];
+    let builders = vec![BuilderCapability {
+        id: "typst".into(),
+        available: available("typst"),
+        version: version("typst"),
+        source_formats: vec!["typst".into()],
+        outputs: vec!["pdf".into()],
+        engines: Vec::new(),
+        operations: vec![BuilderOperation {
+            kind: "build".into(),
+            workspace_modes: snapshot(),
+        }],
+        preview: false,
+        note: String::new(),
+    }];
     Capabilities {
         tools: Tools {
             quarto: Tool::default(),
@@ -432,9 +416,9 @@ mod tests {
     #[test]
     fn a_missing_or_silent_tool_gets_a_setup_hint() {
         for banner in [None, Some("   \n")] {
-            let tool = tool_from_banner("pandoc", banner);
+            let tool = tool_from_banner("calepin", banner);
             assert!(!tool.available);
-            assert!(tool.note.contains("pandoc not found"), "{}", tool.note);
+            assert!(tool.note.contains("calepin not found"), "{}", tool.note);
         }
     }
 

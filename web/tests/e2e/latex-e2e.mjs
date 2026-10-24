@@ -102,7 +102,9 @@ async function main() {
   const tab = await browser(process.env.BROWSER || "chromium", join(scratch, "profile"), 9500 + Math.floor(Math.random() * 500));
   try {
     await tab.resize(1300, 900);
-    await tab.navigate(BASE);
+    // Any same-origin page will do for the cookie. Not the landing page: signed
+    // out, it can redirect to the sign-in provider before the load completes.
+    await tab.navigate(`${BASE}/theme.js`);
     await tab.setCookie("librepaper_session", readerCookie.slice(readerCookie.indexOf("=") + 1), BASE);
     // A wait that, when it runs out, says what the reader was showing and
     // which mirror files it fetched, rather than only that time ran out.

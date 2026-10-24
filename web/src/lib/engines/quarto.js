@@ -551,6 +551,17 @@ export async function virtualTree(tree, options = {}) {
   return { ...tree, main: virtualMain, texts, quarto: draft, quartoSourcePath: main, quartoLineMap: draft.lineMap };
 }
 
+// The draft Pandoc reads for a PDF. The browser draft swaps the front matter
+// for a generated title block, which hides `title`, `bibliography` and `csl`
+// from Pandoc, so this puts the original front matter back and drops the block.
+export function pandocDraft(virtualTree, source) {
+  const main = virtualTree.main;
+  const frontMatter = parseQuarto(source, { path: virtualTree.quartoSourcePath || main }).frontMatter.raw;
+  const body = String(virtualTree.texts[main] ?? "")
+    .replace(/<header class="quarto-title-block" data-librepaper-generated="quarto">[\s\S]*?<\/header>\n*/, "");
+  return { ...virtualTree, texts: { ...virtualTree.texts, [main]: `${frontMatter}\n${body}` } };
+}
+
 // The Markdown worker sees the generated `.md` draft. Keep diagnostics on
 // original qmd coordinates whenever a generated line has a reliable source
 // counterpart; generated title/output/include diagnostics stay explicitly
