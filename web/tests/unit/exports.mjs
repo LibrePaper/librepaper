@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { EXPORT_TARGETS, exportAvailability, exportFile } from "../../src/lib/reader/exports.js";
+import { EXPORT_TARGETS, exportAvailability, exportFile, unrunCells } from "../../src/lib/reader/exports.js";
 
 const all = (...formats) => (format) => formats.includes(format);
 
@@ -150,4 +150,48 @@ const mdTree = { main: "doc/main.md", texts: { "doc/main.md": "x" }, assets: { "
     exportFile({ ...base, target: "pdf", format: "typst", tree: mdTree, render: makeRender({ pdf: null }), run: makeRun() }),
     { message: "The PDF could not be made." },
   );
+}
+
+// A Quarto export with the desktop build on takes every file from Quarto.
+{
+  const qmdTree = { main: "a.qmd", texts: { "a.qmd": "# t" }, assets: {} };
+  const localQuarto = { profile: "print", parameters: { n: 3 } };
+  const local = async (target, result) => {
+    const render = makeRender(result);
+    const run = makeRun();
+    const file = await exportFile({ ...base, slug: "t", target, format: "quarto", tree: qmdTree, render, run, localQuarto });
+    assert.equal(run.calls.length, 0);
+    assert.deepEqual(render.calls[0].options, {
+      format: target,
+      buildPreferences: { selection: "tool", backend: "local", tool: "quarto", output: target, profile: "print", parameters: { n: 3 } },
+    });
+    return file;
+  };
+  const pdf = await local("pdf", { ok: true, pdf: pdfBytes });
+  assert.equal(pdf.name, "t.pdf");
+  assert.deepEqual(new Uint8Array(await pdf.blob.arrayBuffer()), pdfBytes);
+  const html = await local("html", { ok: true, html: "<p>hi</p>" });
+  assert.equal(html.name, "t.html");
+  assert.equal(await html.blob.text(), "<p>hi</p>");
+  const docx = await local("docx", { ok: true, artifact: docxBytes, artifactKind: "docx" });
+  assert.equal(docx.name, "t.docx");
+  assert.deepEqual(new Uint8Array(await docx.blob.arrayBuffer()), docxBytes);
+  await assert.rejects(
+    local("pdf", { ok: false, failure: { message: "quarto: boom" } }),
+    /quarto: boom/,
+  );
+  // Without the desktop build the browser route is taken.
+  const render = makeRender({ pdf: pdfBytes });
+  await exportFile({ ...base, target: "pdf", format: "quarto", tree: qmdTree, render, run: makeRun() });
+  assert.deepEqual(render.calls[0].options, {
+    format: "pdf",
+    buildPreferences: { selection: "tool", backend: "browser", tool: "markdown", output: "pdf" },
+  });
+}
+
+// Cells that a browser export leaves unrun.
+{
+  const source = "# t\n\n```{r}\n1\n```\n\n```{python}\n2\n```\n\n```\nplain\n```\n";
+  assert.equal(unrunCells("quarto", { main: "a.qmd", texts: { "a.qmd": source } }), 2);
+  assert.equal(unrunCells("latex", { main: "a.tex", texts: { "a.tex": source } }), 0);
 }
