@@ -179,6 +179,9 @@
     {#if creating === kind}
       <ShareForm {kind} bind:draft {busy} {allowed} onsubmit={commit} oncancel={cancelForm} />
     {/if}
+    {#if kind === "link"}
+      <p class="panel-meta">Every link opens the whole project. The permission decides what people can do.</p>
+    {/if}
     {#if active.length === 0}
       <p class="panel-meta">{kind === "link" ? "No sharing links yet." : "No agent tokens yet."}</p>
     {:else}
@@ -201,7 +204,7 @@
   {:else if loading}
     <p class="panel-muted share-pad" role="status">Loading sharing settings…</p>
   {:else if sharing && canShare}
-    <PanelTabs id="share" label="Sharing" tabs={TABS} value={tab} onchange={(value) => { tab = value; creating = null; }}>
+    <PanelTabs id="share" label="Share" tabs={TABS} value={tab} onchange={(value) => { tab = value; creating = null; }}>
       <Tabs.Content value="links">{#if tab === "links"}{@render list("link")}{/if}</Tabs.Content>
       <Tabs.Content value="tokens">{#if tab === "tokens"}{@render list("token")}{/if}</Tabs.Content>
     </PanelTabs>
@@ -215,12 +218,12 @@
 
 <div bind:this={root} class="share-root">
   {#if inline}
-    <section class="panel panel-tabbed share-sidebar" aria-label="Share document">
-      <PanelHeader title="Sharing" />
+    <section class="panel panel-tabbed share-sidebar" aria-label="Share">
+      <PanelHeader title="Share" />
       {@render content()}
     </section>
   {:else}
-    <Modal bind:open title="Share document" onclose={onclose}
+    <Modal bind:open title="Share" onclose={onclose}
            confirm={{ label: "Done", cancel: false, onclick: () => (open = false) }}>
       <div class="panel-tabbed share-modal-body">
         {@render content()}

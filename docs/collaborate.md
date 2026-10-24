@@ -2,11 +2,11 @@
 title: "Collaborate"
 ---
 
-Share with links, not people. The owner mints a read, comment or edit link in the Sharing panel. Each role includes the ones beneath it.
+Share with links, not people. The owner mints a read, comment or edit link in the Share panel. Every link opens the whole project: each file, its preview and the comments. Each role includes the ones beneath it.
 
 | Role | May |
 | --- | --- |
-| reader | open the document and read its comments |
+| reader | open every file and its preview, and read the comments |
 | commenter | comment, reply, resolve; delete their own comments |
 | editor | edit the source; delete any comment |
 | owner | share, destroy |
