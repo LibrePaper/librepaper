@@ -769,5 +769,14 @@ try {
   assert.equal(await b.evaluate('document.querySelector(".cm-editor") === window.savedEditor'), true);
 
   assert.deepEqual(await b.evaluate('window.testErrors'),[]);
-  console.log('responsive-browser: panel minimum widths, rail overflow, collaboration tabs, comments, highlight discussions, custom colors, retry/discard, unread chat, drafts, viewport bounds, tap to top and the hiding bar passed');
+
+  // A project opened on a phone lands on the preview, not the files or the source.
+  await b.resize(390,844);
+  await b.navigate(url);
+  await until('phone landing',()=>b.evaluate("Boolean(document.querySelector('.reader.mobile-document .viewport')?.getClientRects().length)"), 10000);
+  await flush();
+  assert.equal(await visible('.viewport'),true,'a phone opens on the preview');
+  assert.equal(await visible('.sidebar'),false,'a phone does not open on the files');
+  assert.equal(await visible('.editorpane'),false,'a phone does not open on the source');
+  console.log('responsive-browser: panel minimum widths, rail overflow, collaboration tabs, comments, highlight discussions, custom colors, retry/discard, unread chat, drafts, viewport bounds, tap to top, the hiding bar and the phone landing passed');
 } finally { await b?.close(); serverHttp?.close(); removeTemporary(temp); }
