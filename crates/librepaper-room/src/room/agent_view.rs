@@ -2,10 +2,10 @@
 //!
 //! The source is read from the sequencer's projection rather than from a
 //! resident `LoroDoc` the room held
-//! itself, and there is no fence to check first: `room.unreadable()` is the
-//! one "cannot serve this" signal now, and it means the cache could
-//! not be built, not that some earlier agent transaction left the room in a
-//! state nobody had reconciled -- that apparatus no longer exists, because a
+//! itself, and there is no fence to check first: the projection's own
+//! `readable()` check is the one "cannot serve this" signal now. It refuses a
+//! fenced document and one whose cache could not be built. No earlier agent
+//! transaction leaves the room in a state nobody had reconciled -- that apparatus no longer exists, because a
 //! command's source is prepared on a fork and only ever imported after its
 //! transaction commits.
 use serde_json::json;
@@ -21,13 +21,12 @@ impl Room {
         &self,
     ) -> Result<crate::room::agent_query::QuerySnapshot, crate::room::source_change::AgentError>
     {
-        if let Some(why) = self.unreadable().await {
-            return Err(crate::room::source_change::AgentError::Storage(why));
-        }
-        let projected = self
-            .projection()
-            .await
-            .map_err(|error| crate::room::source_change::AgentError::Storage(error.to_string()))?;
+        let projected = self.projection().await.map_err(|error| {
+            crate::room::source_change::AgentError::Storage(match error {
+                SequencerError::Unreadable(why) => why,
+                other => other.to_string(),
+            })
+        })?;
         Ok(crate::room::agent_query::QuerySnapshot {
             tree_digest: projected.projection.digest(),
             projected,

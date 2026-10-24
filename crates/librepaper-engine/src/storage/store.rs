@@ -1170,9 +1170,8 @@ impl Store {
             .get(document.id, slug)
             .await
             .map_err(|error| error.to_string())?;
-        let rules = librepaper_document::document::paths::rules(&self.config);
         let projected = sequencer
-            .with_head(|doc| librepaper_document::document::projection::project(doc, &rules))
+            .projection()
             .await
             .map_err(|error| error.to_string())?;
         let mut files: Vec<(String, Vec<u8>)> = Vec::new();
@@ -1226,13 +1225,7 @@ impl Store {
         &self,
         entries: &[IndexEntry],
     ) -> Result<std::collections::HashMap<String, (i64, i64, Option<i32>)>, CatalogError> {
-        let mut by_id = std::collections::HashMap::new();
-        for entry in entries {
-            if let Ok(id) = uuid::Uuid::parse_str(&entry.storage_id) {
-                by_id.insert(id, entry.slug.clone());
-            }
-        }
-        let ids: Vec<_> = by_id.keys().copied().collect();
+        let (by_id, ids) = slugs_by_id(entries);
         let counts = self.catalog.listing_counts(&ids).await?;
         Ok(counts
             .into_iter()
@@ -1253,13 +1246,7 @@ impl Store {
     ) -> Result<std::collections::HashMap<String, (String, bool)>, CatalogError> {
         let account_id = uuid::Uuid::parse_str(account_id)
             .map_err(|_| CatalogError::Invalid("invalid listing account".into()))?;
-        let mut by_id = std::collections::HashMap::new();
-        for entry in entries {
-            if let Ok(id) = uuid::Uuid::parse_str(&entry.storage_id) {
-                by_id.insert(id, entry.slug.clone());
-            }
-        }
-        let ids: Vec<_> = by_id.keys().copied().collect();
+        let (by_id, ids) = slugs_by_id(entries);
         let marks = self.catalog.marks_for_documents(account_id, &ids).await?;
         Ok(marks
             .into_iter()
@@ -1282,13 +1269,7 @@ impl Store {
         entries: &[IndexEntry],
     ) -> Result<std::collections::HashMap<String, Vec<String>>, CatalogError> {
         let account_id = parse_account_id(account_id)?;
-        let mut by_id = std::collections::HashMap::new();
-        for entry in entries {
-            if let Ok(id) = uuid::Uuid::parse_str(&entry.storage_id) {
-                by_id.insert(id, entry.slug.clone());
-            }
-        }
-        let ids: Vec<_> = by_id.keys().copied().collect();
+        let (by_id, ids) = slugs_by_id(entries);
         let links = self.catalog.tags_for_documents(account_id, &ids).await?;
         let mut by_slug: std::collections::HashMap<String, Vec<String>> =
             std::collections::HashMap::new();
@@ -1925,4 +1906,18 @@ fn tag_modify_error(error: CatalogError) -> ModifyError {
         }
         other => ModifyError::Storage(other.to_string()),
     }
+}
+
+/// The listed documents' slugs by storage id, and those ids.
+fn slugs_by_id(
+    entries: &[IndexEntry],
+) -> (std::collections::HashMap<uuid::Uuid, String>, Vec<uuid::Uuid>) {
+    let mut by_id = std::collections::HashMap::new();
+    for entry in entries {
+        if let Ok(id) = uuid::Uuid::parse_str(&entry.storage_id) {
+            by_id.insert(id, entry.slug.clone());
+        }
+    }
+    let ids = by_id.keys().copied().collect();
+    (by_id, ids)
 }
