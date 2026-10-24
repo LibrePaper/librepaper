@@ -340,8 +340,9 @@
   {/if}
   <!-- The eye is the lock. The locked file shows it solid, and pressing it
        unlocks. The file the preview is showing without a lock shows it solid
-       too, and pressing it locks the preview there. Any other file that renders on its own offers the
-       faint eye, which locks the preview there without opening the file. -->
+       too, and pressing it locks the preview there. Any other file that
+       renders on its own offers the faint eye, which locks the preview there
+       without opening the file. -->
   {#if node.kind !== "folder" && locked && node.path === locked}
     <button type="button" class="explorer-preview shown" aria-label="Unlock the preview" title="Unlock the preview"
       onclick={(event) => { event.stopPropagation(); onunlock?.(); }}
