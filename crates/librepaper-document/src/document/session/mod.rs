@@ -16,7 +16,7 @@
 //! | `files` | an id | the text at it |
 //! | `paths` | an id | the path that text is known by |
 //! | `assets` | a path | the digest of the bytes at it |
-//! | `meta` | `main` | the id of the main file |
+//! | `meta` | `latex.engine` | document metadata |
 //!
 //! A text is keyed by an id and named separately because that is what makes a
 //! rename free: renaming moves a string in `paths` and leaves the text where it
@@ -133,8 +133,7 @@ mod astral_tests {
     fn replacing_a_body_with_crlf_stores_line_feeds() {
         // The update path of put_text, then replace_text on a document it
         // seeds and on one it finds, which is what a command-line publish and
-        // a restore use. put_text sets no main marker, so replace_text gets
-        // its own document here rather than a second text named main.md.
+        // a restore use.
         let doc = doc_with("a\nb");
         put_text(&doc, "main.md", "a\r\nb\r\nc");
         assert_eq!(body(&doc), "a\nb\nc");

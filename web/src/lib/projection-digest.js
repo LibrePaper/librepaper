@@ -31,9 +31,10 @@ export function compareUtf8(left, right) {
   return a.length - b.length;
 }
 
-/// The bytes the digest is taken over: a version marker, the main path, then
+/// The bytes the digest is taken over: a version marker, the entry line, then
 /// one line per file in path order carrying its path, kind and content
-/// digest.
+/// digest. The entry line names the file a render tree builds and is empty for
+/// a projection, which has no main file.
 ///
 /// A line-oriented form rather than JSON, because JSON leaves the
 /// implementation free to reorder integer-looking keys and to spell escapes
@@ -52,7 +53,7 @@ export function compareUtf8(left, right) {
 /// `files` is an iterable of `[path, {kind, digest}]` already in path order.
 export function canonicalBytes(projection) {
   let out = "librepaper.projection.v1\n";
-  out += `${projection.main}\n`;
+  out += `${projection.main || ""}\n`;
   for (const [path, entry] of projection.files) {
     out += `${path}\t${entry.kind}\t${entry.digest}\n`;
   }

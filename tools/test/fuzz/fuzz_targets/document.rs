@@ -21,7 +21,6 @@
 //!   oracle: reaching the end of this function is the pass);
 //! * it is deterministic -- the same document projects to the same tree and
 //!   the same digest twice running;
-//! * the main file, when there is one, is a text that is in the tree;
 //! * every text in the tree has a body beside it, which is what an export
 //!   and a render both depend on;
 //! * no path in the tree is a directory prefix of another, which is step 4's
@@ -48,12 +47,10 @@ enum Op {
     PutText { path: String, body: String },
     /// Through the binary: an asset's digest named at a path.
     PutAsset { path: String, sha: String },
-    /// Through the binary: the main file replaced as a publish does.
+    /// Through the binary: a file replaced as a publish does.
     Replace { wanted: String, path: String },
-    /// Through the binary: the main file edited as a `sync` write does.
+    /// Through the binary: the opening file edited as a `sync` write does.
     Edit { wanted: String },
-    /// Through the binary: another id named as main.
-    SetMain { id: String },
     /// Straight into the maps, as a browser can: a text under any id, with
     /// or without a path.
     RawFile {
@@ -65,8 +62,6 @@ enum Op {
     RawPath { id: String, path: String },
     /// Straight into the maps: any asset key.
     RawAsset { path: String, sha: String },
-    /// Straight into the maps: `meta.main` set to anything.
-    RawMain { id: String },
     /// Straight into the maps: a `files` value that is not a text at all,
     /// which §4.4 step 1 says is absent with a diagnostic rather than an
     /// error.
@@ -80,7 +75,6 @@ fuzz_target!(|ops: Vec<Op>| {
     let files = doc.get_map(session::FILES);
     let paths = doc.get_map(session::PATHS);
     let assets = doc.get_map(session::ASSETS);
-    let meta = doc.get_map(session::META);
 
     for op in &ops {
         match op {
@@ -92,14 +86,12 @@ fuzz_target!(|ops: Vec<Op>| {
                 session::replace_text(&doc, wanted, path);
             }
             Op::Edit { wanted } => {
-                let before = session::text_of(&doc);
-                let edits = diff(&before, wanted);
-                let main = session::main_path(&doc);
-                if !main.is_empty() {
-                    session::apply_edits_at(&doc, &main, &edits);
+                if let Some(open) = session::opening_path(&doc) {
+                    let before = session::text_of(&doc, &open).unwrap_or_default();
+                    let edits = diff(&before, wanted);
+                    session::apply_edits_at(&doc, &open, &edits);
                 }
             }
-            Op::SetMain { id } => session::set_main(&doc, id),
             Op::RawFile { id, body, path } => {
                 if let Ok(text) = files.insert_container(id.as_str(), LoroText::new()) {
                     if !body.is_empty() {
@@ -115,9 +107,6 @@ fuzz_target!(|ops: Vec<Op>| {
             }
             Op::RawAsset { path, sha } => {
                 assets.insert(path.as_str(), sha.as_str()).ok();
-            }
-            Op::RawMain { id } => {
-                meta.insert(session::MAIN, id.as_str()).ok();
             }
             Op::RawNonText { id, number } => {
                 files.insert(id.as_str(), *number).ok();
@@ -143,31 +132,6 @@ fuzz_target!(|ops: Vec<Op>| {
         second.projection.digest(),
         "one tree had two digests"
     );
-
-    // The main file is a text that is here, or there is no main. §4.4 step 6
-    // chooses the first text when `meta.main` names nothing, so "no main" is
-    // reachable only for a document with no text in it at all.
-    if !first.projection.main.is_empty() {
-        let entry = first
-            .projection
-            .files
-            .get(&first.projection.main)
-            .expect("the main path is in the tree");
-        assert_eq!(entry.kind, "text", "the main file is a text");
-        assert_eq!(
-            entry.id, first.projection.main_id,
-            "the main path and the main id name one file"
-        );
-    } else {
-        assert!(
-            first
-                .projection
-                .files
-                .values()
-                .all(|entry| entry.kind != "text"),
-            "a document with a text in it has a main file"
-        );
-    }
 
     for (path, entry) in &first.projection.files {
         if entry.kind == "text" {
@@ -207,14 +171,6 @@ fuzz_target!(|ops: Vec<Op>| {
                 );
             }
             _ => session::put_asset(&rebuilt, path, &entry.digest),
-        }
-    }
-    if !first.projection.main.is_empty() {
-        if let Some((id, _)) = session::paths_of(&rebuilt)
-            .into_iter()
-            .find(|(_, path)| path == &first.projection.main)
-        {
-            session::set_main(&rebuilt, &id);
         }
     }
     rebuilt.commit();

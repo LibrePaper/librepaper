@@ -54,8 +54,6 @@ function build(testCase) {
 /// which each implementation words for its own callers.
 function actualOf(projection, digest) {
   return {
-    main: projection.main,
-    mainId: projection.mainId,
     files: [...projection.files].map(([path, entry]) => [
       path,
       { bytes: entry.bytes, digest: entry.digest, id: entry.id, kind: entry.kind },

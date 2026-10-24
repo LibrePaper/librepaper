@@ -67,10 +67,10 @@ function free(taken, path) {
   return true;
 }
 
-/// The seven steps of §4.4, in order. `doc` is a `LoroDoc`; `rules` is the
+/// The steps of §4.4, in order. `doc` is a `LoroDoc`; `rules` is the
 /// deployment's path rules as `/api/config` serves them.
 ///
-/// Returns `{ main, mainId, files, diagnostics, texts }`, where `files` maps
+/// Returns `{ files, diagnostics, texts }`, where `files` maps
 /// a path to `{ kind, id, digest, bytes }` in UTF-8 path order and `texts`
 /// maps a path to its body.
 export function projectDirectory(doc, rules) {
@@ -81,7 +81,6 @@ export function projectDirectory(doc, rules) {
   const filesMap = doc.getMap("files");
   const pathsMap = doc.getMap("paths");
   const assetsMap = doc.getMap("assets");
-  const metaMap = doc.getMap("meta");
 
   const named = new Map();
   for (const id of pathsMap.keys()) {
@@ -208,12 +207,10 @@ export function projectDirectory(doc, rules) {
 
   const files = new Map();
   const texts = new Map();
-  const pathOfId = new Map();
   placed.sort((left, right) => compareUtf8(left[1], right[1]));
   for (const [candidate, path] of placed) {
     if (candidate.text !== null) {
       texts.set(path, candidate.text);
-      pathOfId.set(candidate.id, path);
     }
     const entry = {
       kind: candidate.asset ? "asset" : "text",
@@ -227,34 +224,15 @@ export function projectDirectory(doc, rules) {
     files.set(path, entry);
   }
 
-  // 6. Main.
-  const declared = typeof metaMap.get("main") === "string" ? metaMap.get("main") : "";
-  let mainId = "";
-  let main = "";
-  if (pathOfId.has(declared)) {
-    mainId = declared;
-    main = pathOfId.get(declared);
-  } else {
-    if (declared) diagnostics.push({ kind: "main-missing", id: declared });
-    for (const candidate of valid) {
-      if (candidate.asset) continue;
-      if (pathOfId.has(candidate.id)) {
-        mainId = candidate.id;
-        main = pathOfId.get(candidate.id);
-        break;
-      }
-    }
-  }
-
   diagnostics.sort((left, right) => compareKeys(diagnosticSortKey(left), diagnosticSortKey(right)));
 
-  return { main, mainId, files, diagnostics, texts };
+  return { files, diagnostics, texts };
 }
 
 /// The canonical projection, including the content digests used by snapshots.
 /// Directory and render-tree callers that do not need hashes use
 /// `projectDirectory`; both paths therefore share all validation, collision,
-/// ordering, and main-file decisions.
+/// and ordering decisions.
 export async function project(doc, rules) {
   const projection = projectDirectory(doc, rules);
   await Promise.all([...projection.texts.entries()].map(async ([path, body]) => {

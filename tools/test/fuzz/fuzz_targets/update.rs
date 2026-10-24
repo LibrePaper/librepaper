@@ -73,8 +73,7 @@ fuzz_target!(|input: Input| {
 
     // The room's document, with something already in it.
     let doc = session::new_doc();
-    let id = session::put_text(&doc, "main.typ", "= Title\n\nA paragraph of prose.");
-    session::set_main(&doc, &id);
+    session::put_text(&doc, "main.typ", "= Title\n\nA paragraph of prose.");
     session::put_text(&doc, "chapters/one.typ", "one");
     let before = session::encode_state(&doc);
 
@@ -92,8 +91,8 @@ fuzz_target!(|input: Input| {
             // The projection is the next thing the server reads, and it
             // reads whatever the peer's bytes just put there.
             let _ = session::paths_of(&doc);
-            let _ = session::text_of(&doc);
-            let _ = session::main_path(&doc);
+            let _ = session::text_of(&doc, "main.typ");
+            let _ = session::opening_path(&doc);
         }
         Err(_) => {
             assert!(!decoded, "the rehearsal admitted bytes the import refused");

@@ -13,7 +13,7 @@
 // browser-only cache key for a render tree (`{ main, texts, digests }`),
 // used to tell whether a local build's job or a remembered preview still
 // matches the source on screen. It borrows `projection.js`'s canonical
-// serialization -- main path, then one line per file in UTF-8 order with its
+// serialization -- entry line, then one line per file in UTF-8 order with its
 // kind and content digest -- so there is one digest algorithm in this
 // browser rather than two, but it is never compared against a server digest
 // and never sent as one.
@@ -43,7 +43,7 @@ const tree = {
 };
 
 // The canonical bytes are `projection.js`'s own, so this is the one place
-// that pins the shape rather than re-deriving it: main path, then one line
+// that pins the shape rather than re-deriving it: entry line, then one line
 // per file in UTF-8 path order, tab-separated kind and digest.
 const canonical = canonicalBytes({
   main: "main.tex",

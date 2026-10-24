@@ -61,8 +61,8 @@ pub mod paths {
 pub mod session {
     pub use librepaper_document::document::session::{
         apply_edits_at, apply_update, decode_update, encode_diff, encode_state, encode_vector,
-        main_path, new_doc, paths_of, put_asset, put_text, replace_text, set_main, text_of, Edit,
-        ASSETS, FILES, MAIN, META, PATHS,
+        new_doc, opening_path, paths_of, put_asset, put_text, replace_text, text_of, Edit, ASSETS,
+        FILES, META, PATHS,
     };
 }
 

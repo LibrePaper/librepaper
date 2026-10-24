@@ -118,8 +118,6 @@ fn expectation(projection: &Projection) -> Value {
         })
         .collect();
     json!({
-        "main": projection.main,
-        "mainId": projection.main_id,
         "files": files,
         "diagnostics": diagnostics,
         "digest": projection.digest(),

@@ -13,9 +13,7 @@
       "expect": {
         "diagnostics": [],
         "digest": "4b1a5d15da93509b096d6c5e11e1e26bf7fd44b6a9ba30c005a0b19b1dfb47bc",
-        "files": [],
-        "main": "",
-        "mainId": ""
+        "files": []
       },
       "files": [],
       "meta": [],
@@ -37,9 +35,7 @@
               "kind": "text"
             }
           ]
-        ],
-        "main": "paper.tex",
-        "mainId": "aaa"
+        ]
       },
       "files": [
         {
@@ -47,13 +43,8 @@
           "text": "\\documentclass{article}"
         }
       ],
-      "meta": [
-        {
-          "key": "main",
-          "value": "aaa"
-        }
-      ],
-      "name": "one file and its main pointer",
+      "meta": [],
+      "name": "one file",
       "paths": [
         {
           "id": "aaa",
@@ -85,9 +76,7 @@
               "kind": "text"
             }
           ]
-        ],
-        "main": "😀.md",
-        "mainId": "aaa"
+        ]
       },
       "files": [
         {
@@ -99,12 +88,7 @@
           "text": "combining: é"
         }
       ],
-      "meta": [
-        {
-          "key": "main",
-          "value": "aaa"
-        }
-      ],
+      "meta": [],
       "name": "astral characters and combining marks in text and paths",
       "paths": [
         {
@@ -163,9 +147,7 @@
               "kind": "text"
             }
           ]
-        ],
-        "main": "Résumé.md",
-        "mainId": "aaa"
+        ]
       },
       "files": [
         {
@@ -253,9 +235,7 @@
               "kind": "text"
             }
           ]
-        ],
-        "main": "paper.tex",
-        "mainId": "aaa"
+        ]
       },
       "files": [
         {
@@ -317,9 +297,7 @@
               "kind": "text"
             }
           ]
-        ],
-        "main": "chapters/one.tex",
-        "mainId": "aaa"
+        ]
       },
       "files": [
         {
@@ -370,9 +348,7 @@
               "kind": "asset"
             }
           ]
-        ],
-        "main": "",
-        "mainId": ""
+        ]
       },
       "files": [
         {
@@ -413,9 +389,7 @@
               "kind": "text"
             }
           ]
-        ],
-        "main": "right.md",
-        "mainId": "bbb"
+        ]
       },
       "files": [
         {
@@ -458,9 +432,7 @@
           }
         ],
         "digest": "4b1a5d15da93509b096d6c5e11e1e26bf7fd44b6a9ba30c005a0b19b1dfb47bc",
-        "files": [],
-        "main": "",
-        "mainId": ""
+        "files": []
       },
       "files": [
         {
@@ -507,9 +479,7 @@
               "kind": "text"
             }
           ]
-        ],
-        "main": "ok.md",
-        "mainId": "ccc"
+        ]
       },
       "files": [
         {
@@ -579,109 +549,12 @@
               "kind": "asset"
             }
           ]
-        ],
-        "main": "",
-        "mainId": ""
+        ]
       },
       "files": [],
       "meta": [],
       "name": "an asset value that is not a digest",
       "paths": []
-    },
-    {
-      "assets": [],
-      "expect": {
-        "diagnostics": [],
-        "digest": "4fb2d59849085dd60a3db94d0fc6a5deb662c1a0eb3edaf70375b6c86c92a31d",
-        "files": [
-          [
-            "alpha.md",
-            {
-              "bytes": 1,
-              "digest": "ca978112ca1bbdcafac231b39a23dc4da786eff8147c4e72b9807785afee48bb",
-              "id": "aaa",
-              "kind": "text"
-            }
-          ],
-          [
-            "zeta.md",
-            {
-              "bytes": 1,
-              "digest": "3e23e8160039594a33894f6564e1b1348bbd7a0088d42c4acb73eeaed59c009d",
-              "id": "bbb",
-              "kind": "text"
-            }
-          ]
-        ],
-        "main": "alpha.md",
-        "mainId": "aaa"
-      },
-      "files": [
-        {
-          "id": "bbb",
-          "text": "b"
-        },
-        {
-          "id": "aaa",
-          "text": "a"
-        }
-      ],
-      "meta": [],
-      "name": "an absent main falls back to the first text",
-      "paths": [
-        {
-          "id": "bbb",
-          "path": "zeta.md"
-        },
-        {
-          "id": "aaa",
-          "path": "alpha.md"
-        }
-      ]
-    },
-    {
-      "assets": [],
-      "expect": {
-        "diagnostics": [
-          {
-            "id": "gone",
-            "kind": "main-missing"
-          }
-        ],
-        "digest": "9e1442386b4c36dc5efc15fd5130a10c12c66fa366015674675e61c31c197310",
-        "files": [
-          [
-            "a.md",
-            {
-              "bytes": 1,
-              "digest": "ca978112ca1bbdcafac231b39a23dc4da786eff8147c4e72b9807785afee48bb",
-              "id": "aaa",
-              "kind": "text"
-            }
-          ]
-        ],
-        "main": "a.md",
-        "mainId": "aaa"
-      },
-      "files": [
-        {
-          "id": "aaa",
-          "text": "a"
-        }
-      ],
-      "meta": [
-        {
-          "key": "main",
-          "value": "gone"
-        }
-      ],
-      "name": "meta.main naming a deleted file",
-      "paths": [
-        {
-          "id": "aaa",
-          "path": "a.md"
-        }
-      ]
     },
     {
       "assets": [],
@@ -709,9 +582,7 @@
               "kind": "text"
             }
           ]
-        ],
-        "main": "paper.tex",
-        "mainId": "ccc"
+        ]
       },
       "files": [
         {
@@ -815,9 +686,7 @@
               "kind": "text"
             }
           ]
-        ],
-        "main": "main.typ",
-        "mainId": "0001"
+        ]
       },
       "files": [
         {
@@ -837,12 +706,7 @@
           "value": true
         }
       ],
-      "meta": [
-        {
-          "key": "main",
-          "value": "0001"
-        }
-      ],
+      "meta": [],
       "name": "a project with every shape at once",
       "paths": [
         {

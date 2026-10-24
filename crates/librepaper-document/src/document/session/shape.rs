@@ -15,7 +15,7 @@
 //! | `files` | an id | the LoroText at it |
 //! | `paths` | an id | the path that text is known by |
 //! | `assets` | a path | the digest of the bytes at it |
-//! | `meta` | `main`, `latex.engine` | document metadata |
+//! | `meta` | `latex.engine` | document metadata |
 //!
 //! A text is keyed by an id and named separately because that is what makes a
 //! rename free: renaming moves a string in `paths` and leaves the LoroText
@@ -32,13 +32,12 @@
 
 use std::collections::{BTreeMap, HashMap};
 
-use loro::{Container, LoroDoc, LoroMap, LoroText, LoroValue, ValueOrContainer};
+use loro::{Container, LoroDoc, LoroMap, LoroValue, ValueOrContainer};
 
-// The document's four roots and the key that names its main file, from the
-// crate that owns the schema. They were declared here as well, with the same
+// The document's four roots, from the crate that owns the schema. They were declared here as well, with the same
 // four strings, which is a schema defined in two places that nothing would
 // have made disagree except somebody changing one of them.
-pub use crate::document::projection::{ASSETS, CHANGES, FILES, MAIN, META, PATHS};
+pub use crate::document::projection::{ASSETS, CHANGES, FILES, META, PATHS};
 
 /// A document the browser can talk to.
 pub fn new_doc() -> LoroDoc {
@@ -57,24 +56,6 @@ pub fn new_doc() -> LoroDoc {
 /// the same instant do not collide.
 pub fn mint_id() -> String {
     hex::encode(librepaper_base::util::random_bytes(6))
-}
-
-/// The path the main file is known by, which is what the index entry records
-/// and what the format is derived from.
-pub fn main_path(doc: &LoroDoc) -> String {
-    let path_map = doc.get_map(PATHS);
-    let meta = doc.get_map(META);
-    let Some(id) = string_at(&meta, MAIN) else {
-        return String::new();
-    };
-    string_at(&path_map, &id).unwrap_or_default()
-}
-
-/// Names the main file. An editor's act rather than a keystroke: the server
-/// needs it to render a label and to say what format the document is in.
-pub fn set_main(doc: &LoroDoc, id: &str) {
-    let meta = doc.get_map(META);
-    meta.insert(MAIN, id).ok();
 }
 
 /// Raw text by path for fixtures. Production reads use stable file identities
@@ -162,31 +143,22 @@ pub fn paths_of(doc: &LoroDoc) -> HashMap<String, String> {
     out
 }
 
-/// The main file's text as it stands: what a one-file document has always
-/// meant by "the source", and what the command line reads.
-pub fn text_of(doc: &LoroDoc) -> String {
-    let files = doc.get_map(FILES);
-    let meta = doc.get_map(META);
-    let Some(id) = string_at(&meta, MAIN) else {
-        return String::new();
-    };
-    text_at(&files, &id)
-        .map(|text| text.to_string())
-        .unwrap_or_default()
+/// The text at `path` as it stands, or `None` when the document has no text
+/// there. This is what the command line reads.
+pub fn text_of(doc: &LoroDoc, path: &str) -> Option<String> {
+    texts_of(doc).remove(path)
+}
+
+/// The path the project opens on, by the opening rule over its text files, or
+/// `None` for a project with no text.
+pub fn opening_path(doc: &LoroDoc) -> Option<String> {
+    crate::document::opening::opening_file(&texts_of(doc))
 }
 
 /// Helper: extract a string value from a map by key.
 fn string_at(map: &LoroMap, key: &str) -> Option<String> {
     match map.get(key) {
         Some(ValueOrContainer::Value(LoroValue::String(s))) => Some(s.to_string()),
-        _ => None,
-    }
-}
-
-/// Helper: extract a text container from a map by id.
-fn text_at(files: &LoroMap, id: &str) -> Option<LoroText> {
-    match files.get(id) {
-        Some(ValueOrContainer::Container(Container::Text(text))) => Some(text),
         _ => None,
     }
 }

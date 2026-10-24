@@ -9,7 +9,7 @@ use std::borrow::Cow;
 
 use loro::{LoroDoc, LoroMap, LoroText};
 
-use super::shape::{mint_id, ASSETS, FILES, MAIN, META, PATHS};
+use super::shape::{mint_id, ASSETS, FILES, META, PATHS};
 
 /// A text edit: delete `delete` UTF-16 code units at position `at`,
 /// then insert `insert` at that position.
@@ -34,14 +34,6 @@ fn maps(doc: &LoroDoc) -> (LoroMap, LoroMap, LoroMap, LoroMap) {
 fn text_at(files: &LoroMap, id: &str) -> Option<LoroText> {
     match files.get(id)? {
         loro::ValueOrContainer::Container(loro::Container::Text(t)) => Some(t),
-        _ => None,
-    }
-}
-
-/// Get a string value from a map, or None.
-fn string_at(map: &LoroMap, key: &str) -> Option<String> {
-    match map.get(key)? {
-        loro::ValueOrContainer::Value(loro::LoroValue::String(s)) => Some(s.to_string()),
         _ => None,
     }
 }
@@ -75,31 +67,11 @@ pub fn line_feeds(body: &str) -> Cow<'_, str> {
     Cow::Owned(body.replace("\r\n", "\n").replace('\r', "\n"))
 }
 
-/// Replaces a file's text with `wanted`. This is how a command-line
-/// publish, a `sync` write and a restore all reach the live document.
-/// `path` names the file when the document has none yet, which is the
-/// case for a document being seeded from what it was published with. A
-/// document that already has one keeps it: this writes words, never names.
+/// Replaces the text at `path` with `wanted`, creating the file when the
+/// document has none there. This is how a command-line publish, a `sync`
+/// write and a restore reach the live document.
 pub fn replace_text(doc: &LoroDoc, wanted: &str, path: &str) {
-    let wanted = line_feeds(wanted);
-    let (files, path_map, _, meta) = maps(doc);
-    let id = match string_at(&meta, MAIN) {
-        Some(id) => id,
-        None => {
-            // A document with no directory yet: make one, rather than writing
-            // into the retired text that nothing reads any more.
-            let id = mint_id();
-            if let Ok(text) = files.insert_container(&id, LoroText::new()) {
-                path_map.insert(&id, path).ok();
-                meta.insert(MAIN, id.as_str()).ok();
-                text.update(&wanted, loro::UpdateOptions::default()).ok();
-            }
-            return;
-        }
-    };
-    if let Some(text) = text_at(&files, &id) {
-        text.update(&wanted, loro::UpdateOptions::default()).ok();
-    }
+    put_text(doc, path, wanted);
 }
 
 /// Applies word-level edits to a LoroText, or none of them at all.
@@ -202,18 +174,14 @@ pub fn put_text_with_id(doc: &LoroDoc, id: &str, path: &str, body: &str) -> bool
     true
 }
 
-/// Removes the text currently named `path`, preserving every other file and
-/// clearing the main-file marker when that file was the entrypoint.
+/// Removes the text currently named `path`, preserving every other file.
 pub fn remove_path(doc: &LoroDoc, path: &str) -> bool {
-    let (files, path_map, _, meta) = maps(doc);
+    let (files, path_map, _, _) = maps(doc);
     let Some(id) = id_of_path(&path_map, path) else {
         return false;
     };
     path_map.delete(&id).ok();
     files.delete(&id).ok();
-    if string_at(&meta, MAIN).as_deref() == Some(id.as_str()) {
-        meta.delete(MAIN).ok();
-    }
     true
 }
 
@@ -221,7 +189,7 @@ pub fn remove_path(doc: &LoroDoc, path: &str) -> bool {
 /// must be free; callers use this for filesystem renames so concurrent carets
 /// and edits remain attached to the same shared file.
 pub fn rename_path(doc: &LoroDoc, from: &str, to: &str) -> bool {
-    let (files, path_map, _, meta) = maps(doc);
+    let (files, path_map, _, _) = maps(doc);
     let Some(id) = id_of_path(&path_map, from) else {
         return false;
     };
@@ -232,9 +200,6 @@ pub fn rename_path(doc: &LoroDoc, from: &str, to: &str) -> bool {
         return false;
     }
     path_map.insert(&id, to).ok();
-    if string_at(&meta, MAIN).as_deref() == Some(id.as_str()) {
-        meta.insert(MAIN, id.as_str()).ok();
-    }
     true
 }
 

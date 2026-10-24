@@ -40,9 +40,6 @@ pub const META: &str = "meta";
 /// never alters what a document says.
 pub const CHANGES: &str = "changes";
 
-/// The key in `meta` that names the main file, by id.
-pub const MAIN: &str = "main";
-
 /// How long an asset digest is, spelled in hex. An `assets` value of any
 /// other length is not a digest this document store could have written.
 pub const ASSET_DIGEST_HEX: usize = 64;
@@ -77,8 +74,6 @@ pub enum Diagnostic {
     },
     /// A candidate that asked for a path and could be given none at all.
     Dropped { id: String, path: String },
-    /// `meta.main` names nothing in the projection; the first text was used.
-    MainMissing { id: String },
 }
 
 impl Diagnostic {
@@ -92,7 +87,6 @@ impl Diagnostic {
             Self::InvalidPath { .. } => "invalid-path",
             Self::Moved { .. } => "moved",
             Self::Dropped { .. } => "dropped",
-            Self::MainMissing { .. } => "main-missing",
         }
     }
 
@@ -100,8 +94,7 @@ impl Diagnostic {
         let (first, second) = match self {
             Self::NotAText { id }
             | Self::Unnamed { id }
-            | Self::Dangling { id }
-            | Self::MainMissing { id } => (id.clone(), String::new()),
+            | Self::Dangling { id } => (id.clone(), String::new()),
             Self::NotADigest { path } => (path.clone(), String::new()),
             Self::InvalidPath { id, path, .. } => (id.clone(), path.clone()),
             Self::Moved { id, from, .. } => (id.clone(), from.clone()),
@@ -132,11 +125,6 @@ pub struct Entry {
 /// What the document holds, as a directory.
 #[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
 pub struct Projection {
-    /// The path of the main file, or empty when the document has none.
-    pub main: String,
-    /// Its Loro id, or empty.
-    #[serde(default, skip_serializing_if = "String::is_empty")]
-    pub main_id: String,
     /// Every path in the directory, ordered so that two runs over one
     /// document serialize identically.
     pub files: BTreeMap<String, Entry>,
@@ -173,8 +161,9 @@ impl Projection {
         Sha256::digest(self.canonical_bytes()).into()
     }
 
-    /// The canonical form the digest is taken over: the main path, then one
-    /// line per file in path order. A line-oriented form rather than JSON,
+    /// The canonical form the digest is taken over: an empty entry line, then
+    /// one line per file in path order. The line is kept so the layout matches
+    /// the render-tree digest, which names the file it builds there. A line-oriented form rather than JSON,
     /// because JSON leaves the implementation free to reorder integer-looking
     /// keys and to spell escapes differently, and two implementations have to
     /// produce the same bytes. No field here can contain a newline: a path
@@ -183,7 +172,6 @@ impl Projection {
     pub fn canonical_bytes(&self) -> Vec<u8> {
         let mut out = String::with_capacity(64 + self.files.len() * 96);
         out.push_str("librepaper.projection.v1\n");
-        out.push_str(&self.main);
         out.push('\n');
         for (path, entry) in &self.files {
             out.push_str(path);
@@ -398,12 +386,10 @@ pub fn project(doc: &LoroDoc, rules: &Rules) -> Projected {
 
     let mut files_out = BTreeMap::new();
     let mut texts = BTreeMap::new();
-    let mut path_of_id: HashMap<String, String> = HashMap::new();
     for (index, path) in placed {
         let candidate = &candidates[index];
         if let Some(body) = &candidate.text {
             texts.insert(path.clone(), body.clone());
-            path_of_id.insert(candidate.id.clone(), path.clone());
         }
         files_out.insert(
             path,
@@ -416,41 +402,12 @@ pub fn project(doc: &LoroDoc, rules: &Rules) -> Projected {
         );
     }
 
-    // 6. Main.
-    let meta = doc.get_map(META);
-    let declared = match meta.get(MAIN) {
-        Some(ValueOrContainer::Value(LoroValue::String(id))) => id.to_string(),
-        _ => String::new(),
-    };
-    let (main_id, main) = match path_of_id.get(&declared) {
-        Some(path) => (declared, path.clone()),
-        None => {
-            if !declared.is_empty() {
-                diagnostics.push(Diagnostic::MainMissing { id: declared });
-            }
-            // The first text candidate in the order of step 3. `candidates`
-            // is still in that order and texts sort before assets, so the
-            // first one that received a path is the answer.
-            candidates
-                .iter()
-                .filter(|candidate| !candidate.asset)
-                .find_map(|candidate| {
-                    path_of_id
-                        .get(&candidate.id)
-                        .map(|path| (candidate.id.clone(), path.clone()))
-                })
-                .unwrap_or_default()
-        }
-    };
-
     // A total order, so that two runs over one document -- and the browser's
     // run beside the server's -- report the same list in the same sequence.
     diagnostics.sort_by(|left, right| left.sort_key().cmp(&right.sort_key()));
 
     Projected {
         projection: Projection {
-            main,
-            main_id,
             files: files_out,
             diagnostics,
         },
@@ -530,7 +487,6 @@ mod tests {
     fn an_empty_project_projects_to_nothing() {
         let projected = project(&doc(), &rules());
         assert!(projected.projection.files.is_empty());
-        assert_eq!(projected.projection.main, "");
     }
 
     #[test]
@@ -659,28 +615,6 @@ mod tests {
     }
 
     #[test]
-    fn an_absent_main_falls_back_to_the_first_text() {
-        let doc = doc();
-        put(&doc, "bbb", "b.md", "b");
-        put(&doc, "aaa", "a.md", "a");
-        let projected = project(&doc, &rules());
-        assert_eq!(projected.projection.main, "a.md");
-    }
-
-    #[test]
-    fn a_main_naming_a_deleted_file_falls_back_and_says_so() {
-        let doc = doc();
-        put(&doc, "aaa", "a.md", "a");
-        doc.get_map(META).insert(MAIN, "gone").unwrap();
-        let projected = project(&doc, &rules());
-        assert_eq!(projected.projection.main, "a.md");
-        assert!(projected
-            .projection
-            .diagnostics
-            .contains(&Diagnostic::MainMissing { id: "gone".into() }));
-    }
-
-    #[test]
     fn astral_characters_survive_paths_and_bodies() {
         let doc = doc();
         put(&doc, "aaa", "\u{1F600}.md", "\u{1F600} body");
@@ -699,8 +633,6 @@ mod tests {
 
         let same = self::doc();
         put(&same, "zzz", "a.md", "one");
-        same.get_map(META).insert(MAIN, "zzz").unwrap();
-        doc.get_map(META).insert(MAIN, "aaa").unwrap();
         assert_eq!(
             project(&doc, &rules()).projection.digest(),
             project(&same, &rules()).projection.digest(),
