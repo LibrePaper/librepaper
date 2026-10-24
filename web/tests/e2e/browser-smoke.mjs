@@ -421,7 +421,7 @@ async function run() {
   const owned = await deployment.publish(
     { title: "Owned", source: "# Owned\n\nOriginal wording.\n", source_format: "markdown" },
   );
-  check("publishing hands back a read link", /#k=/.test(owned.share_url || ""), JSON.stringify(owned).slice(0, 120));
+  check("publishing hands back a read link", /\/docs\/[^/]+\/[^/#?]+/.test(owned.share_url || ""), JSON.stringify(owned).slice(0, 120));
   const ownerTab = await openTab(`${BASE}/docs/${owned.slug}`, [
     SESSION,
   ]);
@@ -667,7 +667,7 @@ async function run() {
     },
     body: JSON.stringify({ create: { kind: "link", role: "commenter", until: "180d" } }),
   }).then((r) => r.json());
-  const mintedKey = new URL(minted.created?.url ?? "", BASE).hash.replace("#k=", "");
+  const mintedKey = new URL(minted.created?.url ?? "", BASE).pathname.split("/").pop();
   check("the share route mints a key", Boolean(mintedKey), JSON.stringify(minted).slice(0, 120));
 
   // A separately registered reviewer's browser, and the key in the fragment.
@@ -733,9 +733,9 @@ async function run() {
   // that was shared.
   const copied = await reviewer.eval(`
     const keys = JSON.parse(localStorage.getItem("librepaper-keys"));
-    return location.origin + "/docs/${shared.slug}#k=" + encodeURIComponent(keys["${shared.slug}"]);
+    return location.origin + "/docs/${shared.slug}/" + encodeURIComponent(keys["${shared.slug}"]);
   `);
-  check("the copied link carries the key back", copied.endsWith(`#k=${mintedKey}`));
+  check("the copied link carries the key back", copied.endsWith(`/${mintedKey}`));
 
   /* --- 7. an HTML document is served to its reader's frame, and to no one else */
 
