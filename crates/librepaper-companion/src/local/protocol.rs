@@ -438,7 +438,6 @@ impl BuildRequestV2 {
         // `synctex` options went with them: they were TeX's alone.
         let (outputs, allowed): (&[&str], &[&str]) = match self.builder.as_str() {
             "typst" => (&["pdf"], &[]),
-            "pandoc" => (&["html", "docx"], &[]),
             "calepin" => (&["html", "pdf"], &[]),
             "quarto" => (
                 &["html", "pdf", "docx", "revealjs"],
@@ -1184,7 +1183,7 @@ mod tests {
     fn v2_build_rejects_command_selection_options() {
         let value = serde_json::json!({
             "protocol": 2, "kind": "build", "project": "p", "origin": "https://x",
-            "snapshot": "s", "generation": 1, "builder": "pandoc",
+            "snapshot": "s", "generation": 1, "builder": "calepin",
             "workspace": {"mode": "snapshot"}, "entrypoint": "index.md", "output": "html",
             "options": {"command": "rm -rf /"}
         });
@@ -1211,14 +1210,13 @@ mod tests {
             .validate_shape()
         };
 
-        for builder in ["tex", "latexmk", "tectonic", "biber", "future"] {
+        for builder in ["tex", "latexmk", "tectonic", "biber", "pandoc", "future"] {
             assert!(
                 request(builder, "pdf", serde_json::json!({})).is_err(),
                 "{builder} is still nameable on the wire"
             );
         }
         request("typst", "pdf", serde_json::json!({})).expect("typst builds a PDF");
-        request("pandoc", "html", serde_json::json!({})).expect("pandoc builds HTML");
         request("calepin", "html", serde_json::json!({})).expect("calepin builds HTML");
         request(
             "quarto",

@@ -12,7 +12,6 @@
   const CONFIGURABLE = ["quarto", "calepin"];
   const DESCRIPTIONS = {
     quarto: "Renders Quarto and Markdown documents.",
-    pandoc: "Renders Markdown documents.",
     calepin: "Renders Typst and Calepin documents.",
     zotero: "Citations from your Zotero library.",
   };

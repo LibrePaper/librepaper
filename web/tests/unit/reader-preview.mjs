@@ -1,13 +1,6 @@
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
-import { availableDownloads } from "../../src/lib/reader/downloads.js";
 import { createFramePreview } from "../../src/lib/reader/frame-preview.js";
-
-assert.deepEqual(availableDownloads({ outputKind: "pdf" }), { pdf: false, html: false });
-assert.deepEqual(availableDownloads({ outputKind: "pdf", deliveredKind: "pdf" }), { pdf: true, html: false });
-assert.deepEqual(availableDownloads({ outputKind: "pdf", rendering: { sha: "old" } }), { pdf: false, html: false });
-assert.deepEqual(availableDownloads({ outputKind: "html", displayedFormat: "html" }), { pdf: false, html: true });
-assert.deepEqual(availableDownloads({ outputKind: "html", rendering: { sha: "old" } }), { pdf: false, html: false });
 
 const sources = [];
 const preview = createFramePreview({slug:"paper",getDocsOrigin:()=>"https://docs.example",framePath:()=>"raw",setSource:source=>sources.push(source),send:()=>{}});
@@ -81,13 +74,9 @@ assert.match(readerSource, /const runCodeOffered = \$derived\([\s\S]*?sourceForm
 assert.match(readerSource, /const toggleLocalExecution = \(\) => \{\s*if \(localExecution\) void stopLocalExecution\(\);\s*else void startLocalExecution\(\);/);
 // There is no confirmation dialog any more.
 assert.doesNotMatch(readerSource, /Run code on this computer/);
-// A PDF from Markdown or Quarto source is a local build, and the preview
-// header -- where the gesture that starts one lives -- is hidden for as long
-// as nothing has been painted. So the card standing in for the missing page
-// has to carry it itself, rather than claim a browser render is under way
-// that can never finish.
-assert.match(readerSource, /const pdfNeedsLocalTool = \$derived\(\s*pdfOutput && \["markdown", "quarto"\]\.includes\(sourceFormat\)/);
-assert.match(readerSource, /\{#if pdfNeedsLocalTool\}[\s\S]*?<h2 class="h4">PDF needs[\s\S]*?\{#if pdfNeedsLocalExecution\}[\s\S]*?startLocalExecution[\s\S]*?<\/button>[\s\S]*?Preview as HTML instead<\/button>[\s\S]*?\{:else\}\s*<h2 class="h4">(?:\{#if previewBusy\}<span class="spinner"><\/span>\{\/if\})?Not yet rendered<\/h2>/);
+// The browser makes Markdown and Quarto PDFs itself, so no card sends the
+// author to a local tool for one.
+assert.doesNotMatch(readerSource, /pdfNeedsLocalTool|pdfNeedsLocalExecution|PDF needs/);
 // Choosing Quarto's own preview is a choice of tool, not of output: a PDF
 // that was asked for survives enabling the thing that can produce it.
 assert.match(readerSource, /async function setQuartoPreviewMode\(mode\)[\s\S]*?output: mode === "markdown" \? "html" : \(buildPreferences\.output \|\| "html"\)/);

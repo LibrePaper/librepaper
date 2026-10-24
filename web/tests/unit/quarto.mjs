@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import fs from "node:fs";
-import { cellFingerprint, composeDraft, contextId, contextFingerprint, escapeHtml, mapQuartoDiagnostics, parseQuarto, virtualTree } from "../../src/lib/engines/quarto.js";
+import { cellFingerprint, composeDraft, contextId, contextFingerprint, escapeHtml, mapQuartoDiagnostics, pandocDraft, parseQuarto, virtualTree } from "../../src/lib/engines/quarto.js";
 import { formatOf, outputKind } from "../../src/lib/renderers.js";
 import { quartoRequest } from "../../src/lib/desktop/client.js";
 
@@ -185,3 +185,18 @@ assert.match(movedDraft.quarto.markdown, /```\{r\}\nother\(\)\n```/);
 assert.match(movedDraft.quarto.markdown, /plot\(x\)/);
 console.log("quarto: parser, source-only draft, identity, and protocol scenarios passed");
 assert.doesNotMatch(composeDraft("{{< include hidden.qmd >}}", {expandIncludes:{"hidden.qmd":"```{r}\n#| include: false\nsecret_hidden_code()\n```\nVisible prose"}}).markdown, /secret_hidden_code/);
+
+// A Quarto PDF hands Pandoc the original front matter, not the title block.
+{
+  const front = "---\ntitle: Cited\nbibliography: refs.bib\ncsl: apa.csl\n---\n";
+  const qmd = `${front}\nSee @key.\n\n{{< include part.qmd >}}\n`;
+  const tree = { main: "main.qmd", texts: { "main.qmd": qmd, "part.qmd": "Included words." } };
+  const virtual = await virtualTree(tree, { expandIncludes: tree.texts });
+  assert.match(virtual.texts[virtual.main], /quarto-title-block/);
+  const draft = pandocDraft(virtual, qmd);
+  const text = draft.texts[draft.main];
+  assert.ok(text.startsWith(front));
+  assert.match(text, /Included words\./);
+  assert.doesNotMatch(text, /quarto-title-block/);
+  assert.equal(draft.main, virtual.main);
+}

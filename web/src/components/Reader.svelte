@@ -70,12 +70,16 @@
   import { menubar } from "../lib/menubar.svelte.js";
   import Nav from "./Nav.svelte";
   import Icon from "./Icon.svelte";
+  import ExplorerMenu from "./ExplorerMenu.svelte";
   import IconButton from "./IconButton.svelte";
   import Modal from "./Modal.svelte";
   import CommandPalette from "./CommandPalette.svelte";
   import Toasts from "./Toasts.svelte";
-  import { say } from "../lib/toast.svelte.js";
-  import { archive, availableDownloads, docxFile, entryDownload, projectFiles, renderingFile, saveBlob } from "../lib/reader/downloads.js";
+  import { say, toaster } from "../lib/toast.svelte.js";
+  import { archive, docxFile, entryDownload, projectFiles, saveBlob } from "../lib/reader/downloads.js";
+  import { commentsMarkdown, loadAllComments } from "../lib/reader/comments-export.js";
+  import { exportAvailability, exportFile, unrunCells } from "../lib/reader/exports.js";
+  import { pandoc } from "../lib/pandoc/client.js";
   import Preview from "./Preview.svelte";
   import PreviewControls from "./PreviewControls.svelte";
   import { onPageZoom } from "../lib/desktop/zoom.js";
@@ -378,7 +382,7 @@
   }
 
   // Markdown and Quarto share one output choice, made for the visit like the
-  // others. Pages need a local tool; the preview says so when none is chosen.
+  // others. Pages are made in this browser, through Pandoc and Typst.
   async function setMarkdownOutput(format) {
     const next = format === "html" ? "html" : "pdf";
     if (markdownOutput === next) return;
@@ -2032,29 +2036,6 @@
     sourceFormat === "quarto" && quartoPreviewMode === "quarto" && localExecution && mayEdit &&
       !hasDesktop,
   );
-  // A PDF from Markdown or Quarto source is only ever produced by a tool on
-  // this computer: this browser's own renderer makes HTML and nothing else.
-  // Until that tool is running the PDF frame has nothing to show, and the
-  // "not yet rendered" card would otherwise claim a render is under way that
-  // can never finish -- which is exactly the state an author lands in by
-  // choosing PDF output and then closing, or never installing, the local app.
-  const pdfNeedsLocalTool = $derived(
-    pdfOutput && ["markdown", "quarto"].includes(sourceFormat) && mayEdit &&
-      (!hasDesktop || (sourceFormat === "quarto" && !localExecution)),
-  );
-  // The gesture that is missing, told apart so the card offers one action
-  // rather than a menu: Run code has to be on before anything else is worth
-  // suggesting.
-  const pdfNeedsLocalExecution = $derived(pdfNeedsLocalTool && sourceFormat === "quarto" && !localExecution);
-
-  // The way out for an author who wants to keep reading rather than install
-  // anything: the browser's own HTML preview, which every one of these
-  // formats has.
-  function previewAsHtml() {
-    setBuildPreferences(updateBuildPreferences(buildScope(), sourceFormat, { output: "html" }));
-    void paintPreview();
-  }
-
   // The same two banner cases, for a Typst document with Calepin preview
   // chosen: this is a browser, or the desktop app has no calepin command.
   const typstNeedsLocalApp = $derived(
@@ -2093,7 +2074,6 @@
     hasDesktop ? ""
       : quartoNeedsLocalApp ? "Quarto preview"
       : typstNeedsLocalApp ? "Calepin preview"
-      : pdfNeedsLocalTool ? "The PDF preview"
       : localConnectionError ? "This preview"
       : "",
   );
@@ -2258,7 +2238,8 @@
     rememberPreview: (page, identity) => {
       rememberPreview(previewCacheKey(), page, identity);
     },
-    onRendered: (_identity, projectDigest) => {
+    onRendered: (identity, projectDigest) => {
+      renderedIdentity = identity;
       if (!mayEdit) renderedProjectDigest = projectDigest || "";
     },
     onEmpty: () => {
@@ -2807,8 +2788,9 @@
     if (value === "project-folder") return void (projectFolderOpen = true);
     if (value === "compile") return compileNow();
     if (value === "download") return downloadTree();
-    if (value === "download-docx") return downloadDocx();
-    if (value === "download-pdf" || value === "download-html") return downloadRendering(value.slice(9));
+    if (value === "download-source") return downloadSource();
+    if (value === "download-comments") return downloadComments();
+    if (value === "download-pdf" || value === "download-html" || value === "download-docx") return downloadAs(value.slice(9));
     if (value === "share" || value === "history" || value === "git") return openPanel(value);
     if (value === "save-template") return openSaveTemplateModal();
     if (!["new-file", "new-folder", "upload"].includes(value)) return;
@@ -2818,41 +2800,142 @@
     else fileList?.start(value === "new-file" ? "file" : "folder");
   }
 
-  // Which of the rendering downloads the File menu can honour: the one for
-  // what the preview is producing, once there is something to hand over. What
-  // it is producing rather than what the source format ultimately produces,
-  // because a LaTeX document previewing as HTML has a page to hand over and
-  // no PDF.
-  const downloads = $derived(availableDownloads({
-    outputKind: previewOutputKind,
-    deliveredKind,
-    displayedFormat,
-  }));
+  // Which exports the File menu can honour, for the file being previewed.
+  const exportable = $derived({
+    pdf: exportAvailability(displayedFormat, "pdf"),
+    html: exportAvailability(displayedFormat, "html"),
+    docx: exportAvailability(displayedFormat, "docx"),
+  });
 
   const docxDownload = $derived(renderState.docxArtifact && renderState.docxArtifact.source === sourceGeneration && renderState.docxArtifact.navigation === navigationGeneration ? renderState.docxArtifact : null);
 
-  function downloadDocx() {
-    if (!docxDownload) return;
-    const file = docxFile(docxDownload.bytes, SLUG);
-    saveBlob(file.blob, file.name);
-  }
+  // The identity of the source the frame was last drawn from, so an export
+  // can tell whether the page on screen is the current document.
+  let renderedIdentity = "";
+  let exporting = false;
+  // Zag closes a sub-menu only through its own trigger, so the Download list
+  // is shut by hand whenever the bar stops showing File.
+  let downloadOpen = $state(false);
+  $effect(() => { if (menubar.opened !== "file") downloadOpen = false; });
 
-  // Exports read the transient result currently held by this tab. LibrePaper
+  // Exports are made in this browser from the live source. A page or PDF the
+  // frame already holds is reused when it is the current document. LibrePaper
   // never fetches or uploads a generated result for an export.
-  async function downloadRendering(kind) {
+  async function downloadAs(target) {
+    if (exporting) return;
+    if (target === "docx" && docxDownload) {
+      const file = docxFile(docxDownload.bytes, SLUG);
+      saveBlob(file.blob, file.name);
+      return;
+    }
+    exporting = true;
+    const id = "reader:export";
+    say(`Preparing the ${target.toUpperCase()}.`, { id });
     try {
-      const authored = displayedFormat === "html";
-      const tree = authored ? treeNow() : null;
-      const file = await renderingFile({
-        kind,
+      // Everything that names the document is read before the first await, so
+      // a file switched to while figures load cannot pair one source with
+      // another format.
+      const tree = capturePreviewTree(treeNow());
+      const format = displayedFormat;
+      const preview = framePreview.preview();
+      const localQuarto = format === "quarto" && localExecution && hasDesktop && mayEdit
+        ? { profile: buildPreferences.profile || null, parameters: buildPreferences.parameters || null }
+        : null;
+      if (Object.keys(tree.digests || {}).length) {
+        const { held, missing } = await gatherFigures(tree.digests);
+        if (target !== "html" && missing.length) {
+          throw new Error(`Could not fetch figure${missing.length === 1 ? "" : "s"}: ${missing.join(", ")}.`);
+        }
+        tree.assets = held.assets;
+        tree.urls = { ...(tree.urls || {}), ...held.urls };
+      }
+      const file = await exportFile({
+        target,
+        format,
+        tree,
+        title: await headingOf(tree),
         slug: SLUG,
-        preview: framePreview.preview(),
-        authored,
-        authoredHtml: authored ? tree.texts?.[tree.main] ?? null : null,
+        project: SLUG,
+        preview,
+        previewCurrent: Boolean(renderedIdentity) && renderedIdentity === await renderers.snapshotDigest(tree),
+        render: renderers.render,
+        run: pandoc,
+        localQuarto,
       });
       saveBlob(file.blob, file.name);
+      if (!localQuarto && unrunCells(format, tree) > 0) {
+        say("Code cells were not run. Turn on Run code in the LibrePaper desktop app to include their results.", { id });
+      } else {
+        toaster.dismiss(id);
+      }
     } catch (error) {
-      say(error.message || "The rendered document could not be downloaded.", { kind: "problem", id: "reader:download-render" });
+      say(error.message || `The ${target.toUpperCase()} could not be made.`, { kind: "problem", id });
+    } finally {
+      exporting = false;
+    }
+  }
+
+  // Every thread of the project as Markdown. The server pages comments, so
+  // this reads the same pages the sidebar does, to the end, and then adds what
+  // only this browser knows: whether a passage is still in the document and
+  // where it sits.
+  async function downloadComments() {
+    if (exporting) return;
+    exporting = true;
+    const id = "reader:export";
+    say("Preparing the comments.", { id });
+    try {
+      const read = async (path) => {
+        const response = await fetch(`/api/documents/${SLUG}/comments${path}`, { headers: authHeaders(KEY) });
+        const body = await response.json().catch(() => ({}));
+        if (!response.ok) throw new Error(body.error || `Comments could not be read (${response.status}).`);
+        return body;
+      };
+      const loaded = await loadAllComments({
+        fetchPage: (cursor) => read(cursor ? `?cursor=${encodeURIComponent(cursor)}` : ""),
+        fetchReplies: (comment, cursor) => read(`/${comment.id}/replies?cursor=${encodeURIComponent(cursor)}`),
+      });
+      // Threads on pages the sidebar has not loaded are placed the way the
+      // sidebar places its own, on copies so the sidebar's list is untouched.
+      const held = new Map(comments.map((item) => [String(item.id), item]));
+      const unheld = loaded.filter((item) => !held.has(String(item.id))).map((item) => ({ ...item }));
+      // Without the page text there is nothing to place them against, as for
+      // the sidebar: they stay unplaced rather than read as detached.
+      if (docText !== null) {
+        if (mayEdit && session) {
+          const bodies = new Map();
+          for (const item of unheld) item.attachment = deriveAttachment(session.doc, session.anchors, item, bodies);
+        }
+        anchorComments(unheld);
+      }
+      for (const item of unheld) held.set(String(item.id), item);
+      const threads = loaded.map((item) => {
+        const seen = held.get(String(item.id));
+        return {
+          id: item.id,
+          creator: item.creator,
+          created: item.created,
+          body: item.body,
+          resolved: Boolean(item.resolved),
+          replies: item.replies,
+          whole: aboutWholeDocument(item),
+          quote: shownSelector(item).exact,
+          orphaned: Boolean(seen?.orphaned),
+          position: seen?.start ?? null,
+        };
+      });
+      const markdown = commentsMarkdown({
+        title: await headingOf(capturePreviewTree(treeNow())),
+        url: `${location.origin}/docs/${SLUG}`,
+        exportedAt: new Date(),
+        comments: threads,
+      });
+      saveBlob(new Blob([markdown], { type: "text/markdown" }), `${SLUG}-comments.md`);
+      toaster.dismiss(id);
+    } catch (error) {
+      say(error.message || "The comments could not be exported.", { kind: "problem", id });
+    } finally {
+      exporting = false;
     }
   }
 
@@ -3199,6 +3282,12 @@
       const chosen = await entryDownload({ entry, tree: liveTreeNow(), folders: [...folders], gather: gatherFigures });
       saveBlob(chosen.files ? await archive(chosen.files) : new Blob([chosen.bytes]), chosen.name);
     } catch (error) { say(error.message || "That file could not be downloaded.", { kind: "problem", id: "reader:download-entry" }); }
+  }
+
+  // The file open in the editor, as written, not the project archive.
+  function downloadSource() {
+    if (!toolbarPath) return;
+    return downloadEntry({ kind: "file", path: toolbarPath });
   }
 
   // Dropping a file on the source pane does what the controls in the list do:
@@ -3618,6 +3707,10 @@
   // What the workspace can currently offer, as facts rather than rules. The
   // rules are in lib/commands.js, which decides from these whether a command
   // can be asked for; this is the only place that knows both.
+  // Anyone offered the collaboration panel can see the comments, so the same
+  // test decides who is offered their export.
+  const canExportComments = $derived(tabs.some((tab) => tab.id === "collaboration"));
+
   const commandContext = $derived({
     mayEdit, editing, compact,
     panels: tabs.map((tab) => tab.id),
@@ -3625,9 +3718,11 @@
     compilable: mayEdit && sourceFormat === "latex" && compilesHere,
     canPreviewFile,
     downloads: {
-      pdf: previewOutputKind === "pdf" && Boolean(downloads.pdf),
-      html: previewOutputKind !== "pdf" && Boolean(downloads.html),
-      docx: Boolean(docxDownload),
+      pdf: exportable.pdf.ok,
+      html: exportable.html.ok,
+      docx: exportable.docx.ok,
+      comments: canExportComments,
+      source: Boolean(toolbarPath),
     },
     edit: editAvailability,
     canClearChat: chatState.canClear,
@@ -3771,6 +3866,40 @@
 
 <svelte:window bind:innerWidth={width} onresize={() => (unit = measure())} onkeydown={shortcut} onbeforeunload={beforeUnload} onpagehide={() => session?.leave()} />
 
+{#snippet exportItem(value, label, target)}
+  {@const state = exportable[target]}
+  <Menu.Item value={value} class="menuitem" disabled={!state.ok}>
+    <span class="menuitem-label">{label}</span>
+    {#if !state.ok && state.reason}<span class="export-reason">{state.reason}</span>{/if}
+  </Menu.Item>
+{/snippet}
+
+<!-- A child menu reports its own selections, so it gets the same handler as
+     the File menu; Zag does not pass a sub-menu's select up to its parent. -->
+{#snippet downloadMenu()}
+  <Menu open={downloadOpen}
+        onOpenChange={(event) => (downloadOpen = event.open)}
+        onSelect={(chosen) => void chooseFileCommand(chosen.value)}>
+    <Menu.TriggerItem value="submenu:download" class="menuitem">
+      <span class="menuitem-label">Download</span>
+      <span class="menuitem-chevron" aria-hidden="true"><Icon name="chevron-right" size="1rem" /></span>
+    </Menu.TriggerItem>
+    <ExplorerMenu>
+      {#if mayEdit}<Menu.Item value="download" class="menuitem"><span class="menuitem-label">Project</span></Menu.Item>{/if}
+      {@render exportItem("download-html", "HTML", "html")}
+      {@render exportItem("download-pdf", "PDF", "pdf")}
+      {@render exportItem("download-docx", "DOCX", "docx")}
+      {#if canExportComments}<Menu.Item value="download-comments" class="menuitem"><span class="menuitem-label">Comments</span></Menu.Item>{/if}
+      {#if mayEdit}
+        <Menu.Item value="download-source" class="menuitem" disabled={!toolbarPath}>
+          <span class="menuitem-label">Source</span>
+          {#if !toolbarPath}<span class="export-reason">Open a file to download its source.</span>{/if}
+        </Menu.Item>
+      {/if}
+    </ExplorerMenu>
+  </Menu>
+{/snippet}
+
 {#snippet fileItems()}
   {#if mayEdit}
     <Menu.Item value="new-file" class="menuitem">New file…</Menu.Item>
@@ -3778,18 +3907,7 @@
     <Menu.Item value="upload" class="menuitem">Upload files…</Menu.Item>
     <hr class="hr my-1" />
   {/if}
-  <!-- One of the two, never both: a document renders to a PDF or to a page.
-       Greyed out, not hidden, while there is nothing to download yet, so the
-       menu says what the document will offer. -->
-  {#if previewOutputKind === "pdf"}
-    <Menu.Item value="download-pdf" class="menuitem" disabled={!can["download-pdf"]}>Download PDF</Menu.Item>
-  {:else}
-    <Menu.Item value="download-html" class="menuitem" disabled={!can["download-html"]}>Download HTML</Menu.Item>
-  {/if}
-  <Menu.Item value="download-docx" class="menuitem" disabled={!can["download-docx"]}>Download DOCX</Menu.Item>
-  {#if mayEdit}
-    <Menu.Item value="download" class="menuitem">Download project</Menu.Item>
-  {/if}
+  {@render downloadMenu()}
   {#if me?.id}<Menu.Item value="save-template" class="menuitem">Save as template…</Menu.Item>{/if}
   <hr class="hr my-1" />
   {#if tabs.some((tab) => tab.id === "git")}<Menu.Item value="git" class="menuitem">Git…</Menu.Item>{/if}
@@ -4217,33 +4335,15 @@
   {:else if shown.document && unrendered}
     <section class="latexpane">
       <div class="notyet">
-        {#if pdfNeedsLocalTool}
-          <h2 class="h4">PDF needs {sourceFormat === "quarto" ? "Quarto" : "a local build"} on this computer</h2>
-          <p class="lp-text-secondary text-sm">
-            This browser renders {sourceFormat === "quarto" ? "Quarto" : "Markdown"} to HTML only. The PDF is produced by
-            {sourceFormat === "quarto" ? "Quarto itself" : "Pandoc or Quarto"}, run through the LibrePaper desktop app,
-            so the preview stays empty until you open this document there{sourceFormat === "quarto" ? " and turn on Run code" : ""}.
-          </p>
-          <div class="notyet-actions">
-            {#if pdfNeedsLocalExecution}
-              <button class="btn btn-sm lp-control-brand" onclick={() => void startLocalExecution()}>Run code</button>
-              <button class="btn btn-sm lp-control-tonal-brand" onclick={previewAsHtml}>Preview as HTML instead</button>
-            {:else}
-              <DesktopOnly feature="The PDF preview" />
-              <button class="btn btn-sm lp-control-tonal-brand" onclick={previewAsHtml}>Preview as HTML instead</button>
-            {/if}
-          </div>
-        {:else}
-          <h2 class="h4">{#if previewBusy}<span class="spinner"></span>{/if}Not yet rendered</h2>
-          <p class="lp-text-secondary text-sm">
-            This {sourceFormat === "typst" ? "Typst" : "paged"} document is being rendered from source in this browser.
-          </p>
-          {#if !compilesHere && session?.text}
-            <details open>
-              <summary>View source · {session.mainPath?.() || "document"}</summary>
-              <pre>{session.text.toString()}</pre>
-            </details>
-          {/if}
+        <h2 class="h4">{#if previewBusy}<span class="spinner"></span>{/if}Not yet rendered</h2>
+        <p class="lp-text-secondary text-sm">
+          This {sourceFormat === "typst" ? "Typst" : "paged"} document is being rendered from source in this browser.
+        </p>
+        {#if !compilesHere && session?.text}
+          <details open>
+            <summary>View source · {session.mainPath?.() || "document"}</summary>
+            <pre>{session.text.toString()}</pre>
+          </details>
         {/if}
       </div>
     </section>
@@ -4273,7 +4373,7 @@
           viewerTool = next;
           tell({ type: "viewer-tool", tool: next });
         }}
-        ondownload={can["download-pdf"] ? () => downloadRendering("pdf") : null} />
+        ondownload={can["download-pdf"] ? () => void downloadAs("pdf") : null} />
     {/if}
   {/snippet}
   <Preview bind:this={preview} src={frameSrc} {docsOrigin} onmessage={fromFrame} onload={frameLoaded} {grabbing}
@@ -4443,6 +4543,8 @@
 <Toasts />
 
 <style>
+  .menuitem-chevron { display: inline-flex; margin-left: auto; padding-left: calc(var(--spacing) * 2); }
+  .export-reason { flex: 0 0 auto; margin-left: auto; max-width: 12rem; overflow: hidden; color: var(--color-text-secondary); font-size: .7rem; text-overflow: ellipsis; white-space: nowrap; }
   .run-code-toggle { display: inline-flex; align-items: center; gap: calc(var(--spacing) * 1.5); cursor: pointer; font-size: var(--text-sm); white-space: nowrap; }
   .nav-document {
     display: block;

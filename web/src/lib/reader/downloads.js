@@ -1,33 +1,12 @@
-// What of a document's rendering can be downloaded, and how the page it is
-// downloaded from is made self-contained.
+// How a download is made self-contained, and what the other downloads carry:
+// the project's files, one selected entry, a Word file and the archive.
 //
-// A document renders to one kind of output: LaTeX and Typst to a paged PDF,
-// Markdown, Quarto and authored HTML to flow HTML (`renderers.outputKind`).
-// The File menu offers the download for that kind and no other, and offers
-// it only once there is something to download -- a PDF or HTML payload this
-// browser has been handed, or authored HTML that is itself the source.
-// Nothing here touches the DOM; the Reader supplies what it knows and this
-// decides.
+// Which renderings a document can be exported as, and how each is made, is
+// `exports.js`. Nothing here touches the DOM; the Reader supplies what it
+// knows and this decides.
 
 import { basename, inside } from "../file-manager.js";
 import { toBase64 } from "../figures.js";
-
-/// Which rendering downloads the File menu can honour right now.
-///
-/// - `outputKind`: "pdf" or "html", from `renderers.outputKind`.
-/// - `deliveredKind`: the kind of the payload the frame was last handed, or
-///   "" since the last navigation.
-/// - `displayedFormat`: the source format on screen; authored HTML is its
-///   own rendering, so it is always downloadable.
-export function availableDownloads({ outputKind, deliveredKind = "", displayedFormat = "" }) {
-  if (outputKind === "pdf") {
-    return { pdf: deliveredKind === "pdf", html: false };
-  }
-  if (outputKind === "html") {
-    return { pdf: false, html: deliveredKind === "html" || displayedFormat === "html" };
-  }
-  return { pdf: false, html: false };
-}
 
 /// A page painted in this browser names its figures by object URL
 /// (`figures.gather`), which is dead the moment the page leaves the tab.
@@ -118,26 +97,6 @@ const DOCX_TYPE = "application/vnd.openxmlformats-officedocument.wordprocessingm
 /// The one-shot DOCX artifact this tab is holding, as a file to save.
 export function docxFile(bytes, slug) {
   return { blob: new Blob([bytes], { type: DOCX_TYPE }), name: `${slug}.docx` };
-}
-
-/// The rendering to export, from what this tab is holding and nothing else.
-/// LibrePaper never fetches or uploads a generated result for an export.
-///
-/// `authored` says the document's own source *is* the rendering, which is
-/// true of authored HTML and of nothing else; its text is then exported
-/// verbatim rather than the painted page, and a document whose text could not
-/// be read is an error rather than a silent fall back to the frame.
-export async function renderingFile({ kind, slug, preview, authored = false, authoredHtml = null }) {
-  if (kind === "pdf") {
-    const bytes = preview?.kind === "pdf" ? preview.bytes : null;
-    if (!bytes) throw new Error("Render the document before exporting its PDF.");
-    return { blob: new Blob([bytes], { type: "application/pdf" }), name: `${slug}.pdf` };
-  }
-  const html = authored
-    ? authoredHtml
-    : preview?.kind === "html" ? await inlineBlobUrls(preview.html) : null;
-  if (typeof html !== "string") throw new Error("Render the document before exporting its HTML.");
-  return { blob: new Blob([html], { type: "text/html" }), name: `${slug}.html` };
 }
 
 /// The archive itself. `zip` is loaded when it is asked for: a reader who

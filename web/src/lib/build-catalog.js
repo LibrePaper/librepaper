@@ -11,7 +11,6 @@ export const BUILDERS = Object.freeze([
   { id: "typst", label: "Typst", formats: ["typst"], backend: ["browser"], engines: [] },
   { id: "calepin", label: "Calepin", formats: ["typst"], backend: ["local"], engines: [] },
   { id: "markdown", label: "Markdown", formats: ["markdown", "quarto"], backend: ["browser"], engines: [] },
-  { id: "pandoc", label: "Pandoc", formats: ["markdown"], backend: ["local"], engines: [] },
   { id: "quarto", label: "Quarto", formats: ["markdown", "quarto"], backend: ["local"], engines: [] },
 ]);
 

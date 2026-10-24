@@ -46,7 +46,7 @@ export const CATEGORIES = [
       { id: "render-latex-files", says: "Downloaded LaTeX files", terms: "latex compiler cache clear free space packages storage" },
       { id: "render-typst-preview", says: "Typst default preview", terms: "typst default preview pdf html output" },
       { id: "render-markdown-preview", says: "Markdown default preview", terms: "markdown default preview pdf html output" },
-      { id: "render-markdown-tool", says: "Markdown renderer", terms: "markdown browser pandoc quarto render tool" },
+      { id: "render-markdown-tool", says: "Markdown renderer", terms: "markdown browser quarto render tool" },
       { id: "render-quarto-preview", says: "Quarto default preview", terms: "quarto default preview pdf html output" },
       { id: "rendering-profile", says: "Quarto profile", terms: "quarto profile render preview" },
       { id: "rendering-parameters", says: "Quarto parameters", terms: "quarto params parameters json render preview" },
@@ -56,7 +56,7 @@ export const CATEGORIES = [
     id: "tools", says: "Tools", offered: always,
     note: "This computer",
     entries: [
-      { id: "tools-programs", says: "Programs", terms: "tools tool status version available missing rescan scan local quarto pandoc calepin typst zotero" },
+      { id: "tools-programs", says: "Programs", terms: "tools tool status version available missing rescan scan local quarto calepin typst zotero" },
       { id: "tools-quarto", says: "Quarto", terms: "quarto executable path arguments version" },
       { id: "tools-calepin", says: "Calepin", terms: "calepin typst executable path arguments version" },
       { id: "tools-zotero", says: "Zotero", terms: "zotero citations bibliography library references local api" },

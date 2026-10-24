@@ -23,13 +23,12 @@
     },
     markdown: {
       id: "render-markdown-tool", title: "Renderer", label: "Markdown renderer",
-      description: "Pandoc and Quarto run through the desktop app and must be installed on this computer.",
+      description: "Quarto runs through the desktop app and must be installed on this computer.",
       choices: [
         { value: "browser", says: "Browser", patch: browser("markdown") },
-        { value: "pandoc", says: "Pandoc on this computer", patch: local("pandoc") },
         { value: "quarto", says: "Quarto on this computer", patch: local("quarto") },
       ],
-      chosen: (preference) => preference.backend === "local" && ["pandoc", "quarto"].includes(preference.tool) ? preference.tool : "browser",
+      chosen: (preference) => preference.backend === "local" && preference.tool === "quarto" ? "quarto" : "browser",
     },
   };
 

@@ -30,6 +30,9 @@ export function defaults(format = "") { return { ...DEFAULTS, format, output: "h
 // The Quarto profile and parameters. Markdown rendered by Quarto takes the
 // same ones as a Quarto document, so they are kept once, beside the formats.
 const QUARTO_OPTIONS = "quarto-options";
+// The local tools each format can be built with. Any other stored local
+// choice, such as Pandoc, which now runs in the browser, reads back as the default.
+const LOCAL_TOOLS = { markdown: ["quarto"], quarto: ["quarto"], typst: ["calepin"] };
 const takesQuartoOptions = (format) => format === "markdown" || format === "quarto";
 
 export function readQuartoOptions(scope) {
@@ -90,6 +93,7 @@ function stored(scope, format) {
     }
     // Nor has Typst: the local choice is Calepin.
     if (format === "typst" && result.backend === "local" && result.tool === "typst") result.backend = "browser";
+    if (result.backend === "local" && !(LOCAL_TOOLS[format] || []).includes(result.tool)) return fallback;
     return result;
   } catch { return fallback; }
 }
