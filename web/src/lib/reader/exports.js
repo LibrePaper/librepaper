@@ -89,13 +89,14 @@ export function pandocMath(html) {
 /// - `preview`: what the frame holds now, `{ kind: "pdf", bytes }`,
 ///   `{ kind: "html", html }` or null; reused when its kind is the one
 ///   wanted and `previewCurrent` says it is of the source on screen.
+/// - `project`: the document's slug, which a local build is scoped to.
 /// - `render`: `renderers.render`. `run`: Pandoc.
 /// - `localQuarto`: `{ profile, parameters }` when a Quarto document is to be
 ///   built by the desktop app, null for the browser route.
 ///
 /// Resolves `{ blob, name }`; rejects with an Error whose message is a plain
 /// sentence.
-export async function exportFile({ target, format, tree, title, slug, preview, previewCurrent, render, run, localQuarto = null }) {
+export async function exportFile({ target, format, tree, title, slug, project = "", preview, previewCurrent, render, run, localQuarto = null }) {
   const reused = previewCurrent && preview?.kind === target ? preview : null;
 
   // The desktop app builds the target itself, with no Pandoc step. The frame
@@ -104,6 +105,7 @@ export async function exportFile({ target, format, tree, title, slug, preview, p
     const { profile, parameters } = localQuarto;
     const result = await render(tree, title, {
       format: target,
+      project,
       buildPreferences: {
         selection: "tool", backend: "local", tool: "quarto", output: target,
         ...(profile ? { profile } : {}),
@@ -132,11 +134,11 @@ export async function exportFile({ target, format, tree, title, slug, preview, p
     if (reused) return reused.bytes;
     let result;
     if (format === "html") {
-      result = await render(await typstTree(tree, { from: "html", run }), title, { format: "pdf" });
+      result = await render(await typstTree(tree, { from: "html", run }), title, { format: "pdf", project });
     } else if (format === "markdown" || format === "quarto") {
-      result = await render(tree, title, { format: "pdf", buildPreferences: MARKDOWN_PDF });
+      result = await render(tree, title, { format: "pdf", project, buildPreferences: MARKDOWN_PDF });
     } else {
-      result = await render(tree, title, { format: "pdf" });
+      result = await render(tree, title, { format: "pdf", project });
     }
     if (!result?.pdf) throw failure(result, "pdf");
     return result.pdf;
@@ -151,8 +153,8 @@ export async function exportFile({ target, format, tree, title, slug, preview, p
     if (previewCurrent && preview?.kind === "html") return inlineBlobUrls(preview.html);
     const markdown = format === "markdown" || format === "quarto";
     const result = await render(tree, title, markdown
-      ? { format: "html", buildPreferences: MARKDOWN_HTML }
-      : { format: "html" });
+      ? { format: "html", project, buildPreferences: MARKDOWN_HTML }
+      : { format: "html", project });
     if (typeof result?.html !== "string") throw failure(result, target);
     return inlineBlobUrls(result.html);
   }

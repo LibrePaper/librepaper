@@ -2850,6 +2850,7 @@
         tree,
         title: await headingOf(tree),
         slug: SLUG,
+        project: SLUG,
         preview: framePreview.preview(),
         previewCurrent: Boolean(renderedIdentity) && renderedIdentity === await renderers.snapshotDigest(tree),
         render: renderers.render,
@@ -2889,7 +2890,12 @@
         fetchPage: (cursor) => read(cursor ? `?cursor=${encodeURIComponent(cursor)}` : ""),
         fetchReplies: (comment, cursor) => read(`/${comment.id}/replies?cursor=${encodeURIComponent(cursor)}`),
       });
+      // Threads on pages the sidebar has not loaded are placed the way the
+      // sidebar places its own, on copies so the sidebar's list is untouched.
       const held = new Map(comments.map((item) => [String(item.id), item]));
+      const unheld = loaded.filter((item) => !held.has(String(item.id))).map((item) => ({ ...item }));
+      anchorComments(unheld);
+      for (const item of unheld) held.set(String(item.id), item);
       const threads = loaded.map((item) => {
         const seen = held.get(String(item.id));
         return {
