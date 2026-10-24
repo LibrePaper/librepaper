@@ -76,7 +76,7 @@
   import Toasts from "./Toasts.svelte";
   import { say, toaster } from "../lib/toast.svelte.js";
   import { archive, docxFile, entryDownload, projectFiles, saveBlob } from "../lib/reader/downloads.js";
-  import { exportAvailability, exportFile } from "../lib/reader/exports.js";
+  import { exportAvailability, exportFile, unrunCells } from "../lib/reader/exports.js";
   import { pandoc } from "../lib/pandoc/client.js";
   import Preview from "./Preview.svelte";
   import PreviewControls from "./PreviewControls.svelte";
@@ -2830,6 +2830,9 @@
         tree.assets = held.assets;
         tree.urls = { ...(tree.urls || {}), ...held.urls };
       }
+      const localQuarto = displayedFormat === "quarto" && localExecution && hasDesktop && mayEdit
+        ? { profile: buildPreferences.profile || null, parameters: buildPreferences.parameters || null }
+        : null;
       const file = await exportFile({
         target,
         format: displayedFormat,
@@ -2840,9 +2843,14 @@
         previewCurrent: Boolean(renderedIdentity) && renderedIdentity === await renderers.snapshotDigest(tree),
         render: renderers.render,
         run: pandoc,
+        localQuarto,
       });
       saveBlob(file.blob, file.name);
-      toaster.dismiss(id);
+      if (!localQuarto && unrunCells(displayedFormat, tree) > 0) {
+        say("Code cells were not run. Turn on Run code in the LibrePaper desktop app to include their results.", { id });
+      } else {
+        toaster.dismiss(id);
+      }
     } catch (error) {
       say(error.message || `The ${target.toUpperCase()} could not be made.`, { kind: "problem", id });
     } finally {

@@ -6,10 +6,15 @@
 // HTML is its own page and reaches a PDF the same way. A Word file is Pandoc's
 // reading of the HTML page. Nothing here touches the DOM, and nothing is
 // fetched or uploaded: the Reader supplies the tree it already holds.
+//
+// A Quarto export follows the Run code switch, as the preview does: with it on
+// in the desktop app, all three files come from the local Quarto build, and
+// otherwise they take the browser route, which does not run code cells.
 
 import { pandocAvailable } from "../pandoc/client.js";
 import { dirOf, pandocPath, typstTree } from "../pandoc/typst.js";
 import { compilerAvailable } from "../renderers.js";
+import { parseQuarto } from "../engines/quarto.js";
 import { docxFile, inlineBlobUrls } from "./downloads.js";
 
 export const EXPORT_TARGETS = ["pdf", "html", "docx"];
@@ -18,6 +23,15 @@ const NAMES = { pdf: "PDF", html: "HTML page", docx: "Word file" };
 
 const MARKDOWN_PDF = { selection: "tool", backend: "browser", tool: "markdown", output: "pdf" };
 const MARKDOWN_HTML = { selection: "tool", backend: "browser", tool: "markdown", output: "html" };
+
+/// How many executable code cells the main file holds, which a browser export
+/// of a Quarto or Markdown document leaves unrun.
+export function unrunCells(format, tree) {
+  if (format !== "quarto" && format !== "markdown") return 0;
+  const source = tree.texts?.[tree.main];
+  if (typeof source !== "string") return 0;
+  return parseQuarto(source, { path: tree.main }).cells.length;
+}
 
 /// Whether `target` can be produced for source `format` in this browser.
 ///
@@ -76,11 +90,44 @@ export function pandocMath(html) {
 ///   `{ kind: "html", html }` or null; reused when its kind is the one
 ///   wanted and `previewCurrent` says it is of the source on screen.
 /// - `render`: `renderers.render`. `run`: Pandoc.
+/// - `localQuarto`: `{ profile, parameters }` when a Quarto document is to be
+///   built by the desktop app, null for the browser route.
 ///
 /// Resolves `{ blob, name }`; rejects with an Error whose message is a plain
 /// sentence.
-export async function exportFile({ target, format, tree, title, slug, preview, previewCurrent, render, run }) {
+export async function exportFile({ target, format, tree, title, slug, preview, previewCurrent, render, run, localQuarto = null }) {
   const reused = previewCurrent && preview?.kind === target ? preview : null;
+
+  // The desktop app builds the target itself, with no Pandoc step. A PDF the
+  // frame already holds is its own build and is reused.
+  async function localBuild() {
+    const { profile, parameters } = localQuarto;
+    const result = await render(tree, title, {
+      format: target,
+      buildPreferences: {
+        selection: "tool", backend: "local", tool: "quarto", output: target,
+        ...(profile ? { profile } : {}),
+        ...(parameters ? { parameters } : {}),
+      },
+    });
+    if (result?.ok === false) throw failure(result, target);
+    return result;
+  }
+
+  async function localFile() {
+    if (reused && target === "pdf") return { blob: new Blob([reused.bytes], { type: "application/pdf" }), name: `${slug}.pdf` };
+    const result = await localBuild();
+    if (target === "pdf") {
+      if (!result?.pdf) throw failure(result, target);
+      return { blob: new Blob([result.pdf], { type: "application/pdf" }), name: `${slug}.pdf` };
+    }
+    if (target === "html") {
+      if (typeof result?.html !== "string") throw failure(result, target);
+      return { blob: new Blob([inlineBlobUrls(result.html)], { type: "text/html" }), name: `${slug}.html` };
+    }
+    if (result?.artifactKind !== "docx" || !result.artifact) throw failure(result, target);
+    return docxFile(result.artifact, slug);
+  }
 
   async function pdfBytes() {
     if (reused) return reused.bytes;
@@ -111,6 +158,7 @@ export async function exportFile({ target, format, tree, title, slug, preview, p
     return inlineBlobUrls(result.html);
   }
 
+  if (format === "quarto" && localQuarto && EXPORT_TARGETS.includes(target)) return localFile();
   if (target === "pdf") {
     return { blob: new Blob([await pdfBytes()], { type: "application/pdf" }), name: `${slug}.pdf` };
   }
