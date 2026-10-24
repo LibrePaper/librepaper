@@ -13,7 +13,7 @@ export const citationsChanged = StateEffect.define();
 // Dispatched after the delayed rescan, which then runs in the next update.
 const rescanned = StateEffect.define();
 
-const missing = Decoration.mark({ class: "cm-citation-missing", attributes: { title: "No bibliography entry for this key" } });
+const missing = Decoration.mark({ class: "cm-citation-missing" });
 
 /**
  * Underlines unknown citation keys and shows a card for known ones. Each

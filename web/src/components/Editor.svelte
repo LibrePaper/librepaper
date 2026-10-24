@@ -571,7 +571,7 @@
   }
 
   async function remoteBibliography(query) {
-    if (!["markdown", "quarto", "latex", "tex", "typst"].includes(formatOf(pathOfDoc(session.doc, showing)))) return [];
+    if (!formatOf(pathOfDoc(session.doc, showing))) return [];
     // Zotero lives on this computer, so a browser says where it can be used.
     if (!desktop()) {
       reportZotero(ZOTERO_NEEDS_DESKTOP);

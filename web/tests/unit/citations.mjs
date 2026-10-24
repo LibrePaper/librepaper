@@ -79,8 +79,8 @@ assert.deepEqual(markdownTarget.registration, { from: 0, to: 0, insert: "---\nbi
 const subfolderTarget = planZoteroImport({ source: "# Chapter\n", targetPath: "chapters/one.md", texts: { "references.bib": "" }, item: { zotero_item: "MD2", citation_key: "Doe2025", bibtex: "@article{Doe2025,\n  x-librepaper-zotero-item = {MD2}\n}\n" } });
 assert.equal(subfolderTarget.registration.insert, "---\nbibliography: ../references.bib\n---\n\n");
 const biblatexSource = "\\documentclass{article}\n\\usepackage[style=authoryear]{biblatex}\n\\begin{document}\nHi\n\\end{document}\n";
-assert.deepEqual(bibliographyRegistration(biblatexSource, "refs.bib", "latex"), { from: biblatexSource.indexOf("\n\\begin{document}"), to: biblatexSource.indexOf("\n\\begin{document}"), insert: "\n\\addbibresource{refs.bib}" });
-assert.equal(bibliographyRegistration("\\usepackage{foo,biblatex}\n", "refs.bib", "latex").insert, "\n\\addbibresource{refs.bib}");
+assert.deepEqual(bibliographyRegistration(biblatexSource, "refs.bib", "latex"), { from: biblatexSource.indexOf("\\begin{document}"), to: biblatexSource.indexOf("\\begin{document}"), insert: "\\addbibresource{refs.bib}\n" });
+assert.equal(bibliographyRegistration("\\usepackage{foo,biblatex}\n", "refs.bib", "latex").insert, "\\addbibresource{refs.bib}\n");
 const bibtexSource = "\\begin{document}\nHi\n\\end{document}\n";
 assert.deepEqual(bibliographyRegistration(bibtexSource, "refs.bib", "latex"), { from: bibtexSource.indexOf("\\end{document}"), to: bibtexSource.indexOf("\\end{document}"), insert: "\\bibliographystyle{plain}\n\\bibliography{refs}\n" });
 const styledSource = "\\bibliographystyle{alpha}\n\\begin{document}\n\\end{document}\n";
@@ -98,3 +98,8 @@ assert.equal(latexPlanned.registration, null);
 assert.deepEqual(bibliographyRegistration("= Paper\n", "refs.bib", "typst"), { from: 8, to: 8, insert: '#bibliography("refs.bib")\n' });
 assert.deepEqual(bibliographyRegistration("= Paper", "refs.bib", "typst"), { from: 7, to: 7, insert: '\n#bibliography("refs.bib")\n' });
 assert.equal(bibliographyRegistration('#bibliography("refs.bib")\n', "refs.bib", "typst"), null);
+{
+  const crlf = "\\usepackage{biblatex}\r\n\\begin{document}\r\n";
+  const at = bibliographyRegistration(crlf, "refs.bib", "latex");
+  assert.equal(crlf.slice(0, at.from) + at.insert + crlf.slice(at.to), "\\usepackage{biblatex}\r\n\\addbibresource{refs.bib}\r\n\\begin{document}\r\n");
+}

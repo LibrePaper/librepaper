@@ -190,8 +190,10 @@ function bibliographyRegistrationLatex(source, path) {
   for (const match of source.matchAll(usepackage)) {
     if (!match[1].split(",").map((item) => item.trim()).includes("biblatex")) continue;
     const end = source.indexOf("\n", match.index);
-    const at = end === -1 ? source.length : end;
-    return { from: at, to: at, insert: `\n\\addbibresource{${path}}` };
+    if (end === -1) return { from: source.length, to: source.length, insert: `\n\\addbibresource{${path}}` };
+    // The new line ends the way the package line does, so a CRLF file stays CRLF.
+    const eol = source[end - 1] === "\r" ? "\r\n" : "\n";
+    return { from: end + 1, to: end + 1, insert: `\\addbibresource{${path}}${eol}` };
   }
   const style = /\\bibliographystyle\b/.test(source) ? "" : "\\bibliographystyle{plain}\n";
   const block = `${style}\\bibliography{${name}}\n`;
