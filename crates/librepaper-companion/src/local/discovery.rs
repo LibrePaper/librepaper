@@ -258,22 +258,20 @@ fn capabilities_from(cache: &Cache) -> Capabilities {
     let available = |name: &str| get(name).available;
     let version = |name: &str| get(name).version;
     let snapshot = || vec!["snapshot".to_string()];
-    let builders = vec![
-        BuilderCapability {
-            id: "typst".into(),
-            available: available("typst"),
-            version: version("typst"),
-            source_formats: vec!["typst".into()],
-            outputs: vec!["pdf".into()],
-            engines: Vec::new(),
-            operations: vec![BuilderOperation {
-                kind: "build".into(),
-                workspace_modes: snapshot(),
-            }],
-            preview: false,
-            note: String::new(),
-        },
-    ];
+    let builders = vec![BuilderCapability {
+        id: "typst".into(),
+        available: available("typst"),
+        version: version("typst"),
+        source_formats: vec!["typst".into()],
+        outputs: vec!["pdf".into()],
+        engines: Vec::new(),
+        operations: vec![BuilderOperation {
+            kind: "build".into(),
+            workspace_modes: snapshot(),
+        }],
+        preview: false,
+        note: String::new(),
+    }];
     Capabilities {
         tools: Tools {
             quarto: Tool::default(),

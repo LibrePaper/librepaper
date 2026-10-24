@@ -12,6 +12,9 @@ import { OUTPUT_NAME, fillTree } from "./files.js";
 
 const ARGS = ["pandoc.wasm", "+RTS", "-H64m", "-RTS"];
 
+/** @typedef {(...args: number[]) => number} PandocFunction */
+/** @typedef {WebAssembly.Exports & {memory: WebAssembly.Memory, malloc: PandocFunction, convert: PandocFunction, hs_init_with_rtsopts: PandocFunction, __wasm_call_ctors: PandocFunction}} PandocExports */
+
 /// A ready Pandoc from the module's bytes (or a Response holding them).
 /// `convert(options, files)` resolves { output, warnings, stderr } and throws
 /// an Error with Pandoc's message when it wrote no output. A trap inside the
@@ -26,8 +29,8 @@ export async function createPandoc(source) {
     new PreopenDirectory("/", root),
   ], { debug: false });
   const { instance } = await WebAssembly.instantiate(bytes, { wasi_snapshot_preview1: wasi.wasiImport });
-  const exports = instance.exports;
-  wasi.initialize(instance);
+  const exports = /** @type {PandocExports} */ (instance.exports);
+  wasi.initialize(/** @type {{ exports: PandocExports }} */ (/** @type {unknown} */ (instance)));
   exports.__wasm_call_ctors();
 
   // Haskell's runtime reads argc and argv through pointers into the module's
@@ -98,15 +101,20 @@ async function convertOnce(url, options, files) {
   return (await ready).convert(options, files);
 }
 
-if (typeof WorkerGlobalScope !== "undefined" && self instanceof WorkerGlobalScope) {
-  self.onmessage = async ({ data: { id, url, options, files } }) => {
+// Imported by tests in Node, where there is no worker scope to listen on.
+/** @type {{ onmessage: ((event: MessageEvent) => void) | null, postMessage: (message: unknown, transfer?: Transferable[]) => void } | null} */
+/** @type {any} */
+const WorkerScope = Reflect.get(globalThis, "WorkerGlobalScope");
+const scope = WorkerScope && self instanceof WorkerScope ? /** @type {any} */ (self) : null;
+if (scope) {
+  scope.onmessage = async ({ data: { id, url, options, files } }) => {
     try {
       const result = await convertOnce(url, options, files);
-      self.postMessage({ id, result }, [result.output.buffer]);
+      scope.postMessage({ id, result }, [result.output.buffer]);
     } catch (error) {
       // After a trap the module's memory is in an unknown state, so the client
       // is told to discard this worker.
-      self.postMessage({ id, error: error?.message || String(error), fatal: !(error instanceof PandocFailure) });
+      scope.postMessage({ id, error: error?.message || String(error), fatal: !(error instanceof PandocFailure) });
     }
   };
 }
