@@ -813,7 +813,9 @@ pub(super) async fn dispatch(
 
     // --- the shell -------------------------------------------------------
     let mut page = path.clone();
+    let mut keyed = false;
     if !server.shell.contains_key(&page) {
+        keyed = matches!(parts[..], ["docs", _, _]);
         let docs_slug = match parts[..] {
             ["docs", slug] => Some(slug),
             ["docs", slug, key] if valid_path_link_key(key) => Some(slug),
@@ -833,6 +835,10 @@ pub(super) async fn dispatch(
     }
     if let Some(asset) = server.shell.get(&page) {
         let mut response = write_asset(asset, request.headers());
+        // The URL carries a link key, and a browser's HTTP cache outlives sign-out.
+        if keyed {
+            set(&mut response, "cache-control", "private, no-store");
+        }
         server.issue_visitor(request.headers(), &arrival, asset, &mut response);
         return response;
     }

@@ -669,6 +669,10 @@ async function run() {
   }).then((r) => r.json());
   const mintedKey = new URL(minted.created?.url ?? "", BASE).pathname.split("/").pop();
   check("the share route mints a key", Boolean(mintedKey), JSON.stringify(minted).slice(0, 120));
+  // The page at a keyed URL is never kept in an HTTP cache, which sign-out
+  // does not clear.
+  const keyedCaching = (await fetch(new URL(minted.created.url, BASE))).headers.get("cache-control") || "";
+  check("a keyed link's page is not stored", keyedCaching.includes("no-store"), keyedCaching);
 
   // A separately registered reviewer's browser, opening the link exactly as
   // the server minted it, key in the path.
