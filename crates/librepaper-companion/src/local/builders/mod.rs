@@ -16,7 +16,6 @@ pub mod runner;
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum BuilderId {
     Typst,
-    Pandoc,
     Calepin,
 }
 
@@ -49,7 +48,6 @@ impl BuilderId {
     pub fn parse(value: &str) -> Result<Self, String> {
         match value {
             "typst" => Ok(Self::Typst),
-            "pandoc" => Ok(Self::Pandoc),
             "calepin" => Ok(Self::Calepin),
             _ => Err(format!("unknown local builder: {value}")),
         }
@@ -58,7 +56,6 @@ impl BuilderId {
     pub fn as_str(self) -> &'static str {
         match self {
             Self::Typst => "typst",
-            Self::Pandoc => "pandoc",
             Self::Calepin => "calepin",
         }
     }
@@ -98,7 +95,6 @@ pub fn plan(
         .with_extension(request.output.extension());
     let mut plan = match request.builder {
         BuilderId::Typst => typst_plan(request, tools, workspace, &entrypoint, &output)?,
-        BuilderId::Pandoc => pandoc_plan(request, tools, workspace, &entrypoint, &output)?,
         BuilderId::Calepin => calepin_plan(request, tools, workspace, &entrypoint, &output)?,
     };
     plan.cwd = workspace.to_path_buf();
@@ -184,37 +180,6 @@ fn typst_plan(
     })
 }
 
-fn pandoc_plan(
-    request: &BuildRequest,
-    tools: &BTreeMap<String, PathBuf>,
-    workspace: &Path,
-    entrypoint: &Path,
-    output: &Path,
-) -> Result<CommandPlan, String> {
-    validate_options(&request.options, &[])?;
-    if !matches!(request.output, Output::Html | Output::Docx) {
-        return Err("unsupported Pandoc output".into());
-    }
-    Ok(CommandPlan {
-        executable: tool(tools, "pandoc")?,
-        args: {
-            let mut args = vec![
-                "--sandbox".into(),
-                entrypoint.display().to_string(),
-                "-o".into(),
-                output.display().to_string(),
-            ];
-            if request.output == Output::Html {
-                args.extend(["--standalone".into(), "--embed-resources".into()]);
-            }
-            args
-        },
-        cwd: workspace.to_path_buf(),
-        output: output.to_path_buf(),
-        environment: BTreeMap::new(),
-    })
-}
-
 fn validate_options(options: &BTreeMap<String, String>, allowed: &[&str]) -> Result<(), String> {
     for (key, value) in options {
         if !allowed.iter().any(|allowed| allowed == key) {
@@ -237,7 +202,7 @@ mod tests {
         std::fs::write(root.path().join("main.typ"), "= Title").expect("source");
         let mut options = BTreeMap::new();
         options.insert("command".into(), "evil".into());
-        for builder in [BuilderId::Typst, BuilderId::Pandoc, BuilderId::Calepin] {
+        for builder in [BuilderId::Typst, BuilderId::Calepin] {
             let request = BuildRequest {
                 builder,
                 engine: None,

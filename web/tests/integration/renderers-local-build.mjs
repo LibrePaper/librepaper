@@ -1,5 +1,5 @@
 // Format routing for protocol-v2 one-shot builders. These checks prove that
-// explicit native Typst and Pandoc selections reach the desktop app directly
+// explicit native Typst selections reach the desktop app directly
 // and that a local failure is returned instead of starting a browser render.
 import assert from "node:assert/strict";
 import * as client from "../../src/lib/desktop/client.js";
@@ -36,7 +36,7 @@ client._testing.inject({ storage, wait: () => Promise.resolve() });
 client.configure({ project: "paper", origin: "https://app.test" });
 
 let submitted = null;
-let artifact = new TextEncoder().encode("%PDF-typst");
+const artifact = new TextEncoder().encode("%PDF-typst");
 client._testing.inject({ fetch: async (url, init = {}) => {
   if (url.endsWith("/health")) return response(200, { service: "librepaper-local", protocol: [2], version: "2", instance: "one" });
   if (url.endsWith("/capabilities")) return response(200, { builders: [] });
@@ -59,41 +59,18 @@ assert.equal(submitted.builder, "typst");
 assert.deepEqual(submitted.workspace, { mode: "snapshot" });
 assert.deepEqual([...typst.pdf], [...artifact]);
 
-artifact = new TextEncoder().encode("<!doctype html><h1>Test</h1>");
-const markdown = await renderers.render(
-  { main: "main.md", texts: { "main.md": "# Test" }, assets: {} },
-  "Test",
-  { project: "paper", buildPreferences: { selection: "tool", backend: "local", tool: "pandoc", output: "html" } },
-);
-assert.equal(markdown.ok, true);
-assert.equal(submitted.builder, "pandoc");
-assert.deepEqual(submitted.workspace, { mode: "snapshot" });
-assert.match(markdown.html, /<h1>Test<\/h1>/);
-
-artifact = new Uint8Array([0x50, 0x4b, 0x03, 0x04]);
-const docx = await renderers.render(
-  { main: "main.md", texts: { "main.md": "# Test" }, assets: {} },
-  "Test",
-  { project: "paper", buildPreferences: { selection: "tool", backend: "local", tool: "pandoc", output: "docx" } },
-);
-assert.equal(docx.ok, true);
-assert.equal(docx.artifactKind, "docx");
-assert.deepEqual(docx.artifact, artifact);
-assert.equal(docx.html, null);
-assert.equal(docx.pdf, null);
-
 client._testing.inject({ fetch: async (url, init = {}) => {
   if (url.endsWith("/jobs") && init.method === "POST") return response(202, { id: "failed-1" });
-  if (url.endsWith("/jobs/failed-1")) return response(200, { status: "failed", exit: 1, error: "pandoc failed", outputs: {} });
+  if (url.endsWith("/jobs/failed-1")) return response(200, { status: "failed", exit: 1, error: "typst failed", outputs: {} });
   throw new Error(`unexpected failed-build request ${url}`);
 } });
 const failed = await renderers.render(
-  { main: "main.md", texts: { "main.md": "# Broken" }, assets: {} },
+  { main: "main.typ", texts: { "main.typ": "= Broken" }, assets: {} },
   "Broken",
-  { project: "paper", buildPreferences: { selection: "tool", backend: "local", tool: "pandoc", output: "html" } },
+  { project: "paper", buildPreferences: { selection: "tool", backend: "local", tool: "typst", output: "pdf" } },
 );
 assert.equal(failed.ok, false);
-assert.equal(failed.failure.message, "pandoc failed");
+assert.equal(failed.failure.message, "typst failed");
 assert.equal(failed.html, null);
 
 client._testing.inject({ fetch: async (url, init = {}) => {
