@@ -53,8 +53,8 @@ const scholarly = new Set(['theorem','lemma','proposition','definition','proof',
  * @property {string} [text='']
  * @property {string} [format]
  * @property {string} [path]
- * @property {string} [mainText]
- * @property {string} [mainPath]
+ * @property {string} [entryText]
+ * @property {string} [entryPath]
  * @property {Selection} [selection]
  * @property {InsertFile[]} [files]
  * @property {string} [targetId]
@@ -198,7 +198,7 @@ export function insertionAvailability(id, input = {}) {
  * @returns {string[]}
  */
 export function gatherInsertEnvironments(input = {}) {
-  const c=context(input), text=[c.text,c.mainText,...c.files.map(f=>f.text)].filter(Boolean).join('\n'), names=new Set();
+  const c=context(input), text=[c.text,c.entryText,...c.files.map(f=>f.text)].filter(Boolean).join('\n'), names=new Set();
   const regex=c.format==='latex'?/\\(?:newenvironment|renewenvironment|newtheorem)\*?\s*\{([^}]+)\}/g:/#let\s+([A-Za-z][\w-]*)\s*\([^)]*\bbody\b[^)]*\)/g;
   for(const m of text.matchAll(regex))names.add(m[1]);
   return [...names].sort();
@@ -218,7 +218,7 @@ export function gatherInsertEnvironments(input = {}) {
  */
 export function insertEnvironmentFields(name,input={}) {
   if(!/^[A-Za-z][\w-]*$/.test(name||''))return [];
-  const c=context(input),source=[c.text,c.mainText,...c.files.map(f=>f.text)].filter(Boolean).join('\n');
+  const c=context(input),source=[c.text,c.entryText,...c.files.map(f=>f.text)].filter(Boolean).join('\n');
   if(c.format==='latex'){
     const match=source.match(new RegExp('\\\\(?:newenvironment|renewenvironment)\\s*\\{'+name+'\\}\\s*\\[(\\d+)\\](?:\\s*\\[([^\\]]*)\\])?'));
     return Array.from({length:Math.min(9,Number(match?.[1])||0)},(_,i)=>({label:'Argument '+(i+1),defaultValue:i===0?match?.[2]||'':'',optional:i===0&&match?.[2]!=null}));
@@ -455,7 +455,7 @@ export function buildInsertion(id, options = {}, input = {}) {
   if(c.format==='quarto'&&id==='display-math'&&o.numbered===true&&!o.label)o.label=id;
   if(o.label || id==='label' || (c.format==='quarto'&&scholarly.has(id)&&!['proof','remark'].includes(id)))o.label=uniqueLabel(o.label||id,c,c.format==='quarto'?prefixes[id]:'');
   if(id==='bibliography'){
-    const whole=[c.text,c.mainText].filter(Boolean).join('\n');
+    const whole=[c.text,c.entryText].filter(Boolean).join('\n');
     const exists=c.format==='typst'?/#bibliography\s*\(/.test(whole):c.format==='latex'?/\\(?:printbibliography|bibliography\s*\{)/.test(whole):c.format==='quarto'?/\{#refs\}/.test(c.text):/^#{1,6}\s+References\s*$/im.test(c.text);
     if(exists)throw Error('This document already contains a bibliography. Edit or move the existing one.');
   }
@@ -468,7 +468,7 @@ export function buildInsertion(id, options = {}, input = {}) {
   if(o.file)o.file=relativePath(o.file,basePath);
   if(o.url)url(o.url);
   if(id==='citation' && ['latex','typst'].includes(c.format)){
-    const setup=[c.text,c.mainText].filter(Boolean).join('\n');
+    const setup=[c.text,c.entryText].filter(Boolean).join('\n');
     if(!(c.format==='latex'?/\\(?:bibliography|addbibresource|begin\{thebibliography\})/.test(setup):/#bibliography\s*\(/.test(setup)))throw Error('Insert a bibliography first so citations have a reference source.');
   }
   let result=c.format==='latex'?buildLatex(id,o,c):c.format==='typst'?buildTypst(id,o,c):buildMarkdown(id,o,c);

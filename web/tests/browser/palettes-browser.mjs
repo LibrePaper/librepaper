@@ -155,7 +155,6 @@ document.body.append(host);
 
 const session = joinSession({ send: () => {}, mayEdit: true });
 const file = session.addText("paper.tex", ${JSON.stringify(sample)});
-session.setMain(file);
 createClassComponent({
   component: Editor,
   target: host,

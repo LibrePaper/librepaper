@@ -8,6 +8,7 @@
 // deliberately has no dependency on preview rendering or the live editor.
 import { createGeneration } from "./generation.js";
 import { isMoment } from "../moment.js";
+import { openingFile } from "../opening.js";
 
 /// A selection is a label's id, and nothing else: the timeline lists
 /// versions, and a minute nobody saved is not one.
@@ -87,11 +88,11 @@ export function createHistorySource({ read, currentTree, labels = () => [], pref
       const status = Object.fromEntries(paths.map(name => [name, statusOf(oldTree, newTree, name)]));
       const changed = paths.filter(name => status[name] !== "same");
       // Land on a file the reader came for, then on one that actually
-      // differs, and only then on the document itself.
-      const main = (after || before)?.main || newTree.main;
+      // differs, and only then on the file the project opens on.
+      const landing = openingFile((after || before || newTree).texts);
       state.path = paths.includes(path) ? path
         : changed[0]
-          || (paths.includes(main) ? main : paths[0] || "");
+          || (paths.includes(landing) ? landing : paths[0] || "");
       state.result = {
         oldTree,
         newTree,

@@ -8,7 +8,6 @@ const session = join({ send() {}, mayEdit: true });
 const peer = join({ send() {}, mayEdit: true });
 try {
   const main = session.addText("main.tex", "main");
-  session.setMain(main);
   const chapter = session.addText("chapters/one.tex", "original");
   session.putAsset("chapters/fig/chart.png", digest);
   session.addFolder("chapters/empty", rules);
@@ -44,19 +43,15 @@ try {
   assert.throws(() => checkPlacement(rules, { kind: "text", path: "archive/chapters.tex" }, [{ kind: "text", path: "archive/chapters.tex/one.tex" }], []), /already/);
   assert.throws(() => session.relocate([session.list().find((file) => file.id === main)], "main.png", rules, true), /cannot change/);
   session.removeEntries([session.list().find((file) => file.id === main)]);
-  assert.equal(session.mainId(), chapter, "deleting main selects the remaining text deterministically");
+  assert.deepEqual(session.list().filter((file) => file.kind === "text").map((file) => file.id), [chapter], "deleting a file leaves the others");
   const fresh = join({ send() {}, mayEdit: true });
   try {
     const paper = fresh.addText("paper.tex", "paper");
-    fresh.setMain(paper);
     const bib = fresh.addText("refs.bib", "bib");
-    const intro = fresh.addText("sections/intro.tex", "intro");
     fresh.removeEntries([fresh.list().find((file) => file.id === paper)]);
-    assert.equal(fresh.mainId(), intro, "deleting main skips a text that does not render");
-    fresh.removeFile(intro);
-    assert.equal(fresh.mainId(), bib, "falls back to a non-renderable text when nothing renders");
+    assert.deepEqual(fresh.list().map((file) => file.id), [bib]);
     fresh.removeFile(bib);
-    assert.equal(fresh.mainId(), "", "no text left, so no main");
+    assert.deepEqual(fresh.list(), [], "no file left, so an empty project");
   } finally { fresh.leave(); }
   const copy = session.duplicateEntry(session.list().find((file) => file.id === chapter), "copied.tex", rules);
   session.textOf(copy).insert(0, "COPY ");

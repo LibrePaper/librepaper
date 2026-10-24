@@ -95,7 +95,6 @@ try {
 const frames = [];
 const session = join({ send: (message) => frames.push(message), slug: "review", mayEdit: true });
 const id = session.addText("main.typ", "x".repeat(700_000));
-session.setMain(id);
 const start = frames.find((message) => message.type === "doc-update-start");
 assert.ok(start);
 const chunks = frames.filter((message) => message.type === "doc-update-chunk");

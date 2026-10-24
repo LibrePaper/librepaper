@@ -16,6 +16,7 @@ import { checkPlacement } from "../file-manager.js";
 import * as figures from "../figures.js";
 import * as renderers from "../renderers.js";
 import { authHeaders, uploadAsset } from "../api.js";
+import { openingFile } from "../opening.js";
 
 /** @typedef {ReturnType<typeof import("../collab.js").join>} WorkspaceSession */
 /** @typedef {ReturnType<WorkspaceSession["list"]>[number]} WorkspaceFile */
@@ -34,7 +35,7 @@ export function createWorkspace({
   /// old path.
   say = () => {},
   paint = () => {},
-  // The preview follows the main file unless one was pinned, and which file
+  // The preview follows the open file unless one was locked, and which file
   // that is can change with any directory read.
   retarget = () => {},
   onarrived = () => {},
@@ -110,7 +111,13 @@ export function createWorkspace({
     // leaves the editor showing something that is not there any more, so it
     // falls back to the document itself.
     if (state.openFile && !state.files.some((file) => file.id === state.openFile)) state.openFile = "";
-    if (!state.openFile) state.openFile = session.mainId();
+    // Nothing open: the project lands on the file its opening rule names. This
+    // runs when files first appear and again only when the open file is deleted.
+    if (!state.openFile && state.files.length) {
+      const landing = openingFile(session.tree().texts);
+      const file = landing && state.files.find((file) => file.kind === "text" && file.path === landing);
+      if (file) state.openFile = file.id;
+    }
     // The file the link named, if the project has one by that name. An
     // editor's source pane opens on it; a reader has no pane to open it in
     // and no list to mark it in, so for them the link is to the document.
@@ -207,13 +214,6 @@ export function createWorkspace({
     session.duplicateEntry(entry, path, state.rules);
   }
 
-  /** @param {WorkspaceFile} file */
-  function setMain(file) {
-    if (file.kind !== "text") return;
-    session.setMain(file.id);
-    paint();
-  }
-
   /// The figures a document already holds, offered to the insert dialog
   /// beside whatever the editor says is in scope.
   function assets() {
@@ -272,7 +272,6 @@ export function createWorkspace({
     relocate,
     remove,
     duplicate,
-    setMain,
     assets,
     assetUrl,
     watchFigure,

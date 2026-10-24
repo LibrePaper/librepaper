@@ -57,8 +57,8 @@ const capability = (document_) => JSON.stringify([
  * onMessage?: (message: RoomMessage) => void, onConnected?: (up: boolean) => void,
  * onPeers?: (count: number) => void, onState?: (state: CollaborationState) => void,
  * onSession?: (session: ReaderSession) => void,
- * onDocumentChanged?: (reason: string) => void, onSource?: (session: ReaderSession) => void,
- * onSwap?: (session: ReaderSession) => void, onFiles?: (events: DirectoryEvents, session: ReaderSession) => void,
+ * onDocumentChanged?: (reason: string) => void,
+ * onFiles?: (events: DirectoryEvents, session: ReaderSession) => void,
  * onAwareness?: (session: ReaderSession) => void,
  * sourceSync?: boolean, retryMs?: number, setTimer?: typeof setTimeout, clearTimer?: typeof clearTimeout,
  * }} options
@@ -77,8 +77,6 @@ export function createReaderCollaboration({
   onState = () => {},
   onSession = () => {},
   onDocumentChanged = () => {},
-  onSource = () => {},
-  onSwap = () => {},
   onFiles = () => {},
   onAwareness = () => {},
   sourceSync = true,
@@ -151,8 +149,6 @@ export function createReaderCollaboration({
       mayEdit: canEdit,
     });
     const active = session;
-    active.watchSource(() => { if (live()) onSource(active); });
-    active.onSwap(() => { if (live()) onSwap(active); });
     filesCleanup = active.onFiles((events) => { if (live()) onFiles(events, active); });
     presenceCleanup = active.ephemeral.subscribe(() => { if (live()) onAwareness(active); });
     onSession(active);

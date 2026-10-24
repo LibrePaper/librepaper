@@ -25,7 +25,6 @@
 import { LoroDoc, LoroText, EphemeralStore, VersionVector } from "loro-crdt";
 import { checkPlacement, folderPaths, inside, parentPath, relocation, topEntries } from "./file-manager.js";
 import { projectDirectory } from "./projection.js";
-import { formatOf } from "./formats.js";
 import { createGeneration } from "./reader/generation.js";
 import { AnchorIndex, MoveMemory } from "./anchors.js";
 import { toLf } from "./line-endings.js";
@@ -34,9 +33,9 @@ import { toLf } from "./line-endings.js";
 /** @typedef {{ type: string, [key: string]: unknown }} SessionMessage */
 /** @typedef {{ local: boolean, pending: number, localPending: number, localError: string, joined: boolean }} SessionState */
 /** @typedef {{ hydrated: () => void, writing: (count?: number) => void, persisted: () => void, failed: (error: Error) => void }} PersistenceEvents */
-/** @typedef {{ id: string, path: string, kind: "text" | "asset", sha?: string, main: boolean }} ProjectFile */
+/** @typedef {{ id: string, path: string, kind: "text" | "asset", sha?: string }} ProjectFile */
 /** @typedef {ProjectFile | { kind: "folder", id: string, path: string }} ProjectEntry */
-/** @typedef {{ main: string, texts: Record<string, string>, digests: Record<string, string>, files: Record<string, {kind: "text", id: string} | {kind: "asset", sha: string}> }} ProjectTree */
+/** @typedef {{ texts: Record<string, string>, digests: Record<string, string>, files: Record<string, {kind: "text", id: string} | {kind: "asset", sha: string}> }} ProjectTree */
 /** @typedef {{ text_extensions?: string[], asset_extensions?: string[], derived_extensions?: string[], max_path?: number, [key: string]: unknown }} ProjectRules */
 /** @typedef {import("loro-crdt").LoroEvent} ProjectEvent */
 
@@ -163,11 +162,10 @@ export function createProjectSession({
 }) {
   const doc = new LoroDoc();
   // A document is a directory: `files` holds one LoroText per file under an id
-  // of its own, `paths` says what each of them is called, and `meta.main`
-  // names the one the renderer is run on. Keying the texts by id rather than
-  // by path is what makes a rename free -- the name moves and the text stays
-  // where it is, so a keystroke made during a rename lands where it was always
-  // going to land.
+  // of its own, and `paths` says what each of them is called. Keying the texts
+  // by id rather than by path is what makes a rename free -- the name moves and
+  // the text stays where it is, so a keystroke made during a rename lands where
+  // it was always going to land.
   const files = doc.getMap("files");
   const paths = doc.getMap("paths");
   // Path to digest. An asset's bytes are never in the shared document -- they
@@ -190,81 +188,6 @@ export function createProjectSession({
   // presence -- name, colour and all -- overwritten by somebody else's.
   const localTab = presenceId();
   const localKey = `${PRESENCE_PREFIX}${localTab}`;
-
-  // The text the editor and the preview are following, and who is following
-  // it. Which text that is can change under them -- when the maps arrive from
-  // the server, or when somebody names a different main file -- so the
-  // watchers are held here and moved across rather than re-registered by every
-  // caller.
-  let bound = null;
-  const watchers = new Set();
-  const swaps = new Set();
-  // Track subscriptions: Map from text.id -> Map from watcher -> unsub function
-  const textSubs = new Map();
-
-  // Run after the main file is removed. Prefer a text that renders, so deleting
-  // paper.tex does not make refs.bib main when sections/intro.tex is there; fall
-  // back to any text, and unset main only when no text is left.
-  function reassignMain() {
-    const remaining = [...paths.entries()]
-      .filter(([id]) => files.get(id) instanceof LoroText)
-      .sort((a, b) => String(a[1]).localeCompare(String(b[1])) || String(a[0]).localeCompare(String(b[0])));
-    const next = remaining.find(([, path]) => formatOf(path)) || remaining[0];
-    if (next) meta.set("main", next[0]);
-    else meta.delete("main");
-  }
-
-  function mainText() {
-    // Follow the canonical projection rather than the raw declaration. A
-    // missing, invalid, or otherwise unprojectable declaration falls back to
-    // the same text selected by mainId()/mainPath(); binding the raw id here
-    // would leave the editor subscribed to no text while the tree rendered a
-    // different main file.
-    const id = projectDirectory(doc, projectionRules).mainId;
-    const text = id ? files.get(id) : null;
-    return text instanceof LoroText ? text : null;
-  }
-
-  function rebind() {
-    const next = mainText();
-    // By container id, not by handle: `files.get(id)` mints a fresh LoroText
-    // wrapper on every call, so comparing the objects reads as "the main file
-    // was swapped" once per commit -- once per keystroke -- and everything
-    // hanging off `onSwap` tears itself down and builds again, the editor and
-    // its caret among it. A handle stays live across edits, so the one already
-    // bound is kept rather than replaced by an equivalent.
-    if (next?.id === bound?.id) return;
-    // Unsubscribe all watchers from the old bound text
-    if (bound && textSubs.has(bound.id)) {
-      const subs = textSubs.get(bound.id);
-      for (const unsub of subs.values()) {
-        unsub();
-      }
-      textSubs.delete(bound.id);
-    }
-    bound = next;
-    // Subscribe all current watchers to the new bound text
-    if (bound) {
-      const subs = new Map();
-      for (const watcher of watchers) {
-        const unsub = bound.subscribe((event) => watcher(event));
-        subs.set(watcher, unsub);
-      }
-      textSubs.set(bound.id, subs);
-    }
-    for (const swap of swaps) swap();
-  }
-
-  // Subscribe to document changes to detect when main file or files/paths change.
-  // Each subscription will trigger rebind to update the bound text if needed.
-  doc.subscribe((eventBatch) => {
-    // Text edits cannot change the projection's main id, and projecting all
-    // bodies on every keystroke is needlessly expensive. Directory commits
-    // target one of the root maps; imports and file-container replacement do
-    // too, while edits inside a LoroText target that text container instead.
-    if (eventBatch.events.some((event) => directory.has(event.target))) rebind();
-  });
-  rebind();
 
   // The comment anchors of this document, resolved and kept current for the
   // whole session, whether or not an editor is open: the index follows imports
@@ -738,11 +661,6 @@ export function createProjectSession({
     localPresence() {
       return store.get(localKey) || null;
     },
-    /// The main file's text as it stands. A getter rather than a field,
-    /// because which text that is is not known until the session arrives.
-    get text() {
-      return bound;
-    },
     get joined() {
       return joined;
     },
@@ -756,36 +674,9 @@ export function createProjectSession({
       return unacknowledged.size;
     },
 
-    /// The path the main file is known by, which is what its format is read
-    /// from. Empty until the maps arrive.
-    mainPath() {
-      return projectDirectory(doc, projectionRules).main;
-    },
-
-    /// The main file's id, which is what the editor opens on and what a
-    /// diagnostic with no file of its own belongs to.
-    mainId() {
-      return projectDirectory(doc, projectionRules).mainId;
-    },
-
     /** @param {ProjectRules} rules */
     setRules(rules) {
       projectionRules = rules || {};
-      rebind();
-    },
-
-    /// Follows the main file's text, across the text itself being swapped for
-    /// another -- which happens once on every document migrated from before
-    /// there were directories, and again whenever somebody names a different
-    /// main file.
-    watchSource(watcher) {
-      watchers.add(watcher);
-      if (bound) {
-        // Subscribe this new watcher to the currently bound text
-        const unsub = bound.subscribe((event) => watcher(event));
-        if (!textSubs.has(bound.id)) textSubs.set(bound.id, new Map());
-        textSubs.get(bound.id).set(watcher, unsub);
-      }
     },
 
     /* --------------------------------------------------------- the directory */
@@ -832,7 +723,6 @@ export function createProjectSession({
       }
       const selected = (path) => roots.some((entry) => path === entry.path || (entry.kind === "folder" && inside(path, entry.path)));
       const removed = current.filter((file) => selected(file.path));
-      const removedMain = removed.some((file) => file.main);
       for (const file of removed) {
         if (file.kind === "asset") assets.delete(file.id);
         else { files.delete(file.id); paths.delete(file.id); }
@@ -842,7 +732,6 @@ export function createProjectSession({
         const parent = parentPath(entry.path);
         if (parent) meta.set(`folder:${parent}`, true);
       }
-      if (removedMain) reassignMain();
       doc.commit({ origin: DIRECTORY_ORIGIN });
     },
 
@@ -858,10 +747,7 @@ export function createProjectSession({
       return path;
     },
 
-    /// Every file in the document: its id, its path, and whether it is the
-    /// main one. Sorted with the main file first and the rest by path, which
-    /// is the order the file list shows and the order a person reads a paper
-    /// in.
+    /// Every file in the document: its id and its path, sorted by path.
     /** @returns {ProjectFile[]} */
     list() {
       const projection = projectDirectory(doc, projectionRules);
@@ -870,11 +756,7 @@ export function createProjectSession({
         path,
         ...(file.kind === "asset" ? { sha: file.digest } : {}),
         kind: file.kind,
-        main: file.kind === "text" && file.id === projection.mainId,
-      })).sort((a, b) => {
-        if (a.main !== b.main) return a.main ? -1 : 1;
-        return a.path.localeCompare(b.path);
-      });
+      })).sort((a, b) => a.path.localeCompare(b.path));
     },
 
     /// The whole directory as a renderer takes it. Assets are the digests
@@ -895,7 +777,7 @@ export function createProjectSession({
           entries[path] = { kind: "asset", sha: file.digest };
         }
       }
-      return { main: projection.main, texts, digests, files: entries };
+      return { texts, digests, files: entries };
     },
 
     /// The text at a path, for the caller that has a path and not an id --
@@ -925,7 +807,6 @@ export function createProjectSession({
       }
       files.setContainer(id, text);
       paths.set(id, path);
-      if (!meta.get("main")) meta.set("main", id);
       doc.commit({ origin: DIRECTORY_ORIGIN });
       return id;
     },
@@ -952,16 +833,12 @@ export function createProjectSession({
       }
     },
 
-    /// Removes a file, its name with it. Empty projects are valid; when the
-    /// selected main is removed, choose a remaining text deterministically or
-    /// leave main unset rather than fabricating content.
+    /// Removes a file, its name with it. Empty projects are valid.
     /** @param {string} id */
     removeFile(id) {
       if (!mayEdit) throw new Error("This project is read-only.");
-      const wasMain = meta.get("main") === id;
       files.delete(id);
       paths.delete(id);
-      if (wasMain) reassignMain();
       doc.commit({ origin: DIRECTORY_ORIGIN });
     },
 
@@ -977,16 +854,8 @@ export function createProjectSession({
       doc.commit({ origin: DIRECTORY_ORIGIN });
     },
 
-    /// Names the main file: the one a renderer is run on, and the one the
-    /// document's format is read from.
-    /** @param {string} id */
-    setMain(id) {
-      meta.set("main", id);
-      doc.commit({ origin: DIRECTORY_ORIGIN });
-    },
-
     /// Called whenever the directory changes -- a file added, renamed,
-    /// removed, or made the main one -- so the list can be redrawn.
+    /// or removed -- so the list can be redrawn.
     /** @param {(events: ProjectEvent[]) => void} watcher */
     onFiles(watcher) {
       // The watcher hears once per batch, not once per event. A rename moves a
@@ -1072,13 +941,6 @@ export function createProjectSession({
         });
       }
       return result;
-    },
-
-    /// Called when the text being followed is a different text, so whoever is
-    /// bound to it can bind again.
-    /** @param {() => void} swap */
-    onSwap(swap) {
-      swaps.add(swap);
     },
 
     /// What to send to join, or to rejoin: what this browser already has, so
@@ -1284,10 +1146,6 @@ export function createProjectSession({
       clearPresenceTimer();
       clearPressureTimer();
       report();
-    },
-
-    text_() {
-      return bound ? bound.toString() : "";
     },
 
     /// Says who this is, for the label on their caret.

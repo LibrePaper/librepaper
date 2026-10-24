@@ -6,6 +6,12 @@ import { assertSameProject, projectIdentity, sameProject } from "../../src/lib/p
 const encode = (bytes) => btoa(String.fromCharCode(...bytes));
 const decode = encoded => Uint8Array.from(atob(encoded), char => char.charCodeAt(0));
 
+// The text of the first file by path, which is the only file in most fixtures.
+function bodyOf(session) {
+  const file = session.list().find((entry) => entry.kind === "text");
+  return file ? session.textOf(file.id).toString() : "";
+}
+
 const states = [];
 let persistenceEvents;
 let closed = false;
@@ -76,83 +82,6 @@ assert.equal(closed, true);
   }
 }
 
-// A swap is the main file becoming a different file. Editing the main file is
-// not one: everything hanging off `onSwap` rebuilds itself, so a swap per
-// keystroke used to throw the editor -- and the caret with it -- back to the
-// top of the file on every commit.
-const swapping = createProjectSession({ send: () => {}, onState: () => {} });
-try {
-  const main = swapping.addText("paper.md", "hello");
-  swapping.setMain(main);
-  swapping.doc.commit();
-  await new Promise((resume) => setTimeout(resume, 20));
-  let swaps = 0;
-  swapping.onSwap(() => { swaps += 1; });
-  swapping.textOf(main).insert(5, " world");
-  swapping.doc.commit();
-  await new Promise((resume) => setTimeout(resume, 20));
-  assert.equal(swaps, 0);
-  assert.equal(swapping.text.toString(), "hello world");
-
-  const other = swapping.addText("other.md", "x");
-  swapping.setMain(other);
-  swapping.doc.commit();
-  await new Promise((resume) => setTimeout(resume, 20));
-  assert.equal(swaps, 1);
-  assert.equal(swapping.text.toString(), "x");
-} finally {
-  swapping.leave();
-}
-
-// The bound source must use the projection's canonical main selection. A raw
-// meta.main value can name a deleted file, or a file whose path is rejected
-// once deployment rules arrive; in either case the projection falls back to a
-// deterministic text and the editor must follow that same text.
-{
-  const rules = { text_extensions: [".md"], asset_extensions: [], derived_extensions: [], max_path: 200 };
-  const canonical = createProjectSession({ send: () => {}, onState: () => {} });
-  try {
-    const first = canonical.addText("first.md", "first");
-    canonical.addText("second.md", "second");
-    canonical.setMain(first);
-    canonical.doc.commit();
-    assert.equal(canonical.text.toString(), "first");
-
-    canonical.setMain("deleted-main");
-    canonical.doc.commit();
-    assert.equal(canonical.mainId(), canonical.list()[0].id, "missing declarations use the projected fallback");
-    assert.equal(canonical.text?.id, canonical.textOf(canonical.mainId()).id, "text follows the projected fallback id");
-    assert.equal(canonical.text.toString(), canonical.textOf(canonical.mainId()).toString());
-
-    const ruled = createProjectSession({ send: () => {}, onState: () => {} });
-    try {
-      ruled.addText("valid.md", "valid");
-      const invalid = ruled.addText("invalid.txt", "invalid");
-      ruled.setMain(invalid);
-      ruled.doc.commit();
-      let changes = 0;
-      ruled.watchSource(() => { changes += 1; });
-      ruled.setRules(rules);
-      assert.equal(ruled.mainPath(), "valid.md", "rules reject the declared non-text main path");
-      assert.notEqual(ruled.mainId(), invalid, "rules fallback does not bind the rejected file");
-      assert.equal(ruled.text.toString(), "valid", "rules fallback and bound text agree");
-
-      const beforeInvalidEdit = changes;
-      ruled.textOf(invalid).insert(0, "still-invalid");
-      ruled.doc.commit();
-      assert.equal(changes, beforeInvalidEdit, "edits to the rejected old main do not reach the source watcher");
-
-      ruled.textOf(ruled.mainId()).insert(0, "now-bound");
-      ruled.doc.commit();
-      assert.equal(changes, beforeInvalidEdit + 1, "edits to the projected fallback reach the source watcher");
-    } finally {
-      ruled.leave();
-    }
-  } finally {
-    canonical.leave();
-  }
-}
-
 const first = projectIdentity({ server: "https://paper.example/path", slug: "paper", createdAt: "one" });
 const same = projectIdentity({ server: "https://paper.example", slug: "paper", createdAt: "one" });
 const recreated = projectIdentity({ server: "https://paper.example", slug: "paper", createdAt: "two" });
@@ -171,7 +100,6 @@ assert.throws(() => assertSameProject(first, recreated), { code: "project-identi
   const directory = createProjectSession({ send: () => {}, onState: () => {} });
   try {
     const main = directory.addText("paper.md", "hello");
-    directory.setMain(main);
     directory.doc.commit();
     await new Promise((resume) => setTimeout(resume, 20));
     const batches = [];
@@ -226,7 +154,6 @@ assert.throws(() => assertSameProject(first, recreated), { code: "project-identi
 function sourceLog() {
   const source = createProjectSession({ send: () => {}, onState: () => {} });
   const main = source.addText("paper.md", "hello");
-  source.setMain(main);
   source.doc.commit();
   const base = source.doc.export({ mode: "update" });
   const afterBase = source.doc.oplogVersion();
@@ -242,7 +169,7 @@ function sourceLog() {
   const row2 = source.doc.export({ mode: "update", from: afterRow1 });
 
   const text = "hello there world";
-  assert.equal(source.text.toString(), text, "the fixture reads back what it was built to hold");
+  assert.equal(bodyOf(source), text, "the fixture reads back what it was built to hold");
   source.leave();
   return { base, row1, row2, head, text };
 }
@@ -261,7 +188,7 @@ function sourceLog() {
     assert.equal(sentA.filter((message) => message.type === "doc-update").length, 0,
       "catch-up waits until the advertised rows have arrived");
     await joiner.rows({ protocol: "librepaper.room.v3", vector: encode(head.encode()), updates: [encode(row1), encode(row2)] });
-    assert.equal(joiner.text_(), text, "importing the base and then both rows reproduces the source's text");
+    assert.equal(bodyOf(joiner), text, "importing the base and then both rows reproduces the source's text");
     assert.equal(joiner.joined, true);
     assert.equal(sentA.filter((message) => message.type === "doc-update").length, 1,
       "the complete join sends one catch-up after the advertised rows are present");
@@ -285,7 +212,6 @@ function sourceLog() {
   });
   try {
     const file = source.addText("paper.md", "alpha beta");
-    source.setMain(file);
     source.doc.commit();
     const base = source.doc.export({ mode: "update" });
 
@@ -341,7 +267,7 @@ function sourceLog() {
     joiner.doc.import(base);
     assert.equal(joiner.joined, false);
     await joiner.rows({ protocol: "librepaper.room.v3", vector: encode(head.encode()), updates: [encode(row1), encode(row2)] });
-    assert.equal(joiner.text_(), text, "the rows close the gap between the local base and the head");
+    assert.equal(bodyOf(joiner), text, "the rows close the gap between the local base and the head");
     assert.equal(joiner.joined, true);
   } finally {
     joiner.leave();
@@ -360,7 +286,7 @@ function sourceLog() {
     joiner.doc.import(base);
     joiner.doc.import(row1);
     await joiner.rows({ protocol: "librepaper.room.v3", vector: encode(head.encode()), updates: [encode(row1), encode(row2)] });
-    assert.equal(joiner.text_(), text, "re-importing the row already held costs nothing and the missing one lands");
+    assert.equal(bodyOf(joiner), text, "re-importing the row already held costs nothing and the missing one lands");
     assert.equal(joiner.joined, true);
   } finally {
     joiner.leave();
@@ -386,7 +312,7 @@ function sourceLog() {
   const offlineSource = createProjectSession({ send: () => {}, onState: () => {} });
   offlineSource.doc.import(base);
   const fromBase = offlineSource.doc.oplogVersion();
-  offlineSource.textOf(offlineSource.mainId()).insert(5, " OFFLINE");
+  offlineSource.textOf(offlineSource.list()[0].id).insert(5, " OFFLINE");
   offlineSource.doc.commit();
   const offlineEdit = offlineSource.doc.export({ mode: "update", from: fromBase });
   offlineSource.leave();
@@ -450,7 +376,7 @@ function sourceLog() {
     verify.doc.import(row1);
     verify.doc.import(row2);
     for (const frame of sent) verify.doc.import(decode(frame.update));
-    assert.ok(verify.textOf(verify.mainId()).toString().includes("OFFLINE"),
+    assert.ok(verify.textOf(verify.list()[0].id).toString().includes("OFFLINE"),
       "the catch-up export carries the offline edit hydration imported, not a snapshot taken before it landed");
     assert.ok(verify.list().some((file) => file.path === "during.md"),
       "the edit made while hydration was in flight reaches the catch-up");
@@ -507,7 +433,7 @@ function sourceLog() {
     // catch-up by this point, ahead of the base those rows build on.
     assert.equal(sentG.filter((message) => message.type === "doc-update").length, 0,
       "neither join step has sent anything while the referenced base is still downloading");
-    assert.equal(joiner.text_(), "", "rows has not imported ahead of the base it depends on");
+    assert.equal(bodyOf(joiner), "", "rows has not imported ahead of the base it depends on");
 
     // Let both steps run as far as they can without the fetch: `start`
     // reaches `fetchReference` and suspends there; `rows`, if it is correctly
@@ -524,7 +450,7 @@ function sourceLog() {
     await rowsPromise;
 
     assert.deepEqual(order, ["fetch:https://example.test/base", "fetch-resolved"]);
-    assert.equal(joiner.text_(), text, "the base landed before the rows that build on it were imported");
+    assert.equal(bodyOf(joiner), text, "the base landed before the rows that build on it were imported");
     assert.equal(joiner.joined, true);
   } finally {
     joiner.leave();
@@ -755,7 +681,7 @@ const gate = () => {
   await startPromise;
 
   assert.equal(joiner.joined, false, "a session that was left does not come back joined");
-  assert.equal(joiner.text_(), "", "the referenced base is not imported into a document nobody holds");
+  assert.equal(bodyOf(joiner), "", "the referenced base is not imported into a document nobody holds");
   assert.equal(statesL.length, reportsAtLeave, "a left session reports no state");
   assert.equal(sentL.filter((message) => message.type === "doc-update").length, 0,
     "a left session sends no catch-up");
@@ -787,7 +713,7 @@ const gate = () => {
     await startPromise;
 
     assert.equal(joiner.joined, false, "a dropped socket's join does not revive itself");
-    assert.equal(joiner.text_(), "", "the obsolete base is not imported");
+    assert.equal(bodyOf(joiner), "", "the obsolete base is not imported");
     assert.equal(sentD.filter((message) => message.type === "doc-update").length, 0);
     assert.equal(sentD.filter((message) => message.type === "doc-presence").length, 0,
       "presence is not announced on a socket that has gone");
@@ -833,12 +759,12 @@ const gate = () => {
     await rowsPromise;
 
     assert.equal(joiner.joined, true, "the reconnect joined without waiting for the abandoned fetch");
-    assert.equal(joiner.text_(), text, "the rows landed on the base they build on, in order");
+    assert.equal(bodyOf(joiner), text, "the rows landed on the base they build on, in order");
     assert.equal(fetches, 1, "the abandoned fetch was not retried, and is still in flight");
     // Abandoning it now must not disturb the join that replaced it.
     never.resolve();
     await abandoned;
-    assert.equal(joiner.text_(), text);
+    assert.equal(bodyOf(joiner), text);
     assert.equal(joiner.joined, true);
   } finally {
     joiner.leave();
@@ -874,7 +800,7 @@ const gate = () => {
     await rowsPromise;
 
     assert.equal(joiner.joined, false, "queued rows from a dropped socket do not join");
-    assert.equal(joiner.text_(), "", "queued rows are not imported without the base they name");
+    assert.equal(bodyOf(joiner), "", "queued rows are not imported without the base they name");
     assert.equal(sentQ.filter((message) => message.type === "doc-update").length, 0);
   } finally {
     joiner.leave();
@@ -1005,7 +931,7 @@ const gate = () => {
     joiner.disconnected();
     held.resolve();
     await startPromise;
-    assert.equal(joiner.text_(), "", "bytes that failed their digest are never imported");
+    assert.equal(bodyOf(joiner), "", "bytes that failed their digest are never imported");
   } finally {
     joiner.leave();
   }
@@ -1143,7 +1069,7 @@ const gate = () => {
     pressed.addText("refused.md", "work the server could not keep");
     const refused = sentR.filter((message) => message.type === "doc-update");
     assert.equal(refused.length, 1, "the edit went out once");
-    const before = pressed.text_();
+    const before = bodyOf(pressed);
 
     // The server refuses it and names its head, which does not cover the edit.
     pressed.pressure(headVector);
@@ -1152,7 +1078,7 @@ const gate = () => {
       statesR.at(-1).pending, 1,
       "a refused edit is not durable, so it must still read as unsaved",
     );
-    assert.equal(pressed.text_(), before, "the refused edit is still in this browser's document");
+    assert.equal(bodyOf(pressed), before, "the refused edit is still in this browser's document");
     assert.equal(
       sentR.filter((message) => message.type === "doc-update").length, 1,
       "nothing is resent before the timer fires: an immediate retry is the resend loop this avoids",

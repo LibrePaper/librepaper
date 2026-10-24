@@ -38,10 +38,9 @@ writeFileSync(entry, [
       const ids = {};
       for (const [path, body] of Object.entries(spec.texts)) ids[path] = session.addText(path, body);
       for (const path of spec.assets || []) session.putAsset(path, "0".repeat(64));
-      session.setMain(ids[spec.file]);
       const host = document.createElement("section");
       document.body.append(host);
-      const editor = createClassComponent({ component: Editor, target: host, props: { session, format: spec.format, file: ids[spec.file] } });
+      const editor = createClassComponent({ component: Editor, target: host, props: { session, format: spec.format, file: ids[spec.file], entry: spec.file } });
       try {
         await tick();
         let content = null;

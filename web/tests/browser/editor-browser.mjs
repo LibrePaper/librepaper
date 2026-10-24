@@ -62,7 +62,6 @@ import { setSize, setFont, setLineHeight, start as startEditorType } from ${JSON
 const session = joinSession({ send: () => {}, mayEdit: true });
 const firstFile = session.addText("a.md", "alpha");
 const secondFile = session.addText("b.md", "beta");
-session.setMain(firstFile);
 const component = createClassComponent({
   component: Editor,
   target: document.body,
@@ -108,7 +107,6 @@ window.editorCheck = async () => {
 window.peerChangeCheck = async () => {
   const value = joinSession({ send: () => {}, mayEdit: true });
   const textId = value.addText("cats.md", "the cat sat.");
-  value.setMain(textId);
   const host = document.createElement("section");
   document.body.append(host);
   const component = createClassComponent({
@@ -133,33 +131,27 @@ window.peerChangeCheck = async () => {
   value.leave();
   return drawn;
 };
-window.projectedMainFallbackCheck = async () => {
-  const outcomes = [];
-  for (const mainState of ["absent", "dangling"]) {
-    const value = joinSession({ send: () => {}, mayEdit: true });
-    const textId = value.addText("fallback.md", "Valid " + mainState + " main");
-    const meta = value.doc.getMap("meta");
-    if (mainState === "absent") meta.delete("main");
-    else meta.set("main", "missing-text-id");
-    value.doc.commit();
-    const host = document.createElement("section");
-    document.body.append(host);
-    const fallbackEditor = createClassComponent({
-      component: Editor,
-      target: host,
-      props: { session: value, format: "markdown" },
-    });
-    await tick();
-    const shown = EditorView.findFromDOM(host.querySelector(".cm-editor")).state.doc.toString();
-    fallbackEditor.setDiagnostics([{ severity: "error", message: "Implicit main diagnostic", line: 1, column: 1 }]);
-    const navigated = fallbackEditor.nextDiagnostic();
-    await tick();
-    outcomes.push({ mainState, textId, open: fallbackEditor.openFile(), shown, navigated });
-    fallbackEditor.$destroy();
-    host.remove();
-    value.leave();
-  }
-  return outcomes;
+window.openingFileCheck = async () => {
+  const value = joinSession({ send: () => {}, mayEdit: true });
+  value.addText("chapters/intro.tex", "\\section{Intro}");
+  const thesisId = value.addText("thesis.tex", "\\documentclass{book}\n\\begin{document}\\input{chapters/intro}\\end{document}");
+  const host = document.createElement("section");
+  document.body.append(host);
+  const openingEditor = createClassComponent({
+    component: Editor,
+    target: host,
+    props: { session: value, format: "latex", entry: "thesis.tex" },
+  });
+  await tick();
+  const shown = EditorView.findFromDOM(host.querySelector(".cm-editor")).state.doc.toString();
+  openingEditor.setDiagnostics([{ severity: "error", message: "Entry diagnostic", line: 1, column: 1 }]);
+  const navigated = openingEditor.nextDiagnostic();
+  await tick();
+  const outcome = { thesisId, open: openingEditor.openFile(), shown, navigated };
+  openingEditor.$destroy();
+  host.remove();
+  value.leave();
+  return outcome;
 };
 // A body that still holds carriage returns is rewritten to line feeds when
 // the editor binds it, so the view and the text agree on every offset, and
@@ -168,7 +160,6 @@ window.lineEndingsCheck = async () => {
   const value = joinSession({ send: () => {}, mayEdit: true });
   const textId = value.addText("crlf.md", "one\\ntwo\\nthree\\nfour");
   const text = value.textOf(textId);
-  value.setMain(textId);
   // addText normalises, so the carriage returns come from a peer, the way an
   // old document holds them. The offsets descend so the earlier ones stay valid.
   fromAPeer(value.doc, (peer) => {
@@ -211,7 +202,6 @@ window.remoteUndoCheck = async () => {
   const value = joinSession({ send: () => {}, mayEdit: true });
   const textId = value.addText("undo.md", "alpha");
   const text = value.textOf(textId);
-  value.setMain(textId);
   // Its own host, so this scenario finds its own editor. Counting editors in
   // the body means every scenario that mounted earlier and did not tidy up
   // shifts the index, and the one found belongs to a different document.
@@ -464,7 +454,6 @@ window.vimUndoCheck = async () => {
   const value = joinSession({ send: () => {}, mayEdit: true });
   const textId = value.addText("vim-undo.md", "alpha");
   const text = value.textOf(textId);
-  value.setMain(textId);
   const host = document.createElement("section");
   document.body.append(host);
   const vimComponent = createClassComponent({
@@ -495,7 +484,6 @@ window.vimUndoCheck = async () => {
   const boundarySession = joinSession({ send: () => {}, mayEdit: true });
   const boundaryTextId = boundarySession.addText("vim-boundaries.md", "start\\n");
   const boundaryText = boundarySession.textOf(boundaryTextId);
-  boundarySession.setMain(boundaryTextId);
   const boundaryHost = document.createElement("section");
   document.body.append(boundaryHost);
   const boundaryComponent = createClassComponent({
@@ -611,11 +599,10 @@ window.collabCacheCheck = async () => {
   };
   try {
     const server = create();
-    const main = server.addText("main.md", "server");
-    server.setMain(main);
+    server.addText("main.md", "server");
     const opened = await cached("first-creation", "11111111-1111-4111-8111-111111111111");
     await opened.start(snapshot(server));
-    opened.text.insert(0, "new offline ");
+    opened.textOf(opened.list()[0].id).insert(0, "new offline ");
     await opened.persist();
     await rememberProject({
       server: location.origin, slug, created_at: "first-creation",
@@ -626,21 +613,19 @@ window.collabCacheCheck = async () => {
     opened.leave();
     const reopened = await cached("first-creation", "11111111-1111-4111-8111-111111111111");
     await reopened.start(snapshot(server));
-    const recovered = reopened.text.toString();
+    const recovered = reopened.textOf(reopened.list()[0].id).toString();
 
     const replacement = create();
-    const newMain = replacement.addText("main.md", "reseeded");
-    replacement.setMain(newMain);
+    replacement.addText("main.md", "reseeded");
     const recreated = await cached("second-creation", "22222222-2222-4222-8222-222222222222");
     await recreated.start(snapshot(replacement));
-    recreated.text.insert(0, "edited ");
+    recreated.textOf(recreated.list()[0].id).insert(0, "edited ");
     const result = {
       recovered,
       prepared: manifest?.document?.title,
       preparedSlug: manifest?.document?.slug,
       preparedCreatedAt: manifest?.document?.created_at,
       files: recreated.list().length,
-      main: recreated.mainId() === newMain,
       preview: recreated.tree().texts["main.md"],
     };
     return result;
@@ -655,7 +640,6 @@ window.collabCacheCheck = async () => {
 window.trackingCheck = async () => {
   const value = joinSession({ send: () => {}, mayEdit: true });
   const id = value.addText("tracked.md", "alpha");
-  value.setMain(id);
   const host = document.createElement("section");
   document.body.append(host);
   const tracked = createClassComponent({
@@ -706,7 +690,6 @@ window.trackingEditsCheck = async () => {
   const scenario = async (name, keys, run) => {
     const value = joinSession({ send: () => {}, mayEdit: true });
     const id = value.addText(name + ".md", startText);
-    value.setMain(id);
     const host = document.createElement("section");
     document.body.append(host);
     const component = createClassComponent({
@@ -846,7 +829,6 @@ window.trackingEditsCheck = async () => {
 window.migrationCheck = async () => {
   const value = joinSession({ send: () => {}, mayEdit: true });
   const id = value.addText("old.md", "aXYb");
-  value.setMain(id);
   const text = value.textOf(id);
   value.doc.getMap("changes").set("old-1", {
     file: id, who: "me", author: "Me", at: 1, run: null,
@@ -972,7 +954,6 @@ window.vimCheck = async () => {
 window.switchesCheck = async () => {
   const value = joinSession({ send: () => {}, mayEdit: true });
   const textId = value.addText("switches.md", "alpha");
-  value.setMain(textId);
   const host = document.createElement("section");
   document.body.append(host);
   const local = createClassComponent({
@@ -1036,7 +1017,6 @@ window.multiTabPersistenceCheck = async () => {
   const seedStore = durableProjectPersistence(identity).open(seed.doc, events);
   await seedStore.hydration;
   const file = seed.addText("paper.md", "base");
-  seed.setMain(file);
   seed.doc.commit();
   await seedStore.flush();
   seedStore.close();
@@ -1187,14 +1167,11 @@ try {
   assert.equal(peerChange.mine, 0, "another author's change was drawn as the viewer's own");
   assert.equal(peerChange.entries, 1);
   console.log("editor-browser: a change written by another peer is drawn in the text");
-  const projectedMain = await evaluate("projectedMainFallbackCheck()");
-  assert.deepEqual(projectedMain.map((outcome) => outcome.mainState), ["absent", "dangling"]);
-  for (const outcome of projectedMain) {
-    assert.equal(outcome.open, outcome.textId, `${outcome.mainState} main did not select the projected text`);
-    assert.equal(outcome.shown, `Valid ${outcome.mainState} main`);
-    assert.equal(outcome.navigated, true, "an implicit-main diagnostic did not resolve through the projection");
-  }
-  console.log("editor-browser: absent and dangling main IDs resolve to projected fallback text");
+  const opening = await evaluate("openingFileCheck()");
+  assert.equal(opening.open, opening.thesisId, "an editor with no file named did not open on the opening file");
+  assert.match(opening.shown, /documentclass/);
+  assert.equal(opening.navigated, true, "a diagnostic with no file did not resolve to the entry");
+  console.log("editor-browser: the editor opens on the opening file and an unplaced diagnostic resolves to the entry");
   const quarto = await evaluate("quartoEditorCheck()");
   assert.match(quarto.text, /title: Demo/);
   assert.match(quarto.text, /fig-one/);
@@ -1269,7 +1246,6 @@ try {
   assert.equal(cache.preparedSlug, "cache-upgrade");
   assert.equal(cache.preparedCreatedAt, "first-creation");
   assert.equal(cache.files, 1);
-  assert.equal(cache.main, true);
   assert.equal(cache.preview, "edited reseeded");
   console.log("editor-browser: current cache preserves offline edits and isolates recreated documents");
   const multiTab = await evaluate("multiTabPersistenceCheck()");

@@ -4,7 +4,7 @@ const s = (x, d = "") => x == null ? d : String(x);
 const n = (x, d, min = 1, max = 100) => Math.min(max, Math.max(min, Number.isFinite(+x) ? Math.floor(+x) : d));
 const tex = value => s(value).replace(/[\\{}%#$&_~^]/g, c => ({'\\':'\\textbackslash{}','~':'\\textasciitilde{}','^':'\\textasciicircum{}'}[c] || '\\'+c));
 export const key = (x) => s(x, "label").trim().replace(/[^\p{L}\p{N}:._-]+/gu, "-").replace(/^-+|-+$/g, "") || "label";
-const source = (c = {}) => s(c.mainText || c.text);
+const source = (c = {}) => s(c.entryText || c.text);
 const includeTarget = (value) => s(value).trim().replace(/^\.\//, "").replace(/^\/+/, "").replace(/\.tex$/, "");
 const includesPath = (text, path) => {
   const want = includeTarget(path), base = want.split("/").pop();
@@ -16,9 +16,9 @@ const includesPath = (text, path) => {
 };
 const preambleAnchor = (c = {}, { afterClass = false } = {}) => {
   const current = c.path ? { path: c.path, text: s(c.text) } : null;
-  const includer = c.path ? [...(Array.isArray(c.files) ? c.files : []).map(file => ({ path: file?.path, text: s(file?.text) })), { path: c.mainPath, text: s(c.mainText) }].find(file => file.path && file.text && file.path !== c.path && includesPath(file.text, c.path)) : null;
-  const main = c.mainPath && c.mainPath !== c.path ? { path: c.mainPath, text: s(c.mainText) } : null;
-  for (const { path, text } of [current, includer, main].filter(Boolean)) {
+  const includer = c.path ? [...(Array.isArray(c.files) ? c.files : []).map(file => ({ path: file?.path, text: s(file?.text) })), { path: c.entryPath, text: s(c.entryText) }].find(file => file.path && file.text && file.path !== c.path && includesPath(file.text, c.path)) : null;
+  const entry = c.entryPath && c.entryPath !== c.path ? { path: c.entryPath, text: s(c.entryText) } : null;
+  for (const { path, text } of [current, includer, entry].filter(Boolean)) {
     if (!path || !text) continue;
     const classLine = text.match(/\\documentclass(?:\[[^\]]*\])?\{[^}]+\}[^\S\n]*(?:\n|$)/);
     const classEnd = classLine ? classLine.index + classLine[0].length : -1;
@@ -30,11 +30,11 @@ const preambleAnchor = (c = {}, { afterClass = false } = {}) => {
   return null;
 };
 // The root is the file whose preamble an edit lands in: the current file when
-// it has one, else the file that \input{}s it, else the project's main.
+// it has one, else the file that \input{}s it, else the file the preview renders.
 export const latexRoot = (c) => preambleAnchor(c)?.path || "";
 const packageEdit = (name, c, notes, options = "") => {
   const anchor = preambleAnchor(c, { afterClass: name === "amsthm" }), bracket = options ? `[${options}]` : "";
-  const text = [anchor?.text, c.text, c.mainText].map(value => s(value)).join("\n");
+  const text = [anchor?.text, c.text, c.entryText].map(value => s(value)).join("\n");
   if (new RegExp(`\\\\usepackage(?:\\[[^\\]]*\\])?\\{[^}]*\\b${name}\\b[^}]*\\}`).test(text)) return [];
   if (!anchor) { notes.push(`Add \\usepackage${bracket}{${name}} to the preamble.`); return []; }
   return [{ path: anchor.path, from: anchor.at, to: anchor.at, insert: `\\usepackage${bracket}{${name}}\n` }];
@@ -70,7 +70,7 @@ export function buildLatex(id, options = {}, context = {}) {
   if (id === "citation") { const keys = options.keys || []; if (!keys.length) throw Error("Choose at least one reference."); if (keys.some(k => !/^[\p{L}\p{N}_.:+-]+$/u.test(k))) throw Error("Unsupported citation key."); const loc = options.locator ? `[${tex(options.locator)}]` : ""; const biblatex = /usepackage(?:\[[^\]]*\])?\{biblatex\}/.test(text) || c.biblatex; const natbib = /usepackage(?:\[[^\]]*\])?\{natbib\}/.test(text); const style = options.style || "parenthetical"; if (!biblatex && !natbib && style === "narrative") {
       additionalEdits.push(...packageEdit("natbib", c, notes));
       const existing = text.match(/\\bibliographystyle\{plain\}/);
-      if (existing) additionalEdits.push({path:c.mainPath || c.path,from:existing.index,to:existing.index+existing[0].length,insert:'\\bibliographystyle{plainnat}'});
+      if (existing) additionalEdits.push({path:c.entryPath || c.path,from:existing.index,to:existing.index+existing[0].length,insert:'\\bibliographystyle{plainnat}'});
     } const command = biblatex ? (style === "narrative" ? "\\textcite" : "\\parencite") : (natbib || style === "narrative") ? (style === "narrative" ? "\\citet" : "\\citep") : "\\cite"; return result(`${command}${loc}{${keys.join(",")}}`, additionalEdits, notes); }
   if (id === "bibliography") { const file = tex(options.file || "references"), bibfile = file.endsWith(".bib") ? file : file + ".bib", hasBiblatex = /usepackage(?:\[[^\]]*\])?\{biblatex\}/.test(text) || c.biblatex; if (options.biblatex || hasBiblatex) { if (!/usepackage(?:\[[^\]]*\])?\{biblatex\}/.test(text)) additionalEdits.push(...preambleEdit(`\\usepackage[backend=biber]{biblatex}`, c, notes)); if (!new RegExp(`\\\\addbibresource\{${file.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\}`).test(text)) additionalEdits.push(...preambleEdit(`\\addbibresource{${bibfile}}`, c, notes)); return result("\\printbibliography", additionalEdits, notes); } return result(`\\bibliographystyle{${tex(options.style || (/\\usepackage(?:\[[^\]]*\])?\{natbib\}/.test(text) ? "plainnat" : "plain"))}}\n\\bibliography{${file.replace(/\.bib$/, "")}}`, [], notes); }
   if (id === "cross-reference") return result(`\\ref{${key(options.target || "label")}}`, [], notes, options.target || "label");
