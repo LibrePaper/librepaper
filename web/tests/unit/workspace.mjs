@@ -18,11 +18,8 @@ function fakeSession(entries = [], folders = []) {
     added: [],
     assets: [],
     removed: [],
-    mained: [],
     list: () => session.files,
     folders: () => session.folderList,
-    mainId: () => session.files[0]?.id || "",
-    mainPath: () => session.files[0]?.path || "",
     addText(path, text) {
       const file = { id: `id:${path}`, path, kind: "text" };
       session.files = [...session.files, file];
@@ -34,13 +31,15 @@ function fakeSession(entries = [], folders = []) {
       session.assets.push({ path, sha });
     },
     removeEntries: (entries_) => session.removed.push(entries_),
-    setMain: (id) => session.mained.push(id),
     addFolder: (path, rules) => session.folderList.push({ path, rules }),
     duplicateEntry: (entry, path, rules) => session.folderList.push({ entry, path, rules }),
     relocate: () => ({ files: [{ path: "b.md", previousPath: "a.md" }] }),
     whereEveryoneIs: () => new Map([["id:main.md", ["ada"]]]),
     participants: () => ["ada"],
-    tree: () => ({ digests: { "fig.png": "sha-fig" } }),
+    tree: () => ({
+      texts: Object.fromEntries(session.files.filter((file) => file.kind === "text").map((file) => [file.path, session.bodies?.[file.path] || ""])),
+      digests: { "fig.png": "sha-fig" },
+    }),
   };
   return session;
 }
@@ -79,8 +78,30 @@ function build(extra = {}) {
   assert.equal(events.retargets, 0);
   workspace.refresh();
   assert.deepEqual(workspace.state.files.map((file) => file.path), ["main.md"]);
-  assert.equal(workspace.state.openFile, "id:main.md", "with nothing open, the main file is");
+  assert.equal(workspace.state.openFile, "id:main.md", "with nothing open, the opening file is");
   assert.equal(events.retargets, 1);
+}
+
+// The landing rule: the file that renders on its own and is not included
+// opens, not the first by path.
+{
+  const { workspace } = build();
+  const session = fakeSession([
+    { id: "id:README.md", path: "README.md", kind: "text" },
+    { id: "id:chapters/intro.tex", path: "chapters/intro.tex", kind: "text" },
+    { id: "id:thesis.tex", path: "thesis.tex", kind: "text" },
+  ]);
+  session.bodies = {
+    "README.md": "# Thesis\n",
+    "chapters/intro.tex": "\\section{Intro}\n",
+    "thesis.tex": "\\documentclass{book}\n\\begin{document}\\input{chapters/intro}\\end{document}\n",
+  };
+  workspace.attach(session);
+  workspace.refresh();
+  assert.equal(workspace.state.openFile, "id:thesis.tex", "the project opens on the file that renders on its own");
+  workspace.state.openFile = "id:README.md";
+  workspace.refresh();
+  assert.equal(workspace.state.openFile, "id:README.md", "the landing rule does not move a file that is open");
 }
 
 // A file that went away under this browser leaves the editor showing
@@ -96,7 +117,7 @@ function build(extra = {}) {
   workspace.state.openFile = "id:other.md";
   session.files = session.files.filter((file) => file.id !== "id:other.md");
   workspace.refresh();
-  assert.equal(workspace.state.openFile, "id:main.md", "a deleted open file falls back to the main one");
+  assert.equal(workspace.state.openFile, "id:main.md", "a deleted open file falls back to the opening file");
 }
 
 // A figure renamed by somebody else is still the figure being looked at, and
@@ -201,17 +222,14 @@ function build(extra = {}) {
   assert.match(said[0], /were not rewritten/);
 }
 
-// Removing and re-maining both change what a compiler would produce.
+// Removing a file repaints the preview.
 {
   const { workspace, events } = build();
   const session = fakeSession();
   workspace.attach(session);
   workspace.remove([{ path: "a.md" }]);
-  workspace.setMain({ id: "id:b.md", kind: "text" });
-  workspace.setMain({ id: "fig.png", kind: "asset" });
   assert.equal(session.removed.length, 1);
-  assert.deepEqual(session.mained, ["id:b.md"], "a figure cannot be the main file");
-  assert.equal(events.paints, 2);
+  assert.equal(events.paints, 1);
 }
 
 // Where everyone is, and who they are, are read together.

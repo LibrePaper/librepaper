@@ -46,7 +46,6 @@ window.setupInsert = async (format, source = null) => {
   source ??= format === 'latex' ? ${JSON.stringify('\\documentclass{article}\n\\begin{document}\nBefore AFTER\n\\end{document}')} : 'Before AFTER';
   const extension = {latex:'tex',typst:'typ',markdown:'md',quarto:'qmd'}[format];
   file = session.addText('paper-' + Date.now() + '.' + extension, source);
-  session.setMain(file);
   component = createClassComponent({component:Editor,target:document.getElementById('editor'),props:{session,format,file,me:{who:'me',author:'Me'},analyze:async()=>({entries,diagnostics:[]})}});
   await tick();
   menu = createClassComponent({component:InsertMenu,target:document.getElementById('menu'),props:{
@@ -76,8 +75,8 @@ window.targetChecks=async()=>{
 };
 window.atomicSetupCheck=async()=>{
   const main=session.addText('setup-main.tex','\\\\documentclass{article}\\n\\\\begin{document}\\n\\\\input{chapter}\\n\\\\end{document}');
-  const chapter=session.addText('chapter.tex','BEFORE AFTER');session.setMain(main);
-  component.$set({file:chapter,format:'latex'});await tick();
+  const chapter=session.addText('chapter.tex','BEFORE AFTER');
+  component.$set({file:chapter,format:'latex',entry:'setup-main.tex'});await tick();
   view().dispatch({selection:{anchor:7}});
   const c=component.getInsertContext();const oldMain=session.textOf(main).toString();
   const at=oldMain.indexOf('\\\\begin{document}');
@@ -94,8 +93,7 @@ window.trackedMultiFileInsertCheck=async()=>{
   await setupInsert('latex','\\\\documentclass{article}\\n\\\\begin{document}\\nMain source\\n\\\\end{document}');
   const main=file;
   const chapter=session.addText('chapter.tex','Before AFTER');
-  session.setMain(main);
-  component.$set({file:chapter,format:'latex'});await tick();await tick();
+  component.$set({file:chapter,format:'latex',entry:session.list().find(item=>item.id===main).path});await tick();await tick();
   const collisionPath='insert-regression-'+Date.now()+'-'+Math.random().toString(36).slice(2)+'.tex';
   const pairA=session.addText(collisionPath,'COLLISION A');
   const pairB=session.addText(collisionPath,'COLLISION B');

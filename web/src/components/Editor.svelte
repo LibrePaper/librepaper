@@ -224,6 +224,7 @@
   import { DIRECTORY_ORIGIN } from "../lib/project-session.js";
   import { ANCHORS_ORIGIN, composeEdits, fragmentRangesFor } from "../lib/anchors.js";
   import { projectDirectory } from "../lib/projection.js";
+  import { openingFile } from "../lib/opening.js";
   import { toLf, healLineEndings, LINE_ENDINGS_ORIGIN } from "../lib/line-endings.js";
   import { attachEditorZoom } from "../lib/editor-zoom.js";
   import { start as startEditorType, onFont, onLineHeight, size, setSize, DEFAULT_SIZE } from "../lib/editor-type.js";
@@ -245,7 +246,10 @@
     tracking = false, me = { who: "", author: "" }, selectedChange = null,
     analyze = analyzeBibliography,
     onchange, oncaret, onfilechange, onbibliography, onsave, onquit,
-    rules = null } = $props();
+    rules = null,
+    // The path the preview renders, which Reader passes. It stands in for the
+    // open file wherever the project as a whole is read.
+    entry = "" } = $props();
 
   let tracked = $state(untrack(() => tracking));
 
@@ -504,9 +508,9 @@
   function bibliographyEntries() { return parsedBibliography?.entries || []; }
   function bibliographyRequest() {
     const doc = session.doc;
-    const tree = doc ? treeForDoc(doc) : { main: "", texts: {} };
-    const id = showing || (doc ? projectDirectory(doc, rules ?? null).mainId : "");
-    const main = pathOfDoc(doc, id) || tree.main || "";
+    const tree = doc ? treeForDoc(doc) : { texts: {} };
+    const id = showing;
+    const main = pathOfDoc(doc, id) || entry;
     const activeFormat = formatOf(main);
     return { main, format: activeFormat, source: getTextFromDoc(id)?.toString?.() ?? tree.texts?.[main] ?? "", texts: tree.texts || {} };
   }
@@ -620,10 +624,10 @@
       const end_utf16 = active.convertPos(toResult.offset, "unicode", "utf16") ?? 0;
 
       const tree = treeForDoc(doc);
-      // The bibliography is registered in the main file when it shares the citing file's format family, else in the citing file.
-      const sameFamily = formatOf(tree.main) === formatOf(activePath);
-      const regPath = sameFamily ? tree.main : activePath;
-      const regId = sameFamily ? textIdForPath(doc, tree.main) : activeFile;
+      // The bibliography is registered in the preview's file when it shares the citing file's format family, else in the citing file.
+      const sameFamily = Boolean(entry) && formatOf(entry) === formatOf(activePath);
+      const regPath = sameFamily ? entry : activePath;
+      const regId = sameFamily ? textIdForPath(doc, entry) : activeFile;
       const reg = getTextFromDoc(regId);
       const plan = planZoteroImport({
         source: reg?.toString() || "", targetPath: regPath, texts: tree.texts,
@@ -687,12 +691,12 @@
   let shown = [];
 
   /// Which file a diagnostic is about. The engines agree on this: `file` is
-  /// empty for the main file and a path otherwise, and `line: 0` means the
-  /// diagnostic has no place at all -- which is a different thing from being
-  /// about the main file, and is why the line is checked first.
+  /// empty for the file the preview renders and a path otherwise, and `line: 0`
+  /// means the diagnostic has no place at all -- which is a different thing from
+  /// being about that file, and is why the line is checked first.
   function fileOf(diagnostic) {
     const doc = session.doc;
-    if (!diagnostic.file) return doc ? projectDirectory(doc, rules ?? null).mainId : "";
+    if (!diagnostic.file) return doc && entry ? textIdForPath(doc, entry) : "";
     return textIdForPath(doc, diagnostic.file);
   }
 
@@ -908,8 +912,8 @@
     const path = pathOfDoc(doc, showing);
     const insertFormat = documentFormat(path) || (!path ? format : "");
     const tree = treeForDoc(doc);
-    const mainPath = tree.main || path;
-    const mainText = tree.texts?.[mainPath] || "";
+    const entryPath = entry || path;
+    const entryText = tree.texts?.[entryPath] || "";
     // The stable container behind each path, kept beside the target rather than
     // in the context. applyInsertResult compares against it, so a path that
     // names a different file by the time the dialog applies is refused.
@@ -920,8 +924,8 @@
       path,
       text: view.state.doc.toString(),
       selection: { from: view.state.selection.main.from, to: view.state.selection.main.to, text: target.capturedText },
-      mainText,
-      mainPath,
+      entryText,
+      entryPath,
       files: Object.entries(tree.texts || {}).map(([filePath, text]) => ({ path: filePath, text: String(text ?? "") })),
       bibliography: bibliographyEntries(),
       targetId: (() => {
@@ -940,7 +944,7 @@
     if (context?.targetId) insertTargets.delete(context.targetId);
   }
 
-  // Validate every change before touching shared text. Main-file setup and the
+  // Validate every change before touching shared text. Preamble setup and the
   // snippet share the active editor's Loro transaction and undo entry.
   export function applyInsertResult(result, capturedContext = null, { focus = true } = {}) {
     if (!result || typeof result.text !== "string" || !view || !session || !editable) return false;
@@ -1331,19 +1335,16 @@
         files[path] = { kind: "asset", sha: file.digest };
       }
     }
-    return { main: projection.main, texts, files, digests };
+    return { texts, files, digests };
   }
   function addTextToDoc(doc, path, body = "") {
-    const existingMainId = projectDirectory(doc, rules ?? null).mainId;
     const files = doc.getMap("files"), paths = doc.getMap("paths");
     let id = "";
     do {
       const bytes = new Uint8Array(6);
       crypto.getRandomValues(bytes);
       const random = [...bytes].map((byte) => byte.toString(16).padStart(2, "0")).join("");
-      // With no declared main, projection chooses the first text ID. Keep a
-      // newly imported bibliography after the existing projected main.
-      id = existingMainId ? `${existingMainId}~${random}` : random;
+      id = random;
     } while (files.get(id) !== undefined || paths.get(id) !== undefined);
     const text = new LoroText();
     if (body) text.insert(0, toLf(body));
@@ -1445,7 +1446,7 @@
     // must not recreate the editor when a pane or diagnostic changes.
     return untrack(() => {
       const initial = untrack(() => {
-        const first = file || projectDirectory(session.doc, rules ?? null).mainId || "";
+        const first = file || textIdForPath(session.doc, openingFile(treeForDoc(session.doc).texts)) || "";
         showing = first;
         const documentStates = stateMap(session.doc);
         if (first && !documentStates.has(first)) documentStates.set(first, stateFor(first));

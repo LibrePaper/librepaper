@@ -126,7 +126,7 @@ export function buildTypst(id, options = {}, context = {}) {
     case "custom-environment": {
       const name = textOf(options.environment).trim();
       if (!/^[A-Za-z][\w-]*$/.test(name)) throw Error("Choose a defined content function.");
-      const source = [context.text, context.mainText, ...(context.files || []).map(file => file.text)].filter(Boolean).join('\n');
+      const source = [context.text, context.entryText, ...(context.files || []).map(file => file.text)].filter(Boolean).join('\n');
       if (!new RegExp('#let\\s+' + name + '\\s*\\([^)]*\\bbody\\b[^)]*\\)').test(source)) throw Error("Define this content function before inserting it.");
       const signature=source.match(new RegExp('#let\\s+'+name+'\\s*\\(([^)]*)\\)'));
       let index=0;

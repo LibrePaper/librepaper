@@ -31,29 +31,23 @@ writeFileSync(entry, [
   "import Editor from " + imports("web/src/components/Editor.svelte") + ";",
   `globalThis.LIBREPAPER_MODULES = { bibliography: ${JSON.stringify(bibliographyUrl)} };`,
   "const session = joinSession({ send: () => {}, mayEdit: true });",
-  "const main = session.addText('paper.md', '---\\nbibliography: refs.bib\\n---\\n\\nSee ');",
+  "const paper = session.addText('paper.md', '---\\nbibliography: refs.bib\\n---\\n\\nSee ');",
   "session.addText('refs.bib', '@article{smith2020, author={Jane Smith}, title={A Study of Rivers}, year={2020}, journal={Nature}}');",
-  "session.setMain(main);",
-  "createClassComponent({ component: Editor, target: document.body, props: { session, format: 'markdown', file: main } });",
+  "createClassComponent({ component: Editor, target: document.body, props: { session, format: 'markdown', file: paper, entry: 'paper.md' } });",
   "window.citationReady = async () => { await tick(); return Boolean(document.querySelector('.cm-editor')); };",
   "window.citationPrepare = () => { const view = EditorView.findFromDOM(document.querySelector('.cm-editor')); view.dispatch({ selection: { anchor: view.state.doc.length } }); view.focus(); };",
   "window.citationPoint = (word) => { const view = EditorView.findFromDOM(document.querySelector('.cm-editor')); const box = view.coordsAtPos(view.state.doc.toString().indexOf(word) + 3); return { x: box.left + 1, y: (box.top + box.bottom) / 2 }; };",
   "window.citationState = () => { const view = EditorView.findFromDOM(document.querySelector('.cm-editor')); return { popup: Boolean(document.querySelector('.cm-tooltip-autocomplete')), popupText: document.querySelector('.cm-tooltip-autocomplete')?.textContent || '', text: view.state.doc.toString() }; };",
-  `window.zoteroImportMainCheck = async (missingMain) => {
+  `window.zoteroImportCheck = async () => {
     const value = joinSession({ send: () => {}, mayEdit: true });
-    const main = value.addText("paper.md", "See ");
-    if (missingMain) {
-      value.doc.getMap("meta").delete("main");
-      value.doc.commit();
-    }
+    const paper = value.addText("paper.md", "See ");
     const fetchBefore = globalThis.fetch;
     const zoteroCalls = [];
     const bibliographyReports = [];
-    const baseMeta = [...value.doc.getMap("meta").entries()];
     const host = document.createElement("section");
     document.body.append(host);
     const editor = createClassComponent({ component: Editor, target: host, props: {
-      session: value, format: "markdown", file: main, me: { who: "me", author: "Me" },
+      session: value, format: "markdown", file: paper, entry: "paper.md", me: { who: "me", author: "Me" },
       analyze: async () => ({ entries: [], diagnostics: [] }),
       onbibliography: (report) => bibliographyReports.push(report),
     } });
@@ -91,20 +85,16 @@ writeFileSync(entry, [
       if (!acceptCompletion(view)) throw new Error("the Zotero picker could not accept its selected entry");
       for (let attempt = 0; attempt < 100; attempt++) {
         await new Promise((resolve) => setTimeout(resolve, 50));
-        if (value.textOf(main).toString().includes("@Riv2024") && value.doc.getMap("changes").size > 0) break;
+        if (value.textOf(paper).toString().includes("@Riv2024") && value.doc.getMap("changes").size > 0) break;
       }
-      if (!value.textOf(main).toString().includes("@Riv2024")) throw new Error("tracked Zotero import did not reach the document: " + JSON.stringify({ text: value.textOf(main).toString(), calls: zoteroCalls, reports: bibliographyReports }));
+      if (!value.textOf(paper).toString().includes("@Riv2024")) throw new Error("tracked Zotero import did not reach the document: " + JSON.stringify({ text: value.textOf(paper).toString(), calls: zoteroCalls, reports: bibliographyReports }));
       const projection = projectDirectory(value.doc, null);
       const entries = [...value.doc.getMap("changes").values()];
       return {
-        mainState: missingMain ? "absent" : "explicit",
-        text: value.textOf(main).toString(),
-        mainId: main,
+        text: value.textOf(paper).toString(),
+        paperId: paper,
         bib: [...projection.files].find(([path]) => path === "references.bib")?.[1].id || "",
-        projectedMain: projection.mainId,
-        projectedPath: projection.main,
         bibliography: projection.texts.get("references.bib") || "",
-        metadataUnchanged: JSON.stringify([...value.doc.getMap("meta").entries()]) === JSON.stringify(baseMeta),
         changeCount: entries.length,
         changeFiles: [...new Set(entries.map((entry) => (typeof entry.get === "function" ? entry.get("file") : entry.file)))],
       };
@@ -175,17 +165,12 @@ try {
   for (let attempt = 0; attempt < 60; attempt++) { card = await evaluate("document.querySelector('.cm-citation-card')?.textContent || ''"); if (card) break; await wait(50); }
   assert.match(card, /Smith.*Rivers/, "hovering a known key should show its entry");
   console.log("citations-browser: an unknown key is underlined and a known key shows its entry on hover");
-  for (const missingMain of [true, false]) {
-    const zotero = await evaluate(`zoteroImportMainCheck(${missingMain})`);
-    assert.match(zotero.text, /bibliography: references\.bib/);
-    assert.match(zotero.text, /@Riv2024/);
-    assert.notEqual(zotero.bib, "", "the Zotero import did not create references.bib");
-    assert.match(zotero.bibliography, /x-librepaper-zotero-item=\{ITEM123\}/);
-    assert.equal(zotero.projectedMain, zotero.mainId, "creating the bibliography displaced the projected paper main");
-    assert.equal(zotero.projectedPath, "paper.md");
-    assert.equal(zotero.metadataUnchanged, true, "the tracked import changed metadata");
-    assert.ok(zotero.changeCount > 0, "the tracked import recorded no change");
-    assert.deepEqual(zotero.changeFiles, [zotero.mainId], "the tracked import recorded a change in another file");
-  }
-  console.log("citations-browser: tracked Zotero imports are recorded as changes and preserve implicit and explicit main metadata");
+  const zotero = await evaluate("zoteroImportCheck()");
+  assert.match(zotero.text, /bibliography: references\.bib/);
+  assert.match(zotero.text, /@Riv2024/);
+  assert.notEqual(zotero.bib, "", "the Zotero import did not create references.bib");
+  assert.match(zotero.bibliography, /x-librepaper-zotero-item=\{ITEM123\}/);
+  assert.ok(zotero.changeCount > 0, "the tracked import recorded no change");
+  assert.deepEqual(zotero.changeFiles, [zotero.paperId], "the tracked import recorded a change in another file");
+  console.log("citations-browser: tracked Zotero imports are recorded as changes");
 } finally { socket?.close(); await stopBrowserProcess(browser); server?.close(); removeTemporary(temporary); }

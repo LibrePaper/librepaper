@@ -63,7 +63,6 @@ const wait = (milliseconds) => new Promise((resolve) => setTimeout(resolve, mill
 window.anchorsBrowserCheck = async () => {
   const value = joinSession({ send: () => {}, mayEdit: true });
   const fileId = value.addText("paper.md", TEXT);
-  value.setMain(fileId);
   const notesId = value.addText("notes.md", NOTES);
   const from = TEXT.indexOf(WORD);
   const to = from + WORD.length;
