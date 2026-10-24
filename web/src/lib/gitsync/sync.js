@@ -166,14 +166,16 @@ function decodeVersion(text) {
 /// Waits, bounded, until this page holds every change the server holds (the
 /// `version` the server answered) and has none left to send. A page that has
 /// not received a change would otherwise send back content that was already
-/// pulled. Answers false after the bound.
-async function caughtUp(ctx, version) {
+/// pulled. With `unsent: false` changes still waiting to be sent do not count,
+/// which is what a pull needs: they are in the page already. Answers false
+/// after the bound.
+async function caughtUp(ctx, version, { unsent: counted = true } = {}) {
   const wanted = decodeVersion(version);
   const deadline = Date.now() + (ctx.arrivalMs ?? ARRIVAL_MS);
   for (;;) {
     const relation = wanted ? ctx.session.doc.oplogVersion().compare(wanted) : 0;
     const covered = relation === 0 || relation === 1;
-    const unsent = ctx.session.unacknowledgedCount?.() ?? 0;
+    const unsent = counted ? ctx.session.unacknowledgedCount?.() ?? 0 : 0;
     if (covered && !unsent) {
       timedOut.delete(ctx.session);
       return true;
@@ -184,8 +186,8 @@ async function caughtUp(ctx, version) {
 }
 
 /// The refusal for a page that is not caught up, or null once it is.
-async function catchUpRefusal(ctx, version) {
-  return (await caughtUp(ctx, version)) ? null : refused(NOT_CAUGHT_UP);
+async function catchUpRefusal(ctx, version, options) {
+  return (await caughtUp(ctx, version, options)) ? null : refused(NOT_CAUGHT_UP, [], { kind: "catching-up" });
 }
 
 // ---------------------------------------------------------------- journal
@@ -803,6 +805,11 @@ async function runPull(ctx, options = {}) {
     if (!link) return { result: refused("This project is not connected to a Git repository.") };
     const mismatch = await connectionRefusal(ctx, link);
     if (mismatch) return { result: mismatch };
+    // A page still loading the document would read its missing files as
+    // local deletions, so the snapshot waits until the page holds the
+    // server's version.
+    const loading = await catchUpRefusal(ctx, version, { unsent: false });
+    if (loading) return { result: loading };
     const op = refId();
     await journalSet(ctx, { id: op, kind: "pull", phase: "planned", revision: link.revision, checkpoint: link.checkpoint });
     let step;
@@ -1488,16 +1495,18 @@ async function safeJournal(ctx) {
 
 /// Reconciles the journal after a restart. A pull that was sent is sent again
 /// with the same operation id; a push that was prepared is checked against the
-/// remote. Returns `{ recovered, pending, reasons, conflict, needsPull }`: the
-/// ids settled, the entries that could not be settled yet, why, a saved
-/// conflict session, and whether only a fresh pull can settle what is left
-/// (every pending entry is an interrupted pull too large to send again).
+/// remote. Returns `{ recovered, pending, blocking, reasons, conflict,
+/// needsPull }`: the ids settled, the entries that could not be settled yet,
+/// those of them that belong to the current connection, why, a saved conflict
+/// session, and whether only a fresh pull can settle the blocking ones (each is
+/// an interrupted pull too large to send again).
 export async function recover(ctx) {
   return exclusive(ctx, () => guarded(async () => {
     const recovered = [];
     const pending = [];
     const reasons = {};
     const oversized = new Set();
+    const foreign = new Set();
     let conflict = null;
     // Only this connection's conflict is offered; another connection's stays
     // in the journal untouched.
@@ -1560,11 +1569,13 @@ export async function recover(ctx) {
           await finish(ctx, entry.id);
         }
         recovered.push(entry.id);
-      } catch {
+      } catch (error) {
         pending.push(entry.id);
+        if (error?.otherConnection) foreign.add(entry.id);
       }
     }
-    const needsPull = pending.length > 0 && pending.every((id) => oversized.has(id));
-    return { recovered, pending, reasons, conflict, needsPull };
+    const blocking = pending.filter((id) => !foreign.has(id));
+    const needsPull = blocking.length > 0 && blocking.every((id) => oversized.has(id));
+    return { recovered, pending, blocking, reasons, conflict, needsPull };
   }));
 }

@@ -5,8 +5,9 @@
 //
 // `ops` is { status, recover, check, pull, push }, each async and each allowed
 // to throw. Their answers are the result shapes of sync.js. `recover` also
-// answers `needsPull`, true when every leftover entry can only be settled by a
-// fresh successful pull, and the round then pulls instead of waiting.
+// answers `blocking`, the leftover entries of the current connection, and
+// `needsPull`, true when each of those can only be settled by a fresh
+// successful pull, and the round then pulls instead of waiting.
 
 export const PACE = Object.freeze({
   checkMs: 120_000,
@@ -110,6 +111,8 @@ export function createAutoSync({ ops, clock = realClock, pace = PACE, onChange =
   function refusal(answer) {
     const why = answer.reason || answer.refusals?.[0]?.reason;
     if (answer.kind === "network") return waiting(why || "The remote could not be reached.");
+    // The page is still receiving the document, which settles by itself.
+    if (answer.kind === "catching-up") return waiting(why);
     if (answer.kind === "auth") return { type: "paused", kind: "auth", reason: "Git could not sign in." };
     return { type: "paused", kind: "refused", reason: why || "Automatic sync stopped." };
   }
@@ -184,7 +187,9 @@ export function createAutoSync({ ops, clock = realClock, pace = PACE, onChange =
       const rec = await ops.recover();
       if (!alive()) return ABORTED;
       if (rec.status === "refused") return refusal(rec);
-      if (rec.pending?.length) {
+      // Entries of another connection wait for that connection and do not
+      // hold up this one.
+      if (rec.blocking?.length) {
         if (!rec.needsPull) return waiting(INTERRUPTED);
         const p = await ops.pull();
         if (!alive()) return ABORTED;

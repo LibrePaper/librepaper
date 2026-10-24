@@ -48,7 +48,7 @@ function fakeClock() {
 
 const DEFAULTS = {
   status: { conflict: null, pending: [] },
-  recover: { pending: [], conflict: null },
+  recover: { pending: [], blocking: [], conflict: null },
   check: { status: "current" },
   pull: { status: "pulled" },
   push: { status: "pushed" },
@@ -344,7 +344,7 @@ const refused = (kind, reason) => ({ status: "refused", kind, refusals: [{ reaso
 {
   const { clock, fake, sync } = setup({
     status: { conflict: null, pending: ["op"] },
-    recover: { pending: ["op"], needsPull: true, conflict: null },
+    recover: { pending: ["op"], blocking: ["op"], needsPull: true, conflict: null },
   });
   sync.start();
   await clock.advance(0);
@@ -358,7 +358,7 @@ const refused = (kind, reason) => ({ status: "refused", kind, refusals: [{ reaso
 {
   const { clock, fake, sync } = setup({
     status: { conflict: null, pending: ["op"] },
-    recover: { pending: ["op"], needsPull: false, conflict: null },
+    recover: { pending: ["op"], blocking: ["op"], needsPull: false, conflict: null },
   });
   sync.start();
   await clock.advance(0);
@@ -384,6 +384,35 @@ const refused = (kind, reason) => ({ status: "refused", kind, refusals: [{ reaso
   assert.equal(fake.count("push"), 1);
   await clock.to(2 * PACE.checkMs);
   assert.equal(fake.count("push"), 2);
+  assert.equal(sync.state.mode, "idle");
+  sync.stop();
+}
+
+// 18. An entry left by another connection does not hold up this one.
+{
+  const { clock, fake, sync } = setup({
+    status: [{ conflict: null, pending: [{ id: "old" }] }],
+    recover: { pending: ["old"], blocking: [], needsPull: false, conflict: null },
+  });
+  sync.start();
+  await clock.advance(0);
+  assert.deepEqual(fake.names(), ["status", "recover", "check", "push"]);
+  assert.equal(sync.state.mode, "idle");
+  sync.stop();
+}
+
+// 19. A page still receiving the document waits and tries again, without pausing.
+{
+  const { clock, fake, sync } = setup({
+    check: [{ status: "behind" }, { status: "current" }],
+    pull: [{ status: "refused", kind: "catching-up", refusals: [{ reason: "loading" }] }],
+  });
+  sync.start();
+  await clock.advance(0);
+  assert.equal(sync.state.mode, "waiting");
+  assert.equal(sync.state.reason, "loading");
+  await clock.to(PACE.backoffMs[0]);
+  assert.equal(fake.count("check"), 2);
   assert.equal(sync.state.mode, "idle");
   sync.stop();
 }

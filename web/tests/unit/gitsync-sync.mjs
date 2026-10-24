@@ -1343,6 +1343,8 @@ async function connected(files, folder = "") {
   repo.request = original;
   assert.deepEqual(settled.pending, ["op-old"]);
   assert.deepEqual(settled.recovered, []);
+  assert.deepEqual(settled.blocking, [], "another connection's push does not block this one");
+  assert.equal(settled.needsPull, false);
   assert.deepEqual(asked, []);
   assert.equal(api.state.link.checkpoint, checkpoint);
   assert.equal(repo.journal.length, 1);
