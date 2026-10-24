@@ -61,6 +61,7 @@ window.mount = async (scene) => {
     open: true, slug: "paper", session: { onFiles: () => () => {}, list: () => [] }, rules: {}, me: { name: "Ada" },
     resolver: { state: { active: false }, open() {}, async discard() {} },
     differ: { state: { active: false, selected: "" }, show(ctx, meta, path) { window.git.calls.push(["show", path]); } },
+    auto: scene.auto ? { state: scene.auto, poke() { window.git.calls.push(["poke"]); }, async setEnabled(on) { window.git.calls.push(["setEnabled", on]); return true; } } : null,
   } });
   await tick();
 };
@@ -299,6 +300,23 @@ try {
   assert.equal(connects[0][1].branch, "main");
   assert.deepEqual(connects[0][1].remote, { url: typed });
   assert.equal(await evaluate('git.calls.some((call) => call[0] === "push" || call[0] === "pull")'), false);
+
+  // Automatic sync: a pause shows its reason with Retry, a running round
+  // holds Commit & push, and unticking the switch turns it off.
+  const autoState = { enabled: true, mode: "paused", kind: "auth", reason: "Git could not sign in.", lastPullAt: null, lastPushAt: null, nextAt: null, revision: 0, error: "" };
+  await evaluate(`mount(${JSON.stringify({ ...scene, auto: autoState })})`);
+  await until("auto paused line", () => evaluate('text().includes("Automatic sync paused. Git could not sign in.")'), 5000);
+  assert.equal(await evaluate('document.querySelector(".gh-auto input").checked'), true);
+  await evaluate('click("Retry")');
+  assert.ok(await evaluate('git.calls.some((call) => call[0] === "poke")'));
+  await evaluate(`mount(${JSON.stringify({ ...scene, auto: { ...autoState, mode: "running", kind: "", reason: "" } })})`);
+  await until("auto running", () => evaluate('button("Commit & push") !== null'), 5000);
+  assert.equal(await evaluate('button("Commit & push").disabled'), true);
+  await evaluate('document.querySelector(".gh-auto input").click()');
+  await until("auto turned off", () => evaluate('git.calls.some((call) => call[0] === "setEnabled" && call[1] === false)'), 5000);
+  await evaluate(`mount(${JSON.stringify(scene)})`);
+  await until("up to date without the module", () => evaluate('text().includes("Up to date")'), 5000);
+  assert.equal(await evaluate('document.querySelector(".gh-auto input").disabled'), true);
 
   assert.deepEqual(await evaluate("window.testErrors"), []);
   console.log("git panel browser ok");

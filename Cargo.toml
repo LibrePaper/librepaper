@@ -56,10 +56,22 @@ inherits = "release"
 # cache that cargo clean cannot reach, and an incremental optimized build
 # there once reused objects referencing drop glue that no object defined,
 # which failed at link time.
+#
+# The demo runs on the developer's machine, where build time matters and
+# runtime speed barely does. Most of a rebuild was the optimiser working on
+# the workspace crates and on the generic code of axum, tokio and serde that
+# they instantiate, so the workspace is not optimised at all. Dependencies
+# are, since they compile once and stay in the cache. Overflow checks and
+# debug assertions stay off, as in release, so the demo fails where
+# production would and nowhere else.
 [profile.demo]
 inherits = "release"
+opt-level = 0
 lto = false
 codegen-units = 256
+
+[profile.demo.package."*"]
+opt-level = 3
 
 # The edit-test loop rebuilds one very large test binary, and full debuginfo
 # is the bulk of what it writes and links. Line tables keep backtraces

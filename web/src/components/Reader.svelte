@@ -14,6 +14,7 @@
   import { createHistorySource } from "../lib/reader/history-source.svelte.js";
   import HistoryWorkspace from "./reader/HistoryWorkspace.svelte";
   import { createGitResolver } from "../lib/reader/git-resolver.svelte.js";
+  import { createGitAuto } from "../lib/reader/git-auto.svelte.js";
   import GitConflictWorkspace from "./reader/GitConflictWorkspace.svelte";
   import { createGitDiff } from "../lib/reader/git-diff.svelte.js";
   import GitDiffWorkspace from "./reader/GitDiffWorkspace.svelte";
@@ -1599,6 +1600,12 @@
   const gitResolver = createGitResolver();
   const resolving = $derived(gitResolver.state.active);
   $effect(() => () => gitResolver.dispose());
+  const gitAuto = createGitAuto(() => ({ slug: SLUG, key: KEY, session, rules, me: { name: me.name, handle: me.handle }, title: doc.title }));
+  $effect(() => () => gitAuto.dispose());
+  $effect(() => {
+    const active = session;
+    if (active) untrack(() => gitAuto.attach(active));
+  });
   const gitDiff = createGitDiff();
   // The diff steps aside while a resolution is open.
   const diffing = $derived(gitDiff.state.active && !gitResolver.state.active);
@@ -2465,6 +2472,7 @@
   const keys = $derived(prefs.keys);
   const completion = $derived(prefs.completion);
   const brackets = $derived(prefs.brackets);
+  const spellcheck = $derived(prefs.spellcheck);
   const check = $derived(prefs.check);
   const sizes = $derived(prefs.sizes);
 
@@ -2717,6 +2725,7 @@
   const setKeys = (next) => preferences.setKeys(next);
   const setCompletion = (on) => preferences.setCompletion(on);
   const setBrackets = (on) => preferences.setBrackets(on);
+  const setSpellcheck = (on) => preferences.setSpellcheck(on);
   const setCheck = (on) => preferences.setCheck(on);
 
   // What ":q" in Vim mode asks for: the document alone, set directly rather
@@ -3028,14 +3037,21 @@
   const editorFormat = $derived(toolbarPath ? renderers.formatOf(toolbarPath) : sourceFormat);
   const canPreviewFile = $derived(files.some((file) =>
     file.id === openFile && file.kind === "text" && Boolean(renderers.previewFormatOf(file.path))));
-  loadConfig()
-    .then((answer) => {
-      workspace.setRules(answer || {});
-      if (typeof answer?.latexMirror === "string") latex.at(answer.latexMirror);
-    })
-    .catch(() => {
-      /* the server checks every path again; this only explains it sooner */
-    });
+  // The server checks every path again, but Git sync refuses to run without
+  // the rules, so a failed load is tried again until it lands.
+  let configRetry = null;
+  function loadRules() {
+    loadConfig()
+      .then((answer) => {
+        workspace.setRules(answer || {});
+        if (typeof answer?.latexMirror === "string") latex.at(answer.latexMirror);
+      })
+      .catch(() => {
+        configRetry = setTimeout(loadRules, 30_000);
+      });
+  }
+  loadRules();
+  $effect(() => () => clearTimeout(configRetry));
 
   // Reading the directory into the list is the workspace's; what is left
   // here is the preview target, which is a rendering question rather than a
@@ -4103,7 +4119,7 @@
 
   {#snippet gitPanel()}
     <Git open={panel === "git" && shown.comments} slug={SLUG} key={KEY} {session} {rules}
-      me={{ name: me.name, handle: me.handle }} resolver={gitResolver} differ={gitDiff} />
+      me={{ name: me.name, handle: me.handle }} resolver={gitResolver} differ={gitDiff} auto={gitAuto} />
   {/snippet}
 
   {#snippet diagnosticsPanel()}
@@ -4205,7 +4221,7 @@
         </div>
       {:else if Editor && sourceBound}
         {#key sourceEpoch}
-          <Editor bind:this={editor} {session} format={editorFormat} file={openFile} {keys} {completion} {brackets} {check} {rules} {tracking} me={trackingMe} {selectedChange} editable={mayEdit}
+          <Editor bind:this={editor} {session} format={editorFormat} file={openFile} {keys} {completion} {brackets} {spellcheck} {check} {rules} {tracking} me={trackingMe} {selectedChange} editable={mayEdit}
                   onbibliography={bibliographyAnalyzed} onchange={outlineTextChanged} oncaret={outlineCaretChanged} onsave={reportPersistence} onquit={showDocumentAlone}
                   onfilechange={(id) => { ws.openFile = id; outlineActiveFrom = null; ws.figure = null; noteSourceSelection(); }} />
         {/key}
@@ -4436,7 +4452,7 @@
 <SettingsDialog bind:open={settingsOpen} bind:category={settingsCategory}
                 remoteConnected={connected} remoteNote={connectionNote}
                 {keys} onkeys={setKeys}
-                {completion} oncompletion={setCompletion} {brackets} onbrackets={setBrackets} {check} oncheck={setCheck}
+                {completion} oncompletion={setCompletion} {brackets} onbrackets={setBrackets} {spellcheck} onspellcheck={setSpellcheck} {check} oncheck={setCheck}
                 commands={commandContext}
                 userId={buildUserId}
                 onbuildpreferences={(format, next) => { if (format === sourceFormat) setBuildPreferences(next); }}

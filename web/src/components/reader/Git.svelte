@@ -7,6 +7,7 @@
   import IconButton from "../IconButton.svelte";
   import ExplorerMenu from "../ExplorerMenu.svelte";
   import Modal from "../Modal.svelte";
+  import { desktop } from "../../lib/desktop/client.js";
   import { say } from "../../lib/toast.svelte.js";
   import { createBridge } from "../../lib/gitsync/bridge.js";
   import { syncApi } from "../../lib/gitsync/server.js";
@@ -16,7 +17,7 @@
     checkRemote, connect, defaultMessage, disconnect, discardConflict, leaveBranch, localChanges, outgoing, pull, push, pushToBranch, recover, remoteChanges, status,
   } from "../../lib/gitsync/sync.js";
 
-  let { open = false, slug, key = "", session = null, rules = {}, me = {}, resolver, differ } = $props();
+  let { open = false, slug, key = "", session = null, rules = {}, me = {}, resolver, differ, auto = null } = $props();
 
   const git = createBridge();
   const api = $derived(syncApi(slug, key));
@@ -234,6 +235,33 @@
       unsubscribe?.();
     };
   });
+
+  // Automatic work moved the branch, so the lists are read again.
+  $effect(() => {
+    const revision = auto?.state.revision || 0;
+    if (revision > 0 && open && connectedView) untrack(() => refreshAll());
+  });
+
+  // Browser coauthors cannot sync, but they see when the project last did.
+  let browserLink = $state(null);
+  $effect(() => {
+    if (!open || desktop()) return;
+    slug;
+    let current = true;
+    api.getLink().then(
+      (answer) => { if (current) browserLink = answer?.link || null; },
+      () => { if (current) browserLink = null; },
+    );
+    return () => { current = false; };
+  });
+
+  const autoTime = (ms) => new Date(ms).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
+  async function toggleAuto(event) {
+    const box = event.currentTarget;
+    const on = box.checked;
+    const done = await auto.setEnabled(on);
+    if (on && !done) box.checked = false;
+  }
 
   async function refresh() {
     adopt(await status(context()));
@@ -460,6 +488,8 @@
 
   async function doDisconnect() {
     await guard(async () => {
+      // Automatic sync belongs to the connection, so it ends with it.
+      await auto?.setEnabled(false);
       await disconnect(context());
       link = null;
       outcome = null;
@@ -488,6 +518,7 @@
     const keep = { folder: link?.folder || "", label: link?.remote_label || "" };
     let left = false;
     await guard(async () => {
+      await auto?.setEnabled(false);
       await leaveBranch(context());
       left = true;
       link = null;
@@ -653,6 +684,9 @@
 
 <section class="panel gh-panel" aria-label="Git">
   <PanelHeader title="Git" />
+  {#if browserLink && !desktop()}
+    <p class="gh-browser-sync">Synced with {remoteIdentity(browserLink.remote_label, browserLink.remote_kind).name}, {browserLink.branch}.{#if browserLink.last_pull_at} Last pull {shortTime(browserLink.last_pull_at)}{#if browserLink.last_pull_by} by {label(browserLink.last_pull_by)}{/if}.{/if}{#if browserLink.last_push_at} Last push {shortTime(browserLink.last_push_at)}{#if browserLink.last_push_by} by {label(browserLink.last_push_by)}{/if}.{/if}</p>
+  {/if}
   <DesktopOnly feature="Git sync" description="Keep this project in sync with a Git repository.">
   {#if !loaded}
     <p class="panel-muted" role="status">Loading…</p>
@@ -718,13 +752,33 @@
         {#if sync.action}
           <button type="button"
             class={sync.action.tone === "tonal" ? "btn btn-sm lp-control-tonal-brand gh-status-action" : "gh-action gh-status-action"}
-            disabled={busy || checking} onclick={sync.action.onclick}>{sync.action.label}</button>
+            disabled={busy || checking || auto?.state.mode === "running"} onclick={sync.action.onclick}>{sync.action.label}</button>
         {/if}
         {#if sync.cancel}
           <button type="button" class="gh-action gh-status-action" disabled={busy || resolver?.state.busy} onclick={sync.cancel.onclick}>{sync.cancel.label}</button>
         {/if}
       </div>
       {@render alerts()}
+
+      <label class="gh-auto panel-meta">
+        <input type="checkbox" checked={auto?.state.enabled} disabled={busy || !auto} onchange={toggleAuto} />
+        Sync automatically while this window is open
+      </label>
+      {#if auto?.state.error}<p class="gh-muted lp-text-error">{auto.state.error}</p>{/if}
+      {#if auto?.state.enabled}
+        <p class="gh-muted gh-auto-line">
+          {#if auto.state.mode === "paused" && auto.state.kind !== "conflict"}
+            Automatic sync paused. {auto.state.reason}
+            <button type="button" class="gh-action" onclick={() => auto.poke()}>Retry</button>
+          {:else if auto.state.mode === "paused"}
+            Automatic sync is paused until the conflicts are resolved.
+          {:else if auto.state.mode === "waiting"}
+            Automatic sync will try again at {auto.state.nextAt ? autoTime(auto.state.nextAt) : "a later time"}
+          {:else}
+            Pulls new commits and pushes edits after a few quiet minutes.{#if auto.state.lastPullAt} Last automatic pull {autoTime(auto.state.lastPullAt)}.{/if}{#if auto.state.lastPushAt} Last automatic push {autoTime(auto.state.lastPushAt)}.{/if}
+          {/if}
+        </p>
+      {/if}
 
       {#if remoteState?.status === "behind" && !resolving && !savedConflict && !interrupted}
         <div class="gh-remote">
@@ -769,7 +823,7 @@
                 placeholder={defaultMessage(local.files)} />
             </label>
             <div class="gh-row">
-              <button type="button" class="btn btn-sm lp-control-brand" disabled={busy || remoteState?.status === "behind"} onclick={commitAndPush}>{committing ? "Committing…" : "Commit & push"}</button>
+              <button type="button" class="btn btn-sm lp-control-brand" disabled={busy || remoteState?.status === "behind" || auto?.state.mode === "running"} onclick={commitAndPush}>{committing ? "Committing…" : "Commit & push"}</button>
             </div>
             {#if remoteState?.status === "behind"}
               <p class="gh-muted gh-hint">Pull before pushing</p>
@@ -906,6 +960,9 @@
   .gh-status-icon { display: flex; flex: none; align-items: center; height: 1.5em; }
   .gh-status-text { flex: 1 1 auto; min-width: 0; overflow-wrap: anywhere; }
   .gh-status-action { flex: none; }
+
+  .gh-auto { display: flex; align-items: center; gap: calc(var(--spacing) * 2); margin-top: calc(var(--spacing) * 3); font-size: var(--panel-meta-size); }
+  .gh-auto-line, .gh-browser-sync { margin: calc(var(--spacing) * 1.5) 0 0; font-size: var(--panel-meta-size); color: var(--color-text-muted); overflow-wrap: anywhere; }
 
   .gh-alert { display: flex; align-items: start; gap: calc(var(--spacing) * 2); margin-top: calc(var(--spacing) * 2); padding: calc(var(--spacing) * 2); border-radius: var(--radius-base); background: var(--color-row-hover); }
   .gh-alert > .gh-action { flex: none; }

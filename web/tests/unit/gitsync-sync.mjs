@@ -1343,6 +1343,8 @@ async function connected(files, folder = "") {
   repo.request = original;
   assert.deepEqual(settled.pending, ["op-old"]);
   assert.deepEqual(settled.recovered, []);
+  assert.deepEqual(settled.blocking, [], "another connection's push does not block this one");
+  assert.equal(settled.needsPull, false);
   assert.deepEqual(asked, []);
   assert.equal(api.state.link.checkpoint, checkpoint);
   assert.equal(repo.journal.length, 1);
@@ -1397,6 +1399,74 @@ async function connected(files, folder = "") {
   assert.equal(done.status, "pulled", JSON.stringify(done));
   assert.deepEqual(repo.journal, []);
   assert.ok(!repo.refs.has("op-big/base"));
+}
+
+// A page without the server's file rules refuses to pull, and nothing changes.
+{
+  const { repo, api, ctx } = await connected({ "intro.qmd": "one\n" });
+  repo.advance({ "intro.qmd": "two\n" });
+  const checkpoint = api.state.link.checkpoint;
+  const loaded = ctx.rules;
+  ctx.rules = {};
+  const answer = await sync.pull(ctx);
+  ctx.rules = loaded;
+  assert.equal(answer.status, "refused");
+  assert.equal(answer.kind, "catching-up");
+  assert.equal(api.state.link.checkpoint, checkpoint);
+  assert.deepEqual(await ctx.git.journal(), []);
+}
+
+// recover says when only a fresh pull can settle what is left.
+{
+  const { repo, api, ctx } = await connected({ "intro.qmd": "one\n" });
+  await ctx.git.journalUpsert({
+    id: "op-big",
+    kind: "pull",
+    phase: "sent",
+    revision: 1,
+    connection_id: api.state.link.connection_id,
+    checkpoint: null,
+    body: null,
+  });
+  const alone = await sync.recover(ctx);
+  assert.deepEqual(alone.pending, ["op-big"]);
+  assert.equal(alone.needsPull, true);
+
+  await ctx.git.journalUpsert({
+    id: "op-push",
+    kind: "push",
+    phase: "prepared",
+    commit: repo.head,
+    parent: repo.head,
+    paths: [],
+    connection_id: api.state.link.connection_id,
+  });
+  const fetch = ctx.git.fetch;
+  ctx.git.fetch = async () => {
+    throw new TypeError("network error");
+  };
+  const mixed = await sync.recover(ctx);
+  ctx.git.fetch = fetch;
+  assert.deepEqual([...mixed.pending].sort(), ["op-big", "op-push"]);
+  assert.equal(mixed.needsPull, false);
+}
+
+// An oversized interrupted pull of another connection does not block this one.
+{
+  const { ctx } = await connected({ "intro.qmd": "one\n" });
+  await ctx.git.journalUpsert({
+    id: "op-old-big",
+    kind: "pull",
+    phase: "sent",
+    revision: 1,
+    connection_id: "an-older-connection",
+    checkpoint: null,
+    body: null,
+  });
+  const answer = await sync.recover(ctx);
+  assert.deepEqual(answer.pending, ["op-old-big"]);
+  assert.deepEqual(answer.blocking, []);
+  assert.equal(answer.needsPull, false);
 }
 
 // A resolution whose answer was lost, then applied on the server, finishes its

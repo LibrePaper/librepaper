@@ -12,6 +12,18 @@
 // reader's own: a history is read as "the day I was working", and that day is
 // where the reader is, not where the server is.
 
+// Formatters are cached by time zone because building one costs far more than using it.
+const dayFormatters = new Map();
+
+function dayFormatter(timeZone) {
+  let formatter = dayFormatters.get(timeZone);
+  if (!formatter) {
+    formatter = new Intl.DateTimeFormat("en-US", { timeZone, year: "numeric", month: "2-digit", day: "2-digit" });
+    dayFormatters.set(timeZone, formatter);
+  }
+  return formatter;
+}
+
 /// `at` -- an ISO string, a Date, or a number -- as YYYY-MM-DD in the
 /// reader's timezone. An unparseable value is the empty string, which is what
 /// every caller here wants to render as nothing.
@@ -21,7 +33,7 @@ export function day(at, timeZone) {
   if (Number.isNaN(when.getTime())) return "";
   if (timeZone) {
     try {
-      const parts = new Intl.DateTimeFormat("en-US", { timeZone, year: "numeric", month: "2-digit", day: "2-digit" }).formatToParts(when);
+      const parts = dayFormatter(timeZone).formatToParts(when);
       const part = (name) => parts.find((value) => value.type === name)?.value;
       return `${part("year")}-${part("month")}-${part("day")}`;
     } catch { return day(at, "UTC"); }

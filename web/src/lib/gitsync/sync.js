@@ -37,6 +37,7 @@ const decoder = new TextDecoder();
 const contentDecoder = new TextDecoder("utf-8", { ignoreBOM: true });
 const encoder = new TextEncoder();
 const NOT_CAUGHT_UP = "This page has not received every change yet. Try again in a moment.";
+const RULES_LOADING = "This page has not loaded the server's file rules yet. Try again in a moment.";
 const RECONNECT = "This computer is connected to a different repository for this project. Connect this computer again.";
 const NOT_LINKED = "This project is not connected to a Git repository.";
 const NOT_SYNCED = "This computer has not synced this project yet.";
@@ -75,6 +76,30 @@ async function guarded(work) {
   } catch (error) {
     if (GIT_KINDS.has(error?.kind)) return refused(error.message, [], { kind: error.kind });
     throw error;
+  }
+}
+
+// The manual Git panel and automatic sync share one journal, one project and
+// one shared record. One operation at a time per project keeps recovery from
+// settling a journal entry whose push or pull is still in flight. Where the Web
+// Locks API exists the lock spans every window of the same origin, so two
+// windows on one project take turns. Elsewhere it covers this window only. The
+// lock is not reentrant: a function that runs under it must not call another one.
+const tails = new Map();
+
+/// Runs `work` once the earlier operations on the same project have finished,
+/// whether they succeeded or not, and releases the lock even when `work` throws.
+async function exclusive(ctx, work) {
+  const locks = globalThis.navigator?.locks;
+  if (locks?.request) return locks.request(`librepaper:git:${ctx.slug}`, work);
+  const previous = tails.get(ctx.slug) || Promise.resolve();
+  const turn = previous.catch(() => {}).then(work);
+  const tail = turn.catch(() => {});
+  tails.set(ctx.slug, tail);
+  try {
+    return await turn;
+  } finally {
+    if (tails.get(ctx.slug) === tail) tails.delete(ctx.slug);
   }
 }
 
@@ -142,14 +167,16 @@ function decodeVersion(text) {
 /// Waits, bounded, until this page holds every change the server holds (the
 /// `version` the server answered) and has none left to send. A page that has
 /// not received a change would otherwise send back content that was already
-/// pulled. Answers false after the bound.
-async function caughtUp(ctx, version) {
+/// pulled. With `unsent: false` changes still waiting to be sent do not count,
+/// which is what a pull needs: they are in the page already. Answers false
+/// after the bound.
+async function caughtUp(ctx, version, { unsent: counted = true } = {}) {
   const wanted = decodeVersion(version);
   const deadline = Date.now() + (ctx.arrivalMs ?? ARRIVAL_MS);
   for (;;) {
     const relation = wanted ? ctx.session.doc.oplogVersion().compare(wanted) : 0;
     const covered = relation === 0 || relation === 1;
-    const unsent = ctx.session.unacknowledgedCount?.() ?? 0;
+    const unsent = counted ? ctx.session.unacknowledgedCount?.() ?? 0 : 0;
     if (covered && !unsent) {
       timedOut.delete(ctx.session);
       return true;
@@ -159,9 +186,16 @@ async function caughtUp(ctx, version) {
   }
 }
 
+/// The refusal for a page without the server's file rules, or null once it has
+/// them. Without them no path has a kind, so every synced file would read as
+/// gone from both sides.
+function rulesRefusal(ctx) {
+  return ctx.rules?.text_extensions ? null : refused(RULES_LOADING, [], { kind: "catching-up" });
+}
+
 /// The refusal for a page that is not caught up, or null once it is.
-async function catchUpRefusal(ctx, version) {
-  return (await caughtUp(ctx, version)) ? null : refused(NOT_CAUGHT_UP);
+async function catchUpRefusal(ctx, version, options) {
+  return (await caughtUp(ctx, version, options)) ? null : refused(NOT_CAUGHT_UP, [], { kind: "catching-up" });
 }
 
 // ---------------------------------------------------------------- journal
@@ -779,6 +813,11 @@ async function runPull(ctx, options = {}) {
     if (!link) return { result: refused("This project is not connected to a Git repository.") };
     const mismatch = await connectionRefusal(ctx, link);
     if (mismatch) return { result: mismatch };
+    // A page still loading the document would read its missing files as
+    // local deletions, so the snapshot waits until the page holds the
+    // server's version.
+    const loading = rulesRefusal(ctx) ?? await catchUpRefusal(ctx, version, { unsent: false });
+    if (loading) return { result: loading };
     const op = refId();
     await journalSet(ctx, { id: op, kind: "pull", phase: "planned", revision: link.revision, checkpoint: link.checkpoint });
     let step;
@@ -844,7 +883,7 @@ async function clearStale(ctx, link) {
 /// `{ status: "pulled" | "nothing" }` (and `files`), `{ status: "conflict",
 /// session }` or `{ status: "refused", refusals }`.
 export async function pull(ctx) {
-  return guarded(async () => (await runPull(ctx)).result);
+  return exclusive(ctx, () => guarded(async () => (await runPull(ctx)).result));
 }
 
 /// Stores the typed texts of `resolutions` as the blobs of one unparented
@@ -898,19 +937,21 @@ async function restoreSession(ctx, session) {
 /// so that a restart restores them. Answers the saved session. Throws when
 /// they could not be saved.
 export async function saveResolutions(ctx, session, resolutions) {
-  const chosen = await packResolutions(ctx, resolutions);
-  const carried = await packResolutions(ctx, session.carried);
-  const refs = {};
-  if (chosen.commit) refs.resolutions = chosen.commit;
-  if (carried.commit) refs.carried = carried.commit;
-  if (Object.keys(refs).length) await ctx.git.keep(session.id, refs);
-  await journalSet(ctx, {
-    id: session.id,
-    kind: "conflict",
-    phase: "conflict",
-    session: { ...session, carried: carried.stored, resolutions: chosen.stored },
+  return exclusive(ctx, async () => {
+    const chosen = await packResolutions(ctx, resolutions);
+    const carried = await packResolutions(ctx, session.carried);
+    const refs = {};
+    if (chosen.commit) refs.resolutions = chosen.commit;
+    if (carried.commit) refs.carried = carried.commit;
+    if (Object.keys(refs).length) await ctx.git.keep(session.id, refs);
+    await journalSet(ctx, {
+      id: session.id,
+      kind: "conflict",
+      phase: "conflict",
+      session: { ...session, carried: carried.stored, resolutions: chosen.stored },
+    });
+    return { ...session, resolutions };
   });
-  return { ...session, resolutions };
 }
 
 /// Applies the user's resolutions to a saved conflict session. `resolutions`
@@ -919,7 +960,7 @@ export async function saveResolutions(ctx, session, resolutions) {
 /// resolutions that still apply come back as `session.carried`. A refusal
 /// leaves the session and its resolutions saved and comes back with `session`.
 export async function applyResolution(ctx, session, resolutions = undefined) {
-  return guarded(async () => {
+  return exclusive(ctx, () => guarded(async () => {
     const link = (await ctx.api.getLink()).link;
     if (!link) return refused("This project is not connected to a Git repository.");
     const mismatch = await connectionRefusal(ctx, link);
@@ -971,16 +1012,16 @@ export async function applyResolution(ctx, session, resolutions = undefined) {
     await finish(ctx, session.id);
     await clearStale(ctx, link);
     return step.result;
-  });
+  }));
 }
 
 /// Drops a saved conflict session and its chosen resolutions. The pull it came
 /// from is abandoned: the project and the link stay as they were before it.
 export async function discardConflict(ctx, session) {
-  return guarded(async () => {
+  return exclusive(ctx, () => guarded(async () => {
     if (session) await finish(ctx, session.id);
     return result("nothing");
-  });
+  }));
 }
 
 // ---------------------------------------------------------------- push
@@ -996,7 +1037,13 @@ export function defaultMessage(files) {
 /// push to hand back to `push` as `confirmed`; with `{ status: "nothing" }`;
 /// or with `{ status: "behind", head, reason }` when the remote has commits
 /// the link's checkpoint does not have, which the person clears by pulling.
+/// It writes the journal as a pull does, so it runs under the lock.
 export async function outgoing(ctx) {
+  return exclusive(ctx, () => planOutgoing(ctx));
+}
+
+/// The body of `outgoing`, for the pushes that already hold the lock.
+async function planOutgoing(ctx) {
   return guarded(async () => {
     const pulled = await runPull(ctx, { current: true });
     if (!pulled.state) return pulled.result;
@@ -1119,7 +1166,7 @@ async function publish(ctx, plan, message) {
 /// a set that is no longer the outgoing one, the answer is
 /// `{ status: "moved", outgoing }` and the panel asks again.
 export async function push(ctx, message = "", { confirmed = null } = {}) {
-  return guarded(async () => {
+  return exclusive(ctx, () => guarded(async () => {
     let plan = confirmed;
     if (confirmed) {
       const { link, version } = await ctx.api.getLink();
@@ -1130,27 +1177,27 @@ export async function push(ctx, message = "", { confirmed = null } = {}) {
       if (behind) return behind;
       if (confirmed.connection_id !== link.connection_id) {
         // The review was made against another connection: ask for a new one.
-        const again = await outgoing(ctx);
+        const again = await planOutgoing(ctx);
         if (again.status !== "outgoing") return again;
         return result("moved", { files: again.files, outgoing: again.outgoing });
       }
     }
     for (let attempt = 0; ; attempt += 1) {
       if (!plan) {
-        const planned = await outgoing(ctx);
+        const planned = await planOutgoing(ctx);
         if (planned.status !== "outgoing") return planned;
         plan = planned.outgoing;
       }
       const sent = await publish(ctx, plan, message);
       if (!sent.moved) return sent.result;
-      const again = await outgoing(ctx);
+      const again = await planOutgoing(ctx);
       if (again.status !== "outgoing") return again;
       if (attempt >= 1 || (confirmed && again.outgoing.signature !== plan.signature)) {
         return result("moved", { files: again.files, outgoing: again.outgoing });
       }
       plan = again.outgoing;
     }
-  });
+  }));
 }
 
 /// Pushes the outgoing changes as one commit to a new branch of the connected
@@ -1162,18 +1209,18 @@ export async function push(ctx, message = "", { confirmed = null } = {}) {
 /// files }`, a refusal when the branch exists, or whatever outgoing answers
 /// when there is nothing to push or the remote is ahead.
 export async function pushToBranch(ctx, branch, message = "", { confirmed = null } = {}) {
-  return guarded(async () => {
+  return exclusive(ctx, () => guarded(async () => {
     const name = String(branch || "").trim();
     if (!name) return refused("Name the branch to push to.");
     let plan = confirmed;
     if (!plan) {
-      const planned = await outgoing(ctx);
+      const planned = await planOutgoing(ctx);
       if (planned.status !== "outgoing") return planned;
       plan = planned.outgoing;
     } else {
       const { link } = await ctx.api.getLink();
       if (!link || link.connection_id !== plan.connection_id) {
-        const again = await outgoing(ctx);
+        const again = await planOutgoing(ctx);
         if (again.status !== "outgoing") return again;
         return result("moved", { files: again.files, outgoing: again.outgoing });
       }
@@ -1190,7 +1237,7 @@ export async function pushToBranch(ctx, branch, message = "", { confirmed = null
       throw error;
     }
     return result("branched", { branch: name, commit, files: plan.files });
-  });
+  }));
 }
 
 // ---------------------------------------------------------------- connecting
@@ -1248,7 +1295,9 @@ async function withDraft(ctx, draft, work) {
 /// files that differ go to the resolver. Refuses when the branch cannot be
 /// synced, or when the project is already connected.
 export async function connect(ctx, draft) {
-  return guarded(() => withDraft(ctx, draft, async (mark) => {
+  const loading = rulesRefusal(ctx);
+  if (loading) return loading;
+  return exclusive(ctx, () => guarded(() => withDraft(ctx, draft, async (mark) => {
     const fetched = await ctx.git.fetch([]);
     const spec = draftLink(draft);
     const filter = await filterAt(ctx, spec, fetched.head || null);
@@ -1274,7 +1323,7 @@ export async function connect(ctx, draft) {
     }
     mark.recorded = true;
     return result("connected", { link: (await ctx.api.getLink()).link ?? { ...spec, checkpoint: null } });
-  }));
+  })));
 }
 
 /// The project's synced files compared with the remote branch head, whatever
@@ -1317,14 +1366,18 @@ export async function compareRemote(ctx) {
 /// Forgets the shared record and the sidecar's connection. The private
 /// repository, its commits and the journal stay.
 export async function disconnect(ctx) {
-  await ctx.api.deleteLink();
-  await ctx.git.forget();
+  return exclusive(ctx, async () => {
+    await ctx.api.deleteLink();
+    await ctx.git.forget();
+  });
 }
 
 /// Forgets the shared record but keeps this computer's connection, so the same
 /// remote can be connected again on another branch. A local folder's grant stays.
 export async function leaveBranch(ctx) {
-  await ctx.api.deleteLink();
+  return exclusive(ctx, async () => {
+    await ctx.api.deleteLink();
+  });
 }
 
 // ---------------------------------------------------------------- state
@@ -1452,13 +1505,18 @@ async function safeJournal(ctx) {
 
 /// Reconciles the journal after a restart. A pull that was sent is sent again
 /// with the same operation id; a push that was prepared is checked against the
-/// remote. Returns `{ recovered, pending, conflict }`: the ids settled, the
-/// entries that could not be settled yet, and a saved conflict session.
+/// remote. Returns `{ recovered, pending, blocking, reasons, conflict,
+/// needsPull }`: the ids settled, the entries that could not be settled yet,
+/// those of them that belong to the current connection, why, a saved conflict
+/// session, and whether only a fresh pull can settle the blocking ones (each is
+/// an interrupted pull too large to send again).
 export async function recover(ctx) {
-  return guarded(async () => {
+  return exclusive(ctx, () => guarded(async () => {
     const recovered = [];
     const pending = [];
     const reasons = {};
+    const oversized = new Set();
+    const foreign = new Set();
     let conflict = null;
     // Only this connection's conflict is offered; another connection's stays
     // in the journal untouched.
@@ -1483,7 +1541,10 @@ export async function recover(ctx) {
       try {
         if (entry.kind === "pull" && entry.phase === "sent" && !entry.body) {
           // The request was too large to journal, so it cannot be sent again
-          // and nobody knows whether it applied. The next pull settles it.
+          // and nobody knows whether it applied. The next pull of its own
+          // connection settles it; another connection's waits for that one.
+          if (entry.connection_id === connection) oversized.add(entry.id);
+          else foreign.add(entry.id);
           reasons[entry.id] = "run Pull again to finish an interrupted pull";
           throw new Error(reasons[entry.id]);
         } else if (entry.phase === "planned" || entry.phase === "done") {
@@ -1520,10 +1581,13 @@ export async function recover(ctx) {
           await finish(ctx, entry.id);
         }
         recovered.push(entry.id);
-      } catch {
+      } catch (error) {
         pending.push(entry.id);
+        if (error?.otherConnection) foreign.add(entry.id);
       }
     }
-    return { recovered, pending, reasons, conflict };
-  });
+    const blocking = pending.filter((id) => !foreign.has(id));
+    const needsPull = blocking.length > 0 && blocking.every((id) => oversized.has(id));
+    return { recovered, pending, blocking, reasons, conflict, needsPull };
+  }));
 }

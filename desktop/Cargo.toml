@@ -20,6 +20,7 @@ tauri-plugin-dialog = "2"
 tauri-plugin-opener = "2"
 tauri-plugin-clipboard-manager = "2"
 tauri-plugin-window-state = "2"
+tauri-plugin-notification = "2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "json"] }
@@ -44,11 +45,16 @@ strip = true
 # The demo-desktop target builds with this profile. A demo needs no LTO, and
 # without it the desktop crate compiles in parallel. Incremental compilation
 # is off, as in release and in the workspace demo profile (see the root
-# Cargo.toml for why).
+# Cargo.toml for why). As there, the crate itself is not optimised and its
+# dependencies are, since they compile once and stay in the cache.
 [profile.demo]
 inherits = "release"
+opt-level = 0
 lto = false
 codegen-units = 256
+
+[profile.demo.package."*"]
+opt-level = 3
 
 [target.'cfg(target_os = "macos")'.dependencies]
 objc2 = "0.6"
