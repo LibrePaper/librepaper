@@ -207,9 +207,7 @@ async fn tools_list(
     Path(slug): Path<String>,
     request: Request<Body>,
 ) -> Reply {
-    server
-        .handle_tools_list(request, &ctx, &slug)
-        .await
+    server.handle_tools_list(request, &ctx, &slug).await
 }
 
 async fn tool_call(
@@ -218,9 +216,7 @@ async fn tool_call(
     Path((slug, name)): Path<(String, String)>,
     request: Request<Body>,
 ) -> Reply {
-    server
-        .handle_tool_call(request, &ctx, &slug, &name)
-        .await
+    server.handle_tool_call(request, &ctx, &slug, &name).await
 }
 
 async fn delete_document(
@@ -293,9 +289,7 @@ async fn label_patch(
     Path((slug, sha)): Path<(String, String)>,
     request: Request<Body>,
 ) -> Reply {
-    server
-        .handle_label(request, &ctx, &slug, &sha)
-        .await
+    server.handle_label(request, &ctx, &slug, &sha).await
 }
 
 async fn restore(
@@ -313,9 +307,7 @@ async fn history_trim(
     Path(slug): Path<String>,
     request: Request<Body>,
 ) -> Reply {
-    server
-        .handle_history_trim(request, &ctx, &slug)
-        .await
+    server.handle_history_trim(request, &ctx, &slug).await
 }
 
 async fn rename(
@@ -469,9 +461,7 @@ async fn chat(
     request: Request<Body>,
 ) -> Reply {
     let tail = tail.split('/').collect::<Vec<_>>();
-    server
-        .handle_chat(request, &ctx, &slug, &tail)
-        .await
+    server.handle_chat(request, &ctx, &slug, &tail).await
 }
 
 async fn chat_root(
@@ -753,9 +743,7 @@ pub(super) async fn dispatch(
     // busy catalogue is retryable rather than indistinguishable from a
     // private/missing document.
     if (path.starts_with("/api/") || path.starts_with("/ws/")) && !path.starts_with("/api/auth/") {
-        if let Some(response) =
-            authentication_refusal(&server, &context, request.headers()).await
-        {
+        if let Some(response) = authentication_refusal(&server, &context, request.headers()).await {
             return response;
         }
     }

@@ -1981,9 +1981,7 @@ impl Command for RetryProbe {
         "retry-probe"
     }
 
-    fn replay(
-        &mut self,
-    ) -> BoxFuture<'_, std::result::Result<Option<Self::Output>, CommandError>> {
+    fn replay(&mut self) -> BoxFuture<'_, std::result::Result<Option<Self::Output>, CommandError>> {
         let recorded = self.recorded;
         Box::pin(async move { Ok(recorded.then_some(())) })
     }
