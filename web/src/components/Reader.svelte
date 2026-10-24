@@ -2145,6 +2145,10 @@
   /// Puts the last page this browser drew for this file into the frame, if
   /// nothing newer has reached it since the preview moved here.
   async function restoreLastPreview(path) {
+    // The renderer holds a finished render of this file and paints it, or
+    // the stale page as a stand-in, within a tick. A second delivery of the
+    // same page makes the PDF viewer draw twice.
+    if (renderPreview.holds(path)) return;
     const mine = navigationGeneration;
     const remembered = await lastPreview(previewCacheKey(path));
     // A compile can beat this; IndexedDB is fast but it is not free. The

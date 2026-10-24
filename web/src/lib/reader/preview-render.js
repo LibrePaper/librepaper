@@ -86,10 +86,30 @@ export function createPreviewRenderer({
   refreshFrame = () => {},
   debug = () => {},
 }) {
+  /// The renders that finished during this visit, by entry path, newest last.
+  /// A file whose source has not changed since comes back from here without a
+  /// compile. Nothing is persisted: the stand-in page in IndexedDB covers the
+  /// next visit, and this covers switching back and forth within one.
+  const keep = 8;
+  /** @type {Map<string, { key: string, page: any, diagnostics: any[], latex: any, log: string, synctex: unknown }>} */
+  const finished = new Map();
+  /** @param {string} path @param {{ key: string, page: any, diagnostics: any[], latex: any, log: string, synctex: unknown }} entry */
+  const remember = (path, entry) => {
+    // Delete first so the map's order is recency, then drop the oldest.
+    finished.delete(path);
+    finished.set(path, entry);
+    while (finished.size > keep) finished.delete(finished.keys().next().value);
+  };
+  /// A page that can be handed to the frame again. Publishing transfers the
+  /// buffer of a PDF, so every delivery gets its own copy.
+  const fresh = (page) => (page.kind === "pdf"
+    ? { ...page, bytes: new Uint8Array(page.bytes).slice() }
+    : page);
+
   /// Render once. `ticket` is the coordinator's; every guard below is against
   /// it and against the navigation and source captured at the start.
   /** @param {number} ticket */
-  return async function render(ticket) {
+  async function render(ticket) {
     const start = facts();
     debug("preview: paint requested", start.format, start.hasSession);
     if (start.disposed) return;
@@ -142,6 +162,7 @@ export function createPreviewRenderer({
     const slow = format === "latex";
     // Shared by both guard points so asset fetching and compilation reject
     // against the same captured navigation, source policy, and main path.
+    const capturedMain = source.main;
     const guard = {
       ticket,
       capturedNavigation,
@@ -150,6 +171,45 @@ export function createPreviewRenderer({
       capturedMain: source.main,
     };
     try {
+      // A manual render is the reader forcing a recompile, so it never takes
+      // the shortcut below. Read once here and handed on to the options.
+      const manual = takeManual();
+      /** @param {string} id */
+      const keyOf = (id) => JSON.stringify([id, format, htmlPreview, markdownPdf, start.buildPreferences, start.localExecution]);
+      const held = finished.get(source.main);
+      if (held && !manual) {
+        // The identity depends on the texts, their digests and the main path,
+        // not on the bytes of any figure, so taking it before the figures are
+        // gathered gives the value the compile would have taken.
+        const early = await snapshotDigest(source);
+        if (coordinator.superseded(guard) || facts().disposed) return;
+        if (keyOf(early) === held.key) {
+          // Unchanged since it was drawn: no spinner, no compile, no fetch.
+          coordinator.commit(ticket);
+          if (held.latex) status.recordLatex(held.latex);
+          else status.recordLog(held.log);
+          status.succeeded();
+          status.clearDocx();
+          if (held.page.kind === "pdf") {
+            onsynctex(held.synctex);
+            framePreview.publish(fresh(held.page));
+            onRendered(early, capturedProjectDigest);
+            if (capturedSource === facts().source) {
+              diagnostics.rendered({ page: false, diagnostics: held.diagnostics });
+            }
+          } else {
+            framePreview.publish(held.page);
+            onRendered(early, capturedProjectDigest);
+            if (capturedSource === facts().source) {
+              diagnostics.rendered({ page: Boolean(held.page.html), diagnostics: held.diagnostics });
+            }
+          }
+          return;
+        }
+        // The source changed since. The old page is still better than an empty
+        // pane while the new one compiles.
+        if (!facts().everPainted) framePreview.publish(fresh(held.page));
+      }
       // A LaTeX compile takes seconds rather than milliseconds, so the pane
       // says one is running. The last page that compiled stays up under it:
       // an author who is typing has something to look at, which is the whole
@@ -185,7 +245,6 @@ export function createPreviewRenderer({
       identity = await snapshotDigest(source);
       debug("preview: rendering", format, identity);
       if (facts().disposed) return;
-      const manual = takeManual();
       let rendered;
       const title = await heading(source);
       if (facts().disposed) return;
@@ -253,11 +312,24 @@ export function createPreviewRenderer({
         if (capturedSource === facts().source) {
           diagnostics.rendered({ page: false, diagnostics: contextual });
         }
+        const key = keyOf(identity);
+        const entry = {
+          key,
+          page: { kind: /** @type {const} */ ("pdf"), sha: identity, bytes: new Uint8Array(buffer.slice(0)) },
+          diagnostics: contextual,
+          latex: format === "latex" && !htmlPreview ? rendered : null,
+          log: rendered?.log || "",
+          synctex: null,
+        };
+        if (rendered.ok !== false) remember(source.main, entry);
         // SyncTeX is navigation metadata, not part of the rendered page.
         // Large maps can take long enough to decompress and index that
         // awaiting them here left a finished PDF behind the placeholder.
         if (format === "latex" && synctex && parseSynctex) {
           void parseSynctex(synctex, Object.keys(source.texts || {})).then((parsed) => {
+            // The same map serves the next visit, if this render is still the
+            // one kept for the file.
+            if (finished.get(capturedMain) === entry) entry.synctex = parsed;
             const at = facts();
             if (!at.disposed && coordinator.isCommitted(ticket)
                 && capturedNavigation === at.navigation && capturedSource === at.source) {
@@ -281,6 +353,16 @@ export function createPreviewRenderer({
         onRendered(identity, capturedProjectDigest);
         if (capturedSource === facts().source) {
           diagnostics.rendered({ page: Boolean(html), diagnostics: contextual });
+        }
+        if (rendered.ok !== false) {
+          remember(source.main, {
+            key: keyOf(identity),
+            page: { kind: "html", html },
+            diagnostics: contextual,
+            latex: format === "latex" && !htmlPreview ? rendered : null,
+            log: rendered?.log || "",
+            synctex: null,
+          });
         }
         return;
       }
@@ -340,5 +422,9 @@ export function createPreviewRenderer({
       // committed", not "not yet committed".
       if ((paged || htmlPreview) && coordinator.atLeastCommitted(ticket)) status.finish();
     }
-  };
+  }
+  /// Whether a finished render of this entry path is held, so that it will be
+  /// painted from memory within a tick and needs no stand-in from elsewhere.
+  render.holds = (/** @type {string} */ path) => finished.has(path);
+  return render;
 }

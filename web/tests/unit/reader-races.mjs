@@ -1282,3 +1282,53 @@ console.log('reader-races: View menu exposes explicit preview controls at every 
   await readOnly.confirm(asShown, "frontier-as-shown");
 }
 console.log('reader-races: a restore is confirmed against the project it will replace');
+
+// A file whose source has not changed comes back from memory: no second
+// compile, one delivery of the page. A changed source, a manual render and a
+// switch to another entry each behave as the design says.
+{
+  let compiles = 0;
+  let manual = false;
+  const texts = { "a.typ": "alpha", "b.typ": "beta" };
+  const trees = { current: "a.typ" };
+  const harness = preview({
+    facts: { format: "typst", everPainted: true },
+    tree: () => ({ main: trees.current, texts: { ...texts }, digests: {} }),
+    snapshotDigest: async (tree) => `digest:${tree.main}:${tree.texts[tree.main]}`,
+    takeManual: () => { const was = manual; manual = false; return was; },
+    renderers: {
+      formatOf: () => "typst", previewFormatOf: () => "typst",
+      producesPdf: () => true,
+      render: async () => { compiles++; return { pdf: new Uint8Array([1, 2, 3]), ok: true, diagnostics: [] }; },
+      failurePage: async () => "<p>failure</p>",
+    },
+  });
+  const run = async () => { await harness.paint(); };
+
+  await run();
+  assert.equal(compiles, 1, "the first render compiles");
+  assert.equal(harness.published.length, 1);
+
+  await run();
+  assert.equal(compiles, 1, "an unchanged source is not compiled again");
+  assert.equal(harness.published.length, 2, "the held page is delivered once");
+  assert.deepEqual([...harness.published[1].bytes], [1, 2, 3]);
+  assert.notEqual(harness.published[1].bytes.buffer, harness.published[0].bytes.buffer, "each delivery has its own buffer");
+
+  texts["a.typ"] = "alpha two";
+  await run();
+  assert.equal(compiles, 2, "a changed source compiles again");
+
+  manual = true;
+  await run();
+  assert.equal(compiles, 3, "a manual render always compiles");
+
+  // A, B, A: the second visit to A is served from memory.
+  trees.current = "b.typ";
+  await run();
+  assert.equal(compiles, 4, "B compiles the first time");
+  trees.current = "a.typ";
+  await run();
+  assert.equal(compiles, 4, "A comes back without a compile");
+}
+console.log("reader-races: an unchanged file is painted from memory");
