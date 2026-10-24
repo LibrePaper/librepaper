@@ -40,21 +40,26 @@ const entry = join(temp, "entry.js"), room = join(temp, "room.js"), out = join(t
 
 writeFileSync(room, `
 import { LoroDoc, LoroText } from "loro-crdt";
-const encode = b => btoa(String.fromCharCode(...b));
+const encode = bytes => btoa(String.fromCharCode(...bytes));
+const decode = value => Uint8Array.from(atob(value), char => char.charCodeAt(0));
 const server = new LoroDoc();
 const text = new LoroText(); text.insert(0, ${JSON.stringify(source)});
 server.getMap("files").setContainer("main", text);
 server.getMap("paths").set("main", "main.md");
 server.getMap("meta").set("main", "main");
 server.commit();
-const update = encode(server.export({ mode: "update" }));
-const vector = encode(server.oplogVersion().encode());
 export function openRoom(_slug, {onMessage, onConnected}) {
+  const unsubscribe = server.subscribeLocalUpdates(update => onMessage({type: "doc-update", update: encode(update)}));
   queueMicrotask(() => onConnected(true));
   return {
-    send(message) { if (message.type === "doc-open") queueMicrotask(() => onMessage({type:"doc-state", protocol:"librepaper.room.v3", vector, durableVector: vector, updates:[update]})); return {ok:true}; },
-    sendLive() { return {ok:true}; },
-    close() {}
+    send(message) {
+      const vector = encode(server.oplogVersion().encode());
+      if (message.type === "doc-open") setTimeout(() => onMessage({type: "doc-state", protocol: "librepaper.room.v3", vector, durableVector: vector, updates: [encode(server.export({ mode: "update" }))]}), 0);
+      if (message.type === "doc-update") server.import(decode(message.update));
+      return {ok: true};
+    },
+    sendLive() { return {ok: true}; },
+    close() { unsubscribe?.(); },
   };
 }`);
 writeFileSync(entry, `
@@ -99,10 +104,9 @@ try {
     const url = new URL(request.url, "http://127.0.0.1");
     if (url.pathname === "/api/me") return json(response, { name: "Editor", providers: [] });
     if (url.pathname === `/api/documents/${SLUG}`) return json(response, {
-      title: "Download test", created_at: "download-test", role: "editor", source_format: "markdown",
+      title: "Download test", created_at: "download-test", role: "owner", source_format: "markdown",
       docs_origin: `http://${request.headers.host}`,
     });
-    if (url.pathname.startsWith("/api/")) return json(response, {});
     if (url.pathname.startsWith("/raw/") || url.pathname.startsWith("/pdf/")) { response.setHeader("content-type", "text/html"); return response.end("<!doctype html><body></body>"); }
     if (url.pathname === `/docs/${SLUG}`) {
       response.setHeader("content-type", "text/html");
