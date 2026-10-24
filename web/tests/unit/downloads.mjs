@@ -5,12 +5,10 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import vm from "node:vm";
 import {
-  availableDownloads,
   docxFile,
   entryDownload,
   inlineBlobUrls,
   projectFiles,
-  renderingFile,
 } from "../../src/lib/reader/downloads.js";
 
 const reader = readFileSync(new URL("../../src/components/Reader.svelte", import.meta.url), "utf8");
@@ -162,51 +160,7 @@ await assert.rejects(
   /This file is no longer available/,
 );
 
-// The File menu offers the download for the document's output kind, and only
-// once there is something to hand over.
 {
-  const paged = (extra) => availableDownloads({ outputKind: "pdf", ...extra });
-  assert.deepEqual(paged({}), { pdf: false, html: false }, "a paged document with nothing rendered offers nothing");
-  assert.deepEqual(paged({ deliveredKind: "pdf" }), { pdf: true, html: false }, "a PDF the frame was handed can be saved");
-  assert.deepEqual(paged({ deliveredKind: "" }), { pdf: false, html: false }, "an unrendered document has no PDF fallback");
-  assert.deepEqual(paged({ deliveredKind: "html" }), { pdf: false, html: false }, "a paged document never offers HTML");
-
-  const flow = (extra) => availableDownloads({ outputKind: "html", ...extra });
-  assert.deepEqual(flow({}), { pdf: false, html: false }, "a page not yet painted offers nothing");
-  assert.deepEqual(flow({ deliveredKind: "html" }), { pdf: false, html: true }, "a painted page can be saved");
-  assert.deepEqual(flow({ displayedFormat: "html" }), { pdf: false, html: true }, "an authored HTML document is its own rendering");
-  assert.deepEqual(flow({ deliveredKind: "" }), { pdf: false, html: false }, "a flow document has no generated-output fallback");
-  assert.deepEqual(availableDownloads({ outputKind: "" }), { pdf: false, html: false });
-}
-
-// An export is cut from what this tab is holding, and says so when it is
-// holding nothing.
-{
-  const pdf = await renderingFile({ kind: "pdf", slug: "paper", preview: { kind: "pdf", bytes: Uint8Array.of(1) } });
-  assert.equal(pdf.name, "paper.pdf");
-  assert.equal(pdf.blob.type, "application/pdf");
-  await assert.rejects(
-    renderingFile({ kind: "pdf", slug: "paper", preview: { kind: "html", html: "<p>x</p>" } }),
-    /Render the document before exporting its PDF/,
-  );
-
-  const html = await renderingFile({ kind: "html", slug: "paper", preview: { kind: "html", html: "<p>x</p>" } });
-  assert.equal(html.name, "paper.html");
-  assert.equal(await html.blob.text(), "<p>x</p>");
-
-  // Authored HTML is its own rendering: its source is exported verbatim, and
-  // a source that could not be read is an error rather than a quiet fall back
-  // to whatever the frame happens to be showing.
-  const authored = await renderingFile({
-    kind: "html", slug: "paper", authored: true, authoredHtml: "<h1>source</h1>",
-    preview: { kind: "html", html: "<p>painted</p>" },
-  });
-  assert.equal(await authored.blob.text(), "<h1>source</h1>");
-  await assert.rejects(
-    renderingFile({ kind: "html", slug: "paper", authored: true, authoredHtml: null, preview: { kind: "html", html: "<p>painted</p>" } }),
-    /Render the document before exporting its HTML/,
-  );
-
   const docx = docxFile(Uint8Array.of(1, 2), "paper");
   assert.equal(docx.name, "paper.docx");
   assert.match(docx.blob.type, /wordprocessingml/);

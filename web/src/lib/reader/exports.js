@@ -1,0 +1,130 @@
+// What a document can be exported as, and how each file is made.
+//
+// Every source format offers a PDF, an HTML page and a Word file, produced in
+// this browser. LaTeX and Typst compile to PDF and render to HTML; Markdown
+// and Quarto render to HTML and reach a PDF through Pandoc and Typst; authored
+// HTML is its own page and reaches a PDF the same way. A Word file is Pandoc's
+// reading of the HTML page. Nothing here touches the DOM, and nothing is
+// fetched or uploaded: the Reader supplies the tree it already holds.
+
+import { pandocAvailable } from "../pandoc/client.js";
+import { dirOf, pandocPath, typstTree } from "../pandoc/typst.js";
+import { compilerAvailable } from "../renderers.js";
+import { docxFile, inlineBlobUrls } from "./downloads.js";
+
+export const EXPORT_TARGETS = ["pdf", "html", "docx"];
+
+const NAMES = { pdf: "PDF", html: "HTML page", docx: "Word file" };
+
+const MARKDOWN_PDF = { selection: "tool", backend: "browser", tool: "markdown", output: "pdf" };
+const MARKDOWN_HTML = { selection: "tool", backend: "browser", tool: "markdown", output: "html" };
+
+/// Whether `target` can be produced for source `format` in this browser.
+///
+/// `deps.pandoc` says whether this deployment offers Pandoc, and
+/// `deps.compiler` answers whether a format has a renderer; both default to
+/// the live answers. Returns `{ ok: true }` or `{ ok: false, reason }` with
+/// one plain sentence.
+export function exportAvailability(format, target, deps = {}) {
+  const hasPandoc = deps.pandoc ?? pandocAvailable();
+  const compiler = deps.compiler ?? compilerAvailable;
+  if (!EXPORT_TARGETS.includes(target)) return { ok: false, reason: "That kind of file cannot be exported." };
+  if (!["latex", "typst", "markdown", "quarto", "html"].includes(format)) {
+    return { ok: false, reason: "Only LaTeX, Typst, Markdown, Quarto and HTML documents can be exported." };
+  }
+  const needs = (...requirements) => {
+    for (const [ok, reason] of requirements) if (!ok) return { ok: false, reason };
+    return { ok: true };
+  };
+  const pandocNeed = [hasPandoc, "This deployment does not offer Pandoc."];
+  const noRenderer = (name) => [compiler(name), `This deployment cannot render ${name === "latex" ? "LaTeX" : name === "typst" ? "Typst" : "Markdown"} documents.`];
+  if (format === "html") {
+    if (target === "html") return { ok: true };
+    return target === "pdf" ? needs(noRenderer("typst"), pandocNeed) : needs(pandocNeed);
+  }
+  if (format === "latex") return target === "docx" ? needs(noRenderer("latex"), pandocNeed) : needs(noRenderer("latex"));
+  if (format === "typst") return target === "docx" ? needs(noRenderer("typst"), pandocNeed) : needs(noRenderer("typst"));
+  // Markdown and Quarto.
+  if (target === "html") return needs(noRenderer(format));
+  if (target === "pdf") return needs(noRenderer("typst"), pandocNeed);
+  return needs(noRenderer(format), pandocNeed);
+}
+
+// A render that produced nothing says why in plain words: the first thing
+// the compiler had to say, when it said anything.
+function failure(result, target) {
+  const message = result?.diagnostics?.find((d) => d?.message)?.message || result?.failure?.message;
+  return new Error(message ? `The ${NAMES[target]} could not be made: ${message}` : `The ${NAMES[target]} could not be made.`);
+}
+
+/// Pandoc reads inline and display math from `math` spans carrying the TeX
+/// between `\(` `\)` or `\[` `\]`; the Markdown renderer marks it with data
+/// attributes instead.
+export function pandocMath(html) {
+  return html.replace(
+    /<span\b[^>]*?\bdata-math-style="(inline|display)"[^>]*>([\s\S]*?)<\/span>/g,
+    (_whole, style, tex) => (style === "inline"
+      ? `<span class="math inline">\\(${tex}\\)</span>`
+      : `<span class="math display">\\[${tex}\\]</span>`),
+  );
+}
+
+/// Produce the file to save, from what this tab holds and nothing else.
+///
+/// - `tree`: the full render tree, assets and urls already gathered.
+/// - `preview`: what the frame holds now, `{ kind: "pdf", bytes }`,
+///   `{ kind: "html", html }` or null; reused when its kind is the one
+///   wanted and `previewCurrent` says it is of the source on screen.
+/// - `render`: `renderers.render`. `run`: Pandoc.
+///
+/// Resolves `{ blob, name }`; rejects with an Error whose message is a plain
+/// sentence.
+export async function exportFile({ target, format, tree, title, slug, preview, previewCurrent, render, run }) {
+  const reused = previewCurrent && preview?.kind === target ? preview : null;
+
+  async function pdfBytes() {
+    if (reused) return reused.bytes;
+    let result;
+    if (format === "html") {
+      result = await render(await typstTree(tree, { from: "html", run }), title, { format: "pdf" });
+    } else if (format === "markdown" || format === "quarto") {
+      result = await render(tree, title, { format: "pdf", buildPreferences: MARKDOWN_PDF });
+    } else {
+      result = await render(tree, title, { format: "pdf" });
+    }
+    if (!result?.pdf) throw failure(result, "pdf");
+    return result.pdf;
+  }
+
+  async function htmlText() {
+    if (format === "html") {
+      const source = tree.texts?.[tree.main];
+      if (typeof source !== "string") throw new Error("The HTML page could not be read.");
+      return source;
+    }
+    if (previewCurrent && preview?.kind === "html") return inlineBlobUrls(preview.html);
+    const markdown = format === "markdown" || format === "quarto";
+    const result = await render(tree, title, markdown
+      ? { format: "html", buildPreferences: MARKDOWN_HTML }
+      : { format: "html" });
+    if (typeof result?.html !== "string") throw failure(result, target);
+    return inlineBlobUrls(result.html);
+  }
+
+  if (target === "pdf") {
+    return { blob: new Blob([await pdfBytes()], { type: "application/pdf" }), name: `${slug}.pdf` };
+  }
+  if (target === "html") {
+    return { blob: new Blob([await htmlText()], { type: "text/html" }), name: `${slug}.html` };
+  }
+  if (target === "docx") {
+    const html = pandocMath(await htmlText());
+    const htmlPath = pandocPath(tree, "html");
+    const { output } = await run(
+      { from: "html", to: "docx", "input-files": [htmlPath], "resource-path": [dirOf(tree.main)] },
+      { ...tree.texts, ...tree.assets, [htmlPath]: html },
+    );
+    return docxFile(output, slug);
+  }
+  throw new Error("That kind of file cannot be exported.");
+}
