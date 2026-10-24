@@ -21,6 +21,7 @@ const realClock = {
 };
 
 const MAX_ATTEMPTS = 3;
+const ABORTED = { type: "aborted" };
 const INTERRUPTED = "A sync was interrupted and could not be finished yet.";
 
 /**
@@ -36,6 +37,9 @@ export function createAutoSync({ ops, clock = realClock, pace = PACE, onChange =
   let timer = null;
   let stopped = true;
   let running = false;
+  // Start and stop each move the generation, so a round that outlives its run
+  // can tell and leave the new run alone.
+  let gen = 0;
   let again = false;
   let failures = 0;
   let dirty = false;
@@ -110,12 +114,16 @@ export function createAutoSync({ ops, clock = realClock, pace = PACE, onChange =
 
   const conflicted = () => ({ type: "paused", kind: "conflict", reason: "Conflicts need resolution." });
 
-  async function attempts() {
+  // `alive` is false once the run that began the round has stopped or been
+  // replaced. Every awaited step checks it before the next one starts.
+  async function attempts(alive) {
     for (let attempt = 0; attempt < MAX_ATTEMPTS; attempt++) {
       const c = await ops.check();
+      if (!alive()) return ABORTED;
       if (c.status === "refused" || c.status === "unknown") return refusal(c);
       if (c.status === "behind") {
         const p = await ops.pull();
+        if (!alive()) return ABORTED;
         if (p.status === "pulled") {
           lastPullAt = clock.now();
           emit();
@@ -136,6 +144,7 @@ export function createAutoSync({ ops, clock = realClock, pace = PACE, onChange =
         restore(first);
         throw err;
       }
+      if (!alive()) return ABORTED;
       if (answer.status === "pushed") {
         lastPushAt = clock.now();
         retryAt = null;
@@ -160,16 +169,18 @@ export function createAutoSync({ ops, clock = realClock, pace = PACE, onChange =
     return { type: "idle" };
   }
 
-  async function body() {
+  async function body(alive) {
     let st = await ops.status();
+    if (!alive()) return ABORTED;
     if (st.pending?.length) {
       const rec = await ops.recover();
+      if (!alive()) return ABORTED;
       if (rec.status === "refused") return refusal(rec);
       if (rec.pending?.length) return waiting(INTERRUPTED);
       st = { conflict: rec.conflict, pending: [] };
     }
     if (st.conflict) return conflicted();
-    return attempts();
+    return attempts(alive);
   }
 
   async function round() {
@@ -179,16 +190,26 @@ export function createAutoSync({ ops, clock = realClock, pace = PACE, onChange =
       return;
     }
     running = true;
+    const mine = gen;
+    const alive = () => !stopped && mine === gen;
     mode = "running";
     emit();
     let outcome;
     try {
-      outcome = await body();
+      outcome = await body(alive);
     } catch (err) {
       outcome = waiting(err?.message || String(err));
     }
     running = false;
-    if (stopped) return;
+    if (!alive()) {
+      // A start that came while this round was still settling asked for a
+      // round of its own through `again`; it runs now, never alongside this one.
+      if (!stopped && again) {
+        again = false;
+        round();
+      }
+      return;
+    }
     if (outcome.type === "idle") {
       failures = 0;
       mode = "idle";
@@ -217,6 +238,7 @@ export function createAutoSync({ ops, clock = realClock, pace = PACE, onChange =
     start() {
       if (!stopped) return;
       stopped = false;
+      gen += 1;
       mode = "idle";
       kind = "";
       reason = "";
@@ -228,6 +250,7 @@ export function createAutoSync({ ops, clock = realClock, pace = PACE, onChange =
     },
     stop() {
       stopped = true;
+      gen += 1;
       again = false;
       if (timer != null) clock.clearTimeout(timer);
       timer = null;

@@ -306,4 +306,38 @@ const refused = (kind, reason) => ({ status: "refused", kind, refusals: [{ reaso
   sync.stop();
 }
 
+// 13. Stopping while a check is pending ends the round: no pull and no push follow.
+{
+  let release;
+  const gate = new Promise((resolve) => (release = resolve));
+  const { clock, fake, sync } = setup({ check: () => gate.then(() => ({ status: "behind" })) });
+  sync.start();
+  await clock.advance(0);
+  sync.stop();
+  release();
+  await clock.advance(0);
+  assert.equal(fake.count("pull"), 0);
+  assert.equal(fake.count("push"), 0);
+  assert.equal(sync.state.mode, "off");
+  assert.equal(clock.pending(), 0);
+}
+
+// 14. A restart while the old round is pending runs one round of its own, never alongside the old one.
+{
+  let release;
+  const gate = new Promise((resolve) => (release = resolve));
+  const { clock, fake, sync } = setup({ check: (n) => (n === 0 ? gate.then(() => ({ status: "behind" })) : { status: "current" }) });
+  sync.start();
+  await clock.advance(0);
+  sync.stop();
+  sync.start();
+  release();
+  await clock.advance(0);
+  assert.equal(fake.count("pull"), 0);
+  assert.equal(fake.count("status"), 2);
+  assert.equal(sync.state.mode, "idle");
+  assert.equal(fake.maxInFlight(), 1);
+  sync.stop();
+}
+
 console.log("gitsync auto ok");

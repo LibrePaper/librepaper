@@ -29,6 +29,10 @@ export function createGitAuto(input) {
   let scheduler = null;
   let unsubscribe = null;
   let notified = "";
+  // `generation` moves whenever the switch is touched or sync ends, so a call
+  // that awaited across such a change knows not to start sync afterwards.
+  let generation = 0;
+  let disposed = false;
 
   function stored() {
     try {
@@ -68,7 +72,9 @@ export function createGitAuto(input) {
   }
 
   function onChange(snapshot) {
-    const moved = snapshot.lastPullAt !== state.lastPullAt || snapshot.lastPushAt !== state.lastPushAt;
+    // A pause starting or ending also moves the revision, so an open panel reloads its status.
+    const moved =
+      snapshot.lastPullAt !== state.lastPullAt || snapshot.lastPushAt !== state.lastPushAt || snapshot.kind !== state.kind;
     state.mode = snapshot.mode;
     state.kind = snapshot.kind;
     state.reason = snapshot.reason;
@@ -116,6 +122,7 @@ export function createGitAuto(input) {
   }
 
   function end() {
+    generation += 1;
     scheduler?.stop();
     scheduler = null;
     unsubscribe?.();
@@ -131,6 +138,7 @@ export function createGitAuto(input) {
   }
 
   async function attach(next) {
+    if (disposed) return;
     session = next;
     if (scheduler) {
       unsubscribe?.();
@@ -139,9 +147,10 @@ export function createGitAuto(input) {
     }
     const id = stored();
     if (!state.available || !id) return;
+    const seen = generation;
     try {
       const link = await connection();
-      if (scheduler) return;
+      if (scheduler || disposed || seen !== generation) return;
       if (link && link.connection_id === id) begin();
       else store("");
     } catch {
@@ -150,6 +159,9 @@ export function createGitAuto(input) {
   }
 
   async function setEnabled(on) {
+    if (disposed) return false;
+    generation += 1;
+    const seen = generation;
     state.error = "";
     if (!on) {
       store("");
@@ -162,6 +174,7 @@ export function createGitAuto(input) {
     } catch {
       link = null;
     }
+    if (disposed || seen !== generation) return false;
     if (!link) {
       state.error = "Connect this computer to the repository first.";
       return false;
@@ -171,5 +184,10 @@ export function createGitAuto(input) {
     return true;
   }
 
-  return { state, attach, setEnabled, poke, dispose: end };
+  function dispose() {
+    disposed = true;
+    end();
+  }
+
+  return { state, attach, setEnabled, poke, dispose };
 }
