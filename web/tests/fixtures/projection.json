@@ -11,9 +11,9 @@
     {
       "assets": [],
       "expect": {
+        "files": [],
         "diagnostics": [],
-        "digest": "4b1a5d15da93509b096d6c5e11e1e26bf7fd44b6a9ba30c005a0b19b1dfb47bc",
-        "files": []
+        "digest": "4b1a5d15da93509b096d6c5e11e1e26bf7fd44b6a9ba30c005a0b19b1dfb47bc"
       },
       "files": [],
       "meta": [],
@@ -23,19 +23,19 @@
     {
       "assets": [],
       "expect": {
-        "diagnostics": [],
-        "digest": "86a344c62d54c2632eb7e8f49975b6ed77f10ab872ee86ea336d71d89781c059",
         "files": [
           [
             "paper.tex",
             {
-              "bytes": 23,
-              "digest": "9f1c4eec1f3f6ab16d74135508a6667bb4ec027155c506bad8dfca807899f0a8",
+              "kind": "text",
               "id": "aaa",
-              "kind": "text"
+              "digest": "9f1c4eec1f3f6ab16d74135508a6667bb4ec027155c506bad8dfca807899f0a8",
+              "bytes": 23
             }
           ]
-        ]
+        ],
+        "diagnostics": [],
+        "digest": "0886c0480839bf3e9f3bc5857cd39f27717dd47b098e12890f79c1ec82e6362e"
       },
       "files": [
         {
@@ -55,28 +55,28 @@
     {
       "assets": [],
       "expect": {
-        "diagnostics": [],
-        "digest": "975316db1b8404e559bf374c5cd6a2fb5ce2bac8421f34a72b47513417ae71d0",
         "files": [
           [
             "chapters/résumé.md",
             {
-              "bytes": 14,
-              "digest": "9106df4bcf78e2a07f8285e89c78d5056f8f3a55255c1b22e77dadd7ed20a652",
+              "kind": "text",
               "id": "bbb",
-              "kind": "text"
+              "digest": "9106df4bcf78e2a07f8285e89c78d5056f8f3a55255c1b22e77dadd7ed20a652",
+              "bytes": 14
             }
           ],
           [
             "😀.md",
             {
-              "bytes": 22,
-              "digest": "0277d1253025c4f8be6f6a0c08d2157d4c4759db94fe42701a92fb79e735b020",
+              "kind": "text",
               "id": "aaa",
-              "kind": "text"
+              "digest": "0277d1253025c4f8be6f6a0c08d2157d4c4759db94fe42701a92fb79e735b020",
+              "bytes": 22
             }
           ]
-        ]
+        ],
+        "diagnostics": [],
+        "digest": "cd03b1f3370b4a2efe43f0abb8d03b8652444662c42d969056c2e93fcf887e22"
       },
       "files": [
         {
@@ -104,50 +104,50 @@
     {
       "assets": [],
       "expect": {
-        "diagnostics": [
-          {
-            "from": "RÉSUMÉ.MD",
-            "id": "bbb",
-            "kind": "moved",
-            "to": "RÉSUMÉ (2).MD"
-          },
-          {
-            "from": "résumé.md",
-            "id": "ccc",
-            "kind": "moved",
-            "to": "résumé (3).md"
-          }
-        ],
-        "digest": "461ec085f31aaebb1f672d2d134f47aa02d0015b0df58df1fecd056b03ea63b6",
         "files": [
           [
             "RÉSUMÉ (2).MD",
             {
-              "bytes": 17,
-              "digest": "6e3e1675aadff6dbfb57687e619f5e9d2ad4dd7f83384b3c9dd5ba95453a54a3",
+              "kind": "text",
               "id": "bbb",
-              "kind": "text"
+              "digest": "6e3e1675aadff6dbfb57687e619f5e9d2ad4dd7f83384b3c9dd5ba95453a54a3",
+              "bytes": 17
             }
           ],
           [
             "Résumé.md",
             {
-              "bytes": 9,
-              "digest": "2acb9cbbdb3b6b7c34acf499728a4a2d89b647327d8d5a25484065f8b7f57a7f",
+              "kind": "text",
               "id": "aaa",
-              "kind": "text"
+              "digest": "2acb9cbbdb3b6b7c34acf499728a4a2d89b647327d8d5a25484065f8b7f57a7f",
+              "bytes": 9
             }
           ],
           [
             "résumé (3).md",
             {
-              "bytes": 17,
-              "digest": "61d30b37db3eb7237e8076708db27776d8210482b24afa7a3717d6ee259cb9ac",
+              "kind": "text",
               "id": "ccc",
-              "kind": "text"
+              "digest": "61d30b37db3eb7237e8076708db27776d8210482b24afa7a3717d6ee259cb9ac",
+              "bytes": 17
             }
           ]
-        ]
+        ],
+        "diagnostics": [
+          {
+            "kind": "moved",
+            "id": "bbb",
+            "from": "RÉSUMÉ.MD",
+            "to": "RÉSUMÉ (2).MD"
+          },
+          {
+            "kind": "moved",
+            "id": "ccc",
+            "from": "résumé.md",
+            "to": "résumé (3).md"
+          }
+        ],
+        "digest": "4e8ea0768668fff47d2bbb66d267d6d73b6586846caee14bded32611085ffa77"
       },
       "files": [
         {
@@ -183,59 +183,59 @@
     {
       "assets": [],
       "expect": {
-        "diagnostics": [
-          {
-            "from": "paper.tex",
-            "id": "ccc",
-            "kind": "moved",
-            "to": "paper (3).tex"
-          },
-          {
-            "from": "paper.tex",
-            "id": "ddd",
-            "kind": "moved",
-            "to": "paper (4).tex"
-          }
-        ],
-        "digest": "e0edfe8051ddca4b61cefe399abee1c71fa299a43c5da1a583b3860d4dc4cfc6",
         "files": [
           [
             "paper (2).tex",
             {
-              "bytes": 12,
-              "digest": "573954d93658db3abbc1f1bd20d052a21cfa0bc72ad105c7b3b822dd995a4970",
+              "kind": "text",
               "id": "bbb",
-              "kind": "text"
+              "digest": "573954d93658db3abbc1f1bd20d052a21cfa0bc72ad105c7b3b822dd995a4970",
+              "bytes": 12
             }
           ],
           [
             "paper (3).tex",
             {
-              "bytes": 6,
-              "digest": "16367aacb67a4a017c8da8ab95682ccb390863780f7114dda0a0e0c55644c7c4",
+              "kind": "text",
               "id": "ccc",
-              "kind": "text"
+              "digest": "16367aacb67a4a017c8da8ab95682ccb390863780f7114dda0a0e0c55644c7c4",
+              "bytes": 6
             }
           ],
           [
             "paper (4).tex",
             {
-              "bytes": 5,
-              "digest": "b1e99324505bd32da0e1f85dcf5e19a09db0481e8a15f62c41eb320304a8e927",
+              "kind": "text",
               "id": "ddd",
-              "kind": "text"
+              "digest": "b1e99324505bd32da0e1f85dcf5e19a09db0481e8a15f62c41eb320304a8e927",
+              "bytes": 5
             }
           ],
           [
             "paper.tex",
             {
-              "bytes": 5,
-              "digest": "a7937b64b8caa58f03721bb6bacf5c78cb235febe0e70b1b84cd99541461a08e",
+              "kind": "text",
               "id": "aaa",
-              "kind": "text"
+              "digest": "a7937b64b8caa58f03721bb6bacf5c78cb235febe0e70b1b84cd99541461a08e",
+              "bytes": 5
             }
           ]
-        ]
+        ],
+        "diagnostics": [
+          {
+            "kind": "moved",
+            "id": "ccc",
+            "from": "paper.tex",
+            "to": "paper (3).tex"
+          },
+          {
+            "kind": "moved",
+            "id": "ddd",
+            "from": "paper.tex",
+            "to": "paper (4).tex"
+          }
+        ],
+        "digest": "c904ffef5063a4b3b2bd1444729abf0b8750a28b6634c8cbb9d3a3c31678559b"
       },
       "files": [
         {
@@ -279,25 +279,25 @@
     {
       "assets": [],
       "expect": {
-        "diagnostics": [
-          {
-            "id": "bbb",
-            "kind": "dropped",
-            "path": "chapters/one.tex/deeper.tex"
-          }
-        ],
-        "digest": "4da2b0714eaeec6303d34a9d9cc3a202dab1cc0f352bafee94484d5305cccf1e",
         "files": [
           [
             "chapters/one.tex",
             {
-              "bytes": 6,
-              "digest": "106b086224a4d945eae25f7be3805a931a873270326dd868b0e41f71ee9fff72",
+              "kind": "text",
               "id": "aaa",
-              "kind": "text"
+              "digest": "106b086224a4d945eae25f7be3805a931a873270326dd868b0e41f71ee9fff72",
+              "bytes": 6
             }
           ]
-        ]
+        ],
+        "diagnostics": [
+          {
+            "kind": "dropped",
+            "id": "bbb",
+            "path": "chapters/one.tex/deeper.tex"
+          }
+        ],
+        "digest": "90a6172e08fdf963c290e469bac05af72a4c21281a5951456427b3e937a6248c"
       },
       "files": [
         {
@@ -330,25 +330,25 @@
         }
       ],
       "expect": {
-        "diagnostics": [
-          {
-            "id": "aaa",
-            "kind": "invalid-path",
-            "path": "fig/plot.svg"
-          }
-        ],
-        "digest": "566460bf7acfdde4d502851726d48a58dcec3460054d49bba2a8fcc4cde7b74d",
         "files": [
           [
             "fig/plot.svg",
             {
-              "bytes": 0,
-              "digest": "a3f1c2d4e5b6978012345678901234567890abcdefabcdefabcdefabcdef0123",
+              "kind": "asset",
               "id": "",
-              "kind": "asset"
+              "digest": "a3f1c2d4e5b6978012345678901234567890abcdefabcdefabcdefabcdef0123",
+              "bytes": 0
             }
           ]
-        ]
+        ],
+        "diagnostics": [
+          {
+            "kind": "invalid-path",
+            "id": "aaa",
+            "path": "fig/plot.svg"
+          }
+        ],
+        "digest": "566460bf7acfdde4d502851726d48a58dcec3460054d49bba2a8fcc4cde7b74d"
       },
       "files": [
         {
@@ -368,28 +368,28 @@
     {
       "assets": [],
       "expect": {
-        "diagnostics": [
-          {
-            "id": "aaa",
-            "kind": "dangling"
-          },
-          {
-            "id": "aaa",
-            "kind": "not-a-text"
-          }
-        ],
-        "digest": "f74623085f5b6a6759e581aca8fd1789132c77678ee6d1cd9ff9ab05cd12549f",
         "files": [
           [
             "right.md",
             {
-              "bytes": 4,
-              "digest": "aa33996d60e89311b4d1a920dae03c6d7fa3ae1956c52662e273aad4683e577f",
+              "kind": "text",
               "id": "bbb",
-              "kind": "text"
+              "digest": "aa33996d60e89311b4d1a920dae03c6d7fa3ae1956c52662e273aad4683e577f",
+              "bytes": 4
             }
           ]
-        ]
+        ],
+        "diagnostics": [
+          {
+            "kind": "dangling",
+            "id": "aaa"
+          },
+          {
+            "kind": "not-a-text",
+            "id": "aaa"
+          }
+        ],
+        "digest": "6a2d60e11b86638347f8bde50ace9b7a9f8e610799628373cc1f7a9ad32012d7"
       },
       "files": [
         {
@@ -417,22 +417,22 @@
     {
       "assets": [],
       "expect": {
+        "files": [],
         "diagnostics": [
           {
-            "id": "zzz",
-            "kind": "dangling"
+            "kind": "dangling",
+            "id": "zzz"
           },
           {
-            "id": "aaa",
-            "kind": "unnamed"
+            "kind": "unnamed",
+            "id": "aaa"
           },
           {
-            "id": "aaa",
-            "kind": "unnamed"
+            "kind": "unnamed",
+            "id": "aaa"
           }
         ],
-        "digest": "4b1a5d15da93509b096d6c5e11e1e26bf7fd44b6a9ba30c005a0b19b1dfb47bc",
-        "files": []
+        "digest": "4b1a5d15da93509b096d6c5e11e1e26bf7fd44b6a9ba30c005a0b19b1dfb47bc"
       },
       "files": [
         {
@@ -456,30 +456,30 @@
     {
       "assets": [],
       "expect": {
-        "diagnostics": [
-          {
-            "id": "aaa",
-            "kind": "invalid-path",
-            "path": "../escape.md"
-          },
-          {
-            "id": "bbb",
-            "kind": "invalid-path",
-            "path": "a//b.md"
-          }
-        ],
-        "digest": "857353373426d282984e76b35418d54143057f1fdab50eddf047388aa35044b0",
         "files": [
           [
             "ok.md",
             {
-              "bytes": 4,
-              "digest": "d14a58bae804a2b80b5b76a010239c88ffca1fc7951a90f8e9131beda1e23c1b",
+              "kind": "text",
               "id": "ccc",
-              "kind": "text"
+              "digest": "d14a58bae804a2b80b5b76a010239c88ffca1fc7951a90f8e9131beda1e23c1b",
+              "bytes": 4
             }
           ]
-        ]
+        ],
+        "diagnostics": [
+          {
+            "kind": "invalid-path",
+            "id": "aaa",
+            "path": "../escape.md"
+          },
+          {
+            "kind": "invalid-path",
+            "id": "bbb",
+            "path": "a//b.md"
+          }
+        ],
+        "digest": "5262652536b852df2dd787a2cb210d14a428403059071a59c949d043cb3667c2"
       },
       "files": [
         {
@@ -528,6 +528,17 @@
         }
       ],
       "expect": {
+        "files": [
+          [
+            "fig/c.png",
+            {
+              "kind": "asset",
+              "id": "",
+              "digest": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+              "bytes": 0
+            }
+          ]
+        ],
         "diagnostics": [
           {
             "kind": "not-a-digest",
@@ -538,18 +549,7 @@
             "path": "fig/b.png"
           }
         ],
-        "digest": "a789a31434c047e2a7a3f6cc8528beeb66f8f83674454690433383d017cfe001",
-        "files": [
-          [
-            "fig/c.png",
-            {
-              "bytes": 0,
-              "digest": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
-              "id": "",
-              "kind": "asset"
-            }
-          ]
-        ]
+        "digest": "a789a31434c047e2a7a3f6cc8528beeb66f8f83674454690433383d017cfe001"
       },
       "files": [],
       "meta": [],
@@ -559,30 +559,30 @@
     {
       "assets": [],
       "expect": {
-        "diagnostics": [
-          {
-            "id": "aaa",
-            "kind": "invalid-path",
-            "path": "paper.log"
-          },
-          {
-            "id": "bbb",
-            "kind": "invalid-path",
-            "path": "notes.xyz"
-          }
-        ],
-        "digest": "dab591df7f37452da6d04758bc4599e4282783aadd22c13f2922e8545b14a116",
         "files": [
           [
             "paper.tex",
             {
-              "bytes": 4,
-              "digest": "79f076abdd19a752db7267bfff2f9022161d120dea919fdaca2ffdfc24ca8c96",
+              "kind": "text",
               "id": "ccc",
-              "kind": "text"
+              "digest": "79f076abdd19a752db7267bfff2f9022161d120dea919fdaca2ffdfc24ca8c96",
+              "bytes": 4
             }
           ]
-        ]
+        ],
+        "diagnostics": [
+          {
+            "kind": "invalid-path",
+            "id": "aaa",
+            "path": "paper.log"
+          },
+          {
+            "kind": "invalid-path",
+            "id": "bbb",
+            "path": "notes.xyz"
+          }
+        ],
+        "digest": "fbcbdcb50c4596a7e96f54c73d838b7c1ecba50a559a43c1609a03405a3937e1"
       },
       "files": [
         {
@@ -627,66 +627,66 @@
         }
       ],
       "expect": {
-        "diagnostics": [
-          {
-            "id": "0004",
-            "kind": "dangling"
-          },
-          {
-            "id": "asset:chapters/one.typ",
-            "kind": "invalid-path",
-            "path": "chapters/one.typ"
-          },
-          {
-            "from": "chapters/one.typ",
-            "id": "0003",
-            "kind": "moved",
-            "to": "chapters/one (2).typ"
-          },
-          {
-            "id": "0004",
-            "kind": "not-a-text"
-          }
-        ],
-        "digest": "c5d83f71d3602912dc76a271b1ac10976163d0dc01646ba8f373fd977857ed98",
         "files": [
           [
             "chapters/one (2).typ",
             {
-              "bytes": 11,
-              "digest": "c8523e9dd972b32cac1344a780576b729267ec94ed07be3dc6da493f461f9ee0",
+              "kind": "text",
               "id": "0003",
-              "kind": "text"
+              "digest": "c8523e9dd972b32cac1344a780576b729267ec94ed07be3dc6da493f461f9ee0",
+              "bytes": 11
             }
           ],
           [
             "chapters/one.typ",
             {
-              "bytes": 11,
-              "digest": "d3c22a826e97e9ad2afbceb6f77f70d2245600844259b7596fb109b524b445e4",
+              "kind": "text",
               "id": "0002",
-              "kind": "text"
+              "digest": "d3c22a826e97e9ad2afbceb6f77f70d2245600844259b7596fb109b524b445e4",
+              "bytes": 11
             }
           ],
           [
             "fig/plot.png",
             {
-              "bytes": 0,
-              "digest": "1111111111111111111111111111111111111111111111111111111111111111",
+              "kind": "asset",
               "id": "",
-              "kind": "asset"
+              "digest": "1111111111111111111111111111111111111111111111111111111111111111",
+              "bytes": 0
             }
           ],
           [
             "main.typ",
             {
-              "bytes": 9,
-              "digest": "06b262597d8e28c5d76e44d7c70ae8f660977b72cf17d79bd2b0ff554c0f358f",
+              "kind": "text",
               "id": "0001",
-              "kind": "text"
+              "digest": "06b262597d8e28c5d76e44d7c70ae8f660977b72cf17d79bd2b0ff554c0f358f",
+              "bytes": 9
             }
           ]
-        ]
+        ],
+        "diagnostics": [
+          {
+            "kind": "dangling",
+            "id": "0004"
+          },
+          {
+            "kind": "invalid-path",
+            "id": "asset:chapters/one.typ",
+            "path": "chapters/one.typ"
+          },
+          {
+            "kind": "moved",
+            "id": "0003",
+            "from": "chapters/one.typ",
+            "to": "chapters/one (2).typ"
+          },
+          {
+            "kind": "not-a-text",
+            "id": "0004"
+          }
+        ],
+        "digest": "9968731a26ada7ee44ba0fe1055c76b3754531f222195e36d8a90af4624500db"
       },
       "files": [
         {
