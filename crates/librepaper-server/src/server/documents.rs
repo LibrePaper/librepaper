@@ -662,7 +662,6 @@ impl Server {
                 DocumentInput {
                     slug: key.clone(),
                     title: parsed.title.clone(),
-                    source: parsed.source.clone(),
                     source_format: parsed.source_format.clone(),
                 },
                 parsed.files.clone(),
@@ -1638,21 +1637,10 @@ impl Server {
             base = operation.target.slug.clone();
         }
         files.sort_by(|a, b| a.0.cmp(&b.0));
-        let texts: std::collections::BTreeMap<String, String> = files
-            .iter()
-            .filter_map(|(path, bytes)| {
-                std::str::from_utf8(bytes)
-                    .ok()
-                    .map(|text| (path.clone(), text.to_string()))
-            })
-            .collect();
-        let source = librepaper_document::document::opening::opening_file(&texts)
-            .and_then(|path| texts.get(&path).cloned())
-            .unwrap_or_default();
         if let Err(response) = self.preflight_directory(&Upload {
             title: title.clone(),
             slug: String::new(),
-            source: source.clone(),
+            source: String::new(),
             source_format: entry.source_format.clone(),
             files: files.clone(),
             whole: true,
@@ -1731,7 +1719,6 @@ impl Server {
         let input = DocumentInput {
             slug: base,
             title: title.clone(),
-            source,
             source_format: entry.source_format.clone(),
         };
         let saved = if let Some(operation) = &template_operation {

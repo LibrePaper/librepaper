@@ -186,7 +186,6 @@ impl Server {
                     DocumentInput {
                         slug: slug.clone(),
                         title: starter.title.into(),
-                        source: starter.source.into(),
                         source_format: starter.format.into(),
                     },
                     std::iter::once((starter.path.into(), starter.source.as_bytes().to_vec()))

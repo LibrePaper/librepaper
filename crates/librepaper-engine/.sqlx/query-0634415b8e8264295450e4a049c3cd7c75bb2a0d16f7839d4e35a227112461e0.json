@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "SELECT id,slug,owner_id,ownership_mode,title,status,source_format,\n                    main_path,update_sequence,\n                       created_at,updated_at,deleted_at\n             FROM documents WHERE slug=$1",
+  "query": "SELECT id,slug,owner_id,ownership_mode,title,status,source_format,\n                    update_sequence,\n                       created_at,updated_at,deleted_at\n             FROM documents WHERE slug=$1",
   "describe": {
     "columns": [
       {
@@ -40,26 +40,21 @@
       },
       {
         "ordinal": 7,
-        "name": "main_path",
-        "type_info": "Text"
-      },
-      {
-        "ordinal": 8,
         "name": "update_sequence",
         "type_info": "Int8"
       },
       {
-        "ordinal": 9,
+        "ordinal": 8,
         "name": "created_at",
         "type_info": "Timestamptz"
       },
       {
-        "ordinal": 10,
+        "ordinal": 9,
         "name": "updated_at",
         "type_info": "Timestamptz"
       },
       {
-        "ordinal": 11,
+        "ordinal": 10,
         "name": "deleted_at",
         "type_info": "Timestamptz"
       }
@@ -80,9 +75,8 @@
       false,
       false,
       false,
-      false,
       true
     ]
   },
-  "hash": "01c7156e7d119d5591b6723014a4fb43090173829b8cfc368b455722d2d356fe"
+  "hash": "0634415b8e8264295450e4a049c3cd7c75bb2a0d16f7839d4e35a227112461e0"
 }

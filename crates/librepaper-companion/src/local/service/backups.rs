@@ -2025,7 +2025,6 @@ mod tests {
             "slug": "scheduled-project",
             "title": "Scheduled Project",
             "format": "markdown",
-            "main": fixture.projection.main,
             "tree": fixture.projection.clone(),
             "texts":{"project.md": fixture.text.clone()}
         }))
@@ -2033,10 +2032,7 @@ mod tests {
 
     async fn start_backup_fixture(account_id: String) -> (String, tokio::task::JoinHandle<()>) {
         let text = "# scheduled backup\n".to_string();
-        let mut projection = librepaper_document::document::projection::Projection {
-            main: "project.md".into(),
-            ..Default::default()
-        };
+        let mut projection = librepaper_document::document::projection::Projection::default();
         projection.files.insert(
             "project.md".into(),
             librepaper_document::document::projection::Entry {

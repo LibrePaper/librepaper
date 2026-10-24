@@ -1239,10 +1239,7 @@ mod tests {
                 digest: hex::encode(Sha256::digest(body.as_bytes())),
                 bytes: body.len() as u64,
             };
-            let mut projection = librepaper_document::document::projection::Projection {
-                main: "paper.md".into(),
-                ..Default::default()
-            };
+            let mut projection = librepaper_document::document::projection::Projection::default();
             projection.files.insert("paper.md".into(), entry);
             let asset_bytes = b"\x00\x01\xff";
             projection.files.insert(
