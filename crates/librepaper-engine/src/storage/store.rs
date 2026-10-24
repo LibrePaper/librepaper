@@ -1494,12 +1494,7 @@ impl Store {
         Ok(usize::from(self.begin_delete(slug).await?.is_some()))
     }
 
-    pub async fn rename(
-        &self,
-        slug: &str,
-        title: &str,
-        actor: &Authority,
-    ) -> Result<(), String> {
+    pub async fn rename(&self, slug: &str, title: &str, actor: &Authority) -> Result<(), String> {
         if title.is_empty() {
             return Ok(());
         }

@@ -36,8 +36,7 @@ use librepaper_engine::storage::postgres::annotations::{
     ANNOTATION_PAGE_MAX, REPLY_LOOKUP_MAX, REPLY_PAGE_MAX,
 };
 use librepaper_engine::storage::postgres::{
-    AnnotationRecord, Authority, NewAccount, NewAnnotation, NewReply,
-    PostgresCatalog,
+    AnnotationRecord, Authority, NewAccount, NewAnnotation, NewReply, PostgresCatalog,
 };
 use librepaper_engine::storage::store::{DocumentInput, Store};
 

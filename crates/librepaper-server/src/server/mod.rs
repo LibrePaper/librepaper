@@ -2303,7 +2303,9 @@ mod automation_authority_tests {
     #[test]
     fn authority_refuses_a_malformed_account_session_or_link() {
         let account = uuid::Uuid::new_v4().to_string();
-        assert!(viewer("not-a-uuid", "alice", "").authority(ceiling()).is_err());
+        assert!(viewer("not-a-uuid", "alice", "")
+            .authority(ceiling())
+            .is_err());
         assert!(viewer(&account, "alice", "editor-hash")
             .authority(ceiling())
             .is_err());

@@ -232,12 +232,7 @@ async fn a_listing_cursor_cannot_probe_a_slug_the_caller_cannot_read() {
     let cursor = Some((entry.updated_at.as_str(), deployment.slug.as_str()));
 
     let own = store
-        .visible_page_with_options(
-            Some(&deployment.owner_id.to_string()),
-            cursor,
-            10,
-            false,
-        )
+        .visible_page_with_options(Some(&deployment.owner_id.to_string()), cursor, 10, false)
         .await;
     assert!(own.is_ok(), "the owner may page from their own project");
 

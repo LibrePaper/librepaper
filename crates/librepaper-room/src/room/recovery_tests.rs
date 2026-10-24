@@ -912,7 +912,6 @@ impl Deployment {
             true,
         )
     }
-
 }
 
 /// A reader's projection is stable while nothing changes; a restore refused

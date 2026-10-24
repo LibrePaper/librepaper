@@ -46,8 +46,8 @@ use librepaper_engine::log::sequencer::{
     Command as SequencerCommand, CommandError, Evidence, Head, PreparedSource, Rung,
 };
 use librepaper_engine::storage::postgres::{
-    self, AnnotationRecord, AnnotationState, Authority, NewAnnotation, NewReply,
-    PostgresCatalog, ReplyRecord,
+    self, AnnotationRecord, AnnotationState, Authority, NewAnnotation, NewReply, PostgresCatalog,
+    ReplyRecord,
 };
 
 use super::locate::{self, Quote};

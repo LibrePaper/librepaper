@@ -395,10 +395,12 @@ impl Server {
         }
 
         let now = librepaper_base::util::now_unix();
-        let Ok(mutation_actor) = current_who.authority(librepaper_engine::storage::store::Ceiling {
-            comment: self.commenters.allows(&current_who.id),
-            edit: self.publishers.allows(&current_who.id),
-        }) else {
+        let Ok(mutation_actor) =
+            current_who.authority(librepaper_engine::storage::store::Ceiling {
+                comment: self.commenters.allows(&current_who.id),
+                edit: self.publishers.allows(&current_who.id),
+            })
+        else {
             return write_json(401, &json!({"error": "invalid account"}));
         };
         let updated = self

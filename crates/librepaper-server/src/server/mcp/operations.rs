@@ -1128,11 +1128,11 @@ impl Server {
                 creator,
             )
             .map_err(|error| Failure::new("invalid_params", error))?;
-            let authority = who
-                .authority(self.ceiling_for(&who.id))
-                .map_err(|InvalidCredential| {
-                    Failure::new("permission_changed", "your access changed")
-                })?;
+            let authority =
+                who.authority(self.ceiling_for(&who.id))
+                    .map_err(|InvalidCredential| {
+                        Failure::new("permission_changed", "your access changed")
+                    })?;
             let operation_receipt = self.mcp_operation_receipt(
                 actor,
                 key,

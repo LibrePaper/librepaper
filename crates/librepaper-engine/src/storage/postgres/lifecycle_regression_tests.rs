@@ -7,8 +7,8 @@ use uuid::Uuid;
 use crate::storage::blob::{BlobStore, FsStore};
 
 use super::super::{
-    Authority, FlushRow, NewAccount, NewAsset, NewDocument, NewSnapshot,
-    PostgresCatalog, PostgresOptions,
+    Authority, FlushRow, NewAccount, NewAsset, NewDocument, NewSnapshot, PostgresCatalog,
+    PostgresOptions,
 };
 
 async fn catalog() -> PostgresCatalog {

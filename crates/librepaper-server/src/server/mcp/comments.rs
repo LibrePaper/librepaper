@@ -246,11 +246,9 @@ impl Server {
 
         let request_id = key.scoped_request_id(actor);
         let ceiling = self.ceiling_for(&who.id);
-        let authority = who
-            .authority(ceiling)
-            .map_err(|InvalidCredential| {
-                Failure::new("permission_changed", "your access changed")
-            })?;
+        let authority = who.authority(ceiling).map_err(|InvalidCredential| {
+            Failure::new("permission_changed", "your access changed")
+        })?;
         // Who is writing, built once and carried whole, the same shape the
         // socket and the REST route build.
         let writer = room::CommentAuthor::new(

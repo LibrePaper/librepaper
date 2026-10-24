@@ -414,18 +414,18 @@ impl Server {
             request_digest: hex::encode(Sha256::digest(&body)),
         };
         let ceiling = self.ceiling_for(&who.id);
-        let authority = match who.agent_authority(ceiling, format!("sync:{document_id}:{principal}"))
-        {
-            Ok(authority) => authority,
-            Err(InvalidCredential) => {
-                return self
-                    .source_change_refusal(
-                        document_id,
-                        AgentError::Conflict("document access changed".into()),
-                    )
-                    .await
-            }
-        };
+        let authority =
+            match who.agent_authority(ceiling, format!("sync:{document_id}:{principal}")) {
+                Ok(authority) => authority,
+                Err(InvalidCredential) => {
+                    return self
+                        .source_change_refusal(
+                            document_id,
+                            AgentError::Conflict("document access changed".into()),
+                        )
+                        .await
+                }
+            };
         let write = SyncLinkWrite {
             remote_kind: row.remote_kind.clone(),
             remote_label: row.remote_label.clone(),
