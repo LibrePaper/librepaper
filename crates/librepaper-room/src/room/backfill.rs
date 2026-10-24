@@ -10,8 +10,9 @@
 //! write.
 //!
 //! Opening a room also converts the records that older releases wrote into the
-//! current format, as one server-authored command, before the room is shared. A
-//! document with no old records pays one read.
+//! current format, as one server-authored command, before the room is shared.
+//! The check for old records builds the document, so it runs only once a
+//! passage comment is found. A document with no passage comments pays no build.
 //!
 //! The heal a history trim runs before its shallow snapshot is here too: it
 //! gives each stale record fresh cursors, so the snapshot cannot strand it.
@@ -256,13 +257,7 @@ async fn owner_authority(room: &Room) -> Result<Authority, WriteError> {
 /// as every other reader reads them, so no whole collection is held. Records in
 /// an older format are converted first, so they count as present.
 pub(crate) async fn backfill_anchors(room: &Room) -> Result<usize, WriteError> {
-    let legacy = room.log().with_head(anchors::has_legacy_records).await?;
-    if legacy {
-        let authority = owner_authority(room).await?;
-        room.command(&authority, &mut UpgradeAnchors { upgraded: 0 })
-            .await
-            .map_err(WriteError::from)?;
-    }
+    let mut legacy_checked = false;
     let mut missing: Vec<Missing> = Vec::new();
     let mut after = None;
     loop {
@@ -275,6 +270,16 @@ pub(crate) async fn backfill_anchors(room: &Room) -> Result<usize, WriteError> {
             .filter(|comment| comment.source().is_some())
             .collect();
         if !passages.is_empty() {
+            if !legacy_checked {
+                legacy_checked = true;
+                let legacy = room.log().with_head(anchors::has_legacy_records).await?;
+                if legacy {
+                    let authority = owner_authority(room).await?;
+                    room.command(&authority, &mut UpgradeAnchors { upgraded: 0 })
+                        .await
+                        .map_err(WriteError::from)?;
+                }
+            }
             let absent: Vec<usize> = room
                 .log()
                 .with_head(|doc| {
