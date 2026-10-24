@@ -918,23 +918,21 @@ async function restoreSession(ctx, session) {
 /// so that a restart restores them. Answers the saved session. Throws when
 /// they could not be saved.
 export async function saveResolutions(ctx, session, resolutions) {
-  return exclusive(ctx, () => saveResolutionsUnlocked(ctx, session, resolutions));
-}
-
-async function saveResolutionsUnlocked(ctx, session, resolutions) {
-  const chosen = await packResolutions(ctx, resolutions);
-  const carried = await packResolutions(ctx, session.carried);
-  const refs = {};
-  if (chosen.commit) refs.resolutions = chosen.commit;
-  if (carried.commit) refs.carried = carried.commit;
-  if (Object.keys(refs).length) await ctx.git.keep(session.id, refs);
-  await journalSet(ctx, {
-    id: session.id,
-    kind: "conflict",
-    phase: "conflict",
-    session: { ...session, carried: carried.stored, resolutions: chosen.stored },
+  return exclusive(ctx, async () => {
+    const chosen = await packResolutions(ctx, resolutions);
+    const carried = await packResolutions(ctx, session.carried);
+    const refs = {};
+    if (chosen.commit) refs.resolutions = chosen.commit;
+    if (carried.commit) refs.carried = carried.commit;
+    if (Object.keys(refs).length) await ctx.git.keep(session.id, refs);
+    await journalSet(ctx, {
+      id: session.id,
+      kind: "conflict",
+      phase: "conflict",
+      session: { ...session, carried: carried.stored, resolutions: chosen.stored },
+    });
+    return { ...session, resolutions };
   });
-  return { ...session, resolutions };
 }
 
 /// Applies the user's resolutions to a saved conflict session. `resolutions`
