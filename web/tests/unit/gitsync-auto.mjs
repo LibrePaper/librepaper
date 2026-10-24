@@ -367,4 +367,25 @@ const refused = (kind, reason) => ({ status: "refused", kind, refusals: [{ reaso
   sync.stop();
 }
 
+// 17. A push that answers a conflict pauses and keeps the edits pending, so
+// the push runs again once the conflict is resolved, with no new edit.
+{
+  const conflict = { conflict: { paths: ["a.tex"] }, pending: [] };
+  const { clock, fake, sync } = setup({
+    push: [{ status: "conflict" }, { status: "pushed" }],
+    status: [DEFAULTS.status, conflict, DEFAULTS.status],
+  });
+  sync.start();
+  await clock.advance(0);
+  assert.equal(sync.state.mode, "paused");
+  assert.equal(sync.state.kind, "conflict");
+  await clock.to(PACE.checkMs);
+  assert.equal(sync.state.mode, "paused");
+  assert.equal(fake.count("push"), 1);
+  await clock.to(2 * PACE.checkMs);
+  assert.equal(fake.count("push"), 2);
+  assert.equal(sync.state.mode, "idle");
+  sync.stop();
+}
+
 console.log("gitsync auto ok");

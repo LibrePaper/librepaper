@@ -164,6 +164,12 @@ export function createAutoSync({ ops, clock = realClock, pace = PACE, onChange =
         restore(first);
         return refusal(answer);
       }
+      // The pull inside the push found a conflict. The edits stay pending, so
+      // content kept by the resolution still goes out once sync resumes.
+      if (answer.status === "conflict") {
+        restore(first);
+        return conflicted();
+      }
       retryAt = null;
       break;
     }

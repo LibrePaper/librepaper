@@ -1022,7 +1022,13 @@ export function defaultMessage(files) {
 /// push to hand back to `push` as `confirmed`; with `{ status: "nothing" }`;
 /// or with `{ status: "behind", head, reason }` when the remote has commits
 /// the link's checkpoint does not have, which the person clears by pulling.
+/// It writes the journal as a pull does, so it runs under the lock.
 export async function outgoing(ctx) {
+  return exclusive(ctx, () => planOutgoing(ctx));
+}
+
+/// The body of `outgoing`, for the pushes that already hold the lock.
+async function planOutgoing(ctx) {
   return guarded(async () => {
     const pulled = await runPull(ctx, { current: true });
     if (!pulled.state) return pulled.result;
@@ -1156,20 +1162,20 @@ export async function push(ctx, message = "", { confirmed = null } = {}) {
       if (behind) return behind;
       if (confirmed.connection_id !== link.connection_id) {
         // The review was made against another connection: ask for a new one.
-        const again = await outgoing(ctx);
+        const again = await planOutgoing(ctx);
         if (again.status !== "outgoing") return again;
         return result("moved", { files: again.files, outgoing: again.outgoing });
       }
     }
     for (let attempt = 0; ; attempt += 1) {
       if (!plan) {
-        const planned = await outgoing(ctx);
+        const planned = await planOutgoing(ctx);
         if (planned.status !== "outgoing") return planned;
         plan = planned.outgoing;
       }
       const sent = await publish(ctx, plan, message);
       if (!sent.moved) return sent.result;
-      const again = await outgoing(ctx);
+      const again = await planOutgoing(ctx);
       if (again.status !== "outgoing") return again;
       if (attempt >= 1 || (confirmed && again.outgoing.signature !== plan.signature)) {
         return result("moved", { files: again.files, outgoing: again.outgoing });
@@ -1193,13 +1199,13 @@ export async function pushToBranch(ctx, branch, message = "", { confirmed = null
     if (!name) return refused("Name the branch to push to.");
     let plan = confirmed;
     if (!plan) {
-      const planned = await outgoing(ctx);
+      const planned = await planOutgoing(ctx);
       if (planned.status !== "outgoing") return planned;
       plan = planned.outgoing;
     } else {
       const { link } = await ctx.api.getLink();
       if (!link || link.connection_id !== plan.connection_id) {
-        const again = await outgoing(ctx);
+        const again = await planOutgoing(ctx);
         if (again.status !== "outgoing") return again;
         return result("moved", { files: again.files, outgoing: again.outgoing });
       }
