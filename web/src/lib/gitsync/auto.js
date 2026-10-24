@@ -130,9 +130,12 @@ export function createAutoSync({ ops, clock = realClock, pace = PACE, onChange =
         const p = await ops.pull();
         if (!alive()) return ABORTED;
         // A pull that changed no file can still move the checkpoint, so it
-        // counts as a pull and the panel reloads.
+        // counts as a pull and the panel reloads. A pull can also make a local
+        // file pushable without an edit (a rule that ignored it went away), so
+        // the next push looks again.
         if (p.status === "pulled" || p.status === "nothing") {
           lastPullAt = clock.now();
+          restore(lastPullAt);
           emit();
         } else if (p.status === "conflict") {
           return conflicted();

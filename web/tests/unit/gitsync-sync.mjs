@@ -1451,6 +1451,24 @@ async function connected(files, folder = "") {
   assert.equal(mixed.needsPull, false);
 }
 
+// An oversized interrupted pull of another connection does not block this one.
+{
+  const { ctx } = await connected({ "intro.qmd": "one\n" });
+  await ctx.git.journalUpsert({
+    id: "op-old-big",
+    kind: "pull",
+    phase: "sent",
+    revision: 1,
+    connection_id: "an-older-connection",
+    checkpoint: null,
+    body: null,
+  });
+  const answer = await sync.recover(ctx);
+  assert.deepEqual(answer.pending, ["op-old-big"]);
+  assert.deepEqual(answer.blocking, []);
+  assert.equal(answer.needsPull, false);
+}
+
 // A resolution whose answer was lost, then applied on the server, finishes its
 // conflict session when recovery sends it again.
 {

@@ -1541,8 +1541,10 @@ export async function recover(ctx) {
       try {
         if (entry.kind === "pull" && entry.phase === "sent" && !entry.body) {
           // The request was too large to journal, so it cannot be sent again
-          // and nobody knows whether it applied. The next pull settles it.
-          oversized.add(entry.id);
+          // and nobody knows whether it applied. The next pull of its own
+          // connection settles it; another connection's waits for that one.
+          if (entry.connection_id === connection) oversized.add(entry.id);
+          else foreign.add(entry.id);
           reasons[entry.id] = "run Pull again to finish an interrupted pull";
           throw new Error(reasons[entry.id]);
         } else if (entry.phase === "planned" || entry.phase === "done") {

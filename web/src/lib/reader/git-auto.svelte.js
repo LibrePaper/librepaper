@@ -194,7 +194,8 @@ export function createGitAuto(input) {
     const seen = generation;
     try {
       const link = await connection();
-      if (scheduler || disposed || seen !== generation) return;
+      // Another window may have turned the switch off during the check.
+      if (scheduler || disposed || seen !== generation || stored() !== id) return;
       if (link && link.connection_id === id) begin(id);
       else store("");
     } catch {
