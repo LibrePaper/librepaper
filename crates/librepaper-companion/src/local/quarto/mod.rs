@@ -17,7 +17,6 @@ use sha2::{Digest, Sha256};
 use tokio::process::Command;
 use tokio::sync::{mpsc, watch};
 
-use super::engine_adapter::{self, QuartoInvocationPlan};
 use super::protocol::{
     self, BuildProvenance, JobOutcome, JobRequest, JobStatus, OutputEntry, QuartoBundleSummary,
     QuartoCoverage, QuartoJobOptions, QuartoRenderPolicy, Tool, ToolVersions, Workspace,
@@ -32,6 +31,9 @@ pub struct SourceInventory {
 }
 
 mod collect;
+mod invocation;
+
+use invocation::QuartoInvocationPlan;
 
 // Collection is its own module; every caller still names these here,
 // because which half of the adapter reads the output is not something a
@@ -867,7 +869,7 @@ pub async fn run_job_with_bindings(
         }
     };
     if options.render_scope != protocol::QuartoRenderScope::Project && cell_manifest.is_file() {
-        match engine_adapter::quarto_capture(&cell_manifest, main_name, &source_before, &project) {
+        match crate::local::quarto_capture::collect(&cell_manifest, main_name, &source_before, &project) {
             Ok(capture) => {
                 let capture_had_diagnostics = !capture.diagnostics.is_empty();
                 bundle.cells = capture.cells.into_iter().map(local_cell).collect();
