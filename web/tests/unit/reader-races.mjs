@@ -457,6 +457,7 @@ console.log("reader-races: all checks passed");
     renderers: { formatOf: () => "latex", previewFormatOf: () => "latex", warm: () => {} },
     readQuartoBinding: () => {},
     configureLatex: () => configured++,
+    mayEdit: true, mainPathNow: () => "paper.tex",
   });
   vm.runInContext(body("  function updatePreviewTarget()", "  // A file added"), ctx);
   vm.runInContext("updatePreviewTarget()", ctx);
@@ -1096,7 +1097,7 @@ for (const latest of [
     viewing: null, editing: true, editor: { text: () => null },
     liveTreeNow: () => ({main:'paper.qmd',texts,digests:{}}),
     renderers: { formatOf: p => p.endsWith('.typ') ? 'typst' : 'quarto', previewFormatOf: p => p.endsWith('.typ') ? 'typst' : 'quarto', warm: () => {} },
-    configureLatex: f => configured.push(f), mayEdit: true,
+    configureLatex: f => configured.push(f), mayEdit: true, mainPathNow: () => 'paper.qmd',
     localQuarto: { configure: () => {}, bindingId: () => 'hosted', probe: async () => {} },
     SLUG: 'mixed', location: {origin:'http://localhost'},
     navigationGeneration: 0, issued: 0, docsOrigin: null,

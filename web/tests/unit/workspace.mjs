@@ -115,15 +115,23 @@ function build(extra = {}) {
   assert.equal(workspace.state.openFile, "moved.png", "and stays the open file");
 }
 
-// The file a link named is opened once, and only for somebody who has a
-// source pane to open it in.
+// The file a link named is opened once, for an editor from the session and
+// for a link holder from the project the server sent.
 {
   const entries = [{ id: "id:main.md", path: "main.md", kind: "text" }, { id: "id:ch.md", path: "ch.md", kind: "text" }];
   const reader = build({ arrivedFile: "ch.md" });
   reader.workspace.state.canEdit = false;
-  reader.workspace.attach(fakeSession([...entries]));
-  reader.workspace.refresh();
-  assert.deepEqual(reader.events.arrived, [], "a reader has no pane to open the named file in");
+  const project = { main: "main.md", tree: { main: "main.md", main_id: "id:main.md", files: {
+    "main.md": { kind: "text", id: "id:main.md", digest: "a" },
+    "ch.md": { kind: "text", id: "id:ch.md", digest: "b" },
+    "fig.png": { kind: "asset", digest: "c" },
+  } } };
+  reader.workspace.fromProject(project);
+  reader.workspace.fromProject(project);
+  assert.deepEqual(reader.events.arrived, ["ch.md"], "a link holder opens it, once");
+  assert.deepEqual(reader.workspace.state.files.map((file) => file.path), ["main.md", "ch.md", "fig.png"], "main first, then by path");
+  assert.equal(reader.workspace.state.files.find((file) => file.path === "fig.png").id, "fig.png", "a figure is keyed by its path");
+  assert.equal(reader.workspace.state.openFile, "id:main.md", "the main file is open");
 
   const editor = build({ arrivedFile: "ch.md" });
   editor.workspace.attach(fakeSession([...entries]));
