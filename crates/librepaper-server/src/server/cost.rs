@@ -531,7 +531,7 @@ async fn middleware_inner(
         || path.starts_with("/pdf/")
         || path.starts_with("/auth/")
     {
-        set(&mut response, "cache-control", "private, no-store");
+        default_cache_control(&mut response);
     }
     match permit {
         Some(permit) => {
@@ -544,6 +544,17 @@ async fn middleware_inner(
         }
         None => response,
     }
+}
+
+/// Marks a response `private, no-store` unless it is a validated one. A
+/// handler that sets an `ETag` together with its own `Cache-Control`, as
+/// `/project` does, keeps that policy so the browser can revalidate.
+fn default_cache_control(response: &mut Reply) {
+    let headers = response.headers();
+    if headers.contains_key(header::ETAG) && headers.contains_key(header::CACHE_CONTROL) {
+        return;
+    }
+    set(response, "cache-control", "private, no-store");
 }
 
 /// Whether an `lpt_` token may be presented on this request: `GET
@@ -879,6 +890,41 @@ mod writer_readiness_tests {
             "ordinary requests stop being admitted after lease loss"
         );
         serving.abort();
+    }
+}
+
+#[cfg(test)]
+mod cache_control_tests {
+    use super::*;
+
+    fn cache_control(response: &Reply) -> &str {
+        response.headers()["cache-control"].to_str().unwrap()
+    }
+
+    #[test]
+    fn a_response_without_a_validator_is_no_store() {
+        let mut response = Response::new(Body::empty());
+        default_cache_control(&mut response);
+        assert_eq!(cache_control(&response), "private, no-store");
+
+        let mut response = Response::new(Body::empty());
+        set(&mut response, "cache-control", "no-store");
+        default_cache_control(&mut response);
+        assert_eq!(cache_control(&response), "private, no-store");
+    }
+
+    #[test]
+    fn a_validated_response_keeps_its_own_policy() {
+        let mut response = Response::new(Body::empty());
+        set(&mut response, "etag", "\"abc\"");
+        set(&mut response, "cache-control", "private, no-cache");
+        default_cache_control(&mut response);
+        assert_eq!(cache_control(&response), "private, no-cache");
+
+        let mut response = Response::new(Body::empty());
+        set(&mut response, "etag", "\"abc\"");
+        default_cache_control(&mut response);
+        assert_eq!(cache_control(&response), "private, no-store");
     }
 }
 

@@ -1,13 +1,10 @@
 //! GitHub: the OAuth app a browser signs in through, the token check a bearer
-//! goes through, and the account lookup grants are resolved against.
+//! goes through.
 
 use std::fmt;
-use std::sync::Arc;
 use std::time::Duration;
-use tokio::sync::Semaphore;
 
 use base64::Engine;
-use moka::Expiry;
 use serde::Deserialize;
 
 use crate::auth::{Identity, PROVIDER_HTTP_TIMEOUT};
@@ -16,13 +13,7 @@ use crate::http::{provider_client, read_capped, USER_AGENT};
 pub const GITHUB_AUTHORIZE: &str = "https://github.com/login/oauth/authorize";
 pub const GITHUB_TOKEN: &str = "https://github.com/login/oauth/access_token";
 pub const GITHUB_USER: &str = "https://api.github.com/user";
-const GITHUB_USERS: &str = "https://api.github.com/users";
 pub const GITHUB_CHECK: &str = "https://api.github.com/applications/{id}/token";
-
-const GITHUB_ACCOUNT_CACHE_CAP: usize = 256;
-const GITHUB_ACCOUNT_POSITIVE_TTL: Duration = Duration::from_secs(60);
-const GITHUB_ACCOUNT_NEGATIVE_TTL: Duration = Duration::from_secs(15);
-const GITHUB_ACCOUNT_LOOKUP_CONCURRENCY: usize = 8;
 
 #[derive(Clone)]
 pub struct GithubApp {
@@ -32,9 +23,6 @@ pub struct GithubApp {
     /// rather than a constant for the same reason the other endpoints are:
     /// a test has no network and stands in for GitHub here.
     pub check_url: String,
-    /// The base URL for public account lookups. It is configurable so tests
-    /// can use a local stand-in instead of GitHub.
-    pub users_url: String,
     /// Where the browser's code is exchanged for a token. A test stands in
     /// for GitHub here, as it does for the other endpoints.
     pub token_url: String,
@@ -49,7 +37,6 @@ impl fmt::Debug for GithubApp {
             .field("client_id", &self.client_id)
             .field("client_secret", &"[REDACTED]")
             .field("check_url", &self.check_url)
-            .field("users_url", &self.users_url)
             .field("token_url", &self.token_url)
             .field("user_url", &self.user_url)
             .finish()
@@ -62,7 +49,6 @@ impl Default for GithubApp {
             client_id: String::new(),
             client_secret: String::new(),
             check_url: GITHUB_CHECK.to_string(),
-            users_url: GITHUB_USERS.to_string(),
             token_url: GITHUB_TOKEN.to_string(),
             user_url: GITHUB_USER.to_string(),
         }
@@ -276,147 +262,15 @@ impl GithubApp {
     }
 }
 
-/// Turns a GitHub login into the account behind it. A grant by name is keyed
-/// on the numeric id -- a login can be renamed, the id cannot -- so naming a
-/// coauthor means asking GitHub who that name is. It is a trait rather than a
-/// function so the tests can answer without a network.
-#[async_trait::async_trait]
-pub trait Accounts: Send + Sync {
-    async fn lookup(&self, login: &str) -> Option<Identity>;
-}
-
-/// Determines per-entry expiry for cached GitHub accounts.
-/// Found accounts expire after GITHUB_ACCOUNT_POSITIVE_TTL,
-/// not-found accounts expire after GITHUB_ACCOUNT_NEGATIVE_TTL.
-struct GithubAccountExpiry;
-
-impl GithubAccountExpiry {
-    fn ttl_for(&self, value: &Option<Identity>) -> Option<Duration> {
-        match value {
-            Some(_) => Some(GITHUB_ACCOUNT_POSITIVE_TTL),
-            None => Some(GITHUB_ACCOUNT_NEGATIVE_TTL),
-        }
-    }
-}
-
-impl Expiry<String, Option<Identity>> for GithubAccountExpiry {
-    fn expire_after_create(
-        &self,
-        _key: &String,
-        value: &Option<Identity>,
-        _created_at: std::time::Instant,
-    ) -> Option<Duration> {
-        self.ttl_for(value)
-    }
-
-    fn expire_after_update(
-        &self,
-        _key: &String,
-        value: &Option<Identity>,
-        _updated_at: std::time::Instant,
-        _duration_until_expiry: Option<Duration>,
-    ) -> Option<Duration> {
-        self.ttl_for(value)
-    }
-}
-
-/// The real one: GitHub's public user endpoint. It authenticates with the app
-/// credentials when available, which gives GitHub the higher rate limit for a
-/// deployment serving many grant lookups.
-pub struct GithubAccounts {
-    client_id: String,
-    client_secret: String,
-    users_url: String,
-    cache: moka::sync::Cache<String, Option<Identity>>,
-    lookup_slots: Arc<Semaphore>,
-}
-
-impl GithubAccounts {
-    pub fn new(app: &GithubApp) -> GithubAccounts {
-        let cache = moka::sync::CacheBuilder::new(GITHUB_ACCOUNT_CACHE_CAP as u64)
-            .expire_after(GithubAccountExpiry)
-            .build();
-        GithubAccounts {
-            client_id: app.client_id.clone(),
-            client_secret: app.client_secret.clone(),
-            users_url: app.users_url.clone(),
-            cache,
-            lookup_slots: Arc::new(Semaphore::new(GITHUB_ACCOUNT_LOOKUP_CONCURRENCY)),
-        }
-    }
-
-    #[cfg(test)]
-    fn cache_len(&self) -> usize {
-        self.cache.run_pending_tasks();
-        self.cache.entry_count() as usize
-    }
-
-    fn cache_lookup(&self, login: &str) -> Option<Option<Identity>> {
-        self.cache.get(login)
-    }
-
-    fn cache_insert(&self, login: String, identity: Option<Identity>) {
-        self.cache.insert(login, identity);
-    }
-}
-
-#[async_trait::async_trait]
-impl Accounts for GithubAccounts {
-    async fn lookup(&self, login: &str) -> Option<Identity> {
-        let login = login.trim().trim_start_matches('@').to_ascii_lowercase();
-        if login.is_empty() || !login.chars().all(|c| c.is_ascii_alphanumeric() || c == '-') {
-            return None;
-        }
-        if let Some(identity) = self.cache_lookup(&login) {
-            return identity;
-        }
-        // Bound account resolution as well as token checks: transfer/share
-        // requests must fail fast when the provider is saturated instead of
-        // retaining an unbounded queue of lookup futures.
-        let _permit = self.lookup_slots.try_acquire().ok()?;
-        let _provider_permit = crate::auth::try_provider_request()?;
-        let target = format!("{}/{}", self.users_url.trim_end_matches('/'), login);
-        let mut request = provider_client()
-            .get(target)
-            .timeout(PROVIDER_HTTP_TIMEOUT)
-            .header("user-agent", USER_AGENT)
-            .header("accept", "application/vnd.github+json");
-        if !self.client_id.is_empty() && !self.client_secret.is_empty() {
-            request = request.basic_auth(&self.client_id, Some(&self.client_secret));
-        }
-        let response = request.send().await.ok()?;
-        let status = response.status().as_u16();
-        if status == 404 {
-            self.cache_insert(login, None);
-            return None;
-        }
-        if status != 200 {
-            return None;
-        }
-        let (_, body) = read_capped(response).await.ok()?;
-        let user: GithubUser = serde_json::from_slice(&body).ok()?;
-        if user.login.is_empty() {
-            return None;
-        }
-        let identity = Identity::github(&user.login, &user.id.to_string());
-        self.cache_insert(login, Some(identity.clone()));
-        Some(identity)
-    }
-}
-
 #[cfg(test)]
 mod tests {
-    use std::sync::atomic::{AtomicUsize, Ordering};
-    use std::sync::Arc;
-
-    use axum::extract::State;
     use axum::http::StatusCode;
     use axum::response::IntoResponse;
     use axum::routing::post;
     use axum::{Json, Router};
     use serde_json::json;
 
-    use super::{Accounts, GithubAccounts, GithubApp, ProviderError};
+    use super::{GithubApp, ProviderError};
 
     async fn stand_in(status: StatusCode, body: serde_json::Value) -> String {
         let router = Router::new().route(
@@ -466,45 +320,5 @@ mod tests {
         assert!(debug.contains("public-client"));
         assert!(!debug.contains("do-not-print"));
         assert!(debug.contains("REDACTED"));
-    }
-
-    #[tokio::test]
-    async fn account_lookup_uses_basic_auth_and_caches() {
-        let hits = Arc::new(AtomicUsize::new(0));
-        let expected = Arc::new("Basic Y2xpZW50OnNlY3JldA==".to_string());
-        let router = Router::new()
-            .route(
-                "/users/alice",
-                axum::routing::get(
-                    |State((hits, expected)): State<(Arc<AtomicUsize>, Arc<String>)>,
-                     request: axum::extract::Request| async move {
-                        hits.fetch_add(1, Ordering::Relaxed);
-                        assert_eq!(
-                            request.headers().get("authorization").unwrap(),
-                            expected.as_str()
-                        );
-                        Json(json!({"login": "alice", "id": 7})).into_response()
-                    },
-                ),
-            )
-            .with_state((hits.clone(), expected));
-        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
-            .await
-            .expect("a free port");
-        let address = listener.local_addr().expect("an address");
-        tokio::spawn(async move {
-            axum::serve(listener, router).await.expect("serve stand-in");
-        });
-        let app = GithubApp {
-            client_id: "client".into(),
-            client_secret: "secret".into(),
-            users_url: format!("http://{address}/users"),
-            ..GithubApp::default()
-        };
-        let accounts = GithubAccounts::new(&app);
-        assert_eq!(accounts.lookup("@Alice").await.unwrap().id, "github:7");
-        assert_eq!(accounts.lookup("alice").await.unwrap().id, "github:7");
-        assert_eq!(hits.load(Ordering::Relaxed), 1);
-        assert_eq!(accounts.cache_len(), 1);
     }
 }

@@ -766,28 +766,10 @@ impl Server {
             }
             return;
         }
-        // An unsigned cookie -- from before this server signed them, or forged
-        // -- verifies as absent, so it is simply replaced with a signed one.
+        // An unsigned or forged cookie verifies as absent, so it is replaced
+        // with a signed one.
         if let Some(value) = cookie(headers, &cookie_name(https, VISITOR_COOKIE)) {
-            let token = read_visitor(&self.key, &value);
-            if !token.is_empty() {
-                // Keep an old visitor's ownership while upgrading its
-                // unversioned credential to the strict visitor envelope.
-                // Invalid and unrelated values are replaced below.
-                if value.starts_with("v1.") {
-                    return;
-                }
-                let value = sign_visitor(&self.key, &token);
-                add_cookie(
-                    response,
-                    &set_cookie(
-                        &cookie_name(https, VISITOR_COOKIE),
-                        &value,
-                        365 * 24 * 3600,
-                        https,
-                    ),
-                );
-                set(response, "cache-control", "private, no-store");
+            if !read_visitor(&self.key, &value).is_empty() {
                 return;
             }
         }

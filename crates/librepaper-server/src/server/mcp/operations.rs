@@ -561,7 +561,7 @@ impl Server {
                     // there is no batch-level key here.
                     let result = json!({"operation":key,"status":"committed","batch":"independent","items":items});
                     // Access was rechecked before each child effect above;
-                    // `handle_mcp` rechecks once more before the batch result
+                    // `mcp_recheck` rechecks once more before the batch result
                     // is handed back.
                     return Ok(result);
                 }
@@ -1174,7 +1174,7 @@ impl Server {
         }
         // No receipt is retained for private staging; the candidate was
         // already stored under the recheck at the top of `mcp_operation_inner`,
-        // and `handle_mcp` rechecks once more before the result is returned.
+        // and `mcp_recheck` rechecks once more before the result is returned.
         Ok(result)
     }
 

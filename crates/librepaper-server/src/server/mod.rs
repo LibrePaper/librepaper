@@ -29,7 +29,7 @@ use librepaper_base::auth::pseudonym::pseudonym_for;
 use librepaper_base::auth::{
     cookie_name, device_deadline, normalized, now_unix, pkce_verifier, random_token,
     read_agent_grant, read_device, read_session, read_visitor, session_deadline, sign_device,
-    sign_session, sign_visitor, Accounts, DeviceOutcome, GithubAccounts, GithubApp, Identity,
+    sign_session, sign_visitor, DeviceOutcome, GithubApp, Identity,
     OidcProvider, PendingCodes, Policy, TokenCache, AGENT_GRANT_PREFIX, AGENT_TOKEN_PREFIX,
     DEVICE_POLL_INTERVAL, DEVICE_TOKEN_MAX_AGE, DEVICE_TOKEN_PREFIX, PROVIDER_GITHUB,
     SESSION_COOKIE, SESSION_MAX_AGE, STATE_COOKIE, VISITOR_COOKIE,
@@ -263,9 +263,6 @@ pub struct Server {
     pub graphs: Option<Arc<graphs::Graphs>>,
     pub publishers: Policy,
     pub commenters: Policy,
-    /// Who a GitHub login is, for a grant by name. GitHub in a running
-    /// deployment; a stand-in in the tests, which have no network.
-    pub accounts: Arc<dyn Accounts>,
     /// Days of invented history to write for the starter project a new
     /// account is given, or nothing. A demonstration deployment asks for one;
     /// every other deployment keeps the honest history of a document
@@ -398,9 +395,10 @@ pub const AUTOMATION_HEADER: &str = "x-librepaper-automation";
 /// that grants anything is the presented link, and `ceiling` can only lower
 /// what the link says, never raise it.
 ///
-/// `role_of` is deliberately not called with a blanked caller: an unowned
-/// entry treats an empty caller as its owner, which would turn "no identity"
-/// into the highest rung rather than the lowest.
+/// `role_of` is deliberately not called for automation: it would also honour
+/// the caller's ownership and account grants, and automation is bounded by the
+/// presented link alone. An empty caller owns nothing, so a blanked caller
+/// would work too, but only by relying on that.
 fn resolved_role(
     automation: bool,
     entry: &IndexEntry,
@@ -945,7 +943,6 @@ impl Server {
         // (§4.3) that `serve` also hands the worker itself; building a second
         // one here would mean two caches of the same documents.
         let documents = DocumentService::new(store, rooms, background);
-        let accounts = Arc::new(GithubAccounts::new(&app));
         let cost = Arc::new(cost::CostMeter::new(&config));
         let socket_budget = socket_budget::SocketBudget::new(config.sockets);
         let mcp_capacity = mcp::Capacity::default();
@@ -969,7 +966,6 @@ impl Server {
             graphs: None,
             publishers,
             commenters,
-            accounts,
             simulate_activity: None,
             pending: PendingCodes::new(),
             chat: chat::Hub::default(),
@@ -2466,9 +2462,8 @@ mod automation_authority_tests {
         );
     }
 
-    /// No link is the bottom rung, never the top. An unowned entry treats an
-    /// empty caller as its owner, so routing automation through `role_of` with
-    /// blanked fields would turn "presented nothing" into full authority.
+    /// No link is the bottom rung, never the top. Automation is bounded by the
+    /// presented link alone, so presenting nothing grants only reading.
     #[test]
     fn presenting_no_link_grants_nothing() {
         let now = librepaper_base::util::now_unix();

@@ -116,9 +116,10 @@ pub struct Room {
     /// Whether the chat buffer may hold a reservation row, so housekeeping
     /// keeps the room until it releases it.
     chat_holds: std::sync::atomic::AtomicBool,
-    /// Bytes reserved by uploads whose blob write has not registered its
-    /// metadata yet. The count lets same-digest uploads share one quota claim
-    /// while each cancelled future releases its own claim.
+    /// In-flight uploads by digest: the byte size and how many uploads of that
+    /// digest are running. Entries are added before the blob write and removed
+    /// when the upload finishes or its future is dropped. Nothing reads the map
+    /// to admit or refuse an upload.
     asset_uploads: std::sync::Mutex<HashMap<String, (i64, usize)>>,
     /// Counts the enriched row reads performed by comment event preparation.
     /// This guards against reintroducing an audience-specific second lookup.

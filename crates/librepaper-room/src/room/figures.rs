@@ -17,11 +17,11 @@ use super::*;
 use librepaper_engine::log::sequencer::{Command, CommandError, Evidence, Head, PreparedSource};
 use librepaper_engine::storage::postgres::{AssetRecord, Authority, NewAsset, PostgresCatalog};
 
-/// A reservation made before an asset upload leaves the room.  The reservation
-/// is deliberately independent of anything the sequencer holds: the blob write
-/// can take an arbitrary amount of time, while its quota claim must remain
-/// visible to another upload of the same bytes.  Dropping the future releases
-/// the claim, including when the storage write is cancelled.
+/// An entry in the room's in-flight upload map, made before the blob write
+/// starts. The map is independent of anything the sequencer holds, since the
+/// blob write can take an arbitrary amount of time. Uploads of the same digest
+/// share one entry with a count. Dropping the future removes this upload's
+/// share, including when the storage write is cancelled.
 struct AssetUpload<'a> {
     room: &'a Room,
     sha: String,
@@ -134,11 +134,11 @@ impl Room {
         let sha = librepaper_engine::storage::store::digest_of_bytes(&body);
         let digest: [u8; 32] = Sha256::digest(&body).into();
 
-        // Keep the reservation local and cheap: the object write below can be
+        // Record the upload under a short lock: the object write below can be
         // slow, and holding a lock over it would make a second upload of the
-        // same bytes wait for the first even though the document has room for
-        // both. Two uploads that hash the same share one reservation; each
-        // cancelled future releases only its own (see `AssetUpload::drop`).
+        // same bytes wait for the first. Two uploads that hash the same share
+        // one entry; each cancelled future releases only its own (see
+        // `AssetUpload::drop`).
         let mut upload = {
             let mut uploads = self
                 .asset_uploads()

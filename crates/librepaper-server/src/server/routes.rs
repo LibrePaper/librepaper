@@ -857,6 +857,28 @@ pub(super) fn rfind(haystack: &[u8], needle: &[u8]) -> Option<usize> {
         .rposition(|window| window == needle)
 }
 
+/// The page size and keyset cursor a listing request asks for. A missing or
+/// malformed limit is 200, which is also the most a page holds.
+fn listing_page(query: Option<&str>) -> (u32, Option<(String, String)>) {
+    let query: HashMap<String, String> = query
+        .map(|raw| {
+            url::form_urlencoded::parse(raw.as_bytes())
+                .into_owned()
+                .collect()
+        })
+        .unwrap_or_default();
+    let limit = query
+        .get("limit")
+        .and_then(|value| value.parse::<u32>().ok())
+        .unwrap_or(200)
+        .clamp(1, 200);
+    let cursor = query
+        .get("after_updated")
+        .zip(query.get("after_slug"))
+        .map(|(updated, slug)| (updated.clone(), slug.clone()));
+    (limit, cursor)
+}
+
 impl Server {
     /// Which formats this deployment can render again in a reader, and so
     /// offer an editor for. The compiled-in ones come from the build; `latex`
@@ -1349,21 +1371,9 @@ impl Server {
             Ok(who) => who,
             Err(response) => return response,
         };
-        let listing_query: HashMap<String, String> = query
-            .map(|raw| {
-                url::form_urlencoded::parse(raw.as_bytes())
-                    .into_owned()
-                    .collect()
-            })
-            .unwrap_or_default();
-        let listing_limit = listing_query
-            .get("limit")
-            .and_then(|value| value.parse::<u32>().ok())
-            .unwrap_or(200)
-            .clamp(1, 200);
-        let listing_cursor = listing_query
-            .get("after_updated")
-            .zip(listing_query.get("after_slug"))
+        let (listing_limit, listing_cursor) = listing_page(query);
+        let listing_cursor = listing_cursor
+            .as_ref()
             .map(|(updated, slug)| (updated.as_str(), slug.as_str()));
         let entries = match self
             .store
@@ -1465,21 +1475,9 @@ impl Server {
                 return write_json(401, &json!({"error": "sign in to list backup projects"}));
             }
         };
-        let listing_query: HashMap<String, String> = query
-            .map(|raw| {
-                url::form_urlencoded::parse(raw.as_bytes())
-                    .into_owned()
-                    .collect()
-            })
-            .unwrap_or_default();
-        let listing_limit = listing_query
-            .get("limit")
-            .and_then(|value| value.parse::<u32>().ok())
-            .unwrap_or(200)
-            .clamp(1, 200);
-        let listing_cursor = listing_query
-            .get("after_updated")
-            .zip(listing_query.get("after_slug"))
+        let (listing_limit, listing_cursor) = listing_page(query);
+        let listing_cursor = listing_cursor
+            .as_ref()
             .map(|(updated, slug)| (updated.as_str(), slug.as_str()));
         let entries = match self
             .store

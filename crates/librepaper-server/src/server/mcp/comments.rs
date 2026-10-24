@@ -407,7 +407,7 @@ impl Server {
         // change on reload.
         room.broadcast_comments_changed().await;
 
-        // `handle_mcp` rechecks access around every tool call already (mcp.rs
+        // `mcp_recheck` rechecks access around every tool call already (mcp.rs
         // `tools/call`), so this only shapes the reply this action produced.
         //
         // No `replay` key: none of `AddComment`, `AddReply`,
