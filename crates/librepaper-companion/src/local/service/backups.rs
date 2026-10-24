@@ -1034,20 +1034,27 @@ fn query_account(request: &Request<Body>) -> Option<String> {
         .filter(|value| account_id(value))
 }
 
+/// The route gate: authenticates the request and returns the site origin it
+/// speaks for. `authenticate` refuses a missing or invalid origin, so the
+/// returned origin is always present.
+#[allow(clippy::result_large_err)] // The error is an HTTP response, as in the other service handlers.
+fn gate<'a>(inner: &Inner, headers: &HeaderMap, origin: Option<&'a str>) -> Result<&'a str, Reply> {
+    authenticate(inner, headers, origin)?;
+    Ok(origin.unwrap_or_default())
+}
+
 pub(super) async fn handle_get(
     inner: &Inner,
     headers: &HeaderMap,
     origin: Option<&str>,
     request: Request<Body>,
 ) -> Reply {
-    if let Err(response) = authenticate(inner, headers, origin) {
-        return response;
-    }
+    let origin = match gate(inner, headers, origin) {
+        Ok(origin) => origin,
+        Err(response) => return response,
+    };
     let Some(account_id) = query_account(&request) else {
         return write_json(400, &json!({"error":"backups needs a valid account query"}));
-    };
-    let Some(origin) = origin else {
-        return write_json(403, &json!({"error":"backups require a site origin"}));
     };
     write_json(200, &inner.backups.status(inner, origin, &account_id).await)
 }
@@ -1058,11 +1065,9 @@ pub(super) async fn handle_folder(
     origin: Option<&str>,
     request: Request<Body>,
 ) -> Reply {
-    if let Err(response) = authenticate(inner, headers, origin) {
-        return response;
-    }
-    let Some(origin) = origin else {
-        return write_json(403, &json!({"error":"backups require a site origin"}));
+    let origin = match gate(inner, headers, origin) {
+        Ok(origin) => origin,
+        Err(response) => return response,
     };
     let body = match read_json_body::<AccountBody>(request).await {
         Ok(body) => body,
@@ -1090,11 +1095,9 @@ pub(super) async fn handle_put(
     origin: Option<&str>,
     request: Request<Body>,
 ) -> Reply {
-    if let Err(response) = authenticate(inner, headers, origin) {
-        return response;
-    }
-    let Some(origin) = origin else {
-        return write_json(403, &json!({"error":"backups require a site origin"}));
+    let origin = match gate(inner, headers, origin) {
+        Ok(origin) => origin,
+        Err(response) => return response,
     };
     let body = match read_json_body::<ConfigureBody>(request).await {
         Ok(body) => body,
@@ -1134,11 +1137,9 @@ pub(super) async fn handle_run(
     origin: Option<&str>,
     request: Request<Body>,
 ) -> Reply {
-    if let Err(response) = authenticate(inner, headers, origin) {
-        return response;
-    }
-    let Some(origin) = origin else {
-        return write_json(403, &json!({"error":"backups require a site origin"}));
+    let origin = match gate(inner, headers, origin) {
+        Ok(origin) => origin,
+        Err(response) => return response,
     };
     let body = match read_json_body::<AccountBody>(request).await {
         Ok(body) => body,
@@ -1162,11 +1163,9 @@ pub(super) async fn handle_authorize(
     origin: Option<&str>,
     request: Request<Body>,
 ) -> Reply {
-    if let Err(response) = authenticate(inner, headers, origin) {
-        return response;
-    }
-    let Some(origin) = origin else {
-        return write_json(403, &json!({"error":"backups require a site origin"}));
+    let origin = match gate(inner, headers, origin) {
+        Ok(origin) => origin,
+        Err(response) => return response,
     };
     let body = match read_json_body::<AccountBody>(request).await {
         Ok(body) => body,
@@ -1197,11 +1196,9 @@ pub(super) async fn handle_authorize_complete(
     origin: Option<&str>,
     request: Request<Body>,
 ) -> Reply {
-    if let Err(response) = authenticate(inner, headers, origin) {
-        return response;
-    }
-    let Some(origin) = origin else {
-        return write_json(403, &json!({"error":"backups require a site origin"}));
+    let origin = match gate(inner, headers, origin) {
+        Ok(origin) => origin,
+        Err(response) => return response,
     };
     let body = match read_json_body::<CompleteAuthorizationBody>(request).await {
         Ok(body) => body,

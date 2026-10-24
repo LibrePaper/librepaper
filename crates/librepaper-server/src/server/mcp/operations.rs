@@ -1,6 +1,6 @@
 //! Domain operations behind the five MCP tools. Transport ids never identify effects.
 use super::*;
-use librepaper_room::room::agent::{self, AgentAuthority, OperationKey};
+use librepaper_room::room::agent::{self, OperationKey};
 use librepaper_room::room::source_change::{
     self, Origin, Patch, SourceChange, SourceFile, SourceTree,
 };
@@ -561,7 +561,7 @@ impl Server {
                     // there is no batch-level key here.
                     let result = json!({"operation":key,"status":"committed","batch":"independent","items":items});
                     // Access was rechecked before each child effect above;
-                    // `handle_mcp` rechecks once more before the batch result
+                    // `mcp_recheck` rechecks once more before the batch result
                     // is handed back.
                     return Ok(result);
                 }
@@ -716,15 +716,13 @@ impl Server {
         name: &str,
         request: SourceChange,
     ) -> Result<Value, Failure> {
-        let authority = AgentAuthority {
-            account_id: current.id.id.clone(),
-            owner_key: current.key.clone(),
-            session_generation: current.id.session_generation.clone(),
-            link_hash: current.link.clone(),
-            policy_editor: self.ceiling_for(&current.id).edit,
-            policy_comment: self.ceiling_for(&current.id).comment,
-            operation_scope: actor.to_string(),
-        };
+        let authority = current
+            .agent_authority(self.ceiling_for(&current.id), actor.to_string())
+            .map_err(|InvalidCredential| {
+                failure(source_change::AgentError::Conflict(
+                    "document access changed".into(),
+                ))
+            })?;
         let room = self
             .rooms
             .get(slug)
@@ -795,7 +793,11 @@ impl Server {
         // `take_label` finds. There is no `checkpoint_id` any more (§8.2) --
         // a label is `source_sequence` plus the frontier at that row -- so
         // that is what the response carries in place of one.
-        let authority = who.document_authority(self.ceiling_for(&who.id));
+        let authority = who
+            .authority(self.ceiling_for(&who.id))
+            .map_err(|InvalidCredential| {
+                Failure::new("permission_changed", "your access changed")
+            })?;
         let by = room
             .signed_by(
                 &who.id.id,
@@ -1126,7 +1128,11 @@ impl Server {
                 creator,
             )
             .map_err(|error| Failure::new("invalid_params", error))?;
-            let authority = who.document_authority(self.ceiling_for(&who.id));
+            let authority =
+                who.authority(self.ceiling_for(&who.id))
+                    .map_err(|InvalidCredential| {
+                        Failure::new("permission_changed", "your access changed")
+                    })?;
             let operation_receipt = self.mcp_operation_receipt(
                 actor,
                 key,
@@ -1174,7 +1180,7 @@ impl Server {
         }
         // No receipt is retained for private staging; the candidate was
         // already stored under the recheck at the top of `mcp_operation_inner`,
-        // and `handle_mcp` rechecks once more before the result is returned.
+        // and `mcp_recheck` rechecks once more before the result is returned.
         Ok(result)
     }
 

@@ -116,10 +116,6 @@ pub struct Room {
     /// Whether the chat buffer may hold a reservation row, so housekeeping
     /// keeps the room until it releases it.
     chat_holds: std::sync::atomic::AtomicBool,
-    /// Bytes reserved by uploads whose blob write has not registered its
-    /// metadata yet. The count lets same-digest uploads share one quota claim
-    /// while each cancelled future releases its own claim.
-    asset_uploads: std::sync::Mutex<HashMap<String, (i64, usize)>>,
     /// Counts the enriched row reads performed by comment event preparation.
     /// This guards against reintroducing an audience-specific second lookup.
     #[cfg(test)]
@@ -447,12 +443,6 @@ impl Room {
         let (total, open) = self.catalog.annotation_counts(self.document_id).await?;
         Ok((total as usize, open as usize))
     }
-
-    // -- assets -------------------------------------------------------------
-
-    pub(crate) fn asset_uploads(&self) -> &std::sync::Mutex<HashMap<String, (i64, usize)>> {
-        &self.asset_uploads
-    }
 }
 
 /// Every open room, and the sequencers under them.
@@ -525,7 +515,6 @@ impl Rooms {
             chat: Mutex::new(chat::ChatBuffer::default()),
             chat_waiting: std::sync::atomic::AtomicUsize::new(0),
             chat_holds: std::sync::atomic::AtomicBool::new(false),
-            asset_uploads: std::sync::Mutex::new(HashMap::new()),
             #[cfg(test)]
             event_comment_reads: std::sync::atomic::AtomicUsize::new(0),
         });

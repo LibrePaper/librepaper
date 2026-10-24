@@ -17,41 +17,6 @@ use super::*;
 use librepaper_engine::log::sequencer::{Command, CommandError, Evidence, Head, PreparedSource};
 use librepaper_engine::storage::postgres::{AssetRecord, Authority, NewAsset, PostgresCatalog};
 
-/// A reservation made before an asset upload leaves the room.  The reservation
-/// is deliberately independent of anything the sequencer holds: the blob write
-/// can take an arbitrary amount of time, while its quota claim must remain
-/// visible to another upload of the same bytes.  Dropping the future releases
-/// the claim, including when the storage write is cancelled.
-struct AssetUpload<'a> {
-    room: &'a Room,
-    sha: String,
-    active: bool,
-}
-
-impl AssetUpload<'_> {
-    fn release(&mut self) {
-        if !self.active {
-            return;
-        }
-        if let Ok(mut uploads) = self.room.asset_uploads().lock() {
-            if let Some((_, count)) = uploads.get_mut(&self.sha) {
-                if *count <= 1 {
-                    uploads.remove(&self.sha);
-                } else {
-                    *count -= 1;
-                }
-            }
-        }
-        self.active = false;
-    }
-}
-
-impl Drop for AssetUpload<'_> {
-    fn drop(&mut self) {
-        self.release();
-    }
-}
-
 /// Records a verified asset as belonging to this document.
 ///
 /// This command has no precondition (§7.1 lists none for it, the way it
@@ -120,42 +85,15 @@ impl Room {
     pub async fn put_asset_authorized(
         &self,
         body: Vec<u8>,
-        actor: &librepaper_engine::storage::store::MutationActor,
+        authority: &Authority,
     ) -> Result<(String, i64), WriteError> {
         let size = body.len() as i64;
         if size == 0 {
             return Err(WriteError::Invalid("that file is empty".into()));
         }
         librepaper_document::document::formats::check_asset(&body).map_err(WriteError::Invalid)?;
-        // Validate the actor before writing a blob. Once `put_new` has been
-        // attempted, an error can leave an uncatalogued immutable object and
-        // callers must treat the upload admission as spent.
-        let authorization = super::catalog::mutation_authorization(actor)?;
         let sha = librepaper_engine::storage::store::digest_of_bytes(&body);
         let digest: [u8; 32] = Sha256::digest(&body).into();
-
-        // Keep the reservation local and cheap: the object write below can be
-        // slow, and holding a lock over it would make a second upload of the
-        // same bytes wait for the first even though the document has room for
-        // both. Two uploads that hash the same share one reservation; each
-        // cancelled future releases only its own (see `AssetUpload::drop`).
-        let mut upload = {
-            let mut uploads = self
-                .asset_uploads()
-                .lock()
-                .map_err(|_| WriteError::Storage("asset admission is unavailable".into()))?;
-            if let Some((reserved_size, count)) = uploads.get_mut(&sha) {
-                debug_assert_eq!(*reserved_size, size);
-                *count = count.saturating_add(1);
-            } else {
-                uploads.insert(sha.clone(), (size, 1));
-            }
-            AssetUpload {
-                room: self,
-                sha: sha.clone(),
-                active: true,
-            }
-        };
 
         let key = format!(
             "documents/{}/assets/{}",
@@ -180,20 +118,8 @@ impl Room {
             Ok(())
         }
         .await;
-        if let Err(error) = write {
-            upload.release();
-            return Err(error);
-        }
+        write?;
 
-        let authority = Authority {
-            principal_key: authorization.principal_key.clone(),
-            account_id: authorization.account_id,
-            link_hash: authorization.token_hash.map(|hash| hash.to_vec()),
-            session_generation: authorization.session_generation,
-            policy_edit: authorization.policy_edit,
-            policy_comment: authorization.policy_comment,
-            automation: authorization.automation,
-        };
         let mut attach = AttachAsset {
             input: NewAsset {
                 document_id: self.document_id,
@@ -205,9 +131,10 @@ impl Room {
             },
             catalog: self.catalog().clone(),
         };
-        let result = self.command(&authority, &mut attach).await;
-        upload.release();
-        let (asset, _inserted) = result.map_err(WriteError::from)?;
+        let (asset, _inserted) = self
+            .command(authority, &mut attach)
+            .await
+            .map_err(WriteError::from)?;
         Ok((sha, asset.byte_length))
     }
 }

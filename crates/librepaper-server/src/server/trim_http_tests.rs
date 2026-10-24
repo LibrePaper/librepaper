@@ -20,7 +20,7 @@ use librepaper_document::document::{anchors, session};
 use librepaper_engine::log::Ingested;
 use librepaper_engine::storage::annotation::AnchorStatus;
 use librepaper_engine::storage::postgres::Authority;
-use librepaper_engine::storage::store::{DocumentInput, MutationActor, Role};
+use librepaper_engine::storage::store::{DocumentInput, Role};
 use librepaper_room::room::{Message as RoomMessage, Room};
 
 use super::history_frontier_tests::viewer;
@@ -113,15 +113,14 @@ async fn a_trim_deletes_every_version_and_every_unused_figure() {
 
     // Step 3: replace project so figure-a becomes unreferenced, and add figure-b (named).
     // We'll also add figure-c (unreferenced, fresh).
-    let actor = MutationActor {
-        account_id: deployment.owner_id.to_string(),
-        owner_key: "owner".into(),
-        session_generation: deployment.owner_session_generation.clone(),
-        link_hash: String::new(),
-        policy_editor: true,
+    let actor = Authority {
+        account_id: Some(deployment.owner_id),
+        principal_key: "owner".into(),
+        session_generation: Some(deployment.owner_session_generation.parse().unwrap()),
+        link_hash: None,
+        policy_edit: true,
         policy_comment: true,
         automation: false,
-        unowned_publisher: false,
     };
     deployment
         .server
@@ -222,6 +221,13 @@ async fn a_trim_deletes_every_version_and_every_unused_figure() {
     // Step 6: POST trim.
     let headers = owner_bearer(&deployment);
     let arrival = Origins::loopback_only().resolve("localhost").unwrap();
+    let context = crate::server::RequestContext::resolved(
+        &deployment.server,
+        &headers,
+        arrival,
+        "127.0.0.1:0".parse().unwrap(),
+    )
+    .await;
     let request = Request::builder()
         .method("POST")
         .uri(format!("/api/documents/{}/history/trim", deployment.slug))
@@ -234,7 +240,7 @@ async fn a_trim_deletes_every_version_and_every_unused_figure() {
         .unwrap();
     let response = deployment
         .server
-        .handle_history_trim(request, &arrival, &deployment.slug)
+        .handle_history_trim(request, &context, &deployment.slug)
         .await;
     assert_eq!(response.status(), 200, "trim must succeed");
 
@@ -363,7 +369,7 @@ async fn a_trim_deletes_every_version_and_every_unused_figure() {
         .unwrap();
     let restore_response = deployment
         .server
-        .handle_restore(restore_request, &arrival, &deployment.slug)
+        .handle_restore(restore_request, &context, &deployment.slug)
         .await;
     assert_eq!(
         restore_response.status(),
@@ -446,6 +452,13 @@ async fn periodic_compaction_of_a_trimmed_document_keeps_working() {
     // is shallow. The catalogue does not record that, so decode the base.
     let headers = owner_bearer(&deployment);
     let arrival = Origins::loopback_only().resolve("localhost").unwrap();
+    let context = crate::server::RequestContext::resolved(
+        &deployment.server,
+        &headers,
+        arrival,
+        "127.0.0.1:0".parse().unwrap(),
+    )
+    .await;
     let request = Request::builder()
         .method("POST")
         .uri(format!("/api/documents/{}/history/trim", deployment.slug))
@@ -458,7 +471,7 @@ async fn periodic_compaction_of_a_trimmed_document_keeps_working() {
         .unwrap();
     let response = deployment
         .server
-        .handle_history_trim(request, &arrival, &deployment.slug)
+        .handle_history_trim(request, &context, &deployment.slug)
         .await;
     assert_eq!(response.status(), 200, "trim must succeed");
 
@@ -587,6 +600,13 @@ async fn edit_paper(room: &Room, socket: u64, body: &str) {
 async fn trim_as_owner(deployment: &super::http_test_support::Deployment) -> u16 {
     let headers = owner_bearer(deployment);
     let arrival = Origins::loopback_only().resolve("localhost").unwrap();
+    let context = crate::server::RequestContext::resolved(
+        &deployment.server,
+        &headers,
+        arrival,
+        "127.0.0.1:0".parse().unwrap(),
+    )
+    .await;
     let request = Request::builder()
         .method("POST")
         .uri(format!("/api/documents/{}/history/trim", deployment.slug))
@@ -599,7 +619,7 @@ async fn trim_as_owner(deployment: &super::http_test_support::Deployment) -> u16
         .unwrap();
     let response = deployment
         .server
-        .handle_history_trim(request, &arrival, &deployment.slug)
+        .handle_history_trim(request, &context, &deployment.slug)
         .await;
     response.status().as_u16()
 }

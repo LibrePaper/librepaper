@@ -1851,7 +1851,6 @@ async fn every_sequencer_read_refuses_after_compaction_fence() {
         gate.fence("activation committed but reconciliation failed".into());
     }
 
-    assert!(sequencer.projection_if_warm().await.is_none());
     assert!(matches!(
         sequencer.projection().await,
         Err(SequencerError::Fenced(_))
@@ -1878,15 +1877,13 @@ async fn every_sequencer_read_refuses_after_compaction_fence() {
     ));
     assert_eq!(sequencer.log_state().await.subscribers, 0);
 
-    // `projection_if_warm` must also reject an actually warm cache; using a
-    // cold sequencer alone would make `None` ambiguous with its normal result.
+    // A cache that is already warm must also refuse once fenced.
     let warm = bare_sequencer(Arc::new(FakeCatalog::empty()));
     warm.projection().await.expect("empty fake document builds");
     {
         let mut gate = warm.compaction_gate().await;
         gate.fence("warm cache is no longer authoritative".into());
     }
-    assert!(warm.projection_if_warm().await.is_none());
     assert!(matches!(
         warm.projection().await,
         Err(SequencerError::Fenced(_))

@@ -952,12 +952,25 @@ impl Server {
                                     .ok()
                                     .and_then(|page| page.into_iter().next())
                                     .and_then(|label| label.tree_digest);
+                                let Ok(authority) = who.authority(self.ceiling_for(&who.id)) else {
+                                    let payload = json!({
+                                        "type": "error",
+                                        "message": "editing is not permitted",
+                                        "request_id": incoming.request_id(),
+                                        "version": 1,
+                                        "protocol": PROTOCOL,
+                                    });
+                                    if send_outgoing(&tx, Outgoing::Text(payload.to_string())).await.is_err() {
+                                        break 'reader;
+                                    }
+                                    continue 'reader;
+                                };
                                 let result = room
                                     .take_label(
                                         &why,
                                         None,
                                         who.authorship(&author),
-                                        &who.document_authority(self.ceiling_for(&who.id)),
+                                        &authority,
                                         request_id,
                                     )
                                     .await;

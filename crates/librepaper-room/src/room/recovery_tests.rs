@@ -71,9 +71,9 @@ use librepaper_document::document::session;
 use librepaper_engine::log::*;
 use librepaper_engine::storage::blob::{BlobStore, FsStore};
 use librepaper_engine::storage::postgres::{
-    Authority, MutationAuthorization, NewAccount, NewDocument, PostgresCatalog, PostgresOptions,
+    Authority, NewAccount, NewDocument, PostgresCatalog, PostgresOptions,
 };
-use librepaper_engine::storage::store::{DocumentInput, MutationActor, Store};
+use librepaper_engine::storage::store::{DocumentInput, Store};
 use librepaper_engine::storage::worker::{Task, Worker};
 use librepaper_engine::testing::Outbox;
 
@@ -857,15 +857,14 @@ async fn deployment_with_document(slug: &str) -> Option<Deployment> {
         catalog.clone(),
         registry.clone(),
     ));
-    let actor = MutationActor {
-        account_id: account.id.to_string(),
-        owner_key: "owner".into(),
-        session_generation: account.session_generation.to_string(),
-        link_hash: String::new(),
-        policy_editor: true,
+    let actor = Authority {
+        account_id: Some(account.id),
+        principal_key: "owner".into(),
+        session_generation: Some(account.session_generation),
+        link_hash: None,
+        policy_edit: true,
         policy_comment: true,
         automation: false,
-        unowned_publisher: false,
     };
     store
         .put_directory_as_actor(
@@ -909,21 +908,9 @@ impl Deployment {
             "Reviewer",
             Some(self.account_id),
             format!("account:{}", self.account_id),
-            self.mutation_authorization(),
+            self.authority(),
             true,
         )
-    }
-
-    fn mutation_authorization(&self) -> MutationAuthorization {
-        MutationAuthorization {
-            principal_key: self.account_id.to_string(),
-            account_id: Some(self.account_id),
-            session_generation: Some(1),
-            token_hash: None,
-            policy_edit: true,
-            policy_comment: true,
-            automation: false,
-        }
     }
 }
 
@@ -1380,6 +1367,7 @@ async fn opening_more_documents_than_the_budget_holds_evicts_a_subscribed_entry_
         }
     }
 
+    drop(_writer);
     catalog.close().await;
 }
 
@@ -1975,6 +1963,92 @@ async fn a_command_retires_what_it_committed_and_keeps_what_it_rolled_back() {
         pending.scratch_used(),
         0,
         "a committed command kept the scratch it encoded its row into",
+    );
+
+    deployment.catalog.close().await;
+}
+
+/// A source-producing command that answers from a retry record once `recorded`
+/// is set, the way a command keyed by a request id does on its second call.
+struct RetryProbe {
+    edit: String,
+    recorded: bool,
+}
+
+impl Command for RetryProbe {
+    type Output = ();
+
+    fn name(&self) -> &'static str {
+        "retry-probe"
+    }
+
+    fn replay(&mut self) -> BoxFuture<'_, std::result::Result<Option<Self::Output>, CommandError>> {
+        let recorded = self.recorded;
+        Box::pin(async move { Ok(recorded.then_some(())) })
+    }
+
+    fn evaluate(
+        &mut self,
+        head: &Head<'_>,
+    ) -> std::result::Result<Option<PreparedSource>, CommandError> {
+        let text = self.edit.clone();
+        head.prepare(1, move |draft| {
+            session::put_text(draft, MAIN, &text);
+            Ok(())
+        })
+        .map_err(CommandError::Conflict)
+    }
+
+    fn transact<'a>(
+        &'a mut self,
+        _tx: &'a mut sqlx::Transaction<'_, sqlx::Postgres>,
+        _evidence: &'a Evidence,
+    ) -> BoxFuture<'a, std::result::Result<Self::Output, CommandError>> {
+        Box::pin(async { Ok(()) })
+    }
+}
+
+#[tokio::test]
+#[ignore = "requires LIBREPAPER_TEST_POSTGRES_URL"]
+async fn a_command_that_writes_a_row_charges_the_ledger_once_and_a_replay_charges_nothing() {
+    let Some(deployment) = deployment_with_document("recovery-ledger-replay").await else {
+        return;
+    };
+    let room = deployment
+        .rooms
+        .get("recovery-ledger-replay")
+        .await
+        .expect("the room for the document just created");
+    let before = room.log().owner_storage_bytes();
+
+    let mut first = RetryProbe {
+        edit: format!("{PAPER}\nThis edit writes a row.\n"),
+        recorded: false,
+    };
+    let (_, replayed) = room
+        .command_reporting_replay(&deployment.authority(), &mut first)
+        .await
+        .expect("a well-formed source-producing command");
+    assert!(!replayed, "the first call is a real commit");
+    let after_first = room.log().owner_storage_bytes();
+    assert!(
+        after_first > before,
+        "a command that writes a row charges the owner's ledger"
+    );
+
+    let mut retry = RetryProbe {
+        edit: first.edit.clone(),
+        recorded: true,
+    };
+    let (_, replayed) = room
+        .command_reporting_replay(&deployment.authority(), &mut retry)
+        .await
+        .expect("a replay answers from the retry record");
+    assert!(replayed, "the retry is reported as a replay");
+    assert_eq!(
+        room.log().owner_storage_bytes(),
+        after_first,
+        "a replay writes no row and charges nothing"
     );
 
     deployment.catalog.close().await;

@@ -89,7 +89,10 @@ pub async fn run(
     };
     let entrypoint = request.entrypoint.as_str();
     let mut options = BTreeMap::new();
-    for (key, value) in request.inputs.options() {
+    let Some(typed_options) = request.inputs.native_options() else {
+        return failed(&request, &id, "not a native build");
+    };
+    for (key, value) in typed_options {
         let value = match value {
             serde_json::Value::String(value) => value.clone(),
             serde_json::Value::Bool(value) => value.to_string(),

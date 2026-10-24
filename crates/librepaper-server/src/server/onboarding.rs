@@ -138,20 +138,19 @@ impl Server {
         // `Store::put` deliberately refuses catalogue-backed writes because it
         // has no request actor, so carry the identity that sign-in already
         // authenticated through every catalogue admission and checkpoint.
-        let actor = librepaper_engine::storage::store::MutationActor {
-            account_id: account.id.to_string(),
-            owner_key: account.handle.clone(),
-            session_generation: who.session_generation.clone(),
-            link_hash: String::new(),
+        let actor = librepaper_engine::storage::postgres::Authority {
+            principal_key: account.handle.clone(),
+            account_id: Some(account.id),
+            session_generation: Some(account.session_generation),
+            link_hash: None,
             // Provisioning is an authenticated first-party write for the
             // account itself.  It must not depend on the deployment's public
             // publisher policy: a newly signed-in reader still receives the
             // private starter project, while ordinary document creation remains
             // governed by that policy at its request boundary.
-            policy_editor: true,
+            policy_edit: true,
             policy_comment: true,
             automation: false,
-            unowned_publisher: false,
         };
         let starter = &STARTER;
         let slug = format!("starter-{}", account.id.simple());
@@ -218,24 +217,19 @@ impl Server {
         catalog: &std::sync::Arc<librepaper_engine::storage::postgres::PostgresCatalog>,
         slug: &str,
         starter: &Starter,
-        actor: &librepaper_engine::storage::store::MutationActor,
+        actor: &librepaper_engine::storage::postgres::Authority,
         account_id: uuid::Uuid,
         days: u32,
     ) -> Result<(), String> {
-        let owner_session_generation: i64 = actor
+        let owner_session_generation = actor
             .session_generation
-            .parse()
-            .map_err(|_| "invalid onboarding session".to_string())?;
+            .ok_or_else(|| "invalid onboarding session".to_string())?;
         let document = catalog
             .create_document(librepaper_engine::storage::postgres::NewDocument {
                 slug: slug.to_string(),
                 owner_id: account_id,
                 owner_session_generation: Some(owner_session_generation),
-                ownership_mode: if actor.unowned_publisher {
-                    "open".into()
-                } else {
-                    "owned".into()
-                },
+                ownership_mode: "owned".into(),
                 title: starter.title.into(),
                 source_format: starter.format.into(),
                 main_path: starter.main.into(),
@@ -254,7 +248,7 @@ impl Server {
             .map_err(|e| e.to_string())?;
         let texts: std::collections::BTreeMap<String, String> = texts.into_iter().collect();
         let author_label = match catalog.account_display_name(account_id).await {
-            name if name.is_empty() => actor.owner_key.clone(),
+            name if name.is_empty() => actor.principal_key.clone(),
             name => name,
         };
         librepaper_engine::storage::seed::activity::simulate(

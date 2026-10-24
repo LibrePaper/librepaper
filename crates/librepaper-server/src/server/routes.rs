@@ -93,6 +93,30 @@ pub(super) fn api_router(server: Arc<Server>) -> Router {
         .with_state(server)
 }
 
+/// The 401 or 503 a request whose credential did not validate gets, or
+/// `None` when it validated or none was presented. A 401 also clears the
+/// dead session cookie.
+async fn authentication_refusal(
+    server: &Server,
+    context: &RequestContext,
+    headers: &HeaderMap,
+) -> Option<Reply> {
+    let failure = context.authentication.as_ref().err()?;
+    let (status, message) = match failure {
+        AuthenticationFailure::Invalid => (401, "authentication expired or was revoked"),
+        AuthenticationFailure::Unavailable => {
+            (503, "authentication service temporarily unavailable")
+        }
+    };
+    let mut response = write_json(status, &json!({"error": message}));
+    if status == 401 {
+        server
+            .clear_dead_session(&mut response, headers, &context.arrival)
+            .await;
+    }
+    Some(response)
+}
+
 async fn api_guard(
     State(server): State<Arc<Server>>,
     Extension(context): Extension<RequestContext>,
@@ -102,19 +126,7 @@ async fn api_guard(
     if context.arrival.is_docs_host() {
         return plain(404, "not found");
     }
-    if let Err(failure) = &context.authentication {
-        let (status, message) = match failure {
-            AuthenticationFailure::Invalid => (401, "authentication expired or was revoked"),
-            AuthenticationFailure::Unavailable => {
-                (503, "authentication service temporarily unavailable")
-            }
-        };
-        let mut response = write_json(status, &json!({"error": message}));
-        if status == 401 {
-            server
-                .clear_dead_session(&mut response, request.headers(), &context.arrival)
-                .await;
-        }
+    if let Some(response) = authentication_refusal(&server, &context, request.headers()).await {
         return response;
     }
     next.run(request).await
@@ -195,9 +207,7 @@ async fn tools_list(
     Path(slug): Path<String>,
     request: Request<Body>,
 ) -> Reply {
-    server
-        .handle_tools_list(request, ctx.peer, &ctx.arrival, &slug)
-        .await
+    server.handle_tools_list(request, &ctx, &slug).await
 }
 
 async fn tool_call(
@@ -206,9 +216,7 @@ async fn tool_call(
     Path((slug, name)): Path<(String, String)>,
     request: Request<Body>,
 ) -> Reply {
-    server
-        .handle_tool_call(request, ctx.peer, &ctx.arrival, &slug, &name)
-        .await
+    server.handle_tool_call(request, &ctx, &slug, &name).await
 }
 
 async fn delete_document(
@@ -281,9 +289,7 @@ async fn label_patch(
     Path((slug, sha)): Path<(String, String)>,
     request: Request<Body>,
 ) -> Reply {
-    server
-        .handle_label(request, &ctx.arrival, &slug, &sha)
-        .await
+    server.handle_label(request, &ctx, &slug, &sha).await
 }
 
 async fn restore(
@@ -292,7 +298,7 @@ async fn restore(
     Path(slug): Path<String>,
     request: Request<Body>,
 ) -> Reply {
-    server.handle_restore(request, &ctx.arrival, &slug).await
+    server.handle_restore(request, &ctx, &slug).await
 }
 
 async fn history_trim(
@@ -301,9 +307,7 @@ async fn history_trim(
     Path(slug): Path<String>,
     request: Request<Body>,
 ) -> Reply {
-    server
-        .handle_history_trim(request, &ctx.arrival, &slug)
-        .await
+    server.handle_history_trim(request, &ctx, &slug).await
 }
 
 async fn rename(
@@ -457,9 +461,7 @@ async fn chat(
     request: Request<Body>,
 ) -> Reply {
     let tail = tail.split('/').collect::<Vec<_>>();
-    server
-        .handle_chat(request, &ctx.arrival, &slug, &tail)
-        .await
+    server.handle_chat(request, &ctx, &slug, &tail).await
 }
 
 async fn chat_root(
@@ -468,7 +470,7 @@ async fn chat_root(
     Path(slug): Path<String>,
     request: Request<Body>,
 ) -> Reply {
-    server.handle_chat(request, &ctx.arrival, &slug, &[]).await
+    server.handle_chat(request, &ctx, &slug, &[]).await
 }
 
 async fn assistant_capabilities(
@@ -749,19 +751,7 @@ pub(super) async fn dispatch(
     // busy catalogue is retryable rather than indistinguishable from a
     // private/missing document.
     if (path.starts_with("/api/") || path.starts_with("/ws/")) && !path.starts_with("/api/auth/") {
-        if let Err(failure) = &context.authentication {
-            let (status, message) = match failure {
-                AuthenticationFailure::Invalid => (401, "authentication expired or was revoked"),
-                AuthenticationFailure::Unavailable => {
-                    (503, "authentication service temporarily unavailable")
-                }
-            };
-            let mut response = write_json(status, &json!({"error": message}));
-            if status == 401 {
-                server
-                    .clear_dead_session(&mut response, request.headers(), &arrival)
-                    .await;
-            }
+        if let Some(response) = authentication_refusal(&server, &context, request.headers()).await {
             return response;
         }
     }
@@ -875,6 +865,28 @@ pub(super) fn rfind(haystack: &[u8], needle: &[u8]) -> Option<usize> {
     haystack
         .windows(needle.len())
         .rposition(|window| window == needle)
+}
+
+/// The page size and keyset cursor a listing request asks for. A missing or
+/// malformed limit is 200, which is also the most a page holds.
+fn listing_page(query: Option<&str>) -> (u32, Option<(String, String)>) {
+    let query: HashMap<String, String> = query
+        .map(|raw| {
+            url::form_urlencoded::parse(raw.as_bytes())
+                .into_owned()
+                .collect()
+        })
+        .unwrap_or_default();
+    let limit = query
+        .get("limit")
+        .and_then(|value| value.parse::<u32>().ok())
+        .unwrap_or(200)
+        .clamp(1, 200);
+    let cursor = query
+        .get("after_updated")
+        .zip(query.get("after_slug"))
+        .map(|(updated, slug)| (updated.clone(), slug.clone()));
+    (limit, cursor)
 }
 
 impl Server {
@@ -1369,27 +1381,14 @@ impl Server {
             Ok(who) => who,
             Err(response) => return response,
         };
-        let listing_query: HashMap<String, String> = query
-            .map(|raw| {
-                url::form_urlencoded::parse(raw.as_bytes())
-                    .into_owned()
-                    .collect()
-            })
-            .unwrap_or_default();
-        let listing_limit = listing_query
-            .get("limit")
-            .and_then(|value| value.parse::<u32>().ok())
-            .unwrap_or(200)
-            .clamp(1, 200);
-        let listing_cursor = listing_query
-            .get("after_updated")
-            .zip(listing_query.get("after_slug"))
+        let (listing_limit, listing_cursor) = listing_page(query);
+        let listing_cursor = listing_cursor
+            .as_ref()
             .map(|(updated, slug)| (updated.as_str(), slug.as_str()));
         let entries = match self
             .store
             .visible_page_with_options(
                 (!who.id.is_empty()).then_some(who.id.as_str()),
-                (!who.key.is_empty()).then_some(who.key.as_str()),
                 listing_cursor,
                 listing_limit,
                 false,
@@ -1485,25 +1484,13 @@ impl Server {
                 return write_json(401, &json!({"error": "sign in to list backup projects"}));
             }
         };
-        let listing_query: HashMap<String, String> = query
-            .map(|raw| {
-                url::form_urlencoded::parse(raw.as_bytes())
-                    .into_owned()
-                    .collect()
-            })
-            .unwrap_or_default();
-        let listing_limit = listing_query
-            .get("limit")
-            .and_then(|value| value.parse::<u32>().ok())
-            .unwrap_or(200)
-            .clamp(1, 200);
-        let listing_cursor = listing_query
-            .get("after_updated")
-            .zip(listing_query.get("after_slug"))
+        let (listing_limit, listing_cursor) = listing_page(query);
+        let listing_cursor = listing_cursor
+            .as_ref()
             .map(|(updated, slug)| (updated.as_str(), slug.as_str()));
         let entries = match self
             .store
-            .visible_page_with_options(Some(&account_id), None, listing_cursor, listing_limit, true)
+            .visible_page_with_options(Some(&account_id), listing_cursor, listing_limit, true)
             .await
         {
             Ok(entries) => entries,

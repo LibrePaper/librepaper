@@ -521,42 +521,6 @@ impl TagView {
     }
 }
 
-#[derive(Clone, Debug)]
-pub struct MutationActor {
-    pub account_id: String,
-    pub owner_key: String,
-    pub session_generation: String,
-    /// The live link that supplied authority, if any.  Only its digest is
-    /// carried into storage; the secret never leaves the request.
-    pub link_hash: String,
-    /// Whether the current publisher policy still admits this editor.
-    pub policy_editor: bool,
-    /// Whether the current commenter policy admits this account.
-    pub policy_comment: bool,
-    /// Whether this request uses link-bounded automation authority.
-    pub automation: bool,
-    pub unowned_publisher: bool,
-}
-
-impl MutationActor {
-    fn authorization(&self) -> crate::storage::postgres::MutationAuthorization {
-        let authority = crate::storage::postgres::Authority {
-            principal_key: self.owner_key.clone(),
-            account_id: uuid::Uuid::parse_str(&self.account_id).ok(),
-            link_hash: if self.link_hash.is_empty() {
-                None
-            } else {
-                hex::decode(&self.link_hash).ok()
-            },
-            session_generation: self.session_generation.parse().ok(),
-            policy_edit: self.policy_editor,
-            policy_comment: self.policy_comment,
-            automation: self.automation,
-        };
-        authority.mutation_authorization()
-    }
-}
-
 fn source_put_error(error: CatalogError) -> PutError {
     match error {
         CatalogError::Conflict(message) if message.contains("quota") => PutError::Quota {
@@ -852,7 +816,6 @@ impl Store {
     pub async fn visible_page_with_options(
         &self,
         account_id: Option<&str>,
-        _owner_key: Option<&str>,
         cursor: Option<(&str, &str)>,
         limit: u32,
         include_templates: bool,
@@ -1170,9 +1133,8 @@ impl Store {
             .get(document.id, slug)
             .await
             .map_err(|error| error.to_string())?;
-        let rules = librepaper_document::document::paths::rules(&self.config);
         let projected = sequencer
-            .with_head(|doc| librepaper_document::document::projection::project(doc, &rules))
+            .projection()
             .await
             .map_err(|error| error.to_string())?;
         let mut files: Vec<(String, Vec<u8>)> = Vec::new();
@@ -1226,13 +1188,7 @@ impl Store {
         &self,
         entries: &[IndexEntry],
     ) -> Result<std::collections::HashMap<String, (i64, i64, Option<i32>)>, CatalogError> {
-        let mut by_id = std::collections::HashMap::new();
-        for entry in entries {
-            if let Ok(id) = uuid::Uuid::parse_str(&entry.storage_id) {
-                by_id.insert(id, entry.slug.clone());
-            }
-        }
-        let ids: Vec<_> = by_id.keys().copied().collect();
+        let (by_id, ids) = slugs_by_id(entries);
         let counts = self.catalog.listing_counts(&ids).await?;
         Ok(counts
             .into_iter()
@@ -1253,13 +1209,7 @@ impl Store {
     ) -> Result<std::collections::HashMap<String, (String, bool)>, CatalogError> {
         let account_id = uuid::Uuid::parse_str(account_id)
             .map_err(|_| CatalogError::Invalid("invalid listing account".into()))?;
-        let mut by_id = std::collections::HashMap::new();
-        for entry in entries {
-            if let Ok(id) = uuid::Uuid::parse_str(&entry.storage_id) {
-                by_id.insert(id, entry.slug.clone());
-            }
-        }
-        let ids: Vec<_> = by_id.keys().copied().collect();
+        let (by_id, ids) = slugs_by_id(entries);
         let marks = self.catalog.marks_for_documents(account_id, &ids).await?;
         Ok(marks
             .into_iter()
@@ -1282,13 +1232,7 @@ impl Store {
         entries: &[IndexEntry],
     ) -> Result<std::collections::HashMap<String, Vec<String>>, CatalogError> {
         let account_id = parse_account_id(account_id)?;
-        let mut by_id = std::collections::HashMap::new();
-        for entry in entries {
-            if let Ok(id) = uuid::Uuid::parse_str(&entry.storage_id) {
-                by_id.insert(id, entry.slug.clone());
-            }
-        }
-        let ids: Vec<_> = by_id.keys().copied().collect();
+        let (by_id, ids) = slugs_by_id(entries);
         let links = self.catalog.tags_for_documents(account_id, &ids).await?;
         let mut by_slug: std::collections::HashMap<String, Vec<String>> =
             std::collections::HashMap::new();
@@ -1334,7 +1278,7 @@ impl Store {
         &self,
         value: DocumentInput,
         files: Vec<(String, Vec<u8>)>,
-        actor: MutationActor,
+        actor: Authority,
     ) -> Result<IndexEntry, PutError> {
         self.put_directory_with_operation(value, files, actor, None)
             .await
@@ -1348,7 +1292,7 @@ impl Store {
         &self,
         value: DocumentInput,
         files: Vec<(String, Vec<u8>)>,
-        actor: MutationActor,
+        actor: Authority,
         request_id: Uuid,
         target_document_id: Uuid,
     ) -> Result<IndexEntry, PutError> {
@@ -1365,23 +1309,18 @@ impl Store {
         &self,
         value: DocumentInput,
         files: Vec<(String, Vec<u8>)>,
-        actor: MutationActor,
+        actor: Authority,
         template_operation: Option<(Uuid, Uuid)>,
     ) -> Result<IndexEntry, PutError> {
         let catalog = &self.catalog;
-        let account_id =
-            uuid::Uuid::parse_str(&actor.account_id).map_err(|_| PutError::Authorization {
-                status: 401,
-                message: "bundle actor account is invalid",
-            })?;
-        let session_generation =
-            actor
-                .session_generation
-                .parse::<i64>()
-                .map_err(|_| PutError::Authorization {
-                    status: 401,
-                    message: "bundle actor session is invalid",
-                })?;
+        let account_id = actor.account_id.ok_or(PutError::Authorization {
+            status: 401,
+            message: "bundle actor account is invalid",
+        })?;
+        let session_generation = actor.session_generation.ok_or(PutError::Authorization {
+            status: 401,
+            message: "bundle actor session is invalid",
+        })?;
         let (document, created_here) = match catalog
             .document_by_slug(&value.slug)
             .await
@@ -1408,11 +1347,7 @@ impl Store {
                         slug: value.slug.clone(),
                         owner_id: account_id,
                         owner_session_generation: Some(session_generation),
-                        ownership_mode: if actor.unowned_publisher {
-                            "open".into()
-                        } else {
-                            "owned".into()
-                        },
+                        ownership_mode: "owned".into(),
                         title: value.title.clone(),
                         source_format: value.source_format.clone(),
                         main_path: value.main.clone(),
@@ -1422,7 +1357,7 @@ impl Store {
                 true,
             ),
         };
-        if document.owner_id != account_id && !actor.policy_editor {
+        if document.owner_id != account_id && !actor.policy_edit {
             return Err(PutError::Authorization {
                 status: 403,
                 message: "edit access changed",
@@ -1443,7 +1378,7 @@ impl Store {
             // The name, not the id. `actor.account_id` is the catalogue uuid,
             // and a timeline signed with it can only say "Unknown editor".
             let author_label = match catalog.account_display_name(account_id).await {
-                name if name.is_empty() => actor.owner_key.clone(),
+                name if name.is_empty() => actor.principal_key.clone(),
                 name => name,
             };
             let sequencer = self
@@ -1451,15 +1386,6 @@ impl Store {
                 .get(document.id, &value.slug)
                 .await
                 .map_err(|error| PutError::Storage(error.to_string()))?;
-            let authority = Authority {
-                principal_key: actor.owner_key.clone(),
-                account_id: Some(account_id),
-                link_hash: None,
-                session_generation: Some(session_generation),
-                policy_edit: actor.policy_editor,
-                policy_comment: actor.policy_comment,
-                automation: actor.automation,
-            };
             let mut command = ReplaceProject {
                 request_id: template_operation
                     .map(|(request_id, _)| request_id)
@@ -1475,7 +1401,7 @@ impl Store {
                 author_label,
             };
             sequencer
-                .command(&authority, &mut command)
+                .command(&actor, &mut command)
                 .await
                 .map_err(command_put_error)
         }
@@ -1568,12 +1494,7 @@ impl Store {
         Ok(usize::from(self.begin_delete(slug).await?.is_some()))
     }
 
-    pub async fn rename(
-        &self,
-        slug: &str,
-        title: &str,
-        actor: &MutationActor,
-    ) -> Result<(), String> {
+    pub async fn rename(&self, slug: &str, title: &str, actor: &Authority) -> Result<(), String> {
         if title.is_empty() {
             return Ok(());
         }
@@ -1586,7 +1507,7 @@ impl Store {
             return Err("document not found".into());
         };
         let changed = catalog
-            .update_document_title(document.id, &actor.authorization(), title)
+            .update_document_title(document.id, actor, title)
             .await
             .map_err(|error| match error {
                 CatalogError::Conflict(_) => "ownership changed".to_string(),
@@ -1634,19 +1555,7 @@ impl Store {
     pub async fn modify_as_owner<F>(
         &self,
         slug: &str,
-        actor: &MutationActor,
-        change: F,
-    ) -> Result<IndexEntry, ModifyError>
-    where
-        F: Fn(&mut IndexEntry) -> Result<(), String>,
-    {
-        self.modify_inner(slug, Some(actor), change).await
-    }
-
-    async fn modify_inner<F>(
-        &self,
-        slug: &str,
-        actor: Option<&MutationActor>,
+        actor: &Authority,
         change: F,
     ) -> Result<IndexEntry, ModifyError>
     where
@@ -1658,17 +1567,13 @@ impl Store {
             .await
             .map_err(|e| ModifyError::Storage(e.to_string()))?
             .ok_or(ModifyError::NotFound)?;
-        if let Some(actor) = actor {
-            if uuid::Uuid::parse_str(&actor.account_id).ok() != Some(document.owner_id) {
-                return Err(ModifyError::Refused("ownership changed".into()));
-            }
+        if actor.account_id != Some(document.owner_id) {
+            return Err(ModifyError::Refused("ownership changed".into()));
         }
         let mut entry = entry_from_document(catalog, &document)
             .await
             .map_err(|e| ModifyError::Storage(e.to_string()))?;
         change(&mut entry).map_err(ModifyError::Refused)?;
-        let actor = actor.ok_or_else(|| ModifyError::Refused("owner access is required".into()))?;
-        let authorization = actor.authorization();
         let links = entry
             .links
             .iter()
@@ -1703,7 +1608,7 @@ impl Store {
             .filter_map(|link| hex::decode(&link.hash).ok())
             .collect::<Vec<_>>();
         catalog
-            .save_document_sharing(document.id, &authorization, &links, &live_hashes)
+            .save_document_sharing(document.id, actor, &links, &live_hashes)
             .await
             .map_err(|error| match error {
                 CatalogError::Conflict(_) => ModifyError::Refused("ownership changed".into()),
@@ -1925,4 +1830,21 @@ fn tag_modify_error(error: CatalogError) -> ModifyError {
         }
         other => ModifyError::Storage(other.to_string()),
     }
+}
+
+/// The listed documents' slugs by storage id, and those ids.
+fn slugs_by_id(
+    entries: &[IndexEntry],
+) -> (
+    std::collections::HashMap<uuid::Uuid, String>,
+    Vec<uuid::Uuid>,
+) {
+    let mut by_id = std::collections::HashMap::new();
+    for entry in entries {
+        if let Ok(id) = uuid::Uuid::parse_str(&entry.storage_id) {
+            by_id.insert(id, entry.slug.clone());
+        }
+    }
+    let ids = by_id.keys().copied().collect();
+    (by_id, ids)
 }

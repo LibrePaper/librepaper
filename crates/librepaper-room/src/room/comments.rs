@@ -46,8 +46,8 @@ use librepaper_engine::log::sequencer::{
     Command as SequencerCommand, CommandError, Evidence, Head, PreparedSource, Rung,
 };
 use librepaper_engine::storage::postgres::{
-    self, AnnotationRecord, AnnotationState, MutationAuthorization, NewAnnotation, NewReply,
-    PostgresCatalog, ReplyRecord,
+    self, AnnotationRecord, AnnotationState, Authority, NewAnnotation, NewReply, PostgresCatalog,
+    ReplyRecord,
 };
 
 use super::locate::{self, Quote};
@@ -1026,7 +1026,7 @@ pub struct CommentAuthor {
     pub creator: String,
     pub account_id: Option<Uuid>,
     pub key: String,
-    pub authorization: MutationAuthorization,
+    pub authorization: Authority,
     pub is_owner: bool,
 }
 
@@ -1035,7 +1035,7 @@ impl CommentAuthor {
         creator: impl Into<String>,
         account_id: Option<Uuid>,
         key: impl Into<String>,
-        authorization: MutationAuthorization,
+        authorization: Authority,
         is_owner: bool,
     ) -> Self {
         Self {
@@ -1061,7 +1061,7 @@ pub struct AddComment {
     color: Option<String>,
     author_account_id: Option<Uuid>,
     author_key: String,
-    actor: MutationAuthorization,
+    actor: Authority,
     exact: String,
     prefix: String,
     suffix: String,
@@ -1316,7 +1316,7 @@ pub struct AddReply {
     creator: String,
     author_account_id: Option<Uuid>,
     author_key: String,
-    actor: MutationAuthorization,
+    actor: Authority,
 }
 
 impl AddReply {
@@ -1412,7 +1412,7 @@ pub struct ResolveComment {
     document_id: Uuid,
     comment_id: Uuid,
     resolved: bool,
-    actor: MutationAuthorization,
+    actor: Authority,
 }
 
 impl ResolveComment {
@@ -1503,7 +1503,7 @@ pub struct DeleteComment {
     comment_id: Uuid,
     author_key: String,
     is_owner: bool,
-    actor: MutationAuthorization,
+    actor: Authority,
 }
 
 impl DeleteComment {
@@ -1586,7 +1586,7 @@ pub struct EditComment {
     reply_id: Option<Uuid>,
     body: String,
     author_key: String,
-    actor: MutationAuthorization,
+    actor: Authority,
 }
 
 impl EditComment {

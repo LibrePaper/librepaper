@@ -1570,7 +1570,7 @@ mod comment_traversal {
     use super::*;
     use futures_util::StreamExt;
     use librepaper::annotation::{CommentTarget, OriginalAnchor};
-    use librepaper::postgres::{MutationAuthorization, NewAnnotation, NewReply};
+    use librepaper::postgres::{Authority, NewAnnotation, NewReply};
     use serde_json::Value;
     use tokio::net::TcpListener;
     use tokio_tungstenite::tungstenite::client::IntoClientRequest;
@@ -1630,11 +1630,11 @@ mod comment_traversal {
         // Seeded straight through the catalogue: a sequencer command per
         // comment for a hundred and thirty-seven of them is not what this
         // test is measuring.
-        let actor = MutationAuthorization {
+        let actor = Authority {
             principal_key: owner_id.to_string(),
             account_id: Some(owner_id),
             session_generation: Some(owner.session_generation),
-            token_hash: None,
+            link_hash: None,
             policy_edit: true,
             policy_comment: true,
             automation: false,

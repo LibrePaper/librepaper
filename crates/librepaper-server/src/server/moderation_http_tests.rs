@@ -27,9 +27,9 @@ use librepaper_base::config::Configuration;
 use librepaper_engine::log::Registry;
 use librepaper_engine::storage::blob::FsStore;
 use librepaper_engine::storage::postgres::{
-    AccessRole, NewAccount, PostgresCatalog, PostgresOptions, StoragePolicy,
+    AccessRole, Authority, NewAccount, PostgresCatalog, PostgresOptions, StoragePolicy,
 };
-use librepaper_engine::storage::store::{DocumentInput, MutationActor, Store};
+use librepaper_engine::storage::store::{DocumentInput, Store};
 use librepaper_room::room::Rooms;
 
 use super::Server;
@@ -164,15 +164,14 @@ async fn deployment_mode_with_policy(
     );
     tokio::spawn(worker.run());
     let store = Store::open_with_catalog(blobs.clone(), config.clone(), catalog.clone(), registry);
-    let actor = MutationActor {
-        account_id: account.id.to_string(),
-        owner_key: account.handle.clone(),
-        session_generation: account.session_generation.to_string(),
-        link_hash: String::new(),
-        policy_editor: true,
+    let actor = Authority {
+        account_id: Some(account.id),
+        principal_key: account.handle.clone(),
+        session_generation: Some(account.session_generation),
+        link_hash: None,
+        policy_edit: true,
         policy_comment: true,
         automation: false,
-        unowned_publisher: open,
     };
     let asset_bytes = png(64);
     let asset_sha = librepaper_engine::storage::store::digest_of_bytes(&asset_bytes);
@@ -192,6 +191,13 @@ async fn deployment_mode_with_policy(
         .unwrap();
     let entry = store.get_result(slug).await.unwrap().unwrap();
     let document_id = Uuid::parse_str(&entry.storage_id).unwrap();
+    if open {
+        sqlx::query("UPDATE documents SET ownership_mode='open' WHERE id=$1")
+            .bind(document_id)
+            .execute(catalog.pool())
+            .await
+            .unwrap();
+    }
     let share_key = format!("reader-{}", Uuid::new_v4().simple());
     catalog
         .create_share_link(

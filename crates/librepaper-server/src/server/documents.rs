@@ -90,15 +90,19 @@ fn reader_changes(
     out
 }
 
-/// What a reader's etag names: the projection digest and the pending
-/// changes. The projection digest ignores the `changes` root, so an accept
-/// or a reject, which only deletes a record, would otherwise never reach a
-/// reader. `project_digest` itself stays the projection digest, because the
-/// render and the stale-selection check are keyed on text alone.
-fn reader_identity(project_digest: &str, changes: &[Value]) -> String {
+/// What a reader's etag names: the projection digest, the title, the format
+/// and the pending changes, which is everything `/project` returns that can
+/// change. The projection digest ignores the `changes` root, so an accept or
+/// a reject, which only deletes a record, would otherwise never reach a
+/// reader, and a rename would answer 304 with the old title. `project_digest`
+/// itself stays the projection digest, because the render and the
+/// stale-selection check are keyed on text alone.
+fn reader_identity(project_digest: &str, title: &str, format: &str, changes: &[Value]) -> String {
     let mut hash = Sha256::new();
-    hash.update(project_digest.as_bytes());
-    hash.update(b"\n");
+    for part in [project_digest, title, format] {
+        hash.update(part.as_bytes());
+        hash.update(b"\n");
+    }
     hash.update(Value::Array(changes.to_vec()).to_string().as_bytes());
     hex::encode(hash.finalize())
 }
@@ -337,7 +341,7 @@ impl Server {
             .unwrap_or(50)
             .clamp(1, 100);
         if let Err(response) = self
-            .entry_at_least(slug, &headers, arrival, None, Role::Commenter)
+            .entry_at_least_in(slug, context, &headers, None, Role::Commenter)
             .await
         {
             return response;
@@ -565,15 +569,16 @@ impl Server {
         } else {
             format!("{base}-{}", random_suffix(&self.config))
         };
-        let actor = librepaper_engine::storage::store::MutationActor {
-            account_id: who.id.clone(),
-            owner_key: who.key.clone(),
-            session_generation: who.session_generation.clone(),
-            link_hash: String::new(),
-            policy_editor: true,
-            policy_comment: self.commenters.allows(&who.identity()),
-            automation: false,
-            unowned_publisher: false,
+        let actor = match who.authority(self.commenters.allows(&who.identity())) {
+            Ok(actor) => actor,
+            Err(InvalidCredential) => {
+                let _ = self
+                    .store
+                    .catalog
+                    .cancel_upload_admission(upload_admission)
+                    .await;
+                return write_json(401, &json!({"error": "invalid account"}));
+            }
         };
 
         // What the main file is called, and the rest of the directory to
@@ -1200,7 +1205,10 @@ impl Server {
         // a reader whose text did not move. The `source-changed` frame
         // names no identity the browser compares; it only says to refetch.
         let identity = projected.projection.digest();
-        let etag = format!("\"{}\"", reader_identity(&identity, &changes));
+        let etag = format!(
+            "\"{}\"",
+            reader_identity(&identity, &entry.title, &format, &changes)
+        );
         if header_of(headers, "if-none-match").is_some_and(|value| {
             value
                 .split(',')
@@ -1420,15 +1428,8 @@ impl Server {
             Ok(Some(_)) | Ok(None) => return write_json(404, &json!({"error": "not found"})),
             Err(response) => return response,
         };
-        let actor = librepaper_engine::storage::store::MutationActor {
-            account_id: who.id.clone(),
-            owner_key: who.key.clone(),
-            session_generation: who.session_generation.clone(),
-            link_hash: String::new(),
-            policy_editor: true,
-            policy_comment: self.commenters.allows(&who.identity()),
-            automation: false,
-            unowned_publisher: false,
+        let Ok(actor) = who.authority(self.commenters.allows(&who.identity())) else {
+            return write_json(401, &json!({"error": "invalid account"}));
         };
         match self.store.rename(slug, &title, &actor).await {
             Ok(()) => write_json(200, &json!({"slug": slug, "title": title})),
@@ -1749,15 +1750,14 @@ impl Server {
                 );
             }
         }
-        let actor = librepaper_engine::storage::store::MutationActor {
-            account_id: who.id.clone(),
-            owner_key: who.key.clone(),
-            session_generation: who.session_generation.clone(),
-            link_hash: String::new(),
-            policy_editor: true,
-            policy_comment: self.commenters.allows(&who.identity()),
-            automation: false,
-            unowned_publisher: false,
+        let actor = match who.authority(self.commenters.allows(&who.identity())) {
+            Ok(actor) => actor,
+            Err(InvalidCredential) => {
+                if let Some(admission) = upload_admission {
+                    let _ = self.store.catalog.cancel_upload_admission(admission).await;
+                }
+                return write_json(401, &json!({"error": "invalid account"}));
+            }
         };
         let input = DocumentInput {
             slug: base,
@@ -2264,13 +2264,33 @@ mod reader_changes_tests {
         assert_eq!(row["inserted"], "slow");
         assert_eq!(row.as_object().unwrap().len(), 11);
 
-        let before = reader_identity(&projected.projection.digest(), &changes);
+        let before = reader_identity(
+            &projected.projection.digest(),
+            "Paper",
+            "markdown",
+            &changes,
+        );
+        assert_ne!(
+            before,
+            reader_identity(
+                &projected.projection.digest(),
+                "Renamed",
+                "markdown",
+                &changes
+            ),
+            "a rename must not answer 304 with the old title"
+        );
         assert!(accept(&doc, &set[0]));
         doc.commit();
         let projected = project(&doc, &rules(&config));
         let changes = reader_changes(&doc, &projected);
         assert!(changes.is_empty());
-        let after = reader_identity(&projected.projection.digest(), &changes);
+        let after = reader_identity(
+            &projected.projection.digest(),
+            "Paper",
+            "markdown",
+            &changes,
+        );
         assert_ne!(before, after);
     }
 }

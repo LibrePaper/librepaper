@@ -60,6 +60,13 @@ async fn restore_rechecks_editor_access_after_the_body_is_read() {
     };
     let arrival = Origins::loopback_only().resolve("localhost").unwrap();
     let headers = owner_bearer(&deployment);
+    let context = crate::server::RequestContext::resolved(
+        &deployment.server,
+        &headers,
+        arrival,
+        "127.0.0.1:0".parse().unwrap(),
+    )
+    .await;
     let body = json!({
         "sha": uuid::Uuid::new_v4().to_string(),
         "expected_frontier": ""
@@ -73,7 +80,7 @@ async fn restore_rechecks_editor_access_after_the_body_is_read() {
         .unwrap();
     let server = deployment.server;
     let slug = deployment.slug.clone();
-    let task = tokio::spawn(async move { server.handle_restore(request, &arrival, &slug).await });
+    let task = tokio::spawn(async move { server.handle_restore(request, &context, &slug).await });
 
     tokio::time::timeout(Duration::from_secs(5), started)
         .await
@@ -110,6 +117,13 @@ async fn trim_rechecks_editor_access_after_the_body_is_read() {
     };
     let arrival = Origins::loopback_only().resolve("localhost").unwrap();
     let headers = owner_bearer(&deployment);
+    let context = crate::server::RequestContext::resolved(
+        &deployment.server,
+        &headers,
+        arrival,
+        "127.0.0.1:0".parse().unwrap(),
+    )
+    .await;
     let (body, started, resume) = paused_body("{}".into());
     let request = Request::builder()
         .method("POST")
@@ -119,7 +133,7 @@ async fn trim_rechecks_editor_access_after_the_body_is_read() {
     let server = deployment.server;
     let slug = deployment.slug.clone();
     let task =
-        tokio::spawn(async move { server.handle_history_trim(request, &arrival, &slug).await });
+        tokio::spawn(async move { server.handle_history_trim(request, &context, &slug).await });
 
     tokio::time::timeout(Duration::from_secs(5), started)
         .await
@@ -156,23 +170,28 @@ async fn restore_and_trim_reject_a_caller_without_editor_access() {
             return;
         };
         let arrival = Origins::loopback_only().resolve("localhost").unwrap();
+        let headers = owner_bearer(&deployment);
+        let context = crate::server::RequestContext::resolved(
+            &deployment.server,
+            &headers,
+            arrival,
+            "127.0.0.1:0".parse().unwrap(),
+        )
+        .await;
         let request = Request::builder()
             .method("POST")
-            .header(
-                "authorization",
-                owner_bearer(&deployment)["authorization"].clone(),
-            )
+            .header("authorization", headers["authorization"].clone())
             .body(Body::from("{}"))
             .unwrap();
         let response = if slug.starts_with("history-restore") {
             deployment
                 .server
-                .handle_restore(request, &arrival, slug)
+                .handle_restore(request, &context, slug)
                 .await
         } else {
             deployment
                 .server
-                .handle_history_trim(request, &arrival, slug)
+                .handle_history_trim(request, &context, slug)
                 .await
         };
         assert_eq!(response.status(), StatusCode::NOT_FOUND, "{slug}");
