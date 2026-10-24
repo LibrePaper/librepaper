@@ -6,6 +6,7 @@ import { createBridge } from "../gitsync/bridge.js";
 import { syncApi } from "../gitsync/server.js";
 import { checkRemote, pull, push, recover, status } from "../gitsync/sync.js";
 import { desktop, notify } from "../desktop/client.js";
+import { CHANGES } from "../track-changes.js";
 
 const storageKey = (slug) => `librepaper:git-auto:${slug}`;
 
@@ -99,6 +100,21 @@ export function createGitAuto(input) {
     if (document.visibilityState === "visible") poke();
   };
 
+  // Hears file edits and also decisions on tracked suggestions, which touch
+  // only the `changes` map and which `onFiles` does not report. Returns one
+  // function that ends both subscriptions.
+  function watch(target) {
+    if (!target) return null;
+    const stopFiles = target.onFiles(() => scheduler?.edited());
+    const stopChanges = target.doc.subscribe((batch) => {
+      if (batch.events.some((event) => event.path?.[0] === CHANGES)) scheduler?.edited();
+    });
+    return () => {
+      stopFiles?.();
+      stopChanges?.();
+    };
+  }
+
   function begin() {
     scheduler = createAutoSync({
       ops: {
@@ -113,7 +129,7 @@ export function createGitAuto(input) {
       },
       onChange,
     });
-    unsubscribe = session?.onFiles(() => scheduler?.edited()) || null;
+    unsubscribe = watch(session);
     window.addEventListener("focus", poke);
     window.addEventListener("online", poke);
     document.addEventListener("visibilitychange", onVisible);
@@ -142,7 +158,7 @@ export function createGitAuto(input) {
     session = next;
     if (scheduler) {
       unsubscribe?.();
-      unsubscribe = session?.onFiles(() => scheduler?.edited()) || null;
+      unsubscribe = watch(session);
       return;
     }
     const id = stored();

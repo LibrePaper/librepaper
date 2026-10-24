@@ -4,7 +4,9 @@
 // operations and the clock are injected, so the pacing can be tested alone.
 //
 // `ops` is { status, recover, check, pull, push }, each async and each allowed
-// to throw. Their answers are the result shapes of sync.js.
+// to throw. Their answers are the result shapes of sync.js. `recover` also
+// answers `needsPull`, true when every leftover entry can only be settled by a
+// fresh successful pull, and the round then pulls instead of waiting.
 
 export const PACE = Object.freeze({
   checkMs: 120_000,
@@ -176,8 +178,20 @@ export function createAutoSync({ ops, clock = realClock, pace = PACE, onChange =
       const rec = await ops.recover();
       if (!alive()) return ABORTED;
       if (rec.status === "refused") return refusal(rec);
-      if (rec.pending?.length) return waiting(INTERRUPTED);
-      st = { conflict: rec.conflict, pending: [] };
+      if (rec.pending?.length) {
+        if (!rec.needsPull) return waiting(INTERRUPTED);
+        const p = await ops.pull();
+        if (!alive()) return ABORTED;
+        if (p.status === "conflict") return conflicted();
+        if (p.status === "refused") return refusal(p);
+        if (p.status === "pulled") {
+          lastPullAt = clock.now();
+          emit();
+        }
+        st = { conflict: null, pending: [] };
+      } else {
+        st = { conflict: rec.conflict, pending: [] };
+      }
     }
     if (st.conflict) return conflicted();
     return attempts(alive);
