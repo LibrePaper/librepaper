@@ -522,13 +522,14 @@ pub struct Viewer {
 #[derive(Debug)]
 pub struct InvalidCredential;
 
-/// Parses the identity strings of an authenticated request. An empty string
-/// is absent, and a nonempty one that does not parse is refused.
+/// Parses the identity strings of an authenticated request into an
+/// authority that carries only them. An empty string is absent, and a
+/// nonempty one that does not parse is refused.
 fn parse_credentials(
     account_id: &str,
     session_generation: &str,
     link: &str,
-) -> Result<(Option<uuid::Uuid>, Option<i64>, Option<[u8; 32]>), InvalidCredential> {
+) -> Result<librepaper_engine::storage::postgres::Authority, InvalidCredential> {
     let account_id = if account_id.is_empty() {
         None
     } else {
@@ -549,7 +550,12 @@ fn parse_credentials(
         let bytes = hex::decode(link).map_err(|_| InvalidCredential)?;
         Some(<[u8; 32]>::try_from(bytes).map_err(|_| InvalidCredential)?)
     };
-    Ok((account_id, session_generation, link_hash))
+    Ok(librepaper_engine::storage::postgres::Authority {
+        account_id,
+        session_generation,
+        link_hash,
+        ..Default::default()
+    })
 }
 
 impl Viewer {
@@ -590,16 +596,12 @@ impl Viewer {
         &self,
         ceiling: librepaper_engine::storage::store::Ceiling,
     ) -> Result<librepaper_engine::storage::postgres::Authority, InvalidCredential> {
-        let (account_id, session_generation, link_hash) =
-            parse_credentials(&self.id.id, &self.id.session_generation, &self.link)?;
         Ok(librepaper_engine::storage::postgres::Authority {
             principal_key: self.principal_key(),
-            account_id,
-            session_generation,
-            link_hash,
             policy_edit: ceiling.edit,
             policy_comment: ceiling.comment,
             automation: self.automation,
+            ..parse_credentials(&self.id.id, &self.id.session_generation, &self.link)?
         })
     }
 
@@ -689,16 +691,12 @@ impl Caller {
         &self,
         policy_comment: bool,
     ) -> Result<librepaper_engine::storage::postgres::Authority, InvalidCredential> {
-        let (account_id, session_generation, link_hash) =
-            parse_credentials(&self.id, &self.session_generation, "")?;
         Ok(librepaper_engine::storage::postgres::Authority {
             principal_key: self.key.clone(),
-            account_id,
-            session_generation,
-            link_hash,
             policy_edit: true,
             policy_comment,
             automation: false,
+            ..parse_credentials(&self.id, &self.session_generation, "")?
         })
     }
 
