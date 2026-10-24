@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { loadRunes } from "../helpers/runes.mjs";
 
-const { createAgentClient } = await loadRunes(
+const { createAgentClient, documentKey } = await loadRunes(
   new URL("../../src/lib/agent-client.svelte.js", import.meta.url),
 );
 
@@ -89,6 +89,9 @@ try {
   assert.deepEqual(capabilities, { can_read: true, can_comment: true, can_edit: false });
   assert.equal(requests[1].url, "/api/documents/paper/assistant/capabilities");
   assert.equal(requests[1].headers["X-LibrePaper-Key"], "document-secret");
+  assert.equal(documentKey("https://docs.example/docs/paper/path-secret"), "path-secret");
+  assert.equal(documentKey("https://docs.example/docs/paper#k=fragment-secret"), "fragment-secret");
+  assert.equal(documentKey("https://docs.example/docs/paper"), "");
   const candidate = await client.fetchCandidate("candidate-large", undefined, "candidate-token");
   assert.equal(candidate.texts["paper.md"].length, 20000);
   await assert.rejects(() => client.fetchCandidate("candidate-overlimit"), /aggregate limit/);

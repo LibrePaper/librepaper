@@ -22,6 +22,10 @@ export function documentKey(link) {
   try {
     const url = new URL(link, globalThis.location?.href || "https://invalid.example/");
     if (!["http:", "https:"].includes(url.protocol) || url.username || url.password) return "";
+    const parts = url.pathname.split("/");
+    if (parts.length === 4 && parts[1] === "docs" && parts[3] !== "") {
+      try { return decodeURIComponent(parts[3]); } catch { return ""; }
+    }
     return new URLSearchParams(url.hash.slice(1)).get("k") || "";
   } catch { return ""; }
 }

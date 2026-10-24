@@ -53,7 +53,7 @@
     linkFor,
     markViewed,
     read,
-    takeKeyFromFragment,
+    takeLinkKey,
     write,
   } from "../lib/storage.js";
   import { localDataForgotten } from "../lib/signed-out.js";
@@ -121,15 +121,14 @@
   import Git from "./reader/Git.svelte";
   import PendingAnnotations from "./reader/PendingAnnotations.svelte";
 
-  const SLUG = location.pathname.split("/").pop();
+  const SLUG = location.pathname.split("/")[2];
 
-  // The key a reader arrived with, taken out of the fragment before anything
-  // asks the server a question. A fragment never leaves the browser, so this
-  // is the one part of the URL a link key can safely travel in; from here it
-  // is kept under the slug and presented on every request for this document.
+  // The key a reader arrived with, taken out of the address before anything
+  // asks the server a question. From here it is kept under the slug and
+  // presented on every request for this document.
   // The sign-in return path carries only the path and query: the key stays in
   // this browser's storage and never travels in a URL the server sees.
-  const KEY = takeKeyFromFragment(SLUG);
+  const KEY = takeLinkKey(SLUG);
 
   let { initialSettings = "" } = $props();
 

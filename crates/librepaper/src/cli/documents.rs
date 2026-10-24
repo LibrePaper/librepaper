@@ -280,9 +280,9 @@ async fn resolve_identifier_with(
 }
 
 /// What `--key` takes: the key itself, or the whole link it came in, since a
-/// link is what a person actually has in their clipboard. A URL with no key
-/// in its fragment is an empty key, which is what a plain document URL
-/// carries.
+/// link is what a person actually has in their clipboard. The key comes from
+/// the `/docs/<slug>/<key>` path or the fragment. A URL with neither is an
+/// empty key, which is what a plain document URL carries.
 pub fn link_key(flag: &str) -> String {
     librepaper_companion::automation::peer::link_key(flag)
 }

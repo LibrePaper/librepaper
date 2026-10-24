@@ -77,20 +77,27 @@ export const SYMBOLS_FAVORITES = "librepaper-symbols-favorites";
 // key before it is removed from the address bar.
 const memoryKeys = new Map();
 
-/// Takes the key out of the URL fragment, keeps it, and cleans the address
-/// bar. A fragment is never sent to a server, so the key lands in nobody's
-/// access log and on no Referer header; once it is here, the visible URL has
-/// no reason to keep carrying it, and "Copy link" puts it back.
-export function takeKeyFromFragment(slug) {
-  const found = /(?:^|[#&])k=([^&]+)/.exec(location.hash || "");
-  if (!found) return keyFor(slug);
+/// Takes the link key out of the address, keeps it, and cleans the address
+/// bar. A link carries its key in one of two places. The current form puts it
+/// in the path, as /docs/<slug>/<key>, so it survives apps that drop the
+/// fragment when they open a link. The older form puts it in the fragment, as
+/// /docs/<slug>#k=<key>. Once it is here, the visible URL has no reason to keep
+/// carrying it, and "Copy link" puts it back.
+export function takeLinkKey(slug) {
+  const parts = location.pathname.split("/");
+  const inPath = parts.length === 4 && parts[1] === "docs" && parts[2] === slug && parts[3] !== "";
+  const raw = inPath ? parts[3] : /(?:^|[#&])k=([^&]+)/.exec(location.hash || "")?.[1];
+  if (raw === undefined) return keyFor(slug);
+  // The path form keeps any fragment the address had, as it always has.
+  const hash = inPath ? location.hash : "";
+  const address = `${inPath ? `/docs/${slug}` : location.pathname}${location.search}${hash}`;
   let key;
   try {
-    key = decodeURIComponent(found[1]);
+    key = decodeURIComponent(raw);
   } catch {
     // A malformed escape is untrusted URL input. Remove it from the address
     // bar just like a valid key, but never let it prevent the reader loading.
-    history.replaceState(null, "", location.pathname + location.search);
+    history.replaceState(null, "", address);
     return keyFor(slug);
   }
   memoryKeys.set(slug, key);
@@ -100,7 +107,7 @@ export function takeKeyFromFragment(slug) {
     keys[slug] = key;
     write(KEYS, keys);
   }
-  history.replaceState(null, "", location.pathname + location.search);
+  history.replaceState(null, "", address);
   return key;
 }
 
@@ -114,11 +121,12 @@ export function keyFor(slug) {
 }
 
 /// The link to hand somebody: the one that was shared, key and all, so a link
-/// copied from the reader is the link that was given.
+/// copied from the reader is the link that was given. The key goes in the path,
+/// as /docs/<slug>/<key>, so chat apps that drop the fragment still keep it.
 export function linkFor(slug) {
   const key = keyFor(slug);
   const here = new URL(`/docs/${slug}`, location.origin).href;
-  return key ? `${here}#k=${encodeURIComponent(key)}` : here;
+  return key ? `${here}/${encodeURIComponent(key)}` : here;
 }
 
 /// Notes that this document was opened just now, which is what the landing

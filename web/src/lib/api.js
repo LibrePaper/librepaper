@@ -132,10 +132,14 @@ export const uploadAsset = (slug, file, key) =>
     body: file,
   }).then(json);
 
-/// A document URL without its fragment, which is where the link key lives. The
-/// local service gets this form: it is given its own token, never the key.
+/// A document URL without its link key. The key lives in the fragment of an
+/// older link, and in the path segment after the slug of a current one, so both
+/// are cut here. The local service gets this form: it is given its own token,
+/// never the key.
 export function withoutKey(url) {
   const parsed = new URL(url, globalThis.location?.href);
   parsed.hash = "";
+  const parts = parsed.pathname.split("/");
+  if (parts.length === 4 && parts[1] === "docs") parsed.pathname = `/docs/${parts[2]}`;
   return parsed.href;
 }

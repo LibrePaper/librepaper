@@ -421,7 +421,7 @@ async function run() {
   const owned = await deployment.publish(
     { title: "Owned", source: "# Owned\n\nOriginal wording.\n", source_format: "markdown" },
   );
-  check("publishing hands back a read link", /#k=/.test(owned.share_url || ""), JSON.stringify(owned).slice(0, 120));
+  check("publishing hands back a read link", /\/docs\/[^/]+\/[^/#?]+/.test(owned.share_url || ""), JSON.stringify(owned).slice(0, 120));
   const ownerTab = await openTab(`${BASE}/docs/${owned.slug}`, [
     SESSION,
   ]);
@@ -667,10 +667,15 @@ async function run() {
     },
     body: JSON.stringify({ create: { kind: "link", role: "commenter", until: "180d" } }),
   }).then((r) => r.json());
-  const mintedKey = new URL(minted.created?.url ?? "", BASE).hash.replace("#k=", "");
+  const mintedKey = new URL(minted.created?.url ?? "", BASE).pathname.split("/").pop();
   check("the share route mints a key", Boolean(mintedKey), JSON.stringify(minted).slice(0, 120));
+  // The page at a keyed URL is never kept in an HTTP cache, which sign-out
+  // does not clear.
+  const keyedCaching = (await fetch(new URL(minted.created.url, BASE))).headers.get("cache-control") || "";
+  check("a keyed link's page is not stored", keyedCaching.includes("no-store"), keyedCaching);
 
-  // A separately registered reviewer's browser, and the key in the fragment.
+  // A separately registered reviewer's browser, opening the link exactly as
+  // the server minted it, key in the path.
   const reviewerHandle = "reviewer";
   const reviewerName = "Reviewer";
   const reviewerAccountId = deployment.postgres.seedRegisteredAccount({
@@ -691,12 +696,13 @@ async function run() {
     domain: "localhost",
     path: "/",
   };
-  const reviewer = await openTab(`${BASE}/docs/${shared.slug}#k=${mintedKey}`, [reviewerSession], {
+  const reviewer = await openTab(new URL(minted.created.url, BASE).href, [reviewerSession], {
     ownProfile: true,
   });
   const kept = await until("the key is kept and the bar cleaned", async () => {
     const state = await reviewer.eval(`
       return {
+        path: location.pathname,
         hash: location.hash,
         stored: JSON.parse(localStorage.getItem("librepaper-keys") || "{}")["${shared.slug}"] || "",
       };
@@ -709,11 +715,11 @@ async function run() {
     const frame = await reviewer.evalInFrame("return document.body.innerText", shared.slug);
     return frame?.includes("The draft.") ? state : null;
   });
-  check("a link key is taken from the fragment and kept in this browser", kept?.stored === mintedKey);
+  check("a link key is taken from the path and kept in this browser", kept?.stored === mintedKey);
   check(
     "the visible URL is cleaned once the key is stored",
-    kept && kept.hash === "",
-    kept ? `hash: ${kept.hash}` : "",
+    kept && kept.path === `/docs/${shared.slug}` && kept.hash === "",
+    kept ? `path: ${kept.path} hash: ${kept.hash}` : "",
   );
 
   // And it is presented on the requests that follow, which is what makes the
@@ -733,9 +739,9 @@ async function run() {
   // that was shared.
   const copied = await reviewer.eval(`
     const keys = JSON.parse(localStorage.getItem("librepaper-keys"));
-    return location.origin + "/docs/${shared.slug}#k=" + encodeURIComponent(keys["${shared.slug}"]);
+    return location.origin + "/docs/${shared.slug}/" + encodeURIComponent(keys["${shared.slug}"]);
   `);
-  check("the copied link carries the key back", copied.endsWith(`#k=${mintedKey}`));
+  check("the copied link carries the key back", copied.endsWith(`/${mintedKey}`));
 
   /* --- 7. an HTML document is served to its reader's frame, and to no one else */
 
