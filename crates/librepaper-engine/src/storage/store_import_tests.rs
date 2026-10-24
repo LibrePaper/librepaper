@@ -3,7 +3,7 @@ use std::sync::Arc;
 use sha2::{Digest, Sha256};
 use uuid::Uuid;
 
-use super::{DocumentInput, MutationActor, PutError, ReplaceProject, Store};
+use super::{DocumentInput, PutError, ReplaceProject, Store};
 use crate::log::{CommandError, Registry};
 use crate::storage::blob::{BlobStore, FsStore};
 use crate::storage::postgres::{Authority, NewAccount, NewDocument};
@@ -65,15 +65,14 @@ async fn refused_import_leaves_staged_assets_uncatalogued_then_success_completes
         "test".into(),
     );
     let store = Store::open_with_catalog(blobs.clone(), config, catalog.clone(), registry);
-    let actor = MutationActor {
-        account_id: owner.id.to_string(),
-        owner_key: owner.handle.clone(),
-        session_generation: owner.session_generation.to_string(),
-        link_hash: String::new(),
-        policy_editor: true,
+    let actor = Authority {
+        principal_key: owner.handle.clone(),
+        account_id: Some(owner.id),
+        session_generation: Some(owner.session_generation),
+        link_hash: None,
+        policy_edit: true,
         policy_comment: true,
         automation: false,
-        unowned_publisher: false,
     };
     let bytes = png(64);
     let digest = hex::encode(Sha256::digest(&bytes));
@@ -120,7 +119,7 @@ async fn refused_import_leaves_staged_assets_uncatalogued_then_success_completes
             .await
             .expect("read current session generation");
     let mut current_actor = actor;
-    current_actor.session_generation = current_generation.to_string();
+    current_actor.session_generation = Some(current_generation);
     store
         .put_directory_as_actor(
             DocumentInput {
@@ -237,15 +236,14 @@ async fn a_replacement_refuses_a_figure_a_trim_removed_after_staging() {
         "test".into(),
     );
     let store = Store::open_with_catalog(blobs.clone(), config, catalog.clone(), registry);
-    let actor = MutationActor {
-        account_id: owner.id.to_string(),
-        owner_key: owner.handle.clone(),
-        session_generation: owner.session_generation.to_string(),
-        link_hash: String::new(),
-        policy_editor: true,
+    let actor = Authority {
+        principal_key: owner.handle.clone(),
+        account_id: Some(owner.id),
+        session_generation: Some(owner.session_generation),
+        link_hash: None,
+        policy_edit: true,
         policy_comment: true,
         automation: false,
-        unowned_publisher: false,
     };
 
     let bytes_a = png(64);
@@ -337,15 +335,7 @@ async fn a_replacement_refuses_a_figure_a_trim_removed_after_staging() {
         .await
         .expect("get sequencer");
 
-    let authority = Authority {
-        principal_key: actor.owner_key.clone(),
-        account_id: Some(owner.id),
-        link_hash: None,
-        session_generation: Some(owner.session_generation),
-        policy_edit: actor.policy_editor,
-        policy_comment: actor.policy_comment,
-        automation: false,
-    };
+    let authority = actor.clone();
 
     let mut texts_with_main = texts.clone();
     texts_with_main.insert(0, ("main.md".into(), "# During trim race\n".into()));

@@ -19,8 +19,8 @@ use librepaper_base::auth::{
 use librepaper_base::config::Configuration;
 use librepaper_engine::log::Registry;
 use librepaper_engine::storage::blob::FsStore;
-use librepaper_engine::storage::postgres::{AccessRole, NewAccount, PostgresCatalog};
-use librepaper_engine::storage::store::{DocumentInput, MutationActor, Store};
+use librepaper_engine::storage::postgres::{AccessRole, Authority, NewAccount, PostgresCatalog};
+use librepaper_engine::storage::store::{DocumentInput, Store};
 use librepaper_room::room::Rooms;
 
 use super::Server;
@@ -88,15 +88,14 @@ async fn deployment(slug: &str) -> Option<Deployment> {
                 main: "paper.md".into(),
             },
             Vec::new(),
-            MutationActor {
-                account_id: account.id.to_string(),
-                owner_key: "isolation-owner".into(),
-                session_generation: account.session_generation.to_string(),
-                link_hash: String::new(),
-                policy_editor: true,
+            Authority {
+                account_id: Some(account.id),
+                principal_key: "isolation-owner".into(),
+                session_generation: Some(account.session_generation),
+                link_hash: None,
+                policy_edit: true,
                 policy_comment: true,
                 automation: false,
-                unowned_publisher: false,
             },
         )
         .await

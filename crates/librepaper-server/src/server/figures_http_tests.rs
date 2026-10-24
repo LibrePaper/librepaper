@@ -20,8 +20,8 @@ use super::http_test_support::{deployment as http_deployment, owner_bearer, Depl
 use super::Server;
 use crate::server::origins::Origins;
 use librepaper_base::auth::{sign_device, Identity, PROVIDER_GITHUB};
-use librepaper_engine::storage::postgres::{AccessRole, NewAccount, WriterLease};
-use librepaper_engine::storage::store::{digest_of_bytes, DocumentInput, MutationActor};
+use librepaper_engine::storage::postgres::{AccessRole, Authority, NewAccount, WriterLease};
+use librepaper_engine::storage::store::{digest_of_bytes, DocumentInput};
 
 /// The app origin the requests name in their `host` header; the fixture's
 /// default origins would answer 421 to it.
@@ -63,15 +63,14 @@ async fn deployment(slug: &str) -> Option<Deployment> {
 /// owner. A figure left out of the new tree stays in the catalogue, which is
 /// the retained state trim has not reached yet.
 async fn put_directory(deployment: &Deployment, slug: &str, figures: Vec<(String, Vec<u8>)>) {
-    let actor = MutationActor {
-        account_id: deployment.owner_id.to_string(),
-        owner_key: "owner".into(),
-        session_generation: deployment.owner_session_generation.clone(),
-        link_hash: String::new(),
-        policy_editor: true,
+    let actor = Authority {
+        account_id: Some(deployment.owner_id),
+        principal_key: "owner".into(),
+        session_generation: Some(deployment.owner_session_generation.parse().unwrap()),
+        link_hash: None,
+        policy_edit: true,
         policy_comment: true,
         automation: false,
-        unowned_publisher: false,
     };
     deployment
         .server

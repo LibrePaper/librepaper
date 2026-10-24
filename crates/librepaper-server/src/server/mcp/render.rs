@@ -396,7 +396,7 @@ impl Server {
             .await
             .map_err(|(_, message)| Failure::new("renderer_unavailable", message))?;
         let receipt = Self::render_receipt(candidate_id, &candidate.tree_digest, &result)?;
-        // Access was checked before dispatch above; `handle_mcp` rechecks
+        // Access was checked before dispatch above; `mcp_recheck` rechecks
         // once more before this receipt reaches the caller.
         self.store_render_receipt(slug, actor, who, candidate, receipt.clone())
             .await?;

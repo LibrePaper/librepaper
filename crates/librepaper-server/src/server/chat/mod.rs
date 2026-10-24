@@ -231,10 +231,11 @@ impl Server {
     pub(super) async fn handle_chat(
         self: Arc<Self>,
         request: Request<Body>,
-        arrival: &Arrival,
+        context: &RequestContext,
         slug: &str,
         tail: &[&str],
     ) -> Reply {
+        let arrival = &context.arrival;
         if let [id, "socket"] = tail {
             return self.handle_chat_socket(request, arrival, slug, id).await;
         }
@@ -247,7 +248,7 @@ impl Server {
         let headers = request.headers().clone();
         let query = request.uri().query().map(str::to_string);
         let (_entry, _who) = match self
-            .readable_entry(slug, &headers, arrival, query.as_deref())
+            .readable_entry_in(slug, context, &headers, query.as_deref())
             .await
         {
             Ok(result) => result,

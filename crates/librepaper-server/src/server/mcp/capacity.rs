@@ -62,7 +62,7 @@ impl Capacity {
         };
         if let Some(scope) = scope {
             return Err(Failure::new(
-                "rate_limited",
+                "busy",
                 "document tool capacity is busy; retry with the same operation key",
             )
             .with_data(json!({"retry_after_ms":250,"scope":scope})));
@@ -126,7 +126,7 @@ mod tests {
             .map(|_| capacity.acquire(&alice).unwrap())
             .collect();
         let error = capacity.acquire(&alice).err().unwrap();
-        assert_eq!(error.code, "rate_limited");
+        assert_eq!(error.code, "busy");
         assert_eq!(
             error.data,
             json!({"retry_after_ms":250,"scope":"principal"})
@@ -245,7 +245,7 @@ mod tests {
         let body = axum::body::to_bytes(reply.into_body(), 8192).await.unwrap();
         let value: Value = serde_json::from_slice(&body).unwrap();
         let error = &value["error"];
-        assert_eq!(error["code"], "rate_limited");
+        assert_eq!(error["code"], "busy");
         assert_eq!(
             error["recovery"],
             json!({"retry_after_ms":250,"scope":"principal"})

@@ -1,4 +1,4 @@
-//! Native folder consent names the requesting site and document. Only an
+//! Native folder consent names the requesting site and project. Only an
 //! opaque binding identifier returns to that site. Dialogs are cancellable,
 //! time bounded, and serialized by the service.
 

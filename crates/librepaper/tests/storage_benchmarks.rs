@@ -3663,5 +3663,6 @@ async fn maintenance_backlog_capacity_benchmark() {
             .any(|entry| entry["compacted_after_us"].is_u64()),
         "not one document in the backlog ever compacted; the run measured nothing: {report}"
     );
+    drop(_writer);
     catalog.close().await;
 }

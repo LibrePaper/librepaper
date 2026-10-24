@@ -24,6 +24,7 @@ use loro::{
     Container, ContainerTrait, LoroDoc, LoroMap, LoroText, LoroValue, ValueOrContainer,
 };
 
+use crate::document::anchors::{bytes_of, record_map, str_of};
 use crate::document::session::{apply_text_edits, Edit, CHANGES, FILES};
 
 /// Who is making an edit: the stable key and the name comments show.
@@ -682,14 +683,6 @@ fn plan_one(
     (live, out_gaps)
 }
 
-/// The record `id` of the `changes` root, when it is a map container.
-fn record_map(root: &LoroMap, id: &str) -> Option<LoroMap> {
-    match root.get(id)? {
-        ValueOrContainer::Container(Container::Map(m)) => Some(m),
-        _ => None,
-    }
-}
-
 /// Every map record of the `changes` root. Plain values are left out.
 fn records(doc: &LoroDoc) -> Vec<(String, LoroMap)> {
     let root = doc.get_map(CHANGES);
@@ -697,20 +690,6 @@ fn records(doc: &LoroDoc) -> Vec<(String, LoroMap)> {
     ids.into_iter()
         .filter_map(|id| record_map(&root, &id).map(|m| (id, m)))
         .collect()
-}
-
-fn str_of(m: &LoroMap, key: &str) -> Option<String> {
-    match m.get(key)? {
-        ValueOrContainer::Value(LoroValue::String(s)) => Some(s.to_string()),
-        _ => None,
-    }
-}
-
-fn bytes_of(m: &LoroMap, key: &str) -> Option<Vec<u8>> {
-    match m.get(key)? {
-        ValueOrContainer::Value(LoroValue::Binary(b)) => Some(b.to_vec()),
-        _ => None,
-    }
 }
 
 /// A number field. The browser writes JS numbers, which Loro stores as doubles.

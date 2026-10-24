@@ -7,8 +7,8 @@ use librepaper_base::auth::{GithubApp, Policy};
 use librepaper_base::config::Configuration;
 use librepaper_engine::log::Registry;
 use librepaper_engine::storage::blob::FsStore;
-use librepaper_engine::storage::postgres::{NewAccount, PostgresCatalog, WriterLease};
-use librepaper_engine::storage::store::{DocumentInput, MutationActor, Store};
+use librepaper_engine::storage::postgres::{Authority, NewAccount, PostgresCatalog, WriterLease};
+use librepaper_engine::storage::store::{DocumentInput, Store};
 use librepaper_room::room::Rooms;
 
 pub(super) struct Deployment {
@@ -72,15 +72,14 @@ pub(super) async fn deployment(
         catalog.clone(),
         registry.clone(),
     );
-    let actor = MutationActor {
-        account_id: owner.id.to_string(),
-        owner_key: "owner".into(),
-        session_generation: owner.session_generation.to_string(),
-        link_hash: String::new(),
-        policy_editor: true,
+    let actor = Authority {
+        account_id: Some(owner.id),
+        principal_key: "owner".into(),
+        session_generation: Some(owner.session_generation),
+        link_hash: None,
+        policy_edit: true,
         policy_comment: true,
         automation: false,
-        unowned_publisher: false,
     };
     let slug = input.slug.clone();
     store

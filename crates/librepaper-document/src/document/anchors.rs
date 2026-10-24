@@ -818,22 +818,22 @@ fn span_of(doc: &LoroDoc, live: &Live, place: &Place) -> Option<(usize, usize)> 
     Some((s.offset, to.max(s.offset)))
 }
 
-/// The record `id` of the anchors root, when it is a map container.
-fn record_map(root: &LoroMap, id: &str) -> Option<LoroMap> {
+/// The record `id` of a records root, when it is a map container.
+pub(super) fn record_map(root: &LoroMap, id: &str) -> Option<LoroMap> {
     match root.get(id)? {
         ValueOrContainer::Container(Container::Map(m)) => Some(m),
         _ => None,
     }
 }
 
-fn str_of(m: &LoroMap, key: &str) -> Option<String> {
+pub(super) fn str_of(m: &LoroMap, key: &str) -> Option<String> {
     match m.get(key)? {
         ValueOrContainer::Value(LoroValue::String(s)) => Some(s.to_string()),
         _ => None,
     }
 }
 
-fn bytes_of(m: &LoroMap, key: &str) -> Option<Vec<u8>> {
+pub(super) fn bytes_of(m: &LoroMap, key: &str) -> Option<Vec<u8>> {
     match m.get(key)? {
         ValueOrContainer::Value(LoroValue::Binary(b)) => Some(b.to_vec()),
         _ => None,

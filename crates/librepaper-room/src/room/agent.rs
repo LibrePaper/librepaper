@@ -99,15 +99,14 @@ impl OperationKey {
 /// payload and therefore never alter a retry's operation digest.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct AgentAuthority {
-    pub account_id: String,
-    pub owner_key: String,
-    pub session_generation: String,
-    pub link_hash: String,
-    pub policy_editor: bool,
-    pub policy_comment: bool,
-    /// Trusted endpoint scope (document/account/link/generation/role). This
-    /// binds operation ids to the complete authenticated actor context.
+    pub authority: librepaper_engine::storage::postgres::Authority,
+    /// Trusted endpoint scope that namespaces operation ids. On the MCP path
+    /// it is the actor string, which binds link, generation and role. On the
+    /// sync path it is `sync:{document_id}:{principal}` and binds only the
+    /// document and the principal.
     pub operation_scope: String,
+    /// The viewer key that names the author of the label a change writes.
+    pub author_key: String,
 }
 
 /// Applies each file's edits as tracked changes by `by`, then records the

@@ -29,10 +29,10 @@ use librepaper_base::auth::pseudonym::pseudonym_for;
 use librepaper_base::auth::{
     cookie_name, device_deadline, normalized, now_unix, pkce_verifier, random_token,
     read_agent_grant, read_device, read_session, read_visitor, session_deadline, sign_device,
-    sign_session, sign_visitor, Accounts, DeviceOutcome, GithubAccounts, GithubApp, Identity,
-    OidcProvider, PendingCodes, Policy, TokenCache, AGENT_GRANT_PREFIX, AGENT_TOKEN_PREFIX,
-    DEVICE_POLL_INTERVAL, DEVICE_TOKEN_MAX_AGE, DEVICE_TOKEN_PREFIX, PROVIDER_GITHUB,
-    SESSION_COOKIE, SESSION_MAX_AGE, STATE_COOKIE, VISITOR_COOKIE,
+    sign_session, sign_visitor, DeviceOutcome, GithubApp, Identity, OidcProvider, PendingCodes,
+    Policy, TokenCache, AGENT_GRANT_PREFIX, AGENT_TOKEN_PREFIX, DEVICE_POLL_INTERVAL,
+    DEVICE_TOKEN_MAX_AGE, DEVICE_TOKEN_PREFIX, PROVIDER_GITHUB, SESSION_COOKIE, SESSION_MAX_AGE,
+    STATE_COOKIE, VISITOR_COOKIE,
 };
 use librepaper_base::config::Configuration;
 use librepaper_base::shell::{renderers, ShellFile};
@@ -263,9 +263,6 @@ pub struct Server {
     pub graphs: Option<Arc<graphs::Graphs>>,
     pub publishers: Policy,
     pub commenters: Policy,
-    /// Who a GitHub login is, for a grant by name. GitHub in a running
-    /// deployment; a stand-in in the tests, which have no network.
-    pub accounts: Arc<dyn Accounts>,
     /// Days of invented history to write for the starter project a new
     /// account is given, or nothing. A demonstration deployment asks for one;
     /// every other deployment keeps the honest history of a document
@@ -398,9 +395,10 @@ pub const AUTOMATION_HEADER: &str = "x-librepaper-automation";
 /// that grants anything is the presented link, and `ceiling` can only lower
 /// what the link says, never raise it.
 ///
-/// `role_of` is deliberately not called with a blanked caller: an unowned
-/// entry treats an empty caller as its owner, which would turn "no identity"
-/// into the highest rung rather than the lowest.
+/// `role_of` is deliberately not called for automation: it would also honour
+/// the caller's ownership and account grants, and automation is bounded by the
+/// presented link alone. An empty caller owns nothing, so a blanked caller
+/// would work too, but only by relying on that.
 fn resolved_role(
     automation: bool,
     entry: &IndexEntry,
@@ -519,6 +517,47 @@ pub struct Viewer {
     pub token: Option<AgentToken>,
 }
 
+/// A request's account id, session generation or link digest was not in
+/// the form the credential checks issue.
+#[derive(Debug)]
+pub struct InvalidCredential;
+
+/// Parses the identity strings of an authenticated request into an
+/// authority that carries only them. An empty string is absent, and a
+/// nonempty one that does not parse is refused.
+fn parse_credentials(
+    account_id: &str,
+    session_generation: &str,
+    link: &str,
+) -> Result<librepaper_engine::storage::postgres::Authority, InvalidCredential> {
+    let account_id = if account_id.is_empty() {
+        None
+    } else {
+        Some(uuid::Uuid::parse_str(account_id).map_err(|_| InvalidCredential)?)
+    };
+    let session_generation = if session_generation.is_empty() {
+        None
+    } else {
+        Some(
+            session_generation
+                .parse::<i64>()
+                .map_err(|_| InvalidCredential)?,
+        )
+    };
+    let link_hash = if link.is_empty() {
+        None
+    } else {
+        let bytes = hex::decode(link).map_err(|_| InvalidCredential)?;
+        Some(<[u8; 32]>::try_from(bytes).map_err(|_| InvalidCredential)?)
+    };
+    Ok(librepaper_engine::storage::postgres::Authority {
+        account_id,
+        session_generation,
+        link_hash,
+        ..Default::default()
+    })
+}
+
 impl Viewer {
     pub fn at_least(&self, wanted: Role) -> bool {
         self.id.is_signed_in() && (!self.automation || self.bearer) && self.role.at_least(wanted)
@@ -527,13 +566,6 @@ impl Viewer {
     /// The account this request authenticated, if any.
     pub fn account_id(&self) -> Option<uuid::Uuid> {
         uuid::Uuid::parse_str(&self.id.id).ok()
-    }
-
-    /// The raw bytes of the link digest this request carried, if any.
-    fn link_bytes(&self) -> Option<Vec<u8>> {
-        (!self.link.is_empty())
-            .then(|| hex::decode(&self.link).ok())
-            .flatten()
     }
 
     /// What this caller's writes are named by, on every transport alike:
@@ -557,38 +589,34 @@ impl Viewer {
         format!("{VISITOR_PREFIX}{}", self.key)
     }
 
-    pub fn document_authority(
+    /// The typed identity a write by this caller is authorized as. A
+    /// nonempty account id, session generation or link digest that does not
+    /// parse refuses, so a malformed value never widens into a visitor.
+    pub fn authority(
         &self,
         ceiling: librepaper_engine::storage::store::Ceiling,
-    ) -> librepaper_engine::storage::postgres::Authority {
-        librepaper_engine::storage::postgres::Authority {
+    ) -> Result<librepaper_engine::storage::postgres::Authority, InvalidCredential> {
+        Ok(librepaper_engine::storage::postgres::Authority {
             principal_key: self.principal_key(),
-            account_id: self.account_id(),
-            link_hash: self.link_bytes(),
-            session_generation: self.id.session_generation.parse::<i64>().ok(),
             policy_edit: ceiling.edit,
             policy_comment: ceiling.comment,
             automation: self.automation,
-        }
+            ..parse_credentials(&self.id.id, &self.id.session_generation, &self.link)?
+        })
     }
 
-    /// The same identity as `document_authority`, in the shape the shared
-    /// commit-boundary check uses: the account's live session, the link's
-    /// token hash, and both deployment policy ceilings. A viewer does not
-    /// know the deployment's policy on its own, so callers pass it in.
-    pub fn mutation_authorization(
+    /// The authority a source change runs under. Its author key is the
+    /// viewer's key, which names the author of the label the change writes.
+    pub fn agent_authority(
         &self,
         ceiling: librepaper_engine::storage::store::Ceiling,
-    ) -> librepaper_engine::storage::postgres::MutationAuthorization {
-        librepaper_engine::storage::postgres::MutationAuthorization {
-            principal_key: self.principal_key(),
-            account_id: self.account_id(),
-            session_generation: self.id.session_generation.parse::<i64>().ok(),
-            token_hash: self.link_bytes().and_then(|bytes| bytes.try_into().ok()),
-            policy_edit: ceiling.edit,
-            policy_comment: ceiling.comment,
-            automation: self.automation,
-        }
+        operation_scope: String,
+    ) -> Result<librepaper_room::room::agent::AgentAuthority, InvalidCredential> {
+        Ok(librepaper_room::room::agent::AgentAuthority {
+            authority: self.authority(ceiling)?,
+            operation_scope,
+            author_key: self.key.clone(),
+        })
     }
 
     /// What a write by this caller is attributed to. The display string is
@@ -658,6 +686,20 @@ pub struct Caller {
 }
 
 impl Caller {
+    /// The typed identity of a publisher write, past the HTTP publisher gate.
+    pub fn authority(
+        &self,
+        policy_comment: bool,
+    ) -> Result<librepaper_engine::storage::postgres::Authority, InvalidCredential> {
+        Ok(librepaper_engine::storage::postgres::Authority {
+            principal_key: self.key.clone(),
+            policy_edit: true,
+            policy_comment,
+            automation: false,
+            ..parse_credentials(&self.id, &self.session_generation, "")?
+        })
+    }
+
     /// Enough of an identity to ask the switches with.
     fn identity(&self) -> Identity {
         Identity {
@@ -793,10 +835,12 @@ impl Server {
     /// The same, resolving the caller from the request context the
     /// middleware already filled in rather than authenticating again.
     ///
-    /// Safe because `api_guard` refuses a request whose credential did not
-    /// validate before any router handler runs: by this point the context's
-    /// identity is the answer a fresh lookup would give, and the 401/503
-    /// that a failure would have produced has already been sent.
+    /// Safe because a request whose credential did not validate is refused
+    /// before the handler runs: `api_guard` refuses it for the routes of
+    /// `api_router`, and the fallback dispatch refuses it for the `/api/` and
+    /// `/ws/` paths it serves. By this point the context's identity is the
+    /// answer a fresh lookup would give, and the 401/503 that a failure
+    /// would have produced has already been sent.
     // The error is a whole response, for the same reason `entry_viewer`'s is.
     #[allow(clippy::result_large_err)]
     pub(super) async fn entry_viewer_in(
@@ -945,7 +989,6 @@ impl Server {
         // (§4.3) that `serve` also hands the worker itself; building a second
         // one here would mean two caches of the same documents.
         let documents = DocumentService::new(store, rooms, background);
-        let accounts = Arc::new(GithubAccounts::new(&app));
         let cost = Arc::new(cost::CostMeter::new(&config));
         let socket_budget = socket_budget::SocketBudget::new(config.sockets);
         let mcp_capacity = mcp::Capacity::default();
@@ -969,7 +1012,6 @@ impl Server {
             graphs: None,
             publishers,
             commenters,
-            accounts,
             simulate_activity: None,
             pending: PendingCodes::new(),
             chat: chat::Hub::default(),
@@ -1819,7 +1861,14 @@ impl Server {
         };
         let command = command.with_creator(creator.clone());
         let ceiling = self.ceiling_for(&who.id);
-        let authority = who.document_authority(ceiling);
+        let Ok(authority) = who.authority(ceiling) else {
+            return (
+                json!({"type": "error", "message": "access changed", "temp_id": command.temp_id(),
+                    "request_id": request_id, "version": 1,
+                    "protocol": "librepaper.room.v1"}),
+                false,
+            );
+        };
         // Who is writing, built once from the viewer and carried whole. The
         // things it holds used to travel as positional arguments through
         // every command constructor below.
@@ -1827,7 +1876,7 @@ impl Server {
             creator,
             uuid::Uuid::parse_str(&id.id).ok(),
             author,
-            who.mutation_authorization(ceiling),
+            authority.clone(),
             may_edit,
         );
         let temp_id = command.temp_id().to_owned();
@@ -2209,8 +2258,8 @@ mod automation_authority_tests {
         let signed_in = viewer(&account.to_string(), "alice", "");
         assert_eq!(signed_in.principal_key(), account.to_string());
         assert_eq!(
-            signed_in.document_authority(ceiling()).principal_key,
-            signed_in.mutation_authorization(ceiling()).principal_key
+            signed_in.authority(ceiling()).unwrap().principal_key,
+            account.to_string()
         );
 
         // A link-only automation caller has no upload key at all. Naming it
@@ -2219,49 +2268,51 @@ mod automation_authority_tests {
         let link_only = viewer("", "", &link);
         assert_eq!(link_only.principal_key(), format!("link:{link}"));
         assert_eq!(
-            link_only.document_authority(ceiling()).link_hash,
-            Some(vec![0xabu8; 32])
-        );
-        assert_eq!(
-            link_only
-                .mutation_authorization(Ceiling {
-                    comment: true,
-                    edit: false
-                })
-                .token_hash,
+            link_only.authority(ceiling()).unwrap().link_hash,
             Some([0xabu8; 32])
         );
 
         // `Server::owner` already spells a visitor key `visitor:<token>`.
         let visitor = viewer("", "visitor:token-1", "");
         assert_eq!(visitor.principal_key(), "visitor:token-1");
-        assert_eq!(
-            visitor.document_authority(ceiling()).principal_key,
-            visitor
-                .mutation_authorization(Ceiling {
-                    comment: true,
-                    edit: false
-                })
-                .principal_key
-        );
-        assert!(visitor.document_authority(ceiling()).account_id.is_none());
+        let visitor_authority = visitor.authority(ceiling()).unwrap();
+        assert_eq!(visitor_authority.principal_key, "visitor:token-1");
+        assert!(visitor_authority.account_id.is_none());
     }
 
     #[test]
-    fn mutation_authorization_carries_the_session_generation() {
+    fn authority_carries_the_session_generation() {
         let account = uuid::Uuid::new_v4();
         let who = viewer(&account.to_string(), "alice", "");
-        let authorization = who.mutation_authorization(ceiling());
-        assert_eq!(authorization.session_generation, Some(3));
-        assert_eq!(authorization.account_id, Some(account));
-        assert!(authorization.policy_edit);
+        let authority = who.authority(ceiling()).unwrap();
+        assert_eq!(authority.session_generation, Some(3));
+        assert_eq!(authority.account_id, Some(account));
+        assert!(authority.policy_edit);
         assert!(
-            !who.mutation_authorization(Ceiling {
+            !who.authority(Ceiling {
                 comment: true,
                 edit: false
             })
+            .unwrap()
             .policy_edit
         );
+    }
+
+    #[test]
+    fn authority_refuses_a_malformed_account_session_or_link() {
+        let account = uuid::Uuid::new_v4().to_string();
+        assert!(viewer("not-a-uuid", "alice", "")
+            .authority(ceiling())
+            .is_err());
+        assert!(viewer(&account, "alice", "editor-hash")
+            .authority(ceiling())
+            .is_err());
+        assert!(viewer(&account, "alice", &hex::encode([0xabu8; 16]))
+            .authority(ceiling())
+            .is_err());
+        let mut who = viewer(&account, "alice", "");
+        who.id.session_generation = "three".into();
+        assert!(who.authority(ceiling()).is_err());
     }
 
     #[test]
@@ -2466,9 +2517,8 @@ mod automation_authority_tests {
         );
     }
 
-    /// No link is the bottom rung, never the top. An unowned entry treats an
-    /// empty caller as its owner, so routing automation through `role_of` with
-    /// blanked fields would turn "presented nothing" into full authority.
+    /// No link is the bottom rung, never the top. Automation is bounded by the
+    /// presented link alone, so presenting nothing grants only reading.
     #[test]
     fn presenting_no_link_grants_nothing() {
         let now = librepaper_base::util::now_unix();

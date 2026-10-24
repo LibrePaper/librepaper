@@ -307,9 +307,8 @@ impl PostgresCatalog {
         rung: crate::log::sequencer::Rung,
     ) -> Result<()> {
         self.check_writer_epoch(tx).await?;
-        let actor = authority.mutation_authorization();
         let require_editor = matches!(rung, crate::log::sequencer::Rung::Editor);
-        PostgresCatalog::authorize_mutation(tx, document_id, &actor, require_editor).await
+        PostgresCatalog::authorize_mutation(tx, document_id, authority, require_editor).await
     }
 
     /// §5.1: one transaction, one row.

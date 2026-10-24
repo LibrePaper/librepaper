@@ -95,7 +95,7 @@ pub fn plan(
         .with_extension(request.output.extension());
     let mut plan = match request.builder {
         BuilderId::Typst => typst_plan(request, tools, workspace, &entrypoint, &output)?,
-        BuilderId::Calepin => calepin_plan(request, tools, workspace, &entrypoint, &output)?,
+        BuilderId::Calepin => calepin_plan(request, workspace, &entrypoint, &output)?,
     };
     plan.cwd = workspace.to_path_buf();
     Ok(plan)
@@ -103,7 +103,6 @@ pub fn plan(
 
 fn calepin_plan(
     request: &BuildRequest,
-    tools: &BTreeMap<String, PathBuf>,
     workspace: &Path,
     entrypoint: &Path,
     output: &Path,
@@ -112,19 +111,10 @@ fn calepin_plan(
     if !matches!(request.output, Output::Pdf | Output::Html) {
         return Err("Calepin output must be PDF or HTML".into());
     }
-    // From discovery, like every other native builder. This used to search
-    // `PATH` again here, which could resolve a different executable from
-    // the one discovery reported as available -- and reported a build
-    // failure for a tool the capabilities call had just called present.
-    let executable = if crate::local::integrations::get(Integration::Calepin)
-        .path
-        .is_some()
-    {
-        crate::local::integrations::executable(Integration::Calepin)
-            .ok_or("custom Calepin path not found")?
-    } else {
-        tool(tools, "calepin")?
-    };
+    // The same lookup the capabilities call and previews use: the override
+    // variable, then the settings path, then PATH.
+    let executable = crate::local::integrations::executable(Integration::Calepin)
+        .ok_or("Calepin not found: install Calepin or set its path in settings")?;
     let mut args = vec![
         "compile".into(),
         entrypoint.display().to_string(),

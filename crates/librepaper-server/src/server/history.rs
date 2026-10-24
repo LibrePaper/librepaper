@@ -767,10 +767,11 @@ impl Server {
     pub(super) async fn handle_label(
         &self,
         request: Request<Body>,
-        arrival: &Arrival,
+        context: &RequestContext,
         slug: &str,
         sha: &str,
     ) -> Reply {
+        let arrival = &context.arrival;
         if !self.valid_slug(slug) {
             return plain(400, "bad slug");
         }
@@ -782,7 +783,7 @@ impl Server {
             return write_json(403, &cross_site_refusal());
         }
         let (entry, who) = match self
-            .entry_viewer(slug, request.headers(), arrival, None)
+            .entry_viewer_in(slug, context, request.headers(), None)
             .await
         {
             Ok(result) => result,
@@ -819,7 +820,9 @@ impl Server {
             Ok(room) => room,
             Err(error) => return refused("open the room", &error),
         };
-        let authority = who.document_authority(self.ceiling_for(&who.id));
+        let Ok(authority) = who.authority(self.ceiling_for(&who.id)) else {
+            return write_json(403, &json!({"error": "access changed"}));
+        };
         if current {
             // `Room::take_label` rather than a second label command of this
             // module's own: that one had no §7.2 replay lookup, so a retry
@@ -870,18 +873,18 @@ impl Server {
     pub(super) async fn handle_restore(
         &self,
         request: Request<Body>,
-        arrival: &Arrival,
+        context: &RequestContext,
         slug: &str,
     ) -> Reply {
         let headers = request.headers().clone();
         if !self.valid_slug(slug) {
             return plain(400, "bad slug");
         }
-        if cross_site_refused(&headers, arrival) {
+        if cross_site_refused(&headers, &context.arrival) {
             return write_json(403, &cross_site_refusal());
         }
         if let Err(response) = self
-            .entry_at_least(slug, request.headers(), arrival, None, Role::Editor)
+            .entry_at_least_in(slug, context, request.headers(), None, Role::Editor)
             .await
         {
             return response;
@@ -918,10 +921,11 @@ impl Server {
             Ok(room) => room,
             Err(error) => return refused("open the room", &error),
         };
-        // A link may have been revoked, or the account's rights changed,
-        // while the request body was being read.
+        // A link may have been revoked, the session ended, or the account's
+        // rights changed while the request body was being read, so the caller
+        // is authenticated again rather than taken from the request context.
         let (_current_entry, current_who) = match self
-            .entry_at_least(slug, &headers, arrival, None, Role::Editor)
+            .entry_at_least(slug, &headers, &context.arrival, None, Role::Editor)
             .await
         {
             Ok(result) => result,
@@ -953,7 +957,9 @@ impl Server {
                 assets.push((path.clone(), file.digest.clone()));
             }
         }
-        let authority = current_who.document_authority(self.ceiling_for(&current_who.id));
+        let Ok(authority) = current_who.authority(self.ceiling_for(&current_who.id)) else {
+            return write_json(403, &json!({"error": "access changed"}));
+        };
         let author_account_id = uuid::Uuid::parse_str(&current_who.id.id).ok();
         let mut command = Restore {
             request_id: uuid::Uuid::new_v4(),
@@ -991,18 +997,18 @@ impl Server {
     pub(super) async fn handle_history_trim(
         &self,
         request: Request<Body>,
-        arrival: &Arrival,
+        context: &RequestContext,
         slug: &str,
     ) -> Reply {
         let headers = request.headers().clone();
         if !self.valid_slug(slug) {
             return plain(400, "bad slug");
         }
-        if cross_site_refused(&headers, arrival) {
+        if cross_site_refused(&headers, &context.arrival) {
             return write_json(403, &cross_site_refusal());
         }
         if let Err(response) = self
-            .entry_at_least(slug, request.headers(), arrival, None, Role::Editor)
+            .entry_at_least_in(slug, context, request.headers(), None, Role::Editor)
             .await
         {
             return response;
@@ -1015,10 +1021,11 @@ impl Server {
             Ok(room) => room,
             Err(error) => return refused("open the room", &error),
         };
-        // A link may have been revoked, or the account's rights changed,
-        // while the request body was being read.
+        // A link may have been revoked, the session ended, or the account's
+        // rights changed while the request body was being read, so the caller
+        // is authenticated again rather than taken from the request context.
         let (_, current_who) = match self
-            .entry_at_least(slug, &headers, arrival, None, Role::Editor)
+            .entry_at_least(slug, &headers, &context.arrival, None, Role::Editor)
             .await
         {
             Ok(result) => result,
@@ -1032,7 +1039,9 @@ impl Server {
                 &json!({"error": "another editor has this document open; ask them to close it first"}),
             );
         }
-        let authority = current_who.document_authority(self.ceiling_for(&current_who.id));
+        let Ok(authority) = current_who.authority(self.ceiling_for(&current_who.id)) else {
+            return write_json(403, &json!({"error": "access changed"}));
+        };
         // A shallow snapshot keeps no history before the trim point, so a comment
         // on a passage deleted there could not be resolved again. Each attempt
         // heals the comment anchors to the text as it stands, and the healing
