@@ -29,7 +29,7 @@ struct Pin {
     prefix: &'static str,
 }
 
-/// The renderers and the editor fonts, which are not in the binary. The four
+/// The renderers and the editor fonts, which are not in the binary. The five
 /// `wasm` modules are fetched by the page that renders with them; the `fonts`
 /// files are the faces the editor offers, each fetched when it is used.
 const PINS: &[Pin] = &[
@@ -37,6 +37,7 @@ const PINS: &[Pin] = &[
     pin("bibliography.wasm", "wasm"),
     pin("citations.wasm", "wasm"),
     pin("typst.wasm", "wasm"),
+    pin("pandoc.wasm", "wasm"),
     pin("jetbrains-mono.woff2", "fonts"),
     pin("jetbrains-mono-italic.woff2", "fonts"),
     pin("jetbrains-mono-semibold.woff2", "fonts"),
@@ -262,13 +263,13 @@ mod shell_tests {
         let sha = "a".repeat(64);
         let json = modules_json("https://assets.example/", &lock(&sha)).unwrap();
         let modules: serde_json::Value = serde_json::from_str(&json).unwrap();
-        for name in ["markdown", "bibliography", "citations", "typst"] {
+        for name in ["markdown", "bibliography", "citations", "typst", "pandoc"] {
             assert_eq!(
                 modules[name],
                 format!("https://assets.example/wasm/{sha}/{name}.wasm")
             );
         }
-        assert_eq!(modules.as_object().unwrap().len(), 4);
+        assert_eq!(modules.as_object().unwrap().len(), 5);
     }
 
     #[test]
