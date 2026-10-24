@@ -1125,8 +1125,6 @@ mod selection_tests {
         // failure about that. The type is the sequencer's own, so it
         // cannot drift from the shape a capture really holds.
         let projection = librepaper_document::document::projection::Projection {
-            main: path.into(),
-            main_id: "f1".into(),
             files: [(
                 path.to_string(),
                 librepaper_document::document::projection::Entry {

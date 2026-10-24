@@ -133,7 +133,6 @@ async fn bare_with_config(slug: &str, config: Configuration) -> Option<Bare> {
             ownership_mode: "owned".into(),
             title: "Spike".into(),
             source_format: "markdown".into(),
-            main_path: "paper.md".into(),
         })
         .await
         .expect("create the document row");
@@ -873,7 +872,6 @@ async fn deployment_with_document(slug: &str) -> Option<Deployment> {
                 title: "A Paper".into(),
                 source: PAPER.into(),
                 source_format: "markdown".into(),
-                main: MAIN.into(),
             },
             Vec::new(),
             actor,
@@ -1281,7 +1279,6 @@ async fn opening_more_documents_than_the_budget_holds_evicts_a_subscribed_entry_
                 ownership_mode: "owned".into(),
                 title: "Spike".into(),
                 source_format: "markdown".into(),
-                main_path: "paper.md".into(),
             })
             .await
             .unwrap();
@@ -1735,7 +1732,6 @@ async fn one_housekeeping_pass_flushes_every_due_document_exactly_once() {
                 ownership_mode: "owned".into(),
                 title: "Sweep".into(),
                 source_format: "markdown".into(),
-                main_path: "paper.md".into(),
             })
             .await
             .expect("document row");

@@ -138,7 +138,6 @@ async fn fixture_full(
             title: "Admin origin fixture".into(),
             source: "# Admin origin fixture\n".into(),
             source_format: "markdown".into(),
-            main: "paper.md".into(),
         },
         vec![],
         librepaper_base::auth::Policy::allowing("github", &["owner"]),

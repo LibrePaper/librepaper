@@ -32,7 +32,6 @@ async fn a_new_account_receives_one_project_holding_every_tutorial() {
             title: "Fixture".into(),
             source: "# Fixture\n".into(),
             source_format: "markdown".into(),
-            main: "fixture.md".into(),
         },
         Vec::new(),
         librepaper_base::auth::Policy::allowing("github", &["*"]),
@@ -71,7 +70,6 @@ async fn a_new_account_receives_one_project_holding_every_tutorial() {
         .await
         .unwrap()
         .expect("starter catalogue row exists");
-    assert_eq!(record.main_path, "librepaper.md");
     assert_eq!(record.source_format, "markdown");
     assert_eq!(record.owner_id, d.owner_id);
 

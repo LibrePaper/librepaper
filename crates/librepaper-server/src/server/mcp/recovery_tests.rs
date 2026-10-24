@@ -97,7 +97,6 @@ async fn deployment(slug: &str) -> Option<Deployment> {
                 title: "Recovery paper".into(),
                 source: PAPER.into(),
                 source_format: "markdown".into(),
-                main: "paper.md".into(),
             },
             Vec::new(),
             Authority {

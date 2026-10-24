@@ -85,7 +85,6 @@ async fn deployment(slug: &str) -> Option<Deployment> {
                 title: "Isolation check".into(),
                 source: SOURCE.into(),
                 source_format: "markdown".into(),
-                main: "paper.md".into(),
             },
             Vec::new(),
             Authority {

@@ -118,7 +118,6 @@ async fn deployment(slug: &str) -> Option<Deployment> {
                 title: "A Paper".into(),
                 source: PAPER.into(),
                 source_format: "markdown".into(),
-                main: "paper.md".into(),
             },
             Vec::new(),
             actor,
@@ -1004,7 +1003,6 @@ async fn snapshot_exposes_the_shared_cli_project_snapshot_wire_fields() {
     let snapshot: librepaper_document::document::projection::ProjectSnapshot =
         serde_json::from_value(payload.clone()).unwrap();
     assert_eq!(snapshot.sha, snapshot.tree.digest());
-    assert_eq!(snapshot.tree.main, "paper.md");
     assert_eq!(snapshot.texts["paper.md"], PAPER);
     assert_eq!(payload["files"], payload["tree"]["files"]);
     deployment.catalog.close().await;
@@ -1039,7 +1037,7 @@ fn multipart_upload(
 
 #[tokio::test]
 #[ignore = "requires LIBREPAPER_TEST_POSTGRES_URL"]
-async fn upload_parser_rejects_invalid_utf8_in_single_and_selected_main_files() {
+async fn upload_parser_rejects_invalid_utf8_in_single_and_directory_files() {
     let Some(deployment) = deployment("http-upload-invalid-main-utf8").await else {
         return;
     };
@@ -1049,7 +1047,6 @@ async fn upload_parser_rejects_invalid_utf8_in_single_and_selected_main_files() 
     ];
     let directory = [
         ("title", None, b"Paper".as_slice()),
-        ("main", None, b"paper.md".as_slice()),
         ("file", Some("paper.md"), b"# Bad \xff".as_slice()),
         ("file", Some("notes.md"), b"Valid UTF-8".as_slice()),
     ];
@@ -1086,7 +1083,7 @@ async fn a_titled_upload_with_no_files_creates_an_empty_project() {
     assert!(parsed.empty);
     assert_eq!(parsed.title, "Blank");
     assert_eq!(parsed.source_format, "markdown");
-    assert!(parsed.main.is_empty() && parsed.files.is_empty());
+    assert!(parsed.files.is_empty());
 
     // The other shapes keep their refusals.
     let untitled = deployment
@@ -1102,14 +1099,6 @@ async fn a_titled_upload_with_no_files_creates_an_empty_project() {
         ]))
         .await;
     assert!(one_empty_file.is_err());
-    let missing_main = deployment
-        .server
-        .read_upload(multipart_upload(&[
-            ("title", None, b"Blank".as_slice()),
-            ("main", None, b"paper.md".as_slice()),
-        ]))
-        .await;
-    assert!(missing_main.is_err());
 
     let actor = Authority {
         account_id: Some(deployment.owner_id),
@@ -1129,7 +1118,6 @@ async fn a_titled_upload_with_no_files_creates_an_empty_project() {
                 title: parsed.title.clone(),
                 source: parsed.source.clone(),
                 source_format: parsed.source_format.clone(),
-                main: parsed.main.clone(),
             },
             parsed.files.clone(),
             actor,
@@ -1144,7 +1132,6 @@ async fn a_titled_upload_with_no_files_creates_an_empty_project() {
         .unwrap()
         .unwrap();
     assert_eq!(entry.source_format, "markdown");
-    assert!(entry.main.is_empty());
     let files = deployment
         .server
         .store

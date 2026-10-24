@@ -23,7 +23,6 @@ async fn deployment(slug: &str) -> Option<Deployment> {
             title: "Sync".into(),
             source: SOURCE.into(),
             source_format: "markdown".into(),
-            main: "paper.md".into(),
         },
         Vec::new(),
         librepaper_base::auth::Policy::allowing("github", &["owner"]),

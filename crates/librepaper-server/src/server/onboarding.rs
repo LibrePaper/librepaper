@@ -1,13 +1,14 @@
 //! Every new account starts with one private, normally owned starter project:
-//! the tutorial in every format LibrePaper edits, with the Markdown copy as
-//! its main file. The catalogue records the completed copy independently of
+//! the tutorial in every format LibrePaper edits, opening on the Markdown
+//! copy. The catalogue records the completed copy independently of
 //! its lifetime.
 
 use super::*;
 use librepaper_engine::storage::store::DocumentInput;
 
 struct Starter {
-    main: &'static str,
+    /// Where the starter's own source file lives in the project.
+    path: &'static str,
     title: &'static str,
     format: &'static str,
     source: &'static str,
@@ -15,7 +16,7 @@ struct Starter {
 }
 
 const STARTER: Starter = Starter {
-    main: "librepaper.md",
+    path: "librepaper.md",
     title: "Explore LibrePaper",
     format: "markdown",
     source: include_str!(concat!(
@@ -187,12 +188,14 @@ impl Server {
                         title: starter.title.into(),
                         source: starter.source.into(),
                         source_format: starter.format.into(),
-                        main: starter.main.into(),
                     },
-                    starter
-                        .files
-                        .iter()
-                        .map(|(path, bytes)| ((*path).into(), bytes.to_vec()))
+                    std::iter::once((starter.path.into(), starter.source.as_bytes().to_vec()))
+                        .chain(
+                            starter
+                                .files
+                                .iter()
+                                .map(|(path, bytes)| ((*path).into(), bytes.to_vec())),
+                        )
                         .collect(),
                     actor.clone(),
                 )
@@ -232,7 +235,6 @@ impl Server {
                 ownership_mode: "owned".into(),
                 title: starter.title.into(),
                 source_format: starter.format.into(),
-                main_path: starter.main.into(),
             })
             .await
             .map_err(|e| e.to_string())?;
@@ -255,7 +257,7 @@ impl Server {
             catalog.clone(),
             document.id,
             slug,
-            starter.main,
+            starter.path,
             starter.source,
             &texts,
             &assets,

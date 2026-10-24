@@ -83,7 +83,6 @@ fn projection_wire(
         "label": label,
         "reason": reason,
         "source_format": source_format,
-        "main": projected.projection.main,
         "files": projected.projection.files,
         "texts": texts,
     })
@@ -115,7 +114,6 @@ struct Restore {
     /// severing identity: see `evaluate`.
     texts: Vec<(String, String, String)>,
     assets: Vec<(String, String)>,
-    main: String,
     author_account_id: Option<uuid::Uuid>,
     author_label: String,
     /// The head's version vector when the restore was evaluated: the state
@@ -167,7 +165,6 @@ impl librepaper_engine::log::Command for Restore {
         self.replaced_vector = head.vector.encode();
         let texts = &self.texts;
         let assets = &self.assets;
-        let main = self.main.as_str();
         let client_seq = client_seq_of(self.request_id);
         head.prepare(client_seq, move |draft| {
             let wanted_texts: std::collections::HashSet<&str> =
@@ -213,9 +210,8 @@ impl librepaper_engine::log::Command for Restore {
             for (path, id) in &live_paths {
                 path_of_id.insert(id.clone(), path.clone());
             }
-            let mut main_id = String::new();
             for (path, body, original) in texts {
-                let id = if let Some(moved_to) = path_of_id.get(original) {
+                if let Some(moved_to) = path_of_id.get(original) {
                     // Renamed since the state being restored. Move it back
                     // rather than replacing it, so the carets and the
                     // authorship attached to that `LoroText` come with it.
@@ -223,7 +219,6 @@ impl librepaper_engine::log::Command for Restore {
                         librepaper_document::document::session::rename_path(draft, moved_to, path);
                     }
                     librepaper_document::document::session::put_text(draft, path, body);
-                    original.clone()
                 } else if !original.is_empty()
                     && librepaper_document::document::session::put_text_with_id(
                         draft, original, path, body,
@@ -234,19 +229,12 @@ impl librepaper_engine::log::Command for Restore {
                     // `put_text_with_id` refuses unless both the id and the
                     // path are free, so this cannot collide with anything
                     // the live document holds.
-                    original.clone()
                 } else {
-                    librepaper_document::document::session::put_text(draft, path, body)
-                };
-                if path == main {
-                    main_id = id;
+                    librepaper_document::document::session::put_text(draft, path, body);
                 }
             }
             for (path, digest) in assets {
                 librepaper_document::document::session::put_asset(draft, path, digest);
-            }
-            if !main_id.is_empty() {
-                librepaper_document::document::session::set_main(draft, &main_id);
             }
             Ok(())
         })
@@ -518,7 +506,6 @@ impl Server {
         let labels: Vec<_> = rows.iter().map(label_wire).collect();
         let mut body = json!({
             "slug": entry.slug,
-            "main": entry.main,
             "labels": labels,
         });
         if let Some(next) = next_cursor {
@@ -969,7 +956,6 @@ impl Server {
             expected_frontier,
             texts,
             assets,
-            main: target.projection.main.clone(),
             author_account_id,
             author_label: current_who.attribution().display().to_string(),
             replaced_vector: Vec::new(),

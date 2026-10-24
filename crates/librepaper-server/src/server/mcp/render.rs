@@ -214,7 +214,7 @@ fn manifest(
         // more: it was always the same value as "revision".
         "base_revision": candidate.base_tree_digest,
         "revision": candidate.tree_digest,
-        "main": view.snapshot.projection().main,
+        "main": candidate.render_path,
         "files": files,
         "dependency_hash": dependency_hash,
         "expires_at": candidate.expires_at,

@@ -422,20 +422,14 @@ pub(super) fn text_for_file_id(doc: &LoroDoc, file_id: &str) -> Option<String> {
     }
 }
 
-/// The files a passage could have come from, main first.
+/// The files a passage could have come from, in path order.
 fn source_files(doc: &LoroDoc) -> Vec<(String, String, String)> {
-    let main = session::main_path(doc);
     let paths = session::paths_of(doc);
     let mut files: Vec<(String, String, String)> = paths
         .into_iter()
         .filter_map(|(id, path)| text_for_file_id(doc, &id).map(|text| (id, path, text)))
         .collect();
-    files.sort_by(|a, b| {
-        (a.1 != main, a.1.as_str())
-            .partial_cmp(&(b.1 != main, b.1.as_str()))
-            .expect("total order")
-            .then_with(|| a.0.cmp(&b.0))
-    });
+    files.sort_by(|a, b| a.1.cmp(&b.1).then_with(|| a.0.cmp(&b.0)));
     files
 }
 

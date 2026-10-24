@@ -36,6 +36,7 @@ impl Server {
         #[serde(deny_unknown_fields)]
         struct Input {
             tree_sha256: String,
+            path: String,
         }
         let bytes = match to_bytes(request.into_body(), 4096).await {
             Ok(bytes) => bytes,
@@ -43,7 +44,7 @@ impl Server {
         };
         let input: Input = match serde_json::from_slice(&bytes) {
             Ok(input) => input,
-            Err(_) => return write_json(400, &json!({"error":"tree_sha256 is required"})),
+            Err(_) => return write_json(400, &json!({"error":"tree_sha256 and path are required"})),
         };
         if !is_sha(&input.tree_sha256) {
             return write_json(400, &json!({"error":"invalid tree_sha256"}));
@@ -58,8 +59,13 @@ impl Server {
             Ok(projected) => projected,
             Err(error) => return sequencer_reply(&error),
         };
-        if !librepaper_document::document::render::is_quarto(&projected.projection.main) {
-            return write_json(400, &json!({"error":"document is not Quarto source"}));
+        if !librepaper_document::document::render::is_quarto(&input.path)
+            || !projected.texts.contains_key(&input.path)
+        {
+            return write_json(
+                400,
+                &json!({"error":"path must name a Quarto text file in the project"}),
+            );
         }
         if projected.projection.digest() != input.tree_sha256 {
             return write_json(
@@ -101,7 +107,7 @@ impl Server {
             &json!({
                 "revision": row.id,
                 "tree_sha256": captured,
-                "main": projected.projection.main,
+                "path": input.path,
             }),
         )
     }

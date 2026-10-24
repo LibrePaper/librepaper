@@ -588,11 +588,7 @@ fn execute(
                 && !query.contains_key("line")
                 && !query.contains_key("selection") =>
         {
-            Ok((
-                json!({"kind":"context","main":snapshot.projection().main}),
-                true,
-                None,
-            ))
+            Ok((json!({"kind":"context"}), true, None))
         }
         "source" | "context" | "section" => source_query(
             snapshot,
@@ -633,13 +629,13 @@ fn source_query(
     } else {
         "source"
     };
-    let mut path = query
+    let path = query
         .get("path")
         .and_then(Value::as_str)
         .unwrap_or("")
         .to_string();
     if path.is_empty() {
-        path.clone_from(&snapshot.projection().main);
+        return Err("the path parameter is required: name the file to read".into());
     }
     let source = snapshot
         .texts()
@@ -1143,7 +1139,7 @@ fn manifest_query(
                     "asset".into()
                 }
             });
-        let mut item = json!({"path":path,"kind":kind,"main":path == snapshot.projection().main});
+        let mut item = json!({"path":path,"kind":kind});
         if let Some(source) = source {
             item["bytes"] = json!(source.len());
             let identity = file_identity(snapshot, &path, source);
@@ -1173,7 +1169,7 @@ fn manifest_query(
         query.get("limit"),
     );
     Ok((
-        json!({"kind":"manifest","main":snapshot.projection().main,"files":page.0["items"],"complete":page.0["complete"],"next_cursor":page.0["next_cursor"]}),
+        json!({"kind":"manifest","files":page.0["items"],"complete":page.0["complete"],"next_cursor":page.0["next_cursor"]}),
         page.1,
         page.2,
     ))
@@ -1733,8 +1729,6 @@ mod tests {
             comment_revision: "rev-c".into(),
             projected: snapshot_of(
                 librepaper_document::document::projection::Projection {
-                    main: "main.md".into(),
-                    main_id: "file-1".into(),
                     files: [
                         ("main.md".to_string(), text_entry("file-1", main)),
                         ("refs.bib".to_string(), text_entry("file-2", bib)),
@@ -2110,7 +2104,6 @@ mod tests {
             comment_revision: "rev-c".into(),
             projected: snapshot_of(
                 librepaper_document::document::projection::Projection {
-                    main: "main.md".into(),
                     ..Default::default()
                 },
                 [
@@ -2169,7 +2162,6 @@ mod tests {
             comment_revision: "rev-c".into(),
             projected: snapshot_of(
                 librepaper_document::document::projection::Projection {
-                    main: "main.md".into(),
                     ..Default::default()
                 },
                 [("main.md".into(), source)].into_iter().collect(),
@@ -2213,7 +2205,6 @@ mod thread_pagination_tests {
             comment_revision: revision.into(),
             projected: Arc::new(librepaper_document::document::projection::Projected {
                 projection: librepaper_document::document::projection::Projection {
-                    main: "main.md".into(),
                     ..Default::default()
                 },
                 texts: [("main.md".into(), "body\n".into())].into_iter().collect(),
@@ -2363,7 +2354,6 @@ mod thread_pagination_tests {
             comment_revision: "rev-1".into(),
             projected: Arc::new(librepaper_document::document::projection::Projected {
                 projection: librepaper_document::document::projection::Projection {
-                    main: "main.md".into(),
                     ..Default::default()
                 },
                 texts: [("main.md".into(), "body\n".into())].into_iter().collect(),

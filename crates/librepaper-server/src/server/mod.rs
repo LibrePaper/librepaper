@@ -1784,7 +1784,6 @@ impl Server {
             "source_format": entry.source_format,
             "execution_engine": metadata.execution_engine,
             "draft_format": metadata.draft_format,
-            "main": entry.main,
             "role": role.as_str(),
             // Who the project belongs to. Every row carries it, not only the
             // rows somebody else owns: a listing that names an owner only

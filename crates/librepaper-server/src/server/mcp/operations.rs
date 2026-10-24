@@ -27,6 +27,10 @@ pub(super) struct Candidate {
     pub parent_request_id: String,
     pub digest: String,
     pub validation: String,
+    /// The file a compile validation renders. Empty for a source-only
+    /// candidate, which is never rendered.
+    #[serde(default)]
+    pub render_path: String,
     pub publish: String,
     pub expires_at: i64,
     #[serde(default)]
@@ -179,7 +183,6 @@ pub(super) fn tree_of_view(view: &View) -> Result<SourceTree<'_>, Failure> {
         .map(|(path, entry)| (path.clone(), entry.digest.clone()))
         .collect();
     Ok(SourceTree {
-        main: projection.main.clone(),
         files,
         assets,
         revision: view.snapshot.tree_digest.clone(),
@@ -964,6 +967,22 @@ impl Server {
             entry.digest = hex::encode(Sha256::digest(text.as_bytes()));
             entry.bytes = text.len() as u64;
         }
+        let validation = args["validation"].as_str().unwrap_or("source");
+        let render_path = args["path"].as_str().unwrap_or_default();
+        if validation == "compile" {
+            if render_path.is_empty() {
+                return Err(Failure::new(
+                    "invalid_params",
+                    "the path argument is required to compile: name the file to render",
+                ));
+            }
+            if !candidate_texts.contains_key(render_path) {
+                return Err(Failure::new(
+                    "invalid_params",
+                    "path does not name a text file in the document",
+                ));
+            }
+        }
         let base_tree_digest = view.snapshot.tree_digest.clone();
         let tree_digest = candidate_projection.digest();
         let candidate = Candidate {
@@ -975,7 +994,8 @@ impl Server {
             operation: key.clone(),
             parent_request_id: parent_request_id.to_owned(),
             digest: digest.clone(),
-            validation: args["validation"].as_str().unwrap_or("source").to_string(),
+            validation: validation.to_string(),
+            render_path: render_path.to_string(),
             expires_at: view.expires_at,
             publish: publish.to_string(),
             grant: CandidateGrant {

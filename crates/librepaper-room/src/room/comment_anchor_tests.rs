@@ -86,7 +86,6 @@ async fn deployment(slug: &str) -> Option<Deployment> {
                 title: "A Paper".into(),
                 source: PAPER.into(),
                 source_format: "markdown".into(),
-                main: "paper.md".into(),
             },
             Vec::new(),
             actor,
