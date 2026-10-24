@@ -910,7 +910,7 @@ impl Server {
         result["schema_digest"] = json!(hex::encode(Sha256::digest(include_bytes!(
             "mcp/tools.json"
         ))));
-        // `handle_mcp` rechecks access around every tool call already; a
+        // `mcp_recheck` rechecks access around every tool call already; a
         // second recheck here only re-served the same permissions computed
         // moments earlier from `who`.
         result["permissions"] = json!({"read":true,"suggest":who.at_least(Role::Editor),"comment":who.at_least(Role::Commenter),"apply":who.at_least(Role::Editor)});

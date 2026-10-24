@@ -92,8 +92,8 @@ pub(crate) enum Command {
         /// it
         #[arg(long, value_name = "LABEL")]
         at: Option<String>,
-        /// A share link, or the key from one: read as its holder rather than
-        /// as your sign-in
+        /// An editor share link, or the key from one: exported as its holder
+        /// rather than as your sign-in
         #[arg(long, value_name = "LINK")]
         key: Option<String>,
         #[command(flatten)]

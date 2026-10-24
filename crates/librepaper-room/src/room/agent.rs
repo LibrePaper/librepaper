@@ -105,8 +105,10 @@ pub struct AgentAuthority {
     pub link_hash: String,
     pub policy_editor: bool,
     pub policy_comment: bool,
-    /// Trusted endpoint scope (document/account/link/generation/role). This
-    /// binds operation ids to the complete authenticated actor context.
+    /// Trusted endpoint scope that namespaces operation ids. On the MCP path
+    /// it is the actor string, which binds link, generation and role. On the
+    /// sync path it is `sync:{document_id}:{principal}` and binds only the
+    /// document and the principal.
     pub operation_scope: String,
 }
 
