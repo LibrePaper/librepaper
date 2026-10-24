@@ -105,6 +105,8 @@ pub struct AgentAuthority {
     /// sync path it is `sync:{document_id}:{principal}` and binds only the
     /// document and the principal.
     pub operation_scope: String,
+    /// The viewer key that names the author of the label a change writes.
+    pub author_key: String,
 }
 
 /// Applies each file's edits as tracked changes by `by`, then records the

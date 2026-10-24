@@ -603,7 +603,7 @@ impl Viewer {
         })
     }
 
-    /// The authority a source change runs under. Its principal key is the
+    /// The authority a source change runs under. Its author key is the
     /// viewer's key, which names the author of the label the change writes.
     pub fn agent_authority(
         &self,
@@ -611,11 +611,9 @@ impl Viewer {
         operation_scope: String,
     ) -> Result<librepaper_room::room::agent::AgentAuthority, InvalidCredential> {
         Ok(librepaper_room::room::agent::AgentAuthority {
-            authority: librepaper_engine::storage::postgres::Authority {
-                principal_key: self.key.clone(),
-                ..self.authority(ceiling)?
-            },
+            authority: self.authority(ceiling)?,
             operation_scope,
+            author_key: self.key.clone(),
         })
     }
 
