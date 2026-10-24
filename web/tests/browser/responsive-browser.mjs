@@ -22,9 +22,9 @@ writeFileSync(room, `
 import { LoroDoc, LoroText, EphemeralStore } from "loro-crdt";
 const encode = b => btoa(String.fromCharCode(...b));
 const server = new LoroDoc();
-const files = server.getMap("files"), paths = server.getMap("paths"), meta = server.getMap("meta");
+const files = server.getMap("files"), paths = server.getMap("paths");
 const id = "main"; const text = new LoroText(); text.insert(0, Array.from({length: 180}, (_, i) => "line " + i + " source content").join("\\n"));
-files.setContainer(id, text); paths.set(id, "main.html"); meta.set("main", id);
+files.setContainer(id, text); paths.set(id, "main.html");
 for (let i = 0; i < 70; i++) { const file = new LoroText(); file.insert(0, 'chapter ' + i); files.setContainer('chapter-' + i, file); paths.set('chapter-' + i, 'chapter-' + i + '.html'); }
 server.commit();
 const update = encode(server.export({ mode: "update" }));
@@ -514,7 +514,7 @@ try {
   // The bar may be stepping aside after the resize above, and its slide briefly
   // gives the page a scrollbar that moves the trigger. Bring it back the way
   // focus does and let it come to rest before opening anything from it.
-  for (const [id, item] of [["file", "Settings…"], ["view", "Preview this file"]]) {
+  for (const [id, item] of [["file", "Settings…"], ["view", "Lock preview on this file"]]) {
     await b.evaluate('document.querySelector(".compact-panels-trigger").focus()');
     await until(`top bar at rest before ${id}`, () => b.evaluate(barAtRest), 3000);
     await click('.compact-panels-trigger[aria-label="Menu"]');

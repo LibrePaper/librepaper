@@ -12,9 +12,9 @@
   import { unzip } from "../../lib/zip.js";
   import { retargetElementAttributes } from "../element-attributes.js";
 
-  let { files = [], folders = [], open = "", preview = "", mayEdit = false, rules = {},
-    onopen, onadd, onmkdir, onrelocate, ondelete, onduplicate, onmain, onfigure, ontext, ondownload, ondownloaditem,
-    previewable = () => false, onpreview = undefined } = $props();
+  let { files = [], folders = [], open = "", preview = "", locked = "", mayEdit = false, rules = {},
+    onopen, onadd, onmkdir, onrelocate, ondelete, onduplicate, onfigure, ontext, ondownload, ondownloaditem,
+    previewable = () => false, onlock = undefined, onunlock = undefined } = $props();
 
   let selected = $state([]);
   let expanded = $state([]);
@@ -57,10 +57,10 @@
     // untracked state is read in the scheduled callback to avoid an expansion loop.
     if (parents.length) queueMicrotask(() => { expanded = [...new Set([...expanded, ...parents])]; });
   });
-  // The selection follows a file opened elsewhere too (the preview eye, the
-  // outline), so choosing the file that was open before is still a change the
-  // tree reports. It moves only when the open file changes, and a selection of
-  // several items is left alone.
+  // The selection follows a file opened elsewhere too (the outline, a
+  // diagnostic), so choosing the file that was open before is still a change
+  // the tree reports. It moves only when the open file changes, and a
+  // selection of several items is left alone.
   $effect(() => {
     const id = open;
     untrack(() => {
@@ -132,7 +132,6 @@
     if (value === "move" || value === "delete") ask(value, targets);
     if (value === "file" || value === "folder") start(value, null, entry.path);
     if (value === "upload") choose(entry.path);
-    if (value === "main") onmain?.(entry);
     if (value === "duplicate") {
       try { await onduplicate?.(entry, copyPath(entry.path, files, folders)); }
       catch (error) { refusal = error.message; }
@@ -339,14 +338,20 @@
   {:else}
     <span class="explorer-name">{node.name}</span>
   {/if}
-  <!-- The eye marks the file in the preview. On any other file that can be
-       previewed it is the button that opens the file and moves the preview
-       there, on a phone as on a desktop. -->
-  {#if node.kind !== "folder" && node.path === preview}
+  <!-- The eye is the lock. The locked file shows it solid, and pressing it
+       unlocks. The file the preview is showing without a lock shows it solid
+       too, as a marker. Any other file that renders on its own offers the
+       faint eye, which locks the preview there without opening the file. -->
+  {#if node.kind !== "folder" && locked && node.path === locked}
+    <button type="button" class="explorer-preview shown" aria-label="Unlock the preview" title="Unlock the preview"
+      onclick={(event) => { event.stopPropagation(); onunlock?.(); }}
+      ondblclick={(event) => event.stopPropagation()}
+      onkeydown={(event) => event.stopPropagation()}><Icon name="eye" /></button>
+  {:else if node.kind !== "folder" && node.path === preview}
     <span class="explorer-preview shown" role="img" aria-label="Shown in the preview"><Icon name="eye" /></span>
   {:else if node.kind === "text" && previewable(node.path)}
-    <button type="button" class="explorer-preview" aria-label="Preview {node.name}" title="Preview this file"
-      onclick={(event) => { event.stopPropagation(); const entry = entryOf(node); if (entry) onpreview?.(entry); }}
+    <button type="button" class="explorer-preview" aria-label="Lock preview on {node.name}" title="Lock the preview on this file"
+      onclick={(event) => { event.stopPropagation(); const entry = entryOf(node); if (entry) onlock?.(entry); }}
       ondblclick={(event) => event.stopPropagation()}
       onkeydown={(event) => event.stopPropagation()}><Icon name="eye" /></button>
   {/if}
@@ -363,7 +368,6 @@
       <Menu.Item value="rename" class="menuitem">Rename <span class="ml-auto text-xs">F2</span></Menu.Item>
       <Menu.Item value="move" class="menuitem">Move to…</Menu.Item>
       {#if node.kind !== "folder"}<Menu.Item value="duplicate" class="menuitem">Duplicate</Menu.Item>{/if}
-      {#if node.kind === "text" && !node.main}<Menu.Item value="main" class="menuitem">Set as main file</Menu.Item>{/if}
     {/if}
     <Menu.Item value="download" class="menuitem">Download</Menu.Item>
     {#if mayEdit}<Menu.Item value="delete" class="menuitem">Delete…</Menu.Item>{/if}
@@ -453,6 +457,7 @@
   .explorer-preview { display: flex; flex: none; align-items: center; justify-content: center; width: calc(var(--spacing) * 7); height: calc(var(--spacing) * 7); margin-inline-end: calc(var(--spacing) * -1.5); padding: 0; border: 0; border-radius: var(--radius-base); background: none; color: var(--color-text-secondary); }
   button.explorer-preview { color: var(--color-text-muted); opacity: 0.45; cursor: pointer; }
   button.explorer-preview:hover, button.explorer-preview:focus-visible { opacity: 1; color: var(--color-text-secondary); background: var(--color-row-hover); }
+  button.explorer-preview.shown { color: var(--color-text-secondary); opacity: 1; cursor: pointer; }
   button.explorer-preview:focus-visible { outline: 2px solid var(--color-focus); outline-offset: -2px; }
   .explorer-actions {
     display: flex;

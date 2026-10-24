@@ -29,9 +29,9 @@ writeFileSync(room, `
 import { LoroDoc, LoroText } from "loro-crdt";
 const encode = b => btoa(String.fromCharCode(...b));
 const server = new LoroDoc();
-const files = server.getMap("files"), paths = server.getMap("paths"), meta = server.getMap("meta");
+const files = server.getMap("files"), paths = server.getMap("paths");
 const text = new LoroText(); text.insert(0, "a line of source");
-files.setContainer("main", text); paths.set("main", "main.md"); meta.set("main", "main");
+files.setContainer("main", text); paths.set("main", "main.md");
 server.commit();
 const update = encode(server.export({ mode: "update" }));
 const vector = encode(server.oplogVersion().encode());

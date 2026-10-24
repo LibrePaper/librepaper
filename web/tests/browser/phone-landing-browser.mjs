@@ -28,11 +28,16 @@ import { LoroDoc, LoroText } from "loro-crdt";
 const encode = b => btoa(String.fromCharCode(...b));
 const caseName = new URLSearchParams(location.search).get("case") || "editor";
 const server = new LoroDoc();
-const files = server.getMap("files"), paths = server.getMap("paths"), meta = server.getMap("meta");
+const files = server.getMap("files"), paths = server.getMap("paths");
 if (caseName === "editor") {
   const id = "main"; const text = new LoroText(); text.insert(0, "<h1>Main</h1><p>Phone editor project</p>");
-  files.setContainer(id, text); paths.set(id, "main.html"); meta.set("main", id);
+  files.setContainer(id, text); paths.set(id, "main.html");
   for (let i = 0; i < 3; i++) { const file = new LoroText(); file.insert(0, 'chapter ' + i); files.setContainer('chapter-' + i, file); paths.set('chapter-' + i, 'chapter-' + i + '.html'); }
+}
+// A project whose only file has no renderer: nothing for the preview to draw.
+if (caseName === "bibonly") {
+  const text = new LoroText(); text.insert(0, "@book{a, title={A}}");
+  files.setContainer("refs", text); paths.set("refs", "refs.bib");
 }
 server.commit();
 const update = encode(server.export({ mode: "update" }));
@@ -69,7 +74,7 @@ globalThis.WebSocket = class {
   close() {}
 };
 const caseName = new URLSearchParams(location.search).get('case') || 'editor';
-const editorCase = caseName === 'editor' || caseName === 'empty';
+const editorCase = ['editor', 'empty', 'bibonly'].includes(caseName);
 const MAIN_TEXT = '<h1>Shared</h1><p>Read-only projection</p>';
 globalThis.fetch = async (url, init = {}) => {
   const path = String(url);
@@ -77,11 +82,11 @@ globalThis.fetch = async (url, init = {}) => {
   if (path.endsWith('/config')) return Response.json({ extensions: ['.html', '.md'], text_extensions: ['.html', '.md'], asset_extensions: ['.png'], derived_extensions: [] });
   if (path === '/api/documents/' + location.pathname.split('/').pop()) return Response.json({
     title:'Phone landing paper', created_at:'test', role: editorCase ? 'editor' : caseName,
-    source_format: caseName === 'empty' ? '' : 'html', docs_origin: location.origin,
+    source_format: ['empty', 'bibonly'].includes(caseName) ? '' : 'html', docs_origin: location.origin,
     can_moderate:false, can_see_sharing:false });
   if (path.endsWith('/project')) return Response.json({
-    format:'html', main:'main.html',
-    tree:{ main:'main.html', files:{ 'main.html':{ path:'main.html', kind:'text' } } },
+    format:'html',
+    tree:{ files:{ 'main.html':{ path:'main.html', kind:'text' } } },
     texts:{ 'main.html': MAIN_TEXT }, changes:[], project_digest:'digest-1' });
   if (path.endsWith('/frame')) return Response.json({token:'frame-token',until:9999999999});
   if (path.includes('/comments')) return Response.json({comments:[]});
@@ -153,6 +158,19 @@ try {
   assert.equal(await visible('.sidebar'), true, 'Open Files shows the files column');
   assert.deepEqual(await b.evaluate('window.testErrors'), [], 'the empty project case reports no page errors');
 
+  // A project whose only file has no renderer says so in the preview, and the
+  // card points at Files rather than offering a lock there is nothing to lock.
+  await openCase('bibonly?case=bibonly', 390, 844);
+  await until('bib-only landing', () => b.evaluate(phoneDocument), 10000);
+  await until('bib-only card in the preview', () => b.evaluate(nothingToPreview), 10000);
+  assert.equal(
+    await b.evaluate("[...document.querySelectorAll('section.latexpane .notyet p')].some(node => node.textContent.trim() === 'refs.bib has no preview of its own.')"),
+    true, 'the card names the file and says it has no preview of its own');
+  assert.equal(
+    await b.evaluate("[...document.querySelectorAll('section.latexpane .notyet p')].some(node => node.textContent.includes('Lock the preview on a file with the eye in Files'))"),
+    true, 'and says how to keep a page here');
+  assert.deepEqual(await b.evaluate('window.testErrors'), [], 'the bib-only case reports no page errors');
+
   // Case 3: a commenter link opens on the preview, and the comments column
   // takes the collaboration panel once the window is wide enough.
   await openCase('commenter?case=commenter#k=commentkey', 390, 844);
@@ -177,5 +195,5 @@ try {
   assert.equal(await visible('.sidebar:not(.collapsed)'), false, 'a reader window has no open column at desktop width');
   assert.deepEqual(await b.evaluate('window.testErrors'), [], 'the reader case reports no page errors');
 
-  console.log('phone-landing-browser: editors, empty projects, commenter and reader links open on the preview passed');
+  console.log('phone-landing-browser: editors, empty and bib-only projects, commenter and reader links open on the preview passed');
 } finally { await b?.close(); serverHttp?.close(); removeTemporary(temp); }

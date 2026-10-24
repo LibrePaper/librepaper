@@ -13,6 +13,7 @@ import { createPreviewRenderer } from "../../src/lib/reader/preview-render.js";
 import { createRenderCoordinator } from "../../src/lib/reader/render-coordinator.js";
 import { loadRunes } from "../helpers/runes.mjs";
 import { needsSourceRefresh } from "../../src/lib/reader/source-events.js";
+import { openingFile, previewTarget, rendersAlone } from "../../src/lib/opening.js";
 
 const { createBuildSettings } = await loadRunes(new URL("../../src/lib/reader/build-settings.svelte.js", import.meta.url));
 const { createTimeline } = await loadRunes(new URL("../../src/lib/reader/timeline.svelte.js", import.meta.url));
@@ -25,10 +26,6 @@ const body = (start, end) => {
   assert.notEqual(to, -1, `Reader function boundary not found: ${end}`);
   return reader.slice(from, to);
 };
-
-// `updatePreviewTarget` scopes the local app to this document through small
-// helpers now, so they are sliced in wherever that function is exercised.
-const localAppHelpers = body("  /// Which document this browser tab is about", "  // Which engine draws each format");
 
 // Initial Quarto setup must configure the desktop app as active for an editor.
 // If permission is assigned afterwards, editable onboarding examples remain
@@ -200,8 +197,10 @@ const context = (values) => {
     outlineRevision: 0,
     sourceFormat: "",
     typstOutput: "pdf",
-    previewMain: "",
-    previewFile: "",
+    previewPath: "",
+    previewReason: "none",
+    previewIncluders: [],
+    lockedFile: "",
     SLUG: "doc",
     buildPreferences: { selection: "automatic", backend: "auto", output: "html" },
     session: null,
@@ -396,24 +395,26 @@ console.log("reader-races: all checks passed");
   // does: the texts, their paths, the figures and the metadata.
   const files = { id: "cid:root-files:Map" };
   const paths = { id: "cid:root-paths:Map" };
-  const mainText = { id: "cid:1@1:Text" };
+  const openText = { id: "cid:1@1:Text" };
   const directory = new Set([files.id, paths.id, "cid:root-assets:Map", "cid:root-meta:Map"]);
-  const active = { files, text: mainText,
+  const active = { files,
     directoryChanged: (events) => !Array.isArray(events) || events.some((event) => directory.has(event.target)) };
-  const ctx = context({ session: active, needsSourceRefresh, refreshFiles: () => refreshes++, sourceChanged: () => changes++ });
+  let targets = 0;
+  const ctx = context({ session: active, needsSourceRefresh, refreshFiles: () => refreshes++, sourceChanged: () => changes++, scheduleTargetUpdate: () => targets++ });
   vm.runInContext(body("  function filesChanged(events, active = session)", "  function refreshPeers()"), ctx);
   ctx.events = [{ target: "cid:2@1:Text" }];
   vm.runInContext("filesChanged(events)", ctx);
   assert.equal(refreshes, 0, "an edit inside a file does not rebuild the directory");
   assert.equal(changes, 1, "but it does repaint the preview");
-  ctx.events = [{ target: mainText.id }];
+  assert.equal(targets, 1, "and it asks for the preview target to be worked out again");
+  ctx.events = [{ target: openText.id }];
   vm.runInContext("filesChanged(events)", ctx);
-  assert.equal(changes, 1, "the source watcher owns main-text edits");
+  assert.equal(changes, 2, "an edit to the open file is heard here too, since no watcher is bound to it");
   ctx.events = [{ target: files.id }];
   vm.runInContext("filesChanged(events)", ctx);
   vm.runInContext("filesChanged({})", ctx);
   assert.equal(refreshes, 2, "a change to the directory rebuilds it");
-  assert.equal(changes, 3);
+  assert.equal(changes, 4);
   // One commit is one batch, so a batch that touches both an included file and
   // the directory rebuilds the list once and repaints once.
   // A rename moves a name in `paths` and touches nothing else. The list used
@@ -422,35 +423,36 @@ console.log("reader-races: all checks passed");
   ctx.events = [{ target: paths.id }];
   vm.runInContext("filesChanged(events)", ctx);
   assert.equal(refreshes, 3, "a rename rebuilds the directory");
-  assert.equal(changes, 4);
+  assert.equal(changes, 5);
   ctx.events = [{ target: "cid:2@1:Text" }, { target: files.id }];
   vm.runInContext("filesChanged(events)", ctx);
-  assert.equal(changes, 5, "one batch schedules one repaint");
+  assert.equal(changes, 6, "one batch schedules one repaint");
   assert.equal(refreshes, 4, "and one rebuild");
   const other = { files: { id: "cid:root-files:Map" }, text: { id: "cid:9@9:Text" }, directoryChanged: () => false };
   ctx.events = [{ target: "cid:2@1:Text" }];
   ctx.other = other;
   vm.runInContext("filesChanged(events, other)", ctx);
-  assert.equal(changes, 5, "stale session events are ignored");
+  assert.equal(changes, 6, "stale session events are ignored");
 }
 
-// Renaming the main file into LaTeX configures the already joined project,
+// Pointing the preview at a LaTeX file configures the already joined project,
 // even though the initial prepare ran while it was Markdown.
 {
   let configured = 0;
   const ctx = context({
-    session: {
-      files: {}, list: () => [], folders: () => [], mainId: () => "main",
-      mainPath: () => "paper.tex", latexSettings: () => ({ engine: "auto" }),
-    },
+    session: { latexSettings: () => ({ engine: "auto" }) },
     // The directory itself belongs to the workspace, which is driven on its
     // own in tests/unit/workspace.mjs. What is checked here is the other half
-    // of that read: re-pointing the preview at the file the session now calls
-    // its main one, which is a rendering question rather than a directory one.
-    files: [], previewFile: "", previewMain: "", sourceFormat: "markdown",
+    // of that read: re-pointing the preview at the file that is open, which is
+    // a rendering question rather than a directory one.
+    files: [], sourceFormat: "markdown",
+    openTextPath: "paper.tex", lockedPath: "", aloneSet: new Set(),
+    liveTreeNow: () => ({ texts: { "paper.tex": "\\documentclass{article}" }, digests: {} }),
+    previewTarget, rendersAlone, openingFile, readerProjectOwner: {},
+    restoreLastPreview: () => {},
     tick: async () => ({ then: () => {} }), paintPreview: () => {},
     navigationGeneration: 0, everPainted: false, everPaintedShown: false,
-    docsOrigin: null, navigateFrame: () => {}, readerDisposed: false,
+    docsOrigin: null, navigateFrame: () => {},
     framePreview: { clear: () => {} },
     renderCoordinator: { invalidate: () => {} },
     renderStatus: { resetFailure: () => {} },
@@ -458,10 +460,11 @@ console.log("reader-races: all checks passed");
     readQuartoBinding: () => {},
     configureLatex: () => configured++,
   });
-  vm.runInContext(body("  function updatePreviewTarget()", "  // A file added"), ctx);
+  vm.runInContext(body("  function updatePreviewTarget()", "  // The preview follows the open file"), ctx);
   vm.runInContext("updatePreviewTarget()", ctx);
   assert.equal(configured, 1);
-  assert.equal(ctx.previewMain, "paper.tex");
+  assert.equal(ctx.previewPath, "paper.tex");
+  assert.equal(ctx.previewReason, "alone");
   assert.equal(ctx.sourceFormat, "latex");
 }
 
@@ -738,9 +741,9 @@ for (const invalidate of [null, "navigation", "main"]) {
   let paintedDiagnostics = 0;
   const ctx = context({
     sourceGeneration: 0, historyLiveVersion: 0, quartoFreshnessSerial: 0, sourceFormat: "quarto", quartoView: "draft",
+    previewPath: "main.qmd",
     session: {
-      mainPath: () => "main.qmd", mainId: () => "main", textOf: () => ({ toString: () => "# Draft\n" }),
-      text: { toString: () => "# Draft\n" },
+      idOf: () => "main", textOf: () => ({ toString: () => "# Draft\n" }),
     },
     quarto: { parseQuarto: () => ({ diagnostics: [], source: "# Draft\n" }) },
     diagnosticsController: { render: () => {
@@ -1082,61 +1085,109 @@ for (const latest of [
   assert.equal(timers[0].cleared, true, "teardown clears the chat timer");
 }
 
-// Opening an auxiliary file leaves the preview alone. Explicit preview
-// selection changes its format without mutating the shared main.
+// The preview follows the file open in the source. A file that cannot render
+// alone is shown inside the one file that includes it, a file with nothing to
+// draw empties the preview, and a lock keeps the preview on one file while the
+// source moves on.
 {
-  const texts = { 'paper.qmd': '# Quarto', 'notes.typ': '= Typst', 'other.typ': '= Other' };
+  const texts = {
+    'thesis.tex': '\\documentclass{book}\n\\input{chapters/intro}',
+    'chapters/intro.tex': 'Introduction',
+    'appendix.tex': '\\documentclass{article}',
+    'refs.bib': '@book{a}',
+  };
   const files = Object.keys(texts).map(path => ({ id: path, path, kind: 'text' }));
+  files.push({ id: 'logo.png', path: 'logo.png', kind: 'asset' });
   const configured = [];
   let cleared = 0, painted = 0;
   const ctx = context({
-    session: { mainPath: () => 'paper.qmd', paths: new Map(files.map(f => [f.id, f.path])) },
-    files, openFile: 'paper.qmd', previewMain: 'paper.qmd', sourceFormat: 'quarto',
-    previewFile: '', canPreviewFile: true, compact: false, layout: 'split',
+    session: { paths: new Map(files.map(f => [f.id, f.path])) },
+    files, openFile: 'thesis.tex', sourceFormat: '', aloneSet: new Set(),
+    compact: false, layout: 'source', showMobileView: () => {},
     viewing: null, editing: true, editor: { text: () => null },
-    liveTreeNow: () => ({main:'paper.qmd',texts,digests:{}}),
-    renderers: { formatOf: p => p.endsWith('.typ') ? 'typst' : 'quarto', previewFormatOf: p => p.endsWith('.typ') ? 'typst' : 'quarto', warm: () => {} },
-    configureLatex: f => configured.push(f), mayEdit: true,
+    liveTreeNow: () => ({ texts, digests: {} }),
+    previewTarget, rendersAlone, openingFile, readerProjectOwner: {},
+    restoreLastPreview: () => {},
+    renderers: { formatOf: p => p.endsWith('.tex') ? 'latex' : '', previewFormatOf: p => p.endsWith('.tex') ? 'latex' : '', warm: () => {} },
+    configureLatex: f => configured.push(f),
     localQuarto: { configure: () => {}, bindingId: () => 'hosted', probe: async () => {} },
-    SLUG: 'mixed', location: {origin:'http://localhost'},
+    SLUG: 'thesis', location: {origin:'http://localhost'},
     navigationGeneration: 0, issued: 0, docsOrigin: null,
-    renderingStore: {reset: () => {}}, framePreview: {clear: () => cleared++},
-    dropHeldRendering: () => {}, tick: async () => {}, paintPreview: () => painted++,
+    framePreview: {clear: () => cleared++},
+    renderCoordinator: { invalidate: () => {} },
+    renderStatus: { resetFailure: () => {}, clearDocx: () => {} },
+    diagnosticPainter: { rendered: () => {} },
+    previewTimer: null, deliveredKind: '', activeSynctex: null, previewCleared: false,
+    navigateFrame: () => {}, readQuartoBinding: () => {},
+    tick: async () => {}, paintPreview: () => painted++,
   });
-  vm.runInContext(`${localAppHelpers}\n${body('  function updatePreviewTarget()', '  // A file added')}`, ctx);
+  // `lockedPath` and `openTextPath` are derived in the page; here they are
+  // read from the same two ids.
+  vm.runInContext(`
+    Object.defineProperty(globalThis, 'lockedPath', { get() { return files.find((f) => f.id === lockedFile)?.path || ''; } });
+    Object.defineProperty(globalThis, 'openTextPath', { get() { return files.find((f) => f.id === openFile && f.kind === 'text')?.path || ''; } });
+  `, ctx);
+  vm.runInContext(`${body('  /// Empties the preview', '  // A project with no file at all')}\n${body('  function updatePreviewTarget()', '  // The preview follows the open file')}\n${body('  function lockPreviewOn(id)', '  // Any edit can change')}`, ctx);
   vm.runInContext(body('  function treeNow()', '  // Painting the preview'), ctx);
-  for (const path of ['notes.typ', 'other.typ', 'paper.qmd']) {
-    const previous = ctx.previewMain;
-    ctx.openFile = path;
-    vm.runInContext('updatePreviewTarget()', ctx);
-    assert.equal(ctx.previewMain, previous, 'opening a file does not change the preview');
-    vm.runInContext(`previewTheFile(${JSON.stringify(path)})`, ctx);
-    assert.equal(ctx.previewMain, path);
-    assert.equal(ctx.sourceFormat, path.endsWith('.typ') ? 'typst' : 'quarto');
-    assert.equal(vm.runInContext('treeNow().main', ctx), path);
-    assert.equal(ctx.session.mainPath(), 'paper.qmd');
-    await new Promise(setImmediate);
-  }
-  assert.deepEqual(configured, ['typst','typst','quarto']);
-  assert.equal(cleared, 3);
-  assert.equal(painted, 3);
-  assert.equal(ctx.previewFile, '', 'choosing the main file follows the main again');
-  assert.equal(texts['paper.qmd'], '# Quarto');
-  ctx.openFile = 'data.csv';
-  vm.runInContext('previewTheFile("data.csv")', ctx);
-  assert.equal(ctx.previewMain, 'paper.qmd', 'unsupported files cannot become preview targets');
+  const open = (id) => { ctx.openFile = id; vm.runInContext('updatePreviewTarget()', ctx); };
 
-  // A selected file keeps its identity through a rename and falls back to
-  // the shared main when deleted.
-  ctx.previewFile = 'notes.typ';
-  files[1].path = 'renamed.typ';
   vm.runInContext('updatePreviewTarget()', ctx);
-  assert.equal(ctx.previewMain, 'renamed.typ');
-  ctx.files = files.filter(f => f.id !== 'notes.typ');
-  vm.runInContext('updatePreviewTarget()', ctx);
-  assert.equal(ctx.previewMain, 'paper.qmd');
+  assert.equal(ctx.previewPath, 'thesis.tex', 'the preview starts on the open file');
+  assert.equal(ctx.previewReason, 'alone');
+  assert.deepEqual([...ctx.aloneSet].sort(), ['appendix.tex', 'thesis.tex'], 'the files that render alone are the ones the eye offers');
+
+  open('appendix.tex');
+  assert.equal(ctx.previewPath, 'appendix.tex', 'opening a file that renders alone moves the preview');
+  assert.equal(vm.runInContext('treeNow().main', ctx), 'appendix.tex');
+  await new Promise(setImmediate);
+  assert.equal(painted, 1);
+
+  open('chapters/intro.tex');
+  assert.equal(ctx.previewPath, 'thesis.tex', 'an included file is shown inside its includer');
+  assert.equal(ctx.previewReason, 'inside');
+  assert.equal(vm.runInContext('treeNow().main', ctx), 'thesis.tex');
+
+  open('refs.bib');
+  assert.equal(ctx.previewPath, '', 'a file with nothing to draw empties the preview');
+  assert.equal(ctx.previewReason, 'none');
+  assert.equal(ctx.sourceFormat, '');
+
+  // The eye locks without moving the source.
+  vm.runInContext('lockPreview("appendix.tex")', ctx);
+  assert.equal(ctx.openFile, 'refs.bib', 'locking does not open the file');
+  assert.equal(ctx.previewPath, 'appendix.tex');
+  assert.equal(ctx.previewReason, 'locked');
+  assert.equal(ctx.layout, 'split', 'a source-only layout makes room for the preview');
+  open('chapters/intro.tex');
+  assert.equal(ctx.previewPath, 'appendix.tex', 'the lock holds while the source moves');
+  assert.equal(vm.runInContext('treeNow().main', ctx), 'appendix.tex');
+
+  vm.runInContext('lockPreview("chapters/intro.tex")', ctx);
+  assert.equal(ctx.lockedFile, 'appendix.tex', 'a file that cannot render alone cannot be locked');
+
+  // A figure open in the source leaves the preview where it is.
+  open('logo.png');
+  assert.equal(ctx.previewPath, 'appendix.tex');
+
+  vm.runInContext('unlockPreview()', ctx);
+  open('chapters/intro.tex');
+  assert.equal(ctx.previewPath, 'thesis.tex', 'unlocking returns to following the open file');
+  assert.equal(ctx.lockedFile, '');
+
+  // The lock is by identity: a rename keeps it, and a delete drops it.
+  vm.runInContext('lockPreview("appendix.tex")', ctx);
+  files.find(f => f.id === 'appendix.tex').path = 'annex.tex';
+  texts['annex.tex'] = texts['appendix.tex']; delete texts['appendix.tex'];
+  open('chapters/intro.tex');
+  assert.equal(ctx.previewPath, 'annex.tex');
+  ctx.files = files.filter(f => f.id !== 'appendix.tex');
+  delete texts['annex.tex'];
+  open('chapters/intro.tex');
+  assert.equal(ctx.lockedFile, '', 'deleting the locked file drops the lock');
+  assert.equal(ctx.previewPath, 'thesis.tex');
+  assert.ok(cleared >= 3);
 }
-console.log('reader-races: explicit preview selection, auxiliary files, rename and deletion passed');
+console.log('reader-races: the preview follows the open file, shows includes inside, and honours the lock');
 
 // Main and secondary previews never expose the retired rendering store.
 assert.doesNotMatch(reader, /createRenderingStore|holdRendering|\/renderings\//);
@@ -1145,18 +1196,19 @@ assert.doesNotMatch(reader, /createRenderingStore|holdRendering|\/renderings\//)
 {
   const commands = [];
   const ctx = context({
-    previewTheFile: id => commands.push(`file:${id}`), openFile: 'paper.tex',
+    lockPreview: id => commands.push(`lock:${id}`), unlockPreview: () => commands.push('unlock'), openFile: 'paper.tex',
     setLatexOutput: mode => commands.push(`latex-${mode}`),
     chose: value => commands.push(value),
   });
   vm.runInContext(body('  function chooseViewCommand(value)', '  // The File menu.'), ctx);
-  vm.runInContext('chooseViewCommand("preview-file"); chooseViewCommand("layout-split")', ctx);
-  assert.deepEqual(commands, ['file:paper.tex','layout-split']);
+  vm.runInContext('chooseViewCommand("lock-preview"); chooseViewCommand("unlock-preview"); chooseViewCommand("layout-split")', ctx);
+  assert.deepEqual(commands, ['lock:paper.tex','unlock','layout-split']);
   vm.runInContext('chooseViewCommand("preview-latex-html"); chooseViewCommand("preview-latex-pdf")', ctx);
   assert.deepEqual(commands.slice(-2), ['latex-html', 'latex-pdf']);
   const view = body('{#snippet viewItems()}', '{/snippet}');
   const file = body('{#snippet fileItems()}', '{/snippet}');
-  assert.match(view, /Preview this file/);
+  assert.match(view, /Lock preview on this file/);
+  assert.match(view, /Unlock the preview/);
   assert.match(view, /@render previewItems\(\)/);
   // Running code is the top bar's switch, not a View menu item.
   assert.doesNotMatch(view, /local-execution/);

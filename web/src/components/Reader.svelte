@@ -92,7 +92,8 @@
   import Avatar from "./Avatar.svelte";
   import { extractOutline } from "../lib/outline.js";
   import { createFramePreview } from "../lib/reader/frame-preview.js";
-  import { rememberPreview, lastPreview, flushPreview } from "../lib/reader/preview-cache.js";
+  import { rememberPreview, lastPreview, flushAll } from "../lib/reader/preview-cache.js";
+  import { previewTarget, rendersAlone, openingFile } from "../lib/opening.js";
   import { createFrameOverlays } from "../lib/reader/frame-overlays.js";
   import { createRenderDiagnostics } from "../lib/reader/render-diagnostics.js";
   import { createRenderCoordinator } from "../lib/reader/render-coordinator.js";
@@ -101,7 +102,7 @@
   import { provide } from "../lib/support/providers.js";
   import { createSteadyBusy } from "../lib/reader/steady-busy.js";
   import { createLocalPreview } from "../lib/reader/local-preview.svelte.js";
-  import { previewNotes, unrenderableMain } from "../lib/reader/preview-notes.js";
+  import { previewNotes } from "../lib/reader/preview-notes.js";
   import { HIGHLIGHT_COLORS, colorName } from "../lib/annotation-colors.js";
   import { recenteredLeft, placeBar as placeSelectionBar } from "../lib/annotation-bar.js";
   import { VERBS, motivationFor } from "../lib/annotating.js";
@@ -158,7 +159,8 @@
   // is what the document pane below renders instead of staying blank while
   // `settled` silently ends the loading state (§2.2).
   let projectUnreadable = $state("");
-  const previewCacheKey = () => `${SLUG}:${doc?.created_at || "unknown"}`;
+  // One page is kept per file, so the key names the file as well as the project.
+  const previewCacheKey = (path) => `${SLUG}:${doc?.created_at || "unknown"}|${path}`;
   // Set when the page was opened from this browser's copy because the server
   // could not be reached, so the page says it may be missing newer changes.
   let openedLocally = $state(false);
@@ -400,8 +402,8 @@
   }
 
   function quartoTargetFormat(tree = treeNow()) {
-    const main = tree?.main || session?.mainPath?.() || "main.qmd";
-    const source = tree?.texts?.[main] || session?.textOf?.(session.mainId?.())?.toString?.() || session?.text?.toString?.() || "";
+    const main = tree?.main || previewPath || "main.qmd";
+    const source = tree?.texts?.[main] || "";
     const value = quarto.parseQuarto(source, { path: main }).metadata?.format;
     const named = typeof value === "string" ? value : value && typeof value === "object" ? Object.keys(value)[0] : "html";
     const format = String(named || "html").trim().toLowerCase().split(/[+:]/, 1)[0];
@@ -1342,20 +1344,9 @@
   // are compared to this by identity. A deep proxy would never be equal to it.
   let session = $state.raw(null);
   let editing = $state(false);
-  // Which text the editor is bound to. Keying the component on this binds it
-  // to the current main file when another file becomes main.
-  let sourceEpoch = $state(0);
-  // Whether there is a main text to edit yet. `session.text` is a getter over
-  // a handle the session rebinds when the document hydrates, which happens
-  // outside Svelte's knowledge: reading it straight in the markup is read once
-  // and never again, so a document that arrives after the editor module has
-  // loaded leaves the source pane blank until something unrelated -- opening a
-  // panel, say -- happens to re-run that branch. `sourceEpoch` is the signal
-  // that a rebind occurred, so the read is tied to it.
-  const sourceBound = $derived.by(() => {
-    void sourceEpoch;
-    return Boolean(session?.text);
-  });
+  // Whether there is a text to edit yet. The directory arrives after the
+  // session joins, and the editor has nothing to bind to before then.
+  const sourceBound = $derived(Boolean(session && persistence.joined && files.some((file) => file.kind === "text")));
   let mayEdit = $state(false);
   let sourceFormat = $state("");
 
@@ -1383,8 +1374,8 @@
 
   // What the document is called, which is what the rendered page is titled.
   // The title it was published under wins; a document that never had one is
-  // named by its own first heading, the way `publish` names one -- the *main*
-  // file's first heading, since a chapter's heading names the chapter.
+  // named by its own first heading, the way `publish` names one -- the heading
+  // of the file the preview draws, since a chapter's heading names the chapter.
   async function headingOf(tree) {
     return doc.title || (await renderers.titleOf(tree)) || "Untitled";
   }
@@ -1512,8 +1503,8 @@
     // The binding is part of the target so choosing a folder restarts the preview there.
     // The output format is too, because Quarto reads it only when it starts, so
     // switching View between HTML and PDF restarts the preview.
-    const quartoTarget = quartoLiveActive && previewMain && `${previewMain}|${quartoBindingId}|${buildPreferences.output || ""}`;
-    const calepinTarget = calepinActive && previewMain && `${previewMain}|${quartoBindingId}`;
+    const quartoTarget = quartoLiveActive && previewPath && `${previewPath}|${quartoBindingId}|${buildPreferences.output || ""}`;
+    const calepinTarget = calepinActive && previewPath && `${previewPath}|${quartoBindingId}`;
     const stale = localPreviewSwitches.begin();
     untrack(async () => {
       // Both engines use the same workspace. Release its old watcher before
@@ -1643,7 +1634,7 @@
   // the question and the answer are asked of the same project.
   const projectSignature = () => {
     const tree = session?.tree?.();
-    return JSON.stringify({ main: tree?.main || "", texts: tree?.texts || {}, files: tree?.files || {} });
+    return JSON.stringify({ texts: tree?.texts || {}, files: tree?.files || {} });
   };
   // The base64 Loro frontier of the session as it stands right now: what a
   // restore's `expected_frontier` names (§7.1), so the server can tell a
@@ -1697,9 +1688,8 @@
     }
   }
 
-  // The document as a renderer takes it: every text in it, the figures by
-  // digest, and which file is the document. A compiler given only the main
-  // file produces the error a reader would otherwise be shown.
+  // The document as a renderer takes it: every text in it and the figures by
+  // digest. The file the render builds is named by `treeNow` below.
   //
   // Before a session arrives there is no source tree to render.
   // The file manager always operates on the live directory. In particular,
@@ -1713,30 +1703,30 @@
         if (file?.kind === "asset" && file.digest) digests[path] = file.digest;
       }
       return {
-        main: currentProject.main || currentProject.tree?.main || "",
+        main: "",
         texts: { ...(currentProject.texts || {}) },
         digests,
         settings: currentProject.tree?.settings || null,
       };
     }
     const tree = session.tree();
-    if (!tree.main) return tree;
     // CodeMirror owns the active Loro binding and exposes the text it is
     // displaying. During a local transaction its view can be one tick ahead
     // of the directory observer, so use that current source for snapshots
     // taken by the preview scheduler.
-    const activeText = typeof editing !== "undefined" && editing && typeof editor !== "undefined" && editor?.text?.(openFile) != null && (!openFile || session.paths?.get?.(openFile) === tree.main)
+    const activeText = editing && openTextPath && editor?.text?.(openFile) != null
       ? String(editor.text(openFile))
       : null;
-    return activeText == null ? tree : { ...tree, texts: { ...tree.texts, [tree.main]: activeText } };
+    return activeText == null ? tree : { ...tree, texts: { ...tree.texts, [openTextPath]: activeText } };
   }
 
+  // The tree a render builds: the live tree with the file the preview shows
+  // named as its entry. That entry is chosen per render and is no setting of
+  // the project.
   function treeNow() {
     const tree = liveTreeNow();
-    if (!previewMain || !(previewMain in tree.texts)) return tree;
-    const activeText = editing && editor?.text?.(openFile) != null && session?.paths?.get(openFile) === previewMain
-      ? String(editor.text(openFile)) : tree.texts[previewMain];
-    return { ...tree, main: previewMain, texts: { ...tree.texts, [previewMain]: activeText } };
+    if (!previewPath || !(previewPath in tree.texts)) return tree;
+    return { ...tree, main: previewPath };
   }
 
   // Painting the preview is sending it to the frame: the draft is a document,
@@ -1776,7 +1766,7 @@
   });
   const outlineFormat = $derived.by(() => {
     const path = toolbarPath;
-    return renderers.formatOf(path) || (path && path === session?.mainPath?.() ? sourceFormat : "");
+    return renderers.formatOf(path) || (path && path === previewPath ? sourceFormat : "");
   });
   const outlineHeadings = $derived.by(() => panel === "outline" && mayEdit
     ? extractOutline(outlineSource, outlineFormat) : []);
@@ -1849,7 +1839,7 @@
 
   function diagnosticFile(item) {
     if (!(item.line > 0)) return null;
-    const id = item.file ? session?.idOf(item.file) : session?.mainId();
+    const id = session?.idOf(item.file || previewPath);
     return files.find((file) => file.id === id && file.kind === "text") || null;
   }
 
@@ -2155,13 +2145,15 @@
   });
 
 
-  /// Puts the last page this browser drew for this document into the frame,
-  /// if the frame has nothing newer in it yet.
-  async function restoreLastPreview() {
-    const remembered = await lastPreview(previewCacheKey());
+  /// Puts the last page this browser drew for this file into the frame, if
+  /// nothing newer has reached it since the preview moved here.
+  async function restoreLastPreview(path) {
+    const mine = navigationGeneration;
+    const remembered = await lastPreview(previewCacheKey(path));
     // A compile can beat this; IndexedDB is fast but it is not free. The
-    // cached page is only ever a stand-in for an empty pane.
-    if (!remembered || readerDisposed || everPainted || !paintsTheFrame) return;
+    // cached page is only ever a stand-in for an empty pane, and a preview
+    // that has moved on since is no place for it.
+    if (!remembered || readerDisposed || mine !== navigationGeneration || everPainted || !paintsTheFrame) return;
     framePreview.publish(remembered.kind === "pdf"
       ? { kind: "pdf", sha: remembered.identity, bytes: new Uint8Array(remembered.bytes).slice() }
       : { kind: "html", html: remembered.html });
@@ -2176,8 +2168,8 @@
   };
 
   // The kind of frame follows the tree being displayed, including a
-  // historical tree. This effect is also what navigates when the live main
-  // file changes from Markdown/Typst/HTML to LaTeX or back.
+  // historical tree. This effect is also what navigates when the file the
+  // preview shows changes from Markdown/Typst/HTML to LaTeX or back.
   $effect(() => {
     void docsOrigin;
     void framePath;
@@ -2185,8 +2177,8 @@
   });
 
   function refreshFramedPage() {
-    if (paintsTheFrame || !session || !docsOrigin) return;
-    framePreview.refresh(session.text.toString());
+    if (paintsTheFrame || !session || !docsOrigin || !previewPath) return;
+    framePreview.refresh(String(session.textOf(session.idOf(previewPath))?.toString?.() ?? ""));
   }
 
   const compiling = $derived(Boolean(
@@ -2234,8 +2226,11 @@
     snapshotDigest: renderers.snapshotDigest,
     diagnosticContext,
     parseSynctex,
+    // A render that is no longer for this file never reaches here: the
+    // coordinator drops it when the preview has moved, so the file shown now
+    // is the file the page was drawn for.
     rememberPreview: (page, identity) => {
-      rememberPreview(previewCacheKey(), page, identity);
+      if (previewPath) rememberPreview(previewCacheKey(previewPath), page, identity);
     },
     onRendered: (identity, projectDigest) => {
       renderedIdentity = identity;
@@ -2307,10 +2302,9 @@
       clearTimeout(calepinSyncTimer);
       calepinSyncTimer = setTimeout(() => void calepinPreviewController.sync(), 500);
     }
-    if (sourceFormat === "quarto" && session?.text) {
-      const main = previewMain || session.mainPath() || "main.qmd";
-      const id = session.idOf?.(main) || session.mainId();
-      const parsed = quarto.parseQuarto(session.textOf(id)?.toString?.() || session.text.toString(), { path: main });
+    if (sourceFormat === "quarto" && session && previewPath) {
+      const main = previewPath;
+      const parsed = quarto.parseQuarto(String(session.textOf(session.idOf(main))?.toString?.() ?? ""), { path: main });
       const nextDiagnostics = parsed.diagnostics.map((item) => diagnosticContext(item, { main, texts: { [main]: parsed.source } }, ""));
       const diagnosticsGeneration = sourceGeneration;
       // Loro can notify this observer from inside CodeMirror's update
@@ -2446,7 +2440,7 @@
   // `reader/preferences.svelte.js` for why those are one act and not two.
   const preferences = createPreferences();
   const prefs = preferences.state;
-  // Every project opens the same way: the files, the main file and its
+  // Every project opens the same way: the files, the file it opens on and its
   // preview, or the preview alone on a phone. Where the last visit ended is
   // not kept.
   let layout = $state("split");
@@ -2772,7 +2766,8 @@
     }
     if (value === "preview-latex-pdf") return void setLatexOutput("pdf");
     if (value === "preview-latex-html") return void setLatexOutput("html");
-    if (value === "preview-file") return previewTheFile(openFile);
+    if (value === "lock-preview") return lockPreview(openFile);
+    if (value === "unlock-preview") return unlockPreview();
     if (value === "preview-typst-pdf") return void setTypstOutput("pdf");
     if (value === "preview-typst-html") return void setTypstOutput("html");
     return chose(value);
@@ -3040,26 +3035,43 @@
   ]);
   let outlineActiveFrom = $state(null);
   let outlineRevision = $state(0);
-  let previewMain = $state("");
-  // Pin an explicitly previewed file by identity so renames keep it selected.
-  // Empty means follow the shared main file; opening an include never pins it.
-  let previewFile = $state("");
+  // What the preview draws. `previewPath` is the file, `previewReason` says
+  // why it is that one (the file itself, the file it is shown inside, the file
+  // the preview is locked on, or nothing at all) and `previewIncluders` lists
+  // the files that include the open file when it has no preview of its own.
+  // The rule is `lib/opening.js`'s; this is where its answer is kept.
+  let previewPath = $state("");
+  let previewReason = $state("none");
+  let previewIncluders = $state([]);
+  // The file the preview is locked on, by identity so a rename keeps the lock.
+  // It lasts for this visit: nothing stores it and nobody else sees it.
+  let lockedFile = $state("");
+  const lockedPath = $derived(files.find((file) => file.id === lockedFile)?.path || "");
+  // The paths that render on their own, which is what the eye in Files offers
+  // to lock. Worked out with the target, from the same texts.
+  let aloneSet = $state.raw(new Set());
   const toolbarPath = $derived(files.find((file) => file.id === openFile)?.path || "");
+  const openTextPath = $derived(files.find((file) => file.id === openFile && file.kind === "text")?.path || "");
   const previewNoteItems = $derived(previewNotes({
     openPath: toolbarPath,
     openIsText: files.find((file) => file.id === openFile)?.kind === "text",
-    mainPath: previewMain || session?.mainPath?.() || "",
-    formatOf: renderers.previewFormatOf,
+    target: { path: previewPath, reason: previewReason },
   }));
-  // session.mainPath() is not reactive on its own, so read files to recompute
-  // when the directory changes.
-  const mainUnrenderable = $derived.by(() => {
-    void files;
-    return unrenderableMain({ mainPath: previewMain || session?.mainPath?.() || "", formatOf: renderers.previewFormatOf });
-  });
   const editorFormat = $derived(toolbarPath ? renderers.formatOf(toolbarPath) : sourceFormat);
-  const canPreviewFile = $derived(files.some((file) =>
-    file.id === openFile && file.kind === "text" && Boolean(renderers.previewFormatOf(file.path))));
+  // Why the pane shows what it shows, when it is not simply the open file.
+  const previewChip = $derived(Boolean(previewPath) && (previewReason === "locked" || (previewReason === "inside" && toolbarPath)));
+  // What the card says when the open file has nothing the preview could draw.
+  // Empty when there is no card.
+  const previewCard = $derived.by(() => {
+    if (previewReason !== "none" || projectEmpty || !openTextPath) return "";
+    const name = basename(openTextPath);
+    const format = renderers.previewFormatOf(openTextPath);
+    if (!format) return `${name} has no preview of its own.`;
+    return format === "latex"
+      ? `${name} has no \\documentclass, so it is part of a larger document.`
+      : `${name} is part of a larger document.`;
+  });
+  const canLockPreview = $derived(Boolean(openTextPath && aloneSet.has(openTextPath) && lockedFile !== openFile));
   // The server checks every path again, but Git sync refuses to run without
   // the rules, so a failed load is tried again until it lands.
   let configRetry = null;
@@ -3090,8 +3102,7 @@
   /// nothing is drawn. No render is attempted and no engine is warmed.
   function clearPreview() {
     previewCleared = true;
-    previewMain = "";
-    previewFile = "";
+    previewPath = "";
     sourceFormat = "";
     configureLatex("");
     navigationGeneration += 1;
@@ -3114,33 +3125,46 @@
   const projectEmpty = $derived(mayEdit
     ? Boolean(session && persistence.joined && files.length === 0 && session.list().length === 0)
     : Boolean(currentProject && !Object.keys(currentProject.tree?.files || currentProject.texts || {}).length));
-  // An editor project with files but no main file, which the preview cannot draw.
-  const mainMissing = $derived(mayEdit && !projectEmpty
-    && Boolean(session && persistence.joined && files.length > 0 && !session.mainPath?.()));
   $effect(() => { if (projectEmpty) untrack(clearPreview); });
 
+  // Works out which file the preview draws and moves it there. It runs when
+  // the open file changes, when the lock does, when the directory does, and a
+  // moment after any edit, because which file includes which is read from the
+  // texts. A target that has not changed costs a comparison and nothing else.
   function updatePreviewTarget() {
-    if (!session) return;
-    const selected = files.find((file) => file.id === previewFile);
-    if (!selected || selected.kind !== "text" || !renderers.previewFormatOf(selected.path)) previewFile = "";
-    const path = selected?.kind === "text" && renderers.previewFormatOf(selected.path)
-      ? selected.path : session.mainPath();
-    const format = renderers.previewFormatOf(path);
-    // Nothing the preview could follow: the file it showed is gone and the
-    // main file now is not a format that renders, or there is no file at all.
+    if (readerDisposed || (!session && !currentProject)) return;
+    // A figure is open in the source pane: the preview stays where it is.
+    if (session && !openTextPath && previewPath) return;
+    const texts = liveTreeNow().texts;
+    if (lockedFile && session && !lockedPath) lockedFile = "";
+    // A reader with no session has no files to switch between and opens on the
+    // file the project opens on.
+    const open = (session ? openTextPath : "") || openingFile(texts) || "";
+    const target = previewTarget({ open, locked: lockedPath, texts });
+    const alone = Object.keys(texts).filter((path) => rendersAlone(path, texts)).sort();
+    if (alone.length !== aloneSet.size || alone.some((path) => !aloneSet.has(path))) aloneSet = new Set(alone);
+    if (target.reason !== previewReason) previewReason = target.reason;
+    if (target.includers.join("\n") !== previewIncluders.join("\n")) previewIncluders = target.includers;
+    const path = target.path || "";
+    const format = path ? renderers.previewFormatOf(path) : "";
+    // Nothing the preview could follow: the open file has no renderer, or it
+    // is part of a document no single file stands for, or there is no file.
     if (!format) {
-      if (previewMain) clearPreview();
+      if (previewPath) clearPreview();
       return;
     }
-    if (previewMain === path && sourceFormat === format) return;
-    const previous = previewMain || sourceFormat || (previewCleared ? "cleared" : "");
+    if (previewPath === path && sourceFormat === format) return;
+    const previous = previewPath || sourceFormat || (previewCleared ? "cleared" : "");
     previewCleared = false;
-    previewMain = path;
+    previewPath = path;
     sourceFormat = format;
-    configureLatex(format);
+    configureLatex(format, session || readerProjectOwner);
     renderers.warm(format);
     if (["quarto", "typst", "markdown"].includes(format)) readQuartoBinding();
-    if (!previous) return;
+    if (!previous) {
+      void restoreLastPreview(path);
+      return;
+    }
     // Invalidate both running compiles and replayed pages, even when the
     // two selected files use the same renderer or both produce PDFs.
     navigationGeneration += 1;
@@ -3151,43 +3175,64 @@
     everPaintedShown = false;
     renderStatus.resetFailure();
     if (docsOrigin) navigateFrame(true);
+    // The page this file last drew stands in until the render replaces it.
+    void restoreLastPreview(path);
     void tick().then(() => {
       if (!readerDisposed && mine === navigationGeneration) void paintPreview();
     });
   }
 
-  function previewTheFile(id) {
-    const file = files.find((entry) => entry.id === id);
-    if (!file || file.kind !== "text" || !renderers.previewFormatOf(file.path)) return;
-    // Choosing the main file goes back to following it, so a later change of main still shows.
-    previewFile = file.path === session?.mainPath?.() ? "" : id;
+  // The preview follows the open file, and follows the lock when there is one.
+  $effect(() => {
+    void openFile;
+    void lockedFile;
+    untrack(updatePreviewTarget);
+  });
+
+  // The eye in Files, the View menu and the card all lock the preview, and
+  // none of them opens the file. A phone shows the preview it just moved.
+  function lockPreviewOn(id) {
+    lockedFile = id;
     updatePreviewTarget();
     if (!compact && layout === "source") layout = "split";
     if (compact) showMobileView("document");
   }
 
-  // The eye in the file list opens the file as well as previewing it, so the
-  // source and the preview show the same file.
-  function openAndPreview(file) {
-    if (openFile !== file.id) outlineActiveFrom = null;
-    workspace.show(file);
-    previewTheFile(file.id);
+  function lockPreview(id) {
+    const file = files.find((entry) => entry.id === id);
+    if (!file || file.kind !== "text" || !aloneSet.has(file.path)) return;
+    lockPreviewOn(id);
   }
 
-  // A file added, renamed, removed, or made the main one: the list is redrawn
-  // and the document is rendered again, because every one of those changes
-  // what a compiler would produce. Main-text edits also arrive through the
-  // source watcher; skip them here so one commit does not schedule
-  // the same diagnostics and preview twice. Included-file edits still need a
-  // source change of their own because they can alter a Quarto render without
-  // changing the main Y.Text.
+  function unlockPreview() {
+    lockedFile = "";
+    updatePreviewTarget();
+  }
+
+  // Any edit can change which file includes which, so the preview target is
+  // worked out again once typing pauses, so the texts are read once per pause
+  // and not once per keystroke.
+  const TARGET_PAUSE = 500;
+  let targetTimer = null;
+  function scheduleTargetUpdate() {
+    clearTimeout(targetTimer);
+    targetTimer = setTimeout(() => updatePreviewTarget(), TARGET_PAUSE);
+  }
+
+  // A file added, renamed or removed: the list is redrawn and the document is
+  // rendered again, because every one of those changes what a compiler would
+  // produce. An edit to the text of any file is a source change too, because
+  // it can alter the render of whichever file the preview is drawing.
   function filesChanged(events, active = session) {
     if (!active || active !== session) return;
     // Nested text edits change the preview, but not the file list. Which
     // events are the directory's is the session's to say: the list moves with
     // four maps, not one.
     if (active.directoryChanged(events)) refreshFiles();
-    if (needsSourceRefresh(events, active.text)) sourceChanged();
+    if (needsSourceRefresh(events)) {
+      sourceChanged();
+      scheduleTargetUpdate();
+    }
   }
 
   function refreshPeers() {
@@ -3235,7 +3280,6 @@
   const addFile = (path) => workspace.addText(path);
   const relocateFiles = (entries, destination, rename) => workspace.relocate(entries, destination, rename);
   const deleteFiles = (entries) => workspace.remove(entries);
-  const makeMain = (file) => workspace.setMain(file);
   const addFigure = (file, path) => workspace.addFigure(file, path);
 
   function insertContext() {
@@ -3274,7 +3318,7 @@
       // and handed over as values: `projectFiles` cannot then be cut from a
       // tree newer than the one whose assets it fetched.
       const files = await projectFiles({ tree: liveTreeNow(), folders: [...folders], gather: gatherFigures });
-      // Named for the document rather than for its main file: what is being
+      // Named for the document rather than for any one file: what is being
       // downloaded is the directory, and the slug is what a person knows it by.
       saveBlob(await archive(files), `${SLUG}.zip`);
     } catch (error) {
@@ -3386,8 +3430,6 @@
           if (!readerDisposed && active === session) void paintPreview();
         });
       },
-      onSource: () => sourceChanged(),
-      onSwap: () => { if (!readerDisposed) sourceEpoch += 1; },
       onFiles: filesChanged,
       onAwareness: () => { if (!readerDisposed) refreshPeers(); },
       onDocumentChanged: () => {
@@ -3426,12 +3468,13 @@
       changeRows = readerChangeRows(next.changes);
       if (selectedChange && !changeRows.some((row) => row.id === selectedChange)) selectedChange = null;
       projectUnreadable = "";
-      sourceFormat = renderers.previewFormatOf(next.main) || next.format || sourceFormat;
-      configureLatex(sourceFormat, readerProjectOwner);
+      // A reader opens on the file the project opens on, whichever that is
+      // now. The target puts its format in place and paints the page this
+      // browser last drew for it.
+      updatePreviewTarget();
       sourceGeneration += 1;
       outlineRevision += 1;
       settled = true;
-      if (sourceFormat) renderers.warm(sourceFormat);
       void paintPreview();
     })().catch((error) => {
       if (readerDisposed) return;
@@ -3526,15 +3569,10 @@
     // transient and does not create a server-side result.
     if (format) {
       renderers.warm(format);
-      // And put the last page this browser drew for this document up while that
-      // happens. Loading an engine and compiling a paper takes seconds, and the
-      // pane would otherwise spend all of them blank -- showing nothing, while
-      // holding the page that is almost always about to be drawn again.
-      void restoreLastPreview();
     }
     await startCollaboration(document_);
-    // `onSource` starts projection metadata only after the initial document state
-    // has populated the source tree. A session object alone is not a snapshot.
+    // The directory arrives after the session does. A session object alone is
+    // not a snapshot.
     // No chooser and no saved distribution: `latex.configure` tells the
     // controller which project this is and what it is allowed to do, and the
     // first `paintPreview` (from `startEditing` below, or an edit) is what
@@ -3620,12 +3658,13 @@
       // A page compiled in the last few seconds is still waiting out its
       // settling pause. Leaving is the moment it is worth most: it is the
       // page this document will open with next time.
-      void flushPreview(previewCacheKey());
+      void flushAll();
       renderCoordinator.invalidate();
       navigationGeneration += 1;
       renderers.cancelPreview();
       clearTimeout(reviewTimer);
       clearTimeout(previewTimer);
+      clearTimeout(targetTimer);
       clearTimeout(projectRefreshTimer);
       projectRefreshTimer = null;
       previewTimer = null;
@@ -3728,7 +3767,8 @@
     panels: tabs.map((tab) => tab.id),
     preview: shown.document,
     compilable: mayEdit && sourceFormat === "latex" && compilesHere,
-    canPreviewFile,
+    canLockPreview,
+    previewLocked: Boolean(lockedPath),
     downloads: {
       pdf: exportable.pdf.ok,
       html: exportable.html.ok,
@@ -3771,7 +3811,7 @@
     if (id === "focus-preview") return focusPreview();
     if (id === "layout-cycle") return cycleLayout();
     if (LAYOUT_COMMANDS.includes(id)) return chose(id);
-    if (id === "preview-file") return chooseViewCommand(id);
+    if (id === "lock-preview" || id === "unlock-preview") return chooseViewCommand(id);
     if (TEXT_SIZE_COMMANDS.includes(id)) return changeTextSize(id);
     return chooseFileCommand(id);
   }
@@ -3988,7 +4028,8 @@
 {/snippet}
 
 {#snippet viewItems()}
-  <Menu.Item value="preview-file" class="menuitem" disabled={!can["preview-file"]}>Preview this file</Menu.Item>
+  <Menu.Item value="lock-preview" class="menuitem" disabled={!can["lock-preview"]}>Lock preview on this file</Menu.Item>
+  {#if can["unlock-preview"]}<Menu.Item value="unlock-preview" class="menuitem">Unlock the preview</Menu.Item>{/if}
   <hr class="hr my-1" />
   {@render previewItems()}
   <hr class="hr my-1" />
@@ -4094,13 +4135,13 @@
        of these its rail has selected; none of it travels through the column
        as props, so a panel can grow a field without the column hearing of it. -->
   {#snippet filesPanel()}
-    <Files bind:this={fileList} {files} {folders} open={openFile} preview={previewMain || session?.mainPath() || ""}
+    <Files bind:this={fileList} {files} {folders} open={openFile} preview={previewPath} locked={lockedPath}
       {mayEdit} {rules} onopen={openTheFile} onadd={addFile}
       onmkdir={(path) => workspace.addFolder(path)} onrelocate={relocateFiles}
       ondelete={deleteFiles} onduplicate={(entry, path) => workspace.duplicate(entry, path)}
-      onmain={makeMain} onfigure={addFigure} ontext={addDroppedText}
+      onfigure={addFigure} ontext={addDroppedText}
       ondownload={downloadTree} ondownloaditem={downloadEntry}
-      previewable={(path) => Boolean(renderers.previewFormatOf(path))} onpreview={openAndPreview} />
+      previewable={(path) => aloneSet.has(path)} onlock={(entry) => lockPreview(entry.id)} onunlock={unlockPreview} />
   {/snippet}
 
   {#snippet outlinePanel()}
@@ -4156,7 +4197,7 @@
   {#snippet diagnosticsPanel()}
     <Diagnostics {diagnostics} localAppProblem={localAppDiagnostics.length > 0} {desktopNeeds}
       onretrylocal={() => localExecutionRelevant ? startLocalExecution() : ensureLocalApp()}
-      main={previewMain || session?.mainPath() || ""}
+      entry={previewPath}
       canOpen={(item) => Boolean(diagnosticFile(item))} onopen={openDiagnostic}
       provenance={renderState.lastLatexResult?.provenance || null}
       attempts={renderState.lastLatexResult?.attempts || []}
@@ -4251,11 +4292,9 @@
           {/if}
         </div>
       {:else if Editor && sourceBound}
-        {#key sourceEpoch}
-          <Editor bind:this={editor} {session} format={editorFormat} file={openFile} {keys} {completion} {brackets} {spellcheck} {check} {rules} {tracking} me={trackingMe} {selectedChange} editable={mayEdit}
+        <Editor bind:this={editor} {session} format={editorFormat} file={openFile} entry={previewPath} {keys} {completion} {brackets} {spellcheck} {check} {rules} {tracking} me={trackingMe} {selectedChange} editable={mayEdit}
                   onbibliography={bibliographyAnalyzed} onchange={outlineTextChanged} oncaret={outlineCaretChanged} onsave={reportPersistence} onquit={showDocumentAlone}
                   onfilechange={(id) => { ws.openFile = id; outlineActiveFrom = null; ws.figure = null; noteSourceSelection(); }} />
-        {/key}
       {/if}
     </section>
   {/if}
@@ -4305,13 +4344,13 @@
         </div>
       </div>
     </section>
-  {:else if shown.document && (projectEmpty || mainMissing)}
+  {:else if shown.document && projectEmpty}
     <section class="latexpane">
       <div class="notyet">
         <h2 class="h4">Nothing to preview</h2>
         <p class="lp-text-secondary text-sm">
-          {projectEmpty ? "This project has no files yet." : "This project has no main file."}
-          {#if mayEdit}{projectEmpty ? "Add one from Files." : "Choose one in Files."}{/if}
+          This project has no files yet.
+          {#if mayEdit}Add one from Files.{/if}
         </p>
         {#if mayEdit}
           <div class="notyet-actions">
@@ -4320,11 +4359,23 @@
         {/if}
       </div>
     </section>
-  {:else if shown.document && mainUnrenderable}
+  {:else if shown.document && previewCard}
+    <!-- The open file has nothing the preview could draw: no renderer, or it
+         is part of a larger document that no single file stands for. -->
     <section class="latexpane">
       <div class="notyet">
         <h2 class="h4">Nothing to preview</h2>
-        <p class="lp-text-secondary text-sm">{mainUnrenderable}</p>
+        <p class="lp-text-secondary text-sm">{previewCard}</p>
+        {#if previewIncluders.length}
+          <p class="lp-text-secondary text-sm">It is included by:</p>
+          <div class="notyet-actions">
+            {#each previewIncluders as includer (includer)}
+              <button class="btn btn-sm lp-control-tonal-brand" onclick={() => lockPreviewOn(session?.idOf?.(includer) || "")}>Lock preview on {includer}</button>
+            {/each}
+          </div>
+        {:else}
+          <p class="lp-text-secondary text-sm">Lock the preview on a file with the eye in Files to keep a page here while you edit this one.</p>
+        {/if}
       </div>
     </section>
   {:else if shown.document && failedBeforeRender}
@@ -4366,10 +4417,10 @@
         <p class="lp-text-secondary text-sm">
           This {sourceFormat === "typst" ? "Typst" : "paged"} document is being rendered from source in this browser.
         </p>
-        {#if !compilesHere && session?.text}
+        {#if !compilesHere && session && previewPath}
           <details open>
-            <summary>View source · {session.mainPath?.() || "document"}</summary>
-            <pre>{session.text.toString()}</pre>
+            <summary>View source · {previewPath}</summary>
+            <pre>{String(session.textOf(session.idOf(previewPath))?.toString?.() ?? "")}</pre>
           </details>
         {/if}
       </div>
@@ -4403,11 +4454,22 @@
         ondownload={can["download-pdf"] ? () => void downloadAs("pdf") : null} />
     {/if}
   {/snippet}
+  {#snippet previewNotice()}
+    {#if previewReason === "locked"}
+      <span class="notice-chip">
+        <span>Locked: {previewPath}</span>
+        <button type="button" aria-label="Unlock the preview" title="Unlock the preview" onclick={unlockPreview}><Icon name="x" /></button>
+      </span>
+    {:else}
+      <span class="notice-chip"><span>{basename(toolbarPath)}, shown inside {previewPath}</span></span>
+    {/if}
+  {/snippet}
   <Preview bind:this={preview} src={frameSrc} {docsOrigin} onmessage={fromFrame} onload={frameLoaded} {grabbing}
            controls={previewControls}
+           notice={previewChip ? previewNotice : undefined}
            busy={previewBusy}
            progress={sourceFormat === "latex" && !latexHtmlPreview && latexState.progress?.total ? latexState.progress : null}
-           away={documentNeedsSignIn || !shown.document || unrendered || failedBeforeRender || Boolean(projectUnreadable) || Boolean(mainUnrenderable)} />
+           away={documentNeedsSignIn || !shown.document || unrendered || failedBeforeRender || Boolean(projectUnreadable) || Boolean(previewCard)} />
 
   <!-- Shown only while a separator is dragged: a line that follows the pointer
        so the split can be seen moving without the iframe reflowing on every
@@ -4506,7 +4568,7 @@
                 account={me} />
 
 <Modal bind:open={projectFolderOpen} title="Project folder">
-  <ProjectFolderSetting {sourceFormat} main={previewMain} {mayEdit} onbindingid={(id) => { quartoBindingId = id; localQuarto.setBindingId(id); }} />
+  <ProjectFolderSetting {sourceFormat} main={previewPath} {mayEdit} onbindingid={(id) => { quartoBindingId = id; localQuarto.setBindingId(id); }} />
 </Modal>
 
 <Modal bind:open={templateModalOpen} title="Save as template"

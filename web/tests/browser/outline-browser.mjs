@@ -2,7 +2,7 @@
 //
 // The Reader is real. Only its room and HTTP shell are local test doubles: the
 // room is backed by Loro, so file changes take the same path as a collaborator's
-// update. Keeping the main file HTML lets this check exercise Markdown,
+// update. Opening on an HTML file lets this check exercise Markdown,
 // Quarto, Typst and LaTeX source files without requiring five compilers.
 import assert from "node:assert/strict";
 import { build } from "vite";
@@ -47,7 +47,6 @@ function makeRoom(slug) {
   const doc = new LoroDoc();
   const files = doc.getMap("files");
   const paths = doc.getMap("paths");
-  const meta = doc.getMap("meta");
   for (const [path, value] of Object.entries(initial)) {
     const id = path === "main.html" ? "main" : path;
     const text = new LoroText();
@@ -55,9 +54,8 @@ function makeRoom(slug) {
     files.setContainer(id, text);
     paths.set(id, path);
   }
-  meta.set("main", "main");
   doc.commit();
-  return { doc, files, paths, meta };
+  return { doc, files, paths };
 }
 
 function bytes(update) { return new Uint8Array(update); }
@@ -315,14 +313,20 @@ try {
   await clickHeading("HTML heading");
   assert.equal(await visible('.editorpane'), true, "outline jump reveals source from document-only layout");
 
-  // The eye in the file list opens the file in the source and previews it.
+  // The eye in the file list locks the preview on a file and leaves the
+  // source where it is.
   await openFile("notes.md");
   await openFiles();
-  await until("paper.typ preview eye", () => tab.evaluate(`Boolean(document.querySelector('.explorer-row[title="paper.typ"] button.explorer-preview'))`), 5000);
+  await until("paper.typ lock eye", () => tab.evaluate(`Boolean(document.querySelector('.explorer-row[title="paper.typ"] button[aria-label="Lock preview on paper.typ"]'))`), 5000);
   await click('.explorer-row[title="paper.typ"] button.explorer-preview');
-  await until("the eye opens paper.typ in the source", () => tab.evaluate(`window.editorState().text.includes("Typst")`), 5000);
-  assert.equal(await tab.evaluate(`Boolean(document.querySelector('.explorer-row[title="paper.typ"] .explorer-preview.shown'))`), true, "the eye marks paper.typ as previewed");
-  // The tree follows the eye, so the file that was open before opens again.
+  await until("the lock chip names paper.typ", () => tab.evaluate(`document.querySelector('.notice-chip')?.textContent.includes("Locked: paper.typ") === true`), 5000);
+  assert.equal(await tab.evaluate(`window.editorState().text.includes("Typst")`), false, "the eye does not open paper.typ in the source");
+  assert.equal(await tab.evaluate(`Boolean(document.querySelector('.explorer-row[title="paper.typ"] button[aria-label="Unlock the preview"]'))`), true, "the eye is solid on the locked file and unlocks");
+  // The source moves and the lock stays.
+  await openFile("main.html");
+  assert.equal(await tab.evaluate(`document.querySelector('.notice-chip')?.textContent.includes("Locked: paper.typ") === true`), true, "opening another file leaves the lock where it is");
+  await click('.explorer-row[title="paper.typ"] button[aria-label="Unlock the preview"]');
+  await until("the lock is released", () => tab.evaluate(`!document.querySelector('.notice-chip')`), 5000);
   await openFile("notes.md");
 
   // On a phone the outline is a workspace tab, and choosing a heading reveals
@@ -330,11 +334,11 @@ try {
   await tab.resize(390, 844);
   await flush();
   await openFile("notes.md");
-  // On a phone the eye opens the file and shows its preview, not its source.
+  // On a phone the eye locks the preview and shows it, and leaves the source alone.
   await mobileNav("Files");
   await until("chapter.qmd preview eye", () => visible('.explorer-row[title="chapter.qmd"] button.explorer-preview'), 5000);
   await click('.explorer-row[title="chapter.qmd"] button.explorer-preview');
-  await until("the eye opens chapter.qmd on a phone", () => tab.evaluate(`window.editorState().text.includes("Quarto")`), 5000);
+  await until("the eye locks chapter.qmd on a phone", () => tab.evaluate(`document.querySelector('.notice-chip')?.textContent.includes("Locked: chapter.qmd") === true`), 5000);
   await flush();
   assert.equal(await tab.evaluate("document.querySelector('main.reader')?.classList.contains('mobile-document')"), true, "the eye on a phone shows the preview");
   await openFile("notes.md");

@@ -42,7 +42,6 @@ const server = new LoroDoc();
 const text = server.getMap('files').setContainer('main', new LoroText());
 text.insert(0, ${JSON.stringify(BASE_TEXT)});
 server.getMap('paths').set('main', 'main.html');
-server.getMap('meta').set('main', 'main');
 server.commit();
 const base = server.export({ mode: "update" });
 const afterBase = server.oplogVersion();

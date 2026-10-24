@@ -24,15 +24,14 @@ const liveTreeNow = body("  function liveTreeNow()", "  function treeNow()");
 const treeNow = body("  function treeNow()", "  // Painting the preview");
 
 const live = {
-  main: "project/current.md",
   texts: { "project/current.md": "live", "project/new.md": "new live file" },
   digests: { "project/fig.png": "asset-sha" },
 };
 const context = vm.createContext({
-  session: { tree: () => live, text: { toString: () => "fallback" } },
+  session: { tree: () => live },
   sourceFormat: "markdown",
   editing: false,
-  previewMain: "project/new.md",
+  previewPath: "project/new.md",
 });
 
 vm.runInContext(`${liveTreeNow}\n${treeNow}`, context);
@@ -42,7 +41,7 @@ assert.deepEqual(vm.runInContext("liveTreeNow()", context), live, "the directory
 assert.deepEqual(
   JSON.parse(JSON.stringify(vm.runInContext("treeNow()", context))),
   { ...live, main: "project/new.md" },
-  "the preview follows the explicitly previewed file",
+  "the render builds the file the preview shows",
 );
 
 // Read-only viewers (no session) must populate digests from asset entries
@@ -51,10 +50,8 @@ assert.deepEqual(
   const roContext = vm.createContext({
     session: null,
     currentProject: {
-      main: "readme.md",
       texts: { "readme.md": "content" },
       tree: {
-        main: "readme.md",
         files: {
           "image.png": { kind: "asset", digest: "abc123def456" },
           "data.json": { kind: "text" },
@@ -68,7 +65,7 @@ assert.deepEqual(
   assert.deepEqual(
     result,
     {
-      main: "readme.md",
+      main: "",
       texts: { "readme.md": "content" },
       digests: { "image.png": "abc123def456" },
       settings: null,
