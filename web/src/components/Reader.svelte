@@ -2448,11 +2448,11 @@
   const preferences = createPreferences();
   const prefs = preferences.state;
   // Every project opens the same way: the files, the main file and its
-  // preview, or the files alone on a phone. Where the last visit ended is
+  // preview, or the preview alone on a phone. Where the last visit ended is
   // not kept.
   let layout = $state("split");
   let panel = $state("files");
-  let mobileView = $state("sidebar");
+  let mobileView = $state("document");
   let preferredPane = $state("document");
   let collaborationTab = $state("comments");
   // The selected comment lasts only while the comment panel is open.
