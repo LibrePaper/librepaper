@@ -2447,11 +2447,11 @@
   const preferences = createPreferences();
   const prefs = preferences.state;
   // Every project opens the same way: the files, the main file and its
-  // preview, or the files alone on a phone. Where the last visit ended is
+  // preview, or the preview alone on a phone. Where the last visit ended is
   // not kept.
   let layout = $state("split");
   let panel = $state("files");
-  let mobileView = $state("sidebar");
+  let mobileView = $state("document");
   let preferredPane = $state("document");
   let collaborationTab = $state("comments");
   // The selected comment lasts only while the comment panel is open.
@@ -2538,6 +2538,11 @@
     const next = panel === name && (!compact || activeMobileView === "sidebar") ? "" : name;
     showPanel(next);
     if (width <= 760) showMobileView(next ? "sidebar" : "document");
+  }
+  // The files panel, brought forward wherever it is drawn.
+  function openFilesPanel() {
+    void showPanel("files");
+    if (compact) showMobileView("sidebar");
   }
   // The tabs this browser is offered. Which reader may see which panel is
   // written with the panels, in lib/panels.js; this only says who is asking.
@@ -2637,7 +2642,7 @@
   // A window that cannot hold the split it was asked for: the phone, and the
   // tight split above it. Both show one pane at a time, so both need the
   // switch between the two faces in the bar; only the phone loses the rail
-  // beside the column and needs the row along the bottom.
+  // beside the column, and reaches the panels from the Menu in the top bar.
   const adapted = $derived(compact || (splitTight && layout === "split"));
   const effectiveLayout = $derived(!compact && (gitWorkspace || panel === "history")
     ? "source"
@@ -3109,6 +3114,9 @@
   const projectEmpty = $derived(mayEdit
     ? Boolean(session && persistence.joined && files.length === 0 && session.list().length === 0)
     : Boolean(currentProject && !Object.keys(currentProject.tree?.files || currentProject.texts || {}).length));
+  // An editor project with files but no main file, which the preview cannot draw.
+  const mainMissing = $derived(mayEdit && !projectEmpty
+    && Boolean(session && persistence.joined && files.length > 0 && !session.mainPath?.()));
   $effect(() => { if (projectEmpty) untrack(clearPreview); });
 
   function updatePreviewTarget() {
@@ -3483,6 +3491,14 @@
       forgetProject({ server: location.origin, documentId: document_.document_id, slug: SLUG, createdAt: document_.created_at })
         .catch(() => {});
     }
+    // The column opens on the files, which a link-holder is not offered; and
+    // a panel this visit has already moved to may not be theirs either. A
+    // phone keeps the view it opened on.
+    if (panel && !tabs.some((tab) => tab.id === panel)) {
+      const view = mobileView;
+      showPanel(home);
+      mobileView = view;
+    }
     // Reader and commenter links receive an allowlisted projection of the
     // current project. They share the renderer but never join CRDT sync.
     if (!mayEdit) {
@@ -3505,9 +3521,6 @@
       settled = true;
       return;
     }
-    // The column opens on the files, which a link-holder is not offered; and
-    // a panel this visit has already moved to may not be theirs either.
-    if (panel && !tabs.some((tab) => tab.id === panel)) showPanel(home);
     settled = true;
     // Load the browser renderer for readers as well as editors; this is all
     // transient and does not create a server-side result.
@@ -4290,6 +4303,21 @@
         <div class="notyet-actions">
           <button class="btn btn-sm lp-control-tonal-brand" onclick={() => void refreshCurrentProject()}>Try again</button>
         </div>
+      </div>
+    </section>
+  {:else if shown.document && (projectEmpty || mainMissing)}
+    <section class="latexpane">
+      <div class="notyet">
+        <h2 class="h4">Nothing to preview</h2>
+        <p class="lp-text-secondary text-sm">
+          {projectEmpty ? "This project has no files yet." : "This project has no main file."}
+          {#if mayEdit}{projectEmpty ? "Add one from Files." : "Choose one in Files."}{/if}
+        </p>
+        {#if mayEdit}
+          <div class="notyet-actions">
+            <button class="btn btn-sm lp-control-tonal-brand" onclick={openFilesPanel}>Open Files</button>
+          </div>
+        {/if}
       </div>
     </section>
   {:else if shown.document && mainUnrenderable}
