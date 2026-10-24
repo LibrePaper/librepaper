@@ -110,7 +110,9 @@ export async function previewCandidate({ request, tree: sourceTree, render, titl
   if (Object.keys(tree.digests).some((path) => !owns(tree.assets, path))) {
     throw new Error("Document assets are unavailable for verification.");
   }
-  const candidateRevision = await digest(tree);
+  // The revision is the projection digest, which names no entry file: the
+  // file to render travels beside it, as `main`.
+  const candidateRevision = await digest({ ...tree, main: "" });
   if (candidateRevision !== revision) throw new Error("The candidate revision does not match its source files.");
   const rendered = await render(tree, await title(tree));
   const diagnostics = (rendered.diagnostics || []).map((item) => diagnosticContext(item, tree, candidateRevision));

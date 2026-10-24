@@ -176,10 +176,12 @@ async fn source_of(d: &Deployment) -> String {
         .get(&d.slug)
         .await
         .unwrap()
-        .source()
+        .projection()
         .await
         .unwrap()
-        .map(|(_, text)| text)
+        .texts
+        .get("paper.md")
+        .cloned()
         .unwrap_or_default()
 }
 

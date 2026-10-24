@@ -19,7 +19,7 @@ const candidateManifest = {
   "main.md": { kind: "text", sha: sourceHash, size: new TextEncoder().encode(longSource).byteLength },
 };
 const referenced = { candidate_id: "candidate-1", base_revision, revision: "", main: "main.md", files: candidateManifest, texts: { "main.md": longSource } };
-referenced.revision = await snapshotDigest({ main: referenced.main, texts: referenced.texts, files: referenced.files, digests: {} });
+referenced.revision = await snapshotDigest({ main: "", texts: referenced.texts, files: referenced.files, digests: {} });
 let compiled = 0;
 const result = await previewCandidate({
   request: { candidate_id: referenced.candidate_id, base_revision, revision: referenced.revision, candidate: referenced },
@@ -72,7 +72,7 @@ const bigManifest = {
   "main.md": { kind: "text", sha: bigHash, size: new TextEncoder().encode(bigSource).byteLength },
 };
 const bigReferenced = { candidate_id: "candidate-large", base_revision, revision: "", main: "main.md", files: bigManifest, texts: { "main.md": bigSource } };
-bigReferenced.revision = await snapshotDigest({ main: bigReferenced.main, texts: bigReferenced.texts, files: bigReferenced.files, digests: {} });
+bigReferenced.revision = await snapshotDigest({ main: "", texts: bigReferenced.texts, files: bigReferenced.files, digests: {} });
 const bigResult = await previewCandidate({
   request: { candidate_id: bigReferenced.candidate_id, base_revision, revision: bigReferenced.revision, candidate: bigReferenced },
   tree,
@@ -95,7 +95,7 @@ const assetCandidate = {
     "figure.png": { kind: "asset", sha: assetSha, size: assetBytes.byteLength },
   },
   texts: { "main.md": bigSource },
-  revision: await snapshotDigest({ main: "main.md", texts: { "main.md": bigSource }, files: {
+  revision: await snapshotDigest({ main: "", texts: { "main.md": bigSource }, files: {
     "main.md": { kind: "text", sha: bigHash, size: new TextEncoder().encode(bigSource).byteLength },
     "figure.png": { kind: "asset", sha: assetSha, size: assetBytes.byteLength },
   }, digests: { "figure.png": assetSha }, assets: { "figure.png": assetBytes } }),
