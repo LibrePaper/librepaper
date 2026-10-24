@@ -20,7 +20,7 @@ const sources = ["<p>first red draft</p>", "<p>second blue draft</p>", "<p>third
 const current = "<p>current purple draft</p>";
 const points = sources.map((text, i) => ({
   sha: `00000000-0000-4000-8000-${String(i + 1).padStart(12, "0")}`,
-  at: `2026-09-10T09:0${i}:00Z`, seq: i + 1, main: "main.html", by: "Editor", why: i > 2 ? "quiet" : "label",
+  at: `2026-09-10T09:0${i}:00Z`, seq: i + 1, by: "Editor", why: i > 2 ? "quiet" : "label",
   label: ["Original", "Blah blah", "Latest label"][i] || "", changed: ["main.html"],
   texts: { "main.html": text }, files: { "main.html": { kind: "text" } },
 }));
@@ -37,7 +37,6 @@ let text = server.getMap('files').get('main');
 if (!text) {
   text = new LoroText(); text.insert(0, ${JSON.stringify(current)});
   server.getMap('files').setContainer('main', text); server.getMap('paths').set('main', 'main.html');
-  server.getMap('meta').set('main', 'main');
   server.commit();
 }
 const persist = () => localStorage.setItem('history-test-source', encode(server.export({ mode: "update" })));
@@ -92,8 +91,7 @@ try {
       // `{sha, sequence, at, by, label, reason, tree_sha, frontier,
       // archive_status}` inside a `labels` array, not `checkpoints` (old name). There is
       // no per-row `changed` any more (a manifest is a moment, not a diff;
-      // src/lib/history.js's own comment on `fromWire` says so) and `main` is
-      // named once at the top of the payload, not on every row.
+      // src/lib/history.js's own comment on `fromWire` says so).
       const wire = point => ({
         sha: point.sha, sequence: point.seq, at: point.at, by: point.by,
         label: point.label, reason: point.why, tree_sha: `tree-${point.sha}`,
@@ -101,7 +99,7 @@ try {
       });
       const list = points.map(wire).reverse();
       const page = url.searchParams.has('after') ? {labels:list.slice(-1)} : {labels:list.slice(0, -1),next_cursor:2};
-      return json(response, {slug:"paper", main:"main.html", ...page});
+      return json(response, {slug:"paper", ...page});
     }
     if (url.pathname.startsWith("/api/documents/paper/history/")) {
       const point = points.find(point => url.pathname.endsWith(point.sha));

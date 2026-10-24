@@ -63,13 +63,11 @@ window.markDurable = () => {
 // handshake, which no longer exists to simulate.
 window.ready = session.start({ protocol: "librepaper.room.v3", vector: "", durableVector: "", updates: [] }).then(() => true);
 window.mainText = () => {
-  const files = session.doc.getMap("files");
-  const id = session.doc.getMap("meta").get("main");
-  return id ? (files.get(id)?.toString() ?? "") : "";
+  const id = session.idOf("main.md");
+  return id ? (session.textOf(id)?.toString() ?? "") : "";
 };
 window.type = (words) => {
-  const id = session.addText("main.md", words);
-  session.doc.getMap("meta").set("main", id);
+  session.addText("main.md", words);
   session.doc.commit();
   return session.persist();
 };

@@ -55,9 +55,9 @@ writeFileSync(room, `
 import { LoroDoc, LoroText } from "loro-crdt";
 const encode = b => btoa(String.fromCharCode(...b));
 const server = new LoroDoc();
-const files = server.getMap("files"), paths = server.getMap("paths"), meta = server.getMap("meta");
+const files = server.getMap("files"), paths = server.getMap("paths");
 const text = files.setContainer("main", new LoroText()); text.insert(0, "A paragraph of source.");
-paths.set("main", "main.html"); meta.set("main", "main");
+paths.set("main", "main.html");
 const notes = files.setContainer("notes", new LoroText()); notes.insert(0, "Notes");
 paths.set("notes", "notes.html");
 server.commit();

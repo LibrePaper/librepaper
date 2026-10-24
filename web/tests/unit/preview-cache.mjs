@@ -6,7 +6,7 @@
 // keeping too little means the pane is blank on open, which is the whole
 // thing this exists to fix.
 import assert from "node:assert/strict";
-import { bytesOf, pageRecord, pagesToDrop } from "../../src/lib/reader/preview-cache.js";
+import { bytesOf, flushAll, lastPreview, pageRecord, pagesToDrop, rememberPreview } from "../../src/lib/reader/preview-cache.js";
 
 const pdf = (slug, savedAt, bytes) => ({ slug, kind: "pdf", bytes: new Uint8Array(bytes), savedAt });
 
@@ -17,6 +17,13 @@ const pdf = (slug, savedAt, bytes) => ({ slug, kind: "pdf", bytes: new Uint8Arra
   assert.deepEqual(pagesToDrop(pages, { kept: 2, ceiling: 1e9 }), ["b"]);
   assert.deepEqual(pagesToDrop(pages, { kept: 1, ceiling: 1e9 }), ["c", "b"]);
   assert.deepEqual(pagesToDrop(pages, { kept: 9, ceiling: 1e9 }), []);
+}
+
+// Every file of a project keeps a page, so the default holds 48 of them.
+{
+  const pages = Array.from({ length: 50 }, (_, at) => pdf(`k${at}`, at, 1));
+  assert.deepEqual(pagesToDrop(pages), ["k1", "k0"]);
+  assert.deepEqual(pagesToDrop(pages.slice(0, 48)), []);
 }
 
 // The byte ceiling is the second bound, and it counts what is actually held.
@@ -66,6 +73,17 @@ const pdf = (slug, savedAt, bytes) => ({ slug, kind: "pdf", bytes: new Uint8Arra
   assert.equal(record.html, "<p>x</p>");
   assert.equal(pageRecord("", { kind: "html" }, "", 0), null, "a page needs a document");
   assert.equal(pageRecord("paper", {}, "", 0), null, "and a kind");
+}
+
+// A page still waiting out its settling pause is found by a lookup, before
+// anything has reached a database. Each key is its own page.
+{
+  rememberPreview("paper:1|thesis.tex", { kind: "html", html: "<p>thesis</p>" }, "sha-a");
+  rememberPreview("paper:1|appendix.tex", { kind: "html", html: "<p>appendix</p>" }, "sha-b");
+  assert.equal((await lastPreview("paper:1|thesis.tex")).html, "<p>thesis</p>");
+  assert.equal((await lastPreview("paper:1|appendix.tex")).identity, "sha-b");
+  assert.equal(await lastPreview("paper:1|other.tex"), null, "a key with no page has none");
+  await flushAll();
 }
 
 console.log("preview-cache: the last page drawn is kept, and the oldest let go");

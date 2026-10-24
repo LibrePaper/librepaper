@@ -1,5 +1,6 @@
-// The last page this browser drew for a document, kept so the next visit has
-// something to show.
+// The last page this browser drew for each file of a document, kept so the
+// next visit, and the next move of the preview to that file, has something to
+// show. The key names the project and the file: `<slug>:<created>|<path>`.
 //
 // Opening a project used to mean an empty pane until the engine had loaded
 // and the source had compiled -- seconds for LaTeX, and the first of those
@@ -22,9 +23,10 @@ import { PREVIEW_DATABASE as DATABASE, localDataForgotten } from "../local-data.
 
 const VERSION = 1;
 const PAGES = "pages";
-/// How many documents keep a page. A reader moves between a handful of
-/// projects; the rest are worth less than the space they would hold.
-const KEPT = 12;
+/// How many pages are kept. Each file of a project keeps a page of its own,
+/// and a reader moves between a handful of projects with a few files each;
+/// the rest are worth less than the space they would hold.
+const KEPT = 48;
 /// And how much they may hold in total. A rendered paper is a megabyte or
 /// two, and a browser that refuses a write when its quota is gone would
 /// otherwise start failing at whatever unrelated thing asked next.
@@ -87,7 +89,7 @@ export function bytesOf(record) {
 }
 
 /// The pages to let go of, newest first until both bounds are met: at most
-/// `KEPT` documents, and at most `CEILING` bytes between them. A page that is
+/// `KEPT` pages, and at most `CEILING` bytes between them. A page that is
 /// on its own bigger than the ceiling is still kept when it is the newest --
 /// dropping it would mean a document that can never cache its page at all.
 ///
@@ -155,9 +157,12 @@ export function rememberPreview(slug, payload, identity) {
   timers.set(slug, setTimeout(() => void write(slug), SETTLE_MS));
 }
 
-/// The page this browser last drew for a document, or null.
+/// The page this browser last drew for a key, or null. A page still waiting
+/// out its settling pause is the newest there is, so it is answered first.
 export async function lastPreview(slug) {
   if (!slug) return null;
+  const waiting = pending.get(slug);
+  if (waiting) return waiting;
   const database = await open();
   if (!database) return null;
   try {
@@ -170,10 +175,15 @@ export async function lastPreview(slug) {
   }
 }
 
-/// Writes a page that is waiting out its settling pause, for a document that
-/// is being left. Nothing depends on this arriving.
+/// Writes a page that is waiting out its settling pause, for a key that is
+/// being left. Nothing depends on this arriving.
 export function flushPreview(slug) {
   if (!timers.has(slug)) return;
   clearTimeout(timers.get(slug));
   return write(slug);
+}
+
+/// Writes every page that is waiting, for a document that is being left.
+export function flushAll() {
+  return Promise.all([...timers.keys()].map((slug) => flushPreview(slug)));
 }

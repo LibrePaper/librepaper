@@ -46,7 +46,6 @@ const server = new LoroDoc();
 const text = new LoroText(); text.insert(0, ${JSON.stringify(source)});
 server.getMap("files").setContainer("main", text);
 server.getMap("paths").set("main", "main.md");
-server.getMap("meta").set("main", "main");
 server.commit();
 export function openRoom(_slug, {onMessage, onConnected}) {
   const unsubscribe = server.subscribeLocalUpdates(update => onMessage({type: "doc-update", update: encode(update)}));

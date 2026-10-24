@@ -1,4 +1,4 @@
-// Files with no renderer are not errors, so they are notes.
+// Files with no preview of their own are not errors, so they are notes.
 // They appear in Diagnostics but never count as errors or warnings.
 
 /**
@@ -6,47 +6,21 @@
  */
 
 /**
- * The message shown when the main file cannot be rendered, or "" when it can.
- * @param {{ mainPath: string | null, formatOf: (path: string) => string | null }} options
- * @returns {string}
- */
-export function unrenderableMain({ mainPath, formatOf }) {
-  if (mainPath && !formatOf(mainPath)) {
-    return `${mainPath} is not a format LibrePaper renders. Make a .tex, .typ, .qmd or .md file the main file.`;
-  }
-  return "";
-}
-
-/**
- * Produce diagnostics for files that have no preview of their own.
- * @param {{ openPath: string | null, openIsText: boolean, mainPath: string | null, formatOf: (path: string) => string | null }} options
+ * Produce a note for the open file when the preview is not drawing it itself.
+ * `target` is the resolved preview target: the file drawn and why. A file with
+ * nothing to draw says so, and a file drawn inside its includer says where.
+ * A locked preview says nothing, since the lock is shown by the pane itself.
+ * @param {{ openPath: string | null, openIsText: boolean, target: { path: string | null, reason: string } }} options
  * @returns {PreviewNote[]}
  */
-export function previewNotes({ openPath, openIsText, mainPath, formatOf }) {
-  /** @type {PreviewNote[]} */
-  const notes = [];
-
-  // The warning says all there is to say: a note that the preview shows the
-  // main file would point at a preview that does not exist.
-  const mainMessage = unrenderableMain({ mainPath, formatOf });
-  if (mainMessage) {
-    return [{ severity: "warning", message: `Nothing to preview: ${mainMessage}`, source: "preview" }];
+export function previewNotes({ openPath, openIsText, target }) {
+  if (!openPath || !openIsText) return [];
+  const name = openPath.split("/").pop();
+  if (target.reason === "none") {
+    return [{ severity: "info", message: `${name} has no preview of its own.`, file: openPath, line: 0, source: "preview" }];
   }
-
-  if (
-    openPath &&
-    openIsText &&
-    !formatOf(openPath) &&
-    openPath !== mainPath
-  ) {
-    notes.push({
-      severity: "info",
-      message: `This file has no preview of its own${mainPath ? `; the preview shows ${mainPath}` : ""}.`,
-      file: openPath,
-      line: 0,
-      source: "preview",
-    });
+  if (target.reason === "inside" && target.path) {
+    return [{ severity: "info", message: `${name} is shown inside ${target.path}.`, file: openPath, line: 0, source: "preview" }];
   }
-
-  return notes;
+  return [];
 }

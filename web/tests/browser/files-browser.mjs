@@ -45,11 +45,10 @@ const session = joinSession({ send() {}, mayEdit: true });
 const rules = { extensions: [".tex", ".md", ".qmd"], text_extensions: [".tex", ".md", ".qmd"], asset_extensions: [".png"],
   derived_extensions: [], max_path: 200, max_files: 200, log_quota_bytes: 1000000, storage: { per_owner: 1000000 } };
 const main = session.addText("main.tex", "main");
-session.setMain(main);
 const child = session.addText("chapters/one.tex", "chapter");
 session.addFolder("empty", rules);
 const component = createClassComponent({ component: Files, target: document.body, props: {
-  files: session.list(), folders: session.folders(), rules, mayEdit: true, open: main, preview: "main.tex",
+  files: session.list(), folders: session.folders(), rules, mayEdit: true, open: main, preview: "main.tex", locked: "",
   onadd: (path) => session.addText(path), onmkdir: (path) => session.addFolder(path, rules),
   onrelocate: (...args) => session.relocate(args[0], args[1], rules, args[2]),
   ondelete: (entries) => session.removeEntries(entries),
@@ -58,7 +57,8 @@ const component = createClassComponent({ component: Files, target: document.body
   ontext: async (file, path) => session.addText(path, await file.text()),
   onfigure: async (file, path) => session.addText(path, String((await file.arrayBuffer()).byteLength)),
   previewable: (path) => /\.(tex|md|qmd)$/.test(path),
-  onpreview: (file) => { window.previewed = file.path; component.$set({ preview: file.path }); },
+  onlock: (file) => { window.locked = file.path; component.$set({ locked: file.path, preview: file.path }); },
+  onunlock: () => { window.locked = ''; component.$set({ locked: '', preview: 'main.tex' }); },
 } });
 session.onFiles(() => component.$set({ files: session.list(), folders: session.folders() }));
 const flush = async () => { await tick(); await new Promise((resolve) => setTimeout(resolve, 80)); await tick(); };
@@ -106,7 +106,7 @@ window.filesCheck = async () => {
     check(document.querySelector('.panel-actions').contains(control), label + ' remains in the toolbar');
     check(control.querySelector('svg path, svg rect'), label + ' has an actual icon');
   }
-  check(!button('Rename selected item') && !button('Move selected items') && !button('Set selected file as main'), 'no redundant selection toolbar');
+  check(!button('Rename selected item') && !button('Move selected items'), 'no redundant selection toolbar');
   check(!document.querySelector('[aria-label="Main file"]'), 'no favorite-looking star');
   row('main.tex').dispatchEvent(new MouseEvent('dblclick', { bubbles: true })); await flush();
   await name('Rename main.tex', 'renamed-main.tex');
@@ -130,15 +130,22 @@ window.filesCheck = async () => {
   check(chevron('chapters')?.dataset.state === 'closed', 'a shut folder points its chevron aside');
   row('chapters').click(); await flush();
   check(chevron('chapters')?.dataset.state === 'open', 'an open folder turns it down');
-  // Any other file that can be previewed carries a faint eye that moves the preview there.
-  const previewOne = row('chapters/one.tex').querySelector('button[aria-label="Preview one.tex"]');
-  check(previewOne, 'a previewable file offers its eye as a button');
-  previewOne.click(); await flush();
-  check(window.previewed === 'chapters/one.tex', 'the eye moves the preview to its file');
+  // Any other file that renders alone carries a faint eye that locks the
+  // preview there, without opening the file.
+  const lockOne = row('chapters/one.tex').querySelector('button[aria-label="Lock preview on one.tex"]');
+  check(lockOne, 'a file that renders alone offers its eye as a button');
+  lockOne.click(); await flush();
+  check(window.locked === 'chapters/one.tex', 'the eye locks the preview on its file');
   check(document.querySelector('.explorer-open')?.getAttribute('title') !== 'chapters/one.tex', 'the eye does not open the file');
-  check(row('chapters/one.tex').querySelector('[aria-label="Shown in the preview"]'), 'the eye is solid on the newly previewed file');
-  check(row('main.tex').querySelector('button[aria-label="Preview main.tex"]'), 'the old file offers its eye again');
-  component.$set({ preview: 'main.tex' }); await flush();
+  const unlockOne = row('chapters/one.tex').querySelector('button[aria-label="Unlock the preview"]');
+  check(unlockOne, 'the locked row shows the solid eye as a button that unlocks');
+  check(!row('chapters/one.tex').querySelector('[aria-label="Shown in the preview"]'), 'a locked row is not also the plain marker');
+  check(row('main.tex').querySelector('button[aria-label="Lock preview on main.tex"]'), 'the old file offers its eye again');
+  check(document.querySelectorAll('[aria-label="Unlock the preview"]').length === 1, 'only the locked file carries the unlock eye');
+  unlockOne.click(); await flush();
+  check(window.locked === '', 'pressing the solid eye unlocks');
+  check(row('main.tex').querySelector('[aria-label="Shown in the preview"]'), 'the preview is back on the followed file');
+  check(!document.querySelector('[role="menuitem"]') || ![...document.querySelectorAll('[role="menuitem"]')].some((item) => item.textContent.includes('main file')), 'no menu item makes a main file');
   const guide = document.querySelector('.explorer-guide');
   check(guide && guide.dataset.depth === '1', 'an open folder draws the guide at its own depth');
   row('chapters').click(); await flush();
@@ -216,7 +223,7 @@ window.filesCheck = async () => {
   check(after.includes('fig/plot.png'), 'figures come with it');
   check(!after.includes('report.html') && !after.some((path) => path.startsWith('_freeze/')),
     'what Quarto renders is left behind: ' + after.join(', '));
-  check(session.paths.get(main) === 'main.tex', 'importing a paper does not change which file is the main one');
+  check(session.paths.get(main) === 'main.tex', 'importing a paper does not rename the open file');
   component.$set({ mayEdit: false }); await flush();
   check(!button('New folder'), 'read-only toolbar');
   check(!document.querySelector('[draggable="true"]'), 'read-only drag disabled');

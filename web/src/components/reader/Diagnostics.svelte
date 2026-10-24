@@ -6,7 +6,7 @@
 
   let {
     diagnostics = [],
-    main = "",
+    entry = "",
     canOpen = () => false,
     onopen,
     localAppProblem = false,
@@ -44,7 +44,7 @@
   const earlier = $derived(attempts.length > 1 ? attempts.slice(0, -1) : []);
   // What TeX itself would have called the file, so a downloaded transcript
   // arrives under the name the log's own last line reports.
-  const logName = $derived(`${(main || "document").split("/").pop().replace(/\.[^.]+$/, "") || "document"}.log`);
+  const logName = $derived(`${(entry || "document").split("/").pop().replace(/\.[^.]+$/, "") || "document"}.log`);
   // The transcript to show. The result carries one for an ordinary compile,
   // but a run that stopped in a later stage -- a Biber failure, a worker that
   // died -- returns with the engine's log on the attempt that produced it and
@@ -122,10 +122,10 @@
                 {#if canOpen(item)}
                   <button type="button" class="anchor text-left" onclick={() => onopen?.(item)}
                           title="Go to this location in the source">
-                    {item.file || main}:{item.line}{item.column > 0 ? `:${item.column}` : ""}
+                    {item.file || entry}:{item.line}{item.column > 0 ? `:${item.column}` : ""}
                   </button>
                 {:else}
-                  <span>{item.file || main}{item.line > 0 ? `:${item.line}` : ""}{item.line > 0 && item.column > 0 ? `:${item.column}` : ""}</span>
+                  <span>{item.file || entry}{item.line > 0 ? `:${item.line}` : ""}{item.line > 0 && item.column > 0 ? `:${item.column}` : ""}</span>
                 {/if}
               </div>
             {/if}

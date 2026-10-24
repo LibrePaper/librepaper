@@ -21,10 +21,16 @@
   // all. What is being previewed is said in the Files pane, by the eye beside
   // the file, rather than spelled out again here.
   //
+  // `notice` is a chip saying why the pane shows what it shows: the file is
+  // locked, or is drawn inside the file that includes it. It sits in its own
+  // slim band under the controls rather than over the frame, for the same
+  // reason the controls do: nothing may cover a page, least of all at phone
+  // width.
+  //
   // A thin progress line along the top edge signals a render under way without
   // covering the document, and nothing shows for renders under the
   // steady-busy threshold.
-  let { src, docsOrigin, onmessage, onload, grabbing = false, away = false, controls, busy = false, progress = null } = $props();
+  let { src, docsOrigin, onmessage, onload, grabbing = false, away = false, controls, notice, busy = false, progress = null } = $props();
 
   let frame = $state(null);
   let viewport = $state(null);
@@ -113,6 +119,7 @@
     </div>
   {/if}
   {@render controls?.()}
+  {#if notice}<div class="notice-band">{@render notice()}</div>{/if}
   <!-- allow-same-origin refers to the document's own origin, not this one, so
        the agent can read the document while the document can read nothing
        here. While a separator is being dragged the frame is deafened: it
@@ -137,6 +144,44 @@
 </section>
 
 <style>
+  .notice-band {
+    display: flex;
+    flex: none;
+    justify-content: flex-end;
+    padding: calc(var(--spacing) * 1) calc(var(--spacing) * 2);
+    min-width: 0;
+  }
+
+  .notice-band :global(.notice-chip) {
+    display: inline-flex;
+    align-items: center;
+    gap: calc(var(--spacing) * 1);
+    max-width: 100%;
+    min-width: 0;
+    padding: calc(var(--spacing) * 0.5) calc(var(--spacing) * 2);
+    border-radius: var(--radius-base);
+    background: var(--color-row-hover);
+    color: var(--color-text-secondary);
+    font-size: var(--text-xs);
+  }
+
+  .notice-band :global(.notice-chip > span) {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .notice-band :global(.notice-chip button) {
+    display: inline-flex;
+    flex: none;
+    align-items: center;
+    padding: 0;
+    border: 0;
+    background: none;
+    color: inherit;
+    cursor: pointer;
+  }
+
   .render-line {
     position: absolute;
     top: 0;
