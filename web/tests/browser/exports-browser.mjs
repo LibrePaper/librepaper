@@ -6,10 +6,35 @@ import { spawn } from "node:child_process";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { createHash } from "node:crypto";
+import { inflateRawSync } from "node:zlib";
 import { existsSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { requireChromiumExecutable } from "../helpers/browser-executable.mjs";
 import { removeTemporary, stopBrowserProcess } from "../helpers/browser-driver.mjs";
+
+// Reads one entry of a zip as text. It walks the central directory, which is always complete, unlike local headers.
+function zipEntry(bytes, name) {
+  const buffer = Buffer.from(bytes);
+  let end = -1;
+  for (let at = buffer.length - 22; at >= 0; at--) if (buffer.readUInt32LE(at) === 0x06054b50) { end = at; break; }
+  assert.ok(end >= 0, "the zip has no end of central directory record");
+  let at = buffer.readUInt32LE(end + 16);
+  for (let left = buffer.readUInt16LE(end + 10); left > 0; left--) {
+    assert.equal(buffer.readUInt32LE(at), 0x02014b50, "the zip central directory is damaged");
+    const method = buffer.readUInt16LE(at + 10), size = buffer.readUInt32LE(at + 20);
+    const nameLength = buffer.readUInt16LE(at + 28), extraLength = buffer.readUInt16LE(at + 30), commentLength = buffer.readUInt16LE(at + 32);
+    const local = buffer.readUInt32LE(at + 42);
+    if (buffer.toString("utf8", at + 46, at + 46 + nameLength) === name) {
+      assert.equal(buffer.readUInt32LE(local), 0x04034b50, "the zip local header is damaged");
+      const start = local + 30 + buffer.readUInt16LE(local + 26) + buffer.readUInt16LE(local + 28);
+      const data = buffer.subarray(start, start + size);
+      assert.ok(method === 0 || method === 8, `the zip entry ${name} uses unsupported method ${method}`);
+      return (method === 8 ? inflateRawSync(data) : data).toString("utf8");
+    }
+    at += 46 + nameLength + extraLength + commentLength;
+  }
+  throw new Error(`the zip has no ${name} entry`);
+}
 
 const root = dirname(dirname(dirname(dirname(fileURLToPath(import.meta.url)))));
 const names = ["markdown", "citations", "typst", "pandoc"];
@@ -112,6 +137,8 @@ try {
   assert.equal(zip.subarray(0, 2).toString("latin1"), "PK", "Markdown DOCX is not a zip");
   assert.ok(zip.includes("word/document.xml"), "Markdown DOCX has no word/document.xml entry");
   assert.equal(docx.name, "t.docx", "Markdown DOCX has the wrong file name");
+  assert.ok(zipEntry(zip, "word/document.xml").includes("<m:oMath"), "Markdown DOCX lost the math: word/document.xml has no <m:oMath");
+  console.log("exports-browser: Markdown DOCX math survives ok");
   console.log(`exports-browser: timing: first Pandoc conversion ${Math.round(pdf.ms)} ms (PDF route), second ${Math.round(docx.ms)} ms (DOCX route)`);
 
   const html = await run("Markdown to HTML", { ...paper, target: "html" });
@@ -132,6 +159,25 @@ try {
 
   const typstDocx = await run("Typst to DOCX", { format: "typst", main: "main.typ", target: "docx", texts: { "main.typ": "= Title\nSome text.\n" } });
   assert.equal(isZip(typstDocx).subarray(0, 2).toString("latin1"), "PK", "Typst DOCX is not a zip");
+
+  const typstMath = "= Math heading\n\nA paragraph with inline math $x^2 + 1$ and a display equation.\n\n$ sum_(i=1)^n i $\n";
+  const typstPaper = { format: "typst", main: "main.typ", texts: { "main.typ": typstMath } };
+  const typstPdf = await run("Typst math to PDF", { ...typstPaper, target: "pdf" });
+  assert.equal(typstPdf.head, "%PDF", "Typst math PDF does not start with %PDF");
+  const typstHtml = await run("Typst math to HTML", { ...typstPaper, target: "html" });
+  assert.ok(typstHtml.text.includes("Math heading"), "Typst math HTML lacks the heading text");
+  const typstMathDocx = await run("Typst math to DOCX", { ...typstPaper, target: "docx" });
+  const typstMathZip = isZip(typstMathDocx);
+  assert.equal(typstMathZip.subarray(0, 2).toString("latin1"), "PK", "Typst math DOCX is not a zip");
+  console.log(`exports-browser: Typst DOCX math: ${zipEntry(typstMathZip, "word/document.xml").includes("<m:oMath") ? "present" : "absent"}`);
+
+  const quarto = { format: "quarto", main: "main.qmd", texts: { "main.qmd": "---\ntitle: Quarto check\n---\n\nA Quarto paragraph.\n\n```{r}\n1 + 1\n```\n" } };
+  const quartoPdf = await run("Quarto to PDF", { ...quarto, target: "pdf" });
+  assert.equal(quartoPdf.head, "%PDF", "Quarto PDF does not start with %PDF");
+  const quartoHtml = await run("Quarto to HTML", { ...quarto, target: "html" });
+  assert.ok(quartoHtml.text.includes("Quarto check") || quartoHtml.text.includes("A Quarto paragraph"), "Quarto HTML lacks the title and the paragraph text");
+  const quartoDocx = await run("Quarto to DOCX", { ...quarto, target: "docx" });
+  assert.equal(isZip(quartoDocx).subarray(0, 2).toString("latin1"), "PK", "Quarto DOCX is not a zip");
 
   const unavailable = await evaluate(`exportAvailable("text", "pdf")`);
   assert.equal(unavailable.ok, false, "a plain text document should not be exportable as PDF");
