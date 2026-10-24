@@ -231,7 +231,10 @@ async fn the_share_route_creates_updates_replaces_and_revokes_by_id() {
     assert_eq!(first["created"]["kind"], "link");
     let first_id = first["created"]["id"].as_str().unwrap().to_string();
     assert_eq!(first_id.len(), 16);
-    assert!(first["created"]["url"].as_str().unwrap().contains("#k="));
+    let link = first["created"]["url"].as_str().unwrap();
+    let key = link.strip_prefix("/docs/").and_then(|rest| rest.split_once('/')).unwrap().1;
+    assert_eq!(key.len(), 64);
+    assert!(key.bytes().all(|b| b.is_ascii_hexdigit()));
 
     let (_, second) = served
         .share(json!({"create": {"kind": "link", "role": "reader", "until": "1d"}}))
