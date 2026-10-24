@@ -34,33 +34,33 @@ const named = (name) => corpus.cases.find((testCase) => testCase.name === name).
 const thesis = named("LaTeX thesis with chapters");
 assert.deepEqual(
   previewTarget({ open: "chapters/intro.tex", locked: null, texts: thesis }),
-  { path: "thesis.tex", reason: "inside", includers: ["thesis.tex"] },
+  { path: "thesis.tex", reason: "inside", includers: ["thesis.tex"], choices: [] },
   "a thesis chapter previews inside the thesis",
 );
 assert.deepEqual(
   previewTarget({ open: "thesis.tex", locked: null, texts: thesis }),
-  { path: "thesis.tex", reason: "alone", includers: [] },
+  { path: "thesis.tex", reason: "alone", includers: [], choices: [] },
   "a thesis previews itself",
 );
 
 const shared = named("two papers share macros");
 assert.deepEqual(
   previewTarget({ open: "macros.tex", locked: null, texts: shared }),
-  { path: null, reason: "none", includers: ["a.tex", "b.tex"] },
+  { path: null, reason: "none", includers: ["a.tex", "b.tex"], choices: ["a.tex", "b.tex"] },
   "macros shared by two papers have no preview and list both",
 );
 
 const book = named("Typst book with chapters and a template");
 assert.deepEqual(
   previewTarget({ open: "chapters/two.typ", locked: null, texts: book }),
-  { path: "book.typ", reason: "inside", includers: ["chapters/one.typ"] },
+  { path: "book.typ", reason: "inside", includers: ["chapters/one.typ"], choices: [] },
   "a nested chapter walks up to the book",
 );
 
 const papers = named("two papers share macros");
 assert.deepEqual(
   previewTarget({ open: "macros.tex", locked: "b.tex", texts: papers }),
-  { path: "b.tex", reason: "locked", includers: ["a.tex", "b.tex"] },
+  { path: "b.tex", reason: "locked", includers: ["a.tex", "b.tex"], choices: [] },
   "a locked file wins over the open one",
 );
 assert.equal(
@@ -72,7 +72,7 @@ assert.equal(
 const paper = named("one LaTeX paper");
 assert.deepEqual(
   previewTarget({ open: "refs.bib", locked: null, texts: paper }),
-  { path: null, reason: "none", includers: [] },
+  { path: null, reason: "none", includers: [], choices: [] },
   "a bib file has no preview",
 );
 
@@ -84,6 +84,27 @@ assert.equal(
   previewTarget({ open: "a.typ", locked: null, texts: cycle }).reason,
   "none",
   "a cycle ends the walk",
+);
+
+const nested = {
+  "shared.tex": "\\newcommand{\\x}{x}\n",
+  "chapter.tex": "\\input{shared}\n",
+  "a.tex": "\\documentclass{article}\n\\input{chapter}\n",
+  "b.tex": "\\documentclass{article}\n\\input{chapter}\n",
+};
+const nestedTarget = previewTarget({ open: "shared.tex", locked: null, texts: nested });
+assert.equal(nestedTarget.reason, "none", "a file under two includers has no single preview");
+assert.deepEqual(nestedTarget.choices, ["a.tex", "b.tex"], "choices walk up past a file that cannot render alone");
+
+const macros = {
+  "macros.tex": "\\newcommand{\\x}{x}\n",
+  "p1.tex": "\\documentclass{article}\n\\input{macros}\n",
+  "p2.tex": "\\documentclass{article}\n\\input{macros}\n",
+};
+assert.deepEqual(
+  previewTarget({ open: "macros.tex", locked: null, texts: macros }).choices,
+  ["p1.tex", "p2.tex"],
+  "macros included directly by two papers offer both",
 );
 
 console.log("opening: all checks passed");

@@ -185,19 +185,35 @@ fn has_document_class(body: &str) -> bool {
     false
 }
 
+/// The names `\input`, `\include` and `\subfile` point at. Whitespace of any
+/// kind, newlines included, may sit between the command and its name. Only
+/// `\input` takes TeX's unbraced form, a run of characters up to whitespace,
+/// `%`, `\`, `{` or `}`. A longer command such as `\includegraphics` is not
+/// one of these.
 fn latex_names(text: &str) -> Vec<String> {
+    const SPACE: [char; 6] = [' ', '\t', '\r', '\n', '\x0c', '\x0b'];
     let mut names = Vec::new();
     for command in ["\\input", "\\include", "\\subfile"] {
         let mut rest = text;
         while let Some(at) = rest.find(command) {
             rest = &rest[at + command.len()..];
-            let Some(open) = rest.trim_start_matches([' ', '\t']).strip_prefix('{') else {
+            if rest.starts_with(|c: char| c.is_ascii_alphabetic()) {
                 continue;
-            };
-            if let Some(close) = open.find('}') {
-                let name = open[..close].trim();
-                if !name.is_empty() {
-                    names.push(name.to_string());
+            }
+            let open = rest.trim_start_matches(SPACE);
+            if let Some(braced) = open.strip_prefix('{') {
+                if let Some(close) = braced.find('}') {
+                    let name = braced[..close].trim();
+                    if !name.is_empty() {
+                        names.push(name.to_string());
+                    }
+                }
+            } else if command == "\\input" {
+                let end = open
+                    .find(|c: char| SPACE.contains(&c) || matches!(c, '%' | '\\' | '{' | '}'))
+                    .unwrap_or(open.len());
+                if end > 0 {
+                    names.push(open[..end].to_string());
                 }
             }
         }

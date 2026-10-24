@@ -60,18 +60,28 @@ function hasDocumentClass(body) {
   return false;
 }
 
+// The names `\input`, `\include` and `\subfile` point at. Whitespace of any
+// kind, newlines included, may sit between the command and its name. Only
+// `\input` takes TeX's unbraced form, a run of characters up to whitespace,
+// `%`, `\`, `{` or `}`. A longer command such as `\includegraphics` is not
+// one of these.
 function latexNames(text) {
   const names = [];
   for (const command of ["\\input", "\\include", "\\subfile"]) {
     let rest = text;
     for (let at = rest.indexOf(command); at >= 0; at = rest.indexOf(command)) {
       rest = rest.slice(at + command.length);
-      const open = rest.replace(/^[ \t]+/, "");
-      if (!open.startsWith("{")) continue;
-      const close = open.indexOf("}");
-      if (close < 0) continue;
-      const name = open.slice(1, close).trim();
-      if (name) names.push(name);
+      if (/^[A-Za-z]/.test(rest)) continue;
+      const open = rest.replace(/^[ \t\r\n\f\v]+/, "");
+      if (open.startsWith("{")) {
+        const close = open.indexOf("}");
+        if (close < 0) continue;
+        const name = open.slice(1, close).trim();
+        if (name) names.push(name);
+      } else if (command === "\\input") {
+        const bare = /^[^ \t\r\n\f\v%\\{}]+/.exec(open);
+        if (bare) names.push(bare[0]);
+      }
     }
   }
   return names;
@@ -203,8 +213,9 @@ export function openingFile(texts) {
 ///
 /// `open` is the path open in the source, `locked` the path the preview is
 /// locked on (or null), and `texts` is `{ [path]: body }`. The answer is
-/// `{ path, reason, includers }`, where `includers` are the files that include
-/// the open file directly, sorted.
+/// `{ path, reason, includers, choices }`, where `includers` are the files that
+/// include the open file directly, sorted, and `choices` (only for `none`) are
+/// the files that render on their own and sit above the open file, sorted.
 ///
 /// - `locked`: the locked file exists and renders on its own.
 /// - `alone`: the open file renders on its own.
@@ -219,10 +230,10 @@ export function previewTarget({ open, locked, texts }) {
   const listed = open ? direct(open) : [];
 
   if (locked && Object.hasOwn(texts, locked) && alone(locked)) {
-    return { path: locked, reason: "locked", includers: listed };
+    return { path: locked, reason: "locked", includers: listed, choices: [] };
   }
   if (open && Object.hasOwn(texts, open)) {
-    if (alone(open)) return { path: open, reason: "alone", includers: listed };
+    if (alone(open)) return { path: open, reason: "alone", includers: listed, choices: [] };
     const seen = new Set([open]);
     let current = open;
     for (;;) {
@@ -230,8 +241,31 @@ export function previewTarget({ open, locked, texts }) {
       if (above.length !== 1 || seen.has(above[0])) break;
       current = above[0];
       seen.add(current);
-      if (alone(current)) return { path: current, reason: "inside", includers: listed };
+      if (alone(current)) return { path: current, reason: "inside", includers: listed, choices: [] };
     }
   }
-  return { path: null, reason: "none", includers: listed };
+  return { path: null, reason: "none", includers: listed, choices: choicesAbove(open, texts, direct, alone) };
+}
+
+// The files that render on their own and are reached by walking up includers
+// from `open`, breadth first. The walk goes on past a file that renders alone,
+// and a file seen once is not visited again.
+function choicesAbove(open, texts, direct, alone) {
+  if (!open || !Object.hasOwn(texts, open)) return [];
+  const seen = new Set([open]);
+  const found = [];
+  let level = [open];
+  while (level.length) {
+    const next = [];
+    for (const path of level) {
+      for (const above of direct(path)) {
+        if (seen.has(above)) continue;
+        seen.add(above);
+        next.push(above);
+        if (alone(above)) found.push(above);
+      }
+    }
+    level = next;
+  }
+  return found.sort(compareUtf8);
 }

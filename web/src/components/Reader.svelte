@@ -2763,7 +2763,7 @@
     }
     if (value === "preview-latex-pdf") return void setLatexOutput("pdf");
     if (value === "preview-latex-html") return void setLatexOutput("html");
-    if (value === "lock-preview") return lockPreview(openFile);
+    if (value === "lock-preview") return lockPreview(shownOpenId);
     if (value === "unlock-preview") return unlockPreview();
     if (value === "preview-typst-pdf") return void setTypstOutput("pdf");
     if (value === "preview-typst-html") return void setTypstOutput("html");
@@ -3037,12 +3037,13 @@
   let outlineRevision = $state(0);
   // What the preview draws. `previewPath` is the file, `previewReason` says
   // why it is that one (the file itself, the file it is shown inside, the file
-  // the preview is locked on, or nothing at all) and `previewIncluders` lists
-  // the files that include the open file when it has no preview of its own.
+  // the preview is locked on, or nothing at all) and
+  // `previewChoices` lists the files that could host the open file when it has
+  // no preview of its own.
   // The rule is `lib/opening.js`'s; this is where its answer is kept.
   let previewPath = $state("");
   let previewReason = $state("none");
-  let previewIncluders = $state([]);
+  let previewChoices = $state([]);
   // The file the preview is locked on, by identity so a rename keeps the lock.
   // It lasts for this visit: nothing stores it and nobody else sees it.
   let lockedFile = $state("");
@@ -3160,7 +3161,7 @@
     const alone = Object.keys(texts).filter((path) => rendersAlone(path, texts, includers)).sort();
     if (alone.length !== aloneSet.size || alone.some((path) => !aloneSet.has(path))) aloneSet = new Set(alone);
     if (target.reason !== previewReason) previewReason = target.reason;
-    if (target.includers.join("\n") !== previewIncluders.join("\n")) previewIncluders = target.includers;
+    if (target.choices.join("\n") !== previewChoices.join("\n")) previewChoices = target.choices;
     const path = target.path || "";
     const format = path ? renderers.previewFormatOf(path) : "";
     // Nothing the preview could follow: the open file has no renderer, or it
@@ -3187,6 +3188,8 @@
     const mine = navigationGeneration;
     renderCoordinator.invalidate();
     framePreview.clear();
+    // Only the render of the new file installs a click map.
+    activeSynctex = null;
     everPainted = false;
     everPaintedShown = false;
     renderStatus.resetFailure();
@@ -4396,10 +4399,10 @@
       <div class="notyet">
         <h2 class="h4">Nothing to preview</h2>
         <p class="lp-text-secondary text-sm">{previewCard}</p>
-        {#if previewIncluders.length}
-          <p class="lp-text-secondary text-sm">It is included by:</p>
+        {#if previewChoices.length}
+          <p class="lp-text-secondary text-sm">It can be previewed inside:</p>
           <div class="notyet-actions">
-            {#each previewIncluders as includer (includer)}
+            {#each previewChoices as includer (includer)}
               <button class="btn btn-sm lp-control-tonal-brand" onclick={() => lockPreviewOn(session ? session.idOf(includer) || "" : includer)}>Lock preview on {includer}</button>
             {/each}
           </div>

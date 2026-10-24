@@ -164,6 +164,26 @@
       "includers": {}
     },
     {
+      "name": "input after a newline",
+      "files": {
+        "main.tex": "\\documentclass{article}\n\\input\n{chapters/a}\n",
+        "chapters/a.tex": "A\n"
+      },
+      "opening": "main.tex",
+      "alone": ["main.tex"],
+      "includers": { "chapters/a.tex": ["main.tex"] }
+    },
+    {
+      "name": "unbraced input",
+      "files": {
+        "main.tex": "\\documentclass{article}\n\\input chapters/b.tex\n\\inputencoding{utf8}\n\\includegraphics{fig}\n",
+        "chapters/b.tex": "B\n"
+      },
+      "opening": "main.tex",
+      "alone": ["main.tex"],
+      "includers": { "chapters/b.tex": ["main.tex"] }
+    },
+    {
       "name": "only a README, which opens as the last resort",
       "files": { "README.md": "# r\n" },
       "opening": "README.md",

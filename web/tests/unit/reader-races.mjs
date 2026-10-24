@@ -199,7 +199,7 @@ const context = (values) => {
     typstOutput: "pdf",
     previewPath: "",
     previewReason: "none",
-    previewIncluders: [],
+    previewChoices: [],
     lockedFile: "",
     SLUG: "doc",
     buildPreferences: { selection: "automatic", backend: "auto", output: "html" },
@@ -1199,7 +1199,7 @@ assert.doesNotMatch(reader, /createRenderingStore|holdRendering|\/renderings\//)
 {
   const commands = [];
   const ctx = context({
-    lockPreview: id => commands.push(`lock:${id}`), unlockPreview: () => commands.push('unlock'), openFile: 'paper.tex',
+    lockPreview: id => commands.push(`lock:${id}`), unlockPreview: () => commands.push('unlock'), openFile: 'paper.tex', shownOpenId: 'paper.tex',
     setLatexOutput: mode => commands.push(`latex-${mode}`),
     chose: value => commands.push(value),
   });
