@@ -37,6 +37,7 @@ writeFileSync(entry, [
   "createClassComponent({ component: Editor, target: document.body, props: { session, format: 'markdown', file: main } });",
   "window.citationReady = async () => { await tick(); return Boolean(document.querySelector('.cm-editor')); };",
   "window.citationPrepare = () => { const view = EditorView.findFromDOM(document.querySelector('.cm-editor')); view.dispatch({ selection: { anchor: view.state.doc.length } }); view.focus(); };",
+  "window.citationPoint = (word) => { const view = EditorView.findFromDOM(document.querySelector('.cm-editor')); const box = view.coordsAtPos(view.state.doc.toString().indexOf(word) + 3); return { x: box.left + 1, y: (box.top + box.bottom) / 2 }; };",
   "window.citationState = () => { const view = EditorView.findFromDOM(document.querySelector('.cm-editor')); return { popup: Boolean(document.querySelector('.cm-tooltip-autocomplete')), popupText: document.querySelector('.cm-tooltip-autocomplete')?.textContent || '', text: view.state.doc.toString() }; };",
   `window.zoteroImportMainCheck = async (missingMain) => {
     const value = joinSession({ send: () => {}, mayEdit: true });
@@ -162,6 +163,18 @@ try {
   assert.equal(state.popup, false, "a space after an accepted key should not reopen the picker");
   assert.equal(state.text, "---\nbibliography: refs.bib\n---\n\nSee @smith2020 ");
   console.log("citations-browser: analyzer-backed @ Rivers picker opened, inserted Smith, and stayed closed");
+  await send("Input.insertText", { text: "and @nobody2001." });
+  await send("Input.dispatchKeyEvent", { type: "keyDown", key: "Escape", code: "Escape", windowsVirtualKeyCode: 27, nativeVirtualKeyCode: 27 });
+  await send("Input.dispatchKeyEvent", { type: "keyUp", key: "Escape", code: "Escape", windowsVirtualKeyCode: 27, nativeVirtualKeyCode: 27 });
+  let missing = [];
+  for (let attempt = 0; attempt < 60; attempt++) { missing = await evaluate("[...document.querySelectorAll('.cm-citation-missing')].map((node) => node.textContent)"); if (missing.length) break; await wait(50); }
+  assert.deepEqual(missing, ["nobody2001"], "only the key with no entry should be underlined");
+  const point = await evaluate("citationPoint('smith2020')");
+  await send("Input.dispatchMouseEvent", { type: "mouseMoved", x: point.x, y: point.y });
+  let card = "";
+  for (let attempt = 0; attempt < 60; attempt++) { card = await evaluate("document.querySelector('.cm-citation-card')?.textContent || ''"); if (card) break; await wait(50); }
+  assert.match(card, /Smith.*Rivers/, "hovering a known key should show its entry");
+  console.log("citations-browser: an unknown key is underlined and a known key shows its entry on hover");
   for (const missingMain of [true, false]) {
     const zotero = await evaluate(`zoteroImportMainCheck(${missingMain})`);
     assert.match(zotero.text, /bibliography: references\.bib/);
