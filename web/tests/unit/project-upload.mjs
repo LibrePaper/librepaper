@@ -8,43 +8,46 @@ const config = {
 };
 const entries = (files) => Object.entries(files).map(([path, value]) => ({ path, bytes: typeof value === "string" ? new TextEncoder().encode(value) : value }));
 const project = (files) => archiveProject(entries(files), config);
-const select = (value, main = value.main, limits = config) => archiveSelection(value, main, limits);
+const select = (value, opening = value.opening, limits = config) => archiveSelection(value, opening, limits);
 
 const latex = project({ "paper/main.tex": "Title", "paper/refs.bib": "References", "paper/fig.png": new Uint8Array([1,2]), "paper/main.pdf": "generated", "paper/main.aux": "aux", "paper/.git/config": "private", "__MACOSX/._main.tex": "metadata" });
-assert.equal(latex.main, "main.tex");
+assert.equal(latex.opening, "main.tex");
 assert.equal(latex.root, "paper", "the wrapper folder is reported and stripped");
 assert.deepEqual(select(latex).files.map((file) => file.path), ["main.tex", "refs.bib", "fig.png"]);
 assert.ok(select(latex).skipped.includes("main.pdf"));
 assert.deepEqual(latex.candidates, ["main.tex"]);
 const ambiguous = project({ "one.md": "First", "two.md": "Second", "refs.bib": "References" });
-assert.equal(ambiguous.main, "");
+assert.equal(ambiguous.opening, "one.md", "the first document at the top opens");
 assert.equal(ambiguous.root, "", "no wrapper folder means no root");
 assert.deepEqual(ambiguous.candidates, ["one.md", "two.md"]);
-assert.throws(() => select(ambiguous), /Choose the document/);
-assert.equal(select(ambiguous, "two.md").files.length, 3);
+assert.equal(select(ambiguous).files.length, 3);
 const nested = project({ "chapters/paper.tex": "Text", "fig.png": "Image" });
-assert.equal(nested.main, "");
+assert.equal(nested.opening, "chapters/paper.tex", "a nested document opens when nothing is at the top");
 assert.deepEqual(nested.candidates, ["chapters/paper.tex"]);
-assert.equal(select(nested, "chapters/paper.tex").files.length, 2);
+assert.equal(select(nested).files.length, 2);
+// The opening file decides which generated PDF is left out: the one beside it.
+const documents = project({ "a.tex": "First", "b.tex": "Second", "a.pdf": "generated", "b.pdf": new Uint8Array([5]) });
+assert.equal(documents.opening, "a.tex");
+assert.deepEqual(select(documents).files.map((file) => file.path), ["a.tex", "b.tex", "b.pdf"]);
+assert.deepEqual(select(documents).skipped, ["a.pdf"]);
 assert.throws(() => project({ "refs.bib": "References" }), /no supported document/);
 assert.throws(() => project({ "main.md": "a", "MAIN.md": "b" }), /share one name/);
 
 const quarto = project({ "main.qmd": "# Source", "main.html": "Generated", "main.md": "Generated", "refs.bib": "References", "data.csv": "private", "_freeze/result.json": "cache", "_site/index.html": "generated", "figure.png": new Uint8Array([3,4]) });
-assert.equal(quarto.main, "main.qmd");
+assert.equal(quarto.opening, "main.qmd");
 assert.deepEqual(select(quarto).files.map((file) => file.path), ["main.qmd", "refs.bib", "figure.png"]);
-assert.ok(select(quarto, "main.html").files.some((file) => file.path === "main.html"), "changing main recomputes exclusions");
 const siblings = project({ "paper.qmd": "# Source", "paper.html": "Generated", "notes.typ": "Typst", "appendix.tex": "LaTeX", "page.html": "Page", "_freeze/x.json": "cache", "data.docx": "binary" });
 assert.deepEqual(select(siblings, "paper.qmd").files.map((file) => file.path), ["paper.qmd", "notes.typ", "appendix.tex", "page.html"]);
 const explicit = project({ "main.qmd": "# Source", "data.csv": "shared", ".librepaper-share.json": '{"include":["data.csv"]}' });
 assert.ok(select(explicit).files.some((file) => file.path === "data.csv"));
 assert.throws(() => select(project({ "main.qmd": "# Source", ".librepaper-share.json": '{"include":["missing.csv"]}' })), /missing/);
 assert.throws(() => project({ "main.qmd": "# Source", ".librepaper-share.json": '{"include":"data.csv"}' }), /include list/);
-assert.throws(() => select(latex, latex.main, { ...config, max_files: 2 }), /hold 2 files/);
+assert.throws(() => select(latex, latex.opening, { ...config, max_files: 2 }), /hold 2 files/);
 assert.throws(() => select(project({ "main.md": new Uint8Array([255]) })), /UTF-8/);
 // A ZIP dropped into a project's explorer becomes the files inside it, with
 // the wrapper folder stripped and the rendered output left behind, and the
-// folders it needs named parents first. Which file is the main one is no
-// longer asked: the project already has one.
+// folders it needs named parents first. Nothing asks which file to open: the
+// project keeps its own.
 {
   const archive = { file: "archive bytes", path: "paper.zip" };
   const plain = { file: "figure bytes", path: "extra.png" };
@@ -69,7 +72,7 @@ assert.throws(() => select(project({ "main.md": new Uint8Array([255]) })), /UTF-
 }
 
 // An archive whose candidates are ambiguous still imports: the drop is about
-// the files, and the destination project already names its main file.
+// the files, and the destination project keeps its own open file.
 {
   const opened = await expandArchives([{ file: null, path: "two.zip" }], config, async () =>
     entries({ "one.md": "First", "two.md": "Second" }));
@@ -85,4 +88,4 @@ assert.throws(() => select(project({ "main.md": new Uint8Array([255]) })), /UTF-
   );
 }
 
-console.log("project-upload: main selection, wrapper folders, exclusions, Quarto sharing, separate limits, and explorer imports passed");
+console.log("project-upload: opening file, wrapper folders, exclusions, Quarto sharing, separate limits, and explorer imports passed");

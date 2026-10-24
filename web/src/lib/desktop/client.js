@@ -839,7 +839,7 @@ export async function startLocalPreview({ engine = "quarto", job = {}, tree, opt
   const details = engine === "calepin" ? built.calepin : built.quarto;
   if (!details) throw new Error(`local preview request is missing ${builder} job details`);
   const output = details.format || options.format || "html";
-  const entrypoint = details.main || options.entrypoint;
+  const entrypoint = options.entrypoint || tree?.main;
   const previewOptions = engine === "quarto" && built.quarto
     ? {
         ...(built.quarto.profile ? { profile: built.quarto.profile } : {}),

@@ -6,7 +6,6 @@ title: "FAQ"
 
 - In Overleaf, open the project and choose Menu > Download > Source. This saves a ZIP of every file.
 - In LibrePaper, choose New project > Upload Files and drop the ZIP on the page. Folders are kept, and a wrapper folder around the whole archive is removed.
-- Check the Open first choice, usually `main.tex`, then press Create project.
 - The browser compiler has pdfLaTeX and XeLaTeX. LuaLaTeX projects need changes before they compile.
 - The engine follows a `% !TEX program = xelatex` line, then the packages the document loads. Settings > Render forces one engine everywhere.
 - BibTeX and Biber run on their own. Upload the `.bib` files with the rest of the project.
@@ -22,7 +21,7 @@ title: "FAQ"
   #set text(font: "Fira Sans")
   ```
 
-- LaTeX: use `fontspec` and name the file. `fontspec` switches the project to XeLaTeX. Fonts are found by file name only, not by family name. Drop `Path=` when the file sits next to the main file.
+- LaTeX: use `fontspec` and name the file. `fontspec` switches the project to XeLaTeX. Fonts are found by file name only, not by family name. Drop `Path=` when the font file sits next to the file that loads it.
 
   ```latex
   \setmainfont{FiraSans-Regular.otf}[Path=fonts/, BoldFont=FiraSans-Bold.otf]

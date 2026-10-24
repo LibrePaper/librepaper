@@ -1,7 +1,8 @@
 // ZIP imports use the same path rules and multipart bundle as directories.
-// Keep selection separate from extraction so choosing another main file can
-// recompute which generated or local-only inputs should be omitted.
+// Keep selection separate from extraction, so the rule for which generated or
+// local-only inputs to omit can be read apart from reading the ZIP.
 import { checkPath, collisionKey, normalisePath } from "./paths.js";
+import { openingFile } from "./opening.js";
 
 const extension = (path) => path.slice(path.lastIndexOf(".")).toLowerCase();
 const basename = (path) => path.slice(path.lastIndexOf("/") + 1);
@@ -10,6 +11,7 @@ const editorial = new Set([".qmd", ".md", ".bib", ".csl", ".yml", ".yaml", ".css
 const generatedFolders = new Set(["_freeze", "_site", "_book", "site_libs", "node_modules", "renv", "venv", "env"]);
 const hidden = (path) => path.split("/").some((part) => part.startsWith(".") || part === "__MACOSX");
 const renderable = (config, path) => (config.extensions || []).some((ext) => path.toLowerCase().endsWith(ext.toLowerCase()));
+const renderedOutput = (path, quartoStems) => ([".md", ".html", ".htm", ".ipynb", ".pdf", ".docx", ".tex"].includes(extension(path)) && quartoStems.has(stem(path))) || path.split("/").some((part) => generatedFolders.has(part) || part.endsWith("_files") || part.endsWith("_cache"));
 
 export function archiveProject(entries, config) {
   const skipped = entries.filter((entry) => hidden(entry.path)).map((entry) => entry.path);
@@ -39,14 +41,19 @@ export function archiveProject(entries, config) {
   }
   const candidates = files.filter((entry) => renderable(config, entry.path)).map((entry) => entry.path).sort();
   if (!candidates.length) throw new Error("The archive contains no supported document file.");
-  const top = candidates.filter((path) => !path.includes("/") && !([".html", ".htm", ".md", ".markdown"].includes(extension(path)) && candidates.includes(`${stem(path)}.qmd`)));
-  const main = top.length === 1 ? top[0] : top.find((path) => stem(path).toLowerCase() === "main") || "";
-  return { files, candidates, main, skipped, include, root: prefix.replace(/\/$/, "") };
+  // Only the documents are read to find the file it opens on, not the output beside them.
+  const quartoStems = new Set(files.filter((file) => extension(file.path) === ".qmd").map((file) => stem(file.path)));
+  const texts = {};
+  for (const file of files) {
+    if (candidates.includes(file.path) && !renderedOutput(file.path, quartoStems)) texts[file.path] = new TextDecoder().decode(file.bytes);
+  }
+  const opening = openingFile(texts) ?? "";
+  return { files, candidates, opening, skipped, include, root: prefix.replace(/\/$/, "") };
 }
 
-export function archiveSelection(project, main, config) {
-  if (!project.candidates.includes(main)) throw new Error("Choose the document file to open from the archive.");
-  const quarto = extension(main) === ".qmd";
+export function archiveSelection(project, opening, config) {
+  if (!project.candidates.includes(opening)) throw new Error("The archive has no document to open.");
+  const quarto = extension(opening) === ".qmd";
   const quartoStems = new Set(project.files.filter((file) => extension(file.path) === ".qmd").map((file) => stem(file.path)));
   const skipped = [...project.skipped];
   const files = [];
@@ -59,12 +66,12 @@ export function archiveSelection(project, main, config) {
   }
   for (const file of project.files) {
     const ext = extension(file.path);
-    const generated = ([".md", ".html", ".htm", ".ipynb", ".pdf", ".docx", ".tex"].includes(ext) && quartoStems.has(stem(file.path))) || file.path.split("/").some((part) => generatedFolders.has(part) || part.endsWith("_files") || part.endsWith("_cache"));
+    const generated = renderedOutput(file.path, quartoStems);
     const excluded = quarto
       ? !project.include.includes(file.path) && (generated || !(editorial.has(ext) || renderable(config, file.path)))
-      : file.path === `${stem(main)}.pdf`;
+      : file.path === `${stem(opening)}.pdf`;
     const derived = (config.derived_extensions || []).some((suffix) => file.path.toLowerCase().endsWith(suffix));
-    if (file.path !== main && (excluded || derived)) {
+    if (file.path !== opening && (excluded || derived)) {
       skipped.push(file.path);
       continue;
     }
@@ -95,10 +102,8 @@ function foldersFor(paths) {
 ///
 /// This is how an existing paper gets into a project: the archive's own rules
 /// still apply -- the wrapper folder is stripped, `.librepaper-share.json` is
-/// honoured, and Quarto's rendered output is left behind -- but which file is
-/// the main one is no longer asked here. The project already has a main file,
-/// and the explorer's own "Set as main file" is where that changes. What the
-/// archive nominates is used only to decide what it renders and therefore what
+/// honoured, and Quarto's rendered output is left behind -- and the file the
+/// archive opens on is used only to decide what it renders and therefore what
 /// not to carry in.
 export async function expandArchives(items, rules, unzip) {
   const files = [];
@@ -116,7 +121,7 @@ export async function expandArchives(items, rules, unzip) {
       maxFiles: (rules.max_files || 200) * 9,
     });
     const project = archiveProject(entries, rules);
-    const selected = archiveSelection(project, project.main || project.candidates[0], rules);
+    const selected = archiveSelection(project, project.opening, rules);
     skipped.push(...selected.skipped);
     roots.push(project.root);
     // Paths are relative to the archive, so the whole tree lands under

@@ -2,7 +2,7 @@
 // project name and format, and the staging of files for the Upload tab.
 import assert from "node:assert/strict";
 import {
-  bytes, browse, catalog, finalPaths, formatSummary, guessMain, mainCandidates,
+  bytes, browse, catalog, finalPaths, formatSummary,
   pickFormat, settle, stage, suggestName, tree, uniqueName, unstage, wrapperOf,
 } from "../../src/lib/new-project.js";
 
@@ -178,26 +178,6 @@ const blob = (text) => new Blob([text]);
   assert.deepEqual(finalPaths([{ path: "a.md" }], true), ["a.md"], "nothing is stripped without a wrapper");
 }
 
-// ---- mainCandidates and guessMain ----
-{
-  const rulesForMain = { extensions: [".tex", ".md", ".qmd"] };
-  assert.deepEqual(
-    mainCandidates(["sub/Ch.qmd", "main.tex", "fig.png", "notes.MD"], rulesForMain),
-    ["main.tex", "notes.MD", "sub/Ch.qmd"],
-    "renderable files only, A to Z",
-  );
-  assert.equal(guessMain(["chapters/main.tex", "main.md", "index.qmd"]), "main.md", "a root main file beats an index");
-  assert.equal(guessMain(["main.tex", "main.md"]), "main.tex", "tex is preferred among main files");
-  assert.equal(guessMain(["index.md", "index.qmd", "notes.md"]), "index.qmd", "index.qmd beats index.md");
-  assert.equal(guessMain(["index.md", "notes.md"]), "index.md");
-  assert.equal(guessMain(["a.tex"]), "a.tex", "the only root-level candidate");
-  assert.equal(guessMain(["notes.md", "sub/main.tex"]), "notes.md", "a nested main is not a root main");
-  assert.equal(guessMain(["chapters/one.tex"]), "chapters/one.tex", "the only candidate at all");
-  assert.equal(guessMain(["one.md", "two.md"]), "", "ambiguous gives nothing");
-  assert.equal(guessMain(["ch/a.tex", "ch/b.tex"]), "");
-  assert.equal(guessMain([]), "");
-}
-
 // ---- tree ----
 {
   const nodes = tree([
@@ -228,8 +208,8 @@ const blob = (text) => new Blob([text]);
   assert.equal(suggestName([{ path: "paper/main.tex" }], { archives: ["Paper.zip"] }), "Paper", "the ZIP name comes first");
   assert.equal(suggestName([{ path: "paper/main.tex" }], { archives: ["Draft.ZIP"] }), "Draft");
   assert.equal(suggestName([{ path: "paper/main.tex" }]), "paper", "then the wrapper folder");
-  assert.equal(suggestName([{ path: "main.tex" }, { path: "fig.png" }]), "main", "then the main document's stem");
-  assert.equal(suggestName([{ path: "a/x.tex" }, { path: "b/y.tex" }]), "", "nothing to suggest");
+  assert.equal(suggestName([{ path: "main.tex" }, { path: "fig.png" }]), "main", "then the first file's stem");
+  assert.equal(suggestName([{ path: "a/x.tex" }, { path: "b/y.tex" }]), "x", "then the first file's stem again, with no wrapper");
   assert.equal(suggestName([], { archives: ["x.zip"] }), "x");
   assert.equal(suggestName([]), "");
 }
@@ -249,4 +229,4 @@ const blob = (text) => new Blob([text]);
   assert.equal(bytes(Math.round(1.1 * 1024 ** 3)), "1.1 GB");
 }
 
-console.log("new-project: catalog, browse, format and name choice, staging, settling, wrappers, main file, tree, names and sizes passed");
+console.log("new-project: catalog, browse, format and name choice, staging, settling, wrappers, tree, names and sizes passed");

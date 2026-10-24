@@ -11,7 +11,7 @@ A directory is held as four maps in one CRDT document:
 | `files` | file id | text |
 | `paths` | file id | path |
 | `assets` | path | digest of bytes |
-| `meta` | `main`, engine, markers | document settings |
+| `meta` | engine, markers | document settings |
 
 Text is stored under an opaque id. Paths are separate entries pointing at ids. Renames move strings in `paths` without touching text. Comments name files by id, so renames don't orphan reviews. Figure bytes sit in the object store under their digest. Identical uploads are stored once. The editable source is authoritative. Comment ranges are translated to source when made.
 

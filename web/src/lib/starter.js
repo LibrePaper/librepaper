@@ -1,5 +1,5 @@
-// What a new project is made of. A project is a directory and a main file, so
-// a project with no main file is not a project; the files themselves are
+// What a new project is made of. A project is a directory of files, so a
+// project with no files is not a project; the files themselves are
 // templates, kept as plain files under src/templates and read by templates.js
 // (the half that needs Vite). This half is pure, so node can test it: it
 // knows the formats, and how a name and an author become text in each one.

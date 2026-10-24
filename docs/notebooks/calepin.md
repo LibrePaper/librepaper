@@ -15,7 +15,7 @@ Typst preview runs in the browser, and no code runs. It is the default and alway
 - PDF shows in the viewer where comments work.
 - HTML is a self-contained page.
 
-Output is written beside the main file as `.pdf` or `.html` with the same name.
+Output is written beside the file being previewed as `.pdf` or `.html` with the same name.
 
 Calepin runs locally and its generated output is not uploaded automatically. The project's Typst source and resources are stored on the server. Anyone you share the project with can read them, so keep private data in your project folder.
 
@@ -25,7 +25,7 @@ Calepin can render with a folder on your computer. This is how you use private d
 
 - Open the desktop app.
 - Choose **File → Project folder…**.
-- Check the main file name.
+- Check the name of the file you preview.
 - Click **Choose folder…** and approve.
 
 Choosing a folder does not upload its contents, and LibrePaper never learns its path. Each folder runs one preview at a time.

@@ -1,4 +1,4 @@
-/// What a document is written in, which follows from what its main file is
+/// What a document is written in, which follows from what its file is
 /// called. A document is a directory, so the format is a property of one file
 /// in it rather than of the whole.
 export function formatOf(path) {
