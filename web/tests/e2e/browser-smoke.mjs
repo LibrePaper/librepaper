@@ -670,7 +670,8 @@ async function run() {
   const mintedKey = new URL(minted.created?.url ?? "", BASE).pathname.split("/").pop();
   check("the share route mints a key", Boolean(mintedKey), JSON.stringify(minted).slice(0, 120));
 
-  // A separately registered reviewer's browser, and the key in the fragment.
+  // A separately registered reviewer's browser, opening the link exactly as
+  // the server minted it, key in the path.
   const reviewerHandle = "reviewer";
   const reviewerName = "Reviewer";
   const reviewerAccountId = deployment.postgres.seedRegisteredAccount({
@@ -691,12 +692,13 @@ async function run() {
     domain: "localhost",
     path: "/",
   };
-  const reviewer = await openTab(`${BASE}/docs/${shared.slug}#k=${mintedKey}`, [reviewerSession], {
+  const reviewer = await openTab(new URL(minted.created.url, BASE).href, [reviewerSession], {
     ownProfile: true,
   });
   const kept = await until("the key is kept and the bar cleaned", async () => {
     const state = await reviewer.eval(`
       return {
+        path: location.pathname,
         hash: location.hash,
         stored: JSON.parse(localStorage.getItem("librepaper-keys") || "{}")["${shared.slug}"] || "",
       };
@@ -709,11 +711,11 @@ async function run() {
     const frame = await reviewer.evalInFrame("return document.body.innerText", shared.slug);
     return frame?.includes("The draft.") ? state : null;
   });
-  check("a link key is taken from the fragment and kept in this browser", kept?.stored === mintedKey);
+  check("a link key is taken from the path and kept in this browser", kept?.stored === mintedKey);
   check(
     "the visible URL is cleaned once the key is stored",
-    kept && kept.hash === "",
-    kept ? `hash: ${kept.hash}` : "",
+    kept && kept.path === `/docs/${shared.slug}` && kept.hash === "",
+    kept ? `path: ${kept.path} hash: ${kept.hash}` : "",
   );
 
   // And it is presented on the requests that follow, which is what makes the
