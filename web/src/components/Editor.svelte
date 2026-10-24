@@ -39,7 +39,7 @@
   // would leave the switch half off.
   const completionOn = (on) => (on ? autocompletion({ activateOnTyping: true }) : []);
   const bracketsOn = (on) => (on ? [closeBrackets(), keymap.of(closeBracketsKeymap)] : []);
-  const checkOn = (on) => (on ? lintGutter() : []);
+  const checkOn = (on, citations) => (on ? [lintGutter(), citations] : []);
   // The browser's spellcheck, on for prose and off for code and data files,
   // where every identifier would be underlined. Markup inside a prose file is
   // skipped too, by spellcheckExtension.
@@ -214,7 +214,9 @@
   import { emphasisCommand } from "../lib/emphasis.js";
   import { sourceHighlighting } from "../lib/source-highlight.js";
   import { analyzeBibliography } from "../lib/bibliography-engine.js";
-  import { bibliographyCache, bibliographyCacheKey, bibliographyCompletion, bibliographyNeedsAnalysis, citationContext, planZoteroImport } from "../lib/bibliography.js";
+  import { bibliographyCache, bibliographyCacheKey, bibliographyCompletion, bibliographyNeedsAnalysis, citationContext, planZoteroImport, selectedBibliographyFiles } from "../lib/bibliography.js";
+  import { typstLabels } from "../lib/citation-keys.js";
+  import { citationKeysExtension, citationsChanged } from "../lib/citation-keys-extension.js";
   import { completionExtension, formatOfPath } from "../lib/completion/index.js";
   import { desktop, searchZotero, zoteroItem } from "../lib/desktop/client.js";
   import { changeMarks, setChangeMarks } from "../lib/change-marks.js";
@@ -515,15 +517,17 @@
     const key = bibliographyCacheKey(request);
     if (!bibliographyNeedsAnalysis(request)) {
       parsedBibliography = null; lastBibliographyKey = key;
+      citationsUpdated();
       onbibliography?.({ entries: [], diagnostics: [] }, request);
       return;
     }
-    if (key !== lastBibliographyKey) parsedBibliography = null;
+    if (key !== lastBibliographyKey) { parsedBibliography = null; citationsUpdated(); }
     lastBibliographyKey = key;
     bibliographyCache.get(request, analyze).then((result) => {
       if (generation !== bibliographyGeneration) return;
       const newlyAvailable = !parsedBibliography && result.entries.length > 0;
       parsedBibliography = result;
+      citationsUpdated();
       onbibliography?.(result, request);
       const currentFormat = formatOf(pathOfDoc(session.doc, showing));
       const currentContext = view && citationContext(view.state.doc.toString(), view.state.selection.main.head, currentFormat);
@@ -531,6 +535,7 @@
     }).catch((error) => {
       if (generation !== bibliographyGeneration) return;
       parsedBibliography = null;
+      citationsUpdated();
       onbibliography?.({ entries: [], diagnostics: [{ severity: "warning", message: `Bibliography unavailable: ${error?.message || "the parser could not be loaded"}`, file: request.main, line: 0 }] }, request);
     });
   }
@@ -539,6 +544,25 @@
     clearTimeout(bibliographyTimer);
     bibliographyTimer = setTimeout(refreshBibliography, 120);
   }
+
+  // Redraws the citation underlines once the bibliography has changed.
+  function citationsUpdated() {
+    view?.dispatch({ effects: citationsChanged.of(null) });
+  }
+
+  // Unknown citations are underlined only once the bibliography is parsed, or
+  // when the file names one, so a file with neither gets no underlines.
+  const citationKeys = citationKeysExtension({
+    entries: () => {
+      if (!parsedBibliography) return null;
+      const source = getTextFromDoc(showing)?.toString?.() ?? "";
+      const format = formatOf(pathOfDoc(session?.doc, showing));
+      if (!parsedBibliography.entries.length && !selectedBibliographyFiles(source, format).length) return null;
+      return parsedBibliography.entries;
+    },
+    format: () => formatOf(pathOfDoc(session?.doc, showing)),
+    labels: () => (formatOf(pathOfDoc(session?.doc, showing)) === "typst" ? typstLabels(treeForDoc(session.doc).texts) : new Set()),
+  });
 
   function reportZotero(message) {
     if (message === lastZoteroError) return;
@@ -1107,7 +1131,7 @@
         // Where a compile's errors are shown: the gutter mark, and with it the
         // underline and the hover the lint extension draws. Drawn only while
         // the check is on.
-        checkCompartment.of(checkOn(untrack(() => check))),
+        checkCompartment.of(checkOn(untrack(() => check), citationKeys)),
         EditorView.lineWrapping,
         // Pending changes, drawn in the text they changed.
         pendingChanges,
@@ -1233,7 +1257,7 @@
         completionCompartment.reconfigure(completionOn(untrack(() => completion))),
         bracketsCompartment.reconfigure(bracketsOn(untrack(() => brackets))),
         spellcheckCompartment.reconfigure(spellcheckOn(untrack(() => spellcheck), proseFormat(id))),
-        checkCompartment.reconfigure(checkOn(untrack(() => check))),
+        checkCompartment.reconfigure(checkOn(untrack(() => check), citationKeys)),
       ],
     });
   }
