@@ -1,6 +1,7 @@
 // Real Reader phone landing test. The room is the only module replaced, and the
 // document, project and role answers come from a small fetch mock. One bundle
-// is built; each case is picked from the page query string.
+// is built; each case is picked from the page query string and opens its own
+// slug, so the copy a browser keeps of one project never stands in for another.
 import assert from "node:assert/strict";
 import { build } from "vite";
 import { svelte } from "@sveltejs/vite-plugin-svelte";
@@ -74,7 +75,7 @@ globalThis.fetch = async (url, init = {}) => {
   const path = String(url);
   if (path.endsWith('/me')) return Response.json({name:'Phone Tester',handle:'phone-tester',provider:'github',providers:[]});
   if (path.endsWith('/config')) return Response.json({ extensions: ['.html', '.md'], text_extensions: ['.html', '.md'], asset_extensions: ['.png'], derived_extensions: [] });
-  if (path === '/api/documents/paper') return Response.json({
+  if (path === '/api/documents/' + location.pathname.split('/').pop()) return Response.json({
     title:'Phone landing paper', created_at:'test', role: editorCase ? 'editor' : caseName,
     source_format: caseName === 'empty' ? '' : 'html', docs_origin: location.origin,
     can_moderate:false, can_see_sharing:false });
@@ -96,7 +97,7 @@ try {
   await build({ configFile:false, define: KATEX_DEFINE, root:join(root,"web"), resolve:{alias:loroAlias}, plugins:[tailwindcss(), svelte(), {name:"mock-room", enforce:"pre", resolveId(id){ if(id === '../lib/room.js' || id === '../room.js' || id.endsWith('/src/lib/room.js')) return room; }}], build:{outDir:out,emptyOutDir:true,lib:{entry,formats:["es"],fileName:()=>"check.js"}}, logLevel:"error" });
   serverHttp = createServer((req, res) => {
     if (serveKatex(req, res)) return;
-    if (req.url.split("?")[0] === "/docs/paper") {
+    if (req.url.startsWith("/docs/")) {
       res.setHeader("content-type", "text/html");
       res.end('<!doctype html><html data-theme="librepaper"><head><meta name="viewport" content="width=device-width,initial-scale=1"><link rel="stylesheet" href="/librepaper-web.css"></head><body><script type="module" src="/check.js"></script></body></html>');
       return;
@@ -112,7 +113,7 @@ try {
   });
   await new Promise((resolve, reject) => { serverHttp.once("error", reject); serverHttp.listen(0, "127.0.0.1", resolve); });
   b = await browser("chromium", join(temp, "profile"), 19000 + Math.floor(Math.random() * 1000));
-  const base = `http://127.0.0.1:${serverHttp.address().port}/docs/paper`;
+  const base = `http://127.0.0.1:${serverHttp.address().port}/docs/`;
   const flush = () => b.evaluate('new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)))');
   const visible = (selector) => b.evaluate(`(() => { const node=document.querySelector(${JSON.stringify(selector)}); return Boolean(node?.getClientRects().length && getComputedStyle(node).visibility !== 'hidden'); })()`);
   const phoneDocument = "Boolean(document.querySelector('main.reader.mobile-document'))";
@@ -128,7 +129,7 @@ try {
   };
 
   // Case 1: a normal editor project opens on the preview.
-  await openCase('?case=editor', 390, 844);
+  await openCase('editor?case=editor', 390, 844);
   await landOnPreview('editor');
   assert.equal(await b.evaluate(phoneDocument), true, 'an editor phone opens on the preview');
   assert.equal(await visible('.viewport'), true, 'an editor phone shows the preview frame');
@@ -139,7 +140,7 @@ try {
   // Case 2: an editor project with no files shows the empty card, and Open Files leads to the files.
   const nothingToPreview = "Boolean([...document.querySelectorAll('section.latexpane .notyet h2')].find(node => node.textContent.trim() === 'Nothing to preview')?.getClientRects().length)";
   const openFilesButton = "[...document.querySelectorAll('section.latexpane .notyet button')].find(node => node.textContent.trim() === 'Open Files')";
-  await openCase('?case=empty', 390, 844);
+  await openCase('empty?case=empty', 390, 844);
   await until('empty landing', () => b.evaluate(phoneDocument), 10000);
   await until('empty project card in the preview', () => b.evaluate(nothingToPreview), 10000);
   await flush();
@@ -154,25 +155,26 @@ try {
 
   // Case 3: a commenter link opens on the preview, and the comments column
   // takes the collaboration panel once the window is wide enough.
-  await openCase('?case=commenter#k=commentkey', 390, 844);
+  await openCase('commenter?case=commenter#k=commentkey', 390, 844);
   await landOnPreview('commenter');
   assert.equal(await b.evaluate(phoneDocument), true, 'a commenter phone opens on the preview');
   assert.equal(await visible('.sidebar'), false, 'a commenter phone does not open on the comments column');
   assert.equal(await visible('.editorpane'), false, 'a commenter phone does not open on the source');
   await b.resize(1280, 900); await flush();
-  await until('commenter comments column', () => visible('.sidebar'), 5000);
-  assert.equal(await visible('.sidebar'), true, 'a commenter window shows the comments column');
+  await until('commenter comments column', () => visible('.sidebar:not(.collapsed)'), 5000);
+  assert.equal(await visible('.sidebar:not(.collapsed)'), true, 'a commenter window shows the comments column');
   assert.equal(await visible('.sidebar section.collaboration'), true, 'the comments column holds the collaboration panel rather than an empty column');
   assert.deepEqual(await b.evaluate('window.testErrors'), [], 'the commenter case reports no page errors');
 
   // Case 4: a reader link opens on the preview, and has no column at desktop width.
-  await openCase('?case=reader#k=readerkey', 390, 844);
+  await openCase('reader?case=reader#k=readerkey', 390, 844);
   await landOnPreview('reader');
   assert.equal(await b.evaluate(phoneDocument), true, 'a reader phone opens on the preview');
   assert.equal(await visible('.sidebar'), false, 'a reader phone does not open on the files column');
   assert.equal(await visible('.editorpane'), false, 'a reader phone does not open on the source');
   await b.resize(1280, 900); await flush();
-  assert.equal(await visible('.sidebar'), false, 'a reader window has no column at desktop width');
+  // The rail stays; the column beside it is collapsed.
+  assert.equal(await visible('.sidebar:not(.collapsed)'), false, 'a reader window has no open column at desktop width');
   assert.deepEqual(await b.evaluate('window.testErrors'), [], 'the reader case reports no page errors');
 
   console.log('phone-landing-browser: editors, empty projects, commenter and reader links open on the preview passed');
