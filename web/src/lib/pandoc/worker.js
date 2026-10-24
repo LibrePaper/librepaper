@@ -102,9 +102,9 @@ async function convertOnce(url, options, files) {
 }
 
 // Imported by tests in Node, where there is no worker scope to listen on.
-/** @type {{ onmessage: ((event: MessageEvent) => void) | null, postMessage: (message: unknown, transfer?: Transferable[]) => void } | null} */
 /** @type {any} */
 const WorkerScope = Reflect.get(globalThis, "WorkerGlobalScope");
+/** @type {{ onmessage: ((event: MessageEvent) => void) | null, postMessage: (message: unknown, transfer?: Transferable[]) => void } | null} */
 const scope = WorkerScope && self instanceof WorkerScope ? /** @type {any} */ (self) : null;
 if (scope) {
   scope.onmessage = async ({ data: { id, url, options, files } }) => {
