@@ -2894,7 +2894,9 @@
       // sidebar places its own, on copies so the sidebar's list is untouched.
       const held = new Map(comments.map((item) => [String(item.id), item]));
       const unheld = loaded.filter((item) => !held.has(String(item.id))).map((item) => ({ ...item }));
-      anchorComments(unheld);
+      // Without the page text there is nothing to place them against, as for
+      // the sidebar: they stay unplaced rather than read as detached.
+      if (docText !== null) anchorComments(unheld);
       for (const item of unheld) held.set(String(item.id), item);
       const threads = loaded.map((item) => {
         const seen = held.get(String(item.id));
