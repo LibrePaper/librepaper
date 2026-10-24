@@ -1628,6 +1628,7 @@
                 keys={preferences.state.keys} onkeys={preferences.setKeys}
                 completion={preferences.state.completion} oncompletion={preferences.setCompletion}
                 brackets={preferences.state.brackets} onbrackets={preferences.setBrackets}
+                spellcheck={preferences.state.spellcheck} onspellcheck={preferences.setSpellcheck}
                 check={preferences.state.check} oncheck={preferences.setCheck} />
 
 <Modal open={Boolean(renaming)} title="Rename project"

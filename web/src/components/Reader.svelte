@@ -2491,6 +2491,7 @@
   const keys = $derived(prefs.keys);
   const completion = $derived(prefs.completion);
   const brackets = $derived(prefs.brackets);
+  const spellcheck = $derived(prefs.spellcheck);
   const check = $derived(prefs.check);
   const sizes = $derived(prefs.sizes);
 
@@ -2743,6 +2744,7 @@
   const setKeys = (next) => preferences.setKeys(next);
   const setCompletion = (on) => preferences.setCompletion(on);
   const setBrackets = (on) => preferences.setBrackets(on);
+  const setSpellcheck = (on) => preferences.setSpellcheck(on);
   const setCheck = (on) => preferences.setCheck(on);
 
   // What ":q" in Vim mode asks for: the document alone, set directly rather
@@ -4120,7 +4122,7 @@
         </div>
       {:else if Editor && sourceBound}
         {#key sourceEpoch}
-          <Editor bind:this={editor} {session} format={editorFormat} file={openFile} {keys} {completion} {brackets} {check} {rules} {tracking} me={trackingMe} {selectedChange} editable={mayEdit}
+          <Editor bind:this={editor} {session} format={editorFormat} file={openFile} {keys} {completion} {brackets} {spellcheck} {check} {rules} {tracking} me={trackingMe} {selectedChange} editable={mayEdit}
                   onbibliography={bibliographyAnalyzed} onchange={outlineTextChanged} oncaret={outlineCaretChanged} onsave={reportPersistence} onquit={showDocumentAlone}
                   onfilechange={(id) => { ws.openFile = id; outlineActiveFrom = null; ws.figure = null; noteSourceSelection(); }} />
         {/key}
@@ -4369,7 +4371,7 @@
 <SettingsDialog bind:open={settingsOpen} bind:category={settingsCategory}
                 remoteConnected={connected} remoteNote={connectionNote}
                 {keys} onkeys={setKeys}
-                {completion} oncompletion={setCompletion} {brackets} onbrackets={setBrackets} {check} oncheck={setCheck}
+                {completion} oncompletion={setCompletion} {brackets} onbrackets={setBrackets} {spellcheck} onspellcheck={setSpellcheck} {check} oncheck={setCheck}
                 commands={commandContext}
                 userId={buildUserId}
                 onbuildpreferences={(format, next) => { if (format === sourceFormat) setBuildPreferences(next); }}

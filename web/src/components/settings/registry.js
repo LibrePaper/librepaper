@@ -32,6 +32,7 @@ export const CATEGORIES = [
       { id: "editor-keys", says: "Key bindings", terms: "vim emacs keymap keyboard bindings modal source standard" },
       { id: "editor-completion", says: "Autocomplete", terms: "autocomplete completion suggestions suggest popup intellisense commands citations" },
       { id: "editor-brackets", says: "Close brackets", terms: "close brackets auto pair braces parentheses quotes dollar autoclose" },
+      { id: "editor-spellcheck", says: "Spellcheck", terms: "spellcheck spelling spell check typo dictionary misspelled" },
       { id: "editor-check", says: "Code check", terms: "code check lint errors warnings underline gutter diagnostics squiggle" },
       { id: "editor-shortcuts", says: "Keyboard shortcuts", terms: "shortcut shortcuts keys keyboard chord binding hotkey accelerator palette command undo redo find" },
     ],
