@@ -81,9 +81,9 @@ const mdTree = { main: "doc/main.md", texts: { "doc/main.md": "x" }, assets: { "
 {
   const render = makeRender({ pdf: pdfBytes, diagnostics: [] });
   await exportFile({ ...base, target: "pdf", format: "latex", tree: mdTree, render, run: makeRun() });
-  assert.deepEqual(render.calls[0].options, { format: "pdf" });
+  assert.deepEqual(render.calls[0].options, { format: "pdf", project: "" });
   await exportFile({ ...base, target: "pdf", format: "quarto", tree: mdTree, render, run: makeRun() });
-  assert.deepEqual(render.calls[1].options, { format: "pdf", buildPreferences: { selection: "tool", backend: "browser", tool: "markdown", output: "pdf" } });
+  assert.deepEqual(render.calls[1].options, { format: "pdf", project: "", buildPreferences: { selection: "tool", backend: "browser", tool: "markdown", output: "pdf" } });
   // Authored HTML goes through Pandoc to Typst, and the Typst tree is rendered.
   const run = makeRun();
   const htmlTree = { main: "site/index.html", texts: { "site/index.html": "<p>x</p>" }, assets: {} };
@@ -97,7 +97,7 @@ const mdTree = { main: "doc/main.md", texts: { "doc/main.md": "x" }, assets: { "
 {
   const render = makeRender({ html: "<p>made</p>", diagnostics: [] });
   const typst = await exportFile({ ...base, target: "html", format: "typst", tree: mdTree, render, run: makeRun() });
-  assert.deepEqual(render.calls[0].options, { format: "html" });
+  assert.deepEqual(render.calls[0].options, { format: "html", project: "" });
   assert.equal(await typst.blob.text(), "<p>made</p>");
   await exportFile({ ...base, target: "html", format: "markdown", tree: mdTree, render, run: makeRun() });
   assert.equal(render.calls[1].options.buildPreferences.output, "html");
@@ -160,10 +160,11 @@ const mdTree = { main: "doc/main.md", texts: { "doc/main.md": "x" }, assets: { "
   const local = async (target, result) => {
     const render = makeRender(result);
     const run = makeRun();
-    const file = await exportFile({ ...base, slug: "t", target, format: "quarto", tree: qmdTree, render, run, localQuarto });
+    const file = await exportFile({ ...base, slug: "t", target, format: "quarto", tree: qmdTree, project: "slug-x", render, run, localQuarto });
     assert.equal(run.calls.length, 0);
     assert.deepEqual(render.calls[0].options, {
       format: target,
+      project: "slug-x",
       buildPreferences: { selection: "tool", backend: "local", tool: "quarto", output: target, profile: "print", parameters: { n: 3 } },
     });
     return file;
@@ -186,6 +187,7 @@ const mdTree = { main: "doc/main.md", texts: { "doc/main.md": "x" }, assets: { "
   await exportFile({ ...base, target: "pdf", format: "quarto", tree: qmdTree, render, run: makeRun() });
   assert.deepEqual(render.calls[0].options, {
     format: "pdf",
+    project: "",
     buildPreferences: { selection: "tool", backend: "browser", tool: "markdown", output: "pdf" },
   });
 }

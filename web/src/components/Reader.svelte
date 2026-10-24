@@ -2850,6 +2850,7 @@
         tree,
         title: await headingOf(tree),
         slug: SLUG,
+        project: SLUG,
         preview: framePreview.preview(),
         previewCurrent: Boolean(renderedIdentity) && renderedIdentity === await renderers.snapshotDigest(tree),
         render: renderers.render,
