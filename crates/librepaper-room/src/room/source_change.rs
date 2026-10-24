@@ -1014,7 +1014,7 @@ impl Room {
             catalog: catalog.clone(),
             document_id: self.document_id,
             author_account_id: document_authority.account_id,
-            author_label: authority.authority.principal_key.clone(),
+            author_label: authority.author_key.clone(),
             operation_receipt,
             hook,
             refusal: None,

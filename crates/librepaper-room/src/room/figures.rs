@@ -17,41 +17,6 @@ use super::*;
 use librepaper_engine::log::sequencer::{Command, CommandError, Evidence, Head, PreparedSource};
 use librepaper_engine::storage::postgres::{AssetRecord, Authority, NewAsset, PostgresCatalog};
 
-/// An entry in the room's in-flight upload map, made before the blob write
-/// starts. The map is independent of anything the sequencer holds, since the
-/// blob write can take an arbitrary amount of time. Uploads of the same digest
-/// share one entry with a count. Dropping the future removes this upload's
-/// share, including when the storage write is cancelled.
-struct AssetUpload<'a> {
-    room: &'a Room,
-    sha: String,
-    active: bool,
-}
-
-impl AssetUpload<'_> {
-    fn release(&mut self) {
-        if !self.active {
-            return;
-        }
-        if let Ok(mut uploads) = self.room.asset_uploads().lock() {
-            if let Some((_, count)) = uploads.get_mut(&self.sha) {
-                if *count <= 1 {
-                    uploads.remove(&self.sha);
-                } else {
-                    *count -= 1;
-                }
-            }
-        }
-        self.active = false;
-    }
-}
-
-impl Drop for AssetUpload<'_> {
-    fn drop(&mut self) {
-        self.release();
-    }
-}
-
 /// Records a verified asset as belonging to this document.
 ///
 /// This command has no precondition (§7.1 lists none for it, the way it
@@ -130,29 +95,6 @@ impl Room {
         let sha = librepaper_engine::storage::store::digest_of_bytes(&body);
         let digest: [u8; 32] = Sha256::digest(&body).into();
 
-        // Record the upload under a short lock: the object write below can be
-        // slow, and holding a lock over it would make a second upload of the
-        // same bytes wait for the first. Two uploads that hash the same share
-        // one entry; each cancelled future releases only its own (see
-        // `AssetUpload::drop`).
-        let mut upload = {
-            let mut uploads = self
-                .asset_uploads()
-                .lock()
-                .map_err(|_| WriteError::Storage("asset admission is unavailable".into()))?;
-            if let Some((reserved_size, count)) = uploads.get_mut(&sha) {
-                debug_assert_eq!(*reserved_size, size);
-                *count = count.saturating_add(1);
-            } else {
-                uploads.insert(sha.clone(), (size, 1));
-            }
-            AssetUpload {
-                room: self,
-                sha: sha.clone(),
-                active: true,
-            }
-        };
-
         let key = format!(
             "documents/{}/assets/{}",
             self.document_id,
@@ -176,10 +118,7 @@ impl Room {
             Ok(())
         }
         .await;
-        if let Err(error) = write {
-            upload.release();
-            return Err(error);
-        }
+        write?;
 
         let mut attach = AttachAsset {
             input: NewAsset {
@@ -192,9 +131,10 @@ impl Room {
             },
             catalog: self.catalog().clone(),
         };
-        let result = self.command(authority, &mut attach).await;
-        upload.release();
-        let (asset, _inserted) = result.map_err(WriteError::from)?;
+        let (asset, _inserted) = self
+            .command(authority, &mut attach)
+            .await
+            .map_err(WriteError::from)?;
         Ok((sha, asset.byte_length))
     }
 }
