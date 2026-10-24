@@ -2098,6 +2098,7 @@ impl Sequencer {
         let wrote_a_row = !acknowledged.is_empty();
         if wrote_a_row {
             inner.retire(take, source_sequence, vector, row_bytes);
+            self.ledger.charge(self.owner_id, row_bytes as i64);
         }
         if let Some(source) = &prepared {
             inner.head_vector.merge(&source.end);
@@ -2135,34 +2136,6 @@ impl Sequencer {
     }
 
     // -- sections 4.3 and 9: the cache ----------------------------------
-
-    /// The projection at head, but only when a cache is already resident,
-    /// and never building one. §4.5 already draws this line for a reader's
-    /// digest -- "computed only when a warm cache exists, and otherwise
-    /// deferred" -- and anything else on a periodic pass that only wants to
-    /// know whether the document moved (comment re-anchoring, for one) needs
-    /// the same restraint: a document nobody has looked at recently should
-    /// not have a cache built for it just to answer "did it change".
-    pub async fn projection_if_warm(
-        &self,
-    ) -> Option<Arc<librepaper_document::document::projection::Projected>> {
-        let mut inner = self.inner.lock().await;
-        if inner.fenced.is_some() || inner.unreadable.is_some() || inner.cache.is_none() {
-            return None;
-        }
-        if let Some(projection) = &inner.projection {
-            return Some(projection.clone());
-        }
-        let projected = {
-            let cache = inner.cache.as_ref().expect("checked above");
-            Arc::new(librepaper_document::document::projection::project(
-                &cache.doc,
-                &librepaper_document::document::paths::rules(&self.config),
-            ))
-        };
-        inner.projection = Some(projected.clone());
-        Some(projected)
-    }
 
     /// The projection at head, building a cache entry if there is not one.
     pub async fn projection(
