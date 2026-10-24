@@ -36,10 +36,9 @@ use librepaper_engine::storage::postgres::annotations::{
     ANNOTATION_PAGE_MAX, REPLY_LOOKUP_MAX, REPLY_PAGE_MAX,
 };
 use librepaper_engine::storage::postgres::{
-    AnnotationRecord, Authority, MutationAuthorization, NewAccount, NewAnnotation, NewReply,
-    PostgresCatalog,
+    AnnotationRecord, Authority, NewAccount, NewAnnotation, NewReply, PostgresCatalog,
 };
-use librepaper_engine::storage::store::{DocumentInput, MutationActor, Store};
+use librepaper_engine::storage::store::{DocumentInput, Store};
 
 const PAPER: &str = "# Interval estimates\n\nThe *interval* covers the mean of the posterior.\n";
 
@@ -86,15 +85,14 @@ async fn deployment(slug: &str) -> Option<Deployment> {
         catalog.clone(),
         registry.clone(),
     );
-    let actor = MutationActor {
-        account_id: account.id.to_string(),
-        owner_key: "owner".into(),
-        session_generation: account.session_generation.to_string(),
-        link_hash: String::new(),
-        policy_editor: true,
+    let actor = Authority {
+        account_id: Some(account.id),
+        principal_key: "owner".into(),
+        session_generation: Some(account.session_generation),
+        link_hash: None,
+        policy_edit: true,
         policy_comment: true,
         automation: false,
-        unowned_publisher: false,
     };
     for name in [slug, &format!("{slug}-other")] {
         store
@@ -141,21 +139,9 @@ impl Deployment {
             "Reviewer",
             Some(self.account_id),
             format!("account:{}", self.account_id),
-            self.mutation_authorization(),
+            self.authority(),
             true,
         )
-    }
-
-    fn mutation_authorization(&self) -> MutationAuthorization {
-        MutationAuthorization {
-            principal_key: self.account_id.to_string(),
-            account_id: Some(self.account_id),
-            session_generation: Some(1),
-            token_hash: None,
-            policy_edit: true,
-            policy_comment: true,
-            automation: false,
-        }
     }
 
     fn author_key(&self) -> String {
@@ -197,7 +183,7 @@ impl Deployment {
                     &mut tx,
                     id,
                     self.whole_document_comment(document_id, &format!("Remark {index}")),
-                    &self.mutation_authorization(),
+                    &self.authority(),
                     false,
                 )
                 .await
@@ -223,7 +209,7 @@ impl Deployment {
                         author_label: "Reviewer".into(),
                         body: format!("Reply {index}"),
                     },
-                    &self.mutation_authorization(),
+                    &self.authority(),
                 )
                 .await
                 .unwrap();
@@ -553,7 +539,7 @@ async fn a_retried_create_past_the_page_size_stays_one_comment() {
                     &mut tx,
                     id,
                     input.clone(),
-                    &deployment.mutation_authorization(),
+                    &deployment.authority(),
                     false,
                 )
                 .await
@@ -592,7 +578,7 @@ async fn a_concurrent_create_neither_duplicates_nor_drops_a_row() {
     let catalog = deployment.catalog.clone();
     let document_id = room.document_id;
     let input = deployment.whole_document_comment(document_id, "Arriving mid-walk");
-    let actor = deployment.mutation_authorization();
+    let actor = deployment.authority();
     let writer = tokio::spawn(async move {
         let mut tx = catalog.pool().begin().await.unwrap();
         let row = catalog

@@ -306,7 +306,7 @@ impl PostgresCatalog {
     pub async fn update_document_title(
         &self,
         id: Uuid,
-        actor: &super::MutationAuthorization,
+        actor: &super::Authority,
         title: &str,
     ) -> Result<bool> {
         if title.is_empty() {
@@ -337,7 +337,7 @@ impl PostgresCatalog {
     pub async fn save_document_sharing(
         &self,
         document_id: Uuid,
-        actor: &super::MutationAuthorization,
+        actor: &super::Authority,
         links: &[(
             String,
             [u8; 32],
@@ -362,7 +362,7 @@ impl PostgresCatalog {
     async fn require_document_owner(
         tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
         document_id: Uuid,
-        actor: &super::MutationAuthorization,
+        actor: &super::Authority,
     ) -> Result<Uuid> {
         if actor.automation {
             return Err(Error::Conflict("owner access is required".into()));
@@ -1107,7 +1107,7 @@ impl PostgresCatalog {
     pub async fn complete_asset_authorized(
         &self,
         input: NewAsset,
-        actor: &super::MutationAuthorization,
+        actor: &super::Authority,
     ) -> Result<(AssetRecord, bool)> {
         self.complete_assets_inner(vec![input], Some(actor))
             .await?
@@ -1119,7 +1119,7 @@ impl PostgresCatalog {
     async fn complete_assets_inner(
         &self,
         inputs: Vec<NewAsset>,
-        actor: Option<&super::MutationAuthorization>,
+        actor: Option<&super::Authority>,
     ) -> Result<Vec<(AssetRecord, bool)>> {
         let document_id = inputs.first().map(|input| input.document_id);
         let mut tx = self.begin_writer_transaction().await?;

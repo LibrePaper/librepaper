@@ -565,15 +565,16 @@ impl Server {
         } else {
             format!("{base}-{}", random_suffix(&self.config))
         };
-        let actor = librepaper_engine::storage::store::MutationActor {
-            account_id: who.id.clone(),
-            owner_key: who.key.clone(),
-            session_generation: who.session_generation.clone(),
-            link_hash: String::new(),
-            policy_editor: true,
-            policy_comment: self.commenters.allows(&who.identity()),
-            automation: false,
-            unowned_publisher: false,
+        let actor = match who.authority(self.commenters.allows(&who.identity())) {
+            Ok(actor) => actor,
+            Err(InvalidCredential) => {
+                let _ = self
+                    .store
+                    .catalog
+                    .cancel_upload_admission(upload_admission)
+                    .await;
+                return write_json(401, &json!({"error": "invalid account"}));
+            }
         };
 
         // What the main file is called, and the rest of the directory to
@@ -1420,15 +1421,8 @@ impl Server {
             Ok(Some(_)) | Ok(None) => return write_json(404, &json!({"error": "not found"})),
             Err(response) => return response,
         };
-        let actor = librepaper_engine::storage::store::MutationActor {
-            account_id: who.id.clone(),
-            owner_key: who.key.clone(),
-            session_generation: who.session_generation.clone(),
-            link_hash: String::new(),
-            policy_editor: true,
-            policy_comment: self.commenters.allows(&who.identity()),
-            automation: false,
-            unowned_publisher: false,
+        let Ok(actor) = who.authority(self.commenters.allows(&who.identity())) else {
+            return write_json(401, &json!({"error": "invalid account"}));
         };
         match self.store.rename(slug, &title, &actor).await {
             Ok(()) => write_json(200, &json!({"slug": slug, "title": title})),
@@ -1749,15 +1743,14 @@ impl Server {
                 );
             }
         }
-        let actor = librepaper_engine::storage::store::MutationActor {
-            account_id: who.id.clone(),
-            owner_key: who.key.clone(),
-            session_generation: who.session_generation.clone(),
-            link_hash: String::new(),
-            policy_editor: true,
-            policy_comment: self.commenters.allows(&who.identity()),
-            automation: false,
-            unowned_publisher: false,
+        let actor = match who.authority(self.commenters.allows(&who.identity())) {
+            Ok(actor) => actor,
+            Err(InvalidCredential) => {
+                if let Some(admission) = upload_admission {
+                    let _ = self.store.catalog.cancel_upload_admission(admission).await;
+                }
+                return write_json(401, &json!({"error": "invalid account"}));
+            }
         };
         let input = DocumentInput {
             slug: base,

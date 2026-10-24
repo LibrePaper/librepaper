@@ -7,8 +7,8 @@ use uuid::Uuid;
 use crate::storage::blob::{BlobStore, FsStore};
 
 use super::super::{
-    FlushRow, MutationAuthorization, NewAccount, NewAsset, NewDocument, NewSnapshot,
-    PostgresCatalog, PostgresOptions,
+    Authority, FlushRow, NewAccount, NewAsset, NewDocument, NewSnapshot, PostgresCatalog,
+    PostgresOptions,
 };
 
 async fn catalog() -> PostgresCatalog {
@@ -35,12 +35,12 @@ async fn account(catalog: &PostgresCatalog) -> super::super::AccountRecord {
         .unwrap()
 }
 
-fn mutation_authorization(account: &super::super::AccountRecord) -> MutationAuthorization {
-    MutationAuthorization {
+fn mutation_authorization(account: &super::super::AccountRecord) -> Authority {
+    Authority {
         principal_key: account.handle.clone(),
         account_id: Some(account.id),
         session_generation: Some(account.session_generation),
-        token_hash: None,
+        link_hash: None,
         policy_edit: true,
         policy_comment: true,
         automation: false,
@@ -481,10 +481,16 @@ async fn already_admitted_log_rows_can_flush_after_a_project_is_hidden() {
         .execute(catalog.pool())
         .await
         .unwrap();
-    assert!(catalog
-        .authorize_document_mutation(document.id, &mutation_authorization(&owner), true)
-        .await
-        .is_err());
+    let mut tx = catalog.pool().begin().await.unwrap();
+    assert!(PostgresCatalog::authorize_mutation(
+        &mut tx,
+        document.id,
+        &mutation_authorization(&owner),
+        true
+    )
+    .await
+    .is_err());
+    tx.rollback().await.unwrap();
     let row_bytes = vec![11_u8; 60];
     let sequence = catalog
         .flush_log_row(

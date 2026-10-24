@@ -71,9 +71,9 @@ use librepaper_document::document::session;
 use librepaper_engine::log::*;
 use librepaper_engine::storage::blob::{BlobStore, FsStore};
 use librepaper_engine::storage::postgres::{
-    Authority, MutationAuthorization, NewAccount, NewDocument, PostgresCatalog, PostgresOptions,
+    Authority, NewAccount, NewDocument, PostgresCatalog, PostgresOptions,
 };
-use librepaper_engine::storage::store::{DocumentInput, MutationActor, Store};
+use librepaper_engine::storage::store::{DocumentInput, Store};
 use librepaper_engine::storage::worker::{Task, Worker};
 use librepaper_engine::testing::Outbox;
 
@@ -857,15 +857,14 @@ async fn deployment_with_document(slug: &str) -> Option<Deployment> {
         catalog.clone(),
         registry.clone(),
     ));
-    let actor = MutationActor {
-        account_id: account.id.to_string(),
-        owner_key: "owner".into(),
-        session_generation: account.session_generation.to_string(),
-        link_hash: String::new(),
-        policy_editor: true,
+    let actor = Authority {
+        account_id: Some(account.id),
+        principal_key: "owner".into(),
+        session_generation: Some(account.session_generation),
+        link_hash: None,
+        policy_edit: true,
         policy_comment: true,
         automation: false,
-        unowned_publisher: false,
     };
     store
         .put_directory_as_actor(
@@ -909,21 +908,9 @@ impl Deployment {
             "Reviewer",
             Some(self.account_id),
             format!("account:{}", self.account_id),
-            self.mutation_authorization(),
+            self.authority(),
             true,
         )
-    }
-
-    fn mutation_authorization(&self) -> MutationAuthorization {
-        MutationAuthorization {
-            principal_key: self.account_id.to_string(),
-            account_id: Some(self.account_id),
-            session_generation: Some(1),
-            token_hash: None,
-            policy_edit: true,
-            policy_comment: true,
-            automation: false,
-        }
     }
 }
 

@@ -99,12 +99,7 @@ impl OperationKey {
 /// payload and therefore never alter a retry's operation digest.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct AgentAuthority {
-    pub account_id: String,
-    pub owner_key: String,
-    pub session_generation: String,
-    pub link_hash: String,
-    pub policy_editor: bool,
-    pub policy_comment: bool,
+    pub authority: librepaper_engine::storage::postgres::Authority,
     /// Trusted endpoint scope that namespaces operation ids. On the MCP path
     /// it is the actor string, which binds link, generation and role. On the
     /// sync path it is `sync:{document_id}:{principal}` and binds only the

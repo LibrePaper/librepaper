@@ -35,12 +35,10 @@ pub(super) fn parse_uuid(value: &str, what: &str) -> Result<uuid::Uuid, Failure>
 }
 
 // This endpoint's writer identity comes from the viewer itself --
-// `Viewer::document_authority` and `Viewer::mutation_authorization` -- so an
-// MCP caller is named exactly as the same caller is over the socket or an
-// ordinary request. The two are not interchangeable: the first names the
-// principal the writer-epoch fence is made against, the second additionally
-// carries the session generation, which is what makes a write from a
-// signed-out session fail rather than succeed. A command needs both (§7).
+// `Viewer::authority` -- so an MCP caller is named exactly as the same caller
+// is over the socket or an ordinary request. It carries the principal, the
+// session generation and the link digest the commit-boundary check is made
+// against, so a write from a signed-out session fails rather than succeeds.
 
 /// A refused command as an MCP failure.
 ///
@@ -248,14 +246,16 @@ impl Server {
 
         let request_id = key.scoped_request_id(actor);
         let ceiling = self.ceiling_for(&who.id);
-        let authority = who.document_authority(ceiling);
+        let authority = who.authority(ceiling).map_err(|InvalidCredential| {
+            Failure::new("permission_changed", "your access changed")
+        })?;
         // Who is writing, built once and carried whole, the same shape the
         // socket and the REST route build.
         let writer = room::CommentAuthor::new(
             creator.clone(),
             uuid::Uuid::parse_str(&who.id.id).ok(),
             author.clone(),
-            who.mutation_authorization(ceiling),
+            authority.clone(),
             who.at_least(Role::Editor),
         );
         let catalog = room.catalog().clone();

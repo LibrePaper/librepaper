@@ -11,44 +11,25 @@ use uuid::Uuid;
 
 /// Who a document transaction is being made on behalf of.
 ///
-/// Three spellings of one question, because a deployment admits three kinds
-/// of writer: a signed-in account, an authenticated automation key, and
-/// somebody holding an editor link. The link hash is checked against
-/// `share_links` in the same transaction as the write, so revoking a link
-/// refuses the next command rather than the next login.
-#[derive(Clone, Debug)]
+/// A deployment admits three kinds of writer: a signed-in account, an
+/// authenticated automation key, and somebody holding a link. The
+/// transaction that writes checks this value against the live account,
+/// grants and `share_links`, so revoking a link or ending a session refuses
+/// the next command.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Authority {
-    /// A stable name for this writer. It is copied into the
-    /// `MutationAuthorization` built from this authority, and the
-    /// commit-boundary check does not read it. It is not the peer key on
-    /// batches: that key names the connection and reaches the sequencer
-    /// separately.
+    /// The writer's stable name. It is used for attribution and identity
+    /// comparisons and is not read by the SQL check.
     pub principal_key: String,
     pub account_id: Option<Uuid>,
-    pub link_hash: Option<Vec<u8>>,
-    /// The account session this request was authenticated under.
+    /// The account session generation the request was authenticated under.
     pub session_generation: Option<i64>,
+    /// SHA-256 digest of the presented link or agent token.
+    pub link_hash: Option<[u8; 32]>,
     /// Deployment ceilings resolved from the authenticated identity.
     pub policy_edit: bool,
     pub policy_comment: bool,
-    /// In automation mode the account remains useful for attribution and
-    /// session validity, while only the presented live link grants access.
+    /// In automation mode the account is used for attribution and session
+    /// validity, and only the presented live link grants access.
     pub automation: bool,
-}
-
-impl Authority {
-    pub fn mutation_authorization(&self) -> super::annotations::MutationAuthorization {
-        super::annotations::MutationAuthorization {
-            principal_key: self.principal_key.clone(),
-            account_id: self.account_id,
-            session_generation: self.session_generation,
-            token_hash: self
-                .link_hash
-                .as_deref()
-                .and_then(|hash| hash.try_into().ok()),
-            policy_edit: self.policy_edit,
-            policy_comment: self.policy_comment,
-            automation: self.automation,
-        }
-    }
 }
