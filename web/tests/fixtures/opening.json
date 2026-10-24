@@ -1,0 +1,174 @@
+{
+  "about": "Shared by web/tests/unit/opening.mjs and crates/librepaper-document opening tests. Each case lists text files by path. `opening` is the file the project opens on (null for none). `alone` lists the files that render on their own; every other file in `files` does not. `includers` maps a file to the files that include it, sorted; files absent from it have none.",
+  "cases": [
+    {
+      "name": "empty project",
+      "files": {},
+      "opening": null,
+      "alone": [],
+      "includers": {}
+    },
+    {
+      "name": "one LaTeX paper",
+      "files": { "main.tex": "\\documentclass{article}\n\\begin{document}Hi\\end{document}\n", "refs.bib": "@book{a,title={A}}\n" },
+      "opening": "main.tex",
+      "alone": ["main.tex"],
+      "includers": {}
+    },
+    {
+      "name": "LaTeX thesis with chapters",
+      "files": {
+        "thesis.tex": "\\documentclass{book}\n\\begin{document}\n\\include{chapters/intro}\n\\input{chapters/method.tex}\n\\end{document}\n",
+        "chapters/intro.tex": "\\chapter{Intro}\n",
+        "chapters/method.tex": "\\chapter{Method}\n",
+        "appendix.tex": "\\section{Extra}\n"
+      },
+      "opening": "thesis.tex",
+      "alone": ["thesis.tex"],
+      "includers": { "chapters/intro.tex": ["thesis.tex"], "chapters/method.tex": ["thesis.tex"] }
+    },
+    {
+      "name": "commented documentclass does not count",
+      "files": { "notes.tex": "% \\documentclass{article}\n\\section{A}\n", "paper.tex": "\\documentclass{article}\n" },
+      "opening": "paper.tex",
+      "alone": ["paper.tex"],
+      "includers": {}
+    },
+    {
+      "name": "escaped percent keeps the documentclass",
+      "files": { "a.tex": "50\\% done \\documentclass{article}\n" },
+      "opening": "a.tex",
+      "alone": ["a.tex"],
+      "includers": {}
+    },
+    {
+      "name": "subfiles chapter renders alone and is included",
+      "files": {
+        "main.tex": "\\documentclass{book}\n\\usepackage{subfiles}\n\\begin{document}\\subfile{ch1}\\end{document}\n",
+        "ch1.tex": "\\documentclass[main.tex]{subfiles}\n\\begin{document}One\\end{document}\n"
+      },
+      "opening": "main.tex",
+      "alone": ["ch1.tex", "main.tex"],
+      "includers": { "ch1.tex": ["main.tex"] }
+    },
+    {
+      "name": "LaTeX include resolves against the including folder first",
+      "files": {
+        "paper/paper.tex": "\\documentclass{article}\n\\input{sec}\n",
+        "paper/sec.tex": "Section\n",
+        "sec.tex": "Other\n"
+      },
+      "opening": "paper/paper.tex",
+      "alone": ["paper/paper.tex"],
+      "includers": { "paper/sec.tex": ["paper/paper.tex"] }
+    },
+    {
+      "name": "LaTeX include falls back to the project root",
+      "files": {
+        "paper/paper.tex": "\\documentclass{article}\n\\input{shared/macros}\n",
+        "shared/macros.tex": "\\newcommand{\\x}{x}\n"
+      },
+      "opening": "paper/paper.tex",
+      "alone": ["paper/paper.tex"],
+      "includers": { "shared/macros.tex": ["paper/paper.tex"] }
+    },
+    {
+      "name": "two papers share macros",
+      "files": {
+        "a.tex": "\\documentclass{article}\n\\input{macros}\n",
+        "b.tex": "\\documentclass{article}\n\\input{macros}\n",
+        "macros.tex": "\\newcommand{\\x}{x}\n"
+      },
+      "opening": "a.tex",
+      "alone": ["a.tex", "b.tex"],
+      "includers": { "macros.tex": ["a.tex", "b.tex"] }
+    },
+    {
+      "name": "Typst book with chapters and a template",
+      "files": {
+        "book.typ": "#import \"template.typ\": conf\n#show: conf\n#include \"chapters/one.typ\"\n",
+        "template.typ": "#let conf(doc) = doc\n",
+        "chapters/one.typ": "= One\n#include \"two.typ\"\n",
+        "chapters/two.typ": "= Two\n"
+      },
+      "opening": "book.typ",
+      "alone": ["book.typ"],
+      "includers": { "template.typ": ["book.typ"], "chapters/one.typ": ["book.typ"], "chapters/two.typ": ["chapters/one.typ"] }
+    },
+    {
+      "name": "Typst root-relative import",
+      "files": { "src/main.typ": "#import \"/lib.typ\": *\n", "lib.typ": "#let x = 1\n" },
+      "opening": "src/main.typ",
+      "alone": ["src/main.typ"],
+      "includers": { "lib.typ": ["src/main.typ"] }
+    },
+    {
+      "name": "Typst package import is not a file",
+      "files": { "paper.typ": "#import \"@preview/cetz:0.3.0\": canvas\n" },
+      "opening": "paper.typ",
+      "alone": ["paper.typ"],
+      "includers": {}
+    },
+    {
+      "name": "Quarto include and underscore files",
+      "files": {
+        "report.qmd": "---\ntitle: R\n---\n{{< include _setup.qmd >}}\n{{< include parts/body.qmd >}}\n",
+        "_setup.qmd": "```{r}\n1\n```\n",
+        "parts/body.qmd": "Body\n",
+        "_draft.md": "Draft\n"
+      },
+      "opening": "report.qmd",
+      "alone": ["report.qmd"],
+      "includers": { "_setup.qmd": ["report.qmd"], "parts/body.qmd": ["report.qmd"] }
+    },
+    {
+      "name": "README and LICENSE never open",
+      "files": { "README.md": "# Repo\n", "LICENSE.md": "MIT\n", "paper.tex": "\\documentclass{article}\n" },
+      "opening": "paper.tex",
+      "alone": ["LICENSE.md", "README.md", "paper.tex"],
+      "includers": {}
+    },
+    {
+      "name": "case-insensitive order",
+      "files": { "Zeta.md": "z\n", "alpha.md": "a\n", "Beta.md": "b\n" },
+      "opening": "alpha.md",
+      "alone": ["Beta.md", "Zeta.md", "alpha.md"],
+      "includers": {}
+    },
+    {
+      "name": "top level wins over a folder",
+      "files": { "a/first.md": "x\n", "z.md": "z\n" },
+      "opening": "z.md",
+      "alone": ["a/first.md", "z.md"],
+      "includers": {}
+    },
+    {
+      "name": "nothing top level qualifies, so the whole tree is searched",
+      "files": { "README.md": "# r\n", "docs/b.md": "b\n", "docs/a.md": "a\n" },
+      "opening": "docs/a.md",
+      "alone": ["README.md", "docs/a.md", "docs/b.md"],
+      "includers": {}
+    },
+    {
+      "name": "HTML renders alone",
+      "files": { "index.html": "<p>Hi</p>\n", "style.css": "p{}\n" },
+      "opening": "index.html",
+      "alone": ["index.html"],
+      "includers": {}
+    },
+    {
+      "name": "nothing renders, so the first text file opens",
+      "files": { "refs.bib": "@book{a}\n", "data.csv": "a,b\n" },
+      "opening": "data.csv",
+      "alone": [],
+      "includers": {}
+    },
+    {
+      "name": "only a README, which opens as the last resort",
+      "files": { "README.md": "# r\n" },
+      "opening": "README.md",
+      "alone": ["README.md"],
+      "includers": {}
+    }
+  ]
+}
