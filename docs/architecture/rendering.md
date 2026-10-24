@@ -10,6 +10,18 @@ LaTeX engines and TeX Live packages are fetched from an HTTPS mirror from `latex
 
 Compilation runs in one worker per module. Markdown and Quarto produce flow HTML. LaTeX and Typst produce paged PDF. The deployment never renders or stores a compiler. The editor keeps the last successfully rendered page while the engine warms.
 
+## Downloads
+
+File > Download offers Source, PDF, HTML and DOCX for every format. Each file is made in the browser from the live source and never stored.
+
+- PDF: LaTeX and Typst use their own engines. Markdown, Quarto and HTML go through Pandoc to a Typst source, which the Typst engine compiles. Typst formats the citations, with the style named by `csl` or `bibliography-style`.
+- HTML: each format's own HTML renderer. Authored HTML is downloaded as written.
+- DOCX: Pandoc reads the HTML rendering.
+
+Pandoc is the official `pandoc.wasm` build, pinned in `assets.lock` and fetched from the mirror on the first PDF or DOCX that needs it. It runs in its own worker. View > PDF for Markdown and Quarto takes the same route, so a PDF needs the desktop app only when Run code is on.
+
+## The live head
+
 There is no publish step or stored rendered page. A reader sees the same head an editor sees, projected as text tree, main file, format and assets, identified by tree digest not version number. The parent reader requests this projection from the application origin and renders it. It sends the resulting preview to the isolated document frame. Opening, reconnecting and every edit resolve to fetch-and-render.
 
 The projection algorithm is implemented in Rust and JavaScript, held to the same behaviour by `web/tests/fixtures/projection.json`. When a document changes, the socket carries `source-changed {digest}` with only the digest. The reader refetches using digest as etag. Unchanged files reuse cache.
