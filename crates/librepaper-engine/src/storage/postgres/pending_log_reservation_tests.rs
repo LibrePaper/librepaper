@@ -42,7 +42,6 @@ async fn pending_log_reservation_survives_rollback_and_is_consumed_with_row() {
             ownership_mode: "owned".into(),
             title: "Reservation test".into(),
             source_format: "markdown".into(),
-            main_path: "main.md".into(),
         })
         .await
         .unwrap();
@@ -84,7 +83,6 @@ async fn pending_log_reservation_survives_rollback_and_is_consumed_with_row() {
                 update_bytes: b"x",
                 vector: b"vector",
                 source_format: None,
-                main_path: None,
             },
             &[reservation_key],
             32,
@@ -112,7 +110,6 @@ async fn pending_log_reservation_survives_rollback_and_is_consumed_with_row() {
                 update_bytes: b"x",
                 vector: b"vector",
                 source_format: None,
-                main_path: None,
             },
             &[reservation_key],
             32,
@@ -161,7 +158,6 @@ async fn quota_admission_rejects_before_acceptance_and_hidden_prefix_still_flush
             ownership_mode: "owned".into(),
             title: "Quota test".into(),
             source_format: "markdown".into(),
-            main_path: "main.md".into(),
         })
         .await
         .unwrap();
@@ -196,7 +192,6 @@ async fn quota_admission_rejects_before_acceptance_and_hidden_prefix_still_flush
                 update_bytes: b"x",
                 vector: b"vector",
                 source_format: None,
-                main_path: None,
             },
             &[first_key],
             32,
@@ -239,7 +234,6 @@ async fn durable_ledger_usage_replaces_pending_reservation_on_flush() {
             ownership_mode: "owned".into(),
             title: "Durable usage test".into(),
             source_format: "markdown".into(),
-            main_path: "main.md".into(),
         })
         .await
         .unwrap();
@@ -282,7 +276,6 @@ async fn durable_ledger_usage_replaces_pending_reservation_on_flush() {
                 update_bytes: b"x",
                 vector: b"vector",
                 source_format: None,
-                main_path: None,
             },
             &[reservation_key],
             32,

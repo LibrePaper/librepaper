@@ -764,8 +764,8 @@ mod tests {
         .await
         .unwrap();
         sqlx::query(
-            "INSERT INTO documents(id,slug,owner_id,ownership_mode,title,status,source_format,main_path)
-             VALUES($1,$2,$3,'owned','Moderation project','active','markdown','main.md')",
+            "INSERT INTO documents(id,slug,owner_id,ownership_mode,title,status,source_format)
+             VALUES($1,$2,$3,'owned','Moderation project','active','markdown')",
         )
         .bind(document)
         .bind(&slug)
@@ -852,8 +852,8 @@ mod tests {
         .unwrap();
         for (id, slug) in [(hidden_id, &hidden_slug), (visible_id, &visible_slug)] {
             sqlx::query(
-                "INSERT INTO documents(id,slug,owner_id,ownership_mode,title,status,source_format,main_path)
-                 VALUES($1,$2,$3,'owned','Moderation pagination test','active','markdown','main.md')",
+                "INSERT INTO documents(id,slug,owner_id,ownership_mode,title,status,source_format)
+                 VALUES($1,$2,$3,'owned','Moderation pagination test','active','markdown')",
             )
             .bind(id)
             .bind(slug)
@@ -928,10 +928,10 @@ mod tests {
         .unwrap();
         sqlx::query(
             "INSERT INTO documents
-             (id,slug,owner_id,ownership_mode,title,status,source_format,main_path,updated_at)
+             (id,slug,owner_id,ownership_mode,title,status,source_format,updated_at)
              SELECT md5('moderation-retention-' || n::text)::uuid,
                     'moderation-retention-' || n::text,$1,'owned',
-                    'Retention pagination test','active','markdown','main.md',
+                    'Retention pagination test','active','markdown',
                     now() - n * interval '1 day'
              FROM generate_series(0,200) AS series(n)",
         )
@@ -1000,8 +1000,8 @@ mod tests {
             for _ in 0..count {
                 let document = Uuid::now_v7();
                 sqlx::query(
-                    "INSERT INTO documents(id,slug,owner_id,ownership_mode,title,status,source_format,main_path)
-                     VALUES($1,$2,$3,'owned','Largest accounts test','active','markdown','main.md')",
+                    "INSERT INTO documents(id,slug,owner_id,ownership_mode,title,status,source_format)
+                     VALUES($1,$2,$3,'owned','Largest accounts test','active','markdown')",
                 )
                 .bind(document)
                 .bind(format!("largest-document-{document}"))
@@ -1093,8 +1093,8 @@ mod tests {
     async fn insert_document_with_bytes(catalog: &PostgresCatalog, owner: Uuid, bytes: i64) {
         let document = Uuid::now_v7();
         sqlx::query(
-            "INSERT INTO documents(id,slug,owner_id,ownership_mode,title,status,source_format,main_path)
-             VALUES($1,$2,$3,'owned','Inactive accounts test','active','markdown','main.md')",
+            "INSERT INTO documents(id,slug,owner_id,ownership_mode,title,status,source_format)
+             VALUES($1,$2,$3,'owned','Inactive accounts test','active','markdown')",
         )
         .bind(document)
         .bind(format!("inactive-document-{document}"))

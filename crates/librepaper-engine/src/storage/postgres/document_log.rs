@@ -93,11 +93,10 @@ pub struct FlushRow<'a> {
     pub expected_update_sequence: i64,
     pub update_bytes: &'a [u8],
     pub vector: &'a [u8],
-    /// Written onto the document row when the flush changes either, so the
+    /// Written onto the document row when the flush changes it, so the
     /// listing and the reader route do not have to project to find out what a
-    /// document is called or written in.
+    /// document is written in.
     pub source_format: Option<&'a str>,
-    pub main_path: Option<&'a str>,
 }
 
 impl PostgresCatalog {
@@ -374,8 +373,7 @@ impl PostgresCatalog {
         }
         if row.source_format.is_some_and(|format| {
             !matches!(format, "markdown" | "html" | "typst" | "latex" | "quarto")
-        }) || row.main_path.is_some_and(str::is_empty)
-        {
+        }) {
             return Err(Error::Invalid("source identity is invalid".into()));
         }
         if reserved_bytes < 0 || (reserved_keys.is_empty() != (reserved_bytes == 0)) {
@@ -428,7 +426,7 @@ impl PostgresCatalog {
             "UPDATE documents SET update_sequence=update_sequence+1,
                  uncompacted_update_count=uncompacted_update_count+1,
                  uncompacted_update_bytes=uncompacted_update_bytes+octet_length($3::bytea),
-                 source_format=COALESCE($4,source_format),main_path=COALESCE($5,main_path),
+                 source_format=COALESCE($4,source_format),
                  updated_at=now()
                WHERE id=$1 AND update_sequence=$2 AND status='active'
                RETURNING update_sequence",
@@ -437,7 +435,6 @@ impl PostgresCatalog {
         .bind(row.expected_update_sequence)
         .bind(row.update_bytes)
         .bind(row.source_format)
-        .bind(row.main_path)
         .fetch_optional(&mut **tx)
         .await?
         .ok_or_else(|| Error::Conflict("document sequence changed".into()))?;

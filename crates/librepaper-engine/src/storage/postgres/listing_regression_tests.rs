@@ -38,7 +38,6 @@ async fn document(catalog: &PostgresCatalog, owner_id: Uuid, mode: &str) -> Uuid
             ownership_mode: mode.into(),
             title: "Schema test".into(),
             source_format: "markdown".into(),
-            main_path: "main.md".into(),
         })
         .await
         .unwrap()
@@ -462,7 +461,6 @@ async fn template_operations_hide_incomplete_rows_replay_and_page_stably() {
         ownership_mode: "owned".into(),
         title,
         source_format: "markdown".into(),
-        main_path: "main.md".into(),
     };
     let (pending, created) = catalog
         .begin_template_operation(

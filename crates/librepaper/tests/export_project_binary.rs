@@ -44,8 +44,6 @@ async fn project_export_writes_verified_text_and_binary_files() {
         },
     );
     let projection = Projection {
-        main: "paper.md".into(),
-        main_id: "source-id".into(),
         files,
         diagnostics: Vec::new(),
     };
@@ -56,7 +54,6 @@ async fn project_export_writes_verified_text_and_binary_files() {
         "slug": SLUG,
         "title": "Paper",
         "format": "markdown",
-        "main": "paper.md",
         "sha": digest,
         "tree": projection,
         "files": projection.files,

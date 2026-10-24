@@ -9,10 +9,10 @@ VALUES ('00000000-0000-0000-0000-000000000001', 'anonymous',
         'snapshot-lifecycle-test', 'Snapshot lifecycle test', 'active');
 
 INSERT INTO documents (id, slug, owner_id, ownership_mode, title, status,
-                       source_format, main_path)
+                       source_format)
 VALUES ('00000000-0000-0000-0000-000000000002', 'snapshot-lifecycle-test',
         '00000000-0000-0000-0000-000000000001', 'owned',
-        'Snapshot lifecycle test', 'active', 'markdown', 'main.md');
+        'Snapshot lifecycle test', 'active', 'markdown');
 
 -- A current snapshot requires the complete snapshot metadata.
 INSERT INTO document_snapshots (

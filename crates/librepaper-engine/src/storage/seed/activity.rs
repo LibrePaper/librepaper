@@ -441,14 +441,14 @@ fn names(take: &[bool]) -> BTreeMap<usize, String> {
 /// `texts` are its other files, finished; `assets` are figures already
 /// written to the blob store as `(path, digest hex)`, named in the document
 /// up front, the way a project arrives with its figures already in the
-/// folder. `main_path`, `author_account_id` and `author_label` describe the
+/// folder. `path`, `author_account_id` and `author_label` describe the
 /// document and the writer the same way a plain publish does.
 #[allow(clippy::too_many_arguments)]
 pub async fn simulate(
     catalog: Arc<PostgresCatalog>,
     document_id: Uuid,
     slug: &str,
-    main_path: &str,
+    path: &str,
     main_body: &str,
     texts: &BTreeMap<String, String>,
     assets: &[(String, String)],
@@ -477,12 +477,10 @@ pub async fn simulate(
     for (path, digest) in assets {
         session::put_asset(&doc, path, digest);
     }
-    // The entrypoint is named before anything is written into it, because
+    // The entrypoint exists before anything is written into it, because
     // every state recorded below is a document somebody can open, and a
-    // document with no main file is not one -- that is what a reader would
-    // have been shown for every moment but the last.
-    let main_id = session::put_text(&doc, main_path, "");
-    session::set_main(&doc, &main_id);
+    // document with no file is not one.
+    session::put_text(&doc, path, "");
 
     let peer_key = format!("seed:{document_id}");
     let authority = Authority {
@@ -495,7 +493,7 @@ pub async fn simulate(
         automation: false,
     };
     // No operation has reached storage yet. The first row must include the
-    // file containers, paths, main entrypoint and assets created above; a
+    // file containers, paths and assets created above; a
     // delta starting at the current vector would strand every later edit
     // behind dependencies that a cold replay can never obtain.
     let mut vector = loro::VersionVector::default();
@@ -509,7 +507,7 @@ pub async fn simulate(
             session::put_text(&doc, path, body);
             present.push(path.clone());
         }
-        session::put_text(&doc, main_path, &step.body);
+        session::put_text(&doc, path, &step.body);
         doc.commit();
 
         let batch = doc
@@ -549,7 +547,6 @@ pub async fn simulate(
                     update_bytes: &framed,
                     vector: &vector.encode(),
                     source_format: None,
-                    main_path: None,
                 },
             )
             .await
@@ -792,7 +789,6 @@ mod tests {
                 ownership_mode: "owned".into(),
                 title: "Seed session test".into(),
                 source_format: "markdown".into(),
-                main_path: "paper.md".into(),
             })
             .await
             .unwrap();
@@ -847,7 +843,6 @@ mod tests {
                 ownership_mode: "owned".into(),
                 title: "Text only seed test".into(),
                 source_format: "markdown".into(),
-                main_path: "paper.md".into(),
             })
             .await
             .unwrap();

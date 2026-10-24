@@ -32,8 +32,8 @@ async fn seed_documents(tx: &mut sqlx::Transaction<'_, sqlx::Postgres>) -> (Uuid
         (second, format!("schema-{second}")),
     ] {
         sqlx::query(
-            "INSERT INTO documents(id,slug,owner_id,ownership_mode,title,status,source_format,main_path)
-             VALUES($1,$2,$3,'owned','Schema test','active','markdown','main.md')",
+            "INSERT INTO documents(id,slug,owner_id,ownership_mode,title,status,source_format)
+             VALUES($1,$2,$3,'owned','Schema test','active','markdown')",
         )
         .bind(id)
         .bind(slug)

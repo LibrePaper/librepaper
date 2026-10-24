@@ -50,7 +50,6 @@ async fn refused_import_leaves_staged_assets_uncatalogued_then_success_completes
             ownership_mode: "owned".into(),
             title: "Import asset atomicity".into(),
             source_format: "markdown".into(),
-            main_path: "main.md".into(),
         })
         .await
         .expect("create document");
@@ -87,11 +86,12 @@ async fn refused_import_leaves_staged_assets_uncatalogued_then_success_completes
             DocumentInput {
                 slug: document.slug.clone(),
                 title: document.title.clone(),
-                source: "# Import\n".into(),
                 source_format: "markdown".into(),
-                main: "main.md".into(),
             },
-            vec![("figure.png".into(), bytes.clone())],
+            vec![
+                ("main.md".into(), "# Import\n".as_bytes().to_vec()),
+                ("figure.png".into(), bytes.clone()),
+            ],
             actor.clone(),
         )
         .await;
@@ -125,11 +125,12 @@ async fn refused_import_leaves_staged_assets_uncatalogued_then_success_completes
             DocumentInput {
                 slug: document.slug.clone(),
                 title: document.title,
-                source: "# Import\n".into(),
                 source_format: "markdown".into(),
-                main: "main.md".into(),
             },
-            vec![("figure.png".into(), bytes)],
+            vec![
+                ("main.md".into(), "# Import\n".as_bytes().to_vec()),
+                ("figure.png".into(), bytes),
+            ],
             current_actor.clone(),
         )
         .await
@@ -152,7 +153,6 @@ async fn refused_import_leaves_staged_assets_uncatalogued_then_success_completes
                 ownership_mode: "owned".into(),
                 title: "Copied template".into(),
                 source_format: "markdown".into(),
-                main_path: "main.md".into(),
             },
         )
         .await
@@ -164,11 +164,9 @@ async fn refused_import_leaves_staged_assets_uncatalogued_then_success_completes
             DocumentInput {
                 slug: template_slug,
                 title: template.title.clone(),
-                source: "# Copied source\n".into(),
                 source_format: "markdown".into(),
-                main: "main.md".into(),
             },
-            Vec::new(),
+            vec![("main.md".into(), "# Copied source\n".as_bytes().to_vec())],
             current_actor,
             request_id,
             template.target.id,
@@ -221,7 +219,6 @@ async fn a_replacement_refuses_a_figure_a_trim_removed_after_staging() {
             ownership_mode: "owned".into(),
             title: "Trim guard test".into(),
             source_format: "markdown".into(),
-            main_path: "main.md".into(),
         })
         .await
         .expect("create document");
@@ -256,11 +253,10 @@ async fn a_replacement_refuses_a_figure_a_trim_removed_after_staging() {
             DocumentInput {
                 slug: document.slug.clone(),
                 title: document.title.clone(),
-                source: "# Initial\n".into(),
                 source_format: "markdown".into(),
-                main: "main.md".into(),
             },
             vec![
+                ("main.md".into(), "# Initial\n".as_bytes().to_vec()),
                 ("figure_a.png".into(), bytes_a.clone()),
                 ("figure_b.png".into(), bytes_b.clone()),
             ],
@@ -275,11 +271,12 @@ async fn a_replacement_refuses_a_figure_a_trim_removed_after_staging() {
             DocumentInput {
                 slug: document.slug.clone(),
                 title: document.title.clone(),
-                source: "# After replace\n".into(),
                 source_format: "markdown".into(),
-                main: "main.md".into(),
             },
-            vec![("figure_b.png".into(), bytes_b.clone())],
+            vec![
+                ("main.md".into(), "# After replace\n".as_bytes().to_vec()),
+                ("figure_b.png".into(), bytes_b.clone()),
+            ],
             actor.clone(),
         )
         .await
@@ -348,7 +345,6 @@ async fn a_replacement_refuses_a_figure_a_trim_removed_after_staging() {
         texts: texts_with_main,
         assets,
         staged_assets,
-        main: "main.md".into(),
         author_account_id: Some(owner.id),
         author_label: owner.handle.clone(),
     };
@@ -389,11 +385,12 @@ async fn a_replacement_refuses_a_figure_a_trim_removed_after_staging() {
             DocumentInput {
                 slug: document.slug.clone(),
                 title: document.title.clone(),
-                source: "# After retry\n".into(),
                 source_format: "markdown".into(),
-                main: "main.md".into(),
             },
-            vec![("figure_a.png".into(), bytes_a)],
+            vec![
+                ("main.md".into(), "# After retry\n".as_bytes().to_vec()),
+                ("figure_a.png".into(), bytes_a),
+            ],
             actor,
         )
         .await
