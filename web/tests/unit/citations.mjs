@@ -110,3 +110,4 @@ assert.equal(bibliographyRegistration('#bibliography("refs.bib")\n', "refs.bib",
   const at = bibliographyRegistration(crlf, "refs.bib", "latex");
   assert.equal(crlf.slice(0, at.from) + at.insert + crlf.slice(at.to), "\\usepackage{biblatex}\r\n\\addbibresource{refs.bib}\r\n\\begin{document}\r\n");
 }
+assert.notEqual(planZoteroImport({ source: "% \\bibliography{old}\n\\begin{document}\n\\end{document}\n", targetPath: "paper.tex", texts: {}, item: { zotero_item: "Z1", citation_key: "Doe2020", bibtex: "@article{Doe2020,\n title={T}}\n" }, format: "latex" }).registration, null);

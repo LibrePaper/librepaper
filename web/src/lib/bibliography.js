@@ -249,7 +249,7 @@ function projectBibliographyPath(filePath, reference) {
 }
 
 export function planZoteroImport({ source, targetPath, texts, item, format = "markdown" }) {
-  const configured = selectedBibliographyFiles(source, format);
+  const configured = selectedBibliographyFiles(format === "latex" || format === "tex" ? latexMasked(string(source)) : source, format);
   const configuredPaths = configured.map((path) => projectBibliographyPath(targetPath, path)).filter(Boolean)
     .map((path) => (format === "latex" || format === "tex") && !/\.bib$/i.test(path) ? `${path}.bib` : path);
   const existing = bibliographyFiles({ texts });

@@ -55,3 +55,4 @@ assert.deepEqual(
   unknownCitations({ text: "\\citep{Smith}", format: "latex", entries: [{ key: "smith" }] }).map((cite) => cite.key),
   ["Smith"],
 );
+assert.deepEqual(citedKeys("= Intro <intro>\n#cite(<intro>) and @intro", "typst", { labels: new Set(["intro"]) }).map((cite) => cite.key), ["intro"]);

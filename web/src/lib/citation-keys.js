@@ -94,10 +94,11 @@ export function citedKeys(text, format, { labels = new Set() } = {}) {
     found = latexKeys(text);
   } else if (format === "typst") {
     const masked = typstMasked(text);
-    found = [...atKeys(masked, TYPST_AT), ...[...masked.matchAll(TYPST_CITE)].map((match) => {
+    // An @ may name a label as well as a bibliography key; #cite(<key>) names a key.
+    found = [...atKeys(masked, TYPST_AT).filter((cite) => !labels.has(cite.key)), ...[...masked.matchAll(TYPST_CITE)].map((match) => {
       const from = match.index + match[0].indexOf("<") + 1;
       return { key: match[1], from, to: from + match[1].length };
-    })].filter((cite) => !labels.has(cite.key));
+    })];
   } else if (format === "markdown" || format === "quarto") {
     found = atKeys(markdownMasked(text), MARKDOWN_AT).filter((cite) => !CROSS_REF.test(cite.key));
   } else {
