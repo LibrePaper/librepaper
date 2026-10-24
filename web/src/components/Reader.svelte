@@ -3047,6 +3047,12 @@
   // Empty means follow the shared main file; opening an include never pins it.
   let previewFile = $state("");
   const toolbarPath = $derived(files.find((file) => file.id === openFile)?.path || "");
+  // The main file as this browser knows it: the session's for somebody who
+  // edits, the last project the server sent for somebody who does not.
+  const mainPathNow = () => mayEdit
+    ? session?.mainPath?.() || ""
+    : currentProject?.main || currentProject?.tree?.main || "";
+
   const previewNoteItems = $derived(previewNotes({
     openPath: toolbarPath,
     openIsText: files.find((file) => file.id === openFile)?.kind === "text",
@@ -3120,12 +3126,6 @@
   const mainMissing = $derived(mayEdit && !projectEmpty
     && Boolean(session && persistence.joined && files.length > 0 && !session.mainPath?.()));
   $effect(() => { if (projectEmpty) untrack(clearPreview); });
-
-  // The main file as this browser knows it: the session's for somebody who
-  // edits, the last project the server sent for somebody who does not.
-  const mainPathNow = () => mayEdit
-    ? session?.mainPath?.() || ""
-    : currentProject?.main || currentProject?.tree?.main || "";
 
   function updatePreviewTarget() {
     if (mayEdit ? !session : !currentProject) return;

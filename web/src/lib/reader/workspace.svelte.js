@@ -122,7 +122,7 @@ export function createWorkspace({
       id: file.kind === "asset" ? path : file.id || path,
       path,
       ...(file.kind === "asset" ? { sha: file.digest } : {}),
-      kind: file.kind,
+      kind: /** @type {"text" | "asset"} */ (file.kind === "asset" ? "asset" : "text"),
       main: file.kind === "text" && (tree.main_id ? file.id === tree.main_id : path === main),
     })).sort((a, b) => {
       if (a.main !== b.main) return a.main ? -1 : 1;
