@@ -1104,7 +1104,7 @@ async fn handle_zotero_item(
     }
     match crate::local::zotero::Client::local().item(key).await {
         Ok(item) => {
-            let citation_key = crate::local::zotero::base_key(&item.data);
+            let citation_key = crate::local::zotero::preferred_key(&item.data);
             let bib = crate::local::zotero::bibliography(&[item], &BTreeMap::new());
             write_json(200, &json!({ "citation_key": citation_key, "bibtex": bib }))
         }

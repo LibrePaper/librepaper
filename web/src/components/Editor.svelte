@@ -547,7 +547,7 @@
   }
 
   async function remoteBibliography(query) {
-    if (!["markdown", "quarto"].includes(formatOf(pathOfDoc(session.doc, showing)))) return [];
+    if (!["markdown", "quarto", "latex", "tex", "typst"].includes(formatOf(pathOfDoc(session.doc, showing)))) return [];
     // Zotero lives on this computer, so a browser says where it can be used.
     if (!desktop()) {
       reportZotero(ZOTERO_NEEDS_DESKTOP);
@@ -596,14 +596,14 @@
       const end_utf16 = active.convertPos(toResult.offset, "unicode", "utf16") ?? 0;
 
       const tree = treeForDoc(doc);
-      // The bibliography is registered in the main file when it is Markdown, else in the citing file.
-      const mainIsMarkdown = formatOf(tree.main) === "markdown";
-      const regPath = mainIsMarkdown ? tree.main : activePath;
-      const regId = mainIsMarkdown ? textIdForPath(doc, tree.main) : activeFile;
+      // The bibliography is registered in the main file when it shares the citing file's format family, else in the citing file.
+      const sameFamily = formatOf(tree.main) === formatOf(activePath);
+      const regPath = sameFamily ? tree.main : activePath;
+      const regId = sameFamily ? textIdForPath(doc, tree.main) : activeFile;
       const reg = getTextFromDoc(regId);
       const plan = planZoteroImport({
         source: reg?.toString() || "", targetPath: regPath, texts: tree.texts,
-        item: { ...fetched, zotero_item: entry.zotero_item },
+        item: { ...fetched, zotero_item: entry.zotero_item }, format: formatOf(regPath),
       });
       const bibId = textIdForPath(doc, plan.path);
       const bib = bibId ? getTextFromDoc(bibId) : null;

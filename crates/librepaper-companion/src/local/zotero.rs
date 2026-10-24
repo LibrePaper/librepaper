@@ -80,6 +80,10 @@ pub struct ItemData {
     pub url: String,
     #[serde(default, deserialize_with = "null_string")]
     pub abstract_note: String,
+    #[serde(default, deserialize_with = "null_string")]
+    pub extra: String,
+    #[serde(default, deserialize_with = "null_string")]
+    pub citation_key: String,
 }
 
 #[derive(Clone, Debug, Default, Deserialize, Serialize, PartialEq)]
@@ -166,7 +170,7 @@ impl Client {
             .into_iter()
             .map(|item| SearchResult {
                 zotero_item: item.key,
-                citation_key: base_key(&item.data),
+                citation_key: preferred_key(&item.data),
                 title: item.data.title,
                 authors: author_names(&item.data.creators),
                 year: issued_year(&item.data.date),
@@ -265,6 +269,32 @@ fn issued_year(date: &str) -> Option<u16> {
     })
 }
 
+fn valid_key(key: &str) -> bool {
+    !key.is_empty()
+        && key.chars().count() <= 128
+        && key
+            .chars()
+            .all(|c| c.is_alphanumeric() || "-_:.+".contains(c))
+}
+
+pub fn preferred_key(data: &ItemData) -> String {
+    let field = data.citation_key.trim();
+    if valid_key(field) {
+        return field.to_owned();
+    }
+    let extra = data.extra.lines().find_map(|line| {
+        let (label, value) = line.split_once(':')?;
+        label
+            .trim()
+            .eq_ignore_ascii_case("Citation Key")
+            .then(|| value.trim())
+    });
+    match extra {
+        Some(key) if valid_key(key) => key.to_owned(),
+        _ => base_key(data),
+    }
+}
+
 pub fn base_key(data: &ItemData) -> String {
     let author = creators(data)
         .take(5)
@@ -320,7 +350,7 @@ pub fn bibliography(items: &[Item], existing: &BTreeMap<String, String>) -> Stri
     let mut used: BTreeSet<String> = existing.values().cloned().collect();
     let mut entries = Vec::new();
     for item in ordered {
-        let base = base_key(&item.data);
+        let base = preferred_key(&item.data);
         let key = existing.get(&item.key).cloned().unwrap_or_else(|| {
             if used.insert(base.clone()) {
                 return base;
@@ -453,6 +483,43 @@ mod tests {
         assert_eq!(suffix(1), "a");
         assert_eq!(suffix(26), "z");
         assert_eq!(suffix(27), "aa");
+    }
+
+    #[test]
+    fn citation_key_field_wins() {
+        let data = ItemData {
+            citation_key: " smith2020a ".into(),
+            extra: "Citation Key: other2020".into(),
+            ..item("", "2023", &["Smith"])
+        };
+        assert_eq!(preferred_key(&data), "smith2020a");
+    }
+
+    #[test]
+    fn extra_citation_key_is_used_when_field_is_empty() {
+        let data = ItemData {
+            extra: "Type: article\ncitation key: Doe_2021:x\n".into(),
+            ..item("", "2023", &["Smith"])
+        };
+        assert_eq!(preferred_key(&data), "Doe_2021:x");
+    }
+
+    #[test]
+    fn invalid_keys_fall_back_to_base_key() {
+        let data = ItemData {
+            citation_key: "bad key{".into(),
+            extra: "Citation Key: also bad".into(),
+            ..item("", "2023", &["Smith"])
+        };
+        assert_eq!(preferred_key(&data), "Smi2023");
+    }
+
+    #[test]
+    fn null_citation_key_is_empty_string() {
+        let item: ItemData =
+            serde_json::from_str(r#"{"citationKey":null,"extra":null}"#).unwrap();
+        assert_eq!(item.citation_key, "");
+        assert_eq!(item.extra, "");
     }
 
     #[test]
