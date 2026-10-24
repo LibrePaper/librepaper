@@ -93,6 +93,30 @@ pub(super) fn api_router(server: Arc<Server>) -> Router {
         .with_state(server)
 }
 
+/// The 401 or 503 a request whose credential did not validate gets, or
+/// `None` when it validated or none was presented. A 401 also clears the
+/// dead session cookie.
+async fn authentication_refusal(
+    server: &Server,
+    context: &RequestContext,
+    headers: &HeaderMap,
+) -> Option<Reply> {
+    let failure = context.authentication.as_ref().err()?;
+    let (status, message) = match failure {
+        AuthenticationFailure::Invalid => (401, "authentication expired or was revoked"),
+        AuthenticationFailure::Unavailable => {
+            (503, "authentication service temporarily unavailable")
+        }
+    };
+    let mut response = write_json(status, &json!({"error": message}));
+    if status == 401 {
+        server
+            .clear_dead_session(&mut response, headers, &context.arrival)
+            .await;
+    }
+    Some(response)
+}
+
 async fn api_guard(
     State(server): State<Arc<Server>>,
     Extension(context): Extension<RequestContext>,
@@ -102,19 +126,7 @@ async fn api_guard(
     if context.arrival.is_docs_host() {
         return plain(404, "not found");
     }
-    if let Err(failure) = &context.authentication {
-        let (status, message) = match failure {
-            AuthenticationFailure::Invalid => (401, "authentication expired or was revoked"),
-            AuthenticationFailure::Unavailable => {
-                (503, "authentication service temporarily unavailable")
-            }
-        };
-        let mut response = write_json(status, &json!({"error": message}));
-        if status == 401 {
-            server
-                .clear_dead_session(&mut response, request.headers(), &context.arrival)
-                .await;
-        }
+    if let Some(response) = authentication_refusal(&server, &context, request.headers()).await {
         return response;
     }
     next.run(request).await
@@ -196,7 +208,7 @@ async fn tools_list(
     request: Request<Body>,
 ) -> Reply {
     server
-        .handle_tools_list(request, ctx.peer, &ctx.arrival, &slug)
+        .handle_tools_list(request, &ctx, &slug)
         .await
 }
 
@@ -207,7 +219,7 @@ async fn tool_call(
     request: Request<Body>,
 ) -> Reply {
     server
-        .handle_tool_call(request, ctx.peer, &ctx.arrival, &slug, &name)
+        .handle_tool_call(request, &ctx, &slug, &name)
         .await
 }
 
@@ -282,7 +294,7 @@ async fn label_patch(
     request: Request<Body>,
 ) -> Reply {
     server
-        .handle_label(request, &ctx.arrival, &slug, &sha)
+        .handle_label(request, &ctx, &slug, &sha)
         .await
 }
 
@@ -292,7 +304,7 @@ async fn restore(
     Path(slug): Path<String>,
     request: Request<Body>,
 ) -> Reply {
-    server.handle_restore(request, &ctx.arrival, &slug).await
+    server.handle_restore(request, &ctx, &slug).await
 }
 
 async fn history_trim(
@@ -302,7 +314,7 @@ async fn history_trim(
     request: Request<Body>,
 ) -> Reply {
     server
-        .handle_history_trim(request, &ctx.arrival, &slug)
+        .handle_history_trim(request, &ctx, &slug)
         .await
 }
 
@@ -458,7 +470,7 @@ async fn chat(
 ) -> Reply {
     let tail = tail.split('/').collect::<Vec<_>>();
     server
-        .handle_chat(request, &ctx.arrival, &slug, &tail)
+        .handle_chat(request, &ctx, &slug, &tail)
         .await
 }
 
@@ -468,7 +480,7 @@ async fn chat_root(
     Path(slug): Path<String>,
     request: Request<Body>,
 ) -> Reply {
-    server.handle_chat(request, &ctx.arrival, &slug, &[]).await
+    server.handle_chat(request, &ctx, &slug, &[]).await
 }
 
 async fn assistant_capabilities(
@@ -741,19 +753,9 @@ pub(super) async fn dispatch(
     // busy catalogue is retryable rather than indistinguishable from a
     // private/missing document.
     if (path.starts_with("/api/") || path.starts_with("/ws/")) && !path.starts_with("/api/auth/") {
-        if let Err(failure) = &context.authentication {
-            let (status, message) = match failure {
-                AuthenticationFailure::Invalid => (401, "authentication expired or was revoked"),
-                AuthenticationFailure::Unavailable => {
-                    (503, "authentication service temporarily unavailable")
-                }
-            };
-            let mut response = write_json(status, &json!({"error": message}));
-            if status == 401 {
-                server
-                    .clear_dead_session(&mut response, request.headers(), &arrival)
-                    .await;
-            }
+        if let Some(response) =
+            authentication_refusal(&server, &context, request.headers()).await
+        {
             return response;
         }
     }

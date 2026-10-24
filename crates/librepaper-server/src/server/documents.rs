@@ -337,7 +337,7 @@ impl Server {
             .unwrap_or(50)
             .clamp(1, 100);
         if let Err(response) = self
-            .entry_at_least(slug, &headers, arrival, None, Role::Commenter)
+            .entry_at_least_in(slug, context, &headers, None, Role::Commenter)
             .await
         {
             return response;

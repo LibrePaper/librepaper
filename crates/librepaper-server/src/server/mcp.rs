@@ -243,10 +243,10 @@ impl Server {
     pub(super) async fn handle_tools_list(
         &self,
         request: Request<Body>,
-        _peer: SocketAddr,
-        arrival: &Arrival,
+        context: &RequestContext,
         slug: &str,
     ) -> Reply {
+        let arrival = &context.arrival;
         if request.method() != Method::GET {
             return plain(405, "method not allowed");
         }
@@ -260,7 +260,7 @@ impl Server {
         }
         let mut headers = request.headers().clone();
         headers.insert(AUTOMATION_HEADER, HeaderValue::from_static("1"));
-        let (entry, who) = match self.entry_viewer(slug, &headers, arrival, None).await {
+        let (entry, who) = match self.entry_viewer_in(slug, context, &headers, None).await {
             Ok(result) => result,
             Err(reply) => return reply,
         };
@@ -293,11 +293,11 @@ impl Server {
     pub(super) async fn handle_tool_call(
         &self,
         request: Request<Body>,
-        _peer: SocketAddr,
-        arrival: &Arrival,
+        context: &RequestContext,
         slug: &str,
         name: &str,
     ) -> Reply {
+        let arrival = &context.arrival;
         if request.method() != Method::POST {
             return plain(405, "method not allowed");
         }
@@ -333,7 +333,7 @@ impl Server {
         if !args.is_object() {
             return plain(400, "expected a JSON object body");
         }
-        let (entry, who) = match self.entry_viewer(slug, &headers, arrival, None).await {
+        let (entry, who) = match self.entry_viewer_in(slug, context, &headers, None).await {
             Ok(result) => result,
             Err(reply) => return reply,
         };

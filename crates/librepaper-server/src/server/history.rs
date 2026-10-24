@@ -767,10 +767,11 @@ impl Server {
     pub(super) async fn handle_label(
         &self,
         request: Request<Body>,
-        arrival: &Arrival,
+        context: &RequestContext,
         slug: &str,
         sha: &str,
     ) -> Reply {
+        let arrival = &context.arrival;
         if !self.valid_slug(slug) {
             return plain(400, "bad slug");
         }
@@ -782,7 +783,7 @@ impl Server {
             return write_json(403, &cross_site_refusal());
         }
         let (entry, who) = match self
-            .entry_viewer(slug, request.headers(), arrival, None)
+            .entry_viewer_in(slug, context, request.headers(), None)
             .await
         {
             Ok(result) => result,
@@ -872,18 +873,18 @@ impl Server {
     pub(super) async fn handle_restore(
         &self,
         request: Request<Body>,
-        arrival: &Arrival,
+        context: &RequestContext,
         slug: &str,
     ) -> Reply {
         let headers = request.headers().clone();
         if !self.valid_slug(slug) {
             return plain(400, "bad slug");
         }
-        if cross_site_refused(&headers, arrival) {
+        if cross_site_refused(&headers, &context.arrival) {
             return write_json(403, &cross_site_refusal());
         }
         if let Err(response) = self
-            .entry_at_least(slug, request.headers(), arrival, None, Role::Editor)
+            .entry_at_least_in(slug, context, request.headers(), None, Role::Editor)
             .await
         {
             return response;
@@ -923,7 +924,7 @@ impl Server {
         // A link may have been revoked, or the account's rights changed,
         // while the request body was being read.
         let (_current_entry, current_who) = match self
-            .entry_at_least(slug, &headers, arrival, None, Role::Editor)
+            .entry_at_least_in(slug, context, &headers, None, Role::Editor)
             .await
         {
             Ok(result) => result,
@@ -995,18 +996,18 @@ impl Server {
     pub(super) async fn handle_history_trim(
         &self,
         request: Request<Body>,
-        arrival: &Arrival,
+        context: &RequestContext,
         slug: &str,
     ) -> Reply {
         let headers = request.headers().clone();
         if !self.valid_slug(slug) {
             return plain(400, "bad slug");
         }
-        if cross_site_refused(&headers, arrival) {
+        if cross_site_refused(&headers, &context.arrival) {
             return write_json(403, &cross_site_refusal());
         }
         if let Err(response) = self
-            .entry_at_least(slug, request.headers(), arrival, None, Role::Editor)
+            .entry_at_least_in(slug, context, request.headers(), None, Role::Editor)
             .await
         {
             return response;
@@ -1022,7 +1023,7 @@ impl Server {
         // A link may have been revoked, or the account's rights changed,
         // while the request body was being read.
         let (_, current_who) = match self
-            .entry_at_least(slug, &headers, arrival, None, Role::Editor)
+            .entry_at_least_in(slug, context, &headers, None, Role::Editor)
             .await
         {
             Ok(result) => result,
