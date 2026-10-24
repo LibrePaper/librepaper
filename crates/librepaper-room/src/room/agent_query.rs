@@ -1974,7 +1974,7 @@ mod tests {
         );
         let result = read(
             &captured,
-            &[json!({"kind":"section","query":"Intro"})],
+            &[json!({"kind":"section","path":"main.md","query":"Intro"})],
             QueryBudget::default(),
         )
         .unwrap();
@@ -1992,7 +1992,7 @@ mod tests {
         captured.tree_digest = "section-ignores-fenced-headings-mutated".into();
         assert!(read(
             &captured,
-            &[json!({"kind":"section","query":"Intro"})],
+            &[json!({"kind":"section","path":"main.md","query":"Intro"})],
             QueryBudget::default()
         )
         .is_err());

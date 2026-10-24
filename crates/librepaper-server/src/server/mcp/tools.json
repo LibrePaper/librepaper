@@ -57,7 +57,8 @@
                 },
                 "path": {
                   "type": "string",
-                  "maxLength": 1024
+                  "maxLength": 1024,
+                  "description": "The file to read. Required by context, source and section, since a project has no main file; a manifest query lists the files."
                 },
                 "line": {
                   "type": "integer",
