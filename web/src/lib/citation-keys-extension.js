@@ -86,7 +86,7 @@ export function citationKeysExtension({ entries, format, labels }) {
   });
 
   const theme = EditorView.baseTheme({
-    ".cm-citation-missing": { textDecoration: "underline wavy var(--color-warning-solid, #e69f00)", textUnderlineOffset: "3px" },
+    ".cm-citation-missing": { textDecoration: "underline wavy var(--color-warning-solid)", textUnderlineOffset: "3px" },
     ".cm-citation-card": { padding: "0.4rem 0.6rem", maxWidth: "28rem" },
   });
 
