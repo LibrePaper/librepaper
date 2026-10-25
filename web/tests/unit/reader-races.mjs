@@ -453,7 +453,7 @@ console.log("reader-races: all checks passed");
     files: [], sourceFormat: "markdown",
     openTextPath: "paper.tex", lockedPath: "", aloneSet: new Set(), visitorFile: "",
     liveTreeNow: () => ({ texts: { "paper.tex": "\\documentclass{article}" }, digests: {} }),
-    previewTarget, rendersAlone, openingFile, includersOf, readerProjectOwner: {}, warmEngine: () => {}, releaseLive: () => {}, holdLive: () => {},
+    previewTarget, rendersAlone, openingFile, includersOf, readerProjectOwner: {}, warmEngine: () => {}, releaseLive: () => {}, recheckLive: () => {}, holdLive: () => {},
     tick: async () => ({ then: () => {} }), paintPreview: () => {},
     navigationGeneration: 0, everPainted: false, everPaintedShown: false,
     docsOrigin: null, navigateFrame: () => {},
@@ -658,7 +658,7 @@ for (const invalidate of [null, "navigation", "main"]) {
   let reviewed = 0;
   let rescheduled = 0;
   const ctx = context({
-    sourceGeneration: 0, historyLiveVersion: 0, releaseLive: () => {}, mayEdit: true, publishedBundle: null,
+    sourceGeneration: 0, historyLiveVersion: 0, releaseLive: () => {}, recheckLive: () => {}, mayEdit: true, publishedBundle: null,
     outlineRevision: 0, sourceFormat: "", editing: false,
     previewTimer: null, PASSIVE_PREVIEW_DEBOUNCE: 1000,
     setTimeout: () => 1, clearTimeout: () => {}, paintPreview: () => {},
@@ -706,7 +706,7 @@ for (const invalidate of [null, "navigation", "main"]) {
 {
   let scheduled = 0;
   const ctx = context({
-    sourceGeneration: 0, historyLiveVersion: 0, releaseLive: () => {}, editing: true, sourceFormat: "markdown", pdfOutput: false, mayEdit: true, publishedBundle: null,
+    sourceGeneration: 0, historyLiveVersion: 0, releaseLive: () => {}, recheckLive: () => {}, editing: true, sourceFormat: "markdown", pdfOutput: false, mayEdit: true, publishedBundle: null,
     previewTimer: null, PASSIVE_PREVIEW_DEBOUNCE: 1000,
     diagnosticPainter: { typed: () => {} },
     setTimeout: (fn, ms) => {
@@ -725,7 +725,7 @@ for (const invalidate of [null, "navigation", "main"]) {
 {
   let scheduled = 0;
   const ctx = context({
-    sourceGeneration: 0, historyLiveVersion: 0, releaseLive: () => {}, editing: true, sourceFormat: "typst", pdfOutput: true, compilesHere: true,
+    sourceGeneration: 0, historyLiveVersion: 0, releaseLive: () => {}, recheckLive: () => {}, editing: true, sourceFormat: "typst", pdfOutput: true, compilesHere: true,
     previewTimer: null, diagnosticPainter: { typed: () => {} },
     setTimeout: (fn, ms) => {
       assert.ok(ms <= 50, "Typst starts rendering within 50 ms of an edit");
@@ -745,7 +745,7 @@ for (const invalidate of [null, "navigation", "main"]) {
   let inEditorUpdate = true;
   let paintedDiagnostics = 0;
   const ctx = context({
-    sourceGeneration: 0, historyLiveVersion: 0, releaseLive: () => {}, quartoFreshnessSerial: 0, sourceFormat: "quarto", quartoView: "draft",
+    sourceGeneration: 0, historyLiveVersion: 0, releaseLive: () => {}, recheckLive: () => {}, quartoFreshnessSerial: 0, sourceFormat: "quarto", quartoView: "draft",
     previewPath: "main.qmd",
     session: {
       idOf: () => "main", textOf: () => ({ toString: () => "# Draft\n" }),
@@ -1111,7 +1111,7 @@ for (const latest of [
     compact: false, layout: 'source', showMobileView: () => {},
     viewing: null, editing: true, editor: { text: () => null },
     liveTreeNow: () => ({ texts, digests: {} }),
-    previewTarget, rendersAlone, openingFile, includersOf, readerProjectOwner: {}, warmEngine: () => {}, releaseLive: () => {}, holdLive: () => {},
+    previewTarget, rendersAlone, openingFile, includersOf, readerProjectOwner: {}, warmEngine: () => {}, releaseLive: () => {}, recheckLive: () => {}, holdLive: () => {},
     renderers: { formatOf: p => p.endsWith('.tex') ? 'latex' : '', previewFormatOf: p => p.endsWith('.tex') ? 'latex' : '', warm: () => {} },
     configureLatex: f => configured.push(f),
     localQuarto: { configure: () => {}, bindingId: () => 'hosted', probe: async () => {} },

@@ -1520,7 +1520,7 @@
   // is now. One that matches is shown and held, and the live preview does not
   // start. Otherwise the last page the live preview made for the file stands
   // in while it starts.
-  async function holdLive(path) {
+  async function holdLive(path, { quiet = false } = {}) {
     const engine = liveEngineHere();
     if (!engine) return;
     const mine = ++liveLookupGeneration;
@@ -1542,10 +1542,22 @@
     liveLookup = "";
     if (found) {
       liveHeld = path;
-      framePreview.publish(liveCopy(found));
-    } else if (standIn) {
+      if (!quiet) framePreview.publish(liveCopy(found));
+    } else if (standIn && !quiet) {
       framePreview.publish(liveCopy(standIn));
     }
+  }
+
+  // A source event while a page is held asks again rather than letting go:
+  // hydration and edits to unrelated files leave the held page current, and
+  // only a source that no longer matches it starts the live preview. The page
+  // on screen is already the right one, so nothing is painted again.
+  function recheckLive() {
+    const path = previewPath;
+    const held = liveHeld === path;
+    if (!path || (!held && liveLookup !== path)) return;
+    releaseLive();
+    void holdLive(path, { quiet: held });
   }
 
   const quartoPreviewController = createLocalPreview({
@@ -2433,7 +2445,7 @@
     if (readerDisposed) return;
     sourceGeneration += 1;
     historyLiveVersion += 1;
-    releaseLive();
+    recheckLive();
     refreshReview();
     outlineRevision += 1;
     if (typeof quartoLiveActive !== "undefined" && quartoLiveActive && typeof quartoPreview !== "undefined" && (quartoPreview || quartoPreviewStarting)) {
