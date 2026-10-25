@@ -38,11 +38,14 @@ A folder project is a binding with `kind: "project"`, `project: "local-<id>"`, n
 - It walks the root, skipping `.git`, any hidden file or folder, `node_modules`, `renv`, `__pycache__`, `.quarto`, `_freeze`, symlinks, and files over the upload size bound. At most 5000 files; past that it answers 413.
 - It records every listed file's digest in the binding's written record, so the folder mirror treats every file of the project as managed: a deletion in the editor trashes it, and a rename moves it.
 - A file a local render wrote into the folder (see Outside changes) is left out of `files` and named in `skipped` with the reason "render output".
+- A directory or file that cannot be read is named in `skipped` with the reason "unreadable".
 - `GET projects/<id>/files/<path>`: the bytes of one file inside the root, checked the same way.
 
 ### Writing
 
 `PUT folder` (the `rj7r` mirror) works for project bindings unchanged: edits, renames, deletions to the trash, the `.local` copy when a file changed on disk since LibrePaper last wrote it.
+
+The manifest names every file, so it may list up to 5000 files. Its JSON part is bounded at 512 bytes per allowed file, which is 2.4 MiB, instead of the 64 KiB that bounds other JSON bodies. A bigger manifest answers 413.
 
 ### Outside changes
 
@@ -50,7 +53,8 @@ A folder project is a binding with `kind: "project"`, `project: "local-<id>"`, n
 - A background poller per open project stats the tree (with the same skip rules) every second.
 - A file is reported after its size and modification time held still across one poll, with its new digest.
 - A change whose digest equals the written record's digest for that path is LibrePaper's own write and is not reported.
-- A file a local render wrote into the folder is not reported as added or changed, or the project would import its own PDF and render again. The result and SyncTeX paths are recorded before the command starts. Every other file the run created or changed, found by listing the folder before and after, is recorded when it ends, but only when it sits in the result's directory or below it and its first name there starts with the result's stem and then `.`, `_` or `-` (`main.aux`, `main_files/libs/x.css`, `main-figure0.pdf` for `main.pdf`). A file another program writes during the run, such as `refs.bib`, is never recorded, and neither is a file the project lists. The record is kept in memory, holds at most 512 paths per project, outlives the poller, and is dropped when the folder is forgotten.
+- A file is reported `removed` only when its absence is confirmed. The walk did not find it, no skipped entry (an unreadable directory, say) is it or holds it, and the operating system answers that it is not there or that a directory took its place. Files under something that cannot be read stay as the page holds them and are not reported.
+- A file a local render wrote into the folder is not reported as added or changed, or the project would import its own PDF and render again. The result and SyncTeX paths are recorded before the command starts. Every other file the run created or changed, found by listing the folder before and after, is recorded when it ends, but only when it sits in the result's directory or below it and its first name there starts with the result's stem and then `.`, `_` or `-` (`main.aux`, `main_files/libs/x.css`, `main-figure0.pdf` for `main.pdf`). A file another program writes during the run, such as `refs.bib`, is never recorded, and neither is a file the project lists. While the command runs, a new file named that way is also held back, since the command may write it long before it ends and nothing has recorded it yet. A path the page already holds is reported as usual. The hold ends when the run ends, however it ended, after the files it wrote are recorded. The record is kept in memory, holds at most 512 paths per project, outlives the poller, and is dropped when the folder is forgotten.
 - The poller stops when no `changes` request has arrived for 60 seconds.
 
 ### Server
