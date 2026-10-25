@@ -3960,7 +3960,7 @@
   {/if}
   {@render downloadMenu()}
   {#if me?.id && !LOCAL}<Menu.Item value="save-template" class="menuitem">Save as template…</Menu.Item>{/if}
-  {#if hasDesktop && !LOCAL && mayEdit}<Menu.Item value="keep-folder" class="menuitem">Keep a folder…</Menu.Item>{/if}
+  {#if hasDesktop && !LOCAL && mayEdit}<Menu.Item value="keep-folder" class="menuitem">Work in a folder…</Menu.Item>{/if}
   <hr class="hr my-1" />
   {#if tabs.some((tab) => tab.id === "sync")}<Menu.Item value="sync" class="menuitem">Sync…</Menu.Item>{/if}
   {#if canSeeSharing || canPublish}<Menu.Item value="share" class="menuitem">Share…</Menu.Item>{/if}

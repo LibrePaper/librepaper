@@ -15,7 +15,7 @@ use tokio::sync::Mutex;
 pub static QUITTING: AtomicBool = AtomicBool::new(false);
 
 // The local service protocol this shell speaks.
-const PROTOCOL: u32 = 2;
+const PROTOCOL: u32 = 3;
 
 // The shell needs these fields. serde ignores the rest of the line.
 #[derive(Clone, Deserialize)]
@@ -406,9 +406,9 @@ mod tests {
     #[test]
     fn endpoint_line_with_the_current_protocol_is_compatible() {
         let endpoint: Endpoint =
-            serde_json::from_str(r#"{"address":"http://127.0.0.1:1/","token":"t","protocol":[2]}"#)
+            serde_json::from_str(r#"{"address":"http://127.0.0.1:1/","token":"t","protocol":[3]}"#)
                 .expect("the line parses");
-        assert_eq!(endpoint.protocol, vec![2]);
+        assert_eq!(endpoint.protocol, vec![3]);
         assert!(compatible(&endpoint).is_ok());
     }
 
@@ -424,7 +424,7 @@ mod tests {
     #[test]
     fn endpoint_line_without_instance_parses_with_an_empty_instance() {
         let endpoint: Endpoint =
-            serde_json::from_str(r#"{"address":"http://127.0.0.1:1/","token":"t","protocol":[2]}"#)
+            serde_json::from_str(r#"{"address":"http://127.0.0.1:1/","token":"t","protocol":[3]}"#)
                 .expect("the line parses");
         assert!(endpoint.instance.is_empty());
     }
@@ -442,7 +442,7 @@ mod tests {
         let mut value = serde_json::json!({
             "service": service,
             "instance": instance,
-            "protocol": [2],
+            "protocol": [3],
         });
         if let Some(proof) = proof {
             value["proof"] = proof.into();

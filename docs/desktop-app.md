@@ -94,7 +94,7 @@ LIBREPAPER_SERVER=https://paper.example.org/ desktop/target/release/librepaper-d
 The desktop app can work on a folder instead of a web project.
 
 - **Open folder…** on the landing page opens any folder as a project. No sign-in, no server. Edits reach disk about a second after you stop typing, renames are real renames, deleted files go to the system trash, and a change another program makes shows up within a second. A file you have unsaved edits in asks whether to keep yours or load the disk copy.
-- **Keep a folder…** in a web project's File menu puts that project's files in an empty folder of your choice and opens it. The folder stays linked to the web project.
+- **Work in a folder…** in a web project's File menu puts that project's files in an empty folder of your choice and opens that folder as the project. The folder stays linked to the web project.
 - **Settings, then Rendering** chooses, per format, whether a render runs in the browser or on this computer with your own latexmk, Typst or Quarto. Renders on this computer run in the folder and only while Run code is on.
 - **The Sync tab** of a folder project links it to a web project, or publishes it as a new one, and moves changes with Pull and Push. The first time, it asks you to sign in to the server. A push is refused for a file that changed on the web since your last pull; a pull leaves a file that changed on both sides alone and lets you choose a copy. Files the folder excludes, such as a PDF a render wrote, are never synced.
 - A folder that is a git repository syncs with git instead: see [Git](git.html) for `librepaper pull` and `push` and the GitHub Action.

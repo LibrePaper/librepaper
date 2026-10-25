@@ -131,7 +131,7 @@ Every call into the sync crate passes the folder's recorded render outputs (the 
 
 Authentication: the sidecar holds a device token from the same device flow backups use (`tokens.json`). Kata vhqg's narrower credential applies here too when it lands.
 
-Page: a **Sync** section in the local project's side panel with Link or Publish, the linked project, "N changes here", "The web project changed", Pull, Push and Unlink. On a web project opened in the desktop app, **Keep a folder on this computer…** in the File menu asks for a folder, links it, pulls, and opens it as a local project.
+Page: a **Sync** section in the local project's side panel with Link or Publish, the linked project, "N changes here", "The web project changed", Pull, Push and Unlink. On a web project opened in the desktop app, **Work in a folder…** in the File menu asks for a folder, links it, pulls, and opens it as a local project.
 
 A folder that is also a git repository is Alice's case: the Sync section says so and points to the Git tab or the terminal; pull and push there are the git form. The Git tab itself (plain git on the folder, `SPEC-folder-git.md`) is a separate issue and not part of this set.
 
@@ -161,7 +161,7 @@ About 8,100 production lines and 7,700 test lines, measured on main on 2026-10-2
 2. **Alice backs up a web project.** Empty clone, `librepaper pull URL` with a token, commit, push to GitHub; the Action then commits each named version. Or the reverse: a repository becomes a web project with `librepaper push --title`.
 3. **Alice in VS Code, Bob in the browser.** Alice adds the workflow and a token. Her pushes reach Bob within a minute as a version in his history with her name. Bob's named versions reach her on the next `git pull` as commits by Bob. A file both touched refuses the Action's push; a pull request from `librepaper/sync` appears; she merges it in git. Bob sees none of this.
 4. **Charlie, GitHub only.** Same repository, same Action, nothing to learn.
-5. **Dana, desktop folder, no git.** Keep a folder on this computer, edit offline with local TeX, Push; Pull with a per-file choice when both sides changed a file.
+5. **Dana, desktop folder, no git.** Work in a folder (the File menu item), edit offline with local TeX, Push; Pull with a per-file choice when both sides changed a file.
 
 ## Done
 
