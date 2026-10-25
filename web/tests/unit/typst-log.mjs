@@ -30,6 +30,13 @@ test("the first location that names a project file wins", () => {
   assert.equal(diagnostic.line, 2);
 });
 
+test("a location wrapped in colour codes is still found", () => {
+  const [diagnostic] = parse("\x1b[31merror:\x1b[39m unknown function\n\x1b[36m┌─ main.typ:4:7\x1b[0m", { paths: ["main.typ"] });
+  assert.equal(diagnostic.file, "main.typ");
+  assert.equal(diagnostic.line, 4);
+  assert.equal(diagnostic.column, 7);
+});
+
 test("the message is the error line alone, without colours or its label", () => {
   assert.equal(parse("error: unknown function\n┌─ main.typ:4:7")[0].message, "unknown function");
   const quarto = "processing file: x.qmd\n\x1b[91mERROR: Failed to spawn 'Rscript'\x1b[39m\n\n\x1b[33mWARN: Error encountered\x1b[39m";

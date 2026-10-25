@@ -1238,9 +1238,6 @@
   let mayEdit = $state(false);
   let sourceFormat = $state("");
 
-  // Where the toggle is offered: in the desktop app, for every editable
-  // document whose format is set to this computer.
-  const runCodeOffered = $derived(mayEdit && hasDesktop && buildPreferences.backend === "local");
   let peers = $state(1);
   let participants = $state([]);
   let linked = $state(read(LINKED, false) === true);
@@ -1715,6 +1712,9 @@
     paint: () => void paintPreview(),
   });
   const buildPreferences = $derived(buildSettings.state.preferences);
+  // Where the toggle is offered: in the desktop app, for every editable
+  // document whose format is set to this computer.
+  const runCodeOffered = $derived(mayEdit && hasDesktop && buildPreferences.backend === "local");
   const latexOutput = $derived(buildSettings.state.latexOutput);
   const typstOutput = $derived(buildSettings.state.typstOutput);
   const markdownOutput = $derived(buildPreferences.output === "pdf" ? "pdf" : "html");
