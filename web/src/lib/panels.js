@@ -10,19 +10,21 @@
 // disagreed with this one would silently show an empty panel.
 //
 // `when` is asked about the reader, not about the document: `mayEdit` is the
-// role the document answers with, `editing` whether the source pane is open.
+// role the document answers with, `editing` whether the source pane is open,
+// and `local` whether the project is a folder on this computer, which has no
+// server behind it to collaborate, ask an agent, keep history or share through.
 export const TABS = [
   { id: "files", says: "Files", icon: "folder", when: (who) => who.mayEdit },
   { id: "outline", says: "Outline", icon: "list", when: (who) => who.mayEdit },
-  { id: "collaboration", says: "Collaboration", icon: "comment" },
+  { id: "collaboration", says: "Collaboration", icon: "comment", when: (who) => !who.local },
   { id: "changes", says: "Changes", icon: "pencil" },
-  { id: "agent", says: "Agent", icon: "bot" },
+  { id: "agent", says: "Agent", icon: "bot", when: (who) => !who.local },
   // History is readable by link-holders too: reviewers need the “since”
   // view even when they cannot edit or restore the live source.
-  { id: "history", says: "History", icon: "history" },
+  { id: "history", says: "History", icon: "history", when: (who) => !who.local },
   // Offered to editors in the desktop app, which holds the Git repository.
-  { id: "git", says: "Git", icon: "git-branch", when: (who) => who.mayEdit && who.desktop },
-  { id: "share", says: "Share", icon: "users", when: (who) => who.canSeeSharing || who.canPublish },
+  { id: "git", says: "Git", icon: "git-branch", when: (who) => who.mayEdit && who.desktop && !who.local },
+  { id: "share", says: "Share", icon: "users", when: (who) => !who.local && (who.canSeeSharing || who.canPublish) },
   // Last, because it comes and goes with the source pane: at the end of the
   // rail its arrival moves nothing else.
   { id: "diagnostics", says: "Diagnostics", icon: "triangle-alert", when: (who) => who.editing },
