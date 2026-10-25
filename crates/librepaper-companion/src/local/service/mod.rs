@@ -484,10 +484,16 @@ async fn run_worker(inner: Arc<Inner>) {
             }
         });
 
+        // In a folder project the command writes into the project's own
+        // folder, and the poller must not report those files as the person's.
+        let render = projects::RenderWatch::begin(&inner, &request).await;
         let outcome = inner
             .runner
             .run(request, staged.clone(), cancel_rx, progress_tx)
             .await;
+        if let Some(render) = render {
+            render.finish(&inner).await;
+        }
         let _ = progress_task.await;
         // The uploads were written into the workspace; the staged copy has
         // done its work.
@@ -1699,6 +1705,48 @@ mod settings_tests {
         // The staged uploads are gone once the pipeline has run.
         let staged = inner.jobs_root.join(&id).join("project");
         assert!(!staged.exists());
+    }
+
+    #[tokio::test]
+    async fn a_job_in_a_folder_project_records_its_result_files_for_the_poller() {
+        let (inner, _state_home, _cache_home) = test_inner().await;
+        let origin = "https://paper.example";
+        let folder = tempfile::tempdir().unwrap();
+        std::fs::write(folder.path().join("main.typ"), b"= Title").unwrap();
+        let binding = inner.bindings.open_project(origin, folder.path()).unwrap();
+        tokio::spawn(run_worker(inner.clone()));
+
+        let mut job = job_json(&binding.id, b"= Title");
+        job["project"] = json!(binding.project);
+        let response = jobs::handle_jobs_post(
+            &inner,
+            &bearer(&inner),
+            Some(origin),
+            job_request(job_body(&job, &[("main.typ", b"= Title")])),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::ACCEPTED);
+        let id = body_json(response).await["id"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        tokio::time::timeout(Duration::from_secs(5), async {
+            loop {
+                let response =
+                    jobs::handle_job_status(&inner, &bearer(&inner), Some(origin), &id).await;
+                if body_json(response).await["status"] == "done" {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("the job finishes");
+
+        let outputs = inner.projects.render_outputs(&binding.id);
+        assert!(outputs.contains("main.pdf"));
+        assert!(outputs.contains("main.synctex.gz"));
+        assert!(!outputs.contains("main.typ"));
     }
 
     #[tokio::test]

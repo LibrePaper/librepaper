@@ -94,6 +94,33 @@ pub async fn reports(refresh: bool) -> BTreeMap<String, RendererReport> {
         .collect()
 }
 
+/// The SyncTeX files a TeX run leaves beside its PDF, in the order they are
+/// tried: compressed when the engine wrote it so, else plain.
+const SYNCTEX_EXTENSIONS: [&str; 2] = ["synctex.gz", "synctex"];
+
+/// The files a run of `request` is expected to leave in the workspace: the
+/// result path, which comes first, and, for a PDF, the SyncTeX files beside
+/// it. Empty when the job names no tool record. A folder project's change
+/// poller is told about these before the command starts, so it never reports
+/// them as outside changes.
+pub fn expected_outputs(request: &JobRequest) -> Vec<String> {
+    let Ok(key) = Key::parse_parts(&request.format, &request.output) else {
+        return Vec::new();
+    };
+    let Ok(expanded) = records::get(key).record.expand(&request.entrypoint) else {
+        return Vec::new();
+    };
+    let mut paths = vec![expanded.result];
+    if key.output == Output::Pdf {
+        paths.extend(
+            SYNCTEX_EXTENSIONS
+                .iter()
+                .map(|extension| format!("{}.{extension}", expanded.stem)),
+        );
+    }
+    paths
+}
+
 /// Runs one admitted job. `staged` holds the uploaded files, which are
 /// written into the workspace the binding names before the command starts.
 /// A job already running in that workspace has been canceled by admission,
@@ -380,7 +407,7 @@ fn attach_result(
 /// engine wrote it so, else plain. Each candidate needs the same freshness as
 /// the result it sits beside.
 fn read_synctex(root: &Path, stem: &str, fresh_since: Option<SystemTime>) -> Option<Vec<u8>> {
-    ["synctex.gz", "synctex"].iter().find_map(|extension| {
+    SYNCTEX_EXTENSIONS.iter().find_map(|extension| {
         read_result(root, &format!("{stem}.{extension}"), fresh_since)
             .ok()
             .flatten()
