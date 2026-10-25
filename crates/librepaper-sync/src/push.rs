@@ -271,6 +271,14 @@ pub async fn push(
     for path in &changes.deleted {
         state.files.remove(path);
     }
+    state.synced.extend(
+        changes
+            .added
+            .iter()
+            .chain(&changes.changed)
+            .chain(&changes.deleted)
+            .cloned(),
+    );
     let commit = git.as_ref().and_then(|git| git.rev("HEAD"));
     state.pushed.push(Pushed {
         label: sha.clone(),
@@ -372,6 +380,7 @@ pub async fn publish(
         .ok()
         .and_then(|(newest, _)| newest.first().map(|label| label.sequence));
     state.files = found.records();
+    state.synced = state.files.keys().cloned().collect();
     state.head = git.as_ref().and_then(|git| git.rev("HEAD"));
     store.save(&state)?;
     Ok(link)

@@ -284,6 +284,7 @@ async fn fetch(
         .to_string();
     let local = scan(git.dir(), rules, Some(git))?;
     let mut known: BTreeSet<String> = state.files.keys().cloned().collect();
+    known.extend(state.synced.iter().cloned());
     if let Some(fetched) = &state.fetched {
         known.extend(fetched.files.keys().cloned());
     }
@@ -321,6 +322,7 @@ async fn fetch(
                 commit,
             });
         }
+        state.synced.extend(snapshot.files.keys().cloned());
         newest = Some((None, snapshot.files));
     }
     for label in &found.versions {
@@ -348,6 +350,7 @@ async fn fetch(
             commit,
         });
         taken.push(label.sha.clone());
+        state.synced.extend(snapshot.files.keys().cloned());
         newest = Some((Some(label.sequence), snapshot.files));
     }
 
@@ -578,6 +581,8 @@ async fn pull_folder(
     }
 
     state.files = plan.records;
+    let paths: Vec<String> = state.files.keys().cloned().collect();
+    state.synced.extend(paths);
     // With a file unsettled the same version is met again, so the next call
     // can settle it.
     if plan.conflicts.is_empty() {

@@ -2,7 +2,7 @@
 //! git repository, a blob under `refs/librepaper/state`, so a runner can push
 //! and fetch it; elsewhere, a file in the user's state home.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
@@ -44,6 +44,9 @@ pub struct State {
     /// Versions this directory pushed, until a pull has met them again.
     pub pushed: Vec<Pushed>,
     pub fetched: Option<Fetched>,
+    /// Every path this directory has ever synced, so one the web later drops
+    /// is dropped from the chain's tree too.
+    pub synced: BTreeSet<String>,
 }
 
 /// The state file's shape: the link flattened beside the rest.
@@ -59,6 +62,8 @@ struct Record {
     pushed: Vec<Pushed>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     fetched: Option<Fetched>,
+    #[serde(default, skip_serializing_if = "BTreeSet::is_empty")]
+    synced: BTreeSet<String>,
 }
 
 impl State {
@@ -71,6 +76,7 @@ impl State {
             files: BTreeMap::new(),
             pushed: Vec::new(),
             fetched: None,
+            synced: BTreeSet::new(),
         }
     }
 
@@ -83,6 +89,7 @@ impl State {
             files: self.files.clone(),
             pushed: self.pushed.clone(),
             fetched: self.fetched.clone(),
+            synced: self.synced.clone(),
         };
         serde_json::to_vec_pretty(&record).map_err(|error| Error::State(error.to_string()))
     }
@@ -99,6 +106,7 @@ impl State {
             files: record.files,
             pushed: record.pushed,
             fetched: record.fetched,
+            synced: record.synced,
         })
     }
 }
