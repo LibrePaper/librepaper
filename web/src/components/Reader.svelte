@@ -124,6 +124,9 @@
   const LOCAL_ID = localIdOf(location.search);
   const LOCAL = Boolean(LOCAL_ID);
   const SLUG = LOCAL ? localSlug(LOCAL_ID) : location.pathname.split("/")[2];
+  // Where a local build runs, for the preview and for an export alike: a web
+  // project renders in the hosted workspace, a local project in its folder.
+  const RENDER_BINDING = LOCAL ? LOCAL_ID : localQuarto.HOSTED_BINDING;
 
   // The key a reader arrived with, taken out of the address before anything
   // asks the server a question. From here it is kept under the slug and
@@ -1511,6 +1514,17 @@
     onError: (error) => say(`The project folder could not be updated: ${error?.message || "unknown error"}`, { kind: "problem", id: "reader:folder-sync" }),
   }) : null;
   $effect(() => () => folderSync?.dispose());
+  // Every move this page makes to another page goes through here. A local
+  // project's edits wait in memory for the folder write, so the folder is
+  // settled first, and a write that fails keeps the person on this page, which
+  // holds the only copy of what the folder lacks.
+  async function leaveTo(href) {
+    if (folderSync && !(await folderSync.flush())) {
+      say("The folder could not be saved.", { kind: "problem", id: "reader:folder-leave" });
+      return;
+    }
+    location.href = href;
+  }
   // The Sync panel of a local project. Signing in approves the desktop app's
   // code in this page's own session, as the backups sign-in does. A pull or a
   // push first settles the folder, so the disk holds what the editor holds
@@ -1969,8 +1983,7 @@
   // after every await, and the few effects it cannot perform itself.
   const renderPreview = createPreviewRenderer({
     slug: SLUG,
-    // A web project renders in the hosted workspace; a local project in its folder.
-    bindingId: LOCAL ? LOCAL_ID : localQuarto.HOSTED_BINDING,
+    bindingId: RENDER_BINDING,
     coordinator: renderCoordinator,
     status: renderStatus,
     framePreview: {
@@ -2542,10 +2555,13 @@
   // Keeps this web project in a folder on this computer. The desktop app asks
   // for an empty folder, links it to this project, pulls the files into it and
   // answers with the folder project, which opens the way Open folder does.
+  // Without a sign-in the app has made the folder and only the pull is
+  // refused; that answer is still a folder project, and its Sync panel offers
+  // Sign in, so it opens the same way.
   async function keepFolder() {
     try {
       const project = await keepFolderProject(`${location.origin}/docs/${SLUG}`);
-      if (project) location.href = folderProjectHref(project.id);
+      if (project) await leaveTo(folderProjectHref(project.id));
     } catch (error) {
       // A folder that is not empty is a choice to make again, not a failure.
       const refused = error?.status === 409 && error?.message;
@@ -2608,6 +2624,7 @@
         title: await headingOf(tree),
         slug: SLUG,
         project: SLUG,
+        bindingId: RENDER_BINDING,
         preview,
         previewCurrent: Boolean(renderedIdentity) && renderedIdentity === await renderers.snapshotDigest(tree),
         render: renderers.render,
@@ -3670,9 +3687,14 @@
 
   // There is no save, so a close is almost never worth interrupting: the
   // document is durable, and what is not yet on the server is in this
-  // browser. The one case left is work that has reached neither.
+  // browser. The one case left is work that has reached neither. A local
+  // project has no server copy: its edits are in memory until the folder is
+  // written, so the page is kept while a write is pending, and the write is
+  // started so one that can still finish does.
   function beforeUnload(event) {
-    if (atRisk) event.preventDefault();
+    const folderPending = Boolean(folderSync?.pending());
+    if (folderPending) void folderSync.flush();
+    if (atRisk || folderPending) event.preventDefault();
   }
 
   // The arrangement is changed often enough to be worth a key. Ctrl-\ is what
@@ -3990,6 +4012,7 @@
            switch. Each carries a caption. The menubar stays mounted but is
            invisible; a menu chosen from Menu opens in the menu's own box. -->
       <CompactPanelMenu tabs={tabs} {panel} {me} {badges} open={shown.comments} onselect={openPanel} onsettings={() => openSettings()}
+                        onhome={LOCAL ? () => leaveTo("/") : undefined}
                         menus={compactMenus} onmenu={(id, anchor) => menubar.show(id, anchor)} />
       {@render faceSwitch()}
       {#if !connected && !LOCAL}<span class="presence-offline" title={connectionNote} aria-label={connectionNote}><span class="presence-offline-dot" aria-hidden="true"></span>Offline</span>{/if}
@@ -4187,8 +4210,14 @@
     {#snippet controls()}
       <!-- Back out to the projects. The rail it returns to is this rail, in
            the same place, which is why this is a plain link and not a
-           gesture: the page changes, the furniture does not. -->
-      <IconButton icon="home" label="All projects" href="/" />
+           gesture: the page changes, the furniture does not. A local project
+           first writes its folder, so there it is a button that leaves when
+           the write has finished. -->
+      {#if LOCAL}
+        <IconButton icon="home" label="All projects" onclick={() => leaveTo("/")} />
+      {:else}
+        <IconButton icon="home" label="All projects" href="/" />
+      {/if}
       <IconButton icon="help" label="What is LibrePaper?" href="https://librepaper.org/what.html" external />
       {#if editing}
         <IconButton icon={ARRANGEMENTS[layout].icon}
