@@ -9,7 +9,7 @@ Two commands in the `librepaper` CLI move files between a folder and a web proje
 - The `librepaper` command. Install it with a desktop app package: Homebrew, Scoop, the Windows installer, the `.deb` or `.rpm` package, or Nix. See [Install the desktop app](desktop-app.html#install-the-desktop-app). The plain macOS `.dmg` does not put it on your PATH. On a server, [install the command alone](cli.html#install).
 - Git, if the folder is a repository. A plain folder needs no Git.
 - A token, or a login on this computer.
-  - A project token: open the project, then Sharing, then the Agent tokens tab, then New. Choose the Edit role and an expiry of up to one year. [Agent tokens](agents.html#agent-tokens) has the details.
+  - A project token: open the project, then Share, then the Agent tokens tab, then Create. Choose the Edit role and an expiry of up to 1 year. [Agent tokens](agents.html#agent-tokens) has the details. A project token works for a project that exists; publishing a new one needs `librepaper login`.
   - `librepaper login` signs you in on this computer. The login lasts 90 days.
 
 Give the token to the CLI with `--token`, or with the `LIBREPAPER_TOKEN` variable. After `librepaper login`, you need neither.
@@ -49,6 +49,7 @@ librepaper pull --mine intro.tex
 - In a repository, pull refuses to start with uncommitted changes. Commit first.
 - Outside a repository, pull writes the newest version into the folder. A file that changed only on the web is written. A file that changed only in the folder is kept. A file deleted on the web goes to the trash.
 - A file that changed on both sides is not written. Pull lists it. Run pull again with `--mine PATH` to keep your copy, or `--theirs PATH` to take the web copy.
+- A file the folder itself excludes (ignored by `.gitignore`, hidden, or not a file the project can hold) is left alone even when the web has it. Pull lists those too.
 
 ### push
 
@@ -69,7 +70,7 @@ Push takes these options. Pull takes `--dir` and `--token` too.
 - `--dir DIR` chooses the folder. It defaults to the current folder.
 - `--message TEXT` names the version. In a repository it defaults to the latest commit subject. If several commits came since the last sync, it adds "and N more". Outside a repository it is required.
 - `--author NAME` sets the author. In a repository it defaults to the author of the latest commit. Outside one, the author is your account.
-- `--title TEXT` publishes a folder with no project as a new project.
+- `--title TEXT` publishes a folder with no project as a new project. This needs `librepaper login`, since a project token belongs to one existing project.
 - `--token TOKEN` gives the token for one run. `LIBREPAPER_TOKEN` works too.
 
 ## GitHub Action
@@ -128,17 +129,19 @@ What happens:
 - **On a schedule**, every 15 minutes, the Action pulls. A clean merge is pushed to `main`. When nothing is new, the run ends with no commit.
 - **When a push is refused**, the Action commits the web's files to a branch named `librepaper/sync` and opens one pull request titled "LibrePaper changed files you also changed". The run then fails on purpose, so it shows red. Merge the pull request in git. The next push to `main` sends the merged files.
 - **When a scheduled pull conflicts**, the Action aborts the merge and does the same.
-- **On every run**, the Action pushes the LibrePaper refs back to GitHub. The next run, on a new machine, starts from the same state.
+- **When `main` moved during a scheduled run**, the push to `main` fails, the LibrePaper state is not published, and the next run repeats the pull from the same point.
+- **When an older push run is started again**, the Action sees that its checkout is no longer the tip of the branch and pushes nothing, so an old commit never rolls the project back.
+- **On every run that ends well**, the Action pushes the LibrePaper refs back to GitHub. The next run, on a new machine, starts from the same state.
 
 Anyone with push rights on the repository can change the project this way. Each change is a named version under the git author. You can see it and restore it in History. To stop the Action, revoke its token in Sharing.
 
 ## Common workflows
 
 1. **Bob and Carol write on the web.** They edit and comment in the browser, and nothing changes for them. Their named versions become commits in the repository.
-2. **Alice backs up a web project.** She pulls the project into a new repository with her token, then pushes the repository to GitHub. She runs `librepaper pull` once in her clone and pushes the LibrePaper refs, then adds the workflow. From then on, the Action adds each new named version as a commit. She can also go the other way. `librepaper push --title` in a repository that holds her paper creates the project.
+2. **Alice backs up a web project.** She pulls the project into a new repository with her token, then pushes the repository and its LibrePaper refs to GitHub (`git push origin main 'refs/librepaper/*'`) and adds the workflow. From then on, the Action adds each new named version as a commit. She can also go the other way. `librepaper push --title` in a repository that holds her paper creates the project.
 3. **Alice works in VS Code, and Bob works in the browser.** Alice adds a token. She runs `librepaper pull` once in her clone and pushes the LibrePaper refs, then adds the workflow. If her repository and the project share no history, she also merges them once, as the Before the first run step shows. Her pushes reach Bob within a minute, as versions in his history under her name. Bob's named versions reach her on her next `git pull`, as commits by Bob. If they both changed a file, the Action's push is refused. A pull request from `librepaper/sync` opens, and Alice merges it in git. Bob sees none of this.
 4. **Charlie works on GitHub only.** He works in the same repository, with the same Action. He has nothing new to learn.
-5. **Dana works in a folder with no Git.** In the desktop app, she chooses Keep a folder from the File menu. She edits the folder offline with local TeX and presses Push. When a file also changed on the web, Pull asks her which copy to keep, file by file.
+5. **Dana works in a folder with no Git.** In the desktop app she opens her web project and chooses Keep a folder from the File menu, which puts the project's files in a folder of her choice and opens it. The Sync tab asks her to sign in once. She edits the folder offline with local TeX and presses Push in the Sync tab. When a file also changed on the web, Pull asks her which copy to keep, file by file.
 
 ## What syncs
 
@@ -167,7 +170,7 @@ These files and features stay where they are.
 
 - Comments, suggestions and chat. Pull leaves pending suggestions out of the text it writes.
 - History. Only named versions reach Git, as commits.
-- Build outputs, such as `.aux` and `.log`. They stay on your computer.
+- Build outputs, such as `.aux` and `.log`. They stay on your computer. A file a local render wrote into the folder, such as the PDF, is neither imported into the project nor synced.
 
 ## Versions and commits
 
