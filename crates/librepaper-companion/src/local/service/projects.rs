@@ -485,8 +485,10 @@ impl Registry {
 
     /// Make `scan` the baseline for `binding`, as its tree was just read.
     /// Starts the poller task when none runs and otherwise replaces the
-    /// baseline of the running one, keeping its queue and cursors.
-    fn set_baseline(&self, binding: &ProjectBinding, record: PathBuf, scan: Scan) {
+    /// baseline of the running one, keeping its queue and cursors. Answers the
+    /// cursor at this moment, so events queued from the new baseline on come
+    /// after it.
+    fn set_baseline(&self, binding: &ProjectBinding, record: PathBuf, scan: Scan) -> u64 {
         let mut pollers = self
             .pollers
             .lock()
@@ -499,7 +501,7 @@ impl Registry {
                 .baseline
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(scan);
-            return;
+            return shared.state().cursor;
         }
         let shared = Arc::new(Shared::new(self.timing.max_events));
         *shared
@@ -507,6 +509,7 @@ impl Registry {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(scan);
         pollers.insert(binding.id.clone(), shared.clone());
+        let cursor = shared.state().cursor;
         tokio::spawn(run_poller(
             shared,
             self.pollers.clone(),
@@ -515,6 +518,7 @@ impl Registry {
             record,
             self.timing,
         ));
+        cursor
     }
 
     /// The queue of a polled project, or `None` when no tree was read since
@@ -748,12 +752,15 @@ pub(super) async fn handle_tree(
             // The listing is what the page now holds. A file becomes managed
             // only by appearing in a `PUT folder` manifest, never by being
             // listed here, so the written record is not touched.
-            inner.projects.set_baseline(
+            let cursor = inner.projects.set_baseline(
                 &binding,
                 record_path,
                 Scan::from_listing(&tree.listing),
             );
-            write_json(200, &json!({"files": tree.files, "skipped": tree.skipped}))
+            write_json(
+                200,
+                &json!({"files": tree.files, "skipped": tree.skipped, "cursor": cursor}),
+            )
         }
         Ok(Err((status, error))) => write_json(status, &json!({"error": error})),
         Err(_) => write_json(500, &json!({"error": "the folder read stopped"})),
@@ -1131,7 +1138,7 @@ mod tests {
         let tree = read_tree(&root_path).unwrap();
         // A change between the tree read and the poller's first scan.
         write(&root_path, "main.tex", "edited before the first scan");
-        registry.set_baseline(&binding, record, Scan::from_listing(&tree.listing));
+        let _ = registry.set_baseline(&binding, record, Scan::from_listing(&tree.listing));
         let shared = registry.get(&binding.id).unwrap();
         let cursor = shared.wait(None, Duration::ZERO).await["cursor"]
             .as_u64()
@@ -1199,5 +1206,41 @@ mod tests {
         let body: Value = serde_json::from_slice(&bytes).unwrap();
         assert_eq!(body["reset"], true);
         assert_eq!(body["changes"], json!([]));
+    }
+
+    #[tokio::test]
+    async fn changes_since_the_tree_cursor_report_a_change_made_after_the_tree_read() {
+        let state = tempfile::tempdir().unwrap();
+        let root = tempfile::tempdir().unwrap();
+        let root_path = std::fs::canonicalize(root.path()).unwrap();
+        write(&root_path, "main.tex", "one");
+        let inner = test_support::inner(state.path(), state.path()).await;
+        let origin = "https://paper.example";
+        let binding = inner.bindings.open_project(origin, &root_path).unwrap();
+        let headers = test_support::bearer(&inner);
+
+        let reply = handle_tree(&inner, &headers, Some(origin), &binding.id).await;
+        let bytes = axum::body::to_bytes(reply.into_body(), 1 << 20)
+            .await
+            .unwrap();
+        let tree: Value = serde_json::from_slice(&bytes).unwrap();
+        let cursor = tree["cursor"].as_u64().unwrap();
+
+        write(&root_path, "main.tex", "changed after the read");
+        let request = Request::get(format!("/changes?since={cursor}"))
+            .body(Body::empty())
+            .unwrap();
+        let reply = tokio::time::timeout(
+            Duration::from_secs(10),
+            handle_changes(&inner, &headers, Some(origin), &binding.id, request),
+        )
+        .await
+        .unwrap();
+        let bytes = axum::body::to_bytes(reply.into_body(), 1 << 20)
+            .await
+            .unwrap();
+        let body: Value = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(body["changes"][0]["path"], "main.tex");
+        assert_eq!(body["changes"][0]["kind"], "changed");
     }
 }
