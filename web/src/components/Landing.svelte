@@ -42,7 +42,8 @@
   import { localProjects } from "../lib/offline-projects.js";
   import { provide } from "../lib/support/providers.js";
   import * as localBridge from "../lib/desktop/client.js";
-  import { folderProjectHref, openFolderProject, folderProjects, forgetFolderProject } from "../lib/desktop/projects.js";
+  import { cloneRepository, folderProjectHref, openFolderProject, folderProjects, forgetFolderProject } from "../lib/desktop/projects.js";
+  import { remoteUrlProblem } from "../lib/git-url.js";
   import { createPreferences } from "../lib/reader/preferences.svelte.js";
   import { readDefaultPreview } from "../lib/build-preferences.js";
   import { warmReader } from "../lib/warm-reader.js";
@@ -1144,6 +1145,41 @@
     } catch (error) { say(error?.message || "The desktop app could not open that folder."); }
   }
 
+  // Clone a repository: the address is asked here, the desktop app asks where
+  // to put the copy, runs git, and makes the folder a project, which opens the
+  // way Open folder does. An address with a password in it is refused before it
+  // is sent anywhere. A cancelled chooser leaves the dialog as it was.
+  let cloning = $state(false);
+  let cloneUrl = $state("");
+  let cloneError = $state("");
+  let cloneBusy = $state(false);
+
+  function closeClone() {
+    cloning = false;
+    cloneUrl = "";
+    cloneError = "";
+  }
+
+  async function cloneRepo(event) {
+    event?.preventDefault();
+    if (cloneBusy) return;
+    const problem = remoteUrlProblem(cloneUrl);
+    if (problem) {
+      cloneError = problem;
+      return;
+    }
+    cloneBusy = true;
+    cloneError = "";
+    try {
+      const project = await cloneRepository(cloneUrl.trim());
+      if (project) location.href = folderProjectHref(project.id);
+    } catch (error) {
+      cloneError = error?.message || "The desktop app could not clone that repository.";
+    } finally {
+      cloneBusy = false;
+    }
+  }
+
   async function forgetFolder(folder) {
     try {
       await forgetFolderProject(folder.id);
@@ -1256,6 +1292,7 @@
       {/if}
       {#if inDesktop}
         <button type="button" class="btn btn-sm nav-action lp-control-tonal-brand" onclick={() => void openFolder()}>Open folder…</button>
+        <button type="button" class="btn btn-sm nav-action lp-control-tonal-brand" onclick={() => (cloning = true)}>Clone a repository…</button>
       {/if}
       {#if me.can_publish}
         <button type="button" class="btn btn-sm nav-new nav-action lp-control-tonal-brand" aria-label="New project" onclick={() => openNew()}>
@@ -1638,6 +1675,7 @@
     {#snippet tools()}
       {#if inDesktop}
         <button type="button" class="btn btn-sm lp-control-tonal-brand" onclick={() => void openFolder()}>Open folder…</button>
+        <button type="button" class="btn btn-sm lp-control-tonal-brand" onclick={() => (cloning = true)}>Clone a repository…</button>
       {/if}
       <button type="button" class="btn btn-sm lp-control-tonal-brand" onclick={() => openSettings()}>Settings</button>
     {/snippet}
@@ -1689,6 +1727,23 @@
                 proofing={preferences.state.proofing} onproofing={preferences.setProofing}
                 dialect={preferences.state.dialect} ondialect={preferences.setDialect}
                 check={preferences.state.check} oncheck={preferences.setCheck} />
+
+<Modal open={cloning} title="Clone a repository"
+       description="Paste an https or ssh address. A folder chooser asks where to put the copy next."
+       onclose={closeClone}
+       confirm={{ form: "clone-repository", label: cloneBusy ? "Cloning…" : "Clone", disabled: cloneBusy, oncancel: closeClone }}>
+  {#snippet children()}
+    <form id="clone-repository" onsubmit={cloneRepo}>
+      <label class="label">
+        <span class="label-text">Address</span>
+        <!-- svelte-ignore a11y_autofocus -- the dialog exists to ask this one thing -->
+        <input class="input" type="text" autofocus bind:value={cloneUrl} disabled={cloneBusy}
+               placeholder="https://github.com/you/paper.git" autocomplete="off" spellcheck="false" />
+      </label>
+      {#if cloneError}<p class="lp-text-error text-sm" role="alert">{cloneError}</p>{/if}
+    </form>
+  {/snippet}
+</Modal>
 
 <Modal open={Boolean(renaming)} title="Rename project"
        description="The name changes; the link does not, so anything already shared still works."

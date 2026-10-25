@@ -4,6 +4,8 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import vm from "node:vm";
+import { remoteUrlProblem } from "../../src/lib/git-url.js";
+import { folderProjectHref } from "../../src/lib/desktop/projects.js";
 
 const landing = readFileSync(new URL("../../src/components/Landing.svelte", import.meta.url), "utf8");
 const body = (start, end) => {
@@ -19,6 +21,7 @@ const reallyDelete = body("  async function reallyDelete()", "  /* -------------
 const requestPaths = body("  const pathRequests = new Map();", "  async function learnPaths()");
 const tagging = body("  const tagQueues = new Map();", "  // The two things the rail's tag list offers beneath the tags.");
 const tagEditing = body("  const tagEdits = new Map();", "  function renameTag(");
+const cloning = body("  function closeClone()", "  async function forgetFolder");
 
 const context = (values) => vm.createContext({
   Promise,
@@ -262,4 +265,78 @@ const context = (values) => vm.createContext({
   assert.equal(ctx.tags[0].colour, "blue");
 }
 
-console.log("landing: pagination, refresh preservation, silent offline refresh, deletion failure and tag ordering checks passed");
+// Clone a repository asks for an address, refuses one with a password before
+// anything is sent, opens the cloned folder like Open folder does, and leaves
+// the dialog as it was when the chooser is cancelled or git refuses.
+{
+  const sent = [];
+  const scene = { answer: { id: "f2", project: "local-f2", name: "paper", root_name: "paper" } };
+  const ctx = context({
+    cloning: true, cloneUrl: "", cloneError: "", cloneBusy: false,
+    location: { href: "" },
+    remoteUrlProblem, folderProjectHref,
+    cloneRepository: async (url) => {
+      sent.push(url);
+      if (scene.answer instanceof Error) throw scene.answer;
+      return scene.answer;
+    },
+  });
+  vm.runInContext(cloning, ctx);
+
+  ctx.cloneUrl = "https://you:secret@github.com/you/paper.git";
+  await vm.runInContext("cloneRepo()", ctx);
+  assert.deepEqual(sent, [], "an address with a password is not sent");
+  assert.match(ctx.cloneError, /password/);
+  assert.equal(ctx.cloneBusy, false);
+
+  ctx.cloneUrl = "/home/you/paper";
+  await vm.runInContext("cloneRepo()", ctx);
+  assert.deepEqual(sent, [], "neither is one that is not https, ssh or scp-like");
+  assert.match(ctx.cloneError, /https:\/\/ or ssh:\/\//);
+
+  ctx.cloneUrl = "  git@github.com:you/paper.git  ";
+  await vm.runInContext("cloneRepo({ preventDefault() {} })", ctx);
+  assert.deepEqual(sent, ["git@github.com:you/paper.git"], "the address is sent trimmed");
+  assert.equal(ctx.location.href, "/reader.html?local=f2", "and the folder opens");
+  assert.equal(ctx.cloneError, "");
+  assert.equal(ctx.cloneBusy, false);
+
+  // A cancelled chooser (the desktop app answers 204) is no project, and no error.
+  ctx.location.href = "";
+  scene.answer = null;
+  await vm.runInContext("cloneRepo()", ctx);
+  assert.equal(ctx.location.href, "");
+  assert.equal(ctx.cloneError, "");
+  assert.equal(ctx.cloning, true, "the dialog stays for another try");
+  assert.equal(ctx.cloneBusy, false);
+
+  // A clone git refused says why and stays.
+  scene.answer = Object.assign(new Error("That folder already exists."), { status: 409 });
+  await vm.runInContext("cloneRepo()", ctx);
+  assert.equal(ctx.cloneError, "That folder already exists.");
+  assert.equal(ctx.location.href, "");
+  assert.equal(ctx.cloneBusy, false);
+
+  // One clone at a time.
+  const gates = [];
+  ctx.cloneRepository = (url) => { sent.push(url); return new Promise((resolve) => gates.push(resolve)); };
+  const before = sent.length;
+  const first = vm.runInContext("cloneRepo()", ctx);
+  const second = vm.runInContext("cloneRepo()", ctx);
+  await second;
+  assert.equal(sent.length, before + 1);
+  assert.equal(ctx.cloneBusy, true);
+  gates[0](null);
+  await first;
+  assert.equal(ctx.cloneBusy, false);
+
+  // Closing the dialog forgets the address and the complaint.
+  ctx.cloneUrl = "https://example.org/paper.git";
+  ctx.cloneError = "x";
+  vm.runInContext("closeClone()", ctx);
+  assert.equal(ctx.cloning, false);
+  assert.equal(ctx.cloneUrl, "");
+  assert.equal(ctx.cloneError, "");
+}
+
+console.log("landing: pagination, refresh preservation, silent offline refresh, deletion failure, tag ordering and clone checks passed");
