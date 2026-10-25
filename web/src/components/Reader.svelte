@@ -41,7 +41,7 @@
   import {
     SHELL_HEADERS,
     authHeaders,
-    config as loadConfig,
+    configOrRemembered,
     keyHeaders,
     post,
     signInHref,
@@ -1487,6 +1487,10 @@
   // The folder's project while it is open. It is the collaboration object of a
   // local project, and the only thing that knows what the folder holds.
   let localProject = null;
+  // A render on this computer runs in the folder, so it sends each text as the
+  // folder sync does and rewrites no file it did not change. A web project has
+  // no folder and passes none.
+  const renderEncode = LOCAL ? (/** @type {string} */ path, /** @type {string} */ text) => localProject.encode(path, text) : undefined;
 
   // A local project's folder mirrors the project. Any change to the files
   // pokes the scheduler, which writes the folder once the person pauses. A
@@ -1984,6 +1988,7 @@
   const renderPreview = createPreviewRenderer({
     slug: SLUG,
     bindingId: RENDER_BINDING,
+    encode: renderEncode,
     coordinator: renderCoordinator,
     status: renderStatus,
     framePreview: {
@@ -2625,6 +2630,7 @@
         slug: SLUG,
         project: SLUG,
         bindingId: RENDER_BINDING,
+        encode: renderEncode,
         preview,
         previewCurrent: Boolean(renderedIdentity) && renderedIdentity === await renderers.snapshotDigest(tree),
         render: renderers.render,
@@ -2849,11 +2855,17 @@
   });
   const canLockPreview = $derived(Boolean(openTextPath && aloneSet.has(openTextPath) && lockedFile !== openFile));
   // The server checks every path again, but a folder project opens only with
-  // the rules, so a failed load is tried again until it lands.
+  // the rules, so a failed load is tried again until it lands. The rules of the
+  // last visit stand in until then, and are applied once rather than on every
+  // try.
   let configRetry = null;
+  let rulesRemembered = false;
   function loadRules() {
-    loadConfig()
-      .then((answer) => {
+    configOrRemembered()
+      .then(({ config: answer, remembered }) => {
+        if (remembered) configRetry = setTimeout(loadRules, 30_000);
+        if (remembered && rulesRemembered) return;
+        rulesRemembered = remembered;
         workspace.setRules(answer || {});
         if (typeof answer?.latexMirror === "string") latex.at(answer.latexMirror);
       })
@@ -3506,8 +3518,9 @@
   async function bootLocal() {
     try {
       scopeLocalApp();
-      const [config, collab] = await Promise.all([loadConfig(), import("../lib/collab.js")]);
+      const [{ config, remembered }, collab] = await Promise.all([configOrRemembered(), import("../lib/collab.js")]);
       if (readerDisposed) return;
+      if (remembered) say("The server could not be reached, so the file rules from your last visit are in use.", { kind: "note", id: "reader:config-remembered" });
       localProject = createLocalProject({
         id: LOCAL_ID,
         rules: config || {},

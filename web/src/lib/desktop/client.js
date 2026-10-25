@@ -422,10 +422,13 @@ export const rendererKey = (format, output) => `${format}.${output}`;
 /** Render one document with the command the desktop app holds for its
  * format and output. The page sends a job and never a command. Resolves with
  * the result file, the SyncTeX file when the tool wrote one, and the log.
- * @param {{ job?: DesktopJob, tree: DesktopTree, format: string, output: string, entrypoint?: string, bindingId?: string }} input
+ * A folder project's render runs in its folder, so it sends each text as the
+ * folder sync does, through `encode`, and a file the render did not change
+ * keeps its bytes. A web project passes none and sends every text as LF.
+ * @param {{ job?: DesktopJob, tree: DesktopTree, format: string, output: string, entrypoint?: string, bindingId?: string, encode?: (path: string, text: string) => Uint8Array }} input
  * @param {BuildCallbacks} [callbacks] */
-export async function runRender({ job = {}, tree, format, output, entrypoint = "", bindingId: binding = "" }, { signal, onProgress } = {}) {
-  const files = collectTreeFiles(tree);
+export async function runRender({ job = {}, tree, format, output, entrypoint = "", bindingId: binding = "", encode }, { signal, onProgress } = {}) {
+  const files = collectTreeFiles(tree, encode);
   const manifest = await manifestOf(files);
   const request = {
     protocol: 3,

@@ -1,4 +1,5 @@
 import { forgetLocalData } from "./local-data.js";
+import { CONFIG, read, write } from "./storage.js";
 
 // Talking to the server.
 //
@@ -73,8 +74,26 @@ export function upload(form, { onprogress } = {}) {
 }
 
 /// The limits both this page and the server enforce, so the two never
-/// disagree about what will be refused.
-export const config = () => get("/api/config");
+/// disagree about what will be refused. Each answer is kept in this browser
+/// for `configOrRemembered`.
+export const config = () => get("/api/config").then((answer) => {
+  if (answer && typeof answer === "object") write(CONFIG, answer);
+  return answer;
+});
+
+/// The same limits when the server cannot be reached: the answer kept from the
+/// last visit, with `remembered` set so the page can say so. A folder project
+/// opens from the desktop app and needs only these rules, so it still opens
+/// offline. With nothing kept, the original failure is thrown.
+export async function configOrRemembered() {
+  try {
+    return { config: await config(), remembered: false };
+  } catch (error) {
+    const kept = read(CONFIG, null);
+    if (!kept || typeof kept !== "object") throw error;
+    return { config: kept, remembered: true };
+  }
+}
 
 /// Who you are, which decides what every page is: what you may publish, what
 /// you may comment on, and which providers there are to sign in with. The

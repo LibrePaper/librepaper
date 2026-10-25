@@ -31,10 +31,12 @@ client.configure({ project: "paper", origin: "https://app.test" });
 
 // A fake desktop app that answers one render with the given files.
 let submitted = null;
+let sentForm = null;
 function answer({ status = "done", exit = 0, error, files = {} }) {
   client._testing.inject({ fetch: async (url, init = {}) => {
     if (url.endsWith("/jobs") && init.method === "POST") {
-      submitted = JSON.parse(await (await formOf(init)).get("job").text());
+      sentForm = await formOf(init);
+      submitted = JSON.parse(await sentForm.get("job").text());
       return response(202, { id: "render-1" });
     }
     if (url.endsWith("/jobs/render-1")) {
@@ -67,6 +69,36 @@ assert.equal(submitted.binding_id, "local-1");
 assert.equal(compiled.html, null);
 assert.equal(compiled.log, "compiled");
 assert.deepEqual(compiled.diagnostics, []);
+
+// A folder project passes the folder sync's encoder, so the job carries each
+// text as the folder holds it: a CRLF file keeps its CRLF and a BOM file its
+// BOM, and the manifest names the bytes that were sent. A render that sent LF
+// would rewrite the files it did not change. A web project passes none.
+{
+  const folder = { main: "main.typ", texts: { "main.typ": "= Test\nbody\n", "notes/a.typ": "x\ny\n", "plain.typ": "p\n" }, assets: {} };
+  const held = {
+    "main.typ": text("= Test\r\nbody\r\n"),
+    "notes/a.typ": new Uint8Array([0xef, 0xbb, 0xbf, ...text("x\ny\n")]),
+    "plain.typ": text("p\n"),
+  };
+  const encode = (path, value) => {
+    assert.equal(value, folder.texts[path]);
+    return held[path];
+  };
+  const bytesSent = async (path) => new Uint8Array(await sentForm.getAll("file").find((file) => file.name === path).arrayBuffer());
+  answer({ files: { artifact: pdf } });
+  await renderers.render(folder, "Test", { project: "paper", bindingId: "local-1", encode, buildPreferences: { backend: "local", output: "pdf" } });
+  for (const [path, bytes] of Object.entries(held)) {
+    assert.deepEqual([...await bytesSent(path)], [...bytes], `${path} is sent as the folder holds it`);
+    const listed = submitted.manifest.find((entry) => entry.path === path);
+    assert.equal(listed.sha256, (await descriptor(bytes)).sha256, `${path} is listed by the digest of the bytes sent`);
+    assert.equal(listed.size, bytes.byteLength);
+  }
+
+  answer({ files: { artifact: pdf } });
+  await renderers.render(folder, "Test", { project: "paper", buildPreferences: { backend: "local", output: "pdf" } });
+  assert.deepEqual([...await bytesSent("main.typ")], [...text("= Test\nbody\n")], "a web project sends its texts as LF");
+}
 
 // A failed Typst run is read into one diagnostic. A location counts only when
 // it names a file of the project.

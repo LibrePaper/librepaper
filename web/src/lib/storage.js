@@ -71,6 +71,11 @@ export const THEME = "librepaper-theme";
 // "gruvbox", "catppuccin" or "nord". Like the theme, a habit of the person
 // looking at the screen rather than of the document.
 export const PALETTE = "librepaper-palette";
+// The last `/api/config` answer, the deployment's limits and file rules. The
+// service worker does not keep API answers, so a folder project opened with no
+// connection to the server reads its rules from here. It describes the
+// deployment and nothing about the person, so signing out leaves it.
+export const CONFIG = "librepaper-config";
 // The symbol ids the picker used last, most recent first.
 export const SYMBOLS_RECENT = "librepaper-symbols-recent";
 // The symbol ids starred in the picker, in the order they were starred.
