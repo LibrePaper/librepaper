@@ -35,12 +35,11 @@ use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 use tokio::sync::{mpsc, watch, Mutex, Notify};
 
-use crate::local::bindings::{BindingStore, HOSTED_BINDING};
+use crate::local::bindings::BindingStore;
 use crate::local::protocol::{
     self, Capabilities, JobOutcome, JobRequest, JobStatus, ManifestEntry, BASE_PATH, MAX_FILES,
     MAX_JSON_BYTES, MAX_UPLOAD_BYTES, PROTOCOL_VERSIONS,
 };
-use crate::local::render::workspace::{sync_granted_folder, sync_hosted_workspace};
 use crate::local::store;
 
 mod backups;
@@ -643,9 +642,6 @@ async fn dispatch(
         }
         ["zotero", "items", key] if *method == Method::GET => {
             handle_zotero_item(inner, headers, origin, key).await
-        }
-        ["workspace"] if *method == Method::PUT => {
-            jobs::handle_workspace_put(inner, headers, origin, request).await
         }
         ["jobs"] if *method == Method::POST => {
             jobs::handle_jobs_post(inner, headers, origin, request).await

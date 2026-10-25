@@ -8,14 +8,17 @@
 //! 1. Write the job's files into the persistent workspace (`workspace`).
 //! 2. Run the expanded command there through the confined runner, which owns
 //!    cancellation, the deadline and the captured log.
-//! 3. Read the result file, and for a PDF the SyncTeX file beside it.
+//! 3. Read the result file this run wrote, and for a PDF the SyncTeX file
+//!    beside it.
 //!
 //! Exit status 0 with no result file is a failure that names the path the
-//! command was expected to write.
+//! command was expected to write. A result left in the workspace by an
+//! earlier run does not count, and a command that fails after writing its
+//! result still returns it beside the error.
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime};
 
 use tokio::process::Command;
 use tokio::sync::{mpsc, watch};
@@ -192,6 +195,7 @@ pub async fn run(
     command.process_group(0);
     let deadline =
         Instant::now() + Duration::from_secs(request.options.deadline_seconds.clamp(1, 3600));
+    let started = SystemTime::now();
     let (outcome, output) = native::run_confined_logged(command, &mut cancel, deadline).await;
 
     let mut log: Vec<u8> = notes.iter().flat_map(|note| format!("{note}\n").into_bytes()).collect();
@@ -206,14 +210,16 @@ pub async fn run(
     };
     let mut files: BTreeMap<String, Vec<u8>> = BTreeMap::new();
     match outcome {
-        RunOutcome::Exited(0) => match read_inside(&root, &expanded.result) {
+        RunOutcome::Exited(0) => match read_result(&root, &expanded.result, started) {
             Ok(Some(bytes)) if !bytes.is_empty() => {
-                files.insert("artifact".into(), bytes);
-                if key.output == Output::Pdf {
-                    if let Some(bytes) = read_synctex(&root, &expanded.stem) {
-                        files.insert("synctex".into(), bytes);
-                    }
-                }
+                attach_result(
+                    &mut files,
+                    &root,
+                    key.output == Output::Pdf,
+                    &expanded.stem,
+                    started,
+                    bytes,
+                );
                 status.status = "done".into();
             }
             Ok(Some(_)) => {
@@ -239,6 +245,22 @@ pub async fn run(
             status.exit = code;
             status.status = "failed".into();
             status.error = Some(format!("the command exited with status {code}"));
+            // LaTeX in nonstop mode can exit nonzero and still write a usable
+            // PDF, so a fresh result is shown beside the error.
+            let result = read_result(&root, &expanded.result, started)
+                .ok()
+                .flatten()
+                .filter(|bytes| !bytes.is_empty());
+            if let Some(bytes) = result {
+                attach_result(
+                    &mut files,
+                    &root,
+                    key.output == Output::Pdf,
+                    &expanded.stem,
+                    started,
+                    bytes,
+                );
+            }
         }
         RunOutcome::Canceled => status.status = "canceled".into(),
         RunOutcome::TimedOut => {
@@ -282,6 +304,17 @@ fn failed(request: &JobRequest, error: &str) -> JobOutcome {
     }
 }
 
+/// The bytes of `relative` under `root` when this run wrote it. A file last
+/// modified before `started` was left by an earlier run and counts as absent.
+fn read_result(root: &Path, relative: &str, started: SystemTime) -> Result<Option<Vec<u8>>, String> {
+    match std::fs::metadata(root.join(relative)).and_then(|metadata| metadata.modified()) {
+        Ok(modified) if modified < started => Ok(None),
+        Ok(_) => read_inside(root, relative),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(error) => Err(format!("could not read {relative}: {error}")),
+    }
+}
+
 /// The bytes of `relative` under `root`, or none when nothing is there. A
 /// path that resolves outside the workspace, or to something that is not a
 /// regular file, is an error rather than an absent result.
@@ -302,12 +335,31 @@ fn read_inside(root: &Path, relative: &str) -> Result<Option<Vec<u8>>, String> {
         .map_err(|error| format!("could not read {relative}: {error}"))
 }
 
+/// Adds the result to `files`, and for a PDF the SyncTeX file beside it.
+fn attach_result(
+    files: &mut BTreeMap<String, Vec<u8>>,
+    root: &Path,
+    pdf: bool,
+    stem: &str,
+    started: SystemTime,
+    bytes: Vec<u8>,
+) {
+    files.insert("artifact".into(), bytes);
+    if pdf {
+        if let Some(bytes) = read_synctex(root, stem, started) {
+            files.insert("synctex".into(), bytes);
+        }
+    }
+}
+
 /// The SyncTeX file a TeX run leaves beside its PDF: compressed when the
-/// engine wrote it so, else plain.
-fn read_synctex(root: &Path, stem: &str) -> Option<Vec<u8>> {
-    ["synctex.gz", "synctex"]
-        .iter()
-        .find_map(|extension| read_inside(root, &format!("{stem}.{extension}")).ok().flatten())
+/// engine wrote it so, else plain. Each candidate needs the same freshness.
+fn read_synctex(root: &Path, stem: &str, started: SystemTime) -> Option<Vec<u8>> {
+    ["synctex.gz", "synctex"].iter().find_map(|extension| {
+        read_result(root, &format!("{stem}.{extension}"), started)
+            .ok()
+            .flatten()
+    })
 }
 
 #[cfg(all(test, unix))]
