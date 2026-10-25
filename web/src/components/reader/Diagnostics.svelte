@@ -1,6 +1,5 @@
 <script>
   import PanelHeader from "../PanelHeader.svelte";
-  import DesktopOnly from "../DesktopOnly.svelte";
   import IconButton from "../IconButton.svelte";
   import { provenanceSentence } from "../../lib/latex/status-text.js";
 
@@ -9,10 +8,6 @@
     entry = "",
     canOpen = () => false,
     onopen,
-    localAppProblem = false,
-    // Set when a preview here needs the desktop app and this is a browser.
-    desktopNeeds = "",
-    onretrylocal,
     // The two LaTeX-only additions: what actually produced the current
     // preview, and every backend that was tried to get there. Both come
     // straight off the compile result Reader.svelte kept as
@@ -75,9 +70,6 @@
 
 <section class="panel" aria-label="Warnings and errors">
   <PanelHeader title="Diagnostics" />
-  {#if desktopNeeds}<DesktopOnly feature={desktopNeeds} />{:else if localAppProblem}
-    <button type="button" class="btn btn-sm lp-control-tonal-brand mb-4" onclick={onretrylocal}>Retry preview</button>
-  {/if}
   {#if provenance}
     <details class="mb-4">
       <summary class="panel-section-title">Compiled with</summary>

@@ -217,7 +217,7 @@ See equation~\eqref{eq:test}.
     assert.equal(created.status, 201, JSON.stringify(created.body));
     const { slug } = created.body;
     const buildPreferenceKey = `librepaper-build-v2:${JSON.stringify([appBase, "github:browser-test", slug])}`;
-    await tab.evaluate(`localStorage.setItem(${JSON.stringify(buildPreferenceKey)}, ${JSON.stringify(JSON.stringify({ selection: "tool", backend: "browser", tool: "tex", output: "html", format: "latex" }))})`);
+    await tab.evaluate(`localStorage.setItem(${JSON.stringify(buildPreferenceKey)}, ${JSON.stringify(JSON.stringify({ selection: "tool", backend: "browser", output: "html", format: "latex" }))})`);
     await tab.resize(1300, 900);
     await tab.navigate(`${appBase}/docs/${slug}`);
     await until("initial HTML frame", () => tab.evaluate(`document.querySelector('iframe')?.src.includes('/raw/')`));

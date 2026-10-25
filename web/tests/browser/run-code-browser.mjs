@@ -1,6 +1,6 @@
-// The Run code switch: off whenever a document opens, off in a plain browser
-// (which is told the page needs the desktop app), on in the desktop app, and
-// never remembered across a reload or a stored build preference.
+// The Run code switch: off whenever a document opens, not offered in a plain
+// browser, on in the desktop app, and never remembered across a reload or a
+// stored build preference.
 import assert from "node:assert/strict";
 import { build } from "vite";
 import { svelte } from "@sveltejs/vite-plugin-svelte";
@@ -88,14 +88,11 @@ try {
   const clickRunCode = () => b.evaluate("document.querySelector('button[role=switch][aria-label=\"Run code\"]').click()");
   const settle = () => new Promise((resolve) => setTimeout(resolve, 300));
 
-  // Case 1: a plain browser. The switch starts off, and turning it on is refused.
+  // Case 1: a plain browser has no computer to run code on, so it is not offered.
   await b.navigate(plainUrl);
-  await until('Run code switch in a browser',runCodeSwitchExists,10000);
-  assert.equal(await runCodeState(),"false",'Run code starts off in a browser');
-  await clickRunCode();
-  await until('browser is told the page needs the desktop app',()=>b.evaluate('document.body.textContent.includes("needs the LibrePaper desktop app")'),5000);
+  await until('the page joined its room',()=>b.evaluate('typeof window.roomConnected === "function"'),10000);
   await settle();
-  assert.equal(await runCodeState(),"false",'Run code stays off in a browser');
+  assert.equal(await runCodeSwitchExists(),false,'Run code is not offered in a browser');
 
   // Case 2: the desktop app. The switch turns on, and a reload turns it off again.
   await b.navigate(desktopUrl);
@@ -107,15 +104,14 @@ try {
   await until('Run code switch after reload',runCodeSwitchExists,10000);
   assert.equal(await runCodeState(),"false",'Run code is never remembered across a reload');
 
-  // Case 3: a stored build preference that points Quarto at the local tool
-  // cannot start it. The page is still on this origin, so its storage is ours.
+  // Case 3: a stored build preference that sends Quarto to this computer
+  // cannot turn Run code on. The page is still on this origin, so its storage
+  // is ours.
   await b.evaluate(`(() => {
     const anonymous = localStorage.getItem("librepaper-build-v3:anonymous-id");
     if (!anonymous) throw new Error("no anonymous build identity was stored");
     const scope = JSON.stringify([location.origin, anonymous, "quarto"]);
-    const options = JSON.stringify([location.origin, anonymous, "quarto-options"]);
-    localStorage.setItem("librepaper-build-v3:" + scope, JSON.stringify({ selection: "tool", backend: "local", tool: "quarto", format: "quarto" }));
-    localStorage.setItem("librepaper-build-v3:" + options, JSON.stringify({ profile: null, parameters: {} }));
+    localStorage.setItem("librepaper-build-v3:" + scope, JSON.stringify({ selection: "automatic", backend: "local", format: "quarto" }));
     return true;
   })()`);
   await b.navigate(desktopUrl);
@@ -123,5 +119,5 @@ try {
   assert.equal(await runCodeState(),"false",'a stored preference cannot turn Run code on');
 
   assert.deepEqual(await b.evaluate('window.testErrors'),[]);
-  console.log("run-code-browser: off on open, browser stays off, desktop turns on, never remembered");
+  console.log("run-code-browser: off on open, not offered in a browser, desktop turns on, never remembered");
 } finally { await b?.close(); serverHttp?.close(); removeTemporary(temp); }
