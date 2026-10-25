@@ -42,8 +42,12 @@ tar -xJf "$WORK/$asset" -C "$WORK" "librepaper-x86_64-unknown-linux-musl/librepa
 export PATH="$WORK/librepaper-x86_64-unknown-linux-musl:$PATH"
 
 # Take the LibrePaper state from origin.
-git fetch --quiet origin '+refs/librepaper/*:refs/librepaper/*' ||
-  echo "::notice::no refs/librepaper/* fetched from origin"
+# A glob that matches nothing still succeeds, so a failure here is the network
+# or the credential, not a missing state.
+git fetch --quiet origin '+refs/librepaper/*:refs/librepaper/*' || {
+  echo "::error::could not fetch refs/librepaper/* from origin" >&2
+  exit 1
+}
 # Without the state every project file looks new, so the push would be refused.
 # A person seeds the state once from a clone, as the README's "Before the first run" describes.
 if ! git rev-parse -q --verify refs/librepaper/state >/dev/null; then
