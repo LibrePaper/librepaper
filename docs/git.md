@@ -81,18 +81,25 @@ The Action runs `pull` and `push` for a repository on GitHub. Nothing has to run
 
 ```yaml
 on:
-  push: { branches: [main] }
-  schedule: [{ cron: "*/15 * * * *" }]
+  push:
+    branches: [main]
+  schedule:
+    - cron: "*/15 * * * *"
 concurrency: librepaper            # one run at a time per repository
 jobs:
   sync:
     runs-on: ubuntu-latest
-    permissions: { contents: write, pull-requests: write }
+    permissions:
+      contents: write
+      pull-requests: write
     steps:
       - uses: actions/checkout@v4
-        with: { fetch-depth: 0 }
+        with:
+          fetch-depth: 0
       - uses: LibrePaper/sync-action@v1
-        with: { project: https://app.librepaper.org/docs/<slug>, token: ${{ secrets.LIBREPAPER_TOKEN }} }
+        with:
+          project: https://app.librepaper.org/docs/<slug>
+          token: ${{ secrets.LIBREPAPER_TOKEN }}
 ```
 
 The Action takes two inputs.
