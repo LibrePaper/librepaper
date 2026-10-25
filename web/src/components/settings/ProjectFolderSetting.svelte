@@ -3,7 +3,7 @@
   import DesktopOnly from "../DesktopOnly.svelte";
   import * as desktopClient from "../../lib/desktop/client.js";
 
-  // The folder on this computer that live previews build in.
+  // The folder on this computer that renders on this computer run in.
   let { sourceFormat = "", main = "", mayEdit = false, onbindingid } = $props();
 
   let folderError = $state("");
@@ -29,8 +29,8 @@
   }
 </script>
 
-<DesktopOnly feature="The project folder setting" description="Keep this project in sync with a folder on your computer for live previews.">
-<SettingRow id="render-folder" title="Project folder" description="Folder used for live previews; one-shot builds use a temporary copy.">
+<DesktopOnly feature="The project folder setting" description="Render this project in a folder on your computer.">
+<SettingRow id="render-folder" title="Project folder" description="Renders on this computer run in this folder and leave their files there.">
   <input class="input input-sm setting-input" type="text" aria-label="Project entrypoint" bind:value={entrypoint} disabled={!canChoose} />
   <button type="button" class="btn btn-sm lp-control-tonal-brand" disabled={!canChoose || !entrypoint.trim()} onclick={() => void chooseFolder()}>{choosingFolder ? "Choosing…" : "Choose folder…"}</button>
 </SettingRow>
