@@ -854,7 +854,7 @@ pub(super) async fn handle_keep(
         Ok(link) => link,
         Err((status, body)) => return write_json(status, &body),
     };
-    let root = match projects::choose_root(inner).await {
+    let root = match projects::choose_root(inner, "Choose an empty folder for the project").await {
         Ok(root) => root,
         Err(response) => return response,
     };

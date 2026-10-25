@@ -1315,7 +1315,7 @@ pub(super) async fn handle_clone(
             &json!({"error": "A folder name cannot be made from that URL."}),
         );
     };
-    let parent = match projects::choose_root(inner).await {
+    let parent = match projects::choose_root(inner, "Choose where to put the clone").await {
         Ok(parent) => parent,
         Err(response) => return response,
     };

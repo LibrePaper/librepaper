@@ -69,17 +69,13 @@ pub fn run_folder_picker_helper() -> bool {
     false
 }
 
-/// The folder chooser for opening a folder as a LibrePaper project.
-pub async fn choose_project_directory() -> Result<PathBuf, String> {
-    choose_directory_with_title("Open a folder as a LibrePaper project").await
-}
-
 pub async fn choose_backup_directory(origin: &str) -> Result<PathBuf, String> {
     let title = format!("Choose where to save {origin} backups");
     choose_directory_with_title(&title).await
 }
 
-async fn choose_directory_with_title(title: &str) -> Result<PathBuf, String> {
+/// The native folder chooser, with `title` shown on it.
+pub async fn choose_directory_with_title(title: &str) -> Result<PathBuf, String> {
     #[cfg(target_os = "macos")]
     {
         choose_directory_macos(title).await

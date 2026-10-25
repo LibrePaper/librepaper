@@ -1040,18 +1040,18 @@ pub(super) fn open_binding(
     Ok(binding)
 }
 
-/// Asks the person for a folder through the native chooser. The error is the
-/// answer to send: 409 while another chooser is open, 204 when the person
-/// cancels.
+/// Asks the person for a folder through the native chooser, which shows
+/// `title`. The error is the answer to send: 409 while another chooser is
+/// open, 204 when the person cancels.
 #[allow(clippy::result_large_err)]
-pub(super) async fn choose_root(inner: &Inner) -> Result<PathBuf, Reply> {
+pub(super) async fn choose_root(inner: &Inner, title: &str) -> Result<PathBuf, Reply> {
     let Ok(_dialog) = inner.folder_dialog.try_lock() else {
         return Err(write_json(
             409,
             &json!({"error": "A folder chooser is already open on this computer."}),
         ));
     };
-    match crate::local::folder::choose_project_directory().await {
+    match crate::local::folder::choose_directory_with_title(title).await {
         Ok(root) => Ok(root),
         Err(error) if error == crate::local::folder::CANCELLED => Err(plain_empty(204)),
         Err(error) => Err(write_json(400, &json!({"error": error}))),
@@ -1077,7 +1077,7 @@ pub(super) async fn handle_open(
     if let Err(response) = authenticate(inner, headers, origin) {
         return response;
     }
-    let root = match choose_root(inner).await {
+    let root = match choose_root(inner, "Open a folder as a LibrePaper project").await {
         Ok(root) => root,
         Err(response) => return response,
     };
