@@ -393,13 +393,15 @@ console.log("reader-races: all checks passed");
   const active = { files,
     directoryChanged: (events) => !Array.isArray(events) || events.some((event) => directory.has(event.target)) };
   let targets = 0;
-  const ctx = context({ session: active, needsSourceRefresh, refreshFiles: () => refreshes++, sourceChanged: () => changes++, scheduleTargetUpdate: () => targets++ });
+  let pokes = 0;
+  const ctx = context({ session: active, needsSourceRefresh, refreshFiles: () => refreshes++, sourceChanged: () => changes++, scheduleTargetUpdate: () => targets++, folderSync: { poke: () => pokes++ } });
   vm.runInContext(body("  function filesChanged(events, active = session)", "  function refreshPeers()"), ctx);
   ctx.events = [{ target: "cid:2@1:Text" }];
   vm.runInContext("filesChanged(events)", ctx);
   assert.equal(refreshes, 0, "an edit inside a file does not rebuild the directory");
   assert.equal(changes, 1, "but it does repaint the preview");
   assert.equal(targets, 1, "and it asks for the preview target to be worked out again");
+  assert.equal(pokes, 1, "and it tells the project folder to catch up");
   ctx.events = [{ target: openText.id }];
   vm.runInContext("filesChanged(events)", ctx);
   assert.equal(changes, 2, "an edit to the open file is heard here too, since no watcher is bound to it");
