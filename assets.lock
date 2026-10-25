@@ -17,8 +17,8 @@ markdown.wasm        wasm-markdown       v0.1.1    c701483e38f9da1691e752be48c82
 bibliography.wasm    wasm-bibliography   v0.1.2    429a884eb6c59ec2ac7534e33662722d3d7eef0db39d4651dada113be7ae6c8e
 citations.wasm       wasm-bibliography   v0.1.2    87a4d8eb88027eec485a7794f80d0a040e05f7ea4b6e4afa21b4d6ba73e8bc0d
 typst.wasm           wasm-typst          v0.4.0    6556bc5d0bd83ec205f77ddeb6078c2a1fe707112d97cf0146cdc0b5e146a027
-pandoc.wasm          wasm-pandoc         v3.12.1   784497e55d1f23eb8bb5e21633cb76e6503360fede48536cad64a911fb623bbc
-harper.wasm          wasm-harper         v2.13.0   c82d8d7b2643085baba410d12e61a62abfdc694afa8eb896030f99933dd58cbb
+pandoc.wasm          wasm-upstream       v1.0.0    784497e55d1f23eb8bb5e21633cb76e6503360fede48536cad64a911fb623bbc
+harper.wasm          wasm-upstream       v1.0.0    c82d8d7b2643085baba410d12e61a62abfdc694afa8eb896030f99933dd58cbb
 jetbrains-mono.woff2           editor-fonts        v1.0.0    a9cb1cd82332b23a47e3a1239d25d13c86d16c4220695e34b243effa999f45f2
 jetbrains-mono-italic.woff2    editor-fonts        v1.0.0    cb6a1b246318ed3885d7dffa14a2609297fe80e9b8e500bea33b52fa312a36a4
 jetbrains-mono-semibold.woff2  editor-fonts        v1.0.0    918edad542a1da608fd2ba8daebaff9ac802309103fe760eed465b8b4e47faf1
