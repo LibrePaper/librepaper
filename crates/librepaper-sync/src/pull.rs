@@ -197,11 +197,24 @@ async fn pull_repository(
     let found = discover(client, &slug, state.pulled).await?;
     let nothing_new = found.versions.is_empty() && !found.from_head;
     let pending = state.fetched.is_some();
+    // A trim is said even when the project holds what the chain already has,
+    // so the person knows the versions between are gone.
+    let unchanged = |trimmed: bool| {
+        if trimmed {
+            PullOutcome::Repository {
+                versions: Vec::new(),
+                merge: MergeOutcome::Skipped,
+                trimmed: true,
+            }
+        } else {
+            PullOutcome::UpToDate
+        }
+    };
     if nothing_new && !(pending && options.merge) {
         if settled {
             store.save(&state)?;
         }
-        return Ok(PullOutcome::UpToDate);
+        return Ok(unchanged(found.trimmed));
     }
 
     // A tree with uncommitted changes refuses before anything is fetched.
@@ -227,7 +240,7 @@ async fn pull_repository(
             if settled {
                 store.save(&state)?;
             }
-            return Ok(PullOutcome::UpToDate);
+            return Ok(unchanged(found.trimmed));
         }
     }
     // Saved before git merges, so a merge that stops for a person is not
