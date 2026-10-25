@@ -49,7 +49,7 @@ WEB_BUILD := web/bun.lock web/tools/vendor-katex.mjs web/tools/compress-shell.mj
 WEB     := $(shell find web/src web/public -type f -not -path 'web/src/site/*') $(wildcard web/pages/*.html web/package.json web/vite.config.js web/vite.frame.config.js) $(WEB_BUILD)
 SOURCES := $(shell find crates -type f -not -path '*/target/*') $(shell find docs/examples -type f) Cargo.toml Cargo.lock .cargo/config.toml assets.lock
 
-.PHONY: help build install desktop test test-rust git-test sync-test check fmt serve demo demo-run demo-checkout demo-stop demo-wipe demo-desktop demo-desktop-checkout wipe kill clean snapshot web pins site site-serve
+.PHONY: help build install desktop test test-rust sync-test check fmt serve demo demo-run demo-checkout demo-stop demo-wipe demo-desktop demo-desktop-checkout wipe kill clean snapshot web pins site site-serve
 
 help:  ## Display this help screen
 	@printf "\033[1mAvailable commands:\033[0m\n\n"
@@ -127,15 +127,8 @@ check: test  ## Run the test suite, the browser components and the reader smoke 
 	@tools/test/suite browser
 	@tools/test/suite smoke
 
-# Not part of `test`: the Git sync end-to-end tests need Docker and take a few
-# minutes. LIBREPAPER_GIT_FUZZ_SEEDS=50 makes the random walk a deep sweep.
-git-test:  ## Run the Git sync end-to-end and randomized tests against a throwaway PostgreSQL
-	@cargo build -p librepaper
-	@# The binary cargo just built, wherever CARGO_TARGET_DIR puts it.
-	@LIBREPAPER_TEST_BINARY="$${LIBREPAPER_TEST_BINARY:-$(abspath $(or $(CARGO_TARGET_DIR),target))/debug/librepaper}" tools/dev/db git-test
-
-# Not part of `test` either: it needs Docker. It drives the built binary, so the
-# binary is built first.
+# Not part of `test`: it needs Docker. It drives the built binary, so the
+# binary is built first, wherever CARGO_TARGET_DIR puts it.
 sync-test:  ## Run the librepaper push and pull end-to-end test against a throwaway PostgreSQL
 	@cargo build -p librepaper
 	@LIBREPAPER_TEST_BINARY="$${LIBREPAPER_TEST_BINARY:-$(abspath $(or $(CARGO_TARGET_DIR),target))/debug/librepaper}" tools/dev/db sync-test

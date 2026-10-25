@@ -610,7 +610,11 @@ fn folder_name(root: &Path) -> String {
 
 /// The project binding `id` of `origin`, with its folder present.
 #[allow(clippy::result_large_err)]
-fn open_binding(inner: &Inner, origin: Option<&str>, id: &str) -> Result<ProjectBinding, Reply> {
+pub(super) fn open_binding(
+    inner: &Inner,
+    origin: Option<&str>,
+    id: &str,
+) -> Result<ProjectBinding, Reply> {
     let Some(binding) = inner.bindings.get_project(id, origin.unwrap_or_default()) else {
         return Err(write_json(404, &json!({"error": "no such folder project"})));
     };
@@ -623,6 +627,35 @@ fn open_binding(inner: &Inner, origin: Option<&str>, id: &str) -> Result<Project
     Ok(binding)
 }
 
+/// Asks the person for a folder through the native chooser. The error is the
+/// answer to send: 409 while another chooser is open, 204 when the person
+/// cancels.
+#[allow(clippy::result_large_err)]
+pub(super) async fn choose_root(inner: &Inner) -> Result<PathBuf, Reply> {
+    let Ok(_dialog) = inner.folder_dialog.try_lock() else {
+        return Err(write_json(
+            409,
+            &json!({"error": "A folder chooser is already open on this computer."}),
+        ));
+    };
+    match crate::local::folder::choose_project_directory().await {
+        Ok(root) => Ok(root),
+        Err(error) if error == crate::local::folder::CANCELLED => Err(plain_empty(204)),
+        Err(error) => Err(write_json(400, &json!({"error": error}))),
+    }
+}
+
+/// What opening a folder answers with.
+pub(super) fn opened(binding: &ProjectBinding) -> Value {
+    let name = folder_name(&binding.root);
+    json!({
+        "id": binding.id,
+        "project": binding.project,
+        "name": name,
+        "root_name": name,
+    })
+}
+
 pub(super) async fn handle_open(
     inner: &Arc<Inner>,
     headers: &HeaderMap,
@@ -631,33 +664,15 @@ pub(super) async fn handle_open(
     if let Err(response) = authenticate(inner, headers, origin) {
         return response;
     }
-    let Ok(_dialog) = inner.folder_dialog.try_lock() else {
-        return write_json(
-            409,
-            &json!({"error": "A folder chooser is already open on this computer."}),
-        );
-    };
-    let root = match crate::local::folder::choose_project_directory().await {
+    let root = match choose_root(inner).await {
         Ok(root) => root,
-        Err(error) if error == crate::local::folder::CANCELLED => return plain_empty(204),
-        Err(error) => return write_json(400, &json!({"error": error})),
+        Err(response) => return response,
     };
     match inner
         .bindings
         .open_project(origin.unwrap_or_default(), &root)
     {
-        Ok(binding) => {
-            let name = folder_name(&binding.root);
-            write_json(
-                200,
-                &json!({
-                    "id": binding.id,
-                    "project": binding.project,
-                    "name": name,
-                    "root_name": name,
-                }),
-            )
-        }
+        Ok(binding) => write_json(200, &opened(&binding)),
         Err(error) => write_json(400, &json!({"error": error})),
     }
 }

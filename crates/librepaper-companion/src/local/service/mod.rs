@@ -44,7 +44,6 @@ use crate::local::store;
 
 mod backups;
 mod control;
-mod git;
 
 pub(crate) fn control_token_for_instance(state_home: &Path, instance: &str) -> Option<String> {
     control::token_for_instance(state_home, instance)
@@ -60,6 +59,7 @@ pub(crate) fn normalized_server(raw: &str) -> Result<String, String> {
 
 mod jobs;
 mod projects;
+mod sync;
 
 pub(super) type Reply = Response<Body>;
 
@@ -320,8 +320,6 @@ pub(super) struct Inner {
     pub(super) state_home: PathBuf,
     folder_dialog: Mutex<()>,
     backups: Arc<backups::BackupManager>,
-    /// The private Git repositories behind desktop Git sync.
-    git: crate::local::git::GitManager,
     instance: String,
     port: u16,
     bindings: BindingStore,
@@ -343,6 +341,8 @@ pub(super) struct Inner {
     admission: Mutex<()>,
     /// The change pollers of the folder projects being edited.
     projects: projects::Registry,
+    /// The sign-ins of folder projects waiting for their code to be approved.
+    sync_logins: sync::Logins,
 }
 
 /// The running local service: owns the job table and the background worker
@@ -386,7 +386,6 @@ impl LocalService {
             state_home: state_home.to_path_buf(),
             folder_dialog: Mutex::new(()),
             backups: Arc::new(backups::BackupManager::new(state_home)),
-            git: crate::local::git::GitManager::new(state_home),
             instance,
             port,
             bindings,
@@ -401,6 +400,7 @@ impl LocalService {
             control,
             admission: Mutex::new(()),
             projects: projects::Registry::new(projects::Timing::default()),
+            sync_logins: sync::Logins::new(),
         });
         tokio::spawn(run_worker(inner.clone()));
         tokio::spawn(run_reaper(inner.clone()));
@@ -605,9 +605,6 @@ async fn dispatch(
         ["backups", "authorize", "complete"] if *method == Method::POST => {
             backups::handle_authorize_complete(inner, headers, origin, request).await
         }
-        ["git", op] if *method == Method::POST => {
-            git::handle(inner, headers, origin, op, request).await
-        }
         // Connecting an agent. Reading what is installed is a GET; every
         // route that acts on a document credential is a POST.
         ["agents"] if *method == Method::GET => handle_agents_list(inner, headers, origin).await,
@@ -641,6 +638,9 @@ async fn dispatch(
         ["projects", "open"] if *method == Method::POST => {
             projects::handle_open(inner, headers, origin).await
         }
+        ["projects", "keep"] if *method == Method::POST => {
+            sync::handle_keep(inner, headers, origin, request).await
+        }
         ["projects"] if *method == Method::GET => {
             projects::handle_list(inner, headers, origin).await
         }
@@ -660,6 +660,30 @@ async fn dispatch(
         }
         ["projects", id, "changes"] if *method == Method::GET => {
             projects::handle_changes(inner, headers, origin, id, request).await
+        }
+        ["projects", id, "sync"] if *method == Method::GET => {
+            sync::handle_status(inner, headers, origin, id).await
+        }
+        ["projects", id, "sync", "login"] if *method == Method::POST => {
+            sync::handle_login(inner, headers, origin, id, request).await
+        }
+        ["projects", id, "sync", "login", "complete"] if *method == Method::POST => {
+            sync::handle_login_complete(inner, headers, origin, id, request).await
+        }
+        ["projects", id, "sync", "link"] if *method == Method::POST => {
+            sync::handle_link(inner, headers, origin, id, request).await
+        }
+        ["projects", id, "sync", "publish"] if *method == Method::POST => {
+            sync::handle_publish(inner, headers, origin, id, request).await
+        }
+        ["projects", id, "sync", "unlink"] if *method == Method::POST => {
+            sync::handle_unlink(inner, headers, origin, id).await
+        }
+        ["projects", id, "sync", "pull"] if *method == Method::POST => {
+            sync::handle_pull(inner, headers, origin, id, request).await
+        }
+        ["projects", id, "sync", "push"] if *method == Method::POST => {
+            sync::handle_push(inner, headers, origin, id, request).await
         }
         ["folder"] if *method == Method::PUT => {
             jobs::handle_folder_put(inner, headers, origin, request).await
@@ -1151,7 +1175,6 @@ pub(super) mod test_support {
             state_home: state_home.to_path_buf(),
             folder_dialog: Mutex::new(()),
             backups: Arc::new(backups::BackupManager::new(state_home)),
-            git: crate::local::git::GitManager::new(state_home),
             control: control::ControlAuth::create(state_home, &instance).unwrap(),
             instance,
             port: PORT,
@@ -1166,6 +1189,7 @@ pub(super) mod test_support {
             ),
             admission: Mutex::new(()),
             projects: projects::Registry::new(projects::Timing::default()),
+            sync_logins: sync::Logins::new(),
         })
     }
 
