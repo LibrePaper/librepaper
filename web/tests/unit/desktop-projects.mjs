@@ -1,7 +1,7 @@
 // The landing page's folder-project calls, using the production client and fake HTTP.
 import assert from "node:assert/strict";
 import * as client from "../../src/lib/desktop/client.js";
-import { openFolderProject, folderProjects, forgetFolderProject } from "../../src/lib/desktop/projects.js";
+import { cloneRepository, openFolderProject, folderProjects, forgetFolderProject } from "../../src/lib/desktop/projects.js";
 
 globalThis.window = { __LIBREPAPER_DESKTOP__: { base: "lp-local://localhost/", version: "test" } };
 client._testing.reset();
@@ -11,7 +11,7 @@ function response(status, body) {
 }
 const calls = [];
 let answer;
-client._testing.inject({ fetch: async (url, init = {}) => { calls.push({ url, method: init.method }); return answer(); } });
+client._testing.inject({ fetch: async (url, init = {}) => { calls.push({ url, method: init.method, body: init.body ? JSON.parse(init.body) : undefined }); return answer(); } });
 
 answer = () => response(200, { id: "f1", project: "local-f1", name: "thesis", root_name: "thesis" });
 assert.deepEqual(await openFolderProject(), { id: "f1", project: "local-f1", name: "thesis", root_name: "thesis" });
@@ -34,3 +34,16 @@ answer = () => response(204, null);
 await forgetFolderProject("f1");
 assert.equal(calls.at(-1).method, "DELETE");
 assert.ok(calls.at(-1).url.endsWith("projects/f1"));
+
+// Cloning sends the address, and answers like opening a folder; 204 is a cancelled chooser.
+answer = () => response(200, { id: "f2", project: "local-f2", name: "paper", root_name: "paper" });
+assert.deepEqual(await cloneRepository("https://github.com/you/paper.git"), { id: "f2", project: "local-f2", name: "paper", root_name: "paper" });
+assert.equal(calls.at(-1).method, "POST");
+assert.ok(calls.at(-1).url.endsWith("projects/clone"));
+assert.deepEqual(calls.at(-1).body, { url: "https://github.com/you/paper.git" });
+
+answer = () => response(204, null);
+assert.equal(await cloneRepository("git@github.com:you/paper.git"), null);
+
+answer = () => response(409, { error: "That folder already exists." });
+await assert.rejects(cloneRepository("https://github.com/you/paper.git"), (error) => error.status === 409 && /already exists/.test(error.message));
