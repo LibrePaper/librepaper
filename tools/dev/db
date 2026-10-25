@@ -30,6 +30,7 @@ Commands:
   wipe               Drop and recreate the dev database
   test               Run PostgreSQL-gated tests in a throwaway container
   git-test           Run the Git sync end-to-end and randomized tests in a throwaway container
+  sync-test          Run the librepaper push and pull end-to-end test in a throwaway container
   sqlx-check         Fail if crates/librepaper-engine/.sqlx/ no longer matches the queries in the tree
   sqlx-prepare       Regenerate crates/librepaper-engine/.sqlx/ after changing any query or migration
   help               Show this help text
@@ -175,19 +176,34 @@ cmd_test() {
     cargo test -p librepaper --test admin_pg_environment -- --ignored --test-threads=1
 }
 
-# Run the Git sync end-to-end tests, the hand-written scenarios and the seeded
-# random walk, against a throwaway container. They need a built librepaper
-# binary (make git-test builds it) and git 2.38 or later. psql runs inside the
-# container, so the host needs no PostgreSQL client. The random walk reads
-# LIBREPAPER_GIT_FUZZ_SEED, LIBREPAPER_GIT_FUZZ_SEEDS and LIBREPAPER_GIT_FUZZ_ROUNDS.
-cmd_git_test() {
+# Run the Node end-to-end tests that start a real `librepaper admin serve`
+# against a throwaway container. They need a built librepaper binary (make
+# git-test and make sync-test build it) and git 2.38 or later. psql runs inside
+# the container, so the host needs no PostgreSQL client. The first argument
+# names the container; the rest are the test files, run one at a time.
+run_node_end_to_end() {
+    local name="$1"
+    shift
     trap postgres_stop_disposable EXIT
-    postgres_start_disposable "librepaper-git-test-pg-$$" test
+    postgres_start_disposable "librepaper-$name-test-pg-$$" test
 
     export LIBREPAPER_TEST_POSTGRES_URL="postgresql://postgres:test@127.0.0.1:$POSTGRES_PORT/postgres"
     export LIBREPAPER_TEST_PSQL="docker exec -i $POSTGRES_CONTAINER psql"
     export LIBREPAPER_TEST_PSQL_URL="postgresql://postgres:test@127.0.0.1:5432/postgres"
-    cd web && node --test --test-concurrency=1 tests/integration/git-sync.mjs tests/integration/git-sync-fuzz.mjs
+    cd web && node --test --test-concurrency=1 "$@"
+}
+
+# The Git sync end-to-end tests, the hand-written scenarios and the seeded
+# random walk. The random walk reads LIBREPAPER_GIT_FUZZ_SEED,
+# LIBREPAPER_GIT_FUZZ_SEEDS and LIBREPAPER_GIT_FUZZ_ROUNDS.
+cmd_git_test() {
+    run_node_end_to_end git tests/integration/git-sync.mjs tests/integration/git-sync-fuzz.mjs
+}
+
+# The librepaper push and pull commands against a real server: publish, pull,
+# refusals, figures, trim, a cut connection and a folder without git.
+cmd_sync_test() {
+    run_node_end_to_end sync tests/integration/sync-cli.mjs
 }
 
 # Main dispatcher.
@@ -209,6 +225,9 @@ main() {
             ;;
         git-test)
             cmd_git_test
+            ;;
+        sync-test)
+            cmd_sync_test
             ;;
         sqlx-check)
             cmd_sqlx_check
