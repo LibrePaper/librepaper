@@ -2580,11 +2580,16 @@
     }
   }
 
+  // Whether the desktop app builds exports with the command for this format:
+  // the same facts the preview routes a job by, so the menu offers what the
+  // export makes. The browser route is taken for any file it has no command for.
+  const exportsLocally = $derived(localExecution && hasDesktop && mayEdit && buildPreferences.backend === "local");
+
   // Which exports the File menu can honour, for the file being previewed.
   const exportable = $derived({
-    pdf: exportAvailability(displayedFormat, "pdf"),
-    html: exportAvailability(displayedFormat, "html"),
-    docx: exportAvailability(displayedFormat, "docx"),
+    pdf: exportAvailability(displayedFormat, "pdf", { local: exportsLocally }),
+    html: exportAvailability(displayedFormat, "html", { local: exportsLocally }),
+    docx: exportAvailability(displayedFormat, "docx", { local: exportsLocally }),
   });
 
   const docxDownload = $derived(renderState.docxArtifact && renderState.docxArtifact.source === sourceGeneration && renderState.docxArtifact.navigation === navigationGeneration ? renderState.docxArtifact : null);
@@ -2618,7 +2623,7 @@
       const tree = capturePreviewTree(treeNow());
       const format = displayedFormat;
       const preview = framePreview.preview();
-      const local = localExecution && hasDesktop && mayEdit && buildPreferences.backend === "local";
+      const local = exportsLocally;
       if (Object.keys(tree.digests || {}).length) {
         const { held, missing } = await gatherFigures(tree.digests);
         if (target !== "html" && missing.length) {
