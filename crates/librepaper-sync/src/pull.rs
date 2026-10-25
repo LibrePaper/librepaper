@@ -1003,6 +1003,41 @@ mod tests {
         assert_eq!(plan.skipped, ["build/out.tex", "latin.tex"]);
     }
 
+    #[cfg(unix)]
+    #[test]
+    fn a_web_change_under_an_unreadable_directory_is_not_written() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        std::fs::create_dir_all(root.join("locked")).unwrap();
+        std::fs::write(root.join("locked/inner.tex"), "mine\n").unwrap();
+        std::fs::write(root.join("main.tex"), "main\n").unwrap();
+        let recorded = files(&[("locked/inner.tex", "1"), ("locked/gone.tex", "1")]);
+        // Changed on the web, deleted on the web, and new on the web.
+        let web = files(&[("locked/inner.tex", "2"), ("locked/new.tex", "1")]);
+        let Some(_locked) = crate::walk::testing::lock(&root.join("locked")) else {
+            return;
+        };
+        let here = scan(root, &Rules::default(), None).unwrap();
+        assert!(here.files.keys().all(|path| path == "main.tex"));
+        let excluded = here.left_out(root, web.keys());
+        assert_eq!(
+            excluded.iter().map(String::as_str).collect::<Vec<_>>(),
+            ["locked/inner.tex", "locked/new.tex"]
+        );
+        let local: BTreeMap<String, String> = here
+            .files
+            .iter()
+            .map(|(path, file)| (path.clone(), file.sha.clone()))
+            .collect();
+
+        for theirs in [Vec::new(), vec!["locked/inner.tex".to_string()]] {
+            let plan = reconcile(&recorded, &local, &web, &excluded, &[], &theirs);
+            assert!(plan.apply.is_empty(), "nothing is written or trashed");
+            assert!(plan.conflicts.is_empty());
+            assert_eq!(plan.skipped, ["locked/inner.tex", "locked/new.tex"]);
+        }
+    }
+
     #[test]
     fn a_snapshot_loses_the_paths_the_working_tree_keeps_out_of_the_sync() {
         let dir = tempfile::tempdir().unwrap();
