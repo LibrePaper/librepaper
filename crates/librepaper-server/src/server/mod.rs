@@ -95,7 +95,7 @@ mod signin;
 #[cfg(test)]
 mod signin_http_tests;
 mod socket;
-mod sync_link;
+mod source_change;
 pub use librepaper_base::config::socket_budget;
 #[cfg(test)]
 mod trim_http_tests;

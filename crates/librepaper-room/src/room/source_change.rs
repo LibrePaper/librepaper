@@ -48,7 +48,8 @@ pub enum Origin {
     /// An agent: bounded in size and count, recorded as `agent-patch`.
     Agent,
     /// A sync provider: no limits of its own, checked against the projection
-    /// a person sees, recorded under the provider's name.
+    /// a person sees. The command line's push is `cli`, recorded as `push`;
+    /// any other provider is recorded under its own name.
     Sync { provider: String },
 }
 
@@ -57,6 +58,7 @@ impl Origin {
     fn reason(&self) -> String {
         match self {
             Self::Agent => "agent-patch".to_string(),
+            Self::Sync { provider } if provider == "cli" => "push".to_string(),
             Self::Sync { provider } => provider.clone(),
         }
     }
@@ -168,6 +170,14 @@ pub struct SourceChange {
     /// alter the request identity through JSON fields.
     #[serde(skip)]
     pub request_digest: String,
+    /// The name a sync push gives the label it writes. Set by the endpoint
+    /// from the request's sync block, never read from the change itself.
+    #[serde(skip)]
+    pub message: Option<String>,
+    /// Who the label names instead of the caller, when the push says so. The
+    /// account behind the credential is recorded either way.
+    #[serde(skip)]
+    pub author: Option<String>,
 }
 
 impl SourceChange {
@@ -191,6 +201,20 @@ pub struct AgentReceipt {
     pub tree_digest_before: String,
     pub tree_digest_after: String,
     pub replay: bool,
+    /// The label the change wrote, or the one its first attempt wrote when
+    /// this is a replay. A route that answers with it says so; it is not part
+    /// of the receipt an agent tool returns.
+    #[serde(skip)]
+    pub label: Option<ReceiptLabel>,
+}
+
+/// The label a change wrote, as a caller names it.
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+pub struct ReceiptLabel {
+    /// The label's id, which `GET .../history/{sha}` reads.
+    pub sha: Uuid,
+    pub sequence: i64,
+    pub tree_sha: String,
 }
 
 /// Everything a change has to satisfy against the tree it names, and nothing
@@ -522,8 +546,6 @@ pub enum AgentError {
     Changed(Vec<String>),
     #[error("a pending suggestion is in the way in {path}")]
     Suggestion { path: String, change: String },
-    #[error("sync record refused: {0}")]
-    Hook(String),
 }
 
 impl From<CommandError> for AgentError {
@@ -686,16 +708,6 @@ pub(crate) fn parse_digest(hex_digest: &str) -> Option<[u8; 32]> {
     bytes.try_into().ok()
 }
 
-/// A write the route makes in the transaction that records the change: after
-/// the label is inserted and before the commit. An error rolls the whole
-/// transaction back. It does not run when the request is a replay.
-pub type TransactHook = Box<
-    dyn for<'t> FnOnce(
-            &'t mut sqlx::PgConnection,
-        ) -> futures_util::future::BoxFuture<'t, Result<(), String>>
-        + Send,
->;
-
 /// One source change, run as a semantic command (§7). `evaluate` rebuilds the
 /// tree from head and checks it against the change; `transact` records the
 /// idempotency row that makes a retry of the same request answer without
@@ -709,7 +721,6 @@ struct SourceChangeCommand<'a> {
     author_account_id: Option<Uuid>,
     author_label: String,
     operation_receipt: Option<librepaper_engine::storage::postgres::OperationReceipt>,
-    hook: Option<TransactHook>,
     /// The structured reason a command refused, kept here because `evaluate`
     /// and `transact` can only return a conflict string.
     refusal: Option<AgentError>,
@@ -792,8 +803,8 @@ impl SourceChangeCommand<'_> {
             patch.start = start;
             patch.end = end;
         }
-        // An empty change still runs the transaction, so the hook can record a
-        // baseline.
+        // An empty change still runs the transaction, so its label names the
+        // head as it stands.
         if stored.is_empty() {
             return Ok(None);
         }
@@ -869,19 +880,33 @@ impl Command for SourceChangeCommand<'_> {
                             .clone()
                             .unwrap_or_else(|| evidence.before_frontier.clone()),
                         tree_digest: parse_digest(&after_digest),
-                        label: None,
+                        label: self.change.message.clone(),
                         reason: self.origin.reason(),
                         request_id: Some(self.request_id),
                         author_account_id: self.author_account_id,
-                        author_label: self.author_label.clone(),
+                        author_label: self
+                            .change
+                            .author
+                            .clone()
+                            .unwrap_or_else(|| self.author_label.clone()),
                     },
                 )
                 .await?;
+            let tree_digest_after = label
+                .tree_digest
+                .as_ref()
+                .map(hex::encode)
+                .unwrap_or(after_digest);
             let receipt = AgentReceipt {
                 operation: self.change.operation.clone(),
                 status: "committed".into(),
                 tree_digest_before: evidence.before_digest.clone(),
-                tree_digest_after: label.tree_digest.map(hex::encode).unwrap_or(after_digest),
+                label: Some(ReceiptLabel {
+                    sha: label.id,
+                    sequence: label.sequence,
+                    tree_sha: tree_digest_after.clone(),
+                }),
+                tree_digest_after,
                 replay: false,
             };
             if let Some(operation_receipt) = &self.operation_receipt {
@@ -895,12 +920,6 @@ impl Command for SourceChangeCommand<'_> {
                 });
                 PostgresCatalog::record_operation_outcome(tx, operation_receipt, &outcome).await?;
             }
-            if let Some(hook) = self.hook.take() {
-                if let Err(why) = hook(tx).await {
-                    self.refusal = Some(AgentError::Hook(why.clone()));
-                    return Err(CommandError::Conflict(why));
-                }
-            }
             Ok(receipt)
         })
     }
@@ -910,10 +929,9 @@ impl Command for SourceChangeCommand<'_> {
 /// own in [`CommandError`].
 fn to_conflict(error: &AgentError) -> String {
     match error {
-        AgentError::Conflict(why)
-        | AgentError::Invalid(why)
-        | AgentError::Storage(why)
-        | AgentError::Hook(why) => why.clone(),
+        AgentError::Conflict(why) | AgentError::Invalid(why) | AgentError::Storage(why) => {
+            why.clone()
+        }
         other => other.to_string(),
     }
 }
@@ -944,6 +962,11 @@ pub(crate) async fn label_for_request(
 }
 
 fn receipt_from_label(change: &SourceChange, label: &LabelRecord) -> AgentReceipt {
+    let tree_digest_after = label
+        .tree_digest
+        .as_ref()
+        .map(hex::encode)
+        .unwrap_or_default();
     AgentReceipt {
         operation: change.operation.clone(),
         status: "committed".into(),
@@ -952,18 +975,18 @@ fn receipt_from_label(change: &SourceChange, label: &LabelRecord) -> AgentReceip
         // caller already knows what it sent as `base_tree`; this is here so
         // the shape of a replayed receipt matches a fresh one.
         tree_digest_before: String::new(),
-        tree_digest_after: label
-            .tree_digest
-            .as_ref()
-            .map(hex::encode)
-            .unwrap_or_default(),
+        tree_digest_after: tree_digest_after.clone(),
         replay: true,
+        label: Some(ReceiptLabel {
+            sha: label.id,
+            sequence: label.sequence,
+            tree_sha: tree_digest_after,
+        }),
     }
 }
 
 impl Room {
-    /// Applies a source change as one command. `hook`, when given, writes the
-    /// caller's own row in the same transaction.
+    /// Applies a source change as one command.
     pub async fn apply_source_change<F, Fut>(
         &self,
         change: SourceChange,
@@ -971,7 +994,6 @@ impl Room {
         authority: AgentAuthority,
         operation_receipt: Option<librepaper_engine::storage::postgres::OperationReceipt>,
         recheck: F,
-        hook: Option<TransactHook>,
     ) -> Result<AgentReceipt, AgentError>
     where
         F: FnOnce() -> Fut,
@@ -1014,7 +1036,6 @@ impl Room {
             author_account_id: document_authority.account_id,
             author_label: authority.author_key.clone(),
             operation_receipt,
-            hook,
             refusal: None,
         };
 
@@ -1660,5 +1681,15 @@ mod tests {
             anchors::status_of(&doc, &found[0]),
             anchors::Status::Deleted
         );
+    }
+
+    #[test]
+    fn a_cli_push_is_recorded_as_a_push() {
+        let cli = Origin::Sync {
+            provider: "cli".into(),
+        };
+        assert_eq!(cli.reason(), "push");
+        assert_eq!(sync().reason(), "github");
+        assert_eq!(Origin::Agent.reason(), "agent-patch");
     }
 }

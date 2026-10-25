@@ -22,7 +22,6 @@ mod meter;
 mod moderation;
 mod operation_outcomes;
 mod ownership;
-mod sync_links;
 pub use operation_outcomes::OperationReceipt;
 mod persistence;
 pub use persistence::PersistenceConnection;
@@ -52,7 +51,6 @@ pub use ownership::WriterLease;
 pub use repository::{
     AccountRecord, AssetRecord, DocumentRecord, DocumentStorage, NewAccount, NewAsset, NewDocument,
 };
-pub use sync_links::{SyncLink, SyncLinkWrite};
 pub use tags::{built_in_refusal, DocumentTagRecord, TagRecord, FAVORITES_COLOUR, FAVORITES_NAME};
 
 static MIGRATOR: sqlx::migrate::Migrator = sqlx::migrate!("./migrations/postgres");
