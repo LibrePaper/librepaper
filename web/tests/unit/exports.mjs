@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { EXPORT_TARGETS, exportAvailability, exportFile, unrunCells } from "../../src/lib/reader/exports.js";
+import { EXPORT_TARGETS, exportAvailability, exportFile, madeLocally, unrunCells } from "../../src/lib/reader/exports.js";
 
 const all = (...formats) => (format) => formats.includes(format);
 
@@ -34,6 +34,53 @@ const all = (...formats) => (format) => formats.includes(format);
   const reason = exportAvailability("typst", "pdf", { pandoc: true, compiler: all() }).reason;
   assert.equal(typeof reason, "string");
   assert.equal(exportAvailability("latex", "rtf", rich).ok, false);
+}
+
+// A format that renders on this computer offers the files its command makes, whatever this browser can render.
+{
+  // A deployment with no browser LaTeX, and Pandoc.
+  const noLatex = { pandoc: true, compiler: all("typst", "markdown", "quarto") };
+  assert.equal(exportAvailability("latex", "pdf", noLatex).ok, false, "no browser LaTeX and no local build");
+  assert.deepEqual(exportAvailability("latex", "pdf", { ...noLatex, local: true }), { ok: true }, "the local command makes the PDF");
+  // Run code off, or the format set to the browser, is the browser rule as it was.
+  assert.equal(exportAvailability("latex", "pdf", { ...noLatex, local: false }).ok, false);
+  // The LaTeX command makes a PDF only, so the HTML page and the Word file follow the browser rule.
+  assert.equal(exportAvailability("latex", "html", { ...noLatex, local: true }).ok, false);
+  assert.equal(exportAvailability("latex", "docx", { ...noLatex, local: true }).ok, false);
+  const withLatex = { pandoc: true, compiler: all("latex", "typst", "markdown", "quarto") };
+  assert.equal(exportAvailability("latex", "html", { ...withLatex, local: true }).ok, true);
+  assert.equal(exportAvailability("latex", "docx", { ...withLatex, local: true }).ok, true);
+  assert.equal(exportAvailability("latex", "docx", { pandoc: false, compiler: all("latex"), local: true }).ok, false, "a Word file needs Pandoc when the command does not make it");
+  // Typst the same.
+  assert.equal(exportAvailability("typst", "pdf", { pandoc: true, compiler: all("latex"), local: true }).ok, true);
+  assert.equal(exportAvailability("typst", "html", { pandoc: true, compiler: all("latex"), local: true }).ok, false);
+  // Quarto has no browser engine on a deployment without one, and its commands make every output.
+  const bare = { pandoc: false, compiler: all() };
+  for (const target of EXPORT_TARGETS) {
+    assert.equal(exportAvailability("quarto", target, bare).ok, false, `quarto to ${target} in the browser`);
+    assert.deepEqual(exportAvailability("quarto", target, { ...bare, local: true }), { ok: true }, `quarto to ${target} on this computer`);
+    assert.deepEqual(exportAvailability("markdown", target, { ...bare, local: true }), { ok: true }, `markdown to ${target} on this computer`);
+  }
+  // Authored HTML has no command: its Word file and PDF follow the browser rule.
+  assert.equal(exportAvailability("html", "pdf", { ...bare, local: true }).ok, false);
+  assert.equal(exportAvailability("html", "docx", { ...bare, local: true }).ok, false);
+  assert.equal(exportAvailability("html", "html", { ...bare, local: true }).ok, true);
+  // Only what the app's table lists is made there. A command that declares more makes more.
+  const pdfOnly = { latex: ["pdf"], quarto: ["pdf"] };
+  assert.equal(exportAvailability("quarto", "html", { ...bare, local: true, outputs: pdfOnly }).ok, false);
+  assert.equal(exportAvailability("quarto", "docx", { ...bare, local: true, outputs: pdfOnly }).ok, false);
+  assert.equal(exportAvailability("quarto", "pdf", { ...bare, local: true, outputs: pdfOnly }).ok, true);
+  const withDocx = { latex: ["pdf", "docx"] };
+  assert.equal(exportAvailability("latex", "docx", { ...noLatex, local: true, outputs: withDocx }).ok, true);
+  assert.equal(exportAvailability("latex", "html", { ...noLatex, local: true, outputs: withDocx }).ok, false);
+  // Text is never exportable, even from a local build.
+  assert.equal(exportAvailability("text", "pdf", { ...bare, local: true, outputs: { text: ["pdf"] } }).ok, false);
+  // The export and the menu share one answer.
+  assert.equal(madeLocally("latex", "pdf", true), true);
+  assert.equal(madeLocally("latex", "pdf", false), false);
+  assert.equal(madeLocally("latex", "html", true), false);
+  assert.equal(madeLocally("quarto", "docx", true), true);
+  assert.equal(madeLocally("html", "pdf", true), false);
 }
 
 const pdfBytes = Uint8Array.of(37, 80, 68, 70);

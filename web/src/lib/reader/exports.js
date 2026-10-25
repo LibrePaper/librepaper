@@ -9,8 +9,9 @@
 //
 // An export follows the Run code switch, as the preview does: with it on in
 // the desktop app and the format set to this computer, a file the format has a
-// command for comes from that command, and otherwise it takes the browser
-// route, which does not run code cells.
+// command for comes from that command, even where this browser has no renderer
+// for it, and otherwise it takes the browser route, which does not run code
+// cells.
 
 import { pandocAvailable } from "../pandoc/client.js";
 import { dirOf, pandocPath, typstTree } from "../pandoc/typst.js";
@@ -35,12 +36,24 @@ export function unrunCells(format, tree) {
   return parseQuarto(source, { path: tree.main }).cells.length;
 }
 
-/// Whether `target` can be produced for source `format` in this browser.
+/// Whether the command on this computer makes `target` for `format`. `local`
+/// says the desktop app builds this document there, which is the Reader's
+/// answer to the Run code switch and the format's backend; `outputs` is the
+/// table of what each format has a command for. The menu and the export both
+/// ask this, so a file the menu offers is the file the export makes.
+export function madeLocally(format, target, local, outputs = LOCAL_OUTPUTS) {
+  return Boolean(local) && (outputs[format] || []).includes(target);
+}
+
+/// Whether `target` can be produced for source `format`.
 ///
-/// `deps.pandoc` says whether this deployment offers Pandoc, and
-/// `deps.compiler` answers whether a format has a renderer; both default to
-/// the live answers. Returns `{ ok: true }` or `{ ok: false, reason }` with
-/// one plain sentence.
+/// `deps.local` says the desktop app builds this document on this computer,
+/// and `deps.outputs` is what its commands make (default: the app's table). A
+/// file that command makes is available whatever this browser can render;
+/// every other file follows the browser rule. `deps.pandoc` says whether this
+/// deployment offers Pandoc, and `deps.compiler` answers whether a format has
+/// a renderer; both default to the live answers. Returns `{ ok: true }` or
+/// `{ ok: false, reason }` with one plain sentence.
 export function exportAvailability(format, target, deps = {}) {
   const hasPandoc = deps.pandoc ?? pandocAvailable();
   const compiler = deps.compiler ?? compilerAvailable;
@@ -48,6 +61,7 @@ export function exportAvailability(format, target, deps = {}) {
   if (!["latex", "typst", "markdown", "quarto", "html"].includes(format)) {
     return { ok: false, reason: "Only LaTeX, Typst, Markdown, Quarto and HTML documents can be exported." };
   }
+  if (madeLocally(format, target, deps.local, deps.outputs)) return { ok: true };
   const needs = (...requirements) => {
     for (const [ok, reason] of requirements) if (!ok) return { ok: false, reason };
     return { ok: true };
@@ -162,7 +176,7 @@ export async function exportFile({ target, format, tree, title, slug, project = 
     return inlineBlobUrls(result.html);
   }
 
-  if (local && (LOCAL_OUTPUTS[format] || []).includes(target)) return localFile();
+  if (madeLocally(format, target, local)) return localFile();
   if (target === "pdf") {
     return { blob: new Blob([await pdfBytes()], { type: "application/pdf" }), name: `${slug}.pdf` };
   }
