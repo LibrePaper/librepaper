@@ -3466,14 +3466,14 @@
     diskConflictOpen = true;
   }
   // `choice` is "keep", "load", or "dismiss". Dismissing keeps the editor's
-  // text for a changed file, and leaves a deleted file held.
+  // text, so a deleted file is written back rather than held unsaved.
   function answerDisk(choice) {
     const [first, ...rest] = diskConflicts;
     diskConflicts = rest;
     diskConflictOpen = rest.length > 0;
     if (!first) return;
     if (choice === "load") first.loadDisk();
-    else if (choice === "keep" || !first.deleted) first.keepMine();
+    else first.keepMine();
   }
 
   // Opens the folder behind a local project: its rules, its files, and the
