@@ -38,7 +38,7 @@ fn lists_command(help: &str, command: &str) -> bool {
 #[test]
 fn top_level_help_lists_exactly_the_public_commands() {
     let help = help_of(&["--help"]);
-    for command in ["login", "logout", "list", "export", "admin"] {
+    for command in ["login", "logout", "list", "export", "pull", "push", "admin"] {
         assert!(
             lists_command(&help, command),
             "public command {command:?} is absent from top-level help:\n{help}"

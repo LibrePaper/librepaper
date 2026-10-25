@@ -1,0 +1,36 @@
+# Sync between a working directory and a web project: the logic behind
+# `librepaper pull` and `librepaper push`. Internal to librepaper.
+[package]
+name = "librepaper-sync"
+version.workspace = true
+edition.workspace = true
+publish = false
+license.workspace = true
+repository.workspace = true
+
+[lib]
+doctest = false
+
+[dependencies]
+librepaper-base = { path = "../librepaper-base" }
+thiserror.workspace = true
+tracing.workspace = true
+tokio.workspace = true
+reqwest.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+url.workspace = true
+sha2.workspace = true
+hex.workspace = true
+# Text diffs, and the walk that honours .gitignore.
+similar.workspace = true
+ignore.workspace = true
+# Paths are compared in the form the server stores them.
+unicode-normalization.workspace = true
+# The scratch index a version commit is built in.
+tempfile.workspace = true
+# A file the web deleted goes to the operating system trash.
+trash.workspace = true
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["test-util"] }

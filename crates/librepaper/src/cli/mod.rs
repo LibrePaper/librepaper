@@ -20,13 +20,14 @@ mod documents;
 pub mod export;
 mod history;
 pub(crate) mod server_config;
+mod sync;
 mod tokens;
 
 pub use documents::*;
 pub use tokens::*;
 
 #[derive(Parser)]
-#[command(name = "librepaper", version = crate::VERSION, about = "sign in, list and export documents, and administer deployments", long_about = None, arg_required_else_help = true)]
+#[command(name = "librepaper", version = crate::VERSION, about = "sign in, list, export, pull and push documents, and administer deployments", long_about = None, arg_required_else_help = true)]
 #[command(
     after_help = "To sign in from this terminal, set the deployment and run `librepaper login`:
 
@@ -99,6 +100,16 @@ pub(crate) enum Command {
         #[command(flatten)]
         deployment: Deployment,
     },
+    /// Bring a project's named versions into a directory
+    ///
+    /// In a git repository each version becomes a commit on
+    /// refs/librepaper/main, which is then merged; elsewhere the newest
+    /// version is written into the directory.
+    Pull(sync::PullArgs),
+    /// Send a directory's changes to a project as one named version
+    ///
+    /// With --title, publish the directory as a new project instead.
+    Push(sync::PushArgs),
     // The one command the sidebar assistant's own agent spawns. Not listed,
     // because nobody types it.
     #[command(hide = true)]
@@ -349,6 +360,8 @@ async fn run(command: Command, postgres_env: Option<&server_config::PostgresEnvS
             )
             .await
         }
+        Command::Pull(args) => sync::pull(args).await,
+        Command::Push(args) => sync::push(args).await,
         Command::Mcp(args) => {
             if let Err(err) = agent::run_mcp(args).await {
                 die(err);
@@ -734,7 +747,7 @@ mod socket_policy_tests {
     #[test]
     fn help_lists_the_public_commands_and_hides_local() {
         let help = Cli::command().render_help().to_string();
-        for command in ["login", "logout", "list", "export", "admin"] {
+        for command in ["login", "logout", "list", "export", "pull", "push", "admin"] {
             assert!(help.contains(command), "missing {command} in {help}");
         }
         assert!(!help.to_lowercase().contains("companion"), "{help}");
@@ -768,6 +781,39 @@ mod socket_policy_tests {
             "abuse review",
         ]);
         assert!(complete.is_ok());
+    }
+
+    #[test]
+    fn pull_and_push_parse() {
+        let pull = Cli::try_parse_from([
+            "librepaper",
+            "pull",
+            "https://app.librepaper.org/docs/paper-abc",
+            "--dir",
+            "paper",
+            "--no-merge",
+            "--mine",
+            "a.tex",
+            "--mine",
+            "b.tex",
+            "--theirs",
+            "c.tex",
+        ]);
+        assert!(pull.is_ok());
+        assert!(Cli::try_parse_from(["librepaper", "pull"]).is_ok());
+        let push = Cli::try_parse_from([
+            "librepaper",
+            "push",
+            "--message",
+            "Edit the intro",
+            "--author",
+            "Alice",
+        ]);
+        assert!(push.is_ok());
+        let publish = Cli::try_parse_from(["librepaper", "push", "--title", "My paper"]);
+        assert!(publish.is_ok());
+        assert!(Cli::try_parse_from(["librepaper", "push", "--no-merge"]).is_err());
+        assert!(Cli::try_parse_from(["librepaper", "pull", "--message", "x"]).is_err());
     }
 
     #[test]
