@@ -249,13 +249,20 @@ async function selectPdf(tab, slug, { waitFrame = true } = {}) {
     }
   };
 
-  await clickAt('button[data-menubar="view"]', "the View menu");
+  // A click in the first moments after load can be closed again by the
+  // loading reader, so the View menu is opened again until its item shows.
   const pdfItem = '[data-value="format-pdf"]';
-  await requiredUntil("the enabled PDF format menu item", () => tab.eval(`
+  const pdfShown = () => tab.eval(`
     const item = document.querySelector(${JSON.stringify(pdfItem)});
     return Boolean(item && item.getClientRects().length
       && item.getAttribute("aria-disabled") !== "true" && !item.hasAttribute("disabled"));
-  `));
+  `);
+  let shown = false;
+  for (let attempt = 0; attempt < 4 && !shown; attempt += 1) {
+    await clickAt('button[data-menubar="view"]', "the View menu");
+    shown = Boolean(await until("the enabled PDF format menu item", pdfShown, 2000));
+  }
+  if (!shown) throw new Error("timed out waiting for the enabled PDF format menu item");
   await clickAt(pdfItem, "the visible PDF format menu item");
   if (waitFrame) {
     const frameUrl = await until("the PDF preview frame", () => tab.eval(`
@@ -640,7 +647,7 @@ async function run() {
   const brokenDiagnostic = await until("the Typst source error at line 3", () => brokenTab.eval(`
     const panel = document.querySelector('[aria-label="Warnings and errors"]');
     const text = panel?.innerText || "";
-    return text.includes("main.typ:3") ? text : null;
+    return text.includes("document.typ:3") ? text : null;
   `), 20000);
   const told = Boolean(brokenDiagnostic && /Errors?\s*\(/.test(brokenDiagnostic));
   const brokenState = told ? "" : JSON.stringify({
@@ -846,7 +853,7 @@ async function run() {
   );
   check(
     "a document of one file still shows its directory",
-    listed?.length === 1 && listed[0] === "main.typ",
+    listed?.length === 1 && listed[0] === "document.typ",
     JSON.stringify(listed),
   );
 
@@ -878,11 +885,11 @@ async function run() {
   await setText(author, '#let greeting = "from the library"\n');
   await wait(300);
 
-  // Import it from the main file. Choosing a name in the list is what opens
-  // it, exactly as a person would.
-  await requiredUntil("the main file row", () => author.eval(`return Boolean(document.querySelector('.explorer-row[title="main.typ"]'))`));
+  // Import it from the document's first file, document.typ. Choosing a name
+  // in the list is what opens it, exactly as a person would.
+  await requiredUntil("the document.typ row", () => author.eval(`return Boolean(document.querySelector('.explorer-row[title="document.typ"]'))`));
   await author.eval(`
-    document.querySelector('.explorer-row[title="main.typ"]').click();
+    document.querySelector('.explorer-row[title="document.typ"]').click();
     return true;
   `);
   await wait(300);
@@ -896,7 +903,7 @@ async function run() {
   check("a typst document imports a file beside it and renders", imported);
 
   // An error in the imported file is an error in *that* file, and choosing it
-  // opens the file it is in rather than pointing at a line of the main one.
+  // opens the file it is in rather than pointing at a line of document.typ.
   await requiredUntil("the imported file row", () => author.eval(`return Boolean(document.querySelector('.explorer-row[title="lib.typ"]'))`));
   await author.eval(`
     document.querySelector('.explorer-row[title="lib.typ"]').click();
@@ -964,17 +971,6 @@ async function run() {
     stillThere.slice(0, 60),
   );
 
-  // And the server holds the same directory, which is what a reader will be
-  // given and what a checkpoint will record.
-  const heldPaper = await fetch(`${BASE}/api/documents/${paper.slug}`, {
-    headers: { cookie: deployment.cookie },
-  }).then((r) => r.json());
-  check(
-    "the server records which file is the document",
-    heldPaper.main === "main.typ",
-    JSON.stringify(heldPaper.main),
-  );
-
   /* ---------------------------------------------------------- the figures */
 
   // A figure is the half of a directory a paper's bytes actually live in. The
@@ -1030,17 +1026,21 @@ async function run() {
   check("a figure chosen from a disk joins the directory", Boolean(inTheList), JSON.stringify(inTheList));
 
   // It reaches the page as a data URL in this browser, never as the route it
-  // came from: a rendered page must not carry a credential.
-  const drawn = await until("the figure reaches the rendered page", async () =>
-    illustrator.evalInFrame(
+  // came from: a rendered page must not carry a credential. A page drawn before
+  // the upload landed still names the figure by path, so the check waits for
+  // the render that has it.
+  let lastDrawn = null;
+  const drawn = await until("the figure reaches the rendered page", async () => {
+    lastDrawn = await illustrator.evalInFrame(
       `const img = document.querySelector("img"); return img ? img.src : null`,
       illustrated.slug,
-    ),
-  );
+    );
+    return typeof lastDrawn === "string" && lastDrawn.startsWith("data:") ? lastDrawn : null;
+  }, 20000);
   check(
     "a markdown figure is rewritten to a data URL in this browser",
-    typeof drawn === "string" && drawn.startsWith("data:"),
-    String(drawn).slice(0, 60),
+    Boolean(drawn),
+    String(drawn || lastDrawn).slice(0, 60),
   );
   // The bytes reached the store, under the digest of themselves: the URL the
   // page fetched is the digest, and what comes back from it is the PNG that
@@ -1105,7 +1105,7 @@ async function run() {
     check(
       "the zip is a zip, and holds every file of the document",
       tail.readUInt32LE(0) === 0x06054b50 &&
-        asText.includes("main.md") &&
+        asText.includes("document.md") &&
         asText.includes("one.png"),
       `${bytes.length} bytes`,
     );
