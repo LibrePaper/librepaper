@@ -32,6 +32,7 @@ pub(super) async fn handle_jobs_post(
         "job description is too large",
         "missing the job part",
         MAX_FILES,
+        MAX_JSON_BYTES,
     )
     .await
     {
@@ -192,7 +193,8 @@ pub(super) async fn handle_folder_put(
         );
     };
 
-    // A folder project may hold more files than a render job carries.
+    // A folder project may hold more files than a render job carries, and the
+    // manifest of a save names every one of them.
     let max_files = projects::MAX_PROJECT_FILES;
     let upload = match read_multipart_upload(
         request,
@@ -201,6 +203,7 @@ pub(super) async fn handle_folder_put(
         "the manifest is too large",
         "missing the manifest part",
         max_files,
+        projects::MAX_FOLDER_MANIFEST_BYTES,
     )
     .await
     {

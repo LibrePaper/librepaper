@@ -27,7 +27,7 @@ use std::time::{Duration, Instant};
 
 use axum::body::Body;
 use axum::extract::connect_info::ConnectInfo;
-use axum::extract::{FromRequest, Multipart, State};
+use axum::extract::{DefaultBodyLimit, FromRequest, Multipart, State};
 use axum::http::{HeaderMap, HeaderValue, Method, Request, Response, StatusCode};
 use axum::Router;
 use http_body_util::Limited;
@@ -409,9 +409,14 @@ impl LocalService {
     }
 
     pub fn router(&self) -> Router {
+        // `read_multipart_upload` bounds its body itself, against a ceiling
+        // that holds the files and the description part together. Axum's own
+        // default of 2 MiB must not cut an upload off before that ceiling is
+        // consulted, or no save or render could carry more than 2 MiB.
         Router::new()
             .fallback(handle)
             .with_state(self.inner.clone())
+            .layer(DefaultBodyLimit::disable())
     }
 }
 
@@ -926,6 +931,9 @@ fn stage_uploads(root: &Path, uploads: &[(String, Vec<u8>)]) -> Result<(), Strin
     Ok(())
 }
 
+/// Reads a multipart upload: the description part called `metadata_name`, at
+/// most `max_metadata_bytes` long, and the file parts, at most `max_files` of
+/// them and `MAX_UPLOAD_BYTES` together.
 #[allow(clippy::result_large_err)]
 async fn read_multipart_upload(
     request: Request<Body>,
@@ -934,6 +942,7 @@ async fn read_multipart_upload(
     metadata_size_error: &str,
     metadata_missing_error: &str,
     max_files: usize,
+    max_metadata_bytes: usize,
 ) -> Result<MultipartUpload, Reply> {
     let content_type = header_str(request.headers(), "content-type").unwrap_or_default();
     if !content_type.contains("multipart/form-data") {
@@ -942,7 +951,7 @@ async fn read_multipart_upload(
             &json!({"error": "expected a multipart upload"}),
         ));
     }
-    let ceiling = MAX_UPLOAD_BYTES + MAX_JSON_BYTES + 64 * 1024;
+    let ceiling = MAX_UPLOAD_BYTES + max_metadata_bytes + 64 * 1024;
     let (parts, body) = request.into_parts();
     let limited = Request::from_parts(parts, Body::new(Limited::new(body, ceiling)));
     let mut multipart = Multipart::from_request(limited, &())
@@ -969,7 +978,7 @@ async fn read_multipart_upload(
                     .text()
                     .await
                     .map_err(|_| write_json(400, &json!({"error": metadata_part_error})))?;
-                if text.len() > MAX_JSON_BYTES {
+                if text.len() > max_metadata_bytes {
                     return Err(write_json(413, &json!({"error": metadata_size_error})));
                 }
                 metadata = Some(text);
@@ -1414,13 +1423,13 @@ mod settings_tests {
         }
     }
 
-    /// A multipart `POST jobs` body: the job description and one file part
-    /// per project file, named by its path.
-    fn job_body(job: &Value, files: &[(&str, &[u8])]) -> Body {
+    /// A multipart body: the description under the part name `name` and one
+    /// file part per project file, named by its path.
+    fn multipart_bytes(name: &str, description: &Value, files: &[(&str, &[u8])]) -> Vec<u8> {
         let mut body = Vec::new();
         body.extend_from_slice(
             format!(
-                "--control-test\r\nContent-Disposition: form-data; name=\"job\"\r\nContent-Type: application/json\r\n\r\n{job}\r\n"
+                "--control-test\r\nContent-Disposition: form-data; name=\"{name}\"\r\nContent-Type: application/json\r\n\r\n{description}\r\n"
             )
             .as_bytes(),
         );
@@ -1435,7 +1444,13 @@ mod settings_tests {
             body.extend_from_slice(b"\r\n");
         }
         body.extend_from_slice(b"--control-test--\r\n");
-        Body::from(body)
+        body
+    }
+
+    /// A multipart `POST jobs` body: the job description and one file part
+    /// per project file, named by its path.
+    fn job_body(job: &Value, files: &[(&str, &[u8])]) -> Body {
+        Body::from(multipart_bytes("job", job, files))
     }
 
     fn job_request(body: Body) -> Request<Body> {
@@ -1465,14 +1480,9 @@ mod settings_tests {
         serde_json::from_slice(&bytes).unwrap_or(Value::Null)
     }
 
-    /// A multipart `PUT folder` body: the manifest and a file part per upload.
-    fn folder_request(
-        project: &str,
-        binding: &str,
-        files: &[(&str, &[u8])],
-        uploads: &[&str],
-    ) -> Request<Body> {
-        let manifest: Vec<Value> = files
+    /// The manifest of a `PUT folder` for `files`: path, digest and size each.
+    fn folder_manifest(files: &[(&str, &[u8])]) -> Vec<Value> {
+        files
             .iter()
             .map(|(path, bytes)| {
                 json!({
@@ -1481,21 +1491,29 @@ mod settings_tests {
                     "size": bytes.len(),
                 })
             })
-            .collect();
+            .collect()
+    }
+
+    /// A multipart `PUT folder` body: the manifest and a file part per upload.
+    fn folder_request(
+        project: &str,
+        binding: &str,
+        files: &[(&str, &[u8])],
+        uploads: &[&str],
+    ) -> Request<Body> {
         let upload: Vec<(&str, &[u8])> = files
             .iter()
             .filter(|(path, _)| uploads.contains(path))
             .copied()
             .collect();
-        let body = job_body(&json!({ "manifest": manifest }), &upload);
-        // `job_body` names the description part `job`; the folder route names it `manifest`.
-        let bytes = futures_util::FutureExt::now_or_never(axum::body::to_bytes(body, 1 << 20))
-            .unwrap()
-            .unwrap();
-        let text = String::from_utf8_lossy(&bytes).replacen("name=\"job\"", "name=\"manifest\"", 1);
+        let body = multipart_bytes(
+            "manifest",
+            &json!({ "manifest": folder_manifest(files) }),
+            &upload,
+        );
         Request::put(format!("/folder?project={project}&binding={binding}"))
             .header("content-type", "multipart/form-data; boundary=control-test")
-            .body(Body::from(text))
+            .body(Body::from(body))
             .unwrap()
     }
 
@@ -1614,6 +1632,155 @@ mod settings_tests {
         )
         .await;
         assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test]
+    async fn the_folder_route_takes_the_manifest_of_a_thousand_files() {
+        let (inner, _state_home, _cache_home) = test_inner().await;
+        let origin = "https://paper.example";
+        let folder = tempfile::tempdir().unwrap();
+        // The page read these files, so the folder holds them already and the
+        // save has no bytes to upload.
+        let names: Vec<String> = (0..1000)
+            .map(|index| format!("notes/{index:04}-{}.txt", "x".repeat(45)))
+            .collect();
+        assert!(names.iter().all(|name| name.len() == 60));
+        std::fs::create_dir_all(folder.path().join("notes")).unwrap();
+        for name in &names {
+            std::fs::write(folder.path().join(name), name.as_bytes()).unwrap();
+        }
+        let files: Vec<(&str, &[u8])> = names
+            .iter()
+            .map(|name| (name.as_str(), name.as_bytes()))
+            .collect();
+        // More than the fixed bound for JSON and well inside the folder allowance.
+        let manifest = json!({ "manifest": folder_manifest(&files) }).to_string();
+        assert!(manifest.len() > MAX_JSON_BYTES);
+        assert!(manifest.len() < projects::MAX_FOLDER_MANIFEST_BYTES);
+
+        let binding = inner.bindings.open_project(origin, folder.path()).unwrap();
+        let response = jobs::handle_folder_put(
+            &inner,
+            &bearer(&inner),
+            Some(origin),
+            folder_request(&binding.project, &binding.id, &files, &[]),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(body_json(response).await["trashed"], json!([]));
+        let kept = std::fs::read_dir(folder.path().join("notes"))
+            .unwrap()
+            .count();
+        assert_eq!(kept, 1000);
+    }
+
+    #[tokio::test]
+    async fn a_job_description_over_the_json_bound_is_still_refused() {
+        let (inner, _state_home, _cache_home) = test_inner().await;
+        let mut job = job_json("hosted", b"= Title");
+        job["padding"] = json!("x".repeat(MAX_JSON_BYTES));
+        let response = jobs::handle_jobs_post(
+            &inner,
+            &bearer(&inner),
+            Some("https://paper.example"),
+            job_request(job_body(&job, &[("main.typ", b"= Title")])),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::PAYLOAD_TOO_LARGE);
+        assert_eq!(
+            body_json(response).await["error"],
+            "job description is too large"
+        );
+    }
+
+    /// Serves the real router on a loopback port and sends it one multipart
+    /// request, as the desktop shell would. Answers the status and the whole
+    /// reply. A handler called directly never meets the layers of the router.
+    async fn over_the_wire(
+        inner: &Arc<Inner>,
+        request_line: &str,
+        body: Vec<u8>,
+    ) -> (u16, String) {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
+            .await
+            .unwrap();
+        let address = listener.local_addr().unwrap();
+        let router = LocalService {
+            inner: inner.clone(),
+        }
+        .router();
+        let server = tokio::spawn(async move {
+            let service = router.into_make_service_with_connect_info::<SocketAddr>();
+            let _ = axum::serve(listener, service).await;
+        });
+        let head = format!(
+            "{request_line} HTTP/1.1\r\nHost: 127.0.0.1:{PORT}\r\nAuthorization: Bearer {}\r\nX-LibrePaper-Origin: https://paper.example\r\nContent-Type: multipart/form-data; boundary=control-test\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+            credential(inner),
+            body.len()
+        );
+        let mut stream = tokio::net::TcpStream::connect(address).await.unwrap();
+        stream.write_all(head.as_bytes()).await.unwrap();
+        stream.write_all(&body).await.unwrap();
+        let mut answer = Vec::new();
+        // A server that closes with a reset after answering still leaves what it sent.
+        let _ = stream.read_to_end(&mut answer).await;
+        server.abort();
+        let text = String::from_utf8_lossy(&answer).into_owned();
+        let status = text
+            .split(' ')
+            .nth(1)
+            .and_then(|code| code.parse().ok())
+            .expect("a status line");
+        (status, text)
+    }
+
+    #[tokio::test]
+    async fn a_folder_save_may_carry_more_than_two_mebibytes() {
+        let (inner, _state_home, _cache_home) = test_inner().await;
+        let folder = tempfile::tempdir().unwrap();
+        let binding = inner
+            .bindings
+            .open_project("https://paper.example", folder.path())
+            .unwrap();
+        let figure = vec![7u8; 3 << 20];
+        let files: [(&str, &[u8]); 1] = [("figure.bin", &figure)];
+        let body = multipart_bytes(
+            "manifest",
+            &json!({ "manifest": folder_manifest(&files) }),
+            &files,
+        );
+        let line = format!(
+            "PUT {BASE_PATH}/folder?project={}&binding={}",
+            binding.project, binding.id
+        );
+        let (status, answer) = over_the_wire(&inner, &line, body).await;
+        assert_eq!(status, 200, "{answer}");
+        let saved = std::fs::read(folder.path().join("figure.bin")).unwrap();
+        assert_eq!(saved.len(), 3 << 20);
+    }
+
+    #[tokio::test]
+    async fn a_manifest_over_the_folder_allowance_is_refused_with_413() {
+        let (inner, _state_home, _cache_home) = test_inner().await;
+        let folder = tempfile::tempdir().unwrap();
+        let binding = inner
+            .bindings
+            .open_project("https://paper.example", folder.path())
+            .unwrap();
+        let padding = "x".repeat(projects::MAX_FOLDER_MANIFEST_BYTES);
+        let body = multipart_bytes(
+            "manifest",
+            &json!({ "manifest": [], "padding": padding }),
+            &[],
+        );
+        let line = format!(
+            "PUT {BASE_PATH}/folder?project={}&binding={}",
+            binding.project, binding.id
+        );
+        let (status, answer) = over_the_wire(&inner, &line, body).await;
+        assert_eq!(status, 413, "{answer}");
+        assert!(answer.contains("the manifest is too large"), "{answer}");
     }
 
     #[tokio::test]
@@ -1747,6 +1914,66 @@ mod settings_tests {
         assert!(outputs.contains("main.pdf"));
         assert!(outputs.contains("main.synctex.gz"));
         assert!(!outputs.contains("main.typ"));
+    }
+
+    #[tokio::test]
+    async fn a_cancelled_render_ends_the_running_state_of_its_project() {
+        let (mut inner, _state_home, _cache_home) = test_inner().await;
+        // A runner that takes a minute unless it is cancelled first.
+        Arc::get_mut(&mut inner).expect("not shared yet").runner = Arc::new(FakeRunner {
+            delay: std::sync::Mutex::new(Duration::from_secs(60)),
+            capabilities: Capabilities::default(),
+        });
+        let origin = "https://paper.example";
+        let folder = tempfile::tempdir().unwrap();
+        std::fs::write(folder.path().join("main.typ"), b"= Title").unwrap();
+        let binding = inner.bindings.open_project(origin, folder.path()).unwrap();
+        tokio::spawn(run_worker(inner.clone()));
+
+        let mut job = job_json(&binding.id, b"= Title");
+        job["project"] = json!(binding.project);
+        let response = jobs::handle_jobs_post(
+            &inner,
+            &bearer(&inner),
+            Some(origin),
+            job_request(job_body(&job, &[("main.typ", b"= Title")])),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::ACCEPTED);
+        let id = body_json(response).await["id"]
+            .as_str()
+            .unwrap()
+            .to_string();
+
+        tokio::time::timeout(Duration::from_secs(5), async {
+            while inner.projects.render_state(&binding.id).running.is_none() {
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("the render starts");
+        let running = inner.projects.render_state(&binding.id).running;
+        assert_eq!(running.as_deref(), Some("main.pdf"));
+
+        let response = jobs::handle_cancel(&inner, &bearer(&inner), Some(origin), &id).await;
+        assert_eq!(response.status(), StatusCode::OK);
+        tokio::time::timeout(Duration::from_secs(5), async {
+            loop {
+                let response =
+                    jobs::handle_job_status(&inner, &bearer(&inner), Some(origin), &id).await;
+                if body_json(response).await["status"] == "canceled" {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("the render is cancelled");
+
+        let after = inner.projects.render_state(&binding.id);
+        assert_eq!(after.running, None);
+        // What the command was expected to write stays recorded.
+        assert!(after.outputs.contains("main.pdf"));
     }
 
     #[tokio::test]

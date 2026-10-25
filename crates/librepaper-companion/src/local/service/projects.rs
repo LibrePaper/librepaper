@@ -33,16 +33,30 @@
 //!   because claiming it would silence every later change to it. A file the
 //!   project itself lists is the editor's and is never claimed either, so a
 //!   command that rewrites a source file still shows up as an outside change.
+//! - While the command runs, a new file named for the result is held back as
+//!   well, because the run may write it long before it ends and `finish` has
+//!   not recorded it yet. A path the page already holds is the editor's and is
+//!   reported as usual. The running state ends when the watch does, however the
+//!   run ended, and only after the outputs are recorded.
 //! - At most `MAX_RENDER_OUTPUTS` paths are kept per project, and forgetting
 //!   the project drops them. A poller that stops for want of requests keeps
 //!   them, because the folder's outputs are still not the person's files when
 //!   the project is opened again.
 //! - A recorded file that the page already holds is still reported when it is
 //!   removed, since the page has to drop it.
+//!
+//! A file is reported removed only when its absence is confirmed. The folder
+//! can fail to answer for a moment, through permissions or a network drive,
+//! and the page would drop every file under a directory it could not read, and
+//! the next save would trash them. So a held file that the walk did not find is
+//! reported removed only when no skipped entry is it or holds it and the
+//! operating system says it is not there (`NotFound`, `NotADirectory`) or that
+//! a directory took its place. Anything else leaves it as it is.
 
 use super::*;
 
 use std::collections::BTreeSet;
+use std::io::ErrorKind;
 use std::time::UNIX_EPOCH;
 
 use crate::local::bindings::ProjectBinding;
@@ -50,6 +64,18 @@ use crate::local::render::workspace;
 
 /// Most files a folder project may list. A bigger folder answers 413.
 pub(super) const MAX_PROJECT_FILES: usize = 5000;
+
+/// Most bytes one entry of a folder save's manifest may take as JSON. An entry
+/// is `{"path":"...","sha256":"...","size":N},`, which is about 110 bytes of
+/// syntax, digest and size around the path. 512 bytes leave room for paths of
+/// 400 bytes and more.
+const MANIFEST_ENTRY_BYTES: usize = 512;
+
+/// Most bytes the manifest of a folder save may take: every file a folder
+/// project may list, at `MANIFEST_ENTRY_BYTES` each, which is 2.4 MiB. The
+/// fixed bound for other JSON, 64 KiB, holds a few hundred files, and a save
+/// above that answered 413 even with no bytes to upload.
+pub(super) const MAX_FOLDER_MANIFEST_BYTES: usize = MAX_PROJECT_FILES * MANIFEST_ENTRY_BYTES;
 
 /// Most render outputs remembered per project. Once the record is full, later
 /// paths are not added; the ones it holds stay.
@@ -194,6 +220,27 @@ pub(super) fn walk(root: &Path) -> Result<Walk, WalkError> {
     Ok(result)
 }
 
+/// Whether `entry`, a path the walk skipped, is `path` or a folder holding it.
+fn covers(entry: &str, path: &str) -> bool {
+    path.strip_prefix(entry)
+        .is_some_and(|rest| rest.is_empty() || rest.starts_with('/'))
+}
+
+/// Whether `path`, a file the walk did not list, is gone for sure. It is not
+/// when a skipped entry is it or holds it, since the walk could not look
+/// there, and not when the operating system fails to answer for another reason
+/// than the path being absent, such as a permission or a drive that stopped
+/// responding. A directory in its place means the file is gone.
+fn confirmed_gone(root: &Path, path: &str, skipped: &[(String, &'static str)]) -> bool {
+    if skipped.iter().any(|(entry, _)| covers(entry, path)) {
+        return false;
+    }
+    match std::fs::symlink_metadata(root.join(path)) {
+        Ok(metadata) => metadata.is_dir(),
+        Err(error) => matches!(error.kind(), ErrorKind::NotFound | ErrorKind::NotADirectory),
+    }
+}
+
 /// The listed tree with every file's digest. The listing is also what the
 /// change poller compares the folder against.
 struct Tree {
@@ -203,7 +250,11 @@ struct Tree {
 }
 
 /// Read the tree at `root`. A path in `render_outputs` is a file a render
-/// wrote, so it is left out of `files` and named in `skipped`.
+/// wrote, so it is left out of `files` and named in `skipped`. What the walk
+/// or the read could not reach is named in `skipped` as well, with the reason:
+/// a directory that cannot be read is listed as itself, and a file that cannot
+/// be read is listed under its own path. Only a file that is confirmed gone is
+/// left out without a word.
 fn read_tree(root: &Path, render_outputs: &BTreeSet<String>) -> Result<Tree, WalkError> {
     let walked = walk(root)?;
     let mut tree = Tree {
@@ -232,8 +283,10 @@ fn read_tree(root: &Path, render_outputs: &BTreeSet<String>) -> Result<Tree, Wal
                 }));
                 tree.listing.insert(path, (stat, digest));
             }
-            // A file that vanished or grew past the bound since the walk is
-            // left out, as if the walk had never seen it.
+            // A file that vanished since the walk is left out, as if the walk
+            // had never seen it. One that grew past the bound or cannot be
+            // opened is still there, so it is named.
+            Err(_) if confirmed_gone(root, &path, &walked.skipped) => {}
             Err(_) => tree
                 .skipped
                 .push(json!({"path": path, "reason": "unreadable"})),
@@ -296,6 +349,10 @@ struct Scan {
     /// Files a render wrote into the folder. They are never reported as added
     /// or changed. The poller refreshes this before every look.
     render_outputs: BTreeSet<String>,
+    /// The result path of the render running now. A new file named for it is
+    /// held back until the run ends and records it. The poller refreshes this
+    /// before every look, together with `render_outputs`.
+    running: Option<String>,
 }
 
 impl Scan {
@@ -315,23 +372,38 @@ impl Scan {
                 .map(|(path, (_, digest))| (path.clone(), digest.clone()))
                 .collect(),
             render_outputs: BTreeSet::new(),
+            running: None,
         }
+    }
+
+    /// Whether `path` is a new file named for the result of the render running
+    /// now. The command may be writing it, and `finish` records it when the
+    /// run ends. A path the page holds is the editor's file and is never held
+    /// back, however it is named.
+    fn written_by_running_render(&self, path: &str) -> bool {
+        let Some(result) = self.running.as_deref() else {
+            return false;
+        };
+        !self.digests.contains_key(path) && named_for_result(result, path)
     }
 
     /// Look at the tree once. A file is reported when it held still across
     /// this look and the one before and differs from what was accepted
-    /// earlier; a file that is gone is reported at once. A file a render
-    /// wrote is skipped, and only its removal can be reported, when the page
-    /// holds it. A tree that cannot be walked this time reports nothing and
-    /// changes nothing.
+    /// earlier; a file that is gone is reported at once, but only when its
+    /// absence is confirmed. A file a render wrote is skipped, and only its
+    /// removal can be reported, when the page holds it. So is a new file named
+    /// for the result of the render running now. A tree that cannot be walked
+    /// this time reports nothing and changes nothing, and neither does a part
+    /// of it that cannot be read: its files stay as the page holds them.
     fn look(&mut self, root: &Path, record: &Path) -> Vec<Change> {
-        let Ok(now) = walk(root).map(|walked| walked.files) else {
+        let Ok(walked) = walk(root) else {
             return Vec::new();
         };
+        let (now, skipped) = (walked.files, walked.skipped);
         let mut changes = Vec::new();
         let mut recorded: Option<BTreeMap<String, String>> = None;
         for (path, stat) in &now {
-            if self.render_outputs.contains(path) {
+            if self.render_outputs.contains(path) || self.written_by_running_render(path) {
                 continue;
             }
             if self.seen.get(path) != Some(stat) || self.settled.get(path) == Some(stat) {
@@ -367,7 +439,7 @@ impl Scan {
         let gone: Vec<String> = self
             .digests
             .keys()
-            .filter(|path| !now.contains_key(*path))
+            .filter(|path| !now.contains_key(*path) && confirmed_gone(root, path, &skipped))
             .cloned()
             .collect();
         for path in gone {
@@ -514,8 +586,51 @@ impl Shared {
     }
 }
 
-/// The files renders wrote into each project's folder, by binding id.
-type RenderOutputs = Arc<std::sync::Mutex<HashMap<String, BTreeSet<String>>>>;
+/// What renders have done to one project's folder, as the poller and the tree
+/// listing see it. Both parts are read together, under one lock.
+#[derive(Clone, Debug, Default)]
+pub(super) struct RenderState {
+    /// The files renders wrote. They are never reported as added or changed.
+    pub outputs: BTreeSet<String>,
+    /// The result path of the render running now, when its job names one.
+    pub running: Option<String>,
+}
+
+impl RenderState {
+    /// Record `paths` as outputs. Paths past `MAX_RENDER_OUTPUTS` are dropped
+    /// rather than pushing out the ones held.
+    fn record(&mut self, paths: impl IntoIterator<Item = String>) {
+        for path in paths {
+            if self.outputs.len() >= MAX_RENDER_OUTPUTS {
+                break;
+            }
+            self.outputs.insert(path);
+        }
+    }
+}
+
+/// The render state of each project, by binding id.
+type RenderStates = Arc<std::sync::Mutex<HashMap<String, RenderState>>>;
+
+/// Marks a render as running for as long as it lives. Dropping it ends the
+/// state however the run ended: finished, failed, cancelled or unwound. The
+/// queue runs one job at a time, so a project never has two.
+struct Running {
+    renders: RenderStates,
+    id: String,
+}
+
+impl Drop for Running {
+    fn drop(&mut self) {
+        let mut renders = self
+            .renders
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if let Some(state) = renders.get_mut(&self.id) {
+            state.running = None;
+        }
+    }
+}
 
 /// The polled projects of this service, by binding id.
 pub(super) struct Registry {
@@ -524,7 +639,7 @@ pub(super) struct Registry {
     /// Kept beside the pollers, not on them: a poller stops when the page goes
     /// quiet, and the outputs are still not outside changes when the project
     /// is read again.
-    outputs: RenderOutputs,
+    renders: RenderStates,
 }
 
 impl Registry {
@@ -532,7 +647,7 @@ impl Registry {
         Registry {
             timing,
             pollers: Arc::new(std::sync::Mutex::new(HashMap::new())),
-            outputs: Arc::new(std::sync::Mutex::new(HashMap::new())),
+            renders: Arc::new(std::sync::Mutex::new(HashMap::new())),
         }
     }
 
@@ -573,32 +688,51 @@ impl Registry {
             binding.id.clone(),
             binding.root.clone(),
             record,
-            self.outputs.clone(),
+            self.renders.clone(),
             self.timing,
         ));
         cursor
     }
 
     /// Record `paths` as files a render wrote into the folder of project
-    /// `id`, so its poller and its tree leave them out. Paths past
-    /// `MAX_RENDER_OUTPUTS` are dropped rather than pushing out the ones held.
+    /// `id`, so its poller and its tree leave them out.
     pub(super) fn note_render_outputs(&self, id: &str, paths: impl IntoIterator<Item = String>) {
-        let mut outputs = self
-            .outputs
+        self.renders
             .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        let held = outputs.entry(id.to_string()).or_default();
-        for path in paths {
-            if held.len() >= MAX_RENDER_OUTPUTS {
-                break;
-            }
-            held.insert(path);
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .entry(id.to_string())
+            .or_default()
+            .record(paths);
+    }
+
+    /// A render starts in the folder of project `id`. Records the paths the
+    /// command is expected to write and, when the job names a result, marks
+    /// the render as running until the answer is dropped. Both happen under
+    /// one lock, so the poller never sees one without the other.
+    fn start_render(&self, id: &str, result: Option<String>, expected: Vec<String>) -> Running {
+        {
+            let mut renders = self
+                .renders
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            let state = renders.entry(id.to_string()).or_default();
+            state.record(expected);
+            state.running = result;
         }
+        Running {
+            renders: self.renders.clone(),
+            id: id.to_string(),
+        }
+    }
+
+    /// What renders have done to the folder of project `id`.
+    pub(super) fn render_state(&self, id: &str) -> RenderState {
+        render_state_of(&self.renders, id)
     }
 
     /// The paths renders wrote into the folder of project `id`.
     pub(super) fn render_outputs(&self, id: &str) -> BTreeSet<String> {
-        render_outputs_of(&self.outputs, id)
+        self.render_state(id).outputs
     }
 
     /// The queue of a polled project, or `None` when no tree was read since
@@ -616,7 +750,7 @@ impl Registry {
     /// Stop polling `id` and drop its render outputs, as when its folder is
     /// forgotten.
     fn forget(&self, id: &str) {
-        self.outputs
+        self.renders
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .remove(id);
@@ -632,8 +766,8 @@ impl Registry {
     }
 }
 
-fn render_outputs_of(outputs: &RenderOutputs, id: &str) -> BTreeSet<String> {
-    outputs
+fn render_state_of(renders: &RenderStates, id: &str) -> RenderState {
+    renders
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner)
         .get(id)
@@ -647,7 +781,7 @@ async fn run_poller(
     id: String,
     root: PathBuf,
     record: PathBuf,
-    outputs: RenderOutputs,
+    renders: RenderStates,
     timing: Timing,
 ) {
     let mut scan: Option<Scan> = None;
@@ -679,11 +813,12 @@ async fn run_poller(
             scan = taken;
         }
         let (root, record) = (root.clone(), record.clone());
-        let render_outputs = render_outputs_of(&outputs, &id);
+        let state = render_state_of(&renders, &id);
         let looked = tokio::task::spawn_blocking(move || {
             let changes = match scan.as_mut() {
                 Some(scan) => {
-                    scan.render_outputs = render_outputs;
+                    scan.render_outputs = state.outputs;
+                    scan.running = state.running;
                     scan.look(&root, &record)
                 }
                 None => Vec::new(),
@@ -715,13 +850,16 @@ pub(super) struct RenderWatch {
     /// The folder's files before the command ran, or `None` when it could not
     /// be listed, in which case only the expected outputs are recorded.
     before: Option<BTreeMap<String, FileStat>>,
+    /// Keeps the project's running state until the watch is dropped.
+    running: Running,
 }
 
 impl RenderWatch {
     /// Start watching `request`, which is about to run. `None` unless it
     /// names a folder project. The result and SyncTeX paths are recorded
     /// now, so the poller cannot report them while the command is still
-    /// writing.
+    /// writing, and the project counts as running a render, so it holds back
+    /// the other files named for the result until the run ends.
     pub(super) async fn begin(inner: &Inner, request: &JobRequest) -> Option<RenderWatch> {
         let binding = inner
             .bindings
@@ -729,7 +867,9 @@ impl RenderWatch {
             .filter(|binding| binding.project == request.project)?;
         let expected = crate::local::render::expected_outputs(request);
         let result = expected.first().cloned();
-        inner.projects.note_render_outputs(&binding.id, expected);
+        let running = inner
+            .projects
+            .start_render(&binding.id, result.clone(), expected);
         let walked_root = binding.root.clone();
         let before = tokio::task::spawn_blocking(move || listed_files(&walked_root))
             .await
@@ -745,12 +885,18 @@ impl RenderWatch {
                 .collect(),
             result,
             before,
+            running,
         })
     }
 
     /// The run is over, however it ended. Record every file it created or
-    /// changed that is named for the result.
+    /// changed that is named for the result. The project stops counting as
+    /// running last, whichever way this returns, so the poller never sees a
+    /// finished render with its files unrecorded. A render that is cancelled
+    /// or fails comes back from the runner like any other and ends here; if
+    /// the watch is dropped instead, `running` ends the state on its own.
     pub(super) async fn finish(self, inner: &Inner) {
+        let _running = self.running;
         let (Some(before), Some(result)) = (self.before, self.result) else {
             return;
         };
@@ -1280,6 +1426,157 @@ mod tests {
         assert_eq!(changes[0].path, "gone.tex");
         assert_eq!(changes[0].kind, "removed");
         assert!(scan.look(root.path(), &record).is_empty());
+    }
+
+    /* ------------------------------------------- removal needs confirmation */
+
+    /// A path made unreadable for as long as the guard lives, then restored.
+    #[cfg(unix)]
+    struct Unreadable {
+        path: PathBuf,
+        permissions: std::fs::Permissions,
+    }
+
+    #[cfg(unix)]
+    impl Unreadable {
+        /// `None` when the change does not stop this user from reading the
+        /// path, as for root, so the test has nothing to show.
+        fn new(path: &Path) -> Option<Unreadable> {
+            use std::os::unix::fs::PermissionsExt;
+            let permissions = std::fs::metadata(path).unwrap().permissions();
+            std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o000)).unwrap();
+            let guard = Unreadable {
+                path: path.to_path_buf(),
+                permissions,
+            };
+            let readable = if path.is_dir() {
+                std::fs::read_dir(path).is_ok()
+            } else {
+                std::fs::File::open(path).is_ok()
+            };
+            (!readable).then_some(guard)
+        }
+    }
+
+    #[cfg(unix)]
+    impl Drop for Unreadable {
+        fn drop(&mut self) {
+            let _ = std::fs::set_permissions(&self.path, self.permissions.clone());
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_held_file_under_an_unreadable_directory_is_not_reported_removed() {
+        let (root, _state, record) = setup();
+        write(root.path(), "main.tex", "one");
+        write(root.path(), "chapters/one.tex", "chapter");
+        write(root.path(), "chapters/deep/two.tex", "deeper");
+        let mut scan = seeded_scan(root.path(), &record);
+        {
+            let Some(_locked) = Unreadable::new(&root.path().join("chapters")) else {
+                return;
+            };
+            for _ in 0..3 {
+                assert!(scan.look(root.path(), &record).is_empty());
+            }
+            // The rest of the folder is still watched.
+            std::fs::remove_file(root.path().join("main.tex")).unwrap();
+            let changes = scan.look(root.path(), &record);
+            assert_eq!(changes.len(), 1);
+            assert_eq!(changes[0].path, "main.tex");
+            assert_eq!(changes[0].kind, "removed");
+        }
+        // Readable again with nothing changed, so there is nothing to report.
+        for _ in 0..3 {
+            assert!(scan.look(root.path(), &record).is_empty());
+        }
+        // A file really deleted is reported.
+        std::fs::remove_file(root.path().join("chapters/deep/two.tex")).unwrap();
+        let changes = scan.look(root.path(), &record);
+        assert_eq!(changes.len(), 1);
+        assert_eq!(changes[0].path, "chapters/deep/two.tex");
+        assert_eq!(changes[0].kind, "removed");
+    }
+
+    #[test]
+    fn a_held_file_replaced_by_a_directory_is_reported_removed() {
+        let (root, _state, record) = setup();
+        write(root.path(), "main.tex", "one");
+        write(root.path(), "notes", "a file the page holds");
+        let mut scan = seeded_scan(root.path(), &record);
+        std::fs::remove_file(root.path().join("notes")).unwrap();
+        write(root.path(), "notes/a.tex", "inside");
+        let changes = scan.look(root.path(), &record);
+        assert_eq!(changes.len(), 1);
+        assert_eq!(changes[0].path, "notes");
+        assert_eq!(changes[0].kind, "removed");
+    }
+
+    #[test]
+    fn a_skipped_entry_covers_itself_and_what_is_below_it() {
+        assert!(covers("chapters", "chapters"));
+        assert!(covers("chapters", "chapters/one.tex"));
+        assert!(covers("a/b", "a/b/c/d.tex"));
+        assert!(!covers("chapter", "chapters/one.tex"));
+        assert!(!covers("chapters/one.tex", "chapters"));
+        assert!(!covers("a/b", "a/c/b.tex"));
+    }
+
+    #[test]
+    fn a_path_is_confirmed_gone_only_when_the_folder_says_so() {
+        let (root, _state, _record) = setup();
+        write(root.path(), "file.tex", "x");
+        write(root.path(), "dir/inner.tex", "x");
+        let skipped = [("locked".to_string(), "unreadable")];
+        assert!(confirmed_gone(root.path(), "missing.tex", &skipped));
+        assert!(confirmed_gone(root.path(), "file.tex/below.tex", &skipped));
+        assert!(confirmed_gone(root.path(), "dir", &skipped));
+        // Still a file, only not listed.
+        assert!(!confirmed_gone(root.path(), "file.tex", &skipped));
+        // The walk could not look there.
+        assert!(!confirmed_gone(root.path(), "locked", &skipped));
+        assert!(!confirmed_gone(root.path(), "locked/inner.tex", &skipped));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn reading_the_tree_names_what_it_could_not_read_instead_of_dropping_it() {
+        let root = tempfile::tempdir().unwrap();
+        write(root.path(), "main.tex", "hello");
+        write(root.path(), "locked/inner.tex", "inside");
+        write(root.path(), "secret.tex", "private");
+        let Some(_directory) = Unreadable::new(&root.path().join("locked")) else {
+            return;
+        };
+        let Some(_file) = Unreadable::new(&root.path().join("secret.tex")) else {
+            return;
+        };
+        let tree = read_tree(root.path(), &BTreeSet::new()).unwrap();
+        let listed: Vec<&Value> = tree.files.iter().map(|file| &file["path"]).collect();
+        assert_eq!(listed, ["main.tex"]);
+        assert_eq!(tree.listing.len(), 1);
+        for path in ["locked", "secret.tex"] {
+            let named = json!({"path": path, "reason": "unreadable"});
+            assert!(tree.skipped.contains(&named), "{path}");
+        }
+    }
+
+    #[test]
+    fn the_manifest_allowance_holds_every_file_a_folder_project_may_list() {
+        let entries: Vec<Value> = (0..MAX_PROJECT_FILES)
+            .map(|index| {
+                json!({
+                    "path": format!("{index:05}{}", "p".repeat(195)),
+                    "sha256": "a".repeat(64),
+                    "size": MAX_UPLOAD_BYTES,
+                })
+            })
+            .collect();
+        let text = json!({ "manifest": entries }).to_string();
+        assert!(text.len() <= MAX_FOLDER_MANIFEST_BYTES, "{}", text.len());
+        // The fixed bound for other JSON is far below it.
+        assert!(text.len() > MAX_JSON_BYTES);
     }
 
     fn change(path: &str) -> Change {
@@ -1820,5 +2117,131 @@ mod tests {
         let reply = handle_forget(&inner, &headers, Some(ORIGIN), &binding.id).await;
         assert_eq!(reply.status(), StatusCode::OK);
         assert!(inner.projects.render_outputs(&binding.id).is_empty());
+    }
+
+    #[test]
+    fn during_a_render_a_new_file_named_for_its_result_is_held_back_but_inputs_are_not() {
+        let (root, _state, record) = setup();
+        write(root.path(), "main.tex", "one");
+        write(root.path(), "chapters/one.tex", "first");
+        let mut scan = seeded_scan(root.path(), &record);
+        scan.running = Some("main.pdf".into());
+
+        // The command writes a figure early and keeps running. Meanwhile
+        // another program edits a chapter and the source the page holds.
+        write(root.path(), "main-figure.png", "half");
+        write(root.path(), "chapters/one.tex", "edited outside");
+        write(root.path(), "main.tex", "edited too");
+        assert!(scan.look(root.path(), &record).is_empty());
+        write(root.path(), "main-figure.png", "the whole figure");
+        let mut changes = scan.look(root.path(), &record);
+        changes.sort_by(|left, right| left.path.cmp(&right.path));
+        let reported: Vec<(&str, &str)> = changes
+            .iter()
+            .map(|change| (change.path.as_str(), change.kind))
+            .collect();
+        assert_eq!(
+            reported,
+            [("chapters/one.tex", "changed"), ("main.tex", "changed")]
+        );
+        for _ in 0..3 {
+            assert!(scan.look(root.path(), &record).is_empty());
+        }
+
+        // The run ends and records the figure. It stays unreported.
+        scan.render_outputs = names(&["main-figure.png"]);
+        scan.running = None;
+        for _ in 0..3 {
+            assert!(scan.look(root.path(), &record).is_empty());
+        }
+    }
+
+    #[test]
+    fn during_a_render_a_new_file_not_named_for_its_result_is_still_reported() {
+        let (root, _state, record) = setup();
+        write(root.path(), "main.tex", "one");
+        let mut scan = seeded_scan(root.path(), &record);
+        scan.running = Some("main.pdf".into());
+        write(root.path(), "refs.bib", "@book{key}");
+        assert!(scan.look(root.path(), &record).is_empty());
+        let changes = scan.look(root.path(), &record);
+        assert_eq!(changes.len(), 1);
+        assert_eq!(changes[0].path, "refs.bib");
+        assert_eq!(changes[0].kind, "added");
+    }
+
+    #[tokio::test]
+    async fn while_a_render_runs_the_poller_holds_back_its_files_and_still_reports_inputs() {
+        let state = tempfile::tempdir().unwrap();
+        let root = tempfile::tempdir().unwrap();
+        let root_path = std::fs::canonicalize(root.path()).unwrap();
+        write(&root_path, "main.tex", "hello");
+        write(&root_path, "chapters/one.tex", "first");
+        let inner = quick_inner(state.path()).await;
+        let binding = inner.bindings.open_project(ORIGIN, &root_path).unwrap();
+        let headers = test_support::bearer(&inner);
+        let tree = body_of(handle_tree(&inner, &headers, Some(ORIGIN), &binding.id).await).await;
+        let cursor = tree["cursor"].as_u64().unwrap();
+
+        let render = RenderWatch::begin(&inner, &render_request(&binding, "main.tex"))
+            .await
+            .expect("a folder project is watched");
+        let running = inner.projects.render_state(&binding.id).running;
+        assert_eq!(running.as_deref(), Some("main.pdf"));
+        // The command writes a figure early and keeps running. The person
+        // edits a chapter in the meantime.
+        write(&root_path, "main-figure.png", "png bytes");
+        write(&root_path, "chapters/one.tex", "edited by the person");
+
+        let changes = |since: u64| {
+            let request = Request::get(format!("/changes?since={since}"))
+                .body(Body::empty())
+                .unwrap();
+            handle_changes(&inner, &headers, Some(ORIGIN), &binding.id, request)
+        };
+        let mut answer = body_of(changes(cursor).await).await;
+        for _ in 0..10 {
+            if !answer["changes"].as_array().unwrap().is_empty() {
+                break;
+            }
+            answer = body_of(changes(cursor).await).await;
+        }
+        let reported: Vec<(&str, &str)> = answer["changes"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|change| {
+                (
+                    change["path"].as_str().unwrap(),
+                    change["kind"].as_str().unwrap(),
+                )
+            })
+            .collect();
+        assert_eq!(reported, [("chapters/one.tex", "changed")]);
+
+        // The run ends. The figure is recorded and stays unreported.
+        render.finish(&inner).await;
+        let after = inner.projects.render_state(&binding.id);
+        assert_eq!(after.running, None);
+        assert!(after.outputs.contains("main-figure.png"));
+        let next = body_of(changes(answer["cursor"].as_u64().unwrap()).await).await;
+        assert_eq!(next["changes"], json!([]));
+    }
+
+    #[tokio::test]
+    async fn a_watch_dropped_without_finishing_ends_the_running_state() {
+        let state = tempfile::tempdir().unwrap();
+        let root = tempfile::tempdir().unwrap();
+        let inner = quick_inner(state.path()).await;
+        let binding = inner.bindings.open_project(ORIGIN, root.path()).unwrap();
+        let render = RenderWatch::begin(&inner, &render_request(&binding, "main.tex"))
+            .await
+            .unwrap();
+        assert!(inner.projects.render_state(&binding.id).running.is_some());
+        drop(render);
+        let after = inner.projects.render_state(&binding.id);
+        assert_eq!(after.running, None);
+        // What the command was expected to write stays recorded.
+        assert!(after.outputs.contains("main.pdf"));
     }
 }
