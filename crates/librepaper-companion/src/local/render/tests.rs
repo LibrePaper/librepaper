@@ -147,6 +147,53 @@ async fn exit_zero_with_no_result_file_fails_and_names_the_expected_path() {
 
 #[tokio::test]
 #[allow(clippy::await_holding_lock)]
+async fn a_failing_run_still_returns_the_result_it_wrote() {
+    let _turn = records::TEST_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+    let fixture = fixture("typst", "pdf", "paper.typ");
+    script(
+        "typst.pdf",
+        "cat paper.typ > paper.pdf; echo 'error: broken' >&2; exit 1",
+        "{stem}.pdf",
+    );
+    let outcome = run_fixture(&fixture, false).await;
+    assert_eq!(outcome.status.status, "failed");
+    assert_eq!(outcome.status.exit, 1);
+    assert!(outcome.status.log_tail.contains("error: broken"));
+    assert_eq!(
+        outcome.files["artifact"],
+        b"\\documentclass{article}".to_vec()
+    );
+}
+
+#[tokio::test]
+#[allow(clippy::await_holding_lock)]
+async fn a_result_left_by_an_earlier_run_is_not_returned() {
+    let _turn = records::TEST_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+    let fixture = fixture("typst", "pdf", "paper.typ");
+    script("typst.pdf", "cat paper.typ > paper.pdf", "{stem}.pdf");
+    let first = run_fixture(&fixture, false).await;
+    assert_eq!(first.status.status, "done", "{:?}", first.status.error);
+    let root = fixture
+        .bindings
+        .get_scoped("hosted", ORIGIN, "paper")
+        .unwrap()
+        .root;
+    std::fs::File::options()
+        .write(true)
+        .open(root.join("paper.pdf"))
+        .unwrap()
+        .set_modified(SystemTime::now() - Duration::from_secs(60))
+        .unwrap();
+    script("typst.pdf", "true", "{stem}.pdf");
+    let outcome = run_fixture(&fixture, false).await;
+    assert_eq!(outcome.status.status, "failed");
+    let error = outcome.status.error.unwrap();
+    assert!(error.contains("wrote no paper.pdf"), "{error}");
+    assert!(!outcome.files.contains_key("artifact"));
+}
+
+#[tokio::test]
+#[allow(clippy::await_holding_lock)]
 async fn a_failing_command_reports_its_status_and_its_log() {
     let _turn = records::TEST_LOCK.lock().unwrap_or_else(|p| p.into_inner());
     let fixture = fixture("typst", "pdf", "paper.typ");
