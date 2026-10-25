@@ -369,7 +369,7 @@ console.log("quarto-local: preview lifecycle calls work, and calepinAvailable is
     const context = vm.createContext({
       localQuarto: localBridge, previewClient: localBridge, quartoBindingId: localBridge.bindingId(),
       buildPreferences: { output: "html", profile: null, parameters: {} },
-      readerDisposed: false, navigationGeneration: 0,
+      readerDisposed: false, navigationGeneration: 0, noteSynced: () => {}, publishLive: () => {},
       treeNow: () => ({ main: engine === "quarto" ? "main.qmd" : "main.typ", texts: { [engine === "quarto" ? "main.qmd" : "main.typ"]: "Hello" } }),
       localPreviewTreeNow: async () => ({ main: engine === "quarto" ? "main.qmd" : "main.typ", texts: { [engine === "quarto" ? "main.qmd" : "main.typ"]: "Hello" } }),
       quartoRenderContext: () => ({ format: "html", profiles: [], parameters: {} }),

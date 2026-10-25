@@ -488,6 +488,23 @@ async function run() {
     return { total: frame.contentDocument.querySelectorAll(".page canvas").length, inked: window.inked() };
   `);
   check("and every page is drawn once the background raster ends", rastered.total === 150 && rastered.inked === 150, JSON.stringify(rastered));
+
+  /* --- a resize while a paint runs still reports the delivery drawn ------- */
+
+  // The resize redraw supersedes the paint of the delivery, so it is the
+  // redraw that has to say which delivery is on screen.
+  const drawnAfterResize = await tab.eval(`
+    window.lastDrawn = 0;
+    addEventListener("message", (event) => {
+      if (event.data?.librepaper === true && event.data.type === "viewer-drawn") window.lastDrawn = event.data.frameGeneration;
+    });
+    await window.sendPdf("/pdf/article", 8);
+    frame.style.width = "700px";
+    for (let tries = 0; tries < 100 && window.lastDrawn !== 8; tries++) await new Promise((r) => setTimeout(r, 100));
+    frame.style.width = "900px";
+    return window.lastDrawn;
+  `);
+  check("a resize during the paint still reports the delivery drawn", drawnAfterResize === 8, String(drawnAfterResize));
 }
 
 /// Wait for the agent's republish. It debounces its observer by 250 ms, and a

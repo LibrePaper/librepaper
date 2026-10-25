@@ -524,10 +524,6 @@ main.reader.no-preview:not(.editing) .sidebar {
   flex-wrap: wrap;
   gap: --spacing(2);
 }
-/* The waiting display centres itself in the pane and keeps its size. */
-.latexpane.waitpane {
-  display: flex;
-}
 main.reader.source-right .latexpane {
   order: 1;
 }

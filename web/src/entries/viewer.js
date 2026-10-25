@@ -61,6 +61,9 @@ let paintGeneration = 0;
 // the page keeps whatever width it was first drawn at and is clipped or
 // stranded in the middle of the frame.
 let drawn = null;
+// The reader's generation of the bytes in `drawn`, so a redraw of them can say
+// which delivery is on screen when it finishes.
+let drawnGeneration = 0;
 
 // The sidebar and the overlay are hosts with shadow roots, appended once and
 // never replaced: the agent walks every text node in the body, and neither
@@ -151,6 +154,7 @@ function waiting(title, detail = "") {
   document.body.prepend(note);
   stage = null;
   drawn = null;
+  drawnGeneration = 0;
   pageCount = 0;
   currentPage = 0;
   findState = null;
@@ -280,6 +284,11 @@ function settle(anchor) {
 /// what `librepaperViewer` holds or which generation won.
 async function paint(bytes, frameGeneration = 0) {
   const mine = ++paintGeneration;
+  // A redraw passes no generation: it is the delivery already held. A resize
+  // that lands while the first paint is running supersedes it, and the
+  // redraw is then the paint that puts that delivery on screen.
+  if (frameGeneration) drawnGeneration = frameGeneration;
+  else frameGeneration = drawnGeneration;
   // pdf.js hands the buffer to its worker, which detaches it. So `drawn` is
   // taken first and every draw is given a copy of it: what is kept has to
   // outlive the draw that is about to eat it, redraws included.

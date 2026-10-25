@@ -1947,6 +1947,15 @@
   // of another file. The viewer swaps new pages in only once they are drawn,
   // so such a frame can stay in sight while it draws the next one.
   let frameHasPage = $state(false);
+  // A delivered PDF the viewer has not confirmed within this long is shown
+  // anyway. The confirmation is what keeps the frame out of sight, and a
+  // viewer that never sends it must not leave the pane waiting for ever.
+  const DRAWN_GRACE_MS = 4000;
+  $effect(() => {
+    if (!pdfOutput || !everPaintedShown || pageDrawn) return;
+    const timer = setTimeout(() => { pageDrawn = true; }, DRAWN_GRACE_MS);
+    return () => clearTimeout(timer);
+  });
   // The renderer engine being downloaded for the preview, or "". LaTeX
   // reports its own loading phase and is never named here.
   let engineLoading = $state("");
@@ -4684,10 +4693,6 @@
         {/if}
       </div>
     </section>
-  {:else if waitingUp && shown.document}
-    <section class="latexpane waitpane">
-      <PreviewWaiting stage={waitStage} progress={waitProgress} />
-    </section>
   {/if}
 
   <!-- Kept mounted whatever the arrangement: taking the frame out of the tree
@@ -4717,6 +4722,9 @@
         ondownload={can["download-pdf"] ? () => void downloadAs("pdf") : null} />
     {/if}
   {/snippet}
+  {#snippet waitingCover()}
+    <PreviewWaiting stage={waitStage} progress={waitProgress} />
+  {/snippet}
   {#snippet previewNotice()}
     {#if previewReason === "locked"}
       <span class="notice-chip">
@@ -4730,9 +4738,10 @@
   <Preview bind:this={preview} src={frameSrc} {docsOrigin} onmessage={fromFrame} onload={frameLoaded} {grabbing}
            controls={previewControls}
            notice={previewChip ? previewNotice : undefined}
+           cover={waitingUp ? waitingCover : undefined}
            busy={previewBusy && !waitingUp}
            progress={!waitingUp ? waitProgress : null}
-           away={documentNeedsSignIn || Boolean(heldFile) || !shown.document || noCompiler || waitingUp || failedBeforeRender || Boolean(projectUnreadable) || Boolean(previewCard)} />
+           away={documentNeedsSignIn || Boolean(heldFile) || !shown.document || noCompiler || failedBeforeRender || Boolean(projectUnreadable) || Boolean(previewCard)} />
 
   <!-- Shown only while a separator is dragged: a line that follows the pointer
        so the split can be seen moving without the iframe reflowing on every

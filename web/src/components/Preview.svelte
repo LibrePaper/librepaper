@@ -30,7 +30,7 @@
   // A thin progress line along the top edge signals a render under way without
   // covering the document, and nothing shows for renders under the
   // steady-busy threshold.
-  let { src, docsOrigin, onmessage, onload, grabbing = false, away = false, controls, notice, busy = false, progress = null } = $props();
+  let { src, docsOrigin, onmessage, onload, grabbing = false, away = false, controls, notice, cover, busy = false, progress = null } = $props();
 
   let frame = $state(null);
   let viewport = $state(null);
@@ -120,6 +120,9 @@
   {/if}
   {@render controls?.()}
   {#if notice}<div class="notice-band">{@render notice()}</div>{/if}
+  <!-- Laid over the frame rather than replacing it: the frame keeps its real
+       size underneath, so a page drawn while this is up is drawn to fit. -->
+  {#if cover}<div class="cover">{@render cover()}</div>{/if}
   <!-- allow-same-origin refers to the document's own origin, not this one, so
        the agent can read the document while the document can read nothing
        here. While a separator is being dragged the frame is deafened: it
@@ -144,6 +147,16 @@
 </section>
 
 <style>
+  .cover {
+    position: absolute;
+    inset: 0;
+    z-index: 8;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    background: var(--color-preview);
+  }
+
   .notice-band {
     display: flex;
     flex: none;
