@@ -31,6 +31,7 @@ pub(super) async fn handle_jobs_post(
         "bad job part",
         "job description is too large",
         "missing the job part",
+        MAX_FILES,
     )
     .await
     {
@@ -58,7 +59,7 @@ pub(super) async fn handle_jobs_post(
             &json!({"error": "job scope does not match the request origin"}),
         );
     }
-    if let Err(response) = validate_manifest_shape(&job.manifest) {
+    if let Err(response) = validate_manifest_shape(&job.manifest, MAX_FILES) {
         return response;
     }
     // Whether *this* caller holds the binding the job names. The workspace
@@ -190,13 +191,21 @@ pub(super) async fn handle_folder_put(
         .bindings
         .resolve_scoped(&binding_id, &origin, &project)
         .and_then(|binding| {
-            inner.bindings.validate_scoped_entrypoint(
-                &binding_id,
-                &origin,
-                &project,
-                &binding.entrypoint,
-                false,
-            )
+            if binding.is_project() {
+                // A folder project names no entrypoint; only its grant and
+                // root are revalidated.
+                inner
+                    .bindings
+                    .validate_scoped_root(&binding_id, &origin, &project)
+            } else {
+                inner.bindings.validate_scoped_entrypoint(
+                    &binding_id,
+                    &origin,
+                    &project,
+                    &binding.entrypoint,
+                    false,
+                )
+            }
         });
     let Ok(binding) = granted else {
         return write_json(
@@ -205,12 +214,19 @@ pub(super) async fn handle_folder_put(
         );
     };
 
+    // A folder project may hold more files than a render job carries.
+    let max_files = if binding.is_project() {
+        projects::MAX_PROJECT_FILES
+    } else {
+        MAX_FILES
+    };
     let upload = match read_multipart_upload(
         request,
         "manifest",
         "bad manifest part",
         "the manifest is too large",
         "missing the manifest part",
+        max_files,
     )
     .await
     {
@@ -224,7 +240,7 @@ pub(super) async fn handle_folder_put(
     let Ok(FolderManifest { manifest }) = serde_json::from_str(&upload.metadata) else {
         return write_json(400, &json!({"error": "bad manifest"}));
     };
-    if let Err(response) = validate_manifest_shape(&manifest) {
+    if let Err(response) = validate_manifest_shape(&manifest, max_files) {
         return response;
     }
     if let Err(response) = validate_manifest(&manifest, &upload.files, false) {
@@ -269,8 +285,8 @@ pub(super) async fn handle_folder_put(
 
 /// Every manifest entry has a bounded count, safe path, and total size.
 #[allow(clippy::result_large_err)]
-fn validate_manifest_shape(manifest: &[ManifestEntry]) -> Result<(), Reply> {
-    if manifest.len() > MAX_FILES {
+fn validate_manifest_shape(manifest: &[ManifestEntry], max_files: usize) -> Result<(), Reply> {
+    if manifest.len() > max_files {
         return Err(write_json(
             413,
             &json!({"error": "too many manifest entries"}),
