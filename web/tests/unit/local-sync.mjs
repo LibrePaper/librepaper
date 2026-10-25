@@ -153,6 +153,172 @@ const today = () => new Date(2026, 9, 25, 12);
   assert.equal(sync.state.error, "Sign in to this server first.");
 }
 
+// With a session on the server the code is approved here, and no tab opens.
+{
+  const opened = [];
+  const asked = [];
+  const { api } = routes({
+    syncStatus: { signed_in: false, linked: false },
+    syncLogin: { authorization_id: "auth-1", user_code: "ABCD-EFGH", verification_url: "https://app.example/auth/device?code=ABCD-EFGH" },
+    syncLoginComplete: { signed_in: true, linked: false },
+  });
+  const approved = [];
+  const sync = createLocalSync({
+    id: "f1", api, wait: noWait,
+    signedIn: async () => { asked.push("asked"); return true; },
+    open: (url) => opened.push(url),
+    approve: async (code) => { approved.push(code); },
+  });
+  await sync.login();
+  assert.deepEqual(approved, ["ABCD-EFGH"]);
+  assert.deepEqual(opened, [], "no tab opens when this page can approve");
+  assert.equal(sync.state.waiting, null);
+  assert.equal(sync.state.status.signed_in, true);
+  assert.equal(asked.length, 1, "the session is asked about each time Sign in is pressed");
+}
+
+// Without a session on the server the code is shown, the server's page opens in
+// a new tab, and the finish is asked again until the code is approved there.
+{
+  const opened = [];
+  const order = [];
+  const seen = [];
+  let attempts = 0;
+  const waits = [];
+  const sync = createLocalSync({
+    id: "f1", wait: async (ms) => { waits.push(ms); }, open: (url) => opened.push(url),
+    signedIn: async () => false,
+    approve: async () => { order.push("approve"); },
+    api: routes({
+      syncStatus: { signed_in: false, linked: false },
+      syncLogin: () => { order.push("login"); return { authorization_id: "auth-1", user_code: "ABCD-EFGH", verification_url: "https://app.example/auth/device?code=ABCD-EFGH" }; },
+      syncLoginComplete: () => {
+        attempts += 1;
+        seen.push(sync.state.waiting);
+        if (attempts < 4) return pending();
+        return { signed_in: true, linked: false, site: "https://app.example" };
+      },
+    }).api,
+  });
+  await sync.refresh();
+  await sync.login();
+  assert.deepEqual(order, ["login"], "the page never approves a code it has no session for");
+  assert.deepEqual(opened, ["https://app.example/auth/device?code=ABCD-EFGH"], "the desktop app's verification page opens once");
+  assert.equal(attempts, 4);
+  assert.deepEqual(waits, [3000, 3000, 3000, 3000], "it waits a few seconds before each ask");
+  assert.ok(seen.every((waiting) => waiting?.userCode === "ABCD-EFGH" && waiting.url === opened[0]), "the code and the page are in the state while it waits");
+  assert.equal(sync.state.waiting, null, "and gone once it is approved");
+  assert.equal(sync.state.status.signed_in, true, "the answer to the finish is the new state");
+  assert.equal(sync.state.error, "");
+  assert.equal(sync.state.busy, "");
+}
+
+// A desktop app that names no verification page gets the server's device page under the page's origin.
+{
+  const opened = [];
+  const { api } = routes({
+    syncStatus: { signed_in: false, linked: false },
+    syncLogin: { authorization_id: "auth-1", user_code: "ABCD-EFGH" },
+    syncLoginComplete: { signed_in: true, linked: false },
+  });
+  const sync = createLocalSync({ id: "f1", api, wait: noWait, signedIn: () => false, origin: "https://app.example/", open: (url) => opened.push(url), approve: async () => {} });
+  await sync.login();
+  assert.deepEqual(opened, ["https://app.example/auth/device?code=ABCD-EFGH"]);
+}
+
+// A code that is never approved is given up on after ten minutes, with a sentence that says so.
+{
+  let clock = Date.UTC(2026, 9, 25, 12);
+  let attempts = 0;
+  const { api } = routes({
+    syncStatus: { signed_in: false, linked: false },
+    syncLogin: { authorization_id: "auth-1", user_code: "ABCD-EFGH" },
+    syncLoginComplete: () => { attempts += 1; return pending(); },
+  });
+  const sync = createLocalSync({
+    id: "f1", api, signedIn: () => false, open: () => {}, approve: async () => {},
+    now: () => new Date(clock), wait: async (ms) => { clock += ms; },
+  });
+  await sync.refresh();
+  await sync.login();
+  assert.equal(attempts, 200, "an ask every three seconds for ten minutes");
+  assert.match(sync.state.error, /not approved in time/);
+  assert.equal(sync.state.waiting, null);
+  assert.equal(sync.state.status.signed_in, false, "the panel is back at the Sign in button");
+  assert.equal(sync.state.busy, "");
+}
+
+// Any other refusal while waiting means the sign-in expired, and ends the wait.
+{
+  let attempts = 0;
+  const { api } = routes({
+    syncStatus: { signed_in: false, linked: false },
+    syncLogin: { authorization_id: "auth-1", user_code: "ABCD-EFGH" },
+    syncLoginComplete: () => { attempts += 1; return attempts < 3 ? pending() : refused(400, { error: "that sign-in expired" }); },
+  });
+  const sync = createLocalSync({ id: "f1", api, wait: noWait, signedIn: () => false, open: () => {}, approve: async () => {} });
+  await sync.refresh();
+  await sync.login();
+  assert.equal(attempts, 3);
+  assert.equal(sync.state.error, "that sign-in expired");
+  assert.equal(sync.state.waiting, null);
+  assert.equal(sync.state.status.signed_in, false);
+}
+
+// Cancel ends the wait at once and the desktop app is not asked again.
+{
+  const idle = () => new Promise((resolve) => setImmediate(resolve));
+  const gates = [];
+  let attempts = 0;
+  const { api } = routes({
+    syncStatus: { signed_in: false, linked: false },
+    syncLogin: { authorization_id: "auth-1", user_code: "ABCD-EFGH" },
+    syncLoginComplete: () => { attempts += 1; return pending(); },
+  });
+  const sync = createLocalSync({ id: "f1", api, signedIn: () => false, open: () => {}, approve: async () => {}, wait: () => new Promise((resolve) => gates.push(resolve)) });
+  await sync.refresh();
+  const running = sync.login();
+  await idle();
+  assert.equal(sync.state.waiting?.userCode, "ABCD-EFGH");
+  assert.equal(sync.state.busy, "login");
+  gates.shift()();
+  await idle();
+  assert.equal(attempts, 1, "the first ask found the code pending");
+  sync.cancelLogin();
+  await running;
+  assert.equal(sync.state.waiting, null, "the waiting state goes");
+  assert.equal(sync.state.busy, "");
+  assert.equal(sync.state.error, "", "a cancel is not an error");
+  assert.equal(sync.state.status.signed_in, false, "the panel is back at the Sign in button");
+  while (gates.length) gates.shift()();
+  await idle();
+  assert.equal(attempts, 1, "no ask is made after the cancel");
+  sync.cancelLogin();
+
+  const again = sync.login();
+  await idle();
+  assert.equal(sync.state.waiting?.userCode, "ABCD-EFGH", "Sign in can be pressed again");
+  sync.cancelLogin();
+  await again;
+}
+
+// A panel that goes away ends the wait too.
+{
+  const idle = () => new Promise((resolve) => setImmediate(resolve));
+  let attempts = 0;
+  const { api } = routes({
+    syncStatus: { signed_in: false, linked: false },
+    syncLogin: { authorization_id: "auth-1", user_code: "ABCD-EFGH" },
+    syncLoginComplete: () => { attempts += 1; return pending(); },
+  });
+  const sync = createLocalSync({ id: "f1", api, signedIn: () => false, open: () => {}, approve: async () => {}, wait: () => new Promise(() => {}) });
+  const running = sync.login();
+  await idle();
+  sync.dispose();
+  await running;
+  assert.equal(attempts, 0);
+}
+
 // Link and publish send what was typed, trimmed, and read the state again.
 {
   const scene = { status: { signed_in: true, linked: false } };
@@ -318,4 +484,4 @@ const today = () => new Date(2026, 9, 25, 12);
   assert.equal(sync.state.loaded, false);
 }
 
-console.log("local-sync: status, link, pull with conflicts, push with refusals, sign-in loss");
+console.log("local-sync: status, sign-in by approving here or in another tab, link, pull with conflicts, push with refusals, sign-in loss");

@@ -43,6 +43,7 @@
     authHeaders,
     configOrRemembered,
     keyHeaders,
+    me as whoami,
     post,
     signInHref,
   } from "../lib/api.js";
@@ -1530,12 +1531,16 @@
     location.href = href;
   }
   // The Sync panel of a local project. Signing in approves the desktop app's
-  // code in this page's own session, as the backups sign-in does. A pull or a
-  // push first settles the folder, so the disk holds what the editor holds
-  // when the command reads it.
+  // code in this page's own session, as the backups sign-in does. A folder
+  // project can open without a session on the server and never reads `me`, so
+  // the account is asked at the moment of signing in; with no session the panel
+  // sends the person to the server's approval page instead. A pull or a push
+  // first settles the folder, so the disk holds what the editor holds when the
+  // command reads it.
   const localSync = LOCAL ? createLocalSync({
     id: LOCAL_ID,
     approve: (userCode) => post("/api/auth/device/approve", { user_code: userCode }),
+    signedIn: async () => Boolean((await whoami())?.provider),
     flush: () => folderSync.flush(),
   }) : null;
   $effect(() => () => localSync?.dispose());

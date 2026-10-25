@@ -9,8 +9,11 @@
 // command reads it.
 //
 // Signing in is two calls to the desktop app with the page between them. The
-// first hands out a code, `approve` approves it in the page's own session, and
-// the second finishes once the code has been approved.
+// first hands out a code and the second finishes once the code has been
+// approved. When the page has a session on the server, `approve` approves the
+// code there. A folder project can open without one, so then the page shows the
+// code, opens the server's approval page in a new tab, and asks the second call
+// every few seconds until the code is approved or the person cancels.
 import * as routes from "../desktop/sync.js";
 import { day } from "../dates.js";
 
@@ -19,19 +22,37 @@ import { day } from "../dates.js";
 const COMPLETE_ATTEMPTS = 5;
 const COMPLETE_DELAY_MS = 800;
 
+// The same call while the person approves the code in another tab: how often
+// it is asked, and how long the code is waited for before the sign-in is given
+// up on.
+const APPROVAL_POLL_MS = 3000;
+const APPROVAL_LIMIT_MS = 10 * 60 * 1000;
+
 // The files a push sent, as the desktop app counted them or as a list.
 const count = (value) => (Array.isArray(value) ? value.length : Number(value) || 0);
 
 const realWait = (/** @type {number} */ ms) => new Promise((resolve) => setTimeout(resolve, ms));
+const realOpen = (/** @type {string} */ url) => { globalThis.open?.(url, "_blank", "noopener"); };
 
-/** @typedef {{ loaded: boolean, status: any, busy: string, error: string, pull: { written: number, trashed: number, skipped: string[], trimmed: boolean } | null, conflicts: string[], refusal: { reason: "changed", paths: string[] } | { reason: "suggestion", path: string } | null, pushed: { nothing: true } | { files: number } | null }} SyncState */
+/// Whether the desktop app refused `login/complete` only because the code has
+/// not been approved yet.
+const isPending = (/** @type {any} */ error) => error?.status === 400 && error?.body?.error === routes.LOGIN_PENDING;
 
-/** @param {{ id: string, approve: (userCode: string) => Promise<void>, api?: typeof routes, flush?: () => Promise<boolean>, now?: () => Date, wait?: (ms: number) => Promise<void> }} options */
-export function createLocalSync({ id, approve, api = routes, flush = async () => true, now = () => new Date(), wait = realWait }) {
+/** @typedef {{ loaded: boolean, status: any, busy: string, error: string, waiting: { userCode: string, url: string } | null, pull: { written: number, trashed: number, skipped: string[], trimmed: boolean } | null, conflicts: string[], refusal: { reason: "changed", paths: string[] } | { reason: "suggestion", path: string } | null, pushed: { nothing: true } | { files: number } | null }} SyncState */
+
+/** `signedIn` is asked each time Sign in is pressed: whether this page has a
+ * session on the server, so the code can be approved here. `open` shows a page
+ * in a new tab, and `origin` is the server the verification page is found
+ * under when the desktop app does not name it.
+ * @param {{ id: string, approve: (userCode: string) => Promise<void>, signedIn?: () => boolean | Promise<boolean>, open?: (url: string) => void, origin?: string, api?: typeof routes, flush?: () => Promise<boolean>, now?: () => Date, wait?: (ms: number) => Promise<void> }} options */
+export function createLocalSync({ id, approve, signedIn = () => true, open = realOpen, origin = globalThis.location?.origin ?? "", api = routes, flush = async () => true, now = () => new Date(), wait = realWait }) {
   /** @type {SyncState} */
-  let current = $state.raw({ loaded: false, status: null, busy: "", error: "", pull: null, conflicts: [], refusal: null, pushed: null });
+  let current = $state.raw({ loaded: false, status: null, busy: "", error: "", waiting: null, pull: null, conflicts: [], refusal: null, pushed: null });
   let generation = 0;
   let closed = false;
+  // The sign-in that is waiting for an approval in another tab, if any.
+  /** @type {{ stopped: boolean, wake: () => void, woken: Promise<void> } | null} */
+  let approval = null;
 
   const set = (/** @type {Partial<SyncState>} */ patch) => {
     if (!closed) current = { ...current, ...patch };
@@ -89,20 +110,74 @@ export function createLocalSync({ id, approve, api = routes, flush = async () =>
       try {
         return await api.syncLoginComplete(id, authorizationId);
       } catch (error) {
-        const pending = error?.status === 400 && error?.body?.error === routes.LOGIN_PENDING;
-        if (!pending || closed || attempt === COMPLETE_ATTEMPTS) throw error;
+        if (!isPending(error) || closed || attempt === COMPLETE_ATTEMPTS) throw error;
         await wait(COMPLETE_DELAY_MS);
       }
     }
   }
 
+  /// Asks the desktop app to finish the sign-in every few seconds while the
+  /// person approves the code in another tab. Answers null when the person
+  /// cancelled or the panel is gone, and throws when the code is refused or
+  /// not approved within the limit.
+  async function awaitApproval(/** @type {string} */ authorizationId, /** @type {NonNullable<typeof approval>} */ waiting) {
+    const began = now().getTime();
+    for (;;) {
+      await Promise.race([wait(APPROVAL_POLL_MS), waiting.woken]);
+      if (waiting.stopped || closed) return null;
+      try {
+        const status = await api.syncLoginComplete(id, authorizationId);
+        return waiting.stopped || closed ? null : status;
+      } catch (error) {
+        if (!isPending(error)) throw error;
+      }
+      if (waiting.stopped || closed) return null;
+      if (now().getTime() - began >= APPROVAL_LIMIT_MS) throw new Error("The code was not approved in time. Sign in again to get a new one.");
+    }
+  }
+
+  /// Where the server asks the person to approve a code, when the desktop app
+  /// did not say.
+  const verificationUrl = (/** @type {string} */ userCode) => `${origin.replace(/\/+$/, "")}/auth/device?code=${encodeURIComponent(userCode)}`;
+
   const login = () => run("login", async () => {
+    const approving = Boolean(await signedIn());
     const started = await api.syncLogin(id);
-    await approve(started.user_code);
-    const status = await complete(started.authorization_id);
-    generation += 1;
-    set({ status });
+    if (approving) {
+      await approve(started.user_code);
+      const status = await complete(started.authorization_id);
+      generation += 1;
+      set({ status });
+      return;
+    }
+    // No session here to approve with, so the server's own page does it.
+    const url = started.verification_url || verificationUrl(started.user_code);
+    /** @type {() => void} */
+    let wake = () => {};
+    /** @type {Promise<void>} */
+    const woken = new Promise((resolve) => { wake = () => resolve(); });
+    const waiting = { stopped: false, wake, woken };
+    approval = waiting;
+    set({ waiting: { userCode: started.user_code, url } });
+    open(url);
+    try {
+      const status = await awaitApproval(started.authorization_id, waiting);
+      if (status) {
+        generation += 1;
+        set({ status });
+      }
+    } finally {
+      approval = null;
+      set({ waiting: null });
+    }
   });
+
+  /// Stops waiting for an approval. The panel goes back to the Sign in button.
+  const cancelLogin = () => {
+    if (!approval) return;
+    approval.stopped = true;
+    approval.wake();
+  };
 
   const link = (/** @type {string} */ url) => run("link", async () => {
     await api.syncLink(id, url.trim());
@@ -177,6 +252,7 @@ export function createLocalSync({ id, approve, api = routes, flush = async () =>
 
   function dispose() {
     closed = true;
+    approval?.wake();
   }
 
   return {
@@ -184,6 +260,7 @@ export function createLocalSync({ id, approve, api = routes, flush = async () =>
     defaultMessage,
     refresh,
     login,
+    cancelLogin,
     link,
     publish,
     unlink,
