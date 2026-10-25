@@ -36,7 +36,7 @@ export function parse(log, { paths = [] } = {}) {
   let file = "";
   let line = 0;
   let column = 0;
-  for (const match of String(log || "").matchAll(LOCATION)) {
+  for (const match of stripAnsi(log).matchAll(LOCATION)) {
     const candidate = match[1].trim();
     if (!known.has(candidate)) continue;
     file = candidate;
