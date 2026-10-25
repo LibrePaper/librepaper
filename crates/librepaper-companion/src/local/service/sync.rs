@@ -747,3 +747,530 @@ pub(super) async fn handle_keep(
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    use std::sync::atomic::{AtomicBool, Ordering};
+
+    use axum::routing::{get, post};
+    use axum::Json;
+
+    const PAGE: &str = "https://paper.example";
+
+    /// A folder project opened for `origin` in a fresh state home.
+    struct Fixture {
+        inner: Arc<Inner>,
+        headers: HeaderMap,
+        origin: String,
+        binding: ProjectBinding,
+        _state: Arc<tempfile::TempDir>,
+        _root: tempfile::TempDir,
+    }
+
+    impl Fixture {
+        async fn new(origin: &str) -> Fixture {
+            let state = Arc::new(tempfile::tempdir().unwrap());
+            let inner = test_support::inner(state.path(), state.path()).await;
+            Fixture::open(inner, state, origin)
+        }
+
+        fn open(inner: Arc<Inner>, state: Arc<tempfile::TempDir>, origin: &str) -> Fixture {
+            let root = tempfile::tempdir().unwrap();
+            let binding = inner.bindings.open_project(origin, root.path()).unwrap();
+            Fixture {
+                headers: test_support::bearer(&inner),
+                inner,
+                origin: origin.to_string(),
+                binding,
+                _state: state,
+                _root: root,
+            }
+        }
+
+        /// A second folder project of the same origin in the same state home.
+        fn another_folder(&self) -> Fixture {
+            Fixture::open(self.inner.clone(), self._state.clone(), &self.origin)
+        }
+
+        fn root(&self) -> &Path {
+            &self.binding.root
+        }
+
+        fn sign_in(&self, token: &str) {
+            credentials::store_token_at(&self.inner.state_home, &self.origin, token).unwrap();
+        }
+
+        /// Records a link without asking the site, as `link` does.
+        fn link_to(&self, url: &str) {
+            record_link(
+                &Folder::new(&self.inner, self.binding.clone()),
+                Link::parse(url).unwrap(),
+            )
+            .unwrap();
+        }
+
+        async fn status(&self) -> (u16, Value) {
+            let reply = handle_status(&self.inner, &self.headers, self.origin(), self.id());
+            read(reply.await).await
+        }
+
+        async fn link(&self, url: &str) -> (u16, Value) {
+            let request = json_request(json!({"url": url}));
+            let reply = handle_link(
+                &self.inner,
+                &self.headers,
+                self.origin(),
+                self.id(),
+                request,
+            );
+            read(reply.await).await
+        }
+
+        async fn unlink(&self) -> (u16, Value) {
+            let reply = handle_unlink(&self.inner, &self.headers, self.origin(), self.id());
+            read(reply.await).await
+        }
+
+        async fn publish(&self, body: Value) -> (u16, Value) {
+            let request = json_request(body);
+            let reply = handle_publish(
+                &self.inner,
+                &self.headers,
+                self.origin(),
+                self.id(),
+                request,
+            );
+            read(reply.await).await
+        }
+
+        async fn pull(&self, body: Value) -> (u16, Value) {
+            let request = json_request(body);
+            let reply = handle_pull(
+                &self.inner,
+                &self.headers,
+                self.origin(),
+                self.id(),
+                request,
+            );
+            read(reply.await).await
+        }
+
+        async fn push(&self, body: Value) -> (u16, Value) {
+            let request = json_request(body);
+            let reply = handle_push(
+                &self.inner,
+                &self.headers,
+                self.origin(),
+                self.id(),
+                request,
+            );
+            read(reply.await).await
+        }
+
+        async fn login(&self, body: Value) -> (u16, Value) {
+            let request = json_request(body);
+            let reply = handle_login(
+                &self.inner,
+                &self.headers,
+                self.origin(),
+                self.id(),
+                request,
+            );
+            read(reply.await).await
+        }
+
+        async fn complete_login(&self, authorization_id: &str) -> (u16, Value) {
+            let request = json_request(json!({"authorization_id": authorization_id}));
+            let reply = handle_login_complete(
+                &self.inner,
+                &self.headers,
+                self.origin(),
+                self.id(),
+                request,
+            );
+            read(reply.await).await
+        }
+
+        /// One request through the router, as the desktop shell sends it.
+        async fn route(&self, method: Method, path: &str, body: Option<Value>) -> (u16, Value) {
+            let builder = Request::builder()
+                .method(method)
+                .uri(format!("{BASE_PATH}/projects/{}/{path}", self.binding.id))
+                .header("host", format!("127.0.0.1:{}", test_support::PORT))
+                .header(
+                    "authorization",
+                    format!("Bearer {}", test_support::credential(&self.inner)),
+                )
+                .header("x-librepaper-origin", &self.origin);
+            let request = match body {
+                Some(body) => builder
+                    .header("content-type", "application/json")
+                    .body(Body::from(body.to_string())),
+                None => builder.body(Body::empty()),
+            }
+            .unwrap();
+            let peer: SocketAddr = "127.0.0.1:12345".parse().unwrap();
+            let reply = handle(
+                axum::extract::State(self.inner.clone()),
+                ConnectInfo(peer),
+                request,
+            );
+            read(reply.await).await
+        }
+
+        fn id(&self) -> &str {
+            &self.binding.id
+        }
+
+        fn origin(&self) -> Option<&str> {
+            Some(&self.origin)
+        }
+    }
+
+    async fn read(reply: Reply) -> (u16, Value) {
+        let status = reply.status().as_u16();
+        let bytes = axum::body::to_bytes(reply.into_body(), 1 << 20)
+            .await
+            .unwrap();
+        (
+            status,
+            serde_json::from_slice(&bytes).unwrap_or(Value::Null),
+        )
+    }
+
+    fn json_request(body: Value) -> Request<Body> {
+        Request::post("/sync")
+            .header("content-type", "application/json")
+            .body(Body::from(body.to_string()))
+            .unwrap()
+    }
+
+    fn assert_error(answer: &(u16, Value), status: u16, needle: &str) {
+        assert_eq!(answer.0, status, "{}", answer.1);
+        let error = answer.1["error"].as_str().unwrap_or_default();
+        assert!(error.contains(needle), "{error}");
+    }
+
+    #[tokio::test]
+    async fn an_unlinked_folder_reports_nothing_to_sync() {
+        let fixture = Fixture::new(PAGE).await;
+        let (status, body) = fixture.status().await;
+        assert_eq!(status, 200);
+        assert_eq!(
+            body,
+            json!({
+                "signed_in": false,
+                "linked": false,
+                "git": false,
+                "site": null,
+                "slug": null,
+                "pulled": null,
+                "changes": {"here": 0, "web": false},
+            })
+        );
+
+        // A token for the page's site is a sign-in before there is a link.
+        fixture.sign_in("lp_token");
+        let (_, body) = fixture.status().await;
+        assert_eq!(body["signed_in"], true);
+        assert_eq!(body["linked"], false);
+    }
+
+    #[tokio::test]
+    async fn linking_records_the_project_and_unlinking_clears_it() {
+        let fixture = Fixture::new(PAGE).await;
+        let (status, body) = fixture.link("https://paper.example/docs/abc123").await;
+        assert_eq!(status, 200, "{body}");
+        assert_eq!(body["linked"], true);
+        assert_eq!(body["site"], PAGE);
+        assert_eq!(body["slug"], "abc123");
+        assert_eq!(body["pulled"], Value::Null);
+        // Not signed in, so nothing was asked of the site.
+        assert_eq!(body["signed_in"], false);
+        assert_eq!(body["changes"], json!({"here": 0, "web": false}));
+
+        let store = FileStore::for_dir(&fixture.inner.state_home, fixture.root());
+        let state = store.load().unwrap().unwrap();
+        assert_eq!(state.link.slug, "abc123");
+        assert!(state.files.is_empty());
+        // The folder itself is untouched.
+        assert_eq!(std::fs::read_dir(fixture.root()).unwrap().count(), 0);
+
+        let (status, body) = fixture.status().await;
+        assert_eq!((status, &body["linked"]), (200, &json!(true)));
+
+        let (status, body) = fixture.unlink().await;
+        assert_eq!(status, 200, "{body}");
+        assert_eq!(body["linked"], false);
+        assert_eq!(body["site"], Value::Null);
+        assert!(store.load().unwrap().is_none());
+    }
+
+    #[tokio::test]
+    async fn a_link_must_be_a_project_on_the_pages_own_site() {
+        let fixture = Fixture::new(PAGE).await;
+        let other = fixture.link("https://other.example/docs/abc123").await;
+        assert_error(&other, 400, "another site");
+        let garbage = fixture.link("not a project").await;
+        assert_eq!(garbage.0, 400, "{}", garbage.1);
+        let (_, body) = fixture.status().await;
+        assert_eq!(body["linked"], false);
+    }
+
+    #[tokio::test]
+    async fn another_origin_cannot_reach_the_folder() {
+        let fixture = Fixture::new(PAGE).await;
+        let reply = handle_status(
+            &fixture.inner,
+            &fixture.headers,
+            Some("https://other.example"),
+            fixture.id(),
+        )
+        .await;
+        assert_eq!(read(reply).await.0, 404);
+    }
+
+    #[tokio::test]
+    async fn pull_and_push_need_a_link_and_a_sign_in() {
+        let fixture = Fixture::new(PAGE).await;
+        let pull = fixture.pull(json!({})).await;
+        assert_error(&pull, 409, "link this folder");
+        let push = fixture.push(json!({"message": "Edits"})).await;
+        assert_error(&push, 409, "link this folder");
+
+        fixture.link_to("https://paper.example/docs/abc123");
+        let pull = fixture.pull(json!({})).await;
+        assert_eq!((pull.0, &pull.1), (401, &json!({"error": "sign in"})));
+        let push = fixture.push(json!({"message": "Edits"})).await;
+        assert_eq!((push.0, &push.1), (401, &json!({"error": "sign in"})));
+
+        let silent = fixture.push(json!({"message": "  "})).await;
+        assert_error(&silent, 400, "message");
+        let unsafe_path = fixture.pull(json!({"mine": ["../outside.tex"]})).await;
+        assert_error(&unsafe_path, 400, "unsafe");
+    }
+
+    #[tokio::test]
+    async fn publishing_needs_a_title_a_sign_in_and_no_link() {
+        let fixture = Fixture::new(PAGE).await;
+        let untitled = fixture.publish(json!({"title": " "})).await;
+        assert_error(&untitled, 400, "title");
+        let signed_out = fixture.publish(json!({"title": "Paper"})).await;
+        assert_eq!(signed_out.0, 401, "{}", signed_out.1);
+
+        fixture.link_to("https://paper.example/docs/abc123");
+        let linked = fixture.publish(json!({"title": "Paper"})).await;
+        assert_error(&linked, 409, "already linked");
+    }
+
+    #[tokio::test]
+    async fn a_git_repository_is_left_to_git() {
+        let fixture = Fixture::new(PAGE).await;
+        std::fs::create_dir(fixture.root().join(".git")).unwrap();
+        fixture.link_to("https://paper.example/docs/abc123");
+
+        let (_, body) = fixture.status().await;
+        assert_eq!(body["git"], true);
+        let pull = fixture.pull(json!({})).await;
+        assert_error(&pull, 409, "Git");
+        let push = fixture.push(json!({"message": "Edits"})).await;
+        assert_error(&push, 409, "Git");
+        let publish = fixture.publish(json!({"title": "Paper"})).await;
+        assert_error(&publish, 409, "Git");
+    }
+
+    #[tokio::test]
+    async fn the_router_dispatches_the_sync_routes() {
+        let fixture = Fixture::new(PAGE).await;
+        let (status, body) = fixture.route(Method::GET, "sync", None).await;
+        assert_eq!((status, &body["linked"]), (200, &json!(false)));
+
+        let url = json!({"url": "https://paper.example/docs/abc123"});
+        let (status, body) = fixture.route(Method::POST, "sync/link", Some(url)).await;
+        assert_eq!((status, &body["slug"]), (200, &json!("abc123")));
+
+        let (status, _) = fixture
+            .route(Method::POST, "sync/pull", Some(json!({})))
+            .await;
+        assert_eq!(status, 401);
+        let (status, body) = fixture.route(Method::POST, "sync/unlink", None).await;
+        assert_eq!((status, &body["linked"]), (200, &json!(false)));
+
+        for (method, path) in [
+            (Method::GET, "sync/link"),
+            (Method::POST, "sync"),
+            (Method::GET, "sync/login/complete"),
+            (Method::POST, "sync/other"),
+        ] {
+            assert_eq!(fixture.route(method, path, None).await.0, 404, "{path}");
+        }
+    }
+
+    #[tokio::test]
+    async fn keeping_a_project_on_another_site_is_refused_before_a_folder_is_asked_for() {
+        let fixture = Fixture::new(PAGE).await;
+        let request = json_request(json!({"url": "https://other.example/docs/abc123"}));
+        let reply = handle_keep(&fixture.inner, &fixture.headers, fixture.origin(), request).await;
+        assert_error(&read(reply).await, 400, "another site");
+    }
+
+    /// The site's device flow: the code is approved when `approved` is set.
+    struct DeviceStub {
+        approved: AtomicBool,
+    }
+
+    async fn device_start() -> Json<Value> {
+        Json(json!({
+            "device_code": "device-code",
+            "user_code": "ABCD-EFGH",
+            "verification_url": "https://paper.example/auth/device?code=ABCD-EFGH",
+            "expires_in": 600,
+            "interval": 5,
+        }))
+    }
+
+    async fn device_token(
+        axum::extract::State(stub): axum::extract::State<Arc<DeviceStub>>,
+    ) -> (StatusCode, Json<Value>) {
+        if stub.approved.load(Ordering::SeqCst) {
+            (StatusCode::OK, Json(json!({"token": "lp_stub_token"})))
+        } else {
+            (
+                StatusCode::BAD_REQUEST,
+                Json(json!({"error": "authorization_pending"})),
+            )
+        }
+    }
+
+    async fn serve(app: axum::Router) -> (String, tokio::task::JoinHandle<()>) {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let origin = format!("http://{}", listener.local_addr().unwrap());
+        let task = tokio::spawn(async move {
+            axum::serve(listener, app).await.unwrap();
+        });
+        (origin, task)
+    }
+
+    async fn device_site() -> (String, Arc<DeviceStub>, tokio::task::JoinHandle<()>) {
+        let stub = Arc::new(DeviceStub {
+            approved: AtomicBool::new(false),
+        });
+        let app = axum::Router::new()
+            .route("/api/auth/device", post(device_start))
+            .route("/api/auth/device/token", post(device_token))
+            .with_state(stub.clone());
+        let (origin, task) = serve(app).await;
+        (origin, stub, task)
+    }
+
+    #[tokio::test]
+    async fn signing_in_stores_the_token_once_the_code_is_approved() {
+        let (site, stub, _task) = device_site().await;
+        let fixture = Fixture::new(&site).await;
+        let (status, begun) = fixture.login(json!({})).await;
+        assert_eq!(status, 200, "{begun}");
+        assert_eq!(begun["user_code"], "ABCD-EFGH");
+        assert_eq!(
+            begun["verification_url"],
+            "https://paper.example/auth/device?code=ABCD-EFGH"
+        );
+        let authorization = begun["authorization_id"].as_str().unwrap().to_string();
+
+        // The page has not approved the code yet: the page tries again.
+        let waiting = fixture.complete_login(&authorization).await;
+        assert_error(&waiting, 400, "approve the code");
+        assert_eq!(
+            credentials::stored_token_at(&fixture.inner.state_home, &site),
+            ""
+        );
+
+        stub.approved.store(true, Ordering::SeqCst);
+        let (status, done) = fixture.complete_login(&authorization).await;
+        assert_eq!(status, 200, "{done}");
+        assert_eq!(done["signed_in"], true);
+        assert_eq!(done["linked"], false);
+        assert_eq!(
+            credentials::stored_token_at(&fixture.inner.state_home, &site),
+            "lp_stub_token"
+        );
+
+        // A code is claimed once.
+        let again = fixture.complete_login(&authorization).await;
+        assert_error(&again, 400, "start again");
+    }
+
+    #[tokio::test]
+    async fn a_sign_in_belongs_to_the_folder_that_started_it() {
+        let (site, stub, _task) = device_site().await;
+        stub.approved.store(true, Ordering::SeqCst);
+        let fixture = Fixture::new(&site).await;
+        let other = fixture.another_folder();
+        let (_, begun) = fixture.login(json!({})).await;
+        let authorization = begun["authorization_id"].as_str().unwrap().to_string();
+
+        let stolen = other.complete_login(&authorization).await;
+        assert_error(&stolen, 400, "does not belong");
+        assert_eq!(
+            credentials::stored_token_at(&fixture.inner.state_home, &site),
+            ""
+        );
+        let (status, _) = fixture.complete_login(&authorization).await;
+        assert_eq!(status, 200);
+    }
+
+    #[tokio::test]
+    async fn a_newer_sign_in_replaces_the_one_before_it() {
+        let (site, stub, _task) = device_site().await;
+        stub.approved.store(true, Ordering::SeqCst);
+        let fixture = Fixture::new(&site).await;
+        let (_, first) = fixture.login(json!({})).await;
+        let (_, second) = fixture.login(json!({})).await;
+        let first = first["authorization_id"].as_str().unwrap().to_string();
+        let second = second["authorization_id"].as_str().unwrap().to_string();
+
+        assert_error(&fixture.complete_login(&first).await, 400, "start again");
+        assert_eq!(fixture.complete_login(&second).await.0, 200);
+    }
+
+    #[tokio::test]
+    async fn signing_in_names_the_pages_own_site_or_the_linked_one() {
+        let (site, _stub, _task) = device_site().await;
+        let fixture = Fixture::new(&site).await;
+        let elsewhere = fixture
+            .login(json!({"site": "https://other.example"}))
+            .await;
+        assert_error(&elsewhere, 400, "not the site of this page");
+        let own = fixture.login(json!({"site": site})).await;
+        assert_eq!(own.0, 200, "{}", own.1);
+    }
+
+    /// A site that serves the path rules and nothing else.
+    async fn rules_site() -> (String, tokio::task::JoinHandle<()>) {
+        let app = axum::Router::new().route(
+            "/api/config",
+            get(|| async {
+                Json(json!({
+                    "text_extensions": ["tex", "typ", "md", "bib"],
+                    "asset_extensions": ["png", "jpg"],
+                    "derived_extensions": ["pdf"],
+                    "max_path": 255,
+                    "max_files": 1000,
+                }))
+            }),
+        );
+        serve(app).await
+    }
+
+    #[tokio::test]
+    async fn pushing_a_folder_that_matches_the_record_sends_nothing() {
+        let (site, _task) = rules_site().await;
+        let fixture = Fixture::new(&site).await;
+        fixture.sign_in("lp_token");
+        fixture.link_to(&format!("{site}/docs/abc123"));
+
+        let (status, body) = fixture.push(json!({"message": "No changes"})).await;
+        assert_eq!((status, body), (200, json!({"nothing": true})));
+    }
+}
