@@ -1696,11 +1696,7 @@ mod settings_tests {
     /// Serves the real router on a loopback port and sends it one multipart
     /// request, as the desktop shell would. Answers the status and the whole
     /// reply. A handler called directly never meets the layers of the router.
-    async fn over_the_wire(
-        inner: &Arc<Inner>,
-        request_line: &str,
-        body: Vec<u8>,
-    ) -> (u16, String) {
+    async fn over_the_wire(inner: &Arc<Inner>, request_line: &str, body: Vec<u8>) -> (u16, String) {
         use tokio::io::{AsyncReadExt, AsyncWriteExt};
         let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
             .await
