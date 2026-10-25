@@ -3185,7 +3185,17 @@
     configureLatex(format, session || readerProjectOwner);
     warmEngine(format);
     if (mayEdit && ["quarto", "typst", "markdown"].includes(format)) readQuartoBinding();
-    if (!previous) return;
+    if (!previous) {
+      // The first file the preview is given is rendered now. Waiting for the
+      // typing pause would hold it for a second or more while the project
+      // loads, since every hydration step restarts that timer.
+      clearTimeout(previewTimer);
+      previewTimer = null;
+      void tick().then(() => {
+        if (!readerDisposed && previewPath === path) void paintPreview();
+      });
+      return;
+    }
     // Invalidate both running compiles and replayed pages, even when the
     // two selected files use the same renderer or both produce PDFs.
     navigationGeneration += 1;

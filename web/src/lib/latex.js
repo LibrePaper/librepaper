@@ -610,6 +610,10 @@ async function runCompile({ tree, jobGeneration: generationAtStart, token, start
   });
 
   let releaseEntry;
+  // Reading the release index and staging the job come before the engine
+  // itself, and they are part of starting it as far as anyone watching can
+  // tell. A compile that reuses a loaded engine passes through quickly.
+  if (!release) statusStore.set({ phase: "loading", message: "Loading browser compiler", backend: "browser", engine, progress: null });
   try {
     const loadingRelease = loadRelease();
     const pendingRelease = releasePromise;
