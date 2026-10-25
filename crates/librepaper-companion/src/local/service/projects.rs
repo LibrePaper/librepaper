@@ -1197,7 +1197,9 @@ mod tests {
         let origin = "https://paper.example";
         let binding = inner.bindings.open_project(origin, root.path()).unwrap();
         let headers = test_support::bearer(&inner);
-        let request = Request::get("/changes?since=5").body(Body::empty()).unwrap();
+        let request = Request::get("/changes?since=5")
+            .body(Body::empty())
+            .unwrap();
         let reply = handle_changes(&inner, &headers, Some(origin), &binding.id, request).await;
         assert_eq!(reply.status(), StatusCode::OK);
         let bytes = axum::body::to_bytes(reply.into_body(), 1 << 20)
