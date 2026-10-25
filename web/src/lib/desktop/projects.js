@@ -12,6 +12,21 @@ export async function openFolderProject() {
   return response.json();
 }
 
+/** Show the native folder chooser and keep a web project in the chosen empty
+ * folder: the desktop app links the folder, pulls the project into it and
+ * opens it as a folder project. Resolves to null when the person cancels. A
+ * folder that is not empty is refused with "choose an empty folder".
+ * @param {string} url the project page, `https://<site>/docs/<slug>`
+ * @returns {Promise<{ id: string, project: string, name: string, root_name: string } | null>} */
+export async function keepFolderProject(url) {
+  const response = await send("POST", "projects/keep", { jsonBody: { url } });
+  if (response.status === 204) return null;
+  return response.json();
+}
+
+/** Where a folder project opens. @param {string} id */
+export const folderProjectHref = (id) => `/reader.html?local=${encodeURIComponent(id)}`;
+
 /** The folder projects, most recently opened first.
  * @returns {Promise<{ id: string, project: string, name: string, opened_at: string, present: boolean }[]>} */
 export async function folderProjects() {

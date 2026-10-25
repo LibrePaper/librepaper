@@ -13,6 +13,7 @@
   import { createHistorySource } from "../lib/reader/history-source.svelte.js";
   import HistoryWorkspace from "./reader/HistoryWorkspace.svelte";
   import { createFolderSync } from "../lib/reader/folder-sync.js";
+  import { createLocalSync } from "../lib/reader/local-sync.svelte.js";
   import { diagnosticContext } from "../lib/assistant-review.js";
   import { sourcePassage } from "../lib/assistant.js";
   import { candidateTree, capturePreviewTree, previewCandidate } from "../lib/assistant-preview.js";
@@ -21,6 +22,7 @@
   import { parse as parseSynctex, lineAt as synctexLineAt } from "../lib/synctex.js";
   import * as localQuarto from "../lib/desktop/client.js";
   import { backups as backupStatusStore } from "../lib/desktop/backups.svelte.js";
+  import { folderProjectHref, keepFolderProject } from "../lib/desktop/projects.js";
   import { basename } from "../lib/file-manager.js";
   import { createAnnotations } from "../lib/reader/annotations.svelte.js";
   import { createReaderBoot } from "../lib/reader/boot.js";
@@ -111,6 +113,7 @@
   import Collaboration from "./reader/Collaboration.svelte";
   import Changes from "./reader/Changes.svelte";
   import Share from "./reader/Share.svelte";
+  import Sync from "./reader/Sync.svelte";
   import Diagnostics from "./reader/Diagnostics.svelte";
   import History from "./reader/History.svelte";
   import PendingAnnotations from "./reader/PendingAnnotations.svelte";
@@ -1507,6 +1510,10 @@
     onError: (error) => say(`The project folder could not be updated: ${error?.message || "unknown error"}`, { kind: "problem", id: "reader:folder-sync" }),
   }) : null;
   $effect(() => () => folderSync?.dispose());
+  // The Sync panel of a local project. A push first settles the folder, so
+  // the disk holds what the editor holds when the command reads it.
+  const localSync = LOCAL ? createLocalSync({ id: LOCAL_ID, flush: () => folderSync.flush() }) : null;
+  $effect(() => () => localSync?.dispose());
   // The editor becomes ready. A local project opens with one sync that sends nothing, because the
   // client was told what the folder holds. It makes every file managed.
   $effect(() => {
@@ -2515,13 +2522,29 @@
     if (value === "download-source") return downloadSource();
     if (value === "download-comments") return downloadComments();
     if (value === "download-pdf" || value === "download-html" || value === "download-docx") return downloadAs(value.slice(9));
-    if (value === "share" || value === "history") return openPanel(value);
+    if (value === "share" || value === "history" || value === "sync") return openPanel(value);
+    if (value === "keep-folder") return keepFolder();
     if (value === "save-template") return openSaveTemplateModal();
     if (!["new-file", "new-folder", "upload"].includes(value)) return;
     await openPanel("files");
     await tick();
     if (value === "upload") fileList?.choose();
     else fileList?.start(value === "new-file" ? "file" : "folder");
+  }
+
+  // Keeps this web project in a folder on this computer. The desktop app asks
+  // for an empty folder, links it to this project, pulls the files into it and
+  // answers with the folder project, which opens the way Open folder does.
+  async function keepFolder() {
+    try {
+      const project = await keepFolderProject(`${location.origin}/docs/${SLUG}`);
+      if (project) location.href = folderProjectHref(project.id);
+    } catch (error) {
+      // A folder that is not empty is a choice to make again, not a failure.
+      const refused = error?.status === 409 && error?.message;
+      const text = refused ? `${error.message[0].toUpperCase()}${error.message.slice(1)}.` : error?.message || "The desktop app could not keep a folder for this project.";
+      say(text, { kind: refused ? "note" : "problem", id: "reader:keep-folder" });
+    }
   }
 
   // Which exports the File menu can honour, for the file being previewed.
@@ -3858,7 +3881,9 @@
   {/if}
   {@render downloadMenu()}
   {#if me?.id && !LOCAL}<Menu.Item value="save-template" class="menuitem">Save as template…</Menu.Item>{/if}
+  {#if hasDesktop && !LOCAL && mayEdit}<Menu.Item value="keep-folder" class="menuitem">Keep a folder on this computer…</Menu.Item>{/if}
   <hr class="hr my-1" />
+  {#if tabs.some((tab) => tab.id === "sync")}<Menu.Item value="sync" class="menuitem">Sync…</Menu.Item>{/if}
   {#if canSeeSharing || canPublish}<Menu.Item value="share" class="menuitem">Share…</Menu.Item>{/if}
   <!-- Only where the panel behind it is one this reader is offered: a menu
        that opens a column the rail does not have is the second list of who
@@ -4100,6 +4125,10 @@
       onclose={() => showPanel("")} />
   {/snippet}
 
+  {#snippet syncPanel()}
+    <Sync sync={localSync} open={panel === "sync" && shown.comments} defaultTitle={doc.title || ""} />
+  {/snippet}
+
   {#snippet diagnosticsPanel()}
     <Diagnostics {diagnostics}
       entry={previewPath}
@@ -4142,7 +4171,7 @@
     label="Document"
     panels={{ files: filesPanel, outline: outlinePanel, agent: agentPanel,
               collaboration: collaborationPanel, changes: changesPanel,
-              share: sharePanel, diagnostics: diagnosticsPanel, history: historyPanel }}
+              share: sharePanel, sync: syncPanel, diagnostics: diagnosticsPanel, history: historyPanel }}
     panes={panes} sidebarPane={PANES.sidebar}
     onselectpanel={selectPanel} ondrop={dropped}
     onsize={(size) => setSize(PANES.sidebar, size)} onguide={(where) => (guide = where)}

@@ -42,7 +42,7 @@
   import { localProjects } from "../lib/offline-projects.js";
   import { provide } from "../lib/support/providers.js";
   import * as localBridge from "../lib/desktop/client.js";
-  import { openFolderProject, folderProjects, forgetFolderProject } from "../lib/desktop/projects.js";
+  import { folderProjectHref, openFolderProject, folderProjects, forgetFolderProject } from "../lib/desktop/projects.js";
   import { createPreferences } from "../lib/reader/preferences.svelte.js";
   import { readDefaultPreview } from "../lib/build-preferences.js";
   import { warmReader } from "../lib/warm-reader.js";
@@ -1140,7 +1140,7 @@
   async function openFolder() {
     try {
       const project = await openFolderProject();
-      if (project) location.href = `/reader.html?local=${encodeURIComponent(project.id)}`;
+      if (project) location.href = folderProjectHref(project.id);
     } catch (error) { say(error?.message || "The desktop app could not open that folder."); }
   }
 
@@ -1213,7 +1213,7 @@
         {#each recentFolders as folder (folder.id)}
           <li class="folder-row">
             {#if folder.present}
-              <a class="folder-name" href="/reader.html?local={encodeURIComponent(folder.id)}">{folder.name}</a>
+              <a class="folder-name" href={folderProjectHref(folder.id)}>{folder.name}</a>
               <span class="folder-when" title={folder.opened_at}>{since(folder.opened_at)}</span>
             {:else}
               <span class="folder-name">{folder.name}</span>
