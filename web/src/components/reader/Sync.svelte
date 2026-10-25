@@ -139,6 +139,19 @@
          to this site would not change whose link it is. -->
     <p class="sync-lead">This folder is linked to a project on another site. Unlink it to use it with this one.</p>
     {@render unlinkFoot()}
+  {:else if !status.signed_in && view.waiting}
+    <!-- This page has no session on the server, so the code is approved on the
+         server's own page in another tab. The link is there for a browser that
+         blocked the tab from opening. -->
+    <p class="sync-lead">Approve this code in the other tab to finish signing in.</p>
+    <p class="sync-code">{view.waiting.userCode}</p>
+    <p class="sync-line" role="status">Waiting for the code to be approved in the other tab</p>
+    <p class="sync-line panel-meta">
+      <a href={view.waiting.url} target="_blank" rel="noopener noreferrer">Open the approval page again</a>
+    </p>
+    <div class="sync-row">
+      <button type="button" class="btn btn-sm lp-control-tonal-brand" onclick={() => sync.cancelLogin()}>Cancel</button>
+    </div>
   {:else if !status.signed_in}
     <p class="sync-lead">Sign in to keep this folder and a project on the web in step. This uses your account on this server.</p>
     <div class="sync-row">
@@ -198,6 +211,7 @@
 
 <style>
   .sync-lead { margin: 0 0 calc(var(--spacing) * 3); }
+  .sync-code { margin: 0 0 calc(var(--spacing) * 3); font-family: var(--font-mono, monospace); font-size: var(--text-xl, 1.25rem); letter-spacing: .1em; overflow-wrap: anywhere; user-select: all; }
   .sync-block { display: grid; grid-template-columns: minmax(0, 1fr); gap: calc(var(--spacing) * 2); margin-top: calc(var(--spacing) * 4); }
   .sync-field { display: grid; grid-template-columns: minmax(0, 1fr); gap: var(--spacing); }
   .sync-input { width: 100%; min-width: 0; }

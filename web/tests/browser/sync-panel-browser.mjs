@@ -36,13 +36,19 @@ const linked = (extra = {}) => ({ signed_in: true, linked: true, site: "https://
 // Each scene sets the status the stand-in answers with, what each command
 // does to it, and the answers a pull or a push gives in turn. Signing in is
 // the desktop app's code, the page's approval of it, and the finish, which
-// refuses while the code is pending for as many tries as the scene asks.
+// refuses while the code is pending for as many tries as the scene asks. A
+// scene with `session: false` is a page with no session on the server: the code
+// is then approved in another tab, and `hold` is the promise that the wait
+// between two asks of the finish stays in until the scene releases it.
 const scene = () => window.scene;
 const refusal = (failure) => Object.assign(new Error(failure.message || failure.body?.error || "The desktop app refused the request."), { name: "Refused", status: failure.status, body: failure.body });
 const settle = (value) => { if (value?.fail) throw refusal(value.fail); return value; };
 const api = {
   syncStatus: async () => { scene().calls.push(["syncStatus"]); return structuredClone(scene().status); },
-  syncLogin: async () => { scene().calls.push(["syncLogin"]); return { authorization_id: "auth-1", user_code: "ABCD-EFGH" }; },
+  syncLogin: async () => {
+    scene().calls.push(["syncLogin"]);
+    return { authorization_id: "auth-1", user_code: "ABCD-EFGH", ...(scene().verification ? { verification_url: scene().verification } : {}) };
+  },
   syncLoginComplete: async (id, authorizationId) => {
     scene().calls.push(["syncLoginComplete", authorizationId]);
     if (scene().pendingTries > 0) {
@@ -67,7 +73,9 @@ const mount = async (next, props = {}) => {
   const sync = createLocalSync({
     id: "f1", api,
     approve: async (code) => { scene().calls.push(["approve", code]); },
-    wait: async () => {},
+    signedIn: async () => scene().session !== false,
+    open: (url) => { scene().calls.push(["open", url]); },
+    wait: () => scene().hold ?? Promise.resolve(),
     flush: async () => { scene().saves += 1; return scene().saved !== false; },
   });
   component = createClassComponent({ component: Sync, target: document.getElementById("panel"), props: { sync, open: true, defaultTitle: "thesis", ...props } });
@@ -113,6 +121,48 @@ window.syncPanelCheck = async () => {
   await flush();
   await press("Sign in");
   check(text().includes("that sign-in expired") && button("Sign in"), "an expired sign-in goes back to the button: " + text());
+
+  /* ----------------------------- no session on the server: another tab */
+
+  // The page cannot approve the code, so it shows it, opens the server's page,
+  // and waits until the code is approved there.
+  const verification = "https://app.example/auth/device?code=ABCD-EFGH";
+  let release;
+  await mount({
+    status: { signed_in: false, linked: false }, afterLogin: { signed_in: true, linked: false },
+    session: false, verification, hold: new Promise((resolve) => { release = resolve; }),
+  });
+  await flush();
+  await press("Sign in");
+  check(text().includes("Waiting for the code to be approved in the other tab"), "a page with no session waits for the other tab: " + text());
+  check(panel().querySelector(".sync-code")?.textContent.trim() === "ABCD-EFGH", "and shows the code: " + text());
+  check(calls("approve").length === 0, "it never approves the code itself");
+  check(calls("open").length === 1 && calls("open")[0][1] === verification, "it opens the verification page the desktop app named: " + JSON.stringify(calls("open")));
+  const again = [...document.querySelectorAll("#panel a")].find((node) => node.getAttribute("href") === verification);
+  check(again && again.target === "_blank" && again.rel.includes("noopener"), "and offers the page as a link in case the tab was blocked");
+  check(button("Cancel") && !button("Sign in") && !button("Cancel").disabled, "Cancel is there and Sign in is not: " + text());
+  check(calls("syncLoginComplete").length === 0, "the finish has not been asked yet");
+  for (const width of [260, 320, 400, 600]) {
+    document.documentElement.style.setProperty("--panel-width", width + "px");
+    await flush();
+    check(!overflows(), "no sideways scrolling while waiting at " + width + "px");
+  }
+  document.documentElement.style.removeProperty("--panel-width");
+  release();
+  await flush();
+  check(calls("syncLoginComplete").length === 1 && text().includes("Link to a project") && !text().includes("Waiting for the code"), "once the code is approved the panel moves on: " + text());
+
+  // Cancel goes back to the Sign in button and asks the finish for nothing.
+  await mount({
+    status: { signed_in: false, linked: false }, afterLogin: { signed_in: true, linked: false },
+    session: false, hold: new Promise(() => {}),
+  });
+  await flush();
+  await press("Sign in");
+  check(calls("open")[0][1].endsWith("/auth/device?code=ABCD-EFGH"), "with no page named, the server's device page is opened: " + JSON.stringify(calls("open")));
+  await press("Cancel");
+  check(button("Sign in") && !button("Cancel") && !text().includes("Waiting for the code"), "Cancel goes back to the Sign in button: " + text());
+  check(!text().includes("not approved") && calls("syncLoginComplete").length === 0, "and asks for nothing more: " + text());
 
   /* ------------------------------------------------ signed in, not linked */
 
