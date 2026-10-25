@@ -41,14 +41,14 @@
   const bracketsOn = (on) => (on ? [closeBrackets(), keymap.of(closeBracketsKeymap)] : []);
   const checkOn = (on, citations) => (on ? [lintGutter(), citations] : []);
   // The checker for a source, chosen from the setting, the dialect, the prose
-  // format of the file and its text. Code and data files get no checker, and
+  // format of the file and its text, which is read only when Harper is asked for. Code and data files get no checker, and
   // the browser's spellcheck is off there, where every identifier would be
   // underlined. A prose file gets Harper when the setting says so, this
   // deployment serves it and the text is English. Any other prose file gets
   // the browser's spellcheck, with its markup skipped by spellcheckExtension.
   const proofingOn = (proofing, dialect, prose, text) => {
     if (!prose || proofing === "off") return EditorView.contentAttributes.of({ spellcheck: "false" });
-    if (proofing === "harper" && harperAvailable() && isEnglishDocument(text, prose)) return harperExtension(prose, dialect);
+    if (proofing === "harper" && harperAvailable() && isEnglishDocument(text(), prose)) return harperExtension(prose, dialect);
     return spellcheckExtension(prose);
   };
 
@@ -1116,7 +1116,7 @@
       extensions: [
         EditorView.editable.of(Boolean(editable)),
         EditorView.contentAttributes.of({ "aria-label": path ? `Source of ${path}` : "Source" }),
-        spellcheckCompartment.of(proofingOn(untrack(() => proofing), untrack(() => dialect), proseFormat(id), text.toString())),
+        spellcheckCompartment.of(proofingOn(untrack(() => proofing), untrack(() => dialect), proseFormat(id), () => text.toString())),
         // Vim, when the setting says so, and always first: an earlier
         // extension has precedence, and Vim has to see a key before the
         // default keymap does, or `j` inserts a letter instead of moving.
@@ -1270,7 +1270,7 @@
       effects: [
         completionCompartment.reconfigure(completionOn(untrack(() => completion))),
         bracketsCompartment.reconfigure(bracketsOn(untrack(() => brackets))),
-        spellcheckCompartment.reconfigure(proofingOn(untrack(() => proofing), untrack(() => dialect), proseFormat(id), target.state.doc.toString())),
+        spellcheckCompartment.reconfigure(proofingOn(untrack(() => proofing), untrack(() => dialect), proseFormat(id), () => target.state.doc.toString())),
         checkCompartment.reconfigure(checkOn(untrack(() => check), citationKeys)),
       ],
     });

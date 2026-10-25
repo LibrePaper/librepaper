@@ -68,13 +68,13 @@ import { proseText, keepLint, paragraphs } from "../../src/lib/harper/prose.js";
 {
   const text = "First one.\nStill first.\n\nSecond one.\n\nThird.";
   assert.deepEqual(paragraphs(text, 14, 14), [{ from: 0, to: 23 }]);
-  assert.deepEqual(paragraphs(text, 26, 28), [{ from: 25, to: 37 }]);
+  assert.deepEqual(paragraphs(text, 26, 28), [{ from: 25, to: 36 }]);
 }
 
 // A range across two paragraphs returns both, without the blank line between.
 {
   const text = "First one.\nStill first.\n\nSecond one.\n\nThird.";
-  assert.deepEqual(paragraphs(text, 20, 30), [{ from: 0, to: 23 }, { from: 25, to: 37 }]);
+  assert.deepEqual(paragraphs(text, 20, 30), [{ from: 0, to: 23 }, { from: 25, to: 36 }]);
 }
 
 // Text with no blank line is one paragraph.

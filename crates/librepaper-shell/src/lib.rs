@@ -264,7 +264,14 @@ mod shell_tests {
         let sha = "a".repeat(64);
         let json = modules_json("https://assets.example/", &lock(&sha)).unwrap();
         let modules: serde_json::Value = serde_json::from_str(&json).unwrap();
-        for name in ["markdown", "bibliography", "citations", "typst", "pandoc", "harper"] {
+        for name in [
+            "markdown",
+            "bibliography",
+            "citations",
+            "typst",
+            "pandoc",
+            "harper",
+        ] {
             assert_eq!(
                 modules[name],
                 format!("https://assets.example/wasm/{sha}/{name}.wasm")
