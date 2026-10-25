@@ -13,6 +13,13 @@
 //! linked from another site finds it unlinked and refused.
 //! Pull and push touch no change-poller state: the files a pull writes are
 //! outside changes like any other, and the poll hands them to the editor.
+//!
+//! A local render writes its result and whatever the tool leaves beside it
+//! into the folder. The editor leaves those out of the project, and so does
+//! every call into the sync crate here: the folder's recorded render outputs
+//! are passed as the paths to exclude, so a push, a publish, a pull and the
+//! count of changes never see them. The record is the one the change poller
+//! keeps, in memory, per folder project.
 
 use super::*;
 
@@ -125,6 +132,15 @@ impl Folder {
         self.state(origin)?.ok_or_else(|| refuse(409, NOT_LINKED))
     }
 
+    /// The files a render wrote into the folder, which the sync leaves alone.
+    fn render_outputs(&self, inner: &Inner) -> Vec<String> {
+        inner
+            .projects
+            .render_outputs(&self.binding.id)
+            .into_iter()
+            .collect()
+    }
+
     /// A folder that is a Git repository syncs through Git. Pull, push and
     /// publish here are the form for a folder without it.
     fn refuse_git(&self) -> Result<(), Failure> {
@@ -230,7 +246,11 @@ async fn folder_status(
         match rules {
             Ok(rules) => {
                 let (root, state) = (folder.binding.root.clone(), state.clone());
-                match tokio::task::spawn_blocking(move || changes_here(&root, &state, &rules)).await
+                let exclude = folder.render_outputs(inner);
+                match tokio::task::spawn_blocking(move || {
+                    changes_here(&root, &state, &rules, &exclude)
+                })
+                .await
                 {
                     Ok(Ok(count)) => here = count,
                     Ok(Err(error)) => problem = Some(error.to_string()),
@@ -600,7 +620,8 @@ async fn publish_folder(
         ));
     }
     let client = client_for(inner, &origin_site(origin)?)?;
-    let link = publish(&client, &folder.binding.root, &folder.store, title)
+    let exclude = folder.render_outputs(inner);
+    let link = publish(&client, &folder.binding.root, &folder.store, title, &exclude)
         .await
         .map_err(|error| failed(&error))?;
     let mut body = folder_status(inner, folder, origin).await?;
@@ -660,6 +681,7 @@ async fn run_pull(
         merge: false,
         mine,
         theirs,
+        exclude: folder.render_outputs(inner),
     };
     let outcome = pull(&client, &folder.binding.root, &folder.store, &options)
         .await
@@ -735,6 +757,7 @@ async fn run_push(
     let options = PushOptions {
         message: message.to_owned(),
         author: None,
+        exclude: folder.render_outputs(inner),
     };
     let outcome = push(&client, &folder.binding.root, &folder.store, &options)
         .await
@@ -1323,7 +1346,7 @@ mod tests {
     async fn rules_reply() -> Json<Value> {
         Json(json!({
             "text_extensions": ["tex", "typ", "md", "bib"],
-            "asset_extensions": ["png", "jpg"],
+            "asset_extensions": ["png", "jpg", "pdf"],
             "derived_extensions": ["pdf"],
             "max_path": 255,
             "max_files": 1000,
@@ -1371,6 +1394,169 @@ mod tests {
 
         let (status, body) = fixture.push(json!({"message": "No changes"})).await;
         assert_eq!((status, body), (200, json!({"nothing": true})));
+    }
+
+    /// A site that serves the path rules and counts every other request.
+    async fn counting_rules_site() -> (String, Arc<AtomicUsize>, tokio::task::JoinHandle<()>) {
+        let requests = Arc::new(AtomicUsize::new(0));
+        let counter = requests.clone();
+        let app = axum::Router::new()
+            .route("/api/config", get(rules_reply))
+            .fallback(move || {
+                let counter = counter.clone();
+                async move {
+                    counter.fetch_add(1, Ordering::SeqCst);
+                    StatusCode::NOT_FOUND
+                }
+            });
+        let (origin, task) = serve(app).await;
+        (origin, requests, task)
+    }
+
+    /// The two files a local render leaves in a folder: its result, and a
+    /// figure it made beside it.
+    const RENDER_OUTPUTS: [&str; 2] = ["main.pdf", "main_files/figure-1.png"];
+
+    fn write_render_outputs(fixture: &Fixture) {
+        std::fs::write(fixture.root().join("main.pdf"), b"%PDF rendered").unwrap();
+        std::fs::create_dir_all(fixture.root().join("main_files")).unwrap();
+        std::fs::write(fixture.root().join("main_files/figure-1.png"), b"png").unwrap();
+    }
+
+    /// Records what the folder's render wrote, as the job worker does.
+    fn note_render_outputs(fixture: &Fixture) {
+        fixture
+            .inner
+            .projects
+            .note_render_outputs(fixture.id(), RENDER_OUTPUTS.map(String::from));
+    }
+
+    #[tokio::test]
+    async fn a_file_a_render_wrote_is_not_among_the_changes_a_push_sends() {
+        let (site, requests, _task) = counting_rules_site().await;
+        let fixture = Fixture::new(&site).await;
+        fixture.sign_in("lp_token");
+        fixture.link_to(&format!("{site}/docs/abc123"));
+        write_render_outputs(&fixture);
+
+        // Until the render is recorded the files are changes made here.
+        let (_, body) = fixture.status().await;
+        assert_eq!(body["changes"]["here"], 2, "{body}");
+
+        note_render_outputs(&fixture);
+        let (_, body) = fixture.status().await;
+        assert_eq!(body["changes"]["here"], 0, "{body}");
+
+        let before = requests.load(Ordering::SeqCst);
+        let (status, body) = fixture.push(json!({"message": "Edits"})).await;
+        assert_eq!((status, body), (200, json!({"nothing": true})));
+        assert_eq!(
+            requests.load(Ordering::SeqCst),
+            before,
+            "no figure was offered or uploaded"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_file_a_render_wrote_is_not_published_with_the_folder() {
+        let uploaded = Arc::new(std::sync::Mutex::new(String::new()));
+        let held = uploaded.clone();
+        let app = axum::Router::new()
+            .route("/api/config", get(rules_reply))
+            .route(
+                "/api/documents",
+                post(move |body: axum::body::Bytes| {
+                    let held = held.clone();
+                    async move {
+                        *held.lock().unwrap() = String::from_utf8_lossy(&body).into_owned();
+                        Json(json!({"slug": "abc123"}))
+                    }
+                }),
+            );
+        let (site, _task) = serve(app).await;
+        let fixture = Fixture::new(&site).await;
+        fixture.sign_in("lp_token");
+        let plain = fixture.another_folder();
+        for folder in [&fixture, &plain] {
+            std::fs::write(folder.root().join("main.tex"), "main\n").unwrap();
+            write_render_outputs(folder);
+        }
+
+        // A folder whose render is not recorded sends everything it holds.
+        let (status, body) = plain.publish(json!({"title": "Paper"})).await;
+        assert_eq!(status, 200, "{body}");
+        let sent = uploaded.lock().unwrap().clone();
+        assert!(sent.contains("filename=\"main.tex\""), "{sent}");
+        assert!(sent.contains("filename=\"main.pdf\""), "{sent}");
+
+        note_render_outputs(&fixture);
+        let (status, body) = fixture.publish(json!({"title": "Paper"})).await;
+        assert_eq!(status, 200, "{body}");
+        let sent = uploaded.lock().unwrap().clone();
+        assert!(sent.contains("filename=\"main.tex\""), "{sent}");
+        assert!(!sent.contains("main.pdf"), "{sent}");
+        assert!(!sent.contains("figure-1.png"), "{sent}");
+
+        // Nor does it count them as changes made since.
+        assert_eq!(body["changes"]["here"], 0, "{body}");
+        let store = FileStore::for_dir(&fixture.inner.state_home, fixture.root());
+        let state = store.load().unwrap().unwrap();
+        assert_eq!(state.files.keys().collect::<Vec<_>>(), ["main.tex"]);
+    }
+
+    #[tokio::test]
+    async fn a_pull_does_not_write_a_file_a_render_wrote() {
+        let digest = "a".repeat(64);
+        let version = json!({
+            "files": {
+                "main.tex": {"kind": "text"},
+                "main.pdf": {"kind": "asset", "digest": digest},
+                "main_files/figure-1.png": {"kind": "asset", "digest": digest},
+            },
+            "texts": {"main.tex": "main\n"},
+        });
+        let app = axum::Router::new()
+            .route("/api/config", get(rules_reply))
+            .fallback(move |uri: axum::http::Uri| {
+                let version = version.clone();
+                async move {
+                    match uri.path() {
+                        "/api/documents/abc123/history" => (
+                            StatusCode::OK,
+                            Json(json!({
+                                "labels": [{"sha": "v1", "sequence": 1, "label": "First"}],
+                                "next_cursor": null,
+                            })),
+                        ),
+                        "/api/documents/abc123/history/v1" => (StatusCode::OK, Json(version)),
+                        _ => (StatusCode::NOT_FOUND, Json(json!({"error": "no such file"}))),
+                    }
+                }
+            });
+        let (site, _task) = serve(app).await;
+        let fixture = Fixture::new(&site).await;
+        fixture.sign_in("lp_token");
+        let plain = fixture.another_folder();
+        for folder in [&fixture, &plain] {
+            folder.link_to(&format!("{site}/docs/abc123"));
+        }
+
+        // Without the record the pull fetches the render's files from the site,
+        // which does not hold them.
+        let (status, body) = plain.pull(json!({})).await;
+        assert_eq!(status, 502, "{body}");
+
+        note_render_outputs(&fixture);
+        let (status, body) = fixture.pull(json!({})).await;
+        assert_eq!(status, 200, "{body}");
+        assert_eq!(body["written"], json!(["main.tex"]));
+        assert_eq!(body["skipped"], json!([]));
+        assert!(fixture.root().join("main.tex").exists());
+        assert!(!fixture.root().join("main.pdf").exists());
+        assert!(!fixture.root().join("main_files").exists());
+        let store = FileStore::for_dir(&fixture.inner.state_home, fixture.root());
+        let state = store.load().unwrap().unwrap();
+        assert_eq!(state.files.keys().collect::<Vec<_>>(), ["main.tex"]);
     }
 
     #[tokio::test]

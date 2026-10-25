@@ -29,6 +29,11 @@ pub struct PullOptions {
     /// Outside a repository, files changed on both sides that take the web
     /// version.
     pub theirs: Vec<String>,
+    /// Paths the pull leaves alone, as if the directory did not hold them:
+    /// exact paths, and directories with everything in them, relative to the
+    /// directory with `/` between the parts. A version's file at such a path
+    /// is never written, trashed or put in a commit.
+    pub exclude: Vec<String>,
 }
 
 impl Default for PullOptions {
@@ -37,6 +42,7 @@ impl Default for PullOptions {
             merge: true,
             mine: Vec::new(),
             theirs: Vec::new(),
+            exclude: Vec::new(),
         }
     }
 }
@@ -237,7 +243,7 @@ async fn pull_repository(
 
     let mut versions = Vec::new();
     if !nothing_new {
-        versions = fetch(client, &git, &mut state, &found, rules).await?;
+        versions = fetch(client, &git, &mut state, &found, rules, &options.exclude).await?;
         if versions.is_empty() && state.fetched.is_none() {
             // The project as it stands is what the branch already has.
             if settled {
@@ -277,6 +283,7 @@ async fn fetch(
     state: &mut State,
     found: &Discovery,
     rules: &Rules,
+    exclude: &[String],
 ) -> Result<Vec<VersionCommit>, Error> {
     let slug = state.link.slug.clone();
     let host = state
@@ -285,7 +292,7 @@ async fn fetch(
         .host_str()
         .unwrap_or("librepaper.org")
         .to_string();
-    let local = scan(git.dir(), rules, Some(git))?;
+    let local = scan(git.dir(), rules, Some(git), exclude)?;
     let mut known: BTreeSet<String> = state.files.keys().cloned().collect();
     known.extend(state.synced.iter().cloned());
     if let Some(fetched) = &state.fetched {
@@ -296,6 +303,7 @@ async fn fetch(
     // removes them, so a merge cannot overwrite or delete what the person
     // excluded. Each snapshot adds its own below.
     let mut excluded = local.left_out(git.dir(), &known);
+    excluded.extend(known.iter().filter(|path| local.excludes(path)).cloned());
     // The chain goes on from what was fetched last; a repository that has
     // fetched nothing yet starts from the commit it was published at.
     let before = git.rev(MAIN_REF).or_else(|| {
@@ -398,11 +406,12 @@ async fn fetch(
 }
 
 /// Drops from the snapshot the paths the working tree keeps out of the sync,
-/// and adds them to `excluded`. Such a path never enters the chain, so the
-/// person's file is not overwritten. Answers the files the snapshot held
-/// before, which is what the state records: the web's record of an excluded
-/// path stays, so a push made after the exclusion is lifted measures the file
-/// against the web's and sends a patch, not a create over an existing text.
+/// and the ones the scan was asked to exclude, and adds them to `excluded`.
+/// Such a path never enters the chain, so the person's file is not
+/// overwritten. Answers the files the snapshot held before, which is what the
+/// state records: the web's record of an excluded path stays, so a push made
+/// after the exclusion is lifted measures the file against the web's and sends
+/// a patch, not a create over an existing text.
 fn leave_excluded_out(
     snapshot: &mut Snapshot,
     local: &Scan,
@@ -411,6 +420,13 @@ fn leave_excluded_out(
 ) -> BTreeMap<String, FileRecord> {
     let held = snapshot.files.clone();
     excluded.extend(local.left_out(dir, snapshot.files.keys()));
+    excluded.extend(
+        snapshot
+            .files
+            .keys()
+            .filter(|path| local.excludes(path))
+            .cloned(),
+    );
     snapshot.files.retain(|path, _| !excluded.contains(path));
     snapshot.texts.retain(|path, _| !excluded.contains(path));
     held
@@ -610,7 +626,8 @@ async fn pull_folder(
     // The rules apply to what comes in as to what goes out: a path they refuse
     // is dropped here, so it is never written.
     web.retain_synced(rules);
-    let here = scan(dir, rules, None)?;
+    let here = scan(dir, rules, None, &options.exclude)?;
+    leave_out(&mut web, &here);
     let excluded = here.left_out(dir, web.files.keys());
     let hashes: BTreeMap<String, String> = here
         .files
@@ -662,6 +679,13 @@ async fn pull_folder(
         skipped: plan.skipped,
         trimmed: found.trimmed,
     })
+}
+
+/// Drops from the web version the paths the scan was asked to exclude, so
+/// the pull neither writes nor trashes them and no record of them is kept.
+fn leave_out(web: &mut Snapshot, here: &Scan) {
+    web.files.retain(|path, _| !here.excludes(path));
+    web.texts.retain(|path, _| !here.excludes(path));
 }
 
 /// Writes one file of the web version. A text file keeps the line ending it
@@ -986,7 +1010,7 @@ mod tests {
             ("main.tex", same.as_str()),
             ("new.tex", "1"),
         ]);
-        let here = scan(root, &Rules::default(), None).unwrap();
+        let here = scan(root, &Rules::default(), None, &[]).unwrap();
         let excluded = here.left_out(root, web.keys());
         assert_eq!(
             excluded.iter().map(String::as_str).collect::<Vec<_>>(),
@@ -1027,7 +1051,7 @@ mod tests {
         let Some(_locked) = crate::walk::testing::lock(&root.join("locked")) else {
             return;
         };
-        let here = scan(root, &Rules::default(), None).unwrap();
+        let here = scan(root, &Rules::default(), None, &[]).unwrap();
         assert!(here.files.keys().all(|path| path == "main.tex"));
         let excluded = here.left_out(root, web.keys());
         assert_eq!(
@@ -1056,7 +1080,7 @@ mod tests {
         std::fs::create_dir_all(root.join("build")).unwrap();
         std::fs::write(root.join("build/out.tex"), "mine\n").unwrap();
         std::fs::write(root.join("main.tex"), "main\n").unwrap();
-        let here = scan(root, &Rules::default(), None).unwrap();
+        let here = scan(root, &Rules::default(), None, &[]).unwrap();
 
         let listed = files(&[("main.tex", "1"), ("build/out.tex", "1"), ("new.tex", "1")]);
         let mut snapshot = Snapshot {
@@ -1085,6 +1109,82 @@ mod tests {
     }
 
     #[test]
+    fn a_folder_pull_never_writes_or_records_an_excluded_path() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        std::fs::write(root.join("main.tex"), "same\n").unwrap();
+        std::fs::write(root.join("main.pdf"), "%PDF rendered").unwrap();
+        let same = sha256_hex(b"same\n");
+
+        // The web holds the render's files, though the folder has only the pdf.
+        let recorded = files(&[("main.tex", same.as_str()), ("main.pdf", "1")]);
+        let listed = files(&[
+            ("main.tex", same.as_str()),
+            ("main.pdf", "2"),
+            ("main_files/libs/x.css", "1"),
+            ("new.tex", "1"),
+        ]);
+        let mut web = Snapshot {
+            texts: listed
+                .iter()
+                .filter(|(path, _)| path.ends_with(".tex") || path.ends_with(".css"))
+                .map(|(path, _)| (path.clone(), "text\n".to_string()))
+                .collect(),
+            files: listed,
+        };
+        let exclude = ["main.pdf".to_string(), "main_files".to_string()];
+        let here = scan(root, &Rules::default(), None, &exclude).unwrap();
+        leave_out(&mut web, &here);
+
+        let kept: Vec<&str> = web.files.keys().map(String::as_str).collect();
+        assert_eq!(kept, ["main.tex", "new.tex"]);
+        let kept: Vec<&str> = web.texts.keys().map(String::as_str).collect();
+        assert_eq!(kept, ["main.tex", "new.tex"]);
+
+        let excluded = here.left_out(root, web.files.keys());
+        let local: BTreeMap<String, String> = here
+            .files
+            .iter()
+            .map(|(path, file)| (path.clone(), file.sha.clone()))
+            .collect();
+        let plan = reconcile(&recorded, &local, &web.files, &excluded, &[], &[]);
+        assert_eq!(plan.apply, ["new.tex"], "only the project's own file");
+        assert!(plan.kept.is_empty() && plan.skipped.is_empty());
+        assert!(plan.conflicts.is_empty());
+        assert!(
+            !plan.records.contains_key("main.pdf"),
+            "the old record of the render is dropped"
+        );
+        assert!(!plan.records.contains_key("main_files/libs/x.css"));
+        assert!(root.join("main.pdf").exists(), "and the file is not touched");
+    }
+
+    #[test]
+    fn a_repository_pull_neither_writes_nor_removes_an_excluded_path() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        std::fs::write(root.join("main.tex"), "main\n").unwrap();
+        // Not in the folder at all: only the exclusion keeps it out.
+        let exclude = ["main.pdf".to_string()];
+        let here = scan(root, &Rules::default(), None, &exclude).unwrap();
+
+        let listed = files(&[("main.tex", "1"), ("main.pdf", "1")]);
+        let mut snapshot = Snapshot {
+            texts: BTreeMap::from([("main.tex".to_string(), "main\n".to_string())]),
+            files: listed.clone(),
+        };
+        let mut excluded = BTreeSet::new();
+        let held = leave_excluded_out(&mut snapshot, &here, root, &mut excluded);
+        assert_eq!(held, listed, "the state keeps the web's record");
+        let kept: Vec<&str> = snapshot.files.keys().map(String::as_str).collect();
+        assert_eq!(kept, ["main.tex"]);
+        assert_eq!(
+            excluded.iter().map(String::as_str).collect::<Vec<_>>(),
+            ["main.pdf"]
+        );
+    }
+
+    #[test]
     fn lifting_an_exclusion_after_a_pull_leaves_a_change_not_a_new_file() {
         let Some((_dir, git)) = repository() else {
             return;
@@ -1095,7 +1195,7 @@ mod tests {
         std::fs::write(root.join("main.tex"), "main\n").unwrap();
         let base = commit_all(&git, "base");
         let rules = Rules::default();
-        let here = scan(root, &rules, Some(&git)).unwrap();
+        let here = scan(root, &rules, Some(&git), &[]).unwrap();
         assert_eq!(here.files.keys().collect::<Vec<_>>(), ["main.tex"]);
 
         // The web version holds the excluded path under a hash of its own.
@@ -1144,7 +1244,7 @@ mod tests {
         // Git reads a missing working-tree .gitattributes from the index, so
         // the file leaves both.
         git.run(&["rm", "-q", ".gitattributes"], None, &[]).unwrap();
-        let now = scan(root, &rules, Some(&git)).unwrap();
+        let now = scan(root, &rules, Some(&git), &[]).unwrap();
         let changes = compare(root, &held, &now);
         assert_eq!(changes.changed, ["a.tex"]);
         assert!(changes.added.is_empty());
