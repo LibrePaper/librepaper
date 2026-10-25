@@ -292,7 +292,7 @@ async function paint(bytes, frameGeneration = 0) {
   lastHeight = document.documentElement.clientHeight;
   try {
     const first = !viewer;
-    viewer ??= await import("../lib/pdf/render.js");
+    viewer ??= await loadingViewer;
     if (first) viewer.setMarker((x, y) => overlay.flash(x, y));
     // Several previews can arrive while the module loads. Only the newest
     // may start drawing, so an older import continuation cannot cancel it.
@@ -759,5 +759,12 @@ function validMode(mode) {
   const value = Number(mode);
   return mode.trim() !== "" && Number.isFinite(value) && value >= 0.1 && value <= 10;
 }
+
+// pdf.js and its worker are loaded as soon as the frame is, while the
+// document is still compiling, rather than once its PDF has arrived.
+const loadingViewer = import("../lib/pdf/render.js").then((module) => {
+  module.warm();
+  return module;
+});
 
 waiting("Nothing to show yet.", "This document has not been rendered in this browser.");

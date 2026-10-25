@@ -73,6 +73,12 @@ function documentWorker() {
   return pdfWorker;
 }
 
+/// Starts the worker before there is anything to draw, so the first PDF does
+/// not also wait for the worker's script to load and start.
+export function warm() {
+  documentWorker();
+}
+
 const loadings = new WeakMap();
 
 function startLoading(bytes) {
