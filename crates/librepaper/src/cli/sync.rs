@@ -171,9 +171,15 @@ async fn run_push(args: PushArgs) -> Result<bool, String> {
         let site = url::Url::parse(&server).map_err(|error| format!("{server}: {error}"))?;
         let token = require_token_for(&server, args.deployment.token.as_deref());
         let client = Client::new(site, Credentials::token(&token));
-        let link = publish(&client, &workspace.dir, workspace.store.as_ref(), title, &[])
-            .await
-            .map_err(|error| error.to_string())?;
+        let link = publish(
+            &client,
+            &workspace.dir,
+            workspace.store.as_ref(),
+            title,
+            &[],
+        )
+        .await
+        .map_err(|error| error.to_string())?;
         println!("Published {}.", link.project_url());
         return Ok(true);
     }

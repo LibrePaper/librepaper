@@ -1156,7 +1156,10 @@ mod tests {
             "the old record of the render is dropped"
         );
         assert!(!plan.records.contains_key("main_files/libs/x.css"));
-        assert!(root.join("main.pdf").exists(), "and the file is not touched");
+        assert!(
+            root.join("main.pdf").exists(),
+            "and the file is not touched"
+        );
     }
 
     #[test]

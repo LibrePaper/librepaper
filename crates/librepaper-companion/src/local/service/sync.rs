@@ -621,9 +621,15 @@ async fn publish_folder(
     }
     let client = client_for(inner, &origin_site(origin)?)?;
     let exclude = folder.render_outputs(inner);
-    let link = publish(&client, &folder.binding.root, &folder.store, title, &exclude)
-        .await
-        .map_err(|error| failed(&error))?;
+    let link = publish(
+        &client,
+        &folder.binding.root,
+        &folder.store,
+        title,
+        &exclude,
+    )
+    .await
+    .map_err(|error| failed(&error))?;
     let mut body = folder_status(inner, folder, origin).await?;
     body["url"] = Value::String(project_url(&link));
     Ok(body)
@@ -1529,7 +1535,10 @@ mod tests {
                             })),
                         ),
                         "/api/documents/abc123/history/v1" => (StatusCode::OK, Json(version)),
-                        _ => (StatusCode::NOT_FOUND, Json(json!({"error": "no such file"}))),
+                        _ => (
+                            StatusCode::NOT_FOUND,
+                            Json(json!({"error": "no such file"})),
+                        ),
                     }
                 }
             });
