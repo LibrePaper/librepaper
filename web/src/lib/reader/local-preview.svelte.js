@@ -39,6 +39,7 @@ function etagToSha(etag) {
  * jobOf?: (tree: LocalPreviewTree) => LocalPreviewJob,
  * engine: string, label?: string, isDisposed?: () => boolean,
  * onStartingChange?: (starting: boolean) => void, onEnded?: () => void,
+ * onSynced?: (tree: LocalPreviewTree) => unknown,
  * setTimer?: (fn: () => void, ms: number) => ReturnType<typeof setTimeout>,
  * clearTimer?: (timer: ReturnType<typeof setTimeout> | null) => void,
  * }} options
@@ -58,6 +59,8 @@ export function createLocalPreview({
   // browser was rendering into it.
   onStartingChange,
   onEnded,
+  // Told which tree the workspace now holds, after each sync that succeeded.
+  onSynced,
   setTimer = (fn, ms) => setTimeout(fn, ms),
   clearTimer = (timer) => clearTimeout(timer),
 }) {
@@ -222,6 +225,7 @@ export function createLocalPreview({
       const tree = await Promise.resolve(treeNow());
       noteKept(await local.syncWorkspace({ tree }));
       if (cancelled()) return;
+      onSynced?.(tree);
       const options = { entrypoint: entrypointOf(tree), ...optionsOf(tree) };
       const started = await local.startLocalPreview({ engine, job: jobOf(tree), tree, options });
       if (cancelled()) {
@@ -274,7 +278,9 @@ export function createLocalPreview({
     }
     syncBusy = true;
     try {
-      noteKept(await local.syncWorkspace({ tree: await Promise.resolve(treeNow()) }));
+      const tree = await Promise.resolve(treeNow());
+      noteKept(await local.syncWorkspace({ tree }));
+      if (state.session && !isDisposed()) onSynced?.(tree);
     } catch (error) {
       if (!errorShown) {
         state.error = error.message || `${label} preview could not sync`;

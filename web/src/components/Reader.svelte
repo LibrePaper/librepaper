@@ -93,6 +93,7 @@
   import { extractOutline } from "../lib/outline.js";
   import { createFramePreview } from "../lib/reader/frame-preview.js";
   import { rememberPreview, lastPreview, flushAll } from "../lib/reader/preview-cache.js";
+  import { stamp as stampLive, matches as liveMatches, shouldStartLive, holding as liveHolding } from "../lib/reader/live-cache.js";
   import { previewTarget, rendersAlone, openingFile, includersOf } from "../lib/opening.js";
   import { createFrameOverlays } from "../lib/reader/frame-overlays.js";
   import { createRenderDiagnostics } from "../lib/reader/render-diagnostics.js";
@@ -1448,9 +1449,10 @@
     },
   };
 
-  // The last page each live preview published, per file, for this visit. It
-  // stands in for the file when the preview returns to it, while the live
-  // preview restarts. The newest page is last, and nothing is persisted.
+  // The last page each live preview published, per file, for this visit, with
+  // the identity of the source it was rendered from. The newest is last. Each
+  // page with an identity is also kept in the preview cache, so a later visit
+  // can show it without starting the engine.
   const LIVE_PAGES_KEPT = 8;
   const livePages = new Map();
   // The file each live preview is serving, and whether it has published a
@@ -1458,29 +1460,92 @@
   const liveServing = { quarto: "", calepin: "" };
   let liveTargets = { quarto: "", calepin: "" };
   let liveShown = $state({ quarto: false, calepin: false });
+  // The digest of the source each engine's workspace was last synced to, for
+  // the current target. A page the engine publishes is taken to be a render
+  // of it.
+  const syncedDigest = { quarto: "", calepin: "" };
+  const liveSyncs = { quarto: 0, calepin: 0 };
+  // The file whose kept page is on screen in place of a running live preview,
+  // and the file whose kept page is being looked for. Neither lets the live
+  // preview start.
+  let liveHeld = $state("");
+  let liveLookup = $state("");
+  let liveLookupGeneration = 0;
 
   function liveCopy(payload) {
     return payload.kind === "pdf" ? { ...payload, bytes: payload.bytes.slice() } : { ...payload };
+  }
+
+  // The engine that would own the pane for the open file, or "".
+  function liveEngineHere() {
+    if (sourceFormat === "quarto" && quartoLiveActive) return "quarto";
+    if (sourceFormat === "typst" && calepinActive) return "calepin";
+    return "";
+  }
+
+  function liveIdentity(engine, digest) {
+    return stampLive(engine, engine === "quarto" ? buildPreferences.output : "", digest);
+  }
+
+  async function noteSynced(engine, tree) {
+    const mine = ++liveSyncs[engine];
+    const digest = await renderers.snapshotDigest(tree);
+    if (mine === liveSyncs[engine]) syncedDigest[engine] = digest;
   }
 
   function publishLive(engine, payload) {
     const path = liveServing[engine];
     // The copy is taken first because publishing transfers the PDF buffer.
     if (path && (payload?.kind === "html" || (payload?.kind === "pdf" && payload.bytes))) {
+      const page = liveCopy(payload);
+      const identity = liveIdentity(engine, syncedDigest[engine]);
       livePages.delete(path);
-      livePages.set(path, liveCopy(payload));
+      livePages.set(path, { page, identity });
       while (livePages.size > LIVE_PAGES_KEPT) livePages.delete(livePages.keys().next().value);
+      if (identity) rememberPreview(previewCacheKey(path), liveCopy(page), identity);
     }
     if (!liveShown[engine]) liveShown[engine] = true;
     return framePreview.publish(payload);
   }
 
-  // Shows the last page a live preview made for this file, if it will own the
-  // pane for it, until the live preview publishes its own.
-  function publishLiveStandIn(path) {
-    const live = (sourceFormat === "quarto" && quartoLiveActive) || (sourceFormat === "typst" && calepinActive);
-    const page = live && livePages.get(path);
-    if (page) framePreview.publish(liveCopy(page));
+  // Leaves the held state and cancels a lookup in flight. The live preview
+  // then starts for the open file.
+  function releaseLive() {
+    liveLookupGeneration += 1;
+    liveHeld = "";
+    liveLookup = "";
+  }
+
+  // Looks for a kept page of this file that was rendered from the source as it
+  // is now. One that matches is shown and held, and the live preview does not
+  // start. Otherwise the last page the live preview made for the file stands
+  // in while it starts.
+  async function holdLive(path) {
+    const engine = liveEngineHere();
+    if (!engine) return;
+    const mine = ++liveLookupGeneration;
+    liveLookup = path;
+    const current = () => !readerDisposed && mine === liveLookupGeneration && previewPath === path;
+    let found = null;
+    let standIn = null;
+    try {
+      const identity = liveIdentity(engine, await renderers.snapshotDigest(treeNow()));
+      const kept = livePages.get(path);
+      standIn = kept?.page || null;
+      if (kept && liveMatches({ ...kept.page, identity: kept.identity }, identity)) found = kept.page;
+      else if (current()) {
+        const saved = await lastPreview(previewCacheKey(path));
+        if (liveMatches(saved, identity)) found = saved.kind === "pdf" ? { kind: "pdf", sha: null, bytes: saved.bytes.slice() } : { kind: "html", html: saved.html, presentation: "document" };
+      }
+    } catch { /* a failed lookup is a miss */ }
+    if (!current()) return;
+    liveLookup = "";
+    if (found) {
+      liveHeld = path;
+      framePreview.publish(liveCopy(found));
+    } else if (standIn) {
+      framePreview.publish(liveCopy(standIn));
+    }
   }
 
   const quartoPreviewController = createLocalPreview({
@@ -1489,6 +1554,7 @@
     label: "Quarto",
     publish: (payload) => publishLive("quarto", payload),
     treeNow: localPreviewTreeNow,
+    onSynced: (tree) => void noteSynced("quarto", tree),
     entrypointOf: (tree) => tree.main,
     optionsOf: (tree) => {
       const context = quartoRenderContext(tree);
@@ -1512,6 +1578,7 @@
     label: "Calepin",
     publish: (payload) => publishLive("calepin", payload),
     treeNow: localPreviewTreeNow,
+    onSynced: (tree) => void noteSynced("calepin", tree),
     entrypointOf: (tree) => tree.main,
     optionsOf: () => ({ format: "pdf" }),
     jobOf: () => ({ binding: localQuarto.bindingId() }),
@@ -1541,12 +1608,25 @@
   // back to the ordinary rendering, no retry) the moment any of them stop
   // holding.
   const localPreviewSwitches = createGeneration();
+  // Run code, the output format and the binding decide what a kept page was
+  // rendered by, so a change to any of them leaves the held state and looks
+  // again. An engine that is already running is not interrupted by a kept page.
+  $effect(() => {
+    void quartoLiveActive;
+    void calepinActive;
+    void buildPreferences.output;
+    void quartoBindingId;
+    untrack(() => {
+      releaseLive();
+      if (previewPath && !quartoPreview && !quartoPreviewStarting && !calepinPreview && !calepinPreviewStarting) void holdLive(previewPath);
+    });
+  });
   $effect(() => {
     // The binding is part of the target so choosing a folder restarts the preview there.
     // The output format is too, because Quarto reads it only when it starts, so
     // switching View between HTML and PDF restarts the preview.
-    const quartoTarget = quartoLiveActive && previewPath && `${previewPath}|${quartoBindingId}|${buildPreferences.output || ""}`;
-    const calepinTarget = calepinActive && previewPath && `${previewPath}|${quartoBindingId}`;
+    const quartoTarget = quartoLiveActive && previewPath && shouldStartLive({ held: liveHeld, lookup: liveLookup, path: previewPath }) && `${previewPath}|${quartoBindingId}|${buildPreferences.output || ""}`;
+    const calepinTarget = calepinActive && previewPath && shouldStartLive({ held: liveHeld, lookup: liveLookup, path: previewPath }) && `${previewPath}|${quartoBindingId}`;
     const stale = localPreviewSwitches.begin();
     untrack(async () => {
       // Both engines use the same workspace. Release its old watcher before
@@ -1558,12 +1638,12 @@
       if (readerDisposed || stale()) return;
       if (quartoTarget) {
         liveServing.quarto = previewPath;
-        if (liveTargets.quarto !== quartoTarget) { liveTargets.quarto = quartoTarget; liveShown.quarto = false; }
+        if (liveTargets.quarto !== quartoTarget) { liveTargets.quarto = quartoTarget; liveShown.quarto = false; liveSyncs.quarto += 1; syncedDigest.quarto = ""; }
         await quartoPreviewController.reconcile(quartoTarget);
       }
       if (calepinTarget) {
         liveServing.calepin = previewPath;
-        if (liveTargets.calepin !== calepinTarget) { liveTargets.calepin = calepinTarget; liveShown.calepin = false; }
+        if (liveTargets.calepin !== calepinTarget) { liveTargets.calepin = calepinTarget; liveShown.calepin = false; liveSyncs.calepin += 1; syncedDigest.calepin = ""; }
         await calepinPreviewController.reconcile(calepinTarget);
       }
     });
@@ -2059,6 +2139,7 @@
   // read, so it applies to exactly the one compile it was meant for.
   let manualCompile = false;
   function compileNow() {
+    releaseLive();
     manualCompile = true;
     paintPreview();
   }
@@ -2318,7 +2399,8 @@
       // local previews a given format would be using.
       livePreviewOwnsPane:
         (sourceFormat === "quarto" && quartoLiveActive && Boolean(quartoPreview || quartoPreviewStarting))
-        || (sourceFormat === "typst" && calepinActive && Boolean(calepinPreview || calepinPreviewStarting)),
+        || (sourceFormat === "typst" && calepinActive && Boolean(calepinPreview || calepinPreviewStarting))
+        || (liveEngineHere() !== "" && liveHolding({ held: liveHeld, lookup: liveLookup, path: previewPath })),
     }),
     tree: () => treeNow(),
     gather: (digests) => gatherFigures(digests),
@@ -2351,6 +2433,7 @@
     if (readerDisposed) return;
     sourceGeneration += 1;
     historyLiveVersion += 1;
+    releaseLive();
     refreshReview();
     outlineRevision += 1;
     if (typeof quartoLiveActive !== "undefined" && quartoLiveActive && typeof quartoPreview !== "undefined" && (quartoPreview || quartoPreviewStarting)) {
@@ -3234,7 +3317,8 @@
       // loads, since every hydration step restarts that timer.
       clearTimeout(previewTimer);
       previewTimer = null;
-      publishLiveStandIn(path);
+      releaseLive();
+      void holdLive(path);
       void tick().then(() => {
         if (!readerDisposed && previewPath === path) void paintPreview();
       });
@@ -3256,7 +3340,8 @@
     // two files of the same kind keeps it, so switching files in the list does
     // not pay for a frame load before the cached page can be shown.
     if (docsOrigin) navigateFrame();
-    publishLiveStandIn(path);
+    releaseLive();
+    void holdLive(path);
     void tick().then(() => {
       if (!readerDisposed && mine === navigationGeneration) void paintPreview();
     });
@@ -3343,7 +3428,7 @@
     pageDelivered: pdfOutput && everPaintedShown,
     latexPhase: sourceFormat === "latex" && !latexHtmlPreview ? latexPhase : "",
     latexScope: sourceFormat === "latex" && !latexHtmlPreview ? String(latexState.progress?.scope || "") : "",
-    liveStarting: previewPath && quartoLiveActive && !liveShown.quarto ? "quarto" : previewPath && calepinActive && !liveShown.calepin ? "calepin" : "",
+    liveStarting: !previewPath || liveHeld === previewPath ? "" : quartoLiveActive && !liveShown.quarto ? "quarto" : calepinActive && !liveShown.calepin ? "calepin" : "",
     engineLoading: engineLoading && engineLoading === sourceFormat ? engineLoading : "",
     compiling,
   }));
