@@ -21,7 +21,7 @@
 //   and an asset is replaced by its new bytes.
 import { checkPath } from "../paths.js";
 import { toLf } from "../line-endings.js";
-import { textPatches } from "../gitsync/patches.js";
+import { textPatches } from "../text-patches.js";
 import { formatOf } from "../formats.js";
 import { openingFile } from "../opening.js";
 import { toBase64, typeOf } from "../figures.js";

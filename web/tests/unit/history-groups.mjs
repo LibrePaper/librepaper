@@ -53,7 +53,6 @@ assert.equal(shiftDay("2026-12-31", 1), "2027-01-01");
 assert.equal(shiftDay("2026-03-08", 1), "2026-03-09");
 
 assert.equal(HISTORY_DEFAULTS.sessionGapMinutes, 30);
-assert.equal(HISTORY_DEFAULTS.gitGapMinutes, 5);
 assert.equal(HISTORY_DEFAULTS.recentDays, 7);
 assert.equal(HISTORY_DEFAULTS.flattenEvents, 4);
 assert.equal(HISTORY_DEFAULTS.openYesterdayEvents, 6);
@@ -64,12 +63,16 @@ assert.equal(HISTORY_DEFAULTS.openYesterdayEvents, 6);
   assert.equal(eventKind(point("2026-10-22T10:00:00Z", { label: "Draft" })), "saved");
   assert.equal(eventKind(point("2026-10-22T10:00:00Z", { why: "restore" })), "restore");
   assert.equal(eventKind(point("2026-10-22T10:00:00Z", { why: "superseded" })), "restore");
-  assert.equal(eventKind(point("2026-10-22T10:00:00Z", { why: "git" })), "git");
+  assert.equal(eventKind(point("2026-10-22T10:00:00Z", { why: "push" })), "push");
+  // A push carries its message as a label, and is a push all the same.
+  assert.equal(eventKind(point("2026-10-22T10:00:00Z", { label: "Fix the abstract", why: "push" })), "push");
+  // The old reason is an ordinary version now.
+  assert.equal(eventKind(point("2026-10-22T10:00:00Z", { why: "git" })), "edit");
   assert.equal(eventKind(point("2026-10-22T10:00:00Z", { why: "created" })), "created");
   assert.equal(eventKind(point("2026-10-22T10:00:00Z", { why: "sync" })), "edit");
   assert.equal(eventKind(point("2026-10-22T10:00:00Z", { why: "agent-patch" })), "edit");
   // A label that is empty is no label at all.
-  assert.equal(eventKind(point("2026-10-22T10:00:00Z", { label: "", why: "git" })), "git");
+  assert.equal(eventKind(point("2026-10-22T10:00:00Z", { label: "", why: "push" })), "push");
 }
 
 // --- one version, and a few -------------------------------------------------
@@ -148,44 +151,31 @@ assert.equal(HISTORY_DEFAULTS.openYesterdayEvents, 6);
   assert.deepEqual(events.map((event) => event.day), ["2026-10-23", "2026-10-22"]);
 }
 
-// --- git ----------------------------------------------------------------------
+// --- push ---------------------------------------------------------------------
 
 {
-  // Pulls in quick succession are one Git event.
-  const pulls = [
-    point("2026-10-22T10:00:00Z", { why: "git" }),
-    point("2026-10-22T10:02:00Z", { why: "git" }),
-    point("2026-10-22T10:04:00Z", { why: "git" }),
+  // Pushes in quick succession stay separate: each has its own message.
+  const pushes = [
+    point("2026-10-22T10:00:00Z", { why: "push", label: "First", by: "Alice" }),
+    point("2026-10-22T10:02:00Z", { why: "push", label: "Second", by: "Alice" }),
+    point("2026-10-22T10:04:00Z", { why: "push", label: "Third", by: "Bob" }),
   ];
-  const events = buildEvents(pulls, "UTC");
-  assert.equal(events.length, 1);
-  assert.equal(events[0].type, "git");
-  assert.equal(events[0].points.length, 3);
+  const events = buildEvents(pushes, "UTC");
+  assert.equal(events.length, 3);
+  assert.ok(events.every((event) => event.type === "push" && event.points.length === 1));
+  assert.deepEqual(events.map((event) => event.authors), [["Bob"], ["Alice"], ["Alice"]]);
 }
 
 {
-  // A pull six minutes after the last one is a new Git event.
-  const pulls = [
-    point("2026-10-22T10:00:00Z", { why: "git" }),
-    point("2026-10-22T10:03:00Z", { why: "git" }),
-    point("2026-10-22T10:09:00Z", { why: "git" }),
-  ];
-  const events = buildEvents(pulls, "UTC");
-  assert.deepEqual(events.map((event) => event.points.length), [1, 2]);
-}
-
-{
-  // Two pulls with the same timestamp, separated by an edit, are two Git
-  // events and the edit is its own event between them.
+  // An edit between two pushes is its own event.
   const same = "2026-10-22T10:00:00Z";
-  const pulls = [
-    point(same, { why: "git" }),
+  const points = [
+    point(same, { why: "push", label: "One" }),
     point(same, { why: "sync" }),
-    point(same, { why: "git" }),
+    point(same, { why: "push", label: "Two" }),
   ];
-  const events = buildEvents(pulls, "UTC");
-  assert.deepEqual(events.map((event) => event.type), ["git", "editing", "git"]);
-  assert.equal(events.filter((event) => event.type === "git").length, 2);
+  const events = buildEvents(points, "UTC");
+  assert.deepEqual(events.map((event) => event.type), ["push", "editing", "push"]);
 }
 
 // --- authors ----------------------------------------------------------------
@@ -277,7 +267,7 @@ assert.equal(HISTORY_DEFAULTS.openYesterdayEvents, 6);
   const points = [
     ...run("2026-10-22T09:00:00Z", 4, 3),
     point("2026-10-22T09:20:00Z", { label: "Saved" }),
-    point("2026-10-22T11:00:00Z", { why: "git" }),
+    point("2026-10-22T11:00:00Z", { why: "push", label: "Update" }),
   ];
   assert.deepEqual(buildEvents([...points].reverse(), "UTC"), buildEvents(points, "UTC"));
 }

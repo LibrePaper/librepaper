@@ -37,22 +37,28 @@ for (const role of ["reader", "commenter"]) {
   }
 }
 
-// The Git panel waits for the desktop app.
+// The Sync panel is for a folder on this computer, and only in the desktop app.
 assert.ok(
-  !offered({ role: "editor", mayEdit: true, editing: true, canSeeSharing: false, canPublish: true }).includes("git"),
-  "no desktop app, no Git panel",
+  !offered({ role: "editor", mayEdit: true, editing: true, canSeeSharing: false, canPublish: true, desktop: true }).includes("sync"),
+  "a web project has no Sync panel",
+);
+assert.ok(
+  !offered({ role: "owner", mayEdit: true, editing: true, canSeeSharing: true, canPublish: true, local: true }).includes("sync"),
+  "no desktop app, no Sync panel",
 );
 
 // An editor keeps everything the conditions allow; the role rules take nothing
-// away from somebody who can work here.
+// away from somebody who can work here. Sync belongs to folders, so a web
+// project is offered every panel but that one.
+const webPanels = TABS.map((tab) => tab.id).filter((id) => id !== "sync");
 assert.deepEqual(
   offered({ role: "editor", mayEdit: true, editing: true, canSeeSharing: false, canPublish: true, desktop: true }),
-  TABS.map((tab) => tab.id),
+  webPanels,
   "an editor with the source open is offered every panel",
 );
 assert.deepEqual(
   offered({ role: "owner", mayEdit: true, editing: true, canSeeSharing: true, canPublish: true, desktop: true }),
-  TABS.map((tab) => tab.id),
+  webPanels,
   "and so is an owner",
 );
 
@@ -65,13 +71,14 @@ assert.ok(
 );
 
 // A folder on this computer has no server behind it: collaboration, the agent,
-// history, sharing and Git are not offered, whatever else the reader may do.
+// history and sharing are not offered, whatever else the reader may do. It is
+// offered Sync, which is how it meets a web project.
 {
   const list = offered({ role: "owner", mayEdit: true, editing: true, canSeeSharing: true, canPublish: true, desktop: true, local: true });
-  for (const hidden of ["collaboration", "agent", "history", "share", "git"]) {
+  for (const hidden of ["collaboration", "agent", "history", "share"]) {
     assert.ok(!list.includes(hidden), `a local project is not offered ${hidden}`);
   }
-  assert.deepEqual(list, ["files", "outline", "changes", "diagnostics"], "a local project keeps the files, outline, changes and diagnostics");
+  assert.deepEqual(list, ["files", "outline", "changes", "sync", "diagnostics"], "a local project keeps the files, outline, changes, sync and diagnostics");
 }
 
 // Before the document has answered there is no role, and the rail stays empty

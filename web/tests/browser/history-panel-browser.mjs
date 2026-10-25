@@ -3,8 +3,8 @@
 //
 // The panel lists events, newest first, and not raw versions. A stretch of
 // autosaves that follow each other within half an hour is one editing event,
-// and its versions stay folded until its caret is opened. Git pulls that follow
-// each other within five minutes are one Git event. Two or more people editing
+// and its versions stay folded until its caret is opened. A push is always its
+// own event, titled by who pushed it. Two or more people editing
 // in one stretch make it a collaborative event. A named version is always its
 // own saved event, and it splits the editing around it. Days from the last
 // week each get a heading, and older days fold into the rest of their month,
@@ -87,16 +87,12 @@ const named = ordered([
   ...[10, 12, 14, 16].map((minute) => point("2", minute, at(0, 8, minute), "Vincent", "sync")),
 ]);
 
-// Four pulls from Git, a minute apart: one Git event.
-const git4 = ordered(
-  [0, 1, 2, 3].map((minute) => point("3", minute, at(0, 9, minute), "Vincent", "git")),
-);
-
-// Two pulls with an autosave between them: two Git events.
-const gitSplit = ordered([
-  point("4", 0, at(0, 9, 0), "Vincent", "git"),
-  point("4", 1, at(0, 9, 2), "Vincent", "sync"),
-  point("4", 2, at(0, 9, 4), "Vincent", "git"),
+// Three pushes a minute apart: three events, each titled by its author and
+// carrying its message.
+const pushes = ordered([
+  point("3", 0, at(0, 9, 0), "Alice", "push", "Fix the abstract"),
+  point("3", 1, at(0, 9, 1), "Alice", "push", "Add figure 2"),
+  point("3", 2, at(0, 9, 2), "Bob", "push", "Tidy the bibliography"),
 ]);
 
 // Two people in one stretch of editing: a collaborative event.
@@ -144,8 +140,7 @@ const longSaved = [point("8", 1, at(2, 9, 0), "Vincent", "cli", longName)];
 const fixtures = {
   autosaves,
   named,
-  git4,
-  gitSplit,
+  pushes,
   collab,
   timeline,
   saved,
@@ -255,17 +250,15 @@ async function runChecks() {
         `the named version is one saved event showing its name, found: ${saves.map(text).join(" | ")}`);
     });
 
-    await step("5: git pulls group within five minutes", async () => {
-      mount({ labels: fixtures.git4 });
+    await step("5: each push is its own event, titled by who pushed it", async () => {
+      mount({ labels: fixtures.pushes });
       await flush();
-      const pulls = eventsOf("git");
-      check(pulls.length === 1 && text(pulls[0]).includes("4 versions"),
-        `four pulls a minute apart are one Git event saying 4 versions, found ${pulls.length}: ${pulls.map(text).join(" | ")}`);
-
-      mount({ labels: fixtures.gitSplit });
-      await flush();
-      check(eventsOf("git").length === 2,
-        `two pulls with an autosave between them are two Git events, found ${eventsOf("git").length}`);
+      const found = eventsOf("push");
+      check(found.length === 3, `three pushes a minute apart are three events, found ${found.length}`);
+      check(text(found[0]).includes("Pushed by Bob") && text(found[0]).includes("Tidy the bibliography"),
+        `the newest push names Bob and its message, found: ${text(found[0])}`);
+      check(text(found[2]).includes("Pushed by Alice") && text(found[2]).includes("Fix the abstract"),
+        `the oldest push names Alice and its message, found: ${text(found[2])}`);
     });
 
     await step("6: two authors make a collaborative session", async () => {
@@ -524,7 +517,7 @@ try {
   await until("history panel component", () => tab.evaluate("Boolean(window.historyPanelCheck)"));
   const result = await tab.evaluate("window.historyPanelCheck()");
   assert.equal(result, "passed", "history panel browser check");
-  console.log("history panel: events fold by session, git and named versions, periods, saved view, layout, keyboard");
+  console.log("history panel: events fold by session, pushes and named versions, periods, saved view, layout, keyboard");
 } finally {
   await tab?.close(); server?.close(); removeTemporary(temporary);
 }

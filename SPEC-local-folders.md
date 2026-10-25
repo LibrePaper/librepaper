@@ -69,7 +69,7 @@ A folder project is a binding with `kind: "project"`, `project: "local-<id>"`, n
 A loop calls `projects/<id>/changes`. For each change:
 - `added`: the file joins the project.
 - `removed`: the file leaves the project.
-- `changed`: when the editor's text for that path equals the text last read from or written to disk, the new text replaces it through `textPatches` (in `lib/gitsync/patches.js`), so the cursor and the rest of the document stay put. When the editor holds unsaved edits to that file, a notice asks "chapter.tex changed on disk." with two actions, "Keep mine" (the next sync writes the editor's text) and "Load from disk".
+- `changed`: when the editor's text for that path equals the text last read from or written to disk, the new text replaces it through `textPatches` (in `lib/text-patches.js`), so the cursor and the rest of the document stay put. When the editor holds unsaved edits to that file, a notice asks "chapter.tex changed on disk." with two actions, "Keep mine" (the next sync writes the editor's text) and "Load from disk".
 - Assets that changed are replaced by their new bytes.
 
 ### Reader local mode

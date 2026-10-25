@@ -155,22 +155,19 @@ async function sha256hex(bytes) {
 
 // The shell answers 502 when the local service cannot be reached, which is
 // `Unreachable`; any other non-2xx is `Refused`, carrying the service's own
-// JSON `error` message when it gave one, plus its `status`, its `kind` and
-// the parsed `body`.
+// JSON `error` message when it gave one, plus its `status` and the parsed
+// `body`.
 async function throwOnFailure(response) {
   if (response.ok) return;
   let data = null;
   try {
     data = await response.clone().json();
   } catch { /* not a JSON body; keep the generic message */ }
-  const kind = typeof data?.kind === "string" ? data.kind : "";
-  // A 502 with a `kind` is Git failing to reach its remote, which the service
-  // reports itself. Without one the shell could not reach the service.
-  if (response.status === 502 && !kind) throw unavailable();
+  if (response.status === 502) throw unavailable();
   const message = typeof data?.error === "string"
     ? data.error
     : `The LibrePaper desktop app refused the request (${response.status})`;
-  throw named("Refused", message, { status: response.status, kind, body: data || {} });
+  throw named("Refused", message, { status: response.status, body: data || {} });
 }
 
 /// The one place a feature request is sent to the desktop app. A network
@@ -290,14 +287,6 @@ export async function zoteroItem(key) {
   const value = String(key || "");
   if (!/^[A-Za-z0-9]{1,32}$/.test(value)) throw named("InvalidRequest", "Invalid Zotero item key");
   const response = await send("GET", `zotero/items/${value}`);
-  return response.json();
-}
-
-/// One typed Git operation of the desktop app's local service, for the
-/// current project. The answer is the parsed JSON. A refusal carries `status`,
-/// `kind` and `body`, so callers can tell a moved branch from a failed login.
-export async function gitRequest(op, body = {}) {
-  const response = await send("POST", `git/${op}`, { jsonBody: { ...body, project: current.project } });
   return response.json();
 }
 
