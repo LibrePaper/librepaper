@@ -8,7 +8,7 @@ const filePath = (path) => String(path).split("/").map(segment).join("/");
 
 /** The project's files and what was left out of the listing.
  * @param {string} id
- * @returns {Promise<{ files: Array<{ path: string, size: number, sha256: string, mtime: number }>, skipped: Array<{ path: string, reason: string }> }>} */
+ * @returns {Promise<{ cursor: string | number, files: Array<{ path: string, size: number, sha256: string, mtime: number }>, skipped: Array<{ path: string, reason: string }> }>} */
 export async function projectTree(id) {
   const response = await send("GET", `projects/${segment(id)}/tree`);
   return response.json();
@@ -21,14 +21,13 @@ export async function projectFile(id, path) {
   return new Uint8Array(await response.arrayBuffer());
 }
 
-/** A long poll for outside changes. Without `since` it answers at once with the
- * current cursor. `reset` says the desktop app lost the thread and the tree has
+/** A long poll for outside changes, from the cursor of the latest tree read.
+ * `reset` says the desktop app lost the thread and the tree has
  * to be read again.
- * @param {string} id @param {string} [since] @param {{ signal?: AbortSignal }} [options]
- * @returns {Promise<{ cursor: string, reset?: boolean, changes: Array<{ path: string, kind: "changed" | "added" | "removed", sha256?: string, size?: number }> }>} */
+ * @param {string} id @param {string | number} since @param {{ signal?: AbortSignal }} [options]
+ * @returns {Promise<{ cursor: string | number, reset?: boolean, changes: Array<{ path: string, kind: "changed" | "added" | "removed", sha256?: string, size?: number }> }>} */
 export async function projectChanges(id, since, { signal } = {}) {
-  const query = since === undefined || since === "" ? "" : `?since=${segment(since)}`;
-  const response = await send("GET", `projects/${segment(id)}/changes${query}`, { signal });
+  const response = await send("GET", `projects/${segment(id)}/changes?since=${segment(since)}`, { signal });
   return response.json();
 }
 

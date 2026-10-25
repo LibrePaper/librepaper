@@ -74,8 +74,13 @@ function fakeFolder(initial) {
   const folder = {
     files,
     skipped: [],
+    treeReads: 0,
+    treeCursor: "t0",
+    firstSince: undefined,
     async projectTree() {
+      folder.treeReads += 1;
       return {
+        cursor: folder.treeCursor,
         files: [...files].map(([path, value]) => ({ path, size: bytesOf(value).length, sha256: digest(value), mtime: 0 })),
         skipped: [],
       };
@@ -86,7 +91,8 @@ function fakeFolder(initial) {
     },
     async projectName() { return "thesis"; },
     projectChanges(_id, since, { signal } = {}) {
-      if (since === undefined) return Promise.resolve({ cursor: "0", changes: [] });
+      folder.firstSince ??= since;
+      folder.lastSince = since;
       if (queued.length) return Promise.resolve(queued.shift());
       return new Promise((resolve, reject) => {
         waiter = resolve;
@@ -103,7 +109,7 @@ function fakeFolder(initial) {
       } else queued.push(answer);
     },
     reportReset() {
-      const answer = { cursor: "1", reset: true, changes: [] };
+      const answer = { cursor: 0, reset: true, changes: [] };
       if (waiter) {
         const resolve = waiter;
         waiter = null;
@@ -341,8 +347,12 @@ const textOf = (session, path) => session.textOf(session.idOf(path)).toString();
   folder.files.delete("gone.md");
   folder.files.set("fresh.md", "fresh\n");
   folder.files.set("fig.png", new Uint8Array([4, 5]));
+  assert.equal(folder.firstSince, "t0", "the first request resumes from the tree's cursor");
+  folder.treeCursor = "t1";
   folder.reportReset();
   await tick();
+  assert.equal(folder.treeReads, 2, "a reset rereads the tree once and no more");
+  assert.equal(folder.lastSince, "t1", "and continues from the new tree cursor, not the reset's");
   assert.deepEqual(session.list().map((file) => file.path), ["a.md", "fig.png", "fresh.md", "same.md"]);
   assert.equal(textOf(session, "a.md"), "a changed\n");
   assert.equal(textOf(session, "same.md"), "same\n");
@@ -359,7 +369,6 @@ const textOf = (session, path) => session.textOf(session.idOf(path)).toString();
   const { problems, project } = await open({ "a.md": "a\n" }, {
     folder: Object.assign(fakeFolder({ "a.md": "a\n" }), {
       projectChanges(_id, since) {
-        if (since === undefined) return Promise.resolve({ cursor: "0", changes: [] });
         calls += 1;
         return Promise.reject(Object.assign(new Error("unreachable"), { name: "Unreachable" }));
       },

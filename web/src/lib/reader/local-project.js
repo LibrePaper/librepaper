@@ -196,6 +196,9 @@ export function createLocalProject({
    * @type {Map<string, { text: string, sha: string }>} */
   const conflicts = new Map();
   let failing = false;
+  /** Where the desktop app's changes resume: the cursor of the latest tree
+   * read, so nothing between that read and the next request is skipped. */
+  let cursor;
   /** @type {Record<string, string>} */
   let seeded = {};
 
@@ -249,6 +252,7 @@ export function createLocalProject({
       folder.projectTree(id),
       folder.projectName(id).catch(() => ""),
     ]);
+    cursor = tree.cursor;
     const read = await readAll([...managed(tree.files).values()]);
     initial = [];
     for (const one of read) {
@@ -377,6 +381,7 @@ export function createLocalProject({
   async function reread() {
     const tree = await folder.projectTree(id);
     if (closed) return;
+    cursor = tree.cursor;
     const listed = managed(tree.files);
     for (const path of [...disk.keys()]) if (!listed.has(path)) drop(path);
     const changed = [...listed.values()].filter((file) => {
@@ -391,16 +396,17 @@ export function createLocalProject({
   }
 
   async function follow() {
-    let cursor;
     while (!closed) {
       try {
         const answer = await folder.projectChanges(id, cursor, { signal: abort.signal });
         if (closed) return;
         failing = false;
-        const first = cursor === undefined;
+        if (answer.reset) {
+          // The thread is lost; the tree read gives the cursor to resume from.
+          await reread();
+          continue;
+        }
         cursor = answer.cursor;
-        if (first) continue;
-        if (answer.reset) await reread();
         for (const change of answer.changes || []) {
           if (closed) return;
           await applyChange(change);
