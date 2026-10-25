@@ -51,6 +51,7 @@ The CLI walks the directory with gitignore semantics (the `ignore` crate: `.giti
    - Each version becomes one commit on `refs/librepaper/main`, chained on the previous one: tree = the version's files, author = the version's `by` (`<handle>@<site>` as the address), date = `at`, message = the label, trailer `LibrePaper-Version: <sha>`. A version this directory pushed (see push) is represented by the commit that produced it, so the chain stays related to `main` and nothing is committed twice.
    - Then `git merge librepaper/main` (fast-forward when `main` did not move; a merge commit otherwise). A dirty tree refuses before anything is fetched: commit first. `--no-merge` stops after the fetch. A conflicting merge is left to git exactly as `git pull` leaves it: the person resolves it with their tools.
    - The working tree is otherwise never written by pull; git writes it.
+   - A path the working tree keeps out of the sync (ignored, marked `-librepaper`, not UTF-8, unreadable) is neither written to nor removed from the generated commits. Each tree keeps the base tree's version of it, so the merge leaves the file as it is.
 4. **Outside a repository** (a desktop folder), pull writes the newest version into the folder: files changed only on the web are written, files changed only here are kept, deleted-on-the-web files are moved to the trash. A file changed on both sides is not written; it is listed in the result, and a second call with `--mine` or `--theirs` per path settles it. A path the web holds that the folder also has but the walk leaves out (ignored, hidden, not UTF-8) is never written over or trashed; it is listed as skipped and `pulled` stays where it was. There is no three-way merge.
 5. `pulled` moves to the newest version, `files` to its hashes, `head` to the newest commit.
 
@@ -58,7 +59,7 @@ If no listed version has a sequence at or below `pulled`, history was trimmed. P
 
 ### push
 
-1. Walk the directory. Against `files`: new paths, changed paths (hash differs), deleted paths (recorded, now absent).
+1. Walk the directory. Against `files`: new paths, changed paths (hash differs), deleted paths (recorded, now absent). A recorded path the walk no longer lists but that is still in the directory (now ignored, marked `-librepaper`, not UTF-8, unreadable) has left the sync. It is not a deletion, and the web project keeps the file.
 2. Build one `SourceChange` with `consistency: unchanged_dependencies`: minimal byte-range patches for changed text (a line diff refined to the changed spans, `exact` carrying the base slice), `create` for new text, `delete` for removed text, `put_binary` for new or changed assets after `HEAD` and `PUT /assets`, binary deletes with `expect`. One `Dependency` per patched or deleted text file carrying the recorded hash. The operation key is `v2.<unix ms>.<32 hex>` in epoch `sync`, so a retry after a dropped connection replays the first receipt.
 3. `POST /source-change` with `sync: { provider: "cli", message, author }` (below). The server applies everything or nothing.
 4. On `409 changed` the reply names the paths; the CLI prints them, says "pull first", exits 1. On `409 suggestion` it names the path and the suggestion to accept or reject on the web. Nothing else is partial.
