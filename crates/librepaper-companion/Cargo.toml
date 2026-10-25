@@ -20,6 +20,7 @@ libc.workspace = true
 similar.workspace = true
 librepaper-base = { path = "../librepaper-base" }
 librepaper-document = { path = "../librepaper-document" }
+librepaper-sync = { path = "../librepaper-sync" }
 tokio.workspace = true
 axum.workspace = true
 http-body-util.workspace = true
