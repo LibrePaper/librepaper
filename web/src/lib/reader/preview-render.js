@@ -31,7 +31,7 @@
 /** @typedef {ReturnType<typeof import("../diagnostics.js").painter>} PreviewDiagnostics */
 
 /** @param {{
- * slug: string, coordinator: PreviewCoordinator, status: PreviewStatus, framePreview: PreviewFrame,
+ * slug: string, bindingId?: string, coordinator: PreviewCoordinator, status: PreviewStatus, framePreview: PreviewFrame,
  * diagnostics: PreviewDiagnostics, renderers: PreviewRendererRegistry,
  * snapshotDigest: (tree: PreviewTree) => Promise<string>,
  * diagnosticContext: (item: NonNullable<PreviewResult["diagnostics"]>[number] | {severity: string, message: string}, tree: PreviewTree, identity: string) => NonNullable<PreviewResult["diagnostics"]>[number],
