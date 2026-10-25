@@ -5,21 +5,39 @@
 // `body`, which is where a push says which paths changed.
 import { send } from "./client.js";
 
+/// What the desktop app answers to `login/complete` while the code it handed
+/// out has not been approved yet. Any other 400 means the sign-in expired.
+export const LOGIN_PENDING = "sign in and approve the code, then retry";
+
 const route = (id, step = "") => `projects/${encodeURIComponent(String(id))}/sync${step ? `/${step}` : ""}`;
 
-/** Where the folder stands with its web project.
+/** Where the folder stands with its web project. `git` is true when the
+ * folder holds a `.git`, which the desktop app will not pull into, push from
+ * or publish.
  * @param {string} id
- * @returns {Promise<{ signed_in: boolean, linked: boolean, site?: string, slug?: string, pulled?: number, changes?: { here: number, web: boolean } }>} */
+ * @returns {Promise<{ signed_in: boolean, linked: boolean, git?: boolean, site?: string, slug?: string, pulled?: number, changes?: { here: number, web: boolean } }>} */
 export async function syncStatus(id) {
   const response = await send("GET", route(id));
   return response.json();
 }
 
-/** Signs in to the web server through the system browser. Resolves once the
- * sign-in has finished.
- * @param {string} id */
+/** Starts signing in to the web server. The desktop app answers at once with
+ * a code, which the page approves in its own session.
+ * @param {string} id
+ * @returns {Promise<{ authorization_id: string, user_code: string, verification_url?: string }>} */
 export async function syncLogin(id) {
-  await send("POST", route(id, "login"));
+  const response = await send("POST", route(id, "login"), { jsonBody: {} });
+  return response.json();
+}
+
+/** Finishes the sign-in once the code is approved, and answers like the
+ * status. While the code is still pending the desktop app refuses with a 400
+ * whose error is `LOGIN_PENDING`.
+ * @param {string} id @param {string} authorizationId
+ * @returns {Promise<{ signed_in: boolean, linked: boolean, git?: boolean, site?: string, slug?: string, pulled?: number, changes?: { here: number, web: boolean } }>} */
+export async function syncLoginComplete(id, authorizationId) {
+  const response = await send("POST", route(id, "login/complete"), { jsonBody: { authorization_id: authorizationId } });
+  return response.json();
 }
 
 /** Links the folder to an existing web project.
@@ -43,7 +61,7 @@ export async function syncUnlink(id) {
 /** Takes in what changed on the web. `mine` and `theirs` settle files that
  * changed on both sides, one path at a time.
  * @param {string} id @param {{ mine?: string[], theirs?: string[] }} [choices]
- * @returns {Promise<{ written: number | string[], trashed: number | string[], kept?: unknown, conflicts: string[], trimmed?: boolean }>} */
+ * @returns {Promise<{ written: string[], trashed: string[], kept?: unknown, conflicts: string[], trimmed?: boolean }>} */
 export async function syncPull(id, choices = {}) {
   const response = await send("POST", route(id, "pull"), { jsonBody: choices });
   return response.json();

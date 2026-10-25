@@ -43,6 +43,7 @@
     authHeaders,
     config as loadConfig,
     keyHeaders,
+    post,
     signInHref,
   } from "../lib/api.js";
   import {
@@ -1510,9 +1511,15 @@
     onError: (error) => say(`The project folder could not be updated: ${error?.message || "unknown error"}`, { kind: "problem", id: "reader:folder-sync" }),
   }) : null;
   $effect(() => () => folderSync?.dispose());
-  // The Sync panel of a local project. A push first settles the folder, so
-  // the disk holds what the editor holds when the command reads it.
-  const localSync = LOCAL ? createLocalSync({ id: LOCAL_ID, flush: () => folderSync.flush() }) : null;
+  // The Sync panel of a local project. Signing in approves the desktop app's
+  // code in this page's own session, as the backups sign-in does. A pull or a
+  // push first settles the folder, so the disk holds what the editor holds
+  // when the command reads it.
+  const localSync = LOCAL ? createLocalSync({
+    id: LOCAL_ID,
+    approve: (userCode) => post("/api/auth/device/approve", { user_code: userCode }),
+    flush: () => folderSync.flush(),
+  }) : null;
   $effect(() => () => localSync?.dispose());
   // The editor becomes ready. A local project opens with one sync that sends nothing, because the
   // client was told what the folder holds. It makes every file managed.
