@@ -4,8 +4,9 @@
 //! excludes, hidden entries skipped, symbolic links not followed) whether or
 //! not the directory is a repository. Of what remains, a path is synced when
 //! the server's path rules accept it and its extension names a text file or an
-//! asset. A file git marks `-librepaper` is left out. Everything else is never
-//! read, written or deleted.
+//! asset. A file git marks `-librepaper` is left out, and so is a path the
+//! caller names (`exclude`), such as a file a local render wrote into the
+//! folder. Everything else is never read, written or deleted.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Component, Path, PathBuf};
@@ -27,6 +28,8 @@ pub(crate) struct Local {
 
 pub(crate) struct Scan {
     pub files: BTreeMap<String, Local>,
+    /// The paths the scan was asked to leave out, in the server's spelling.
+    exclude: Vec<String>,
 }
 
 impl Scan {
@@ -47,13 +50,19 @@ impl Scan {
 }
 
 impl Scan {
+    /// Whether the scan was asked to leave `path` out. Unlike a path the walk
+    /// merely did not yield, it is not the sync's whether or not it is on disk.
+    pub(crate) fn excludes(&self, path: &str) -> bool {
+        excluded(path, &self.exclude)
+    }
+
     /// The paths among `paths` that sit in the directory although the scan
     /// does not list them: ignored by git, hidden, not UTF-8, not readable,
-    /// or below a directory that cannot be read. The walk never yields what
-    /// is ignored or hidden, so these are found by asking for each path
-    /// itself. A path is absent only when the disk says it is not found; any
-    /// other answer leaves it counted, so a failure to look is never taken
-    /// for a deletion.
+    /// named in `exclude`, or below a directory that cannot be read. The walk
+    /// never yields what is ignored or hidden, so these are found by asking
+    /// for each path itself. A path is absent only when the disk says it is
+    /// not found; any other answer leaves it counted, so a failure to look is
+    /// never taken for a deletion.
     pub(crate) fn left_out<'a>(
         &self,
         dir: &Path,
@@ -105,9 +114,28 @@ impl LocalChanges {
     }
 }
 
+/// Whether `path` is one of `exclude` or below one: an entry names a file, or a
+/// directory and everything in it.
+pub(crate) fn excluded(path: &str, exclude: &[String]) -> bool {
+    exclude.iter().any(|entry| {
+        path == entry.as_str()
+            || path
+                .strip_prefix(entry.as_str())
+                .is_some_and(|rest| rest.starts_with('/'))
+    })
+}
+
 /// Reads the directory. `git` is given for a repository, so that its
-/// attributes are asked.
-pub(crate) fn scan(dir: &Path, rules: &Rules, git: Option<&Git>) -> Result<Scan, Error> {
+/// attributes are asked. A path in `exclude`, or below a directory in it, is
+/// treated as if the walk had not yielded it. Entries are relative to `dir`
+/// and use `/`.
+pub(crate) fn scan(
+    dir: &Path,
+    rules: &Rules,
+    git: Option<&Git>,
+    exclude: &[String],
+) -> Result<Scan, Error> {
+    let exclude: Vec<String> = exclude.iter().map(|entry| normalise(entry)).collect();
     let mut walk = ignore::WalkBuilder::new(dir);
     walk.standard_filters(true)
         .ignore(false)
@@ -139,6 +167,9 @@ pub(crate) fn scan(dir: &Path, rules: &Rules, git: Option<&Git>) -> Result<Scan,
             continue;
         };
         let path = normalise(&spelled);
+        if excluded(&path, &exclude) {
+            continue;
+        }
         let Some(kind) = rules.kind_of(&path) else {
             continue;
         };
@@ -193,7 +224,7 @@ pub(crate) fn scan(dir: &Path, rules: &Rules, git: Option<&Git>) -> Result<Scan,
         };
         files.insert(path, local);
     }
-    Ok(Scan { files })
+    Ok(Scan { files, exclude })
 }
 
 /// The path below the directory with `/` between its parts, or `None` when a
@@ -211,9 +242,9 @@ fn slashed(relative: &Path) -> Option<String> {
 
 /// The paths that are new, different or gone against what was recorded. A
 /// recorded path the scan does not list but that is still in `dir` (ignored,
-/// marked `-librepaper`, not UTF-8, unreadable, or in a directory that cannot
-/// be read) has left the sync and is not gone: excluding a file is not
-/// deleting it, and neither is failing to look at it.
+/// marked `-librepaper`, not UTF-8, unreadable, excluded, or in a directory
+/// that cannot be read) has left the sync and is not gone: excluding a file is
+/// not deleting it, and neither is failing to look at it.
 pub(crate) fn compare(
     dir: &Path,
     recorded: &BTreeMap<String, FileRecord>,
@@ -293,7 +324,7 @@ mod tests {
         write(root, "Makefile", b"all:\n");
         write(root, "a/b/c/d/e/f/g/h/deep.tex", b"too deep\n");
 
-        let scan = scan(root, &Rules::default(), None).unwrap();
+        let scan = scan(root, &Rules::default(), None, &[]).unwrap();
         assert_eq!(
             names(&scan),
             ["chapters/one.tex", "fig/plot.PNG", "main.tex"]
@@ -307,10 +338,143 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         write(dir.path(), "crlf.tex", b"a\r\nb\r\n");
         write(dir.path(), "lf.tex", b"a\nb\n");
-        let scan = scan(dir.path(), &Rules::default(), None).unwrap();
+        let scan = scan(dir.path(), &Rules::default(), None, &[]).unwrap();
         assert_eq!(scan.files["crlf.tex"].sha, scan.files["lf.tex"].sha);
         assert_eq!(scan.files["crlf.tex"].text.as_deref(), Some("a\nb\n"));
         assert_eq!(scan.files["lf.tex"].sha, sha256_hex(b"a\nb\n"));
+    }
+
+    #[test]
+    fn an_entry_names_a_file_or_a_directory_and_what_is_in_it() {
+        let exclude = ["main.pdf".to_string(), "main_files".to_string()];
+        for path in [
+            "main.pdf",
+            "main_files",
+            "main_files/libs/x.css",
+            "main_files/x.css",
+        ] {
+            assert!(excluded(path, &exclude), "{path}");
+        }
+        for path in [
+            "main.pdf.bak",
+            "main_files2/x.tex",
+            "main_filesx.tex",
+            "fig/main.pdf",
+            "other/main_files/x.css",
+            "main.tex",
+        ] {
+            assert!(!excluded(path, &exclude), "{path}");
+        }
+        assert!(!excluded("main.tex", &[]));
+        assert!(!excluded("main.tex", &[String::new()]));
+    }
+
+    #[test]
+    fn a_scan_leaves_out_the_paths_it_is_asked_to() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        write(root, "main.tex", b"main\n");
+        write(root, "main.pdf", b"%PDF rendered");
+        write(root, "main_files/libs/x.css", b"body {}\n");
+        write(root, "main_files2/y.tex", b"not a render output\n");
+        write(root, "fig/main.pdf", b"%PDF figure");
+
+        let all = scan(root, &Rules::default(), None, &[]).unwrap();
+        assert_eq!(
+            names(&all),
+            [
+                "fig/main.pdf",
+                "main.pdf",
+                "main.tex",
+                "main_files/libs/x.css",
+                "main_files2/y.tex"
+            ]
+        );
+
+        let exclude = ["main.pdf".to_string(), "main_files".to_string()];
+        let scan = scan(root, &Rules::default(), None, &exclude).unwrap();
+        assert_eq!(
+            names(&scan),
+            ["fig/main.pdf", "main.tex", "main_files2/y.tex"]
+        );
+        assert!(scan.excludes("main.pdf"));
+        assert!(scan.excludes("main_files/libs/x.css"));
+        assert!(!scan.excludes("main_files2/y.tex"));
+
+        // They are in the directory, so they are left out and not gone.
+        let asked: Vec<String> = ["main.pdf", "main_files/libs/x.css", "rendered.pdf"]
+            .iter()
+            .map(|path| path.to_string())
+            .collect();
+        assert_eq!(
+            scan.left_out(root, &asked)
+                .iter()
+                .map(String::as_str)
+                .collect::<Vec<_>>(),
+            ["main.pdf", "main_files/libs/x.css"]
+        );
+    }
+
+    #[test]
+    fn an_entry_is_matched_in_the_spelling_the_server_stores() {
+        let dir = tempfile::tempdir().unwrap();
+        // The file is spelled composed (NFC), the entry decomposed (NFD).
+        write(dir.path(), "r\u{e9}sum\u{e9}.pdf", b"%PDF");
+        write(dir.path(), "main.tex", b"main\n");
+        let exclude = ["re\u{301}sume\u{301}.pdf".to_string()];
+        let scan = scan(dir.path(), &Rules::default(), None, &exclude).unwrap();
+        assert_eq!(names(&scan), ["main.tex"]);
+        assert!(scan.excludes("r\u{e9}sum\u{e9}.pdf"));
+    }
+
+    #[test]
+    fn a_recorded_file_that_is_now_excluded_is_not_deleted() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        write(root, "main.tex", b"main\n");
+        write(root, "main.pdf", b"%PDF rendered");
+        write(root, "main_files/libs/x.css", b"body {}\n");
+        let record = |bytes: &[u8], kind| FileRecord {
+            kind,
+            sha: sha256_hex(bytes),
+        };
+        let recorded = BTreeMap::from([
+            ("main.tex".to_string(), record(b"main\n", Kind::Text)),
+            ("main.pdf".to_string(), record(b"%PDF older", Kind::Asset)),
+            (
+                "main_files/libs/x.css".to_string(),
+                record(b"body {}\n", Kind::Text),
+            ),
+        ]);
+
+        // Listed, the render output has changed since it was recorded.
+        let listed = scan(root, &Rules::default(), None, &[]).unwrap();
+        assert_eq!(compare(root, &recorded, &listed).changed, ["main.pdf"]);
+
+        let exclude = ["main.pdf".to_string(), "main_files".to_string()];
+        let kept = scan(root, &Rules::default(), None, &exclude).unwrap();
+        assert_eq!(names(&kept), ["main.tex"]);
+        let changes = compare(root, &recorded, &kept);
+        assert!(changes.is_empty(), "{changes:?}");
+    }
+
+    #[test]
+    fn a_new_file_that_is_excluded_is_not_an_addition() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        write(root, "main.tex", b"main\n");
+        write(root, "main.pdf", b"%PDF rendered");
+        let recorded = BTreeMap::from([(
+            "main.tex".to_string(),
+            FileRecord {
+                kind: Kind::Text,
+                sha: sha256_hex(b"main\n"),
+            },
+        )]);
+        let listed = scan(root, &Rules::default(), None, &[]).unwrap();
+        assert_eq!(compare(root, &recorded, &listed).added, ["main.pdf"]);
+        let kept = scan(root, &Rules::default(), None, &["main.pdf".to_string()]).unwrap();
+        assert!(compare(root, &recorded, &kept).is_empty());
     }
 
     #[test]
@@ -318,7 +482,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         write(dir.path(), "good.tex", b"fine\n");
         write(dir.path(), "latin.tex", &[b'c', b'a', b'f', 0xe9]);
-        let scan = scan(dir.path(), &Rules::default(), None).unwrap();
+        let scan = scan(dir.path(), &Rules::default(), None, &[]).unwrap();
         assert_eq!(names(&scan), ["good.tex"]);
 
         let recorded = BTreeMap::from([(
@@ -343,7 +507,7 @@ mod tests {
         write(root, "build/out.tex", b"ignored by directory\n");
         write(root, "refs.bib", b"ignored by pattern\n");
         write(root, "latin.tex", &[b'c', b'a', b'f', 0xe9]);
-        let scan = scan(root, &Rules::default(), None).unwrap();
+        let scan = scan(root, &Rules::default(), None, &[]).unwrap();
         assert_eq!(names(&scan), ["main.tex"]);
 
         let asked: Vec<String> = [
@@ -374,7 +538,7 @@ mod tests {
         write(dir.path(), "same.tex", b"same\n");
         write(dir.path(), "edited.tex", b"after\n");
         write(dir.path(), "new.tex", b"new\n");
-        let scan = scan(dir.path(), &Rules::default(), None).unwrap();
+        let scan = scan(dir.path(), &Rules::default(), None, &[]).unwrap();
         let record = |text: &str| FileRecord {
             kind: Kind::Text,
             sha: sha256_hex(text.as_bytes()),
@@ -401,7 +565,7 @@ mod tests {
         write(root, "build/out.tex", b"built\n");
         write(root, "refs.bib", b"@book{}\n");
         write(root, "latin.tex", &[b'c', b'a', b'f', 0xe9]);
-        let scan = scan(root, &Rules::default(), None).unwrap();
+        let scan = scan(root, &Rules::default(), None, &[]).unwrap();
         assert_eq!(names(&scan), ["main.tex"]);
 
         let record = |text: &str| FileRecord {
@@ -449,7 +613,7 @@ mod tests {
         let Some(_locked) = testing::lock(&root.join("locked")) else {
             return;
         };
-        let scan = scan(root, &Rules::default(), None).unwrap();
+        let scan = scan(root, &Rules::default(), None, &[]).unwrap();
         assert_eq!(names(&scan), ["main.tex"]);
 
         let asked = ["locked/inner.tex".to_string(), "locked/new.tex".to_string()];
@@ -480,7 +644,7 @@ mod tests {
             ("kept/gone.tex".to_string(), record("gone\n")),
             ("vanished/gone.tex".to_string(), record("gone\n")),
         ]);
-        let scan = scan(root, &Rules::default(), None).unwrap();
+        let scan = scan(root, &Rules::default(), None, &[]).unwrap();
         assert!(scan.left_out(root, recorded.keys()).is_empty());
         let changes = compare(root, &recorded, &scan);
         assert_eq!(changes.deleted, ["kept/gone.tex", "vanished/gone.tex"]);
@@ -495,7 +659,7 @@ mod tests {
         write(dir.path(), ".gitattributes", b"private/** -librepaper\n");
         write(dir.path(), "main.tex", b"main\n");
         write(dir.path(), "private/draft.tex", b"draft\n");
-        let scan = scan(git.dir(), &Rules::default(), Some(&git)).unwrap();
+        let scan = scan(git.dir(), &Rules::default(), Some(&git), &[]).unwrap();
         assert_eq!(names(&scan), ["main.tex"]);
 
         let record = |text: &str| FileRecord {
@@ -517,9 +681,9 @@ mod tests {
         write(dir.path(), ".gitattributes", b"private/** -librepaper\n");
         write(dir.path(), "main.tex", b"main\n");
         write(dir.path(), "private/draft.tex", b"draft\n");
-        let with_git = scan(git.dir(), &Rules::default(), Some(&git)).unwrap();
+        let with_git = scan(git.dir(), &Rules::default(), Some(&git), &[]).unwrap();
         assert_eq!(names(&with_git), ["main.tex"]);
-        let without = scan(git.dir(), &Rules::default(), None).unwrap();
+        let without = scan(git.dir(), &Rules::default(), None, &[]).unwrap();
         assert_eq!(names(&without), ["main.tex", "private/draft.tex"]);
     }
 }

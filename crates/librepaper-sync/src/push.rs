@@ -26,6 +26,12 @@ pub struct PushOptions {
     /// Who made the change, as git would say it. The account behind the
     /// credentials is recorded beside it.
     pub author: Option<String>,
+    /// Paths the push leaves out, as if the directory did not hold them: exact
+    /// paths, and directories with everything in them, relative to the
+    /// directory with `/` between the parts. A file the caller makes in the
+    /// directory that is not part of the project, such as a local render's
+    /// output, goes here.
+    pub exclude: Vec<String>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -167,7 +173,7 @@ pub async fn push(
             store.save(&state)?;
         }
     }
-    let found = scan(dir, &rules, git.as_ref())?;
+    let found = scan(dir, &rules, git.as_ref(), &options.exclude)?;
     let changes = compare(dir, &state.files, &found);
     if changes.is_empty() {
         return Ok(PushOutcome::Nothing);
@@ -332,23 +338,11 @@ fn too_many(rules: &Rules, found: usize) -> Error {
     ))
 }
 
-/// Creates a web project from the directory and links the directory to it.
-pub async fn publish(
-    client: &Client,
-    dir: &Path,
-    store: &dyn StateStore,
-    title: &str,
-) -> Result<Link, Error> {
-    if store.load()?.is_some() {
-        return Err(Error::Invalid(
-            "this directory is already linked to a project".into(),
-        ));
-    }
-    let rules = client.rules().await?;
-    let git = store.repository().map(Git::at);
-    let found = scan(dir, &rules, git.as_ref())?;
+/// The files a new project is created with: everything the scan found, with
+/// its bytes.
+fn upload_list(found: &Scan, rules: &Rules) -> Result<Vec<(String, Vec<u8>)>, Error> {
     if found.files.len() > rules.max_files {
-        return Err(too_many(&rules, found.files.len()));
+        return Err(too_many(rules, found.files.len()));
     }
     let mut sent = Vec::with_capacity(found.files.len());
     for (path, file) in &found.files {
@@ -368,6 +362,27 @@ pub async fn publish(
         };
         sent.push((path.clone(), bytes));
     }
+    Ok(sent)
+}
+
+/// Creates a web project from the directory and links the directory to it.
+/// Paths in `exclude` (see `PushOptions`) are not sent.
+pub async fn publish(
+    client: &Client,
+    dir: &Path,
+    store: &dyn StateStore,
+    title: &str,
+    exclude: &[String],
+) -> Result<Link, Error> {
+    if store.load()?.is_some() {
+        return Err(Error::Invalid(
+            "this directory is already linked to a project".into(),
+        ));
+    }
+    let rules = client.rules().await?;
+    let git = store.repository().map(Git::at);
+    let found = scan(dir, &rules, git.as_ref(), exclude)?;
+    let sent = upload_list(&found, &rules)?;
     let slug = client.publish(title, &sent).await?;
     let link = Link::at(client.site(), slug.clone());
 
@@ -387,10 +402,16 @@ pub async fn publish(
 }
 
 /// How many synced files differ from what the project last agreed on. Reads
-/// the directory and nothing else.
-pub fn changes_here(dir: &Path, state: &State, rules: &Rules) -> Result<usize, Error> {
+/// the directory and nothing else. Paths in `exclude` (see `PushOptions`) are
+/// not counted.
+pub fn changes_here(
+    dir: &Path,
+    state: &State,
+    rules: &Rules,
+    exclude: &[String],
+) -> Result<usize, Error> {
     let git = Git::toplevel(dir);
-    let found = scan(dir, rules, git.as_ref())?;
+    let found = scan(dir, rules, git.as_ref(), exclude)?;
     Ok(compare(dir, &state.files, &found).count())
 }
 
@@ -460,7 +481,7 @@ mod tests {
         write(dir.path(), "fig/new.png", b"new-figure");
         write(dir.path(), "fig/changed.png", b"after");
         write(dir.path(), "same.tex", b"same\n");
-        let found = scan(dir.path(), &Rules::default(), None).unwrap();
+        let found = scan(dir.path(), &Rules::default(), None, &[]).unwrap();
         let recorded = BTreeMap::from([
             (
                 "edited.tex".to_string(),
@@ -537,7 +558,7 @@ mod tests {
     fn a_line_ending_only_edit_sends_nothing() {
         let dir = tempfile::tempdir().unwrap();
         write(dir.path(), "a.tex", b"one\r\ntwo\r\n");
-        let found = scan(dir.path(), &Rules::default(), None).unwrap();
+        let found = scan(dir.path(), &Rules::default(), None, &[]).unwrap();
         let recorded = BTreeMap::from([("a.tex".to_string(), record(Kind::Text, b"one\ntwo\n"))]);
         let changes = compare(dir.path(), &recorded, &found);
         assert!(changes.is_empty(), "the hashes are of the LF text");
@@ -548,7 +569,7 @@ mod tests {
     #[test]
     fn a_deleted_asset_needs_no_dependency() {
         let dir = tempfile::tempdir().unwrap();
-        let found = scan(dir.path(), &Rules::default(), None).unwrap();
+        let found = scan(dir.path(), &Rules::default(), None, &[]).unwrap();
         let recorded = BTreeMap::from([("fig/a.png".to_string(), record(Kind::Asset, b"x"))]);
         let changes = compare(dir.path(), &recorded, &found);
         let plan = plan_change(&recorded, &found, &changes, &BTreeMap::new());
@@ -562,7 +583,7 @@ mod tests {
         write(dir.path(), ".gitignore", b"refs.bib\n");
         write(dir.path(), "main.tex", b"main\n");
         write(dir.path(), "refs.bib", b"@book{}\n");
-        let found = scan(dir.path(), &Rules::default(), None).unwrap();
+        let found = scan(dir.path(), &Rules::default(), None, &[]).unwrap();
         let mut recorded = BTreeMap::from([
             ("main.tex".to_string(), record(Kind::Text, b"main\n")),
             ("refs.bib".to_string(), record(Kind::Text, b"@book{}\n")),
@@ -580,6 +601,95 @@ mod tests {
         let gone = sha256_hex(b"gone\n");
         assert_eq!(plan.delete, [json!({"path": "gone.tex", "expect": gone})]);
         assert_eq!(plan.dependencies, [dependency("gone.tex", &gone)]);
+    }
+
+    #[test]
+    fn a_push_does_not_send_a_file_a_render_wrote() {
+        let dir = tempfile::tempdir().unwrap();
+        write(dir.path(), "main.tex", b"main\n");
+        write(dir.path(), "main.pdf", b"%PDF rendered");
+        write(dir.path(), "main_files/libs/x.css", b"body {}\n");
+        write(dir.path(), "fig/new.png", b"new-figure");
+        let recorded = BTreeMap::from([("main.tex".to_string(), record(Kind::Text, b"main\n"))]);
+
+        let listed = scan(dir.path(), &Rules::default(), None, &[]).unwrap();
+        let changes = compare(dir.path(), &recorded, &listed);
+        assert_eq!(
+            changes.added,
+            ["fig/new.png", "main.pdf", "main_files/libs/x.css"],
+            "without the exclusion the render's files are a push"
+        );
+
+        let exclude = ["main.pdf".to_string(), "main_files".to_string()];
+        let found = scan(dir.path(), &Rules::default(), None, &exclude).unwrap();
+        let changes = compare(dir.path(), &recorded, &found);
+        assert_eq!(changes.added, ["fig/new.png"]);
+        let plan = plan_change(&recorded, &found, &changes, &BTreeMap::new());
+        assert!(plan.create.is_empty());
+        assert_eq!(
+            plan.put_binary,
+            [json!({"path": "fig/new.png", "hash": sha256_hex(b"new-figure"), "expect": null})]
+        );
+        assert_eq!(plan.uploads.len(), 1);
+    }
+
+    #[test]
+    fn a_new_project_is_not_created_with_a_file_a_render_wrote() {
+        let dir = tempfile::tempdir().unwrap();
+        write(dir.path(), "main.tex", b"main\n");
+        write(dir.path(), "chapters/one.tex", b"one\n");
+        write(dir.path(), "main.pdf", b"%PDF rendered");
+        write(dir.path(), "main_files/libs/x.css", b"body {}\n");
+        let rules = Rules::default();
+        let paths = |exclude: &[String]| -> Vec<String> {
+            let found = scan(dir.path(), &rules, None, exclude).unwrap();
+            upload_list(&found, &rules)
+                .unwrap()
+                .into_iter()
+                .map(|(path, _)| path)
+                .collect()
+        };
+        assert_eq!(
+            paths(&[]),
+            [
+                "chapters/one.tex",
+                "main.pdf",
+                "main.tex",
+                "main_files/libs/x.css"
+            ]
+        );
+        let exclude = ["main.pdf".to_string(), "main_files".to_string()];
+        assert_eq!(paths(&exclude), ["chapters/one.tex", "main.tex"]);
+
+        // The bytes sent are the files' own.
+        let found = scan(dir.path(), &rules, None, &exclude).unwrap();
+        let sent = upload_list(&found, &rules).unwrap();
+        assert_eq!(sent[1], ("main.tex".to_string(), b"main\n".to_vec()));
+    }
+
+    #[test]
+    fn the_changes_here_leave_out_what_the_caller_excludes() {
+        let dir = tempfile::tempdir().unwrap();
+        write(dir.path(), "main.tex", b"main\n");
+        write(dir.path(), "main.pdf", b"%PDF rendered");
+        write(dir.path(), "main_files/libs/x.css", b"body {}\n");
+        let mut state = State::new(Link::parse("https://app.librepaper.org/docs/paper").unwrap());
+        state.files = BTreeMap::from([("main.tex".to_string(), record(Kind::Text, b"main\n"))]);
+        let rules = Rules::default();
+
+        assert_eq!(changes_here(dir.path(), &state, &rules, &[]).unwrap(), 2);
+        let exclude = ["main.pdf".to_string(), "main_files".to_string()];
+        assert_eq!(
+            changes_here(dir.path(), &state, &rules, &exclude).unwrap(),
+            0
+        );
+
+        // A real edit is still counted beside them.
+        write(dir.path(), "main.tex", b"edited\n");
+        assert_eq!(
+            changes_here(dir.path(), &state, &rules, &exclude).unwrap(),
+            1
+        );
     }
 
     #[test]

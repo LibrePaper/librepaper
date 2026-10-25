@@ -127,6 +127,8 @@ The sidecar is the same binary, so the two commands run in-process behind routes
 - `POST sync/pull { mine?: [path], theirs?: [path] }`: the no-git form. Answers `{ written, trashed, kept, conflicts: [path], skipped: [path] }`. The page shows conflicts with the existing Keep mine / Load from disk prompt and calls again with the answers. The folder's change poll then reloads the editor.
 - `POST sync/push { message }`: the page flushes the folder sync first so disk equals the editor, then calls. `409 changed` and `409 suggestion` are shown as they are.
 
+Every call into the sync crate passes the folder's recorded render outputs (the files a local render wrote there, such as `main.pdf` and the files under `main_files`) as paths to leave out. The editor does not hold them, so they are never pushed, published, counted in "N changes here", or written by a pull. The record is the change poller's and lives in memory.
+
 Authentication: the sidecar holds a device token from the same device flow backups use (`tokens.json`). Kata vhqg's narrower credential applies here too when it lands.
 
 Page: a **Sync** section in the local project's side panel with Link or Publish, the linked project, "N changes here", "The web project changed", Pull, Push and Unlink. On a web project opened in the desktop app, **Keep a folder on this computer…** in the File menu asks for a folder, links it, pulls, and opens it as a local project.
