@@ -295,7 +295,9 @@ mod tests {
     #[test]
     fn a_state_closes_the_round_with_the_decision() {
         let mut state = State::default();
-        let id = state.open(vec!["main".into(), "w2".into()]).expect("a round");
+        let id = state
+            .open(vec!["main".into(), "w2".into()])
+            .expect("a round");
         assert!(state.answer(id, "main", true).is_none());
         let closed = state.answer(id, "w2", true).expect("the round ends");
         assert_eq!(closed.id, id);
@@ -308,7 +310,9 @@ mod tests {
     #[test]
     fn a_refusal_ends_the_round_and_names_the_windows_to_tell() {
         let mut state = State::default();
-        let id = state.open(vec!["main".into(), "w2".into()]).expect("a round");
+        let id = state
+            .open(vec!["main".into(), "w2".into()])
+            .expect("a round");
         let closed = state.answer(id, "w2", false).expect("the round ends");
         assert_eq!(closed.decision, Decision::Stay);
         assert!(closed.asked.contains("main") && closed.asked.contains("w2"));
@@ -321,7 +325,9 @@ mod tests {
     #[test]
     fn the_deadline_ends_an_open_round_with_an_exit() {
         let mut state = State::default();
-        let id = state.open(vec!["main".into(), "w2".into()]).expect("a round");
+        let id = state
+            .open(vec!["main".into(), "w2".into()])
+            .expect("a round");
         assert!(state.answer(id, "main", true).is_none());
         let closed = state.expire(id).expect("the round ends");
         assert_eq!(closed.decision, Decision::Exit);
@@ -334,7 +340,9 @@ mod tests {
         let first = state.open(vec!["main".into()]).expect("a round");
         assert!(state.open(vec!["main".into()]).is_none());
         assert_eq!(
-            state.answer(first, "main", false).map(|closed| closed.decision),
+            state
+                .answer(first, "main", false)
+                .map(|closed| closed.decision),
             Some(Decision::Stay)
         );
         let second = state.open(vec!["main".into()]).expect("a new round");

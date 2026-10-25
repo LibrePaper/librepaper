@@ -1034,7 +1034,10 @@ fn display_argument(argument: &str) -> String {
     if argument.is_empty()
         || argument.contains(|c: char| c.is_whitespace() || c == '"' || c == '\'')
     {
-        format!("\"{}\"", argument.replace('\\', "\\\\").replace('"', "\\\""))
+        format!(
+            "\"{}\"",
+            argument.replace('\\', "\\\\").replace('"', "\\\"")
+        )
     } else {
         argument.to_string()
     }
