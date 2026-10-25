@@ -49,21 +49,19 @@ const api = {
 };
 
 let component;
-window.mount = async (next, props = {}) => {
+const mount = async (next, props = {}) => {
   component?.$destroy();
   window.scene = { calls: [], saves: 0, pulls: [], pushes: [], ...next };
   const sync = createLocalSync({ id: "f1", api, flush: async () => { scene().saves += 1; return scene().saved !== false; } });
   component = createClassComponent({ component: Sync, target: document.getElementById("panel"), props: { sync, open: true, defaultTitle: "thesis", ...props } });
   await tick();
 };
-window.today = () => day(new Date());
-window.linked = linked;
-window.flush = async () => { await tick(); await new Promise((resolve) => setTimeout(resolve, 60)); await tick(); };
+const today = () => day(new Date());
+const flush = async () => { await tick(); await new Promise((resolve) => setTimeout(resolve, 60)); await tick(); };
 window.ready = true;
 `;
 
 const checks = `
-const flush = () => window.flush();
 const check = (condition, message) => { if (!condition) throw new Error(message); };
 const squash = (node) => node.innerText.replace(/\\s+/g, " ").trim();
 const text = () => squash(document.getElementById("panel"));
@@ -133,7 +131,7 @@ window.syncPanelCheck = async () => {
   await flush();
   await press("Pull");
   check(window.scene.saves === 1, "the folder is saved before the pull");
-  check(text().includes("Pulled: 2 files written, 1 file moved to the trash."), "the pull says what it did: " + text());
+  check(text().includes("Wrote 2 files and moved 1 file to the trash."), "the pull says what it did: " + text());
   check(text().includes("2 files changed here and on the web"), "and what needs an answer: " + text());
   const rows = () => [...document.querySelectorAll(".sync-conflict")];
   check(rows().length === 2 && rows()[0].textContent.includes("intro.tex"), "each file has a row");
@@ -143,7 +141,7 @@ window.syncPanelCheck = async () => {
   check(rows().length === 1 && rows()[0].textContent.includes("long-name.tex"), "and the row goes");
   await press("Take theirs");
   check(JSON.stringify(calls("syncPull")[2][1]) === JSON.stringify({ theirs: ["chapters/long-name.tex"] }), "Take theirs settles the other");
-  check(rows().length === 0 && text().includes("Pulled: 3 files written, 1 file moved to the trash."), "the counts add up: " + text());
+  check(rows().length === 0 && text().includes("Wrote 3 files and moved 1 file to the trash."), "the counts add up: " + text());
 
   await mount({ status: linked({ changes: { here: 0, web: false } }), pulls: [{ written: 0, trashed: 0, kept: [], conflicts: [] }] });
   await flush();

@@ -40,10 +40,11 @@
   // One sentence for what a pull did.
   function pulledText(pull, conflicts) {
     const parts = [];
-    if (pull.written) parts.push(`${plural(pull.written, "file")} written`);
-    if (pull.trashed) parts.push(`${plural(pull.trashed, "file")} moved to the trash`);
+    if (pull.written) parts.push(`wrote ${plural(pull.written, "file")}`);
+    if (pull.trashed) parts.push(`moved ${plural(pull.trashed, "file")} to the trash`);
     if (!parts.length) return conflicts.length ? "" : "Nothing new on the web.";
-    return `Pulled: ${parts.join(", ")}.`;
+    const said = parts.join(" and ");
+    return `${said[0].toUpperCase()}${said.slice(1)}.`;
   }
 
   async function submitPush(event) {
