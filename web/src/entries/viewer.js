@@ -278,7 +278,7 @@ function settle(anchor) {
 ///
 /// One path for a new preview and for a redraw, so the two cannot drift about
 /// what `librepaperViewer` holds or which generation won.
-async function paint(bytes) {
+async function paint(bytes, frameGeneration = 0) {
   const mine = ++paintGeneration;
   // pdf.js hands the buffer to its worker, which detaches it. So `drawn` is
   // taken first and every draw is given a copy of it: what is kept has to
@@ -317,6 +317,13 @@ async function paint(bytes) {
     if (mine !== paintGeneration) return;
     painting = false;
     report();
+    // The reader keeps its waiting display up until the pages it sent are on
+    // screen. The state report above is sent only when it changes, which a
+    // second PDF of the same shape does not do, so the finished paint says so
+    // itself, naming the delivery it drew.
+    if (frameGeneration && readerOrigin) {
+      parent.postMessage({ librepaper: true, type: "viewer-drawn", frameGeneration }, readerOrigin);
+    }
     // The page index for an offset, for the caret lock and SyncTeX. Neither
     // is built here; both need this and nothing else from the viewer, so it
     // is exposed now rather than left for them to reach into the DOM for.
@@ -741,7 +748,7 @@ addEventListener("message", async (event) => {
   const bytes = message.pdf;
   if (!(bytes instanceof ArrayBuffer) && !ArrayBuffer.isView(bytes)) return;
   forcedAnchor = null;
-  await paint(bytes);
+  await paint(bytes, Number.isSafeInteger(message.frameGeneration) ? message.frameGeneration : 0);
 });
 
 /// "auto", the fit modes, or a zoom between 0.1 and 10 as a number string.

@@ -17,3 +17,5 @@ assert.equal(waitStageOf({ pageDelivered: true, compiling: true, latexPhase: "co
 assert.equal(waitStageOf({ latexPhase: "idle" }), "Preparing the preview");
 
 console.log("wait-stage: one stage line for every format");
+assert.equal(waitStageOf({ engineLoading: "typst", compiling: true }), "Loading the Typst engine");
+assert.equal(waitStageOf({ engineLoading: "quarto" }), "Loading the Markdown engine");

@@ -92,6 +92,9 @@ export function validateFrameMessage(input) {
         invert: input.invert, presenting: input.presenting, find,
       };
     }
+    case "viewer-drawn":
+      return Number.isSafeInteger(input.frameGeneration) && input.frameGeneration > 0
+        ? { type: "viewer-drawn", frameGeneration: input.frameGeneration } : null;
     case "viewer-find-open":
       return { type: "viewer-find-open" };
     case "annotate":

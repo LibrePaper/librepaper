@@ -546,8 +546,13 @@
           void paintPreview();
         }
         break;
+      case "viewer-drawn":
+        // The pages of the newest delivery are on screen, so the waiting
+        // display gives way to them. A paint of an older delivery does not.
+        frameHasPage = true;
+        if (message.frameGeneration >= framePreview.deliveredGeneration) pageDrawn = true;
+        break;
       case "viewer-state":
-        if (message.drawn) pageDrawn = true;
         viewerView = message.drawn
           ? {
               mode: String(message.mode || "auto"), scale: Number(message.scale) || null,
@@ -1803,6 +1808,20 @@
   // is the viewer saying it drew; a page that is only delivered is still
   // blank in a viewer that is loading. Reset wherever `everPaintedShown` is.
   let pageDrawn = $state(false);
+  // Whether the frame shows any page at all since it last loaded, even one
+  // of another file. The viewer swaps new pages in only once they are drawn,
+  // so such a frame can stay in sight while it draws the next one.
+  let frameHasPage = $state(false);
+  // The renderer engine being downloaded for the preview, or "". LaTeX
+  // reports its own loading phase and is never named here.
+  let engineLoading = $state("");
+  function warmEngine(format) {
+    const wanted = format;
+    if (!["latex", "html", "text"].includes(format)) engineLoading = format;
+    void renderers.warm(format).then(() => {
+      if (engineLoading === wanted) engineLoading = "";
+    });
+  }
 
   const errorCount = $derived(diagnostics.filter((d) => d.severity !== "warning" && d.severity !== "info").length);
   const warningCount = $derived(diagnostics.filter((d) => d.severity === "warning").length);
@@ -2008,9 +2027,6 @@
   // Readers use the same source renderer as editors. A missing compiler is
   // reported as a tool requirement instead of opening a retained result.
   const compilesHere = $derived(renderers.compilerAvailable(sourceFormat));
-  // A failure is reported once the render has settled as failed. One that a
-  // retry is already superseding is not.
-  const failedBeforeRender = $derived(renderState.failure && !everPaintedShown && !compiling);
   // Nothing can be drawn here, so there is nothing to wait for.
   const noCompiler = $derived(pdfOutput && !everPaintedShown && !renderState.failure && !compilesHere);
 
@@ -2132,6 +2148,7 @@
     send: tell,
     onNavigate: () => {
       frameReady = false;
+      frameHasPage = false;
       // A new frame has nothing drawn in it and no tool set; it says so once
       // it loads. Until then the controls go away rather than describing the
       // document that just left.
@@ -2151,6 +2168,8 @@
       deliveredKind = payload.kind;
       everPainted = true;
       everPaintedShown = true;
+      // An HTML page is on screen the moment it is handed over.
+      if (payload.kind === "html") frameHasPage = true;
     },
   });
 
@@ -2197,33 +2216,6 @@
   });
   $effect(() => () => steadyBusy.stop());
 
-  // The one waiting display. It stands in for the pane until the page for the
-  // current target is drawn, whatever the format. A stand-in page from the
-  // cache is drawn like any other, so a recompile under one never lands here.
-  const pageIsUp = $derived(pdfOutput ? pageDrawn : everPaintedShown);
-  const waiting = $derived(Boolean(
-    shown.document && previewPath && compilesHere && !pageIsUp
-      && !documentNeedsSignIn && !heldFile && !projectUnreadable && !projectEmpty && !previewCard
-      && !failedBeforeRender,
-  ));
-  const waitStage = $derived(waitStageOf({
-    pageDelivered: pdfOutput && everPaintedShown,
-    latexPhase: sourceFormat === "latex" && !latexHtmlPreview ? latexPhase : "",
-    latexScope: sourceFormat === "latex" && !latexHtmlPreview ? String(latexState.progress?.scope || "") : "",
-    quartoStarting: quartoPreviewStarting,
-    compiling,
-  }));
-  const waitProgress = $derived(sourceFormat === "latex" && !latexHtmlPreview && latexState.progress?.total ? latexState.progress : null);
-  // The block is held to reading speed as a whole: it does not appear for a
-  // quick render and does not blink off between stages once it is up.
-  let waitingShown = $state(false);
-  const steadyWaiting = createSteadyBusy({ onchange: (shown) => (waitingShown = shown) });
-  $effect(() => {
-    steadyWaiting.set(waiting);
-  });
-  $effect(() => () => steadyWaiting.stop());
-  // What keeps the frame out of sight: the block is up or about to be.
-  const waitingUp = $derived(waiting || waitingShown);
 
   let previousConnected = null;
   $effect(() => {
@@ -3191,7 +3183,7 @@
     previewPath = path;
     sourceFormat = format;
     configureLatex(format, session || readerProjectOwner);
-    renderers.warm(format);
+    warmEngine(format);
     if (mayEdit && ["quarto", "typst", "markdown"].includes(format)) readQuartoBinding();
     if (!previous) return;
     // Invalidate both running compiles and replayed pages, even when the
@@ -3279,6 +3271,42 @@
   // that cannot be previewed has nowhere else to be shown.
   let viewing = $state(false);
   const heldFile = $derived(!mayEdit && viewing ? files.find((file) => file.id === openFile) || null : null);
+
+  // A failure is reported once the render has settled as failed. One that a
+  // retry is already superseding is not.
+  const failedBeforeRender = $derived(renderState.failure && !everPaintedShown && !compiling);
+  // The one waiting display. It stands in for the pane until the page for the
+  // current target is drawn, whatever the format. A stand-in page from the
+  // cache is drawn like any other, so a recompile under one never lands here.
+  const pageIsUp = $derived(pdfOutput ? pageDrawn : everPaintedShown);
+  const waiting = $derived(Boolean(
+    shown.document && previewPath && compilesHere && !pageIsUp
+      && !documentNeedsSignIn && !heldFile && !projectUnreadable && !projectEmpty && !previewCard
+      && !failedBeforeRender,
+  ));
+  const waitStage = $derived(waitStageOf({
+    pageDelivered: pdfOutput && everPaintedShown,
+    latexPhase: sourceFormat === "latex" && !latexHtmlPreview ? latexPhase : "",
+    latexScope: sourceFormat === "latex" && !latexHtmlPreview ? String(latexState.progress?.scope || "") : "",
+    quartoStarting: quartoPreviewStarting,
+    engineLoading: engineLoading && engineLoading === sourceFormat ? engineLoading : "",
+    compiling,
+  }));
+  const waitProgress = $derived(sourceFormat === "latex" && !latexHtmlPreview && latexState.progress?.total ? latexState.progress : null);
+  // The block is held to reading speed as a whole: it does not appear for a
+  // quick render and does not blink off between stages once it is up.
+  let waitingShown = $state(false);
+  const steadyWaiting = createSteadyBusy({ onchange: (shown) => (waitingShown = shown) });
+  // A delivered PDF in a frame that already shows pages is swapped in by the
+  // viewer once it is drawn, so there is nothing to wait for on screen.
+  const waitingNeeded = $derived(waiting && !(frameHasPage && pdfOutput && everPaintedShown));
+  $effect(() => {
+    steadyWaiting.set(waitingNeeded);
+  });
+  $effect(() => () => steadyWaiting.stop());
+  // What keeps the frame out of sight: the block is up, or the frame has
+  // nothing on it yet, which would show the viewer's own empty page.
+  const waitingUp = $derived(waitingShown || (waitingNeeded && !frameHasPage));
 
   // Somebody who cannot edit has no source pane. Choosing a file opens it as
   // it does for an editor, and the preview follows it there or into the file
@@ -3627,7 +3655,7 @@
     // Load the browser renderer for readers as well as editors; this is all
     // transient and does not create a server-side result.
     if (format) {
-      renderers.warm(format);
+      warmEngine(format);
     }
     await startCollaboration(document_);
     // The directory arrives after the session does. A session object alone is

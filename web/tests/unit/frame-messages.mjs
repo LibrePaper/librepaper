@@ -21,6 +21,8 @@ assert.deepEqual(accepted({ type: "viewer-state", drawn: true, mode: "page-fit",
 assert.deepEqual(accepted({ type: "viewer-state", drawn: false, mode: "1.5", scale: null, ...viewerBase, page: 0, pages: 0 }), { type: "viewer-state", drawn: false, mode: "1.5", scale: null, ...viewerBase, page: 0, pages: 0 });
 assert.deepEqual(accepted({ type: "viewer-state", drawn: true, mode: "auto", scale: 1, ...viewerBase, find: { current: 3, total: 17, extra: 1 }, junk: 1 }), { type: "viewer-state", drawn: true, mode: "auto", scale: 1, ...viewerBase, find: { current: 3, total: 17 } });
 assert.deepEqual(accepted({ type: "viewer-find-open", junk: 1 }), { type: "viewer-find-open" });
+assert.deepEqual(accepted({ type: "viewer-drawn", frameGeneration: 3 }), { type: "viewer-drawn", frameGeneration: 3 });
+assert.equal(accepted({ type: "viewer-drawn", frameGeneration: 0 }), null);
 for (const message of [
   { type: "annotate" }, { type: "disarm" }, { type: "unfocus" }, { type: "focus", id: "mark-1" },
   { type: "reading-position", start: 4 },
