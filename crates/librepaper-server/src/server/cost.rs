@@ -587,9 +587,7 @@ enum TokenRoute {
 /// with the slug the token names, or nothing for a route it may not use.
 fn agent_token_route(token: &str, path: &str, method: &Method) -> Option<TokenRoute> {
     let (slug, _) = parse_agent_token(token)?;
-    let rest = path
-        .strip_prefix("/api/documents/")?
-        .strip_prefix(slug)?;
+    let rest = path.strip_prefix("/api/documents/")?.strip_prefix(slug)?;
     let one_segment = |name: &str| !name.is_empty() && !name.contains('/');
     match (method, rest) {
         (&Method::GET, "/tools") => Some(TokenRoute::Tools),
@@ -849,7 +847,10 @@ mod agent_scope_tests {
             (Method::POST, "/api/documents/paper/history"),
             (Method::GET, "/api/documents/paper/history/"),
             (Method::POST, "/api/documents/paper/history/trim"),
-            (Method::PATCH, &format!("/api/documents/paper/history/{SHA}")),
+            (
+                Method::PATCH,
+                &format!("/api/documents/paper/history/{SHA}"),
+            ),
             (
                 Method::GET,
                 &format!("/api/documents/paper/history/{SHA}/archive"),

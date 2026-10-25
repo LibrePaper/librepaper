@@ -879,7 +879,12 @@ async fn only_an_edit_token_reaches_the_routes_a_sync_uses() {
         .unwrap();
     assert!(listed["labels"].is_array(), "{listed}");
     let read: Value = served
-        .send(Method::GET, &format!("{project}?unsuggested=1"), &edit, None)
+        .send(
+            Method::GET,
+            &format!("{project}?unsuggested=1"),
+            &edit,
+            None,
+        )
         .await
         .json()
         .await
@@ -916,7 +921,10 @@ async fn only_an_edit_token_reaches_the_routes_a_sync_uses() {
     );
     assert_eq!(version["reason"], "push");
     assert_eq!(version["label"], "Tighten the claim");
-    assert_eq!(version["by"], "owner", "a push with no author is the account's");
+    assert_eq!(
+        version["by"], "owner",
+        "a push with no author is the account's"
+    );
 
     let response = served
         .send(Method::PUT, &assets, &edit, Some(figure()))

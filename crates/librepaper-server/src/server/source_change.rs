@@ -158,14 +158,13 @@ impl Server {
             author: input.sync.author,
         };
         let ceiling = self.ceiling_for(&who.id);
-        let mut authority = match who
-            .agent_authority(ceiling, format!("sync:{}:{principal}", room.document_id))
-        {
-            Ok(authority) => authority,
-            Err(InvalidCredential) => {
-                return change_refusal(AgentError::Conflict("document access changed".into()))
-            }
-        };
+        let mut authority =
+            match who.agent_authority(ceiling, format!("sync:{}:{principal}", room.document_id)) {
+                Ok(authority) => authority,
+                Err(InvalidCredential) => {
+                    return change_refusal(AgentError::Conflict("document access changed".into()))
+                }
+            };
         // A token has no key of its own, so a push with no author is the
         // account's.
         if authority.author_key.is_empty() {
