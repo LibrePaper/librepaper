@@ -8,7 +8,9 @@
 //! in the folder.
 //!
 //! A folder may only be linked to a project on the site of the page that asks,
-//! so a page cannot spend the token this computer holds for another site.
+//! so a page cannot spend the token this computer holds for another site. The
+//! link lives with the folder, not with the page, so a page that opens a folder
+//! linked from another site finds it unlinked and refused.
 //! Pull and push touch no change-poller state: the files a pull writes are
 //! outside changes like any other, and the poll hands them to the editor.
 
@@ -30,6 +32,9 @@ const MAX_PENDING_LOGINS: usize = 32;
 const LOGIN_TIMEOUT: Duration = Duration::from_secs(10);
 const MAX_DEVICE_FIELD_BYTES: usize = 4096;
 
+const NOT_LINKED: &str = "link this folder to a web project first";
+const OTHER_SITE: &str = "this folder is linked to a project on another site";
+
 /// A refusal: the status and the JSON body to answer with.
 type Failure = (u16, Value);
 
@@ -37,10 +42,27 @@ fn refuse(status: u16, error: &str) -> Failure {
     (status, json!({"error": error}))
 }
 
+/// Whether the site refused the token this computer holds: it expired, was
+/// revoked, or has no right to the project.
+fn token_refused(error: &Error) -> bool {
+    matches!(error, Error::Http { status: 401 | 403, .. })
+}
+
 /// A failed call into the sync crate. The crate's message already says what
-/// went wrong in plain words.
+/// went wrong in plain words. A refused token is the page's cue to sign in
+/// again, so it answers 401 like a missing one; the site being unreachable or
+/// answering badly is a 502; a mistake in what was asked is a 400; and the
+/// folder, the state record or git failing here is a 500.
 fn failed(error: &Error) -> Failure {
-    (502, json!({"error": error.to_string()}))
+    if token_refused(error) {
+        return refuse(401, "sign in");
+    }
+    match error {
+        Error::NotLinked => refuse(409, NOT_LINKED),
+        Error::Link(_) | Error::Rules(_) | Error::Invalid(_) => refuse(400, &error.to_string()),
+        Error::Network(_) | Error::Http { .. } | Error::Trimmed => refuse(502, &error.to_string()),
+        Error::Io { .. } | Error::Git(_) | Error::State(_) => refuse(500, &error.to_string()),
+    }
 }
 
 fn answer(result: Result<Value, Failure>) -> Reply {
@@ -56,19 +78,45 @@ struct Folder {
     store: FileStore,
 }
 
+/// What the state home holds for a folder, as one page sees it.
+enum Stored {
+    Nothing,
+    /// A link to a project on the page's own site.
+    Here(State),
+    /// A link to a project on another site. The token this computer holds for
+    /// that site is not this page's to spend, so the page sees no link.
+    OtherSite,
+}
+
 impl Folder {
     fn new(inner: &Inner, binding: ProjectBinding) -> Folder {
         let store = FileStore::for_dir(&inner.state_home, &binding.root);
         Folder { binding, store }
     }
 
-    fn state(&self) -> Result<Option<State>, Failure> {
-        self.store.load().map_err(|error| failed(&error))
+    /// The folder's link as seen from `origin`. The state is keyed by the
+    /// directory alone, while the binding that reached it is scoped by origin.
+    fn stored(&self, origin: Option<&str>) -> Result<Stored, Failure> {
+        let Some(state) = self.store.load().map_err(|error| failed(&error))? else {
+            return Ok(Stored::Nothing);
+        };
+        Ok(if same_site(&state.link.site, &origin_site(origin)?) {
+            Stored::Here(state)
+        } else {
+            Stored::OtherSite
+        })
     }
 
-    fn linked(&self) -> Result<State, Failure> {
-        self.state()?
-            .ok_or_else(|| refuse(409, "link this folder to a web project first"))
+    fn state(&self, origin: Option<&str>) -> Result<Option<State>, Failure> {
+        match self.stored(origin)? {
+            Stored::Nothing => Ok(None),
+            Stored::Here(state) => Ok(Some(state)),
+            Stored::OtherSite => Err(refuse(409, OTHER_SITE)),
+        }
+    }
+
+    fn linked(&self, origin: Option<&str>) -> Result<State, Failure> {
+        self.state(origin)?.ok_or_else(|| refuse(409, NOT_LINKED))
     }
 
     /// A folder that is a Git repository syncs through Git. Pull, push and
@@ -144,25 +192,33 @@ fn client_for(inner: &Inner, site: &url::Url) -> Result<Client, Failure> {
 /// Where the folder stands: whether it is linked and signed in, and when it
 /// is both, how much changed here and whether the web project moved. A site
 /// that cannot be reached leaves those two empty and says why in `error`, so
-/// the folder can still be unlinked.
+/// the folder can still be unlinked. A site that refuses the stored token
+/// reads as signed out. A folder linked from another site reads as unlinked
+/// and says so in `other_site`, without a call to either site.
 async fn folder_status(
     inner: &Inner,
     folder: &Folder,
     origin: Option<&str>,
 ) -> Result<Value, Failure> {
-    let state = folder.state()?.map(Arc::new);
+    let (state, other_site) = match folder.stored(origin)? {
+        Stored::Nothing => (None, false),
+        Stored::Here(state) => (Some(Arc::new(state)), false),
+        Stored::OtherSite => (None, true),
+    };
     let site = match &state {
         Some(state) => state.link.site.clone(),
         None => origin_site(origin)?,
     };
     let token = credentials::stored_token_at(&inner.state_home, site.as_str());
-    let signed_in = !token.is_empty();
+    let mut signed_in = !token.is_empty();
     let (mut here, mut web, mut problem) = (0, false, None);
     if let (Some(state), true) = (&state, signed_in) {
         let client = Client::new(site.clone(), Credentials::token(&token));
         let (rules, moved) = tokio::join!(client.rules(), web_changed(&client, state));
+        let mut refused = false;
         match moved {
             Ok(moved) => web = moved,
+            Err(error) if token_refused(&error) => refused = true,
             Err(error) => problem = Some(error.to_string()),
         }
         match rules {
@@ -177,6 +233,10 @@ async fn folder_status(
             }
             Err(error) => problem = Some(error.to_string()),
         }
+        if refused {
+            signed_in = false;
+            problem = Some("sign in".to_string());
+        }
     }
     let mut body = json!({
         "signed_in": signed_in,
@@ -187,6 +247,9 @@ async fn folder_status(
         "pulled": state.as_ref().and_then(|state| state.pulled),
         "changes": {"here": here, "web": web},
     });
+    if other_site {
+        body["other_site"] = Value::Bool(true);
+    }
     if let Some(problem) = problem {
         body["error"] = Value::String(problem);
     }
@@ -297,7 +360,7 @@ async fn begin_login(
     site: Option<String>,
 ) -> Result<Value, Failure> {
     let page = origin_site(origin)?;
-    let site = match (folder.state()?, site) {
+    let site = match (folder.state(origin)?, site) {
         (Some(state), _) => state.link.site,
         (None, None) => page,
         (None, Some(raw)) => {
@@ -524,7 +587,7 @@ async fn publish_folder(
     if title.is_empty() {
         return Err(refuse(400, "a project needs a title"));
     }
-    if folder.state()?.is_some() {
+    if folder.state(origin)?.is_some() {
         return Err(refuse(
             409,
             "this folder is already linked to a web project",
@@ -572,7 +635,7 @@ pub(super) async fn handle_pull(
     {
         return write_json(400, &json!({"error": "unsafe file path"}));
     }
-    answer(run_pull(inner, &folder, mine, theirs).await)
+    answer(run_pull(inner, &folder, origin, mine, theirs).await)
 }
 
 /// Takes the web project's newest version into the folder. A file changed on
@@ -580,11 +643,12 @@ pub(super) async fn handle_pull(
 async fn run_pull(
     inner: &Inner,
     folder: &Folder,
+    origin: Option<&str>,
     mine: Vec<String>,
     theirs: Vec<String>,
 ) -> Result<Value, Failure> {
     folder.refuse_git()?;
-    let state = folder.linked()?;
+    let state = folder.linked(origin)?;
     let client = client_for(inner, &state.link.site)?;
     let options = PullOptions {
         merge: false,
@@ -642,17 +706,22 @@ pub(super) async fn handle_push(
         Ok(body) => body,
         Err(response) => return response,
     };
-    answer(run_push(inner, &folder, body.message.trim()).await)
+    answer(run_push(inner, &folder, origin, body.message.trim()).await)
 }
 
 /// Sends what changed in the folder as one version. The page has saved its
 /// edits to the folder first, so the files are what the editor holds.
-async fn run_push(inner: &Inner, folder: &Folder, message: &str) -> Result<Value, Failure> {
+async fn run_push(
+    inner: &Inner,
+    folder: &Folder,
+    origin: Option<&str>,
+    message: &str,
+) -> Result<Value, Failure> {
     folder.refuse_git()?;
     if message.is_empty() {
         return Err(refuse(400, "a push needs a message"));
     }
-    let state = folder.linked()?;
+    let state = folder.linked(origin)?;
     let client = client_for(inner, &state.link.site)?;
     let options = PushOptions {
         message: message.to_owned(),
@@ -728,7 +797,7 @@ pub(super) async fn handle_keep(
     let folder = Folder::new(inner, binding);
     let pulled = async {
         record_link(&folder, link)?;
-        run_pull(inner, &folder, Vec::new(), Vec::new()).await
+        run_pull(inner, &folder, origin, Vec::new(), Vec::new()).await
     };
     match pulled.await {
         Ok(pulled) => {
@@ -748,7 +817,7 @@ pub(super) async fn handle_keep(
 mod tests {
     use super::*;
 
-    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
     use axum::routing::{get, post};
     use axum::Json;
@@ -1242,21 +1311,46 @@ mod tests {
         assert_eq!(own.0, 200, "{}", own.1);
     }
 
+    async fn rules_reply() -> Json<Value> {
+        Json(json!({
+            "text_extensions": ["tex", "typ", "md", "bib"],
+            "asset_extensions": ["png", "jpg"],
+            "derived_extensions": ["pdf"],
+            "max_path": 255,
+            "max_files": 1000,
+        }))
+    }
+
     /// A site that serves the path rules and nothing else.
     async fn rules_site() -> (String, tokio::task::JoinHandle<()>) {
-        let app = axum::Router::new().route(
-            "/api/config",
-            get(|| async {
-                Json(json!({
-                    "text_extensions": ["tex", "typ", "md", "bib"],
-                    "asset_extensions": ["png", "jpg"],
-                    "derived_extensions": ["pdf"],
-                    "max_path": 255,
-                    "max_files": 1000,
-                }))
-            }),
-        );
+        serve(axum::Router::new().route("/api/config", get(rules_reply))).await
+    }
+
+    /// A site that answers everything with `status`, the path rules included
+    /// unless `rules` serves them.
+    async fn refusing_site(status: u16, rules: bool) -> (String, tokio::task::JoinHandle<()>) {
+        let status = StatusCode::from_u16(status).unwrap();
+        let mut app = axum::Router::new();
+        if rules {
+            app = app.route("/api/config", get(rules_reply));
+        }
+        let app = app.fallback(move || async move { (status, Json(json!({"error": "refused"}))) });
         serve(app).await
+    }
+
+    /// A site that counts the requests it gets.
+    async fn counting_site() -> (String, Arc<AtomicUsize>, tokio::task::JoinHandle<()>) {
+        let requests = Arc::new(AtomicUsize::new(0));
+        let counter = requests.clone();
+        let app = axum::Router::new().fallback(move || {
+            let counter = counter.clone();
+            async move {
+                counter.fetch_add(1, Ordering::SeqCst);
+                StatusCode::NOT_FOUND
+            }
+        });
+        let (origin, task) = serve(app).await;
+        (origin, requests, task)
     }
 
     #[tokio::test]
@@ -1268,5 +1362,147 @@ mod tests {
 
         let (status, body) = fixture.push(json!({"message": "No changes"})).await;
         assert_eq!((status, body), (200, json!({"nothing": true})));
+    }
+
+    #[tokio::test]
+    async fn a_folder_linked_from_another_site_is_not_the_pages_to_sync() {
+        let (site_a, requests, _task) = counting_site().await;
+        let fixture = Fixture::new(PAGE).await;
+        // This computer holds a token for the other site, and the link names it.
+        credentials::store_token_at(&fixture.inner.state_home, &site_a, "lp_token_a").unwrap();
+        fixture.link_to(&format!("{site_a}/docs/abc123"));
+
+        let pull = fixture.pull(json!({})).await;
+        assert_error(&pull, 409, "another site");
+        let push = fixture.push(json!({"message": "Edits"})).await;
+        assert_error(&push, 409, "another site");
+        let login = fixture.login(json!({})).await;
+        assert_error(&login, 409, "another site");
+        let publish = fixture.publish(json!({"title": "Paper"})).await;
+        assert_error(&publish, 409, "another site");
+
+        let (status, body) = fixture.status().await;
+        assert_eq!(status, 200, "{body}");
+        assert_eq!(body["linked"], false);
+        assert_eq!(body["other_site"], true);
+        assert_eq!(body["site"], Value::Null);
+        assert_eq!(body["slug"], Value::Null);
+        // The token is the other site's, so this page is not signed in with it.
+        assert_eq!(body["signed_in"], false);
+        assert!(body.get("error").is_none(), "{body}");
+
+        // The other site was never asked anything, with its token or without.
+        assert_eq!(requests.load(Ordering::SeqCst), 0);
+
+        // The page can still take the folder over.
+        let (status, body) = fixture.unlink().await;
+        assert_eq!(status, 200, "{body}");
+        assert!(body.get("other_site").is_none(), "{body}");
+        let (_, body) = fixture.link("https://paper.example/docs/abc123").await;
+        assert_eq!(body["linked"], true);
+        assert!(body.get("other_site").is_none(), "{body}");
+    }
+
+    #[test]
+    fn a_failed_call_answers_with_the_status_that_names_its_cause() {
+        let http = |status| Error::Http {
+            status,
+            detail: "refused".to_string(),
+        };
+        let refused = (401, json!({"error": "sign in"}));
+        assert_eq!(failed(&http(401)), refused);
+        assert_eq!(failed(&http(403)), refused);
+        for status in [400, 404, 409, 500] {
+            let failure = failed(&http(status));
+            assert_eq!(failure.0, 502, "{status}");
+            assert_eq!(failure.1["error"], format!("refused ({status})"));
+        }
+        assert_eq!(
+            failed(&Error::NotLinked),
+            (409, json!({"error": "link this folder to a web project first"}))
+        );
+        assert_eq!(
+            failed(&Error::Rules("too many files".to_string())),
+            (400, json!({"error": "too many files"}))
+        );
+        assert_eq!(
+            failed(&Error::Invalid("a push needs a message".to_string())),
+            (400, json!({"error": "a push needs a message"}))
+        );
+        assert_eq!(failed(&Error::Link("not a project".to_string())).0, 400);
+        assert_eq!(failed(&Error::Network("no route".to_string())).0, 502);
+        assert_eq!(failed(&Error::Trimmed).0, 502);
+        let io = Error::Io {
+            path: PathBuf::from("main.tex"),
+            source: std::io::Error::other("disk full"),
+        };
+        assert_eq!(failed(&io).0, 500);
+        assert_eq!(failed(&Error::Git("no git".to_string())).0, 500);
+        assert_eq!(failed(&Error::State("unreadable".to_string())).0, 500);
+    }
+
+    #[tokio::test]
+    async fn a_site_that_refuses_the_token_asks_the_page_to_sign_in() {
+        for status in [401, 403] {
+            let (site, _task) = refusing_site(status, false).await;
+            let fixture = Fixture::new(&site).await;
+            fixture.sign_in("lp_revoked");
+            fixture.link_to(&format!("{site}/docs/abc123"));
+
+            let pull = fixture.pull(json!({})).await;
+            assert_eq!((pull.0, &pull.1), (401, &json!({"error": "sign in"})));
+            let push = fixture.push(json!({"message": "Edits"})).await;
+            assert_eq!((push.0, &push.1), (401, &json!({"error": "sign in"})));
+        }
+    }
+
+    #[tokio::test]
+    async fn the_history_list_refusing_the_token_is_a_sign_in_too() {
+        // The path rules are public; the version list is where the token counts.
+        let (site, _task) = refusing_site(401, true).await;
+        let fixture = Fixture::new(&site).await;
+        fixture.sign_in("lp_revoked");
+        fixture.link_to(&format!("{site}/docs/abc123"));
+
+        let pull = fixture.pull(json!({})).await;
+        assert_eq!((pull.0, &pull.1), (401, &json!({"error": "sign in"})));
+    }
+
+    #[tokio::test]
+    async fn a_site_that_fails_is_a_bad_gateway_not_a_sign_in() {
+        let (site, _task) = refusing_site(500, false).await;
+        let fixture = Fixture::new(&site).await;
+        fixture.sign_in("lp_token");
+        fixture.link_to(&format!("{site}/docs/abc123"));
+
+        let pull = fixture.pull(json!({})).await;
+        assert_error(&pull, 502, "(500)");
+        let push = fixture.push(json!({"message": "Edits"})).await;
+        assert_error(&push, 502, "(500)");
+    }
+
+    #[tokio::test]
+    async fn status_reads_a_refused_token_as_signed_out() {
+        for status in [401, 403] {
+            let (site, _task) = refusing_site(status, true).await;
+            let fixture = Fixture::new(&site).await;
+            fixture.sign_in("lp_revoked");
+            fixture.link_to(&format!("{site}/docs/abc123"));
+
+            let (code, body) = fixture.status().await;
+            assert_eq!(code, 200, "{body}");
+            assert_eq!(body["linked"], true);
+            assert_eq!(body["signed_in"], false);
+            assert_eq!(body["error"], "sign in");
+        }
+
+        // A site that merely fails leaves the sign-in standing.
+        let (site, _task) = refusing_site(500, true).await;
+        let fixture = Fixture::new(&site).await;
+        fixture.sign_in("lp_token");
+        fixture.link_to(&format!("{site}/docs/abc123"));
+        let (_, body) = fixture.status().await;
+        assert_eq!(body["signed_in"], true);
+        assert!(body["error"].as_str().unwrap().contains("(500)"), "{body}");
     }
 }

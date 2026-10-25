@@ -8,13 +8,14 @@
 //! 1. Write the job's files into the persistent workspace (`workspace`).
 //! 2. Run the expanded command there through the confined runner, which owns
 //!    cancellation, the deadline and the captured log.
-//! 3. Read the result file this run wrote, and for a PDF the SyncTeX file
-//!    beside it.
+//! 3. Read the result file, and for a PDF the SyncTeX file beside it.
 //!
 //! Exit status 0 with no result file is a failure that names the path the
-//! command was expected to write. A result left in the workspace by an
-//! earlier run does not count, and a command that fails after writing its
-//! result still returns it beside the error.
+//! command was expected to write. After exit status 0 the result counts
+//! whatever its modification time, because a command with nothing to rebuild
+//! leaves it as it was. After a failure only a result this run wrote counts,
+//! so a stale one is never shown as the output of a failed run, and a command
+//! that fails after writing its result still returns it beside the error.
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -194,6 +195,7 @@ pub async fn run(
         Instant::now() + Duration::from_secs(request.options.deadline_seconds.clamp(1, 3600));
     // File times come from a coarse kernel clock that can trail this one by
     // a tick, so a result written at once could read as older than the start.
+    // Only a failed command is held to it.
     let started = SystemTime::now() - Duration::from_secs(1);
     let (outcome, output) = native::run_confined_logged(command, &mut cancel, deadline).await;
 
@@ -212,14 +214,16 @@ pub async fn run(
     };
     let mut files: BTreeMap<String, Vec<u8>> = BTreeMap::new();
     match outcome {
-        RunOutcome::Exited(0) => match read_result(&root, &expanded.result, started) {
+        // A command that finds nothing to rebuild exits 0 without rewriting
+        // its result, so after a success the file counts whatever its time.
+        RunOutcome::Exited(0) => match read_result(&root, &expanded.result, None) {
             Ok(Some(bytes)) if !bytes.is_empty() => {
                 attach_result(
                     &mut files,
                     &root,
                     key.output == Output::Pdf,
                     &expanded.stem,
-                    started,
+                    None,
                     bytes,
                 );
                 status.status = "done".into();
@@ -248,8 +252,9 @@ pub async fn run(
             status.status = "failed".into();
             status.error = Some(format!("the command exited with status {code}"));
             // LaTeX in nonstop mode can exit nonzero and still write a usable
-            // PDF, so a fresh result is shown beside the error.
-            let result = read_result(&root, &expanded.result, started)
+            // PDF, so a fresh result is shown beside the error. One left by an
+            // earlier run is not, or it would pass for this run's output.
+            let result = read_result(&root, &expanded.result, Some(started))
                 .ok()
                 .flatten()
                 .filter(|bytes| !bytes.is_empty());
@@ -259,7 +264,7 @@ pub async fn run(
                     &root,
                     key.output == Output::Pdf,
                     &expanded.stem,
-                    started,
+                    Some(started),
                     bytes,
                 );
             }
@@ -306,13 +311,20 @@ fn failed(request: &JobRequest, error: &str) -> JobOutcome {
     }
 }
 
-/// The bytes of `relative` under `root` when this run wrote it. A file last
-/// modified before `started` was left by an earlier run and counts as absent.
+/// The bytes of `relative` under `root`. After a command that exited 0, pass
+/// no `fresh_since`: such a command may find nothing to rebuild and leave its
+/// result as it was, so the file counts whatever its time. After a failed
+/// command, pass the start of the run: a file last modified before it was left
+/// by an earlier run and counts as absent, so a stale result is never shown as
+/// the output of a run that failed.
 fn read_result(
     root: &Path,
     relative: &str,
-    started: SystemTime,
+    fresh_since: Option<SystemTime>,
 ) -> Result<Option<Vec<u8>>, String> {
+    let Some(started) = fresh_since else {
+        return read_inside(root, relative);
+    };
     match std::fs::metadata(root.join(relative)).and_then(|metadata| metadata.modified()) {
         Ok(modified) if modified < started => Ok(None),
         Ok(_) => read_inside(root, relative),
@@ -347,22 +359,23 @@ fn attach_result(
     root: &Path,
     pdf: bool,
     stem: &str,
-    started: SystemTime,
+    fresh_since: Option<SystemTime>,
     bytes: Vec<u8>,
 ) {
     files.insert("artifact".into(), bytes);
     if pdf {
-        if let Some(bytes) = read_synctex(root, stem, started) {
+        if let Some(bytes) = read_synctex(root, stem, fresh_since) {
             files.insert("synctex".into(), bytes);
         }
     }
 }
 
 /// The SyncTeX file a TeX run leaves beside its PDF: compressed when the
-/// engine wrote it so, else plain. Each candidate needs the same freshness.
-fn read_synctex(root: &Path, stem: &str, started: SystemTime) -> Option<Vec<u8>> {
+/// engine wrote it so, else plain. Each candidate needs the same freshness as
+/// the result it sits beside.
+fn read_synctex(root: &Path, stem: &str, fresh_since: Option<SystemTime>) -> Option<Vec<u8>> {
     ["synctex.gz", "synctex"].iter().find_map(|extension| {
-        read_result(root, &format!("{stem}.{extension}"), started)
+        read_result(root, &format!("{stem}.{extension}"), fresh_since)
             .ok()
             .flatten()
     })
