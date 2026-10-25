@@ -7,7 +7,7 @@
 # browser modules, which are fetched rather than built.
 [workspace]
 resolver = "2"
-members = ["crates/librepaper", "crates/librepaper-shell", "crates/librepaper-base", "crates/librepaper-document", "crates/librepaper-engine", "crates/librepaper-room", "crates/librepaper-server", "crates/librepaper-companion"]
+members = ["crates/librepaper", "crates/librepaper-shell", "crates/librepaper-base", "crates/librepaper-document", "crates/librepaper-engine", "crates/librepaper-room", "crates/librepaper-server", "crates/librepaper-companion", "crates/librepaper-sync"]
 # The fuzz targets need libFuzzer and a nightly compiler, so they build on
 # their own: `tools/test/suite fuzz`, or `cargo fuzz --fuzz-dir tools/test/fuzz run <target>`.
 # The desktop shell links the system webview, so it builds on its own: `make desktop`.
@@ -153,6 +153,9 @@ subtle = "2"
 moka = { version = "0.12", features = ["sync", "future"] }
 # A real unified diff for the permission prompt.
 similar = "3"
+# Walks a directory the way git does: .gitignore, .git/info/exclude and the
+# global excludes decide what a sync looks at.
+ignore = "0.4"
 # Executable lookup on PATH, honouring the execute bit and PATHEXT.
 which = "8"
 # Platform base directories: XDG on Linux, the native folders elsewhere.
