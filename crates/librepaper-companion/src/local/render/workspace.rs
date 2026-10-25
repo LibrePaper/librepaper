@@ -787,9 +787,11 @@ pub(crate) fn recorded_digests(record: &Path) -> Result<BTreeMap<String, String>
     read_written_record(record)
 }
 
-/// Mark every path in `listed` as managed by recording its current digest.
-/// Entries for other files are kept while those files still exist under
-/// `root` and are dropped once they are gone.
+/// Record the current digest of every path in `listed`, as the mirror does
+/// after its own writes. Entries for other files are kept while those files
+/// still exist under `root` and are dropped once they are gone. Tests use it
+/// to stand in for an editor write.
+#[cfg(test)]
 pub(crate) fn record_listed_digests(
     record: &Path,
     root: &Path,

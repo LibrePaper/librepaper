@@ -14,7 +14,6 @@
 
 use super::*;
 
-use std::collections::BTreeSet;
 use std::time::UNIX_EPOCH;
 
 use crate::local::bindings::ProjectBinding;
@@ -162,12 +161,12 @@ pub(super) fn walk(root: &Path) -> Result<Walk, WalkError> {
     Ok(result)
 }
 
-/// The listed tree with every file's digest, and the digests alone for the
-/// written record.
+/// The listed tree with every file's digest. The listing is also what the
+/// change poller compares the folder against.
 struct Tree {
     files: Vec<Value>,
     skipped: Vec<Value>,
-    digests: BTreeMap<String, String>,
+    listing: BTreeMap<String, (FileStat, String)>,
 }
 
 fn read_tree(root: &Path) -> Result<Tree, WalkError> {
@@ -179,7 +178,7 @@ fn read_tree(root: &Path) -> Result<Tree, WalkError> {
             .iter()
             .map(|(path, reason)| json!({"path": path, "reason": reason}))
             .collect(),
-        digests: BTreeMap::new(),
+        listing: BTreeMap::new(),
     };
     for (path, stat) in walked.files {
         match workspace::read_file_bounded_to(&root.join(&path), "project file", MAX_UPLOAD_BYTES) {
@@ -191,7 +190,7 @@ fn read_tree(root: &Path) -> Result<Tree, WalkError> {
                     "sha256": digest,
                     "mtime": stat.mtime_secs(),
                 }));
-                tree.digests.insert(path, digest);
+                tree.listing.insert(path, (stat, digest));
             }
             // A file that vanished or grew past the bound since the walk is
             // left out, as if the walk had never seen it.
@@ -250,47 +249,29 @@ struct Scan {
     settled: BTreeMap<String, FileStat>,
     /// The stat of every file at the previous look.
     seen: BTreeMap<String, FileStat>,
-    /// The paths the page is believed to hold, so a differing one is
-    /// `changed` rather than `added` and a vanished one is `removed`.
-    known: BTreeSet<String>,
+    /// The digest the page holds for every file. A path in it is `changed`
+    /// when it differs and `removed` when it vanishes; a path outside it is
+    /// `added`.
+    digests: BTreeMap<String, String>,
 }
 
 impl Scan {
-    /// Start from the written record, which holds what the page last read or
-    /// had written. A file whose digest matches the record is settled. A file
-    /// that differs, or that the record lacks, is left unsettled and is
-    /// reported on the next look, once its stat held still. A record entry
-    /// whose file is gone is reported removed on the next look. This catches
-    /// what changed between the page's tree read and this first scan.
-    fn baseline(root: &Path, record: &Path) -> Option<Scan> {
-        let walked = walk(root).ok()?;
-        let recorded = workspace::recorded_digests(record).unwrap_or_default();
-        let mut scan = Scan {
-            settled: BTreeMap::new(),
-            seen: walked.files.clone(),
-            known: BTreeSet::new(),
-        };
-        for (path, stat) in &walked.files {
-            let Some(expected) = recorded.get(path) else {
-                continue;
-            };
-            scan.known.insert(path.clone());
-            let matches =
-                workspace::read_file_bounded_to(&root.join(path), "project file", MAX_UPLOAD_BYTES)
-                    .is_ok_and(|bytes| &librepaper_document::results::sha256(&bytes) == expected);
-            if matches {
-                scan.settled.insert(path.clone(), *stat);
-            }
+    /// Start from the listing the page last read. The first looks compare the
+    /// folder with it, so a change made between that read and the first look
+    /// is reported once its stat held still.
+    fn from_listing(listing: &BTreeMap<String, (FileStat, String)>) -> Scan {
+        let stats: BTreeMap<String, FileStat> = listing
+            .iter()
+            .map(|(path, (stat, _))| (path.clone(), *stat))
+            .collect();
+        Scan {
+            settled: stats.clone(),
+            seen: stats,
+            digests: listing
+                .iter()
+                .map(|(path, (_, digest))| (path.clone(), digest.clone()))
+                .collect(),
         }
-        for path in recorded.keys() {
-            // Entries for files the walk skips on purpose are not the page's.
-            let listable = path.split('/').all(|part| skip_reason(part).is_none());
-            let absent = std::fs::symlink_metadata(root.join(path)).is_err();
-            if listable && absent {
-                scan.known.insert(path.clone());
-            }
-        }
-        Some(scan)
     }
 
     /// Look at the tree once. A file is reported when it held still across
@@ -316,31 +297,33 @@ impl Scan {
             let digest = librepaper_document::results::sha256(&bytes);
             let recorded = recorded
                 .get_or_insert_with(|| workspace::recorded_digests(record).unwrap_or_default());
+            // Either LibrePaper's own write, or content the page already holds.
             let own_write = recorded.get(path) == Some(&digest);
-            if !own_write {
+            let held = self.digests.get(path) == Some(&digest);
+            if !own_write && !held {
                 changes.push(Change {
                     path: path.clone(),
-                    kind: if self.known.contains(path) {
+                    kind: if self.digests.contains_key(path) {
                         "changed"
                     } else {
                         "added"
                     },
-                    sha256: Some(digest),
+                    sha256: Some(digest.clone()),
                     size: Some(bytes.len() as u64),
                 });
             }
             self.settled.insert(path.clone(), *stat);
-            self.known.insert(path.clone());
+            self.digests.insert(path.clone(), digest);
         }
         let gone: Vec<String> = self
-            .known
-            .iter()
+            .digests
+            .keys()
             .filter(|path| !now.contains_key(*path))
             .cloned()
             .collect();
         for path in gone {
             self.settled.remove(&path);
-            self.known.remove(&path);
+            self.digests.remove(&path);
             changes.push(Change {
                 path,
                 kind: "removed",
@@ -371,6 +354,8 @@ pub(super) struct Shared {
     state: std::sync::Mutex<State>,
     notify: Notify,
     max_events: usize,
+    /// A baseline from a tree read that the poller task has not taken yet.
+    baseline: std::sync::Mutex<Option<Scan>>,
 }
 
 impl Shared {
@@ -390,6 +375,7 @@ impl Shared {
             }),
             notify: Notify::new(),
             max_events,
+            baseline: std::sync::Mutex::new(None),
         }
     }
 
@@ -497,8 +483,10 @@ impl Registry {
         self.timing
     }
 
-    /// The queue for `binding`, starting its poller task when none runs.
-    fn shared_for(&self, binding: &ProjectBinding, record: PathBuf) -> Arc<Shared> {
+    /// Make `scan` the baseline for `binding`, as its tree was just read.
+    /// Starts the poller task when none runs and otherwise replaces the
+    /// baseline of the running one, keeping its queue and cursors.
+    fn set_baseline(&self, binding: &ProjectBinding, record: PathBuf, scan: Scan) {
         let mut pollers = self
             .pollers
             .lock()
@@ -507,19 +495,38 @@ impl Registry {
             // Under the map lock, so the task cannot decide to stop between
             // this lookup and the touch.
             shared.touch();
-            return shared.clone();
+            *shared
+                .baseline
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(scan);
+            return;
         }
         let shared = Arc::new(Shared::new(self.timing.max_events));
+        *shared
+            .baseline
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(scan);
         pollers.insert(binding.id.clone(), shared.clone());
         tokio::spawn(run_poller(
-            shared.clone(),
+            shared,
             self.pollers.clone(),
             binding.id.clone(),
             binding.root.clone(),
             record,
             self.timing,
         ));
-        shared
+    }
+
+    /// The queue of a polled project, or `None` when no tree was read since
+    /// its poller last stopped.
+    fn get(&self, id: &str) -> Option<Arc<Shared>> {
+        let pollers = self
+            .pollers
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let shared = pollers.get(id)?;
+        shared.touch();
+        Some(shared.clone())
     }
 
     /// Stop polling `id`, as when its folder is forgotten.
@@ -564,14 +571,19 @@ async fn run_poller(
                 return;
             }
         }
+        let taken = shared
+            .baseline
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .take();
+        if taken.is_some() {
+            scan = taken;
+        }
         let (root, record) = (root.clone(), record.clone());
         let looked = tokio::task::spawn_blocking(move || {
             let changes = match scan.as_mut() {
                 Some(scan) => scan.look(&root, &record),
-                None => {
-                    scan = Scan::baseline(&root, &record);
-                    Vec::new()
-                }
+                None => Vec::new(),
             };
             (scan, changes)
         })
@@ -718,7 +730,7 @@ pub(super) async fn handle_tree(
         Err(response) => return response,
     };
     let _ = inner.bindings.touch_project(id, origin.unwrap_or_default());
-    let record = inner.bindings.written_record(&binding.id);
+    let record_path = inner.bindings.written_record(&binding.id);
     let root = binding.root.clone();
     let read = tokio::task::spawn_blocking(move || {
         let tree = read_tree(&root).map_err(|error| match error {
@@ -728,15 +740,21 @@ pub(super) async fn handle_tree(
             ),
             WalkError::Io(error) => (500, format!("read the folder: {error}")),
         })?;
-        // Every listed file becomes managed, so the folder mirror trashes it
-        // when the editor deletes it and moves it when the editor renames it.
-        workspace::record_listed_digests(&record, &root, &tree.digests)
-            .map_err(|error| (500, error))?;
         Ok::<_, (u16, String)>(tree)
     })
     .await;
     match read {
-        Ok(Ok(tree)) => write_json(200, &json!({"files": tree.files, "skipped": tree.skipped})),
+        Ok(Ok(tree)) => {
+            // The listing is what the page now holds. A file becomes managed
+            // only by appearing in a `PUT folder` manifest, never by being
+            // listed here, so the written record is not touched.
+            inner.projects.set_baseline(
+                &binding,
+                record_path,
+                Scan::from_listing(&tree.listing),
+            );
+            write_json(200, &json!({"files": tree.files, "skipped": tree.skipped}))
+        }
         Ok(Err((status, error))) => write_json(status, &json!({"error": error})),
         Err(_) => write_json(500, &json!({"error": "the folder read stopped"})),
     }
@@ -797,9 +815,12 @@ pub(super) async fn handle_changes(
             Err(_) => return write_json(400, &json!({"error": "since must be a cursor"})),
         },
     };
-    let shared = inner
-        .projects
-        .shared_for(&binding, inner.bindings.written_record(&binding.id));
+    // Nothing is polled until the page has read the tree, and a poller that
+    // stopped for want of requests has forgotten its baseline. Either way the
+    // page must read the tree again, which starts the poller.
+    let Some(shared) = inner.projects.get(&binding.id) else {
+        return write_json(200, &json!({"cursor": 0, "reset": true, "changes": []}));
+    };
     write_json(
         200,
         &shared.wait(since, inner.projects.timing().long_poll).await,
@@ -876,36 +897,35 @@ mod tests {
     }
 
     #[test]
-    fn reading_the_tree_seeds_the_written_record() {
+    fn reading_the_tree_lists_files_and_leaves_the_written_record_alone() {
         let root = tempfile::tempdir().unwrap();
-        let state = tempfile::tempdir().unwrap();
         write(root.path(), "main.tex", "hello");
         write(root.path(), "a/b.txt", "world");
         write(root.path(), ".git/config", "x");
-        let record = state.path().join("record.json");
-        // An entry for a file that is gone is dropped, one for a skipped
-        // file that still exists is kept.
-        write(root.path(), ".env", "secret");
-        let mut earlier = BTreeMap::new();
-        earlier.insert("gone.tex".to_string(), "00".to_string());
-        earlier.insert(".env".to_string(), "11".to_string());
-        std::fs::write(&record, serde_json::to_vec(&earlier).unwrap()).unwrap();
-
         let tree = read_tree(root.path()).unwrap();
-        workspace::record_listed_digests(&record, root.path(), &tree.digests).unwrap();
-        let recorded = workspace::recorded_digests(&record).unwrap();
-        assert_eq!(
-            recorded.get("main.tex"),
-            Some(&librepaper_document::results::sha256(b"hello"))
-        );
-        assert_eq!(
-            recorded.get("a/b.txt"),
-            Some(&librepaper_document::results::sha256(b"world"))
-        );
-        assert_eq!(recorded.get(".env").map(String::as_str), Some("11"));
-        assert!(!recorded.contains_key("gone.tex"));
         assert_eq!(tree.files.len(), 2);
         assert!(tree.files[0]["mtime"].is_u64());
+        assert_eq!(
+            tree.listing["main.tex"].1,
+            librepaper_document::results::sha256(b"hello")
+        );
+    }
+
+    #[test]
+    fn a_listed_file_missing_from_a_manifest_survives_the_folder_mirror() {
+        let root = tempfile::tempdir().unwrap();
+        let state = tempfile::tempdir().unwrap();
+        let staged = tempfile::tempdir().unwrap();
+        write(root.path(), "main.tex", "hello");
+        write(root.path(), "data.csv", "1,2,3");
+        let record = state.path().join("record.json");
+        // The page lists both files but keeps only main.tex in the project.
+        let tree = read_tree(root.path()).unwrap();
+        assert!(tree.listing.contains_key("data.csv"));
+        assert!(!record.exists());
+        workspace::mirror_granted_folder(staged.path(), root.path(), &[], &record).unwrap();
+        assert!(root.path().join("data.csv").exists());
+        assert!(root.path().join("main.tex").exists());
     }
 
     #[test]
@@ -933,12 +953,9 @@ mod tests {
         (root, state, record)
     }
 
-    /// Read the tree, which seeds the record as the page's read does, then
-    /// start a scan from that record.
-    fn seeded_scan(root: &Path, record: &Path) -> Scan {
-        let tree = read_tree(root).unwrap();
-        workspace::record_listed_digests(record, root, &tree.digests).unwrap();
-        Scan::baseline(root, record).unwrap()
+    /// Read the tree, as the page does, and start a scan from its listing.
+    fn seeded_scan(root: &Path, _record: &Path) -> Scan {
+        Scan::from_listing(&read_tree(root).unwrap().listing)
     }
 
     #[test]
@@ -946,27 +963,20 @@ mod tests {
         let (root, _state, record) = setup();
         write(root.path(), "main.tex", "one");
         write(root.path(), "gone.tex", "two");
-        let tree = read_tree(root.path()).unwrap();
-        workspace::record_listed_digests(&record, root.path(), &tree.digests).unwrap();
+        let mut scan = seeded_scan(root.path(), &record);
         // The poller starts later than the page's tree read.
         write(root.path(), "main.tex", "edited in between");
         write(root.path(), "late.tex", "new");
         std::fs::remove_file(root.path().join("gone.tex")).unwrap();
-        let mut scan = Scan::baseline(root.path(), &record).unwrap();
+        // Added and changed files wait one poll for their stat to hold still.
+        assert_eq!(scan.look(root.path(), &record).len(), 1);
         let mut first = scan.look(root.path(), &record);
         first.sort_by(|left, right| left.path.cmp(&right.path));
         let kinds: Vec<(&str, &str)> = first
             .iter()
             .map(|change| (change.path.as_str(), change.kind))
             .collect();
-        assert_eq!(
-            kinds,
-            [
-                ("gone.tex", "removed"),
-                ("late.tex", "added"),
-                ("main.tex", "changed")
-            ]
-        );
+        assert_eq!(kinds, [("late.tex", "added"), ("main.tex", "changed")]);
         assert!(scan.look(root.path(), &record).is_empty());
     }
 
@@ -1119,15 +1129,17 @@ mod tests {
         let registry = Registry::new(timing);
         let record = inner.bindings.written_record(&binding.id);
         let tree = read_tree(&root_path).unwrap();
-        workspace::record_listed_digests(&record, &root_path, &tree.digests).unwrap();
-        let shared = registry.shared_for(&binding, record);
+        // A change between the tree read and the poller's first scan.
+        write(&root_path, "main.tex", "edited before the first scan");
+        registry.set_baseline(&binding, record, Scan::from_listing(&tree.listing));
+        let shared = registry.get(&binding.id).unwrap();
         let cursor = shared.wait(None, Duration::ZERO).await["cursor"]
             .as_u64()
             .unwrap();
-        tokio::time::sleep(Duration::from_millis(100)).await;
-        write(&root_path, "main.tex", "changed outside");
         let answer = shared.wait(Some(cursor), timing.long_poll).await;
         assert_eq!(answer["changes"][0]["path"], "main.tex");
+        assert_eq!(answer["changes"][0]["kind"], "changed");
+        assert_eq!(answer["changes"].as_array().unwrap().len(), 1);
         // Nobody asks again, so the poller stops and leaves the registry.
         tokio::time::sleep(Duration::from_millis(800)).await;
         assert!(registry.pollers.lock().unwrap().get(&binding.id).is_none());
@@ -1135,7 +1147,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn the_tree_route_lists_files_and_seeds_the_record() {
+    async fn the_tree_route_lists_files_and_starts_a_poller_without_touching_the_record() {
         let state = tempfile::tempdir().unwrap();
         let root = tempfile::tempdir().unwrap();
         write(root.path(), "main.tex", "hello");
@@ -1154,9 +1166,8 @@ mod tests {
         assert_eq!(body["files"][0]["path"], "main.tex");
         assert_eq!(body["files"][0]["size"], 5);
         assert_eq!(body["skipped"][0]["path"], ".git");
-        let recorded =
-            workspace::recorded_digests(&inner.bindings.written_record(&binding.id)).unwrap();
-        assert!(recorded.contains_key("main.tex"));
+        assert!(!inner.bindings.written_record(&binding.id).exists());
+        assert!(inner.projects.get(&binding.id).is_some());
 
         // Another origin cannot read it, and a render binding is not a project.
         let foreign =
@@ -1169,5 +1180,24 @@ mod tests {
         assert_eq!(&bytes[..], b"hello");
         let hidden = handle_file(&inner, &headers, Some(origin), &binding.id, ".git/config").await;
         assert_eq!(hidden.status(), StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn changes_before_any_tree_read_ask_the_page_to_reset() {
+        let state = tempfile::tempdir().unwrap();
+        let root = tempfile::tempdir().unwrap();
+        let inner = test_support::inner(state.path(), state.path()).await;
+        let origin = "https://paper.example";
+        let binding = inner.bindings.open_project(origin, root.path()).unwrap();
+        let headers = test_support::bearer(&inner);
+        let request = Request::get("/changes?since=5").body(Body::empty()).unwrap();
+        let reply = handle_changes(&inner, &headers, Some(origin), &binding.id, request).await;
+        assert_eq!(reply.status(), StatusCode::OK);
+        let bytes = axum::body::to_bytes(reply.into_body(), 1 << 20)
+            .await
+            .unwrap();
+        let body: Value = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(body["reset"], true);
+        assert_eq!(body["changes"], json!([]));
     }
 }
