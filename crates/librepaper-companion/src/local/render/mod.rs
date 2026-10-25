@@ -151,23 +151,24 @@ pub async fn run(
         }
     };
     // The editor is the source of truth for the files the manifest names. In
-    // a granted folder every other file is left alone, and a file changed
-    // outside LibrePaper since the last write is kept as `<name>.local`; the
-    // notes say which were kept, and lead the log.
+    // a granted folder a file the project dropped is trashed and a renamed one
+    // is moved, but only files LibrePaper wrote; every other file is left
+    // alone, and a file changed outside LibrePaper since the last write is
+    // kept as `<name>.local`. The notes say what changed, and lead the log.
     let mut notes: Vec<String> = Vec::new();
     if BindingStore::is_hosted(&binding) {
         if let Err(error) = workspace::sync_hosted_workspace(&staged, &root, &request.manifest) {
             return failed(&request, &error);
         }
     } else {
-        match workspace::sync_granted_folder(
+        match workspace::mirror_granted_folder(
             &staged,
             &root,
             &request.manifest,
             &bindings.written_record(&binding.id),
         ) {
-            Ok(kept) => notes = kept,
-            Err(error) => return failed(&request, &error),
+            Ok(report) => notes = report.notes(),
+            Err(error) => return failed(&request, &String::from(error)),
         }
     }
 
