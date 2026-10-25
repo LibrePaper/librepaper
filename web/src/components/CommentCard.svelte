@@ -39,7 +39,6 @@
     // the comment was made on. `attachable` says whether a selection is there.
     onattach = undefined,
     attachable = false,
-    onmoment = undefined,
   } = $props();
 
   // How many replies this card is not showing. `reply_total` is the
@@ -359,27 +358,15 @@
           </button>
         {/if}
       </div>
-      {#if canAttach || (onmoment && comment.original_anchor?.frontier) || comment.momentTrimmed}
+      {#if canAttach}
         <Row gap={2} wrap>
-          {#if canAttach}
-            <button type="button" class="btn btn-sm lp-control-tonal-brand"
-              disabled={!attachable}
-              title={attachable ? "Make the selected passage this comment's passage" : "Select the passage in the source first"}
-              onclick={(e) => {
-                e.stopPropagation();
-                onattach?.(comment);
-              }}>Attach to selection</button>
-          {/if}
-          {#if onmoment && comment.original_anchor?.frontier}
-            <button type="button" class="moment-link"
-              onclick={(e) => {
-                e.stopPropagation();
-                onmoment?.(comment);
-              }}>See it as it was</button>
-          {/if}
-          {#if comment.momentTrimmed}
-            <p class="panel-muted">History before this comment was trimmed.</p>
-          {/if}
+          <button type="button" class="btn btn-sm lp-control-tonal-brand"
+            disabled={!attachable}
+            title={attachable ? "Make the selected passage this comment's passage" : "Select the passage in the source first"}
+            onclick={(e) => {
+              e.stopPropagation();
+              onattach?.(comment);
+            }}>Attach to selection</button>
         </Row>
       {/if}
     </div>
@@ -495,8 +482,6 @@
   /* The highlighted words, in the highlight's own colour when it has one.
      Quiet enough to read as a quotation rather than as something said. */
   .quote { margin: 0; border-color: color-mix(in oklab, currentColor 30%, transparent); color: var(--panel-muted); overflow-wrap: anywhere; }
-
-  .moment-link { padding: 0; border: 0; background: none; color: var(--color-link); font: inherit; font-size: 13px; text-decoration: underline; cursor: pointer; }
 
   .actions { display: flex; align-items: center; justify-content: flex-end; gap: 5px; margin-top: 7px; }
   .actions :global(.icon-control) { box-sizing: border-box; width: 32px; height: 32px; min-width: 32px; min-height: 32px; padding: 0; }

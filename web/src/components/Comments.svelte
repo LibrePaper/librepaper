@@ -52,7 +52,6 @@
     // Editors only: see CommentCard.
     onattach = undefined,
     attachable = false,
-    onmoment = undefined,
   } = $props();
 
   function place(comment) {
@@ -209,7 +208,6 @@
         {onloadreplies}
         {onattach}
         {attachable}
-        {onmoment}
       />
     {/each}
     {#if composerKey === ""}{@render composer()}{/if}
