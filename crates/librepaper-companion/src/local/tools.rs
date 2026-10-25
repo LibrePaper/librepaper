@@ -1,16 +1,9 @@
 //! Finding a local tool, and asking it its version without trusting it.
 //!
-//! Three places needed this and three places had it: discovery's scan of the
-//! configured search directories, the Quarto adapter, and the Calepin
-//! preview adapter. The last two were identical character for character,
-//! and the first differed in ways that were never anybody's decision -- a
-//! ten-second timeout against five, a cleared environment against an
-//! inherited one -- so the differences are named here as arguments instead.
-//!
-//! What a probe must do, whichever caller asks: bound the wait, bound what
-//! it keeps of the output, and leave no process behind. A tool that hangs is
-//! a tool the author has just installed and has not noticed is broken; it
-//! must not take discovery, a preview, or a render with it.
+//! What a probe must do, whoever asks: bound the wait, bound what it keeps of
+//! the output, and leave no process behind. A tool that hangs is a tool the
+//! author has just installed and has not noticed is broken; it must not take
+//! discovery or a render with it.
 
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
@@ -46,7 +39,8 @@ impl Probe {
         }
     }
 
-    /// What an adapter uses before it runs the tool for real.
+    /// What the tests use to probe a tool in the ambient environment.
+    #[cfg(test)]
     pub(crate) fn inherited(timeout: Duration) -> Self {
         Self {
             timeout,

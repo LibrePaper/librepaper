@@ -90,9 +90,7 @@ pub mod annotation {
 /// The loopback service takes requests from any page in the browser, and a
 /// request there becomes files on the author's own machine.
 pub mod protocol {
-    pub use librepaper_companion::local::protocol::{
-        decode_preview, safe_relative_path, PreviewInputs, WorkspaceRequest,
-    };
+    pub use librepaper_companion::local::protocol::{safe_relative_path, JobRequest};
 }
 
 /// What a version's bytes travel in, encoded and decoded by

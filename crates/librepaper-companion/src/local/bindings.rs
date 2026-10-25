@@ -8,7 +8,7 @@
 //! a binding that cannot be read is a grant the person made and this process
 //! cannot honour, while a render that fails is a build that did not work.
 //! They also change for different reasons -- one when the grant model does,
-//! the other when Quarto does.
+//! the other when the render pipeline does.
 
 use std::path::{Path, PathBuf};
 
@@ -33,16 +33,17 @@ fn opaque_id() -> String {
     format!("q-{}", hex::encode(librepaper_base::util::random_bytes(16)))
 }
 
-/// Validate an entrypoint stored in a user-approved project binding. Bindings
-/// are shared by project-backed builders, while each builder still validates
-/// its own input before execution (for example, Quarto accepts Markdown only).
+/// Validate an entrypoint stored in a user-approved project binding: a safe
+/// project-relative path to a LaTeX, Typst, Markdown or Quarto source.
 pub fn validate_binding_entrypoint(entrypoint: &str) -> Result<(), String> {
     if !protocol::safe_relative_path(entrypoint)
-        || !(entrypoint.ends_with(".qmd")
-            || entrypoint.ends_with(".md")
-            || entrypoint.ends_with(".typ"))
+        || ![".tex", ".typ", ".md", ".qmd"]
+            .iter()
+            .any(|extension| entrypoint.ends_with(extension))
     {
-        return Err("entrypoint must be a safe project-relative .qmd, .md, or .typ path".into());
+        return Err(
+            "entrypoint must be a safe project-relative .tex, .typ, .md, or .qmd path".into(),
+        );
     }
     Ok(())
 }
@@ -264,9 +265,8 @@ impl BindingStore {
     }
 
     /// Resolve a binding for another local service component after the same
-    /// origin/project/grant checks used by render admission.  Keeping this
-    /// helper crate-visible lets managed preview share the binding authority
-    /// without exposing machine paths through the wire protocol.
+    /// origin/project/grant checks used by render admission, without exposing
+    /// machine paths through the wire protocol.
     pub(crate) fn resolve_scoped(
         &self,
         id: &str,
@@ -274,7 +274,7 @@ impl BindingStore {
         project: &str,
     ) -> Result<ProjectBinding, String> {
         self.get_scoped(id, origin, project).ok_or_else(|| {
-            "quarto binding is missing, revoked, or outside its authorized root".into()
+            "project binding is missing, revoked, or outside its authorized root".into()
         })
     }
 
@@ -312,8 +312,8 @@ impl BindingStore {
     }
 
     /// Revalidate the grant and root at each boundary that can follow a queue
-    /// delay. Hosted previews may choose their entrypoint; snapshot builds
-    /// retain the binding's fixed entrypoint rule. File inventory and symlink
+    /// delay. A hosted workspace takes the entrypoint the job names; a granted
+    /// folder keeps the binding's fixed entrypoint rule. File inventory and symlink
     /// checks remain with the caller, before it reads or executes those files.
     pub(crate) fn validate_scoped_entrypoint(
         &self,
@@ -456,7 +456,7 @@ mod validation_tests {
     }
 
     #[test]
-    fn only_hosted_previews_choose_an_entrypoint() {
+    fn only_hosted_workspaces_choose_an_entrypoint() {
         let state = tempfile::tempdir().unwrap();
         let hosted = tempfile::tempdir().unwrap();
         let store = BindingStore::new(state.path()).with_hosted_workspaces(hosted.path().into());
@@ -486,6 +486,40 @@ mod validation_tests {
                 "paper.qmd",
                 false
             )
+            .is_err());
+    }
+
+    #[test]
+    fn binding_store_scopes_ids_to_origin_and_project() {
+        let config = tempfile::tempdir().unwrap();
+        let root = tempfile::tempdir().unwrap();
+        std::fs::write(root.path().join("paper.qmd"), "# hi").unwrap();
+        let store = BindingStore::new(config.path());
+        let binding = store
+            .grant("https://Example.test/", "p", root.path(), "paper.qmd")
+            .unwrap();
+        assert!(store
+            .get_scoped(&binding.id, "https://example.test", "p")
+            .is_some());
+        assert!(store
+            .get_scoped(&binding.id, "https://other.test", "p")
+            .is_none());
+    }
+
+    #[test]
+    fn a_grant_accepts_the_four_source_kinds_and_nothing_else() {
+        let config = tempfile::tempdir().unwrap();
+        let root = tempfile::tempdir().unwrap();
+        let store = BindingStore::new(config.path());
+        for name in ["paper.tex", "paper.typ", "notes.md", "paper.qmd"] {
+            std::fs::write(root.path().join(name), "x").unwrap();
+            store
+                .grant("https://example.test", "p", root.path(), name)
+                .unwrap_or_else(|error| panic!("{name}: {error}"));
+        }
+        std::fs::write(root.path().join("notes.txt"), "x").unwrap();
+        assert!(store
+            .grant("https://example.test", "p", root.path(), "notes.txt")
             .is_err());
     }
 

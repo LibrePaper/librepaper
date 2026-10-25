@@ -217,7 +217,6 @@ async fn start_foreground(port: u16) {
     if let Some(task) = v6_task {
         task.abort();
     }
-    service.stop_previews().await;
     service_file.remove();
     println!("Local service stopped");
 }
@@ -316,34 +315,21 @@ async fn report_status() -> bool {
     }
 
     println!();
-    let capabilities = crate::local::discovery::discover(true).await;
+    let capabilities = crate::local::render::capabilities(true).await;
     println!("platform: {}", capabilities.platform);
-    println!("tools:");
-    print_tool("calepin", &capabilities.calepin);
-    print_tool("quarto", &capabilities.quarto.tool);
-    if !capabilities.quarto.formats.is_empty() {
-        println!(
-            "  quarto formats: {}",
-            capabilities.quarto.formats.join(", ")
-        );
-    }
-    for (runtime, tool) in &capabilities.quarto.runtime_checks {
-        print_tool(runtime, tool);
+    println!("renderers:");
+    for (key, renderer) in &capabilities.renderers {
+        let program = renderer.command.first().map_or("", String::as_str);
+        let state = match (&renderer.version, renderer.found) {
+            (Some(version), _) => version.clone(),
+            (None, true) => "found".to_string(),
+            (None, false) => "not found".to_string(),
+        };
+        let edited = if renderer.edited { " (edited)" } else { "" };
+        println!("  {key}: {program}: {state}{edited}");
     }
     println!();
-    if capabilities.confinement.available {
-        println!("confinement: {}", capabilities.confinement.kind);
-    } else {
-        println!(
-            "confinement: none ({})",
-            if capabilities.confinement.reason.is_empty() {
-                "not available on this machine"
-            } else {
-                capabilities.confinement.reason.as_str()
-            }
-        );
-        println!("  local builds run with the user's normal access");
-    }
+    println!("local renders run with the user's normal access");
 
     answering
 }
@@ -380,19 +366,6 @@ async fn diagnostics(log_dir_only: bool) {
             }
         }
         Err(_) => println!("(no log yet)"),
-    }
-}
-
-fn print_tool(name: &str, tool: &protocol::Tool) {
-    if tool.available {
-        println!("  {name}: {}", tool.version.as_deref().unwrap_or("found"));
-    } else {
-        let note = if tool.note.is_empty() {
-            "not found".to_string()
-        } else {
-            tool.note.clone()
-        };
-        println!("  {name}: {note}");
     }
 }
 

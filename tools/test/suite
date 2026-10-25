@@ -103,9 +103,7 @@ suite_e2e() {
 }
 
 suite_external() {
-	cargo test -p librepaper-companion quarto -- --ignored --nocapture --test-threads=1 \
-		--skip quarto_project_scope_collects_pages_and_nested_web_resources \
-		--skip quarto_book_scope_keeps_chapter_navigation
+	cargo test -p librepaper-companion render -- --ignored --nocapture --test-threads=1
 }
 
 # The Windows VM wrapper, kept out of make test.

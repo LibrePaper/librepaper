@@ -1,0 +1,764 @@
+//! The persistent workspace a render runs in.
+//!
+//! A document has one folder per site and project that outlives every
+//! render, so `.aux` and `.bbl` files, Typst and Quarto caches and latexmk's
+//! incremental state survive. It is either the folder the person granted or,
+//! for a document the serving deployment hosts, a workspace the server owns.
+//! Before each run the job's files are written into it: the editor is the
+//! source of truth for the paths the manifest names.
+
+use std::collections::{BTreeMap, BTreeSet};
+use std::fs::File;
+use std::io::{Read as _, Write as _};
+use std::path::Path;
+
+use serde::{Deserialize, Serialize};
+
+use crate::local::protocol::{self, MAX_UPLOAD_BYTES};
+
+/// The record of which paths the last sync wrote into a hosted workspace, so
+/// a file the document no longer holds is removed rather than left to be
+/// rendered as part of the project. Everything else in the workspace --
+/// `.aux` and `.bbl` files, `_freeze`, engine caches, environments -- is the
+/// tool's and is kept.
+const HOSTED_TRACKED: &str = ".librepaper-hosted.json";
+
+#[derive(Default, Serialize, Deserialize)]
+struct HostedTracked {
+    #[serde(default)]
+    files: Vec<String>,
+}
+
+fn read_hosted_input(path: &Path) -> Option<Vec<u8>> {
+    let expected = std::fs::symlink_metadata(path).ok()?;
+    if !expected.is_file() {
+        return None;
+    }
+    let mut file = std::fs::OpenOptions::new().read(true).open(path).ok()?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        let actual = file.metadata().ok()?;
+        if actual.dev() != expected.dev() || actual.ino() != expected.ino() {
+            return None;
+        }
+    }
+    let mut bytes = Vec::new();
+    file.read_to_end(&mut bytes).ok()?;
+    Some(bytes)
+}
+
+/// Hosted inputs are uploaded by a remote caller. Refuse a symlink in any
+/// parent directory before creating or opening a path, since `create_dir_all`
+/// would otherwise follow it outside the binding root. The binding root is
+/// canonicalized when it is minted; requiring that invariant here also makes
+/// the check fail closed if a local operator replaces the root afterwards.
+fn ensure_hosted_parent(root: &Path, relative: &str) -> Result<(), String> {
+    let canonical_root = std::fs::canonicalize(root)
+        .map_err(|error| format!("inspect hosted workspace root: {error}"))?;
+    if canonical_root != root {
+        return Err("hosted workspace root changed".into());
+    }
+    let parent = Path::new(relative)
+        .parent()
+        .unwrap_or_else(|| Path::new(""));
+    let mut current = root.to_path_buf();
+    for component in parent.components() {
+        let std::path::Component::Normal(name) = component else {
+            return Err("hosted workspace path has an invalid parent".into());
+        };
+        current.push(name);
+        match std::fs::symlink_metadata(&current) {
+            Ok(metadata) if metadata.file_type().is_symlink() => {
+                return Err(format!(
+                    "hosted workspace parent is a symlink: {}",
+                    current.display()
+                ));
+            }
+            Ok(metadata) if !metadata.is_dir() => {
+                return Err(format!(
+                    "hosted workspace parent is not a directory: {}",
+                    current.display()
+                ));
+            }
+            Ok(_) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                std::fs::create_dir(&current)
+                    .map_err(|error| format!("prepare hosted workspace: {error}"))?;
+                let metadata = std::fs::symlink_metadata(&current)
+                    .map_err(|error| format!("inspect hosted workspace parent: {error}"))?;
+                if metadata.file_type().is_symlink() || !metadata.is_dir() {
+                    return Err(format!(
+                        "hosted workspace parent is not a directory: {}",
+                        current.display()
+                    ));
+                }
+            }
+            Err(error) => return Err(format!("inspect hosted workspace parent: {error}")),
+        }
+    }
+    Ok(())
+}
+
+fn read_hosted_tracking(path: &Path) -> Result<HostedTracked, String> {
+    match std::fs::symlink_metadata(path) {
+        Ok(metadata) if metadata.file_type().is_symlink() => {
+            Err("hosted workspace tracking file is a symlink".into())
+        }
+        Ok(metadata) if !metadata.is_file() => {
+            Err("hosted workspace tracking file is not a regular file".into())
+        }
+        Ok(_) => std::fs::read(path)
+            .map_err(|error| format!("read hosted workspace tracking: {error}"))
+            .and_then(|bytes| {
+                serde_json::from_slice(&bytes)
+                    .map_err(|error| format!("parse hosted workspace tracking: {error}"))
+            }),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(HostedTracked::default()),
+        Err(error) => Err(format!("inspect hosted workspace tracking: {error}")),
+    }
+}
+
+fn write_hosted_tracking(path: &Path, bytes: &[u8]) -> Result<(), String> {
+    let parent = path
+        .parent()
+        .ok_or_else(|| "hosted workspace tracking has no parent".to_string())?;
+    let mut temporary = tempfile::NamedTempFile::new_in(parent)
+        .map_err(|error| format!("stage hosted workspace tracking: {error}"))?;
+    temporary
+        .write_all(bytes)
+        .and_then(|()| temporary.as_file().sync_data())
+        .map_err(|error| format!("write hosted workspace tracking: {error}"))?;
+    temporary
+        .persist(path)
+        .map(|_| ())
+        .map_err(|error| format!("record hosted workspace: {}", error.error))
+}
+
+fn write_hosted_new_input(path: &Path, bytes: &[u8]) -> Result<(), String> {
+    let parent = path
+        .parent()
+        .ok_or_else(|| "hosted workspace input has no parent".to_string())?;
+    let mut temporary = tempfile::NamedTempFile::new_in(parent)
+        .map_err(|error| format!("stage hosted workspace input: {error}"))?;
+    temporary
+        .write_all(bytes)
+        .and_then(|()| temporary.as_file().sync_data())
+        .map_err(|error| format!("write hosted workspace input: {error}"))?;
+    // Replacing a file keeps the mode it already has, such as an executable
+    // bit on a script. The temp file would otherwise carry the 0600 default.
+    if std::fs::symlink_metadata(path).is_ok_and(|metadata| metadata.is_file()) {
+        let permissions = std::fs::metadata(path)
+            .map_err(|error| format!("read hosted workspace input mode: {error}"))?
+            .permissions();
+        temporary
+            .as_file()
+            .set_permissions(permissions)
+            .map_err(|error| format!("set hosted workspace input mode: {error}"))?;
+    }
+    temporary
+        .persist(path)
+        .map(|_| ())
+        .map_err(|error| format!("write hosted workspace input: {}", error.error))
+}
+
+/// Calepin's preprocess fingerprint describes executable/configuration state,
+/// not the prose body. For an HTML theme, a cache hit can therefore leave the
+/// generated wrapper carrying the previous inline body. Uploads are the source
+/// of truth, so discard the small per-document cache markers whenever an input
+/// changes and let the next run regenerate the wrapper and its results.
+fn invalidate_hosted_preprocess_cache(root: &Path) -> Result<(), String> {
+    let cache_root = root.join(".calepin");
+    match std::fs::symlink_metadata(&cache_root) {
+        Ok(metadata) if metadata.file_type().is_symlink() => {
+            return Err("hosted Calepin cache directory is a symlink".into());
+        }
+        Ok(metadata) if !metadata.is_dir() => {
+            return Err("hosted Calepin cache path is not a directory".into());
+        }
+        Ok(_) => {}
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(error) => return Err(format!("inspect hosted Calepin cache: {error}")),
+    };
+    for entry in std::fs::read_dir(&cache_root)
+        .map_err(|error| format!("read hosted Calepin cache: {error}"))?
+    {
+        let entry = entry.map_err(|error| format!("read hosted Calepin cache entry: {error}"))?;
+        let path = entry.path();
+        let entry_metadata = std::fs::symlink_metadata(&path)
+            .map_err(|error| format!("inspect hosted Calepin cache entry: {error}"))?;
+        if entry_metadata.file_type().is_symlink() || !entry_metadata.is_dir() {
+            continue;
+        }
+        for marker in ["fingerprint.xxh3", "expansion.json"] {
+            let marker_path = path.join(marker);
+            match std::fs::symlink_metadata(&marker_path) {
+                Ok(marker_metadata) if marker_metadata.file_type().is_symlink() => {
+                    return Err(format!(
+                        "hosted Calepin cache marker is a symlink: {}",
+                        marker_path.display()
+                    ));
+                }
+                Ok(marker_metadata) if marker_metadata.is_file() => {
+                    std::fs::remove_file(&marker_path).map_err(|error| {
+                        format!(
+                            "invalidate hosted Calepin cache {}: {error}",
+                            marker_path.display()
+                        )
+                    })?;
+                }
+                Ok(_) => {}
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                Err(error) => {
+                    return Err(format!(
+                        "inspect hosted Calepin cache marker {}: {error}",
+                        marker_path.display()
+                    ));
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Reads every manifest entry from the staged directory and checks its size
+/// and digest, so nothing unverified reaches a workspace.
+fn read_verified_manifest(
+    root: &Path,
+    manifest: &[protocol::ManifestEntry],
+    limit: usize,
+) -> Result<Vec<(String, Vec<u8>)>, String> {
+    let mut seen = BTreeSet::new();
+    let mut files = Vec::with_capacity(manifest.len());
+    for entry in manifest {
+        if !protocol::safe_relative_path(&entry.path) {
+            return Err(format!("unsafe manifest path: {}", entry.path));
+        }
+        if !seen.insert(entry.path.as_str()) {
+            return Err(format!("duplicate manifest path: {}", entry.path));
+        }
+        let bytes = read_file_bounded_to(
+            &root.join(&entry.path),
+            &format!("read {}", entry.path),
+            limit,
+        )?;
+        if bytes.len() as u64 != entry.size || sha256(&bytes) != entry.sha256 {
+            return Err(format!("manifest digest mismatch: {}", entry.path));
+        }
+        files.push((entry.path.clone(), bytes));
+    }
+    Ok(files)
+}
+
+/// Write the staged uploads into the hosted workspace and drop what the
+/// previous sync wrote that is no longer in the inventory. Unchanged files
+/// are left untouched so their timestamps, and the caches keyed on them,
+/// survive.
+pub(crate) fn sync_hosted_workspace(
+    staged: &Path,
+    root: &Path,
+    manifest: &[protocol::ManifestEntry],
+) -> Result<(), String> {
+    let tracked_path = root.join(HOSTED_TRACKED);
+    let previous = read_hosted_tracking(&tracked_path)?;
+    let files = read_verified_manifest(staged, manifest, MAX_UPLOAD_BYTES)?;
+    let mut uploads = Vec::with_capacity(files.len());
+    let mut changed = false;
+    for (path, bytes) in files {
+        let target = root.join(&path);
+        let current = read_hosted_input(&target);
+        let same = current.as_deref().is_some_and(|current| current == bytes);
+        changed |= !same;
+        uploads.push((path, bytes, same));
+    }
+    for stale in previous.files.iter().filter(|path| {
+        !manifest
+            .iter()
+            .any(|entry| entry.path.as_str() == path.as_str())
+    }) {
+        if protocol::safe_relative_path(stale) {
+            changed |= std::fs::symlink_metadata(root.join(stale)).is_ok();
+        }
+    }
+    if changed {
+        invalidate_hosted_preprocess_cache(root)?;
+    }
+    let mut written = Vec::with_capacity(manifest.len());
+    for (path, bytes, same) in uploads {
+        ensure_hosted_parent(root, &path)?;
+        if !same {
+            // Atomic replacement keeps readers from seeing a truncated
+            // source while a watcher or renderer is consuming the workspace.
+            write_hosted_new_input(&root.join(&path), &bytes)
+                .map_err(|error| format!("write hosted workspace {}: {error}", path))?;
+        }
+        written.push(path);
+    }
+    for stale in previous.files.iter().filter(|path| !written.contains(path)) {
+        if protocol::safe_relative_path(stale) {
+            ensure_hosted_parent(root, stale)?;
+            let _ = std::fs::remove_file(root.join(stale));
+        }
+    }
+    let record = serde_json::to_vec_pretty(&HostedTracked { files: written })
+        .map_err(|error| format!("record hosted workspace: {error}"))?;
+    if read_hosted_input(&tracked_path).as_deref() != Some(record.as_slice()) {
+        write_hosted_tracking(&tracked_path, &record)?;
+    }
+    Ok(())
+}
+
+static GRANTED_SYNC: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+/// What the companion last wrote into a granted folder: relative path to the
+/// sha256 hex of those bytes.
+type WrittenRecord = BTreeMap<String, String>;
+
+fn read_written_record(path: &Path) -> Result<WrittenRecord, String> {
+    match std::fs::symlink_metadata(path) {
+        Ok(metadata) if metadata.file_type().is_symlink() || !metadata.is_file() => {
+            Err("granted folder record is not a regular file".into())
+        }
+        Ok(_) => {
+            let bytes = std::fs::read(path)
+                .map_err(|error| format!("read granted folder record: {error}"))?;
+            // A damaged record must not block renders. Read as empty, every
+            // differing file is kept as `.local` before it is replaced.
+            Ok(serde_json::from_slice(&bytes).unwrap_or_default())
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(WrittenRecord::new()),
+        Err(error) => Err(format!("inspect granted folder record: {error}")),
+    }
+}
+
+fn write_written_record(path: &Path, written: &WrittenRecord) -> Result<(), String> {
+    let parent = path
+        .parent()
+        .ok_or_else(|| "granted folder record has no parent".to_string())?;
+    std::fs::create_dir_all(parent)
+        .map_err(|error| format!("prepare granted folder record: {error}"))?;
+    let bytes = serde_json::to_vec_pretty(written)
+        .map_err(|error| format!("record granted folder: {error}"))?;
+    let mut temporary = tempfile::NamedTempFile::new_in(parent)
+        .map_err(|error| format!("stage granted folder record: {error}"))?;
+    temporary
+        .write_all(&bytes)
+        .and_then(|()| temporary.as_file().sync_data())
+        .map_err(|error| format!("write granted folder record: {error}"))?;
+    temporary
+        .persist(path)
+        .map(|_| ())
+        .map_err(|error| format!("record granted folder: {}", error.error))
+}
+
+/// Writes a new file without replacing anything already at `path`. The
+/// rename fails with `AlreadyExists` when the name is taken.
+fn write_new_file_no_clobber(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
+    let parent = path
+        .parent()
+        .ok_or_else(|| std::io::Error::other("no parent directory"))?;
+    let mut temporary = tempfile::NamedTempFile::new_in(parent)?;
+    temporary.write_all(bytes)?;
+    temporary.as_file().sync_data()?;
+    temporary
+        .persist_noclobber(path)
+        .map(|_| ())
+        .map_err(|error| error.error)
+}
+
+/// Keeps `bytes` beside `path` as the first of `<path>.local`,
+/// `<path>.local.1`, `<path>.local.2`, ... that is free. Existing files are
+/// never overwritten. Returns the relative name of the copy written.
+fn keep_local_copy(root: &Path, path: &str, bytes: &[u8]) -> Result<String, String> {
+    let mut suffix = 0usize;
+    loop {
+        let copy = if suffix == 0 {
+            format!("{path}.local")
+        } else {
+            format!("{path}.local.{suffix}")
+        };
+        suffix += 1;
+        let target = root.join(&copy);
+        match std::fs::symlink_metadata(&target) {
+            Ok(_) => continue,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => {
+                return Err(format!("keep your copy of {path} as {copy}: {error}"));
+            }
+        }
+        match write_new_file_no_clobber(&target, bytes) {
+            Ok(()) => return Ok(copy),
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            Err(error) => {
+                return Err(format!("keep your copy of {path} as {copy}: {error}"));
+            }
+        }
+    }
+}
+
+/// Write the shared manifest into a granted folder. The editor is the source
+/// of truth, so a file that differs from the upload is replaced. Only manifest
+/// paths are touched and nothing is deleted. A file whose current bytes match
+/// neither the upload nor the digest the companion last wrote there was
+/// changed outside LibrePaper: those bytes are first kept beside it as
+/// `<name>.local`. Returns one note per kept copy.
+pub(crate) fn sync_granted_folder(
+    staged: &Path,
+    root: &Path,
+    manifest: &[protocol::ManifestEntry],
+    record: &Path,
+) -> Result<Vec<String>, String> {
+    // The job runner and the workspace route both call this, and the written
+    // record is read, modified and written back.
+    let _guard = GRANTED_SYNC
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let files = read_verified_manifest(staged, manifest, MAX_UPLOAD_BYTES)?;
+    let mut written = read_written_record(record)?;
+    let before = written.clone();
+    let mut notes = Vec::new();
+    let result = write_granted_files(root, files, &mut written, &mut notes);
+    // Record every write that landed even when a later file fails, so the next
+    // sync does not mistake the companion's own earlier write for an outside edit.
+    let saved = if written != before {
+        write_written_record(record, &written)
+    } else {
+        Ok(())
+    };
+    result?;
+    saved?;
+    Ok(notes)
+}
+
+fn write_granted_files(
+    root: &Path,
+    files: Vec<(String, Vec<u8>)>,
+    written: &mut WrittenRecord,
+    notes: &mut Vec<String>,
+) -> Result<(), String> {
+    let mut invalidated = false;
+    for (path, bytes) in files {
+        ensure_hosted_parent(root, &path)?;
+        let target = root.join(&path);
+        let current = match std::fs::symlink_metadata(&target) {
+            Ok(metadata) if metadata.is_file() => {
+                if metadata.len() > MAX_UPLOAD_BYTES as u64 {
+                    return Err(format!(
+                        "{path} in the project folder is larger than an upload may be; \
+                         it was not replaced"
+                    ));
+                }
+                Some(
+                    read_hosted_input(&target)
+                        .ok_or_else(|| format!("read granted folder file: {path}"))?,
+                )
+            }
+            Ok(_) => {
+                return Err(format!(
+                    "granted folder entry is a symlink or not a regular file: {path}"
+                ))
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
+            Err(error) => return Err(format!("inspect granted folder file {path}: {error}")),
+        };
+        if current.as_deref() == Some(bytes.as_slice()) {
+            // Record a match too, so a folder that already held the editor's
+            // copy does not read as edited outside LibrePaper on the next change.
+            written.insert(path, sha256(&bytes));
+            continue;
+        }
+        if let Some(current) = current {
+            let current_digest = sha256(&current);
+            if written.get(&path) != Some(&current_digest) {
+                invalidate_before_first_write(root, &mut invalidated)?;
+                let copy = keep_local_copy(root, &path, &current)?;
+                notes.push(format!("kept your copy of {path} as {copy}"));
+            }
+        }
+        invalidate_before_first_write(root, &mut invalidated)?;
+        write_hosted_new_input(&target, &bytes)
+            .map_err(|error| format!("write granted folder file {path}: {error}"))?;
+        written.insert(path, sha256(&bytes));
+    }
+    Ok(())
+}
+
+/// Clears Calepin's preprocess markers once, before the first file this sync
+/// changes. A changed input must not leave the markers serving the previous body.
+fn invalidate_before_first_write(root: &Path, invalidated: &mut bool) -> Result<(), String> {
+    if !*invalidated {
+        invalidate_hosted_preprocess_cache(root)?;
+        *invalidated = true;
+    }
+    Ok(())
+}
+
+fn sha256(bytes: &[u8]) -> String {
+    librepaper_document::results::sha256(bytes)
+}
+
+fn read_file_bounded_to(path: &Path, description: &str, limit: usize) -> Result<Vec<u8>, String> {
+    let metadata =
+        std::fs::symlink_metadata(path).map_err(|error| format!("{description}: {error}"))?;
+    if !metadata.file_type().is_file() {
+        return Err(format!("{description} is not a file"));
+    }
+    if metadata.len() > limit as u64 {
+        return Err(format!("{description} exceeds its size limit"));
+    }
+    let file = File::open(path).map_err(|error| format!("{description}: {error}"))?;
+    // The supplied limit governs the read as well as the stat: a file that
+    // grows between the two is still refused.
+    let mut bytes = Vec::with_capacity(metadata.len().min(limit as u64) as usize);
+    file.take(limit as u64 + 1)
+        .read_to_end(&mut bytes)
+        .map_err(|error| format!("{description}: {error}"))?;
+    if bytes.len() > limit {
+        return Err(format!("{description} exceeds its size limit"));
+    }
+    Ok(bytes)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tempfile::tempdir;
+
+    #[test]
+    fn a_bounded_read_honours_a_limit_below_the_upload_ceiling() {
+        let dir = tempdir().expect("tempdir");
+        let path = dir.path().join("payload.bin");
+        let payload = vec![b'q'; 4096];
+        std::fs::write(&path, &payload).expect("payload");
+
+        // Exactly at the supplied limit is allowed, and the whole file comes back.
+        let bytes = read_file_bounded_to(&path, "payload", payload.len()).expect("at the limit");
+        assert_eq!(bytes, payload);
+
+        // One byte over it is refused.
+        let error = read_file_bounded_to(&path, "payload", payload.len() - 1)
+            .expect_err("over the supplied limit");
+        assert!(error.contains("exceeds its size limit"), "{error}");
+
+        // The upload ceiling still accepts the same file.
+        assert_eq!(
+            read_file_bounded_to(&path, "payload", MAX_UPLOAD_BYTES).expect("under the ceiling"),
+            payload
+        );
+    }
+
+    /// The stat check alone does not bound the read. A regular file whose
+    /// reported length understates its contents has to be refused by the read
+    /// too, which it was not while the read used a fixed output ceiling instead
+    /// of the supplied limit.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn a_bounded_read_enforces_the_limit_when_the_stat_size_understates_the_file() {
+        let path = Path::new("/proc/self/environ");
+        let actual = std::fs::read(path).expect("environ readable");
+        assert!(actual.len() > 64, "environ is too small to bound");
+        assert_eq!(
+            std::fs::symlink_metadata(path).expect("stat").len(),
+            0,
+            "procfs is expected to report a zero length"
+        );
+
+        // Report only the length on failure; the contents are this process's
+        // environment.
+        let error = read_file_bounded_to(path, "environ", 64)
+            .map(|bytes| bytes.len())
+            .expect_err("a read past the supplied limit must be refused");
+        assert!(error.contains("exceeds its size limit"), "{error}");
+    }
+
+
+    /// Stage uploads the way the job path does: each file's bytes on disk plus the
+    /// manifest entry whose digest they must match.
+    fn granted_stage(files: &[(&str, &str)]) -> (tempfile::TempDir, Vec<protocol::ManifestEntry>) {
+        let staged = tempdir().expect("staged");
+        let mut manifest = Vec::new();
+        for (path, text) in files {
+            let bytes = text.as_bytes();
+            let target = staged.path().join(path);
+            std::fs::create_dir_all(target.parent().expect("parent")).expect("staged parent");
+            std::fs::write(&target, bytes).expect("staged file");
+            manifest.push(protocol::ManifestEntry {
+                path: (*path).into(),
+                sha256: sha256(bytes),
+                size: bytes.len() as u64,
+            });
+        }
+        (staged, manifest)
+    }
+
+    #[test]
+    fn granted_sync_writes_a_new_shared_file() {
+        let project = tempdir().expect("project");
+        let root = std::fs::canonicalize(project.path()).expect("root");
+        let state = tempdir().expect("state");
+        let record = state.path().join("written").join("grant.json");
+        let (staged, manifest) = granted_stage(&[("paper.qmd", "# paper")]);
+        let notes =
+            sync_granted_folder(staged.path(), &root, &manifest, &record).expect("sync granted");
+        assert!(notes.is_empty());
+        assert_eq!(
+            std::fs::read(root.join("paper.qmd")).expect("paper"),
+            b"# paper".to_vec()
+        );
+        assert!(record.is_file());
+        assert!(!root.join(".librepaper-hosted.json").exists());
+    }
+
+    #[test]
+    fn granted_sync_leaves_unlisted_files_alone() {
+        let project = tempdir().expect("project");
+        let root = std::fs::canonicalize(project.path()).expect("root");
+        std::fs::create_dir_all(root.join("data")).expect("data");
+        std::fs::write(root.join("data/private.csv"), b"secret").expect("private");
+        let state = tempdir().expect("state");
+        let record = state.path().join("grant.json");
+        let (staged, manifest) = granted_stage(&[("paper.qmd", "# paper")]);
+        sync_granted_folder(staged.path(), &root, &manifest, &record).expect("sync granted");
+        assert_eq!(
+            std::fs::read(root.join("data/private.csv")).expect("private"),
+            b"secret".to_vec()
+        );
+    }
+
+    #[test]
+    fn granted_sync_overwrites_its_own_earlier_write_without_a_local_copy() {
+        let project = tempdir().expect("project");
+        let root = std::fs::canonicalize(project.path()).expect("root");
+        let state = tempdir().expect("state");
+        let record = state.path().join("grant.json");
+        let (first, first_manifest) = granted_stage(&[("paper.qmd", "# version one")]);
+        sync_granted_folder(first.path(), &root, &first_manifest, &record).expect("first sync");
+        let (second, second_manifest) = granted_stage(&[("paper.qmd", "# version two")]);
+        let notes =
+            sync_granted_folder(second.path(), &root, &second_manifest, &record).expect("second sync");
+        assert!(notes.is_empty());
+        assert_eq!(
+            std::fs::read(root.join("paper.qmd")).expect("paper"),
+            b"# version two".to_vec()
+        );
+        assert!(!root.join("paper.qmd.local").exists());
+    }
+
+    #[test]
+    fn granted_sync_keeps_an_outside_edit_as_local_copies_without_overwriting() {
+        let project = tempdir().expect("project");
+        let root = std::fs::canonicalize(project.path()).expect("root");
+        let state = tempdir().expect("state");
+        let record = state.path().join("grant.json");
+        let (first, first_manifest) = granted_stage(&[("paper.qmd", "# version one")]);
+        sync_granted_folder(first.path(), &root, &first_manifest, &record).expect("first sync");
+
+        std::fs::write(root.join("paper.qmd"), b"edited by hand").expect("hand edit");
+        let (second, second_manifest) = granted_stage(&[("paper.qmd", "# version two")]);
+        let notes =
+            sync_granted_folder(second.path(), &root, &second_manifest, &record).expect("second sync");
+        assert_eq!(
+            notes,
+            vec!["kept your copy of paper.qmd as paper.qmd.local".to_string()]
+        );
+        assert_eq!(
+            std::fs::read(root.join("paper.qmd.local")).expect("local"),
+            b"edited by hand".to_vec()
+        );
+        assert_eq!(
+            std::fs::read(root.join("paper.qmd")).expect("paper"),
+            b"# version two".to_vec()
+        );
+
+        std::fs::write(root.join("paper.qmd"), b"second hand edit").expect("second hand edit");
+        let (third, third_manifest) = granted_stage(&[("paper.qmd", "# version three")]);
+        let notes =
+            sync_granted_folder(third.path(), &root, &third_manifest, &record).expect("third sync");
+        assert_eq!(
+            notes,
+            vec!["kept your copy of paper.qmd as paper.qmd.local.1".to_string()]
+        );
+        assert_eq!(
+            std::fs::read(root.join("paper.qmd.local")).expect("local"),
+            b"edited by hand".to_vec()
+        );
+        assert_eq!(
+            std::fs::read(root.join("paper.qmd.local.1")).expect("local one"),
+            b"second hand edit".to_vec()
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn granted_sync_refuses_a_symlinked_parent_directory() {
+        let project = tempdir().expect("project");
+        let root = std::fs::canonicalize(project.path()).expect("root");
+        let outside = tempdir().expect("outside");
+        std::os::unix::fs::symlink(outside.path(), root.join("data")).expect("parent symlink");
+        let state = tempdir().expect("state");
+        let record = state.path().join("grant.json");
+        let (staged, manifest) = granted_stage(&[("data/input.csv", "x,y\n1,2\n")]);
+        let error = sync_granted_folder(staged.path(), &root, &manifest, &record).unwrap_err();
+        assert!(error.contains("symlink"), "{error}");
+        assert!(!outside.path().join("input.csv").exists());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn granted_sync_refuses_a_symlink_at_the_target_path() {
+        let project = tempdir().expect("project");
+        let root = std::fs::canonicalize(project.path()).expect("root");
+        let outside = tempdir().expect("outside");
+        let secret = outside.path().join("secret.txt");
+        std::fs::write(&secret, b"keep").expect("secret");
+        std::os::unix::fs::symlink(&secret, root.join("paper.qmd")).expect("target symlink");
+        let state = tempdir().expect("state");
+        let record = state.path().join("grant.json");
+        let (staged, manifest) = granted_stage(&[("paper.qmd", "# paper")]);
+        let error = sync_granted_folder(staged.path(), &root, &manifest, &record).unwrap_err();
+        assert!(error.contains("paper.qmd"), "{error}");
+        assert_eq!(std::fs::read(&secret).expect("secret"), b"keep".to_vec());
+    }
+
+    #[test]
+    fn granted_sync_treats_a_folder_already_matching_the_editor_as_its_own_write() {
+        let project = tempdir().expect("project");
+        let root = std::fs::canonicalize(project.path()).expect("root");
+        std::fs::write(root.join("paper.qmd"), b"# version one").expect("copied by hand");
+        let state = tempdir().expect("state");
+        let record = state.path().join("grant.json");
+        let (first, first_manifest) = granted_stage(&[("paper.qmd", "# version one")]);
+        sync_granted_folder(first.path(), &root, &first_manifest, &record).expect("first sync");
+        let (second, second_manifest) = granted_stage(&[("paper.qmd", "# version two")]);
+        let notes =
+            sync_granted_folder(second.path(), &root, &second_manifest, &record).expect("second sync");
+        assert!(notes.is_empty());
+        assert!(!root.join("paper.qmd.local").exists());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn granted_sync_keeps_the_mode_of_a_replaced_file() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let project = tempdir().expect("project");
+        let root = std::fs::canonicalize(project.path()).expect("root");
+        let state = tempdir().expect("state");
+        let record = state.path().join("grant.json");
+        let (first, first_manifest) = granted_stage(&[("run.sh", "echo one\n")]);
+        sync_granted_folder(first.path(), &root, &first_manifest, &record).expect("first sync");
+        std::fs::set_permissions(root.join("run.sh"), std::fs::Permissions::from_mode(0o755))
+            .expect("chmod");
+        let (second, second_manifest) = granted_stage(&[("run.sh", "echo two\n")]);
+        sync_granted_folder(second.path(), &root, &second_manifest, &record).expect("second sync");
+        let mode = std::fs::metadata(root.join("run.sh"))
+            .expect("run.sh")
+            .permissions()
+            .mode();
+        assert_eq!(mode & 0o777, 0o755);
+        assert_eq!(
+            std::fs::read(root.join("run.sh")).expect("run.sh"),
+            b"echo two\n".to_vec()
+        );
+    }
+}

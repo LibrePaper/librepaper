@@ -107,10 +107,6 @@ toml = "0.8.2"
 reqwest = { version = "0.13", default-features = false, features = ["rustls", "json", "http2", "multipart", "form", "query"] }
 # Digests, SigV4, and the signature on every cookie.
 sha2 = "0.10"
-# Quarto's freezer names a cached computation by the MD5 of its source, so
-# reading that cache means computing the same digest. A format requirement,
-# not a security choice: nothing here trusts MD5 for anything.
-md5 = "0.7"
 hmac = "0.12"
 base64 = "0.22"
 hex = "0.4"
@@ -172,13 +168,11 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 thiserror = "2"
 # Wave 3 of librepaper#d3m7: the MCP tool schemas are validated by a real
 # JSON Schema implementation, metrics are encoded by the official client,
-# UTF-16 offsets are converted without re-encoding, the Quarto resource
-# scanner parses HTML and CSS, and digests use RFC 8785 canonical JSON.
+# UTF-16 offsets are converted without re-encoding, and digests use RFC 8785
+# canonical JSON.
 jsonschema = { version = "0.58", default-features = false }
 prometheus-client = "0.25"
 str_indices = "0.4"
-lol_html = "3"
-cssparser = "0.38"
 serde_jcs = "0.2"
 # PostgreSQL is the production catalogue. SQLx supplies the async pool and
 # compile-independent migrations; queries are exercised against PostgreSQL in
