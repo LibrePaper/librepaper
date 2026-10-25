@@ -250,6 +250,8 @@ pub(crate) mod testing {
                 "user.name=Test",
                 "-c",
                 "user.email=test@example.org",
+                "-c",
+                "commit.gpgsign=false",
                 "commit",
                 "-q",
                 "-m",
