@@ -549,6 +549,14 @@ export async function runRender({ job = {}, tree, format, output, entrypoint = "
 // so the next upload sends every file again.
 let acknowledged = { key: "", digests: new Map() };
 
+/** Makes the next folder sync send these paths again, even though the desktop
+ * app already holds bytes with their digest. A person who keeps their copy of
+ * a file that changed on disk asks for exactly that.
+ * @param {string[]} paths */
+export function forgetAcknowledged(paths) {
+  for (const path of paths) acknowledged.digests.delete(path);
+}
+
 function folderForm(manifest, files) {
   const form = new FormData();
   form.append("manifest", new Blob([JSON.stringify({ manifest })], { type: "application/json" }), "manifest.json");

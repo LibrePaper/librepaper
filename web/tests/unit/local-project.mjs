@@ -1,0 +1,376 @@
+// A folder opened as a project: the standalone session, the document built
+// from a tree, and what an outside change to a file does to the editor.
+import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
+import * as collab from "../../src/lib/collab.js";
+import { createProjectSession } from "../../src/lib/project-session.js";
+import { createFigureStore, createLocalProject, localIdOf, localSlug } from "../../src/lib/reader/local-project.js";
+
+const tick = async () => {
+  for (let turn = 0; turn < 20; turn++) await new Promise((resolve) => setImmediate(resolve));
+};
+const enc = new TextEncoder();
+const dec = new TextDecoder();
+const bytesOf = (value) => (typeof value === "string" ? enc.encode(value) : value);
+const digest = (value) => createHash("sha256").update(bytesOf(value)).digest("hex");
+
+// -------------------------------------------------------------- routing
+
+assert.equal(localIdOf("?local=abc123"), "abc123");
+assert.equal(localIdOf("?x=1&local=a-b_c"), "a-b_c");
+assert.equal(localIdOf(""), "", "an ordinary address is not a local project");
+assert.equal(localIdOf("?local="), "");
+assert.equal(localIdOf("?local=../etc"), "", "an id is a token, never a path");
+assert.equal(localSlug("abc123"), "local-abc123", "the project id of a folder");
+
+// -------------------------------------------------------- standalone session
+
+{
+  const states = [];
+  const session = createProjectSession({
+    send: () => assert.fail("a standalone session sends nothing"),
+    onState: (state) => states.push(state),
+    standalone: true,
+  });
+  assert.equal(session.joined, true, "with nothing to hydrate it is joined at once");
+  assert.equal(states.at(-1).joined, true);
+  assert.equal(states.at(-1).pending, 0);
+  session.addText("a.md", "hello");
+  assert.equal(session.tree().texts["a.md"], "hello");
+  assert.equal(states.at(-1).pending, 0, "an edit waits on no server");
+  session.leave();
+}
+
+{
+  const states = [];
+  let release;
+  const hydration = new Promise((resolve) => { release = resolve; });
+  let events;
+  const session = createProjectSession({
+    send: () => assert.fail("a standalone session sends nothing"),
+    onState: (state) => states.push(state),
+    standalone: true,
+    persistence: { open(_doc, given) { events = given; return { hydration, flush: async () => {}, close() {} }; } },
+  });
+  assert.equal(session.joined, false, "joined waits for the persistence to hydrate");
+  assert.equal(states.at(-1).joined, false);
+  release();
+  await tick();
+  assert.equal(session.joined, true);
+  assert.equal(states.at(-1).joined, true);
+  events.writing(2);
+  assert.equal(states.at(-1).pending, 2, "pending follows the persistence adapter");
+  events.persisted();
+  assert.equal(states.at(-1).pending, 0);
+  session.leave();
+}
+
+// ------------------------------------------------------------ a fake folder
+
+function fakeFolder(initial) {
+  const files = new Map(Object.entries(initial));
+  const queued = [];
+  let waiter = null;
+  const folder = {
+    files,
+    skipped: [],
+    async projectTree() {
+      return {
+        files: [...files].map(([path, value]) => ({ path, size: bytesOf(value).length, sha256: digest(value), mtime: 0 })),
+        skipped: [],
+      };
+    },
+    async projectFile(_id, path) {
+      if (!files.has(path)) throw Object.assign(new Error("gone"), { name: "Refused", status: 404 });
+      return bytesOf(files.get(path));
+    },
+    async projectName() { return "thesis"; },
+    projectChanges(_id, since, { signal } = {}) {
+      if (since === undefined) return Promise.resolve({ cursor: "0", changes: [] });
+      if (queued.length) return Promise.resolve(queued.shift());
+      return new Promise((resolve, reject) => {
+        waiter = resolve;
+        signal?.addEventListener("abort", () => reject(Object.assign(new Error("Canceled"), { name: "Canceled" })), { once: true });
+      });
+    },
+    // The folder reports these changes the next time it is asked.
+    report(...changes) {
+      const answer = { cursor: "1", changes };
+      if (waiter) {
+        const resolve = waiter;
+        waiter = null;
+        resolve(answer);
+      } else queued.push(answer);
+    },
+    reportReset() {
+      const answer = { cursor: "1", reset: true, changes: [] };
+      if (waiter) {
+        const resolve = waiter;
+        waiter = null;
+        resolve(answer);
+      } else queued.push(answer);
+    },
+  };
+  return folder;
+}
+
+const RULES = { text_extensions: [".tex", ".md", ".bib"], asset_extensions: [".png"], derived_extensions: [".log"] };
+const MAIN = "\\documentclass{article}\n\\begin{document}\nHello world.\n\\input{chapters/one}\n\\end{document}\n";
+const PNG = new Uint8Array([137, 80, 78, 71, 1, 2, 3]);
+
+async function open(initial, extra = {}) {
+  const folder = fakeFolder(initial);
+  const conflicts = [];
+  const resends = [];
+  const problems = [];
+  const figures = createFigureStore();
+  const project = createLocalProject({
+    id: "abc",
+    rules: RULES,
+    collab,
+    figures,
+    folder,
+    onConflict: (conflict) => conflicts.push(conflict),
+    onResend: (paths) => resends.push(paths),
+    onProblem: (message) => problems.push(message),
+    wait: () => new Promise(() => {}),
+    ...extra,
+  });
+  const loaded = await project.load();
+  const session = project.start({});
+  await tick();
+  return { folder, conflicts, resends, problems, figures, project, session, loaded };
+}
+
+const textOf = (session, path) => session.textOf(session.idOf(path)).toString();
+
+// ---------------------------------------------------- the document from a tree
+
+{
+  const { session, loaded, project, figures } = await open({
+    "main.tex": MAIN,
+    "chapters/one.tex": "One.\n",
+    "refs.bib": "@book{a}\n",
+    "fig/a.png": PNG,
+    // Left out: not in the rules, a dotfile, a derived name, not UTF-8 text.
+    "notes.pdf": "%PDF",
+    ".hidden.tex": "x",
+    "build.log": "log",
+    "bad.md": new Uint8Array([0xff, 0xfe, 0xfd]),
+  });
+  assert.equal(loaded.name, "thesis", "the title is the folder's name");
+  assert.equal(loaded.sourceFormat, "latex", "the format follows the file the project opens on");
+  assert.equal(session.joined, true);
+  const tree = session.tree();
+  assert.deepEqual(Object.keys(tree.texts).sort(), ["chapters/one.tex", "main.tex", "refs.bib"]);
+  assert.equal(tree.texts["main.tex"], MAIN);
+  assert.deepEqual(Object.keys(tree.digests), ["fig/a.png"]);
+  assert.equal(tree.digests["fig/a.png"], digest(PNG));
+  const held = await figures.gather("local-abc", tree.digests);
+  assert.deepEqual([...held.assets["fig/a.png"]], [...PNG], "the figure bytes are held for the render and the folder sync");
+  assert.match(held.urls["fig/a.png"], /^data:image\/png;base64,/);
+  assert.deepEqual(held.missing, []);
+  assert.deepEqual(project.send({ type: "anything" }), undefined, "there is no room to write to");
+  assert.deepEqual(project.syncStatus(), {});
+  assert.equal(project.sendLive({}).ok, false);
+  project.close();
+}
+
+// CRLF files come into the editor with LF endings.
+{
+  const { session, project } = await open({ "a.md": "one\r\ntwo\r\n" });
+  assert.equal(textOf(session, "a.md"), "one\ntwo\n");
+  project.close();
+}
+
+// A figure added in the editor is stored and read back through the same store.
+{
+  const figures = createFigureStore();
+  const { sha } = await figures.upload("local-abc", new File([PNG], "b.png"));
+  assert.equal(sha, digest(PNG));
+  const held = await figures.gather("local-abc", { "b.png": sha, "gone.png": "0".repeat(64) });
+  assert.deepEqual(held.missing, ["gone.png"]);
+  assert.deepEqual([...held.assets["b.png"]], [...PNG]);
+}
+
+// ----------------------------------------------------------- outside changes
+
+// A file the editor has not touched is replaced by a small edit, so the rest of
+// the document, other files and the file's identity stay where they are.
+{
+  const { folder, session, conflicts, project } = await open({ "main.tex": MAIN, "chapters/one.tex": "One.\n" });
+  const id = session.idOf("main.tex");
+  const cursor = session.textOf(id).getCursor(MAIN.indexOf("Hello"));
+  const next = MAIN.replace("Hello world.", "Hello there, world.");
+  folder.files.set("main.tex", next);
+  folder.report({ path: "main.tex", kind: "changed" });
+  await tick();
+  assert.equal(textOf(session, "main.tex"), next);
+  assert.equal(session.idOf("main.tex"), id, "the file keeps its identity");
+  assert.equal(textOf(session, "chapters/one.tex"), "One.\n", "other files stay as they were");
+  assert.equal(conflicts.length, 0, "a clean file is not asked about");
+  const resolved = session.doc.getCursorPos(cursor).offset;
+  assert.equal(next.slice(resolved, resolved + 5), "Hello", "a cursor on unchanged words stays on them");
+  project.close();
+}
+
+// Changes made on disk with the same text as the editor change nothing.
+{
+  const { folder, session, conflicts, project } = await open({ "a.md": "same\n" });
+  folder.report({ path: "a.md", kind: "changed" });
+  await tick();
+  assert.equal(textOf(session, "a.md"), "same\n");
+  assert.equal(conflicts.length, 0);
+  project.close();
+}
+
+// An unsaved edit makes the person choose. "Load from disk" replaces the editor's
+// text, and "Keep mine" leaves it and asks for a write.
+{
+  const { folder, session, conflicts, resends, project } = await open({ "a.md": "base\n" });
+  const edit = (text) => {
+    session.textOf(session.idOf("a.md")).insert(0, text);
+    session.doc.commit();
+  };
+  edit("mine ");
+  folder.files.set("a.md", "base from disk\n");
+  folder.report({ path: "a.md", kind: "changed" });
+  await tick();
+  assert.equal(conflicts.length, 1);
+  assert.equal(conflicts[0].path, "a.md");
+  assert.equal(textOf(session, "a.md"), "mine base\n", "nothing changes before the person answers");
+
+  // The disk moves on again while the question stands: the answer is for the newest text.
+  folder.files.set("a.md", "base from disk again\n");
+  folder.report({ path: "a.md", kind: "changed" });
+  await tick();
+  assert.equal(conflicts.length, 1, "one question per file");
+  conflicts[0].loadDisk();
+  assert.equal(textOf(session, "a.md"), "base from disk again\n");
+  conflicts[0].loadDisk();
+  assert.equal(textOf(session, "a.md"), "base from disk again\n", "a question is answered once");
+
+  edit("mine ");
+  folder.files.set("a.md", "third\n");
+  folder.report({ path: "a.md", kind: "changed" });
+  await tick();
+  assert.equal(conflicts.length, 2);
+  conflicts[1].keepMine();
+  assert.equal(textOf(session, "a.md"), "mine base from disk again\n");
+  assert.deepEqual(resends, [["a.md"]], "keeping mine asks for the editor's text to be written");
+  project.close();
+}
+
+// Once the folder sync has written the editor's text, the file is clean again.
+{
+  const { folder, session, conflicts, project } = await open({ "a.md": "base\n" });
+  session.textOf(session.idOf("a.md")).insert(0, "mine ");
+  session.doc.commit();
+  project.wrote({ texts: session.tree().texts, digests: {} });
+  folder.files.set("a.md", "mine base and more\n");
+  folder.report({ path: "a.md", kind: "changed" });
+  await tick();
+  assert.equal(conflicts.length, 0, "the text last written to disk is the baseline");
+  assert.equal(textOf(session, "a.md"), "mine base and more\n");
+  project.close();
+}
+
+// A file the editor made and the folder has never held is unsaved by definition.
+{
+  const { folder, session, conflicts, project } = await open({ "a.md": "a\n" });
+  session.addText("new.md", "mine");
+  folder.files.set("new.md", "theirs");
+  folder.report({ path: "new.md", kind: "added" });
+  await tick();
+  assert.equal(conflicts.length, 1);
+  assert.equal(textOf(session, "new.md"), "mine");
+  project.close();
+}
+
+// Files that appear join the project; files outside the rules do not.
+{
+  const { folder, session, project } = await open({ "a.md": "a\n" });
+  folder.files.set("b.md", "# b\n");
+  folder.files.set("fig.png", PNG);
+  folder.files.set("notes.pdf", "%PDF");
+  folder.report(
+    { path: "b.md", kind: "added" },
+    { path: "fig.png", kind: "added" },
+    { path: "notes.pdf", kind: "added" },
+  );
+  await tick();
+  assert.deepEqual(session.list().map((file) => file.path), ["a.md", "b.md", "fig.png"]);
+  assert.equal(textOf(session, "b.md"), "# b\n");
+  assert.equal(session.tree().digests["fig.png"], digest(PNG));
+  project.close();
+}
+
+// A removed file leaves the project, text and asset alike.
+{
+  const { folder, session, project } = await open({ "a.md": "a\n", "b.md": "b\n", "fig.png": PNG });
+  folder.files.delete("b.md");
+  folder.files.delete("fig.png");
+  folder.report({ path: "b.md", kind: "removed" }, { path: "fig.png", kind: "removed" });
+  await tick();
+  assert.deepEqual(session.list().map((file) => file.path), ["a.md"]);
+  project.close();
+}
+
+// An asset that changed is replaced by its new bytes.
+{
+  const { folder, session, figures, project } = await open({ "a.md": "a\n", "fig.png": PNG });
+  const next = new Uint8Array([9, 9, 9]);
+  folder.files.set("fig.png", next);
+  folder.report({ path: "fig.png", kind: "changed" });
+  await tick();
+  assert.equal(session.tree().digests["fig.png"], digest(next));
+  const held = await figures.gather("local-abc", session.tree().digests);
+  assert.deepEqual([...held.assets["fig.png"]], [...next]);
+  project.close();
+}
+
+// A reset rereads the tree and applies the difference.
+{
+  const { folder, session, conflicts, project } = await open({
+    "a.md": "a\n",
+    "gone.md": "gone\n",
+    "same.md": "same\n",
+    "fig.png": PNG,
+  });
+  folder.files.set("a.md", "a changed\n");
+  folder.files.delete("gone.md");
+  folder.files.set("fresh.md", "fresh\n");
+  folder.files.set("fig.png", new Uint8Array([4, 5]));
+  folder.reportReset();
+  await tick();
+  assert.deepEqual(session.list().map((file) => file.path), ["a.md", "fig.png", "fresh.md", "same.md"]);
+  assert.equal(textOf(session, "a.md"), "a changed\n");
+  assert.equal(textOf(session, "same.md"), "same\n");
+  assert.equal(textOf(session, "fresh.md"), "fresh\n");
+  assert.equal(session.tree().digests["fig.png"], digest(new Uint8Array([4, 5])));
+  assert.equal(conflicts.length, 0);
+  project.close();
+}
+
+// A failing folder is reported once, and closing stops the loop.
+{
+  let calls = 0;
+  const waits = [];
+  const { problems, project } = await open({ "a.md": "a\n" }, {
+    folder: Object.assign(fakeFolder({ "a.md": "a\n" }), {
+      projectChanges(_id, since) {
+        if (since === undefined) return Promise.resolve({ cursor: "0", changes: [] });
+        calls += 1;
+        return Promise.reject(Object.assign(new Error("unreachable"), { name: "Unreachable" }));
+      },
+    }),
+    wait: async () => { waits.push(1); if (waits.length >= 3) await new Promise(() => {}); },
+  });
+  await tick();
+  assert.equal(problems.length, 1, "the same failure is said once");
+  assert.match(problems[0], /could not be read/);
+  assert.equal(calls, 3, "the loop asks again after each wait");
+  project.close();
+}
+
+console.log("local-project: routing, standalone session, tree build, outside-change rules");
