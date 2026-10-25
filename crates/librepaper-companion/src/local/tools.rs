@@ -216,6 +216,7 @@ async fn join_streams(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::path::PathBuf;
 
     #[cfg(unix)]
     fn script(directory: &Path, name: &str, body: &str) -> PathBuf {
