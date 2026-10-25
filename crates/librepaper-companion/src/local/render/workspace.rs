@@ -409,6 +409,9 @@ pub(crate) struct MirrorReport {
     /// Recorded paths the project no longer lists that stayed in the folder,
     /// and in the record, because they could not be opened for reading.
     pub kept_unreadable: Vec<String>,
+    /// Recorded paths an opening save dropped from the record because the page
+    /// does not hold them. The files stay in the folder.
+    pub released: Vec<String>,
 }
 
 #[derive(Debug, PartialEq)]
@@ -581,11 +584,20 @@ struct Mirror {
 /// recoverable. A file whose bytes match neither the upload nor the digest
 /// last written was changed outside LibrePaper and is kept as `<name>.local`
 /// before it is replaced.
+///
+/// An `opening` save is the page's first one on open, and its manifest lists
+/// what the page managed to take in. The page's silence about a recorded path
+/// then says that it never held the file, which a text that stopped being
+/// UTF-8 or a file over the size bound would cause, and not that the person
+/// deleted it. So the record is reconciled to the manifest: a recorded path it
+/// omits leaves the record and is reported as released, and nothing is renamed
+/// or trashed.
 pub(crate) fn mirror_granted_folder(
     staged: &Path,
     root: &Path,
     manifest: &[protocol::ManifestEntry],
     record: &Path,
+    opening: bool,
 ) -> Result<MirrorReport, MirrorError> {
     // The job runner and the folder route both call this, and the written
     // record is read, modified and written back.
@@ -601,7 +613,7 @@ pub(crate) fn mirror_granted_folder(
         vacated: BTreeSet::new(),
         invalidated: false,
     };
-    let result = apply_mirror(root, &files, &mut mirror);
+    let result = apply_mirror(root, &files, &mut mirror, opening);
     remove_emptied_directories(root, &mirror.vacated);
     // Record every change that landed even when a later step fails, so the
     // next sync does not mistake the companion's own earlier write for an
@@ -616,10 +628,36 @@ pub(crate) fn mirror_granted_folder(
     Ok(mirror.report)
 }
 
-fn apply_mirror(root: &Path, files: &[Resolved], mirror: &mut Mirror) -> Result<(), String> {
+fn apply_mirror(
+    root: &Path,
+    files: &[Resolved],
+    mirror: &mut Mirror,
+    opening: bool,
+) -> Result<(), String> {
+    if opening {
+        release_dropped_files(files, mirror);
+        return write_granted_files(root, files, mirror);
+    }
     rename_moved_files(root, files, mirror)?;
     write_granted_files(root, files, mirror)?;
     trash_dropped_files(root, files, mirror)
+}
+
+/// Every recorded path the manifest of an opening save omits leaves the record
+/// and is reported as released. No file is touched: the page never held these
+/// files, so their absence is not a deletion by the person.
+fn release_dropped_files(files: &[Resolved], mirror: &mut Mirror) {
+    let listed: BTreeSet<&str> = files.iter().map(|file| file.path.as_str()).collect();
+    let released: Vec<String> = mirror
+        .written
+        .keys()
+        .filter(|path| !listed.contains(path.as_str()))
+        .cloned()
+        .collect();
+    for path in released {
+        mirror.written.remove(&path);
+        mirror.report.released.push(path);
+    }
 }
 
 /// A recorded path the manifest dropped whose untouched file matches a
@@ -1002,7 +1040,7 @@ mod tests {
         manifest: &[protocol::ManifestEntry],
         record: &Path,
     ) -> Result<Vec<String>, String> {
-        mirror_granted_folder(staged, root, manifest, record)
+        mirror_granted_folder(staged, root, manifest, record, false)
             .map(|report| report.notes())
             .map_err(String::from)
     }
@@ -1185,13 +1223,33 @@ mod tests {
         files: &[(&str, &str)],
         uploaded: &[&str],
     ) -> Result<MirrorReport, MirrorError> {
+        mirror_as(false, root, record, files, uploaded)
+    }
+
+    /// The same, as the page's opening save.
+    fn mirror_opening(
+        root: &Path,
+        record: &Path,
+        files: &[(&str, &str)],
+        uploaded: &[&str],
+    ) -> Result<MirrorReport, MirrorError> {
+        mirror_as(true, root, record, files, uploaded)
+    }
+
+    fn mirror_as(
+        opening: bool,
+        root: &Path,
+        record: &Path,
+        files: &[(&str, &str)],
+        uploaded: &[&str],
+    ) -> Result<MirrorReport, MirrorError> {
         let (staged, manifest) = granted_stage(files);
         for (path, _) in files {
             if !uploaded.contains(path) {
                 std::fs::remove_file(staged.path().join(path)).expect("withhold upload");
             }
         }
-        mirror_granted_folder(staged.path(), root, &manifest, record)
+        mirror_granted_folder(staged.path(), root, &manifest, record, opening)
     }
 
     fn all<'a>(files: &[(&'a str, &str)]) -> Vec<&'a str> {
@@ -1287,6 +1345,92 @@ mod tests {
         assert!(!read_written_record(&record)
             .expect("record")
             .contains_key("secret.qmd"));
+    }
+
+    #[test]
+    fn an_opening_save_releases_recorded_files_the_page_never_held_and_trashes_nothing() {
+        let project = tempdir().expect("project");
+        let root = std::fs::canonicalize(project.path()).expect("root");
+        let state = tempdir().expect("state");
+        let record = state.path().join("grant.json");
+        let earlier = [
+            ("paper.qmd", "# paper"),
+            ("notes.txt", "notes"),
+            ("big.csv", "1,2"),
+            ("refs.bib", "@book{a}"),
+        ];
+        mirror(&root, &record, &earlier, &all(&earlier)).expect("earlier session");
+
+        // Since then notes.txt stopped being UTF-8 and big.csv grew past the
+        // size bound, so the page took in neither of them.
+        std::fs::write(root.join("notes.txt"), [0xff, 0xfe, 0xfd]).expect("binary");
+        File::create(root.join("big.csv"))
+            .and_then(|file| file.set_len(MAX_UPLOAD_BYTES as u64 + 1))
+            .expect("oversized");
+        let held = [("paper.qmd", "# paper"), ("refs.bib", "@book{a}")];
+        let report = mirror_opening(&root, &record, &held, &[]).expect("opening");
+
+        assert_eq!(
+            report.released,
+            vec!["big.csv".to_string(), "notes.txt".to_string()]
+        );
+        assert!(report.trashed.is_empty() && report.kept_unreadable.is_empty());
+        assert!(report.renamed.is_empty() && report.kept.is_empty());
+        assert!(root.join("notes.txt").is_file() && root.join("big.csv").is_file());
+        let recorded = read_written_record(&record).expect("record");
+        assert_eq!(
+            recorded.keys().map(String::as_str).collect::<Vec<_>>(),
+            vec!["paper.qmd", "refs.bib"]
+        );
+
+        // The later saves leave the released files alone: they are not recorded.
+        let report = mirror(&root, &record, &held, &[]).expect("later");
+        assert!(report.trashed.is_empty() && report.released.is_empty());
+        assert!(root.join("notes.txt").is_file() && root.join("big.csv").is_file());
+    }
+
+    #[test]
+    fn an_opening_save_releases_a_recorded_file_instead_of_renaming_it() {
+        let project = tempdir().expect("project");
+        let root = std::fs::canonicalize(project.path()).expect("root");
+        let state = tempdir().expect("state");
+        let record = state.path().join("grant.json");
+        let earlier = [("a.qmd", "# a"), ("b.qmd", "# b")];
+        mirror(&root, &record, &earlier, &all(&earlier)).expect("earlier session");
+
+        // The page holds a copy of a.qmd's text under a new name, and nothing
+        // under the old one. That is not a rename the person made.
+        let held = [("sub/c.qmd", "# a"), ("b.qmd", "# b")];
+        let report = mirror_opening(&root, &record, &held, &["sub/c.qmd"]).expect("opening");
+        assert_eq!(report.released, vec!["a.qmd".to_string()]);
+        assert!(report.renamed.is_empty() && report.trashed.is_empty());
+        assert_eq!(std::fs::read(root.join("a.qmd")).expect("a"), b"# a");
+        assert_eq!(std::fs::read(root.join("sub/c.qmd")).expect("c"), b"# a");
+        let recorded = read_written_record(&record).expect("record");
+        assert!(!recorded.contains_key("a.qmd") && recorded.contains_key("sub/c.qmd"));
+    }
+
+    #[test]
+    fn a_save_after_the_opening_one_trashes_a_held_file_it_omits() {
+        let project = tempdir().expect("project");
+        let root = std::fs::canonicalize(project.path()).expect("root");
+        let state = tempdir().expect("state");
+        let record = state.path().join("grant.json");
+        let both = [("paper.qmd", "# paper"), ("notes.qmd", "notes")];
+        mirror(&root, &record, &both, &all(&both)).expect("earlier session");
+
+        // The page holds both files, so the opening save keeps both recorded.
+        let report = mirror_opening(&root, &record, &both, &[]).expect("opening");
+        assert!(report.released.is_empty() && report.trashed.is_empty());
+        let recorded = read_written_record(&record).expect("record");
+        assert!(recorded.contains_key("paper.qmd") && recorded.contains_key("notes.qmd"));
+
+        // The person deletes notes.qmd in the editor, and the next save omits it.
+        let only = [("paper.qmd", "# paper")];
+        let report = mirror(&root, &record, &only, &[]).expect("later");
+        assert_eq!(report.trashed, vec!["notes.qmd".to_string()]);
+        assert!(report.released.is_empty());
+        assert!(!root.join("notes.qmd").exists());
     }
 
     #[test]

@@ -165,4 +165,29 @@ const settle = () => new Promise((resolve) => setImmediate(resolve));
   assert.equal(queue.length, 0);
   watched.dispose();
 }
+
+// The first run is the opening save, and so is every retry until one succeeds.
+// Runs after that are not.
+{
+  const seen = [];
+  let fail = true;
+  const folder = createFolderSync({
+    timers,
+    run: async ({ opening }) => { seen.push(opening); if (fail) throw new Error("down"); },
+    onError: () => {},
+  });
+  folder.poke();
+  await fire();
+  folder.poke();
+  await fire();
+  fail = false;
+  folder.poke();
+  await fire();
+  folder.poke();
+  await fire();
+  folder.poke();
+  await fire();
+  assert.deepEqual(seen, [true, true, true, false, false], "only the runs before the first success are the opening one");
+  folder.dispose();
+}
 console.log("folder-sync unit ok");

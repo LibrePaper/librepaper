@@ -1362,7 +1362,7 @@ mod tests {
         let tree = read_tree(root.path(), &BTreeSet::new()).unwrap();
         assert!(tree.listing.contains_key("data.csv"));
         assert!(!record.exists());
-        workspace::mirror_granted_folder(staged.path(), root.path(), &[], &record).unwrap();
+        workspace::mirror_granted_folder(staged.path(), root.path(), &[], &record, false).unwrap();
         assert!(root.path().join("data.csv").exists());
         assert!(root.path().join("main.tex").exists());
     }
@@ -2300,7 +2300,7 @@ mod tests {
             sha256: digest("hello"),
             size: 5,
         }];
-        workspace::mirror_granted_folder(staged.path(), root, &manifest, record).unwrap()
+        workspace::mirror_granted_folder(staged.path(), root, &manifest, record, false).unwrap()
     }
 
     #[tokio::test]

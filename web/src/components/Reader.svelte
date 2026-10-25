@@ -1498,7 +1498,7 @@
   // web project has no folder, so it has no sync.
   const folderSync = LOCAL ? createFolderSync({
     ready: () => Boolean(hasDesktop && mayEdit && session),
-    run: async () => {
+    run: async ({ opening }) => {
       scopeLocalApp();
       const captured = capturePreviewTree(liveTreeNow());
       // Files deleted on disk while they held unsaved edits are not sent, so
@@ -1509,7 +1509,10 @@
         if (missing.length) throw new Error(`could not fetch ${missing.join(", ")}`);
         tree.assets = held.assets;
       }
-      const result = await localQuarto.syncFolder({ tree, bindingId: LOCAL_ID, encode: localProject.encode });
+      // The first save lists what this page took in, which may be less than
+      // the folder holds. Saying so keeps the desktop app from trashing a file
+      // this page never had.
+      const result = await localQuarto.syncFolder({ tree, bindingId: LOCAL_ID, encode: localProject.encode, opening });
       if (result) localProject?.wrote(tree);
       for (const path of result?.kept_unreadable || []) {
         say(`${String(path).split("/").pop()} could not be read, so it was left in the folder.`, { kind: "note", id: `reader:folder-unreadable:${path}` });
@@ -1562,7 +1565,8 @@
   }) : null;
   $effect(() => () => localSync?.dispose());
   // The editor becomes ready. A local project opens with one sync that sends nothing, because the
-  // client was told what the folder holds. It makes every file managed.
+  // client was told what the folder holds. It makes every file the page holds managed, and it is
+  // the opening save, so the desktop app stops tracking a file the page does not hold.
   $effect(() => {
     if (session && mayEdit) untrack(() => folderSync?.poke());
   });

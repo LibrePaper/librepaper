@@ -6,9 +6,13 @@
 // whether the folder may still be behind, for a caller that is about to leave.
 export const FOLDER_SYNC_PAUSE = 800;
 
-// `run()` performs one sync and may throw. `ready()` says whether syncing
-// applies now. `onError(error)` hears a failed run.
-/** @param {{ run: () => Promise<void>, ready?: () => boolean, onError?: (error: any) => void, pause?: number, timers?: { set: (callback: () => void, ms: number) => unknown, clear: (handle: unknown) => void } }} options */
+// `run({ opening })` performs one sync and may throw. `opening` is true until
+// a run has succeeded: that first save lists what the page took in when it
+// opened the folder, so the folder's desktop app must not read a file missing
+// from it as a deletion. A run that fails is tried again as the opening one.
+// `ready()` says whether syncing applies now. `onError(error)` hears a failed
+// run.
+/** @param {{ run: (state: { opening: boolean }) => Promise<void>, ready?: () => boolean, onError?: (error: any) => void, pause?: number, timers?: { set: (callback: () => void, ms: number) => unknown, clear: (handle: unknown) => void } }} options */
 export function createFolderSync({ run, ready = () => true, onError = () => {}, pause = FOLDER_SYNC_PAUSE, timers = { set: (callback, ms) => setTimeout(callback, ms), clear: (handle) => clearTimeout(/** @type {ReturnType<typeof setTimeout>} */ (handle)) } }) {
   let timer = null;
   let running = false;
@@ -16,6 +20,8 @@ export function createFolderSync({ run, ready = () => true, onError = () => {}, 
   let disposed = false;
   // Whether the last run succeeded, and the run now in flight.
   let ok = true;
+  // Whether no run has succeeded yet.
+  let opening = true;
   let inflight = Promise.resolve();
 
   async function start() {
@@ -28,7 +34,8 @@ export function createFolderSync({ run, ready = () => true, onError = () => {}, 
     running = true;
     const finished = (async () => {
       try {
-        await run();
+        await run({ opening });
+        opening = false;
         ok = true;
       } catch (error) {
         ok = false;

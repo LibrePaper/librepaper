@@ -1501,16 +1501,36 @@ mod settings_tests {
         files: &[(&str, &[u8])],
         uploads: &[&str],
     ) -> Request<Body> {
+        folder_save(project, binding, files, uploads, false)
+    }
+
+    /// The same body for the first save after the page opened the folder.
+    fn folder_opening_request(
+        project: &str,
+        binding: &str,
+        files: &[(&str, &[u8])],
+        uploads: &[&str],
+    ) -> Request<Body> {
+        folder_save(project, binding, files, uploads, true)
+    }
+
+    fn folder_save(
+        project: &str,
+        binding: &str,
+        files: &[(&str, &[u8])],
+        uploads: &[&str],
+        opening: bool,
+    ) -> Request<Body> {
         let upload: Vec<(&str, &[u8])> = files
             .iter()
             .filter(|(path, _)| uploads.contains(path))
             .copied()
             .collect();
-        let body = multipart_bytes(
-            "manifest",
-            &json!({ "manifest": folder_manifest(files) }),
-            &upload,
-        );
+        let mut description = json!({ "manifest": folder_manifest(files) });
+        if opening {
+            description["opening"] = json!(true);
+        }
+        let body = multipart_bytes("manifest", &description, &upload);
         Request::put(format!("/folder?project={project}&binding={binding}"))
             .header("content-type", "multipart/form-data; boundary=control-test")
             .body(Body::from(body))
@@ -1633,6 +1653,76 @@ mod settings_tests {
         assert_eq!(answer["trashed"], json!([]));
         assert_eq!(answer["kept_unreadable"], json!(["secret.typ"]));
         assert!(folder.path().join("secret.typ").exists());
+    }
+
+    #[tokio::test]
+    async fn the_folder_route_releases_what_an_opening_save_omits_and_trashes_nothing() {
+        let (inner, _state_home, _cache_home) = test_inner().await;
+        let origin = "https://paper.example";
+        let folder = tempfile::tempdir().unwrap();
+        let binding = inner.bindings.open_project(origin, folder.path()).unwrap();
+        let headers = bearer(&inner);
+        let both: [(&str, &[u8]); 2] = [("main.typ", b"= Title"), ("data.typ", b"data")];
+        let response = jobs::handle_folder_put(
+            &inner,
+            &headers,
+            Some(origin),
+            folder_request(
+                &binding.project,
+                &binding.id,
+                &both,
+                &["main.typ", "data.typ"],
+            ),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(body_json(response).await["released"], json!([]));
+
+        // The page reopens the folder and could not take data.typ in, so the
+        // opening save omits it. The file stays and leaves the record.
+        let only: [(&str, &[u8]); 1] = [("main.typ", b"= Title")];
+        let response = jobs::handle_folder_put(
+            &inner,
+            &headers,
+            Some(origin),
+            folder_opening_request(&binding.project, &binding.id, &only, &[]),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::OK);
+        let answer = body_json(response).await;
+        assert_eq!(answer["released"], json!(["data.typ"]));
+        assert_eq!(answer["trashed"], json!([]));
+        assert_eq!(answer["kept_unreadable"], json!([]));
+        assert_eq!(
+            std::fs::read(folder.path().join("data.typ")).unwrap(),
+            b"data"
+        );
+
+        // Later saves carry no flag. The released file is no longer recorded,
+        // so it stays, and a recorded file the save omits is trashed.
+        let with_notes: [(&str, &[u8]); 2] = [("main.typ", b"= Title"), ("notes.typ", b"notes")];
+        let response = jobs::handle_folder_put(
+            &inner,
+            &headers,
+            Some(origin),
+            folder_request(&binding.project, &binding.id, &with_notes, &["notes.typ"]),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(body_json(response).await["released"], json!([]));
+        let response = jobs::handle_folder_put(
+            &inner,
+            &headers,
+            Some(origin),
+            folder_request(&binding.project, &binding.id, &only, &[]),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::OK);
+        let answer = body_json(response).await;
+        assert_eq!(answer["trashed"], json!(["notes.typ"]));
+        assert_eq!(answer["released"], json!([]));
+        assert!(folder.path().join("data.typ").is_file());
+        assert!(!folder.path().join("notes.typ").exists());
     }
 
     #[tokio::test]

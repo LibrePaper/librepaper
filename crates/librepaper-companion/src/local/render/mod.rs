@@ -194,6 +194,7 @@ pub async fn run(
             &root,
             &request.manifest,
             &bindings.written_record(&binding.id),
+            false,
         ) {
             Ok(report) => notes = report.notes(),
             Err(error) => return failed(&request, &String::from(error)),

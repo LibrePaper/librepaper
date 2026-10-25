@@ -487,20 +487,23 @@ export function forgetAcknowledged(paths) {
   for (const path of paths) acknowledged.digests.delete(path);
 }
 
-function folderForm(manifest, files) {
+function folderForm(manifest, files, opening) {
   const form = new FormData();
-  form.append("manifest", new Blob([JSON.stringify({ manifest })], { type: "application/json" }), "manifest.json");
+  form.append("manifest", new Blob([JSON.stringify(opening ? { manifest, opening: true } : { manifest })], { type: "application/json" }), "manifest.json");
   for (const [path, bytes] of files) form.append("file", new Blob([toArrayBuffer(bytes)]), path);
   return form;
 }
 
 /** Bring the granted project folder in step with the project. The manifest
  * lists every file, and the bytes go only for files the desktop app has not
- * acknowledged yet. Resolves with the desktop app's answer (`kept`, `trashed`,
- * `renamed`), or the answer as parsed.
- * @param {{ tree: Pick<DesktopTree, "texts" | "assets">, bindingId: string, encode?: (path: string, text: string) => Uint8Array }} input
+ * acknowledged yet. `opening` marks the first save after the page opened the
+ * folder: its manifest lists what the page took in, so the desktop app drops a
+ * recorded file it omits from its record and trashes nothing. Resolves with the
+ * desktop app's answer (`kept`, `trashed`, `renamed`, `kept_unreadable`,
+ * `released`), or the answer as parsed.
+ * @param {{ tree: Pick<DesktopTree, "texts" | "assets">, bindingId: string, encode?: (path: string, text: string) => Uint8Array, opening?: boolean }} input
  * @param {{ signal?: AbortSignal }} [options] */
-export async function syncFolder({ tree, bindingId: binding, encode }, { signal } = {}) {
+export async function syncFolder({ tree, bindingId: binding, encode, opening }, { signal } = {}) {
   const id = String(binding || "");
   if (!id || id === HOSTED_BINDING) throw new Error("only a local project has a folder");
   const files = collectTreeFiles(tree, encode);
@@ -510,7 +513,7 @@ export async function syncFolder({ tree, bindingId: binding, encode }, { signal 
   const known = acknowledged.digests;
   const path = `folder?project=${encodeURIComponent(current.project || "")}&binding=${encodeURIComponent(id)}`;
   const changed = new Set(manifest.filter((entry) => known.get(entry.path) !== entry.sha256).map((entry) => entry.path));
-  const upload = (paths) => send("PUT", path, { formBody: folderForm(manifest, files.filter(([name]) => paths.has(name))), signal });
+  const upload = (paths) => send("PUT", path, { formBody: folderForm(manifest, files.filter(([name]) => paths.has(name)), opening), signal });
   let response;
   try {
     try {
