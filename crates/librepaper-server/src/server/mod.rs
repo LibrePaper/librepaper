@@ -1289,6 +1289,27 @@ impl Server {
         })
     }
 
+    /// Whether an `lpt_` token names a live row with the Edit role. Only the
+    /// row is read: the routes still hold the token to the deployment's
+    /// switches, and an expired or revoked token has no row.
+    async fn agent_token_edits(&self, token: &str) -> Result<bool, AuthenticationFailure> {
+        let Some((slug, key)) = parse_agent_token(token) else {
+            return Ok(false);
+        };
+        let Some(entry) = self
+            .store
+            .get_result(slug)
+            .await
+            .map_err(|_| AuthenticationFailure::Unavailable)?
+        else {
+            return Ok(false);
+        };
+        let now = librepaper_base::util::now_unix();
+        Ok(entry
+            .live_agent(&hash_link_key(key), now)
+            .is_some_and(|row| row.granted().at_least(Role::Editor)))
+    }
+
     /// The key a caller's uploads belong to. A signed-in caller is their
     /// handle. Where publishing needs no account there is still someone on the
     /// other end, so an anonymous caller is named by the visitor cookie the
