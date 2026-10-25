@@ -1,7 +1,7 @@
 // Folder projects against the real detached local service and isolated state:
 // list, tree, read, `PUT folder` (edit, rename, trash), outside changes and
 // forgetting. The native folder chooser cannot run in a test, so the project
-// binding is written into the config home before the service starts, in the
+// binding is written into the state home before the service starts, in the
 // shape `BindingStore::open_project` persists. Never touches the user's
 // installation, trash, or documents.
 import assert from "node:assert/strict";
@@ -67,7 +67,7 @@ env.LIBREPAPER_LOCAL_PORT = String(port);
 const id = `q-${randomBytes(16).toString("hex")}`;
 const project = `local-${id.slice(2)}`;
 const now = Math.floor(Date.now() / 1000);
-const bindingsDir = join(env.XDG_CONFIG_HOME, "librepaper/local");
+const bindingsDir = join(env.XDG_STATE_HOME, "librepaper/local");
 await mkdir(bindingsDir, { recursive: true });
 await writeFile(
   join(bindingsDir, "quarto-bindings.json"),
@@ -119,6 +119,10 @@ try {
     for (const [path, bytes] of uploads) form.append("file", new Blob([bytes]), path);
     return json(await fetch(`${base}/folder?project=${encodeURIComponent(project)}&binding=${encodeURIComponent(id)}`, { method: "PUT", headers: shell, body: form }));
   };
+  // The page's sync on open sends the project as the folder holds it, with no
+  // bytes, which makes its files managed and changes nothing on disk.
+  const opening = await put([entry("main.tex", main1), entry("chapters/one.tex", one), entry("fig.png", png)], []);
+  assert.deepEqual([opening.kept, opening.trashed, opening.renamed], [[], [], []], "the sync on open changes nothing");
   const main2 = Buffer.from("\\documentclass{article}\n\\begin{document}\nHello from the editor\n\\end{document}\n");
   const first = await put([entry("main.tex", main2), entry("chapters/one.tex", one), entry("fig.png", png)], [["main.tex", main2]]);
   assert.deepEqual(first.trashed, [], "nothing was trashed");
@@ -128,7 +132,10 @@ try {
   assert.ok(existsSync(join(folder, "data.csv")), "data.csv was never in a manifest and stays");
 
   // Step 5: drop fig.png and rename one.tex to two.tex.
-  const second = await put([entry("main.tex", main2), entry("chapters/two.tex", one)], []);
+  // The page uploads a path it has not synced before, so the renamed file
+  // carries its bytes; the desktop app still moves the file rather than
+  // writing a copy.
+  const second = await put([entry("main.tex", main2), entry("chapters/two.tex", one)], [["chapters/two.tex", one]]);
   assert.deepEqual(second.renamed, [{ from: "chapters/one.tex", to: "chapters/two.tex" }]);
   assert.deepEqual(second.trashed, ["fig.png"]);
   assert.ok((await readFile(join(folder, "chapters/two.tex"))).equals(one), "the renamed file keeps its bytes");
