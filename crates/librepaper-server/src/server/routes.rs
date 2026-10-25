@@ -243,7 +243,9 @@ async fn document_project(
     Path(slug): Path<String>,
     request: Request<Body>,
 ) -> Reply {
-    server.handle_project(request.headers(), &ctx, &slug).await
+    server
+        .handle_project(request.headers(), &ctx, &slug, request.uri().query())
+        .await
 }
 
 async fn history(

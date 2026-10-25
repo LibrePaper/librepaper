@@ -25,6 +25,7 @@ use loro::{
 };
 
 use crate::document::anchors::{bytes_of, record_map, str_of};
+use crate::document::projection::Projected;
 use crate::document::session::{apply_text_edits, Edit, CHANGES, FILES};
 
 /// Who is making an edit: the stable key and the name comments show.
@@ -2323,6 +2324,20 @@ pub fn unsuggested(doc: &LoroDoc, file_id: &str) -> Option<Unsuggested> {
     Some(Unsuggested { text, runs, marks })
 }
 
+/// Swaps every text in `projected` for the same text with its pending
+/// suggestions undone. The entries keep the digests of the stored texts, so
+/// the projection still names the stored tree.
+pub fn unsuggest_texts(doc: &LoroDoc, projected: &mut Projected) {
+    for (path, entry) in &projected.projection.files {
+        if entry.kind != "text" {
+            continue;
+        }
+        if let Some(text) = unsuggested(doc, &entry.id) {
+            projected.texts.insert(path.clone(), text.text);
+        }
+    }
+}
+
 impl Unsuggested {
     /// Maps the half-open UTF-8 byte range `[start, end)` of `self.text` onto
     /// the file's stored text, as UTF-8 byte offsets. Errs with the id of the
@@ -4214,6 +4229,33 @@ mod tests {
         assert_eq!(u.to_stored(5, 11), Err(change.clone()));
         assert_eq!(u.to_stored(0, 6), Err(change.clone()));
         assert_eq!(u.to_stored(5, 5), Err(change));
+    }
+
+    #[test]
+    fn unsuggest_texts_swaps_a_text_and_leaves_the_tree_alone() {
+        use crate::document::projection::{Entry, Projection};
+        let (doc, id) = setup("hello world");
+        apply_tracked_edits(&doc, &id, &[edit(5, 0, " big")], &ME, None, 1).unwrap();
+        doc.commit();
+        let entry = Entry {
+            kind: "text".into(),
+            id,
+            digest: "stored".into(),
+            bytes: 15,
+        };
+        let mut projected = Projected {
+            projection: Projection {
+                files: [("main.md".to_string(), entry)].into_iter().collect(),
+                diagnostics: Vec::new(),
+            },
+            texts: [("main.md".to_string(), "hello big world".to_string())]
+                .into_iter()
+                .collect(),
+        };
+        let tree = projected.projection.clone();
+        unsuggest_texts(&doc, &mut projected);
+        assert_eq!(projected.texts["main.md"], "hello world");
+        assert_eq!(projected.projection, tree);
     }
 
     #[test]

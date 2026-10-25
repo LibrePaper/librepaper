@@ -1135,6 +1135,7 @@ impl Server {
         headers: &HeaderMap,
         context: &RequestContext,
         slug: &str,
+        query: Option<&str>,
     ) -> Reply {
         let arrival = &context.arrival;
         if !self.valid_slug(slug) {
@@ -1155,6 +1156,11 @@ impl Server {
         if !self.may_read(&entry, &who) {
             return write_json(404, &json!({"error": "not found"}));
         }
+        // `unsuggested=1` answers each text with its pending suggestions
+        // undone, the text a sync change is checked against.
+        let unsuggested = query.is_some_and(|q| {
+            url::form_urlencoded::parse(q.as_bytes()).any(|(k, v)| k == "unsuggested" && v == "1")
+        });
         let room = match self.rooms.get(slug).await {
             Ok(room) => room,
             Err(error) => return refused("open the room", &error),
@@ -1168,7 +1174,14 @@ impl Server {
         let (projected, changes) = match room
             .log()
             .with_projected_head(|doc, projected| {
-                (projected.clone(), reader_changes(doc, projected))
+                // Change offsets are measured on the stored text, so they are
+                // read before any text is swapped.
+                let changes = reader_changes(doc, projected);
+                let mut projected = projected.clone();
+                if unsuggested {
+                    librepaper_document::document::track::unsuggest_texts(doc, &mut projected);
+                }
+                (projected, changes)
             })
             .await
         {
@@ -1182,8 +1195,9 @@ impl Server {
         // names no identity the browser compares; it only says to refetch.
         let identity = projected.projection.digest();
         let etag = format!(
-            "\"{}\"",
-            reader_identity(&identity, &entry.title, &format, &changes)
+            "\"{}{}\"",
+            reader_identity(&identity, &entry.title, &format, &changes),
+            if unsuggested { "-u" } else { "" }
         );
         if header_of(headers, "if-none-match").is_some_and(|value| {
             value
