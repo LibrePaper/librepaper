@@ -47,7 +47,11 @@ A folder project is a binding with `kind: "project"`, `project: "local-<id>"`, n
 
 The manifest names every file, so it may list up to 5000 files. Its JSON part is bounded at 512 bytes per allowed file, which is 2.4 MiB, instead of the 64 KiB that bounds other JSON bodies. A bigger manifest answers 413. The description of a render job carries the same manifest, so it has the same bound and the same limit of 5000 files.
 
-A recorded file that the manifest omits goes to the trash only when it can be opened for reading. A file that cannot be opened stays on disk and in the record, and the reply names it under `kept_unreadable`. The tree lists such a file as unreadable, so the page never held it and the save did not delete it.
+The page's first save after it opens the folder carries `"opening": true` beside `manifest` in the manifest part. Its manifest lists what the page took in, which can be less than the folder holds: a text that stopped being UTF-8 or a file over the size bound is not in the project. A recorded path it omits then says the page never had the file, not that the person deleted it, so the opening save trashes and renames nothing. A recorded path the manifest omits leaves the record, the file stays in the folder, and the reply lists the path under `released`. The page repeats the flag until a save succeeds.
+
+On every other save, which has no flag, a recorded file that the manifest omits goes to the trash only when it can be opened for reading. A file that cannot be opened stays on disk and in the record, and the reply names it under `kept_unreadable`. The tree lists such a file as unreadable, so the page never held it and the save did not delete it.
+
+The reply is `{ kept, trashed, renamed, kept_unreadable, released }`.
 
 ### Outside changes
 

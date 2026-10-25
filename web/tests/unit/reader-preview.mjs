@@ -114,6 +114,8 @@ assert.match(previewSource, /framePreview\.clear\?\.\(\);[\s\S]*?onEmpty\(\);/);
 // A web project has no project folder: no File menu item, no modal, and no folder sync.
 assert.doesNotMatch(readerSource, /project-folder|ProjectFolderSetting/);
 assert.match(readerSource, /const folderSync = LOCAL \? createFolderSync\(/);
+// The folder sync's first save says it is the opening one, so the desktop app trashes nothing the page never held.
+assert.match(readerSource, /createFolderSync\(\{[\s\S]*?run: async \(\{ opening \}\) => \{[\s\S]*?localQuarto\.syncFolder\(\{[^}]*\bopening \}\)/);
 // A web project renders in the hosted workspace and a local project in its own folder, and an
 // export of either runs where its preview does.
 assert.match(readerSource, /const RENDER_BINDING = LOCAL \? LOCAL_ID : localQuarto\.HOSTED_BINDING;/);

@@ -14,8 +14,8 @@ const calls = [];
 let answers = [];
 client._testing.inject({ fetch: async (url, init = {}) => {
   const form = await formOf(init);
-  const manifest = JSON.parse(await form.get("manifest").text()).manifest;
-  calls.push({ url, method: init.method, manifest, files: form.getAll("file").map((file) => file.name).sort() });
+  const body = JSON.parse(await form.get("manifest").text());
+  calls.push({ url, method: init.method, manifest: body.manifest, opening: body.opening, files: form.getAll("file").map((file) => file.name).sort() });
   return answers.shift() || response(200, { kept: [], trashed: [], renamed: [] });
 } });
 
@@ -28,6 +28,7 @@ assert.equal(calls[0].method, "PUT");
 assert.match(calls[0].url, /folder\?project=paper&binding=folder-1$/);
 assert.deepEqual(calls[0].files, ["a.tex", "b.tex", "fig/dot.png"]);
 assert.deepEqual(calls[0].manifest.map((file) => file.path).sort(), ["a.tex", "b.tex", "fig/dot.png"]);
+assert.equal(calls[0].opening, undefined, "a save is not the opening one unless it says so");
 
 // After one edit only that file is sent, and the manifest still lists all.
 await client.syncFolder({ tree: tree("two"), bindingId: "folder-1" });
@@ -67,5 +68,25 @@ assert.deepEqual(calls.at(-1).files, ["a.tex", "b.tex", "fig/dot.png"]);
   await client.syncFolder({ tree: { ...open, texts: { "w.tex": "one\nthree\n", "b.tex": "b2\n" } }, bindingId: "folder-2", encode });
   assert.deepEqual(calls.at(-1).files, ["w.tex"]);
   assert.equal(calls.at(-1).manifest.find((file) => file.path === "w.tex").sha256, sha(crlf("one\nthree\n")));
+}
+
+// The opening save says so in the manifest part, and so does its retry after a 409.
+// The answer carries the paths the desktop app released.
+{
+  const released = { kept: [], trashed: [], renamed: [], kept_unreadable: [], released: ["data.bin"] };
+  answers = [response(409, { missing: ["b.tex"] }), response(200, released)];
+  const before = calls.length;
+  const result = await client.syncFolder({ tree: tree("one"), bindingId: "folder-3", opening: true });
+  assert.deepEqual(result, released);
+  assert.equal(calls.length, before + 2);
+  assert.equal(calls[before].opening, true);
+  assert.equal(calls[before + 1].opening, true, "the retry is still the opening save");
+  assert.deepEqual(calls[before].manifest, calls[before + 1].manifest);
+
+  // The save after it carries no flag.
+  await client.syncFolder({ tree: tree("two"), bindingId: "folder-3" });
+  assert.equal(calls.at(-1).opening, undefined);
+  await client.syncFolder({ tree: tree("three"), bindingId: "folder-3", opening: false });
+  assert.equal(calls.at(-1).opening, undefined, "a false flag is not sent");
 }
 console.log("folder-sync integration ok");

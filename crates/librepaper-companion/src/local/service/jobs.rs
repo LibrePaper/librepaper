@@ -216,8 +216,13 @@ pub(super) async fn handle_folder_put(
     #[derive(serde::Deserialize)]
     struct FolderManifest {
         manifest: Vec<ManifestEntry>,
+        /// Set on the first save after the page opened the folder, which
+        /// lists what the page took in and so cannot tell a file it never
+        /// held from one the person deleted.
+        #[serde(default)]
+        opening: bool,
     }
-    let Ok(FolderManifest { manifest }) = serde_json::from_str(&upload.metadata) else {
+    let Ok(FolderManifest { manifest, opening }) = serde_json::from_str(&upload.metadata) else {
         return write_json(400, &json!({"error": "bad manifest"}));
     };
     if let Err(response) = validate_manifest_shape(&manifest, max_files) {
@@ -240,7 +245,7 @@ pub(super) async fn handle_folder_put(
     let root = binding.root.clone();
     let staged = staging.path().to_path_buf();
     let outcome = tokio::task::spawn_blocking(move || {
-        workspace::mirror_granted_folder(&staged, &root, &manifest, &record)
+        workspace::mirror_granted_folder(&staged, &root, &manifest, &record, opening)
     })
     .await;
     drop(staging);
@@ -256,6 +261,7 @@ pub(super) async fn handle_folder_put(
                     .map(|renamed| json!({"from": renamed.from, "to": renamed.to}))
                     .collect::<Vec<_>>(),
                 "kept_unreadable": report.kept_unreadable,
+                "released": report.released,
             }),
         ),
         Ok(Err(MirrorError::Missing(missing))) => write_json(409, &json!({"missing": missing})),
