@@ -1,4 +1,4 @@
-// The Sync panel's state for a folder project, over a stand-in for the desktop
+// The LibrePaper section of the Git panel for a folder project, over a stand-in for the desktop
 // app's sync routes: what each action asks, what it says back, and the
 // refusals the panel shows instead of failing.
 import assert from "node:assert/strict";
@@ -376,6 +376,47 @@ const today = () => new Date(2026, 9, 25, 12);
   await sync.pull();
   await sync.pull();
   assert.deepEqual(sync.state.pull, { written: 2, trashed: 0, skipped: [], trimmed: true });
+}
+
+// In a git repository the desktop app answers a pull in its repository form:
+// the versions it took in as commits, then how git merged them. The controller
+// keeps the counts and the word, and the paths of a merge that did not finish.
+{
+  const version = (n) => ({ sha: `sha${n}`, label: `v${n}`, by: "anne", commit: `c${n}` });
+  const answers = [
+    { repository: true, versions: [version(1), version(2), version(3)], merge: "fast-forward", trimmed: false },
+    { repository: true, versions: [version(4)], merge: "merged", trimmed: true },
+    { repository: true, versions: [], merge: "already", trimmed: false },
+    { repository: true, versions: [version(5)], merge: "skipped", trimmed: false },
+    { repository: true, versions: [version(6)], merge: { conflicts: ["a.tex", "b.tex"] }, trimmed: false },
+    { repository: true, versions: [], merge: { dirty: ["c.tex"] }, trimmed: false },
+  ];
+  const { api, calls } = routes({ syncStatus: { ...linked, git: true }, syncPull: () => answers.shift() });
+  const sync = createLocalSync({ id: "f1", api });
+  await sync.refresh();
+  assert.equal(sync.state.status.git, true, "a git folder keeps the whole LibrePaper section; the flag only picks the wording");
+  await sync.pull();
+  assert.deepEqual(sync.state.pull, { repository: true, versions: 3, merge: "fast-forward", paths: [], trimmed: false });
+  assert.deepEqual(sync.state.conflicts, [], "there is no file to choose a side for");
+  await sync.pull();
+  assert.deepEqual(sync.state.pull, { repository: true, versions: 1, merge: "merged", paths: [], trimmed: true });
+  await sync.pull();
+  assert.deepEqual(sync.state.pull, { repository: true, versions: 0, merge: "already", paths: [], trimmed: false });
+  await sync.pull();
+  assert.equal(sync.state.pull.merge, "skipped");
+  await sync.pull();
+  assert.deepEqual(sync.state.pull, { repository: true, versions: 1, merge: "conflicts", paths: ["a.tex", "b.tex"], trimmed: false });
+  assert.deepEqual(sync.state.conflicts, [], "git's conflicts are resolved in the editor, not by Keep mine and Take theirs");
+  await sync.pull();
+  assert.deepEqual(sync.state.pull, { repository: true, versions: 0, merge: "dirty", paths: ["c.tex"], trimmed: false });
+  assert.equal(calls.filter((call) => call[0] === "syncPull").length, 6);
+  assert.equal(sync.state.error, "");
+
+  // Push on a git folder answers the same shapes as before.
+  const pushes = routes({ syncStatus: { ...linked, git: true }, syncPush: { label: { sha: "abc", sequence: 5 }, files: 2 } });
+  const pushing = createLocalSync({ id: "f1", api: pushes.api, now: today });
+  await pushing.push("Fix");
+  assert.deepEqual(pushing.state.pushed, { files: 2 });
 }
 
 // A folder that could not be saved stops both commands before they run.

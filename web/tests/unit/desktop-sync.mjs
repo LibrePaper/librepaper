@@ -28,7 +28,7 @@ assert.deepEqual(await syncStatus("f1"), status);
 assert.equal(last().method, "GET");
 assert.ok(last().url.endsWith("projects/f1/sync"));
 
-// A folder that holds a .git says so, and the panel stops offering the commands.
+// A folder that holds a .git says so. The panel keeps every command and uses the flag for its wording.
 answer = () => response(200, { ...status, git: true });
 assert.equal((await syncStatus("f1")).git, true);
 
@@ -72,6 +72,12 @@ await syncPull("f1", { mine: ["a.tex"] });
 assert.deepEqual(last().body, { mine: ["a.tex"] });
 await syncPull("f1", { theirs: ["a.tex"] });
 assert.deepEqual(last().body, { theirs: ["a.tex"] });
+
+// In a git repository the pull answers in its repository form, and the route hands it on whole.
+const repositoryPull = { repository: true, versions: [{ sha: "s1", label: "v1", by: "anne", commit: "c1" }], merge: { conflicts: ["a.tex"] }, trimmed: false };
+answer = () => response(200, repositoryPull);
+assert.deepEqual(await syncPull("f1"), repositoryPull);
+assert.ok(last().url.endsWith("projects/f1/sync/pull"));
 
 // A pull without a sign-in is a 401 with the service's own words.
 answer = () => response(401, { error: "sign in" });
