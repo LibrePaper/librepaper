@@ -134,6 +134,11 @@
       {@render projectLine()}
       {@render unlinkFoot()}
     {/if}
+  {:else if status.other_site}
+    <!-- Before the sign-in question: unlinking needs no token, and signing in
+         to this site would not change whose link it is. -->
+    <p class="sync-lead">This folder is linked to a project on another site. Unlink it to use it with this one.</p>
+    {@render unlinkFoot()}
   {:else if !status.signed_in}
     <p class="sync-lead">Sign in to keep this folder and a project on the web in step. This uses your account on this server.</p>
     <div class="sync-row">
@@ -141,9 +146,6 @@
         {view.busy === "login" ? "Signing in…" : "Sign in"}
       </button>
     </div>
-  {:else if status.other_site}
-    <p class="sync-lead">This folder is linked to a project on another site. Unlink it to use it with this one.</p>
-    {@render unlinkFoot()}
   {:else if !status.linked}
     <p class="sync-lead">This folder is not linked to a project on the web.</p>
     <form class="sync-block" onsubmit={(event) => { event.preventDefault(); void sync.link(url); }}>

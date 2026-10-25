@@ -88,6 +88,14 @@ open_sync_pr() {
 status=0
 case "${GITHUB_EVENT_NAME:-}" in
 push)
+  # A re-run of an older push event checks out an older commit. Pushing it
+  # against the newest state would roll the web project back, so only the
+  # branch tip is pushed; a newer event has done or will do the rest.
+  git fetch --quiet origin "$BRANCH"
+  if [[ "$(git rev-parse HEAD)" != "$(git rev-parse "origin/$BRANCH")" ]]; then
+    echo "::notice::this checkout is not the tip of $BRANCH any more; nothing pushed"
+    exit 0
+  fi
   # The checked-out commit is the one pushed. Its subject and author name the version.
   run_cli push "$PROJECT" --message "$(git log -1 --format=%s)" \
     --author "$(git log -1 --format=%an)" || status=$?
