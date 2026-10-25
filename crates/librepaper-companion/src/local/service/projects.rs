@@ -275,12 +275,9 @@ impl Scan {
                 continue;
             };
             scan.known.insert(path.clone());
-            let matches = workspace::read_file_bounded_to(
-                &root.join(path),
-                "project file",
-                MAX_UPLOAD_BYTES,
-            )
-            .is_ok_and(|bytes| &librepaper_document::results::sha256(&bytes) == expected);
+            let matches =
+                workspace::read_file_bounded_to(&root.join(path), "project file", MAX_UPLOAD_BYTES)
+                    .is_ok_and(|bytes| &librepaper_document::results::sha256(&bytes) == expected);
             if matches {
                 scan.settled.insert(path.clone(), *stat);
             }
