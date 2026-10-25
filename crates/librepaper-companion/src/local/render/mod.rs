@@ -129,7 +129,6 @@ pub async fn run(
         &request.origin,
         &request.project,
         &request.entrypoint,
-        true,
     ) {
         Ok(binding) => binding,
         Err(error) => return failed(&request, &error),

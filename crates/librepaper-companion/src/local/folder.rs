@@ -69,13 +69,6 @@ pub fn run_folder_picker_helper() -> bool {
     false
 }
 
-pub async fn choose_directory(origin: &str, project: &str) -> Result<PathBuf, String> {
-    let title =
-        format!("Allow {origin} to render {project} using this folder (contents are not uploaded)");
-
-    choose_directory_with_title(&title).await
-}
-
 /// The folder chooser for opening a folder as a LibrePaper project.
 pub async fn choose_project_directory() -> Result<PathBuf, String> {
     choose_directory_with_title("Open a folder as a LibrePaper project").await

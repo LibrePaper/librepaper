@@ -40,31 +40,6 @@ pub struct Health {
     pub instance: String,
 }
 
-/// Request a native folder chooser for a document of a site. The
-/// chooser is deliberately initiated by an explicit POST from the UI; paths
-/// never cross this protocol.
-#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
-pub struct FolderBindingRequest {
-    pub project: String,
-    pub entrypoint: String,
-}
-
-#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
-pub struct FolderBindingResponse {
-    pub id: String,
-    pub project: String,
-    pub entrypoint: String,
-    pub created_at: i64,
-}
-
-#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
-pub struct BindingSummary {
-    pub id: String,
-    pub project: String,
-    pub entrypoint: String,
-    pub created_at: i64,
-}
-
 /// One native tool, as the browser is allowed to know it: whether, which
 /// version, and a note. Never a path.
 #[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq)]

@@ -66,7 +66,7 @@ pub(super) async fn handle_jobs_post(
     // it points at is written to before the command runs.
     if inner
         .bindings
-        .validate_scoped_entrypoint(&job.binding_id, &origin, &project, &job.entrypoint, true)
+        .validate_scoped_entrypoint(&job.binding_id, &origin, &project, &job.entrypoint)
         .is_err()
     {
         return write_json(
@@ -158,7 +158,7 @@ pub(super) async fn handle_jobs_post(
     write_json(202, &json!({"id": id, "status": "queued"}))
 }
 
-/// `PUT folder`: mirror the whole project into the granted folder the binding
+/// `PUT folder`: mirror the whole project into the project folder the binding
 /// names. The manifest lists every file; the uploads carry the bytes of some.
 pub(super) async fn handle_folder_put(
     inner: &Arc<Inner>,
@@ -177,36 +177,12 @@ pub(super) async fn handle_folder_put(
         return write_json(400, &json!({"error": "folder needs a binding"}));
     };
     if binding_id == crate::local::bindings::HOSTED_BINDING {
-        return write_json(400, &json!({"error": "only a granted folder is mirrored"}));
+        return write_json(400, &json!({"error": "only a project folder is mirrored"}));
     }
-    if !inner
-        .bindings
-        .list_all()
-        .iter()
-        .any(|binding| binding.id == binding_id)
-    {
-        return write_json(404, &json!({"error": "workspace binding not found"}));
-    }
+    // Only a project binding is stored, so any other id does not resolve.
     let granted = inner
         .bindings
-        .resolve_scoped(&binding_id, &origin, &project)
-        .and_then(|binding| {
-            if binding.is_project() {
-                // A folder project names no entrypoint; only its grant and
-                // root are revalidated.
-                inner
-                    .bindings
-                    .validate_scoped_root(&binding_id, &origin, &project)
-            } else {
-                inner.bindings.validate_scoped_entrypoint(
-                    &binding_id,
-                    &origin,
-                    &project,
-                    &binding.entrypoint,
-                    false,
-                )
-            }
-        });
+        .validate_scoped_root(&binding_id, &origin, &project);
     let Ok(binding) = granted else {
         return write_json(
             403,
@@ -215,11 +191,7 @@ pub(super) async fn handle_folder_put(
     };
 
     // A folder project may hold more files than a render job carries.
-    let max_files = if binding.is_project() {
-        projects::MAX_PROJECT_FILES
-    } else {
-        MAX_FILES
-    };
+    let max_files = projects::MAX_PROJECT_FILES;
     let upload = match read_multipart_upload(
         request,
         "manifest",
