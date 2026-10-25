@@ -291,6 +291,11 @@ async fn fetch(
     if let Some(fetched) = &state.fetched {
         known.extend(fetched.files.keys().cloned());
     }
+    // Paths the working tree keeps out of the sync (ignored, marked
+    // `-librepaper`, not UTF-8, unreadable). The chain neither writes nor
+    // removes them, so a merge cannot overwrite or delete what the person
+    // excluded. Each snapshot adds its own below.
+    let mut excluded = local.left_out(git.dir(), &known);
     // The chain goes on from what was fetched last; a repository that has
     // fetched nothing yet starts from the commit it was published at.
     let before = git.rev(MAIN_REF).or_else(|| {
@@ -308,6 +313,7 @@ async fn fetch(
     if found.from_head {
         let mut snapshot = client.head(&slug).await?;
         snapshot.retain_synced(rules);
+        leave_excluded_out(&mut snapshot, &local, git.dir(), &mut excluded);
         let assets = asset_bytes(client, &slug, &local, &snapshot, &chain).await?;
         let meta = Meta {
             by: "LibrePaper",
@@ -316,7 +322,14 @@ async fn fetch(
             version: None,
             skip_if_unchanged: true,
         };
-        let commit = chain.commit(&snapshot.files, &snapshot.texts, &assets, &meta, None)?;
+        let commit = chain.commit(
+            &snapshot.files,
+            &snapshot.texts,
+            &assets,
+            &meta,
+            None,
+            &excluded,
+        )?;
         if Some(commit.as_str()) != before.as_deref() {
             commits.push(VersionCommit {
                 sha: String::new(),
@@ -332,6 +345,7 @@ async fn fetch(
         let mut snapshot = client.version(&slug, &label.sha).await?;
         // A path the rules refuse never enters the chain, whatever the web holds.
         snapshot.retain_synced(rules);
+        leave_excluded_out(&mut snapshot, &local, git.dir(), &mut excluded);
         let assets = asset_bytes(client, &slug, &local, &snapshot, &chain).await?;
         let name = label.name();
         let meta = Meta {
@@ -346,7 +360,14 @@ async fn fetch(
             .iter()
             .find(|pushed| pushed.label == label.sha)
             .and_then(|pushed| pushed.commit.as_deref());
-        let commit = chain.commit(&snapshot.files, &snapshot.texts, &assets, &meta, own)?;
+        let commit = chain.commit(
+            &snapshot.files,
+            &snapshot.texts,
+            &assets,
+            &meta,
+            own,
+            &excluded,
+        )?;
         commits.push(VersionCommit {
             sha: label.sha.clone(),
             label: name.clone(),
@@ -371,6 +392,20 @@ async fn fetch(
     }
     state.pushed.retain(|pushed| !taken.contains(&pushed.label));
     Ok(commits)
+}
+
+/// Drops from the snapshot the paths the working tree keeps out of the sync,
+/// and adds them to `excluded`. Such a path never enters the chain, so the
+/// person's file is not overwritten and its record is not taken in.
+fn leave_excluded_out(
+    snapshot: &mut Snapshot,
+    local: &Scan,
+    dir: &Path,
+    excluded: &mut BTreeSet<String>,
+) {
+    excluded.extend(local.left_out(dir, snapshot.files.keys()));
+    snapshot.files.retain(|path, _| !excluded.contains(path));
+    snapshot.texts.retain(|path, _| !excluded.contains(path));
 }
 
 /// The bytes of every asset in the snapshot that git does not have yet, from
@@ -655,18 +690,26 @@ fn write_file(dir: &Path, relative: &str, bytes: &[u8]) -> Result<(), Error> {
     // could land anywhere, as `C:/x` does on Windows.
     let target = inside(dir, relative)?;
     let parent = target.parent().unwrap_or(dir);
-    std::fs::create_dir_all(parent).map_err(|error| Error::io(parent, error))?;
-    // A link anywhere on the way in could lead out of the directory.
-    for ancestor in target.ancestors().skip(1) {
-        if ancestor == dir || !ancestor.starts_with(dir) {
-            break;
-        }
-        if std::fs::symlink_metadata(ancestor).is_ok_and(|meta| meta.file_type().is_symlink()) {
-            return Err(Error::Invalid(format!(
-                "{relative} is behind a symbolic link"
-            )));
+    // A link anywhere on the way in could lead out of the directory, and
+    // creating the missing directories behind one would make them outside it.
+    // So the parts that exist are checked first, down to the first that does
+    // not.
+    let below = parent.strip_prefix(dir).unwrap_or(Path::new(""));
+    let mut walked = dir.to_path_buf();
+    for part in below.components() {
+        walked.push(part);
+        match std::fs::symlink_metadata(&walked) {
+            Ok(meta) if meta.file_type().is_symlink() => {
+                return Err(Error::Invalid(format!(
+                    "{relative} is behind a symbolic link"
+                )));
+            }
+            Ok(_) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => break,
+            Err(error) => return Err(Error::io(&walked, error)),
         }
     }
+    std::fs::create_dir_all(parent).map_err(|error| Error::io(parent, error))?;
     let temporary = parent.join(format!(
         ".librepaper-{}.tmp",
         librepaper_base::util::random_token()
@@ -961,6 +1004,38 @@ mod tests {
     }
 
     #[test]
+    fn a_snapshot_loses_the_paths_the_working_tree_keeps_out_of_the_sync() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        std::fs::write(root.join(".gitignore"), "build/\n").unwrap();
+        std::fs::create_dir_all(root.join("build")).unwrap();
+        std::fs::write(root.join("build/out.tex"), "mine\n").unwrap();
+        std::fs::write(root.join("main.tex"), "main\n").unwrap();
+        let here = scan(root, &Rules::default(), None).unwrap();
+
+        let listed = files(&[("main.tex", "1"), ("build/out.tex", "1"), ("new.tex", "1")]);
+        let mut snapshot = Snapshot {
+            texts: listed
+                .keys()
+                .map(|path| (path.clone(), "text\n".to_string()))
+                .collect(),
+            files: listed,
+        };
+        // A path kept out because it was synced before and is not here now.
+        let mut excluded = BTreeSet::from(["old.tex".to_string()]);
+        leave_excluded_out(&mut snapshot, &here, root, &mut excluded);
+
+        let kept: Vec<&str> = snapshot.files.keys().map(String::as_str).collect();
+        assert_eq!(kept, ["main.tex", "new.tex"]);
+        let kept: Vec<&str> = snapshot.texts.keys().map(String::as_str).collect();
+        assert_eq!(kept, ["main.tex", "new.tex"]);
+        assert_eq!(
+            excluded.iter().map(String::as_str).collect::<Vec<_>>(),
+            ["build/out.tex", "old.tex"]
+        );
+    }
+
+    #[test]
     fn a_path_that_is_not_plain_names_is_refused_before_anything_is_made() {
         let outer = tempfile::tempdir().unwrap();
         let dir = outer.path().join("folder");
@@ -1029,5 +1104,22 @@ mod tests {
         std::os::unix::fs::symlink(outside.path(), dir.path().join("linked")).unwrap();
         assert!(write_file(dir.path(), "linked/escape.tex", b"x").is_err());
         assert!(!outside.path().join("escape.tex").exists());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_link_on_the_way_in_stops_the_write_before_any_directory_is_made() {
+        let dir = tempfile::tempdir().unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        std::os::unix::fs::symlink(outside.path(), dir.path().join("linked")).unwrap();
+        let error = write_file(dir.path(), "linked/new/file.tex", b"x")
+            .unwrap_err()
+            .to_string();
+        assert!(error.ends_with("is behind a symbolic link"), "{error}");
+        assert_eq!(
+            std::fs::read_dir(outside.path()).unwrap().count(),
+            0,
+            "nothing was made outside the folder"
+        );
     }
 }

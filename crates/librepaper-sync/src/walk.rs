@@ -27,9 +27,6 @@ pub(crate) struct Local {
 
 pub(crate) struct Scan {
     pub files: BTreeMap<String, Local>,
-    /// Paths that would be synced but could not be read or are not UTF-8. A
-    /// file in this set is not a deleted file.
-    pub unreadable: BTreeSet<String>,
 }
 
 impl Scan {
@@ -139,13 +136,11 @@ pub(crate) fn scan(dir: &Path, rules: &Rules, git: Option<&Git>) -> Result<Scan,
     }
 
     let mut files = BTreeMap::new();
-    let mut unreadable = BTreeSet::new();
     for (path, _, file, kind) in found {
         let bytes = match std::fs::read(&file) {
             Ok(bytes) => bytes,
             Err(error) => {
                 tracing::warn!("sync: leaving out {path}: {error}");
-                unreadable.insert(path);
                 continue;
             }
         };
@@ -166,7 +161,6 @@ pub(crate) fn scan(dir: &Path, rules: &Rules, git: Option<&Git>) -> Result<Scan,
                 }
                 Err(_) => {
                     tracing::warn!("sync: leaving out {path}: it is not valid UTF-8");
-                    unreadable.insert(path);
                     continue;
                 }
             },
@@ -179,7 +173,7 @@ pub(crate) fn scan(dir: &Path, rules: &Rules, git: Option<&Git>) -> Result<Scan,
         };
         files.insert(path, local);
     }
-    Ok(Scan { files, unreadable })
+    Ok(Scan { files })
 }
 
 /// The path below the directory with `/` between its parts, or `None` when a
@@ -195,8 +189,15 @@ fn slashed(relative: &Path) -> Option<String> {
     Some(parts.join("/"))
 }
 
-/// The paths that are new, different or gone against what was recorded.
-pub(crate) fn compare(recorded: &BTreeMap<String, FileRecord>, scan: &Scan) -> LocalChanges {
+/// The paths that are new, different or gone against what was recorded. A
+/// recorded path the scan does not list but that is still in `dir` (ignored,
+/// marked `-librepaper`, not UTF-8, unreadable) has left the sync and is not
+/// gone: excluding a file is not deleting it.
+pub(crate) fn compare(
+    dir: &Path,
+    recorded: &BTreeMap<String, FileRecord>,
+    scan: &Scan,
+) -> LocalChanges {
     let mut changes = LocalChanges::default();
     for (path, local) in &scan.files {
         match recorded.get(path) {
@@ -205,8 +206,9 @@ pub(crate) fn compare(recorded: &BTreeMap<String, FileRecord>, scan: &Scan) -> L
             Some(_) => {}
         }
     }
+    let left_out = scan.left_out(dir, recorded.keys());
     for path in recorded.keys() {
-        if !scan.files.contains_key(path) && !scan.unreadable.contains(path) {
+        if !scan.files.contains_key(path) && !left_out.contains(path) {
             changes.deleted.push(path.clone());
         }
     }
@@ -250,7 +252,6 @@ mod tests {
         );
         assert_eq!(scan.files["main.tex"].kind, Kind::Text);
         assert_eq!(scan.files["fig/plot.PNG"].kind, Kind::Asset);
-        assert!(scan.unreadable.is_empty());
     }
 
     #[test]
@@ -265,13 +266,12 @@ mod tests {
     }
 
     #[test]
-    fn a_text_file_that_is_not_utf8_is_reported_and_is_not_a_deletion() {
+    fn a_text_file_that_is_not_utf8_is_not_a_deletion() {
         let dir = tempfile::tempdir().unwrap();
         write(dir.path(), "good.tex", b"fine\n");
         write(dir.path(), "latin.tex", &[b'c', b'a', b'f', 0xe9]);
         let scan = scan(dir.path(), &Rules::default(), None).unwrap();
         assert_eq!(names(&scan), ["good.tex"]);
-        assert!(scan.unreadable.contains("latin.tex"));
 
         let recorded = BTreeMap::from([(
             "latin.tex".to_string(),
@@ -280,7 +280,7 @@ mod tests {
                 sha: "0".repeat(64),
             },
         )]);
-        let changes = compare(&recorded, &scan);
+        let changes = compare(dir.path(), &recorded, &scan);
         assert_eq!(changes.added, ["good.tex"]);
         assert!(changes.deleted.is_empty());
     }
@@ -336,12 +336,73 @@ mod tests {
             ("edited.tex".to_string(), record("before\n")),
             ("gone.tex".to_string(), record("gone\n")),
         ]);
-        let changes = compare(&recorded, &scan);
+        let changes = compare(dir.path(), &recorded, &scan);
         assert_eq!(changes.added, ["new.tex"]);
         assert_eq!(changes.changed, ["edited.tex"]);
         assert_eq!(changes.deleted, ["gone.tex"]);
         assert_eq!(changes.count(), 3);
-        assert!(compare(&scan.records(), &scan).is_empty());
+        assert!(compare(dir.path(), &scan.records(), &scan).is_empty());
+    }
+
+    #[test]
+    fn a_recorded_file_that_is_now_ignored_is_not_deleted_but_one_that_is_gone_is() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        write(root, ".gitignore", b"build/\n*.bib\n");
+        write(root, "main.tex", b"main\n");
+        write(root, "build/out.tex", b"built\n");
+        write(root, "refs.bib", b"@book{}\n");
+        write(root, "latin.tex", &[b'c', b'a', b'f', 0xe9]);
+        let scan = scan(root, &Rules::default(), None).unwrap();
+        assert_eq!(names(&scan), ["main.tex"]);
+
+        let record = |text: &str| FileRecord {
+            kind: Kind::Text,
+            sha: sha256_hex(text.as_bytes()),
+        };
+        let recorded = BTreeMap::from([
+            ("main.tex".to_string(), record("main\n")),
+            ("build/out.tex".to_string(), record("old build\n")),
+            ("refs.bib".to_string(), record("@book{}\n")),
+            ("latin.tex".to_string(), record("cafe\n")),
+            ("gone.tex".to_string(), record("gone\n")),
+        ]);
+        let changes = compare(root, &recorded, &scan);
+        assert_eq!(
+            changes.deleted,
+            ["gone.tex"],
+            "only the file that is not on disk any more"
+        );
+        assert!(changes.added.is_empty() && changes.changed.is_empty());
+        assert_eq!(changes.count(), 1);
+
+        let without_gone: BTreeMap<String, FileRecord> = recorded
+            .into_iter()
+            .filter(|(path, _)| path != "gone.tex")
+            .collect();
+        assert!(compare(root, &without_gone, &scan).is_empty());
+    }
+
+    #[test]
+    fn a_recorded_file_git_marks_unset_is_not_deleted() {
+        let Some((dir, git)) = crate::git::testing::repository() else {
+            return;
+        };
+        write(dir.path(), ".gitattributes", b"private/** -librepaper\n");
+        write(dir.path(), "main.tex", b"main\n");
+        write(dir.path(), "private/draft.tex", b"draft\n");
+        let scan = scan(git.dir(), &Rules::default(), Some(&git)).unwrap();
+        assert_eq!(names(&scan), ["main.tex"]);
+
+        let record = |text: &str| FileRecord {
+            kind: Kind::Text,
+            sha: sha256_hex(text.as_bytes()),
+        };
+        let recorded = BTreeMap::from([
+            ("main.tex".to_string(), record("main\n")),
+            ("private/draft.tex".to_string(), record("draft\n")),
+        ]);
+        assert!(compare(git.dir(), &recorded, &scan).is_empty());
     }
 
     #[test]

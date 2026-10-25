@@ -76,6 +76,12 @@ impl<'a> Chain<'a> {
     /// it is the version's commit and nothing new is written; when it does not
     /// (the web moved on other files first, or the tree was dirty), the
     /// version's commit is made on top of it.
+    ///
+    /// `excluded` holds the paths this working tree keeps out of the sync
+    /// (ignored, marked `-librepaper`, not UTF-8, unreadable). An excluded
+    /// path keeps the base tree's version: it is neither written, whatever
+    /// the version holds, nor removed, whatever the version dropped, so the
+    /// merge that follows leaves the file as the person has it.
     pub(crate) fn commit(
         &mut self,
         files: &BTreeMap<String, FileRecord>,
@@ -83,16 +89,20 @@ impl<'a> Chain<'a> {
         assets: &HashMap<String, Vec<u8>>,
         meta: &Meta<'_>,
         pushed: Option<&str>,
+        excluded: &BTreeSet<String>,
     ) -> Result<String, Error> {
         let mut entries: Vec<(String, String)> = Vec::new();
         for (path, record) in files {
+            if excluded.contains(path) {
+                continue;
+            }
             let blob = self.blob(path, record, texts, assets)?;
             entries.push((path.clone(), blob));
         }
         let removals: Vec<String> = self
             .known
             .iter()
-            .filter(|path| !files.contains_key(*path))
+            .filter(|path| !files.contains_key(*path) && !excluded.contains(*path))
             .cloned()
             .collect();
 
@@ -130,7 +140,12 @@ impl<'a> Chain<'a> {
             _ => self.create(&tree, &parents, meta)?,
         };
         self.tip = Some(commit.clone());
-        self.known.extend(files.keys().cloned());
+        self.known.extend(
+            files
+                .keys()
+                .filter(|path| !excluded.contains(*path))
+                .cloned(),
+        );
         Ok(commit)
     }
 
@@ -327,6 +342,10 @@ mod tests {
         paths.iter().map(|path| path.to_string()).collect()
     }
 
+    fn none() -> BTreeSet<String> {
+        BTreeSet::new()
+    }
+
     #[test]
     fn a_version_keeps_what_the_project_does_not_hold() {
         let Some((_dir, git)) = repository() else {
@@ -352,6 +371,7 @@ mod tests {
                 &HashMap::new(),
                 &meta("Edit a", "sha-1"),
                 None,
+                &none(),
             )
             .unwrap();
         assert_eq!(show(&git, &first, "README.md").as_deref(), Some("readme"));
@@ -372,6 +392,7 @@ mod tests {
                 &HashMap::new(),
                 &meta("Drop a", "sha-2"),
                 None,
+                &none(),
             )
             .unwrap();
         assert_eq!(show(&git, &second, "a.tex"), None);
@@ -382,6 +403,75 @@ mod tests {
             first
         );
         assert_eq!(chain.tip(), Some(second.as_str()));
+    }
+
+    #[test]
+    fn an_excluded_path_is_neither_written_nor_removed() {
+        let Some((_dir, git)) = repository() else {
+            return;
+        };
+        write(&git, "a.tex", "old\n");
+        write(&git, "private.tex", "mine\n");
+        write(&git, "dropped.tex", "mine too\n");
+        let base = commit_all(&git, "base");
+        let mut chain = Chain::new(
+            &git,
+            "app.example.org",
+            Some(base),
+            known(&["a.tex", "private.tex", "dropped.tex"]),
+        )
+        .unwrap();
+        let excluded = known(&["private.tex", "dropped.tex", "extra.tex"]);
+
+        // The version holds an excluded path the tree has, and one it lacks.
+        let (files, texts) = version(&[
+            ("a.tex", "new\n"),
+            ("private.tex", "the web's\n"),
+            ("extra.tex", "the web's extra\n"),
+        ]);
+        let first = chain
+            .commit(
+                &files,
+                &texts,
+                &HashMap::new(),
+                &meta("Edit a", "sha-1"),
+                None,
+                &excluded,
+            )
+            .unwrap();
+        assert_eq!(show(&git, &first, "a.tex").as_deref(), Some("new"));
+        assert_eq!(
+            show(&git, &first, "private.tex").as_deref(),
+            Some("mine"),
+            "the tree keeps the person's version, so a merge leaves the file alone"
+        );
+        assert_eq!(
+            show(&git, &first, "dropped.tex").as_deref(),
+            Some("mine too"),
+            "a path the version never held was not removed either"
+        );
+        assert_eq!(show(&git, &first, "extra.tex"), None, "not written");
+
+        // The next version drops them all; an ordinary known path goes, the
+        // excluded ones stay.
+        let (files, texts) = version(&[]);
+        let second = chain
+            .commit(
+                &files,
+                &texts,
+                &HashMap::new(),
+                &meta("Drop all", "sha-2"),
+                None,
+                &excluded,
+            )
+            .unwrap();
+        assert_eq!(show(&git, &second, "a.tex"), None, "an ordinary path goes");
+        assert_eq!(show(&git, &second, "private.tex").as_deref(), Some("mine"));
+        assert_eq!(
+            show(&git, &second, "dropped.tex").as_deref(),
+            Some("mine too")
+        );
+        assert_eq!(show(&git, &second, "extra.tex"), None);
     }
 
     #[test]
@@ -398,6 +488,7 @@ mod tests {
                 &HashMap::new(),
                 &meta("First draft", "label-9"),
                 None,
+                &none(),
             )
             .unwrap();
         let shown = git
@@ -423,6 +514,7 @@ mod tests {
                 &HashMap::new(),
                 &meta("First draft", "label-9"),
                 None,
+                &none(),
             )
             .unwrap();
         assert_eq!(repeated, commit);
@@ -450,6 +542,7 @@ mod tests {
                 &HashMap::new(),
                 &meta("Edit a", "sha-1"),
                 Some(&own),
+                &none(),
             )
             .unwrap();
         assert_eq!(commit, own, "nothing is committed twice");
@@ -458,7 +551,14 @@ mod tests {
         // The next web version lands on the person's commit, README and all.
         let (files, texts) = version(&[("a.tex", "newer\n")]);
         let next = chain
-            .commit(&files, &texts, &HashMap::new(), &meta("Bob", "sha-2"), None)
+            .commit(
+                &files,
+                &texts,
+                &HashMap::new(),
+                &meta("Bob", "sha-2"),
+                None,
+                &none(),
+            )
             .unwrap();
         assert_eq!(
             git.line(&["rev-parse", format!("{next}^").as_str()])
@@ -489,7 +589,14 @@ mod tests {
         // Bob changed b on the web before the push landed.
         let (files, texts) = version(&[("a.tex", "old\n"), ("b.tex", "bob's b\n")]);
         let bobs = chain
-            .commit(&files, &texts, &HashMap::new(), &meta("Bob", "sha-1"), None)
+            .commit(
+                &files,
+                &texts,
+                &HashMap::new(),
+                &meta("Bob", "sha-1"),
+                None,
+                &none(),
+            )
             .unwrap();
 
         // The person's own commit never saw Bob's change.
@@ -503,6 +610,7 @@ mod tests {
                 &HashMap::new(),
                 &meta("Edit a", "sha-2"),
                 Some(&own),
+                &none(),
             )
             .unwrap();
         assert_ne!(joined, own);
@@ -525,10 +633,10 @@ mod tests {
         head.version = None;
         head.skip_if_unchanged = true;
         let first = chain
-            .commit(&files, &texts, &HashMap::new(), &head, None)
+            .commit(&files, &texts, &HashMap::new(), &head, None, &none())
             .unwrap();
         let second = chain
-            .commit(&files, &texts, &HashMap::new(), &head, None)
+            .commit(&files, &texts, &HashMap::new(), &head, None, &none())
             .unwrap();
         assert_eq!(first, second);
     }

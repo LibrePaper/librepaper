@@ -168,7 +168,7 @@ pub async fn push(
         }
     }
     let found = scan(dir, &rules, git.as_ref())?;
-    let changes = compare(&state.files, &found);
+    let changes = compare(dir, &state.files, &found);
     if changes.is_empty() {
         return Ok(PushOutcome::Nothing);
     }
@@ -391,7 +391,7 @@ pub async fn publish(
 pub fn changes_here(dir: &Path, state: &State, rules: &Rules) -> Result<usize, Error> {
     let git = Git::toplevel(dir);
     let found = scan(dir, rules, git.as_ref())?;
-    Ok(compare(&state.files, &found).count())
+    Ok(compare(dir, &state.files, &found).count())
 }
 
 /// Whether the project has a named version this directory has not taken in.
@@ -477,7 +477,7 @@ mod tests {
                 record(Kind::Asset, b"old-figure"),
             ),
         ]);
-        let changes = compare(&recorded, &found);
+        let changes = compare(dir.path(), &recorded, &found);
         let bases =
             BTreeMap::from([("edited.tex".to_string(), "alpha\nbeta\ngamma\n".to_string())]);
 
@@ -539,7 +539,7 @@ mod tests {
         write(dir.path(), "a.tex", b"one\r\ntwo\r\n");
         let found = scan(dir.path(), &Rules::default(), None).unwrap();
         let recorded = BTreeMap::from([("a.tex".to_string(), record(Kind::Text, b"one\ntwo\n"))]);
-        let changes = compare(&recorded, &found);
+        let changes = compare(dir.path(), &recorded, &found);
         assert!(changes.is_empty(), "the hashes are of the LF text");
         let plan = plan_change(&recorded, &found, &changes, &BTreeMap::new());
         assert!(plan.is_empty());
@@ -550,10 +550,36 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let found = scan(dir.path(), &Rules::default(), None).unwrap();
         let recorded = BTreeMap::from([("fig/a.png".to_string(), record(Kind::Asset, b"x"))]);
-        let changes = compare(&recorded, &found);
+        let changes = compare(dir.path(), &recorded, &found);
         let plan = plan_change(&recorded, &found, &changes, &BTreeMap::new());
         assert!(plan.dependencies.is_empty());
         assert_eq!(plan.delete.len(), 1);
+    }
+
+    #[test]
+    fn a_recorded_file_that_became_ignored_is_not_deleted_but_one_that_is_gone_is() {
+        let dir = tempfile::tempdir().unwrap();
+        write(dir.path(), ".gitignore", b"refs.bib\n");
+        write(dir.path(), "main.tex", b"main\n");
+        write(dir.path(), "refs.bib", b"@book{}\n");
+        let found = scan(dir.path(), &Rules::default(), None).unwrap();
+        let mut recorded = BTreeMap::from([
+            ("main.tex".to_string(), record(Kind::Text, b"main\n")),
+            ("refs.bib".to_string(), record(Kind::Text, b"@book{}\n")),
+        ]);
+        let changes = compare(dir.path(), &recorded, &found);
+        assert!(
+            changes.is_empty(),
+            "the file left the sync, it was not deleted"
+        );
+        assert!(plan_change(&recorded, &found, &changes, &BTreeMap::new()).is_empty());
+
+        recorded.insert("gone.tex".to_string(), record(Kind::Text, b"gone\n"));
+        let changes = compare(dir.path(), &recorded, &found);
+        let plan = plan_change(&recorded, &found, &changes, &BTreeMap::new());
+        let gone = sha256_hex(b"gone\n");
+        assert_eq!(plan.delete, [json!({"path": "gone.tex", "expect": gone})]);
+        assert_eq!(plan.dependencies, [dependency("gone.tex", &gone)]);
     }
 
     #[test]
