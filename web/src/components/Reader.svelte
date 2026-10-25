@@ -1516,7 +1516,10 @@
     run: async () => {
       scopeLocalApp();
       const binding = folderBinding();
-      const tree = capturePreviewTree(liveTreeNow());
+      const captured = capturePreviewTree(liveTreeNow());
+      // Files deleted on disk while they held unsaved edits are not sent, so
+      // the folder does not bring them back before the person decides.
+      const tree = LOCAL ? localProject.withoutHeld(captured) : captured;
       if (Object.keys(tree.digests || {}).length) {
         const { held, missing } = await gatherFigures(tree.digests);
         if (missing.length) throw new Error(`could not fetch ${missing.join(", ")}`);
@@ -3462,13 +3465,15 @@
     diskConflicts = [...diskConflicts, conflict];
     diskConflictOpen = true;
   }
-  function answerDisk(loadDisk) {
+  // `choice` is "keep", "load", or "dismiss". Dismissing keeps the editor's
+  // text for a changed file, and leaves a deleted file held.
+  function answerDisk(choice) {
     const [first, ...rest] = diskConflicts;
     diskConflicts = rest;
     diskConflictOpen = rest.length > 0;
     if (!first) return;
-    if (loadDisk) first.loadDisk();
-    else first.keepMine();
+    if (choice === "load") first.loadDisk();
+    else if (choice === "keep" || !first.deleted) first.keepMine();
   }
 
   // Opens the folder behind a local project: its rules, its files, and the
@@ -4509,12 +4514,16 @@
 
 <!-- A file changed on disk while the editor held unsaved edits to it. -->
 <Modal bind:open={diskConflictOpen} title="File changed on disk"
-  description={diskConflicts.length ? `${diskConflicts[0].path} changed on disk.` : ""}
+  description={diskConflicts.length ? `${diskConflicts[0].path} ${diskConflicts[0].deleted ? "was deleted" : "changed"} on disk.` : ""}
   cancelLabel="Keep mine"
-  onclose={() => answerDisk(false)}
-  confirm={{ label: "Load from disk", onclick: () => answerDisk(true), oncancel: () => answerDisk(false) }}>
+  onclose={() => answerDisk("dismiss")}
+  confirm={{ label: diskConflicts[0]?.deleted ? "Delete" : "Load from disk", onclick: () => answerDisk("load"), oncancel: () => answerDisk("keep") }}>
   {#snippet children()}
-    <p class="text-sm">Keep mine writes the editor's text over the file on the next save. Load from disk replaces the editor's text with the file.</p>
+    {#if diskConflicts[0]?.deleted}
+      <p class="text-sm">Keep mine writes the file back from the editor's text. Delete removes the file from the project.</p>
+    {:else}
+      <p class="text-sm">Keep mine writes the editor's text over the file on the next save. Load from disk replaces the editor's text with the file.</p>
+    {/if}
   {/snippet}
 </Modal>
 

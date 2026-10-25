@@ -27,6 +27,11 @@ import { openingFile } from "../opening.js";
 import { toBase64, typeOf } from "../figures.js";
 import * as folderRead from "../desktop/folder-read.js";
 
+/** @typedef {{ path: string, kind: "text", text: string, sha: string | null, ending: string, raw?: Uint8Array }} TextItem */
+/** @typedef {{ path: string, kind: "asset", sha: string }} AssetItem */
+/** @typedef {TextItem | AssetItem} Item */
+/** @typedef {{ kind: "text", text: string, sha: string | null, ending?: string, raw?: Uint8Array } | { kind: "asset", sha: string }} DiskRecord */
+
 /// The origin of a commit that brings the disk's text into the editor. The
 /// prefix is the directory's, which the editor's undo manager leaves alone:
 /// undoing a reload would write the old text back over the file.
@@ -129,7 +134,7 @@ export function createFigureStore() {
       const key = `${type}|${sha}`;
       if (!urls.has(key)) {
         const base = type === "application/pdf"
-          ? URL.createObjectURL(new Blob([body], { type }))
+          ? URL.createObjectURL(new Blob([/** @type {Uint8Array<ArrayBuffer>} */ (body)], { type }))
           : `data:${type};base64,${toBase64(body)}`;
         urls.set(key, base);
       }
@@ -158,7 +163,7 @@ export function createFigureStore() {
  * onSession?: (session: any) => void,
  * onFiles?: (events: any, session: any) => void,
  * onAwareness?: (session: any) => void,
- * onConflict?: (conflict: { path: string, keepMine: () => void, loadDisk: () => void }) => void,
+ * onConflict?: (conflict: { path: string, deleted: boolean, keepMine: () => void, loadDisk: () => void }) => void,
  * onResend?: (paths: string[]) => void,
  * onProblem?: (message: string) => void,
  * wait?: (ms: number, signal?: AbortSignal) => Promise<void>,
@@ -186,16 +191,20 @@ export function createLocalProject({
   let filesCleanup = null;
   let presenceCleanup = null;
   /** The files read by `load`, added to the session when it starts.
-   * @type {Array<{ path: string, kind: "text" | "asset", text?: string, sha: string }>} */
+   * @type {Item[]} */
   let initial = [];
   /** What the folder holds for each path as far as this module knows: the text
    * last read from or written to disk, and the digest of the bytes when it is
-   * known. @type {Map<string, { kind: "text" | "asset", text?: string, sha: string | null }>} */
+   * known. @type {Map<string, DiskRecord>} */
   const disk = new Map();
   /** The disk version of a file the person has not yet answered for.
-   * @type {Map<string, { text: string, sha: string }>} */
+   * @type {Map<string, { text: string, sha: string | null, item: TextItem }>} */
   const conflicts = new Map();
   let failing = false;
+  /** Files another program deleted while the editor held unsaved edits to
+   * them. They stay in the project and out of the folder sync until the person
+   * answers. @type {Map<string, object>} */
+  const held = new Map();
   /** Where the desktop app's changes resume: the cursor of the latest tree
    * read, so nothing between that read and the next request is skipped. */
   let cursor;
@@ -214,7 +223,7 @@ export function createLocalProject({
     const kept = new Map();
     for (const file of listed || []) {
       const checked = checkPath(rules, file.path);
-      if (!checked.error) kept.set(file.path, { ...file, kind: checked.kind });
+      if (!checked.error) kept.set(file.path, { ...file, kind: /** @type {"text" | "asset"} */ (checked.kind) });
     }
     return kept;
   }
@@ -231,6 +240,8 @@ export function createLocalProject({
 
   /// A file's bytes as the project holds them: a text with LF endings, or an
   /// asset's digest. Null for a text that is not UTF-8.
+  /** @param {{ file: { path: string, kind: "text" | "asset", sha256?: string | null }, bytes: Uint8Array }} read
+   * @returns {Promise<Item | null>} */
   async function interpret({ file, bytes }) {
     if (file.kind === "text") {
       const text = decodeText(bytes);
@@ -278,8 +289,10 @@ export function createLocalProject({
     session.doc.commit({ origin: DISK_ORIGIN });
   }
 
+  /** @param {TextItem} item @returns {DiskRecord} */
   const textRecord = (item) => ({ kind: "text", text: item.text, sha: item.sha, ending: item.ending, raw: item.raw });
 
+  /** @param {TextItem} item */
   function askAboutText(item) {
     const { path, text, sha } = item;
     const waiting = conflicts.get(path);
@@ -296,6 +309,7 @@ export function createLocalProject({
     const current = () => !closed && conflicts.get(path) === pending;
     onConflict({
       path,
+      deleted: false,
       keepMine() {
         if (!current()) return;
         conflicts.delete(path);
@@ -313,8 +327,10 @@ export function createLocalProject({
   }
 
   /// A text that is new on disk or changed there.
+  /** @param {TextItem} item */
   function ingestText(item) {
     const { path, text } = item;
+    held.delete(path);
     const entry = entryOf(path, "text");
     if (!entry) {
       session.addText(path, text);
@@ -342,17 +358,60 @@ export function createLocalProject({
     disk.set(path, { kind: "asset", sha });
   }
 
+  /** @param {Item} item */
   function ingest(item) {
     if (item.kind === "text") ingestText(item);
     else ingestAsset(item.path, item.sha);
   }
 
   function drop(path) {
+    held.delete(path);
     conflicts.delete(path);
     disk.delete(path);
     const text = entryOf(path, "text");
     if (text) session.removeFile(text.id);
     if (entryOf(path, "asset")) session.removeAsset(path);
+  }
+
+  /// A file that is gone from the disk. With nothing unsaved it leaves the
+  /// project. With unsaved edits it stays, held out of the folder sync, and
+  /// the person is asked. Dismissing the question leaves it held.
+  function gone(path) {
+    if (held.has(path)) return;
+    const entry = entryOf(path, "text");
+    const known = disk.get(path);
+    const unsaved = entry
+      && (conflicts.has(path) || (known?.kind === "text" && session.textOf(entry.id)?.toString() !== known.text));
+    if (!unsaved) {
+      drop(path);
+      return;
+    }
+    const token = {};
+    held.set(path, token);
+    conflicts.delete(path);
+    disk.delete(path);
+    const current = () => !closed && held.get(path) === token;
+    onConflict({
+      path,
+      deleted: true,
+      keepMine() {
+        if (!current()) return;
+        held.delete(path);
+        onResend([path]);
+      },
+      loadDisk() {
+        if (!current()) return;
+        drop(path);
+      },
+    });
+  }
+
+  /// The project as the folder sync should send it: held files are left out,
+  /// so the mirror does not bring a deleted file back.
+  /** @template {{ texts: Record<string, string> }} T @param {T} tree @returns {T} */
+  function withoutHeld(tree) {
+    if (!held.size) return tree;
+    return { ...tree, texts: Object.fromEntries(Object.entries(tree.texts).filter(([path]) => !held.has(path))) };
   }
 
   /// One change from the desktop app. A file that cannot be read now has
@@ -361,7 +420,7 @@ export function createLocalProject({
     const checked = checkPath(rules, change.path);
     if (checked.error) return;
     if (change.kind === "removed") {
-      drop(change.path);
+      gone(change.path);
       return;
     }
     let bytes;
@@ -372,7 +431,7 @@ export function createLocalProject({
       return;
     }
     if (closed) return;
-    const item = await interpret({ file: { path: change.path, kind: checked.kind, sha256: change.sha256 ?? null }, bytes });
+    const item = await interpret({ file: { path: change.path, kind: /** @type {"text" | "asset"} */ (checked.kind), sha256: change.sha256 ?? null }, bytes });
     if (item && !closed) ingest(item);
   }
 
@@ -383,7 +442,7 @@ export function createLocalProject({
     if (closed) return;
     cursor = tree.cursor;
     const listed = managed(tree.files);
-    for (const path of [...disk.keys()]) if (!listed.has(path)) drop(path);
+    for (const path of [...disk.keys()]) if (!listed.has(path)) gone(path);
     const changed = [...listed.values()].filter((file) => {
       const known = disk.get(file.path);
       return !known || known.sha === null || known.sha !== file.sha256;
@@ -464,8 +523,8 @@ export function createLocalProject({
         kind: "text",
         text,
         sha: null,
-        ending: before?.ending,
-        raw: before?.text === text ? before.raw : undefined,
+        ending: before?.kind === "text" ? before.ending : undefined,
+        raw: before?.kind === "text" && before.text === text ? before.raw : undefined,
       });
     }
     for (const [path, sha] of Object.entries(digests)) disk.set(path, { kind: "asset", sha });
@@ -504,6 +563,7 @@ export function createLocalProject({
     start,
     close,
     wrote,
+    withoutHeld,
     encode,
     seed,
     // There is no room to write to.

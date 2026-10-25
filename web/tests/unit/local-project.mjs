@@ -382,6 +382,67 @@ const textOf = (session, path) => session.textOf(session.idOf(path)).toString();
   project.close();
 }
 
+// A file another program deleted: clean files leave, files with unsaved edits
+// are held out of the folder sync and the person is asked.
+{
+  const { folder, session, conflicts, resends, project } = await open({ "a.md": "a\n", "b.md": "b\n", "c.md": "c\n" });
+  const edit = (path) => {
+    session.textOf(session.idOf(path)).insert(0, "mine ");
+    session.doc.commit();
+  };
+  const sent = () => Object.keys(project.withoutHeld(session.tree()).texts).sort();
+
+  folder.files.delete("a.md");
+  folder.report({ path: "a.md", kind: "removed" });
+  await tick();
+  assert.deepEqual(session.list().map((file) => file.path), ["b.md", "c.md"], "a clean file leaves the project");
+  assert.equal(conflicts.length, 0);
+
+  edit("b.md");
+  folder.files.delete("b.md");
+  folder.report({ path: "b.md", kind: "removed" });
+  await tick();
+  assert.equal(textOf(session, "b.md"), "mine b\n", "an edited file stays");
+  assert.equal(conflicts.length, 1);
+  assert.equal(conflicts[0].deleted, true);
+  assert.equal(conflicts[0].path, "b.md");
+  assert.deepEqual(sent(), ["c.md"], "and is left out of what the folder sync sends");
+
+  conflicts[0].keepMine();
+  assert.deepEqual(resends, [["b.md"]]);
+  assert.deepEqual(sent(), ["b.md", "c.md"], "keeping mine puts it back in the manifest");
+
+  edit("c.md");
+  folder.files.delete("c.md");
+  folder.report({ path: "c.md", kind: "removed" });
+  await tick();
+  assert.equal(conflicts.length, 2);
+  conflicts[1].loadDisk();
+  assert.deepEqual(session.list().map((file) => file.path), ["b.md"], "Delete drops the file");
+  assert.deepEqual(sent(), ["b.md"]);
+  project.close();
+}
+
+// A held file that comes back on disk is the changed-on-disk question.
+{
+  const { folder, session, conflicts, project } = await open({ "a.md": "a\n" });
+  session.textOf(session.idOf("a.md")).insert(0, "mine ");
+  session.doc.commit();
+  folder.files.delete("a.md");
+  folder.report({ path: "a.md", kind: "removed" });
+  await tick();
+  assert.equal(conflicts[0].deleted, true);
+  folder.files.set("a.md", "back\n");
+  folder.report({ path: "a.md", kind: "added" });
+  await tick();
+  assert.equal(conflicts.length, 2);
+  assert.equal(conflicts[1].deleted, false);
+  assert.deepEqual(Object.keys(project.withoutHeld(session.tree()).texts), ["a.md"], "it is no longer held");
+  conflicts[0].loadDisk();
+  assert.equal(textOf(session, "a.md"), "mine a\n", "the old deletion question is void");
+  project.close();
+}
+
 // Line endings: a CRLF file is written back as CRLF, byte for byte when it was
 // not edited, and an outside CRLF change reaches the editor as LF text.
 {
