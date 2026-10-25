@@ -79,7 +79,11 @@ impl Scan {
 fn may_exist(path: &Path) -> bool {
     match std::fs::symlink_metadata(path) {
         Ok(_) => true,
-        Err(error) => error.kind() != std::io::ErrorKind::NotFound,
+        // A path under what is now a file cannot exist either.
+        Err(error) => !matches!(
+            error.kind(),
+            std::io::ErrorKind::NotFound | std::io::ErrorKind::NotADirectory
+        ),
     }
 }
 
