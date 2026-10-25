@@ -72,6 +72,8 @@ A loop calls `projects/<id>/changes`. For each change:
 - `changed`: when the editor's text for that path equals the text last read from or written to disk, the new text replaces it through `textPatches` (in `lib/text-patches.js`), so the cursor and the rest of the document stay put. When the editor holds unsaved edits to that file, a notice asks "chapter.tex changed on disk." with two actions, "Keep mine" (the next sync writes the editor's text) and "Load from disk".
 - Assets that changed are replaced by their new bytes.
 
+The cursor moves past a batch only after every change in it was applied. When a file cannot be read, the loop keeps the old cursor, says so once, waits and asks again: the desktop app answers the same changes after a cursor until it is given a newer one, and the changes already applied are skipped. After three polls in a row that end on an unreadable file, the loop reads the whole tree instead, as it does after a `reset`. A reset whose tree read fails keeps the old cursor and tries again.
+
 ### Reader local mode
 
 One derived `local` flag:

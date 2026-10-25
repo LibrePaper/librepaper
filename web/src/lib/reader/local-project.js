@@ -19,6 +19,11 @@
 //   person chooses `keepMine` or `loadDisk`.
 // - Files that were added join the project, files that were removed leave it,
 //   and an asset is replaced by its new bytes.
+//
+// The cursor moves past a batch of changes only when the whole batch was
+// applied. A file that cannot be read now keeps the cursor where it was, so
+// the desktop app answers the batch again; after a few failures in a row the
+// whole tree is read instead.
 import { checkPath } from "../paths.js";
 import { toLf } from "../line-endings.js";
 import { textPatches } from "../text-patches.js";
@@ -40,6 +45,19 @@ const DISK_ORIGIN = "directory:disk";
 const READ_BATCH = 8;
 // How long the change loop waits after a failed request before asking again.
 const RETRY_MS = 3000;
+// Polls in a row that end on a file that cannot be read, after which the tree
+// is read again in place of asking for the same batch once more.
+const REREAD_AFTER = 3;
+
+/// A file named by a change could not be read. The change is not settled: the
+/// desktop app counts the file as reported and will not report it again.
+class ReadFailure extends Error {
+  /** @param {string} path @param {any} cause */
+  constructor(path, cause) {
+    super(`Could not read ${path} from the folder: ${cause?.message || "unknown error"}. Trying again.`);
+    this.name = "ReadFailure";
+  }
+}
 
 /// The `?local=` value of a reader address, or an empty string when the
 /// address is not a local project's.
@@ -206,8 +224,14 @@ export function createLocalProject({
    * answers. @type {Map<string, object>} */
   const held = new Map();
   /** Where the desktop app's changes resume: the cursor of the latest tree
-   * read, so nothing between that read and the next request is skipped. */
+   * read or of the latest batch applied in full, so nothing between that
+   * point and the next request is skipped. */
   let cursor;
+  /** How many changes at the head of the batch that follows `cursor` were
+   * applied while a later one could not be read. */
+  let settled = 0;
+  /** Polls in a row that ended on a file that could not be read. */
+  let stalls = 0;
   /** @type {Record<string, string>} */
   let seeded = {};
 
@@ -414,8 +438,10 @@ export function createLocalProject({
     return { ...tree, texts: Object.fromEntries(Object.entries(tree.texts).filter(([path]) => !held.has(path))) };
   }
 
-  /// One change from the desktop app. A file that cannot be read now has
-  /// changed again or gone; the next report says which.
+  /// One change from the desktop app. A file that cannot be read throws a
+  /// `ReadFailure`: the desktop app does not report that content again, so the
+  /// change stays unsettled until a read succeeds. Any file read error counts,
+  /// because the desktop app answers a missing file and a busy one alike.
   async function applyChange(change) {
     const checked = checkPath(rules, change.path);
     if (checked.error) return;
@@ -428,19 +454,22 @@ export function createLocalProject({
       bytes = await folder.projectFile(id, change.path);
     } catch (error) {
       if (error?.name === "Canceled") throw error;
-      return;
+      throw new ReadFailure(change.path, error);
     }
     if (closed) return;
     const item = await interpret({ file: { path: change.path, kind: /** @type {"text" | "asset"} */ (checked.kind), sha256: change.sha256 ?? null }, bytes });
     if (item && !closed) ingest(item);
   }
 
-  /// The desktop app lost the thread of its changes, so the tree is read
-  /// again and compared with what this module knows.
+  /// The desktop app lost the thread of its changes, or a batch could not be
+  /// read in full, so the tree is read again and compared with what this
+  /// module knows. The new cursor is recorded only once every file has been
+  /// read and applied. A failure leaves the old cursor, and asking again
+  /// repeats this: a file dropped here is no longer known, and the rest is
+  /// compared by digest, so doing it twice changes nothing.
   async function reread() {
     const tree = await folder.projectTree(id);
     if (closed) return;
-    cursor = tree.cursor;
     const listed = managed(tree.files);
     for (const path of [...disk.keys()]) if (!listed.has(path)) gone(path);
     const changed = [...listed.values()].filter((file) => {
@@ -452,6 +481,39 @@ export function createLocalProject({
       const item = await interpret(one);
       if (item && !closed) ingest(item);
     }
+    if (closed) return;
+    cursor = tree.cursor;
+    settled = 0;
+    stalls = 0;
+    failing = false;
+  }
+
+  /// Applies the changes of one answer in order. A file that cannot be read
+  /// stops the batch there and says so once. Resolves true when the whole
+  /// batch is applied.
+  ///
+  /// This relies on how the desktop app numbers its changes: `since` is the
+  /// newest change already handled, and every change after it is answered in
+  /// order, the same ones again for as long as the cursor is not moved. Changes
+  /// only ever join the end, and an answer that no longer covers `since` is a
+  /// `reset`. So a retried answer starts with the changes already applied,
+  /// which `settled` skips: applying a removal twice could drop a file the
+  /// person has since chosen to keep.
+  /** @param {Array<{ path: string, kind: string, sha256?: string }>} changes */
+  async function applyBatch(changes) {
+    while (settled < changes.length) {
+      if (closed) return false;
+      try {
+        await applyChange(changes[settled]);
+      } catch (error) {
+        if (!(error instanceof ReadFailure)) throw error;
+        if (!failing) complain(error.message);
+        failing = true;
+        return false;
+      }
+      settled += 1;
+    }
+    return true;
   }
 
   async function follow() {
@@ -459,17 +521,29 @@ export function createLocalProject({
       try {
         const answer = await folder.projectChanges(id, cursor, { signal: abort.signal });
         if (closed) return;
-        failing = false;
         if (answer.reset) {
           // The thread is lost; the tree read gives the cursor to resume from.
           await reread();
           continue;
         }
-        cursor = answer.cursor;
-        for (const change of answer.changes || []) {
-          if (closed) return;
-          await applyChange(change);
+        const complete = await applyBatch(answer.changes || []);
+        if (closed) return;
+        if (complete) {
+          cursor = answer.cursor;
+          settled = 0;
+          stalls = 0;
+          failing = false;
+          continue;
         }
+        // The cursor stays, so the next poll answers this batch again. The
+        // desktop app answers at once, so the loop waits between asks.
+        stalls += 1;
+        if (stalls < REREAD_AFTER) {
+          await wait(RETRY_MS, abort.signal);
+          continue;
+        }
+        stalls = 0;
+        await reread();
       } catch (error) {
         if (closed || error?.name === "Canceled") return;
         if (!failing) complain(`The folder could not be read: ${error?.message || "unknown error"}`);
