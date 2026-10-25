@@ -181,6 +181,8 @@
     {/if}
     {#if kind === "link"}
       <p class="panel-meta">Every link opens the whole project. The permission decides what people can do.</p>
+    {:else}
+      <p class="panel-meta">A token with the Edit role is also what the librepaper command line and the GitHub Action use to sync this project.</p>
     {/if}
     {#if active.length === 0}
       <p class="panel-meta">{kind === "link" ? "No sharing links yet." : "No agent tokens yet."}</p>
