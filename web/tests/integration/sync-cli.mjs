@@ -613,10 +613,19 @@ try {
     assert.equal(state.head, commit, "the state remembers the pushed commit");
     assert.equal(state.files["main.tex"].sha, sha256(mainTex("Hello again, from Alice.")));
 
-    // The version this directory pushed is its own commit, not a second one.
+    // The version this directory pushed stands on its own commit. The web had
+    // edited the other file before the push, so the version holds that edit
+    // too, as one commit on top of the pushed one rather than a copy of it.
     succeeds(await librepaper(dirTwo, ["pull"]), "the pull after the push");
-    assert.equal(refOf(dirTwo, "refs/librepaper/main"), commit, "the pushed version is represented by the commit that made it");
-    assert.equal(commitsOn(dirTwo, "refs/librepaper/main").length, 4, "nothing is committed twice");
+    const tip = refOf(dirTwo, "refs/librepaper/main");
+    const parents = gitText(dirTwo, "rev-list", "--parents", "-1", tip).split(" ").slice(1);
+    assert.ok(tip === commit || parents.includes(commit), `the pushed commit is the version's commit or its parent: ${tip} ${parents}`);
+    const chain = commitsOn(dirTwo, "refs/librepaper/main");
+    assert.equal(chain.filter((entry) => entry.hash === commit).length, 1, "the pushed commit is in the chain once");
+    assert.equal(chain.length, tip === commit ? 4 : 5, "nothing is committed twice");
+    const held = treeOf(dirTwo, tip);
+    assert.equal(held["main.tex"].toString("utf8"), mainTex("Hello again, from Alice."), "the chain holds the pushed text");
+    assert.equal(held["chapters/one.tex"].toString("utf8"), ONE_WEB, "and the web's edit of the other file");
     assert.equal(gitText(dirTwo, "status", "--porcelain"), "");
   });
 
