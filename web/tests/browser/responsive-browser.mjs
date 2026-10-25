@@ -716,8 +716,8 @@ try {
   assert.equal(await visible('.filelist'),true);
   assert.equal(await visible('.editorpane'),false);
   await click('.explorer-row[title="chapter-1.html"]');
-  assert.equal(await visible('.editorpane'),true, 'choosing a file opens its source');
-  await click(face('Preview'));
+  assert.equal(await visible('.viewport'),true, 'choosing a file on a phone shows its preview');
+  assert.equal(await visible('.editorpane'),false, 'choosing a file on a phone does not open its source');
   assert.equal(await b.evaluate('document.querySelector(".viewport iframe") === window.savedFrame'), true);
   // The frame stays mounted, and the preview has followed the source to the
   // file just opened.

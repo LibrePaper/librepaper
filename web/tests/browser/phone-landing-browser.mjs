@@ -143,6 +143,23 @@ try {
   assert.equal(await visible('.editorpane'), false, 'an editor phone does not show the source');
   assert.deepEqual(await b.evaluate('window.testErrors'), [], 'the editor case reports no page errors');
 
+  // A tapped file on a phone opens on the preview. The Files column is opened
+  // from the Menu, as a person does it, and chapter-1.html is tapped there.
+  const press = async (selector) => { await b.evaluate(`(() => { const node=document.querySelector(${JSON.stringify(selector)}); node.dispatchEvent(new PointerEvent('pointerdown',{bubbles:true,pointerType:'mouse'})); node.click(); })()`); await flush(); };
+  await press('.compact-panels-trigger[aria-label="Menu"]');
+  await until('menu lists the files panel', () => b.evaluate(`Boolean(document.querySelector('.explorer-menu[data-state="open"] [data-panel-id="files"]'))`), 5000);
+  await press('.explorer-menu[data-state="open"] [data-panel-id="files"]');
+  await until('files column shows the files', () => visible('.sidebar .explorer'), 5000);
+  await until('chapter-1.html is listed', () => b.evaluate(`Boolean(document.querySelector('.explorer-row[title="chapter-1.html"]'))`), 5000);
+  await b.evaluate(`document.querySelector('.explorer-row[title="chapter-1.html"]').click()`);
+  await until('a tapped file opens on the preview', async () => !(await visible('.sidebar')) && await b.evaluate(phoneDocument), 5000);
+  await until('a tapped file shows the preview frame', () => visible('.viewport'), 5000);
+  await flush();
+  assert.equal(await b.evaluate(phoneDocument), true, 'a tapped file on a phone opens on the preview');
+  assert.equal(await visible('.viewport'), true, 'a tapped file on a phone shows the preview frame');
+  assert.equal(await visible('.editorpane'), false, 'a tapped file on a phone does not show the source');
+  assert.deepEqual(await b.evaluate('window.testErrors'), [], 'the tapped file case reports no page errors');
+
   // Case 2: an editor project with no files shows the empty card, and Open Files leads to the files.
   const nothingToPreview = "Boolean([...document.querySelectorAll('section.latexpane .notyet h2')].find(node => node.textContent.trim() === 'Nothing to preview')?.getClientRects().length)";
   const openFilesButton = "[...document.querySelectorAll('section.latexpane .notyet button')].find(node => node.textContent.trim() === 'Open Files')";

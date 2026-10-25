@@ -3472,7 +3472,16 @@
     if (previewed) ws.openFile = previewed.id;
   }
 
-  function openTheFile(file) {
+  // On a phone, a tap in Files shows the preview when the preview would show
+  // that file. A figure, a file with no preview of its own, or a preview
+  // locked on another file opens the source instead.
+  function previewsOnTap(file) {
+    if (file.kind !== "text") return false;
+    const target = previewTarget({ open: file.path, locked: lockedPath, texts: liveTreeNow().texts });
+    return Boolean(target.path) && (!lockedPath || lockedPath === file.path);
+  }
+
+  function openTheFile(file, { fromList = false } = {}) {
     if (!mayEdit) {
       viewTheFile(file);
       return;
@@ -3482,7 +3491,7 @@
     // Choosing a file is asking to see it, so an arrangement with no source
     // pane makes room for one.
     if (mayEdit && !compact && layout === "document") layout = "split";
-    if (mayEdit) showMobileView("source");
+    if (mayEdit) showMobileView(fromList && compact && previewsOnTap(file) ? "document" : "source");
   }
 
   // An outline entry is a source navigation command. It may be the first
@@ -4368,7 +4377,7 @@
        as props, so a panel can grow a field without the column hearing of it. -->
   {#snippet filesPanel()}
     <Files bind:this={fileList} {files} {folders} open={openFile} preview={previewPath} locked={lockedPath}
-      {mayEdit} {rules} onopen={openTheFile} onadd={addFile}
+      {mayEdit} {rules} onopen={(file) => openTheFile(file, { fromList: true })} onadd={addFile}
       onmkdir={(path) => workspace.addFolder(path)} onrelocate={relocateFiles}
       ondelete={deleteFiles} onduplicate={(entry, path) => workspace.duplicate(entry, path)}
       onfigure={addFigure} ontext={addDroppedText}
