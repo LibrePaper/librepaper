@@ -7,13 +7,15 @@
 // reading of the HTML page. Nothing here touches the DOM, and nothing is
 // fetched or uploaded: the Reader supplies the tree it already holds.
 //
-// A Quarto export follows the Run code switch, as the preview does: with it on
-// in the desktop app, all three files come from the local Quarto build, and
-// otherwise they take the browser route, which does not run code cells.
+// An export follows the Run code switch, as the preview does: with it on in
+// the desktop app and the format set to this computer, a file the format has a
+// command for comes from that command, and otherwise it takes the browser
+// route, which does not run code cells.
 
 import { pandocAvailable } from "../pandoc/client.js";
 import { dirOf, pandocPath, typstTree } from "../pandoc/typst.js";
 import { compilerAvailable } from "../renderers.js";
+import { LOCAL_OUTPUTS } from "../desktop/client.js";
 import { parseQuarto } from "../engines/quarto.js";
 import { docxFile, inlineBlobUrls } from "./downloads.js";
 
@@ -21,8 +23,8 @@ export const EXPORT_TARGETS = ["pdf", "html", "docx"];
 
 const NAMES = { pdf: "PDF", html: "HTML page", docx: "Word file" };
 
-const MARKDOWN_PDF = { selection: "tool", backend: "browser", tool: "markdown", output: "pdf" };
-const MARKDOWN_HTML = { selection: "tool", backend: "browser", tool: "markdown", output: "html" };
+const MARKDOWN_PDF = { backend: "browser", output: "pdf" };
+const MARKDOWN_HTML = { backend: "browser", output: "html" };
 
 /// How many executable code cells a Quarto main file holds, which a browser
 /// export leaves unrun.
@@ -91,26 +93,21 @@ export function pandocMath(html) {
 ///   wanted and `previewCurrent` says it is of the source on screen.
 /// - `project`: the document's slug, which a local build is scoped to.
 /// - `render`: `renderers.render`. `run`: Pandoc.
-/// - `localQuarto`: `{ profile, parameters }` when a Quarto document is to be
-///   built by the desktop app, null for the browser route.
+/// - `local`: whether the desktop app builds the file with the command for
+///   its format, false for the browser route.
 ///
 /// Resolves `{ blob, name }`; rejects with an Error whose message is a plain
 /// sentence.
-export async function exportFile({ target, format, tree, title, slug, project = "", preview, previewCurrent, render, run, localQuarto = null }) {
+export async function exportFile({ target, format, tree, title, slug, project = "", preview, previewCurrent, render, run, local = false }) {
   const reused = previewCurrent && preview?.kind === target ? preview : null;
 
   // The desktop app builds the target itself, with no Pandoc step. The frame
   // is not reused: its page may predate Run code and lack the cells' results.
   async function localBuild() {
-    const { profile, parameters } = localQuarto;
     const result = await render(tree, title, {
       format: target,
       project,
-      buildPreferences: {
-        selection: "tool", backend: "local", tool: "quarto", output: target,
-        ...(profile ? { profile } : {}),
-        ...(parameters ? { parameters } : {}),
-      },
+      buildPreferences: { backend: "local", output: target },
     });
     if (result?.ok === false) throw failure(result, target);
     return result;
@@ -159,7 +156,7 @@ export async function exportFile({ target, format, tree, title, slug, project = 
     return inlineBlobUrls(result.html);
   }
 
-  if (format === "quarto" && localQuarto && EXPORT_TARGETS.includes(target)) return localFile();
+  if (local && (LOCAL_OUTPUTS[format] || []).includes(target)) return localFile();
   if (target === "pdf") {
     return { blob: new Blob([await pdfBytes()], { type: "application/pdf" }), name: `${slug}.pdf` };
   }

@@ -22,7 +22,7 @@
 // arguments now, and the guards are gone with them.
 
 /** @typedef {ReturnType<ReturnType<typeof import("../project-session.js").createProjectSession>["tree"]> & { main?: string, assets?: Record<string, Uint8Array>, urls?: Record<string, string> }} PreviewTree */
-/** @typedef {{ disposed: boolean, navigation: number, source: number, everPainted: boolean, format: string, hasSession: boolean, paintsTheFrame: boolean, latexOutput: string, typstOutput: string, buildPreferences: { selection?: string, backend?: string, tool?: string, output?: string, [key: string]: unknown }, localExecution: boolean, projectDigest?: string, livePreviewOwnsPane: boolean }} PreviewFacts */
+/** @typedef {{ disposed: boolean, navigation: number, source: number, everPainted: boolean, format: string, hasSession: boolean, paintsTheFrame: boolean, latexOutput: string, typstOutput: string, buildPreferences: { selection?: string, backend?: string, tool?: string, output?: string, [key: string]: unknown }, localExecution: boolean, projectDigest?: string }} PreviewFacts */
 /** @typedef {Awaited<ReturnType<typeof import("../renderers.js").render>>} PreviewResult */
 /** @typedef {ReturnType<typeof import("./render-status.svelte.js").createRenderStatus>} PreviewStatus */
 /** @typedef {ReturnType<typeof import("./render-coordinator.js").createRenderCoordinator>} PreviewCoordinator */
@@ -31,7 +31,7 @@
 /** @typedef {ReturnType<typeof import("../diagnostics.js").painter>} PreviewDiagnostics */
 
 /** @param {{
- * slug: string, coordinator: PreviewCoordinator, status: PreviewStatus, framePreview: PreviewFrame,
+ * slug: string, bindingId?: string, coordinator: PreviewCoordinator, status: PreviewStatus, framePreview: PreviewFrame,
  * diagnostics: PreviewDiagnostics, renderers: PreviewRendererRegistry,
  * snapshotDigest: (tree: PreviewTree) => Promise<string>,
  * diagnosticContext: (item: NonNullable<PreviewResult["diagnostics"]>[number] | {severity: string, message: string}, tree: PreviewTree, identity: string) => NonNullable<PreviewResult["diagnostics"]>[number],
@@ -48,6 +48,7 @@
  */
 export function createPreviewRenderer({
   slug,
+  bindingId = "hosted",
   coordinator,
   status,
   framePreview,
@@ -137,13 +138,6 @@ export function createPreviewRenderer({
     if (start.disposed) return;
     // A render is happening, so a render that was merely scheduled is not.
     clearDebounce();
-    // A live preview owns the pane while it is running or starting: the frame
-    // shows the local tool's own page, kept current by its poller rather than
-    // by anything painted here. Keyed to a preview actually running, not to
-    // whether this browser is paired -- one whose preview failed to start
-    // falls through to the draft below rather than leaving the pane at
-    // whatever it last showed.
-    if (start.livePreviewOwnsPane) return;
     // Every preview is compiled from the source in this tab. Results remain
     // in the frame only for the active view or an explicit user export.
     if (!start.paintsTheFrame) {
@@ -274,22 +268,16 @@ export function createPreviewRenderer({
       if (htmlPreview) options.format = "html";
       const current = facts();
       // Run code is a switch that is off whenever a document opens and is
-      // never stored. While it is off, a stored preference for a tool that
-      // runs the document -- Quarto, Calepin -- is ignored. A Quarto document
-      // is then drawn as the Markdown it is, and a Typst one by this
-      // browser's own renderer, rather than by running code without consent.
-      const executes = format === "quarto" || ["quarto", "calepin"].includes(current.buildPreferences.tool);
-      const build = executes && !current.localExecution
-        ? (format === "typst"
-            ? { selection: "tool", backend: "browser", tool: "typst", output: current.buildPreferences.output }
-            : { selection: "tool", backend: "browser", tool: "markdown", output: current.buildPreferences.output === "pdf" ? "pdf" : "html" })
-        : current.buildPreferences;
-      rendered = await renderers.render(source, title, { ...options, buildPreferences: build, project: slug });
+      // never stored. While it is off, a format set to this computer is
+      // drawn by this browser's own renderer, and a document never runs on
+      // this computer without consent.
+      const build = current.localExecution ? current.buildPreferences : { ...current.buildPreferences, backend: "browser" };
+      rendered = await renderers.render(source, title, { ...options, buildPreferences: build, project: slug, bindingId });
       debug("preview: result", Boolean(rendered?.pdf), rendered?.ok, rendered?.failure?.message || "");
       if (facts().disposed) return;
       if (format === "latex" && !htmlPreview) status.recordLatex(rendered);
-      // Every other format keeps its tool's output too, so a failed Quarto or
-      // Calepin run can show its whole log. Each render replaces the last one,
+      // Every other format keeps its tool's output too, so a failed Quarto
+      // or Typst run on this computer can show its whole log. Each render replaces the last one,
       // including with "" when this one produced none.
       else status.recordLog(rendered?.log || "");
       const { html, pdf, artifact, artifactKind, synctex, diagnostics: said, log } = rendered;

@@ -33,7 +33,6 @@ pub struct Forward {
     pub path: String,
     pub origin: String,
     pub content_type: Option<HeaderValue>,
-    pub if_none_match: Option<HeaderValue>,
     pub body: Vec<u8>,
 }
 
@@ -183,9 +182,6 @@ impl Service {
             .body(request.body.clone());
         if let Some(content_type) = &request.content_type {
             builder = builder.header(header::CONTENT_TYPE, content_type.clone());
-        }
-        if let Some(if_none_match) = &request.if_none_match {
-            builder = builder.header(header::IF_NONE_MATCH, if_none_match.clone());
         }
         builder.send().await
     }
@@ -379,15 +375,12 @@ fn binary() -> PathBuf {
 }
 
 // Only these headers reach the page. The service's other headers stay on
-// its side of the bridge. The preview poller reads the etag and rendering
-// headers. The last two keep a served file sandboxed and unsniffed, which the
-// page's own origin would otherwise lose in the relay.
-const RELAYED: [&str; 7] = [
+// its side of the bridge. The last two keep a served file sandboxed and
+// unsniffed, which the page's own origin would otherwise lose in the relay.
+const RELAYED: [&str; 5] = [
     "content-type",
     "cache-control",
     "content-disposition",
-    "etag",
-    "x-librepaper-rendering",
     "content-security-policy",
     "x-content-type-options",
 ];
@@ -502,12 +495,6 @@ mod tests {
     fn empty_expected_instance_is_never_ours() {
         let body = health("librepaper-local", "", Some(&proof(TOKEN, &NONCE)));
         assert!(!health_matches(&body, "", TOKEN, &NONCE));
-    }
-
-    #[test]
-    fn relayed_headers_include_the_preview_poller_headers() {
-        assert!(RELAYED.contains(&"etag"));
-        assert!(RELAYED.contains(&"x-librepaper-rendering"));
     }
 
     #[test]

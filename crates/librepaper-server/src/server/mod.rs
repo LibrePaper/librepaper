@@ -84,7 +84,6 @@ mod onboarding;
 #[cfg(test)]
 mod onboarding_tests;
 pub mod origins;
-mod quarto_checkpoint;
 mod quota;
 mod reply;
 #[cfg(test)]

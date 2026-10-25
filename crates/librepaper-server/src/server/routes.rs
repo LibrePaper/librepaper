@@ -61,10 +61,6 @@ pub(super) fn api_router(server: Arc<Server>) -> Router {
         .route("/api/documents/{slug}/assets", any(document_assets))
         .route("/api/documents/{slug}/assets/{sha}", get(document_asset))
         .route(
-            "/api/documents/{slug}/quarto/checkpoint",
-            post(quarto_checkpoint),
-        )
-        .route(
             "/api/documents/{slug}/sync",
             get(sync_link).put(sync_link).delete(sync_link),
         )
@@ -504,17 +500,6 @@ async fn document_asset(
 ) -> Reply {
     server
         .handle_asset_read(request.headers(), &ctx, &slug, &sha)
-        .await
-}
-
-async fn quarto_checkpoint(
-    State(server): State<Arc<Server>>,
-    Extension(ctx): Extension<RequestContext>,
-    Path(slug): Path<String>,
-    request: Request<Body>,
-) -> Reply {
-    server
-        .handle_quarto_checkpoint(request, &ctx.arrival, &slug)
         .await
 }
 

@@ -64,6 +64,16 @@ assert.ok(
   "diagnostics waits on the source pane, whatever the role",
 );
 
+// A folder on this computer has no server behind it: collaboration, the agent,
+// history, sharing and Git are not offered, whatever else the reader may do.
+{
+  const list = offered({ role: "owner", mayEdit: true, editing: true, canSeeSharing: true, canPublish: true, desktop: true, local: true });
+  for (const hidden of ["collaboration", "agent", "history", "share", "git"]) {
+    assert.ok(!list.includes(hidden), `a local project is not offered ${hidden}`);
+  }
+  assert.deepEqual(list, ["files", "outline", "changes", "diagnostics"], "a local project keeps the files, outline, changes and diagnostics");
+}
+
 // Before the document has answered there is no role, and the rail stays empty
 // rather than putting up one audience's furniture and taking it down again
 // when the reply lands.

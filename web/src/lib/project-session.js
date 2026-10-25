@@ -139,6 +139,7 @@ export function uniquePresences(states, { localClient = null, localTab = "" } = 
  * onState?: (state: SessionState) => void,
  * name?: string,
  * mayEdit?: boolean,
+ * standalone?: boolean,
  * persistence?: { open?: (doc: LoroDoc, events: PersistenceEvents) => { hydration?: unknown, flush?: () => Promise<unknown>, close?: () => void } | null },
  * fetchReference?: (reference: string) => Promise<Uint8Array>,
  * presenceId?: () => string,
@@ -153,6 +154,10 @@ export function createProjectSession({
   onState,
   name,
   mayEdit = true,
+  // A standalone session has no server. It is joined once its persistence has
+  // hydrated, sends nothing, and its `pending` follows the persistence adapter
+  // instead of a server acknowledgement.
+  standalone = false,
   persistence = null,
   fetchReference,
   presenceId = randomPresenceId,
@@ -347,7 +352,7 @@ export function createProjectSession({
   const report = () => left ? undefined : onState?.({
     // Keep this numeric for the existing toolbar truthiness checks. It is a
     // save signal, not a count of transport batches.
-    pending: Number(mayEdit && !coveredByDurable()),
+    pending: standalone ? localPending : Number(mayEdit && !coveredByDurable()),
     local,
     localPending,
     localError,
@@ -391,6 +396,16 @@ export function createProjectSession({
   // Sessions without an asynchronous persistence adapter are hydrated at
   // construction. Mark that baseline before a socket can import remote data.
   if (!persister?.hydration) captureHydratedTarget();
+  if (standalone) {
+    const settle = () => {
+      joined = true;
+      report();
+    };
+    // `then` runs on a later turn even for a resolved promise, so a session
+    // built without an adapter is joined in its constructor instead.
+    if (persister?.hydration) Promise.resolve(persister.hydration).then(settle, settle);
+    else joined = true;
+  }
   report();
 
   // `color` is the wire spelling every peer already reads. It is the person's
@@ -429,7 +444,7 @@ export function createProjectSession({
     send({ type: "doc-update-end", seq: mine });
   }
 
-  if (mayEdit) {
+  if (mayEdit && !standalone) {
     doc.subscribeLocalUpdates((update) => {
       const mine = ++seq;
       unacknowledged.add(mine);
@@ -1169,6 +1184,9 @@ export function createProjectSession({
       clearPresenceTimer();
       clearPressureTimer();
       pendingPresence.clear();
+      // The presence store expires peers on its own interval, which would
+      // otherwise outlive the session.
+      store.destroy();
       left = true;
       // `left` alone would be enough for the checks, but the gate has to be
       // released too: a caller that leaves one session and opens another on

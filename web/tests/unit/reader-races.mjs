@@ -184,6 +184,7 @@ const context = (values) => {
     Uint8Array,
     ArrayBuffer,
     readerDisposed: false,
+    LOCAL: false,
     // Recomputing the changes is part of what an edit does now; the blocks
     // that care override this to count the calls.
     refreshReview: () => {},
@@ -202,7 +203,7 @@ const context = (values) => {
     previewChoices: [],
     lockedFile: "",
     SLUG: "doc",
-    buildPreferences: { selection: "automatic", backend: "auto", output: "html" },
+    buildPreferences: { selection: "automatic", backend: "browser", output: "html" },
     session: null,
     diagnosticContext,
     snapshotDigest: async () => "test-render-digest",
@@ -250,9 +251,8 @@ const preview = (values = {}) => {
     paintsTheFrame: true,
     latexOutput: "pdf",
     typstOutput: "pdf",
-    buildPreferences: { selection: "automatic", backend: "auto", output: "html" },
+    buildPreferences: { selection: "automatic", backend: "browser", output: "html" },
     localExecution: true,
-    livePreviewOwnsPane: false,
     ...values.facts,
   };
   const state = {
@@ -366,17 +366,6 @@ const preview = (values = {}) => {
   assert.equal(harness.published.at(-1)?.kind, "html", "and a flow page is what reaches the frame");
 }
 
-// A live preview owns the pane: this browser's own compile stays out of it.
-{
-  const harness = preview({
-    facts: { format: "quarto", livePreviewOwnsPane: true },
-    renderers: { formatOf: () => assert.fail("a live preview must not be compiled over"), previewFormatOf: () => assert.fail("a live preview must not be compiled over"), producesPdf: () => false },
-  });
-  await harness.paint();
-  assert.deepEqual(harness.published, []);
-  assert.equal(harness.refreshed, 0);
-}
-
 // A frame showing something this render does not own is refreshed rather than
 // painted over.
 {
@@ -405,13 +394,15 @@ console.log("reader-races: all checks passed");
   const active = { files,
     directoryChanged: (events) => !Array.isArray(events) || events.some((event) => directory.has(event.target)) };
   let targets = 0;
-  const ctx = context({ session: active, needsSourceRefresh, refreshFiles: () => refreshes++, sourceChanged: () => changes++, scheduleTargetUpdate: () => targets++ });
+  let pokes = 0;
+  const ctx = context({ session: active, needsSourceRefresh, refreshFiles: () => refreshes++, sourceChanged: () => changes++, scheduleTargetUpdate: () => targets++, folderSync: { poke: () => pokes++ } });
   vm.runInContext(body("  function filesChanged(events, active = session)", "  function refreshPeers()"), ctx);
   ctx.events = [{ target: "cid:2@1:Text" }];
   vm.runInContext("filesChanged(events)", ctx);
   assert.equal(refreshes, 0, "an edit inside a file does not rebuild the directory");
   assert.equal(changes, 1, "but it does repaint the preview");
   assert.equal(targets, 1, "and it asks for the preview target to be worked out again");
+  assert.equal(pokes, 1, "and it tells the folder sync to catch up");
   ctx.events = [{ target: openText.id }];
   vm.runInContext("filesChanged(events)", ctx);
   assert.equal(changes, 2, "an edit to the open file is heard here too, since no watcher is bound to it");
@@ -453,7 +444,7 @@ console.log("reader-races: all checks passed");
     files: [], sourceFormat: "markdown",
     openTextPath: "paper.tex", lockedPath: "", aloneSet: new Set(), visitorFile: "",
     liveTreeNow: () => ({ texts: { "paper.tex": "\\documentclass{article}" }, digests: {} }),
-    previewTarget, rendersAlone, openingFile, includersOf, readerProjectOwner: {}, warmEngine: () => {}, releaseLive: () => {}, recheckLive: () => {}, holdLive: () => {},
+    previewTarget, rendersAlone, openingFile, includersOf, readerProjectOwner: {}, warmEngine: () => {},
     tick: async () => ({ then: () => {} }), paintPreview: () => {},
     navigationGeneration: 0, everPainted: false, everPaintedShown: false,
     docsOrigin: null, navigateFrame: () => {},
@@ -461,7 +452,7 @@ console.log("reader-races: all checks passed");
     renderCoordinator: { invalidate: () => {} },
     renderStatus: { resetFailure: () => {} },
     renderers: { formatOf: () => "latex", previewFormatOf: () => "latex", warm: () => {} },
-    readQuartoBinding: () => {},
+   
     configureLatex: () => configured++,
     mayEdit: true, mainPathNow: () => "paper.tex",
   });
@@ -497,7 +488,7 @@ console.log("reader-races: all checks passed");
   const settings = createBuildSettings({
     slug: "project",
     origin: "https://app.example",
-    read: () => ({ selection: "automatic", backend: "auto", engine: "auto" }),
+    read: () => ({ selection: "automatic", backend: "browser", engine: "auto" }),
     paint: () => paints++,
     latex: {
       configure: (value) => configurations.push(value), cancel: () => {}, setSettings: () => {},
@@ -542,61 +533,52 @@ console.log("reader-races: all checks passed");
     origin: "https://app.example",
     read,
     latex: { configure: () => {}, cancel: () => {}, setSettings: () => {} },
-    interrupt: (next) => interrupted.push(next),
+    interrupt: () => interrupted.push(true),
   });
   const settings = build((scope, format) =>
-    ({ selection: "tool", backend: "local", tool: "calepin", output: "pdf", user: scope.user, format }));
+    ({ selection: "tool", backend: "local", engine: "xelatex", output: "pdf", user: scope.user, format }));
   settings.follow({ format: "typst", user: "anonymous" });
   assert.deepEqual(interrupted, [], "the first load interrupts nothing");
   settings.follow({ format: "typst", user: "anonymous" });
   assert.deepEqual(interrupted, [], "the same reader's preference, again, interrupts nothing");
   settings.follow({ format: "typst", user: "google:ada" });
-  assert.deepEqual(interrupted, [null], "signing in is a different reader");
+  assert.equal(interrupted.length, 1, "signing in is a different reader");
   assert.equal(settings.state.preferences.user, "google:ada", "and their preference is the one loaded");
 
-  // A preference chosen by hand interrupts with the choice itself, so a local
-  // preview that the choice keeps using can survive it.
-  settings.choose({ selection: "tool", backend: "local", tool: "calepin" }, "typst");
-  assert.deepEqual(interrupted.at(-1), { selection: "tool", backend: "local", tool: "calepin" });
+  // A preference chosen by hand interrupts whatever was rendering.
+  settings.choose({ selection: "tool", backend: "browser" }, "typst");
+  assert.equal(interrupted.length, 2);
 }
 
-// What a preference says about the outputs and the preview modes. A loaded
-// preference never puts a tool that runs the document in charge: Quarto and
-// Calepin follow the per-document permission, which is chosen by hand, and a
-// chosen preference speaks only for the document on screen.
+// What a preference says about the outputs. Where a format renders is not
+// stored in the page's state: the pane asks the preference, and Run code
+// decides whether the answer applies.
 {
-  const calepin = { selection: "tool", backend: "local", tool: "calepin", output: "pdf" };
+  const local = { selection: "automatic", backend: "local", output: "pdf" };
   const settings = createBuildSettings({
     slug: "project", origin: "https://app.example",
-    read: () => calepin,
+    read: () => local,
     latex: { configure: () => {}, cancel: () => {}, setSettings: () => {} },
   });
 
-  // A remembered local preference, loaded for either format, leaves both on
-  // the browser's own renderer.
+  // A remembered local preference, loaded for any format, leaves the preview
+  // modes out of the state entirely.
   for (const format of ["markdown", "typst", "quarto"]) {
     settings.follow({ format, user: "anonymous" });
-    assert.equal(settings.state.typstPreviewMode, "typst", "a loaded preference never starts Calepin");
-    assert.equal(settings.state.quartoPreviewMode, "markdown", "a loaded preference never starts Quarto");
+    assert.equal(settings.state.preferences.backend, "local");
+    assert.equal("typstPreviewMode" in settings.state, false);
+    assert.equal("quartoPreviewMode" in settings.state, false);
   }
-
-  // Choosing one while a Markdown document is on screen says nothing about
-  // Typst, because that is not what the reader was looking at.
-  settings.state.typstPreviewMode = "typst";
-  settings.choose(calepin, "markdown");
-  assert.equal(settings.state.typstPreviewMode, "typst", "a chosen preference speaks only for the document on screen");
-  settings.choose(calepin, "typst");
-  assert.equal(settings.state.typstPreviewMode, "calepin");
 
   // The output each format produces follows the preference it was loaded or
   // chosen with, and anything that is not a PDF is a flow page.
-  settings.choose({ ...calepin, output: "html" }, "typst");
+  settings.choose({ ...local, output: "html" }, "typst");
   assert.equal(settings.state.typstOutput, "html");
-  settings.choose({ ...calepin, output: "pdf" }, "typst");
+  settings.choose({ ...local, output: "pdf" }, "typst");
   assert.equal(settings.state.typstOutput, "pdf");
-  settings.choose({ ...calepin, output: "docx" }, "typst");
+  settings.choose({ ...local, output: "docx" }, "typst");
   assert.equal(settings.state.typstOutput, "html", "an output that is not paged falls back to the default flow page");
-  settings.choose({ selection: "tool", backend: "browser", tool: "tex", output: "html" }, "latex");
+  settings.choose({ selection: "automatic", backend: "browser", output: "html" }, "latex");
   assert.equal(settings.state.latexOutput, "html");
 }
 
@@ -658,7 +640,7 @@ for (const invalidate of [null, "navigation", "main"]) {
   let reviewed = 0;
   let rescheduled = 0;
   const ctx = context({
-    sourceGeneration: 0, historyLiveVersion: 0, releaseLive: () => {}, recheckLive: () => {}, mayEdit: true, publishedBundle: null,
+    sourceGeneration: 0, historyLiveVersion: 0, mayEdit: true, publishedBundle: null,
     outlineRevision: 0, sourceFormat: "", editing: false,
     previewTimer: null, PASSIVE_PREVIEW_DEBOUNCE: 1000,
     setTimeout: () => 1, clearTimeout: () => {}, paintPreview: () => {},
@@ -706,7 +688,7 @@ for (const invalidate of [null, "navigation", "main"]) {
 {
   let scheduled = 0;
   const ctx = context({
-    sourceGeneration: 0, historyLiveVersion: 0, releaseLive: () => {}, recheckLive: () => {}, editing: true, sourceFormat: "markdown", pdfOutput: false, mayEdit: true, publishedBundle: null,
+    sourceGeneration: 0, historyLiveVersion: 0, editing: true, sourceFormat: "markdown", pdfOutput: false, mayEdit: true, publishedBundle: null,
     previewTimer: null, PASSIVE_PREVIEW_DEBOUNCE: 1000,
     diagnosticPainter: { typed: () => {} },
     setTimeout: (fn, ms) => {
@@ -725,7 +707,7 @@ for (const invalidate of [null, "navigation", "main"]) {
 {
   let scheduled = 0;
   const ctx = context({
-    sourceGeneration: 0, historyLiveVersion: 0, releaseLive: () => {}, recheckLive: () => {}, editing: true, sourceFormat: "typst", pdfOutput: true, compilesHere: true,
+    sourceGeneration: 0, historyLiveVersion: 0, editing: true, sourceFormat: "typst", pdfOutput: true, compilesHere: true,
     previewTimer: null, diagnosticPainter: { typed: () => {} },
     setTimeout: (fn, ms) => {
       assert.ok(ms <= 50, "Typst starts rendering within 50 ms of an edit");
@@ -745,7 +727,7 @@ for (const invalidate of [null, "navigation", "main"]) {
   let inEditorUpdate = true;
   let paintedDiagnostics = 0;
   const ctx = context({
-    sourceGeneration: 0, historyLiveVersion: 0, releaseLive: () => {}, recheckLive: () => {}, quartoFreshnessSerial: 0, sourceFormat: "quarto", quartoView: "draft",
+    sourceGeneration: 0, historyLiveVersion: 0, quartoFreshnessSerial: 0, sourceFormat: "quarto", quartoView: "draft",
     previewPath: "main.qmd",
     session: {
       idOf: () => "main", textOf: () => ({ toString: () => "# Draft\n" }),
@@ -766,9 +748,9 @@ for (const invalidate of [null, "navigation", "main"]) {
   assert.equal(paintedDiagnostics, 1, "diagnostics paint after the editor update returns");
 }
 
-// A Quarto document with no live preview running paints its Markdown draft
-// like any other draft format -- nothing rendered is ever uploaded, so there
-// is no saved bundle left to prefer over it.
+// A Quarto document with Run code off paints its Markdown draft like any other
+// draft format -- nothing rendered is ever uploaded, so there is no saved
+// bundle left to prefer over it.
 {
   const builds = [];
   const harness = preview({
@@ -783,15 +765,21 @@ for (const invalidate of [null, "navigation", "main"]) {
     },
   });
   await harness.paint();
-  assert.equal(builds.length, 1, "a Quarto document with no live preview compiles its own draft");
+  assert.equal(builds.length, 1, "a Quarto document compiles its own draft");
   assert.equal(harness.published[0].kind, "html");
   assert.equal(harness.published[0].html, "<p>draft</p>");
+
+  // With Run code on, the stored choice of this computer is what renders.
+  harness.facts.buildPreferences = { selection: "automatic", backend: "local", output: "html" };
+  harness.facts.localExecution = true;
+  await harness.paint();
+  assert.equal(builds.at(-1).backend, "local");
 
   // And a reader who has not approved execution gets the Markdown it is,
   // rather than code this browser was never given permission to run.
   harness.facts.localExecution = false;
   await harness.paint();
-  assert.deepEqual(builds.at(-1), { selection: "tool", backend: "browser", tool: "markdown", output: "html" });
+  assert.deepEqual(builds.at(-1), { selection: "automatic", backend: "browser", output: "html" });
 }
 
 // Typst follows the PDF lifecycle too: one compile in flight, latest request
@@ -1111,10 +1099,9 @@ for (const latest of [
     compact: false, layout: 'source', showMobileView: () => {},
     viewing: null, editing: true, editor: { text: () => null },
     liveTreeNow: () => ({ texts, digests: {} }),
-    previewTarget, rendersAlone, openingFile, includersOf, readerProjectOwner: {}, warmEngine: () => {}, releaseLive: () => {}, recheckLive: () => {}, holdLive: () => {},
+    previewTarget, rendersAlone, openingFile, includersOf, readerProjectOwner: {}, warmEngine: () => {},
     renderers: { formatOf: p => p.endsWith('.tex') ? 'latex' : '', previewFormatOf: p => p.endsWith('.tex') ? 'latex' : '', warm: () => {} },
     configureLatex: f => configured.push(f),
-    localQuarto: { configure: () => {}, bindingId: () => 'hosted', probe: async () => {} },
     SLUG: 'thesis', location: {origin:'http://localhost'},
     navigationGeneration: 0, issued: 0, docsOrigin: null,
     framePreview: {clear: () => cleared++},
@@ -1122,7 +1109,7 @@ for (const latest of [
     renderStatus: { resetFailure: () => {}, clearDocx: () => {} },
     diagnosticPainter: { rendered: () => {} },
     previewTimer: null, deliveredKind: '', activeSynctex: null, previewCleared: false,
-    navigateFrame: () => {}, readQuartoBinding: () => {},
+    navigateFrame: () => {},
     tick: async () => {}, paintPreview: () => painted++,
   });
   // `lockedPath`, `openTextPath` and the visitor-aware `filesShown` and

@@ -1,6 +1,6 @@
-//! The job surface: admitting a build, running it, and answering for it.
+//! The job surface: admitting a render, running it, and answering for it.
 //!
-//! `POST jobs` is the only door a build comes through, and everything from
+//! `POST jobs` is the only door a render comes through, and everything from
 //! the multipart upload to the workspace it is staged into to the status a
 //! caller polls is here. Admission in particular: what a request has to
 //! satisfy before anything is copied onto this computer, which is the whole
@@ -12,114 +12,7 @@
 
 use super::*;
 
-/* ------------------------------------------------------------ workspace */
-
-/// `PUT workspace?project=[&binding=]`: sync a workspace for this (origin,
-/// project) scope from a fresh multipart upload, the same shape as `jobs`'s own
-/// `manifest`/`file` parts but named `manifest` here since there is no job
-/// to describe. Without `binding`, or with `HOSTED_BINDING`, this syncs the
-/// hosted workspace. Any other id names a granted project folder, which gets
-/// the shared files written into it; the folder's other files are never
-/// touched, and a file edited outside LibrePaper is kept as `<name>.local`.
-pub(super) async fn handle_workspace_put(
-    inner: &Arc<Inner>,
-    headers: &HeaderMap,
-    origin: Option<&str>,
-    request: Request<Body>,
-) -> Reply {
-    if let Err(response) = authenticate(inner, headers, origin) {
-        return response;
-    }
-    let Some(project) = project_query(request.uri()) else {
-        return write_json(
-            400,
-            &json!({"error": "workspace sync needs a valid project"}),
-        );
-    };
-    let binding_id = binding_query(request.uri()).unwrap_or_else(|| HOSTED_BINDING.to_string());
-    let granted = binding_id != HOSTED_BINDING;
-    let origin = origin.unwrap_or_default().to_string();
-
-    let upload = match read_multipart_upload(
-        request,
-        "manifest",
-        "bad manifest part",
-        "manifest is too large",
-        "missing the manifest part",
-    )
-    .await
-    {
-        Ok(upload) => upload,
-        Err(response) => return response,
-    };
-    // Upload bodies are bounded but may be slow, so the admission gate is
-    // not held while reading them; it is taken before syncing.
-    let uploads = upload.files;
-    let manifest_text = upload.metadata;
-    let manifest: Vec<ManifestEntry> = match serde_json::from_str(&manifest_text) {
-        Ok(manifest) => manifest,
-        Err(_) => return write_json(400, &json!({"error": "bad manifest"})),
-    };
-    if let Err(response) = validate_manifest_shape(&manifest) {
-        return response;
-    }
-    if let Err(response) = validate_manifest(&manifest, &uploads) {
-        return response;
-    }
-
-    if inner
-        .quarto_bindings
-        .get_scoped(&binding_id, &origin, &project)
-        .is_none()
-    {
-        let error = if granted {
-            "this project folder is not granted"
-        } else {
-            "this local app keeps no hosted workspace"
-        };
-        return write_json(404, &json!({"error": error}));
-    }
-
-    let staged = match tempfile::tempdir() {
-        Ok(dir) => dir,
-        Err(_) => return write_json(500, &json!({"error": "could not create a workspace"})),
-    };
-    if let Err(error) = stage_uploads(staged.path(), &uploads) {
-        return write_json(400, &json!({"error": error}));
-    }
-
-    let _admission = inner.admission.lock().await;
-    let Some(binding) = inner
-        .quarto_bindings
-        .get_scoped(&binding_id, &origin, &project)
-    else {
-        let error = if granted {
-            "this project folder was revoked"
-        } else {
-            "hosted workspace was revoked"
-        };
-        return write_json(403, &json!({"error": error}));
-    };
-    if granted {
-        let record = inner.quarto_bindings.written_record(&binding.id);
-        return match sync_granted_folder(staged.path(), &binding.root, &manifest, &record) {
-            Ok(kept) => write_json(200, &json!({"synced": manifest.len(), "kept": kept})),
-            Err(error) => write_json(400, &json!({"error": error})),
-        };
-    }
-    match sync_hosted_workspace(staged.path(), &binding.root, &manifest) {
-        Ok(()) => write_json(200, &json!({"synced": manifest.len()})),
-        Err(error) => write_json(400, &json!({"error": error})),
-    }
-}
-
-/// The optional `binding` query parameter naming a granted project folder.
-fn binding_query(uri: &axum::http::Uri) -> Option<String> {
-    let query = uri.query()?;
-    url::form_urlencoded::parse(query.as_bytes())
-        .find(|(name, _)| name == "binding")
-        .map(|(_, value)| value.into_owned())
-}
+use crate::local::render::workspace::{self, MirrorError};
 
 pub(super) async fn handle_jobs_post(
     inner: &Arc<Inner>,
@@ -138,6 +31,7 @@ pub(super) async fn handle_jobs_post(
         "bad job part",
         "job description is too large",
         "missing the job part",
+        MAX_FILES,
     )
     .await
     {
@@ -145,137 +39,17 @@ pub(super) async fn handle_jobs_post(
         Err(response) => return response,
     };
     // Never hold the admission gate across an upload.
-    let mut uploads = upload.files;
-    let job_text = upload.metadata;
-    let raw_job: Value = match serde_json::from_str(&job_text) {
+    let uploads = upload.files;
+    let raw_job: Value = match serde_json::from_str(&upload.metadata) {
         Ok(job) => job,
         Err(_) => return write_json(400, &json!({"error": "bad job description"})),
     };
-    // The version is refused here, at the wire, before the request is decoded;
-    // `BuildRequestV2::validate_shape` checks it again on the decoded request.
-    // There used to be a second decode below for anything that was not
-    // protocol 2, producing a `JobRequest` whose required fields were absent
-    // and which every consumer then had to treat as optional.
-    if raw_job.get("protocol").and_then(Value::as_u64) != Some(2) {
-        return write_json(400, &json!({"error": "unsupported protocol version"}));
-    }
-    let mut job: JobRequest = {
-        let request: protocol::BuildRequestV2 = match serde_json::from_value(raw_job) {
-            Ok(request) => request,
-            Err(error) => {
-                return write_json(
-                    400,
-                    &json!({"error": format!("bad protocol 2 job description: {error}")}),
-                )
-            }
-        };
-        if let Err(error) = request.validate_shape() {
-            return write_json(400, &json!({"error": error}));
-        }
-        let is_quarto = request.builder == "quarto";
-        if request.builder == "calepin"
-            && !matches!(
-                request.workspace,
-                protocol::WorkspaceRequest::Snapshot {
-                    binding_id: Some(_)
-                }
-            )
-        {
-            return write_json(
-                400,
-                &json!({"error": "Calepin builds require a scoped snapshot binding"}),
-            );
-        }
-        let inputs = if is_quarto {
-            let binding_id = match &request.workspace {
-                protocol::WorkspaceRequest::Snapshot {
-                    binding_id: Some(id),
-                } => id.clone(),
-                _ => {
-                    return write_json(
-                        400,
-                        &json!({"error": "Quarto builds require a scoped snapshot binding"}),
-                    )
-                }
-            };
-            protocol::BuildInputs::Quarto {
-                options: protocol::QuartoJobOptions {
-                    binding_id,
-                    main: request.entrypoint.clone(),
-                    format: request.output.clone(),
-                    execution_mode: protocol::QuartoExecutionMode::IsolatedSnapshot,
-                    profile: request
-                        .options
-                        .get("profile")
-                        .and_then(Value::as_str)
-                        .filter(|value| !value.is_empty())
-                        .map(str::to_owned),
-                    parameters: request
-                        .options
-                        .get("parameters")
-                        .and_then(Value::as_object)
-                        .map(|values| {
-                            values
-                                .iter()
-                                .map(|(key, value)| (key.clone(), value.clone()))
-                                .collect()
-                        })
-                        .unwrap_or_default(),
-                    policy: request
-                        .options
-                        .get("policy")
-                        .map(|value| serde_json::from_value(value.clone()))
-                        .transpose()
-                        .unwrap_or_default()
-                        .unwrap_or_default(),
-                    data_inputs: request
-                        .options
-                        .get("data_inputs")
-                        .and_then(Value::as_array)
-                        .map(|values| {
-                            values
-                                .iter()
-                                .filter_map(Value::as_str)
-                                .map(str::to_owned)
-                                .collect()
-                        })
-                        .unwrap_or_default(),
-                    shared_inventory_complete: true,
-                    shared_tree_sha256: Some(manifest_tree_digest(&request.manifest, &uploads)),
-                    ..Default::default()
-                },
-            }
-        } else {
-            protocol::BuildInputs::Native {
-                options: request.options,
-            }
-        };
-        JobRequest {
-            protocol: 2,
-            kind: if is_quarto {
-                "quarto".into()
-            } else {
-                "build".into()
-            },
-            project: request.project,
-            origin: request.origin,
-            snapshot: request.snapshot,
-            generation: request.generation,
-            inputs,
-            manifest: request.manifest,
-            source: request.source,
-            options: JobOptions {
-                deadline_seconds: request
-                    .deadline_seconds
-                    .unwrap_or(protocol::DEFAULT_DEADLINE_SECONDS),
-            },
-            builder: request.builder,
-            workspace: request.workspace,
-            entrypoint: request.entrypoint,
-            output: request.output,
-        }
+    // The version is refused before the rest of the body is decoded, and a
+    // protocol 2 page is told to update.
+    let job = match JobRequest::decode(raw_job) {
+        Ok(job) => job,
+        Err(error) => return write_json(400, &json!({"error": error})),
     };
-    // Bound local reads must follow authentication and inventory limits.
     let Some(project) = store::valid_project(&job.project) else {
         return write_json(400, &json!({"error": "job needs a valid project"}));
     };
@@ -285,152 +59,33 @@ pub(super) async fn handle_jobs_post(
             &json!({"error": "job scope does not match the request origin"}),
         );
     }
-    if let Err(response) = validate_manifest_shape(&job.manifest) {
+    if let Err(response) = validate_manifest_shape(&job.manifest, MAX_FILES) {
         return response;
     }
-    if let Some(source) = &job.source {
-        if let Err(error) = source.validate() {
-            return write_json(400, &json!({"error": error}));
-        }
-        if source.tree_sha256 != job.snapshot || source.main_path != job.entrypoint {
-            return write_json(
-                400,
-                &json!({"error": "source snapshot identity does not match the build request"}),
-            );
-        }
-        if source.manifest_sha256 != input_manifest_digest(&job.manifest) {
-            return write_json(
-                400,
-                &json!({"error": "source manifest digest does not match the materialized inputs"}),
-            );
-        }
-    }
+    // Whether *this* caller holds the binding the job names. The workspace
+    // it points at is written to before the command runs.
+    if inner
+        .bindings
+        .validate_scoped_entrypoint(&job.binding_id, &origin, &project, &job.entrypoint)
+        .is_err()
     {
-        // Shape, size and safety of `builder`, `entrypoint`, `output` and
-        // `workspace` were settled by `BuildRequestV2::validate_shape` above,
-        // which also repeats the protocol version check. What is left here is
-        // what that check cannot reach: whether *this* caller holds the
-        // binding a bound snapshot names, and what its files actually are.
-        let builder = job.builder.as_str();
-        let workspace = &job.workspace;
-        let entrypoint = job.entrypoint.as_str();
-        // Builds always run in service-owned temporary workspaces. Bound
-        // directories are a preview surface; a snapshot may name a binding
-        // solely to authorize copying selected inputs into its temp workspace.
-        if matches!(workspace, protocol::WorkspaceRequest::Bound { .. }) {
-            return write_json(
-                400,
-                &json!({"error": "bound workspace is only available for managed previews"}),
-            );
-        }
-        if let protocol::WorkspaceRequest::Snapshot {
-            binding_id: Some(binding_id),
-        } = workspace
-        {
-            // The hosted workspace takes the entrypoint the job names, as a live preview does.
-            let binding = match inner
-                .quarto_bindings
-                .validate_scoped_entrypoint(binding_id, &origin, &project, entrypoint, true)
-            {
-                Ok(binding) => binding,
-                Err(_) => {
-                    return write_json(
-                        403,
-                        &json!({"error": "workspace binding is not granted for this origin and project"}),
-                    );
-                }
-            };
-            let authorized_root = binding.root.clone();
-            // A bound snapshot contributes only files explicitly named by
-            // the manifest. Copying happens into this request's fresh job
-            // workspace below; the binding root itself is never executed.
-            for entry in &job.manifest {
-                if uploads.iter().any(|(name, _)| name == &entry.path) {
-                    continue;
-                }
-                let source = binding.root.join(&entry.path);
-                let source = match std::fs::canonicalize(&source) {
-                    Ok(source) if source.starts_with(&authorized_root) && source.is_file() => {
-                        source
-                    }
-                    _ => {
-                        return write_json(
-                            400,
-                            &json!({"error": format!("bound input is outside the authorized folder: {}", entry.path)}),
-                        )
-                    }
-                };
-                let bytes = match read_bounded_public(&source, MAX_UPLOAD_BYTES) {
-                    Ok(bytes) => bytes,
-                    Err(_) => {
-                        return write_json(
-                            400,
-                            &json!({"error": format!("bound input is unavailable: {}", entry.path)}),
-                        )
-                    }
-                };
-                if bytes.len() as u64 != entry.size
-                    || librepaper_document::results::sha256(&bytes) != entry.sha256
-                {
-                    return write_json(
-                        400,
-                        &json!({"error": format!("bound input digest mismatch: {}", entry.path)}),
-                    );
-                }
-                uploads.push((entry.path.clone(), bytes));
-            }
-        }
-        debug_assert_eq!(job.kind == "quarto", builder == "quarto");
-    }
-    let preview_conflict = {
-        let previews = inner.previews.lock().await;
-        render_conflicts_with_preview(inner, &job, &previews, &origin, &project)
-    };
-    if preview_conflict {
         return write_json(
-            409,
-            &json!({"error":"Stop managed preview before rendering or publishing."}),
+            403,
+            &json!({"error": "workspace binding is not granted for this origin and project"}),
         );
     }
-    if job.kind == "quarto" {
-        let Some(options) = job.inputs.quarto() else {
-            return write_json(
-                400,
-                &json!({"error": "quarto job is missing typed options"}),
-            );
-        };
-        if let Err(error) = options.validate() {
-            return write_json(400, &json!({"error": error}));
-        }
-        if inner
-            .quarto_bindings
-            .get_scoped(&options.binding_id, &origin, &project)
-            .is_none()
-        {
-            return write_json(
-                403,
-                &json!({"error": "quarto binding is not granted for this origin and project"}),
-            );
-        }
-    }
-    if job.manifest.len() > MAX_FILES {
-        return write_json(413, &json!({"error": "too many files"}));
-    }
-
-    if let Err(response) = validate_manifest(&job.manifest, &uploads) {
+    if let Err(response) = validate_manifest(&job.manifest, &uploads, true) {
         return response;
     }
-    if let Some(options) = job.inputs.quarto_mut() {
-        options.shared_tree_sha256 = Some(manifest_tree_digest(&job.manifest, &uploads));
-    }
-
-    // Answer a repeat before staging anything, so a retry does not copy the
-    // uploads again only to be refused below.
+    if !job
+        .manifest
+        .iter()
+        .any(|entry| entry.path == job.entrypoint)
     {
-        let jobs = inner.jobs.lock().await;
-        if let Some(response) = admitted_idempotent_response(&jobs, &origin, &project, &job) {
-            return response;
-        }
+        return write_json(
+            400,
+            &json!({"error": "the input inventory must include the entry file"}),
+        );
     }
 
     let id = librepaper_base::util::new_id();
@@ -444,44 +99,30 @@ pub(super) async fn handle_jobs_post(
         return write_json(400, &json!({"error": error}));
     }
 
-    let workspace = Workspace { root: root.clone() };
     let (cancel_tx, cancel_rx) = watch::channel(false);
     let status = JobStatus {
         id: id.clone(),
-        kind: job.kind.clone(),
         status: "queued".to_string(),
         stage: "staging".to_string(),
         snapshot: job.snapshot.clone(),
         generation: job.generation,
+        provenance: protocol::Provenance {
+            backend: "local".into(),
+            format: job.format.clone(),
+            output: job.output.clone(),
+        },
         ..Default::default()
     };
     let generation = job.generation;
+    let binding_id = job.binding_id.clone();
 
     let _admission = inner.admission.lock().await;
-    // Preview admission uses admission -> previews -> jobs. Recheck with the
-    // same order here: the early check above intentionally released previews
-    // before staging uploads, so a preview may have started in the meantime.
-    let previews = inner.previews.lock().await;
-    if render_conflicts_with_preview(inner, &job, &previews, &origin, &project) {
-        drop(previews);
-        let _ = std::fs::remove_dir_all(&root);
-        return write_json(
-            409,
-            &json!({"error":"Stop managed preview before rendering or publishing."}),
-        );
-    }
-    drop(previews);
     let mut jobs = inner.jobs.lock().await;
-    // The early lookup above avoids most duplicate staging, but it cannot
-    // reserve a key across concurrent requests. Recheck while holding the
-    // admission lock immediately before insertion so only one request can
-    // become executable for a given scoped idempotency key.
-    if let Some(response) = admitted_idempotent_response(&jobs, &origin, &project, &job) {
-        drop(jobs);
-        let _ = std::fs::remove_dir_all(&root);
-        return response;
-    }
     supersede_older_generations(&mut jobs, &origin, &project, generation);
+    // A job already running in this workspace is stopped, so the new one
+    // starts as soon as the queue reaches it and two commands never share a
+    // folder.
+    cancel_running_in_workspace(&jobs, &origin, &project, &binding_id);
     let mut queue = inner.queue.lock().await;
     queue.retain(|qid| jobs.get(qid).is_some_and(|entry| !entry.superseded));
     if queue.len() >= MAX_QUEUE {
@@ -501,7 +142,7 @@ pub(super) async fn handle_jobs_post(
             origin,
             project,
             files: BTreeMap::new(),
-            workspace,
+            root,
             cancel_tx,
             cancel_rx,
             queued: true,
@@ -509,25 +150,6 @@ pub(super) async fn handle_jobs_post(
             finished_at: None,
         },
     );
-    if jobs
-        .get(&id)
-        .is_some_and(|entry| entry.request.kind == "quarto")
-    {
-        let persisted = jobs
-            .get(&id)
-            .ok_or_else(|| "admitted Quarto job disappeared".to_string())
-            .and_then(persist_quarto_job);
-        if persisted.is_err() {
-            jobs.remove(&id);
-            drop(queue);
-            drop(jobs);
-            let _ = std::fs::remove_dir_all(&root);
-            return write_json(
-                500,
-                &json!({"error": "could not persist the local Quarto job admission"}),
-            );
-        }
-    }
     queue.push_back(id.clone());
     drop(queue);
     drop(jobs);
@@ -536,31 +158,107 @@ pub(super) async fn handle_jobs_post(
     write_json(202, &json!({"id": id, "status": "queued"}))
 }
 
-fn render_conflicts_with_preview(
-    inner: &Inner,
-    job: &JobRequest,
-    previews: &super::preview::Previews,
-    origin: &str,
-    project: &str,
-) -> bool {
-    if job.kind != "quarto" {
-        return false;
+/// `PUT folder`: mirror the whole project into the project folder the binding
+/// names. The manifest lists every file; the uploads carry the bytes of some.
+pub(super) async fn handle_folder_put(
+    inner: &Arc<Inner>,
+    headers: &HeaderMap,
+    origin: Option<&str>,
+    request: Request<Body>,
+) -> Reply {
+    if let Err(response) = authenticate(inner, headers, origin) {
+        return response;
     }
-    previews.0.values().any(|preview| {
-        job.inputs.quarto().is_some_and(|options| {
-            preview.binding == options.binding_id
-                || inner
-                    .quarto_bindings
-                    .get_scoped(&options.binding_id, origin, project)
-                    .is_some_and(|binding| binding.root == preview.root)
-        })
+    let origin = origin.unwrap_or_default().to_string();
+    let Some(project) = project_query(request.uri()) else {
+        return write_json(400, &json!({"error": "folder needs a valid project"}));
+    };
+    let Some(binding_id) = query_value(request.uri(), "binding") else {
+        return write_json(400, &json!({"error": "folder needs a binding"}));
+    };
+    if binding_id == crate::local::bindings::HOSTED_BINDING {
+        return write_json(400, &json!({"error": "only a project folder is mirrored"}));
+    }
+    // Only a project binding is stored, so any other id does not resolve.
+    let granted = inner
+        .bindings
+        .validate_scoped_root(&binding_id, &origin, &project);
+    let Ok(binding) = granted else {
+        return write_json(
+            403,
+            &json!({"error": "workspace binding is not granted for this origin and project"}),
+        );
+    };
+
+    // A folder project may hold more files than a render job carries.
+    let max_files = projects::MAX_PROJECT_FILES;
+    let upload = match read_multipart_upload(
+        request,
+        "manifest",
+        "bad manifest part",
+        "the manifest is too large",
+        "missing the manifest part",
+        max_files,
+    )
+    .await
+    {
+        Ok(upload) => upload,
+        Err(response) => return response,
+    };
+    #[derive(serde::Deserialize)]
+    struct FolderManifest {
+        manifest: Vec<ManifestEntry>,
+    }
+    let Ok(FolderManifest { manifest }) = serde_json::from_str(&upload.metadata) else {
+        return write_json(400, &json!({"error": "bad manifest"}));
+    };
+    if let Err(response) = validate_manifest_shape(&manifest, max_files) {
+        return response;
+    }
+    if let Err(response) = validate_manifest(&manifest, &upload.files, false) {
+        return response;
+    }
+
+    let staging = match std::fs::create_dir_all(&inner.jobs_root)
+        .and_then(|()| tempfile::tempdir_in(&inner.jobs_root))
+    {
+        Ok(staging) => staging,
+        Err(_) => return write_json(500, &json!({"error": "could not create a workspace"})),
+    };
+    if let Err(error) = stage_uploads(staging.path(), &upload.files) {
+        return write_json(400, &json!({"error": error}));
+    }
+    let record = inner.bindings.written_record(&binding.id);
+    let root = binding.root.clone();
+    let staged = staging.path().to_path_buf();
+    let outcome = tokio::task::spawn_blocking(move || {
+        workspace::mirror_granted_folder(&staged, &root, &manifest, &record)
     })
+    .await;
+    drop(staging);
+    match outcome {
+        Ok(Ok(report)) => write_json(
+            200,
+            &json!({
+                "kept": report.kept.iter()
+                    .map(|kept| json!({"path": kept.path, "copy": kept.copy}))
+                    .collect::<Vec<_>>(),
+                "trashed": report.trashed,
+                "renamed": report.renamed.iter()
+                    .map(|renamed| json!({"from": renamed.from, "to": renamed.to}))
+                    .collect::<Vec<_>>(),
+            }),
+        ),
+        Ok(Err(MirrorError::Missing(missing))) => write_json(409, &json!({"missing": missing})),
+        Ok(Err(MirrorError::Failed(error))) => write_json(500, &json!({"error": error})),
+        Err(_) => write_json(500, &json!({"error": "the folder mirror stopped"})),
+    }
 }
 
 /// Every manifest entry has a bounded count, safe path, and total size.
 #[allow(clippy::result_large_err)]
-fn validate_manifest_shape(manifest: &[ManifestEntry]) -> Result<(), Reply> {
-    if manifest.len() > MAX_FILES {
+fn validate_manifest_shape(manifest: &[ManifestEntry], max_files: usize) -> Result<(), Reply> {
+    if manifest.len() > max_files {
         return Err(write_json(
             413,
             &json!({"error": "too many manifest entries"}),
@@ -588,6 +286,7 @@ fn validate_manifest_shape(manifest: &[ManifestEntry]) -> Result<(), Reply> {
 fn validate_manifest(
     manifest: &[ManifestEntry],
     uploads: &[(String, Vec<u8>)],
+    require_all: bool,
 ) -> Result<(), Reply> {
     let mut expected: HashMap<&str, &ManifestEntry> = HashMap::new();
     for entry in manifest {
@@ -633,7 +332,7 @@ fn validate_manifest(
             ));
         }
     }
-    if provided.len() != expected.len() {
+    if require_all && provided.len() != expected.len() {
         return Err(write_json(
             400,
             &json!({"error": "the manifest lists a file that was never uploaded"}),
@@ -693,11 +392,13 @@ pub(super) async fn handle_job_file(
         return plain(404, "not found");
     };
     let mut response = Response::new(Body::from(bytes.clone()));
-    let mime = match name {
-        "pdf" => "application/pdf",
-        "html" => "text/html; charset=utf-8",
-        "docx" => "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-        "log" => "text/plain; charset=utf-8",
+    let mime = match (name, entry.request.output.as_str()) {
+        ("artifact", "pdf") => "application/pdf",
+        ("artifact", "html") => "text/html; charset=utf-8",
+        ("artifact", "docx") => {
+            "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+        }
+        ("log", _) => "text/plain; charset=utf-8",
         _ => "application/octet-stream",
     };
     set(&mut response, "content-type", mime);
@@ -757,7 +458,7 @@ pub(super) async fn handle_job_delete(
         return write_json(404, &json!({"error": "not found"}));
     }
     let _ = entry.cancel_tx.send(true);
-    let root = entry.workspace.root.clone();
+    let root = entry.root.clone();
     jobs.remove(id);
     drop(jobs);
     inner.queue.lock().await.retain(|qid| qid != id);

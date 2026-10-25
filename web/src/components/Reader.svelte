@@ -14,6 +14,7 @@
   import HistoryWorkspace from "./reader/HistoryWorkspace.svelte";
   import { createGitResolver } from "../lib/reader/git-resolver.svelte.js";
   import { createGitAuto } from "../lib/reader/git-auto.svelte.js";
+  import { createFolderSync } from "../lib/reader/folder-sync.js";
   import GitConflictWorkspace from "./reader/GitConflictWorkspace.svelte";
   import { createGitDiff } from "../lib/reader/git-diff.svelte.js";
   import GitDiffWorkspace from "./reader/GitDiffWorkspace.svelte";
@@ -32,6 +33,7 @@
   import { createLiveChat } from "../lib/reader/live-chat.svelte.js";
   import { createReaderCollaboration } from "../lib/reader/collaboration.js";
   import { createWorkspace } from "../lib/reader/workspace.svelte.js";
+  import { createFigureStore, createLocalProject, localIdOf, localSlug } from "../lib/reader/local-project.js";
   import { createBuildSettings } from "../lib/reader/build-settings.svelte.js";
   import { createTimeline } from "../lib/reader/timeline.svelte.js";
   import { createPreviewRenderer } from "../lib/reader/preview-render.js";
@@ -83,27 +85,22 @@
   import PreviewControls from "./PreviewControls.svelte";
   import { onPageZoom } from "../lib/desktop/zoom.js";
   import Grip from "./Grip.svelte";
-  import { parseRenderOptions } from "../lib/quarto-options.js";
   import SettingsDialog from "./settings/SettingsDialog.svelte";
-  import ProjectFolderSetting from "./settings/ProjectFolderSetting.svelte";
   import DesktopOnly from "./DesktopOnly.svelte";
-  import { anonymousIdentity, read as readBuildPreferences, update as updateBuildPreferences, writeQuartoOptions } from "../lib/build-preferences.js";
+  import { anonymousIdentity, update as updateBuildPreferences } from "../lib/build-preferences.js";
   import Avatar from "./Avatar.svelte";
   import { extractOutline } from "../lib/outline.js";
   import { createFramePreview } from "../lib/reader/frame-preview.js";
   import { rememberPreview, lastPreview, flushAll } from "../lib/reader/preview-cache.js";
-  import { stamp as stampLive, matches as liveMatches, shouldStartLive, holding as liveHolding } from "../lib/reader/live-cache.js";
   import { previewTarget, rendersAlone, openingFile, includersOf } from "../lib/opening.js";
   import { createFrameOverlays } from "../lib/reader/frame-overlays.js";
   import { createRenderDiagnostics } from "../lib/reader/render-diagnostics.js";
   import { createRenderCoordinator } from "../lib/reader/render-coordinator.js";
-  import { createGeneration } from "../lib/reader/generation.js";
   import { createRenderStatus } from "../lib/reader/render-status.svelte.js";
   import { provide } from "../lib/support/providers.js";
   import { createSteadyBusy } from "../lib/reader/steady-busy.js";
   import { waitStageOf } from "../lib/reader/wait-stage.js";
   import PreviewWaiting from "./reader/PreviewWaiting.svelte";
-  import { createLocalPreview } from "../lib/reader/local-preview.svelte.js";
   import { previewNotes } from "../lib/reader/preview-notes.js";
   import { HIGHLIGHT_COLORS, colorName } from "../lib/annotation-colors.js";
   import { recenteredLeft, placeBar as placeSelectionBar } from "../lib/annotation-bar.js";
@@ -124,14 +121,18 @@
   import Git from "./reader/Git.svelte";
   import PendingAnnotations from "./reader/PendingAnnotations.svelte";
 
-  const SLUG = location.pathname.split("/")[2];
+  // A folder opened in the desktop app arrives as `?local=<id>`. It has no
+  // document on the server and no link key, and its project id is its own.
+  const LOCAL_ID = localIdOf(location.search);
+  const LOCAL = Boolean(LOCAL_ID);
+  const SLUG = LOCAL ? localSlug(LOCAL_ID) : location.pathname.split("/")[2];
 
   // The key a reader arrived with, taken out of the address before anything
   // asks the server a question. From here it is kept under the slug and
   // presented on every request for this document.
   // The sign-in return path carries only the path and query: the key stays in
   // this browser's storage and never travels in a URL the server sees.
-  const KEY = takeLinkKey(SLUG);
+  const KEY = LOCAL ? "" : takeLinkKey(SLUG);
 
   let { initialSettings = "" } = $props();
 
@@ -163,6 +164,10 @@
   let projectUnreadable = $state("");
   // One page is kept per file, so the key names the file as well as the project.
   const previewCacheKey = (path) => `${SLUG}:${doc?.created_at || "unknown"}|${path}`;
+  // A local project keeps no page in this browser: the folder is the only copy
+  // of the project there is.
+  const lastCachedPage = async (path) => (LOCAL ? null : lastPreview(previewCacheKey(path)));
+  const cachePage = (path, page, identity) => { if (!LOCAL) rememberPreview(previewCacheKey(path), page, identity); };
   // Set when the page was opened from this browser's copy because the server
   // could not be reached, so the page says it may be missing newer changes.
   let openedLocally = $state(false);
@@ -182,12 +187,12 @@
   const chatState = liveChat.state;
   let unreadChat = $state(false);
   let pendingChat;
-  let mayChat = $derived(["commenter", "editor", "owner"].includes(doc.role));
+  let mayChat = $derived(!LOCAL && ["commenter", "editor", "owner"].includes(doc.role));
   // Sharing is the owner's; seeing who else is in the room is anyone's who is
   // named on the document. A reader who arrived by link is offered neither,
   // which is most of the point of a blind review.
-  let canSeeSharing = $derived(Boolean(doc.can_see_sharing));
-  let canPublish = $derived(["editor", "owner"].includes(doc.role));
+  let canSeeSharing = $derived(!LOCAL && Boolean(doc.can_see_sharing));
+  let canPublish = $derived(!LOCAL && ["editor", "owner"].includes(doc.role));
 
   // Whether this browser's work is safe, which is a different question from
   // whether the socket is up. `pending` counts the updates the server has not
@@ -230,42 +235,21 @@
   // update from starting while the first is still in flight.
 
   let preview = $state(null);
-  // Both Quarto's own live preview and a Typst document previewed through
-  // Calepin run the same `createLocalPreview` lifecycle
-  // (`../lib/reader/local-preview.svelte.js`) against the same local app.
-  // Each controller owns what it is doing -- running, starting, re-rendering,
-  // and the last thing that went wrong -- and the aliases further down read
-  // it, rather than the page keeping a copy of each and a callback to keep
-  // the copy honest.
-  let localConnectionError = $state("");
-  let quartoLiveSyncTimer = null;
-  let calepinSyncTimer = null;
-  let quartoBindingId = $state("");
   // The desktop app is there or it is not; this page never changes its mind.
   const hasDesktop = Boolean(localQuarto.desktop());
-  // Whether the desktop app found the calepin command, read once the Typst
-  // preview asks for it.
-  let calepinFound = $state(false);
 
   /// Which document this browser tab is about, as far as the desktop app is
   /// concerned. It picks up whatever binding the client already remembers for
   /// it. Nothing is asked of the desktop app here.
   ///
-  /// Deliberately not behind a format check. It used to live inside the
-  /// Quarto binding lookup below, which meant an HTML or LaTeX document never
-  /// scoped the client at all, and anything else that wanted the local app
-  /// for that document -- the agent panel -- asked with a null project and
-  /// was refused. Rendering locally and using the desktop app are different
-  /// questions about the same document.
+  /// Deliberately not behind a format check: anything that wants the local
+  /// app for this document, such as the agent panel, would otherwise ask with
+  /// a null project and be refused. Rendering locally and using the desktop
+  /// app are different questions about the same document.
   function scopeLocalApp() {
     localQuarto.configure({ project: SLUG, origin: location.origin });
   }
 
-  /// The Quarto project binding this document already has, if any. This one
-  /// really is format-specific: only a locally renderable project has one.
-  function readQuartoBinding() {
-    quartoBindingId = localQuarto.bindingId();
-  }
   // Which engine draws each format, and what it produces, belong to the
   // build settings along with the preference they follow from; the aliases
   // are further down, where that module is built. Whether this document's
@@ -277,7 +261,7 @@
     const next = format === "html" ? "html" : "pdf";
     if (latexOutput === next) return;
     buildSettings.state.latexOutput = next;
-    setBuildPreferences(updateBuildPreferences(buildScope(), "latex", { ...(next === "html" ? { selection: "tool", backend: "browser", tool: "tex" } : {}), output: next }));
+    setBuildPreferences(updateBuildPreferences(buildScope(), "latex", { output: next }));
     navigationGeneration += 1;
     renderers.cancelPreview({ keepWarm: true });
     latex.cancel();
@@ -293,84 +277,22 @@
     if (!readerDisposed) void paintPreview();
   }
 
-  // Switching between the browser's Markdown draft and Quarto's own preview
-  // is a choice of tool, not of output. The browser draft is HTML and nothing
-  // else, so that direction pins the output; the other keeps whatever output
-  // was already asked for, or a PDF preview would quietly become an HTML one
-  // at the moment local rendering was enabled to produce it.
-  async function setQuartoPreviewMode(mode) {
-    setBuildPreferences(updateBuildPreferences(buildScope(), "quarto", { selection: "tool", backend: mode === "markdown" ? "browser" : "local", tool: mode === "markdown" ? "markdown" : "quarto", output: mode === "markdown" ? "html" : (buildPreferences.output || "html") }));
+  // Run code is the consent to run a document's code on this computer. It is
+  // off whenever a document opens and is never remembered. While it is on, a
+  // format set to this computer renders there; the pane is drawn again
+  // because the renderer that draws it changes hands.
+  function toggleLocalExecution() {
+    localExecution = !localExecution;
+    stopRendering();
+    void paintPreview();
+  }
+
+  // Everything in flight stops: a render that finishes after the renderer, or
+  // the reader, has changed must not reach the pane.
+  function stopRendering() {
     navigationGeneration += 1;
-    buildSettings.state.quartoPreviewMode = mode === "markdown" ? "markdown" : "quarto";
-    if (quartoPreviewMode === "markdown") {
-      await quartoPreviewController.stop();
-      void paintPreview();
-    }
-  }
-
-  // The formats whose local tool runs the document rather than only typesets
-  // it. Running is off whenever a document opens and is never remembered: the
-  // toggle is the consent, and it is given again each time.
-  const localExecutionRelevant = $derived.by(() => ["quarto", "typst"].includes(sourceFormat) && mayEdit);
-
-  // Turning it on puts this format's engine on the local tool and uses the
-  // desktop app. A browser without the desktop app says so and stays off.
-  async function startLocalExecution() {
-    if (!hasDesktop) { say(localQuarto.DESKTOP_ONLY_MESSAGE, { kind: "problem", id: "reader:desktop-only" }); return; }
-    localExecution = true;
-    if (!localExecutionRelevant) return;
-    if (sourceFormat === "quarto") {
-      await setQuartoPreviewMode("quarto");
-      await ensureLocalApp();
-    } else if (sourceFormat === "typst") {
-      await setTypstPreviewMode("calepin");
-    }
-  }
-
-  // Turning it off puts the browser's own renderer back and stops whatever
-  // the desktop app was running for this document.
-  async function stopLocalExecution() {
-    localExecution = false;
-    if (sourceFormat === "quarto") await setQuartoPreviewMode("markdown");
-    else if (sourceFormat === "typst") await setTypstPreviewMode("typst");
-  }
-
-  const toggleLocalExecution = () => {
-    if (localExecution) void stopLocalExecution();
-    else void startLocalExecution();
-  };
-
-  // A document always opens with its code off. A build preference saved
-  // while it was running must not turn it back on, so the preview starts on
-  // the browser's own renderer.
-  $effect(() => {
-    SLUG;
-    untrack(() => {
-      localExecution = false;
-      if (quartoPreviewMode === "quarto") void setQuartoPreviewMode("markdown");
-      if (typstPreviewMode === "calepin") void setTypstPreviewMode("typst");
-    });
-  });
-
-  // Pointing the preview at a file in the other executable format, while Run
-  // code is on, puts the desktop app behind that one too.
-  $effect(() => {
-    if (!localExecution || !localExecutionRelevant) return;
-    const running = sourceFormat === "quarto" ? quartoPreviewMode === "quarto" : typstPreviewMode === "calepin";
-    if (running) return;
-    untrack(() => void startLocalExecution());
-  });
-
-  async function setTypstPreviewMode(mode) {
-    setBuildPreferences(updateBuildPreferences(buildScope(), "typst", { selection: "tool", backend: mode === "calepin" ? "local" : "browser", tool: mode === "calepin" ? "calepin" : "typst" }));
-    navigationGeneration += 1;
-    buildSettings.state.typstPreviewMode = mode === "calepin" ? "calepin" : "typst";
-    if (typstPreviewMode === "calepin") {
-      if (await ensureLocalApp() && calepinActive) await calepinPreviewController.start();
-    } else {
-      await calepinPreviewController.stop();
-      void paintPreview();
-    }
+    renderers.cancelPreview({ keepWarm: true });
+    latex.cancel();
   }
 
   async function setTypstOutput(format) {
@@ -378,10 +300,9 @@
     if (typstOutput === next) return;
     buildSettings.state.typstOutput = next;
     setBuildPreferences(updateBuildPreferences(buildScope(), "typst", { output: typstOutput }));
-    // Invalidate every pending delivery before stopping Calepin. A PDF that
-    // finishes after this gesture must never replace the HTML frame.
+    // Invalidate every pending delivery. A PDF that finishes after this
+    // gesture must never replace the HTML frame.
     navigationGeneration += 1;
-    if (typstOutput === "html") await calepinPreviewController.stop();
     void paintPreview();
   }
 
@@ -403,22 +324,6 @@
     previewTimer = null;
     await tick();
     if (!readerDisposed) void paintPreview();
-  }
-
-  function quartoTargetFormat(tree = treeNow()) {
-    const main = tree?.main || previewPath || "main.qmd";
-    const source = tree?.texts?.[main] || "";
-    const value = quarto.parseQuarto(source, { path: main }).metadata?.format;
-    const named = typeof value === "string" ? value : value && typeof value === "object" ? Object.keys(value)[0] : "html";
-    const format = String(named || "html").trim().toLowerCase().split(/[+:]/, 1)[0];
-    return ["html", "pdf", "docx", "revealjs"].includes(format) ? format : "html";
-  }
-  function quartoRenderContext(tree = null) {
-    return {
-      format: quartoTargetFormat(tree || treeNow()),
-      profiles: buildPreferences.profile ? [buildPreferences.profile] : [],
-      parameters: { ...buildPreferences.parameters },
-    };
   }
 
   const tell = (message, transfer) => preview?.tell(message, transfer);
@@ -1342,9 +1247,6 @@
   let mayEdit = $state(false);
   let sourceFormat = $state("");
 
-  // Where the toggle is offered: every editable Quarto document, and an
-  // editable Typst document when the desktop app found Calepin.
-  const runCodeOffered = $derived(mayEdit && (sourceFormat === "quarto" || (sourceFormat === "typst" && hasDesktop && calepinFound)));
   let peers = $state(1);
   let participants = $state([]);
   let linked = $state(read(LINKED, false) === true);
@@ -1352,6 +1254,7 @@
   // Routine saving stays quiet; losing the connection still needs a warning,
   // and the warning has to say what is happening to the typing meanwhile.
   const connectionNote = $derived.by(() => {
+    if (LOCAL) return "";
     if (connected) return "";
     if (openedLocally) return "Offline. This is the copy saved in this browser, and it may be missing changes made elsewhere.";
     if (!mayEdit || !session) return "Reconnecting…";
@@ -1372,19 +1275,6 @@
     return doc.title || (await renderers.titleOf(tree)) || "Untitled";
   }
 
-  // Scopes the desktop client to this document and says so in Diagnostics
-  // when this is a browser.
-  function ensureLocalApp() {
-    localConnectionError = "";
-    if (!hasDesktop) {
-      localConnectionError = localQuarto.DESKTOP_ONLY_MESSAGE;
-      showPanel("diagnostics");
-      return false;
-    }
-    localQuarto.configure({ project: SLUG, origin: location.origin });
-    return true;
-  }
-
   /* --------------------------------------------------------- the timeline */
 
   // What this document used to say, and when. The manifest is fetched when the
@@ -1395,281 +1285,6 @@
   // every value a focused controller getter rather than a Reader-owned bag.
   // The label being shown in the document pane, whole -- its tree and its
   // texts -- or null for the document as it stands.
-
-  // Whether this browser should be running Quarto's own live preview rather
-  // than showing its own draft rendering: Quarto preview mode chosen, ready,
-  // connected, editable, and not looking at history. `editing` (the source
-  // pane) is not required -- an editor who has not opened it yet still gets
-  // the live pane the moment they are able to edit.
-  const quartoLiveActive = $derived.by(() =>
-    sourceFormat === "quarto" && quartoPreviewMode === "quarto" && localExecution && (!buildPreferences.output || ["html", "pdf"].includes(buildPreferences.output)) && (buildPreferences.selection === "automatic" || (buildPreferences.backend === "local" && buildPreferences.tool === "quarto")) && mayEdit && hasDesktop,
-  );
-
-  // Whether this browser should be showing a Typst document's chunks run by
-  // Calepin on this computer rather than this browser's own Typst rendering:
-  // the calepin mode chosen, ready, the calepin command itself
-  // found, editable, and not looking at history.
-  const calepinActive = $derived.by(() =>
-    sourceFormat === "typst" && !typstHtmlPreview && localExecution && typstPreviewMode === "calepin" && buildPreferences.backend === "local" && buildPreferences.tool === "calepin" && mayEdit && hasDesktop && calepinFound,
-  );
-
-  async function localPreviewTreeNow() {
-    const tree = treeNow();
-    if (!Object.keys(tree.digests || {}).length) return tree;
-    const { held, missing } = await gatherFigures(tree.digests);
-    if (missing.length) throw new Error(`Local preview is missing ${missing.join(", ")}`);
-    return { ...tree, assets: held.assets };
-  }
-
-  // A sync can forget a folder the desktop app no longer grants. Mirroring that
-  // here restarts the preview in the hosted workspace.
-  const previewClient = {
-    ...localQuarto,
-    syncWorkspace: async (input) => {
-      const result = await localQuarto.syncWorkspace(input);
-      const id = localQuarto.bindingId();
-      if (id !== quartoBindingId) quartoBindingId = id;
-      return result;
-    },
-  };
-
-  // The last page each live preview published, per file, for this visit, with
-  // the identity of the source it was rendered from. The newest is last. Each
-  // page with an identity is also kept in the preview cache, so a later visit
-  // can show it without starting the engine.
-  const LIVE_PAGES_KEPT = 8;
-  const livePages = new Map();
-  // The file each live preview is serving, and whether it has published a
-  // page for it yet.
-  const liveServing = { quarto: "", calepin: "" };
-  let liveTargets = { quarto: "", calepin: "" };
-  let liveShown = $state({ quarto: false, calepin: false });
-  // The digest of the source each engine's workspace was last synced to, for
-  // the current target. A page the engine publishes is taken to be a render
-  // of it.
-  const syncedDigest = { quarto: "", calepin: "" };
-  const liveSyncs = { quarto: 0, calepin: 0 };
-  // The file whose kept page is on screen in place of a running live preview,
-  // and the file whose kept page is being looked for. Neither lets the live
-  // preview start.
-  let liveHeld = $state("");
-  let liveLookup = $state("");
-  let liveLookupGeneration = 0;
-
-  function liveCopy(payload) {
-    return payload.kind === "pdf" ? { ...payload, bytes: payload.bytes.slice() } : { ...payload };
-  }
-
-  // The engine that would own the pane for the open file, or "".
-  function liveEngineHere() {
-    if (sourceFormat === "quarto" && quartoLiveActive) return "quarto";
-    if (sourceFormat === "typst" && calepinActive) return "calepin";
-    return "";
-  }
-
-  function liveIdentity(engine, digest) {
-    return stampLive(engine, engine === "quarto" ? buildPreferences.output : "", digest);
-  }
-
-  async function noteSynced(engine, tree) {
-    const mine = ++liveSyncs[engine];
-    const digest = await renderers.snapshotDigest(tree);
-    if (mine === liveSyncs[engine]) syncedDigest[engine] = digest;
-  }
-
-  function publishLive(engine, payload) {
-    const path = liveServing[engine];
-    // The copy is taken first because publishing transfers the PDF buffer.
-    if (path && (payload?.kind === "html" || (payload?.kind === "pdf" && payload.bytes))) {
-      const page = liveCopy(payload);
-      const identity = liveIdentity(engine, syncedDigest[engine]);
-      livePages.delete(path);
-      livePages.set(path, { page, identity });
-      while (livePages.size > LIVE_PAGES_KEPT) livePages.delete(livePages.keys().next().value);
-      if (identity) rememberPreview(previewCacheKey(path), liveCopy(page), identity);
-    }
-    if (!liveShown[engine]) liveShown[engine] = true;
-    return framePreview.publish(payload);
-  }
-
-  // Leaves the held state and cancels a lookup in flight. The live preview
-  // then starts for the open file.
-  function releaseLive() {
-    liveLookupGeneration += 1;
-    liveHeld = "";
-    liveLookup = "";
-  }
-
-  // Looks for a kept page of this file that was rendered from the source as it
-  // is now. One that matches is shown and held, and the live preview does not
-  // start. Otherwise the last page the live preview made for the file stands
-  // in while it starts.
-  async function holdLive(path, { quiet = false } = {}) {
-    const engine = liveEngineHere();
-    if (!engine) return;
-    const mine = ++liveLookupGeneration;
-    liveLookup = path;
-    const current = () => !readerDisposed && mine === liveLookupGeneration && previewPath === path;
-    let found = null;
-    let standIn = null;
-    try {
-      const identity = liveIdentity(engine, await renderers.snapshotDigest(treeNow()));
-      const kept = livePages.get(path);
-      standIn = kept?.page || null;
-      if (kept && liveMatches({ ...kept.page, identity: kept.identity }, identity)) found = kept.page;
-      else if (current()) {
-        const saved = await lastPreview(previewCacheKey(path));
-        if (liveMatches(saved, identity)) found = saved.kind === "pdf" ? { kind: "pdf", sha: null, bytes: saved.bytes.slice() } : { kind: "html", html: saved.html, presentation: "document" };
-      }
-    } catch { /* a failed lookup is a miss */ }
-    if (!current()) return;
-    liveLookup = "";
-    if (found) {
-      liveHeld = path;
-      if (!quiet) framePreview.publish(liveCopy(found));
-    } else if (standIn && !quiet) {
-      framePreview.publish(liveCopy(standIn));
-    }
-  }
-
-  // A source event while a page is held asks again rather than letting go:
-  // hydration and edits to unrelated files leave the held page current, and
-  // only a source that no longer matches it starts the live preview. The page
-  // on screen is already the right one, so nothing is painted again.
-  function recheckLive() {
-    const path = previewPath;
-    const held = liveHeld === path;
-    if (!path || (!held && liveLookup !== path)) return;
-    releaseLive();
-    void holdLive(path, { quiet: held });
-  }
-
-  const quartoPreviewController = createLocalPreview({
-    local: previewClient,
-    engine: "quarto",
-    label: "Quarto",
-    publish: (payload) => publishLive("quarto", payload),
-    treeNow: localPreviewTreeNow,
-    onSynced: (tree) => void noteSynced("quarto", tree),
-    entrypointOf: (tree) => tree.main,
-    optionsOf: (tree) => {
-      const context = quartoRenderContext(tree);
-      // Managed Quarto preview serves a single HTML or PDF artifact. DOCX is
-      // export-only and therefore never activates this controller.
-      return { format: buildPreferences.output || (context.format === "revealjs" ? "revealjs" : "html"), profile: buildPreferences.profile || context.profiles[0] || null, parameters: buildPreferences.parameters || context.parameters };
-    },
-    // syncWorkspace writes the browser's tree to the project's binding, the
-    // chosen project folder when there is one, and the preview runs in that same place.
-    jobOf: () => ({ binding: localQuarto.bindingId() }),
-    isDisposed: () => readerDisposed,
-    // A managed preview taking the pane invalidates whatever this browser
-    // was rendering into it.
-    onStartingChange: (value) => { if (value) navigationGeneration += 1; },
-    onEnded: () => void paintPreview(),
-  });
-
-  const calepinPreviewController = createLocalPreview({
-    local: previewClient,
-    engine: "calepin",
-    label: "Calepin",
-    publish: (payload) => publishLive("calepin", payload),
-    treeNow: localPreviewTreeNow,
-    onSynced: (tree) => void noteSynced("calepin", tree),
-    entrypointOf: (tree) => tree.main,
-    optionsOf: () => ({ format: "pdf" }),
-    jobOf: () => ({ binding: localQuarto.bindingId() }),
-    isDisposed: () => readerDisposed,
-    onEnded: () => void paintPreview(),
-  });
-
-  // What each controller says about itself, read where the page used to read
-  // its own copy.
-  const quartoPreview = $derived(quartoPreviewController.state.session);
-  const quartoPreviewStarting = $derived(quartoPreviewController.state.starting);
-  // Whether the bridge says Quarto is currently re-rendering the live preview
-  // -- carried on every response of the page route (200, 304, 404 alike),
-  // never just the ones with new HTML. Drives the "Rendering…" badge and the
-  // faster poll cadence while true.
-  const quartoRendering = $derived(quartoPreviewController.state.rendering);
-  const quartoPreviewError = $derived(quartoPreviewController.state.error);
-  const quartoPreviewKept = $derived(quartoPreviewController.state.kept);
-  const calepinPreview = $derived(calepinPreviewController.state.session);
-  const calepinPreviewStarting = $derived(calepinPreviewController.state.starting);
-  const calepinRendering = $derived(calepinPreviewController.state.rendering);
-  const calepinPreviewError = $derived(calepinPreviewController.state.error);
-  const calepinPreviewKept = $derived(calepinPreviewController.state.kept);
-
-  // Drives the whole automatic mode for each engine: starts the managed
-  // preview the moment its conditions are met, and tears it down (falling
-  // back to the ordinary rendering, no retry) the moment any of them stop
-  // holding.
-  const localPreviewSwitches = createGeneration();
-  // Run code, the output format and the binding decide what a kept page was
-  // rendered by, so a change to any of them leaves the held state and looks
-  // again. An engine that is already running is not interrupted by a kept page.
-  $effect(() => {
-    void quartoLiveActive;
-    void calepinActive;
-    void buildPreferences.output;
-    void quartoBindingId;
-    untrack(() => {
-      releaseLive();
-      if (previewPath && !quartoPreview && !quartoPreviewStarting && !calepinPreview && !calepinPreviewStarting) void holdLive(previewPath);
-    });
-  });
-  $effect(() => {
-    // The binding is part of the target so choosing a folder restarts the preview there.
-    // The output format is too, because Quarto reads it only when it starts, so
-    // switching View between HTML and PDF restarts the preview.
-    const quartoTarget = quartoLiveActive && previewPath && shouldStartLive({ held: liveHeld, lookup: liveLookup, path: previewPath }) && `${previewPath}|${quartoBindingId}|${buildPreferences.output || ""}`;
-    const calepinTarget = calepinActive && previewPath && shouldStartLive({ held: liveHeld, lookup: liveLookup, path: previewPath }) && `${previewPath}|${quartoBindingId}`;
-    const stale = localPreviewSwitches.begin();
-    untrack(async () => {
-      // Both engines use the same workspace. Release its old watcher before
-      // asking the other engine to watch it, including during rapid switches.
-      await Promise.all([
-        quartoTarget ? Promise.resolve() : quartoPreviewController.reconcile(false),
-        calepinTarget ? Promise.resolve() : calepinPreviewController.reconcile(false),
-      ]);
-      if (readerDisposed || stale()) return;
-      if (quartoTarget) {
-        liveServing.quarto = previewPath;
-        if (liveTargets.quarto !== quartoTarget) { liveTargets.quarto = quartoTarget; liveShown.quarto = false; liveSyncs.quarto += 1; syncedDigest.quarto = ""; }
-        await quartoPreviewController.reconcile(quartoTarget);
-      }
-      if (calepinTarget) {
-        liveServing.calepin = previewPath;
-        if (liveTargets.calepin !== calepinTarget) { liveTargets.calepin = calepinTarget; liveShown.calepin = false; liveSyncs.calepin += 1; syncedDigest.calepin = ""; }
-        await calepinPreviewController.reconcile(calepinTarget);
-      }
-    });
-  });
-
-  // Calepin is found by the desktop app, not by this page, so it is asked
-  // when a Typst document opens there. Whether it is found decides whether
-  // the Typst document offers the toggle.
-  $effect(() => {
-    if (!hasDesktop || sourceFormat !== "typst" || !mayEdit) return;
-    let stale = false;
-    localQuarto.calepinAvailable().then((found) => { if (!stale) calepinFound = found; }, () => { if (!stale) calepinFound = false; });
-    return () => { stale = true; };
-  });
-
-  // The profile and parameters, applied from Settings: kept for every Quarto
-  // build in this browser, and the live preview -- which reads them only as
-  // it starts -- restarted so the page shows the new ones rather than the
-  // old until the next reconnect. A preview still starting reads the options after its
-  // workspace sync, so it picks them up on its own.
-  async function applyRenderOptions(next) {
-    const options = parseRenderOptions({ ...next, format: "default" });
-    writeQuartoOptions(buildScope(), { profile: options.profile || null, parameters: options.parameters || {} });
-    if (sourceFormat === "markdown" || sourceFormat === "quarto") {
-      setBuildPreferences(readBuildPreferences(buildScope(), sourceFormat));
-    }
-    if (!quartoLiveActive) return;
-    await quartoPreviewController.stop();
-    if (quartoLiveActive) await quartoPreviewController.start();
-  }
 
   // The manifest, and whether the last read of it succeeded, belong to the
   // timeline; the comparison below owns everything about a selected version.
@@ -1720,7 +1335,7 @@
   $effect(() => () => gitAuto.dispose());
   $effect(() => {
     const active = session;
-    if (active) untrack(() => gitAuto.attach(active));
+    if (active && !LOCAL) untrack(() => gitAuto.attach(active));
   });
   const gitDiff = createGitDiff();
   // The diff steps aside while a resolution is open.
@@ -1873,12 +1488,53 @@
   /// requested digests the server did not have, so a caller can decide
   /// whether a hole in the result is tolerable or should fail the whole call.
   async function gatherFigures(digests) {
-    const held = await figures.gather(SLUG, digests, authHeaders(KEY));
+    const held = LOCAL
+      ? await localFigures.gather(SLUG, digests)
+      : await figures.gather(SLUG, digests, authHeaders(KEY));
     const missing = Object.keys(digests).filter(
       (path) => !Object.prototype.hasOwnProperty.call(held.assets, path),
     );
     return { held, missing };
   }
+
+  // A local project holds its figures in memory, in place of the server's
+  // asset store.
+  const localFigures = LOCAL ? createFigureStore() : null;
+  // The folder's project while it is open. It is the collaboration object of a
+  // local project, and the only thing that knows what the folder holds.
+  let localProject = null;
+
+  // A local project's folder mirrors the project. Any change to the files
+  // pokes the scheduler, which writes the folder once the person pauses. A
+  // web project has no folder, so it has no sync.
+  const folderSync = LOCAL ? createFolderSync({
+    ready: () => Boolean(hasDesktop && mayEdit && session),
+    run: async () => {
+      scopeLocalApp();
+      const captured = capturePreviewTree(liveTreeNow());
+      // Files deleted on disk while they held unsaved edits are not sent, so
+      // the folder does not bring them back before the person decides.
+      const tree = localProject.withoutHeld(captured);
+      if (Object.keys(tree.digests || {}).length) {
+        const { held, missing } = await gatherFigures(tree.digests);
+        if (missing.length) throw new Error(`could not fetch ${missing.join(", ")}`);
+        tree.assets = held.assets;
+      }
+      const result = await localQuarto.syncFolder({ tree, bindingId: LOCAL_ID, encode: localProject.encode });
+      if (result) localProject?.wrote(tree);
+      for (const kept of result?.kept || []) {
+        const name = String(kept.path || "").split("/").pop();
+        say(`Your copy of ${name} was kept as ${String(kept.copy || "").split("/").pop()}.`, { kind: "note", id: `reader:folder-kept:${kept.path}` });
+      }
+    },
+    onError: (error) => say(`The project folder could not be updated: ${error?.message || "unknown error"}`, { kind: "problem", id: "reader:folder-sync" }),
+  }) : null;
+  $effect(() => () => folderSync?.dispose());
+  // The editor becomes ready. A local project opens with one sync that sends nothing, because the
+  // client was told what the folder holds. It makes every file managed.
+  $effect(() => {
+    if (session && mayEdit) untrack(() => folderSync?.poke());
+  });
 
   // Outline reads the same live text as the editor. The revision dependency
   // is explicit because document changes happen outside Svelte's normal tracking;
@@ -2103,25 +1759,16 @@
   const buildSettings = createBuildSettings({
     slug: SLUG,
     origin: location.origin,
-    interrupt: (next) => {
-      navigationGeneration += 1;
-      renderers.cancelPreview({ keepWarm: true });
-      latex.cancel();
-      // A local preview survives only a choice that keeps using it. `next` is
-      // null when the reader changed rather than the preference, and then
-      // neither does.
-      const local = next?.selection === "tool" && next?.backend === "local";
-      if (sourceFormat === "quarto" && !(local && next.tool === "quarto")) void quartoPreviewController?.stop?.();
-      if (sourceFormat === "typst" && !(local && next.tool === "calepin")) void calepinPreviewController?.stop?.();
-    },
+    interrupt: stopRendering,
     paint: () => void paintPreview(),
   });
   const buildPreferences = $derived(buildSettings.state.preferences);
+  // Where the toggle is offered: in the desktop app, for every editable
+  // document whose format is set to this computer.
+  const runCodeOffered = $derived(mayEdit && hasDesktop && buildPreferences.backend === "local");
   const latexOutput = $derived(buildSettings.state.latexOutput);
   const typstOutput = $derived(buildSettings.state.typstOutput);
   const markdownOutput = $derived(buildPreferences.output === "pdf" ? "pdf" : "html");
-  const quartoPreviewMode = $derived(buildSettings.state.quartoPreviewMode);
-  const typstPreviewMode = $derived(buildSettings.state.typstPreviewMode);
   const buildScope = () => buildSettings.scopeFor(buildUserId);
   $effect(() => {
     const format = sourceFormat;
@@ -2144,7 +1791,6 @@
   // read, so it applies to exactly the one compile it was meant for.
   let manualCompile = false;
   function compileNow() {
-    releaseLive();
     manualCompile = true;
     paintPreview();
   }
@@ -2173,31 +1819,12 @@
       : renderState.failure ? renderState.failureReason || "The build failed without reporting why." : "",
   );
 
-  // Quarto preview mode chosen, but this is a browser: the pane
-  // shows the draft, and Diagnostics explains why.
-  const quartoNeedsLocalApp = $derived(
-    sourceFormat === "quarto" && quartoPreviewMode === "quarto" && localExecution && mayEdit &&
-      !hasDesktop,
-  );
-  // The same two banner cases, for a Typst document with Calepin preview
-  // chosen: this is a browser, or the desktop app has no calepin command.
-  const typstNeedsLocalApp = $derived(
-    sourceFormat === "typst" && !typstHtmlPreview && localExecution && typstPreviewMode === "calepin" && mayEdit &&
-      !hasDesktop,
-  );
-  const typstNeedsCalepinCommand = $derived(
-    sourceFormat === "typst" && !typstHtmlPreview && localExecution && typstPreviewMode === "calepin" && mayEdit &&
-      hasDesktop && !calepinFound,
-  );
+  // A Quarto document is drawn as the Markdown it is until Run code is on,
+  // so the desktop app says what turns the real render on.
+  const quartoNeedsRunCode = $derived(sourceFormat === "quarto" && hasDesktop && mayEdit && !localExecution);
 
   const localAppDiagnostics = $derived([
-    !hasDesktop ? { severity: "error", message: localConnectionError } : null,
-    quartoNeedsLocalApp && !localConnectionError ? { severity: "warning", message: "The Markdown preview is shown. Running code needs the LibrePaper desktop app." } : null,
-    typstNeedsCalepinCommand ? { severity: "warning", message: "Calepin preview needs the calepin command on this computer." } : null,
-    sourceFormat === "quarto" && quartoPreviewMode === "quarto" && localExecution ? { severity: "error", message: quartoPreviewError } : null,
-    ...(sourceFormat === "quarto" && quartoPreviewMode === "quarto" && localExecution ? quartoPreviewKept : []).map((note) => ({ severity: "warning", message: note.charAt(0).toUpperCase() + note.slice(1) + "." })),
-    sourceFormat === "typst" && typstPreviewMode === "calepin" && localExecution ? { severity: "error", message: calepinPreviewError } : null,
-    ...(sourceFormat === "typst" && typstPreviewMode === "calepin" && localExecution ? calepinPreviewKept : []).map((note) => ({ severity: "warning", message: note.charAt(0).toUpperCase() + note.slice(1) + "." })),
+    quartoNeedsRunCode ? { severity: "warning", message: "Turn on Run code to render on this computer." } : null,
   // An item with no message is dropped. An empty error would show as a blank
   // entry and would hide the failed render's own message.
   ].filter((item) => item?.message).map((item) => ({ ...item, source: "local-app" })));
@@ -2211,15 +1838,6 @@
       : "";
     return message ? [{ severity: "warning", message, source: "backups" }] : [];
   });
-  // What the Diagnostics panel names when a preview here needs the desktop
-  // app and this is a browser. Empty when nothing needs it.
-  const desktopNeeds = $derived(
-    hasDesktop ? ""
-      : quartoNeedsLocalApp ? "Quarto preview"
-      : typstNeedsLocalApp ? "Calepin preview"
-      : localConnectionError ? "This preview"
-      : "",
-  );
   $effect(() => {
     void localAppDiagnostics;
     void backupDiagnostics;
@@ -2327,7 +1945,7 @@
 
   const compiling = $derived(Boolean(
     (sourceFormat === "latex" && !latexHtmlPreview && ["loading", "compiling", "browser-biber"].includes(latexPhase))
-      || renderState.compiling || quartoPreviewStarting || quartoRendering || calepinRendering,
+      || renderState.compiling,
   ));
   // The preview pane's progress line shows this flag. A Typst or Markdown
   // render finishes in tens of milliseconds, and a control that mounts and
@@ -2360,6 +1978,8 @@
   // after every await, and the few effects it cannot perform itself.
   const renderPreview = createPreviewRenderer({
     slug: SLUG,
+    // A web project renders in the hosted workspace; a local project in its folder.
+    bindingId: LOCAL ? LOCAL_ID : localQuarto.HOSTED_BINDING,
     coordinator: renderCoordinator,
     status: renderStatus,
     framePreview: {
@@ -2373,8 +1993,8 @@
     parseSynctex,
     // The page this file last drew stands in for an empty pane until the
     // render replaces it.
-    lastPage: (path) => lastPreview(previewCacheKey(path)),
-    rememberPreview: (path, page, identity) => rememberPreview(previewCacheKey(path), page, identity),
+    lastPage: lastCachedPage,
+    rememberPreview: cachePage,
     onRendered: (identity, projectDigest) => {
       renderedIdentity = identity;
       if (!mayEdit) renderedProjectDigest = projectDigest || "";
@@ -2399,13 +2019,6 @@
       buildPreferences,
       localExecution,
       projectDigest: mayEdit ? "" : currentProject?.project_digest || "",
-      // A local tool's own preview owns the pane while it is running or
-      // starting. Answered here because only this page knows which of the two
-      // local previews a given format would be using.
-      livePreviewOwnsPane:
-        (sourceFormat === "quarto" && quartoLiveActive && Boolean(quartoPreview || quartoPreviewStarting))
-        || (sourceFormat === "typst" && calepinActive && Boolean(calepinPreview || calepinPreviewStarting))
-        || (liveEngineHere() !== "" && liveHolding({ held: liveHeld, lookup: liveLookup, path: previewPath })),
     }),
     tree: () => treeNow(),
     gather: (digests) => gatherFigures(digests),
@@ -2438,17 +2051,8 @@
     if (readerDisposed) return;
     sourceGeneration += 1;
     historyLiveVersion += 1;
-    recheckLive();
     refreshReview();
     outlineRevision += 1;
-    if (typeof quartoLiveActive !== "undefined" && quartoLiveActive && typeof quartoPreview !== "undefined" && (quartoPreview || quartoPreviewStarting)) {
-      clearTimeout(quartoLiveSyncTimer);
-      quartoLiveSyncTimer = setTimeout(() => void quartoPreviewController.sync(), 500);
-    }
-    if (typeof calepinActive !== "undefined" && calepinActive && typeof calepinPreview !== "undefined" && calepinPreview) {
-      clearTimeout(calepinSyncTimer);
-      calepinSyncTimer = setTimeout(() => void calepinPreviewController.sync(), 500);
-    }
     if (sourceFormat === "quarto" && session && previewPath) {
       const main = previewPath;
       const parsed = quarto.parseQuarto(String(session.textOf(session.idOf(main))?.toString?.() ?? ""), { path: main });
@@ -2621,7 +2225,6 @@
   // point opens the same dialog on the category it is about.
   let settingsOpen = $state(untrack(() => initialSettings === "tools"));
   let settingsCategory = $state(untrack(() => initialSettings || "editor"));
-  let projectFolderOpen = $state(false);
   let savingTemplate = $state(false);
   let templateModalOpen = $state(false);
   let templateName = $state("");
@@ -2688,7 +2291,7 @@
   }
   // The tabs this browser is offered. Which reader may see which panel is
   // written with the panels, in lib/panels.js; this only says who is asking.
-  const tabs = $derived(tabsFor({ role: doc.role, mayEdit, editing, canSeeSharing, canPublish, desktop: hasDesktop }));
+  const tabs = $derived(tabsFor({ role: doc.role, mayEdit, editing, canSeeSharing, canPublish, desktop: hasDesktop, local: LOCAL }));
   // The robot buttons hand work to the agent. The agent runs only in the
   // desktop app, so in a browser they say so rather than disappear.
   const agentOffered = $derived(tabs.some((tab) => tab.id === "agent"));
@@ -2934,7 +2537,6 @@
   async function chooseFileCommand(value) {
     if (value === "settings") return openSettings("editor");
     if (value === "quit") return void localQuarto.shellAction("quit").catch((error) => say(error.message || "The desktop app could not quit.", { kind: "problem", id: "reader:quit" }));
-    if (value === "project-folder") return void (projectFolderOpen = true);
     if (value === "compile") return compileNow();
     if (value === "download") return downloadTree();
     if (value === "download-source") return downloadSource();
@@ -2987,9 +2589,7 @@
       const tree = capturePreviewTree(treeNow());
       const format = displayedFormat;
       const preview = framePreview.preview();
-      const localQuarto = format === "quarto" && localExecution && hasDesktop && mayEdit
-        ? { profile: buildPreferences.profile || null, parameters: buildPreferences.parameters || null }
-        : null;
+      const local = localExecution && hasDesktop && mayEdit && buildPreferences.backend === "local";
       if (Object.keys(tree.digests || {}).length) {
         const { held, missing } = await gatherFigures(tree.digests);
         if (target !== "html" && missing.length) {
@@ -3009,10 +2609,10 @@
         previewCurrent: Boolean(renderedIdentity) && renderedIdentity === await renderers.snapshotDigest(tree),
         render: renderers.render,
         run: pandoc,
-        localQuarto,
+        local,
       });
       saveBlob(file.blob, file.name);
-      if (!localQuarto && unrunCells(format, tree) > 0) {
+      if (!local && unrunCells(format, tree) > 0) {
         say("Code cells were not run. Turn on Run code in the LibrePaper desktop app to include their results.", { id });
       } else {
         toaster.dismiss(id);
@@ -3162,6 +2762,8 @@
     paint: () => paintPreview(),
     retarget: () => updatePreviewTarget(),
     onarrived: (file) => openTheFile(file),
+    upload: localFigures?.upload,
+    gather: localFigures?.gather,
   });
   const ws = workspace.state;
   const files = $derived(ws.files);
@@ -3317,15 +2919,12 @@
     sourceFormat = format;
     configureLatex(format, session || readerProjectOwner);
     warmEngine(format);
-    if (mayEdit && ["quarto", "typst", "markdown"].includes(format)) readQuartoBinding();
     if (!previous) {
       // The first file the preview is given is rendered now. Waiting for the
       // typing pause would hold it for a second or more while the project
       // loads, since every hydration step restarts that timer.
       clearTimeout(previewTimer);
       previewTimer = null;
-      releaseLive();
-      void holdLive(path);
       void tick().then(() => {
         if (!readerDisposed && previewPath === path) void paintPreview();
       });
@@ -3347,8 +2946,6 @@
     // two files of the same kind keeps it, so switching files in the list does
     // not pay for a frame load before the cached page can be shown.
     if (docsOrigin) navigateFrame();
-    releaseLive();
-    void holdLive(path);
     void tick().then(() => {
       if (!readerDisposed && mine === navigationGeneration) void paintPreview();
     });
@@ -3403,6 +3000,7 @@
     // four maps, not one.
     if (active.directoryChanged(events)) refreshFiles();
     if (needsSourceRefresh(events)) {
+      folderSync?.poke();
       sourceChanged();
       scheduleTargetUpdate();
     }
@@ -3435,7 +3033,6 @@
     pageDelivered: pdfOutput && everPaintedShown,
     latexPhase: sourceFormat === "latex" && !latexHtmlPreview ? latexPhase : "",
     latexScope: sourceFormat === "latex" && !latexHtmlPreview ? String(latexState.progress?.scope || "") : "",
-    liveStarting: !previewPath || liveHeld === previewPath ? "" : quartoLiveActive && !liveShown.quarto ? "quarto" : calepinActive && !liveShown.calepin ? "calepin" : "",
     engineLoading: engineLoading && engineLoading === sourceFormat ? engineLoading : "",
     compiling,
   }));
@@ -3613,34 +3210,10 @@
     paintPreview();
   }
 
-  // The CRDT is loaded here and nowhere else. A reader with a link to a
-  // published document never joins the source room, so it never asks for the
-  // three megabytes of loro wasm behind it; an editor pays for them once, on
-  // the way in, rather than before the page has drawn.
-  async function startCollaboration(document_, { sourceSync = true } = {}) {
-    collaboration?.close();
-    const collab = sourceSync ? await import("../lib/collab.js") : null;
-    // Awaiting the module gave the reader time to be torn down or replaced.
-    if (readerDisposed) return;
-    collaboration = createReaderCollaboration({
-      slug: SLUG,
-      key: KEY,
-      collab,
-      getIdentity: () => identity,
-      getCanEdit: () => mayEdit,
-      sourceSync,
-      onMessage: receive,
-      onConnected: (up) => {
-        connected = up;
-        if (!up) {
-          pendingChat?.disconnect();
-          outbox.disconnected();
-        }
-        // A publish that happened while this browser was not listening was
-        // announced to nobody: the offer is pushed over this very socket. So
-        // the way back up is where a reader asks whether they missed one.
-        if (up && !mayEdit) void refreshCurrentProject();
-      },
+  // What the Reader hears from a session, whether it is joined to a room or
+  // built from a folder.
+  function sessionEvents() {
+    return {
       onPeers: (count) => { if (!readerDisposed) peers = Math.max(peers, count); },
       onState: (state_) => {
         // Teardown sets this before it closes the collaboration, so a local
@@ -3675,6 +3248,45 @@
       },
       onFiles: filesChanged,
       onAwareness: () => { if (!readerDisposed) refreshPeers(); },
+    };
+  }
+
+  // The CRDT is loaded here and nowhere else. A reader with a link to a
+  // published document never joins the source room, so it never asks for the
+  // three megabytes of loro wasm behind it; an editor pays for them once, on
+  // the way in, rather than before the page has drawn.
+  async function startCollaboration(document_, { sourceSync = true } = {}) {
+    collaboration?.close();
+    if (LOCAL) {
+      // The folder was read before the document was shown, so the project
+      // joins at once and there is no room to connect to.
+      collaboration = localProject;
+      session = localProject.start(document_);
+      return;
+    }
+    const collab = sourceSync ? await import("../lib/collab.js") : null;
+    // Awaiting the module gave the reader time to be torn down or replaced.
+    if (readerDisposed) return;
+    collaboration = createReaderCollaboration({
+      slug: SLUG,
+      key: KEY,
+      collab,
+      getIdentity: () => identity,
+      getCanEdit: () => mayEdit,
+      sourceSync,
+      onMessage: receive,
+      onConnected: (up) => {
+        connected = up;
+        if (!up) {
+          pendingChat?.disconnect();
+          outbox.disconnected();
+        }
+        // A publish that happened while this browser was not listening was
+        // announced to nobody: the offer is pushed over this very socket. So
+        // the way back up is where a reader asks whether they missed one.
+        if (up && !mayEdit) void refreshCurrentProject();
+      },
+      ...sessionEvents(),
       onDocumentChanged: () => {
         location.reload();
       },
@@ -3799,7 +3411,6 @@
       (document_.execution_engine === "quarto" ? "quarto" : "");
     sourceFormat = format;
     scopeLocalApp();
-    if (["quarto", "typst", "markdown"].includes(format)) readQuartoBinding();
     // Every reader compiles from source when the browser has the engine. A
     // missing engine produces an actionable local-tool message below.
     if (format && !renderers.outputKind(format)) {
@@ -3828,37 +3439,101 @@
     if (mayEdit) startEditing();
   }
 
+  // A document is shown the same way whether the server answered for it or the
+  // folder did.
+  function showDocument(found) {
+    doc = found;
+    document.title = `${found.title} · LibrePaper`;
+    // The server refuses a documents host equal to the app host, so the
+    // page only has to refuse to invent one: falling back to the app's own
+    // origin would hand the sandboxed frame that origin.
+    const separate = Boolean(found.docs_origin);
+    docsOrigin = separate ? found.docs_origin : null;
+    // The frame is an empty page with the agent in it, on the documents
+    // origin. What goes into it is what this browser renders -- or, for a
+    // LaTeX document, a PDF an editor's browser compiled, which needs a
+    // frame that can draw one. Set after `prepare`, which is what settles
+    // the format and so which frame this document wants.
+    void prepare(found);
+    if (!separate) {
+      renderStatus.failed(NO_DOCS_ORIGIN);
+      say(NO_DOCS_ORIGIN, { kind: "problem", id: "reader:no-docs-origin" });
+    }
+  }
+
+  // A file that changed on disk while the editor holds unsaved edits to it
+  // asks which copy wins. The questions are answered one at a time, and
+  // closing the dialog any other way keeps the editor's text.
+  let diskConflicts = $state([]);
+  let diskConflictOpen = $state(false);
+  function askAboutDisk(conflict) {
+    diskConflicts = [...diskConflicts, conflict];
+    diskConflictOpen = true;
+  }
+  // `choice` is "keep", "load", or "dismiss". Dismissing keeps the editor's
+  // text, so a deleted file is written back rather than held unsaved.
+  function answerDisk(choice) {
+    const [first, ...rest] = diskConflicts;
+    diskConflicts = rest;
+    diskConflictOpen = rest.length > 0;
+    if (!first) return;
+    if (choice === "load") first.loadDisk();
+    else first.keepMine();
+  }
+
+  // Opens the folder behind a local project: its rules, its files, and the
+  // synthetic document that stands where the server's would.
+  async function bootLocal() {
+    try {
+      scopeLocalApp();
+      const [config, collab] = await Promise.all([loadConfig(), import("../lib/collab.js")]);
+      if (readerDisposed) return;
+      localProject = createLocalProject({
+        id: LOCAL_ID,
+        rules: config || {},
+        collab,
+        figures: localFigures,
+        ...sessionEvents(),
+        onConflict: askAboutDisk,
+        onResend: (paths) => {
+          localQuarto.forgetAcknowledged(paths);
+          folderSync?.poke();
+        },
+        onProblem: (message) => say(message, { kind: "problem", id: "reader:folder-read" }),
+      });
+      const { name, sourceFormat: opening } = await localProject.load();
+      if (readerDisposed) return;
+      localQuarto.acknowledge(LOCAL_ID, localProject.seed());
+      showDocument({
+        title: name,
+        role: "owner",
+        can_edit: true,
+        can_moderate: false,
+        can_see_sharing: false,
+        source_format: opening,
+        renderers: config?.latex ? ["markdown", "latex"] : ["markdown"],
+        docs_origin: config?.docs_origin,
+      });
+    } catch (error) {
+      if (readerDisposed) return;
+      doc = { title: "Folder unavailable" };
+      say(`The folder could not be opened: ${error?.message || "unknown error"}`, { kind: "problem", id: "reader:folder-open" });
+    }
+  }
+
   $effect(() => {
-    markViewed(SLUG);
+    if (!LOCAL) markViewed(SLUG);
     pendingChat = createPendingChat({
       send: (message) => collaboration?.sendLive(message) || { ok: false },
     });
-    const boot = createReaderBoot({
+    const boot = LOCAL ? null : createReaderBoot({
       slug: SLUG,
       key: KEY,
       onIdentity: (who) => {
         me = who;
         if (who.name) session?.rename(who.name);
       },
-      onDocument: (found) => {
-        doc = found;
-        document.title = `${found.title} · LibrePaper`;
-        // The server refuses a documents host equal to the app host, so the
-        // page only has to refuse to invent one: falling back to the app's own
-        // origin would hand the sandboxed frame that origin.
-        const separate = Boolean(found.docs_origin);
-        docsOrigin = separate ? found.docs_origin : null;
-        // The frame is an empty page with the agent in it, on the documents
-        // origin. What goes into it is what this browser renders -- or, for a
-        // LaTeX document, a PDF an editor's browser compiled, which needs a
-        // frame that can draw one. Set after `prepare`, which is what settles
-        // the format and so which frame this document wants.
-        void prepare(found);
-        if (!separate) {
-          renderStatus.failed(NO_DOCS_ORIGIN);
-          say(NO_DOCS_ORIGIN, { kind: "problem", id: "reader:no-docs-origin" });
-        }
-      },
+      onDocument: showDocument,
       // A document answers a stranger exactly as a missing one does, which
       // tells a stranger nothing -- and tells an owner who has not signed in
       // nothing either. That is what this line is for: the page was opened
@@ -3891,7 +3566,8 @@
         }
       },
     });
-    boot.start();
+    if (boot) boot.start();
+    else void bootLocal();
 
     return () => {
       // The session on the server ends when the last person in it
@@ -3911,9 +3587,7 @@
       clearTimeout(projectRefreshTimer);
       projectRefreshTimer = null;
       previewTimer = null;
-      boot.dispose();
-      void quartoPreviewController.stop();
-      void calepinPreviewController.stop();
+      boot?.dispose();
       framePreview.dispose();
       stopLatex();
       pendingChat?.dispose();
@@ -3922,6 +3596,7 @@
       followAnnotations?.();
       followAnnotations = null;
       collaboration?.close();
+      localProject?.close();
     };
   });
 
@@ -3940,7 +3615,7 @@
   let localCopyRunning = false;
   let localCopyRemembered = false;
   $effect(() => {
-    const ready = mayEdit && !openedLocally && persistence.local && Editor;
+    const ready = !LOCAL && mayEdit && !openedLocally && persistence.local && Editor;
     if (!ready || localCopyRunning || localCopyRemembered) return;
     localCopyRunning = true;
     const server = location.origin;
@@ -3967,6 +3642,12 @@
   // offline Ctrl-S says where the work currently is and what will happen to
   // it, and leaves the word alone. Only the server copy is called saved.
   function reportPersistence() {
+    // A local project is saved to its files by the folder sync, which reports
+    // its own failures.
+    if (LOCAL) {
+      say("Changes are saved to the files in the folder.", { id: "reader:persistence" });
+      return;
+    }
     // A local write that failed or is still in flight is not worth
     // reassuring anybody about; the failure says so on its own.
     if (persistence.localError || persistence.localPending) return;
@@ -4203,7 +3884,7 @@
     <hr class="hr my-1" />
   {/if}
   {@render downloadMenu()}
-  {#if me?.id}<Menu.Item value="save-template" class="menuitem">Save as template…</Menu.Item>{/if}
+  {#if me?.id && !LOCAL}<Menu.Item value="save-template" class="menuitem">Save as template…</Menu.Item>{/if}
   <hr class="hr my-1" />
   {#if tabs.some((tab) => tab.id === "git")}<Menu.Item value="git" class="menuitem">Git…</Menu.Item>{/if}
   {#if canSeeSharing || canPublish}<Menu.Item value="share" class="menuitem">Share…</Menu.Item>{/if}
@@ -4214,9 +3895,6 @@
   <hr class="hr my-1" />
   {#if mayEdit && sourceFormat === "latex" && compilesHere}
     <Menu.Item value="compile" class="menuitem"><span class="menuitem-label">Compile now</span>{#if MENU_KEYS.compile}<span class="menuitem-keys">{MENU_KEYS.compile}</span>{/if}</Menu.Item>
-  {/if}
-  {#if mayEdit && ["typst", "markdown", "quarto"].includes(sourceFormat)}
-    <Menu.Item value="project-folder" class="menuitem">Project folder…</Menu.Item>
   {/if}
   <Menu.Item value="settings" class="menuitem"><span class="menuitem-label">Settings…</span>{#if MENU_KEYS.settings}<span class="menuitem-keys">{MENU_KEYS.settings}</span>{/if}</Menu.Item>
   {#if hasDesktop}
@@ -4310,7 +3988,7 @@
       <CompactPanelMenu tabs={tabs} {panel} {me} {badges} open={shown.comments} onselect={openPanel} onsettings={() => openSettings()}
                         menus={compactMenus} onmenu={(id, anchor) => menubar.show(id, anchor)} />
       {@render faceSwitch()}
-      {#if !connected}<span class="presence-offline" title={connectionNote} aria-label={connectionNote}><span class="presence-offline-dot" aria-hidden="true"></span>Offline</span>{/if}
+      {#if !connected && !LOCAL}<span class="presence-offline" title={connectionNote} aria-label={connectionNote}><span class="presence-offline-dot" aria-hidden="true"></span>Offline</span>{/if}
     {:else}
       <!-- Between 761px and the split's narrow point, the face choice stays in
            the top bar. Compact widths render it beside the hamburger above. -->
@@ -4325,7 +4003,7 @@
           <Avatar name={person.name} key={person.key} colour={person.colour} size={6} />
         {/each}
         {#if participants.length > 3}<span class="presence-more">+{participants.length - 3}</span>{/if}
-        {#if !connected}<span class="presence-offline"><span class="presence-offline-dot" aria-hidden="true"></span>Offline</span>{/if}
+        {#if !connected && !LOCAL}<span class="presence-offline"><span class="presence-offline-dot" aria-hidden="true"></span>Offline</span>{/if}
       </div>
     {/if}
   {/snippet}
@@ -4456,14 +4134,13 @@
   {/snippet}
 
   {#snippet diagnosticsPanel()}
-    <Diagnostics {diagnostics} localAppProblem={localAppDiagnostics.length > 0} {desktopNeeds}
-      onretrylocal={() => localExecutionRelevant ? startLocalExecution() : ensureLocalApp()}
+    <Diagnostics {diagnostics}
       entry={previewPath}
       canOpen={(item) => Boolean(diagnosticFile(item))} onopen={openDiagnostic}
       provenance={renderState.lastLatexResult?.provenance || null}
       attempts={renderState.lastLatexResult?.attempts || []}
       onagent={agentOffered ? askDiagnostic : undefined}
-      log={renderState.lastLatexResult?.log || (quartoPreviewError && quartoPreviewController.state.log) || (calepinPreviewError && calepinPreviewController.state.log) || renderState.lastLog || ""}
+      log={renderState.lastLatexResult?.log || renderState.lastLog || ""}
       logOpen={renderState.lastLatexResult ? undefined : false} />
   {/snippet}
 
@@ -4830,11 +4507,21 @@
                 commands={commandContext}
                 userId={buildUserId}
                 onbuildpreferences={(format, next) => { if (format === sourceFormat) setBuildPreferences(next); }}
-                onquartooptions={applyRenderOptions}
                 account={me} />
 
-<Modal bind:open={projectFolderOpen} title="Project folder">
-  <ProjectFolderSetting {sourceFormat} main={previewPath} {mayEdit} onbindingid={(id) => { quartoBindingId = id; localQuarto.setBindingId(id); }} />
+<!-- A file changed on disk while the editor held unsaved edits to it. -->
+<Modal bind:open={diskConflictOpen} title="File changed on disk"
+  description={diskConflicts.length ? `${diskConflicts[0].path} ${diskConflicts[0].deleted ? "was deleted" : "changed"} on disk.` : ""}
+  cancelLabel="Keep mine"
+  onclose={() => answerDisk("dismiss")}
+  confirm={{ label: diskConflicts[0]?.deleted ? "Delete" : "Load from disk", onclick: () => answerDisk("load"), oncancel: () => answerDisk("keep") }}>
+  {#snippet children()}
+    {#if diskConflicts[0]?.deleted}
+      <p class="text-sm">Keep mine writes the file back from the editor's text. Delete removes the file from the project.</p>
+    {:else}
+      <p class="text-sm">Keep mine writes the editor's text over the file on the next save. Load from disk replaces the editor's text with the file.</p>
+    {/if}
+  {/snippet}
 </Modal>
 
 <Modal bind:open={templateModalOpen} title="Save as template"

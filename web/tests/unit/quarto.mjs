@@ -2,7 +2,6 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import { cellFingerprint, composeDraft, contextId, contextFingerprint, escapeHtml, mapQuartoDiagnostics, pandocDraft, parseQuarto, virtualTree } from "../../src/lib/engines/quarto.js";
 import { formatOf, outputKind } from "../../src/lib/renderers.js";
-import { quartoRequest } from "../../src/lib/desktop/client.js";
 
 const source = [
   "---", "title: Example", "execute:", "  echo: false", "---", "",
@@ -171,10 +170,6 @@ assert.equal(await contextId({ format: "html", profiles: ["default"], parameters
 assert.notEqual(await contextId({ format: "html", parameters: { seed: 1 } }), await contextId({ format: "html", parameters: { seed: "1" } }), "parameter scalar types remain part of the selection identity");
 assert.notEqual(await contextId({ format: "html" }), await contextId({ format: "pdf" }));
 assert.equal((await contextFingerprint(parsed, { main: "paper.qmd" })).length, 64);
-const request = quartoRequest({ job: { binding: "binding-1", id: "job-1" }, entrypoint: "paper.qmd", files: [{ path: "paper.qmd", sha256: "a".repeat(64), size: 1 }] });
-assert.equal(request.kind, "quarto");
-assert.equal(request.quarto.binding_id, "binding-1");
-assert.throws(() => quartoRequest({ job: { binding: "x" }, entrypoint: "../paper.qmd" }));
 
 const original = "```{r}\nplot(x)\n```\n";
 const inserted = "```{r}\nother()\n```\n" + original;
@@ -183,7 +178,7 @@ assert.equal(movedDraft.texts["main.md"], "Desktop source");
 // Every executable cell stays in the transient source draft.
 assert.match(movedDraft.quarto.markdown, /```\{r\}\nother\(\)\n```/);
 assert.match(movedDraft.quarto.markdown, /plot\(x\)/);
-console.log("quarto: parser, source-only draft, identity, and protocol scenarios passed");
+console.log("quarto: parser, source-only draft and identity scenarios passed");
 assert.doesNotMatch(composeDraft("{{< include hidden.qmd >}}", {expandIncludes:{"hidden.qmd":"```{r}\n#| include: false\nsecret_hidden_code()\n```\nVisible prose"}}).markdown, /secret_hidden_code/);
 
 // A Quarto PDF hands Pandoc the original front matter, not the title block.

@@ -83,7 +83,7 @@ const mdTree = { main: "doc/main.md", texts: { "doc/main.md": "x" }, assets: { "
   await exportFile({ ...base, target: "pdf", format: "latex", tree: mdTree, render, run: makeRun() });
   assert.deepEqual(render.calls[0].options, { format: "pdf", project: "" });
   await exportFile({ ...base, target: "pdf", format: "quarto", tree: mdTree, render, run: makeRun() });
-  assert.deepEqual(render.calls[1].options, { format: "pdf", project: "", buildPreferences: { selection: "tool", backend: "browser", tool: "markdown", output: "pdf" } });
+  assert.deepEqual(render.calls[1].options, { format: "pdf", project: "", buildPreferences: { backend: "browser", output: "pdf" } });
   // Authored HTML goes through Pandoc to Typst, and the Typst tree is rendered.
   const run = makeRun();
   const htmlTree = { main: "site/index.html", texts: { "site/index.html": "<p>x</p>" }, assets: {} };
@@ -153,19 +153,18 @@ const mdTree = { main: "doc/main.md", texts: { "doc/main.md": "x" }, assets: { "
   );
 }
 
-// A Quarto export with the desktop build on takes every file from Quarto.
+// An export with the desktop build on takes each file the format has a command for from that command.
 {
   const qmdTree = { main: "a.qmd", texts: { "a.qmd": "# t" }, assets: {} };
-  const localQuarto = { profile: "print", parameters: { n: 3 } };
   const local = async (target, result) => {
     const render = makeRender(result);
     const run = makeRun();
-    const file = await exportFile({ ...base, slug: "t", target, format: "quarto", tree: qmdTree, project: "slug-x", render, run, localQuarto });
+    const file = await exportFile({ ...base, slug: "t", target, format: "quarto", tree: qmdTree, project: "slug-x", render, run, local: true });
     assert.equal(run.calls.length, 0);
     assert.deepEqual(render.calls[0].options, {
       format: target,
       project: "slug-x",
-      buildPreferences: { selection: "tool", backend: "local", tool: "quarto", output: target, profile: "print", parameters: { n: 3 } },
+      buildPreferences: { backend: "local", output: target },
     });
     return file;
   };
@@ -188,8 +187,21 @@ const mdTree = { main: "doc/main.md", texts: { "doc/main.md": "x" }, assets: { "
   assert.deepEqual(render.calls[0].options, {
     format: "pdf",
     project: "",
-    buildPreferences: { selection: "tool", backend: "browser", tool: "markdown", output: "pdf" },
+    buildPreferences: { backend: "browser", output: "pdf" },
   });
+}
+
+// A format with a command only for some outputs takes the browser route for the rest.
+{
+  const texTree = { main: "a.tex", texts: { "a.tex": "x" }, assets: {} };
+  const render = makeRender({ ok: true, pdf: pdfBytes, html: "<p>hi</p>" });
+  const run = makeRun();
+  const pdf = await exportFile({ ...base, slug: "t", target: "pdf", format: "latex", tree: texTree, project: "slug-x", render, run, local: true });
+  assert.equal(pdf.name, "t.pdf");
+  assert.deepEqual(render.calls[0].options, { format: "pdf", project: "slug-x", buildPreferences: { backend: "local", output: "pdf" } });
+  await exportFile({ ...base, slug: "t", target: "html", format: "latex", tree: texTree, project: "slug-x", render, run, local: true });
+  assert.deepEqual(render.calls[1].options, { format: "html", project: "slug-x" });
+  assert.equal(run.calls.length, 0);
 }
 
 // Cells that a browser export leaves unrun.

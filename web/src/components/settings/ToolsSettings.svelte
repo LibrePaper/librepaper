@@ -1,6 +1,5 @@
 <script>
   import ToolRow from "./ToolRow.svelte";
-  import ToolCommand from "./ToolCommand.svelte";
   import DesktopOnly from "../DesktopOnly.svelte";
   import { forgetCapabilities } from "../../lib/desktop/client.js";
   import { toolItems } from "../../lib/desktop/tools.js";
@@ -9,15 +8,13 @@
   let { view } = $props();
   const active = (status) => !["done", "complete", "completed", "succeeded", "failed", "error", "cancelled", "canceled", "stopped", "interrupted", "expired", "denied"].includes(String(status || "").toLowerCase());
 
-  const CONFIGURABLE = ["quarto", "calepin"];
   const DESCRIPTIONS = {
-    quarto: "Renders Quarto and Markdown documents.",
-    calepin: "Renders Typst and Calepin documents.",
     zotero: "Citations from your Zotero library.",
   };
 
   const connected = $derived(view.available);
-  const capabilities = $derived(view.state?.tools);
+  // The render commands are set in Settings > Rendering. Their programs are listed here.
+  const capabilities = $derived({ ...view.state?.tools, renderers: view.state?.settings?.renderers });
   // The programs worth showing are listed even when the desktop app did not report them.
   const tools = $derived(toolItems(capabilities));
 
@@ -42,11 +39,9 @@
     return DESCRIPTIONS[key] || "";
   }
 
-  const bindings = $derived(view.list(view.state?.bindings));
   const jobs = $derived(view.list(view.state?.jobs));
-  const previews = $derived(view.list(view.state?.previews));
   const sessions = $derived(view.list(view.state?.sessions));
-  const running = $derived(jobs.length + previews.length + sessions.length > 0);
+  const running = $derived(jobs.length + sessions.length > 0);
 
   // Elapsed time when the desktop app says when the work started.
   function elapsed(item) {
@@ -54,10 +49,9 @@
     if (!Number.isFinite(seconds) || seconds < 0) return "";
     return seconds < 60 ? `${Math.round(seconds)} s` : `${Math.floor(seconds / 60)} min ${Math.round(seconds % 60)} s`;
   }
-  const bindingNote = (binding) => [binding.origin || "Connected site", binding.entrypoint || "project folder", binding.execution_granted === false ? "Code execution is not authorized" : ""].filter(Boolean).join(" · ");
 </script>
 
-<DesktopOnly description="Render documents with the programs on your computer, link projects to folders and run their code locally.">
+<DesktopOnly description="Render documents with the programs on your computer, run their code locally.">
 {#if view.error}
   <p class="setting-description desktop-error" role="alert">{view.error}</p>
 {/if}
@@ -75,33 +69,9 @@
       <button class="btn btn-sm lp-control-tonal-brand" type="button" disabled={Boolean(view.pending)} onclick={() => void rescan()}>{view.pending === "rescan" ? "Scanning…" : "Rescan"}</button>
     </div>
     {#each tools as { key, title, tool } (key)}
-      {#if CONFIGURABLE.includes(key)}
-        <ToolRow id={`tools-${key}`} {title} description={description(key, title, tool)} status={status(tool)}><ToolCommand name={key} /></ToolRow>
-      {:else}
-        <ToolRow id={`tools-${key}`} {title} description={description(key, title, tool)} status={status(tool)} />
-      {/if}
+      <ToolRow id={`tools-${key}`} {title} description={description(key, title, tool)} status={status(tool)} />
     {/each}
   </section>
-
-  {#if bindings.length}
-    <section id="tools-folders" class="settings-subsection">
-      <div class="settings-section-title">
-        <h4 class="settings-subhead">Project folders</h4>
-      </div>
-      <table class="desktop-table" aria-label="Project folders">
-        <thead><tr><th scope="col">Project folder</th><th scope="col">Details</th><th scope="col"><span class="sr-only">Action</span></th></tr></thead>
-        <tbody>
-          {#each bindings as binding (binding.id)}
-            <tr>
-              <th scope="row">{binding.project || "Authorized folder"}</th>
-              <td>{bindingNote(binding)}</td>
-              <td class="desktop-action"><button class="btn btn-sm lp-control-tonal-brand" type="button" disabled={Boolean(view.pending)} onclick={() => { if (confirm(`Remove folder authorization for ${binding.project || "this project"}?`)) void view.act(`binding-${binding.id}`, "Folder authorization removed.", `/bindings/${view.id(binding.id)}`, { method: "DELETE" }); }}>Revoke</button></td>
-            </tr>
-          {/each}
-        </tbody>
-      </table>
-    </section>
-  {/if}
 
   {#if running}
     <section id="tools-activity" class="settings-subsection">
@@ -117,14 +87,6 @@
               <td>{elapsed(job)}</td>
               <td>{job.status || "running"}{job.error ? ` · ${job.error}` : ""}</td>
               <td class="desktop-action">{#if active(job.status)}<button class="btn btn-sm lp-control-tonal-brand" type="button" disabled={Boolean(view.pending)} onclick={() => void view.act(`job-${job.id}`, "Cancellation requested.", `/jobs/${view.id(job.id)}/cancel`, { method: "POST" })}>Cancel</button>{/if}</td>
-            </tr>
-          {/each}
-          {#each previews as preview (preview.id)}
-            <tr>
-              <th scope="row">{preview.label || preview.project || "Preview"}</th>
-              <td>{elapsed(preview)}</td>
-              <td>{preview.status || "active"}</td>
-              <td class="desktop-action"><button class="btn btn-sm lp-control-tonal-brand" type="button" disabled={Boolean(view.pending)} onclick={() => void view.act(`preview-${preview.id}`, "Preview stopped.", `/previews/${view.id(preview.id)}`, { method: "DELETE" })}>Stop</button></td>
             </tr>
           {/each}
           {#each sessions as session (session.id)}

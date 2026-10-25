@@ -854,14 +854,13 @@ fn serve(app: &AppHandle, label: String, request: Request<Vec<u8>>, responder: U
             .to_string(),
         origin: origin.clone(),
         content_type: parts.headers.get(header::CONTENT_TYPE).cloned(),
-        if_none_match: parts.headers.get(header::IF_NONE_MATCH).cloned(),
         body,
     };
     let app = app.clone();
     tauri::async_runtime::spawn(async move {
         // The page is a remote site, so the shell asks before it lets the page
-        // choose which program runs Quarto or Calepin documents, or adds an
-        // agent that LibrePaper runs.
+        // choose which command renders a document, or adds an agent that
+        // LibrePaper runs.
         if let Some(Prompt {
             title,
             message,
@@ -902,11 +901,16 @@ struct ServerChoice {
     url: String,
 }
 
+// The body of `PUT renderers/<format>.<output>`: a whole command and the
+// file it leaves behind, or a reset to the built-in default. The service
+// reads the same shape and refuses a reset that also carries a command.
 #[derive(serde::Deserialize)]
-struct IntegrationChange {
-    path: Option<String>,
+#[serde(deny_unknown_fields)]
+struct RendererChange {
+    command: Option<Vec<String>>,
+    result: Option<String>,
     #[serde(default)]
-    args: Vec<String>,
+    reset: bool,
 }
 
 #[derive(serde::Deserialize)]
@@ -924,7 +928,7 @@ struct Prompt {
 }
 
 // Returns the confirmation a request needs, or None for any request that
-// does not change an integration or add an agent.
+// does not change a render command or add an agent.
 fn prompt_for(
     origin: &str,
     method: &Method,
@@ -932,8 +936,8 @@ fn prompt_for(
     body: &[u8],
 ) -> Result<Option<Prompt>, Box<Response<Vec<u8>>>> {
     let local = route(path, "/librepaper/local");
-    if *method == Method::PUT && local.first() == Some(&"integrations") {
-        return integration_prompt(origin, &local, body).map(Some);
+    if *method == Method::PUT && local.first() == Some(&"renderers") {
+        return renderer_prompt(origin, &local, body);
     }
     let api = route(path, "/companion/api");
     if *method == Method::POST && api == ["agents"] {
@@ -954,49 +958,66 @@ fn route<'a>(path: &'a str, prefix: &str) -> Vec<&'a str> {
         .unwrap_or_default()
 }
 
-fn integration_prompt(
+// A reset needs no confirmation: it returns the command to the built-in
+// default. Anything that sets a command shows the whole of it first.
+fn renderer_prompt(
     origin: &str,
     route: &[&str],
     body: &[u8],
-) -> Result<Prompt, Box<Response<Vec<u8>>>> {
-    let name = if route.len() == 2 { route[1] } else { "" };
-    let tool = match name {
-        "quarto" => "Quarto",
-        "calepin" => "Calepin",
-        _ => {
-            return Err(Box::new(json_error(
-                StatusCode::BAD_REQUEST,
-                "unknown integration",
-            )))
-        }
-    };
-    let Ok(change) = serde_json::from_slice::<IntegrationChange>(body) else {
+) -> Result<Option<Prompt>, Box<Response<Vec<u8>>>> {
+    let key = if route.len() == 2 { route[1] } else { "" };
+    if key.is_empty() {
+        return Err(Box::new(json_error(
+            StatusCode::BAD_REQUEST,
+            "unknown renderer",
+        )));
+    }
+    let Ok(change) = serde_json::from_slice::<RendererChange>(body) else {
         return Err(Box::new(json_error(
             StatusCode::BAD_REQUEST,
             "the body must be JSON",
         )));
     };
-    let path = change.path.filter(|path| !path.is_empty());
-    let args = change.args;
-    let title = format!("Change the {tool} command");
-    let message = match (path, args.is_empty()) {
-        (None, true) => format!("{origin} wants LibrePaper to use the default {tool} command."),
-        (path, _) => {
-            let program = path.unwrap_or_else(|| format!("{name} (found on PATH)"));
-            let command = std::iter::once(program)
-                .chain(args)
-                .collect::<Vec<_>>()
-                .join(" ");
-            format!(
-                "{origin} wants LibrePaper to run {tool} as:\n\n{command}\n\nOnly allow this if you asked for it."
-            )
+    if change.reset {
+        if change.command.is_some() || change.result.is_some() {
+            return Err(Box::new(json_error(
+                StatusCode::BAD_REQUEST,
+                "a reset carries no command",
+            )));
         }
+        return Ok(None);
+    }
+    let (Some(command), Some(result)) = (change.command, change.result) else {
+        return Err(Box::new(json_error(
+            StatusCode::BAD_REQUEST,
+            "a renderer needs a command and a result",
+        )));
     };
-    Ok(Prompt {
-        title,
-        message,
+    let command = command
+        .iter()
+        .map(|argument| display_argument(argument))
+        .collect::<Vec<_>>()
+        .join(" ");
+    Ok(Some(Prompt {
+        title: format!("Change the {key} command"),
+        message: format!(
+            "{origin} wants LibrePaper to render {key} by running:\n\n{command}\n\nIt reads the result from {result}. Only allow this if you asked for it."
+        ),
         refused: "The command was not changed.",
-    })
+    }))
+}
+
+// One argument as the person should read it: quoted when it is empty or
+// holds whitespace or a quote, so the boundaries between arguments stay
+// visible.
+fn display_argument(argument: &str) -> String {
+    if argument.is_empty()
+        || argument.contains(|c: char| c.is_whitespace() || c == '"' || c == '\'')
+    {
+        format!("\"{}\"", argument.replace('\\', "\\\\").replace('"', "\\\""))
+    } else {
+        argument.to_string()
+    }
 }
 
 fn agent_prompt(origin: &str, body: &[u8]) -> Result<Prompt, Box<Response<Vec<u8>>>> {
@@ -1025,10 +1046,6 @@ fn with_origin(mut res: Response<Vec<u8>>, origin: &str) -> Response<Vec<u8>> {
     }
     res.headers_mut()
         .insert(header::VARY, HeaderValue::from_static("Origin"));
-    res.headers_mut().insert(
-        header::ACCESS_CONTROL_EXPOSE_HEADERS,
-        HeaderValue::from_static("etag, x-librepaper-rendering"),
-    );
     res
 }
 
@@ -1262,6 +1279,62 @@ mod tests {
             prompt_for(ORIGIN, &Method::DELETE, "/companion/api/agents/x", &[]),
             Ok(None)
         ));
+    }
+
+    const RENDERER: &[u8] =
+        br#"{"command":["latexmk","-pdf","my paper.tex"],"result":"my paper.pdf"}"#;
+
+    #[test]
+    fn setting_a_renderer_asks_and_shows_the_whole_command() {
+        let prompt = prompt_for(
+            ORIGIN,
+            &Method::PUT,
+            "/librepaper/local/renderers/latex.pdf",
+            RENDERER,
+        )
+        .ok()
+        .flatten()
+        .expect("a prompt");
+        assert!(prompt.message.contains("latexmk -pdf \"my paper.tex\""));
+        assert!(prompt.message.contains("my paper.pdf"));
+        assert_eq!(prompt.refused, "The command was not changed.");
+    }
+
+    #[test]
+    fn a_doubled_slash_still_asks_for_a_renderer() {
+        let prompt = prompt_for(
+            ORIGIN,
+            &Method::PUT,
+            "/librepaper/local//renderers/latex.pdf",
+            RENDERER,
+        )
+        .ok()
+        .flatten();
+        assert!(prompt.is_some());
+    }
+
+    #[test]
+    fn resetting_a_renderer_asks_nothing() {
+        assert!(matches!(
+            prompt_for(
+                ORIGIN,
+                &Method::PUT,
+                "/librepaper/local/renderers/latex.pdf",
+                br#"{"reset":true}"#
+            ),
+            Ok(None)
+        ));
+    }
+
+    #[test]
+    fn a_reset_that_carries_a_command_is_refused() {
+        assert!(prompt_for(
+            ORIGIN,
+            &Method::PUT,
+            "/librepaper/local/renderers/latex.pdf",
+            br#"{"reset":true,"command":["x"]}"#
+        )
+        .is_err());
     }
 
     #[test]

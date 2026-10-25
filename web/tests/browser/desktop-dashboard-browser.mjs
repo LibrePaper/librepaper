@@ -175,7 +175,6 @@ try {
   assert.equal(await b.evaluate('document.querySelector("#tray-enabled") === null'), true, "there is no tray preference");
   assert.equal(await b.evaluate(`document.querySelector("#agents-list-heading") === null`), true, "agents have their own category");
   assert.equal(await b.evaluate('document.body.innerText.includes("Tool search folders")'), false, "tool search folders are not configurable");
-  assert.equal(await b.evaluate('document.querySelector("#tools-folders") === null'), true, "with no project-folder grants there is no Project folders section");
 
   for (const path of ["/companion", "/companion/", "/companion/index.html", "/companion/app.js", "/companion/style.css"]) {
     const response = await fetch(`${companionAddress.replace(/\/$/, "")}${path}`);
@@ -265,42 +264,33 @@ try {
     return response.ok && !(await response.json()).custom_agents.some((item) => item.id === agentId);
   }, 10000);
 
-  await b.evaluate(`[...document.querySelectorAll(".settings-nav-item")].find((item) => item.textContent.trim() === "Tools").click()`);
-  await b.evaluate('window.showSettingsCategory("tools")');
-  await until("Quarto details available", () => b.evaluate(`Boolean(document.querySelector('#tools-quarto .tool-row-toggle'))`), 10000);
-  await b.evaluate(`(() => {
-    const button = document.querySelector('#tools-quarto .tool-row-toggle');
-    if (button.getAttribute('aria-expanded') !== 'true') button.click();
-  })()`);
-  await until("real Quarto integration in Tools", () => b.evaluate(`
-    document.querySelector(".settings-category")?.textContent.trim() === "Tools"
-      && document.querySelector("#quarto-executable input")?.disabled === false
+  await b.evaluate(`[...document.querySelectorAll(".settings-nav-item")].find((item) => item.textContent.trim() === "Rendering").click()`);
+  await b.evaluate('window.showSettingsCategory("rendering")');
+  const quartoField = "#render-quarto-html [aria-label='HTML command for quarto']";
+  await until("the Quarto HTML command in Rendering", () => b.evaluate(`
+    document.querySelector(".settings-category")?.textContent.trim() === "Rendering"
+      && document.querySelector(${JSON.stringify(quartoField)})?.disabled === false
   `), 10000);
   const quartoPath = process.execPath;
-  const quartoArgs = "--profile=test --verbose";
   await b.evaluate(`(() => {
-    const path = document.querySelector("#quarto-executable input");
-    path.value = ${JSON.stringify(quartoPath)};
-    path.dispatchEvent(new Event("input", { bubbles: true }));
-    const args = document.querySelector("#quarto-arguments input");
-    args.value = ${JSON.stringify(quartoArgs)};
-    args.dispatchEvent(new Event("input", { bubbles: true }));
+    const field = document.querySelector(${JSON.stringify(quartoField)});
+    field.value = ${JSON.stringify(`"${quartoPath}" render {input} --to html --profile test`)};
+    field.dispatchEvent(new Event("input", { bubbles: true }));
   })()`);
-  await waitForEnabledButton("Save", "#quarto-executable");
-  await b.evaluate(`(() => {
-    const section = document.querySelector("#quarto-executable").closest(".tool-command");
-    [...section.querySelectorAll("button")].find((item) => item.textContent.trim() === "Save").click();
-  })()`);
-  await until("Quarto integration path and arguments persisted", async () => {
+  await until("Save enabled for the Quarto command", () => b.evaluate(`
+    [...document.querySelectorAll("#render-quarto-html .tool-command-actions button")].some((button) => button.textContent.trim() === "Save" && !button.disabled)
+  `), 10000);
+  await b.evaluate(`[...document.querySelectorAll("#render-quarto-html .tool-command-actions button")].find((button) => button.textContent.trim() === "Save").click()`);
+  await until("Quarto command persisted", async () => {
     const response = await apiState();
     if (!response.ok) return false;
-    const quarto = (await response.json()).settings.integrations.quarto;
-    return quarto.path === quartoPath && quarto.args.join(" ") === quartoArgs;
+    const quarto = (await response.json()).settings.renderers["quarto.html"];
+    return quarto.edited === true && quarto.command.join(" ") === [quartoPath, "render", "{input}", "--to", "html", "--profile", "test"].join(" ");
   }, 10000);
 
   await captureSettingsScreenshot();
 
-  console.log("desktop-dashboard-browser: shell-forwarded Settings, agent management, and tool commands passed");
+  console.log("desktop-dashboard-browser: shell-forwarded Settings, agent management, and render commands passed");
 } finally {
   if (b) await b.close();
   if (app && app.exitCode === null) {

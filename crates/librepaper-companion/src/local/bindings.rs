@@ -1,6 +1,8 @@
-//! Project bindings: which folders on this computer a site may build in.
+//! Project bindings: which folders on this computer a site may use.
 //!
-//! A binding is machine-local and is granted by the person at the keyboard,
+//! Only a folder opened as a local project is bound. A web project renders
+//! in the hosted workspace and gets no folder. A binding is machine-local
+//! and is granted by the person at the keyboard,
 //! never by the page asking. What crosses the wire is an opaque id; the
 //! absolute path it stands for stays here.
 //!
@@ -8,7 +10,7 @@
 //! a binding that cannot be read is a grant the person made and this process
 //! cannot honour, while a render that fails is a build that did not work.
 //! They also change for different reasons -- one when the grant model does,
-//! the other when Quarto does.
+//! the other when the render pipeline does.
 
 use std::path::{Path, PathBuf};
 
@@ -31,20 +33,6 @@ fn transaction_lock() -> std::sync::MutexGuard<'static, ()> {
 
 fn opaque_id() -> String {
     format!("q-{}", hex::encode(librepaper_base::util::random_bytes(16)))
-}
-
-/// Validate an entrypoint stored in a user-approved project binding. Bindings
-/// are shared by project-backed builders, while each builder still validates
-/// its own input before execution (for example, Quarto accepts Markdown only).
-pub fn validate_binding_entrypoint(entrypoint: &str) -> Result<(), String> {
-    if !protocol::safe_relative_path(entrypoint)
-        || !(entrypoint.ends_with(".qmd")
-            || entrypoint.ends_with(".md")
-            || entrypoint.ends_with(".typ"))
-    {
-        return Err("entrypoint must be a safe project-relative .qmd, .md, or .typ path".into());
-    }
-    Ok(())
 }
 
 /// A project slug fit to be a directory name under the hosted base: the
@@ -72,12 +60,38 @@ pub struct ProjectBinding {
     pub created_at: i64,
     #[serde(default)]
     pub execution_granted: bool,
+    /// `KIND_PROJECT` for a folder opened as a project. A stored binding of
+    /// any other kind, or with no kind, is dropped when the store loads.
+    #[serde(default)]
+    pub kind: String,
+    /// When a project binding was last opened, as Unix seconds.
+    #[serde(default)]
+    pub opened_at: i64,
+}
+
+/// A folder opened as a project: no fixed entrypoint, any file inside the
+/// root may be built.
+pub const KIND_PROJECT: &str = "project";
+
+impl ProjectBinding {
+    pub fn is_project(&self) -> bool {
+        self.kind == KIND_PROJECT
+    }
 }
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 struct BindingFile {
     #[serde(default)]
     bindings: Vec<ProjectBinding>,
+}
+
+impl BindingFile {
+    /// Drops every stored binding that is not a project binding. Render
+    /// bindings, and bindings from before kinds existed, are not migrated.
+    fn projects_only(mut self) -> Self {
+        self.bindings.retain(ProjectBinding::is_project);
+        self
+    }
 }
 
 /// The one binding id that needs no grant: a document the serving deployment
@@ -165,13 +179,16 @@ impl BindingStore {
             entrypoint: String::new(),
             created_at: 0,
             execution_granted: true,
+            kind: String::new(),
+            opened_at: 0,
         })
     }
 
     fn load(&self) -> BindingFile {
         std::fs::read(&self.path)
             .ok()
-            .and_then(|bytes| serde_json::from_slice(&bytes).ok())
+            .and_then(|bytes| serde_json::from_slice::<BindingFile>(&bytes).ok())
+            .map(BindingFile::projects_only)
             .unwrap_or_default()
     }
 
@@ -183,7 +200,9 @@ impl BindingStore {
             }
             Err(error) => return Err(format!("read binding store: {error}")),
         };
-        serde_json::from_slice(&bytes).map_err(|error| format!("decode binding store: {error}"))
+        serde_json::from_slice::<BindingFile>(&bytes)
+            .map(BindingFile::projects_only)
+            .map_err(|error| format!("decode binding store: {error}"))
     }
 
     fn save(&self, file: &BindingFile) -> Result<(), String> {
@@ -195,43 +214,85 @@ impl BindingStore {
         librepaper_base::private_files::publish(&self.path, &bytes, "binding store")
     }
 
-    /// Grant a binding after resolving the root and entrypoint. The root is
-    /// canonicalised before persistence, and must be a directory.
-    pub fn grant(
-        &self,
-        origin: &str,
-        project: &str,
-        root: &Path,
-        entrypoint: &str,
-    ) -> Result<ProjectBinding, String> {
+    /// Open `root` as a folder project for `origin`. The same canonical root
+    /// for the same origin answers its existing project binding with a fresh
+    /// `opened_at`, so reopening a folder never creates a second project.
+    pub fn open_project(&self, origin: &str, root: &Path) -> Result<ProjectBinding, String> {
         let root = std::fs::canonicalize(root).map_err(|e| format!("project root: {e}"))?;
         if !root.is_dir() {
             return Err("project root is not a directory".into());
         }
-        validate_binding_entrypoint(entrypoint)?;
-        let entrypoint_path = root.join(entrypoint);
-        let resolved_entrypoint = std::fs::canonicalize(&entrypoint_path)
-            .map_err(|e| format!("project entrypoint: {e}"))?;
-        if !resolved_entrypoint.starts_with(&root) || !resolved_entrypoint.is_file() {
-            return Err("project entrypoint escapes the selected root".into());
-        }
-        let id = opaque_id();
-        let binding = ProjectBinding {
-            id,
-            origin: super::store::normalize_origin(origin),
-            project: project.to_string(),
-            root,
-            entrypoint: entrypoint.to_string(),
-            created_at: now_unix(),
-            execution_granted: true,
-        };
+        let origin = super::store::normalize_origin(origin);
         let _transaction = transaction_lock();
         let mut file = self.load_checked()?;
-        file.bindings
-            .retain(|old| !(old.origin == binding.origin && old.project == binding.project));
+        if let Some(existing) = file
+            .bindings
+            .iter_mut()
+            .find(|old| old.is_project() && old.origin == origin && old.root == root)
+        {
+            existing.opened_at = now_unix();
+            let binding = existing.clone();
+            self.save(&file)?;
+            return Ok(binding);
+        }
+        let id = opaque_id();
+        let now = now_unix();
+        let binding = ProjectBinding {
+            project: format!("local-{}", id.trim_start_matches("q-")),
+            id,
+            origin,
+            root,
+            entrypoint: String::new(),
+            created_at: now,
+            execution_granted: true,
+            kind: KIND_PROJECT.to_string(),
+            opened_at: now,
+        };
         file.bindings.push(binding.clone());
         self.save(&file)?;
         Ok(binding)
+    }
+
+    /// The folder projects of `origin`, most recently opened first. A project
+    /// whose folder is gone is still listed.
+    pub fn list_projects(&self, origin: &str) -> Vec<ProjectBinding> {
+        let origin = super::store::normalize_origin(origin);
+        let mut projects: Vec<ProjectBinding> = self
+            .load()
+            .bindings
+            .into_iter()
+            .filter(|binding| binding.is_project() && binding.origin == origin)
+            .collect();
+        projects.sort_by_key(|binding| std::cmp::Reverse(binding.opened_at));
+        projects
+    }
+
+    /// The project binding `id` for `origin`, whether or not its folder
+    /// still exists.
+    pub fn get_project(&self, id: &str, origin: &str) -> Option<ProjectBinding> {
+        let origin = super::store::normalize_origin(origin);
+        self.load().bindings.into_iter().find(|binding| {
+            binding.id == id
+                && binding.is_project()
+                && binding.origin == origin
+                && binding.execution_granted
+        })
+    }
+
+    /// Stamp the project binding `id` as opened now.
+    pub fn touch_project(&self, id: &str, origin: &str) -> Result<(), String> {
+        let origin = super::store::normalize_origin(origin);
+        let _transaction = transaction_lock();
+        let mut file = self.load_checked()?;
+        let Some(binding) = file
+            .bindings
+            .iter_mut()
+            .find(|binding| binding.id == id && binding.is_project() && binding.origin == origin)
+        else {
+            return Ok(());
+        };
+        binding.opened_at = now_unix();
+        self.save(&file)
     }
 
     /// Revokes the binding `id` if `origin` owns it, whatever its project.
@@ -264,9 +325,8 @@ impl BindingStore {
     }
 
     /// Resolve a binding for another local service component after the same
-    /// origin/project/grant checks used by render admission.  Keeping this
-    /// helper crate-visible lets managed preview share the binding authority
-    /// without exposing machine paths through the wire protocol.
+    /// origin/project/grant checks used by render admission, without exposing
+    /// machine paths through the wire protocol.
     pub(crate) fn resolve_scoped(
         &self,
         id: &str,
@@ -274,86 +334,53 @@ impl BindingStore {
         project: &str,
     ) -> Result<ProjectBinding, String> {
         self.get_scoped(id, origin, project).ok_or_else(|| {
-            "quarto binding is missing, revoked, or outside its authorized root".into()
+            "project binding is missing, revoked, or outside its authorized root".into()
         })
     }
 
-    pub fn list_scoped(&self, origin: &str, project: &str) -> Vec<ProjectBinding> {
-        let origin = super::store::normalize_origin(origin);
-        self.load()
-            .bindings
-            .into_iter()
-            .filter(|binding| binding.origin == origin && binding.project == project)
-            .collect()
-    }
-
-    /// All ordinary grants for the local control panel. Hosted workspaces are
-    /// derived from documents and are not persistent grants.
-    pub(crate) fn list_all(&self) -> Vec<ProjectBinding> {
-        let mut bindings = self.load().bindings;
-        bindings.sort_by(|left, right| {
-            left.origin
-                .cmp(&right.origin)
-                .then_with(|| left.project.cmp(&right.project))
-        });
-        bindings
-    }
-
-    pub(crate) fn revoke_any(&self, id: &str) -> Result<bool, String> {
-        let _transaction = transaction_lock();
-        let mut file = self.load_checked()?;
-        let old = file.bindings.len();
-        file.bindings.retain(|binding| binding.id != id);
-        if old == file.bindings.len() {
-            return Ok(false);
-        }
-        self.save(&file)?;
-        Ok(true)
-    }
-
     /// Revalidate the grant and root at each boundary that can follow a queue
-    /// delay. Hosted previews may choose their entrypoint; snapshot builds
-    /// retain the binding's fixed entrypoint rule. File inventory and symlink
-    /// checks remain with the caller, before it reads or executes those files.
+    /// delay. A hosted workspace takes the entrypoint the job names. A folder
+    /// project builds any regular file inside its root. File inventory and
+    /// symlink checks remain with the caller, before it reads or executes
+    /// those files.
     pub(crate) fn validate_scoped_entrypoint(
         &self,
         id: &str,
         origin: &str,
         project: &str,
         entrypoint: &str,
-        allow_hosted_entrypoint: bool,
     ) -> Result<ProjectBinding, String> {
         let binding = self.resolve_scoped(id, origin, project)?;
         if !protocol::safe_relative_path(entrypoint) {
             return Err("entrypoint must be a safe project-relative path".into());
         }
-        if !(allow_hosted_entrypoint && Self::is_hosted(&binding))
-            && entrypoint != binding.entrypoint
-        {
-            return Err("entrypoint does not match the scoped binding".into());
+        if binding.is_project() {
+            let inside = std::fs::canonicalize(binding.root.join(entrypoint))
+                .is_ok_and(|resolved| resolved.starts_with(&binding.root) && resolved.is_file());
+            if !inside {
+                return Err("entrypoint is not a file inside the project folder".into());
+            }
         }
+        self.check_root(binding)
+    }
+
+    /// Revalidate only the grant and the root, for a route that names no
+    /// entrypoint, such as the folder mirror of a project binding.
+    pub(crate) fn validate_scoped_root(
+        &self,
+        id: &str,
+        origin: &str,
+        project: &str,
+    ) -> Result<ProjectBinding, String> {
+        let binding = self.resolve_scoped(id, origin, project)?;
+        self.check_root(binding)
+    }
+
+    fn check_root(&self, binding: ProjectBinding) -> Result<ProjectBinding, String> {
         match std::fs::canonicalize(&binding.root) {
             Ok(root) if root == binding.root && root.is_dir() => Ok(binding),
             _ => Err("scoped binding root is unavailable or changed".into()),
         }
-    }
-
-    /// Public metadata for the management API. Absolute roots intentionally
-    /// stay inside the companion and are never serialized onto the wire.
-    pub fn summaries_scoped(
-        &self,
-        origin: &str,
-        project: &str,
-    ) -> Vec<super::protocol::BindingSummary> {
-        self.list_scoped(origin, project)
-            .into_iter()
-            .map(|binding| super::protocol::BindingSummary {
-                id: binding.id,
-                project: binding.project,
-                entrypoint: binding.entrypoint,
-                created_at: binding.created_at,
-            })
-            .collect()
     }
 }
 
@@ -362,30 +389,115 @@ mod validation_tests {
     use super::*;
 
     #[test]
-    fn each_validation_rechecks_scope_entrypoint_and_revocation() {
+    fn a_project_binding_accepts_any_safe_entrypoint_inside_its_root() {
         let state = tempfile::tempdir().unwrap();
         let root = tempfile::tempdir().unwrap();
-        std::fs::write(root.path().join("paper.qmd"), "# Paper").unwrap();
+        std::fs::create_dir(root.path().join("chapters")).unwrap();
+        std::fs::write(root.path().join("chapters/one.tex"), "x").unwrap();
+        std::fs::write(root.path().join("notes.txt"), "x").unwrap();
         let store = BindingStore::new(state.path());
-        let binding = store
-            .grant("https://example.test", "paper", root.path(), "paper.qmd")
+        let project = store
+            .open_project("https://example.test", root.path())
             .unwrap();
-        let validate = |origin, project, main| {
-            store.validate_scoped_entrypoint(&binding.id, origin, project, main, false)
+        assert_eq!(project.kind, KIND_PROJECT);
+        assert!(project.entrypoint.is_empty());
+        let validate = |entry: &str| {
+            store.validate_scoped_entrypoint(
+                &project.id,
+                "https://example.test",
+                &project.project,
+                entry,
+            )
         };
-        assert!(validate("https://example.test", "paper", "paper.qmd").is_ok());
-        assert!(validate("https://other.test", "paper", "paper.qmd").is_err());
-        assert!(validate("https://example.test", "other", "paper.qmd").is_err());
-        assert!(validate("https://example.test", "paper", "other.qmd").is_err());
+        assert!(validate("chapters/one.tex").is_ok());
+        assert!(validate("notes.txt").is_ok());
+        assert!(validate("missing.tex").is_err());
+        assert!(validate("../escape.tex").is_err());
+        assert!(validate("").is_err());
         assert!(store
-            .revoke_origin_binding(&binding.id, "https://example.test")
+            .validate_scoped_root(&project.id, "https://example.test", &project.project)
+            .is_ok());
+        assert!(store
+            .validate_scoped_entrypoint(
+                &project.id,
+                "https://other.test",
+                &project.project,
+                "notes.txt"
+            )
+            .is_err());
+        assert!(store
+            .revoke_origin_binding(&project.id, "https://example.test")
             .unwrap());
-        assert!(validate("https://example.test", "paper", "paper.qmd").is_err());
-        let replacement = store
-            .grant("https://example.test", "paper", root.path(), "paper.qmd")
+        assert!(validate("notes.txt").is_err());
+    }
+
+    #[test]
+    fn opening_the_same_root_again_returns_the_existing_project() {
+        let state = tempfile::tempdir().unwrap();
+        let root = tempfile::tempdir().unwrap();
+        let other = tempfile::tempdir().unwrap();
+        let store = BindingStore::new(state.path());
+        let first = store
+            .open_project("https://example.test/", root.path())
             .unwrap();
-        assert_ne!(replacement.id, binding.id);
-        assert!(validate("https://example.test", "paper", "paper.qmd").is_err());
+        assert!(first.project.starts_with("local-"));
+        assert!(!first.project.contains("q-"));
+        let again = store
+            .open_project("https://example.test", root.path())
+            .unwrap();
+        assert_eq!(again.id, first.id);
+        assert_eq!(store.list_projects("https://example.test").len(), 1);
+        // Another origin and another root each get their own project.
+        let foreign = store
+            .open_project("https://other.test", root.path())
+            .unwrap();
+        assert_ne!(foreign.id, first.id);
+        let second = store
+            .open_project("https://example.test", other.path())
+            .unwrap();
+        assert_ne!(second.id, first.id);
+        assert_eq!(store.list_projects("https://example.test").len(), 2);
+        assert!(store.get_project(&first.id, "https://other.test").is_none());
+    }
+
+    #[test]
+    fn stored_render_bindings_are_dropped_when_the_store_loads() {
+        let state = tempfile::tempdir().unwrap();
+        let root = tempfile::tempdir().unwrap();
+        let store = BindingStore::new(state.path());
+        let project = store
+            .open_project("https://example.test", root.path())
+            .unwrap();
+        let mut file: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(&store.path).unwrap()).unwrap();
+        let root_path = root.path().to_string_lossy().to_string();
+        let entries = file["bindings"].as_array_mut().unwrap();
+        entries.push(serde_json::json!({
+            "id": "q-render", "origin": "https://example.test", "project": "paper",
+            "root": root_path, "entrypoint": "paper.qmd", "kind": "render",
+            "execution_granted": true
+        }));
+        entries.push(serde_json::json!({
+            "id": "q-legacy", "origin": "https://example.test", "project": "paper",
+            "root": root_path, "entrypoint": "paper.qmd", "execution_granted": true
+        }));
+        std::fs::write(&store.path, serde_json::to_vec(&file).unwrap()).unwrap();
+
+        let reloaded = BindingStore::new(state.path());
+        let projects = reloaded.list_projects("https://example.test");
+        assert_eq!(projects.len(), 1);
+        assert_eq!(projects[0].id, project.id);
+        assert!(reloaded
+            .get_scoped("q-render", "https://example.test", "paper")
+            .is_none());
+        assert!(reloaded
+            .get_scoped("q-legacy", "https://example.test", "paper")
+            .is_none());
+        assert!(reloaded
+            .touch_project(&project.id, "https://example.test")
+            .is_ok());
+        let saved = std::fs::read_to_string(&reloaded.path).unwrap();
+        assert!(!saved.contains("q-render") && !saved.contains("q-legacy"));
     }
 
     #[test]
@@ -394,69 +506,66 @@ mod validation_tests {
         let store = BindingStore::new(state.path());
         std::fs::create_dir_all(store.path.parent().unwrap()).unwrap();
         std::fs::write(&store.path, b"not valid json").unwrap();
-        assert!(store.revoke_any("binding-id").is_err());
+        assert!(store
+            .revoke_origin_binding("binding-id", "https://example.test")
+            .is_err());
     }
 
     #[test]
-    fn concurrent_grant_from_another_store_does_not_restore_a_revoked_binding() {
+    fn concurrent_open_from_another_store_does_not_restore_a_revoked_binding() {
         let state = tempfile::tempdir().unwrap();
         let root = tempfile::tempdir().unwrap();
-        std::fs::write(root.path().join("paper.qmd"), "# Paper").unwrap();
         let initial = BindingStore::new(state.path());
         let revoked_id = initial
-            .grant("https://revoked.test", "paper", root.path(), "paper.qmd")
+            .open_project("https://revoked.test", root.path())
             .unwrap()
             .id;
 
         let revoker = BindingStore::new(state.path());
-        let granter = BindingStore::new(state.path());
+        let opener = BindingStore::new(state.path());
         let (started_tx, started_rx) = std::sync::mpsc::channel();
         let (revoke_finished_tx, revoke_finished_rx) = std::sync::mpsc::channel();
-        let (grant_finished_tx, grant_finished_rx) = std::sync::mpsc::channel();
+        let (open_finished_tx, open_finished_rx) = std::sync::mpsc::channel();
         let transaction = transaction_lock();
         let revoke_started = started_tx.clone();
         let revoke_finished = revoke_finished_tx;
         let revoke_thread = std::thread::spawn(move || {
             revoke_started.send(()).unwrap();
-            let result = revoker.revoke_any(&revoked_id).map(|_| ());
+            let result = revoker
+                .revoke_origin_binding(&revoked_id, "https://revoked.test")
+                .map(|_| ());
             revoke_finished.send(result).unwrap();
         });
-        let grant_started = started_tx;
-        let grant_finished = grant_finished_tx;
+        let open_started = started_tx;
+        let open_finished = open_finished_tx;
         let root_path = root.path().to_path_buf();
-        let grant_thread = std::thread::spawn(move || {
-            grant_started.send(()).unwrap();
-            let result = granter
-                .grant("https://other.test", "paper", &root_path, "paper.qmd")
+        let open_thread = std::thread::spawn(move || {
+            open_started.send(()).unwrap();
+            let result = opener
+                .open_project("https://other.test", &root_path)
                 .map(|_| ());
-            grant_finished.send(result).unwrap();
+            open_finished.send(result).unwrap();
         });
 
         started_rx.recv().unwrap();
         started_rx.recv().unwrap();
         let timeout = std::time::Duration::from_millis(50);
         assert!(revoke_finished_rx.recv_timeout(timeout).is_err());
-        assert!(grant_finished_rx.recv_timeout(timeout).is_err());
+        assert!(open_finished_rx.recv_timeout(timeout).is_err());
         drop(transaction);
 
-        let revoke_completion = revoke_finished_rx.recv().unwrap();
-        assert!(revoke_completion.is_ok());
-        let grant_completion = grant_finished_rx.recv().unwrap();
-        assert!(grant_completion.is_ok());
+        assert!(revoke_finished_rx.recv().unwrap().is_ok());
+        assert!(open_finished_rx.recv().unwrap().is_ok());
         revoke_thread.join().unwrap();
-        grant_thread.join().unwrap();
+        open_thread.join().unwrap();
 
-        let bindings = BindingStore::new(state.path()).list_all();
-        assert!(!bindings
-            .iter()
-            .any(|binding| binding.origin == "https://revoked.test"));
-        assert!(bindings
-            .iter()
-            .any(|binding| binding.origin == "https://other.test"));
+        let store = BindingStore::new(state.path());
+        assert!(store.list_projects("https://revoked.test").is_empty());
+        assert_eq!(store.list_projects("https://other.test").len(), 1);
     }
 
     #[test]
-    fn only_hosted_previews_choose_an_entrypoint() {
+    fn only_hosted_workspaces_choose_an_entrypoint() {
         let state = tempfile::tempdir().unwrap();
         let hosted = tempfile::tempdir().unwrap();
         let store = BindingStore::new(state.path()).with_hosted_workspaces(hosted.path().into());
@@ -465,8 +574,7 @@ mod validation_tests {
                 HOSTED_BINDING,
                 "https://example.test",
                 "paper",
-                "paper.qmd",
-                true
+                "paper.qmd"
             )
             .is_ok());
         assert!(store
@@ -474,33 +582,21 @@ mod validation_tests {
                 HOSTED_BINDING,
                 "https://example.test",
                 "paper",
-                "../paper.qmd",
-                true
-            )
-            .is_err());
-        assert!(store
-            .validate_scoped_entrypoint(
-                HOSTED_BINDING,
-                "https://example.test",
-                "paper",
-                "paper.qmd",
-                false
+                "../paper.qmd"
             )
             .is_err());
     }
 
     #[cfg(unix)]
     #[test]
-    fn replacing_the_granted_root_with_a_symlink_is_refused() {
+    fn replacing_the_project_root_with_a_symlink_is_refused() {
         let state = tempfile::tempdir().unwrap();
         let directory = tempfile::tempdir().unwrap();
         let root = directory.path().join("project");
         std::fs::create_dir(&root).unwrap();
         std::fs::write(root.join("paper.qmd"), "# Paper").unwrap();
         let store = BindingStore::new(state.path());
-        let binding = store
-            .grant("https://example.test", "paper", &root, "paper.qmd")
-            .unwrap();
+        let binding = store.open_project("https://example.test", &root).unwrap();
         let moved = directory.path().join("moved");
         std::fs::rename(&root, &moved).unwrap();
         std::os::unix::fs::symlink(&moved, &root).unwrap();
@@ -508,9 +604,8 @@ mod validation_tests {
             .validate_scoped_entrypoint(
                 &binding.id,
                 "https://example.test",
-                "paper",
-                "paper.qmd",
-                false
+                &binding.project,
+                "paper.qmd"
             )
             .is_err());
     }

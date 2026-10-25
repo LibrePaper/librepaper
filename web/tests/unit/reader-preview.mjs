@@ -62,31 +62,32 @@ assert.match(previewSource, /const failed = hasError[\s\S]*?severity: "error"[\s
 // stored. The switch is the consent, and it is given again each time.
 assert.match(readerSource, /let localExecution = \$state\(false\)/);
 assert.doesNotMatch(readerSource, /granted\(|local-execution\.js|localExecutionConsent/);
-assert.match(readerSource, /async function stopLocalExecution\(\)\s*\{\s*localExecution = false;[\s\S]*?setQuartoPreviewMode\("markdown"\)[\s\S]*?setTypstPreviewMode\("typst"\)/);
-// The open-reset effect turns the code off when a document opens, and puts a
-// stored build preference back on the browser's renderer.
-assert.match(readerSource, /SLUG;[\s\S]*?localExecution = false;[\s\S]*?setQuartoPreviewMode\("markdown"\)[\s\S]*?setTypstPreviewMode\("typst"\)/);
+// Turning the switch changes who renders, so what was in flight stops and the
+// pane is drawn again.
+assert.match(readerSource, /function toggleLocalExecution\(\) \{\s*localExecution = !localExecution;\s*stopRendering\(\);\s*void paintPreview\(\);/);
+// Nothing resets a stored choice of this computer when a document opens, and
+// there is no live preview left to start or stop.
+assert.doesNotMatch(readerSource, /setQuartoPreviewMode|setTypstPreviewMode|startLocalExecution|stopLocalExecution|createLocalPreview/);
+assert.doesNotMatch(readerSource, /livePreviewOwnsPane|liveServing|liveTargets|liveShown|calepin/i);
+assert.doesNotMatch(previewSource, /livePreviewOwnsPane|calepin/i);
 // The switch sits in the top bar and the View menu, and it is the consent.
 assert.match(readerSource, /\{#snippet localExecutionControl\(\)\}[\s\S]*?\{#if runCodeOffered\}[\s\S]*?role="switch"[\s\S]*?aria-checked=\{localExecution\}[\s\S]*?onclick=\{toggleLocalExecution\}/);
-// The switch is offered for every editable Quarto document, and for an
-// editable Typst document only when the desktop app found Calepin.
-assert.match(readerSource, /const runCodeOffered = \$derived\([\s\S]*?sourceFormat === "quarto"[\s\S]*?sourceFormat === "typst"[\s\S]*?calepinFound/);
-assert.match(readerSource, /const toggleLocalExecution = \(\) => \{\s*if \(localExecution\) void stopLocalExecution\(\);\s*else void startLocalExecution\(\);/);
+// The switch is offered in the desktop app, for every editable document whose
+// format is set to this computer.
+assert.match(readerSource, /const runCodeOffered = \$derived\(mayEdit && hasDesktop && buildPreferences\.backend === "local"\)/);
 // There is no confirmation dialog any more.
 assert.doesNotMatch(readerSource, /Run code on this computer/);
 // The browser makes Markdown and Quarto PDFs itself, so no card sends the
 // author to a local tool for one.
 assert.doesNotMatch(readerSource, /pdfNeedsLocalTool|pdfNeedsLocalExecution|PDF needs/);
-// Choosing Quarto's own preview is a choice of tool, not of output: a PDF
-// that was asked for survives enabling the thing that can produce it.
-assert.match(readerSource, /async function setQuartoPreviewMode\(mode\)[\s\S]*?output: mode === "markdown" \? "html" : \(buildPreferences\.output \|\| "html"\)/);
-// A document nobody approved for execution is drawn by the browser: Quarto
-// as the Markdown it is, Typst by this browser's own renderer, whatever tool
-// a remembered preference asks for. The condition used to carry a `typeof`
-// guard, because the only way to test it was to slice it out of the component
-// into a context that had never declared the name; it is an argument now.
-assert.match(previewSource, /const executes = format === "quarto" \|\| \["quarto", "calepin"\]\.includes\(current\.buildPreferences\.tool\)/);
-assert.match(previewSource, /executes && !current\.localExecution[\s\S]*?backend: "browser", tool: "typst"[\s\S]*?backend: "browser", tool: "markdown"/);
+// A document nobody approved for execution is drawn by the browser, whatever
+// the stored choice for its format says. The condition used to carry a
+// `typeof` guard, because the only way to test it was to slice it out of the
+// component into a context that had never declared the name; it is an argument
+// now.
+assert.match(previewSource, /const build = current\.localExecution \? current\.buildPreferences : \{ \.\.\.current\.buildPreferences, backend: "browser" \};/);
+// Quarto with Run code off says what turns the real render on.
+assert.match(readerSource, /Turn on Run code to render on this computer\./);
 // The paged controls are the preview header's, and the frame is what says
 // what they should read: a zoom the frame could not honour -- a pane too
 // narrow for 150% -- must not leave the header claiming it did.
@@ -110,8 +111,11 @@ assert.match(frameSource, /librepaper-flow img \{[\s\S]*?max-width: 100%;[\s\S]*
 // clears the old payload/export and paints an explicit empty state.
 assert.match(previewSource, /if \(!String\(source\.texts\?\.\[source\.main\] \?\? ""\)\.trim\(\)\) \{/);
 assert.match(previewSource, /framePreview\.clear\?\.\(\);[\s\S]*?onEmpty\(\);/);
-// Project folder setting is shown in the File menu for typst, markdown, and quarto.
-assert.match(readerSource, /\{#if mayEdit && \["typst", "markdown", "quarto"\]\.includes\(sourceFormat\)\}[\s\S]*?<Menu\.Item value="project-folder"[\s\S]*?Project folder/);
+// A web project has no project folder: no File menu item, no modal, and no folder sync.
+assert.doesNotMatch(readerSource, /project-folder|ProjectFolderSetting/);
+assert.match(readerSource, /const folderSync = LOCAL \? createFolderSync\(/);
+// A web project renders in the hosted workspace and a local project in its own folder.
+assert.match(readerSource, /bindingId: LOCAL \? LOCAL_ID : localQuarto\.HOSTED_BINDING/);
 // HTML/PDF output format choice for markdown and quarto in View menu.
 assert.match(readerSource, /\{@const selectableFormat = \["latex", "typst", "markdown", "quarto"\]\.includes\(displayedFormat\)\}/);
 assert.match(readerSource, /async function setMarkdownOutput\(format\)/);

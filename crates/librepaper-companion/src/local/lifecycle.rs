@@ -204,15 +204,13 @@ pub async fn stop(state_home: &Path) -> Result<(), String> {
         }
         tokio::time::sleep(Duration::from_millis(100)).await;
     }
-    // The service removes its state after cleaning up preview processes.
+    // The service removes its state file as its last step.
     while ServiceFile::new(state_home)
         .read()
         .is_some_and(|s| s.instance == state.instance)
     {
         if tokio::time::Instant::now() >= deadline {
-            return Err(
-                "The local service is still cleaning up its previews. Retry shortly.".into(),
-            );
+            return Err("The local service is still shutting down. Retry shortly.".into());
         }
         tokio::time::sleep(Duration::from_millis(100)).await;
     }

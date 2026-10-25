@@ -10,7 +10,7 @@ const latexFiles = await read("LatexFilesSettings.svelte");
 const command = await read("ToolCommand.svelte");
 const toolsSettings = await read("ToolsSettings.svelte");
 const toolList = await readFile(new URL("../../src/lib/desktop/tools.js", import.meta.url), "utf8");
-const renderingComponent = await read("RenderingSettings.svelte");
+const renderer = await read("RendererSettings.svelte");
 const remote = await read("RemoteSettings.svelte");
 const statusPill = await read("StatusPill.svelte");
 
@@ -24,7 +24,7 @@ for (const signedIn of [true, false]) {
   }
 }
 assert.doesNotMatch(registryText, /id: "desktop"/);
-for (const query of ["rescan", "project folders", "zotero", "server address", "remote connection", "disconnected sync"]) {
+for (const query of ["rescan", "zotero", "server address", "remote connection", "disconnected sync"]) {
   assert.ok(search(query, { signedIn: false })?.length, `settings search finds ${query}`);
 }
 
@@ -34,8 +34,17 @@ const renderingRows = (context) => rendering.entries.filter((entry) => !entry.of
 const rows = renderingRows({ signedIn: false });
 assert.ok(rows.includes("render-latex-engine"), "Rendering keeps LaTeX engine selection visible");
 assert.ok(rows.includes("render-latex-files"), "Rendering keeps browser-wide LaTeX cache controls visible");
-assert.ok(rows.includes("render-markdown-tool"), "Rendering keeps Markdown renderer selection visible");
-assert.ok(rows.includes("rendering-profile") && rows.includes("rendering-parameters"), "Rendering keeps Quarto profile and parameters visible");
+for (const format of ["latex", "typst", "markdown"]) {
+  assert.ok(rows.includes(`render-${format}-where`), `Rendering says where ${format} renders`);
+  assert.match(dialog, new RegExp(`<RendererSettings format="${format}"`));
+}
+assert.match(dialog, /<RendererSettings format="quarto"/);
+assert.ok(rows.includes("render-quarto-html"), "Rendering lists the Quarto command");
+// The Quarto profile and parameters are part of the command now.
+for (const gone of ["rendering-profile", "rendering-parameters", "render-markdown-tool", "tools-quarto", "tools-calepin"]) {
+  assert.ok(!registryText.includes(`id: "${gone}"`), `${gone} is gone from the settings map`);
+}
+assert.doesNotMatch(dialog, /RenderingSettings|onquartooptions/);
 for (const format of ["latex", "typst", "markdown", "quarto"]) {
   assert.ok(rows.includes(`render-${format}-preview`), `Rendering keeps the ${format} default preview visible`);
   assert.match(dialog, new RegExp(`<DefaultPreviewSetting format="${format}"`));
@@ -45,37 +54,43 @@ for (const format of ["latex", "typst", "markdown", "quarto"]) {
 for (const name of ["LaTeX", "Typst", "Markdown", "Quarto"]) {
   assert.ok(dialog.includes(`<h4 class="settings-subhead">${name}</h4>`), `Rendering always includes ${name}`);
 }
-assert.match(dialog, /<RenderingSettings \{userId\} \{onquartooptions\} \/>/);
 assert.doesNotMatch(dialog, /h4 class="settings-group-title">/);
 assert.doesNotMatch(dialog, /quartoOptionsRelevant/);
-assert.match(renderingComponent, /disabled=\{controlsDisabled\}/);
 assert.doesNotMatch(dialog, /quartoExecutionRelevant/);
 assert.match(latexFiles, /id="render-latex-files"/);
 assert.doesNotMatch(dialog, /render-folder/);
 
-// Build settings are global. LaTeX engine and Markdown tool
-// selections both present the correct options.
+// Build settings are global. The LaTeX engine is chosen once for every
+// document, and where a format renders is a separate row for each format.
 assert.doesNotMatch(build, /desktop\/client/);
 assert.match(build, /id: "render-latex-engine"/);
 assert.deepEqual([...build.matchAll(/value: "(\w+)", says/g)].map((match) => match[1]), [
   "automatic", "pdflatex", "xelatex",
-  "browser", "quarto",
 ]);
 assert.doesNotMatch(build, /lualatex/i);
-for (const format of ["latex", "markdown"]) assert.match(dialog, new RegExp(`<BuildSettings format="${format}"`));
-// Quarto and Calepin run the document, so whether they do is asked per
-// document in the View menu, never chosen once for every document here.
-for (const format of ["typst", "quarto"]) assert.doesNotMatch(dialog, new RegExp(`<BuildSettings format="${format}"`));
+assert.match(dialog, /<BuildSettings format="latex"/);
+for (const format of ["typst", "markdown", "quarto"]) assert.doesNotMatch(dialog, new RegExp(`<BuildSettings format="${format}"`));
+// This computer is offered only in the desktop app, and Quarto has no browser
+// engine to choose.
+assert.match(renderer, /\{#if hasDesktop\}/);
+assert.match(renderer, /\{#if format !== "quarto"\}/);
+assert.match(renderer, /<option value="browser">Browser<\/option>[\s\S]*?<option value="local">This computer<\/option>/);
+assert.match(renderer, /The tool may download packages on its own\./);
+assert.match(renderer, /LOCAL_OUTPUTS\[format\]/);
 
-// A tool's command fields need the desktop app and fresh settings before edits
-// apply, and a response for another tool is dropped. Only Quarto and Calepin
-// have commands; Zotero is listed with the other programs.
-assert.match(command, /const canEdit = \$derived\(isConnected && settingsLoaded && !pendingDialogAction\);/);
-assert.match(command, /requestId !== loadId[\s\S]{0,260}requestedName !== name/);
-assert.match(toolsSettings, /const CONFIGURABLE = \["quarto", "calepin"\];/);
+// A render command's fields need the desktop app and fresh settings before
+// edits apply, and a response for another output is dropped. The whole
+// command is one line, saved by key, and the program is listed with the others.
+assert.match(command, /const canEdit = \$derived\(isConnected && record !== null && !pendingDialogAction\);/);
+assert.match(command, /requestId !== loadId \|\| requestedKey !== key/);
+assert.match(command, /desktopClient\.setRenderer\(requestedKey, \{ command: splitArgs\(editingCommand\)/);
+assert.match(command, /desktopClient\.resetRenderer\(requestedKey\)/);
+assert.match(command, /Reset to default/);
+assert.doesNotMatch(toolsSettings, /ToolCommand|CONFIGURABLE/);
 assert.match(toolList, /"Zotero"/);
-// Rendering says nothing about the desktop app; the programs live under Tools.
-assert.doesNotMatch(dialog, /ConnectionRow|ToolCommand/);
+assert.match(toolList, /capabilities\?\.renderers/);
+// Rendering says nothing about the desktop app's connection; the programs live under Tools.
+assert.doesNotMatch(dialog, /ConnectionRow/);
 
 // The account page calls the server Remote connection and shows its state as
 // a compact, accessible pill beside the server address.
@@ -86,4 +101,4 @@ assert.match(statusPill, /tone = "neutral"/);
 assert.match(statusPill, /role="status" aria-label=\{accessibleLabel \|\| label\}/);
 assert.match(statusPill, /aria-hidden="true"/);
 
-console.log("settings-quarto: Rendering page shows one section per format; format-specific controls stay available");
+console.log("settings-quarto: Rendering page shows one section per format; where it renders and its commands sit in each");

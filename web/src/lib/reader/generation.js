@@ -1,7 +1,7 @@
 // "Is this run still the current one?", written once.
 //
-// Eight counters across seven files -- boot, collaboration, history-source,
-// timeline, passage-trace, local-preview twice, and Reader itself -- had
+// Counters across many files -- boot, collaboration, history-source,
+// timeline, passage-trace and Reader itself -- had
 // hand-rolled the same thing: bump an integer when a run starts, capture it in
 // a local, and compare it back after every await so a slow answer cannot
 // overwrite a newer one. The counter was always right, but each copy re-stated
