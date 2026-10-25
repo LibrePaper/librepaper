@@ -1,0 +1,31 @@
+name: LibrePaper sync
+description: Keeps a Git repository and a LibrePaper project in step.
+inputs:
+  project:
+    description: The project page URL, https://<site>/docs/<slug>.
+    required: true
+  token:
+    description: A LibrePaper project token with the Edit role. Store it as a secret.
+    required: true
+  version:
+    # The default is the release matching the workspace version in Cargo.toml.
+    # Bump it when a release ships the push and pull commands.
+    description: The librepaper release tag to download, such as v0.0.52.
+    required: false
+    default: v0.0.52
+  branch:
+    description: The branch to sync. The workflow must check it out.
+    required: false
+    default: main
+runs:
+  using: composite
+  steps:
+    - name: Sync with LibrePaper
+      shell: bash
+      env:
+        PROJECT: ${{ inputs.project }}
+        LIBREPAPER_TOKEN: ${{ inputs.token }}
+        LIBREPAPER_VERSION: ${{ inputs.version }}
+        BRANCH: ${{ inputs.branch }}
+        GITHUB_TOKEN: ${{ github.token }}
+      run: bash "${{ github.action_path }}/sync.sh"
