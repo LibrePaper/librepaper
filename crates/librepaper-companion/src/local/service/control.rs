@@ -203,7 +203,7 @@ pub(super) async fn handle(
         }
         (Some("bindings"), Some(id), None, None) if *method == Method::DELETE => {
             let _admission = inner.admission.lock().await;
-            match inner.quarto_bindings.revoke_any(id) {
+            match inner.bindings.revoke_any(id) {
                 Ok(revoked) => write_json(200, &json!({"revoked":revoked})),
                 Err(error) => write_json(500, &json!({"error":error})),
             }
@@ -213,15 +213,6 @@ pub(super) async fn handle(
         }
         (Some("jobs"), Some(id), Some("cancel"), None) if *method == Method::POST => {
             cancel_job(inner, id).await
-        }
-        (Some("previews"), Some(id), None, None) if *method == Method::DELETE => {
-            let mut previews = inner.previews.lock().await;
-            if previews.0.contains_key(id) {
-                previews.stop(id).await;
-                write_json(200, &json!({"stopped":true}))
-            } else {
-                write_json(404, &json!({"error":"preview not found"}))
-            }
         }
         (Some("agents"), None, None, None) if *method == Method::POST => {
             add_agent(inner, request).await
@@ -267,8 +258,9 @@ pub(super) fn apply_headers(mut response: Reply, path: &str) -> Reply {
 
 async fn state(inner: &Inner) -> Reply {
     let capabilities = inner.runner.capabilities(false).await;
+    let renderers = capabilities.renderers.clone();
     let bindings: Vec<_> = inner
-        .quarto_bindings
+        .bindings
         .list_all()
         .into_iter()
         .map(|binding| {
@@ -282,27 +274,9 @@ async fn state(inner: &Inner) -> Reply {
         entries
             .into_iter()
             .map(|(id, entry)| {
-                json!({"id":id,"status":entry.status.status,"kind":entry.status.kind,"stage":entry.status.stage,"origin":entry.request.origin,"project":entry.request.project,"log_tail":entry.status.log_tail,"error":entry.status.error})
+                json!({"id":id,"status":entry.status.status,"format":entry.request.format,"output":entry.request.output,"stage":entry.status.stage,"origin":entry.request.origin,"project":entry.request.project,"log_tail":entry.status.log_tail,"error":entry.status.error})
             })
             .collect::<Vec<_>>()
-    };
-    let previews = {
-        let mut entries = Vec::new();
-        let mut previews = inner.previews.lock().await;
-        let mut ids: Vec<_> = previews.0.keys().cloned().collect();
-        ids.sort();
-        for id in ids {
-            if let Some(session) = previews.0.get_mut(&id) {
-                let running = session.is_running();
-                entries.push(json!({
-                    "id":id,"engine":session.engine,"kind":session.kind.as_str(),
-                    "origin":session.origin,"project":session.project,
-                    "status":if running { if session.rendering.load(std::sync::atomic::Ordering::SeqCst) {"rendering"} else {"watching"} } else {"stopped"},
-                    "log_tail":crate::local::preview::log_tail(session, 4096).await
-                }));
-            }
-        }
-        entries
     };
     let sessions: Vec<_> = inner
         .assistant_sessions
@@ -320,12 +294,11 @@ async fn state(inner: &Inner) -> Reply {
             "tools":capabilities,
             "bindings":bindings,
             "jobs":jobs,
-            "previews":previews,
             "agents":crate::local::acp_agents::detect(&inner.state_home),
             "custom_agents":crate::local::acp_agents::CustomStore::new(&inner.state_home).list().into_iter().map(|(id, agent)| json!({"id":id,"label":agent.label,"command":agent.command})).collect::<Vec<_>>(),
             "sessions":sessions,
             "settings":{
-                "integrations":crate::local::integrations::all(),
+                "renderers":renderers,
             }
         }),
     )
@@ -390,7 +363,7 @@ async fn choose_binding_folder(inner: &Inner, request: Request<Body>) -> Reply {
         Err(error) => return write_json(400, &json!({"error":error})),
     };
     match inner
-        .quarto_bindings
+        .bindings
         .grant(&origin, &project, &root, &body.entrypoint)
     {
         Ok(binding) => write_json(200, &json!({"binding":binding})),

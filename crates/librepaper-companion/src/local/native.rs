@@ -1,18 +1,15 @@
 //! Running one subprocess with bounded lifecycle and captured output.
 //!
 //! Every process started here is an explicit argument array against an
-//! app-resolved absolute path, with a cleared environment. Cancellation and
+//! app-resolved absolute path. Cancellation and
 //! the deadline kill the whole process group, and both pipes are drained for
 //! the process's whole lifetime so a verbose tool cannot deadlock on a full
 //! pipe; the retained log is the bounded tail.
 //!
 //! This is process hygiene, not an operating-system security boundary: the
-//! tool runs with the user's permissions. Capabilities report confinement as
-//! `none` until a sandbox is actually enforced.
+//! tool runs with the user's permissions.
 //!
-//! The builders (`builders/`) and tool discovery are the callers. LaTeX is
-//! built in the browser, so no TeX engine, BibTeX, Biber or makeindex is
-//! invoked from this process.
+//! The render pipeline (`render`) is the caller.
 
 use std::time::{Duration, Instant};
 
@@ -218,7 +215,7 @@ mod tests {
         ));
     }
 
-    /// The Quarto render reads its log through this supervisor. A byte-index
+    /// A render reads its log through this supervisor. A byte-index
     /// cut can land inside a multibyte character; the log is carried as bytes
     /// and decoded lossily for exactly that reason. Truncating the decoded
     /// `String` at the same byte index instead panics on a non-boundary, and

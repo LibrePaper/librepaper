@@ -24,8 +24,8 @@
 //! point is corrected without waiting for a release. That declaration goes
 //! through the authenticated control API (`service/control.rs`), which only
 //! the desktop shell can reach. A document page chooses *which* agent, never
-//! *what command*, the same invariant the build protocol keeps by refusing a
-//! caller-supplied `command` (see `protocol::BuildRequestV2::validate_shape`).
+//! *what command*, the same invariant the job protocol keeps by refusing a
+//! caller-supplied `command` (see `protocol::JobRequest`).
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
