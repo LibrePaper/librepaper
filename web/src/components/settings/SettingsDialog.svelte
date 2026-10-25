@@ -31,8 +31,10 @@
     oncompletion = undefined,
     brackets = true,
     onbrackets = undefined,
-    spellcheck = true,
-    onspellcheck = undefined,
+    proofing = "browser",
+    onproofing = undefined,
+    dialect = "american",
+    ondialect = undefined,
     check = true,
     oncheck = undefined,
     // What the workspace can currently be asked to do, for the shortcut table
@@ -101,7 +103,7 @@
         {#if shown.id === "appearance"}
           <AppearanceSettings />
         {:else if shown.id === "editor"}
-          <EditorSettings {keys} {onkeys} {completion} {oncompletion} {brackets} {onbrackets} {spellcheck} {onspellcheck} {check} {oncheck} {commands} />
+          <EditorSettings {keys} {onkeys} {completion} {oncompletion} {brackets} {onbrackets} {proofing} {onproofing} {dialect} {ondialect} {check} {oncheck} {commands} />
         {:else if shown.id === "rendering"}
           <section class="settings-subsection">
             <div class="settings-section-title"><h4 class="settings-subhead">LaTeX</h4></div>

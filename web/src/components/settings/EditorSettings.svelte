@@ -10,12 +10,21 @@
     oncompletion,
     brackets = true,
     onbrackets,
-    spellcheck = true,
-    onspellcheck,
+    proofing = "browser",
+    onproofing,
+    dialect = "american",
+    ondialect,
     check = true,
     oncheck,
     commands = {},
   } = $props();
+
+  const PROOFING_DESCRIPTIONS = {
+    off: "Nothing is underlined.",
+    browser: "Your browser underlines misspelled words in prose, skipping commands, code, math and citation keys. Its language and dictionary decide what counts as a word.",
+    harper: "Harper checks English spelling and grammar in prose. It downloads 7 MB the first time and uses about 300 MB of memory while a document is open. Documents that declare another language get the browser's spellcheck instead.",
+  };
+  const proofingDescription = $derived(PROOFING_DESCRIPTIONS[proofing] ?? PROOFING_DESCRIPTIONS.browser);
 </script>
 
 <SettingRow id="editor-keys" title="Key bindings">
@@ -43,13 +52,27 @@
   </button>
 </SettingRow>
 
-<SettingRow id="editor-spellcheck" title="Spellcheck"
-            description="Underline misspelled words in prose, skipping commands, code, math and citation keys. The browser's language and dictionary decide what counts as a word.">
-  <button type="button" role="switch" class="switch" aria-checked={spellcheck} aria-label="Spellcheck"
-          data-state={spellcheck ? "checked" : "unchecked"} onclick={() => onspellcheck?.(!spellcheck)}>
-    <span class="switch-thumb" data-state={spellcheck ? "checked" : "unchecked"}></span>
-  </button>
+<SettingRow id="editor-proofing" title="Grammar and spelling" description={proofingDescription}>
+  <select class="select setting-select" aria-label="Grammar and spelling" value={proofing}
+          onchange={(event) => onproofing?.(event.currentTarget.value)}>
+    <option value="off">Off</option>
+    <option value="browser">Browser</option>
+    <option value="harper">Harper</option>
+  </select>
 </SettingRow>
+
+{#if proofing === "harper"}
+  <SettingRow id="editor-dialect" title="English dialect">
+    <select class="select setting-select" aria-label="English dialect" value={dialect}
+            onchange={(event) => ondialect?.(event.currentTarget.value)}>
+      <option value="american">American</option>
+      <option value="british">British</option>
+      <option value="canadian">Canadian</option>
+      <option value="australian">Australian</option>
+      <option value="indian">Indian</option>
+    </select>
+  </SettingRow>
+{/if}
 
 <SettingRow id="editor-check" title="Code check"
             description="Underline errors and warnings from the last render in the source. The list of messages stays available.">

@@ -40,10 +40,17 @@
   const completionOn = (on) => (on ? autocompletion({ activateOnTyping: true }) : []);
   const bracketsOn = (on) => (on ? [closeBrackets(), keymap.of(closeBracketsKeymap)] : []);
   const checkOn = (on, citations) => (on ? [lintGutter(), citations] : []);
-  // The browser's spellcheck, on for prose and off for code and data files,
-  // where every identifier would be underlined. Markup inside a prose file is
-  // skipped too, by spellcheckExtension.
-  const spellcheckOn = (on, prose) => (on && prose ? spellcheckExtension(prose) : EditorView.contentAttributes.of({ spellcheck: "false" }));
+  // The checker for a source, chosen from the setting, the dialect, the prose
+  // format of the file and its text. Code and data files get no checker, and
+  // the browser's spellcheck is off there, where every identifier would be
+  // underlined. A prose file gets Harper when the setting says so, this
+  // deployment serves it and the text is English. Any other prose file gets
+  // the browser's spellcheck, with its markup skipped by spellcheckExtension.
+  const proofingOn = (proofing, dialect, prose, text) => {
+    if (!prose || proofing === "off") return EditorView.contentAttributes.of({ spellcheck: "false" });
+    if (proofing === "harper" && harperAvailable() && isEnglishDocument(text, prose)) return harperExtension(prose, dialect);
+    return spellcheckExtension(prose);
+  };
 
   // Loro merges nearby commits by default. A handled Vim key starts a new
   // command boundary; the first local edit after it consumes that boundary
@@ -231,6 +238,9 @@
   import { snippetTemplate } from "../lib/snippet-template.js";
   import { formatOf as documentFormat } from "../lib/formats.js";
   import { spellcheckExtension } from "../lib/spellcheck/extension.js";
+  import { harperExtension } from "../lib/harper/extension.js";
+  import { harperAvailable } from "../lib/harper/client.js";
+  import { isEnglishDocument } from "../lib/harper/language.js";
   import { untrack } from "svelte";
 
   // Whether what is typed here is recorded as a tracked change is not a prop
@@ -242,7 +252,7 @@
   // is the id of the change the reviewer is looking at.
   /** @type {{ me?: { who: string, author: string }, [key: string]: any }} */
   let { session, format = "", file = "", keys = "default", editable = true,
-    completion = true, brackets = true, spellcheck = true, check = true,
+    completion = true, brackets = true, proofing = "browser", dialect = "american", check = true,
     tracking = false, me = { who: "", author: "" }, selectedChange = null,
     analyze = analyzeBibliography,
     onchange, oncaret, onfilechange, onbibliography, onsave, onquit,
@@ -1106,7 +1116,7 @@
       extensions: [
         EditorView.editable.of(Boolean(editable)),
         EditorView.contentAttributes.of({ "aria-label": path ? `Source of ${path}` : "Source" }),
-        spellcheckCompartment.of(spellcheckOn(untrack(() => spellcheck), proseFormat(id))),
+        spellcheckCompartment.of(proofingOn(untrack(() => proofing), untrack(() => dialect), proseFormat(id), text.toString())),
         // Vim, when the setting says so, and always first: an earlier
         // extension has precedence, and Vim has to see a key before the
         // default keymap does, or `j` inserts a letter instead of moving.
@@ -1249,9 +1259,9 @@
     });
   }
 
-  /// Reconfigures the live view's completion, bracket, spellcheck and check
+  /// Reconfigures the live view's completion, bracket, proofing and check
   /// switches to match their props, in one transaction. `id` is the file the
-  /// view shows, which decides whether spellcheck applies. Like `syncKeys`, it
+  /// view shows, which decides whether proofing applies. Like `syncKeys`, it
   /// reads the props without tracking, so the effect at the end of the script
   /// is the one that follows them.
   function syncFeatures(target, id = showing) {
@@ -1260,7 +1270,7 @@
       effects: [
         completionCompartment.reconfigure(completionOn(untrack(() => completion))),
         bracketsCompartment.reconfigure(bracketsOn(untrack(() => brackets))),
-        spellcheckCompartment.reconfigure(spellcheckOn(untrack(() => spellcheck), proseFormat(id))),
+        spellcheckCompartment.reconfigure(proofingOn(untrack(() => proofing), untrack(() => dialect), proseFormat(id), target.state.doc.toString())),
         checkCompartment.reconfigure(checkOn(untrack(() => check), citationKeys)),
       ],
     });
@@ -1544,11 +1554,12 @@
     if (view) syncKeys(view);
   });
 
-  // The completion, bracket and spellcheck switches work the same way.
+  // The completion, bracket and proofing switches work the same way.
   $effect(() => {
     void completion;
     void brackets;
-    void spellcheck;
+    void proofing;
+    void dialect;
     if (view) syncFeatures(view);
   });
 

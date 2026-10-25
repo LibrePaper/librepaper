@@ -2612,7 +2612,8 @@
   const keys = $derived(prefs.keys);
   const completion = $derived(prefs.completion);
   const brackets = $derived(prefs.brackets);
-  const spellcheck = $derived(prefs.spellcheck);
+  const proofing = $derived(prefs.proofing);
+  const dialect = $derived(prefs.dialect);
   const check = $derived(prefs.check);
   const sizes = $derived(prefs.sizes);
 
@@ -2871,7 +2872,8 @@
   const setKeys = (next) => preferences.setKeys(next);
   const setCompletion = (on) => preferences.setCompletion(on);
   const setBrackets = (on) => preferences.setBrackets(on);
-  const setSpellcheck = (on) => preferences.setSpellcheck(on);
+  const setProofing = (value) => preferences.setProofing(value);
+  const setDialect = (value) => preferences.setDialect(value);
   const setCheck = (on) => preferences.setCheck(on);
 
   // What ":q" in Vim mode asks for: the document alone, set directly rather
@@ -4528,7 +4530,7 @@
       {:else if shownFigure}
         {@render figureBody()}
       {:else if Editor && sourceBound}
-        <Editor bind:this={editor} {session} format={editorFormat} file={openFile} entry={previewPath} {keys} {completion} {brackets} {spellcheck} {check} {rules} {tracking} me={trackingMe} {selectedChange} editable={mayEdit}
+        <Editor bind:this={editor} {session} format={editorFormat} file={openFile} entry={previewPath} {keys} {completion} {brackets} {proofing} {dialect} {check} {rules} {tracking} me={trackingMe} {selectedChange} editable={mayEdit}
                   onbibliography={bibliographyAnalyzed} onchange={outlineTextChanged} oncaret={outlineCaretChanged} onsave={reportPersistence} onquit={showDocumentAlone}
                   onfilechange={(id) => { ws.openFile = id; outlineActiveFrom = null; ws.figure = null; noteSourceSelection(); }} />
       {/if}
@@ -4815,7 +4817,7 @@
 <SettingsDialog bind:open={settingsOpen} bind:category={settingsCategory}
                 remoteConnected={connected} remoteNote={connectionNote}
                 {keys} onkeys={setKeys}
-                {completion} oncompletion={setCompletion} {brackets} onbrackets={setBrackets} {spellcheck} onspellcheck={setSpellcheck} {check} oncheck={setCheck}
+                {completion} oncompletion={setCompletion} {brackets} onbrackets={setBrackets} {proofing} onproofing={setProofing} {dialect} ondialect={setDialect} {check} oncheck={setCheck}
                 commands={commandContext}
                 userId={buildUserId}
                 onbuildpreferences={(format, next) => { if (format === sourceFormat) setBuildPreferences(next); }}
